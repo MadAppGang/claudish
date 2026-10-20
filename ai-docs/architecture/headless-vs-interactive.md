@@ -123,12 +123,13 @@ an agent driving another agent is exactly the case where a human needs to be abl
 
 `packages/magmux-{darwin,linux}-*` ship with the CLI. Since 10.4 its main consumer is
 `packages/cli/src/pane/`: every MCP `team` slot, every CLI `team`/`--team --mode json` slot and every
-`create_session` is an interactive Claude Code in its own headless magmux pane, and the MCP server
-no longer starts any child with `-p` ([`pane-session.md`](pane-session.md)). `team-grid.ts` and
+`create_session` is an interactive Claude Code in its own headless magmux pane
+([`pane-session.md`](pane-session.md)). The one `-p` child the MCP server starts is `run_prompt` on
+a Claude model, below. `team-grid.ts` and
 `--grid` remain the side-by-side viewer for a human, not the rationale.
 
 The MCP-server constraint quoted above is about `magmux mcp`, magmux's OWN MCP server. claudish's
-MCP server spawns its panes itself, headless, because a team slot or a channel session has no human
+MCP server spawns its panes itself, headless, because a team slot or a session has no human
 in front of it; the pane's screen is still readable through `team(mode:"capture")` and
 `capture_session`, which is what the peer's Claude Code mod draws.
 
@@ -215,13 +216,15 @@ long-lived; there is no poll-interval race in that model.
 The controller's `CtrlAwaitingPermission` state is not something a driver can rely on. Read in
 magmux 0.14.0's source: `ClaudeCodeController` never produces `awaiting_permission` (only a plugin
 controller can push it), so a permission block shows up in `list` as `awaiting_input`; and a
-`claudish` pane has no controller at all. The
+`claudish` pane is DECLARED to the controller for its input gate (magmux 0.17.0, bound by name to
+the pane's own transcript), but claudish never reads the controller's turn state. The
 cheaper route for automation is not to be asked: claudish's pane children run with `-y`, under
 which `--permission-mode default` produces no dialog (measured), and `--no-auto-approve` is a
 reserved flag. A permission dialog therefore appears only for plan approval
-(`--permission-mode plan`). `PaneSession` recognises it, and AskUserQuestion, from a closed list of
-named dialog headers on the screen plus the pending tool in the transcript; team fails such a slot
-`blocked`, a channel session waits in `AWAITING_PERMISSION` or `AWAITING_INPUT` for `send_input`.
+(`--permission-mode plan`). `PaneSession` recognises it, and AskUserQuestion, from the pending tool in the transcript plus
+the gate's `dialog:permission`, `dialog:plan` or `dialog:question` (AskUserQuestion from the
+transcript alone); team fails such a slot
+`blocked`, an MCP session waits in `AWAITING_PERMISSION` or `AWAITING_INPUT` for `send_input`.
 
 ## What this means when you are writing code here
 
@@ -238,4 +241,43 @@ named dialog headers on the screen plus the pending tool in the transcript; team
   never exercised. A refused agent is FAILED `agent_rejected` with the child's own line.
 - **Prefer magmux over `-p`** for anything where a silent behavioural difference would corrupt
   the result rather than merely degrade it. claudish's own `-p` single-shot mode still exists for
-  users who pipe a prompt in; nothing in the MCP server uses it.
+  users who pipe a prompt in; the MCP server uses it in exactly one place, below.
+
+## The one `-p` the MCP server starts: `run_prompt` on a Claude model
+
+`run_prompt` (and each Claude entry of `compare_models`) on a bare Claude name runs
+`claudish -p --model <model> --output-format json --tools "" --strict-mcp-config
+--setting-sources "" --disable-slash-commands --no-session-persistence` with the prompt on stdin
+(`mcp/run-prompt-claude-code.ts`; the full rationale is in [`mcp-sessions.md`](mcp-sessions.md)
+"`run_prompt`: two paths"). It has to be a Claude Code call because claudish may not read the
+Claude Code login itself, and it can be `-p` because none of what makes `-p` untrustworthy applies:
+
+- **The measured divergence needs `--input-format stream-json` and `--agent`.** This call uses
+  neither: its input is plain text on stdin, and it passes no agent, so there is no validation for
+  Claude Code to skip silently.
+- **There is nothing to validate.** `--tools ""` and `--strict-mcp-config` leave the child no tools
+  and no MCP servers (`system/init`: `tools: []`, `mcp_servers: []`); a flag Claude Code ignored
+  could only widen that, and the init frame would show it.
+- **It is one turn with nothing to drive.** A session needs the REPL because it waits, queues
+  `send_input` and answers dialogs; this call sends one prompt and reads one answer, which is what
+  print mode is.
+- **Exit 0 is never the verdict.** The answer is the `type: "result"` frame: `is_error` and
+  `api_error_status` decide failure (a bad model exits 1 with `is_error: true` and
+  `api_error_status: 404`), and output with no result frame is an error, never a success.
+
+Measured for this call on Claude Code 2.1.301 (session
+`dev-feature-mcp-run-prompt-claude-20261016-a7c3`):
+
+- `--output-format json` prints a JSON ARRAY of frames (`system/init`, `assistant`,
+  `rate_limit_event`, `result`), not the single object older releases printed. The parser takes
+  both.
+- `--setting-sources ""` keeps the subscription login: `apiKeySource: "none"`, answer `OK`. The
+  login lives in the Keychain, not in a settings source. `--bare` does not: it reads only
+  `ANTHROPIC_API_KEY`/`apiKeyHelper`.
+- The working directory decides the context size, even with every settings source off: CLAUDE.md
+  and memory still load, 8 718 input tokens in this repo against 580–597 in an empty directory.
+  The call runs in a new empty one.
+- claudish passes every one of these flags to `claude` unchanged, empty values included, and adds
+  `--settings <file>` and `--dangerously-skip-permissions`. Its passthrough parser takes a value
+  only when it does not start with `-`, so the prompt goes on stdin and the system prompt in a file
+  (`--system-prompt-file`); `- Say OK` on stdin was answered correctly.

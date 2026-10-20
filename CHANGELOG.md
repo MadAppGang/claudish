@@ -2,6 +2,334 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.1.2] - 2026-10-20
+
+### Bug Fixes
+
+- start pane children with Claude Code's native cursor *(pane)* ([`6265866`](https://github.com/MadAppGang/claudish/commit/626586617143c6c38751467b9db470574005819a))
+
+### Documentation
+
+- record the 2026-10-20 recommended-models Bench run *(reports)* ([`34fbe21`](https://github.com/MadAppGang/claudish/commit/34fbe212af1172f13480a7de9f4725e6c8091087))
+- update CHANGELOG.md for v12.1.1([`43eeca1`](https://github.com/MadAppGang/claudish/commit/43eeca1e4c02fde1b4392b7b98be6480ab6822db))
+
+### Other Changes
+
+- v12.1.2 *(release)* ([`7efd15b`](https://github.com/MadAppGang/claudish/commit/7efd15bb5a774b6a286da2a6c6e42891799be9b5))
+
+## [12.1.1] - 2026-10-20
+
+### Bug Fixes
+
+- bundle magmux 0.18.0, which binds deep pane socket paths *(pane)* ([`dd91ceb`](https://github.com/MadAppGang/claudish/commit/dd91cebfe51f59f637a7f89336a743aaf94ece06))
+- accept pane socket paths of 100 bytes or more *(pane)* ([`7836e09`](https://github.com/MadAppGang/claudish/commit/7836e09a70660dca7ed6afce44b99a25ae643f68))
+
+### Documentation
+
+- update CHANGELOG.md for v12.1.0([`2a66aeb`](https://github.com/MadAppGang/claudish/commit/2a66aebcac4005fc3670cc3d10f5a98c373feb51))
+
+### Other Changes
+
+- v12.1.1 *(release)* ([`02b6009`](https://github.com/MadAppGang/claudish/commit/02b600917d7c23c0410bc3611f3732a7b4923faa))
+
+### Refactoring
+
+- read the magmux minimum in help text from MIN_MAGMUX_VERSION *(mcp)* ([`50850fa`](https://github.com/MadAppGang/claudish/commit/50850fab617366076e54d1f7256562d6d774706f))
+
+## [12.1.0] - 2026-10-20
+
+### Bug Fixes
+
+- run one magmux --version probe for panes that start together *(pane)* ([`378b854`](https://github.com/MadAppGang/claudish/commit/378b85448d88e01e9112990d3343923ebddaa2aa))
+- corroborate turn settle with the input gate, not the box *(pane)* ([`af427dd`](https://github.com/MadAppGang/claudish/commit/af427ddf81ba1d473b02f9ba89e482d130aff56c))
+- submit each prompt through one gated magmux send *(pane)* ([`1673aeb`](https://github.com/MadAppGang/claudish/commit/1673aeb89ef2c5689306002ea68e2422a525c428))
+- keep an explicit typed:false on a magmux failure reply *(pane)* ([`64233a2`](https://github.com/MadAppGang/claudish/commit/64233a2f90e14765b10b02f531257a250c3dfc1e))
+- read a binding missing its id or path as unbound *(pane)* ([`5e664f2`](https://github.com/MadAppGang/claudish/commit/5e664f22a2b421cd5c17fbc522f7b7d0f1b2f6c7))
+- read maybeSubmitted from the magmux reply *(pane)* ([`2b03645`](https://github.com/MadAppGang/claudish/commit/2b03645c099065293fd88a998726fbb455e15eae))
+- clamp resize_session width to 250 columns, not 500 *(mcp)* ([`f67bd3a`](https://github.com/MadAppGang/claudish/commit/f67bd3aaa6467a7d30daca63bb3588630f1cb3f5))
+- send a resize_session size stored during a redial *(pane)* ([`6978d2a`](https://github.com/MadAppGang/claudish/commit/6978d2a5f5ae463706aaa316e5b93fe6e465169f))
+- require magmux 0.15.1 so a taller pane redraws Claude Code *(team)* ([`243bd01`](https://github.com/MadAppGang/claudish/commit/243bd0142b700839a94036e3a8d8468989c55759))
+- match echo, dialog and working rows at any terminal width *(pane)* ([`cd6baf3`](https://github.com/MadAppGang/claudish/commit/cd6baf37b9ba268926b17805574328ba071bcdd7))
+
+### Documentation
+
+- record the live validation of resize_session and team resize *(reports)* ([`80b6d4e`](https://github.com/MadAppGang/claudish/commit/80b6d4e64518a9be832db6ad152c1a0d09f58b87))
+- close the magmux controller and double-typed prompt items *(roadmap)* ([`2ea9dfb`](https://github.com/MadAppGang/claudish/commit/2ea9dfbd845eafbea155c15ea3e321c3783b189a))
+- document the magmux input gate in pane-session.md *(pane)* ([`d19050c`](https://github.com/MadAppGang/claudish/commit/d19050c1f297e0b1aa2f912dbf15171e07798f1d))
+- update CHANGELOG.md for v12.0.1([`0d875ef`](https://github.com/MadAppGang/claudish/commit/0d875ef062a688e162f1f10c45091dd8f33e3936))
+
+### New Features
+
+- remove the 250-column cap from resize_session *(mcp)* ([`7d43b73`](https://github.com/MadAppGang/claudish/commit/7d43b73263e737c46e491e52ef60de139057459e))
+- read boot readiness and dialogs from the magmux input gate *(pane)* ([`2462745`](https://github.com/MadAppGang/claudish/commit/24627459e8cb4312936eebbff2aa825e32976719))
+- bind each pane to its transcript in magmux's input gate *(pane)* ([`ea1b992`](https://github.com/MadAppGang/claudish/commit/ea1b99280c83421e253b3f3de5a6f3c2d0bbb56c))
+- locate the input box by the cursor row *(pane)* ([`dd5baac`](https://github.com/MadAppGang/claudish/commit/dd5baac62ab053e5cca175952e29dfdfa74ea092))
+- keep magmux reply reason and typed fields *(pane)* ([`c36359f`](https://github.com/MadAppGang/claudish/commit/c36359f614c69cb2c3c424520b81a2d972013c31))
+- list resize in the contract capabilities *(mcp)* ([`ab23345`](https://github.com/MadAppGang/claudish/commit/ab2334508ea8d6ec870e6df1adf13dadaad61c4c))
+- require magmux 0.15.0 and ship it in the npm packages *(team)* ([`2e2e836`](https://github.com/MadAppGang/claudish/commit/2e2e8361b230fe1d4e1cc4aa58ed747ae99c9fb5))
+- add resize_session tool and team mode resize *(mcp)* ([`9c400d2`](https://github.com/MadAppGang/claudish/commit/9c400d235d7e742b2ee92272d42f232512c57cc4))
+
+### Other Changes
+
+- raise the hermetic test step timeout to 40 minutes *(ci)* ([`1f72a19`](https://github.com/MadAppGang/claudish/commit/1f72a1996030d50040b648e62c87960a7d64309e))
+- v12.1.0 *(release)* ([`458adf6`](https://github.com/MadAppGang/claudish/commit/458adf6be7c6d19a7b5de38bbd33b93ebd938211))
+
+## [12.0.1] - 2026-10-20
+
+### Bug Fixes
+
+- copy tool, reasoning and vision support into recommended rows *(catalog)* ([`14e7e60`](https://github.com/MadAppGang/claudish/commit/14e7e606f7c2b1331dcd8741047ee989a541eefe))
+
+### Documentation
+
+- document supportsTools, supportsReasoning and supportsVision *(catalog)* ([`ad0c82e`](https://github.com/MadAppGang/claudish/commit/ad0c82e62f9e03bba91ee6cd60977b27363162f9))
+- stamp the playbook verified at the v12.0.0 merge *(release)* ([`dfd23e6`](https://github.com/MadAppGang/claudish/commit/dfd23e6203566381138fc1946dc7a43ad7b90338))
+- update CHANGELOG.md for v12.0.0([`f1d641a`](https://github.com/MadAppGang/claudish/commit/f1d641ae0ced799f0dabae3803e399d7719adf9a))
+
+### Other Changes
+
+- v12.0.1 *(release)* ([`c6115ea`](https://github.com/MadAppGang/claudish/commit/c6115eacdadbfa181bb238fe0bad9686d61bb72b))
+
+## [12.0.0] - 2026-10-20
+
+### ⚠ BREAKING CHANGES
+
+- meta@<model> no longer routes to OllamaCloud. Use *(ollamacloud)* ([`2724916`](https://github.com/MadAppGang/claudish/commit/2724916dfc3ca0dec5bf4e41c8c2c319ac493de2))
+
+### Bug Fixes
+
+- keep the shutdown hook outside the SIGINT event-loop hold *(mcp)* ([`b3934a6`](https://github.com/MadAppGang/claudish/commit/b3934a667787b6246dd99296cfc4c51658c80a53))
+- exit 130 on SIGINT instead of 0 after the pane reap *(team)* ([`b31e383`](https://github.com/MadAppGang/claudish/commit/b31e38329db2182b667b5935cb37e6e92c8e9d44))
+- deny Keychain prompts to every process in an MCP session *(auth)* ([`c099163`](https://github.com/MadAppGang/claudish/commit/c099163b7e3097ff7e602b9a2e274cc2a095a777))
+- name the Muse signer when a signed probe request fails *(probe)* ([`20a2a87`](https://github.com/MadAppGang/claudish/commit/20a2a87fd1bdb608623e8a589ea3da123eb3e5fd))
+- show the Muse Key line only when muse@ answered the probe *(probe)* ([`ead3017`](https://github.com/MadAppGang/claudish/commit/ead3017acce5a7d9e53d31818b185b967e1c9f11))
+- take x-claudish-signed-with from the request's own key *(probe)* ([`4cb9d3d`](https://github.com/MadAppGang/claudish/commit/4cb9d3da167c970075b768626dab6c1a4188c0d5))
+- keep upstream_status 401/403 on a rejected login *(meta-muse-code)* ([`04360e8`](https://github.com/MadAppGang/claudish/commit/04360e8d0b1d627f99787489fa0467b18669bb02))
+- show the Muse login fix when muse@ is dropped for no login *(probe)* ([`1a6acd8`](https://github.com/MadAppGang/claudish/commit/1a6acd8056012cb67ad24e428039aa76526b6a97))
+- show the Muse Key line in the interactive --probe screen *(probe)* ([`0c62978`](https://github.com/MadAppGang/claudish/commit/0c62978a71545a4c3c37828c3754e0cccc33fbed))
+- name the Muse login that signed each probe request *(probe)* ([`a7a7655`](https://github.com/MadAppGang/claudish/commit/a7a765500b56d1a40a885b016870f5ade6c31678))
+- keep one-line remedies in preflight no-route rows *(mcp)* ([`0da6f59`](https://github.com/MadAppGang/claudish/commit/0da6f59c624423570c7643d38b542109e9c38b10))
+- add the login instruction to a preflight no-route row *(mcp)* ([`e1099a8`](https://github.com/MadAppGang/claudish/commit/e1099a85143852a640519522ad3253be8e3b0d7f))
+- say a rejected Muse login was rejected, not missing *(meta-muse-code)* ([`410ee8f`](https://github.com/MadAppGang/claudish/commit/410ee8ff066ca789c6ead96df126ab218ca38407))
+- show the Muse Code login source and tier on the Key line *(probe)* ([`4eba300`](https://github.com/MadAppGang/claudish/commit/4eba3001d5dbd69c44c401d35f1fa59d59d7522d))
+- read tool_call from the Muse models list *(meta-muse-code)* ([`d8fe49b`](https://github.com/MadAppGang/claudish/commit/d8fe49b5c427de6908976d0cbc850312fe0a6535))
+- send no device-code poll after the code expires *(meta-muse-code)* ([`267a5fe`](https://github.com/MadAppGang/claudish/commit/267a5feb54f0e8dd26cf00f858beacee203796f1))
+- stop calling a local Muse mint error unreachable *(meta-muse-code)* ([`60f79e7`](https://github.com/MadAppGang/claudish/commit/60f79e781e611ca3e5cb490de6f59d587b7586e9))
+- retry a 2xx Muse key mint whose body is not JSON *(meta-muse-code)* ([`24bb804`](https://github.com/MadAppGang/claudish/commit/24bb8040c7c9436a0088f00c5706fcb62f786ca3))
+- stop a subscription chain on a raw 403 credential rejection *(routing)* ([`45d74c8`](https://github.com/MadAppGang/claudish/commit/45d74c8a9e27d4e94b8f59574c0ed80327d6052f))
+- report a 401/403 on the parameter-recovery re-fetch *(errors)* ([`d1500aa`](https://github.com/MadAppGang/claudish/commit/d1500aae206850d59342fbab5b8a425ad3163ecf))
+- tell a rejected subscription login to run claudish login *(errors)* ([`d037370`](https://github.com/MadAppGang/claudish/commit/d03737085d03721c548e5b3290cfcd5e586a8afa))
+- answer a subscription's unclassified primary-fetch throw 503 *(errors)* ([`d1fbde6`](https://github.com/MadAppGang/claudish/commit/d1fbde695da66f38133c7c64eac059b75a67ea1d))
+- restore the real Muse login stores after test:safe *(meta-muse-code)* ([`bf4736b`](https://github.com/MadAppGang/claudish/commit/bf4736b8b37da4424ee02c562402413f73aff1fb))
+- retry a 2xx token refresh that carries no access_token *(errors)* ([`3adfc29`](https://github.com/MadAppGang/claudish/commit/3adfc299384d9989a798a9d748106e0400734f20))
+- delete the Kimi login only on a 401/403 or invalid_grant 400 *(kimi)* ([`78e8b3e`](https://github.com/MadAppGang/claudish/commit/78e8b3e59f9b492fa77f0df54a0de42d357419b5))
+- drop the login hint from a 429/5xx token refresh *(openai-codex)* ([`30f6c88`](https://github.com/MadAppGang/claudish/commit/30f6c8871e84f66c5f55ebf0877737e7f97230bd))
+- refuse a kc@ request that no credential signs *(kimi-coding)* ([`00832e8`](https://github.com/MadAppGang/claudish/commit/00832e848f80af21b3786686e766352534ebb5f2))
+- drop Keychain results that finish after a Muse reset *(meta-muse-code)* ([`a1172e6`](https://github.com/MadAppGang/claudish/commit/a1172e6919fc84cbcbabb34d9f98254ae51ec628))
+- sign kc@ with only its own key after a rejected login *(kimi-coding)* ([`d3821f7`](https://github.com/MadAppGang/claudish/commit/d3821f7cbecb6e6ee0bd4345fe1f1dd19b0f9550))
+- keep the Kimi login on a refresh blip or non-JSON 200 *(kimi)* ([`c14e162`](https://github.com/MadAppGang/claudish/commit/c14e16231140382d975ca4381317dee26968c8ff))
+- keep a stalled refresh body retryable, never a dead login *(openai-codex)* ([`41ffcd8`](https://github.com/MadAppGang/claudish/commit/41ffcd852159c7a2eac9fb0b77bde52d2a05e9eb))
+- send the Muse login only to api.meta.ai *(meta-muse-code)* ([`f08e5d9`](https://github.com/MadAppGang/claudish/commit/f08e5d97c4332557233ae8f6b3cbea8647d2d0a8))
+- hold an approved Keychain token only after its mint fails *(meta-muse-code)* ([`36b5446`](https://github.com/MadAppGang/claudish/commit/36b54463ab5b29d9b841f6f50f2d1b8699f251c8))
+- drop held Keychain tokens on a Muse credential reset *(meta-muse-code)* ([`e6a0e0c`](https://github.com/MadAppGang/claudish/commit/e6a0e0c5520426b41b9442334d071a10fde23659))
+- skip the borrowed-copy write of a fenced Muse resolve *(meta-muse-code)* ([`a74f6e2`](https://github.com/MadAppGang/claudish/commit/a74f6e2d883cf0ae1a5fe414d1ea0d839d96426c))
+- ignore a cwd .env's host opt-in for the Muse login *(meta-muse-code)* ([`f65763a`](https://github.com/MadAppGang/claudish/commit/f65763adbb4c7ba60a9d309ab9d7a0e40d3541bb))
+- keep a forced refresh's agy timeout retryable *(antigravity)* ([`b161d13`](https://github.com/MadAppGang/claudish/commit/b161d1331917d73bd980820563e0f297ea6c4524))
+- retry a token-host blip before the CLI credential *(grok-subscription)* ([`e40d109`](https://github.com/MadAppGang/claudish/commit/e40d109b6d6326d895ddf4c938b4a1b829814003))
+- keep an interrupted token-refresh body retryable *(grok-subscription)* ([`698df0a`](https://github.com/MadAppGang/claudish/commit/698df0aad596afab3ba857691b87e4d575a55090))
+- surface an OAuth refresh failure instead of an empty key *(kimi-coding)* ([`95d17a8`](https://github.com/MadAppGang/claudish/commit/95d17a83aaa136164018d5641ebb206bb4caaa3e))
+- stop on a rejected OAuth refresh instead of the API key *(openai-codex)* ([`1ca8ccb`](https://github.com/MadAppGang/claudish/commit/1ca8ccbb19c943a6a95640b04013ef9c5a8de5e0))
+- open only an https verification URL during login *(meta-muse-code)* ([`418d49c`](https://github.com/MadAppGang/claudish/commit/418d49c375f1b7d8729e507e16f781b3773c374c))
+- keep the team-slot login message after a 401 re-mint *(meta-muse-code)* ([`49d88ea`](https://github.com/MadAppGang/claudish/commit/49d88eaba8499068d3d99589549154629e788de7))
+- read the Muse Keychain login before testing a Muse Code row *(tui)* ([`0f459ef`](https://github.com/MadAppGang/claudish/commit/0f459efd2cc4ea84c4e3bc5e791083d0e0d78138))
+- bound each login request and keep polling on a 5xx *(meta-muse-code)* ([`8784723`](https://github.com/MadAppGang/claudish/commit/8784723fd7be712491a77b021eb6e3425f4c8dec))
+- fence a Muse resolve that outlives a credential reset *(meta-muse-code)* ([`fc2bfaf`](https://github.com/MadAppGang/claudish/commit/fc2bfaf02804da6cdf907c9e70b2f675966c920f))
+- stop the Keychain read lock spinning without a deadline *(meta-muse-code)* ([`c4749fe`](https://github.com/MadAppGang/claudish/commit/c4749fe191d576a1867dcc83c6a7718026872ba0))
+- refuse to send the Muse login to a non-Meta host *(meta-muse-code)* ([`a1528b1`](https://github.com/MadAppGang/claudish/commit/a1528b1885c1f397d87f4ca687b1c546d44600ac))
+- keep a mint body-read reset as a connection fault *(meta-muse-code)* ([`09a3cd4`](https://github.com/MadAppGang/claudish/commit/09a3cd4bdc37d062b9221da66a33d2c9826d054b))
+- return an auth-verdict response verbatim from FallbackHandler *(errors)* ([`4c397f3`](https://github.com/MadAppGang/claudish/commit/4c397f3905594eb8b7cd26298c45b5020dfc5efc))
+- retry a subscription token host's 429/5xx instead of a 400 *(errors)* ([`264b275`](https://github.com/MadAppGang/claudish/commit/264b275907af818e02ed6bc0975c4e8f75224508))
+- advance past an opencode-zen-go 401 for an uncarried model *(errors)* ([`5d57a9e`](https://github.com/MadAppGang/claudish/commit/5d57a9e2ec6d3012a2c7cf540195ab1bf0450447))
+- classify auth failures alike at every auth site *(errors)* ([`7fbd96f`](https://github.com/MadAppGang/claudish/commit/7fbd96f184dc5dc152a0783666697a4bad4b73f6))
+- stop the routing chain on a subscription credential failure *(errors)* ([`72d63cc`](https://github.com/MadAppGang/claudish/commit/72d63cc34419d7a373e3babd419640592684620e))
+- apply plan membership to gathered subscription candidates *(routing)* ([`9830dda`](https://github.com/MadAppGang/claudish/commit/9830dda1e8f021c6f6a613723fac6df0b90e733d))
+- exclude contributor wire ids unless typed exactly *(routing)* ([`13d4e69`](https://github.com/MadAppGang/claudish/commit/13d4e691e4304202321ace37b8fc0bad75874f22))
+- remove the meta@ shortcut *(ollamacloud)* ([`2724916`](https://github.com/MadAppGang/claudish/commit/2724916dfc3ca0dec5bf4e41c8c2c319ac493de2))
+
+### Documentation
+
+- add the live validation report for muse@ *(meta-muse-code)* ([`11584f4`](https://github.com/MadAppGang/claudish/commit/11584f4b20209186997992b0f0e553027d4d49fc))
+- record tests that read the real ~/.claudish and pass only locally *(testing)* ([`6ed99e6`](https://github.com/MadAppGang/claudish/commit/6ed99e6f1947cd3fbf27b5dfe567bd181ad87918))
+- put getRecoveryHint's JSDoc back above it *(errors)* ([`2a6031e`](https://github.com/MadAppGang/claudish/commit/2a6031e43ba7cfc8813244ede2dcc34467962912))
+- put credentialHintFrom's JSDoc back above it *(probe)* ([`3e99892`](https://github.com/MadAppGang/claudish/commit/3e998920430e9dfc2a4791bc97efa403076260af))
+- describe the rethrow in the Codex transport comments *(openai-codex)* ([`51b8f53`](https://github.com/MadAppGang/claudish/commit/51b8f5362d85d8498e2129512bcfd517b48ce684))
+- move setMuseKeychainTestDeps' JSDoc back above it *(meta-muse-code)* ([`4ea77d9`](https://github.com/MadAppGang/claudish/commit/4ea77d97cfeb1f84b07b71d0c4562ca498b63fb2))
+- document unclassified subscription auth failures as 503 *(errors)* ([`7c83735`](https://github.com/MadAppGang/claudish/commit/7c83735e335a739262d788fa4cfd9cbaa4e5ae4e))
+- state the stale-lock reclaim window in muse-keychain.ts *(meta-muse-code)* ([`0752594`](https://github.com/MadAppGang/claudish/commit/075259444338748bbec3059d668b71989948246b))
+- track the Muse Code wire capture notes *(meta-muse-code)* ([`c1b25c5`](https://github.com/MadAppGang/claudish/commit/c1b25c5c2660199fc84e9868d73faa058fcd8f18))
+- add the Muse Code usage page and the meta@ shortcut rows([`41464d6`](https://github.com/MadAppGang/claudish/commit/41464d6df37b18219bff499b794965aa24bd146b))
+- record the Muse Code wire and Keychain login *(meta-muse-code)* ([`dfd0c96`](https://github.com/MadAppGang/claudish/commit/dfd0c9661e82cd4499fc726218682760e39bce0b))
+- add the models-index tasks for a Muse Code route *(meta)* ([`f173620`](https://github.com/MadAppGang/claudish/commit/f173620bf00fd4db04450c45f95369a099d15a8b))
+- stamp the playbook verified at the v11.1.0 merge *(release)* ([`24461bc`](https://github.com/MadAppGang/claudish/commit/24461bc60db237662ab4fe6216674002dcfb9a15))
+- update CHANGELOG.md for v11.1.0([`3647c88`](https://github.com/MadAppGang/claudish/commit/3647c88fe5b088162d67526589b83054a10cb5b8))
+
+### New Features
+
+- add claudish login muse with Meta device code *(meta-muse-code)* ([`c60836f`](https://github.com/MadAppGang/claudish/commit/c60836f38157cd097e9218c6ecdc462925ee5ad7))
+- borrow reasoning effort from the meta direct-api wire *(meta-muse-code)* ([`795c8aa`](https://github.com/MadAppGang/claudish/commit/795c8aaad44108326582ddc702f8f97f5ae88dbc))
+- prepare the Muse login before Claude Code starts *(meta-muse-code)* ([`2d968a6`](https://github.com/MadAppGang/claudish/commit/2d968a6745ee85bb710090e9cafad4679d41b254))
+- list muse@ models from /muse-code/models *(picker)* ([`b99a4be`](https://github.com/MadAppGang/claudish/commit/b99a4be315506a7e7bd85110d36b261fb2c1a173))
+- add muse@ signed by the Muse Code login *(meta-muse-code)* ([`a5e67ec`](https://github.com/MadAppGang/claudish/commit/a5e67ec026f843ee90d75dea318a131c067de59c))
+- read the Muse Keychain login with a per-machine lock *(meta-muse-code)* ([`7e9ea74`](https://github.com/MadAppGang/claudish/commit/7e9ea74995208299a3c191df15b3e0cbdc404837))
+- add the Muse key mint with entitlement checks *(meta-muse-code)* ([`b5fa734`](https://github.com/MadAppGang/claudish/commit/b5fa734a377cd2d5b0c3a174dd2e0be1bb5d887d))
+- fix the credential prompt role once per process *(auth)* ([`17c4392`](https://github.com/MadAppGang/claudish/commit/17c43922bac0bb9b47953094b669ba25b4decbc8))
+- add the metered meta provider for META_API_KEY *(meta)* ([`a6d8391`](https://github.com/MadAppGang/claudish/commit/a6d83918ec295fa6faf3180b821472e2ec855b20))
+
+### Other Changes
+
+- v12.0.0 *(release)* ([`adc3b96`](https://github.com/MadAppGang/claudish/commit/adc3b96b01796a36a34bd65faadef382a95b1e44))
+- apply biome format to composed-handler and muse-mint *(meta-muse-code)* ([`d780111`](https://github.com/MadAppGang/claudish/commit/d7801118f09ac05f01d24e339107bb57eefc88da))
+
+### Refactoring
+
+- add a joinable spawnAsync with no kill path *(keychain)* ([`79023a0`](https://github.com/MadAppGang/claudish/commit/79023a041487c6f4c3fe234c2e56921a9aed3a44))
+
+## [11.1.0] - 2026-10-19
+
+### Documentation
+
+- say recent rows reach the calling agent, not stay local *(team)* ([`34519f8`](https://github.com/MadAppGang/claudish/commit/34519f80c330f88613e91d45d3c2df9158713ea4))
+- record the live validation of SlotRow.recent *(reports)* ([`32415f7`](https://github.com/MadAppGang/claudish/commit/32415f7033631777519ed3f9b4e66746970ed07b))
+- remove the background-agent settle item fixed in 11.0.0 *(roadmap)* ([`fc9b476`](https://github.com/MadAppGang/claudish/commit/fc9b476f0e207ebe6c67d4b3e408f2ca601b8266))
+- record the double-typed prompt and the text-shaped API error *(roadmap)* ([`b9b2c7b`](https://github.com/MadAppGang/claudish/commit/b9b2c7b85f4d5d6aa533929c9b1db910a52b2c9c))
+- stamp the playbook verified at the v11.0.0 merge *(release)* ([`b8ce659`](https://github.com/MadAppGang/claudish/commit/b8ce6592ac015dd02c99a37294c78111614306bd))
+- update CHANGELOG.md for v11.0.0([`0065691`](https://github.com/MadAppGang/claudish/commit/006569193cfbe83e01dab22b2e2cce0c56da8c01))
+
+### New Features
+
+- add recent steps to SlotRow for team and session rows *(team)* ([`01b28bb`](https://github.com/MadAppGang/claudish/commit/01b28bb92ff1f792587e9110079251c91bc64727))
+
+### Other Changes
+
+- v11.1.0 *(release)* ([`adf58ea`](https://github.com/MadAppGang/claudish/commit/adf58eab8fcb8003985cb6c275bdc5fa9bad82f3))
+
+## [11.0.0] - 2026-10-19
+
+### ⚠ BREAKING CHANGES
+
+- a bare `claudish team run` no longer opens the grid; *(team)* ([`3a35680`](https://github.com/MadAppGang/claudish/commit/3a356804b3a777d8a48249e60fbfdae4e4111ce9))
+
+### Bug Fixes
+
+- run `team run` as panes when --grid is not given *(team)* ([`3a35680`](https://github.com/MadAppGang/claudish/commit/3a356804b3a777d8a48249e60fbfdae4e4111ce9))
+- keep an existing input.md when `team run` has no --input *(team)* ([`b7a708a`](https://github.com/MadAppGang/claudish/commit/b7a708a2415e0f340909db1c795633929790b469))
+- settle turns whose background agents finish mid-turn *(pane)* ([`a673918`](https://github.com/MadAppGang/claudish/commit/a6739184392201892a5d8e853ed0181eade8bd8e))
+
+### Documentation
+
+- record how the 11.0.0 pane and team fixes were verified *(reports)* ([`e8d1f5b`](https://github.com/MadAppGang/claudish/commit/e8d1f5bd81b2cb884d88401b6adaea7146dd4e23))
+- update CHANGELOG.md for v10.7.1([`8d8a0ea`](https://github.com/MadAppGang/claudish/commit/8d8a0eaccca4a27958a9d1432fe258fbbf2f529d))
+
+### New Features
+
+- report agent_count_mismatch when agent counts disagree *(pane)* ([`de9366b`](https://github.com/MadAppGang/claudish/commit/de9366b49a538a72da6a1b0b0aa127be3a922fee))
+
+### Other Changes
+
+- v11.0.0 *(release)* ([`a9b98b0`](https://github.com/MadAppGang/claudish/commit/a9b98b0bab02e6c8937940c9509e4a872ec1ca32))
+
+## [10.7.1] - 2026-10-16
+
+### Bug Fixes
+
+- tell a nested session to run delegated work itself *(mcp)* ([`01f3ec1`](https://github.com/MadAppGang/claudish/commit/01f3ec149e051b951a0efe2fc68ad1eb2e5ba978))
+
+### Documentation
+
+- record why the nested instructions name the delegate role *(mcp)* ([`68cb097`](https://github.com/MadAppGang/claudish/commit/68cb0976357bdd026ce8419e77e401e74820a4e2))
+- stamp the playbook verified at the v10.7.0 merge *(release)* ([`fb3f470`](https://github.com/MadAppGang/claudish/commit/fb3f470f5e6324ce4688d08f1aa06b47f9158e0f))
+- update CHANGELOG.md for v10.7.0([`e3930ae`](https://github.com/MadAppGang/claudish/commit/e3930ae93d1da3a7dc218aa30e97d9e7c058a97d))
+
+### Other Changes
+
+- v10.7.1 *(release)* ([`bcbc968`](https://github.com/MadAppGang/claudish/commit/bcbc9686620a034ba8355780713ffb5bc822160c))
+
+## [10.7.0] - 2026-10-16
+
+### ⚠ BREAKING CHANGES
+
+- hosts started with `--channels` no longer receive *(mcp)* ([`753a3c3`](https://github.com/MadAppGang/claudish/commit/753a3c3e87ba611afd7609394a4f58a69bf98ff9))
+- CLAUDISH_MCP_TOOLS=channel now selects all tools. Set *(mcp)* ([`46ad7b7`](https://github.com/MadAppGang/claudish/commit/46ad7b787c27ca5d969e8217b614d326ecb772b3))
+
+### Bug Fixes
+
+- wait for the cleared input box before retyping the prompt *(team)* ([`62c58b5`](https://github.com/MadAppGang/claudish/commit/62c58b5962738414d80b383c23d8628db0c5ea85))
+- warn on an unknown CLAUDISH_MCP_TOOLS value *(mcp)* ([`29b0b23`](https://github.com/MadAppGang/claudish/commit/29b0b230216f981f6328596fbf84b285984c565b))
+- fill a missing max_tokens from the catalog, not 4096 *(adapters)* ([`ebed28e`](https://github.com/MadAppGang/claudish/commit/ebed28e3f220f5b214821ce0a037c534bb180887))
+- wait out Claude Code's stdin reset before typing the prompt *(team)* ([`b119b54`](https://github.com/MadAppGang/claudish/commit/b119b54803ca7ee862a43dd5ffb287225a7b137a))
+- force editorMode normal in pane children *(team)* ([`87d3194`](https://github.com/MadAppGang/claudish/commit/87d31943fb03e5d1c8af822be80c6a7b2b3af1e4))
+- report the package version instead of 9.0.0 in serverInfo *(mcp)* ([`6280236`](https://github.com/MadAppGang/claudish/commit/6280236938c9382a29176d22ce03e8b455d219e1))
+- remove max_tokens from run_prompt and compare_models *(mcp)* ([`bfc6857`](https://github.com/MadAppGang/claudish/commit/bfc685705817b4238950c185277c678675302588))
+- send Claude models in run_prompt to claudish -p, not the proxy *(mcp)* ([`a8ea269`](https://github.com/MadAppGang/claudish/commit/a8ea269a5c4722fb2fa61472b12d8af51c948987))
+
+### Documentation
+
+- record the 10.7.0 validation and the pane follow-ups *(mcp)* ([`903c1f4`](https://github.com/MadAppGang/claudish/commit/903c1f4360523aa3a84964e56fbbd3aa369a8482))
+- update CHANGELOG.md for v10.6.3([`2f005e2`](https://github.com/MadAppGang/claudish/commit/2f005e20107377c2810b96c0897f1f9fb1425d14))
+- add the magus handoff for this branch's MCP surface changes *(mcp)* ([`1f9f83b`](https://github.com/MadAppGang/claudish/commit/1f9f83b9826ce5a72c9f3113ee4529e6128470de))
+- record why a session with background agents never settles *(reports)* ([`e027f11`](https://github.com/MadAppGang/claudish/commit/e027f11a0805fec72b3df61ece679679c89d78f8))
+- close the channel notification phases as removed *(roadmap)* ([`e932e61`](https://github.com/MadAppGang/claudish/commit/e932e6162c88375abef96644a9e29d06cbb0bb63))
+- record run_prompt's Claude Code path and the push removal *(mcp)* ([`3fe4980`](https://github.com/MadAppGang/claudish/commit/3fe49800059a45f57774c2878ddff5bc370b98d5))
+- document run_prompt's Claude path and session polling *(mcp)* ([`4aec497`](https://github.com/MadAppGang/claudish/commit/4aec4975fdafdfb3de2a50bcba450a4cc10a2920))
+
+### New Features
+
+- add reason_detail to SlotRow *(team)* ([`059cb25`](https://github.com/MadAppGang/claudish/commit/059cb2535271206209746e294abbf39339afe97f))
+- stop sending notifications/claude/channel *(mcp)* ([`753a3c3`](https://github.com/MadAppGang/claudish/commit/753a3c3e87ba611afd7609394a4f58a69bf98ff9))
+- add the debug tool group and move compare_models into it *(mcp)* ([`0a28db6`](https://github.com/MadAppGang/claudish/commit/0a28db6862cf528a8e6f343c0467f068eb0902cf))
+- rename the channel tool group to session *(mcp)* ([`46ad7b7`](https://github.com/MadAppGang/claudish/commit/46ad7b787c27ca5d969e8217b614d326ecb772b3))
+
+### Other Changes
+
+- v10.7.0 *(release)* ([`d38fba8`](https://github.com/MadAppGang/claudish/commit/d38fba803070d27021135455a9f66ec0b7e5606b))
+
+### Refactoring
+
+- rename the channel module and vocabulary to session *(session)* ([`a13d7e4`](https://github.com/MadAppGang/claudish/commit/a13d7e4caf8b17c4428641663522c92868a324a0))
+- delete the frame emitter and the trace diagnostics *(channel)* ([`7751901`](https://github.com/MadAppGang/claudish/commit/7751901c1e1e0e9d1c9927b7e7e5868faa6d0cd4))
+
+## [10.6.3] - 2026-10-16
+
+### Bug Fixes
+
+- register no session tools in a server inside an MCP session *(mcp)* ([`1b73e51`](https://github.com/MadAppGang/claudish/commit/1b73e51c02a6024407a34445b0e6de96a8a87b45))
+- refuse claudish -p and team run inside an MCP-started session *(pane)* ([`9c5cd84`](https://github.com/MadAppGang/claudish/commit/9c5cd84ffeeb07e43741d3585c9e098afeea1a91))
+
+### Documentation
+
+- record the one-level nesting rule and CLAUDISH_PANE_CHILD *(pane)* ([`6a19ee5`](https://github.com/MadAppGang/claudish/commit/6a19ee53bf058fdafdb38eefe66f015cf1981e91))
+- update CHANGELOG.md for v10.6.2([`8d3437b`](https://github.com/MadAppGang/claudish/commit/8d3437b6159e38d8d56b5fc5835d5b1460a98590))
+
+### Other Changes
+
+- v10.6.3 *(release)* ([`bb695f1`](https://github.com/MadAppGang/claudish/commit/bb695f13194b3272abecf8f2ce50cb6f9608ecb7))
+
+## [10.6.2] - 2026-10-16
+
+### Bug Fixes
+
+- show one recommended fallback row per model id *(picker)* ([`21a7837`](https://github.com/MadAppGang/claudish/commit/21a78370f6cda456f768610420a7dfe0f3bb7672))
+- list cost_efficient and luxury tiers as their own sections *(catalog)* ([`cfe7de0`](https://github.com/MadAppGang/claudish/commit/cfe7de0b5b2ad407d98ba3ce877f3541b676aff8))
+
+### Documentation
+
+- document recommendationTier in --models-top --json *(catalog)* ([`21d3f59`](https://github.com/MadAppGang/claudish/commit/21d3f59af77a42dc153b90d0bcb204a9b03eee05))
+- update CHANGELOG.md for v10.6.1([`086cf60`](https://github.com/MadAppGang/claudish/commit/086cf608e82124c5d92f13f2184575c091eb6723))
+
+### Other Changes
+
+- v10.6.2 *(release)* ([`206f96b`](https://github.com/MadAppGang/claudish/commit/206f96be8f88dadf11b33c6078411cb9b666c985))
+
 ## [10.6.1] - 2026-10-14
 
 ### Bug Fixes

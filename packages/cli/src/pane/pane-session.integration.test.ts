@@ -15,8 +15,12 @@ import {
   type PaneBlock,
   type PaneSession,
   type PaneSessionOptions,
+  REPL_STABLE_MS,
   startPaneSession,
 } from "./pane-session.js";
+import { inputBox, readBoot } from "./screen-classifier.js";
+import type { ScreenState } from "./screen-model.js";
+import { type ObservedClient, observeClients } from "./test-helpers/client-observer.js";
 import {
   MAGMUX,
   NO_MAGMUX_MESSAGE,
@@ -34,6 +38,7 @@ const sha8 = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 
 const open = new Set<Run>();
 afterAll(async () => {
   for (const r of open) {
+    r.unobserve();
     r.s.cancel();
     await r.s.reaped();
     killLeftovers({ sockRoot: r.t.sockRoot, ids: [r.uuid] });
@@ -48,6 +53,20 @@ interface Run {
   transitions: Array<[SlotState, SlotState]>;
   turns: SettledTurn[];
   blocks: PaneBlock[];
+  submits: Array<{ text: string; at: number }>;
+  sendLog: SendLog;
+  /** Stop handing this run's new magmux clients to its send observer. */
+  unobserve: () => void;
+}
+
+/** Every `send` the run's magmux clients carried, recorded from the moment each client exists. */
+interface SendLog {
+  /** Set once `startPaneSession` returns; until then a send's box reads null. */
+  session: PaneSession | null;
+  /** Sends issued before `start` returned: no test could have attached a trace that early. */
+  early: InputSend[];
+  /** The live lists `traceInput` handed out. */
+  traces: InputSend[][];
 }
 
 /** team-like policy: verdict at the first settle; api error → FAILED; question → FAILED blocked */
@@ -62,12 +81,17 @@ async function start(
   scenario: string,
   over: Partial<PaneSessionOptions> & { env?: Record<string, string> } = {}
 ): Promise<Run> {
-  const t = makePaneTestEnv(over.env ?? {});
+  const t = makePaneTestEnv({ CONTRACT_FAKE_MAX_MS: "60000", ...over.env });
+  t.env.FAKE_SUBMIT_LOG = join(t.tmp, "submits.jsonl");
   const uuid = newSessionUuid();
   const transitions: Array<[SlotState, SlotState]> = [];
   const turns: SettledTurn[] = [];
   const blocks: PaneBlock[] = [];
-  const { env: _e, decide, onBlocked, ...rest } = over;
+  const { env: _e, decide, onBlocked, timings, ...rest } = over;
+  // A one-shot pane's first gated send can leave from inside `attach()`, before
+  // `startPaneSession` returns: observe each client as it is created, not `s.client` later.
+  const sendLog: SendLog = { session: null, early: [], traces: [] };
+  const unobserve = observeClients(t.sockRoot, recordSends(sendLog));
   const s = await startPaneSession({
     kind: "t",
     label: "01",
@@ -95,11 +119,25 @@ async function start(
       replStableMs: 200,
       bootStaticMs: 800,
       corroborationMs: 200,
-      ...(rest.timings ?? {}),
+      ...timings,
     },
     ...rest,
+  }).catch((error: unknown) => {
+    unobserve();
+    throw error;
   });
-  const run = { s, t, uuid, transitions, turns, blocks };
+  sendLog.session = s;
+  const run: Run = {
+    s,
+    t,
+    uuid,
+    transitions,
+    turns,
+    blocks,
+    submits: [],
+    sendLog,
+    unobserve,
+  };
   open.add(run);
   return run;
 }
@@ -116,8 +154,16 @@ async function finish(r: Run, ms = 20_000): Promise<PaneSnapshot> {
     return snap;
   } finally {
     open.delete(r);
+    r.unobserve();
     r.s.cancel();
     await r.s.reaped();
+    const log = r.t.env.FAKE_SUBMIT_LOG as string;
+    if (existsSync(log))
+      r.submits = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
     const left = await waitNoOrphans({
       sockRoot: r.t.sockRoot,
       ids: [r.uuid],
@@ -153,11 +199,98 @@ async function until(
   }
 }
 
+function screenOf(r: Run): ScreenState {
+  return screenOfSession(r.s);
+}
+
+function screenOfSession(s: PaneSession): ScreenState {
+  const capture = s.capture(undefined, { spans: true });
+  if (!("lines" in capture)) throw new Error("expected a full capture");
+  return {
+    ...capture,
+    spans: capture.spans ?? [],
+    alt: false,
+    changedAt: 0,
+    aboveBoxChangedAt: 0,
+  };
+}
+
+type Request = (m: Record<string, unknown>, ms?: number) => Promise<unknown>;
+interface InputSend {
+  message: Record<string, unknown>;
+  box: string | null;
+  at: number;
+}
+
+/** The client observer for one run: wrap each new client's `request` once, recording sends. */
+function recordSends(log: SendLog): (client: ObservedClient) => void {
+  const seen = new WeakSet<ObservedClient>();
+  return (client) => {
+    if (seen.has(client)) return;
+    seen.add(client);
+    const real = client.request.bind(client);
+    client.request = async (message, ms) => {
+      if (message.type === "send") {
+        const send: InputSend = {
+          message: { ...message },
+          box: log.session ? (inputBox(screenOfSession(log.session))?.text ?? null) : null,
+          at: Date.now(),
+        };
+        if (!log.session) log.early.push(send);
+        for (const trace of log.traces) trace.push(send);
+      }
+      return real(message, ms);
+    };
+  };
+}
+
+/**
+ * Observe actual sends without replacing the gate's decisions: every send from this call
+ * on, plus any issued while `start` was still running (a one-shot pane's first gated send).
+ */
+function traceInput(r: Run): InputSend[] {
+  const sends = [...r.sendLog.early];
+  r.sendLog.traces.push(sends);
+  return sends;
+}
+
 const T = 40_000;
 
 describe.skipIf(!MAGMUX)(
   `PaneSession, real magmux + fake child (${MAGMUX ? "" : NO_MAGMUX_MESSAGE})`,
   () => {
+    describe("production boot stability", () => {
+      test("the production REPL_STABLE_MS is 3000 ms", () => {
+        expect(REPL_STABLE_MS).toBe(3000);
+      });
+
+      test(
+        "no_boot_reset: the gate waits its 3.5 second raw-terminal floor before typing",
+        async () => {
+          // Explicit undefined removes the helper's short test seam: exercise the production default.
+          const r = await start("no_boot_reset", { timings: { replStableMs: undefined } });
+          const sends = traceInput(r);
+          try {
+            await until(r, () => readBoot(screenOf(r)).kind === "repl");
+            const firstEmptyBox = Date.now();
+            expect(r.s.snapshot().state).toBe("STARTING");
+            await r.s.ready;
+            const snap = await finish(r);
+            expect(snap.state).toBe("COMPLETED");
+            // Measure actual typing, not a sleep that can overshoot under concurrent process tests.
+            // The screen polling above can observe the first frame up to 50 ms late.
+            expect((sends[0]?.at ?? 0) - firstEmptyBox).toBeGreaterThanOrEqual(3350);
+            expect(sends[0]?.message.text).toBe("Reply with exactly PEAR.");
+            expect(sends[0]?.message).toMatchObject({ typed: true, enter: true });
+            expect(sends).toHaveLength(1);
+          } finally {
+            if (open.has(r)) await close(r);
+          }
+        },
+        T
+      );
+    });
+
     describe.concurrent("happy path and delivery", () => {
       test(
         "answer: STARTING → RUNNING → COMPLETED on turn_duration, the typed line's hash, all reaped",
@@ -247,12 +380,79 @@ describe.skipIf(!MAGMUX)(
       );
 
       test(
-        "menu_eats_enter: the line still in the box at +resend → Enter again (resent_enter)",
+        "menu_eats_enter: magmux resends Enter inside one gated SUBMIT, never retypes",
         async () => {
-          const r = await start("menu_eats_enter", { timings: { resendAfterMs: 800 } });
+          const prompt = "Reply with exactly PEAR.";
+          const r = await start("menu_eats_enter", { env: { FAKE_GAP_MS_WITNESS: "5000" } });
+          const sends = traceInput(r);
           const snap = await finish(r);
           expect(snap.state).toBe("COMPLETED");
-          expect(snap.anomalies).toContain("resent_enter");
+          expect(snap.anomalies).toContain("gate_resent_enter");
+          expect(sends.map(({ message }) => message)).toMatchObject([
+            { text: prompt, typed: true, enter: true },
+          ]);
+          expect(sends).toHaveLength(1);
+          expect(r.submits.map(({ text }) => text)).toEqual([prompt]);
+          expect(r.turns).toHaveLength(1);
+          expect(r.turns[0]?.answer).toBe(`ANSWER fake-menu_eats_enter ${sha8(prompt)}`);
+          expect(snap.turnsCompleted).toBe(1);
+        },
+        T
+      );
+
+      test(
+        "I21: a published leftover draft is cleared before the next gated send",
+        async () => {
+          const r = await start("answer", {
+            shape: "interactive",
+            initialPrompt: undefined,
+            decide: () => "continue",
+          });
+          await r.s.ready;
+          const client = (r.s as unknown as { client: { request: Request } }).client;
+          await client.request({
+            type: "send",
+            pane: 0,
+            text: "Different unsent draft",
+            typed: true,
+            enter: false,
+          });
+          await until(r, () => r.s.diagnostics().gate?.reason === "box_not_empty");
+          const sends = traceInput(r);
+          const at = Date.now();
+          r.s.send("Reply with exactly PEAR.");
+          await until(r, (s) => s.turnsCompleted === 1 && s.state === "AWAITING_INPUT");
+          expect(Date.now() - at).toBeLessThan(15_000);
+          const snap = await close(r);
+          expect(snap.anomalies).not.toContain("gate_busy:box_not_empty");
+          expect(sends.map(({ message }) => message)).toMatchObject([
+            { keys: ["ctrl-u"], enter: false, noGate: true },
+            { text: "Reply with exactly PEAR.", typed: true, enter: true },
+          ]);
+          expect(sends).toHaveLength(2);
+          expect(r.submits.map(({ text }) => text)).toEqual(["Reply with exactly PEAR."]);
+        },
+        T
+      );
+
+      test(
+        "I7: enter_ignored_1 is accepted by magmux's resent_enter, with one submitted copy",
+        async () => {
+          const r = await start("enter_ignored_1", { env: { FAKE_GAP_MS_WITNESS: "5000" } });
+          const sends = traceInput(r);
+          const snap = await finish(r);
+          expect(snap.state).toBe("COMPLETED");
+          expect(snap.anomalies).toContain("gate_resent_enter");
+          expect(sends).toHaveLength(1);
+          expect(sends[0]?.message).toMatchObject({
+            text: "Reply with exactly PEAR.",
+            typed: true,
+            enter: true,
+          });
+          expect(r.submits.map(({ text }) => text)).toEqual(["Reply with exactly PEAR."]);
+          expect(r.turns[0]?.answer).toBe(
+            `ANSWER fake-enter_ignored_1 ${sha8("Reply with exactly PEAR.")}`
+          );
         },
         T
       );
@@ -478,21 +678,21 @@ describe.skipIf(!MAGMUX)(
         "a /compact that outlasts the admission bound stays admitted; the prompt queued behind it is answered",
         async () => {
           // 2.1.291 writes <command-name>/compact only when compaction FINISHES; a real one
-          // takes minutes. Compaction here outlasts the admission bound by 2.5 s.
+          // takes minutes. Compaction here outlasts the admission bound by 5 s.
           const r = await start("answer", {
             shape: "interactive",
             initialPrompt: undefined,
             decide: () => "continue",
-            admitTimeoutMs: 1500,
-            env: { FAKE_GAP_MS_COMPACT: "4000" },
+            admitTimeoutMs: 4000,
+            env: { FAKE_GAP_MS_COMPACT: "9000" },
           });
           await r.s.ready;
           expect(r.s.send("/compact").ok).toBe(true);
           expect(r.s.send("Reply with exactly KIWI.").ok).toBe(true);
-          await until(r, (s) => s.state === "RUNNING");
-          await Bun.sleep(2500); // past the admission bound, mid-compaction
+          await until(r, (s) => s.phase === "RUNNING"); // accepted, not merely admitting
+          await Bun.sleep(5000); // past the admission bound, mid-compaction
           expect(r.s.snapshot()).toMatchObject({ state: "RUNNING", pendingInputs: 1 });
-          await until(r, (s) => s.turnsCompleted === 2 && s.state === "AWAITING_INPUT", 20_000);
+          await until(r, (s) => s.turnsCompleted === 2 && s.state === "AWAITING_INPUT", 25_000);
           expect(r.turns.map((t) => t.settledBy)).toEqual(["local_command", "turn_duration"]);
           expect(r.turns[0]?.answer).toBe("Compacted (ctrl+o to see full summary)");
           expect(r.turns[1]?.answer).toBe(`ANSWER fake-answer ${sha8("Reply with exactly KIWI.")}`);
@@ -534,7 +734,9 @@ describe.skipIf(!MAGMUX)(
           expect(r.s.send("/cost").ok).toBe(true);
           expect(r.s.send("Reply with exactly KIWI.").ok).toBe(true);
           const s = await until(r, (x) => x.turnsCompleted === 1 && x.state === "AWAITING_INPUT");
-          expect(Date.now() - at).toBeLessThan(10_000); // well inside the 30 s admission bound
+          // Held behind the panel means the 30 s admission bound (≈ 30 s); 20 s leaves room
+          // for full-suite load, which measured 13.3 s for a prompt that was not held.
+          expect(Date.now() - at).toBeLessThan(20_000);
           expect(s.anomalies).toContain("panel_dismissed");
           expect(s.anomalies).toContain("panel_command");
           expect(s.anomalies).not.toContain("send_not_accepted");
@@ -566,7 +768,7 @@ describe.skipIf(!MAGMUX)(
       );
 
       test(
-        "ask_user_send (channel): AWAITING_INPUT; a send presses Esc → path I settles; the text is turn 2",
+        "ask_user_send (session): AWAITING_INPUT; a send presses Esc → path I settles; the text is turn 2",
         async () => {
           const r = await start("ask_user_send", {
             shape: "interactive",
@@ -767,21 +969,27 @@ describe.skipIf(!MAGMUX)(
       );
 
       test(
-        "promptless_first_send_ignored: AWAITING_INPUT → RUNNING → AWAITING_INPUT, never STARTING or FAILED",
+        "promptless_first_send_ignored: unconfirmed fails the later admission loudly at 30 s, then accepts the next prompt",
         async () => {
           const r = await start("promptless_first_send_ignored", {
             shape: "interactive",
             initialPrompt: undefined,
             decide: () => "continue",
-            admitTimeoutMs: 2000,
-            timings: { resendAfterMs: 800, degradedEntryMs: 800 },
           });
           await r.s.ready;
+          const sends = traceInput(r);
+          const at = Date.now();
           r.s.send("first, ignored");
           await until(
             r,
-            (s) => s.anomalies.includes("send_not_accepted") && s.state === "AWAITING_INPUT"
+            (s) => s.anomalies.includes("send_not_accepted") && s.state === "AWAITING_INPUT",
+            35_000
           );
+          expect(Date.now() - at).toBeGreaterThanOrEqual(29_000);
+          expect(r.s.diagnostics().lastSend?.reason).toBe("unconfirmed");
+          expect(r.s.snapshot().anomalies).not.toContain("degraded_mode");
+          expect(sends.filter(({ message }) => typeof message.text === "string")).toHaveLength(1);
+          expect(r.turns).toHaveLength(0);
           r.s.send("second, answered");
           await until(r, (s) => s.turnsCompleted === 1);
           await close(r);
@@ -791,8 +999,9 @@ describe.skipIf(!MAGMUX)(
             ["RUNNING", "AWAITING_INPUT"],
           ]);
           expect(r.transitions.some(([, to]) => to === "STARTING" || to === "FAILED")).toBe(false);
+          expect(r.submits.map(({ text }) => text)).toEqual(["second, answered"]);
         },
-        T
+        T * 2
       );
 
       test(
@@ -945,6 +1154,7 @@ describe.skipIf(!MAGMUX)(
             decide: () => "continue",
           });
           await r.s.ready;
+          const sends = traceInput(r);
           type Req = (m: Record<string, unknown>, ms?: number) => Promise<unknown>;
           const client = (r.s as unknown as { client: { request: Req } }).client;
           const real = client.request.bind(client);
@@ -965,6 +1175,13 @@ describe.skipIf(!MAGMUX)(
           expect(r.s.snapshot().anomalies).toContain("send_reply_lost");
           r.s.cancel();
           await finish(r);
+          expect(sends.filter(({ message }) => message.text === "/model haiku")).toHaveLength(2);
+          expect(
+            sends.filter(
+              ({ message }) => Array.isArray(message.keys) && message.keys.includes("ctrl-u")
+            )
+          ).toHaveLength(1);
+          expect(r.submits.map(({ text }) => text)).toEqual(["/model haiku"]);
         },
         T
       );

@@ -34,7 +34,15 @@ type Json = Record<string, unknown>;
 
 /* ─────────────── literals from the frozen contract (§8 Types) ─────────────── */
 
-const CAPABILITIES = ["list", "status", "cancel", "capture", "capture_since_seq", "capture_spans"];
+const CAPABILITIES = [
+  "list",
+  "status",
+  "cancel",
+  "capture",
+  "capture_since_seq",
+  "capture_spans",
+  "resize",
+];
 const SLOT_STATES = [
   "STARTING",
   "RUNNING",
@@ -71,8 +79,10 @@ const SLOT_ROW_KEYS = [
   "last_activity_at",
   "model",
   "pane",
+  "recent",
   "provider",
   "reason",
+  "reason_detail",
   "slot",
   "state",
   "tokens_in",
@@ -191,9 +201,11 @@ function expectSlotRowTyped(row: Json): void {
   }
   if (["FAILED", "EMPTY", "CANCELLED", "TIMEOUT"].includes(row.state as string)) {
     expect(row.reason).not.toBeNull();
+    expect(isStrOrNull(row.reason_detail)).toBe(true);
   } else {
     // "null otherwise (incl. COMPLETED)"
     expect(row.reason).toBeNull();
+    expect(row.reason_detail).toBeNull();
   }
 }
 

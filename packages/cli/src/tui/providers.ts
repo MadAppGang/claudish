@@ -14,6 +14,11 @@ import {
 } from "../auth/vertex-auth.js";
 import { hasDevinCredentials } from "../providers/devin/devin-credentials.js";
 import type { LocalLiveness } from "../providers/local-liveness.js";
+import {
+  type MuseCredentialStatus,
+  isMuseCredentialConfigured,
+  museCredentialStatus,
+} from "../providers/meta-muse/muse-credentials.js";
 import { type ProviderDefinition, getAllProviders } from "../providers/provider-definitions.js";
 
 export interface ProviderDef {
@@ -191,7 +196,13 @@ export function providerAuthCapabilities(
   // "no auth method available" for a machine that holds a live `ya29…` token is
   // the wrong statement, and the `l` keybinding stays gated on `oauthSlug` so no
   // `claudish login vertex` is advertised.
-  const oauthSupported = !!p.oauthSlug || p.catalogName === "devin" || p.catalogName === "vertex";
+  // Muse Code: statically supported, so the login guidance shows before the
+  // first login; its presence drives only "set" (architecture §6).
+  const oauthSupported =
+    !!p.oauthSlug ||
+    p.catalogName === "devin" ||
+    p.catalogName === "vertex" ||
+    p.catalogName === "meta-muse-code";
   // Antigravity's OAuth token is in the shared keychain, not an oauth-file — so
   // hasOAuthCredentials can't see it; check the keychain directly (memoized).
   const oauthSet =
@@ -199,7 +210,8 @@ export function providerAuthCapabilities(
     (hasOAuthCredentials(p.catalogName) ||
       (p.catalogName === "antigravity" && hasSharedAntigravityToken()) ||
       (p.catalogName === "devin" && hasDevinCredentials()) ||
-      (p.catalogName === "vertex" && hasVertexAdcCredentials()));
+      (p.catalogName === "vertex" && hasVertexAdcCredentials()) ||
+      (p.catalogName === "meta-muse-code" && isMuseCredentialConfigured(museCredentialStatus())));
   return {
     apiKey: { supported: apiKeySupported, set: apiKeySet },
     oauth: { supported: oauthSupported, set: oauthSet },
@@ -220,7 +232,18 @@ export function providerAuthCapabilities(
  * Sync and free of subprocesses (see `peekVertexProjectOrigin`), so it is safe
  * on a render path.
  */
+/** What the Muse Code row says about its login, by the one cached status. */
+const MUSE_STATUS_NOTE: Record<MuseCredentialStatus, string> = {
+  "own-login": "Signed in with claudish's own Muse Code login",
+  "borrowed-copy": "Using claudish's copy of the Muse Code CLI login",
+  keychain: "Muse Code CLI login found in the Keychain — first use asks for access",
+  absent: "No Muse Code login — run `claudish login muse`, or `muse login`",
+  failed: "The Keychain could not be asked about the Muse Code login",
+  unknown: "Checking for a Muse Code login…",
+};
+
 export function providerCredentialNote(p: ProviderDef): string | undefined {
+  if (p.catalogName === "meta-muse-code") return MUSE_STATUS_NOTE[museCredentialStatus()];
   if (p.catalogName !== "vertex") return undefined;
   const origin = peekVertexProjectOrigin();
   if (!origin) {

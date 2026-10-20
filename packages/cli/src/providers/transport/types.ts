@@ -140,9 +140,26 @@ export interface ProviderTransport {
    * Used by OAuth providers (Vertex, CodeAssist) to handle token expiry.
    * ComposedHandler calls this automatically on 401 and retries the request.
    * A returned binding REPLACES the request's binding for the retry.
+   *
+   * `ctx.rejectedHeaders` are the headers of the request the upstream just
+   * rejected, so a transport holding several credentials can tell a stale
+   * failure (its credential already changed) from one that names the
+   * credential it holds now.
    */
-  // biome-ignore lint/suspicious/noConfusingVoidType: legacy transports return Promise<void>, which `undefined` would reject
-  forceRefreshAuth?(): Promise<AuthBinding | void>;
+  forceRefreshAuth?(
+    ctx?: { rejectedHeaders?: Record<string, string> }
+    // biome-ignore lint/suspicious/noConfusingVoidType: legacy transports return Promise<void>, which `undefined` would reject
+  ): Promise<AuthBinding | void>;
+
+  /**
+   * Optional: a display-safe name of the credential that signed a request
+   * (`RequestAuth.signer`), for a provider with several login sources, looked
+   * up from the headers THAT request was sent with — never from the
+   * transport's current state, which a concurrent request may have rotated.
+   * ComposedHandler returns it on the response as `x-claudish-signed-with`
+   * (URI-encoded), which `--probe` reads per request.
+   */
+  signingCredential?(sentHeaders: Record<string, string>): string | undefined;
 
   /**
    * Optional per-provider verdict on whether an error response is TERMINAL

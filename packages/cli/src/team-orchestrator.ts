@@ -9,6 +9,8 @@ import {
   type CaptureResult,
   type CaptureUnchanged,
   ContractErrorException,
+  DEFAULT_PANE_COLS,
+  DEFAULT_PANE_ROWS,
   type FailureReason,
   type FinalVerdict,
   MAX_LIVE_PANES,
@@ -23,6 +25,7 @@ import {
   TERMINAL_STATES,
   type TeamCancelResult,
   type TeamListResult,
+  type TeamResizeResult,
   type TeamRunRow,
   assertMagmuxAvailable,
   checkChildFlags,
@@ -33,12 +36,14 @@ import {
   livePaneCount,
   mergeAccounting,
   readTokenFileCached,
+  reasonDetail,
   releasePaneReservations,
   reservePanes,
   resolveProvider,
   sockRootFor,
   startPaneSession,
   toSlotRow,
+  upstreamRecordsFor,
 } from "./pane/index.js";
 import { redactSecrets } from "./redact.js";
 import { projectsDir, transcriptPathFor } from "./session/session-discovery.js";
@@ -336,7 +341,7 @@ const startsInFlight = new Map<StartFlight, Promise<unknown>>();
 const teamRuns = new Map<string, LiveTeamRun>();
 /** resolved path → run_id of the newest run started there */
 const newestRunByPath = new Map<string, string>();
-export const SETTLED_RUN_RETENTION_MS = 30 * 60_000; // same as channel TERMINAL_RETENTION_MS
+export const SETTLED_RUN_RETENTION_MS = 30 * 60_000; // same as the MCP session manager's TERMINAL_RETENTION_MS
 export const MAX_SETTLED_RUNS = 20;
 /** Slots of one run spawn this far apart, so N REPLs do not write ~/.claude.json at once (X-L8). */
 export const BOOT_STAGGER_MS = 300;
@@ -425,8 +430,14 @@ function notableAnomalies(snap: PaneSnapshot): string[] {
     (a) =>
       a.startsWith("background_shell_open") ||
       a.startsWith("turn_end_record_missing") ||
+      a.startsWith("agent_count_mismatch") ||
       a.startsWith("prompt_not_read")
   );
+}
+
+/** `errors/<slot>-upstream.jsonl`: the child proxy's upstream-error capture for one slot. */
+function upstreamLogPath(path: string, id: string): string {
+  return join(path, "errors", `${id}-upstream.jsonl`);
 }
 
 function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
@@ -436,6 +447,11 @@ function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
     provider: e.acct.provider,
     state: m?.state ?? "FAILED",
     reason: m?.error?.reason ?? "pane_lost",
+    reason_detail: reasonDetail({
+      state: m?.state ?? "FAILED",
+      reason: m?.error?.reason ?? "pane_lost",
+      detail: m?.error?.detail,
+    }),
     tokens_in: null,
     tokens_out: null,
     cost_usd: null,
@@ -445,6 +461,7 @@ function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
     idle_seconds: null,
     activity: null,
     pane: null,
+    recent: null,
   };
 }
 
@@ -454,7 +471,9 @@ function liveSlotRow(run: LiveTeamRun, e: SlotEntry): SlotRow {
   return toSlotRow(
     { slot: e.id, model: e.model, spawnModel: e.spawnModel },
     snap,
-    refreshAccounting(e, snap)
+    refreshAccounting(e, snap),
+    Date.now(),
+    upstreamRecordsFor(snap, upstreamLogPath(run.path, e.id))
   );
 }
 
@@ -513,12 +532,16 @@ export function teamRunRowFromDisk(path: string, status: TeamStatus): TeamRunRow
     .map(([id, m]) => {
       const { state, known } = closedState(m?.state);
       const terminal = isTerminalState(state);
+      const reason =
+        !known || !terminal || state === "COMPLETED" ? null : (m?.error?.reason ?? null);
+      const why = { state, reason, detail: m?.error?.detail };
       return {
         slot: id,
         model: m?.model ?? manifest?.models[id]?.model ?? "unknown",
         provider: m?.provider ?? null,
         state,
-        reason: !known || !terminal || state === "COMPLETED" ? null : (m?.error?.reason ?? null),
+        reason,
+        reason_detail: reasonDetail(why, upstreamRecordsFor(why, upstreamLogPath(path, id))),
         tokens_in: m?.tokensIn ?? null,
         tokens_out: m?.tokensOut ?? null,
         cost_usd: m?.costUsd ?? null,
@@ -528,6 +551,7 @@ export function teamRunRowFromDisk(path: string, status: TeamStatus): TeamRunRow
         idle_seconds: null,
         activity: null,
         pane: m?.pane ?? null,
+        recent: null,
       };
     });
   const settled = slots.length > 0 && slots.every((s) => isTerminalState(s.state));
@@ -630,10 +654,10 @@ export async function cancelTeamRun(
 function neverSpawnedCapture(): CaptureResult {
   return {
     seq: 0,
-    cols: 160,
-    rows: 50,
+    cols: DEFAULT_PANE_COLS,
+    rows: DEFAULT_PANE_ROWS,
     cursor: { x: 0, y: 0 },
-    lines: Array.from({ length: 50 }, () => ""),
+    lines: Array.from({ length: DEFAULT_PANE_ROWS }, () => ""),
     final: true,
   };
 }
@@ -659,6 +683,33 @@ export function captureTeamSlot(
     return sinceSeq === 0 ? { unchanged: true, seq: 0, final: true } : c;
   }
   return e.session.capture(sinceSeq, { spans: spans === true });
+}
+
+/**
+ * Contract F: set one slot's terminal size (clamped), in any state, mid-turn included.
+ * A slot whose pane never spawned answers the default size with `changed:false`; a
+ * terminal one its last size. Throws `ContractErrorException`: `unknown_run`,
+ * `unknown_slot`, `resize_unsupported`, `delivery_unavailable`.
+ */
+export async function resizeTeamSlot(
+  path: string | undefined,
+  slot: string,
+  cols: number,
+  rows: number,
+  runId?: string
+): Promise<TeamResizeResult> {
+  const run = addressRun(path, runId);
+  if (!run) throw unknownRun(path, runId);
+  const e = run.slots.get(slot);
+  if (!e)
+    throw new ContractErrorException(
+      "unknown_slot",
+      `run ${run.runId} has no slot ${JSON.stringify(slot)}`
+    );
+  const where = { run_id: run.runId, path: run.path, slot };
+  if (!e.session)
+    return { ...where, cols: DEFAULT_PANE_COLS, rows: DEFAULT_PANE_ROWS, changed: false, seq: 0 };
+  return { ...where, ...(await e.session.resize(cols, rows)) };
 }
 
 /**
@@ -1088,7 +1139,7 @@ function assertValidRequirePattern(pattern: string | undefined): void {
 /**
  * The pre-spawn refusals of a team run, in the order the MCP `run` handler applies them
  * BEFORE `setupSession` writes anything (§4.1): the caller's flags (D18), a prompt that
- * cannot be delivered with those flags (§2.3 rule 4), magmux present (≥ 0.14.0), no
+ * cannot be delivered with those flags (§2.3 rule 4), magmux present (≥ `MIN_MAGMUX_VERSION`), no
  * ACTIVE run at the path, and room under the per-user pane limit. Each throws an Error
  * whose message starts with its code (`invalid_args:`, `magmux_unavailable:`,
  * `pane_limit:`). `startModels` repeats them, so the CLI gets the same checks.
@@ -1242,7 +1293,7 @@ async function startModelsIn(
   const entries = new Map<string, SlotEntry>();
   let run: LiveTeamRun | null = null;
   const errorLogPathOf = (id: string) => join(path, "errors", `${id}.log`);
-  const upstreamLogOf = (id: string) => join(path, "errors", `${id}-upstream.jsonl`);
+  const upstreamLogOf = (id: string) => upstreamLogPath(path, id);
   const commandOf = (e: SlotEntry) =>
     ["claudish", "-i", "--model", e.spawnModel ?? e.model, "-y", "--quiet", ...claudeFlags].join(
       " "

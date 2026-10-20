@@ -44,7 +44,7 @@ import {
 } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { proxyRouteDecision } from "./providers/native-route.js";
-import { describeMissingCredential } from "./providers/provider-definitions.js";
+import { describeMissingCredential, getProviderByName } from "./providers/provider-definitions.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import {
   createUrlProvider,
@@ -64,6 +64,7 @@ import {
 import { LocalTransport } from "./providers/transport/local.js";
 import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
 import { PoeProvider } from "./providers/transport/poe.js";
+import { discoverProviderProbeModel } from "./providers/transport/provider-model-discovery.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
 import { RefusingHandler } from "./providers/wire-handler.js";
 import {
@@ -130,7 +131,7 @@ export interface ProxyServerOptions {
   servedSlotIds?: string[];
   /**
    * An ordered, already-credential-filtered candidate list pinned by a PARENT
-   * claudish process (`team` / channel `create_session`), parsed from a `--model`
+   * claudish process (`team` / `create_session`), parsed from a `--model`
    * chain value. Element 0 is also the `model` argument, so a chain is opt-in and
    * additive: absent it, routing behaves exactly as before.
    *
@@ -791,7 +792,7 @@ export async function createProxyServer(
 
     // 2a-chain. A PINNED CHAIN from a parent process.
     //
-    // `team` / channel `create_session` resolve the route in the parent and spawn
+    // `team` / `create_session` resolve the route in the parent and spawn
     // the child with explicit specs, because a bare name would make the child
     // re-resolve credentials and open its own 1Password client — one dialog per
     // child instead of one per run (auth/credentials/prehydrate.ts). The cost used
@@ -840,7 +841,11 @@ export async function createProxyServer(
         // differs (a provider it cannot construct), and the remaining candidates
         // are still strictly better than failing the request.
         if (handler) {
-          candidates.push({ name: DISPLAY_NAMES[parsed.provider] ?? parsed.provider, handler });
+          candidates.push({
+            name: DISPLAY_NAMES[parsed.provider] ?? parsed.provider,
+            provider: parsed.provider,
+            handler,
+          });
         }
       }
 
@@ -944,7 +949,11 @@ export async function createProxyServer(
               handler = await getRemoteProviderHandler(candidate.modelSpec, invocationMode);
             }
             if (handler) {
-              candidates.push({ name: candidate.displayName, handler });
+              candidates.push({
+                name: candidate.displayName,
+                provider: candidate.provider,
+                handler,
+              });
             }
           }
 
@@ -1193,11 +1202,21 @@ export async function createProxyServer(
     const handler =
       getLocalProviderHandler(targetModel) ?? (await getRemoteProviderHandler(targetModel));
     const transport = (handler as unknown as { provider?: ProviderTransport })?.provider;
-    if (!transport?.discoverProbeModel) {
+    // A handler that exposes no transport (a catalog provider built as a
+    // try-in-turn handler) still answers from the provider's own dynamic
+    // models catalog when its definition declares one.
+    const definition = getProviderByName(provider);
+    const discover = transport?.discoverProbeModel
+      ? (ex?: ReadonlySet<string>) => transport.discoverProbeModel!(ex)
+      : definition?.modelDiscovery
+        ? (ex?: ReadonlySet<string>) =>
+            discoverProviderProbeModel(provider, definition.displayName, ex)
+        : undefined;
+    if (!discover) {
       return c.json({ provider, model: null, reason: "transport does not support discovery" }, 404);
     }
     try {
-      const outcome = await transport.discoverProbeModel(exclude);
+      const outcome = await discover(exclude);
       return c.json({
         provider,
         model: outcome.model,

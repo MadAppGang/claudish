@@ -19,21 +19,28 @@ lives in `ROADMAP.md`.
 - `behavior-layer.md` — Layer 4, the harness-conformance supervisor
 - `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10, Claude Code's gates, metered panel billing; read before editing advisor, decorator, monitor-launch or native-auth code
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
+- `providers/meta-muse-code.md`: `muse@` on a Muse Code subscription and its metered sibling `meta@`: the mint
+  as entitlement evidence (per process, on 401, 30-min TTL), the Muse Keychain item read only by an
+  `interactive-launch` or TUI role and never killed, the borrowed 0600 copy team/MCP slots sign with,
+  the contributor guard and its removal trigger (backend M3). Read before editing `meta-muse/`,
+  `prompt-role.ts` or `content-use.ts`
 - `headless-vs-interactive.md` — `-p` is not interactive-minus-a-TTY; an UNKNOWN `--agent` name is
   silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux,
-  and why the MCP server starts no child with `-p`
+  and the one `-p` the MCP server does start (`run_prompt` on a Claude model)
 - `pane-session.md` — MCP and CLI `team` slots and `create_session` as interactive Claude Code in
-  headless magmux panes: transcript turn oracle, settle on `turn_duration` (32 s quiet path gated
+  headless magmux panes: transcript turn oracle, the magmux ≥ 0.17.0 input gate bound to the
+  pane's own transcript (one gated send per prompt, readiness and dialogs from `list` `input`, the
+  box located by the cursor, no width cap), settle on `turn_duration` (32 s quiet path gated
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
-  watcher and identity-checked reap, socket traps, the frozen mod contract v1, the session registry
-  read as telemetry (and why no in-child mod or argv prompt). Read before editing `pane/`, team spawn
-  or channel spawn
+  watcher and identity-checked reap, socket traps, one level of nesting (`CLAUDISH_PANE_CHILD` kept,
+  the nested refusal), the frozen mod contract v1, the session registry read as telemetry (and why no
+  in-child mod or argv prompt). Read before editing `pane/`, team spawn or MCP session spawn
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
-- `mcp-channel.md` — the 14-tool MCP surface, channel sessions on panes (`send_input` queueing,
-  `capture_session`, the session records the magus monitor reads), channel wire format
-  (`awaiting_permission`, no `finishing`), progress keepalive
+- `mcp-sessions.md` — the 15-tool MCP surface and its four groups, the 4-tool nested mode, sessions
+  on panes (`send_input` queueing, `capture_session`, `resize_session`, the session records the
+  magus monitor reads), `run_prompt`'s Claude Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
   assistant message of its turn, from the transcript, starting after the task file was read
 - `team-lifecycle.md` — why no slot is ever killed on a timer, why `run` returns once every
@@ -75,6 +82,7 @@ negative case: if you are about to type one of those words, stop and use the lef
 | route candidate | option, hop (before filtering), chain entry | one `(provider, wire id)` pair gathered for a model, BEFORE the credential and availability filters. A candidate is a proposal; a hop is what survived |
 | tier | class, category, rank, level | a provider's routing class: `subscription`, `dynamic-subscription`, `native`, `gateway`, `fallback`. Ordering is by tier first, and only then by vendor and price — except that the two subscription tiers count as one, so a vendor's own dynamic subscription leads another vendor's catalog subscription (`gk@` before `zengo@` for `grok-4.x`) |
 | namespace claim | pattern match, native claim | a dynamic subscription becoming a candidate because its `nativeModelPatterns` match the name. It exists so the availability filter can ASK the account; it is never evidence that the account is served |
+| recommendation tier | category, bucket, tier (alone, on a recommendation) | the backend's curated list a model is recommended in: `flagship`, `cost_efficient`, `lightweight`, `luxury`, `subscription`. The projected field is `recommendationTier`; a value claudish does not know is skipped. Bare "tier" is the routing class above |
 
 **Providers and routing**
 
@@ -132,6 +140,7 @@ negative case: if you are about to type one of those words, stop and use the lef
 - A connection failure can arrive wearing an AUTH status code, at FIVE sites in `composed-handler.ts` (`refreshAuth`, `forceRefreshAuth`, the parameter-recovery re-fetch, `getHeaders`, the primary fetch). 401 is retryable to `FallbackHandler`, so answering it for a network fault walks a subscription user onto metered billing mid-outage; an unclassified THROW is the same bug one layer out (`{status: 0}` + an unconditional advance, with no cost warning). Classify first or rethrow unchanged — never invent a status. `getHeaders()` is the non-obvious one: for `gk@` it is the request's first network touch, and refresh-conditional, so it is rare rather than safe. A TRANSPORT's own `refreshAuth` catch that returns normally is the same bug one layer earlier: `openai-codex.ts` swallowed an unreachable token host and fell through to the metered api-key path.
 - Anything that renders a TUI to **stderr** must `setStderrQuiet(true)` for as long as it owns the screen, and release it in a `finally`. `logStderr` writes there too, so the two interleave inside one frame: the TUI repaints its own cells over part of the line and the surviving fragments read as a layout bug. `--probe` hit this — the tell was a stray `[c`, the head of `[claudish] `, left in a failed row. The message is not lost; `logStderr` always writes the debug log as well.
 - A `route binding` names one endpoint AND one credential silo. A provider that owns neither does not belong in `CATALOG_ROUTE_BINDINGS`, even when its name matches the `routeId`: since `routingProvidersForRoute` returns every provider bound to a route, a placeholder listed there becomes a route candidate and `--probe` prints a hop no key can ever satisfy. A name that only READS catalog data through a route (a vendor slug such as `anthropic` for the savings-panel price, `moonshotai` for the Kimi picker list) goes in `LOOKUP_ONLY_ROUTE_BINDINGS`, which the lookups consult and routing never does; a test pins that table's members. Do NOT fix that by filtering `reason: "virtual"` out of the gatherer — `native-anthropic` is virtual and genuinely routable through the native passthrough, so that filter takes `claude-*` away from anyone holding an `ANTHROPIC_API_KEY`.
+- `CLAUDISH_PANE_CHILD` must never be scrubbed from Claude Code's env: `scrubChildEnv` deletes only `PANE_LAUNCH_VARS` (`CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD`). The flag is how a claudish or claudish MCP server started inside a session knows it is one level deep; scrubbing it silently re-enables `create_session` inside `create_session`, with no error. See `pane-session.md` § One level of nesting.
 
 ## Commands
 
@@ -234,7 +243,7 @@ for rationale. Three write-ups already died this way.
 
 ### Workflow
 <!-- learned: 2026-04-06 session: df311293 source: explicit_rule -->
-- Don't run claudish directly in main bash — use dedicated channel sessions or `/delegate`
+- Don't run claudish directly in main bash — use dedicated MCP sessions (`create_session`) or `/delegate`
 <!-- learned: 2026-09-02 source: near_miss -->
 - NEVER `git stash` from a worktree. The stash stack is shared with the main checkout and
   every sibling worktree, and concurrent sessions push and pop it. A bare push/pop pair is

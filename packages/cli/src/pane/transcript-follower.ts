@@ -39,6 +39,8 @@ import {
   statSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { SlotStep } from "./contract.js";
+import { RECENT_STEP_LIMIT, stepOf } from "./slot-steps.js";
 
 export type Witness =
   | { kind: "text"; text: string } // typed plain line or the file-reference instruction (exact)
@@ -87,6 +89,8 @@ export interface TurnView {
   lastChatOffset: number | null;
   /** a local command's `<local-command-stdout>` after its witness (ANSI removed); null otherwise */
   localCommandOutput: string | null;
+  /** the last RECENT_STEP_LIMIT steps of this turn, oldest first (SlotRow.recent); [] before the first */
+  recent: SlotStep[];
 }
 
 export interface SessionFacts {
@@ -145,6 +149,8 @@ interface TurnState {
   read: ReadState | null;
   lastChatOffset: number | null;
   localOutput: { text: string; offset: number } | null;
+  /** at most RECENT_STEP_LIMIT, oldest dropped first */
+  steps: SlotStep[];
 }
 
 export interface FollowerState {
@@ -225,6 +231,17 @@ function isLocalCommandText(text: string): boolean {
 
 function isTaskNotification(r: Rec): boolean {
   return r.origin?.kind === "task-notification" || userText(r).includes("<task-notification>");
+}
+
+/**
+ * A `<task-notification>` Claude Code absorbed into a turn still running: a main-chain
+ * `attachment` with `attachment.type:"queued_command"` (captured 2.1.263 and 2.1.301). The
+ * prefix test keeps out a peer `<agent-message>` that merely quotes one.
+ */
+function queuedTaskNotification(r: Rec): string | null {
+  const a = r.type === "attachment" ? r.attachment : null;
+  if (a?.type !== "queued_command" || typeof a.prompt !== "string") return null;
+  return a.prompt.startsWith("<task-notification>") ? a.prompt : null;
 }
 
 function taskIdOf(text: string): string | null {
@@ -379,7 +396,15 @@ function applyAssistant(state: FollowerState, t: TurnState, r: Rec, offset: numb
   t.waking = false;
   t.apiError = isApiError ? apiErrorOf(r) : null;
   if (isApiError) return;
-  for (const b of m.content ?? []) applyAssistantBlock(state, t, b, offset);
+  const at = typeof r.timestamp === "string" ? r.timestamp : new Date().toISOString();
+  for (const b of m.content ?? []) {
+    applyAssistantBlock(state, t, b, offset);
+    const step = stepOf(b, at);
+    if (step) {
+      t.steps.push(step);
+      if (t.steps.length > RECENT_STEP_LIMIT) t.steps.shift();
+    }
+  }
 }
 
 function apiErrorOf(r: Rec): TurnView["apiError"] {
@@ -444,6 +469,17 @@ function applyNotification(t: TurnState, text: string): void {
   if (!id) return;
   if (t.agents.has(id)) t.agentsDone.add(id);
   t.shells.delete(id);
+}
+
+/**
+ * Completes the agent or closes the shell only, never waking and never chat activity: the
+ * attachment rides an API request already in flight, and the assistant record that answers it
+ * follows (1,133 of 1,134 corpus notification attachments; the other was a file still being
+ * written).
+ */
+function applyQueuedNotification(t: TurnState, r: Rec): void {
+  const text = queuedTaskNotification(r);
+  if (text) applyNotification(t, text);
 }
 
 function applyUser(t: TurnState, r: Rec, offset: number): void {
@@ -519,6 +555,7 @@ export function applyRecord(
   else if (r.type === "system" && r.subtype === "stop_hook_summary") {
     if (t.lastAssistant) t.stopHookAfterLast = true;
   } else if (r.type === "system" && r.subtype === "turn_duration") applyTurnDuration(state, t, r);
+  applyQueuedNotification(t, r); // attachment records only; the predicate rejects every other type
   // compact_boundary carries no turn fact; compactions are counted on the isCompactSummary record
   return state;
 }
@@ -584,6 +621,7 @@ export function openTurnState(
     read: t.delivery ? newReadState(t.delivery) : null,
     lastChatOffset: null,
     localOutput: null,
+    steps: [],
   });
   return state;
 }
@@ -637,6 +675,7 @@ export function turnView(t: TurnState): TurnView {
     preambleBytes,
     lastChatOffset: t.lastChatOffset,
     localCommandOutput: t.localOutput?.text ?? null,
+    recent: [...t.steps],
   };
 }
 

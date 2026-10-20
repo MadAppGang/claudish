@@ -13,7 +13,7 @@
  * Every test asserts the SPEC; only these functions bend to the implementation. If a contract
  * test fails with "ADAPTER:", fix this file, not the test.
  */
-import * as sessionManagerModule from "../channel/session-manager.js";
+import * as sessionManagerModule from "../mcp-session/session-manager.js";
 import type { SlotState } from "../pane/index.js";
 import * as orchestrator from "../team-orchestrator.js";
 

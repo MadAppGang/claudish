@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { installPaneShutdownHooks } from "./pane/index.js";
+import { assertNotNested } from "./pane/child-env.js";
+import { MIN_MAGMUX_VERSION, installPaneShutdownHooks } from "./pane/index.js";
 import {
   type TeamRunOptions,
   type TeamStatus,
@@ -13,8 +14,9 @@ import {
 } from "./team-orchestrator.js";
 
 /**
- * `claudish team run|run-and-judge` (json mode) runs every slot as an interactive pane,
- * like the MCP `team` tool (they share `runModels`). The refusals come first, before
+ * `claudish team run|run-and-judge` (json mode, the default) runs every slot as an
+ * interactive pane, like the MCP `team` tool (they share `runModels`); only `run --grid`
+ * (or `--mode default` / `--interactive`) takes the magmux grid. The refusals come first, before
  * the session directory is written: a bad flag exits 2, a missing magmux or a full pane
  * limit exits 1. Ctrl-C (and SIGTERM / SIGHUP) reaps every pane in ≤ 3 s, then exits
  * 128 + the signal number — 130 for Ctrl-C.
@@ -86,8 +88,10 @@ Options (run / run-and-judge):
   --timeout <secs>    Grid modes only: magmux's own per-pane timeout (default: 300).
                       json mode has no deadline — nothing kills a working model.
                       json mode runs each model as an interactive pane in a headless
-                      magmux (>= 0.14.0; darwin and linux).
+                      magmux (>= ${MIN_MAGMUX_VERSION}; darwin and linux).
   --grid              Show all models in a magmux grid with live output + status bar
+  --mode <m>          run only: json (default, panes), default (the grid, as --grid)
+                      or interactive (as --interactive)
 
 Options (judge / run-and-judge):
   --judges <a,b,...>  Comma-separated judge model IDs (default: same as runners)
@@ -117,6 +121,11 @@ export async function teamCommand(args: string[]): Promise<void> {
   const legacySubs = ["run", "judge", "run-and-judge", "status"];
   const subcommand = legacySubs.includes(firstArg) ? firstArg : "run";
 
+  // run, judge and run-and-judge start models; inside an MCP-started session that
+  // is a second level of nesting (exit 64). Checked before any argument validation.
+  // `status` only reads a session directory, so it stays usable.
+  if (subcommand !== "status") assertNotNested();
+
   const rawSessionPath = getFlag(args, "--path") ?? ".";
   let sessionPath: string;
   try {
@@ -127,7 +136,14 @@ export async function teamCommand(args: string[]): Promise<void> {
   }
   const modelsRaw = getFlag(args, "--models");
   const judgesRaw = getFlag(args, "--judges");
-  const mode = (getFlag(args, "--mode") ?? "default") as "default" | "interactive" | "json";
+  // A bare `team run` runs panes (json); `default` is the magmux grid. An unknown value
+  // exits 2 before anything is written, rather than silently picking a mode.
+  const modeRaw = getFlag(args, "--mode") ?? "json";
+  if (modeRaw !== "default" && modeRaw !== "interactive" && modeRaw !== "json") {
+    console.error(`Error: invalid --mode "${modeRaw}" (expected default, interactive or json)`);
+    process.exit(2);
+  }
+  const mode: "default" | "interactive" | "json" = modeRaw;
   const timeoutStr = getFlag(args, "--timeout");
   const timeout = timeoutStr ? Number.parseInt(timeoutStr, 10) : 300;
 
@@ -181,7 +197,8 @@ export async function teamCommand(args: string[]): Promise<void> {
         printStatus(runStatus);
       } else {
         const { runWithGrid } = await import("./team-grid.js");
-        const gridStatus = await runWithGrid(sessionPath, models, input ?? "", {
+        // A missing --input stays undefined so setupSession keeps an existing input.md.
+        const gridStatus = await runWithGrid(sessionPath, models, input, {
           timeout,
           mode: effectiveMode === "interactive" ? "interactive" : "default",
         });

@@ -1,0 +1,5 @@
+# magus: copied into new worktrees so they start with this project's plugins (source of truth: .claude/profiles.json)
+.claude/settings.json
+.mcp.json
+.claude/models.json
+.claude/profiles/active.json

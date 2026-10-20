@@ -50,6 +50,12 @@ export interface WireChoices {
   hasTools?: boolean;
   /** The output limit to write at `wire.tokenParam`. */
   maxTokens?: number;
+  /**
+   * The catalog's `maxOutputTokens` for the connection's model. Written ONLY
+   * when `maxTokens` is absent and the API requires a limit (the Messages API
+   * requires `max_tokens`); every other API is left to the upstream's default.
+   */
+  catalogMaxOutputTokens?: number;
   /** `+pro` on the model spec, or pro turned on by `proOnUltracode`. */
   mode?: { value: WireMode; explicit: boolean };
   /** `#<speed>` on the model spec. */
@@ -366,6 +372,35 @@ export function wireChoicesFromClaudeRequest(
   };
 }
 
+// ─── Output limit ──────────────────────────────────────────────────────────
+
+/** APIs that reject a request with no output limit. */
+const LIMIT_REQUIRED_APIS: ReadonlySet<KnownWire["api"]> = new Set(["anthropic-messages"]);
+
+/**
+ * The output limit to write: the request's own when it has one, unchanged.
+ * Otherwise, only on an API that requires a limit, the catalog's
+ * `maxOutputTokens` for this model. With no published ceiling nothing is
+ * written: an unknown value is never replaced by a pinned number.
+ */
+function outputLimitToSend(
+  wire: KnownWire,
+  choices: WireChoices,
+  result: WireShapeResult
+): number | undefined {
+  if (typeof choices.maxTokens === "number") return choices.maxTokens;
+  if (!LIMIT_REQUIRED_APIS.has(wire.api)) return undefined;
+  const ceiling = choices.catalogMaxOutputTokens;
+  if (typeof ceiling === "number" && ceiling > 0) {
+    result.notes.push(`request has no output limit: sent the catalog's maxOutputTokens ${ceiling}`);
+    return ceiling;
+  }
+  result.notes.push(
+    "request has no output limit and the catalog publishes no maxOutputTokens: none sent"
+  );
+  return undefined;
+}
+
 // ─── Entry point ───────────────────────────────────────────────────────────
 
 /**
@@ -393,8 +428,9 @@ export function shapeRequestFromWire(
   };
   const sameApiOwner = owner && owner !== wire && owner.api === wire.api ? owner : undefined;
 
+  const maxTokens = outputLimitToSend(wire, choices, result);
   if (typeof wire.tokenParam === "string") {
-    if (typeof choices.maxTokens === "number") body[wire.tokenParam] = choices.maxTokens;
+    if (typeof maxTokens === "number") body[wire.tokenParam] = maxTokens;
   } else if (wire.api !== "gemini") {
     // Only an UNKNOWN field is tried from the owner; `not_applicable` is an
     // answer (this connection takes no limit field), not a gap.
@@ -402,9 +438,9 @@ export function shapeRequestFromWire(
       wire.tokenParam.status === "unknown" &&
       sameApiOwner &&
       typeof sameApiOwner.tokenParam === "string" &&
-      typeof choices.maxTokens === "number"
+      typeof maxTokens === "number"
     ) {
-      borrow(`/${sameApiOwner.tokenParam}`, choices.maxTokens);
+      borrow(`/${sameApiOwner.tokenParam}`, maxTokens);
       result.notes.push(
         `tokenParam ${wire.tokenParam.status}: trying the owner's ${sameApiOwner.tokenParam}`
       );

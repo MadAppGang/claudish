@@ -150,6 +150,38 @@ export interface KeychainDeps {
   run: (args: string[], stdin?: string) => KeychainRunResult;
   /** Async form, used by the parallel hydration pass. */
   runAsync: (args: string[], stdin?: string) => Promise<KeychainRunResult>;
+  /**
+   * Start `security` and hand back its completion as a JOINABLE handle, with NO
+   * deadline and NO kill path. `done` resolves only when `security` itself
+   * exits — never rejects — and `pid` is the child's pid (undefined when the
+   * spawn failed). See {@link KeychainSpawn}.
+   */
+  spawnAsync: (args: string[], stdin?: string) => KeychainSpawn;
+}
+
+/**
+ * One `security` run that may outlive whoever started it.
+ *
+ * WHY NO DEADLINE AND NO KILL. A value read of an item another application owns
+ * (`find-generic-password -w`) can open the macOS access dialog, and the user
+ * may take minutes to answer it. `runAsync`'s `SPAWN_TIMEOUT_MS` would KILL
+ * `security` at ten seconds, and a `security` killed mid-transaction is how
+ * this codebase once made macOS restart `securityd`, which dropped every
+ * running application's keychain session (keychain.md, "NEVER verify against
+ * the real login keychain"). Killing it also throws away the user's answer:
+ * the dialog stays up, and a click on "Always Allow" lands on a process that is
+ * gone.
+ *
+ * So the handle is the contract. A caller races `done` against ITS OWN
+ * deadline and, when the deadline wins, simply stops waiting: `done` stays
+ * alive, a late approval still resolves it, and the next caller can JOIN the
+ * same `done` instead of spawning a second dialog. `pid` lets a caller record
+ * which `security` holds the dialog (a per-machine lock names the child, not
+ * the claudish process that may exit first).
+ */
+export interface KeychainSpawn {
+  done: Promise<KeychainRunResult>;
+  pid: number | undefined;
 }
 
 /**
@@ -217,6 +249,43 @@ async function asyncRun(args: string[], stdin?: string): Promise<KeychainRunResu
   }
 }
 
+/**
+ * {@link KeychainDeps.spawnAsync}: no `timeout` option, no `kill()`, anywhere.
+ * stderr piped for the same reason as `syncRun`. A spawn that cannot start
+ * resolves `done` with the error, as `asyncRun` reports it.
+ */
+function spawnAsyncRun(args: string[], stdin?: string): KeychainSpawn {
+  try {
+    const proc = Bun.spawn([SECURITY_BIN, ...args], {
+      stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const done = Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]).then(
+      ([stdout, stderr, exitCode]) => normalizeResult(exitCode, proc.signalCode, stdout, stderr),
+      (err: unknown) => ({
+        code: 1,
+        stdout: "",
+        stderr: err instanceof Error ? err.message : String(err),
+      })
+    );
+    return { done, pid: proc.pid };
+  } catch (err) {
+    return {
+      done: Promise.resolve({
+        code: 1,
+        stdout: "",
+        stderr: err instanceof Error ? err.message : String(err),
+      }),
+      pid: undefined,
+    };
+  }
+}
+
 function decode(buf: Uint8Array | null | undefined): string {
   return buf ? new TextDecoder().decode(buf) : "";
 }
@@ -245,6 +314,7 @@ const defaultDeps: KeychainDeps = {
   platform: () => process.platform,
   run: syncRun,
   runAsync: asyncRun,
+  spawnAsync: spawnAsyncRun,
 };
 
 let deps: KeychainDeps = defaultDeps;
@@ -427,6 +497,88 @@ export async function readKeychainSecretAsync(envVar: string): Promise<string | 
   const value = interpretRead(envVar, await deps.runAsync(findArgs(envVar)));
   valueMemo.set(envVar, { at, value });
   return value;
+}
+
+// ---------------------------------------------------------------------------
+// Another application's generic-password item (joinable, no kill path)
+// ---------------------------------------------------------------------------
+
+/** Which generic-password item, in which keychain file. */
+export interface GenericPasswordQuery {
+  service: string;
+  account?: string;
+  /**
+   * A keychain FILE to search instead of the default search list. Absent:
+   * `CLAUDISH_KEYCHAIN_FILE` when set, else the user's default keychains.
+   */
+  keychainFile?: string;
+}
+
+/** The outcome of one item lookup. `failed` is never collapsed into `absent`. */
+export type GenericPasswordResult =
+  | { kind: "found"; value?: string }
+  | { kind: "absent" }
+  | { kind: "failed"; code: number; error: string };
+
+function genericPasswordArgs(query: GenericPasswordQuery, withValue: boolean): string[] {
+  return [
+    "find-generic-password",
+    "-s",
+    query.service,
+    ...(query.account !== undefined ? ["-a", query.account] : []),
+    ...(withValue ? ["-w"] : []),
+    ...(query.keychainFile !== undefined ? [query.keychainFile] : keychainFileArgs()),
+  ];
+}
+
+function interpretGenericPassword(
+  res: KeychainRunResult,
+  withValue: boolean
+): GenericPasswordResult {
+  if (res.code === 0) {
+    if (!withValue) return { kind: "found" };
+    const value = stripOneTrailingNewline(res.stdout);
+    return value.length > 0 ? { kind: "found", value } : { kind: "absent" };
+  }
+  if (res.code === EXIT_ITEM_NOT_FOUND) return { kind: "absent" };
+  return {
+    kind: "failed",
+    code: res.code,
+    error: res.stderr.trim() || `security exited ${res.code}`,
+  };
+}
+
+/**
+ * Whether an item exists, from its ATTRIBUTES only: `find-generic-password`
+ * without `-w` reads no item data, so it opens no access dialog. Async, and
+ * through {@link KeychainDeps.spawnAsync}, so nothing ever kills it; it is
+ * never on a render path. stdout (the attribute dump) is discarded here.
+ */
+export async function findGenericPasswordPresence(
+  query: GenericPasswordQuery
+): Promise<GenericPasswordResult> {
+  if (!isKeychainSupported()) return { kind: "absent" };
+  const res = await deps.spawnAsync(genericPasswordArgs(query, false)).done;
+  return interpretGenericPassword(res, false);
+}
+
+/**
+ * Start a VALUE read of an item (`find-generic-password -w`). This may open the
+ * macOS access dialog for an item another application owns, so it returns the
+ * joinable handle rather than a promise with a deadline: the caller races
+ * `done` against its own deadline, never kills `security`, and a later caller
+ * may join the same `done` (see {@link KeychainSpawn}). The value is never
+ * memoized here; the caller decides what to keep.
+ */
+export function startGenericPasswordRead(query: GenericPasswordQuery): {
+  done: Promise<GenericPasswordResult>;
+  pid: number | undefined;
+} {
+  if (!isKeychainSupported()) {
+    return { done: Promise.resolve({ kind: "absent" }), pid: undefined };
+  }
+  const spawn = deps.spawnAsync(genericPasswordArgs(query, true));
+  return { done: spawn.done.then((res) => interpretGenericPassword(res, true)), pid: spawn.pid };
 }
 
 // ---------------------------------------------------------------------------

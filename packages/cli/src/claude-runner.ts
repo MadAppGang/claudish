@@ -25,7 +25,7 @@ import {
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
-import { PANE_MARKER_VARS, isPaneChild } from "./pane/child-env.js";
+import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
 import { loadConfig } from "./profile-config.js";
 import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
@@ -817,7 +817,7 @@ export function createTempSettingsFile(
   const tempPath = join(claudishDir, `settings-${process.pid}-${Date.now()}.json`);
 
   // The file the proxy's TokenTracker writes: one a parent ASSIGNED (a team slot's or
-  // channel session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
+  // MCP session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
   // An enclosing claudish session's PUBLISHED file (inherited by a claudish run from its
   // Bash tool) is not an assignment — see assignedTokenFile. Resolved by the same
   // function as the tracker and the summary, so the status line can never be pointed at
@@ -984,11 +984,17 @@ export function createTempSettingsFile(
  * writes no transcript. Only the magmux-wrap path stripped it before. Print mode is
  * left as it was.
  *
- * Every launch loses the `CLAUDISH_PANE_*` markers (`PANE_MARKER_VARS`). They describe
- * THIS claudish (an MCP pane child), not Claude Code; inherited, a claudish started
- * from the slot's Bash tool would take itself for a pane child (re-apply a stale
- * environment snapshot, refuse a prompt, lose its recovery surface). The markers stay
- * in this process's own `process.env`, which `magmuxPaneCapability()` reads.
+ * Every launch loses `CLAUDISH_PANE_ENV` and `CLAUDISH_PANE_CWD` (`PANE_LAUNCH_VARS`).
+ * They describe THIS claudish (an MCP pane child), not Claude Code; inherited, a
+ * claudish started from the slot's Bash tool would take itself for the pane child
+ * (re-apply a stale environment snapshot, chdir). They stay in this process's own
+ * `process.env`, which `isPaneChild()` and `magmuxPaneCapability()` read.
+ *
+ * `CLAUDISH_PANE_CHILD` is KEPT. It says "this session was started by a claudish
+ * owner", which is true of everything the session starts: a claudish run from its
+ * Bash tool refuses to nest (`assertNotNested`), and the claudish MCP server its
+ * plugins start registers no session tools. Deleting it here silently re-enables a
+ * claudish MCP session inside a claudish MCP session.
  */
 export function scrubChildEnv(
   env: Record<string, string | undefined>,
@@ -997,7 +1003,7 @@ export function scrubChildEnv(
   if (opts.interactive) {
     for (const key of STRIPPED_CHILD_VARS) delete env[key];
   }
-  for (const key of PANE_MARKER_VARS) delete env[key];
+  for (const key of PANE_LAUNCH_VARS) delete env[key];
 }
 
 /**
@@ -1010,10 +1016,20 @@ export function scrubChildEnv(
  *   `forceLoginMethod: "claudeai"` would block that at startup. In native-Anthropic /
  *   --monitor mode we leave it out so the user's real claude.ai subscription keeps working.
  * - `skipDangerousModePermissionPrompt: true` is added ONLY in an MCP pane child
- *   (`CLAUDISH_PANE_CHILD=1`). The pane runs `--dangerously-skip-permissions`, and its
- *   one-time confirmation dialog defaults to "No, exit": nobody is at a headless pane to
- *   answer it, so every slot would fail at boot. Verified to suppress the dialog at this
- *   tier. Gated on the marker so no other launch changes.
+ *   (`isPaneChild()`: `CLAUDISH_PANE_CHILD=1` AND `CLAUDISH_PANE_CWD`). The pane runs
+ *   `--dangerously-skip-permissions`, and its one-time confirmation dialog defaults to
+ *   "No, exit": nobody is at a headless pane to answer it, so every slot would fail at
+ *   boot. Verified to suppress the dialog at this tier. Gated on `isPaneChild()`, not
+ *   the session flag alone, so no other launch changes.
+ * - `editorMode: "normal"` is added ONLY in an MCP pane child, for the same reason
+ *   and on the same gate. A user `editorMode: "vim"` puts the REPL box in vim
+ *   INSERT mode, where the Enter claudish sends to submit the typed prompt is
+ *   swallowed: the prompt sits in the box and the slot fails `prompt_not_accepted`.
+ *   Interactive use outside a pane keeps the user's editorMode. magmux 0.16.0 forces
+ *   the same value for its panes; once that is the minimum, this key can go.
+ *
+ * Claude Code merges settings sources per key, so every other key of the user's
+ * settings files still applies; this overlay only wins on the keys it sets.
  *
  * (The OS *managed* tier can't be overridden — that case aborts before we get here.)
  */
@@ -1028,6 +1044,7 @@ export function buildClaudishSettingsOverlay(
   }
   if (paneChild) {
     settings.skipDangerousModePermissionPrompt = true;
+    settings.editorMode = "normal";
   }
   return settings;
 }
@@ -1087,6 +1104,13 @@ export function mergeUserSettingsIfPresent(
     // buildClaudishSettingsOverlay) unless the caller's --settings decides it.
     if (paneChild && !("skipDangerousModePermissionPrompt" in userSettings)) {
       userSettings.skipDangerousModePermissionPrompt = true;
+    }
+
+    // In an MCP pane child, keep the REPL box out of vim mode so the submit Enter
+    // reaches it (see buildClaudishSettingsOverlay). Forced over the caller's
+    // --settings: a pane child in vim mode cannot accept a prompt at all.
+    if (paneChild) {
+      userSettings.editorMode = "normal";
     }
 
     // Overwrite the temp settings file with the merged result
@@ -2254,10 +2278,10 @@ function setupSignalHandlers(
       // `128 + signum`, the shell convention for "died from signal N" — NOT 0.
       //
       // This one line manufactured the 900-second silent success. A supervisor
-      // (the channel session manager's timeout, `team`'s deadline, a CI runner)
+      // (the MCP session manager's timeout, `team`'s deadline, a CI runner)
       // would SIGTERM the process group, this handler would run its cleanup and
       // exit 0, and every layer above read that 0 as "the run succeeded". The
-      // channel manager then let the exit UPGRADE a state its timeout handler
+      // session manager then let the exit UPGRADE a state its timeout handler
       // had already recorded as failed, and wrote `status: "completed"` to
       // meta.json for a session that had been killed. A graceful shutdown is
       // still a shutdown: the process did not finish its work, and its exit

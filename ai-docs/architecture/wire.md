@@ -51,6 +51,23 @@ lists, effort ladders by `gpt-5.x`) being falsified by each new model release.
 `not_applicable` is an ANSWER, never borrowed over (Codex found the shaper treating it like
 `unknown`). Mode and speed are never borrowed: they carry entitlement and price.
 
+## Output limit
+
+The request's own `max_tokens` is sent unchanged, at the wire's `tokenParam`. When the request
+has none (MCP `run_prompt` and `compare_models` send none), only an API that REQUIRES a limit
+gets one: the Messages API (`anthropic-messages`) receives the catalog's `maxOutputTokens` for
+the connection's model (`ResolvedConnection.maxOutputTokens`, written by step 5w through
+`WireChoices.catalogMaxOutputTokens`). Chat Completions, Responses and Gemini are left to the
+upstream's own default. The slim catalog publishes the ceiling per model, not per connection.
+
+An unknown ceiling follows the same rule as an unknown `tokenParam` in the table above: send
+nothing, never a pinned number. `[Wire]` logs "the catalog publishes no maxOutputTokens: none
+sent". The adapter's old `max_tokens || 4096` capped every Messages connection (`minimax-m3`
+via `minimax` and `opencode`, `qwen3.8-max` via `opencode`) at 4096 output tokens wherever no
+wire overwrote it. With no wire the adapter now fills from the same catalog field
+(`lookupModelMaxOutputTokens`), or leaves the field out. On generation
+`g-20261016053727894-8a743761` 6 of 58 Messages connections had no model `maxOutputTokens`, `minimax-m3` among them.
+
 ## Traps
 
 - **Older claudish erases the registry.** Releases before 10.5.0 rewrite

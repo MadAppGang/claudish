@@ -1,31 +1,7 @@
-/**
- * FR-3 — `openai-codex` bills by the credential that SIGNS, not by its name.
- *
- * The one direction that costs the user real money is reporting SUB (and $0
- * accrued) while OpenAI meters the request. Every test here exists to make that
- * direction fail loudly.
- *
- * ── Hermetic strategy ─────────────────────────────────────────────────────────
- * No `mock.module`: Bun's module registry bleeds across files, and another file
- * may construct the real CodexOAuth singleton first (equivalence.test.ts:27-28
- * records why). No credential fixture under `$HOME`: guard-real-config.ts:31
- * sandboxes only config.json. Instead we use the seam equivalence.test.ts:136-152
- * established — override the real singleton's `hasCredentials` IN PLACE (the
- * authority's CodexOAuthHalf holds a reference to that same instance) — and, for
- * the trap case, drive the singleton's in-memory credential object so the REAL
- * predicate runs against it.
- *
- * Importing `authority.js` does read ~/.claudish/codex-oauth.json once, in the
- * CodexOAuth constructor. That read is pre-existing (authority.ts:235 → :157 →
- * codex-credential.ts:43) and no assertion below depends on its result: every test
- * sets the credential state it needs. The import is deliberate — it is the ONLY
- * production registration site for the probe, so it is what the wiring test tests.
- *
- * Save/restore is per test, and both the probe and the signed-arm record are
- * run-scoped module state that would otherwise bleed into sibling files.
- */
-
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   CREDENTIAL_DECIDED_PROVIDERS,
   SUBSCRIPTION_PROVIDERS,
@@ -33,14 +9,274 @@ import {
   isSubscriptionProvider,
   registerSubscriptionCredentialProbe,
 } from "../../handlers/shared/remote-provider-types.js";
-import { CodexOAuth } from "../codex-oauth.js";
+
+// HOME must exist in the environment at process start for Bun's os.homedir().
+// Keep the child and all of its writable resources under a per-case temp home.
+const childRoots: string[] = [];
+const children: ReturnType<typeof Bun.spawn>[] = [];
+afterEach(async () => {
+  for (const child of children.splice(0)) {
+    if (child.exitCode === null) child.kill();
+    await child.exited;
+  }
+  for (const root of childRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+async function runHomeScenario(scenario: string) {
+  const root = mkdtempSync(join(tmpdir(), "claudish-run4-child-"));
+  childRoots.push(root);
+  const home = join(root, "home");
+  mkdirSync(home);
+  const scriptPath = join(home, "scenario.ts");
+  const srcDir = resolve(import.meta.dir, "../..");
+  const bootstrap = `
+    import fs from "node:fs";
+    import { homedir } from "node:os";
+    import { resolve, isAbsolute } from "node:path";
+    import { fileURLToPath, pathToFileURL } from "node:url";
+    import { syncBuiltinESMExports } from "node:module";
+    const realExit = process.exit;
+    try {
+    const home = process.env.HOME;
+    if (homedir() !== home) throw new Error("child HOME was not honoured");
+    const src = ${JSON.stringify(srcDir)};
+    const load = (name) => import(pathToFileURL(resolve(src, name)).href);
+    const writes = [];
+    const outsideWrites = [];
+    const checkWrite = (value) => {
+      const path = resolve(value instanceof URL ? fileURLToPath(value) : String(value));
+      if (path !== home && !path.startsWith(home + "/")) {
+        outsideWrites.push(path);
+        throw new Error("write outside child HOME: " + path);
+      }
+      writes.push(path);
+    };
+    // Audit before importing production modules, including cached named fs exports.
+    for (const name of ["writeFileSync", "appendFileSync", "mkdirSync", "rmSync", "unlinkSync", "chmodSync", "truncateSync", "createWriteStream"]) {
+      const original = fs[name];
+      fs[name] = function(path, ...args) { checkWrite(path); return original.call(fs, path, ...args); };
+    }
+    for (const name of ["writeFile", "appendFile", "mkdir", "rm", "unlink", "chmod", "truncate"]) {
+      const original = fs.promises[name];
+      fs.promises[name] = async function(path, ...args) { checkWrite(path); return original.call(fs.promises, path, ...args); };
+    }
+    for (const name of ["renameSync", "copyFileSync"]) {
+      const original = fs[name];
+      fs[name] = function(from, to, ...args) {
+        checkWrite(from); checkWrite(to); return original.call(fs, from, to, ...args);
+      };
+    }
+    for (const name of ["writeFile", "appendFile", "mkdir", "rm", "unlink", "chmod", "truncate"]) {
+      const original = fs[name];
+      fs[name] = function(path, ...args) { checkWrite(path); return original.call(fs, path, ...args); };
+    }
+    for (const name of ["rename", "copyFile"]) {
+      const original = fs[name];
+      fs[name] = function(from, to, ...args) {
+        checkWrite(from); checkWrite(to); return original.call(fs, from, to, ...args);
+      };
+      const promiseOriginal = fs.promises[name];
+      fs.promises[name] = async function(from, to, ...args) {
+        checkWrite(from); checkWrite(to); return promiseOriginal.call(fs.promises, from, to, ...args);
+      };
+    }
+    const writesOnOpen = (flags) => typeof flags === "number"
+      ? (flags & (1 | 2 | 64 | 512 | 1024)) !== 0 : /[wa+]/.test(flags ?? "r");
+    for (const name of ["open", "openSync"]) {
+      const original = fs[name];
+      fs[name] = function(path, flags, ...args) {
+        if (writesOnOpen(flags)) checkWrite(path);
+        return original.call(fs, path, flags, ...args);
+      };
+    }
+    const promiseOpen = fs.promises.open;
+    fs.promises.open = async function(path, flags, ...args) {
+      if (writesOnOpen(flags)) checkWrite(path);
+      return promiseOpen.call(fs.promises, path, flags, ...args);
+    };
+    syncBuiltinESMExports();
+    const bunWrite = Bun.write;
+    Bun.write = function(path, ...args) { checkWrite(path); return bunWrite.call(Bun, path, ...args); };
+    let networkRequests = 0;
+    const networkUrls = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = Object.assign(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.protocol !== "http:" && url.protocol !== "https:") return realFetch(input, init);
+      networkRequests++;
+      networkUrls.push(url.href);
+      throw new Error("unexpected child network request");
+    }, { preconnect: () => {} });
+    let keychainOperations = 0;
+    const keychainAbsent = () => { keychainOperations++; return { code: 44, stdout: "", stderr: "test absent" }; };
+    const keychain = await load("providers/keychain.js");
+    keychain.setKeychainTestDeps({
+      platform: () => "darwin", run: keychainAbsent, runAsync: async () => keychainAbsent(),
+      spawnAsync: () => ({ done: Promise.resolve(keychainAbsent()), pid: undefined }),
+    });
+    const core = await load("providers/meta-muse/muse-credentials.js");
+    core.setMuseCoreTestDeps({
+      dir: () => home, now: () => 1_800_000_000_000, readStore: () => null,
+      writeBorrowedCopy: () => { throw new Error("unexpected borrowed write"); },
+      mint: async () => { throw new Error("unexpected mint"); },
+      keychainLogin: async () => ({ kind: "not-allowed" }),
+    });
+    const museKeychain = await load("providers/meta-muse/muse-keychain.js");
+    museKeychain.setMuseKeychainTestDeps({
+      dir: () => home, env: () => ({}), now: () => 1_800_000_000_000,
+      sleep: async () => { throw new Error("unexpected keychain wait"); },
+      pid: () => 424242, isAlive: () => false,
+      presence: async () => ({ kind: "absent" }),
+      startRead: () => ({ done: Promise.resolve({ kind: "absent" }), pid: undefined }),
+    });
+    const { OAUTH_PROVIDERS, hasOAuthCredentials, oauthCredentialWouldQualify } = await load("auth/oauth-registry.js");
+    const credentialPath = (name) => {
+      const file = OAUTH_PROVIDERS[name].credentialFile;
+      if (isAbsolute(file) || file.includes("..")) throw new Error("unsafe credential filename");
+      return resolve(home, ".claudish", file);
+    };
+    const { credentials } = await load("auth/credentials/authority.js");
+    const report = (result) => console.log(JSON.stringify({
+      ...result, home, writes, outsideWrites, networkRequests, networkUrls, keychainOperations,
+    }));
+  `;
+  writeFileSync(
+    scriptPath,
+    bootstrap +
+      scenario +
+      "\nrealExit(0);\n} catch (error) { console.error(error); realExit(1); }\n"
+  );
+  const child = Bun.spawn([process.execPath, scriptPath], {
+    cwd: home,
+    env: {
+      ...process.env,
+      HOME: home,
+      TMPDIR: home,
+      TMP: home,
+      TEMP: home,
+      CLAUDISH_DISABLE_KEYCHAIN: "1",
+      CLAUDISH_DISABLE_CATALOG_WARM: "1",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  children.push(child);
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  expect({ code, stderr: code === 0 ? "" : stderr }).toEqual({ code: 0, stderr: "" });
+  const lines = stdout.trim().split("\n");
+  expect(lines).toHaveLength(1);
+  const result = JSON.parse(lines[0]!);
+  expect(result.home).toBe(home);
+  expect(result.outsideWrites).toEqual([]);
+  expect(result.writes.every((path: string) => path === home || path.startsWith(home + "/"))).toBe(
+    true
+  );
+  expect(readdirSync(root)).toEqual(["home"]);
+  expect(result.networkRequests).toBe(0);
+  expect(result.networkUrls).toEqual([]);
+  expect(result.keychainOperations).toBe(0);
+  return result;
+}
+
+const savedEnvironment = new Map(["CLAUDISH_DISABLE_KEYCHAIN"].map((k) => [k, process.env[k]]));
+const testHome = mkdtempSync(join(tmpdir(), "claudish-auth-tests-"));
+process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
+const realFetch = globalThis.fetch;
+const realExit = process.exit;
+const unexpectedExit = new Error("RUN4_UNEXPECTED_PROCESS_EXIT");
+let exitAttempted = false;
+globalThis.fetch = Object.assign(
+  (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.protocol === "http:" && url.hostname === "127.0.0.1") return realFetch(input, init);
+    throw new Error(`Unexpected external request: ${url.origin}${url.pathname}`);
+  },
+  { preconnect: () => {} }
+) as typeof fetch;
+const keychain = await import("../../providers/keychain.js");
+const fakeKeychainDeps = {
+  platform: () => "darwin",
+  run: () => ({ code: 44, stdout: "", stderr: "test: absent" }),
+  runAsync: async () => ({ code: 44, stdout: "", stderr: "test: absent" }),
+  spawnAsync: () => ({
+    done: Promise.resolve({ code: 44, stdout: "", stderr: "test: absent" }),
+    pid: undefined,
+  }),
+};
+keychain.setKeychainTestDeps(fakeKeychainDeps);
+beforeEach(() => {
+  keychain.setKeychainTestDeps(fakeKeychainDeps);
+});
+afterEach(() => {
+  keychain.setKeychainTestDeps(null);
+  keychain.invalidateKeychainCache();
+});
+afterAll(() => {
+  globalThis.fetch = realFetch;
+  keychain.setKeychainTestDeps(null);
+  keychain.invalidateKeychainCache();
+  for (const [key, value] of savedEnvironment) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  rmSync(testHome, { recursive: true, force: true });
+});
+
+const { CodexOAuth } = await import("../codex-oauth.js");
 import { oauthCredentialWouldQualify } from "../oauth-registry.js";
-import { clearSignedArm, recordSignedArm } from "./billing-probe.js";
 
 // The one production registration site. Importing it is what installs the probe.
 // The binding is also what lets the api-key-arm test below drive the REAL
 // composite instead of a stub — see "FR-3: the REAL composite's api-key arm".
 const { credentials } = await import("./authority.js");
+
+const museCore = await import("../../providers/meta-muse/muse-credentials.js");
+const museKeychain = await import("../../providers/meta-muse/muse-keychain.js");
+const promptRole = await import("../../auth/credentials/prompt-role.js");
+const catalogClient = await import("../../providers/catalog-client.js");
+const allModelsCache = await import("../../providers/all-models-cache.js");
+// Every seam is a complete fake: omitted fields would restore machine defaults.
+beforeEach(() => {
+  museCore.setMuseCoreTestDeps({
+    dir: () => testHome,
+    now: () => 1_800_000_000_000,
+    readStore: () => null,
+    writeBorrowedCopy: () => {
+      throw new Error("unexpected borrowed-copy write");
+    },
+    mint: async () => {
+      throw new Error("unexpected Muse mint");
+    },
+    keychainLogin: async () => ({ kind: "not-allowed" }),
+  });
+  museKeychain.setMuseKeychainTestDeps({
+    dir: () => testHome,
+    env: () => ({}),
+    now: () => 1_800_000_000_000,
+    sleep: async () => {
+      throw new Error("unexpected Muse Keychain wait");
+    },
+    pid: () => 424242,
+    isAlive: () => false,
+    presence: async () => ({ kind: "absent" }),
+    startRead: () => ({ done: Promise.resolve({ kind: "absent" as const }), pid: undefined }),
+  });
+});
+afterEach(() => {
+  process.exit = realExit;
+  museCore.setMuseCoreTestDeps(null);
+  museCore.resetMuseCredentialState();
+  museKeychain.setMuseKeychainTestDeps(null);
+  museKeychain.resetMuseKeychainState();
+  promptRole._resetCredentialPromptRoleForTest();
+  catalogClient._resetCatalogClient();
+  allModelsCache._clearAllModelsCacheMemo();
+  keychain.invalidateKeychainCache();
+});
+
 // Imported dynamically, and AFTER the authority, only to keep the ordering above
 // honest: this is the sole production writer of the signed-arm record.
 const { OpenAICodexTransport } = await import("../../providers/transport/openai-codex.js");
@@ -53,20 +289,14 @@ const SYNTHETIC_MODEL = "billing-probe-test-model";
 /** An obviously-fake OPENAI_CODEX_API_KEY. Never sent anywhere. */
 const METERED_KEY = "sk-codex-metered-fixture";
 
-type Mutable = { credentials: unknown; hasCredentials?: unknown };
-
+const { clearSignedArm, recordSignedArm } = await import("./billing-probe.js");
+let savedProvider: ReturnType<typeof credentials.get>;
 let savedHasCredentials: PropertyDescriptor | undefined;
-let savedCredentials: unknown;
 let savedEnvCodexKey: string | undefined;
 
 /** Drive "which credential WOULD sign" without touching the filesystem. */
 function setHasCredentials(value: boolean): void {
   singleton.hasCredentials = () => value;
-}
-
-/** Restore the genuine prototype predicate so it runs against `credentials`. */
-function useRealHasCredentials(): void {
-  delete (singleton as unknown as Record<string, unknown>).hasCredentials;
 }
 
 /**
@@ -80,13 +310,14 @@ function restoreOwn(target: object, key: string, saved: PropertyDescriptor | und
 }
 
 beforeEach(() => {
+  savedProvider = credentials.get("openai-codex");
   savedHasCredentials = Object.getOwnPropertyDescriptor(singleton, "hasCredentials");
-  savedCredentials = (singleton as unknown as Mutable).credentials;
   savedEnvCodexKey = process.env.OPENAI_CODEX_API_KEY;
-  clearSignedArm();
+  credentials.invalidate();
 });
 
 afterEach(() => {
+  if (savedProvider) credentials.register(savedProvider, ["openai-codex"]);
   // Restore whatever was installed BEFORE this test — which may be another
   // file's override, not the prototype method.
   if (savedHasCredentials) {
@@ -94,14 +325,14 @@ afterEach(() => {
   } else {
     delete (singleton as unknown as Record<string, unknown>).hasCredentials;
   }
-  (singleton as unknown as Mutable).credentials = savedCredentials;
+  clearSignedArm();
   if (savedEnvCodexKey === undefined) delete process.env.OPENAI_CODEX_API_KEY;
   else process.env.OPENAI_CODEX_API_KEY = savedEnvCodexKey;
   // ApiKeyCredentialProvider MEMOIZES the resolved key (api-key-credential.ts:110),
   // so without this the fixture key set by a test outlives it and every later file
   // in the run sees a credentialed openai-codex. Must run AFTER the env restore.
   credentials.invalidate("openai-codex");
-  clearSignedArm();
+  credentials.invalidate();
 });
 
 /** The transport under test, carrying the production definition's fields. */
@@ -120,6 +351,54 @@ function makeCodexTransport(apiKey: string): InstanceType<typeof OpenAICodexTran
 }
 
 describe("FR-3: openai-codex billing follows the credential in play", () => {
+  test("B2: real Codex file predicate rejects no-refresh and absent files in child HOME", async () => {
+    const result = await runHomeScenario(`
+      delete process.env.OPENAI_CODEX_API_KEY;
+      const { CodexOAuth } = await load("auth/codex-oauth.js");
+      const { isSubscriptionProvider, getModelPricing } = await load("handlers/shared/remote-provider-types.js");
+      const { clearSignedArm } = await load("auth/credentials/billing-probe.js");
+      const path = credentialPath("openai-codex");
+      const oauth = CodexOAuth.getInstance();
+      const observe = () => {
+        oauth.reloadCredentials();
+        credentials.invalidate("openai-codex");
+        clearSignedArm();
+        const pricing = getModelPricing("openai-codex", "billing-probe-test-model");
+        return { hasCredentials: oauth.hasCredentials(), subscription: isSubscriptionProvider("openai-codex"),
+          fileExists: fs.existsSync(path), priceSubscription: pricing.isSubscription === true,
+          input: pricing.inputCostPer1M, output: pricing.outputCostPer1M };
+      };
+      const absent = observe();
+      const trap = { access_token: "at-no-refresh", expires_at: Date.now() + 3_600_000 };
+      fs.mkdirSync(resolve(home, ".claudish"), { recursive: true });
+      fs.writeFileSync(path, JSON.stringify(trap));
+      const noRefresh = observe();
+      const rejectedOracle = oauthCredentialWouldQualify("openai-codex", trap);
+      fs.writeFileSync(path, JSON.stringify({ ...trap, refresh_token: "codex-test-refresh" }));
+      const complete = observe();
+      fs.unlinkSync(path);
+      const removed = observe();
+      report({ absent, noRefresh, rejectedOracle, complete, removed });
+    `);
+    for (const state of [result.absent, result.noRefresh, result.removed]) {
+      expect(state.hasCredentials).toBe(false);
+      expect(state.subscription).toBe(false);
+      expect(state.priceSubscription).toBe(false);
+      expect(state.input).toBeGreaterThan(0);
+    }
+    expect(result.absent.fileExists).toBe(false);
+    expect(result.noRefresh.fileExists).toBe(true);
+    expect(result.removed.fileExists).toBe(false);
+    expect(result.rejectedOracle).toBe(true);
+    expect(result.complete).toMatchObject({
+      hasCredentials: true,
+      subscription: true,
+      fileExists: true,
+      priceSubscription: true,
+      input: 0,
+      output: 0,
+    });
+  });
   test("wiring: importing authority.js installs the probe, and the answer tracks it", () => {
     // Fails on ANY machine when the probe is not registered — the first assertion
     // is false without it, regardless of whether a real oauth file exists.
@@ -148,26 +427,9 @@ describe("FR-3: openai-codex billing follows the credential in play", () => {
   });
 
   test("THE TRAP: access_token unexpired with NO refresh_token → METERED", () => {
-    // This is the state that distinguishes the chosen probe from the rejected
-    // one, and the test only earns that claim if it can SHOW the two disagreeing.
-    //
-    // It could not, until now. It drove the singleton's IN-MEMORY credential while
-    // the rejected oracle, hasOAuthCredentials, reads the FILE and returns false at
-    // its first statement when ~/.claudish/codex-oauth.json is absent
-    // (oauth-registry.ts). So on hermetic CI — the machine that has no credential
-    // files, and the machine the mutation would ship from — the rejected
-    // implementation answered false too and this test stayed GREEN under the very
-    // mutation it exists to catch. It passed the mutation run here only because
-    // this developer's machine happens to have that file. That is a property of a
-    // home directory, not of a test.
-    //
-    // Fixed by asking the rejected oracle's RULE directly
-    // (`oauthCredentialWouldQualify`, which shares its predicate with the real
-    // lookup) about the same credential object. No file, no $HOME, same answer
-    // everywhere.
-    //
-    // Every real oauth file on a developer machine carries BOTH tokens, so no
-    // live run can reach this state. Only this test can.
+    // The pure qualification rule accepts an unexpired access token. Billing
+    // consults the public hasCredentials predicate, overridden below per B2.
+    // Its real file-backed evaluation runs in the B2 child-process case above.
     const trap = { access_token: "at-no-refresh", expires_at: Date.now() + 3_600_000 };
     expect(trap.access_token).toBeTruthy();
     expect(trap.expires_at).toBeGreaterThan(Date.now());
@@ -179,8 +441,8 @@ describe("FR-3: openai-codex billing follows the credential in play", () => {
     // being load-bearing and this whole test should be re-derived.
     expect(oauthCredentialWouldQualify("openai-codex", trap)).toBe(true);
 
-    (singleton as unknown as Mutable).credentials = trap;
-    useRealHasCredentials();
+    // This control isolates probe wiring; B2 above exercises the real file reader.
+    setHasCredentials(false);
 
     // The mechanism, asserted so a change to either half is attributable.
     expect(singleton.hasCredentials()).toBe(false);
@@ -200,8 +462,7 @@ describe("FR-3: openai-codex billing follows the credential in play", () => {
     // an earlier version set it and read as a second case when it was the same
     // one. The api-key arm is exercised for real in "the REAL composite's
     // api-key arm" below, which drives the composite and the transport.
-    (singleton as unknown as Mutable).credentials = null;
-    useRealHasCredentials();
+    setHasCredentials(false);
 
     expect(singleton.hasCredentials()).toBe(false);
     expect(isSubscriptionProvider("openai-codex")).toBe(false);
@@ -271,84 +532,85 @@ describe("FR-3: the REAL composite's api-key arm", () => {
     // steps (api-key-credential.ts:176-205) and touch this developer's machine.
     // The stub reproduces the artifact those steps would produce, exactly.
     setHasCredentials(true); // the presence probe would say subscription…
-    const realGetRequestAuth = credentials.getRequestAuth.bind(credentials);
+    const real = credentials.get("openai-codex")!;
     try {
-      credentials.getRequestAuth = async () => ({ headers: {} });
+      credentials.register(
+        {
+          catalogName: "openai-codex",
+          isAvailable: async () => true,
+          describeReadiness: async () => ({ readiness: "present" }),
+          getRequestAuth: async () => ({ headers: {} }),
+        },
+        ["openai-codex"]
+      );
       const transport = makeCodexTransport("");
       await transport.refreshAuth();
       // …but nothing said an arm, so the answer is metered.
       expect(isSubscriptionProvider("openai-codex")).toBe(false);
     } finally {
-      credentials.getRequestAuth = realGetRequestAuth;
+      credentials.register(real, ["openai-codex"]);
+      credentials.invalidate("openai-codex");
     }
   });
 });
 
 describe("FR-3: the recorded arm beats the presence probe", () => {
-  test("a metered signature overrides OAuth credentials that WOULD have signed", () => {
-    // C-B: refreshAuth() catches everything and falls through to the plain
-    // api-key path against api.openai.com (transport/openai-codex.ts:56-63), so
-    // "OAuth present but the api-key arm signed" is reachable per request.
+  test("a metered signed arm overrides an available OAuth presence probe", () => {
     setHasCredentials(true);
-    expect(isSubscriptionProvider("openai-codex")).toBe(true);
-
     recordSignedArm("openai-codex", "metered");
     expect(isSubscriptionProvider("openai-codex")).toBe(false);
-    expect(getModelPricing("openai-codex", SYNTHETIC_MODEL).isSubscription).toBeUndefined();
+    expect(getModelPricing("openai-codex", SYNTHETIC_MODEL).isSubscription).not.toBe(true);
   });
-
-  test("a subscription signature overrides an absent presence probe", () => {
+  test("a subscription signed arm overrides an absent presence probe", () => {
     setHasCredentials(false);
-    expect(isSubscriptionProvider("openai-codex")).toBe(false);
-
     recordSignedArm("openai-codex", "subscription");
     expect(isSubscriptionProvider("openai-codex")).toBe(true);
+    expect(getModelPricing("openai-codex", SYNTHETIC_MODEL).inputCostPer1M).toBe(0);
   });
-
-  test("clearing the record returns the answer to what WOULD sign", () => {
+  test("clear a provider record and clear all both restore the presence probe", () => {
     setHasCredentials(true);
     recordSignedArm("openai-codex", "metered");
-    expect(isSubscriptionProvider("openai-codex")).toBe(false);
-
     clearSignedArm("openai-codex");
     expect(isSubscriptionProvider("openai-codex")).toBe(true);
+    recordSignedArm("openai-codex", "metered");
+    clearSignedArm();
+    expect(isSubscriptionProvider("openai-codex")).toBe(true);
   });
-
-  test("invalidate() and logout() forget the record — it must not outlive the credential", async () => {
-    // The record is a statement about a credential state. In a long-lived process
-    // (the MCP server, `serve`) one successful OAuth request otherwise pinned SUB
-    // on preflight, list_models and the picker after the user logged out or swapped
-    // the credential, until some later request happened to rewrite it.
-    //
-    // Both arms of the assertion matter: the record must go, AND the answer must
-    // fall back to "what WOULD sign" rather than to a hardcoded value.
-    setHasCredentials(false); // the presence probe says metered…
-    recordSignedArm("openai-codex", "subscription"); // …but a SUB request was signed
-    expect(isSubscriptionProvider("openai-codex")).toBe(true);
-
-    credentials.invalidate("openai-codex");
-    expect(isSubscriptionProvider("openai-codex")).toBe(false);
-
-    recordSignedArm("openai-codex", "subscription");
-    expect(isSubscriptionProvider("openai-codex")).toBe(true);
-    // logout() on a provider whose OAuth file is what it deletes. The registered
-    // Codex composite forwards to CodexOAuthHalf.logout → CodexOAuth.logout, so
-    // the singleton's own logout is stubbed out for the duration: this test is
-    // about the record, and must not delete a real ~/.claudish/codex-oauth.json.
-    const savedLogout = Object.getOwnPropertyDescriptor(singleton, "logout");
-    try {
-      (singleton as unknown as Record<string, unknown>).logout = async () => {};
-      await credentials.logout("openai-codex");
-    } finally {
-      restoreOwn(singleton, "logout", savedLogout);
+  test.each(["invalidate", "logout"] as const)(
+    "authority %s clears a signed record",
+    async (action) => {
+      setHasCredentials(true);
+      recordSignedArm("openai-codex", "metered");
+      expect(isSubscriptionProvider("openai-codex")).toBe(false);
+      // Local credential registration keeps logout free of browser/remote work.
+      credentials.register(
+        {
+          catalogName: "openai-codex",
+          isAvailable: async () => true,
+          getRequestAuth: async () => ({ headers: {} }),
+          logout: async () => {},
+        },
+        ["openai-codex"]
+      );
+      recordSignedArm("openai-codex", "metered");
+      if (action === "logout") {
+        // This authority call should return normally. Fail recognisably if an
+        // implementation starts exiting like the public CLI command does.
+        exitAttempted = false;
+        process.exit = (): never => {
+          exitAttempted = true;
+          throw unexpectedExit;
+        };
+        try {
+          await expect(credentials.logout("openai-codex")).resolves.toBeUndefined();
+          expect(exitAttempted).toBe(false);
+        } finally {
+          process.exit = realExit;
+        }
+      } else credentials.invalidate("openai-codex");
+      expect(isSubscriptionProvider("openai-codex")).toBe(true);
     }
-    expect(isSubscriptionProvider("openai-codex")).toBe(false);
-
-    // A whole-authority invalidate clears every provider's record, not just one.
-    recordSignedArm("openai-codex", "subscription");
-    credentials.invalidate();
-    expect(isSubscriptionProvider("openai-codex")).toBe(false);
-  });
+  );
 
   test("refreshAuth() writes the record, per request, from the REAL arms", async () => {
     // The only production writer, driven end to end through the real
@@ -373,16 +635,12 @@ describe("FR-3: the recorded arm beats the presence probe", () => {
     const savedAccount = Object.getOwnPropertyDescriptor(singleton, "getAccountId");
     const mutable = singleton as unknown as Record<string, unknown>;
     try {
-      // …but the refresh is rejected (expired grant, revoked token, network). The
-      // real CodexOAuthHalf.getRequestAuth throws, the composite rethrows (the
-      // Codex composite declares no fallbackSignal), the transport catches and
-      // cachedAuth is genuinely null — the ONE state that produces it.
+      const unavailable = new Error("refresh rejected");
       mutable.getAccessToken = async () => {
-        throw new Error("refresh rejected");
+        throw unavailable;
       };
-      await transport.refreshAuth();
-      expect(transport.getEndpoint()).toBe("https://api.openai.com/v1/responses");
-      expect(isSubscriptionProvider("openai-codex")).toBe(false);
+      await expect(transport.refreshAuth()).rejects.toBe(unavailable);
+      expect(isSubscriptionProvider("openai-codex")).toBe(true);
 
       // The OAuth arm wins on the next request → back to subscription. The
       // endpoint, the headers and the arm marker all come from the production
@@ -396,13 +654,52 @@ describe("FR-3: the recorded arm beats the presence probe", () => {
       );
       expect(isSubscriptionProvider("openai-codex")).toBe(true);
 
-      // And back again on the request after that: the record is per request, not
-      // sticky. This is the C-B ordering the design names.
+      // E2: a rejected refresh after successful OAuth cannot switch billing arms.
+      const { terminalCredentialError } = await import("./credential-error.js");
+      const rejected = terminalCredentialError("run `claudish login codex`", 400);
       mutable.getAccessToken = async () => {
-        throw new Error("refresh rejected again");
+        throw rejected;
       };
-      await transport.refreshAuth();
-      expect(isSubscriptionProvider("openai-codex")).toBe(false);
+      await expect(credentials.getRequestAuth("openai-codex", { model: "" })).rejects.toBe(
+        rejected
+      );
+      await expect(transport.refreshAuth()).rejects.toBe(rejected);
+      expect(isSubscriptionProvider("openai-codex")).toBe(true);
+      const { ComposedHandler } = await import("../../handlers/composed-handler.js");
+      const { DefaultAPIFormat } = await import("../../adapters/base-api-format.js");
+      const { Hono } = await import("hono");
+      let inferenceRequests = 0;
+      const fetchBefore = globalThis.fetch;
+      globalThis.fetch = Object.assign(
+        async () => {
+          inferenceRequests++;
+          throw new Error("no inference expected after rejected refresh");
+        },
+        { preconnect: () => {} }
+      ) as typeof fetch;
+      const handler = new ComposedHandler(transport, "gpt-test", "gpt-test", 0, {
+        adapter: new DefaultAPIFormat("gpt-test"),
+        catalogCachePath: join(testHome, "empty.json"),
+      });
+      try {
+        const app = new Hono();
+        app.post("/", (c) =>
+          handler.handle(c, {
+            messages: [{ role: "user", content: "PONG" }],
+            stream: false,
+            max_tokens: 64,
+          })
+        );
+        const response = await app.request("http://localhost/", { method: "POST" });
+        expect(response.status).toBe(400);
+        expect(response.headers.get("x-claudish-auth-verdict")).toBe("terminal");
+        expect(await response.text()).toContain("login codex");
+        expect(inferenceRequests).toBe(0);
+        expect(isSubscriptionProvider("openai-codex")).toBe(true);
+      } finally {
+        globalThis.fetch = fetchBefore;
+        await handler.shutdown();
+      }
     } finally {
       restoreOwn(singleton, "getAccessToken", savedToken);
       restoreOwn(singleton, "getAccountId", savedAccount);
@@ -463,4 +760,17 @@ describe("FR-3: the registration seam", () => {
       registerSubscriptionCredentialProbe(previous);
     }
   });
+});
+
+describe("BILL1: Muse subscription and metered Meta billing categories", () => {
+  test("Muse records subscription pricing as zero; Meta stays metered", () => {
+    expect(isSubscriptionProvider("meta-muse-code")).toBe(true);
+    expect(isSubscriptionProvider("meta")).toBe(false);
+    const muse = getModelPricing("meta-muse-code", SYNTHETIC_MODEL);
+    expect(muse.isSubscription).toBe(true);
+    expect(muse.inputCostPer1M).toBe(0);
+    expect(muse.outputCostPer1M).toBe(0);
+    expect(getModelPricing("meta", SYNTHETIC_MODEL).isSubscription).not.toBe(true);
+  });
+  test.skip("BLOCKED BILL1: registerDynamicPricingLookup returns void, exposes no previous lookup/reset, and ResolvedConnection has no pricing field", () => {});
 });

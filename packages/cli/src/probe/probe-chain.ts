@@ -66,6 +66,8 @@ export interface ProbeDroppedLink {
   outcome: DroppedOutcome;
   /** The remedy, for a candidate the credential filter dropped. */
   credentialHint?: string;
+  /** A no-credential candidate whose credential is not an env var (`effectiveLabel`). */
+  provenance?: KeyProvenance;
 }
 
 /** Where `--probe` reads a provider's credential remedy and key provenance from. */
@@ -132,6 +134,11 @@ function droppedLinkOf(
   credentials: CredentialLookup
 ): ProbeDroppedLink {
   const hint = outcome === "no-credential" ? credentials.hintFor(candidate.provider) : undefined;
+  // Only a credential that is not an env var (`effectiveLabel`: Muse Code's
+  // login, Vertex's project) says something an env-var name would not, so only
+  // that provenance rides on a dropped row, for the Key line when nothing was kept.
+  const provenance =
+    outcome === "no-credential" ? credentials.provenanceFor(candidate.provider) : undefined;
   return {
     provider: candidate.provider,
     displayName: candidate.displayName,
@@ -141,7 +148,19 @@ function droppedLinkOf(
     label: hopLabel(candidate),
     outcome,
     ...(hint ? { credentialHint: hint } : {}),
+    ...(provenance?.effectiveLabel ? { provenance } : {}),
   };
+}
+
+/**
+ * The Key line text of a credential that is not an env var:
+ * `<effectiveLabel>  (<effectiveSource>)`, e.g.
+ * `Muse Code borrowed copy · Muse Code Power Usage  (signed this probe request)`.
+ * Undefined for an env-var key, whose line the printer builds itself.
+ */
+export function keyLineText(provenance: KeyProvenance | undefined): string | undefined {
+  if (!provenance?.effectiveLabel) return undefined;
+  return `${provenance.effectiveLabel}  (${provenance.effectiveSource})`;
 }
 
 /** The fields the printer, the TUI and the JSON share, taken from the explanation. */
@@ -199,6 +218,7 @@ export function resultLinksFrom(
         ...(link.credentialHint ? { credentialHint: link.credentialHint } : {}),
         ...(link.notProbed ? { notProbed: link.notProbed } : {}),
         ...(link.probe ? { probe: link.probe } : {}),
+        ...withKeyLine(link.provenance),
       })
     ),
     ...dropped.map(
@@ -212,7 +232,13 @@ export function resultLinksFrom(
         hasCredentials: entry.outcome === "not-served",
         ...(entry.credentialHint ? { credentialHint: entry.credentialHint } : {}),
         dropped: entry.outcome,
+        ...withKeyLine(entry.provenance),
       })
     ),
   ];
+}
+
+function withKeyLine(provenance: KeyProvenance | undefined): { keyLine?: string } {
+  const keyLine = keyLineText(provenance);
+  return keyLine ? { keyLine } : {};
 }

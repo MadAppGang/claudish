@@ -66,7 +66,7 @@ hosted catalog changed its answer.
 
 ## A gate must not also gate its own diagnostic
 
-`e2e-channel.test.ts` Group 2 spawns a real `claude -p`, so it needs a working credential.
+`e2e-sessions.test.ts` Group 2 spawns a real `claude -p`, so it needs a working credential.
 It gates on a genuine probe — one tiny headless prompt, treating a login/credential error as
 "not usable" — which is the right design. But the probe itself lived inside
 `if (!SKIP_LIVE_E2E) { … }`.
@@ -75,7 +75,7 @@ So running with `CLAUDISH_SKIP_LIVE_E2E=1` — which is the normal, recommended 
 suite — meant the probe never executed, `claudeUsable` stayed `false`, and Group 2 reported:
 
 ```
-[e2e-channel] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated
+[e2e-sessions] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated
 ```
 
 **That message is a claim about the environment that the environment was never asked.** It is
@@ -95,8 +95,8 @@ like a confident answer. Prefer "unknown" to a plausible guess in any automated 
 
 ## A fixture must live where the test lives, never in scratch space
 
-`channel/test-helpers/captured-stream-json.ts` reads real captured stream-json frames at
-MODULE LOAD, via an IIFE. Its `PROBE_DIR` originally pointed at
+`channel/test-helpers/captured-stream-json.ts` (the directory is now `mcp-session/`) read real
+captured stream-json frames at MODULE LOAD, via an IIFE. Its `PROBE_DIR` originally pointed at
 `ai-docs/sessions/dev-arch-*/probes/` — where the probe that recorded them happened to write.
 
 `.gitignore:56` excludes `ai-docs/sessions/`. So the files existed on exactly one machine and
@@ -177,11 +177,45 @@ budgeted at 17 — is 576, almost all `U+1160..U+11FF`, conjoining Hangul Jamo t
 When the pin is bumped, RE-BASELINE the budgets against the new oracle. Never
 widen them to clear a red run: the budget is the entire assertion.
 
+## A green local suite can be reading the developer's own `~/.claudish`
+
+The guard snapshots and prevents writes. It does nothing about READS. A production
+fallback that asks "what is on disk under `homedir()`" answers from the developer's
+real state, and Bun keeps `homedir()` on the real home even when a test assigns
+`process.env.HOME`. The test is then green on every developer machine that has the
+file and red on the clean runner, which has none.
+
+Measured 2026-10-20 on PR #301, two cases, both green locally under `test:safe` and
+red on CI; each reproduced locally by making the read return what a clean runner
+returns:
+
+| Test | Real file it read | Local | CI |
+|---|---|---|---|
+| `openai-codex-refresh-outage.test.ts` C2/E2 "unknown refresh" | `~/.claudish/codex-oauth.json`, through the billing probe's `CodexOAuth.hasCredentials()` fallback (`billing-probe.ts`) | subscription, 503 | metered, 401 |
+| `model-selector.muse-code.test.ts` N3 | `~/.claudish/cloud-models-catalog-v3.json`, through `isChatCapable` → `classifyChatCapability` with no `cachePath` | `muse-spark-1.3` is chat | `unknown`, row dropped |
+
+The injected dependency was right in both. The read happened several layers below
+it, in code the test never named. Two seams now exist for this:
+`registerSubscriptionCredentialProbe` makes the billing probe agree with a fake
+credential, and `_setChatCapabilityCachePathForTest` points the chat filter at a
+test-owned catalog.
+
+Before calling a test that reaches routing, billing or the picker green, ask what it
+would read with an empty `~/.claudish`. CI is the only place that state is empty.
+
+The same CI run showed a third red that was not this class:
+`team-cli-signal.test.ts` exited 0 instead of 130 on SIGINT in 5 of 6 local runs,
+on `main`'s code as well. `shutdown()` in `pane/pane-registry.ts` awaited a reap
+whose last waits (the pane watcher, `waitForExit`'s timer) are unref'd, so Bun
+drained the event loop and exited 0 before `process.exit(code)`. The shutdown now
+holds the loop with an interval until the reap ends. A test of an exit code under
+signals needs `--rerun-each`: one run hides a race that loses more often than it wins.
+
 ## Pane tests: a real magmux, a fake child, nothing left behind
 
 MCP `team` slots and `create_session` run as interactive Claude Code in headless magmux panes
 (`pane-session.md`), so every suite that starts one — `pane/*.integration.test.ts`,
-`pane/pane-registry.test.ts`, the channel and team suites, `mcp-contract.e2e.test.ts`,
+`pane/pane-registry.test.ts`, the MCP session and team suites, `mcp-contract.e2e.test.ts`,
 `mcp-shutdown.e2e.test.ts` — runs a REAL `magmux --headless`. The transport's behaviour (frames,
 `exit` events, `close_pane`, slow-subscriber drops, socket paths) is magmux's, and a simulated
 magmux would test our model of it instead.
@@ -202,10 +236,18 @@ and the fake dumps the argv, env, cwd and `--settings` it was given.
 **The environment is built by ALLOWLIST** (`makePaneTestEnv()`, and `serverEnv(layout)` for a
 real MCP server), never by deleting from `process.env`: no `ANTHROPIC_*` or provider key survives
 because none is listed, and `HOME`, `CLAUDE_CONFIG_DIR`, `ZDOTDIR` and `XDG_CONFIG_HOME` all point
-into a temp directory. `CLAUDISH_PANE_ROOT` is a fresh `/tmp/cpt-<8 hex>` per test or layout:
-short, so socket paths stay under magmux's 100-byte limit, and never the user's
-`/tmp/claudish-mux-<uid>`, whose startup sweep and 48-pane limit belong to the user's own
+into a temp directory. `CLAUDISH_PANE_ROOT` is a fresh `/tmp/cpt-<8 hex>` per test or layout,
+never the user's `/tmp/claudish-mux-<uid>`, whose startup sweep and 48-pane limit belong to the user's own
 sessions.
+
+**Drop `CLAUDISH_PANE_CHILD` from any env spread from `process.env`.** The flag reaches everything a
+claudish-started session runs ([`pane-session.md`](pane-session.md) § One level of nesting), so a
+suite launched from inside one (a runner in a `create_session` pane) inherits it. A claudish child
+spawned with `...process.env` then refuses to run a model (exit 64, `nested session refused`), and
+an MCP server spawned that way lists 4 tools instead of 14. Build the env by allowlist, or set
+`CLAUDISH_PANE_CHILD: undefined` explicitly. `scripts/guard-real-config.ts` deletes the flag for
+`bun run test:safe` as a second layer; a hand-run `bun test <file>` from such a session gets no
+such help.
 
 **Every test asserts that nothing outlived it** (`assertNoOrphans`, `paneOrphans(layout)`): no
 process whose argv contains the test's root or a session uuid, no process left in any pane

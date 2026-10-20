@@ -34,7 +34,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { SessionManager } from "./channel/session-manager.js";
+import { SessionManager } from "./mcp-session/session-manager.js";
 import { waitNoOrphans } from "./pane/test-helpers/hermetic-env.js";
 import { type TeamStatus, setupSession, startModels } from "./team-orchestrator.js";
 import {

@@ -362,10 +362,10 @@ Or use npx (no installation needed):
 
 | Tool | Description | Example Use |
 |------|-------------|-------------|
-| `run_prompt` | Execute prompt on any model | Get a second opinion from Grok |
+| `run_prompt` | One quick prompt to one model's API; no tools, no session | Get a second opinion from Grok |
 | `list_models` | Show recommended models | Find models with tool support |
 | `search_models` | Fuzzy search all models | Find vision-capable models |
-| `compare_models` | Run same prompt on multiple models | Compare reasoning approaches |
+| `compare_models` | DEBUG tool (`debug` group): one prompt to several models, raw answers side by side | Check that routes answer |
 
 ### Using MCP Tools from Claude Code
 
@@ -378,8 +378,11 @@ Claude: [calls run_prompt tool with model="x-ai/grok-code-fast-1"]
 User: "What models support vision?"
 Claude: [calls search_models tool with query="vision"]
 
-User: "Compare how GPT-5 and Gemini explain this concept"
+User: "Check that GPT-5 and Gemini both answer"
 Claude: [calls compare_models tool with models=["openai/gpt-5.3", "google/gemini-3-pro-preview"]]
+
+User: "Have GPT-5 and Gemini both review this design"
+Claude: [calls team tool with mode="run-and-judge" — a real multi-model task, not compare_models]
 ```
 
 ### MCP vs CLI Mode
@@ -398,10 +401,15 @@ Claude: [calls compare_models tool with models=["openai/gpt-5.3", "google/gemini
 {
   model: string,        // e.g., "x-ai/grok-code-fast-1"
   prompt: string,       // The prompt to send
-  system_prompt?: string,  // Optional system prompt
-  max_tokens?: number   // Default: 4096
+  system_prompt?: string   // Optional system prompt
 }
 ```
+
+No output-limit parameter: the request carries no `max_tokens`, and the provider applies its
+own default. A bare Claude name (`claude-*`, `opus`, `sonnet`, `haiku`) runs as one Claude Code
+print-mode call (`claudish -p`) on the user's own Claude Code login, with tools, MCP servers and
+settings off; its answer ends with `Auth: Claude Code login (subscription)`. The explicit
+`anthropic@claude-*` is the metered Anthropic API.
 
 **list_models**
 ```typescript
@@ -431,52 +439,75 @@ Claude: [calls compare_models tool with models=["openai/gpt-5.3", "google/gemini
 ### JSON Output (Recommended)
 
 ```bash
-claudish --list-models --json
+claudish --models-top --json
 ```
 
-**Output:**
+**Output** (abridged; one row shown):
 ```json
 {
-  "version": "1.8.0",
-  "lastUpdated": "2025-11-19",
-  "source": "https://openrouter.ai/models",
+  "contractVersion": 3,
+  "generationId": "g-20261016120000000-abcdef12",
+  "version": "g-20261016120000000-abcdef12",
+  "lastUpdated": "2026-10-16T12:00:00.000Z",
+  "generatedAt": "2026-10-16T12:00:00.000Z",
+  "recommendationTiers": ["flagship", "cost_efficient", "lightweight", "luxury", "subscription"],
   "models": [
     {
-      "id": "x-ai/grok-code-fast-1",
+      "id": "grok-code-fast-1",
       "name": "Grok Code Fast 1",
       "description": "Ultra-fast agentic coding",
-      "provider": "xAI",
-      "category": "coding",
+      "provider": "x-ai",
+      "recommendationTier": "flagship",
       "priority": 1,
       "pricing": {
-        "input": "$0.20/1M",
-        "output": "$1.50/1M",
+        "input": "$0.2/1M",
+        "output": "$1.5/1M",
         "average": "$0.85/1M"
       },
-      "context": "256K",
-      "supportsTools": true,
-      "supportsReasoning": true
+      "context": "256000"
     }
   ]
 }
 ```
 
+`recommendationTier` is one of `flagship`, `cost_efficient`, `lightweight`, `luxury` or
+`subscription`; `recommendationTiers` lists the tiers this claudish version knows. `priority` is
+the rank within that tier, from 1. A model listed in two tiers is two rows, so dedupe ids
+yourself. Only `subscription` rows carry `subscriptions[].command`, the model spec to run.
+Prices are `"N/A"` when the catalog has none.
+
+`claudish --list-models --json` prints the full catalog instead; its records carry no
+`recommendationTier`.
+
+### Filter with jq
+
+```bash
+# Flagship model ids, in rank order
+claudish --models-top --json | jq -r '.models | map(select(.recommendationTier == "flagship")) | sort_by(.priority) | .[].id'
+
+# Runnable subscription commands
+claudish --models-top --json | jq -r '.models[] | select(.recommendationTier == "subscription") | .subscriptions[]?.command'
+```
+
 ### Parse in TypeScript
 
 ```typescript
-const { stdout } = await Bash("claudish --list-models --json");
+const { stdout } = await Bash("claudish --models-top --json");
 const data = JSON.parse(stdout);
 
-// Get all model IDs
-const modelIds = data.models.map(m => m.id);
+// Every recommended model id, once (a model in two tiers is two rows)
+const modelIds = [...new Set(data.models.map(m => m.id))];
 
-// Get coding models
-const codingModels = data.models.filter(m => m.category === "coding");
+// Flagship models, in rank order
+const flagshipModels = data.models
+  .filter(m => m.recommendationTier === "flagship")
+  .sort((a, b) => a.priority - b.priority);
 
-// Get cheapest model
-const cheapest = data.models.sort((a, b) =>
-  parseFloat(a.pricing.average) - parseFloat(b.pricing.average)
-)[0];
+// Cheapest model by average price ("$0.85/1M"; "N/A" when unpriced)
+const price = m => Number.parseFloat(m.pricing.average.replace(/^\$/, ""));
+const cheapest = data.models
+  .filter(m => !Number.isNaN(price(m)))
+  .sort((a, b) => price(a) - price(b))[0];
 ```
 
 ## JSON Output Format

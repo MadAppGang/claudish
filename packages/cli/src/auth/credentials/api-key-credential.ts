@@ -15,7 +15,7 @@
  * types one into the config, means it.
  *
  * When step 4 or 5 resolves a key, the value is written THROUGH into process.env
- * so spawned child processes (MCP team/channel) inherit it and never touch the
+ * so spawned child processes (MCP team/session) inherit it and never touch the
  * SDK or the keychain. The authority is the ONLY code that pushes keys from
  * either vault into process.env.
  *

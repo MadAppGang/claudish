@@ -608,6 +608,87 @@ The exclusion rested on "a 503 cannot silently switch the user off a pinned mode
   (found by the 10.3.0 release review, source-traced; the status alone could not tell a
   connection fault from an overload).
 
+### A subscription's credential failure stops the chain (2026-10-16)
+
+The `upstream_status` recovery above made a remapped 401/403 advance the chain, on the reasoning
+that a revoked key on one provider is exactly when the next should be tried. For a SUBSCRIPTION
+that reasoning bills money: a user whose Kimi Code, Grok Build or Zen Go login had expired was
+walked onto the next hop, usually metered, and never told to log in. Jack's decision: a terminal
+credential failure of any subscription provider stops with its message, and a transient fault
+never becomes a 401. This narrows the "strictly additive" property for exactly that case.
+
+**Amended 2026-10-20: the chain moves on to the other SUBSCRIPTIONS, never to a metered hop.**
+The Bench run of that day (`ai-docs/reports/recommended-models-bench-run-20261020.md`) showed the
+stop costing availability the rule was never meant to cost: a bare `glm-5.3` whose Zen Go key had
+expired stopped dead although the Qwen Token Plan, also a subscription, was two hops later. Jack:
+"it should not go to metered providers, but that models has native subscription". So after a
+subscription candidate's terminal verdict (or a headerless 401/403 credential rejection,
+`isSubscriptionCredentialRejection`), `FallbackHandler.handle` skips every metered candidate and
+tries only the remaining subscription ones. Any failure of those is logged and passed over; if none
+serves, the answer is the FIRST rejection's response unchanged (its status, verdict header and
+"log in" message), never a combined `all_providers_failed`. An explicit spec (`zengo@glm-5.3`) has
+one candidate, so it still stops. A transient verdict, and a terminal verdict from a metered
+candidate, still return at once. Tests: `fallback-handler.subscription-only.test.ts`.
+
+**The verdict rides a header, `x-claudish-auth-verdict`** (`terminal` or `transient`), from
+`handlers/shared/auth-failure.ts`. The status cannot carry it: a terminal failure is answered 400
+so Claude Code shows it inline, and a 400 with `upstream_status: 401` is precisely what the
+recovery above reads as retryable. `isRetryableError` checks the verdict right after the
+connection verdict, BEFORE the quota wording and the `upstream_status` recovery. It cannot be
+forged for the same reason `x-claudish-recovery` cannot: every non-ok `ComposedHandler` exit is a
+`c.json(...)`.
+
+One classifier, `classifyAuthFailure(err)`, reads only fields a credential path sets on purpose,
+in one order:
+
+| Kind | Read from | Answer (`respondAuthFailure`) |
+|---|---|---|
+| connection | `classifyConnectionError` | none; the caller runs connection recovery first |
+| terminal | `err.terminal === true` | 400 `invalid_request_error`, verdict `terminal`, `upstream_status` kept |
+| transient | `upstreamStatus` 429 or 5xx, or `transient: true` | 429 for a 429, otherwise 503, verdict `transient` |
+| unknown, subscription | anything else | 503 `overloaded_error`, verdict `transient` (retried on the same hop, never walked) |
+| unknown, metered | anything else | 401 at `refreshAuth` and `forceRefreshAuth` only; other sites rethrow |
+
+**The rule: a dead or unsubscribed credential is a terminal 400 that stops the chain; an
+unclassified failure is a retryable 503.** It holds because the PRODUCERS say what their failure
+is, through `auth/credentials/credential-error.ts` (`d86e3d86`): a missing login or a rejected
+grant is `terminalCredentialError`, a token host's 429/5xx is `credentialHttpError` (transient,
+with its `upstreamStatus`). Kimi's "No Kimi OAuth credentials found. Please run `claudish login
+kimi` first." is therefore `terminal`, not `unknown`. What is still `unknown` is a failure nobody
+classified, and for a subscription the conservative answer is retry: stopping a working plan with a
+login instruction because a token host blinked is the worse error. (An earlier cut answered
+`unknown` as terminal; it turned Grok's token-host 503 into a fatal "run `claudish login grok`".)
+
+The producers that must keep this contract, and the first place a NEW subscription provider must
+follow it: `auth/grok-oauth.ts`, `providers/grok/grok-credentials.ts`, `auth/kimi-oauth.ts`,
+`auth/codex-oauth.ts`, `auth/antigravity-token.ts` (both the expiry and the forced refresh),
+`auth/antigravity-user.ts`, `auth/oauth-manager.ts` (missing login), and the Muse Code mint and
+core (`providers/meta-muse/`). A TRANSPORT must not swallow what they throw: a catch that returns
+normally hands ComposedHandler nothing to classify (CLAUDE.md's transport-catch invariant). The
+Codex and Kimi Code transports each had one, and both now rethrow (`ecbb92d1`, `2bf1f736`).
+
+All five auth sites in `composed-handler.ts` (`refreshAuth`, `getHeaders`, the primary fetch, the
+parameter-recovery re-fetch, `forceRefreshAuth`) use it, and so does a `recoverConnection` that
+throws a non-connection error (`c6a7b4a5`). `settleAuthRetry` answers a 401/403 after a refresh as
+terminal when the provider is a subscription or `classifyTerminalError` says so, and leaves every
+other status alone, so Antigravity's terminal 429 is unchanged.
+
+**Not every 401/403 is a credential verdict** (`isCredentialRejection`, `a5a29f36`). The first
+cut read the status alone and stopped three answers that must keep advancing:
+
+| Body | Measured | Why it advances |
+|---|---|---|
+| Zen Go `401 "Model deepseek-v4-pro-0813 is not supported"` | 2026-08-18, same key serving `kimi-k3` with 200 | the model, not the credential (`hasModelUnsupportedWording`) |
+| Kimi Code `403 "You've reached your usage limit for this billing cycle"` | `quota-exhaustion.ts` | a spent allowance, which advances with its per-token warning |
+| Zen Go `403 {"error":{"type":"RegionError",…}}` | 2026-08-19 | the provider's own error type names a region |
+
+`FallbackHandler`'s subscription rule, the generic remap's verdict header and `settleAuthRetry` all
+ask the same predicate. A spent allowance still advances because the quota wording is checked
+before the subscription 401 rule. An `"Invalid API key."` 401 or 403 is still a rejection.
+
+`FallbackCandidate.provider` now carries the claudish provider uid. `isRetryableError` used to
+receive the candidate's DISPLAY name, and `isSubscriptionProvider("Kimi Coding")` is false.
+
 ## The catalog's endpoint contract has two halves (v9.0.7)
 
 > **Superseded (10.5.0).** The gate, the name rule and the model-level `tokenParam` read

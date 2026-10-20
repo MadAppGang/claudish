@@ -5,13 +5,16 @@
 
 import type { Accounting } from "./accounting.js";
 import { type SlotRow, isTerminalState } from "./contract.js";
+import { reasonDetail } from "./reason-detail.js";
 import type { PaneSnapshot } from "./types.js";
 
 export function toSlotRow(
   id: { slot: string; model: string; spawnModel: string | null },
   snap: PaneSnapshot,
   acct: Accounting,
-  now: number = Date.now()
+  now: number = Date.now(),
+  /** the slot's upstream-error records (`upstreamRecordsFor`); [] = none read */
+  upstreamRecords: readonly string[] = []
 ): SlotRow {
   const terminal = isTerminalState(snap.state);
   let idle: number | null = null;
@@ -26,6 +29,10 @@ export function toSlotRow(
     state: snap.state,
     // set on FAILED / EMPTY / CANCELLED / TIMEOUT; null otherwise
     reason: snap.state === "COMPLETED" || !terminal ? null : snap.reason,
+    reason_detail: reasonDetail(
+      { state: snap.state, reason: snap.reason, detail: snap.detail },
+      upstreamRecords
+    ),
     tokens_in: acct.tokensIn,
     tokens_out: acct.tokensOut,
     cost_usd: acct.costUsd,
@@ -38,7 +45,10 @@ export function toSlotRow(
       ? null
       : snap.turnEndRecordMissing && snap.activity
         ? `${snap.activity}: turn_end_record_missing`
-        : snap.activity,
+        : snap.agentCountMismatch && snap.activity
+          ? `${snap.activity}: agent_count_mismatch`
+          : snap.activity,
     pane: snap.paneId || null,
+    recent: snap.recent,
   };
 }

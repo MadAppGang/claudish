@@ -230,10 +230,10 @@ process.on("exit", syncFlushOnExit);
  * `process.exit` unconditionally — so they, not that one, are what a SIGTERM
  * actually reaches first. While they exited 0, a claudish process that a
  * supervisor had KILLED reported a clean success to everything above it:
- * measured 2026-08-22, a group SIGTERM against a running channel session still
+ * measured 2026-08-22, a group SIGTERM against a running MCP session still
  * produced `code=0, signal=null` with `claude-runner.ts` already fixed.
  *
- * That mattered most in the channel session manager, where an exit-0 was
+ * That mattered most in the MCP session manager, where an exit-0 was
  * allowed to upgrade a state the timeout handler had already recorded as
  * failed, and `meta.json` was written saying `"completed"` for a session that
  * had been killed 15 minutes into real, billed work.

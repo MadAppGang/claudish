@@ -1,7 +1,7 @@
 /**
  * Which `claudish` binary a spawned CHILD is.
  *
- * `team` and channel `create_session` spawn children as `spawn("claudish", …)` —
+ * `team` and `create_session` spawn children as `spawn("claudish", …)` —
  * by NAME, resolved through PATH. In production that is exactly right: the child
  * should be the installed claudish. In a TEST it is a bug, and a particularly
  * dishonest one, because the suite goes green or red against whatever version
@@ -11,7 +11,7 @@
  * path DELETED from this tree came back to life during a run: installed 7.34.0
  * still contained an `op account get` probe removed here, and it fired on every
  * child spawn while the harness asserted on dev spans from the parent. And the
- * channel e2e's `create_session` test failed for an afternoon against a fix that
+ * MCP session e2e's `create_session` test failed for an afternoon against a fix that
  * was already correct in the tree — the child was the installed binary, which
  * still had the bug.
  *

@@ -1,0 +1,344 @@
+{
+  "contractVersion": 3,
+  "generationId": "g-dryrun-20261011014104-c27355",
+  "entries": [
+    {
+      "modelId": "claude-opus-5-5",
+      "tier": "flagship"
+    },
+    {
+      "modelId": "gpt-6.1-sol",
+      "tier": "flagship"
+    },
+    {
+      "modelId": "kimi-k3",
+      "tier": "flagship"
+    },
+    {
+      "modelId": "grok-4.7",
+      "tier": "flagship"
+    },
+    {
+      "modelId": "gemini-3.8-flash",
+      "tier": "flagship"
+    },
+    {
+      "modelId": "qwen3.8-max-0902",
+      "tier": "flagship"
+    },
+    {
+      "modelId": "glm-5.3",
+      "tier": "flagship"
+    },
+    {
+      "modelId": "minimax-m3",
+      "tier": "flagship"
+    },
+    {
+      "modelId": "deepseek-v3.2-exp",
+      "tier": "flagship"
+    },
+    {
+      "modelId": "claude-haiku-5-5",
+      "tier": "lightweight"
+    },
+    {
+      "modelId": "deepseek-v4.1-flash",
+      "tier": "lightweight"
+    },
+    {
+      "modelId": "gemini-3.5-flash-lite",
+      "tier": "lightweight"
+    },
+    {
+      "modelId": "mistral-small-2603",
+      "tier": "lightweight"
+    },
+    {
+      "modelId": "gpt-5.4-nano-2026-03-17",
+      "tier": "lightweight"
+    },
+    {
+      "modelId": "qwen3.8-omni-flash",
+      "tier": "lightweight"
+    },
+    {
+      "modelId": "grok-build-0.1",
+      "tier": "lightweight"
+    },
+    {
+      "modelId": "glm-5.3-flash",
+      "tier": "lightweight"
+    },
+    {
+      "modelId": "claude-opus-5-5",
+      "tier": "subscription",
+      "route": {
+        "routeId": "anthropic",
+        "routeProfileId": "claude-code-subscription"
+      },
+      "planId": "anthropic-claude-code"
+    },
+    {
+      "modelId": "gpt-6.1-sol",
+      "tier": "subscription",
+      "route": {
+        "routeId": "openai",
+        "routeProfileId": "codex-subscription"
+      },
+      "planId": "openai-codex"
+    },
+    {
+      "modelId": "kimi-k3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "moonshotai",
+        "routeProfileId": "kimi-code-subscription"
+      },
+      "planId": "kimi-code"
+    },
+    {
+      "modelId": "kimi-k3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "ollama",
+        "routeProfileId": "cloud"
+      },
+      "planId": "ollama-cloud"
+    },
+    {
+      "modelId": "kimi-k3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go"
+    },
+    {
+      "modelId": "kimi-k3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go-plus"
+    },
+    {
+      "modelId": "grok-4.7",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go"
+    },
+    {
+      "modelId": "grok-4.7",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go-plus"
+    },
+    {
+      "modelId": "glm-5.3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "qwen",
+        "routeProfileId": "qwencloud-token-plan"
+      },
+      "planId": "alibaba-token-plan-individual"
+    },
+    {
+      "modelId": "glm-5.3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "qwen",
+        "routeProfileId": "qwencloud-token-plan"
+      },
+      "planId": "alibaba-token-plan-team-edition"
+    },
+    {
+      "modelId": "glm-5.3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "ollama",
+        "routeProfileId": "cloud"
+      },
+      "planId": "ollama-cloud"
+    },
+    {
+      "modelId": "glm-5.3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go"
+    },
+    {
+      "modelId": "glm-5.3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go-plus"
+    },
+    {
+      "modelId": "glm-5.3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "z-ai",
+        "routeProfileId": "glm-coding-subscription"
+      },
+      "planId": "z-ai-glm-coding-plan"
+    },
+    {
+      "modelId": "minimax-m3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "minimax",
+        "routeProfileId": "coding-plan-subscription"
+      },
+      "planId": "minimax-token-plan"
+    },
+    {
+      "modelId": "minimax-m3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "ollama",
+        "routeProfileId": "cloud"
+      },
+      "planId": "ollama-cloud"
+    },
+    {
+      "modelId": "minimax-m3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go"
+    },
+    {
+      "modelId": "minimax-m3",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go-plus"
+    },
+    {
+      "modelId": "claude-haiku-5-5",
+      "tier": "subscription",
+      "route": {
+        "routeId": "anthropic",
+        "routeProfileId": "claude-code-subscription"
+      },
+      "planId": "anthropic-claude-code"
+    },
+    {
+      "modelId": "claude-haiku-5-5",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go"
+    },
+    {
+      "modelId": "claude-haiku-5-5",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go-plus"
+    },
+    {
+      "modelId": "deepseek-v4.1-flash",
+      "tier": "subscription",
+      "route": {
+        "routeId": "qwen",
+        "routeProfileId": "qwencloud-token-plan"
+      },
+      "planId": "alibaba-token-plan-individual"
+    },
+    {
+      "modelId": "deepseek-v4.1-flash",
+      "tier": "subscription",
+      "route": {
+        "routeId": "qwen",
+        "routeProfileId": "qwencloud-token-plan"
+      },
+      "planId": "alibaba-token-plan-team-edition"
+    },
+    {
+      "modelId": "deepseek-v4.1-flash",
+      "tier": "subscription",
+      "route": {
+        "routeId": "ollama",
+        "routeProfileId": "cloud"
+      },
+      "planId": "ollama-cloud"
+    },
+    {
+      "modelId": "deepseek-v4.1-flash",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go"
+    },
+    {
+      "modelId": "deepseek-v4.1-flash",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go-plus"
+    },
+    {
+      "modelId": "glm-5.3-flash",
+      "tier": "subscription",
+      "route": {
+        "routeId": "ollama",
+        "routeProfileId": "cloud"
+      },
+      "planId": "ollama-cloud"
+    },
+    {
+      "modelId": "glm-5.3-flash",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go"
+    },
+    {
+      "modelId": "glm-5.3-flash",
+      "tier": "subscription",
+      "route": {
+        "routeId": "opencode",
+        "routeProfileId": "go-subscription"
+      },
+      "planId": "opencode-go-plus"
+    },
+    {
+      "modelId": "glm-5.3-flash",
+      "tier": "subscription",
+      "route": {
+        "routeId": "z-ai",
+        "routeProfileId": "glm-coding-subscription"
+      },
+      "planId": "z-ai-glm-coding-plan"
+    }
+  ]
+}

@@ -147,6 +147,13 @@ export interface RequestAuth {
    * hiding a real bill. See `OpenAICodexTransport.refreshAuth`.
    */
   arm?: CredentialArm;
+  /**
+   * A display-safe name of the credential that signed (no secret in it), for
+   * a provider with several login sources: Muse Code's
+   * `Muse Code borrowed copy · Muse Code Power Usage`. A transport returns it
+   * from `signingCredential()`, and `--probe` reads it off the response.
+   */
+  signer?: string;
 }
 
 export interface CredentialProvider {

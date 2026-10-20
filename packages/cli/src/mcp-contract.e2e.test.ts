@@ -37,8 +37,10 @@ const SLOT_ROW_KEYS = [
   "last_activity_at",
   "model",
   "pane",
+  "recent",
   "provider",
   "reason",
+  "reason_detail",
   "slot",
   "state",
   "tokens_in",
@@ -113,6 +115,11 @@ function expectContractMeta(body: Json): void {
 function expectSlotRow(row: Json, extended: string[] = SLOT_ROW_KEYS): void {
   expect(keys(row)).toEqual(extended);
   expect(SLOT_STATES).toContain(row.state as never);
+  if (["FAILED", "EMPTY", "CANCELLED", "TIMEOUT"].includes(row.state as string)) {
+    expect(row.reason_detail === null || typeof row.reason_detail === "string").toBe(true);
+  } else {
+    expect(row.reason_detail).toBeNull();
+  }
 }
 
 function expectRunRow(run: Json): void {

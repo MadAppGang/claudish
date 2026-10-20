@@ -4,6 +4,8 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { _resetAntigravityTokenState } from "../auth/antigravity-token.js";
 import { getCodexOAuth } from "../auth/codex-oauth.js";
+import { credentials } from "../auth/credentials/authority.js";
+import { setCredentialPromptRole } from "../auth/credentials/prompt-role.js";
 import { getKimiOAuth } from "../auth/kimi-oauth.js";
 import { setStderrQuiet } from "../logger.js";
 import { applyRendererThemeMode } from "../theme/renderer-theme.js";
@@ -12,6 +14,7 @@ import type { ProviderDef } from "./providers.js";
 /** The `claudish login <slug>` argument, derived from the provider catalog. */
 type LoginSlug = NonNullable<ProviderDef["oauthSlug"]>;
 import { ensureEndpointsRegistered } from "../providers/endpoint-registration.js";
+import { resetMuseCredentialState } from "../providers/meta-muse/muse-credentials.js";
 import { App } from "./App.js";
 import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.js";
 
@@ -31,6 +34,10 @@ import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.
  * rare and the state machine is small.
  */
 export async function startConfigTui(): Promise<void> {
+  // The config TUI may read a credential only inside an explicit user action,
+  // in-process, before that action issues any proxy request
+  // (`auth/credentials/prompt-role.ts`).
+  setCredentialPromptRole("tui");
   // Register bundled endpoints before the first render: the Providers tab is
   // built from `getAllProviders()`, so a catalog vendor the user has a key for
   // must already be in the provider list or it simply is not there to configure.
@@ -115,6 +122,12 @@ export async function startConfigTui(): Promise<void> {
         getKimiOAuth().reloadCredentials();
         invalidateProbeProxyHandlers("kimi");
         invalidateProbeProxyHandlers("kimi-coding");
+      } else if (slug === "muse") {
+        // The child wrote meta-muse-oauth.json. Drop this process's minted key
+        // and the authority's memo so the next test signs with the new login.
+        resetMuseCredentialState();
+        credentials.invalidate("meta-muse-code");
+        invalidateProbeProxyHandlers("meta-muse-code");
       }
     }
     // Re-enter the TUI regardless of login outcome — failed login should

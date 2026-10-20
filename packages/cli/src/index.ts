@@ -3,7 +3,11 @@
 // FIRST import, on purpose: in an MCP pane child it restores the server's exact
 // environment and cwd at import time — before `.env` loading and before any module
 // below reads the environment while it is being evaluated. A no-op everywhere else.
-import { assertPaneChildInteractive, paneChildBootNotes } from "./pane/child-env.js";
+import {
+  assertNotNested,
+  assertPaneChildInteractive,
+  paneChildBootNotes,
+} from "./pane/child-env.js";
 
 // Load .env file before anything else (quiet mode to suppress verbose output)
 import { config } from "dotenv";
@@ -92,7 +96,7 @@ process.on("exit", () => {
  * Why: the old eager hydration ran the SDK (DesktopAuth prompt) at the top of
  * EVERY process launch whenever a config environment existed — so `--update`,
  * `--version`, `--help`, and OAuth-only (codex) sessions all prompted, and every
- * spawned team/channel child re-prompted (the "storm"). Point-of-need touches
+ * spawned team/MCP session child re-prompted (the "storm"). Point-of-need touches
  * 1Password only when a key is actually needed; no-key runs never prompt. This
  * also changes precedence: environments are now a lazy op source (env/config
  * already set wins), not a startup overwrite.
@@ -267,7 +271,7 @@ async function applyConfigOverride(): Promise<void> {
   setConfigFileOverride(plan.path);
 
   // Propagate to the whole process tree via the (absolute) env fallback: team
-  // mode and channel sessions spawn CHILD `claudish` processes, which re-read
+  // mode and MCP sessions spawn CHILD `claudish` processes, which re-read
   // CLAUDISH_CONFIG here and apply the same override. The child `claude` ignores
   // it. Absolute so a child with a different cwd still resolves the same file.
   process.env.CLAUDISH_CONFIG = plan.path;
@@ -276,7 +280,7 @@ async function applyConfigOverride(): Promise<void> {
 // `--default-provider <name>`: strip it from argv and export it as
 // CLAUDISH_DEFAULT_PROVIDER before parseArgs and every subcommand dispatch. The env
 // variable is the ONE place the flag lives after this: route(), the proxy, `--probe`
-// and every child claudish (team, channel sessions) read it through
+// and every child claudish (team, MCP sessions) read it through
 // `resolveDefaultProvider`. `--probe` is why this cannot wait for parseArgs: it
 // runs and exits inside parseArgs's argv loop, so a flag read there or after it
 // never reached it, in either argv order.
@@ -628,9 +632,32 @@ async function runCli() {
       await detectAndSetThemeMode();
     });
 
+    // The credential prompt role, fixed BEFORE parseArgs: `--probe` exits inside
+    // it, and the model picker below may need a credential. A pane child, a
+    // piped or CI launch, and `--probe` never open a credential dialog
+    // (`auth/credentials/prompt-role.ts`).
+    {
+      const { decideLaunchRole, setCredentialPromptRole } = await import(
+        "./auth/credentials/prompt-role.js"
+      );
+      setCredentialPromptRole(
+        decideLaunchRole({
+          argv: process.argv.slice(2),
+          stdinIsTTY: process.stdin.isTTY === true,
+          stderrIsTTY: process.stderr.isTTY === true,
+        })
+      );
+    }
+
     // Parse CLI arguments (includes profile/config load; terminal flags like
     // --version/--models/--probe exit inside — the exit-hook fallback covers them)
     const cliConfig = await traceSpan("startup:parse-args", () => parseArgs(process.argv.slice(2)));
+
+    // One level of nesting is the limit: a model-running claudish started from
+    // inside an MCP-started session (anything but the pane child itself: its
+    // Bash tool, a hook, a script) would be a second level, so it exits 64 here.
+    // The `team` subcommand is dispatched before runCli and guards itself.
+    assertNotNested();
 
     // An MCP pane child must be an interactive REPL: a positional prompt, -p,
     // --stdin or --team that slipped past the server's flag check exits 64 here,
@@ -1031,6 +1058,35 @@ async function runCli() {
     );
     if (warmOutcome === "hard_fail") {
       process.exit(1);
+    }
+
+    // === Muse Code login, before Claude Code starts ===
+    // In every launch role: the served context window is read before spawn and
+    // needs a signed key; an interactive launch puts any Keychain dialog here,
+    // in front of the user. Needs the warm catalog to see bare names that
+    // gather `meta-muse-code` (`providers/meta-muse/muse-launch.ts`).
+    if (!cliConfig.monitor) {
+      const { prepareMuseLoginForLaunch } = await import("./providers/meta-muse/muse-launch.js");
+      const museModels =
+        typeof cliConfig.model === "string"
+          ? [cliConfig.model]
+          : [
+              cliConfig.model,
+              cliConfig.modelOpus,
+              cliConfig.modelSonnet,
+              cliConfig.modelHaiku,
+              cliConfig.modelSubagent,
+            ];
+      const muse = await traceSpan("startup:muse-login", () =>
+        prepareMuseLoginForLaunch(museModels)
+      );
+      if (muse.kind === "fatal") {
+        process.stderr.write(`[claudish] Error: ${muse.message}\n`);
+        process.exit(1);
+      }
+      if (muse.kind === "warn" && !cliConfig.quiet) {
+        process.stderr.write(`[claudish] Warning: ${muse.message}\n`);
+      }
     }
 
     // === --advisor: startup refusals and notice ===

@@ -13,10 +13,13 @@
  * When OAuth is unavailable the authority FALLS THROUGH to that api-key half, which
  * returns an artifact of its own — an endpoint-less one, so getEndpoint()/getHeaders()
  * below land on the plain api-key path (api.openai.com + Bearer key) from the OpenAI
- * base transport. `cachedAuth` stays null ONLY when getRequestAuth throws, which
- * needs an AVAILABLE OAuth primary whose refresh was then rejected. An earlier
- * version of this comment ran the two together ("throws/falls through … cachedAuth
- * stays null") and a billing discriminator was built on it; see refreshAuth().
+ * base transport. getRequestAuth THROWS only when an AVAILABLE OAuth primary
+ * failed (a rejected, unreachable or busy refresh), and refreshAuth() rethrows
+ * that to ComposedHandler's auth site: it never falls to the api-key path, so a
+ * logged-in subscriber is never moved onto OPENAI_CODEX_API_KEY. The api-key
+ * path is used only when the composite RETURNED the api-key artifact (no OAuth
+ * login). An earlier version of this comment ran the two together and a billing
+ * discriminator was built on it; see refreshAuth().
  *
  * IMPORTANT: OAuth tokens only work with chatgpt.com/backend-api, NOT api.openai.com.
  */
@@ -27,6 +30,7 @@ import { CodexOAuth } from "../../auth/codex-oauth.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import { recordSignedArm } from "../../auth/credentials/billing-probe.js";
 import { CodexOAuthHalf } from "../../auth/credentials/codex-credential.js";
+import { isTransientCredentialError } from "../../auth/credentials/credential-error.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
@@ -53,11 +57,12 @@ const defaultCodexOAuthRefresher: CodexOAuthRefresher = {
 
 export class OpenAICodexTransport extends OpenAIProviderTransport {
   /**
-   * The last auth artifact refreshAuth() minted. Shared by every request on this
-   * transport, so the request path never reads it: ComposedHandler passes the
-   * request's own `AuthBinding` instead. Read only by callers that pass no
-   * binding (probes, tests). Null when OAuth is unavailable — the transport then
-   * falls back to the OpenAI base transport's api-key path.
+   * The last auth artifact refreshAuth() minted: the OAuth artifact, or the
+   * endpoint-less api-key artifact when there is no OAuth login. Shared by
+   * every request on this transport, so the request path never reads it:
+   * ComposedHandler passes the request's own `AuthBinding` instead. Read only
+   * by callers that pass no binding (probes, tests). Null only before the first
+   * refreshAuth(); a refreshAuth() that throws never reaches getHeaders().
    */
   private cachedAuth: RequestAuth | null = null;
 
@@ -89,8 +94,18 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
       // it and holds the request (CLAUDE.md: a connection failure wearing an
       // auth status, the five sites; this catch was a sixth that swallowed).
       if (classifyConnectionError(err)) throw err;
-      // The refresh was REJECTED (or no OAuth) → use the api-key path below.
-      this.cachedAuth = null;
+      // A token host's 429/5xx is the same kind of fact: the subscription is
+      // there and busy, so the request retries rather than moving to metered.
+      if (isTransientCredentialError(err)) throw err;
+      // A REJECTED refresh of a logged-in user is rethrown too. The composite
+      // throws only when the OAuth half was available and failed (with no
+      // OAuth login it returns the api-key artifact and never reaches this
+      // catch), so falling to the api-key path here moved a ChatGPT subscriber
+      // onto developer-billed api.openai.com, or sent `Bearer ` with no key,
+      // and the `claudish login codex` message was lost. ComposedHandler's
+      // refreshAuth site answers the terminal error as a 400 that stops the
+      // chain; nothing here records the metered arm.
+      throw err;
     }
     // ── DO NOT rewrite this as `this.cachedAuth ? "subscription" : "metered"` ──
     //
@@ -100,9 +115,9 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
     // `return this.fallback.getRequestAuth(ctx)` (composite-credential.ts) and the
     // api-key half ALWAYS returns an object (api-key-credential.ts) —
     // `{headers:{Authorization:"Bearer sk-…"}}` with a key, `{headers:{}}` without
-    // one. It never returns null and never throws. So `cachedAuth` is null only
-    // when getRequestAuth THREW, i.e. an available OAuth primary whose refresh was
-    // rejected. Truthiness therefore labelled every plain api-key request — and
+    // one. It never returns null and never throws. (When getRequestAuth THROWS —
+    // an available OAuth primary that failed — the catch above rethrows, so
+    // this line is never reached.) Truthiness therefore labelled every plain api-key request — and
     // every credential-less one — `subscription`, reporting SUB and $0 accrued
     // while OpenAI metered the request at api.openai.com.
     //

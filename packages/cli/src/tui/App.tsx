@@ -47,6 +47,10 @@ import {
   pingLocalProvider,
   pingLocalProviders,
 } from "../providers/local-liveness.js";
+import {
+  prepareMuseLoginForTuiAction,
+  refreshMuseCredentialStatus,
+} from "../providers/meta-muse/muse-credentials.js";
 // 1Password CONFIG persistence (sync, no SDK). Reads/writes the global +
 // project config files for the account / imports / environments fields.
 import {
@@ -535,6 +539,22 @@ export function App({ requestLogin }: AppProps = {}) {
       cancelled = true;
     };
   }, [keychainSupported, refreshKeychainVars, refreshConfig]);
+
+  // The Muse Code row reads one cached status (`museCredentialStatus`): two
+  // file checks plus the Keychain PRESENCE memo. Fill that memo once at mount
+  // (attributes only; no item data is read) and re-derive the rows, so a
+  // Keychain-only Muse login does not render as unconfigured.
+  useEffect(() => {
+    let cancelled = false;
+    void refreshMuseCredentialStatus()
+      .catch(() => undefined)
+      .then(() => {
+        if (!cancelled) refreshConfig();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshConfig]);
 
   // Drop the cached test badge for one provider (keyed by TUI name, as
   // runProbeTest stores it). Call on any credential change — save/remove key or
@@ -1319,6 +1339,12 @@ export function App({ requestLogin }: AppProps = {}) {
 
     const startMs = Date.now();
     try {
+      // Muse Code: the user's own action, so its login is resolved HERE,
+      // in-process, before any proxy request — the one TUI path allowed to read
+      // the Muse Code CLI's Keychain item (the access dialog, if any, belongs to
+      // this keypress). The probe proxy runs in this process and finds the key
+      // in memory; the request path itself never prompts.
+      if (prov.catalogName === "meta-muse-code") await prepareMuseLoginForTuiAction();
       const proxyUrl = await ensureProbeProxy();
       const catalogModel = getProbeModel(prov.catalogName);
       // Models that already failed this round — passed to discovery so we

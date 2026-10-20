@@ -76,11 +76,17 @@ export const ENV = {
   // is READ, never written, because it is the hard ceiling any in-request hold
   // must land inside. See recovery/settings.ts's resolveTier1DeadlineMs.
   API_TIMEOUT_MS: "API_TIMEOUT_MS",
-  // Internal markers of an MCP pane child: the claudish an MCP `team` slot or
-  // `create_session` starts inside a headless magmux pane. Set by the pane
-  // launcher, consumed by `pane/child-env.ts`, deleted from Claude Code's
-  // environment by claude-runner. Never set by a user.
-  CLAUDISH_PANE_CHILD: "CLAUDISH_PANE_CHILD", // "1" in a pane child, nowhere else
+  // Internal markers set by the pane launcher on the claudish an MCP `team` slot,
+  // `create_session` or CLI `team --mode json` starts inside a headless magmux
+  // pane ("the pane child"), consumed by `pane/child-env.ts`. Never set by a user.
+  //
+  // CLAUDISH_PANE_CHILD is "1" inside ANY session a claudish owner started: the
+  // pane child, its Claude Code and everything that starts. claude-runner KEEPS
+  // it, and `inMcpSession()` reads it to hold nesting to one level.
+  // CLAUDISH_PANE_ENV and CLAUDISH_PANE_CWD are carried by the launched pane child
+  // only: claude-runner deletes them from Claude Code's environment
+  // (`PANE_LAUNCH_VARS`), which is how `isPaneChild()` tells the child apart.
+  CLAUDISH_PANE_CHILD: "CLAUDISH_PANE_CHILD", // "1" anywhere inside a claudish-started session
   CLAUDISH_PANE_ENV: "CLAUDISH_PANE_ENV", // JSON snapshot of the MCP server's environment; re-applied, then deleted
   CLAUDISH_PANE_CWD: "CLAUDISH_PANE_CWD", // realpath of the cwd the pane child must run in
   // Where pane sockets, records and launcher dirs live (default /tmp/claudish-mux-<uid>).

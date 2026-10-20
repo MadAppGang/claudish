@@ -8,12 +8,16 @@
  * or cols — for the pane's whole life.
  *
  * `aboveBoxChangedAt` moves only when a row ABOVE the input box's top rule changes, so a
- * status line ticking under the box never holds a settle quiet window open (M3). In
+ * status line ticking under the box never holds a settle quiet window open (M3). The box
+ * is the one `locateBox` finds from the cursor row (architecture-v2 §7.5); any change in a
+ * frame where no box is located counts as above it, and readers treat the quiet of a frame
+ * with no located box as unknown. In
  * Claude Code 2.1.290 the working row (`· Processing… (running Stop hook · 2s …)`) sits
  * above the box and is rewritten every second while anything runs, which is what keeps
  * that window closed during a Stop hook (phase-2 capture s04).
  */
 
+import { locateBox } from "./box-locate.js";
 import type { SpanRun } from "./contract.js";
 
 export interface ScreenState {
@@ -70,10 +74,15 @@ export function emptyScreen(cols: number, rows: number): ScreenState {
  * A full-width box rule: `─`, at least 20 cells and at least cols−1 wide. Under `--agent`,
  * Claude Code writes the agent's name into the top rule's right end (`──── dev:reviewer ─`),
  * so one ` label ─` tail is part of the rule.
+ *
+ * Claude Code draws the rule edge to edge at every width captured: 80, 120, 160 and 250
+ * columns (Claude Code 2.1.299, `test-fixtures/screens/size-*`; the 250-column rules are
+ * 250 cells), so the floor is `cols − 1` with no cap. A screen whose rows are still the
+ * pre-resize width reads as "no box" until Claude Code redraws it.
  */
 export function isBoxRule(line: string | undefined, cols: number): boolean {
   if (!line || !/^─+(?: [^─]+ ─+)?$/.test(line)) return false;
-  return line.length >= Math.max(20, Math.min(cols, 160) - 1);
+  return line.length >= Math.max(20, cols - 1);
 }
 
 /**
@@ -103,9 +112,13 @@ function withSize(s: ScreenState, rows: number): { lines: string[]; spans: SpanR
   return { lines, spans };
 }
 
-function aboveBoxText(lines: readonly string[], cols: number): string {
-  const top = boxTopRow(lines, cols);
-  return (top >= 0 ? lines.slice(0, top) : lines).join("\n");
+/**
+ * The rows above the box located by the cursor (architecture-v2 §7.5), or null when the
+ * frame has no located box. No width test: the box is found from the cursor row.
+ */
+function aboveBoxText(s: ScreenState): string | null {
+  const box = locateBox(s);
+  return box ? s.lines.slice(0, box.top).join("\n") : null;
 }
 
 function finish(
@@ -123,14 +136,17 @@ function finish(
     next.lines.some((l, i) => l !== prev.lines[i]) ||
     next.spans.some((r, i) => !sameSpans(r, prev.spans[i]));
   if (!visible) return prev;
-  const aboveChanged =
-    prev.seq === 0 || aboveBoxText(prev.lines, prev.cols) !== aboveBoxText(next.lines, next.cols);
-  return {
+  const out: ScreenState = {
     ...next,
     seq: prev.seq + 1,
     changedAt: now,
-    aboveBoxChangedAt: aboveChanged ? now : prev.aboveBoxChangedAt,
+    aboveBoxChangedAt: prev.aboveBoxChangedAt,
   };
+  // conservative: a change while either frame has no located box counts as above the box
+  const before = prev.seq === 0 ? null : aboveBoxText(prev);
+  const after = aboveBoxText(out);
+  if (before === null || after === null || before !== after) out.aboveBoxChangedAt = now;
+  return out;
 }
 
 /** Apply one watch frame. A keyframe replaces every row; a delta replaces the rows it names. */

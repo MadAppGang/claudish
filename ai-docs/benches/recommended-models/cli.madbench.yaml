@@ -35,21 +35,21 @@ scenarios:
       The test in slugify.test.ts fails. Fix slugify.ts so that `bun test`
       passes. Do not change slugify.test.ts. Run `bun test` to confirm.
     checks:
-      # The outcome, with its anti-cheat in the same Check: `bun test` passes AND
-      # the four cases are still there. Apart, the anti-cheat half passes under
-      # a no-op agent and `madbench check` reports it WRONGLY PASSED.
+      # The work: `bun test` passes in the agent's tree.
       - type: exec
-        args:
-          cmd: [sh, -c, 'bun test && test "$(grep -c "expect(slugify" slugify.test.ts)" -ge 4']
-          expected_exit: 0
-          timeout: 60s
-      # The model drove tools through the proxy: it read the code...
+        cmd: bun test
+        expected_exit: 0
+        timeout: 60s
+      # The boundary: the fix is in slugify.ts and the test file is untouched. A ban alone
+      # passes under an agent that did nothing; the exec Check above proves the work.
+      - type: file-changes
+        must: { update: slugify.ts }
+        must-not: { touch: slugify.test.ts }
+      # The model drove tools through the proxy: it read the code. Which tool made the
+      # edit is not checked: file-changes above proves the edit landed, and on
+      # 2026-10-20 claude-opus-5-5 and claude-fable-5-1 fixed the test with a Bash
+      # heredoc, so an Edit-or-Write Check failed two working models.
       - type: any-of
         checks:
           - { type: session:tool-used, value: Read }
           - { type: session:tool-used, value: Bash }
-      # ...and changed it with a file tool.
-      - type: any-of
-        checks:
-          - { type: session:tool-used, value: Edit }
-          - { type: session:tool-used, value: Write }

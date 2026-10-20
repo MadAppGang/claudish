@@ -89,6 +89,29 @@ export interface ProbeResultLink {
   notProbed?: "native-auth";
   /** Set on a candidate the routing chain dropped: why. Never probed. */
   dropped?: DroppedOutcome;
+  /**
+   * The Key line of a credential that is not an env var (`keyLineText`):
+   * `Muse Code borrowed copy · Muse Code Power Usage  (signed this probe request)`.
+   */
+  keyLine?: string;
+}
+
+/**
+ * The Details tab's Key line, by the static printer's rule (`buildCardLayout`):
+ * the ACTIVE entry is the link that answered (`winner`), else the first kept
+ * credentialed hop, and only that entry's own credential is shown. Another
+ * provider's credential is never shown in its place: a muse@ line under a live
+ * metered meta@ would state a false billing fact. Only with no active entry
+ * does a dropped no-login candidate's line show. Only a credential that is not
+ * an env var has a line (Muse Code's login source and tier, Vertex's project).
+ */
+export function detailsKeyLine(
+  links: ProbeResultLink[],
+  winner: ProbeResultLink | undefined
+): string | undefined {
+  const active = winner ?? links.find((l) => !l.dropped && l.hasCredentials);
+  if (active) return active.keyLine;
+  return links.find((l) => l.dropped && l.keyLine)?.keyLine;
 }
 
 /**
@@ -1043,6 +1066,8 @@ function DetailModel({
       ? `wire (${winner.displayName}): ${wiring.wireSummary ?? `${wiring.effectiveStreamFormat} · ${wiring.modelTranslator}`} · ${formatContextWindow(wiring.contextWindow)} ctx`
       : "wire: —";
 
+  const keyLine = detailsKeyLine(result.links, winner);
+
   // ── Routing advisor ────────────────────────────────────────────────
   // Full route: the ordered chain of providers claudish would try — the kept
   // hops only, each with its tier label. Dropped rows are listed above, not here.
@@ -1143,6 +1168,12 @@ function DetailModel({
       <text>
         <span fg={C.dim}>{`  ${wireLine}`}</span>
       </text>
+      {keyLine && (
+        <text>
+          <span fg={C.dim}>{"  Key  "}</span>
+          <span fg={C.fgMuted}>{keyLine}</span>
+        </text>
+      )}
       {/* Routing advisor — full route + (when picked ≠ fastest) the rule to add */}
       <text>
         <span fg={C.dim}>{"  route: "}</span>

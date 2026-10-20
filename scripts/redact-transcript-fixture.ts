@@ -12,7 +12,9 @@
  * every other string, by a placeholder of the same kind (`<text 812>`). The markers the
  * pane transcript follower reads are structural, so they survive with their bodies
  * emptied: `[Request interrupted by user…]`, `<task-notification>`, `<command-name>`,
- * `<local-command-stdout>`, `<local-command-caveat>`.
+ * `<local-command-stdout>`, `<local-command-caveat>`. A string that IS a notification
+ * (starts with `<task-notification>`) keeps its `<task-id>`: it is an id linking records
+ * (the notification to its launch), like `agentId`. A string that only quotes one does not.
  *
  * Used for shapes Phase 2 could not elicit live (a `refusal` stop, an automatic
  * compaction inside a turn); see ai-docs/reports/mcp-magmux-panes/phase2-captures.md.
@@ -34,6 +36,7 @@ const KEEP_STRING_KEYS = new Set([
   "sourceToolAssistantUUID",
   "promptId",
   "agentId",
+  "backgroundTaskId",
   "requestId",
   "name",
   "timestamp",
@@ -61,6 +64,16 @@ const MARKERS = [
   "system-reminder",
 ];
 
+/** Same pattern as `taskIdOf` in packages/cli/src/pane/transcript-follower.ts. */
+const TASK_ID = /<task-id>([^<]+)<\/task-id>/;
+
+/** One marker with its body emptied; a string that IS a task-notification, not one quoting it, keeps its `<task-id>`. */
+function redactedMarker(m: string, s: string): string {
+  const isNotification = m === "task-notification" && s.startsWith("<task-notification>");
+  const taskId = isNotification ? s.match(TASK_ID)?.[1]?.trim() : undefined;
+  return taskId ? `<${m}><task-id>${taskId}</task-id>redacted</${m}>` : `<${m}>redacted</${m}>`;
+}
+
 export function redactString(key: string, s: string): string {
   if (KEEP_STRING_KEYS.has(key)) return s;
   if (s.startsWith("[Request interrupted by user")) return s;
@@ -68,7 +81,7 @@ export function redactString(key: string, s: string): string {
   if (key === "cwd") return "/redacted/cwd";
   if (key === "gitBranch") return "redacted";
   const tags = MARKERS.filter((m) => s.includes(`<${m}>`));
-  if (tags.length > 0) return tags.map((m) => `<${m}>redacted</${m}>`).join("\n");
+  if (tags.length > 0) return tags.map((m) => redactedMarker(m, s)).join("\n");
   return `<${key || "text"} ${s.length}>`;
 }
 
