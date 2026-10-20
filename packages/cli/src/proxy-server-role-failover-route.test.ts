@@ -40,6 +40,7 @@ import {
   classifyNominalBucket,
   isBucketWalled,
   markStepFailed,
+  nativeBucketFor,
   resetFailoverForTests,
   setRoleNominalResolver,
 } from "./fork/failover.js";
@@ -62,10 +63,10 @@ const SANDBOX_ENV_KEYS = [
   "GLM_CODING_API_KEY", "MOONSHOT_API_KEY", "KIMI_API_KEY", "KIMI_CODING_API_KEY",
   "OPENAI_API_KEY", "OPENAI_CODEX_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY",
   "MINIMAX_API_KEY", "MINIMAX_CODING_API_KEY", "LITELLM_API_KEY", "POE_API_KEY",
-  "DEEPSEEK_API_KEY", "CLAUDE_API_KEY", "ANTHROPIC_API_KEY",
+  "DEEPSEEK_API_KEY", "CLAUDE_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
   "CLAUDISH_NO_ANTHROPIC", "CLAUDISH_FAILOVER_ACTIVE",
   "CLAUDISH_PROXY_KEY", "CLAUDISH_PROXY_KEY_PREVIOUS",
-  "CLAUDISH_CAPTURE_DIR",
+  "CLAUDISH_CAPTURE_DIR", "CLAUDISH_DEFAULT_PROVIDER",
 ];
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -151,7 +152,7 @@ async function postMessage(model: string): Promise<Response> {
 }
 
 beforeEach(() => {
-  calls = { nm: 0, s0: 0, s1: 0, or: 0, mm: 0 };
+  calls = { nm: 0, s0: 0, s1: 0, or: 0, mm: 0, native: 0 };
   wallLog = [];
   wallEndpoints = new Set(["nm"]);
   configExisted = existsSync(REAL_CONFIG_PATH);
@@ -183,6 +184,12 @@ beforeEach(() => {
   }
   globalThis.fetch = (async (input: any, init: any) => {
     const url = typeof input === "string" ? input : String(input?.url ?? "");
+    // #554: a claude-* serve never reaches the network from this file — the
+    // native wire is counted and walled here.
+    if (url.startsWith("https://api.anthropic.com")) {
+      calls.native += 1;
+      return quotaWall();
+    }
     if (!url.startsWith(UPSTREAM_BASE)) return realFetch(input, init);
     const which = url.slice(UPSTREAM_BASE.length + 1, UPSTREAM_BASE.length + 3);
     calls[which] = (calls[which] ?? 0) + 1;
@@ -375,6 +382,65 @@ describe("role-step delegation to a BARE routing-chain nominal (hub shape)", () 
     expect(r1.status).toBe(200);
     expect(calls.nm).toBe(1);
     expect(calls.s0).toBe(0);
+  }, 30_000);
+});
+
+// ── #554 — the sync twin's two decisions on a claude-* nominal ────────────────
+// #551 put role-step delegation on the proxy's sync bucket twin
+// (concreteStepBucketOfSync). Two of its decisions survived their own removal
+// (193 pass / 0 fail): a bare `claude-*` nominal keeps its per-model native
+// bucket, and a user routing rule that claims the name wins over it. Under
+// either mutant the delegation tests the wrong bucket, finds it healthy and
+// serves the walled nominal; opus[0] is its last step, so the wall surfaces.
+describe("#554 — role-step delegation to a claude-* nominal", () => {
+  const SONNET_CLAUDE = "claude-sonnet-5";
+
+  test("C1: walled on its per-model native bucket → the delegation joins sonnet's cascade", async () => {
+    // A credentialed default hop gives route() a primary for the claude-* name.
+    // Without one route() finds no plan, its fallback lands on the same native
+    // bucket, and the mutant (claude-* sent through route()) is invisible.
+    process.env.CLAUDISH_DEFAULT_PROVIDER = "or-ep";
+    await spin(undefined, { sonnet: SONNET_CLAUDE });
+    resetFailoverForTests({ ...DELEGATION_ENV, CLAUDISH_FAILOVER_ACTIVE: "opus" });
+    expect(classifyNominalBucket(SONNET_CLAUDE, () => false)).toEqual({
+      bucket: nativeBucketFor(SONNET_CLAUDE),
+    });
+    expect(armFailover("sonnet", "test: native per-model wall", nativeBucketFor(SONNET_CLAUDE))).toBe(true);
+
+    const r1 = await postMessage("claude-opus-5");
+    expect(r1.status).toBe(200);
+    expect(calls.native).toBe(0); // the walled nominal is not paid
+    expect(calls.s0).toBe(1); // sonnet's cascade step 0 serves
+    // Mutant: the bucket tested is route()'s primary `or-ep`, healthy → the
+    // nominal is served on the native lane, whose credential guard (#296)
+    // refuses this keyless request (403); s0 is never tried.
+  }, 30_000);
+
+  test("C2: claimed by a user routing rule → the wall the request side records is the one the delegation tests", async () => {
+    const cfg = JSON.parse(readFileSync(REAL_CONFIG_PATH, "utf-8"));
+    cfg.routing = { [SONNET_CLAUDE]: ["nom-ep"] };
+    writeFileSync(REAL_CONFIG_PATH, JSON.stringify(cfg), "utf-8");
+    await spin(undefined, { sonnet: SONNET_CLAUDE });
+    resetFailoverForTests({ ...DELEGATION_ENV, CLAUDISH_FAILOVER_ACTIVE: "opus" });
+
+    // Request side: a direct sonnet request pays the rule's endpoint (nm),
+    // which walls. The wall lands on the rule's bucket, not the native one.
+    const r1 = await postMessage(SONNET_CLAUDE);
+    expect(r1.status).toBe(200); // sonnet's own cascade took over
+    expect(calls.nm).toBe(1);
+    expect(calls.native).toBe(0);
+    expect(isBucketWalled("nom-ep")).toBe(true);
+    expect(isBucketWalled(nativeBucketFor(SONNET_CLAUDE))).toBe(false);
+
+    // Role-step side: the delegation must test that same bucket.
+    const s0Before = calls.s0;
+    const r2 = await postMessage("claude-opus-5");
+    expect(r2.status).toBe(200);
+    expect(calls.nm).toBe(1); // never re-paid
+    expect(calls.s0).toBe(s0Before + 1);
+    // Mutant (override ignored on the twin): the bucket tested is the native
+    // per-model one, healthy → the nominal is served through the rule and its
+    // wall surfaces (402).
   }, 30_000);
 });
 

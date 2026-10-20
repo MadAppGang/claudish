@@ -2595,6 +2595,19 @@ describe("#274 — role-step resolution", () => {
       const { step } = resolveFailoverTarget("opus");
       expect(step!.target).toBe("glm-5.3");
     });
+
+    // #554 point 3: the full reset must drop an injected bucket resolver. A
+    // stale one names `glm-coding` here, so the delegation would join sonnet's
+    // cascade instead of serving the bare nominal (the case just above).
+    it("resetFailoverForTests() drops an injected bucket resolver", () => {
+      setRoleNominalBucketResolver((m) => (m === "glm-5.3" ? "glm-coding" : undefined));
+      resetFailoverForTests();
+      initFailover(env274({ CLAUDISH_FAILOVER_ACTIVE: "opus", CLAUDISH_FAILOVER_AUTO: "1" }));
+      setRoleNominalResolver((r) => (r === "sonnet" ? "glm-5.3" : undefined));
+      armFailover("sonnet", "test wall", "glm-coding");
+      const { step } = resolveFailoverTarget("opus");
+      expect(step!.target).toBe("glm-5.3");
+    });
   });
 });
 
