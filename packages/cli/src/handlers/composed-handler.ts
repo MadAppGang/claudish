@@ -565,6 +565,16 @@ export class ComposedHandler implements ModelHandler {
   }
 
   /**
+   * The ONE writer of this handler's stats events. Every `recordStats` call in
+   * this class goes through here, so a field that must be on every event (the
+   * request role of an advisor handler) is added in one place and cannot be
+   * missed by a site added later.
+   */
+  private emitStats(event: Parameters<typeof recordStats>[0]): void {
+    recordStats(event);
+  }
+
+  /**
    * The ONE response shape for "claudish could not reach the host".
    *
    * Every outbound call in this handler that can throw without a Response must
@@ -635,7 +645,7 @@ export class ComposedHandler implements ModelHandler {
     });
     try {
       const { error_class, error_code } = classifyError(error, undefined);
-      recordStats({
+      this.emitStats({
         model_id: this.targetModel,
         provider_name: this.provider.name,
         stream_format: this.provider.streamFormat,
@@ -735,7 +745,7 @@ export class ComposedHandler implements ModelHandler {
     const msg = buildRecoveryHoldMessage(reason, ctx.attempts, ctx.recoveryMs);
     try {
       const { error_class, error_code } = classifyError(error, undefined);
-      recordStats({
+      this.emitStats({
         model_id: this.targetModel,
         provider_name: this.provider.name,
         stream_format: this.provider.streamFormat,
@@ -1036,7 +1046,7 @@ export class ComposedHandler implements ModelHandler {
         "releasing the request"
     );
     try {
-      recordStats({
+      this.emitStats({
         model_id: this.targetModel,
         provider_name: this.provider.name,
         stream_format: this.provider.streamFormat,
@@ -2133,7 +2143,7 @@ export class ComposedHandler implements ModelHandler {
                 retryResp.status,
                 errorText
               );
-              recordStats({
+              this.emitStats({
                 model_id: this.targetModel,
                 provider_name: this.provider.name,
                 stream_format: this.provider.streamFormat,
@@ -2267,7 +2277,7 @@ export class ComposedHandler implements ModelHandler {
             });
             try {
               const { error_class, error_code } = classifyError(err, 401, err.message);
-              recordStats({
+              this.emitStats({
                 model_id: this.targetModel,
                 provider_name: this.provider.name,
                 stream_format: this.provider.streamFormat,
@@ -2386,7 +2396,7 @@ export class ComposedHandler implements ModelHandler {
             response.status,
             errorText
           );
-          recordStats({
+          this.emitStats({
             model_id: this.targetModel,
             provider_name: this.provider.name,
             stream_format: this.provider.streamFormat,
@@ -2504,7 +2514,7 @@ export class ComposedHandler implements ModelHandler {
           `claudish retried ${settled.attempts}× over ${Math.round(waited / 1000)}s without success.`;
         logStderr(`Error: ${surfaced}`);
         try {
-          recordStats({
+          this.emitStats({
             model_id: this.targetModel,
             provider_name: this.provider.name,
             stream_format: this.provider.streamFormat,
@@ -2570,7 +2580,7 @@ export class ComposedHandler implements ModelHandler {
           providerErrorType: settled.code,
         });
         try {
-          recordStats({
+          this.emitStats({
             model_id: this.targetModel,
             provider_name: this.provider.name,
             stream_format: this.provider.streamFormat,
@@ -2732,7 +2742,7 @@ export class ComposedHandler implements ModelHandler {
     const onStreamComplete = () => {
       try {
         const isFreeModel = this.tokenTracker.getTotalCost() === 0;
-        recordStats({
+        this.emitStats({
           model_id: this.targetModel,
           provider_name: this.provider.name,
           stream_format: this.provider.streamFormat,
