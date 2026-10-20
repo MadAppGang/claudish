@@ -155,8 +155,8 @@ not answered (RB2).
 open; `to` is the session event of the new state (`sessionEventFor`: `running`, `tool_executing`,
 `completed`, `failed`, `cancelled`, `timeout`, …), never another wait (the phase table has no
 wait-to-wait edge). The vocabulary outlived the push it was named for: the field is a record
-contract the monitor reads, so it keeps those words. It is append-only because an observer polling the directory (the magus
-`claudish` plugin monitor) must see a wait that opened and closed between two of its reads — a
+contract outside observers read, so it keeps those words. It is append-only because an observer polling the directory
+must see a wait that opened and closed between two of its reads — a
 marker file that exists only during the wait cannot give it that.
 
 The writer is the pane's `onTransition` hook: synchronous, every wire-state change, never
@@ -192,10 +192,10 @@ every runtime file (`output.log`, `events.jsonl`, `tokens.json`, `waits.jsonl`, 
 }
 ```
 
-It exists for observers OUTSIDE this process — the magus `claudish` plugin monitor polls the
-sessions directory and reports progress to the Claude Code window that started a run.
+It exists for observers OUTSIDE this process, which poll the sessions directory to report
+progress to the Claude Code window that started a run.
 `claudeSessionId` is the pane's `--session-id` uuid, the transcript's basename. For a pane session
-`mcpPid` is also the pane record's owner, and the watchers make the monitor's liveness inference
+`mcpPid` is also the pane record's owner, and the watchers make an observer's liveness inference
 sound: when the writer dies, its panes die with it.
 
 **`hostPid` is structural, computed once at startup** (`hostPidFrom`, `mcp-session/parent-session.ts`).
@@ -550,7 +550,7 @@ the same facts from the records. The frames were never a keepalive either (next 
 
 Where the facts are now: `list_sessions` rows (`state`, `activity`, `idle_seconds`, accounting),
 `get_output`, `get_diagnostics`, `capture_session`, and the session records (`spawn.json`,
-`waits.jsonl`, `meta.json`, `events.jsonl`, `screen.txt`), which the magus monitor reads and which
+`waits.jsonl`, `meta.json`, `events.jsonl`, `screen.txt`), which outside observers read and which
 are byte-identical to before. `waits.jsonl` keeps the same event names in its `to` field.
 `team` progress is `team(mode:"status")`. The `notifications/progress` keepalive stays.
 

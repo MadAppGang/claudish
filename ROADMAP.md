@@ -617,7 +617,7 @@ finding id in `ai-docs/reports/mcp-magmux-panes/session-record/implementation-lo
   prehydrate. Trigger: the next change to `team(mode="run")` start-up ordering.
 - **C-L1 — an `invalid_args` spawn model is recorded as `pane_lost`.** Trigger: the next change to
   `create_session` argument handling.
-- **C-L5 — accounting freezes at the terminal transition.** The Magus monitor reads `tokens.json`, so it is
+- **C-L5 — accounting freezes at the terminal transition.** Outside observers read `tokens.json`, so they are
   unaffected today. Trigger: a consumer that reads final tokens from the session row instead.
 - **gpt-5-mini cost is estimated** (`stats/*.json` prices it at $2/$8 per M with `is_estimated:true`), so
   `cost_usd` may be overstated for it. Trigger: the catalog publishing real gpt-5-mini pricing.

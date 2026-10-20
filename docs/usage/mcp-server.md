@@ -471,8 +471,7 @@ the same for a team slot.
 
 Every `create_session` session keeps its record under `~/.claudish/sessions/<session_id>/`
 (`CLAUDISH_SESSIONS_DIR` overrides the root). Tools that watch sessions from outside the MCP
-server — such as the magus `claudish` plugin's monitor — read these files; they are a stable
-contract.
+server read these files; they are a stable contract.
 
 | File | Written | Contents |
 |------|---------|----------|
