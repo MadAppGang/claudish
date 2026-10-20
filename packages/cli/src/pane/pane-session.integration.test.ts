@@ -20,6 +20,7 @@ import {
 } from "./pane-session.js";
 import { inputBox, readBoot } from "./screen-classifier.js";
 import type { ScreenState } from "./screen-model.js";
+import { type ObservedClient, observeClients } from "./test-helpers/client-observer.js";
 import {
   MAGMUX,
   NO_MAGMUX_MESSAGE,
@@ -37,6 +38,7 @@ const sha8 = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 
 const open = new Set<Run>();
 afterAll(async () => {
   for (const r of open) {
+    r.unobserve();
     r.s.cancel();
     await r.s.reaped();
     killLeftovers({ sockRoot: r.t.sockRoot, ids: [r.uuid] });
@@ -52,6 +54,19 @@ interface Run {
   turns: SettledTurn[];
   blocks: PaneBlock[];
   submits: Array<{ text: string; at: number }>;
+  sendLog: SendLog;
+  /** Stop handing this run's new magmux clients to its send observer. */
+  unobserve: () => void;
+}
+
+/** Every `send` the run's magmux clients carried, recorded from the moment each client exists. */
+interface SendLog {
+  /** Set once `startPaneSession` returns; until then a send's box reads null. */
+  session: PaneSession | null;
+  /** Sends issued before `start` returned: no test could have attached a trace that early. */
+  early: InputSend[];
+  /** The live lists `traceInput` handed out. */
+  traces: InputSend[][];
 }
 
 /** team-like policy: verdict at the first settle; api error → FAILED; question → FAILED blocked */
@@ -73,6 +88,10 @@ async function start(
   const turns: SettledTurn[] = [];
   const blocks: PaneBlock[] = [];
   const { env: _e, decide, onBlocked, timings, ...rest } = over;
+  // A one-shot pane's first gated send can leave from inside `attach()`, before
+  // `startPaneSession` returns: observe each client as it is created, not `s.client` later.
+  const sendLog: SendLog = { session: null, early: [], traces: [] };
+  const unobserve = observeClients(t.sockRoot, recordSends(sendLog));
   const s = await startPaneSession({
     kind: "t",
     label: "01",
@@ -103,8 +122,22 @@ async function start(
       ...timings,
     },
     ...rest,
+  }).catch((error: unknown) => {
+    unobserve();
+    throw error;
   });
-  const run: Run = { s, t, uuid, transitions, turns, blocks, submits: [] };
+  sendLog.session = s;
+  const run: Run = {
+    s,
+    t,
+    uuid,
+    transitions,
+    turns,
+    blocks,
+    submits: [],
+    sendLog,
+    unobserve,
+  };
   open.add(run);
   return run;
 }
@@ -121,6 +154,7 @@ async function finish(r: Run, ms = 20_000): Promise<PaneSnapshot> {
     return snap;
   } finally {
     open.delete(r);
+    r.unobserve();
     r.s.cancel();
     await r.s.reaped();
     const log = r.t.env.FAKE_SUBMIT_LOG as string;
@@ -166,7 +200,11 @@ async function until(
 }
 
 function screenOf(r: Run): ScreenState {
-  const capture = r.s.capture(undefined, { spans: true });
+  return screenOfSession(r.s);
+}
+
+function screenOfSession(s: PaneSession): ScreenState {
+  const capture = s.capture(undefined, { spans: true });
   if (!("lines" in capture)) throw new Error("expected a full capture");
   return {
     ...capture,
@@ -184,21 +222,35 @@ interface InputSend {
   at: number;
 }
 
-/** Observe actual sends without replacing the gate's decisions. */
-function traceInput(r: Run): InputSend[] {
-  const sends: InputSend[] = [];
-  const client = (r.s as unknown as { client: { request: Request } }).client;
-  const real = client.request.bind(client);
-  client.request = async (message, ms) => {
-    if (message.type === "send") {
-      sends.push({
-        message: { ...message },
-        box: inputBox(screenOf(r))?.text ?? null,
-        at: Date.now(),
-      });
-    }
-    return real(message, ms);
+/** The client observer for one run: wrap each new client's `request` once, recording sends. */
+function recordSends(log: SendLog): (client: ObservedClient) => void {
+  const seen = new WeakSet<ObservedClient>();
+  return (client) => {
+    if (seen.has(client)) return;
+    seen.add(client);
+    const real = client.request.bind(client);
+    client.request = async (message, ms) => {
+      if (message.type === "send") {
+        const send: InputSend = {
+          message: { ...message },
+          box: log.session ? (inputBox(screenOfSession(log.session))?.text ?? null) : null,
+          at: Date.now(),
+        };
+        if (!log.session) log.early.push(send);
+        for (const trace of log.traces) trace.push(send);
+      }
+      return real(message, ms);
+    };
   };
+}
+
+/**
+ * Observe actual sends without replacing the gate's decisions: every send from this call
+ * on, plus any issued while `start` was still running (a one-shot pane's first gated send).
+ */
+function traceInput(r: Run): InputSend[] {
+  const sends = [...r.sendLog.early];
+  r.sendLog.traces.push(sends);
   return sends;
 }
 

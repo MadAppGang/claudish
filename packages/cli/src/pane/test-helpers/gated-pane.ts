@@ -1,10 +1,11 @@
 /** Real-magmux test driver. Deliberately has NO timings seam: D-A/D-B use production defaults. */
 import { expect } from "bun:test";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
-import { MagmuxClient, type MagmuxReply } from "../magmux-client.js";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { MagmuxReply } from "../magmux-client.js";
 import { type PaneSession, type PaneSessionOptions, startPaneSession } from "../pane-session.js";
 import type { PaneSnapshot, SettledTurn } from "../types.js";
+import { type ObservedClient, observeClients } from "./client-observer.js";
 import {
   type PaneTestEnv,
   killLeftovers,
@@ -38,62 +39,15 @@ type Options = Omit<Partial<PaneSessionOptions>, "timings"> & {
   prepare?: (t: PaneTestEnv, uuid: string) => Partial<Omit<PaneSessionOptions, "timings">>;
 };
 const open = new Set<GateRun>();
-const routeKeysOf = new WeakMap<GateRun, string[]>();
+const unrouteOf = new WeakMap<GateRun, () => void>();
 
-interface TestClient {
-  request: Request;
-  close(): void;
-}
+type TestClient = ObservedClient;
 
 export function clientOf(r: GateRun): TestClient {
   return (r.s as unknown as { client: TestClient }).client;
 }
 
-/**
- * Socket root (with a trailing slash) -> the observer of the pane started under it.
- *
- * A pane's first gated send can leave from inside `attach()`, before `startPaneSession`
- * returns: wrapping `s.client` afterwards misses it. So every client is handed to its
- * pane's observer as `MagmuxClient.connect` / `MagmuxClient.dial` return it.
- */
-const routes = new Map<string, (client: TestClient) => void>();
-let creationHooked = false;
-
-/** Wrap the two client-creation statics once. With no matching route they pass through. */
-function hookClientCreation(): void {
-  if (creationHooked) return;
-  creationHooked = true;
-  const statics = MagmuxClient as unknown as Record<
-    "connect" | "dial",
-    (sockPath: string, ...rest: unknown[]) => Promise<TestClient>
-  >;
-  for (const name of ["connect", "dial"] as const) {
-    const real = statics[name].bind(MagmuxClient);
-    statics[name] = async (sockPath, ...rest) => {
-      const client = await real(sockPath, ...rest);
-      for (const [root, observe] of routes) if (sockPath.startsWith(root)) observe(client);
-      return client;
-    };
-  }
-}
-
-/** The raw root and its realpath form (`/tmp` is `/private/tmp` on macOS); the root may not exist yet. */
-function routeKeys(sockRoot: string): string[] {
-  const keys = new Set([`${sockRoot}/`]);
-  try {
-    keys.add(`${join(realpathSync(dirname(sockRoot)), basename(sockRoot))}/`);
-  } catch {
-    // parent missing: only the raw key can match
-  }
-  return [...keys];
-}
-
-function unroute(keys: string[]): void {
-  for (const key of keys) routes.delete(key);
-}
-
 export async function startGatePane(scenario: string, opts: Options = {}): Promise<GateRun> {
-  hookClientCreation();
   const t = makePaneTestEnv({ CONTRACT_FAKE_MAX_MS: "120000", ...opts.env });
   const uuid = newSessionUuid();
   const log = join(t.tmp, "submits.jsonl");
@@ -120,8 +74,9 @@ export async function startGatePane(scenario: string, opts: Options = {}): Promi
       return reply;
     };
   };
-  const keys = routeKeys(t.sockRoot);
-  for (const key of keys) routes.set(key, observe);
+  // A pane's first gated send can leave from inside `attach()`, before `startPaneSession`
+  // returns: observe every client as it is created, not `s.client` afterwards.
+  const unroute = observeClients(t.sockRoot, observe);
   let s: PaneSession;
   try {
     s = await startPaneSession({
@@ -153,14 +108,14 @@ export async function startGatePane(scenario: string, opts: Options = {}): Promi
       },
     });
   } catch (error) {
-    unroute(keys);
+    unroute();
     killLeftovers({ sockRoot: t.sockRoot, ids: [uuid] });
     t.cleanup();
     throw error;
   }
   const r: GateRun = { scenario, s, t, uuid, transcript, log, sends, turns, transitions };
   open.add(r);
-  routeKeysOf.set(r, keys);
+  unrouteOf.set(r, unroute);
   // Backstop: a client assigned without passing connect/dial is still observed.
   let current: TestClient | null = clientOf(r);
   observe(current);
@@ -218,7 +173,7 @@ export async function disposeGatePane(r: GateRun): Promise<void> {
     expect(report).toEqual({ processes: [], files: [] });
   } finally {
     open.delete(r);
-    unroute(routeKeysOf.get(r) ?? []);
+    unrouteOf.get(r)?.();
     killLeftovers({ sockRoot: r.t.sockRoot, ids: [r.uuid] });
     r.t.cleanup();
   }
