@@ -107,12 +107,18 @@ export function readProcessTable(): PsRow[] {
 /** The whole process table without blocking the event loop (the registry tick). */
 export function readProcessTableAsync(): Promise<PsRow[]> {
   return new Promise((resolve) => {
-    execFile(
-      "ps",
-      PS_ARGS,
-      { env: PS_ENV, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-      (err, stdout) => resolve(err ? [] : parsePsTable(String(stdout)))
-    );
+    try {
+      execFile(
+        "ps",
+        PS_ARGS,
+        { env: PS_ENV, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+        (err, stdout) => resolve(err ? [] : parsePsTable(String(stdout)))
+      );
+    } catch {
+      // spawn throws synchronously for errnos other than ENOENT/EACCES/EAGAIN/EMFILE/ENFILE:
+      // EPERM when a macOS sandbox refuses to exec the setuid /bin/ps. Keep the never-reject contract.
+      resolve([]);
+    }
   });
 }
 
