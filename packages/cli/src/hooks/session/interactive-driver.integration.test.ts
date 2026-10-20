@@ -1009,7 +1009,7 @@ describe.skipIf(!MAGMUX)(`ambient: own pane ${MAGMUX ? "" : NO_MAGMUX_MESSAGE}`,
  * `responseEnd` annotates each response (through the in-process sink), and
  * `sessionIdle` injects HOOK-PING once, only when that annotation arrived.
  */
-const E2E_HOOKS = (endMarker: string) => `import { writeFileSync } from "node:fs";
+const E2E_HOOKS = (endMarker: string) => `import { renameSync, writeFileSync } from "node:fs";
 export default [{
   apiVersion: 1,
   id: "ping",
@@ -1023,7 +1023,10 @@ export default [{
       return [{ type: "injectUserTurn", text: "HOOK-PING" }];
     },
     sessionEnd(ctx) {
-      writeFileSync(${JSON.stringify(endMarker)}, JSON.stringify({ session: ctx.session, outcome: ctx.outcome }));
+      // Written whole and renamed into place: the test polls for the file, and a
+      // plain write is visible empty before its JSON lands.
+      writeFileSync(${JSON.stringify(`${endMarker}.tmp`)}, JSON.stringify({ session: ctx.session, outcome: ctx.outcome }));
+      renameSync(${JSON.stringify(`${endMarker}.tmp`)}, ${JSON.stringify(endMarker)});
       return [];
     },
   },
