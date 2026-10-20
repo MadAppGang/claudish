@@ -210,6 +210,7 @@ describe("pane environment", () => {
       slotEnv: {},
       cwd: "/c",
       ctlDir: "/r/launch-AAAAAA",
+      configFile: null,
     });
     expect(magmuxEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
     expect(magmuxEnv.CLAUDE_CODE_NATIVE_CURSOR).toBe("1");
@@ -223,6 +224,7 @@ describe("pane environment", () => {
       slotEnv: {},
       cwd: "/c",
       ctlDir: "/r/launch-AAAAAA",
+      configFile: null,
     });
     expect(magmuxEnv.CLAUDE_CODE_NATIVE_CURSOR).toBe("yes");
   });
@@ -233,6 +235,7 @@ describe("pane environment", () => {
       slotEnv: {},
       cwd: "/c",
       ctlDir: "/r/launch-AAAAAA",
+      configFile: null,
     });
     expect(magmuxEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
     expect(magmuxEnv.CLAUDE_CODE_NATIVE_CURSOR).toBe("1");
@@ -249,6 +252,7 @@ describe("pane environment", () => {
       slotEnv,
       cwd: "/c",
       ctlDir: "/r/launch-AAAAAA",
+      configFile: null,
     }).magmuxEnv;
     expect(fromDefault.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("slot-traffic");
     expect(fromDefault.CLAUDE_CODE_NATIVE_CURSOR).toBe("slot-cursor");
@@ -261,6 +265,7 @@ describe("pane environment", () => {
       slotEnv,
       cwd: "/c",
       ctlDir: "/r/launch-AAAAAA",
+      configFile: null,
     }).magmuxEnv;
     expect(fromParent.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("slot-traffic");
     expect(fromParent.CLAUDE_CODE_NATIVE_CURSOR).toBe("slot-cursor");
