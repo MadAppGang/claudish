@@ -7,15 +7,16 @@
     "reason": "dialog:question",
     "detail": "a question dialog is showing"
   },
-  "rows": 23,
+  "rows": 24,
   "cols": 40,
   "alt": true,
   "cursor": {
     "x": 0,
-    "y": 11
+    "y": 12
   },
   "lines": [
     "",
+    "✻ Churned for 1s · done 12:42 am",
     "",
     "❯ Use the AskUserQuestion tool to ask",
     "  me which fruit I prefer, with the",
@@ -41,6 +42,7 @@
   ],
   "spans": [
     [],
+    [[0, 1, 241, -1, 0], [2, 30, 241, -1, 0]],
     [],
     [[0, 2, 241, 255, 0], [2, 36, 16, 255, 0], [38, 2, -1, 255, 0]],
     [[0, 2, -1, 255, 0], [2, 34, 16, 255, 0], [36, 4, -1, 255, 0]],

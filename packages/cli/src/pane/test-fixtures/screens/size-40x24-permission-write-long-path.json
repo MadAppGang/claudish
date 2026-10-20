@@ -8,18 +8,19 @@
     "detail": "a permission dialog is showing",
     "dismissable": true
   },
-  "rows": 23,
+  "rows": 24,
   "cols": 40,
   "alt": true,
   "cursor": {
     "x": 1,
-    "y": 15
+    "y": 16
   },
   "lines": [
     "",
+    "",
     "⏺ Write(/private/var/folders/ch/50hwlbxs",
-    "       7k588shf059gzzph0000gn/T/cap40-Gw",
-    "       lKrW/cwd/deeply/nested/directory/",
+    "       7k588shf059gzzph0000gn/T/cap40-ys",
+    "       vN5z/cwd/deeply/nested/directory/",
     "       structure/for/the/resize/fixture/",
     "       capture/run/with/a/very/long/path",
     "       /name/hello.txt)",
@@ -41,6 +42,7 @@
     " Esc to cancel · Tab to amend"
   ],
   "spans": [
+    [],
     [],
     [[0, 1, 241, -1, 0], [2, 5, -1, -1, 1]],
     [],

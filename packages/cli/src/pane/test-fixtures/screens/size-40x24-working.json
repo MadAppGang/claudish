@@ -3,23 +3,20 @@
   "claudeCode": "2.1.304",
   "magmux": "0.18.0",
   "gate": {
-    "ready": false,
-    "reason": "box_not_empty",
-    "detail": "the input box already holds text",
-    "boxHasText": true
+    "ready": true
   },
-  "rows": 23,
+  "rows": 24,
   "cols": 40,
   "alt": true,
   "cursor": {
     "x": 2,
-    "y": 17
+    "y": 18
   },
   "lines": [
     "",
     " ▐▛███▛█   Claude Code v2.1.304",
     "▝▜██████▀  Haiku 5.5 · Claude Max",
-    " ▝▝   ▝▝   /…/T/cap40-ifnQGh/cwd",
+    " ▝▝   ▝▝   /…/T/cap40-ysvN5z/cwd",
     "",
     "",
     "❯ Reply with exactly the word pear and",
@@ -29,15 +26,16 @@
     "",
     "",
     "",
-    "✽ Flowing… (",
+    "",
+    "✢ Hullaballooing… (",
     "running UserPromptSubmit hook · 0s)",
     "                    ◐ medium · /effort",
     "────────────────────────────────────────",
     "❯",
     "────────────────────────────────────────",
-    "  * Haiku | $0.00 | 1s | 󰍛 373M",
+    "  * Haiku | $0.00 | 2s | 󰍛 390M",
     "  ctx   ░░░░░░ 0%",
-    "  plan  █████▀▀▀--  5h:86%  ↻2h38m 7d…",
+    "  plan  █████▀▀▀--  5h:87%  ↻2h27m 7d…",
     "  ⏸ manual mode on · ← 3 agents"
   ],
   "spans": [
@@ -54,12 +52,13 @@
     [],
     [],
     [],
+    [],
     [
       [0, 1, 174, -1, 0],
-      [2, 2, 174, -1, 0],
-      [4, 3, 216, -1, 0],
-      [7, 4, 174, -1, 0],
-      [11, 1, 241, -1, 0]
+      [2, 6, 174, -1, 0],
+      [8, 3, 216, -1, 0],
+      [11, 7, 174, -1, 0],
+      [18, 1, 241, -1, 0]
     ],
     [[0, 35, 241, -1, 0]],
     [[20, 18, 241, -1, 0]],
