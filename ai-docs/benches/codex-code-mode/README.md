@@ -32,6 +32,7 @@ credential.
 | `classic` | off (`CLAUDISH_CODE_MODE=off`) | Phase 7's parallel-Read prompt; the answer is 6 | answer 6; three Reads reached Claude Code with `file_path` ending in `a.ts`, `b.ts`, `c.ts`; no tool_result carries `InputValidationError` or a missing `file_path`; the log says `[CodeMode] off (` |
 | `auto` | default (`auto`) | the same | answer 6; the same argument Checks; the log says `[CodeMode] on (<shape>, discovery: …)`; **every relayed exec resumed** and none took the lost-state path |
 | `auto-edit` | default (`auto`) | Phase 7 V4: create `notes.txt` containing `alpha`, run `wc -c notes.txt` through Bash, report the byte count | `notes.txt` contains `alpha`; the number `wc` printed is in the answer; Bash was used with no input error; code mode on; every relayed exec resumed |
+| `single-call` | off (`CLAUDISH_CODE_MODE=off`) | run `cat token.txt` as one Bash call on its own, report the line | the answer carries `kestrel-4182` (only in `token.txt`); Bash ran with `command: "cat token.txt"` and its tool_result carries the token; no tool_result carries an input error; in the log that call was **alone in its response, streamed >0 argument deltas that add up to the `.done` arguments, and claudish emitted nothing from `.done` for it** (`single_call_streamed`); the log says `[CodeMode] off (` |
 
 Every Scenario also carries:
 
@@ -49,7 +50,34 @@ a failure.
 
 The testdata (`a.ts`, `b.ts`, `c.ts`) is copied from the Phase 7 run directories
 (`it2/V2a/p7i2-V2a-304-1`, `it2/V4/p7i2-V4-304-1`). `notes.txt` is absent, so a session that does
-nothing fails `auto-edit`.
+nothing fails `auto-edit`. `testdata/single-call/token.txt` holds a token the prompt never names.
+
+## `single-call`: the streamed case (replaces live check V3)
+
+`classic` covers a call Codex sends with NO argument deltas. `single-call` covers the other half
+of `emitUnforwardedArguments` (`handlers/shared/stream-parsers/responses/responses-leg.ts`): a
+lone function call, whose arguments Codex DOES stream as `response.function_call_arguments.delta`
+events. claudish must forward those deltas and send nothing more; sending the `.done` arguments
+as well would hand Claude Code `{…}{…}`, which is not valid JSON. On the subscription this was
+measured before the Scenario existed: in the first full run a lone `Bash pwd` streamed 30 deltas
+and the log has no `zero-delta function_call Bash` line.
+
+`checks/single-call-streamed.ts` (a `ts` Check) reads `logs/claudish_*.log` from the Session's
+`work_dir`, parses the `[SSE:responses]` lines, and finds every `Bash` function_call whose
+`.done` arguments carry `command: "cat token.txt"`. Each must be alone in its
+`response.completed`, carry more than zero deltas, and its deltas concatenated must equal the
+`.done` arguments. The log must also carry no `function_call Bash: emitted N-byte suffix`, no
+`done arguments diverge … for Bash`, and no more `zero-delta function_call Bash` lines than there
+are Bash calls that really streamed zero deltas. The Session half (`args_intact`) proves Claude
+Code ran the call with those arguments and got the token back with no input error.
+
+**How it was proven able to fail.** `madbench check` fails all six of its Checks. The Check's
+pure `analyse` was also run against real logs from the first full run
+(`ai-docs/sessions/codex-code-mode-bench-20261020-172800-a1c3/single-call/prove-check.ts`,
+gitignored): it passes the lone streamed `Bash pwd` (30 deltas), and fails the same log's three
+parallel zero-delta Reads (`streamed 0 argument deltas`, `shared its response with 3
+function_call(s)`), a command that never ran, the log with its delta events removed, and the log
+with claudish's zero-delta line attributed to the streamed Bash call.
 
 ## Running it
 
@@ -65,7 +93,7 @@ The free gates, from this folder:
 ```bash
 madbench list      madbench.yaml
 madbench preflight madbench.yaml
-madbench check     madbench.yaml                # negative control: all 19 Checks must fail
+madbench check     madbench.yaml                # negative control: all 25 Checks must fail
 madbench madbench.yaml --harness mock           # offline dry run
 ```
 
@@ -95,10 +123,11 @@ Why each setting:
   own path, writes `claudish-provenance.txt`, and adds `--debug-claudish --log-level debug -q`.
   The debug log in `logs/claudish_*.log` is what the `exec` Checks read; `-q` returns before the
   update prompt, which would otherwise wait on a TTY nobody answers.
-- **`CLAUDISH_CODE_MODE=off`** on `classic` is claudish's documented equivalent of
-  `--code-mode off` (`code-mode/policy.ts`: flag > env > project > global > `auto`). Nothing
-  passes the flag, and `harness.args` belongs to the whole Bench, so the environment is how one
-  Scenario turns code mode off.
+- **`CLAUDISH_CODE_MODE=off`** on `classic` and `single-call` is claudish's documented
+  equivalent of `--code-mode off` (`code-mode/policy.ts`: flag > env > project > global >
+  `auto`). Nothing passes the flag, and `harness.args` belongs to the whole Bench (madbench
+  0.47.0 refuses `harness:` on a Scenario), so the environment is how one Scenario turns code
+  mode off. A madbench feature request for per-Scenario harness args is drafted, not yet filed.
 - **`driver: false`**: every prompt is an order, so a question from the agent fails the Scenario
   by name instead of being answered by a model and becoming a variable.
 
@@ -122,7 +151,9 @@ jq -r '.results[] | "\(.scenario_id) \(.status)", (.checks[] | select(.result.pa
 | `subscription` | a call went somewhere other than `chatgpt.com/backend-api/codex`, or another handler served the request. **That is metered spend or a fallback, never a pass** | the `uniq -c` table in the reason |
 | `provenance` | the shim did not run, so the build under test is unknown | `harness.binary`; `bun run build` |
 | `bash_output_reported` | `wc` ran but its number is not in the answer, or Bash never ran | the Session's Bash `tool_result` |
-| `answer` | the final answer has no 6 | read the other Checks first: on `auto` a right answer with a failed `resumed` is D1 |
+| `single_call_streamed` with `streamed 0 argument deltas` or `shared its response` | the model put the call in a multi-call turn, or Codex stopped streaming deltas for lone calls: this sample did not exercise the streamed case | the Check's `calls_of_tool` evidence; re-run |
+| `single_call_streamed` with a `zero-delta`, `suffix` or `diverge` line | **claudish emitted arguments from `.done` on top of streamed deltas**: the duplicate-arguments defect | `emitUnforwardedArguments`; `args_intact` should show the input error |
+| `answer` | the final answer has no 6 (`kestrel-4182` on `single-call`) | read the other Checks first: on `auto` a right answer with a failed `resumed` is D1 |
 
 An exec Check's reason ends with the tail of its own output on failure (the matching log lines and
 the `relayed= resumed= lost=` tally), so most failures can be read straight from the report.

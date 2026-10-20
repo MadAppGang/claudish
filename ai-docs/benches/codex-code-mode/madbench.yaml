@@ -65,7 +65,8 @@ scenarios:
             regex: true
             event_type: tool_result
             eq: 0
-      - type: exec
+      - &code_mode_off
+        type: exec
         metric: code_mode_off
         cmd: 'L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" && grep -h "\[CodeMode\] off (" $L && ! grep -q "\[CodeMode\] on (" $L'
       # Measures whether this session hit the defect's trigger at all: Codex
@@ -169,5 +170,55 @@ scenarios:
             eq: 0
       - *code_mode_on
       - *resumed
+      - *subscription
+      - *provenance
+
+  # ── single-call: one classic tool call whose arguments Codex DOES stream ───
+  # Replaces the hand-run live check V3 on the subscription. A lone function
+  # call streams its arguments as function_call_arguments.delta events
+  # (measured: the lone `Bash pwd` in the first full run streamed 30 deltas,
+  # and claudish logged no zero-delta line for it). claudish must forward
+  # those deltas and NOT also emit the .done arguments, or Claude Code gets
+  # the arguments twice and the tool input is not valid JSON.
+  - name: single-call
+    description: "code mode off: one lone Bash call streams its argument deltas; claudish forwards them once"
+    testdata: ./testdata/single-call
+    # Same mechanism as classic: harness.args is per Bench.
+    sandbox:
+      level: workspace
+      env:
+        CLAUDISH_CODE_MODE: "off"
+    prompt: "Use the Bash tool to run exactly this command: cat token.txt — make it a single Bash call on its own, with no other tool call before or after it. Then reply with the line it printed."
+    checks:
+      # The token is only in token.txt, never in the prompt, so an answer that
+      # carries it came from the tool's output.
+      - type: regex
+        metric: answer
+        value: '\bkestrel-4182\b'
+      # Claude Code ran the call with the intended arguments, its output came
+      # back, and no tool_result carries an input error (arguments sent twice
+      # are not valid JSON, and come back as one). The absence half sits
+      # inside the set so the set as a whole is a positive Check.
+      - type: assert-set
+        metric: args_intact
+        checks:
+          - { type: session:tool-args-match, value: Bash, tool_args: { command: "cat token.txt" } }
+          - { type: session:match, value: "kestrel-4182", event_type: tool_result }
+          - type: session:match
+            value: "InputValidationError|not valid JSON|invalid tool input"
+            regex: true
+            ignore_case: true
+            event_type: tool_result
+            eq: 0
+      # In claudish's log: that call was alone in its response, streamed >0
+      # argument deltas that add up to the .done arguments, and claudish wrote
+      # no zero-delta / suffix / divergence line for it.
+      - type: ts
+        metric: single_call_streamed
+        value: "file://./checks/single-call-streamed.ts"
+        config:
+          tool: Bash
+          args: { command: "cat token.txt" }
+      - *code_mode_off
       - *subscription
       - *provenance
