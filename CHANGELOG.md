@@ -2,6 +2,110 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.0.0] - 2026-10-20
+
+### ⚠ BREAKING CHANGES
+
+- meta@<model> no longer routes to OllamaCloud. Use *(ollamacloud)* ([`2724916`](https://github.com/MadAppGang/claudish/commit/2724916dfc3ca0dec5bf4e41c8c2c319ac493de2))
+
+### Bug Fixes
+
+- keep the shutdown hook outside the SIGINT event-loop hold *(mcp)* ([`b3934a6`](https://github.com/MadAppGang/claudish/commit/b3934a667787b6246dd99296cfc4c51658c80a53))
+- exit 130 on SIGINT instead of 0 after the pane reap *(team)* ([`b31e383`](https://github.com/MadAppGang/claudish/commit/b31e38329db2182b667b5935cb37e6e92c8e9d44))
+- deny Keychain prompts to every process in an MCP session *(auth)* ([`c099163`](https://github.com/MadAppGang/claudish/commit/c099163b7e3097ff7e602b9a2e274cc2a095a777))
+- name the Muse signer when a signed probe request fails *(probe)* ([`20a2a87`](https://github.com/MadAppGang/claudish/commit/20a2a87fd1bdb608623e8a589ea3da123eb3e5fd))
+- show the Muse Key line only when muse@ answered the probe *(probe)* ([`ead3017`](https://github.com/MadAppGang/claudish/commit/ead3017acce5a7d9e53d31818b185b967e1c9f11))
+- take x-claudish-signed-with from the request's own key *(probe)* ([`4cb9d3d`](https://github.com/MadAppGang/claudish/commit/4cb9d3da167c970075b768626dab6c1a4188c0d5))
+- keep upstream_status 401/403 on a rejected login *(meta-muse-code)* ([`04360e8`](https://github.com/MadAppGang/claudish/commit/04360e8d0b1d627f99787489fa0467b18669bb02))
+- show the Muse login fix when muse@ is dropped for no login *(probe)* ([`1a6acd8`](https://github.com/MadAppGang/claudish/commit/1a6acd8056012cb67ad24e428039aa76526b6a97))
+- show the Muse Key line in the interactive --probe screen *(probe)* ([`0c62978`](https://github.com/MadAppGang/claudish/commit/0c62978a71545a4c3c37828c3754e0cccc33fbed))
+- name the Muse login that signed each probe request *(probe)* ([`a7a7655`](https://github.com/MadAppGang/claudish/commit/a7a765500b56d1a40a885b016870f5ade6c31678))
+- keep one-line remedies in preflight no-route rows *(mcp)* ([`0da6f59`](https://github.com/MadAppGang/claudish/commit/0da6f59c624423570c7643d38b542109e9c38b10))
+- add the login instruction to a preflight no-route row *(mcp)* ([`e1099a8`](https://github.com/MadAppGang/claudish/commit/e1099a85143852a640519522ad3253be8e3b0d7f))
+- say a rejected Muse login was rejected, not missing *(meta-muse-code)* ([`410ee8f`](https://github.com/MadAppGang/claudish/commit/410ee8ff066ca789c6ead96df126ab218ca38407))
+- show the Muse Code login source and tier on the Key line *(probe)* ([`4eba300`](https://github.com/MadAppGang/claudish/commit/4eba3001d5dbd69c44c401d35f1fa59d59d7522d))
+- read tool_call from the Muse models list *(meta-muse-code)* ([`d8fe49b`](https://github.com/MadAppGang/claudish/commit/d8fe49b5c427de6908976d0cbc850312fe0a6535))
+- send no device-code poll after the code expires *(meta-muse-code)* ([`267a5fe`](https://github.com/MadAppGang/claudish/commit/267a5feb54f0e8dd26cf00f858beacee203796f1))
+- stop calling a local Muse mint error unreachable *(meta-muse-code)* ([`60f79e7`](https://github.com/MadAppGang/claudish/commit/60f79e781e611ca3e5cb490de6f59d587b7586e9))
+- retry a 2xx Muse key mint whose body is not JSON *(meta-muse-code)* ([`24bb804`](https://github.com/MadAppGang/claudish/commit/24bb8040c7c9436a0088f00c5706fcb62f786ca3))
+- stop a subscription chain on a raw 403 credential rejection *(routing)* ([`45d74c8`](https://github.com/MadAppGang/claudish/commit/45d74c8a9e27d4e94b8f59574c0ed80327d6052f))
+- report a 401/403 on the parameter-recovery re-fetch *(errors)* ([`d1500aa`](https://github.com/MadAppGang/claudish/commit/d1500aae206850d59342fbab5b8a425ad3163ecf))
+- tell a rejected subscription login to run claudish login *(errors)* ([`d037370`](https://github.com/MadAppGang/claudish/commit/d03737085d03721c548e5b3290cfcd5e586a8afa))
+- answer a subscription's unclassified primary-fetch throw 503 *(errors)* ([`d1fbde6`](https://github.com/MadAppGang/claudish/commit/d1fbde695da66f38133c7c64eac059b75a67ea1d))
+- restore the real Muse login stores after test:safe *(meta-muse-code)* ([`bf4736b`](https://github.com/MadAppGang/claudish/commit/bf4736b8b37da4424ee02c562402413f73aff1fb))
+- retry a 2xx token refresh that carries no access_token *(errors)* ([`3adfc29`](https://github.com/MadAppGang/claudish/commit/3adfc299384d9989a798a9d748106e0400734f20))
+- delete the Kimi login only on a 401/403 or invalid_grant 400 *(kimi)* ([`78e8b3e`](https://github.com/MadAppGang/claudish/commit/78e8b3e59f9b492fa77f0df54a0de42d357419b5))
+- drop the login hint from a 429/5xx token refresh *(openai-codex)* ([`30f6c88`](https://github.com/MadAppGang/claudish/commit/30f6c8871e84f66c5f55ebf0877737e7f97230bd))
+- refuse a kc@ request that no credential signs *(kimi-coding)* ([`00832e8`](https://github.com/MadAppGang/claudish/commit/00832e848f80af21b3786686e766352534ebb5f2))
+- drop Keychain results that finish after a Muse reset *(meta-muse-code)* ([`a1172e6`](https://github.com/MadAppGang/claudish/commit/a1172e6919fc84cbcbabb34d9f98254ae51ec628))
+- sign kc@ with only its own key after a rejected login *(kimi-coding)* ([`d3821f7`](https://github.com/MadAppGang/claudish/commit/d3821f7cbecb6e6ee0bd4345fe1f1dd19b0f9550))
+- keep the Kimi login on a refresh blip or non-JSON 200 *(kimi)* ([`c14e162`](https://github.com/MadAppGang/claudish/commit/c14e16231140382d975ca4381317dee26968c8ff))
+- keep a stalled refresh body retryable, never a dead login *(openai-codex)* ([`41ffcd8`](https://github.com/MadAppGang/claudish/commit/41ffcd852159c7a2eac9fb0b77bde52d2a05e9eb))
+- send the Muse login only to api.meta.ai *(meta-muse-code)* ([`f08e5d9`](https://github.com/MadAppGang/claudish/commit/f08e5d97c4332557233ae8f6b3cbea8647d2d0a8))
+- hold an approved Keychain token only after its mint fails *(meta-muse-code)* ([`36b5446`](https://github.com/MadAppGang/claudish/commit/36b54463ab5b29d9b841f6f50f2d1b8699f251c8))
+- drop held Keychain tokens on a Muse credential reset *(meta-muse-code)* ([`e6a0e0c`](https://github.com/MadAppGang/claudish/commit/e6a0e0c5520426b41b9442334d071a10fde23659))
+- skip the borrowed-copy write of a fenced Muse resolve *(meta-muse-code)* ([`a74f6e2`](https://github.com/MadAppGang/claudish/commit/a74f6e2d883cf0ae1a5fe414d1ea0d839d96426c))
+- ignore a cwd .env's host opt-in for the Muse login *(meta-muse-code)* ([`f65763a`](https://github.com/MadAppGang/claudish/commit/f65763adbb4c7ba60a9d309ab9d7a0e40d3541bb))
+- keep a forced refresh's agy timeout retryable *(antigravity)* ([`b161d13`](https://github.com/MadAppGang/claudish/commit/b161d1331917d73bd980820563e0f297ea6c4524))
+- retry a token-host blip before the CLI credential *(grok-subscription)* ([`e40d109`](https://github.com/MadAppGang/claudish/commit/e40d109b6d6326d895ddf4c938b4a1b829814003))
+- keep an interrupted token-refresh body retryable *(grok-subscription)* ([`698df0a`](https://github.com/MadAppGang/claudish/commit/698df0aad596afab3ba857691b87e4d575a55090))
+- surface an OAuth refresh failure instead of an empty key *(kimi-coding)* ([`95d17a8`](https://github.com/MadAppGang/claudish/commit/95d17a83aaa136164018d5641ebb206bb4caaa3e))
+- stop on a rejected OAuth refresh instead of the API key *(openai-codex)* ([`1ca8ccb`](https://github.com/MadAppGang/claudish/commit/1ca8ccbb19c943a6a95640b04013ef9c5a8de5e0))
+- open only an https verification URL during login *(meta-muse-code)* ([`418d49c`](https://github.com/MadAppGang/claudish/commit/418d49c375f1b7d8729e507e16f781b3773c374c))
+- keep the team-slot login message after a 401 re-mint *(meta-muse-code)* ([`49d88ea`](https://github.com/MadAppGang/claudish/commit/49d88eaba8499068d3d99589549154629e788de7))
+- read the Muse Keychain login before testing a Muse Code row *(tui)* ([`0f459ef`](https://github.com/MadAppGang/claudish/commit/0f459efd2cc4ea84c4e3bc5e791083d0e0d78138))
+- bound each login request and keep polling on a 5xx *(meta-muse-code)* ([`8784723`](https://github.com/MadAppGang/claudish/commit/8784723fd7be712491a77b021eb6e3425f4c8dec))
+- fence a Muse resolve that outlives a credential reset *(meta-muse-code)* ([`fc2bfaf`](https://github.com/MadAppGang/claudish/commit/fc2bfaf02804da6cdf907c9e70b2f675966c920f))
+- stop the Keychain read lock spinning without a deadline *(meta-muse-code)* ([`c4749fe`](https://github.com/MadAppGang/claudish/commit/c4749fe191d576a1867dcc83c6a7718026872ba0))
+- refuse to send the Muse login to a non-Meta host *(meta-muse-code)* ([`a1528b1`](https://github.com/MadAppGang/claudish/commit/a1528b1885c1f397d87f4ca687b1c546d44600ac))
+- keep a mint body-read reset as a connection fault *(meta-muse-code)* ([`09a3cd4`](https://github.com/MadAppGang/claudish/commit/09a3cd4bdc37d062b9221da66a33d2c9826d054b))
+- return an auth-verdict response verbatim from FallbackHandler *(errors)* ([`4c397f3`](https://github.com/MadAppGang/claudish/commit/4c397f3905594eb8b7cd26298c45b5020dfc5efc))
+- retry a subscription token host's 429/5xx instead of a 400 *(errors)* ([`264b275`](https://github.com/MadAppGang/claudish/commit/264b275907af818e02ed6bc0975c4e8f75224508))
+- advance past an opencode-zen-go 401 for an uncarried model *(errors)* ([`5d57a9e`](https://github.com/MadAppGang/claudish/commit/5d57a9e2ec6d3012a2c7cf540195ab1bf0450447))
+- classify auth failures alike at every auth site *(errors)* ([`7fbd96f`](https://github.com/MadAppGang/claudish/commit/7fbd96f184dc5dc152a0783666697a4bad4b73f6))
+- stop the routing chain on a subscription credential failure *(errors)* ([`72d63cc`](https://github.com/MadAppGang/claudish/commit/72d63cc34419d7a373e3babd419640592684620e))
+- apply plan membership to gathered subscription candidates *(routing)* ([`9830dda`](https://github.com/MadAppGang/claudish/commit/9830dda1e8f021c6f6a613723fac6df0b90e733d))
+- exclude contributor wire ids unless typed exactly *(routing)* ([`13d4e69`](https://github.com/MadAppGang/claudish/commit/13d4e691e4304202321ace37b8fc0bad75874f22))
+- remove the meta@ shortcut *(ollamacloud)* ([`2724916`](https://github.com/MadAppGang/claudish/commit/2724916dfc3ca0dec5bf4e41c8c2c319ac493de2))
+
+### Documentation
+
+- add the live validation report for muse@ *(meta-muse-code)* ([`11584f4`](https://github.com/MadAppGang/claudish/commit/11584f4b20209186997992b0f0e553027d4d49fc))
+- record tests that read the real ~/.claudish and pass only locally *(testing)* ([`6ed99e6`](https://github.com/MadAppGang/claudish/commit/6ed99e6f1947cd3fbf27b5dfe567bd181ad87918))
+- put getRecoveryHint's JSDoc back above it *(errors)* ([`2a6031e`](https://github.com/MadAppGang/claudish/commit/2a6031e43ba7cfc8813244ede2dcc34467962912))
+- put credentialHintFrom's JSDoc back above it *(probe)* ([`3e99892`](https://github.com/MadAppGang/claudish/commit/3e998920430e9dfc2a4791bc97efa403076260af))
+- describe the rethrow in the Codex transport comments *(openai-codex)* ([`51b8f53`](https://github.com/MadAppGang/claudish/commit/51b8f5362d85d8498e2129512bcfd517b48ce684))
+- move setMuseKeychainTestDeps' JSDoc back above it *(meta-muse-code)* ([`4ea77d9`](https://github.com/MadAppGang/claudish/commit/4ea77d97cfeb1f84b07b71d0c4562ca498b63fb2))
+- document unclassified subscription auth failures as 503 *(errors)* ([`7c83735`](https://github.com/MadAppGang/claudish/commit/7c83735e335a739262d788fa4cfd9cbaa4e5ae4e))
+- state the stale-lock reclaim window in muse-keychain.ts *(meta-muse-code)* ([`0752594`](https://github.com/MadAppGang/claudish/commit/075259444338748bbec3059d668b71989948246b))
+- track the Muse Code wire capture notes *(meta-muse-code)* ([`c1b25c5`](https://github.com/MadAppGang/claudish/commit/c1b25c5c2660199fc84e9868d73faa058fcd8f18))
+- add the Muse Code usage page and the meta@ shortcut rows([`41464d6`](https://github.com/MadAppGang/claudish/commit/41464d6df37b18219bff499b794965aa24bd146b))
+- record the Muse Code wire and Keychain login *(meta-muse-code)* ([`dfd0c96`](https://github.com/MadAppGang/claudish/commit/dfd0c9661e82cd4499fc726218682760e39bce0b))
+- add the models-index tasks for a Muse Code route *(meta)* ([`f173620`](https://github.com/MadAppGang/claudish/commit/f173620bf00fd4db04450c45f95369a099d15a8b))
+- stamp the playbook verified at the v11.1.0 merge *(release)* ([`24461bc`](https://github.com/MadAppGang/claudish/commit/24461bc60db237662ab4fe6216674002dcfb9a15))
+- update CHANGELOG.md for v11.1.0([`3647c88`](https://github.com/MadAppGang/claudish/commit/3647c88fe5b088162d67526589b83054a10cb5b8))
+
+### New Features
+
+- add claudish login muse with Meta device code *(meta-muse-code)* ([`c60836f`](https://github.com/MadAppGang/claudish/commit/c60836f38157cd097e9218c6ecdc462925ee5ad7))
+- borrow reasoning effort from the meta direct-api wire *(meta-muse-code)* ([`795c8aa`](https://github.com/MadAppGang/claudish/commit/795c8aaad44108326582ddc702f8f97f5ae88dbc))
+- prepare the Muse login before Claude Code starts *(meta-muse-code)* ([`2d968a6`](https://github.com/MadAppGang/claudish/commit/2d968a6745ee85bb710090e9cafad4679d41b254))
+- list muse@ models from /muse-code/models *(picker)* ([`b99a4be`](https://github.com/MadAppGang/claudish/commit/b99a4be315506a7e7bd85110d36b261fb2c1a173))
+- add muse@ signed by the Muse Code login *(meta-muse-code)* ([`a5e67ec`](https://github.com/MadAppGang/claudish/commit/a5e67ec026f843ee90d75dea318a131c067de59c))
+- read the Muse Keychain login with a per-machine lock *(meta-muse-code)* ([`7e9ea74`](https://github.com/MadAppGang/claudish/commit/7e9ea74995208299a3c191df15b3e0cbdc404837))
+- add the Muse key mint with entitlement checks *(meta-muse-code)* ([`b5fa734`](https://github.com/MadAppGang/claudish/commit/b5fa734a377cd2d5b0c3a174dd2e0be1bb5d887d))
+- fix the credential prompt role once per process *(auth)* ([`17c4392`](https://github.com/MadAppGang/claudish/commit/17c43922bac0bb9b47953094b669ba25b4decbc8))
+- add the metered meta provider for META_API_KEY *(meta)* ([`a6d8391`](https://github.com/MadAppGang/claudish/commit/a6d83918ec295fa6faf3180b821472e2ec855b20))
+
+### Other Changes
+
+- v12.0.0 *(release)* ([`adc3b96`](https://github.com/MadAppGang/claudish/commit/adc3b96b01796a36a34bd65faadef382a95b1e44))
+- apply biome format to composed-handler and muse-mint *(meta-muse-code)* ([`d780111`](https://github.com/MadAppGang/claudish/commit/d7801118f09ac05f01d24e339107bb57eefc88da))
+
+### Refactoring
+
+- add a joinable spawnAsync with no kill path *(keychain)* ([`79023a0`](https://github.com/MadAppGang/claudish/commit/79023a041487c6f4c3fe234c2e56921a9aed3a44))
+
 ## [11.1.0] - 2026-10-19
 
 ### Documentation
