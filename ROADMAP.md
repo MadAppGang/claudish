@@ -631,27 +631,12 @@ finding id in `ai-docs/reports/mcp-magmux-panes/session-record/implementation-lo
 
 Status: not started. Evidence: `ai-docs/reports/2026-10-16-mcp-update-validation.md`. The turn
 that never settled after its background agents finished mid-turn was fixed in 11.0.0 (`a6739184`).
+Adopting magmux's `--controller claude-code` input gate, and the prompt typed twice under load,
+were closed by the `resize_session` redesign: panes need magmux 0.17.0, every prompt goes through
+one gated magmux `send` bound to the pane's own transcript, and the retype nudge
+(`PaneSession.nudge`, `awaitClearedBox`) and the `editorMode` overlay key are gone
+(`ai-docs/architecture/pane-session.md`).
 
-- **Adopt magmux 0.16.0 `--controller claude-code`.** Pass it before `-e` in `spawnPaneMagmux`
-  (`pane/pane-launch.ts`) behind a version check. The request timeout around magmux `send` must
-  cover ~18 s (readyTimeoutMs default 10 s, max 60 s, plus typing, pre-Enter verify and
-  acceptance), or pass a smaller readyTimeoutMs. Map the new replies: `busy`
-  (terminal_not_ready, dialog:permission, dialog:question, vim_mode) and `not_accepted`
-  (text_mismatch: Enter not pressed; still_in_box: do not retype; unconfirmed: caller decides;
-  empty_box). On a controller pane claudish's own ctrl-u/retype nudge (`PaneSession.nudge`) must
-  yield to magmux, and slash commands may come back `unconfirmed`. Once 0.16.0 is the minimum, the
-  `editorMode: "normal"` overlay key can go. Trigger: magmux 0.16.0 released with final field
-  names, and `.github/magmux.env` bumped to it.
-- **A prompt typed twice under load.** `pane-session.integration.test.ts` "a send whose reply is
-  lost after magmux typed it is not typed twice" failed inside a full `test:safe` run on
-  2026-10-17 with `Received: "Set model to \`haiku/model haiku\`"`, and passed alone (54/0). Two
-  sibling tests in that file timed out in the same run. The retype nudge (`PaneSession.nudge`,
-  `awaitClearedBox`) is the code that can type a line a second time; the 10.7.0 release review
-  also found a race there (ctrl-u lets degraded acceptance accept an empty box). Trigger: now;
-  reproduce with the loaded-run harness (3 parallel suites) before changing the nudge. Owner
-  since 2026-10-17: the `resize_session` redesign (branch `worktree-claudish-mcp-session-size`),
-  which rewrites box location and acceptance; the race is one of its requirements, with a test at
-  production timings, and the doubled-typing test runs in each of its loaded runs.
 - **An upstream stream error is shown as assistant text, so the turn reads COMPLETED.** A
   `create_session` on `gpt-6.1-sol` (`cx@`, claudish 10.6.3) ended its only turn with the
   assistant text `[API Error: server_is_overloaded Our servers are currently overloaded. Please
