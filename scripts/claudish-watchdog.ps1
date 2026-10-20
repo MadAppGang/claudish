@@ -692,6 +692,89 @@ function Invoke-RelaunchPreflightWatch {
     }
 }
 
+# Step 0: Engine recovery. After a reboot the Docker Desktop backend can die
+# outright ("backend process exited") — docker CLI then fails with rc 28/125 and
+# `docker start` is useless. Observed 2026-08-29: the first reboot of the hub
+# machine came back with no container for exactly this reason, and a human had
+# to reboot a second time. Start the service, then launch Docker Desktop in the
+# interactive user session via a helper task (SYSTEM cannot own the GUI app),
+# then wait, bounded, for the engine to answer.
+function Test-DockerEngine {
+    return (Invoke-DockerBounded @("version")).Ok
+}
+
+function Start-DockerEngine {
+    # Gap 3 of #530: this glue (engine-down -> GUI absent -> relaunch ready ->
+    # task start -> bounded recovery wait) had no seam of any kind — the only
+    # way to execute its logic was a real engine-down on the production hub,
+    # which is exactly the situation where nobody wants to discover a wiring
+    # bug. Same idiom as the wedge/preflight watches above: every probe and
+    # actuator is a scriptblock parameter defaulting to the LIVE call, so
+    # production behaviour is byte-identical, and
+    # scripts/tests/claudish-watchdog-relaunch.Tests.ps1 exercises the matrix
+    # with spies — never Docker, never the service manager, never the real
+    # task scheduler.
+    param(
+        [scriptblock]$EngineProbe = $null,
+        [scriptblock]$ServiceStarter = $null,
+        [scriptblock]$GuiProcessProbe = $null,
+        [scriptblock]$RelaunchReady = $null,
+        [scriptblock]$TaskStarter = $null,
+        [scriptblock]$RecoveryTick = $null
+    )
+    if (-not $EngineProbe)     { $EngineProbe     = { Test-DockerEngine } }
+    if (-not $ServiceStarter)  { $ServiceStarter  = { try { Start-Service com.docker.service -ErrorAction SilentlyContinue } catch {} } }
+    if (-not $GuiProcessProbe) { $GuiProcessProbe = { Get-Process "Docker Desktop" -ErrorAction SilentlyContinue } }
+    if (-not $RelaunchReady)   { $RelaunchReady   = { Test-EngineRelaunchReady } }
+    if (-not $TaskStarter)     { $TaskStarter     = { param($n) Start-ScheduledTask -TaskName $n } }
+    if (-not $RecoveryTick)    { $RecoveryTick    = { Start-Sleep -Seconds 10 } }
+
+    if (& $EngineProbe) { return $true }
+    Write-Log "ENGINE-DOWN: docker CLI cannot reach the engine — recovering"
+    Write-DiagLine "engine-down"
+    & $ServiceStarter
+    if (-not (& $GuiProcessProbe)) {
+        # This relaunch had NEVER worked on any machine until 2026-09-20.
+        #
+        # The call here used to be
+        #     Register-ScheduledTask -TaskName $h -Action $a `
+        #         -User "$env:COMPUTERNAME\jsboige" -LogonType Interactive ...
+        # and Register-ScheduledTask has no -LogonType parameter — it belongs to
+        # New-ScheduledTaskPrincipal. So it threw ParameterBindingException on
+        # every single invocation, its own catch swallowed the error, and the
+        # only trace was "could not launch Docker Desktop". That is almost
+        # certainly why the hub came back from its 2026-08-29 reboot with no
+        # container and a human had to reboot a second time; and it is exactly
+        # what turned a loopback wedge into a host with no engine at 13:18 on
+        # 2026-09-20, because a teardown ran ahead of a rebuild nobody had tried.
+        #
+        # Test-EngineRelaunchReady performs the registration AND reads the task
+        # back, so "can we relaunch?" is answered by doing it, not by assuming.
+        # Pinned by scripts/tests/claudish-engine.Tests.ps1 (AST check: no script
+        # may pass -LogonType to Register-ScheduledTask).
+        $ready = & $RelaunchReady
+        if ($ready.Ready) {
+            try {
+                & $TaskStarter "ClaudishDockerDesktopStart"
+                Write-Log "ENGINE: Docker Desktop launch requested in user session (relaunch path proven: $($ready.Checks -join ','))"
+            } catch {
+                Write-Log "ENGINE: relaunch task proven but would not start ($($_.Exception.Message))"
+            }
+        } else {
+            Write-Log "ENGINE: cannot launch Docker Desktop — relaunch path NOT proven ($($ready.Reason)); checks=$($ready.Checks -join ',')"
+        }
+    }
+    for ($i = 1; $i -le 12; $i++) {
+        & $RecoveryTick
+        if (& $EngineProbe) {
+            Write-Log "ENGINE: recovered after $($i * 10)s"
+            return $true
+        }
+    }
+    Write-Log "ENGINE: still down after 120s — FATAL this cycle (next run retries)"
+    return $false
+}
+
 # --- Main ---
 
 # Dot-sourcing this file loads its functions without running a cycle, the same
@@ -726,64 +809,6 @@ try {
 }
 catch {
     Write-Log "PROVENANCE: unavailable ($($_.Exception.Message))"
-}
-
-# Step 0: Engine recovery. After a reboot the Docker Desktop backend can die
-# outright ("backend process exited") — docker CLI then fails with rc 28/125 and
-# `docker start` is useless. Observed 2026-08-29: the first reboot of the hub
-# machine came back with no container for exactly this reason, and a human had
-# to reboot a second time. Start the service, then launch Docker Desktop in the
-# interactive user session via a helper task (SYSTEM cannot own the GUI app),
-# then wait, bounded, for the engine to answer.
-function Test-DockerEngine {
-    return (Invoke-DockerBounded @("version")).Ok
-}
-
-function Start-DockerEngine {
-    if (Test-DockerEngine) { return $true }
-    Write-Log "ENGINE-DOWN: docker CLI cannot reach the engine — recovering"
-    Write-DiagLine "engine-down"
-    try { Start-Service com.docker.service -ErrorAction SilentlyContinue } catch {}
-    if (-not (Get-Process "Docker Desktop" -ErrorAction SilentlyContinue)) {
-        # This relaunch had NEVER worked on any machine until 2026-09-20.
-        #
-        # The call here used to be
-        #     Register-ScheduledTask -TaskName $h -Action $a `
-        #         -User "$env:COMPUTERNAME\jsboige" -LogonType Interactive ...
-        # and Register-ScheduledTask has no -LogonType parameter — it belongs to
-        # New-ScheduledTaskPrincipal. So it threw ParameterBindingException on
-        # every single invocation, its own catch swallowed the error, and the
-        # only trace was "could not launch Docker Desktop". That is almost
-        # certainly why the hub came back from its 2026-08-29 reboot with no
-        # container and a human had to reboot a second time; and it is exactly
-        # what turned a loopback wedge into a host with no engine at 13:18 on
-        # 2026-09-20, because a teardown ran ahead of a rebuild nobody had tried.
-        #
-        # Test-EngineRelaunchReady performs the registration AND reads the task
-        # back, so "can we relaunch?" is answered by doing it, not by assuming.
-        # Pinned by scripts/tests/claudish-engine.Tests.ps1 (AST check: no script
-        # may pass -LogonType to Register-ScheduledTask).
-        $ready = Test-EngineRelaunchReady
-        if ($ready.Ready) {
-            try {
-                Start-ScheduledTask -TaskName "ClaudishDockerDesktopStart"
-                Write-Log "ENGINE: Docker Desktop launch requested in user session (relaunch path proven: $($ready.Checks -join ','))"
-            } catch {
-                Write-Log "ENGINE: relaunch task proven but would not start ($($_.Exception.Message))"
-            }
-        } else {
-            Write-Log "ENGINE: cannot launch Docker Desktop — relaunch path NOT proven ($($ready.Reason)); checks=$($ready.Checks -join ',')"
-        }
-    }
-    for ($i = 1; $i -le 12; $i++) {
-        Start-Sleep -Seconds 10
-        if (Test-DockerEngine) {
-            Write-Log "ENGINE: recovered after $($i * 10)s"
-            return $true
-        }
-    }
-    Write-Log "ENGINE: still down after 120s — FATAL this cycle (next run retries)"
-    return $false
 }
 
 # Step 1: Container running?
