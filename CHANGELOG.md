@@ -2,6 +2,30 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [12.3.2] - 2026-10-20
+
+### Bug Fixes
+
+- set no ANTHROPIC_API_KEY in a proxied pane child *(pane)* ([`185a9c1`](https://github.com/MadAppGang/claudish/commit/185a9c1b40fa5a8b449a5ff1efa9c4bb39977716))
+- keep live panes when the sweep cannot read the process table *(pane)* ([`cbf7996`](https://github.com/MadAppGang/claudish/commit/cbf79965e290925ed4a0036628c39edb98429f79))
+- name the ADC account for an authorized_user credential file *(vertex)* ([`ac28515`](https://github.com/MadAppGang/claudish/commit/ac28515e6134ad4784ba8806dc6297a6c85c4d6c))
+- run gcloud.cmd for the ADC login on Windows *(tui)* ([`e6ee327`](https://github.com/MadAppGang/claudish/commit/e6ee327b0b3900ac6dce171571eb88e3c70fcd5e))
+- clear the "Starting probe proxy…" status after the test starts *(tui)* ([`9abab24`](https://github.com/MadAppGang/claudish/commit/9abab244f5bf884183c921fc2da49862ba7fc443))
+- name the credential in the provider Test success line *(tui)* ([`6965ff3`](https://github.com/MadAppGang/claudish/commit/6965ff333254797e6daae9851ecaf498ca0d8827))
+- bound the provider Auth note to the detail pane height *(tui)* ([`171d160`](https://github.com/MadAppGang/claudish/commit/171d160b0f65c6838a8f108d254f432976a7ab70))
+- label the Vertex s key "set project" *(tui)* ([`fd6b909`](https://github.com/MadAppGang/claudish/commit/fd6b909e979cab17f874a838476ef58857ec3bc0))
+- run gcloud ADC login from the Vertex row's l key *(tui)* ([`94f5f33`](https://github.com/MadAppGang/claudish/commit/94f5f33580026de3d45a5c559d03c3da5a221a3d))
+- lead model-list errors with the upstream message *(vertex)* ([`14bf07f`](https://github.com/MadAppGang/claudish/commit/14bf07ff995baed5587cb8fbaaf385e020a238cc))
+
+### Documentation
+
+- record the Vertex ADC identity split and cache resets *(reports)* ([`f3887cf`](https://github.com/MadAppGang/claudish/commit/f3887cf9968ce66be841cfd8dba01538e2a5b57f))
+- update CHANGELOG.md for v12.3.1([`e13980c`](https://github.com/MadAppGang/claudish/commit/e13980c2e398e04320ffc0b1d6c2dc7188ee0501))
+
+### Other Changes
+
+- v12.3.2 *(release)* ([`469ba5b`](https://github.com/MadAppGang/claudish/commit/469ba5b69b90a628c512e2e3a47bc155f2db60fc))
+
 ## [12.3.1] - 2026-10-20
 
 ### Bug Fixes
