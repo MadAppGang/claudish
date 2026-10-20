@@ -17,15 +17,9 @@
 import { log } from "../logger.js";
 import { loadConfig } from "../profile-config.js";
 import { builtinHooks } from "./builtins/index.js";
-import {
-  type HooksConfig,
-  hooksConfigDir,
-  parseHooksConfig,
-  reportBehaviorBlock,
-  reportProjectHooks,
-} from "./config.js";
+import { type HooksConfig, type WarnSink, hooksConfigDir, readHooksConfig } from "./config.js";
 import { HookEngine } from "./engine.js";
-import { loadUserHooks } from "./loader.js";
+import { type LoadError, loadUserHooks } from "./loader.js";
 import type { HostMode } from "./public.js";
 import { HookRegistry, type UserHookInput } from "./registry.js";
 
@@ -59,7 +53,32 @@ export function resetHookEngineForTests(): void {
   loadedEngine = null;
 }
 
-async function buildEngine(hostMode: HostMode): Promise<HookEngine> {
+/** What one load of the hook configuration produced, before an engine is built on it. */
+export interface HookSet {
+  config: HooksConfig;
+  registry: HookRegistry;
+  /** Modules or exports that were skipped, and why. */
+  errors: LoadError[];
+  /** A pre-hook-system `behavior` block is present in the global config. */
+  behaviorConfigFound: boolean;
+}
+
+export interface LoadHookSetOptions {
+  hostMode: HostMode;
+  /** Where the config-load reporters write (`readHooksConfig`). Default: stderr. */
+  warn?: WarnSink;
+  /**
+   * Where per-module load warnings go. Default: `warn`. `claudish hooks list` drops
+   * them, because each one is also in `errors`, which it prints.
+   */
+  moduleWarn?: WarnSink;
+}
+
+/**
+ * Read the global config's `hooks`, report what is no longer read, load the user
+ * modules and build the registry (built-ins first). Never throws.
+ */
+export async function loadHookSet(opts: LoadHookSetOptions): Promise<HookSet> {
   let raw: { hooks?: unknown; behavior?: unknown } = {};
   try {
     raw = loadConfig();
@@ -67,32 +86,39 @@ async function buildEngine(hostMode: HostMode): Promise<HookEngine> {
     log(`[hooks] config unreadable, built-in hooks only: ${errorText(err)}`);
   }
 
-  const config: HooksConfig = parseHooksConfig(raw.hooks);
-  reportBehaviorBlock(raw.behavior);
-  reportProjectHooks();
+  const config: HooksConfig = readHooksConfig(raw, opts.warn);
 
   let users: UserHookInput[] = [];
+  let errors: LoadError[] = [];
   try {
     const loaded = await loadUserHooks({
       modules: config.modules,
       configDir: hooksConfigDir(),
-      hostMode,
+      hostMode: opts.hostMode,
+      warn: opts.moduleWarn ?? opts.warn,
     });
     users = loaded.hooks;
+    errors = loaded.errors;
   } catch (err) {
     // The loader reports per module and does not throw; this guards the
     // promise contract against anything it did not anticipate.
     log(`[hooks] user hook loading failed, built-in hooks only: ${errorText(err)}`);
   }
 
-  const builtins = builtinHooks(config);
-  const engine = new HookEngine({
-    registry: new HookRegistry(builtins, users, config.severity),
+  return {
     config,
-    hostMode,
-  });
+    registry: new HookRegistry(builtinHooks(config), users, config.severity),
+    errors,
+    behaviorConfigFound: raw.behavior !== undefined && raw.behavior !== null,
+  };
+}
+
+async function buildEngine(hostMode: HostMode): Promise<HookEngine> {
+  const set = await loadHookSet({ hostMode });
+  const engine = new HookEngine({ registry: set.registry, config: set.config, hostMode });
+  const users = set.registry.hooks.filter((h) => h.source === "user").length;
   log(
-    `[hooks] engine ready (host ${hostMode}): ${builtins.length} built-in, ${users.length} user hook(s)`
+    `[hooks] engine ready (host ${hostMode}): ${set.registry.hooks.length - users} built-in, ${users} user hook(s)`
   );
   return engine;
 }
