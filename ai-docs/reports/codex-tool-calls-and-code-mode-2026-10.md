@@ -75,8 +75,12 @@ request shape from the design, not from the harness.
 
 - Re-run check: `ai-docs/benches/codex-code-mode/` (madbench; `classic`, `auto`, `auto-edit` on
   `cx@gpt-6.1-sol`, subscription only). First run 2026-10-20 on Claude Code 2.1.304: 15/15, 19/19 exec
-  scripts resumed, 0 input errors in tool_results. Needs `--concurrency 1` (cause unknown). Claude Code
-  2.1.303, where D1 lived, was not pinned.
+  scripts resumed, 0 input errors in tool_results. Second run with the `single-call` scenario (V3's
+  purpose on the subscription: 32–34 streamed deltas, forwarded once): 20/20 at `--concurrency 4`.
+  Claude Code 2.1.303, where D1 lived, was not pinned.
+- claudish defect found by the bench: `createTempSettingsFile` (`claude-runner.ts:815`) names the file
+  `settings-<Date.now()>.json`, so two sessions started in the same millisecond share one settings file
+  (status line, hooks). The bench spaces launches 100 ms apart until this is fixed.
 - Behaviour changes outside code mode, for the PR and release notes: `d6629064` identity-filters
   `instructions` on every `cx@`/`openai@` Responses request; a 401 whose forced refresh lands on another
   ChatGPT account is answered with the upstream 401, not resent (`1fe1b580`, `a808fab2`).
