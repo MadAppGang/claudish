@@ -2500,7 +2500,9 @@ async function main() {
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
   // after an identity check. Asynchronous, and once per root per process — the first
   // pane's own sweep (ensureSwept in startPaneSession) is this one, not a second `ps`.
-  void ensureSwept(sockRootFor()).catch(() => undefined);
+  // A nested server registers no session tools and never spawns a pane, so it has
+  // nothing to sweep.
+  if (!nested) void ensureSwept(sockRootFor()).catch(() => undefined);
 }
 
 /**

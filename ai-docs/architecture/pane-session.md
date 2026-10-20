@@ -818,6 +818,15 @@ on its panes: without them a SIGKILLed MCP server would leave REPLs running and 
    first spawn on a root, a process sweeps it once (`ensureSwept`): records whose owner is dead and
    whose watcher is gone are killed after identity checks and removed; a recordless
    `magmux-c<pid>-*.sock` whose owner is dead is probed and cleaned.
+
+   **A process table without this process decides nothing.** Every table read maps a `ps` failure
+   to `[]` (EPERM in a macOS sandbox that refuses the setuid `/bin/ps`, EAGAIN/EMFILE, `maxBuffer`),
+   and an empty table reads as "owner dead, watcher gone". So the sweep checks
+   `processTableTrusted` on each read and, when this process is absent, keeps the pane: no kill,
+   no unlink. Measured 2026-10-21: in the madbench home sandbox a voter's nested MCP server ran the
+   sweep on the shared root and deleted a live voter's launch dir and record about 4 s after it
+   started. A nested MCP server also does not sweep at all: it registers no session tools and never
+   spawns a pane.
 3. **Shutdown hooks.** SIGINT, SIGTERM, SIGHUP and, for the MCP server, stdin EOF/close run the
    owner's `before` (the MCP server ends its session and team records there) and then reap every pane
    in parallel, then exit 128 + n (0 for stdin). `stats-buffer.ts` used to exit synchronously on
