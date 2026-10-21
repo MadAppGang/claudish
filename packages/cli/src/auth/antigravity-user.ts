@@ -435,7 +435,8 @@ interface FetchAvailableModelsRawBase {
  * One `fetchAvailableModels` call, BEFORE any processing.
  *
  * `answered` means the backend sent a status. Its body is:
- * - `json`: a 2xx body that parsed. `value` is the parse, untouched.
+ * - `json`: a 2xx body that parsed. `text` is the response text exactly as
+ *   read (byte for byte, untrimmed); `value` is its parse, untouched.
  * - `not-json`: a 2xx body that did not parse.
  * - `read-failed`: a 2xx body that could not be read.
  * - `unread`: any non-2xx answer. That body is never read.
@@ -449,7 +450,7 @@ export type FetchAvailableModelsRaw =
       /** ISO-8601 UTC, taken when the response arrived. */
       fetchedAt: string;
       body:
-        | { kind: "json"; value: unknown }
+        | { kind: "json"; text: string; value: unknown }
         | { kind: "not-json" }
         | { kind: "unread" }
         | { kind: "read-failed" };
@@ -506,7 +507,7 @@ export async function fetchAntigravityAvailableModelsRaw(
     return { ...answered, body: { kind: "read-failed" } };
   }
   try {
-    return { ...answered, body: { kind: "json", value: JSON.parse(text) } };
+    return { ...answered, body: { kind: "json", text, value: JSON.parse(text) } };
   } catch {
     // `JSON.parse` throws SyntaxError on invalid text (Phase 0, M4).
     return { ...answered, body: { kind: "not-json" } };

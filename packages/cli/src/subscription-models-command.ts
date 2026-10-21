@@ -2,7 +2,8 @@
  * `claudish subscription models antigravity --raw --json`
  *
  * Prints the body of Antigravity's `fetchAvailableModels` exactly as the
- * backend sent it, inside one JSON envelope on ONE stdout line. The caller is
+ * backend sent it (the response text, byte for byte, as a JSON string) inside
+ * one JSON envelope on ONE stdout line. The caller is
  * the models-index wire-probe runner: a macOS LaunchAgent with no TTY and no
  * browser. It uploads stdout, and models-index seals the body as evidence of
  * what this account's subscription serves.
@@ -22,8 +23,8 @@
  * - A non-2xx `fetchAvailableModels` answer is not a failure (exit 0, no body).
  * - Each failure carries a fixed `class` and `code`, and the class decides the
  *   exit code.
- * - Before anything is written, the line is checked for the access token, the
- *   refresh token and the project id. A hit writes nothing to stdout and exits 1.
+ * - Before anything is written, the raw body text and the line are checked for
+ *   the access token, the refresh token and the project id. A hit exits 1.
  * - No prompt: stdin is never read, no browser path is reachable, claudish
  *   never writes the keychain, and every wait is bounded.
  */
@@ -128,8 +129,11 @@ export interface SubscriptionModelListEnvelope {
   /** `fetchAvailableModels` status, once it answered. */
   httpStatus?: number;
   failure?: SubscriptionModelListFailure;
-  /** The parsed 2xx body, verbatim. Success only. */
-  body?: unknown;
+  /**
+   * The 2xx response text, byte for byte as `res.text()` read it: never parsed
+   * and re-serialized, never trimmed. Success only.
+   */
+  body?: string;
 }
 
 /** The fixed usage line (stderr, exit 2). */
@@ -234,7 +238,7 @@ function addSecret(secrets: Secrets, value: string | null | undefined): void {
 function buildEnvelope(
   facts: Facts,
   failure?: SubscriptionModelListFailure,
-  body?: { value: unknown }
+  body?: string
 ): SubscriptionModelListEnvelope {
   return {
     schema: SUBSCRIPTION_MODEL_LIST_SCHEMA,
@@ -249,7 +253,7 @@ function buildEnvelope(
     tokenRefreshed: facts.tokenRefreshed,
     ...(facts.httpStatus !== undefined ? { httpStatus: facts.httpStatus } : {}),
     ...(failure ? { failure } : {}),
-    ...(body ? { body: body.value } : {}),
+    ...(body !== undefined ? { body } : {}),
   };
 }
 
@@ -357,6 +361,8 @@ const TIMED_OUT: unique symbol = Symbol("timed-out");
 interface RunResult {
   envelope: SubscriptionModelListEnvelope;
   exitCode: number;
+  /** The raw response text printed as `body`, kept for the secret guard. */
+  bodyText?: string;
 }
 
 function fail(facts: Facts, failure: SubscriptionModelListFailure): RunResult {
@@ -448,11 +454,13 @@ function classifyAvailableModels(
   }
   switch (raw.body.kind) {
     case "json": {
+      // The parse decides success; the TEXT is what gets printed.
       const incomplete = listFailure(raw.body.value, raw.status);
       if (incomplete) return fail(facts, incomplete);
       return {
-        envelope: buildEnvelope(facts, undefined, { value: raw.body.value }),
+        envelope: buildEnvelope(facts, undefined, raw.body.text),
         exitCode: EXIT.ok,
+        bodyText: raw.body.text,
       };
     }
     case "not-json":
@@ -514,16 +522,19 @@ export async function runAntigravityRawModelList(deps: SubscriptionModelsDeps): 
   const secrets: Secrets = { values: new Set() };
   let line: string;
   let exitCode: number;
+  let bodyText: string | undefined;
   try {
     const result = await determine(deps, secrets);
     line = `${JSON.stringify(result.envelope)}\n`;
     exitCode = result.exitCode;
+    bodyText = result.bodyText;
   } catch {
     deps.writeStderr(`${INTERNAL_ERROR_MESSAGE}\n`);
     return EXIT.internal;
   }
   for (const secret of secrets.values) {
-    if (line.includes(secret)) {
+    // The raw text too: an escaped form in the line cannot hide a credential.
+    if (line.includes(secret) || bodyText?.includes(secret)) {
       deps.writeStderr(`${SECRET_GUARD_MESSAGE}\n`);
       return EXIT.internal;
     }
