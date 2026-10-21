@@ -93,9 +93,37 @@ function makeTerminalSetupError(message: string): Error {
 /** A floor for when agy cannot be read — not a pinned target; the version comes from agy. */
 const AGY_FALLBACK_CLIENT_VERSION = "1.1.9";
 
+/** Where the presented client version came from: agy's own, or the floor. */
+export type AntigravityClientVersionSource = "agy" | "fallback";
+
+/** The client version this process presents, and which source it came from. */
+export interface AntigravityClientVersion {
+  version: string;
+  source: AntigravityClientVersionSource;
+}
+
+/**
+ * The client version this process presents: agy's own, else the floor.
+ *
+ * `source: "fallback"` is not cosmetic: the 1.1.9 floor hides every
+ * `gemini-4-argon-*` id from `fetchAvailableModels`, so a reader of that answer
+ * must be told it was asked with the floor.
+ */
+export function resolveAntigravityClientVersion(): AntigravityClientVersion {
+  const agy = getAgyClientVersion();
+  return agy
+    ? { version: agy, source: "agy" }
+    : { version: AGY_FALLBACK_CLIENT_VERSION, source: "fallback" };
+}
+
 /** The client version this process presents: agy's own, else the floor. */
 function antigravityClientVersion(): string {
-  return getAgyClientVersion() ?? AGY_FALLBACK_CLIENT_VERSION;
+  return resolveAntigravityClientVersion().version;
+}
+
+/** The Antigravity CLI's User-Agent for one given client version. */
+function userAgentFor(version: string): string {
+  return `antigravity/cli/${version} (aidev_client; os_type=${process.platform}; arch=${process.arch}; auth_method=consumer)`;
 }
 
 /**
@@ -114,7 +142,7 @@ function antigravityClientVersion(): string {
  * carrying a real Antigravity token, not to impersonate one.
  */
 export function buildAntigravityUserAgent(): string {
-  return `antigravity/cli/${antigravityClientVersion()} (aidev_client; os_type=${process.platform}; arch=${process.arch}; auth_method=consumer)`;
+  return userAgentFor(antigravityClientVersion());
 }
 
 let cachedAgProjectId: string | null = null;
@@ -394,6 +422,97 @@ function flattenAgentModelSorts(
   return ids.length > 0 ? ids : undefined;
 }
 
+/** What every raw `fetchAvailableModels` result records about the request it sent. */
+interface FetchAvailableModelsRawBase {
+  /** The URL called: `<host>/v1internal:fetchAvailableModels`. */
+  url: string;
+  /** The client version in the User-Agent this request presented. */
+  clientVersion: string;
+  clientVersionSource: AntigravityClientVersionSource;
+}
+
+/**
+ * One `fetchAvailableModels` call, BEFORE any processing.
+ *
+ * `answered` means the backend sent a status. Its body is:
+ * - `json`: a 2xx body that parsed. `value` is the parse, untouched.
+ * - `not-json`: a 2xx body that did not parse.
+ * - `read-failed`: a 2xx body that could not be read.
+ * - `unread`: any non-2xx answer. That body is never read.
+ *
+ * `unreachable` means `fetch` itself threw, so no status exists.
+ */
+export type FetchAvailableModelsRaw =
+  | (FetchAvailableModelsRawBase & {
+      kind: "answered";
+      status: number;
+      /** ISO-8601 UTC, taken when the response arrived. */
+      fetchedAt: string;
+      body:
+        | { kind: "json"; value: unknown }
+        | { kind: "not-json" }
+        | { kind: "unread" }
+        | { kind: "read-failed" };
+    })
+  | (FetchAvailableModelsRawBase & { kind: "unreachable"; error: unknown });
+
+/**
+ * Call `fetchAvailableModels` once and hand back what the backend sent,
+ * verbatim. There is no cache, no exclusion, no displayName handling and no
+ * `agentModelSorts` flattening; `getServedAntigravityModels` does all of that on
+ * top of this call.
+ *
+ * The URL, the version and the User-Agent are computed in ONE synchronous step
+ * before `fetch`. The result therefore names the version the request actually
+ * presented, and a caller that keys a cache to it stamps the right one.
+ *
+ * Never throws: every outcome is a variant of the result.
+ */
+export async function fetchAntigravityAvailableModelsRaw(
+  accessToken: string,
+  projectId: string,
+  opts?: { signal?: AbortSignal; now?: () => number }
+): Promise<FetchAvailableModelsRaw> {
+  const url = `${apiBase()}:fetchAvailableModels`;
+  const { version, source } = resolveAntigravityClientVersion();
+  const base: FetchAvailableModelsRawBase = {
+    url,
+    clientVersion: version,
+    clientVersionSource: source,
+  };
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "User-Agent": userAgentFor(version),
+      },
+      // NOTE: the body is `{ project }` — NOT `{ metadata }` (that 400s here).
+      body: JSON.stringify({ project: projectId }),
+      ...(opts?.signal ? { signal: opts.signal } : {}),
+    });
+  } catch (error) {
+    return { ...base, kind: "unreachable", error };
+  }
+  const fetchedAt = new Date((opts?.now ?? Date.now)()).toISOString();
+  const answered = { ...base, kind: "answered" as const, status: res.status, fetchedAt };
+  if (!res.ok) return { ...answered, body: { kind: "unread" } };
+  let text: string;
+  try {
+    text = await res.text();
+  } catch {
+    return { ...answered, body: { kind: "read-failed" } };
+  }
+  try {
+    return { ...answered, body: { kind: "json", value: JSON.parse(text) } };
+  } catch {
+    // `JSON.parse` throws SyntaxError on invalid text (Phase 0, M4).
+    return { ...answered, body: { kind: "not-json" } };
+  }
+}
+
 /**
  * Discover which model ids this account's Antigravity subscription serves — LIVE.
  *
@@ -432,20 +551,21 @@ export async function getServedAntigravityModels(
     return agServedCache;
   }
   try {
-    const res = await fetch(`${apiBase()}:fetchAvailableModels`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        // Built in the same synchronous step as `version` above, so the cache is
-        // stamped with the version this request actually presented.
-        "User-Agent": buildAntigravityUserAgent(),
-      },
-      // NOTE: the body is `{ project }` — NOT `{ metadata }` (that 400s here).
-      body: JSON.stringify({ project: projectId }),
-    });
-    if (res.ok) {
-      const data = (await res.json()) as FetchAvailableModelsResponse;
+    const raw = await fetchAntigravityAvailableModelsRaw(accessToken, projectId);
+    if (raw.kind === "unreachable") {
+      log(`[Antigravity] fetchAvailableModels error: ${raw.error}`);
+    } else if (raw.status < 200 || raw.status >= 300) {
+      log(`[Antigravity] fetchAvailableModels failed: ${raw.status}`);
+    } else if (raw.body.kind !== "json") {
+      log(
+        `[Antigravity] fetchAvailableModels error: ${
+          raw.body.kind === "not-json" ? "the body is not JSON" : "the body could not be read"
+        }`
+      );
+    } else {
+      // Still inside the `try`: a 2xx `null` body parses fine and then throws
+      // here, which must degrade exactly as before.
+      const data = raw.body.value as FetchAvailableModelsResponse;
       const servedIds = data.models ? Object.keys(data.models) : [];
       const defaultId =
         typeof data.defaultAgentModelId === "string" ? data.defaultAgentModelId : null;
@@ -507,11 +627,11 @@ export async function getServedAntigravityModels(
           ...(agentModelIds ? { agentModelIds } : {}),
         };
         agServedCacheAt = now;
-        agServedCacheVersion = version;
+        // The version the request actually presented, read in the same
+        // synchronous step as its User-Agent (it equals `version` above).
+        agServedCacheVersion = raw.clientVersion;
         return agServedCache;
       }
-    } else {
-      log(`[Antigravity] fetchAvailableModels failed: ${res.status}`);
     }
   } catch (err) {
     log(`[Antigravity] fetchAvailableModels error: ${err}`);
