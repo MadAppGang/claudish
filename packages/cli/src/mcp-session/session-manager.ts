@@ -100,6 +100,7 @@ import { projectsDir, transcriptPathFor } from "../session/session-discovery.js"
 import { TRUNCATION_NOTE, type TeamRunOutcome, classifyRunOutput } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
 import { sessionsDirFrom } from "./home-dir.js";
+import { buildInheritedSettingsLayer } from "./inherited-settings.js";
 import { hostPidFrom } from "./parent-session.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import type {
@@ -325,6 +326,9 @@ const UPSTREAM_ERROR_TAIL_BYTES = 64 * 1024;
  * versions that file alone, not `waits.jsonl` or a team record's `meta.json`.
  */
 const SPAWN_RECORD_SCHEMA = 1;
+
+/** The caller's settings layer, in the session dir (never in work_dir or setupFrom). */
+const INHERITED_SETTINGS = "inherited-settings.json";
 
 /** RUNNING activities that are not a tool name (§8 B). */
 // "hook": a settled turn held while session hooks run (§7.3); not a tool
@@ -841,6 +845,7 @@ export class SessionManager {
       claudeSessionId?: string;
       teamPath?: string;
       slots?: number;
+      setupFrom?: string;
     }
   ): void {
     const { kind, sessionId, parentClaudeSessionId, startedAt, ...rest } = record;
@@ -875,9 +880,14 @@ export class SessionManager {
     if (opts.sessionId !== undefined && this.sessions.has(opts.sessionId)) {
       throw new Error(`Session id already in use: ${opts.sessionId}`);
     }
-    const flags = opts.claudishFlags ?? [];
-    const flagCheck = checkChildFlags(flags);
+    const callerFlags = opts.claudishFlags ?? [];
+    const flagCheck = checkChildFlags(callerFlags);
     if (!flagCheck.ok) throw new Error(`invalid_args: ${flagCheck.message}`);
+    // Built before any pane, so a malformed settings file fails the call as invalid_args.
+    const inherited = opts.setupFrom
+      ? buildInheritedSettingsLayer(opts.setupFrom, callerFlags)
+      : { layer: null, restFlags: callerFlags };
+    let flags = callerFlags;
     const readAvailable = !flagsRemoveRead(flags);
     if (opts.prompt) {
       const refusal = deliveryRefusal(opts.prompt, readAvailable);
@@ -898,10 +908,15 @@ export class SessionManager {
       reservePanes(1, sockRootFor(parentEnv));
       let entry: SessionEntry;
       try {
-        entry = this.recordSession(opts);
+        entry = this.recordSession(opts, inherited.layer);
       } catch (err) {
         releasePaneReservations(1);
         throw err;
+      }
+      // The caller's `--settings` are inside the file: exactly one `--settings` reaches
+      // the child, since Claude Code keeps only the last one.
+      if (inherited.layer) {
+        flags = [...inherited.restFlags, "--settings", join(entry.sessionDir, INHERITED_SETTINGS)];
       }
       this.sessions.set(entry.info.sessionId, entry);
       uncount();
@@ -919,8 +934,14 @@ export class SessionManager {
     }
   }
 
-  /** `prompt.md`, `spawn.json` and the in-memory entry (STARTING). Throws before any pane. */
-  private recordSession(opts: SessionCreateOptions): SessionEntry {
+  /**
+   * `prompt.md`, `spawn.json`, `inherited-settings.json` (when there is a layer) and the
+   * in-memory entry (STARTING). Throws before any pane.
+   */
+  private recordSession(
+    opts: SessionCreateOptions,
+    inheritedLayer: Record<string, unknown> | null
+  ): SessionEntry {
     const sessionId = opts.sessionId ?? randomUUID().slice(0, 8);
     // Minted here: it is the child's transcript basename, known BEFORE the pane starts.
     const claudeSessionId = randomUUID();
@@ -942,7 +963,16 @@ export class SessionManager {
       model: opts.model,
       timeoutSeconds: timeout,
       claudeSessionId,
+      ...(opts.setupFrom ? { setupFrom: opts.setupFrom } : {}),
     });
+    // 0600: the caller's settings.local.json can carry `env` secrets.
+    if (inheritedLayer) {
+      writeFileSync(
+        join(sessionDir, INHERITED_SETTINGS),
+        `${JSON.stringify(inheritedLayer, null, 2)}\n`,
+        { encoding: "utf-8", mode: 0o600 }
+      );
+    }
 
     const cwd = opts.cwd ?? process.cwd();
     const parentEnv = opts.parentEnv ?? this.parentEnv;

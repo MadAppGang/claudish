@@ -24,6 +24,7 @@ import { loadHooksOnce } from "./hooks/index.js";
 import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
 import { initLogger, log } from "./logger.js";
 import { SessionManager } from "./mcp-session/index.js";
+import { resolveSetupFrom } from "./mcp-session/inherited-settings.js";
 import { parentSessionForCall } from "./mcp-session/parent-session.js";
 import { NESTED_INSTRUCTIONS, NESTED_MCP_TOOL_NAMES } from "./mcp/nested-mode.js";
 import {
@@ -1985,6 +1986,14 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           type: "string",
           description: "Working directory for the session (default: current directory)",
         },
+        setup_from: {
+          type: ["string", "null"],
+          description:
+            "Directory whose .claude/settings.json and settings.local.json the session " +
+            "inherits (enabled plugins, permissions, env), so a session in another work_dir " +
+            "keeps the caller's plugins and agents. Default: the caller's project directory, " +
+            "when work_dir differs from it. null keeps the session on work_dir's own settings only.",
+        },
       },
       required: ["model"],
     },
@@ -2034,6 +2043,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           timeoutSeconds: args.timeout_seconds as number | undefined,
           claudishFlags,
           cwd: workDir,
+          // Claude Code reads project settings only from the child's own cwd.
+          setupFrom: resolveSetupFrom(args.setup_from, workDir, process.cwd()),
           parentClaudeSessionId,
         });
 

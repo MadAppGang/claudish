@@ -146,6 +146,14 @@ export interface SessionCreateOptions {
   claudishFlags?: string[];
   cwd?: string;
   /**
+   * The directory whose `.claude/settings{,.local}.json` the child inherits. Claude
+   * Code reads project settings only from `<cwd>/.claude`, so a child in another
+   * `cwd` would otherwise lose every plugin the caller's project enables. The layer
+   * (with the caller's own `--settings` folded in) becomes the child's ONE
+   * `--settings` file, `<sessionDir>/inherited-settings.json`. Absent → today's flags.
+   */
+  setupFrom?: string;
+  /**
    * Use this id instead of minting a random one. Must be unique among live sessions;
    * a collision throws rather than silently adopting the existing session.
    */
