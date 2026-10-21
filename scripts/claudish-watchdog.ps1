@@ -290,6 +290,7 @@ function Set-State {
     param(
         [Nullable[int]]$ConsecutiveHangs = $null,
         [Nullable[int]]$ConsecutiveWedge = $null,
+        [Nullable[int]]$ConsecutiveGuiZombie = $null,
         # #185: UTC yyyy-MM-dd of the last MEASURED relaunch-preflight verdict.
         # '' (the default) leaves the stored value untouched — strings cannot
         # use the Nullable trick, and '' is never a valid stored date.
@@ -299,9 +300,11 @@ function Set-State {
     $obj = @{
         consecutiveHangs     = [int](Get-StateField $cur 'consecutiveHangs' 0)
         consecutiveWedge     = [int](Get-StateField $cur 'consecutiveWedge' 0)
+        consecutiveGuiZombie = [int](Get-StateField $cur 'consecutiveGuiZombie' 0)
     }
-    if ($null -ne $ConsecutiveHangs) { $obj.consecutiveHangs = [int]$ConsecutiveHangs }
-    if ($null -ne $ConsecutiveWedge) { $obj.consecutiveWedge = [int]$ConsecutiveWedge }
+    if ($null -ne $ConsecutiveHangs)     { $obj.consecutiveHangs = [int]$ConsecutiveHangs }
+    if ($null -ne $ConsecutiveWedge)     { $obj.consecutiveWedge = [int]$ConsecutiveWedge }
+    if ($null -ne $ConsecutiveGuiZombie) { $obj.consecutiveGuiZombie = [int]$ConsecutiveGuiZombie }
     $prevProbe = [string](Get-StateField $cur 'relaunchProbeDate' '')
     if ($prevProbe) { $obj.relaunchProbeDate = $prevProbe }
     if (-not [string]::IsNullOrEmpty($RelaunchProbeDate)) { $obj.relaunchProbeDate = $RelaunchProbeDate }
@@ -775,6 +778,75 @@ function Start-DockerEngine {
     return $false
 }
 
+# Gap 1 of #530: name the zombie-GUI state — engine down while the Docker
+# Desktop GUI process is PRESENT, persisting across cycles. Until this watch,
+# that state was invisible: the GUI's existence suppresses the relaunch path
+# (Start-DockerEngine above), so the cycle just logs ENGINE-DOWN and FATALs,
+# again and again, and nothing distinguishes "recovering" from "held dead by a
+# zombie GUI" (the 2026-08-29 shape, where a human had to reboot twice).
+#
+# Detection is DEFAULT-ON and pure-read (one bounded docker probe + one
+# process-table look). The kill half is behind its OWN consent file
+# (gui-zombie-kill.enabled, Test-GuiZombieKillOptIn) because killing a
+# user-session GUI from a SYSTEM scheduled task is invasive and must never be
+# a default. Even armed, the kill touches ONLY the GUI process — never
+# com.docker.service, never docker — so the proven GUI-absent relaunch path
+# fires on the next cycle and performs the actual recovery.
+#
+# Same seam idiom as the watches above: every probe is a scriptblock
+# defaulting to the LIVE call, pinned by the gap-1 Describe of
+# scripts/tests/claudish-watchdog-relaunch.Tests.ps1.
+function Invoke-EngineZombieWatch {
+    param(
+        [scriptblock]$EngineProbe = $null,
+        [scriptblock]$GuiProcessProbe = $null,
+        [scriptblock]$GuiKiller = $null
+    )
+    if (-not $EngineProbe)     { $EngineProbe = { Test-DockerEngine } }
+    if (-not $GuiProcessProbe) { $GuiProcessProbe = { Get-Process "Docker Desktop" -ErrorAction SilentlyContinue } }
+    if (-not $GuiKiller)       { $GuiKiller = { Stop-Process -Name "Docker Desktop" -ErrorAction SilentlyContinue } }
+
+    try {
+        # Consent read BEFORE anything could act on it: an unarmed machine
+        # gets the detection (free, names the state) but never even constructs
+        # a kill verdict.
+        $killArmed = Test-GuiZombieKillOptIn -ClaudishHome $ClaudishHome
+
+        $st = Get-State
+        $decision = Get-EngineZombieDecision `
+            -EngineUp   ([bool](& $EngineProbe)) `
+            -GuiPresent ([bool](& $GuiProcessProbe)) `
+            -ConsecutiveZombie ([int](Get-StateField $st 'consecutiveGuiZombie' 0)) `
+            -KillArmed  $killArmed
+
+        Set-State -ConsecutiveGuiZombie $decision.Streak
+
+        switch ($decision.Action) {
+            'arm' {
+                Write-Log "ENGINE-ZOMBIE: $($decision.Reason)"
+            }
+            'escalate' {
+                Write-Log "ENGINE: GUI zombie suspected (streak=$($decision.Streak)) — $($decision.Reason)"
+                Write-Log "ENGINE: GUI zombie ESCALATE: operator attention required — the GUI holds the relaunch path dead; a kill (if consented) only hands recovery to the next cycle"
+                Write-DiagLine "gui-zombie"
+                if ($decision.Kill) {
+                    try {
+                        & $GuiKiller
+                        Write-Log "ENGINE: GUI zombie kill requested (consent gui-zombie-kill.enabled) — the GUI-absent relaunch path fires next cycle"
+                    } catch {
+                        Write-Log "ENGINE: GUI zombie kill failed ($($_.Exception.Message)) — detection stands, no further action this cycle"
+                    }
+                }
+            }
+            'none' { }
+        }
+    } catch {
+        # Same discipline as the wedge watch: a watch that can kill a cycle is
+        # strictly worse than one that logs its own failure.
+        Write-Log "ENGINE-ZOMBIE-WATCH: internal error, ignored ($($_.Exception.Message))"
+    }
+}
+
 # --- Main ---
 
 # Dot-sourcing this file loads its functions without running a cycle, the same
@@ -810,6 +882,14 @@ try {
 catch {
     Write-Log "PROVENANCE: unavailable ($($_.Exception.Message))"
 }
+
+# #530 gap 1: one zombie-GUI read per cycle, right after provenance and before
+# the container steps. On a healthy cycle this costs one bounded docker probe
+# and a streak reset; on a zombie cycle it names the state that used to be
+# invisible between "ENGINE-DOWN" and "FATAL". It never repairs anything
+# itself — killing (consented) only hands the machine to the proven relaunch
+# path one cycle earlier.
+Invoke-EngineZombieWatch
 
 # Step 1: Container running?
 $inspect = Invoke-DockerBounded @("inspect", $ContainerName, "--format", "{{.State.Status}}")

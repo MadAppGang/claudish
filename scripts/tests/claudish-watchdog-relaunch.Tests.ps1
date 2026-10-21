@@ -175,3 +175,150 @@ Describe 'Start-DockerEngine (defaults stay live)' {
         $fn.Extent.Text | Should -Match '\$RecoveryTick\s*=\s*\{\s*Start-Sleep\s+-Seconds\s+10\s*\}'
     }
 }
+
+Describe 'Invoke-EngineZombieWatch (wiring, #530 gap 1)' {
+    # The zombie-GUI watch: engine down while the Docker Desktop GUI process
+    # is PRESENT, persisting across cycles. Detection default-on; the kill
+    # behind its own consent file. The streak persists ACROSS cycles through
+    # the state file — each It replays consecutive cycles by calling the watch
+    # repeatedly in one sandbox, exactly what the 15-minute task does over
+    # 45 minutes.
+    BeforeEach {
+        $script:SandboxHome = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $script:SandboxHome -Force | Out-Null
+
+        . $script:WatchdogPath -ClaudishHome $script:SandboxHome
+
+        $script:Spies = @{
+            EngineCalls = 0
+            GuiCalls    = 0
+            Kills       = 0
+        }
+        $script:EngineUpSpy   = { $script:Spies.EngineCalls++; $true }
+        $script:EngineDownSpy = { $script:Spies.EngineCalls++; $false }
+        $script:GuiAbsentSpy  = { $script:Spies.GuiCalls++; $null }
+        $script:GuiPresentSpy = { $script:Spies.GuiCalls++; [PSCustomObject]@{ Name = 'Docker Desktop' } }
+        $script:KillSpy       = { $script:Spies.Kills++ }
+        $script:KillThrows    = { throw 'access denied' }
+
+        $script:LogPath     = Join-Path $SandboxHome 'watchdog.log'
+        $script:StatePath   = Join-Path $SandboxHome 'watchdog-state.json'
+        $script:ConsentPath = Join-Path $SandboxHome 'gui-zombie-kill.enabled'
+    }
+
+    It 'healthy cycle: one engine probe, streak reset to 0, no marker, no kill' {
+        Invoke-EngineZombieWatch -EngineProbe $EngineUpSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+
+        $script:Spies.EngineCalls | Should -Be 1
+        $script:Spies.Kills | Should -Be 0
+        # A no-op cycle writes no log line at all — the file may not exist, and
+        # "no marker" must hold either way (no log file IS no marker).
+        $log = Get-Content $LogPath -Raw -ErrorAction SilentlyContinue
+        if (-not $log) { $log = '' }
+        $log | Should -Not -Match 'zombie'
+        (Get-Content $StatePath -Raw | ConvertFrom-Json).consecutiveGuiZombie | Should -Be 0
+    }
+
+    It 'engine down, GUI ABSENT: the relaunch path owns it — no count, no marker, no kill' {
+        Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiAbsentSpy -GuiKiller $KillSpy
+
+        $script:Spies.Kills | Should -Be 0
+        $log = Get-Content $LogPath -Raw -ErrorAction SilentlyContinue
+        if (-not $log) { $log = '' }
+        $log | Should -Not -Match 'zombie'
+        (Get-Content $StatePath -Raw | ConvertFrom-Json).consecutiveGuiZombie | Should -Be 0
+    }
+
+    It 'design matrix 3 — streak reaches the threshold with NO consent: marker + ESCALATE fire, ZERO kills' {
+        1..2 | ForEach-Object {
+            Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+        }
+        $log = Get-Content $LogPath -Raw
+        $log | Should -Match 'ENGINE-ZOMBIE: engine down with GUI present \(1/3\)'
+        $log | Should -Not -Match 'GUI zombie suspected'
+
+        Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+
+        $log = Get-Content $LogPath -Raw
+        $log | Should -Match 'ENGINE: GUI zombie suspected \(streak=3\)'
+        $log | Should -Match 'GUI zombie ESCALATE'
+        $script:Spies.Kills | Should -Be 0
+        (Get-Content $StatePath -Raw | ConvertFrom-Json).consecutiveGuiZombie | Should -Be 3
+    }
+
+    It 'design matrix 4 — threshold WITH consent: exactly ONE kill of the GUI, never the service' {
+        1..2 | ForEach-Object {
+            Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+        }
+        Set-Content -Path $ConsentPath -Value 'enabled' -NoNewline
+
+        Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+
+        $script:Spies.Kills | Should -Be 1
+        $log = Get-Content $LogPath -Raw
+        $log | Should -Match 'GUI zombie kill requested \(consent gui-zombie-kill\.enabled\)'
+    }
+
+    It 'wrong token in the consent file does NOT arm the kill — detection stands, hand stays off' {
+        1..2 | ForEach-Object {
+            Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+        }
+        Set-Content -Path $ConsentPath -Value 'yes please' -NoNewline
+
+        Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+
+        $log = Get-Content $LogPath -Raw
+        $log | Should -Match 'GUI zombie suspected \(streak=3\)'
+        $script:Spies.Kills | Should -Be 0
+    }
+
+    It 'reset on healthy: a zombie streak does not survive the engine coming back' {
+        1..2 | ForEach-Object {
+            Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+        }
+        Invoke-EngineZombieWatch -EngineProbe $EngineUpSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+        (Get-Content $StatePath -Raw | ConvertFrom-Json).consecutiveGuiZombie | Should -Be 0
+
+        # The next sighting starts over at 1 — the threshold is not inherited
+        # across a recovery, or one transient + one real outage would escalate.
+        Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+        (Get-Content $LogPath -Raw) | Should -Match '\(1/3\)'
+        $script:Spies.Kills | Should -Be 0
+    }
+
+    It 'a probe that throws is swallowed and logged — the watch can never kill the cycle' {
+        { Invoke-EngineZombieWatch -EngineProbe { throw 'wmi broken' } -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy } |
+            Should -Not -Throw
+
+        (Get-Content $LogPath -Raw) | Should -Match 'ENGINE-ZOMBIE-WATCH: internal error, ignored \(wmi broken\)'
+    }
+
+    It 'a kill that throws is caught and logged — detection stands, no further action' {
+        1..2 | ForEach-Object {
+            Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillSpy
+        }
+        Set-Content -Path $ConsentPath -Value 'enabled' -NoNewline
+
+        { Invoke-EngineZombieWatch -EngineProbe $EngineDownSpy -GuiProcessProbe $GuiPresentSpy -GuiKiller $KillThrows } |
+            Should -Not -Throw
+
+        (Get-Content $LogPath -Raw) | Should -Match 'GUI zombie kill failed \(access denied\)'
+    }
+
+    It 'defaults stay live: the seams fall back to the real engine probe, process probe and GUI kill' {
+        $tokens = $null; $errs = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:WatchdogPath, [ref]$tokens, [ref]$errs)
+
+        $fn = $ast.FindAll({
+            param($n)
+            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $n.Name -eq 'Invoke-EngineZombieWatch'
+        }, $true) | Select-Object -First 1
+
+        $fn | Should -Not -BeNullOrEmpty -Because 'the guard must have something to guard'
+        $fn.Extent.Text | Should -Match 'Test-DockerEngine'
+        $fn.Extent.Text | Should -Match 'Get-Process\s+"Docker Desktop"'
+        $fn.Extent.Text | Should -Match 'Stop-Process\s+-Name\s+"Docker Desktop"'
+    }
+}

@@ -52,10 +52,18 @@ $script:OptInToken              = 'enabled'
 # task-registering one silently — the sequencing collapse #172 AC4 exists to
 # prevent.
 $script:RelaunchPreflightOptInFileName = 'relaunch-preflight.enabled'
+# A THIRD opt-in file (#530 gap 1). The zombie-GUI DETECTION is default-on and
+# touches nothing (one bounded docker probe + one process-table read); this
+# consent arms only the KILL half — Stop-Process on the Docker Desktop GUI —
+# because killing a user-session GUI from a SYSTEM scheduled task is invasive
+# and must never be a default, even though the process it kills has, by the
+# time it fires, been proven useless across three consecutive cycles.
+$script:GuiZombieKillOptInFileName = 'gui-zombie-kill.enabled'
 
 function Get-ClaudishOptInFileName { return $script:OptInFileName }
 function Get-ClaudishOptInToken    { return $script:OptInToken }
 function Get-RelaunchPreflightOptInFileName { return $script:RelaunchPreflightOptInFileName }
+function Get-GuiZombieKillOptInFileName     { return $script:GuiZombieKillOptInFileName }
 
 function Get-ClaudishMachineName {
     <#
@@ -268,6 +276,20 @@ function Test-RelaunchPreflightOptIn {
     #>
     param([Parameter(Mandatory)][string]$ClaudishHome)
     return (Test-ClaudishOptIn -ClaudishHome $ClaudishHome -FileName $script:RelaunchPreflightOptInFileName)
+}
+
+function Test-GuiZombieKillOptIn {
+    <#
+        The zombie-GUI kill's consent, on its OWN file (#530 gap 1) — same
+        token semantics as the other two ('enabled', trimmed).
+
+        Deliberately does NOT gate the detection: a machine that never opted in
+        still gets the ENGINE: GUI zombie markers naming the state; it just
+        never has its GUI killed. The kill is the invasive half, the naming is
+        free.
+    #>
+    param([Parameter(Mandatory)][string]$ClaudishHome)
+    return (Test-ClaudishOptIn -ClaudishHome $ClaudishHome -FileName $script:GuiZombieKillOptInFileName)
 }
 
 function Enable-DrainAdmissionFreeze {
@@ -764,6 +786,73 @@ function Get-WedgeDecision {
     return [PSCustomObject]@{
         Action = 'escalate'; Wedge = $wedge; Signature = 'wedge'
         Reason = "confirmed ${wedge}/${ConfirmCycles}: $detail — container restarts CANNOT fix this (13 tried 2026-09-20); only a host reboot rebuilds the forwarder. Escalating, no action taken."
+    }
+}
+
+function Get-EngineZombieDecision {
+    <#
+        PURE decision function, same shape as Get-WedgeDecision: no I/O, no
+        clock, no process table — every input injected, every branch reachable
+        from a unit test.
+
+        Names the state that until #530 was invisible: the engine is down, the
+        Docker Desktop GUI process is PRESENT, and this has persisted across
+        cycles. A GUI that is up while its engine stays dead is not a recovery
+        in progress — it is a zombie holding the only recovery lever the
+        watchdog has: the proven GUI-absent relaunch path cannot fire while
+        the process exists (the 2026-08-29 lesson — the "relaunch" that ran
+        was a useless single-instance forward, and a human had to reboot a
+        second time).
+
+        Returns @{ Action = 'none'|'arm'|'escalate'; Streak = <int>;
+                  Kill = <bool>; Reason = <string> }
+
+          none      nothing zombie-shaped; reset the streak. `Reason` says
+                    which non-zombie state decided it — engine healthy, or
+                    engine down with the GUI ABSENT (that one belongs to the
+                    relaunch path, not to this watch).
+          arm       sighting below threshold: counted, logged, touched nothing.
+          escalate  the streak reached $ZombieThreshold while the GUI held.
+                    Marker + escalation.
+          Kill      $true ONLY on escalate AND $KillArmed — the caller's
+                    Test-GuiZombieKillOptIn consent. The kill is Stop-Process
+                    on the GUI alone, never the service, so the GUI-absent
+                    relaunch path fires on the NEXT cycle and does the real
+                    recovery. This function only computes the verdict; the
+                    actuator lives in the watchdog, behind the consent.
+    #>
+    param(
+        [Parameter(Mandatory)][bool]$EngineUp,
+        [Parameter(Mandatory)][bool]$GuiPresent,
+        [int]$ConsecutiveZombie = 0,
+        [bool]$KillArmed = $false,
+        [int]$ZombieThreshold = 3
+    )
+
+    if ($EngineUp) {
+        return [PSCustomObject]@{
+            Action = 'none'; Streak = 0; Kill = $false
+            Reason = 'engine healthy'
+        }
+    }
+    if (-not $GuiPresent) {
+        return [PSCustomObject]@{
+            Action = 'none'; Streak = 0; Kill = $false
+            Reason = 'engine down, GUI absent — the relaunch path owns this, not a zombie'
+        }
+    }
+
+    $streak = $ConsecutiveZombie + 1
+    if ($streak -lt $ZombieThreshold) {
+        return [PSCustomObject]@{
+            Action = 'arm'; Streak = $streak; Kill = $false
+            Reason = "engine down with GUI present ($streak/$ZombieThreshold) — counting, no action"
+        }
+    }
+
+    return [PSCustomObject]@{
+        Action = 'escalate'; Streak = $streak; Kill = $KillArmed
+        Reason = "GUI present but engine down across $streak consecutive cycles — the GUI holds the relaunch path dead"
     }
 }
 
@@ -2346,6 +2435,9 @@ Export-ModuleMember -Function @(
     'Test-ClaudishOptIn'
     'Test-RelaunchPreflightOptIn'
     'Get-RelaunchPreflightOptInFileName'
+    'Test-GuiZombieKillOptIn'
+    'Get-GuiZombieKillOptInFileName'
+    'Get-EngineZombieDecision'
     'Enable-DrainAdmissionFreeze'
     'Disable-DrainAdmissionFreeze'
     'New-EngineRelaunchRegistration'
