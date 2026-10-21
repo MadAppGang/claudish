@@ -578,8 +578,9 @@ export async function probeSocket(sockPath: string, magmuxMayLive: boolean): Pro
  * A failed dial's errno, with ENOENT checked against the path itself. Bun before 1.4
  * reports ENOENT for EVERY failed unix connect (measured, 1.3.10 on darwin: a refused
  * socket, a mode-000 socket and a plain file all answer ENOENT), so ENOENT alone would
- * read a live pane's socket as gone. The path decides instead: missing → ENOENT; not a
- * socket → ENOTSOCK; not writable → EACCES; any other socket → ECONNREFUSED, which is
+ * read a live pane's socket as gone. The path decides instead: missing (lstat's own
+ * ENOENT) → ENOENT; lstat failing otherwise → its errno; not a socket → ENOTSOCK; not
+ * writable → EACCES; any other socket → ECONNREFUSED, which is
  * stale only with pid evidence that its magmux is dead (`probeSocket`).
  */
 function dialErrno(reported: string, sockPath: string): string {
@@ -587,8 +588,9 @@ function dialErrno(reported: string, sockPath: string): string {
   let isSocket: boolean;
   try {
     isSocket = lstatSync(sockPath).isSocket();
-  } catch {
-    return "ENOENT";
+  } catch (e) {
+    // only lstat's own ENOENT proves the path gone; EACCES, EPERM, EIO prove nothing
+    return (e as NodeJS.ErrnoException).code ?? "unknown";
   }
   if (!isSocket) return "ENOTSOCK";
   try {

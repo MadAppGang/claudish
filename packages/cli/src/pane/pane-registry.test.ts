@@ -1012,6 +1012,22 @@ describe("a dial that reports ENOENT is checked against the path (Bun < 1.4 repo
     });
     expect(await probeWithEnoent(refused, false)).toEqual({ state: "stale", code: "ECONNREFUSED" });
   }, 20_000);
+
+  test("an lstat that fails with anything but ENOENT proves nothing: inconclusive, even with magmux dead", async () => {
+    const t = env();
+    const root = ensureSockRoot(t.sockRoot);
+    const hidden = join(root, "hidden");
+    mkdirSync(hidden, { mode: 0o700 });
+    const sock = join(hidden, "magmux-hidden.sock");
+    await staleSocket(sock);
+    chmodSync(hidden, 0o000); // lstat of the socket inside now fails with EACCES
+    try {
+      expect(await probeWithEnoent(sock, false)).toEqual({ state: "inconclusive", code: "EACCES" });
+    } finally {
+      chmodSync(hidden, 0o700);
+    }
+    expect(existsSync(sock)).toBe(true);
+  }, 20_000);
 });
 
 describe("the pane-socket probe: ENOENT, or ECONNREFUSED with magmux proven dead, is stale", () => {
