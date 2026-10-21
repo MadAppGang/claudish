@@ -1,0 +1,1308 @@
+{
+  "version": 3,
+  "lastUpdated": "2026-10-21T06:36:12.126Z",
+  "catalogGenerationId": "g-20261021063612126-17350b71",
+  "entries": [
+    {
+      "contractVersion": 3,
+      "modelId": "muse-spark-1.3",
+      "displayName": "Muse Spark 1.3",
+      "provider": "meta",
+      "aliases": [
+        "meta/muse-spark-1.3-contributor",
+        "meta/muse-spark-1.3",
+        "muse-spark-1.3-contributor"
+      ],
+      "status": "active",
+      "releaseDate": "2026-09-02",
+      "contextWindow": 1048576,
+      "subscriptionPlanIds": [
+        "llm-gateway-devpass",
+        "meta-muse-code",
+        "opencode-go",
+        "opencode-go-plus"
+      ],
+      "inputModalities": ["audio", "file", "image", "text", "video"],
+      "outputModalities": ["text"],
+      "aggregators": [
+        {
+          "sourceProviderId": "meta-muse-code",
+          "sourceCollectorId": "meta-muse-code-models",
+          "confidence": "scrape_verified",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "meta",
+            "routeProfileId": "muse-code-subscription"
+          },
+          "externalModelId": "muse-spark-1.3",
+          "reasoning": {
+            "mode": {
+              "status": "unknown"
+            },
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "responses",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "unknown"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                },
+                "default": "high"
+              },
+              "mode": {
+                "status": "unknown"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_04288df13535d80665f24f9daa9ca2c8",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_3e3fb2cf70d59eb8e0b9c1c2d15da18a",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_e7912689f4de354141898ee06d333353",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_2b9e2d5638126a00ae4393dea81e2570",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:27.910Z"
+              },
+              {
+                "evidenceId": "wev_06bb599d9ba7010e07acb6ad444e89e6",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:44:24.748Z"
+              }
+            ]
+          },
+          "contentUse": "standard",
+          "limits": {
+            "contextWindow": 1007997,
+            "maxOutputTokens": 128000
+          }
+        },
+        {
+          "sourceProviderId": "meta-muse-code",
+          "sourceCollectorId": "meta-muse-code-models",
+          "confidence": "scrape_verified",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "meta",
+            "routeProfileId": "muse-code-subscription"
+          },
+          "externalModelId": "muse-spark-1.3-contributor",
+          "reasoning": {
+            "mode": {
+              "status": "unknown"
+            },
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "responses",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "unknown"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                },
+                "default": "high"
+              },
+              "mode": {
+                "status": "unknown"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_16a7d869a66715a63ccd4fc2eacc496b",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_733171c27656ba67ea5d68c203ea8b1a",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_ac7343ae7a78e7f79bead3f3e8acc7c7",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_83c09da585cfb6fe63c733809336d189",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:27.910Z"
+              },
+              {
+                "evidenceId": "wev_f1011c00e234c622af7cbef52329377c",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:44:44.057Z"
+              }
+            ]
+          },
+          "contentUse": "contributor",
+          "limits": {
+            "contextWindow": 1007997,
+            "maxOutputTokens": 128000
+          }
+        },
+        {
+          "sourceProviderId": "meta",
+          "sourceCollectorId": "meta-model-api-docs",
+          "confidence": "scrape_verified",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "meta",
+            "routeProfileId": "direct-api"
+          },
+          "externalModelId": "muse-spark-1.3",
+          "pricing": {
+            "type": "flat",
+            "input": 1.25,
+            "output": 4.25,
+            "cachedRead": 0.15
+          },
+          "reasoning": {
+            "mode": {
+              "status": "unknown"
+            },
+            "request": {
+              "status": "supported",
+              "api": "responses",
+              "evidenceSourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                }
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "responses",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": {
+              "status": "unknown"
+            },
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "unknown"
+              },
+              "disable": {
+                "status": "unknown"
+              },
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                },
+                "default": {
+                  "status": "unknown"
+                }
+              },
+              "mode": {
+                "status": "unknown"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_0397824925b454f5bcbd61c54c580036",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:10.218Z"
+              },
+              {
+                "evidenceId": "wev_117e27d6b5024c07a75a0043357cead4",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:10.218Z"
+              },
+              {
+                "evidenceId": "wev_6c22d1c8007221fdb63a512a1f01ea8e",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:27.910Z"
+              },
+              {
+                "evidenceId": "wev_7d19d81a63e440eadf19a8c75f1a57e4",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/protocols.md",
+                "observedAt": "2026-10-21T06:35:27.271Z"
+              },
+              {
+                "evidenceId": "wev_8778e1445c2378beeeeb931713e332f3",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/models.md",
+                "observedAt": "2026-10-21T06:35:10.218Z"
+              }
+            ]
+          },
+          "contentUse": "standard"
+        },
+        {
+          "sourceProviderId": "meta",
+          "sourceCollectorId": "meta-model-api-docs",
+          "confidence": "scrape_verified",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "meta",
+            "routeProfileId": "direct-api"
+          },
+          "externalModelId": "muse-spark-1.3-contributor",
+          "pricing": {
+            "type": "flat",
+            "input": 0.1,
+            "output": 0.2,
+            "cachedRead": 0.002
+          },
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "responses",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": {
+              "status": "unknown"
+            },
+            "reasoning": {
+              "status": "unknown"
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_0f0e67b97618f96ad3f620e2106c55ca",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/models.md",
+                "observedAt": "2026-10-21T06:35:10.218Z"
+              },
+              {
+                "evidenceId": "wev_60907804155ec8303590fa114ace6ae7",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/protocols.md",
+                "observedAt": "2026-10-21T06:35:27.271Z"
+              },
+              {
+                "evidenceId": "wev_b1a412daaf4a2aa47514290d316c8a1b",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:27.910Z"
+              }
+            ]
+          },
+          "contentUse": "contributor"
+        },
+        {
+          "sourceProviderId": "opencode-go",
+          "sourceCollectorId": "popular-coding-subscriptions",
+          "confidence": "gateway_official",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "opencode",
+            "routeProfileId": "go-subscription"
+          },
+          "externalModelId": "muse-spark-1.3-contributor",
+          "reasoning": {
+            "request": {
+              "status": "supported",
+              "api": "responses",
+              "evidenceSourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                },
+                "default": "high"
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "responses",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "unknown"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                },
+                "default": "high"
+              },
+              "mode": {
+                "status": "not_applicable"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_47119607f4b1616cea77d3f61a9ba010",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_7bb0414812763fc9d314fe6b74a44000",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_90d2e91832e12cada18fa98e05293edb",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:10.218Z"
+              },
+              {
+                "evidenceId": "wev_ca8cb7a6f65308f8b4fc3466c882e7c1",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:10.218Z"
+              },
+              {
+                "evidenceId": "wev_8a70b5c935cf38684678b4fed38b3ea4",
+                "method": "endpoint-table",
+                "sourceUrl": "https://opencode.ai/v2/docs/console/go",
+                "observedAt": "2026-10-21T06:35:16.451Z"
+              },
+              {
+                "evidenceId": "wev_4d248b2e2b014555387c4e992ec29790",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:45:10.781Z"
+              },
+              {
+                "evidenceId": "wev_8667ab426cbbb56b218f38fd9d6cee4a",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:45:07.549Z"
+              },
+              {
+                "evidenceId": "wev_e44eaa84fcca24d6b1cf3871b8edb131",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:44:58.671Z"
+              }
+            ]
+          },
+          "contentUse": "contributor"
+        },
+        {
+          "sourceProviderId": "opencode-zen",
+          "sourceCollectorId": "opencode-zen-api",
+          "confidence": "gateway_official",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "opencode",
+            "routeProfileId": "zen"
+          },
+          "externalModelId": "muse-spark-1.3",
+          "pricing": {
+            "type": "flat",
+            "input": 1.25,
+            "output": 4.25,
+            "cachedRead": 0.15
+          },
+          "reasoning": {
+            "request": {
+              "status": "supported",
+              "api": "responses",
+              "evidenceSourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                }
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "responses",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "unknown"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                },
+                "default": {
+                  "status": "unknown"
+                }
+              },
+              "mode": {
+                "status": "not_applicable"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_3b3579784d7f42910baf0e1119b479dd",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_4e6f94c5bc04042cf9397d935f21c733",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:10.218Z"
+              },
+              {
+                "evidenceId": "wev_c6a19a94322f88a8abab3922f55bd93e",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:10.218Z"
+              },
+              {
+                "evidenceId": "wev_26236c23f7ed788827ab57341f86e97a",
+                "method": "endpoint-table",
+                "sourceUrl": "https://opencode.ai/v2/docs/console/models",
+                "observedAt": "2026-10-21T06:35:13.029Z"
+              },
+              {
+                "evidenceId": "wev_2440fb8df5af44fc7ea0d50272101ebf",
+                "method": "probe",
+                "observedAt": "2026-10-20T19:30:23.133Z"
+              },
+              {
+                "evidenceId": "wev_714628d77c14572e103911b2c4e170f9",
+                "method": "probe",
+                "observedAt": "2026-10-20T19:30:37.658Z"
+              },
+              {
+                "evidenceId": "wev_a4538225f29e5559938e62cea3470d15",
+                "method": "probe",
+                "observedAt": "2026-10-20T19:30:41.759Z"
+              }
+            ]
+          },
+          "contentUse": "standard"
+        },
+        {
+          "sourceProviderId": "openrouter",
+          "sourceCollectorId": "openrouter-api",
+          "confidence": "aggregator_reported",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "openrouter",
+            "routeProfileId": "gateway"
+          },
+          "externalModelId": "meta/muse-spark-1.3",
+          "pricing": {
+            "type": "flat",
+            "input": 1.25,
+            "output": 4.25,
+            "cachedRead": 0.15
+          },
+          "reasoning": {
+            "request": {
+              "status": "supported",
+              "api": "chat-completions",
+              "evidenceSourceUrl": "https://openrouter.ai/api/v1/models",
+              "enable": [
+                {
+                  "path": "/reasoning/enabled",
+                  "value": true
+                }
+              ],
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                },
+                "default": "medium"
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": [
+                {
+                  "path": "/reasoning/enabled",
+                  "value": true
+                }
+              ],
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                },
+                "default": "medium"
+              },
+              "mode": {
+                "status": "not_applicable"
+              }
+            },
+            "speed": {
+              "status": "not_applicable"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_34a10cf6cbe6d708f709b9cf07e66c66",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_3f44e9a9f1a410124454db5eec4f0471",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_70981244082f1739a9659dc36feb234a",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_81195a5527fb7aa3bc43b5991e37250a",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_d5792de03bb757566b46609e80f41b35",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_debc19c8d89f597df66385f7d8ef29b5",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_7f61c81b197018796e7d0355f1211d79",
+                "method": "docs",
+                "sourceUrl": "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens",
+                "observedAt": "2026-10-21T06:35:41.955Z"
+              },
+              {
+                "evidenceId": "wev_b84da5303b143ab05c251bf6983efdea",
+                "method": "docs",
+                "sourceUrl": "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens",
+                "observedAt": "2026-10-21T06:35:41.955Z"
+              },
+              {
+                "evidenceId": "wev_b9b7e400208288ec83af4f6a1ba13d29",
+                "method": "docs",
+                "sourceUrl": "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens",
+                "observedAt": "2026-10-21T06:35:41.955Z"
+              },
+              {
+                "evidenceId": "wev_4656abe7e30256b263b5ef861246ed2c",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:43:17.183Z"
+              },
+              {
+                "evidenceId": "wev_4766440fd3c8d7baccb1d8c7267b2509",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:43:17.183Z"
+              },
+              {
+                "evidenceId": "wev_51ab4bec8c05a1bf2f305a5b392f47a0",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:43:12.248Z"
+              }
+            ]
+          },
+          "contentUse": "standard"
+        },
+        {
+          "sourceProviderId": "openrouter",
+          "sourceCollectorId": "openrouter-api",
+          "confidence": "aggregator_reported",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "openrouter",
+            "routeProfileId": "gateway"
+          },
+          "externalModelId": "meta/muse-spark-1.3-contributor",
+          "pricing": {
+            "type": "flat",
+            "input": 0.1,
+            "output": 0.2,
+            "cachedRead": 0.002
+          },
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_tokens",
+            "toolsWithReasoning": {
+              "status": "unknown"
+            },
+            "reasoning": {
+              "status": "unknown"
+            },
+            "speed": {
+              "status": "rejected",
+              "path": "/service_tier"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_99e338f4399ac819b5350ccb372e17e8",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_efe49be85fb43f006fd3da7bee537a6a",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_6e332573149dbe993f08e74cf3fd82c3",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:45:03.331Z"
+              }
+            ]
+          },
+          "contentUse": "contributor"
+        }
+      ],
+      "supportsVision": true,
+      "supportsTools": true,
+      "supportsThinking": true,
+      "videoInput": true,
+      "videoOutput": false,
+      "reasoning": {
+        "supported": true,
+        "mandatory": true,
+        "control": "effort",
+        "efforts": ["max", "xhigh", "high", "medium", "low", "minimal"]
+      },
+      "endpoints": {
+        "openai": {
+          "api": "responses"
+        }
+      },
+      "tokenParam": "max_output_tokens"
+    },
+    {
+      "contractVersion": 3,
+      "modelId": "muse-wonder-full",
+      "displayName": "Muse Wonder Full",
+      "provider": "meta",
+      "aliases": ["muse-wonder-full-1.0-contributor", "muse-wonder-full-1.0"],
+      "status": "active",
+      "subscriptionPlanIds": ["meta-muse-code"],
+      "inputModalities": ["image", "text"],
+      "outputModalities": ["text"],
+      "aggregators": [
+        {
+          "sourceProviderId": "meta-muse-code",
+          "sourceCollectorId": "meta-muse-code-models",
+          "confidence": "scrape_verified",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "meta",
+            "routeProfileId": "muse-code-subscription"
+          },
+          "externalModelId": "muse-wonder-full-1.0",
+          "reasoning": {
+            "mode": {
+              "status": "unknown"
+            },
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "responses",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "unknown"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                },
+                "default": "high"
+              },
+              "mode": {
+                "status": "unknown"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_8e9c40c0dd80a939c62eff22366e1dec",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_ad799ecc20b0ce76dfe937191473c431",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_cb53fb5a05694ca659488c2d98043096",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_3f065bca1a277f0890e3dd4570914522",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:27.910Z"
+              },
+              {
+                "evidenceId": "wev_5471931bb686382d2b574d3d37a2a741",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:45:08.110Z"
+              }
+            ]
+          },
+          "contentUse": "standard",
+          "limits": {
+            "contextWindow": 1007997,
+            "maxOutputTokens": 128000
+          }
+        },
+        {
+          "sourceProviderId": "meta-muse-code",
+          "sourceCollectorId": "meta-muse-code-models",
+          "confidence": "scrape_verified",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "meta",
+            "routeProfileId": "muse-code-subscription"
+          },
+          "externalModelId": "muse-wonder-full-1.0-contributor",
+          "reasoning": {
+            "mode": {
+              "status": "unknown"
+            },
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "responses",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "unknown"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "xhigh": "xhigh",
+                  "high": "high",
+                  "medium": "medium",
+                  "low": "low",
+                  "minimal": "minimal"
+                },
+                "default": "high"
+              },
+              "mode": {
+                "status": "unknown"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_0a57ebf68ea64602c074c4eff114b06e",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_7826bf693273f06864c33779136b7def",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_837893dd748459654818fd93d4f2c2ec",
+                "method": "api",
+                "sourceUrl": "https://api.meta.ai/muse-code/models",
+                "observedAt": "2026-10-21T05:42:00.668Z"
+              },
+              {
+                "evidenceId": "wev_bf9c52787c73750eb9effb254621c2ed",
+                "method": "docs",
+                "sourceUrl": "https://dev.meta.ai/docs/reasoning.md",
+                "observedAt": "2026-10-21T06:35:27.910Z"
+              },
+              {
+                "evidenceId": "wev_268907488b19d2fb8c612e99201423cc",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:45:26.408Z"
+              }
+            ]
+          },
+          "contentUse": "contributor",
+          "limits": {
+            "contextWindow": 1007997,
+            "maxOutputTokens": 128000
+          }
+        }
+      ],
+      "reasoning": {
+        "supported": true,
+        "control": "effort",
+        "efforts": ["max", "xhigh", "high", "medium", "low", "minimal"],
+        "defaultEffort": "high"
+      }
+    }
+  ],
+  "models": [],
+  "plans": [
+    {
+      "contractVersion": 3,
+      "id": "meta-muse-code",
+      "displayName": "Muse Code",
+      "provider": "meta",
+      "pricing": [
+        {
+          "period": "monthly",
+          "price": 5,
+          "currency": "USD",
+          "description": "Everyday Usage: Best for shipping your first projects",
+          "tier": "Everyday Usage"
+        },
+        {
+          "period": "monthly",
+          "price": 15,
+          "currency": "USD",
+          "description": "High Usage: Best for bigger projects that need serious coding power",
+          "tier": "High Usage"
+        },
+        {
+          "period": "monthly",
+          "price": 50,
+          "currency": "USD",
+          "description": "Power Usage: Best for ambitious work with intense coding workflows",
+          "tier": "Power Usage"
+        },
+        {
+          "period": "monthly",
+          "price": 200,
+          "currency": "USD",
+          "description": "Maximum Usage: Best for the most demanding coding use cases",
+          "tier": "Maximum Usage"
+        }
+      ],
+      "modelDiscovery": "catalog",
+      "inclusions": [
+        {
+          "kind": "provider_model",
+          "sourceText": "muse-wonder-full-1.0-contributor",
+          "provider": "meta-muse-code",
+          "externalModelId": "muse-wonder-full-1.0-contributor",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "muse-wonder-full"
+          },
+          "tierStatus": "subset",
+          "tiers": ["Power Usage", "Maximum Usage"]
+        },
+        {
+          "kind": "provider_model",
+          "sourceText": "muse-wonder-full-1.0",
+          "provider": "meta-muse-code",
+          "externalModelId": "muse-wonder-full-1.0",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "muse-wonder-full"
+          },
+          "tierStatus": "subset",
+          "tiers": ["Power Usage", "Maximum Usage"]
+        },
+        {
+          "kind": "provider_model",
+          "sourceText": "muse-wonder-1.0-contributor",
+          "provider": "meta-muse-code",
+          "externalModelId": "muse-wonder-1.0-contributor",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "muse-wonder"
+          },
+          "tierStatus": "all"
+        },
+        {
+          "kind": "provider_model",
+          "sourceText": "muse-wonder-1.0",
+          "provider": "meta-muse-code",
+          "externalModelId": "muse-wonder-1.0",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "muse-wonder"
+          },
+          "tierStatus": "all"
+        },
+        {
+          "kind": "provider_model",
+          "sourceText": "muse-spark-1.3-contributor",
+          "provider": "meta-muse-code",
+          "externalModelId": "muse-spark-1.3-contributor",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "muse-spark-1.3"
+          },
+          "tierStatus": "all"
+        },
+        {
+          "kind": "provider_model",
+          "sourceText": "muse-spark-1.3",
+          "provider": "meta-muse-code",
+          "externalModelId": "muse-spark-1.3",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "muse-spark-1.3"
+          },
+          "tierStatus": "all"
+        },
+        {
+          "kind": "provider_model",
+          "sourceText": "muse-spark-1.2-contributor",
+          "provider": "meta-muse-code",
+          "externalModelId": "muse-spark-1.2-contributor",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "muse-spark-1.2"
+          },
+          "tierStatus": "all"
+        },
+        {
+          "kind": "provider_model",
+          "sourceText": "muse-spark-1.2",
+          "provider": "meta-muse-code",
+          "externalModelId": "muse-spark-1.2",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "muse-spark-1.2"
+          },
+          "tierStatus": "all"
+        }
+      ],
+      "features": [
+        "Access to Muse Spark, Muse Wonder and Muse Image",
+        "Send 10-50 prompts every 5 hours, including image and video uploads",
+        "Use voice mode",
+        "Get access to web search",
+        "5x more usage than the Everyday Usage plan",
+        "Access to the most powerful Muse models, including Muse Wonder Full",
+        "20x more usage than the Everyday Usage plan",
+        "80x more usage than the Everyday Usage plan"
+      ],
+      "lastUpdated": "2026-10-21T05:42:00.668Z",
+      "routeStatus": "supported",
+      "route": {
+        "routeId": "meta",
+        "routeProfileId": "muse-code-subscription"
+      },
+      "membershipRequirements": [
+        {
+          "membershipId": "meta-muse-code-live",
+          "authority": "authoritative",
+          "requiredForActivation": true,
+          "maxAgeHours": 48
+        }
+      ],
+      "membershipCoverage": {
+        "status": "complete",
+        "observedAt": "2026-10-21T05:42:00.668Z",
+        "expiresAt": "2026-10-23T05:42:00.668Z"
+      }
+    }
+  ],
+  "routeRegistry": {
+    "generationId": "g-20261021063612126-17350b71",
+    "registry": {
+      "contractVersion": 3,
+      "registryVersion": "3.7.0",
+      "routes": {
+        "meta": {
+          "routeId": "meta",
+          "consumerProviderId": "meta",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "meta-direct",
+              "credentialProfileId": "meta-api-key",
+              "nativeModelProviders": ["meta"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.meta.ai/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://api.meta.ai/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://api.meta.ai/v1"
+                }
+              },
+              "admission": "docs_roster"
+            },
+            "muse-code-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "meta-muse-code",
+              "credentialProfileId": "meta-muse-code-oauth",
+              "nativeModelProviders": ["meta"],
+              "apis": {
+                "responses": {
+                  "baseUrl": "https://api.meta.ai/v1"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        },
+        "opencode": {
+          "routeId": "opencode",
+          "consumerProviderId": "opencode",
+          "profiles": {
+            "zen": {
+              "kind": "gateway",
+              "endpointProfileId": "opencode-zen",
+              "credentialProfileId": "opencode-zen-api-key",
+              "nativeModelProviders": [],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://opencode.ai/inference/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://opencode.ai/inference/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://opencode.ai/inference/v1"
+                },
+                "gemini": {
+                  "baseUrl": "https://opencode.ai/inference/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "systemone": {
+              "kind": "gateway",
+              "endpointProfileId": "opencode-zen-systemone",
+              "credentialProfileId": "opencode-zen-api-key",
+              "nativeModelProviders": [],
+              "apis": {},
+              "admission": "api_roster"
+            },
+            "go-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "opencode-go",
+              "credentialProfileId": "opencode-go-token",
+              "nativeModelProviders": [],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://opencode.ai/inference/go/openai/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://opencode.ai/inference/go/openai/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://opencode.ai/inference/go/anthropic/v1"
+                },
+                "gemini": {
+                  "baseUrl": "https://opencode.ai/inference/go/google/v1beta"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        },
+        "openrouter": {
+          "routeId": "openrouter",
+          "consumerProviderId": "openrouter",
+          "profiles": {
+            "gateway": {
+              "kind": "gateway",
+              "endpointProfileId": "openrouter-gateway",
+              "credentialProfileId": "openrouter-api-key",
+              "nativeModelProviders": [],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://openrouter.ai/api/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://openrouter.ai/api/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://openrouter.ai/api/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "decisions": {
+              "kind": "gateway",
+              "endpointProfileId": "openrouter-decisions",
+              "credentialProfileId": "openrouter-api-key",
+              "nativeModelProviders": [],
+              "apis": {},
+              "admission": "api_roster"
+            }
+          }
+        }
+      }
+    }
+  }
+}

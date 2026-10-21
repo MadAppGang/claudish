@@ -188,7 +188,8 @@ every runtime file (`output.log`, `events.jsonl`, `tokens.json`, `waits.jsonl`, 
   "startedAt": "2026-10-02T10:00:00.000Z",
   "model": "<as the caller asked for it>",
   "timeoutSeconds": 600,             // effective: min(requested ?? 600, 3600)
-  "claudeSessionId": "<the child's uuid>"
+  "claudeSessionId": "<the child's uuid>",
+  "setupFrom": "/abs/caller/project" // OPTIONAL — present only when the child inherits a settings layer
 }
 ```
 
@@ -334,6 +335,60 @@ because the records carry no session id and a shared path interleaves 20 concurr
 into one unattributable file. The capture **redacts at write time** now that it is no longer
 only a path a user opted into: a 401/403 body routinely echoes the credential that failed,
 and `get_diagnostics` hands these records to an agent.
+
+### A work_dir child inherits the caller's settings layer
+
+Claude Code reads project-scope settings (`enabledPlugins`, hooks, permissions, `env`) only from
+`<cwd>/.claude/settings{,.local}.json`; it does not walk up to the repository root. A
+`create_session` child runs with `work_dir` as its cwd, so before MTL-185 every plugin the
+caller's project enables was off in it and `--agent dev:qa-engineer` was refused
+(`agent_rejected`). Measured on Claude Code 2.1.306 (session `dev-fix-20261022-023522-f75563b5`):
+
+| Child cwd | Flags | Agents listed |
+|---|---|---|
+| caller project (E1) | none | the full list (24) |
+| sandbox inside the repo (E2) | none | the 5 built-ins |
+| sandbox inside the repo (E8, E16) | `--settings` = the caller's layer | identical to E1 |
+| sandbox outside the repo (E5) | `--settings` = the caller's layer | user-scope installs only: `dev` at the user row's version (9.2.0, not 9.4.0); `designer`, `madbench`, `code-search`, `code-simplifier` absent |
+| sandbox outside the repo (E13) | the layer + one `--plugin-dir` per install row | identical to E1 |
+
+What `createSession` does now (`mcp-session/inherited-settings.ts`, `session-manager.ts`):
+
+- `setup_from` defaults to the server's cwd (the caller's project) and is skipped when it resolves
+  to the child's own cwd, whose files Claude Code already reads. `setup_from: null` opts out: the
+  child's argv and files are byte-for-byte what they were. An explicit `setup_from` that is not an
+  existing directory, or a value that is neither a string nor null, is refused as `invalid_args`;
+  the implicit default is not checked.
+- The layer is `settings.json`, then `settings.local.json`, then every caller `--settings` value
+  (both `--settings v` and `--settings=v`), merged in that order: objects deep, arrays
+  concatenated without duplicates, scalars later-wins.
+- **Exactly one `--settings` reaches the child.** Claude Code keeps only the LAST one (E14: the
+  root settings then `{}` lists the 5 built-ins; E15, reversed, the full list), and claudish's
+  child runner merges only the first bare `--settings` into its own overlay (`claude-runner.ts`).
+  A second token would replace either the inherited layer or claudish's overlay (statusLine,
+  `forceLoginMethod`, `editorMode`), and losing the overlay fails the pane at boot. So the caller's
+  `--settings` are folded into the file and removed from argv.
+- `permissions.additionalDirectories` is removed: it is `--add-dir` in settings form, and the main
+  checkout's `settings.local.json` carries one that would re-open reads outside `work_dir`.
+- The layer is written to `<sessionDir>/inherited-settings.json`, mode 0600, because
+  `settings.local.json` can carry `env` secrets. Nothing is written to `work_dir` or `setup_from`.
+  `spawn.json` records `setupFrom`. A file that is not a JSON object fails the call as
+  `invalid_args`, before any pane starts.
+
+Known gaps, not carried: exact plugin versions outside the repo (needs per-row `--plugin-dir`,
+E13, which depends on Claude Code's undocumented install-row keying); project `.claude/skills`,
+`.claude/commands` and `.mcp.json`; project hooks with relative paths, which resolve against
+`work_dir`. `team` needs none of this: its slots run in the server's cwd.
+
+An inherited layer also turns on the caller's plugin hooks in the child, and those hooks keep
+per-cwd state: in the live run they wrote `.claude/.coaching/state.json` and `.mnemex/` into the
+sandbox. A `work_dir` that must stay pristine needs `setup_from: null`.
+
+To re-measure the table, ask Claude Code for an agent that does not exist:
+`(cd <dir> && env -u CLAUDECODE claude <flags> --agent __probe__ -p hi </dev/null)` prints
+`--agent '__probe__' not found. Available agents: …` and exits before any model request, so a
+matrix of cwds and flag sets costs nothing. `env -u CLAUDECODE` lets it run from inside a
+session.
 
 ## MCP Tools (15 total)
 

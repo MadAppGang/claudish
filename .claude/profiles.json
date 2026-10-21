@@ -87,6 +87,15 @@
             }
           }
         }
+      },
+      "mcpServers": {
+        "linear-server": {
+          "type": "http",
+          "url": "https://mcp.linear.app/mcp",
+          "headers": {
+            "Authorization": "Bearer ${LINEAR_API_KEY}"
+          }
+        }
       }
     }
   },

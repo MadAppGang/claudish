@@ -14,6 +14,14 @@ Claude Code resolves its compaction point as `min(CLAUDE_CODE_AUTO_COMPACT_WINDO
 
 The status line is a generated **shell one-liner** (and a generated JS file on Windows), so TypeScript cannot catch a typo in it — test the generated artifact by executing it (`status-line-context.test.ts`). The token file's path is ONE rule, `resolveTokenFilePath` in `session/token-file.ts`, used by the tracker that writes it, the status line and the end-of-session summary: an ASSIGNED `CLAUDISH_TOKEN_FILE` (a team slot's or MCP session's own path; tests use it too), else `<home>/.claudish/tokens-<port>.json` with `<home>` read `$HOME`-first — Bun's `os.homedir()` ignores a runtime `HOME`, so a tracker that called it wrote a file the summary never read under a redirected HOME. claude-runner publishes the session's file to Claude Code as both `CLAUDISH_TOKEN_FILE` and `CLAUDISH_PUBLISHED_TOKEN_FILE`; when a claudish started from that session's Bash tool sees the two equal, the file is its parent's status-line file, not an assignment, and it keeps its own (sharing one made each status line show the other's model and cost). Bash integer division truncates where JS `Math.round` rounds, so the bash variant uses `((x*200/w)+1)/2` to keep both platforms on the same number.
 
+## Bare-name context-window lookup
+
+`resolveLocalContextWindow` routes a bare name first, then asks discovery and the slim
+catalog for the primary hop's wire id on that provider. The canonical model id can differ
+from the served id (`muse-wonder-full` → `muse-wonder-full-1.0`); discovery keyed by the
+canonical id misses the account's served window. A slim-catalog miss by wire id still tries
+the canonical model id, so canonical-keyed windows remain available.
+
 ## Context Tracking for Local Models
 
 Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conversation context** each request, not incremental tokens. The `writeTokenFile` function uses assignment (`=`) not accumulation (`+=`) for input tokens to handle this correctly.

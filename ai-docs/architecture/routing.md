@@ -41,7 +41,7 @@ claudish --model ollama@<model>:3 "task"   # 3 concurrent requests
 - `dv@`, `devin@` → Devin (Cognition/Codeium subscription — see `ai-docs/architecture/providers/devin.md`)
 - `gk@` → Grok Build subscription (SuperGrok / X Premium+ — see `ai-docs/architecture/providers/grok-subscription.md`). `grok@` stays with the METERED `x-ai` provider
 - `x-ai@`, `xai@`, `grok@` → xAI direct API, metered (`XAI_API_KEY`)
-- `muse@` → Muse Code subscription (`meta-muse-code`: `claudish login muse`, or the Muse CLI's Keychain login; see `ai-docs/architecture/providers/meta-muse-code.md`). No route binding yet, so only an explicit `muse@<wire id>` reaches it
+- `muse@` → Muse Code subscription (`meta-muse-code`: `claudish login muse`, or the Muse CLI's Keychain login; see `ai-docs/architecture/providers/meta-muse-code.md`). Route binding `meta/muse-code-subscription` lets mapped subscription connections lead bare-name routing, subject to membership, credential and availability filters
 - `meta@` → Meta Model API, metered (`meta`, `META_API_KEY`, route `meta/direct-api`). Until `ca4be53b` `meta` was an `ollamacloud` shortcut; it moved with no alias, so an old `meta@llama-…` spec now goes to Meta
 - `llama@`, `oc@` → OllamaCloud
 - `litellm@`, `ll@` → LiteLLM (requires LITELLM_BASE_URL)
@@ -332,9 +332,11 @@ in, with nothing on screen to say so.
 Jack's decision: a contributor id is never chosen for the user, on any route. One typed exactly
 (`meta@muse-spark-1.3-contributor`) is sent verbatim.
 
-`isOptInWireId` (`providers/content-use.ts`) matches `-contributor` and `-contributor-free` on the
-last path segment. It is enforced where catalog data enters memory, not at each reader, so a
-reader added later inherits it:
+The connection rule (`providers/content-use.ts`, decision 2026-10-22) reads `contentUse` first:
+`contributor` means opt-in; `standard` never means opt-in, even with a contributor suffix.
+Without the field, `isOptInWireId` matches `-contributor` and `-contributor-free` on the last
+path segment. The connection rule is enforced where catalog data enters memory, not at each
+reader, so a reader added later inherits it:
 
 | Entry point | What it does |
 |---|---|
@@ -354,9 +356,10 @@ and shows no drop. Measured on the pinned generation `g-20261016053727894-8a7437
 models): three chains changed, and each lost only `zengo@<id>-contributor` (`gemini-4-argon`,
 `muse-spark-1.3`, `muse-spark-1.2`).
 
-**Removal trigger:** models-index publishes a content-use field on every route (backend task M3,
-`ai-docs/reports/BACKEND_TASKS_meta_muse_code_route-20261016.md`). Until then this is the one
-wire-id name rule claudish keeps.
+**Suffix-fallback removal trigger:** models-index publishes `contentUse` on every connection
+(backend task M3, `ai-docs/reports/BACKEND_TASKS_meta_muse_code_route-20261016.md`). Readers with
+only a wire id still use the suffix rule. Until then this is the one wire-id name rule claudish
+keeps.
 
 ## Route bindings: which claudish provider a catalog route means
 

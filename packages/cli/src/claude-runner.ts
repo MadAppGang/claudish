@@ -1473,12 +1473,14 @@ async function resolveLocalContextWindow(
 ): Promise<{ modelId: string; window: number | null } | null> {
   const parsed = parseModelSpec(spec);
   let provider = parsed.provider;
+  let wireId = parsed.model;
   if (!parsed.isExplicitProvider) {
     // Bare name: resolve the backend the proxy will actually pick — the same
     // (memoized, process-shared) routing the proxy runs on the first request.
     const plan = await route(spec);
     if (plan.kind !== "ok") return null;
     provider = plan.primary.provider;
+    wireId = parseModelSpec(plan.primary.modelSpec).model;
   }
   // Live discovery wins over the catalog: for subscription endpoints the
   // real window depends on the caller's tier (Kimi's k3 is 1M only on
@@ -1486,8 +1488,9 @@ async function resolveLocalContextWindow(
   // Providers without a modelDiscovery descriptor short-circuit to
   // undefined without a network call, so this stays free for everyone else.
   const win =
-    (await discoverContextWindow(provider, parsed.model)) ??
-    lookupModelForProvider(parsed.model, provider, cachePath);
+    (await discoverContextWindow(provider, wireId)) ??
+    lookupModelForProvider(parsed.model, provider, cachePath) ??
+    (wireId !== parsed.model ? lookupModelForProvider(wireId, provider, cachePath) : null);
   return {
     modelId: parsed.model,
     window: typeof win === "number" && win > 0 ? win : null,
