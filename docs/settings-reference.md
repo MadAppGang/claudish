@@ -213,19 +213,19 @@ The **control variables** steer claudish itself: `CLAUDISH_CONFIG`, `CLAUDISH_PA
 | `MINIMAX_API_KEY` | MiniMax (`mm@`, `mmax@`) | | https://platform.minimax.io/user-center/basic-information/interface-key (China platform: https://www.minimaxi.com/, and set `MINIMAX_BASE_URL`) |
 | `MINIMAX_CODING_API_KEY` | MiniMax Coding Plan (`mmc@`) | | https://platform.minimax.io/ |
 | `MOONSHOT_API_KEY` | Kimi/Moonshot (`kimi@`, `moon@`) | `KIMI_API_KEY` | https://platform.moonshot.cn/ |
-| `KIMI_CODING_API_KEY` | Kimi Coding Plan (`kc@`); also accepts OAuth via `claudish --kimi-login` | | https://kimi.com/code |
+| `KIMI_CODING_API_KEY` | Kimi Coding Plan (`kc@`); also accepts OAuth via `claudish --kimi-login` | | https://www.kimi.com/code |
 | `ZHIPU_API_KEY` | GLM/Zhipu direct API (`glm@`, `zhipu@`) | `GLM_API_KEY` | https://open.bigmodel.cn/ |
 | `GLM_CODING_API_KEY` | GLM Coding Plan at Z.AI (`gc@`) | `ZAI_CODING_API_KEY` | https://z.ai/subscribe |
-| `ZAI_API_KEY` | Z.AI Anthropic-compatible API (`zai@`) | | https://z.ai/ |
+| `ZAI_API_KEY` | Z.AI Anthropic-compatible API (`zai@`) | | https://z.ai/manage-apikey/apikey-list |
 | `SAKANA_API_KEY` | Sakana Fugu API / token plan (`sakana@`, `fugu@`) | | https://console.sakana.ai/get-started |
 | `SAKANA_CODING_API_KEY` | Sakana Fugu Subscription (`sc@`) | `SAKANA_API_KEY` | https://console.sakana.ai/get-started |
 | `QWEN_TOKEN_PLAN_API_KEY` | Alibaba Token Plan (`qtoken@`) — Model Studio subscription, metered in Credits | _(none by design — see the note below)_ | https://docs.qwencloud.com/token-plan/overview |
 | `QWEN_CODING_PLAN_API_KEY` | Alibaba Coding Plan (`qcode@`) — Model Studio subscription, metered in requests | _(none by design — see the note below)_ | https://www.alibabacloud.com/help/en/model-studio/coding-plan |
 | `META_API_KEY` | Meta Model API, metered (`meta@`). Never signs the `muse@` subscription, which uses `claudish login muse` or the Muse Code CLI's Keychain login | | https://dev.meta.ai |
 | `DASHSCOPE_API_KEY` | Alibaba PAYG (`qpay@`) — Model Studio pay-as-you-go, billed per token | _(none by design — see the note below)_ | https://www.alibabacloud.com/help/en/model-studio/get-api-key |
-| `OLLAMA_API_KEY` | OllamaCloud hosted API (`oc@`, `llama@`, `lc@`) | | https://ollama.com/account |
-| `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) — **required** | | https://opencode.ai/ |
-| `OPENCODE_GO_API_KEY` | OpenCode Zen Go plan (`zgo@`, `zengo@`) — **required** | | https://opencode.ai/ |
+| `OLLAMA_API_KEY` | OllamaCloud hosted API (`oc@`, `llama@`, `lc@`) | | https://ollama.com/settings/keys |
+| `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) — **required** | | https://opencode.ai/console (Settings > Service accounts) |
+| `OPENCODE_GO_API_KEY` | OpenCode Zen Go plan (`zgo@`, `zengo@`) — **required** | | https://opencode.ai/console (Settings > Service accounts) |
 | `XAI_API_KEY` | xAI / Grok (direct API, detected in model selector) | | https://x.ai/ |
 | `LITELLM_API_KEY` | LiteLLM proxy (`ll@`, `litellm@`) | | https://docs.litellm.ai/ |
 | `POE_API_KEY` | Poe (`poe@`) | | https://poe.com/ |

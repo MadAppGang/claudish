@@ -1209,6 +1209,21 @@ export function mergeUserSettingsIfPresent(
 export const MIN_AUTO_COMPACT_WINDOW = 200_000;
 
 /**
+ * Claude Code's ceiling for `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. A larger value is
+ * clamped to it, but Claude Code also prints a warning on EVERY launch:
+ *
+ *   CLAUDE_CODE_AUTO_COMPACT_WINDOW="1050000" is too large, so Claude Code
+ *   treats it as the 1M maximum. ...
+ *
+ * Measured 2026-10-20, Claude Code 2.1.304: `cx@gpt-6.1-sol` (catalog window
+ * 1,050,000) and `muse@muse-spark-1.3` (1,007,997). Sending the ceiling changes
+ * no compaction point, since Claude Code uses it anyway, and drops the warning.
+ * `CLAUDE_CODE_MAX_CONTEXT_TOKENS` printed no warning at the same values, so it
+ * keeps the real window.
+ */
+export const MAX_AUTO_COMPACT_WINDOW = 1_000_000;
+
+/**
  * How long `computeMainThreadContextWindow` will wait on the cloud catalog before
  * giving up and launching with today's behaviour (window unknown → env unset).
  *
@@ -1334,7 +1349,9 @@ export function resolveContextWindowEnv(
   if (processEnv[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]) return { vars };
 
   if (realWindow >= MIN_AUTO_COMPACT_WINDOW) {
-    vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(realWindow);
+    vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(
+      Math.min(realWindow, MAX_AUTO_COMPACT_WINDOW)
+    );
     return {
       vars,
       notice:
