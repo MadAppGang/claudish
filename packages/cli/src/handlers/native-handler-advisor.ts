@@ -60,10 +60,10 @@ import {
   type AdvisorPanelResult,
   type AdvisorTurn,
   type ExtractedAdvice,
-  billingWord,
   buildAdvisorPanelPayload,
   describeAdvisorRefusal,
   extractAdvice,
+  hopLabel,
 } from "./advisor-route-plan.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
 import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
@@ -2825,8 +2825,8 @@ function warnWhenServedUnlikePlan(
   if (servedUnlikePlan.get(key) === served) return;
   servedUnlikePlan.set(key, served);
   warn(
-    `${req.spec} was served by ${servedBy.displayName} (${billingWord(servedBy.billing)}), ` +
-      `not ${planned.displayName} (${billingWord(planned.billing)}) as the notice said; later ` +
+    `${req.spec} was served by ${hopLabel(servedBy.displayName, servedBy.billing)}, ` +
+      `not ${hopLabel(planned.displayName, planned.billing)} as the notice said; later ` +
       "calls start there (routing keeps the last hop that served)"
   );
 }

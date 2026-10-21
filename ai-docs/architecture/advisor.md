@@ -569,7 +569,9 @@ off the main status line by design.
 A routed member reads from its BUILT chain (`describeAdvisorPlan`,
 `handlers/advisor-route-plan.ts:618`): the first callable hop, each later hop a call can reach, a
 refusing hop the chain stops at, the subscription candidates routing skipped and why
-(`skipped: … — no credential`), and hops that could not be built. A routed member's
+(`skipped: … — no credential`), and hops that could not be built. Each hop is named by
+`hopLabel`: its display name and billing word, the word printed once when the display name
+already ends in it (`grok-4.7 -> Grok Build (subscription)`). A routed member's
 `subscription-not-served` / `subscription-credential-unreadable` warnings print under it as
 `note:` lines, because `route()`'s per-request notices never run for a panel call. A Claude
 member on a launch claudish does not control reads `<spec> -> api.anthropic.com (metered, billed

@@ -314,6 +314,18 @@ export function billingWord(billing: AdvisorBilling): string {
   return billing === "subscription" ? "subscription" : "metered, billed per token";
 }
 
+/**
+ * A hop as a notice names it: its display name and its billing word, the word
+ * printed once. Some display names already end in it (`Grok Build
+ * (subscription)`), which read `Grok Build (subscription) (subscription)`.
+ */
+export function hopLabel(displayName: string, billing: AdvisorBilling): string {
+  const suffix = `(${billingWord(billing)})`;
+  return displayName.toLowerCase().endsWith(suffix.toLowerCase())
+    ? displayName
+    : `${displayName} ${suffix}`;
+}
+
 /** A `CandidateOutcome` as the notice's "skipped" phrase. */
 export const SKIPPED_PHRASE: Readonly<Record<Exclude<CandidateOutcome, "kept">, string>> = {
   "no-credential": "no credential",
@@ -649,7 +661,7 @@ function laterHopParts(
       continue;
     }
     if (b.kind !== "built" && b.kind !== "built-pending") continue;
-    parts.push(`; then ${hop.displayName} (${billingWord(hop.billing)})`);
+    parts.push(`; then ${hopLabel(hop.displayName, hop.billing)}`);
     if (hop.billing === "metered") metered = true;
   }
   return { parts, metered };
@@ -670,10 +682,7 @@ export function describeAdvisorPlan(plan: AdvisorModelPlan, build?: AdvisorChain
 
   const first = plan.hops[build.firstCallableHop];
   const later = laterHopParts(plan, build, build.firstCallableHop);
-  const parts = [
-    `${plan.spec} -> ${first.displayName} (${billingWord(first.billing)})`,
-    ...later.parts,
-  ];
+  const parts = [`${plan.spec} -> ${hopLabel(first.displayName, first.billing)}`, ...later.parts];
   const laterMetered = later.metered;
 
   const skipped = plan.explanation.candidates
