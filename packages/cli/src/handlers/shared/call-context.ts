@@ -187,6 +187,15 @@ export function credentialValuesFromRequest(
  * settled (`cancelEndsUpstreamWork`, `stream-parsers/upstream-cancel.ts`); a
  * flag-only parser cancel let the loop keep reading and logging frames after
  * the lease was gone.
+ *
+ * One finalizer decides, and a cancel owns it once it has begun. Cancelling a
+ * stream resolves every read outstanding on it with `done` BEFORE the source's
+ * own cancel has settled, so a `pull` waiting in `reader.read()` wakes up with
+ * `done` while `reader.cancel()` is still waiting for the parser's loop. Were
+ * that pull to release, the lease would end before the parser's teardown
+ * logging (native-handler's whole-stream log, a parser's usage lines). So
+ * `cancelling` is set before `reader.cancel()` is called, and from then on
+ * only the cancel path releases, after that cancel has resolved.
  */
 export function releaseWhenBodyEnds(response: Response, release: () => void): Response {
   const source = response.body;
@@ -195,23 +204,31 @@ export function releaseWhenBodyEnds(response: Response, release: () => void): Re
     return response;
   }
   const reader = source.getReader();
+  let cancelling = false;
   const stream = new ReadableStream<Uint8Array>(
     {
       async pull(controller) {
+        let result: Awaited<ReturnType<typeof reader.read>>;
         try {
-          const { done, value } = await reader.read();
-          if (done) {
-            release();
-            controller.close();
-            return;
-          }
-          controller.enqueue(value);
+          result = await reader.read();
         } catch (err) {
+          if (cancelling) return;
           release();
           controller.error(err);
+          return;
         }
+        // A read the cancel below woke up: the cancel path releases, once the
+        // upstream work has settled, and this stream is already closed.
+        if (cancelling) return;
+        if (result.done) {
+          release();
+          controller.close();
+          return;
+        }
+        controller.enqueue(result.value);
       },
       async cancel(reason) {
+        cancelling = true;
         try {
           await reader.cancel(reason);
         } catch {
