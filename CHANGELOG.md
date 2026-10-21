@@ -2,6 +2,30 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [13.2.0] - 2026-10-21
+
+### Documentation
+
+- document the text body and the internal failure class *(antigravity)* ([`1fa1cef`](https://github.com/MadAppGang/claudish/commit/1fa1cef64e1c034ce0ea5e5188f7acccce57daee))
+- replace the stale self-refresh description *(antigravity)* ([`5732aa7`](https://github.com/MadAppGang/claudish/commit/5732aa746104ba8ed53056b6833e94e5b254e2d7))
+- document the raw model list command *(antigravity)* ([`9637b84`](https://github.com/MadAppGang/claudish/commit/9637b8486a04908482c7b287d14451a38bfd0701))
+- update CHANGELOG.md for v13.1.0([`c19a8ab`](https://github.com/MadAppGang/claudish/commit/c19a8ab0549a22de5d5b69033a14eb3821a29d67))
+
+### New Features
+
+- print a failure object on usage and internal errors *(antigravity)* ([`42091b7`](https://github.com/MadAppGang/claudish/commit/42091b7a5b3a754604d1dd9827eb463df0fb6eb0))
+- print the verbatim fetchAvailableModels response text *(antigravity)* ([`eccf5c6`](https://github.com/MadAppGang/claudish/commit/eccf5c662df6f884595ae4a401e81846c97a0338))
+- print the raw fetchAvailableModels body as JSON *(antigravity)* ([`5edb656`](https://github.com/MadAppGang/claudish/commit/5edb656243f898836f83dbc9bfe17740f5c71479))
+
+### Other Changes
+
+- v13.2.0 *(release)* ([`f9b4500`](https://github.com/MadAppGang/claudish/commit/f9b4500ba65f63dccd715754694e9da1965760d3))
+
+### Refactoring
+
+- export the token deps and a classified store read *(antigravity)* ([`1cf7df1`](https://github.com/MadAppGang/claudish/commit/1cf7df13ed18562313e00637b5e2fe918e5a9ea2))
+- extract fetchAntigravityAvailableModelsRaw from discovery *(antigravity)* ([`8f1741e`](https://github.com/MadAppGang/claudish/commit/8f1741eb515d2c7be951d8526f9cb373468902cd))
+
 ## [13.1.0] - 2026-10-21
 
 ### Bug Fixes
