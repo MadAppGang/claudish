@@ -10,9 +10,9 @@
  */
 
 import type { Context } from "hono";
-import { logStderr } from "../logger.js";
+import { log, logStderr } from "../logger.js";
 import { redactForClient } from "../redact.js";
-import { ComposedHandler } from "./composed-handler.js";
+import { ComposedHandler, getRecoveryHint } from "./composed-handler.js";
 import { extractUpstreamStatus } from "./shared/anthropic-error.js";
 import { authVerdict, isCredentialRejection } from "./shared/auth-failure.js";
 import { abortedResponse, callAborted } from "./shared/call-context.js";
@@ -56,16 +56,16 @@ export class FallbackHandler implements ModelHandler {
   async handle(c: Context, payload: any): Promise<Response> {
     const errors: Array<{ provider: string; status: number; message: string }> = [];
     const startIndex = this.lastSuccessIndex;
-    // Set by the first subscription candidate whose login is rejected. From
-    // then on only subscription candidates are tried, and this response is the
-    // answer if none of them serves.
-    let credentialStop: Response | undefined;
+    // The first subscription candidate whose credential was rejected. The chain
+    // moves past it like any retryable failure; this is kept because its
+    // message (log in again, renew the key) is the one a user can act on, so
+    // an exhausted chain still shows it.
+    let firstRejection: { name: string; response: Response; body: string } | undefined;
 
     for (let attempt = 0; attempt < this.candidates.length; attempt++) {
       const idx = (startIndex + attempt) % this.candidates.length;
       const { name, handler, provider } = this.candidates[idx];
       const isLast = attempt === this.candidates.length - 1;
-      if (credentialStop && !(provider && isSubscriptionProvider(provider))) continue;
       // An internal call whose deadline passed (call-context.ts) never reaches
       // another hop. Never true for a request from Claude Code.
       if (callAborted(c)) return abortedResponse();
@@ -160,11 +160,14 @@ export class FallbackHandler implements ModelHandler {
         // header was dropped. A terminal verdict keeps its exact message and
         // `upstream_status` the same way (`auth-failure.ts`).
         //
-        // One exception, for a TERMINAL verdict on a subscription: the chain
-        // moves on to its remaining SUBSCRIPTION candidates, never a metered one
-        // (project owner, 2026-10-20). A bare `glm-5.3` whose Zen Go key expired
-        // is served by the Token Plan the user also holds, not stopped and not
-        // billed per token.
+        // One exception, for a TERMINAL verdict on a subscription (an expired,
+        // wrong or revoked credential): the chain moves on to its next hop,
+        // metered included (project owner, 2026-10-21). An expired key must not
+        // block the chain, and a metered key the user configured is consent to
+        // be billed by it. The move is announced, once per provider and status
+        // (`announceCredentialRejection`). The connection, recovery-hold and
+        // stream-failure verdicts above still answer first, so a network fault
+        // never walks onto metered billing.
         const verdict = authVerdict(response.headers);
         const subscriptionRejected =
           verdict === "terminal" && !!provider && isSubscriptionProvider(provider);
@@ -185,23 +188,11 @@ export class FallbackHandler implements ModelHandler {
           isSubscriptionCredentialRejection(response.status, errorBody, provider)
         ) {
           errors.push({ provider: name, status: response.status, message: errorBody });
-          if (!credentialStop) {
-            credentialStop = response;
-            logStderr(
-              `[Fallback] ${name}: subscription login rejected — trying the chain's other subscription providers only; metered providers are skipped.`
-            );
+          if (!firstRejection) firstRejection = { name, response, body: errorBody };
+          if (!isLast) {
+            const next = this.candidates[(idx + 1) % this.candidates.length];
+            announceCredentialRejection({ name, provider }, response.status, errorBody, next);
           }
-          continue;
-        }
-
-        // A later subscription candidate that fails in any other way does not
-        // end the search either: the answer, if none serves, is the login
-        // failure that started it.
-        if (credentialStop) {
-          errors.push({ provider: name, status: response.status, message: errorBody });
-          logStderr(
-            `[Fallback] ${name} failed (HTTP ${response.status}), trying the next subscription provider...`
-          );
           continue;
         }
 
@@ -210,7 +201,7 @@ export class FallbackHandler implements ModelHandler {
           if (errors.length > 0) {
             // We had previous fallback attempts; show combined error
             errors.push({ provider: name, status: response.status, message: errorBody });
-            return this.formatCombinedError(c, errors, payload.model);
+            return this.formatCombinedError(c, errors, payload.model, firstRejection);
           }
           // First and only attempt — return original response as-is
           return response;
@@ -246,23 +237,27 @@ export class FallbackHandler implements ModelHandler {
       }
     }
 
-    // No subscription served after a login failure: the user is told to renew
-    // that login, with its own message and verdict, not shown a combined error.
-    if (credentialStop) {
-      logStderr(
-        `[Fallback] No subscription provider could serve ${payload.model || "the model"}; metered providers were skipped.`
-      );
-      return credentialStop;
-    }
+    // The rejected credential was the only failure (a chain whose other hops
+    // were never reached): answered as a chain of one would be, with its own
+    // message, status and verdict.
+    if (firstRejection && errors.length === 1) return firstRejection.response;
 
     // All providers failed
-    return this.formatCombinedError(c, errors, payload.model);
+    return this.formatCombinedError(c, errors, payload.model, firstRejection);
   }
 
+  /**
+   * The combined answer of an exhausted chain. When a subscription's
+   * credential was rejected on the way, its message leads: the later hops'
+   * failures (a missing key, a model they do not carry) are not what the user
+   * can fix, and the per-attempt list clips each message at 200 characters,
+   * which cut the `claudish login …` line off.
+   */
   private formatCombinedError(
     c: Context,
     errors: Array<{ provider: string; status: number; message: string }>,
-    modelName?: string
+    modelName?: string,
+    firstRejection?: { name: string; body: string }
   ): Response {
     const summary = errors
       .map(
@@ -271,15 +266,20 @@ export class FallbackHandler implements ModelHandler {
       )
       .join("\n");
 
+    const rejection = firstRejection
+      ? ` First, ${firstRejection.name} rejected its credential: ${parseErrorMessage(redactForClient(firstRejection.body))}`
+      : "";
+
     logStderr(
-      `[Fallback] All ${errors.length} provider(s) failed for ${modelName || "model"}:\n${summary}`
+      `[Fallback] All ${errors.length} provider(s) failed for ${modelName || "model"}:\n${summary}` +
+        (rejection ? `\n ${rejection.trim()}` : "")
     );
 
     return c.json(
       {
         error: {
           type: "all_providers_failed",
-          message: `All ${errors.length} providers failed for model '${modelName || "unknown"}'`,
+          message: `All ${errors.length} providers failed for model '${modelName || "unknown"}'${rejection ? `.${rejection}` : ""}`,
           attempts: errors.map((e) => ({
             provider: e.provider,
             status: e.status,
@@ -331,6 +331,60 @@ export function isSubscriptionCredentialRejection(
   return status === 403 && isCredentialRejection(403, errorBody);
 }
 
+/** `<provider uid>|<upstream status>` of every rejection already announced on stderr. */
+const announcedRejections = new Set<string>();
+
+/** Test seam: forget which credential rejections were announced. */
+export function _resetCredentialRejectionNotices(): void {
+  announcedRejections.clear();
+}
+
+/** The billing words for a hop the chain moves to; a hop of unknown billing reads metered. */
+function hopBillingWords(provider: string | undefined): string {
+  return provider && isSubscriptionProvider(provider)
+    ? "subscription"
+    : "metered, billed per token";
+}
+
+/**
+ * Say that a subscription's credential was rejected and which hop the chain
+ * moves to, and how that hop bills. The user did not choose the move (claudish
+ * assembled the chain), and the next hop may bill per token, so it is said on
+ * stderr, once per provider and upstream status per process; every occurrence
+ * is written to the log. The provider message has already been redacted for
+ * the client by `ComposedHandler`; it is redacted again here, and `logStderr`
+ * redacts the request's signing values.
+ */
+export function announceCredentialRejection(
+  rejected: { name: string; provider?: string },
+  status: number,
+  errorBody: string,
+  next: { name: string; provider?: string }
+): void {
+  const upstreamStatus = (status === 400 ? extractUpstreamStatus(errorBody) : undefined) ?? status;
+  const providerMessage = truncate(
+    parseProviderMessage(redactForClient(errorBody)).replace(/\s+/g, " ").trim(),
+    300
+  );
+  const hint = getRecoveryHint(
+    upstreamStatus,
+    errorBody,
+    rejected.name,
+    undefined,
+    rejected.provider
+  );
+  const line =
+    `${rejected.name} rejected its credential (${upstreamStatus}: ${providerMessage}) — ` +
+    `moving to ${next.name} (${hopBillingWords(next.provider)}). ${hint}`;
+  const key = `${rejected.provider ?? rejected.name}|${upstreamStatus}`;
+  if (announcedRejections.has(key)) {
+    log(`[Fallback] ${line}`);
+    return;
+  }
+  announcedRejections.add(key);
+  logStderr(line);
+}
+
 /**
  * Determine if an HTTP error is retryable (should try next provider).
  * Auth errors, billing errors, rate limits, model-not-found errors and an
@@ -369,17 +423,21 @@ export function isRetryableError(
   // the same reason as the line above.
   if (hasStreamFailureMarker(headers)) return false;
 
-  // ── A CREDENTIAL VERDICT IS NEVER A REASON TO ADVANCE EITHER ──────────────
+  // ── A CREDENTIAL VERDICT: TERMINAL ON A SUBSCRIPTION ADVANCES, ELSE HOLDS ──
   //
   // `ComposedHandler` marks its answer to a credential failure it could place
-  // (`auth-failure.ts`): `terminal` — a subscription login that cannot succeed
-  // on retry, answered 400 so the message lands inline — or `transient` — a
+  // (`auth-failure.ts`): `terminal` — a credential that cannot succeed on
+  // retry, answered 400 so the message lands inline — or `transient` — a
   // 5xx/429 on the credential path, which the SAME hop answers on Claude Code's
-  // own retry. Either way the next candidate is the wrong remedy, and for a
-  // subscription it is a metered one (project owner, 2026-10-16). Above the
-  // quota wording and the `upstream_status` recovery below, because a terminal
-  // 400 carries `upstream_status: 401`, which that recovery reads as retryable.
-  if (authVerdict(headers)) return false;
+  // own retry, so the next candidate is the wrong remedy for it. A terminal
+  // verdict on a SUBSCRIPTION hop (an expired, wrong or revoked credential)
+  // advances to the next hop, metered included (project owner, 2026-10-21:
+  // an expired key must not block the chain). A terminal verdict on any other
+  // hop still holds. Above the quota wording and the `upstream_status`
+  // recovery below, because a terminal 400 carries `upstream_status: 401`,
+  // which that recovery reads as retryable whatever the hop.
+  const verdict = authVerdict(headers);
+  if (verdict) return verdict === "terminal" && !!providerId && isSubscriptionProvider(providerId);
 
   // A spent subscription allowance is retryable AT THE CHAIN LEVEL: this
   // provider cannot serve, but the next one can.
@@ -415,11 +473,9 @@ export function isRetryableError(
   // prevented at the cost of the request.
   if (hasQuotaExhaustionWording(errorBody)) return true;
 
-  // A SUBSCRIPTION's 401 never advances in the ordinary way, whatever its
-  // transport answered. AFTER the quota wording: a spent allowance still
-  // advances, with its warning. `handle()` moves such a rejection on to the
-  // chain's remaining subscription candidates only.
-  if (isSubscriptionCredentialRejection(status, errorBody, providerId)) return false;
+  // A SUBSCRIPTION's rejected credential, answered without the verdict header,
+  // advances like the terminal verdict above (`handle()` announces it).
+  if (isSubscriptionCredentialRejection(status, errorBody, providerId)) return true;
 
   // ── Recover the ORIGINAL status from a remapped terminal error (#148) ──────
   //
@@ -679,6 +735,22 @@ export function isProvider(provider: string | undefined, needle: string): boolea
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "")
     .includes(needle);
+}
+
+/**
+ * The upstream's own words from a claudish error body (`provider_message`,
+ * which carries no hint, provider name or status), else its message.
+ */
+function parseProviderMessage(body: string): string {
+  try {
+    const parsed = JSON.parse(body);
+    if (typeof parsed?.error?.provider_message === "string" && parsed.error.provider_message) {
+      return parsed.error.provider_message;
+    }
+  } catch {
+    // Not JSON — fall through
+  }
+  return parseErrorMessage(body);
 }
 
 /** Extract a human-readable message from a JSON error body */

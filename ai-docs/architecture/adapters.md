@@ -608,7 +608,7 @@ The exclusion rested on "a 503 cannot silently switch the user off a pinned mode
   (found by the 10.3.0 release review, source-traced; the status alone could not tell a
   connection fault from an overload).
 
-### A subscription's credential failure stops the chain (2026-10-16)
+### A subscription's credential failure (2026-10-16, replaced 2026-10-21)
 
 The `upstream_status` recovery above made a remapped 401/403 advance the chain, on the reasoning
 that a revoked key on one provider is exactly when the next should be tried. For a SUBSCRIPTION
@@ -628,7 +628,31 @@ tries only the remaining subscription ones. Any failure of those is logged and p
 serves, the answer is the FIRST rejection's response unchanged (its status, verdict header and
 "log in" message), never a combined `all_providers_failed`. An explicit spec (`zengo@glm-5.3`) has
 one candidate, so it still stops. A transient verdict, and a terminal verdict from a metered
-candidate, still return at once. Tests: `fallback-handler.subscription-only.test.ts`.
+candidate, still return at once.
+
+**Replaced 2026-10-21: the chain moves on to its next hop, metered included.** The preflight run of
+that day (`ai-docs/reports/model-failures-2026-10-21.md`, D7) showed what the subscription-only
+rule cost: one expired subscription key blocked every metered hop of the chain, although the user
+had configured those keys. Jack: an expired key must not block the chain; a configured metered key
+is consent to be billed by it. So a subscription candidate's terminal verdict (or a headerless
+401/403 credential rejection, `isSubscriptionCredentialRejection`) is retryable:
+`isRetryableError` returns `true` for both, and `FallbackHandler.handle` advances to the next hop
+whatever it bills. `announceCredentialRejection` says so on stderr once per (provider uid,
+upstream status) per process, and in the log every time:
+
+```
+[claudish] Kimi Coding rejected its credential (401: Invalid token) — moving to OpenRouter (metered, billed per token). The Kimi Coding login was rejected (HTTP 401). Run `claudish login kimi` to sign in again.
+```
+
+The next hop's billing comes from `isSubscriptionProvider` on its uid; a hop with no uid reads
+metered. When every hop fails, the answer is the usual combined `all_providers_failed`, with the
+first rejection's message appended to `error.message` (the per-attempt list clips at 200
+characters, which cut the login line off). When the rejection was the only failure, its own
+response is returned unchanged. Unchanged and still ahead of this rule: connection verdicts, the
+recovery hold and stream failures return before any credential reading, so a network fault never
+walks onto metered billing; a transient verdict and a metered hop's terminal verdict return at
+once. Billing follows the signing arm of the hop that served. Tests:
+`fallback-handler.subscription-only.test.ts`, `fallback-handler.muse-code.test.ts`.
 
 **The verdict rides a header, `x-claudish-auth-verdict`** (`terminal` or `transient`), from
 `handlers/shared/auth-failure.ts`. The status cannot carry it: a terminal failure is answered 400
@@ -649,8 +673,8 @@ in one order:
 | unknown, subscription | anything else | 503 `overloaded_error`, verdict `transient` (retried on the same hop, never walked) |
 | unknown, metered | anything else | 401 at `refreshAuth` and `forceRefreshAuth` only; other sites rethrow |
 
-**The rule: a dead or unsubscribed credential is a terminal 400 that stops the chain; an
-unclassified failure is a retryable 503.** It holds because the PRODUCERS say what their failure
+**The rule: a dead or unsubscribed credential is a terminal 400 (an explicit spec stops on it; a
+chain moves past a subscription's, above); an unclassified failure is a retryable 503.** It holds because the PRODUCERS say what their failure
 is, through `auth/credentials/credential-error.ts` (`d86e3d86`): a missing login or a rejected
 grant is `terminalCredentialError`, a token host's 429/5xx is `credentialHttpError` (transient,
 with its `upstreamStatus`). Kimi's "No Kimi OAuth credentials found. Please run `claudish login

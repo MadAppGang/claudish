@@ -2,14 +2,14 @@
  * One classifier for every failure that reaches a credential site, and one way
  * to answer it.
  *
- * ## The rule (project owner, 2026-10-16)
+ * ## The rule (project owner, 2026-10-16, amended 2026-10-21)
  *
  * - A TERMINAL credential failure of a SUBSCRIPTION provider answers 400 with
- *   its message. It never walks onto a metered provider: a user whose
- *   flat-rate login expired is told to log in, not silently billed per token
- *   by the next hop. The routing chain tries only its remaining SUBSCRIPTION
- *   candidates, and answers with this failure if none serves (2026-10-20,
- *   `FallbackHandler.handle`).
+ *   its message and the terminal verdict. An explicit spec stops there and the
+ *   user is told to log in. In a routing chain, `FallbackHandler.handle` moves
+ *   on to the next hop, metered included, and says so on stderr with the next
+ *   hop's billing (2026-10-21: an expired key must not block the chain; a
+ *   metered key the user configured is consent to be billed by it).
  * - A TRANSIENT failure (network fault, 5xx, 429) never becomes a 401. A 401 is
  *   the one status `FallbackHandler.isRetryableError` reads as "try another
  *   credential", so a blip answered 401 walked the chain mid-outage.
@@ -51,7 +51,8 @@ import { isQuotaExhaustionError } from "./quota-exhaustion.js";
 export const AUTH_VERDICT_HEADER = "x-claudish-auth-verdict";
 
 /**
- * - `terminal`: the credential cannot succeed on retry; the chain must stop here.
+ * - `terminal`: the credential cannot succeed on retry. A metered hop stops the chain
+ *   here; a subscription hop is moved past, with a notice (`FallbackHandler`).
  * - `transient`: retrying the SAME hop is the remedy; the chain must not walk.
  */
 export type AuthVerdict = "terminal" | "transient";
@@ -102,7 +103,8 @@ export type AuthFailure =
  *     (measured 2026-08-19, `model-unsupported.ts`). Read from the provider's
  *     own error TYPE, which names a region rather than a credential.
  *
- * Only what is left is a credential verdict that stops the chain.
+ * Only what is left is a credential verdict: the terminal 400 that stops an
+ * explicit spec, and that a routing chain announces as it moves to the next hop.
  */
 export function isCredentialRejection(status: number, errorBody: string): boolean {
   if (status !== 401 && status !== 403) return false;
@@ -116,8 +118,8 @@ export function isCredentialRejection(status: number, errorBody: string): boolea
  * The provider's own `error.type` in a raw upstream JSON error body. Read at
  * the sites that hold the upstream body (the generic remap, settleAuthRetry);
  * claudish's remapped 400 does not carry it. FallbackHandler's own
- * subscription rule therefore stops on a RAW 403 (whose body still carries the
- * type, so a 403 RegionError advances) and not on a recovered one.
+ * subscription rule therefore treats a RAW 403 as a rejection (whose body still
+ * carries the type, so a 403 RegionError is a per-model miss) and not a recovered one.
  */
 function providerErrorType(errorBody: string): string | undefined {
   try {

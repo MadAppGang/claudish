@@ -2644,10 +2644,11 @@ export class ComposedHandler implements ModelHandler {
               ? CONTEXT_OVERFLOW_PHRASE
               : undefined,
           });
-          // A SUBSCRIPTION's rejected credential stops the routing chain here
-          // (`auth-failure.ts`): the next hop would bill the user per token for a
-          // login they can fix. A spent allowance (402/429) is not a credential
-          // failure and still advances, with its warning.
+          // A SUBSCRIPTION's rejected credential carries the terminal verdict
+          // (`auth-failure.ts`): an explicit spec stops with the login hint, and
+          // a routing chain moves to its next hop with a notice naming that
+          // hop's billing (`FallbackHandler`). A spent allowance (402/429) is
+          // not a credential failure and advances with its own warning.
           // A model the provider does not carry (Zen Go's 401 "Model <id> is not
           // supported") is NOT a credential rejection and keeps advancing.
           const verdictHeaders =
