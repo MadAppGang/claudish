@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [13.0.3] - 2026-10-21
+
+### Bug Fixes
+
+- cap CLAUDE_CODE_AUTO_COMPACT_WINDOW at 1,000,000 *(context-window)* ([`5406c31`](https://github.com/MadAppGang/claudish/commit/5406c31d97209eb8240b0c0402dbe42707b6bc8f))
+- update stale key links in the settings reference *(docs)* ([`553905a`](https://github.com/MadAppGang/claudish/commit/553905a157004108cdaac44e4b3becb8a0673197))
+- print the provider API endpoint without its https:// scheme *(tui)* ([`3c4767c`](https://github.com/MadAppGang/claudish/commit/3c4767ce5e70a528f7fb786c423748b07b054cdb))
+- replace apiKeyUrl links that 404 or miss the key page *(providers)* ([`f0282dc`](https://github.com/MadAppGang/claudish/commit/f0282dcfaad5de6ebe44d1e36cea22d06651f956))
+- retry the definition's model-list URL after a 404 *(discovery)* ([`c54b14e`](https://github.com/MadAppGang/claudish/commit/c54b14ec8267ed502d3dce9e64b05dfd818235eb))
+
+### Documentation
+
+- record the key expiry, Zen Go host split and link audit *(opencode)* ([`da371a2`](https://github.com/MadAppGang/claudish/commit/da371a29d1fe7d6d4744941ded3f1610b12a1b31))
+- update CHANGELOG.md for v13.0.2([`b5c9e79`](https://github.com/MadAppGang/claudish/commit/b5c9e7939a6152bfceda49588e99049b5ef22cd4))
+
+### Other Changes
+
+- v13.0.3 *(release)* ([`71395b7`](https://github.com/MadAppGang/claudish/commit/71395b7e51d49284052907995605794825f0e5dc))
+
 ## [13.0.2] - 2026-10-21
 
 ### Bug Fixes
