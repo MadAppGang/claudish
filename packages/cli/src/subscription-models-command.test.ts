@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { _resetAgyClientVersion } from "./auth/antigravity-client-version.js";
 import {
   type AgyRefreshOutcome,
@@ -14,6 +13,7 @@ import {
 } from "./auth/antigravity-user.js";
 import {
   EXIT,
+  FAILURE_CODES,
   INTERNAL_ERROR_MESSAGE,
   SECRET_GUARD_MESSAGE,
   SUBSCRIPTION_MODELS_USAGE,
@@ -33,18 +33,14 @@ interface CapturedModels {
   [key: string]: unknown;
 }
 
-const oldCapture: CapturedModels = JSON.parse(
-  readFileSync(
-    new URL("./auth/fixtures/antigravity-fetchAvailableModels-1.1.9.json", import.meta.url),
-    "utf8"
-  )
-);
-const newCapture: CapturedModels = JSON.parse(
-  readFileSync(
-    new URL("./auth/fixtures/antigravity-fetchAvailableModels-1.3.5.json", import.meta.url),
-    "utf8"
-  )
-);
+const oldCaptureText = await Bun.file(
+  new URL("./auth/fixtures/antigravity-fetchAvailableModels-1.1.9.json", import.meta.url)
+).text();
+const newCaptureText = await Bun.file(
+  new URL("./auth/fixtures/antigravity-fetchAvailableModels-1.3.5.json", import.meta.url)
+).text();
+const oldCapture: CapturedModels = JSON.parse(oldCaptureText);
+const newCapture: CapturedModels = JSON.parse(newCaptureText);
 const NOW = Date.parse("2026-10-21T12:34:56.789Z");
 const HOST = "https://daily-cloudcode-pa.googleapis.com";
 const MODELS_URL = `${HOST}/v1internal:fetchAvailableModels`;
@@ -164,6 +160,10 @@ function vendorJson(value: unknown, status = 200): Response {
   return Response.json(value, { status, headers: { "X-Response-Canary": RESPONSE_HEADER } });
 }
 
+function vendorText(text: string, status = 200): Response {
+  return new Response(text, { status, headers: { "X-Response-Canary": RESPONSE_HEADER } });
+}
+
 function loadCodeAssistSuccess(): Response {
   return vendorJson({
     cloudaicompanionProject: PROJECT,
@@ -193,7 +193,7 @@ function installFetch(
       return overrides.setup ? overrides.setup(recorded) : loadCodeAssistSuccess();
     }
     if (new URL(recorded.url).pathname.endsWith(":fetchAvailableModels")) {
-      return overrides.models ? overrides.models(recorded) : vendorJson(newCapture);
+      return overrides.models ? overrides.models(recorded) : vendorText(newCaptureText);
     }
     throw new Error("Unexpected HTTP endpoint in hermetic test");
   }) as typeof fetch;
@@ -248,6 +248,10 @@ function expectEnvelope(
   expect(line.split("\n")).toHaveLength(2);
   const envelope: SubscriptionModelListEnvelope = JSON.parse(line);
   expect(envelope).toEqual(expected);
+  if (Object.hasOwn(expected, "body")) {
+    expect(typeof envelope.body).toBe("string");
+    expect(envelope.body).toBe(expected.body);
+  }
   expect(Object.keys(envelope)).toEqual(
     ENVELOPE_KEYS.filter((key) => Object.hasOwn(envelope, key))
   );
@@ -257,7 +261,7 @@ function expectEnvelope(
 function expectFailure(
   harness: Harness,
   exit: number,
-  failure: SubscriptionModelListFailure,
+  failure: SubscriptionModelListFailure & { class: keyof typeof FAILURE_EXITS },
   known: Partial<SubscriptionModelListEnvelope> = {},
   tokenRefreshed = false,
   expectedDirectStderr = ""
@@ -331,7 +335,7 @@ describe("subscription models raw command output", () => {
       const exit = await subscriptionModelsCommand(VALID_ARGS, harness.deps);
 
       expect(exit).toBe(0);
-      expectEnvelope(harness, { ...baseEnvelope(), ...answeredFields(), body: newCapture });
+      expectEnvelope(harness, { ...baseEnvelope(), ...answeredFields(), body: newCaptureText });
       expectStderr(harness);
       expect(requests.map((request) => request.url)).toEqual([
         `${HOST}/v1internal:loadCodeAssist`,
@@ -345,23 +349,26 @@ describe("subscription models raw command output", () => {
   test.skipIf(process.platform !== "darwin")(
     "S2: preserves internal ids, deprecated ids, displayName and agentModelSorts verbatim",
     async () => {
-      const body = structuredClone(newCapture);
-      body.deprecatedModelIds = { "gemini-3.1-pro-high": { newModelId: "gemini-pro-agent" } };
+      const body = newCaptureText.replace(
+        "{",
+        '{\n  "deprecatedModelIds": {"gemini-3.1-pro-high": {"newModelId": "gemini-pro-agent"}},'
+      );
+      const parsedBody: CapturedModels = JSON.parse(body);
       const harness = makeHarness();
-      installFetch({ models: () => vendorJson(body) });
+      installFetch({ models: () => vendorText(body) });
 
       const exit = await runAntigravityRawModelList(harness.deps);
 
       expect(exit).toBe(0);
       const envelope = expectEnvelope(harness, { ...baseEnvelope(), ...answeredFields(), body });
-      const actual = envelope.body as CapturedModels;
+      const actual: CapturedModels = JSON.parse(envelope.body as string);
       expect(actual.models.chat_20706?.isInternal).toBe(true);
       expect(actual.models["gemini-2.5-flash"]?.displayName).toBe("Gemini 3.5 Flash Lite");
       expect(actual.deprecatedModelIds?.["gemini-3.1-pro-high"]).toEqual({
         newModelId: "gemini-pro-agent",
       });
-      expect(actual.agentModelSorts).toEqual(body.agentModelSorts);
-      expect(JSON.stringify(actual)).toBe(JSON.stringify(body));
+      expect(actual.agentModelSorts).toEqual(parsedBody.agentModelSorts);
+      expect(JSON.stringify(actual)).toBe(JSON.stringify(parsedBody));
       expectStderr(harness);
     }
   );
@@ -373,7 +380,7 @@ describe("subscription models raw command output", () => {
         const harness = makeHarness();
         if (mode === "omitted") delete harness.tokenDeps.readAgyVersion;
         else harness.tokenDeps.readAgyVersion = () => null;
-        const requests = installFetch({ models: () => vendorJson(oldCapture) });
+        const requests = installFetch({ models: () => vendorText(oldCaptureText) });
 
         const exit = await runAntigravityRawModelList(harness.deps);
 
@@ -383,7 +390,7 @@ describe("subscription models raw command output", () => {
           ...answeredFields(),
           clientVersion: "1.1.9",
           clientVersionSource: "fallback",
-          body: oldCapture,
+          body: oldCaptureText,
         });
         for (const request of requests) expectRequestIdentity(request, ACCESS, "1.1.9");
         expect(requests[1].body).toEqual({ project: PROJECT });
@@ -401,7 +408,7 @@ describe("subscription models raw command output", () => {
       const exit = await runAntigravityRawModelList(harness.deps);
 
       expect(exit).toBe(0);
-      expectEnvelope(harness, { ...baseEnvelope(true), ...answeredFields(), body: newCapture });
+      expectEnvelope(harness, { ...baseEnvelope(true), ...answeredFields(), body: newCaptureText });
       for (const request of requests) expectRequestIdentity(request, REMINTED_ACCESS);
       expect(requests[1].body).toEqual({ project: PROJECT });
       expectStderr(harness);
@@ -413,17 +420,17 @@ describe("subscription models raw command output", () => {
     async () => {
       const first = makeHarness();
       const second = makeHarness();
-      let nextBody = newCapture;
-      const requests = installFetch({ models: () => vendorJson(nextBody) });
+      let nextBody = newCaptureText;
+      const requests = installFetch({ models: () => vendorText(nextBody) });
 
       const firstExit = await runAntigravityRawModelList(first.deps);
-      nextBody = oldCapture;
+      nextBody = oldCaptureText;
       const secondExit = await runAntigravityRawModelList(second.deps);
 
       expect(firstExit).toBe(0);
       expect(secondExit).toBe(0);
-      expectEnvelope(first, { ...baseEnvelope(), ...answeredFields(), body: newCapture });
-      expectEnvelope(second, { ...baseEnvelope(), ...answeredFields(), body: oldCapture });
+      expectEnvelope(first, { ...baseEnvelope(), ...answeredFields(), body: newCaptureText });
+      expectEnvelope(second, { ...baseEnvelope(), ...answeredFields(), body: oldCaptureText });
       const modelRequests = requests.filter((request) =>
         request.url.endsWith(":fetchAvailableModels")
       );
@@ -465,7 +472,7 @@ describe("subscription models raw command output", () => {
       await Promise.resolve();
       try {
         expect(exits).toEqual([]);
-        expectEnvelope(harness, { ...baseEnvelope(), ...answeredFields(), body: newCapture });
+        expectEnvelope(harness, { ...baseEnvelope(), ...answeredFields(), body: newCaptureText });
       } finally {
         releaseWrite();
         await run;
@@ -506,7 +513,7 @@ describe("subscription models raw command output", () => {
         ...baseEnvelope(),
         ...answeredFields(),
         sourceUrl: "https://example.test/v1internal:fetchAvailableModels",
-        body: newCapture,
+        body: newCaptureText,
       });
       expect(requests.map((request) => new URL(request.url).host)).toEqual([
         "example.test",
@@ -539,13 +546,17 @@ describe("subscription models raw command output", () => {
         const exit = await runAntigravityRawModelList(harness.deps);
 
         expect(exit).toBe(1);
-        expect(harness.stdout).toEqual([]);
+        expectEnvelope(harness, {
+          ...baseEnvelope(),
+          ...answeredFields(),
+          failure: { class: "internal", code: "secret_guard" },
+        });
         expectStderr(harness, `${SECRET_GUARD_MESSAGE}\n`);
       }
     );
   }
 
-  test("S10: reports an unexpected dependency error with fixed stderr and empty stdout", async () => {
+  test("S10: reports an unexpected dependency error with a fixed internal failure envelope", async () => {
     const harness = makeHarness();
     harness.deps.readStore = async () => {
       throw new Error(`${ACCESS} ${REFRESH} ${PROJECT}`);
@@ -554,9 +565,27 @@ describe("subscription models raw command output", () => {
     const exit = await runAntigravityRawModelList(harness.deps);
 
     expect(exit).toBe(1);
-    expect(harness.stdout).toEqual([]);
+    expectEnvelope(harness, {
+      ...baseEnvelope(),
+      failure: { class: "internal", code: "internal_error" },
+    });
     expectStderr(harness, `${INTERNAL_ERROR_MESSAGE}\n`);
   });
+
+  test.skipIf(process.platform !== "darwin")(
+    "S11: preserves unusual JSON formatting and trailing whitespace byte for byte",
+    async () => {
+      const body = '{"models":{"a":{"maxTokens":1.0}} } ';
+      const harness = makeHarness();
+      installFetch({ models: () => vendorText(body) });
+
+      const exit = await runAntigravityRawModelList(harness.deps);
+
+      expect(exit).toBe(0);
+      expectEnvelope(harness, { ...baseEnvelope(), ...answeredFields(), body });
+      expectStderr(harness);
+    }
+  );
 });
 
 describe("subscription models D5 failures and field presence", () => {
@@ -844,6 +873,13 @@ describe("subscription models D5 failures and field presence", () => {
       }
     );
   }
+
+  test("F15: keeps every failure code bounded and pins the internal codes", () => {
+    expect(FAILURE_CODES.internal).toEqual(["usage", "secret_guard", "internal_error"]);
+    for (const codes of Object.values(FAILURE_CODES)) {
+      for (const code of codes) expect(code).toMatch(/^[a-z0-9_.:-]{1,120}$/);
+    }
+  });
 });
 
 describe("subscription models argument contract", () => {
@@ -861,14 +897,19 @@ describe("subscription models argument contract", () => {
     { label: "unknown-flag", argv: [...VALID_ARGS, "--debug"] },
   ];
   for (const { label, argv } of invalidCases) {
-    test(`U1-${label}: rejects usage with exit 2, empty stdout and one fixed stderr line`, async () => {
+    test(`U1-${label}: rejects usage with exit 2, one JSON envelope and one fixed stderr line`, async () => {
       const harness = makeHarness();
 
       expect(parseSubscriptionModelsArgs(argv)).toEqual({ ok: false });
       const exit = await subscriptionModelsCommand(argv, harness.deps);
 
       expect(exit).toBe(2);
-      expect(harness.stdout).toEqual([]);
+      expectEnvelope(harness, {
+        schema: "claudish.subscription-model-list.v1",
+        claudishVersion: VERSION,
+        tokenRefreshed: false,
+        failure: { class: "internal", code: "usage" },
+      });
       expectStderr(harness, `${SUBSCRIPTION_MODELS_USAGE}\n`);
     });
   }
@@ -952,7 +993,7 @@ describe("fetchAntigravityAvailableModelsRaw public seam", () => {
   });
 
   test("R4: returns the unprocessed body, injected arrival clock and fallback version actually sent", async () => {
-    const requests = installFetch({ models: () => vendorJson(oldCapture) });
+    const requests = installFetch({ models: () => vendorText(oldCaptureText) });
 
     const result = await fetchAntigravityAvailableModelsRaw(ACCESS, PROJECT, { now: () => NOW });
 
@@ -963,7 +1004,7 @@ describe("fetchAntigravityAvailableModelsRaw public seam", () => {
       clientVersionSource: "fallback",
       status: 200,
       fetchedAt: new Date(NOW).toISOString(),
-      body: { kind: "json", value: oldCapture },
+      body: { kind: "json", value: oldCapture, text: oldCaptureText },
     });
     expectRequestIdentity(requests[0], ACCESS, "1.1.9");
     expect(requests[0].body).toEqual({ project: PROJECT });
@@ -982,7 +1023,7 @@ describe("fetchAntigravityAvailableModelsRaw public seam", () => {
       const result = await fetchAntigravityAvailableModelsRaw(ACCESS, PROJECT, { now: () => NOW });
 
       expect(exit).toBe(0);
-      expectEnvelope(harness, { ...baseEnvelope(), ...answeredFields(), body: newCapture });
+      expectEnvelope(harness, { ...baseEnvelope(), ...answeredFields(), body: newCaptureText });
       expect(result).toEqual({
         kind: "answered",
         url: MODELS_URL,
@@ -990,7 +1031,7 @@ describe("fetchAntigravityAvailableModelsRaw public seam", () => {
         clientVersionSource: "agy",
         status: 200,
         fetchedAt: new Date(NOW).toISOString(),
-        body: { kind: "json", value: newCapture },
+        body: { kind: "json", value: newCapture, text: newCaptureText },
       });
       const lastRequest = requests[requests.length - 1];
       expectRequestIdentity(lastRequest);
@@ -1033,7 +1074,7 @@ describe("fetchAntigravityAvailableModelsRaw public seam", () => {
       clientVersionSource: "fallback",
       status: 200,
       fetchedAt: new Date(NOW).toISOString(),
-      body: { kind: "json", value: newCapture },
+      body: { kind: "json", value: newCapture, text: newCaptureText },
     });
     expect(new URL(requests[0].url).host).toBe("example.test");
     expect(new URL(requests[0].url).pathname).toBe("/v1internal:fetchAvailableModels");
