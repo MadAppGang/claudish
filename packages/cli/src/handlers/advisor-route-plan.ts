@@ -127,14 +127,25 @@ export interface PlanAdvisorDeps {
 /**
  * Sources after which Claude Code itself sends a real `x-api-key`, so a Claude
  * member signs with that and needs no ANTHROPIC_API_KEY of claudish's.
- * `custom-headers` may set either header; it is not refused for a missing key.
+ * `custom-headers` is not listed: it counts only when the headers set
+ * `x-api-key` (`sendsApiKey`, see `sendsInboundApiKey`).
  */
 const INBOUND_KEY_SOURCES: ReadonlySet<ChildAuthSource> = new Set([
   "user-api-key",
   "settings-api-key",
   "api-key-helper",
-  "custom-headers",
 ]);
+
+/**
+ * Whether Claude Code sends a real `x-api-key` on this uncontrolled launch.
+ * ANTHROPIC_CUSTOM_HEADERS that set only `Authorization` send a bearer the
+ * advisor never signs with off a controlled launch, so such a launch needs
+ * ANTHROPIC_API_KEY or is refused at startup, not stubbed at every call.
+ */
+function sendsInboundApiKey(childAuth: Extract<ChildAuthControl, { controlled: false }>): boolean {
+  if (childAuth.reason === "custom-headers") return childAuth.sendsApiKey === true;
+  return INBOUND_KEY_SOURCES.has(childAuth.reason);
+}
 
 /** The catalog wait main routing applies before it routes (`proxy-server.ts` step 2c). */
 const CATALOG_WAIT_MS = 5000;
@@ -227,7 +238,7 @@ async function planClaudeMember(
     return { kind: "claude-native", spec, role, model: claude.id, expectedArm: "claude-login" };
   }
   const authSource = { reason: childAuth.reason, where: childAuth.where };
-  if (INBOUND_KEY_SOURCES.has(childAuth.reason)) {
+  if (sendsInboundApiKey(childAuth)) {
     return {
       kind: "claude-native",
       spec,

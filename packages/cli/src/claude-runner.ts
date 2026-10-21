@@ -352,7 +352,18 @@ export type ChildAuthSource =
  */
 export type ChildAuthControl =
   | { controlled: true }
-  | { controlled: false; reason: ChildAuthSource; where: string };
+  | {
+      controlled: false;
+      reason: ChildAuthSource;
+      where: string;
+      /**
+       * `custom-headers` only: whether the headers set `x-api-key`, so Claude
+       * Code itself sends a real key the advisor can sign with. False when they
+       * set only `Authorization`, whose bearer the advisor never uses on an
+       * uncontrolled launch.
+       */
+      sendsApiKey?: boolean;
+    };
 
 /** Injectable reads for {@link childAuthControl}; defaults read the real files. */
 export interface ChildAuthControlDeps {
@@ -413,10 +424,19 @@ export function childAuthControl(
     }
   }
   if (customHeadersCarryAuth(env.ANTHROPIC_CUSTOM_HEADERS)) {
-    return { controlled: false, reason: "custom-headers", where: "environment" };
+    return {
+      controlled: false,
+      reason: "custom-headers",
+      where: "environment",
+      sendsApiKey: customHeaderAuthNames(env.ANTHROPIC_CUSTOM_HEADERS).has("x-api-key"),
+    };
   }
   for (const { where, settings } of readableClaudeSettingsLayers(config, env, deps)) {
     const reason = settings === null ? "settings-unreadable" : settingsAuthSource(settings);
+    if (reason === "custom-headers" && settings) {
+      const sendsApiKey = customHeaderAuthNames(settingsCustomHeaders(settings)).has("x-api-key");
+      return { controlled: false, reason, where, sendsApiKey };
+    }
     if (reason) return { controlled: false, reason, where };
   }
   return { controlled: true };
@@ -451,15 +471,29 @@ function settingsArgOccurrences(args: readonly string[]): SettingsArgOccurrence[
   return out;
 }
 
-/** True when an ANTHROPIC_CUSTOM_HEADERS value (one `Name: value` per line) sets an auth header. */
-function customHeadersCarryAuth(value: unknown): boolean {
-  if (typeof value !== "string" || !value) return false;
-  return value.split(/\r?\n/).some((line) => {
+/** The auth header names (lowercase) an ANTHROPIC_CUSTOM_HEADERS value (one `Name: value` per line) sets. */
+function customHeaderAuthNames(value: unknown): Set<"authorization" | "x-api-key"> {
+  const names = new Set<"authorization" | "x-api-key">();
+  if (typeof value !== "string" || !value) return names;
+  for (const line of value.split(/\r?\n/)) {
     const colon = line.indexOf(":");
-    if (colon <= 0) return false;
+    if (colon <= 0) continue;
     const name = line.slice(0, colon).trim().toLowerCase();
-    return name === "authorization" || name === "x-api-key";
-  });
+    if (name === "authorization" || name === "x-api-key") names.add(name);
+  }
+  return names;
+}
+
+/** True when an ANTHROPIC_CUSTOM_HEADERS value sets an auth header. */
+function customHeadersCarryAuth(value: unknown): boolean {
+  return customHeaderAuthNames(value).size > 0;
+}
+
+/** The `ANTHROPIC_CUSTOM_HEADERS` a settings object's `env` block sets, if any. */
+function settingsCustomHeaders(settings: Record<string, unknown>): unknown {
+  return settings.env && typeof settings.env === "object"
+    ? (settings.env as Record<string, unknown>).ANTHROPIC_CUSTOM_HEADERS
+    : undefined;
 }
 
 /** The non-login credential source one settings object declares, or null. */
