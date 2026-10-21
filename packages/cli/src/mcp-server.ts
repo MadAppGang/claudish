@@ -304,7 +304,11 @@ export function formatTeamResult(
         if (m.error.errorLogPath) {
           result += `- **Full error log:** ${m.error.errorLogPath}\n`;
         }
-        result += `- **Working directory:** ${m.error.workDir}\n`;
+        // Grid-mode producers have no pane cwd (#578) - same rule as the log
+        // path: never advertise what is not there.
+        if (m.error.workDir) {
+          result += `- **Working directory:** ${m.error.workDir}\n`;
+        }
       }
       result += "\n";
     }

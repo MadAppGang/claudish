@@ -251,6 +251,8 @@ interface PaneResult {
   completedAt?: string;
 }
 
+export type { PaneResult };
+
 interface MagmuxResultsEvent {
   type: "results";
   panes: PaneResult[];
@@ -325,8 +327,12 @@ async function subscribeToMagmux(
 /**
  * Translate magmux's PaneResult[] into claudish's TeamStatus.
  * Pane indices map to anonIds via insertion order in the manifest.
+ *
+ * Exported for the #578 pin: the grid path is a second ModelStatus producer
+ * beside runModels, and it must not silently drop the failure details the
+ * MCP report renders.
  */
-function buildTeamStatus(
+export function buildTeamStatus(
   manifest: TeamManifest,
   startedAt: string,
   results: PaneResult[] | null
@@ -363,13 +369,31 @@ function buildTeamStatus(
         state = "TIMEOUT";
     }
 
-    models[anonId] = {
+    const status: ModelStatus = {
       state,
       exitCode: result.exitCode,
       startedAt: result.startedAt ?? startedAt,
       completedAt: result.completedAt ?? new Date().toISOString(),
       outputSize: result.response?.length ?? 0,
     };
+
+    // #578: a FAILED pane on the grid path must still render the failure
+    // detail block. magmux's PaneResult carries no stderr and no log path
+    // (state/exitCode/response only), so say that honestly instead of
+    // leaving the block silently absent — the renderer skips the log-path
+    // and workDir lines when they are empty.
+    if (state === "FAILED") {
+      status.error = {
+        model: result.model ?? manifest.models[anonId].model,
+        command: `team run (grid, pane ${result.pane})`,
+        stderrSnippet:
+          "not captured in grid mode - magmux reports state/exit code only; rerun the model with `team run --no-grid` to capture stderr and an error log",
+        errorLogPath: "",
+        workDir: "",
+      };
+    }
+
+    models[anonId] = status;
   }
 
   return { startedAt, models };
