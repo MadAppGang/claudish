@@ -363,8 +363,10 @@ jobs:
           # Get checksums
           curl -sL "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/checksums.txt" -o checksums.txt
 
-          ARM64_SHA=$(grep "darwin-arm64" checksums.txt | awk '{print $1}')
-          X64_SHA=$(grep "darwin-x64" checksums.txt | awk '{print $1}')
+          # Match the whole filename field: checksums.txt also lists magmux-darwin-*, which a
+          # bare "darwin-arm64" grep would match too, giving the formula two sums.
+          ARM64_SHA=$(awk '$2 == "claudish-darwin-arm64" {print $1}' checksums.txt)
+          X64_SHA=$(awk '$2 == "claudish-darwin-x64" {print $1}' checksums.txt)
 
           echo "arm64_sha=$ARM64_SHA" >> $GITHUB_OUTPUT
           echo "x64_sha=$X64_SHA" >> $GITHUB_OUTPUT
