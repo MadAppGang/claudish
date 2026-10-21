@@ -252,6 +252,24 @@ Lecture :
   couvre l'heure de l'épisode, et qualifier « candidat compaction, non prouvé » plutôt qu'attribuer.
   `DOWN after 2 failure(s) → AUTONOMOUS` puis `healthy again → NOMINAL` borne un vrai épisode ; `served LOCALLY [1/2 before AUTONOMOUS]` est un incident isolé sans basculement. Rapprocher ensuite chaque épisode d'une cause externe (deploy, restart drainé, crash backend Docker, reboot hôte) — un épisode **sans** cause identifiée est le seul qui mérite une enquête.
 
+**Matrice `settings.json` de la flotte (mandat user 20/10, « une bonne dizaine de fois »).** Le coordinateur doit savoir ce que contient le `~/.claude/settings.json` de chaque machine du roster.
+
+- **Incident fondateur, 20/10.** C'est le user, pas moi, qui a trouvé sur po-2028 une `ANTHROPIC_API_KEY` renseignée. Le client envoie alors cette clé au lieu de sa propre authentification, et le hub refuse chaque tour natif : #296 forme B, 403 « no Anthropic credential to send ». po-2028 n'avait **jamais** publié d'instantané, et web2 porte la même clé (instantané du 13/10).
+- **Instrument, à chaque cycle :** `python scripts/settings-matrix.py --shared "$ROOSYNC_SHARED_PATH"`. Il lit le dernier instantané RooSync `claude-settings` de chaque machine.
+  - Il signale : non couvert, instantané de plus de 48 h, `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` renseignée, valeur hors canon, valeurs divergentes entre machines.
+  - **Canon décidé** (constante `CANON` du script, à tenir à jour au fil des décisions) : `CLAUDE_CODE_AUTO_COMPACT_WINDOW` vaut `263000` sur la flotte, soit 856 tokens **au-dessus** de la limite de Swift (`swift-1.5-27b`, 262 144 tokens, embarqué comme lane haiku) : écart ouvert, question Q58 du registre du coordinateur. ai-01 seul est légèrement plus haut, à `330000`, et c'est voulu (user 20/10). Un écart au canon est un drapeau, même s'il est majoritaire.
+  - Une clé sensible n'apparaît que par son nom et `set`/`empty`/`unset`. Le marqueur `<set:len=…:sha256=…>` de RSM n'est jamais recopié.
+- **Angle mort de l'instantané** (mesuré sur ai-01 le 20/10 : 12 noms `env` absents sur 25, dont `CLAUDE_CODE_SUBAGENT_MODEL`, la présence de `ANTHROPIC_CUSTOM_HEADERS` et les `*_NAME`/`*_DESCRIPTION`).
+  - Le correctif est demandé à roo-extensions, propriétaire de RSM.
+  - En attendant, chaque lane claudish publie son instantané, puis poste la sortie de la ligne ci-dessous. Elle donne les noms de clés, les valeurs des seules clés de modèle et l'état des trois clés sensibles ; jamais une valeur, une longueur, un préfixe ou une empreinte.
+
+  ```bash
+  python -I -c "import json,os,re;d=json.load(open(os.path.expanduser('~/.claude/settings.json'),encoding='utf-8-sig'));e=d.get('env') or {};S={'ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_CUSTOM_HEADERS'};C=re.compile(r'CLAUDE_CODE_(SUBAGENT_MODEL|AUTO_COMPACT_WINDOW)|ANTHROPIC_(DEFAULT_[A-Z]+_MODEL|CUSTOM_MODEL_OPTION)(_NAME|_DESCRIPTION)?');print('top:',sorted(d));[print(k,'=',json.dumps(e[k],ensure_ascii=False) if C.fullmatch(k) else (('present-empty' if e[k]=='' else 'present-set') if k in S else '(name only)')) for k in sorted(e)];[print(k,': absent') for k in sorted(S-set(e))]"
+  ```
+
+- **Toute modification d'un `settings.json`** est annoncée avant, avec une sauvegarde, puis suivie d'une republication de l'instantané. Une modification non annoncée est un incident.
+- Le **repoint de `ANTHROPIC_BASE_URL`** reste un remplacement d'une seule ligne, fait par l'opérateur de la machine (01/10). La matrice détaillée vit sur le dashboard interne : le dépôt est **public**, jamais d'adresse interne dans une issue.
+
 ### Phase 3 — Trafic et leak-policy
 
 ```
