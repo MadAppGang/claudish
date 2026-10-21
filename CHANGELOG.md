@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [13.0.1] - 2026-10-21
+
+### Bug Fixes
+
+- ship all of bin/ in the npm package, and start the packed package before publishing *(release)* ([`9cf0725`](https://github.com/MadAppGang/claudish/commit/9cf0725ee0a089a8a60025d886d39365109ac950))
+
+### Documentation
+
+- stamp the playbook verified at the v12.3.2 merge *(release)* ([`edb1e57`](https://github.com/MadAppGang/claudish/commit/edb1e574b936d39a473d07824909f585cebd3a82))
+- bring main into a release PR with gh pr update-branch *(release)* ([`f4cd82f`](https://github.com/MadAppGang/claudish/commit/f4cd82fc27390b29eaa70cb2bbaf9aa9ff40ba65))
+- update CHANGELOG.md for v13.0.0([`2320b8a`](https://github.com/MadAppGang/claudish/commit/2320b8a0ca4af14b8a0b2da38a6bf8f07d8ddc9c))
+
+### Other Changes
+
+- v13.0.1 *(release)* ([`579e14c`](https://github.com/MadAppGang/claudish/commit/579e14c2d32ae3170d17fd2231446c170f973130))
+
 ## [13.0.0] - 2026-10-20
 
 ### ⚠ BREAKING CHANGES
