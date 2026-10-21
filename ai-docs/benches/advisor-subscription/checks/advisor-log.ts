@@ -184,7 +184,13 @@ function gradeNotice(text: string, recs: Rec[], cfg: Config) {
     if (!line) problems.push(`${model}: no notice line '${model} -> <provider> (' found`);
     else if (ran.length === 0) problems.push(`${model}: no upstream record to compare the notice with`);
     else {
-      const unlike = names.filter((n) => !line.startsWith(`${model} -> ${n} (`) && line !== `${model} -> ${n}`);
+      // The first hop ends at its billing label, at `;` before the next hop,
+      // or at the end of the line. A displayName that already ends in its
+      // label ("Grok Build (subscription)") is printed with it once.
+      const unlike = names.filter((n) => {
+        const head = `${model} -> ${n}`;
+        return !(line === head || line.startsWith(`${head} (`) || line.startsWith(`${head};`));
+      });
       if (unlike.length) problems.push(`${model}: notice said "${line}", served by ${unlike.join(", ")}`);
     }
   }
