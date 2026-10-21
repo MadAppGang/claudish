@@ -3,9 +3,6 @@ import { join } from "node:path";
 import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { isEffortLevel } from "./adapters/base-api-format.js";
-import { LocalModelAdapter } from "./adapters/local-adapter.js";
-import { OpenRouterAPIFormat } from "./adapters/openrouter-api-format.js";
-import { credentials } from "./auth/credentials/authority.js";
 import { loadHookRules } from "./behavior/hooks.js";
 import { parseBehaviorConfig, registerHookRules } from "./behavior/index.js";
 import {
@@ -18,9 +15,10 @@ import {
   createAdvisorPresenceMonitor,
   withAdvisorSwap,
 } from "./handlers/advisor-decorator.js";
-import { ComposedHandler, type ComposedHandlerOptions } from "./handlers/composed-handler.js";
+import type { ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
+import { createHandlerSet } from "./handlers/handler-set.js";
 import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
@@ -40,8 +38,6 @@ import {
   resolveTargetForCatalog,
   warmCatalog,
 } from "./providers/catalog-client.js";
-import { type ResolvedConnection, resolveConnection } from "./providers/connection-resolver.js";
-import { declaredConnection, declaredWire } from "./providers/declared-wire.js";
 import { getEndpointUnavailableReason } from "./providers/endpoint-diagnostics.js";
 import {
   ensureEndpointsRegistered,
@@ -50,14 +46,6 @@ import {
 import { parseModelSpec } from "./providers/model-parser.js";
 import { proxyRouteDecision } from "./providers/native-route.js";
 import { describeMissingCredential, getProviderByName } from "./providers/provider-definitions.js";
-import { createHandlerForProvider } from "./providers/provider-profiles.js";
-import {
-  createUrlProvider,
-  parseUrlModel,
-  resolveProvider,
-} from "./providers/provider-registry.js";
-import { resolveModelProvider } from "./providers/provider-resolver.js";
-import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
 import {
   describeRoutingRuleProblem,
   effectiveDefaultProvider,
@@ -66,9 +54,6 @@ import {
   route,
   routingRuleProblems,
 } from "./providers/routing-rules.js";
-import { LocalTransport } from "./providers/transport/local.js";
-import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
-import { PoeProvider } from "./providers/transport/poe.js";
 import { discoverProviderProbeModel } from "./providers/transport/provider-model-discovery.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
 import { RefusingHandler } from "./providers/wire-handler.js";
@@ -341,322 +326,30 @@ export async function createProxyServer(
     codeMode: parseCodeModeSetting(options.codeMode),
   };
 
-  const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
-  const localProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Local Provider Handler
-  const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler
-  const poeHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Poe Handler
-
-  // The catalog connection behind a gateway handler built here rather than by
-  // a profile (OpenRouter, the legacy `poe:` prefix). Both speak Chat
-  // Completions only, so a known wire on another API — or an unsupported one —
-  // is refused rather than sent a chat body; an unknown wire keeps the
-  // gateway's own handler.
-  const chatWireConnection = (
-    provider: string,
-    modelId: string
-  ): { connection?: ResolvedConnection; refusal?: string } => {
-    const resolution = resolveConnection(provider, modelId);
-    if (!resolution.ok) return {};
-    const { connection } = resolution;
-    const where = `${connection.route.routeId}/${connection.route.routeProfileId} · ${connection.externalModelId}`;
-    if (connection.wire.status === "unsupported") {
-      return {
-        refusal: `${where} speaks ${connection.wire.protocol}, which claudish does not implement`,
-      };
-    }
-    if (connection.wire.status !== "known") return {};
-    if (connection.wire.api !== "chat-completions") {
-      return {
-        refusal: `${where} is published on ${connection.wire.api}, which this gateway handler does not speak`,
-      };
-    }
-    return { connection };
-  };
-
-  // Helper to get or create OpenRouter handler for a target model
-  const getOpenRouterHandler = (
-    targetModel: string,
-    invocationMode?: ComposedHandlerOptions["invocationMode"]
-  ): ModelHandler => {
-    // For explicit @ syntax: strip provider prefix (openrouter@google/gemini → google/gemini)
-    // For already-resolved vendor/model IDs (qwen/qwen3.5-plus-02-15): use as-is to preserve
-    // the vendor prefix that OpenRouter requires. parseModelSpec() would otherwise strip it
-    // (e.g. "qwen/" is a native pattern match → model becomes "qwen3.5-plus-02-15").
-    const parsed = parseModelSpec(targetModel);
-    const modelId = targetModel.includes("@") ? parsed.model : targetModel;
-
-    if (!openRouterHandlers.has(modelId)) {
-      const wired = chatWireConnection("openrouter", modelId);
-      if (wired.refusal) {
-        openRouterHandlers.set(modelId, new RefusingHandler(wired.refusal));
-        return openRouterHandlers.get(modelId)!;
-      }
-      // The OpenRouter key is resolved through the credential authority inside
-      // the transport's getHeaders() (single source of truth) — the legacy
-      // openrouterApiKey param is no longer the signing source.
-      const orProvider = new OpenRouterProviderTransport("", modelId);
-      // A model the catalog does not publish on OpenRouter still gets a wire:
-      // the documented default (chat, max_tokens, no reasoning field), never
-      // the name-picked dialect.
-      const connection =
-        wired.connection ??
-        declaredConnection(
-          "openrouter",
-          modelId,
-          "https://openrouter.ai/api/v1",
-          declaredWire("chat-completions", undefined)
-        );
-      const orAdapter = new OpenRouterAPIFormat(modelId, { vendor: connection.vendor ?? "" });
-      openRouterHandlers.set(
-        modelId,
-        new ComposedHandler(orProvider, modelId, modelId, port, {
-          adapter: orAdapter,
-          isInteractive: options.isInteractive,
-          invocationMode,
-          ...requestShapingOpts,
-          connection,
-        })
-      );
-    }
-    return openRouterHandlers.get(modelId)!;
-  };
-
-  // Helper to get or create Poe handler for a target model
-  const getPoeHandler = async (
-    targetModel: string,
-    invocationMode?: ComposedHandlerOptions["invocationMode"]
-  ): Promise<ModelHandler | null> => {
-    // Gate on the authority (env → config → op://), not a raw env read.
-    if (!(await credentials.isAvailable("poe"))) {
-      log(`[Proxy] Poe credentials not available, cannot use Poe model: ${targetModel}`);
-      return null;
-    }
-    // Strip "poe:" prefix to get the actual model name for the API
-    const modelId = targetModel.replace(/^poe:/, "");
-    if (!poeHandlers.has(modelId)) {
-      const wired = chatWireConnection("poe", modelId);
-      if (wired.refusal) {
-        poeHandlers.set(modelId, new RefusingHandler(wired.refusal));
-        return poeHandlers.get(modelId)!;
-      }
-      const connection =
-        wired.connection ??
-        declaredConnection(
-          "poe",
-          modelId,
-          "https://api.poe.com/v1",
-          declaredWire("chat-completions", undefined)
-        );
-      // The transport resolves its key through the authority in getHeaders().
-      const poeTransport = new PoeProvider();
-      poeHandlers.set(
-        modelId,
-        new ComposedHandler(poeTransport, modelId, modelId, port, {
-          isInteractive: options.isInteractive,
-          invocationMode,
-          ...requestShapingOpts,
-          connection,
-        })
-      );
-    }
-    return poeHandlers.get(modelId)!;
-  };
+  // The four handler getters and their caches, built by one factory so the
+  // advisor can own a second, isolated set (`requestRole: "advisor"`) without
+  // sharing a cached handler, its token tracker or a FallbackHandler's
+  // routing position with the main session. This set is the session's own:
+  // exactly the options these getters captured before the move.
+  const sessionHandlers = createHandlerSet({
+    port,
+    isInteractive: options.isInteractive,
+    quiet: options.quiet,
+    summarizeTools: options.summarizeTools,
+    requestShapingOpts,
+  });
+  const {
+    localProviderHandlers,
+    remoteProviderHandlers,
+    openRouter: getOpenRouterHandler,
+    poe: getPoeHandler,
+    local: getLocalProviderHandler,
+    remote: getRemoteProviderHandler,
+  } = sessionHandlers;
 
   // Check if model is a Poe model (has poe: prefix)
   const isPoeModel = (model: string): boolean => {
     return model.startsWith("poe:");
-  };
-
-  // Helper to get or create Local Provider handler for a target model
-  const getLocalProviderHandler = (
-    targetModel: string,
-    invocationMode?: ComposedHandlerOptions["invocationMode"]
-  ): ModelHandler | null => {
-    if (localProviderHandlers.has(targetModel)) {
-      return localProviderHandlers.get(targetModel)!;
-    }
-
-    // Check for prefix-based local provider (ollama/, lmstudio/, etc.)
-    const resolved = resolveProvider(targetModel);
-    if (resolved) {
-      const provider = new LocalTransport(resolved.provider, resolved.modelName, {
-        concurrency: resolved.concurrency,
-      });
-      const adapter = new LocalModelAdapter(resolved.modelName, resolved.provider.name);
-      const handler = new ComposedHandler(provider, resolved.modelName, resolved.modelName, port, {
-        adapter,
-        tokenStrategy: "local",
-        summarizeTools: options.summarizeTools,
-        isInteractive: options.isInteractive,
-        invocationMode,
-        ...requestShapingOpts,
-      });
-      localProviderHandlers.set(targetModel, handler);
-      log(
-        `[Proxy] Created local provider handler: ${resolved.provider.name}/${resolved.modelName}${resolved.concurrency !== undefined ? ` (concurrency: ${resolved.concurrency})` : ""}`
-      );
-      return handler;
-    }
-
-    // Check for URL-based model (http://localhost:11434/llama3)
-    const urlParsed = parseUrlModel(targetModel);
-    if (urlParsed) {
-      const providerConfig = createUrlProvider(urlParsed);
-      const provider = new LocalTransport(providerConfig, urlParsed.modelName);
-      const adapter = new LocalModelAdapter(urlParsed.modelName, providerConfig.name);
-      const handler = new ComposedHandler(
-        provider,
-        urlParsed.modelName,
-        urlParsed.modelName,
-        port,
-        {
-          adapter,
-          tokenStrategy: "local",
-          summarizeTools: options.summarizeTools,
-          isInteractive: options.isInteractive,
-          invocationMode,
-          ...requestShapingOpts,
-        }
-      );
-      localProviderHandlers.set(targetModel, handler);
-      log(
-        `[Proxy] Created URL-based local provider handler: ${urlParsed.baseUrl}/${urlParsed.modelName}`
-      );
-      return handler;
-    }
-
-    return null;
-  };
-
-  // Helper to get or create remote provider handler (Gemini, OpenAI)
-  // TODO: Consolidate src/ and packages/core/src/ - they're manually synced duplicates
-  const getRemoteProviderHandler = async (
-    targetModel: string,
-    invocationMode?: ComposedHandlerOptions["invocationMode"]
-  ): Promise<ModelHandler | null> => {
-    if (remoteProviderHandlers.has(targetModel)) {
-      return remoteProviderHandlers.get(targetModel)!;
-    }
-
-    // Use centralized resolver with fallback logic
-    const resolution = resolveModelProvider(targetModel);
-
-    if (resolution.wasAutoRouted && resolution.autoRouteMessage) {
-      // logStderr, NOT console.error: this fires PER REQUEST, i.e. while Claude
-      // Code owns the inherited TTY. A raw console write here lands mid-frame.
-      if (!options.quiet) {
-        logStderr(`[Auto-route] ${resolution.autoRouteMessage}`);
-      } else {
-        log(`[Auto-route] ${resolution.autoRouteMessage}`);
-      }
-    }
-
-    // If resolver says use OpenRouter (including fallback cases), create the handler
-    // directly here so we can use the correctly-formatted fullModelId (e.g. "google/gemini-2.0-flash")
-    // rather than the raw targetModel string.
-    if (resolution.category === "openrouter") {
-      if (resolution.wasAutoRouted && resolution.fullModelId) {
-        return getOpenRouterHandler(resolution.fullModelId);
-      }
-      return null;
-    }
-
-    // When auto-routed (e.g. to LiteLLM), use the resolved fullModelId so that
-    // resolveRemoteProvider() receives "litellm@gemini-2.0-flash" instead of the
-    // original bare model name which would match the wrong (native) provider.
-    const resolveTarget =
-      resolution.wasAutoRouted && resolution.fullModelId ? resolution.fullModelId : targetModel;
-
-    // If resolver says use direct-api, resolve credentials via the authority.
-    if (resolution.category === "direct-api") {
-      const resolved = resolveRemoteProvider(resolveTarget);
-      if (!resolved) {
-        // A KNOWN provider name that resolves to nothing has no endpoint: it
-        // declares no static baseUrl, no set `baseUrlEnvVars`, and not
-        // `buildsOwnEndpoint`. Say that here, because everything downstream of
-        // this null (OpenRouter fallback, or a 400 on an explicit spec) reads as
-        // "my key is missing" — which is how `vertex@` sent users looking for a
-        // key that was never involved.
-        log(
-          `[Proxy] No remote provider resolved for "${resolveTarget}" — no endpoint is configured for it (not a credential problem)`
-        );
-        return null;
-      }
-
-      // Skip 'openrouter' provider here - it uses the existing OpenRouterHandler
-      if (resolved.provider.name === "openrouter") {
-        return null; // Will fall through to OpenRouterHandler
-      }
-
-      // Resolve the API key ON DEMAND via the credential authority — the SINGLE
-      // source of truth. This pulls env → aliases → config → 1Password (lazy SDK)
-      // and writes a resolved op:// key through to process.env. Providers that
-      // need no auth (e.g. zen/ free) have no apiKeyEnvVar → empty key.
-      let apiKey = "";
-      // `authScheme: "none"` declares that this provider takes NO credential, so
-      // the whole resolution block is skipped — including the anti-poison
-      // `if (!apiKey) return null` at its end, which cannot otherwise tell
-      // "a key was required and did not resolve" from "no key was ever wanted".
-      //
-      // Checked on apiKeyEnvVar's own condition rather than inside, because a
-      // custom endpoint ALWAYS carries a synthesized `CUSTOM_<NAME>_KEY` — the
-      // variable exists whether or not the endpoint authenticates, so its
-      // presence cannot be the test. This was the last of four gates a keyless
-      // endpoint hit: schema, definition, credential authority, and here.
-      const needsNoAuth = resolved.provider.authScheme === "none";
-      if (resolved.provider.apiKeyEnvVar && !needsNoAuth) {
-        // HARDENING: getRequestAuth THROWS for a name the authority never
-        // registered (e.g. a runtime-renamed provider missing an alias), which
-        // would surface as an HTTP 500. Degrade to the same "no credential"
-        // path a missing key takes (null → explicit-spec routing reject → 400,
-        // or bare-name fallback) — but warn on stderr so the registration gap
-        // stays loud instead of silently masquerading as a missing key.
-        if (!credentials.get(resolved.provider.name)) {
-          logStderr(
-            `[Proxy] No credential provider registered for "${resolved.provider.name}" — treating as missing credential (authority registration gap)`
-          );
-          log(
-            `[Proxy] Credential authority has no provider registered under "${resolved.provider.name}"`
-          );
-          return null;
-        }
-        const auth = await credentials.getRequestAuth(resolved.provider.name, {
-          model: resolved.modelName,
-        });
-        // Extract the bearer / x-api-key value back into the construction-time
-        // key string createHandlerForProvider expects.
-        apiKey =
-          auth.headers.Authorization?.replace(/^Bearer\s+/i, "") || auth.headers["x-api-key"] || "";
-        // ANTI-POISON: a provider that requires a key but resolved empty must NOT
-        // be cached — return null (falls through to OpenRouter) so a key added
-        // later (TUI hydrate-on-add, op:// resolve) is picked up on the next try.
-        if (!apiKey) return null;
-      }
-
-      const handler = await createHandlerForProvider({
-        provider: resolved.provider,
-        modelName: resolved.modelName,
-        apiKey,
-        targetModel,
-        port,
-        sharedOpts: { isInteractive: options.isInteractive, invocationMode, ...requestShapingOpts },
-      });
-      if (!handler) {
-        return null; // Profile returned null (missing config) or unknown provider
-      }
-
-      // Cache under both the original targetModel and the resolveTarget (if different)
-      // so subsequent lookups with either key are served from cache.
-      remoteProviderHandlers.set(resolveTarget, handler);
-      if (resolveTarget !== targetModel) {
-        remoteProviderHandlers.set(targetModel, handler);
-      }
-      return handler;
-    }
-
-    // If we get here, either category is not direct-api or key is not available
-    // Both cases should fall through to OpenRouter or return null
-    return null;
   };
 
   // Direct-provider catalog warmup (LiteLLM, Zen, Zen Go) was removed in
