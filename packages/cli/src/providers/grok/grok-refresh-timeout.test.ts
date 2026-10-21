@@ -8,15 +8,17 @@
  *
  * Coverage map (requirement -> test):
  *   REQ-0  the ceiling is 20000 ms                       -> "REQ-0 ..."
- *   REQ-T1 hung host -> rejects within ~ceiling (< 30 s)  -> "REQ-T1 ..."
+ *   REQ-T1 hung host -> rejects within ~ceiling           -> "REQ-T1 ..."
  *   REQ-T2 the rejection classifies as "unreachable"      -> "REQ-T2 ..."
  *   REQ-T3 the rejection carries claudishEndpoint         -> "REQ-T3 ..."
  *   REQ-T4 the latch clears: 2 sequential calls = 2 POSTs -> "REQ-T4 ..."
  *   REQ-T5 2 concurrent calls = exactly 1 POST            -> "REQ-T5 ..."
  *
  * The hung host is a real `Bun.serve` on an ephemeral port, so the real client and its real
- * timeout are exercised: no fetch double, no module mock. The timeout is really waited out,
- * so to keep the file near 60 s the waits are SHARED, never shortened:
+ * AbortSignal timeout are exercised: no fetch double, no module mock. REQ-0 pins the 20000 ms
+ * value; the waits run at CEILING_MS through `setGrokRefreshTimeoutForTesting`, because the
+ * latch, the classification and the endpoint name are the same at any ceiling. The waits are
+ * also SHARED:
  *   - T1, T2, T3 and T4 assert on ONE timed-out refresh (`firstTimedOutRefresh`). Whichever of
  *     them runs first starts it; the rest reuse its recorded outcome. Each test awaits it
  *     itself, so any one of them run alone (`-t`) still performs the call, and a refresh that
@@ -30,15 +32,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 import { TOKEN_REFRESH_TIMEOUT_MS } from "../../handlers/shared/transient-retry.js";
-import { resolveGrokAccessToken, setGrokHomeForTesting } from "./grok-credentials.js";
+import {
+  resolveGrokAccessToken,
+  setGrokHomeForTesting,
+  setGrokRefreshTimeoutForTesting,
+} from "./grok-credentials.js";
 
 const OIDC_SCOPE = "https://auth.x.ai::TEST-CLIENT-ID";
 
-/** "About TOKEN_REFRESH_TIMEOUT_MS" with the generous slack the spec allows: < 30 s. */
-const SETTLE_LIMIT_MS = TOKEN_REFRESH_TIMEOUT_MS + 10_000;
+/** The refresh ceiling these tests run at. */
+const CEILING_MS = 300;
+/** "About the ceiling" with generous slack: a missing timeout still reports as `pending`. */
+const SETTLE_LIMIT_MS = CEILING_MS + 3_000;
 /** Per-test budgets, well above the in-test deadline so the deadline reports first. */
-const ONE_CALL_BUDGET_MS = 60_000;
-const TWO_CALL_BUDGET_MS = 90_000;
+const ONE_CALL_BUDGET_MS = 10_000;
+const TWO_CALL_BUDGET_MS = 15_000;
+
+beforeAll(() => setGrokRefreshTimeoutForTesting(CEILING_MS));
+afterAll(() => setGrokRefreshTimeoutForTesting(null));
 
 const TOKEN_POST = { method: "POST", path: "/oauth2/token" } as const;
 
