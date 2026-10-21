@@ -401,7 +401,7 @@ describe("decideAdvisorStartup", () => {
 
     expect(decision.notice).toContain("  panel (each model is routed like a main-model request):");
     expect(decision.notice).toContain(
-      "    gpt-6.1-sol -> OpenAI Codex (subscription); then OpenAI (metered, billed per token) (a rejected subscription login is reported, never routed onto a metered hop)"
+      "    gpt-6.1-sol -> OpenAI Codex (subscription); then OpenAI (metered, billed per token) (if the subscription login is rejected, calls move on to the metered hop)"
     );
     expect(decision.notice).toContain(
       "    haiku -> api.anthropic.com (subscription: your Claude Code login; if a request carries none: its x-api-key or ANTHROPIC_API_KEY, metered, billed per token)"

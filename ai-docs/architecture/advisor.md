@@ -443,9 +443,13 @@ Deliberate deviations from main routing:
 
 `FallbackHandler` starts each call at the last hop that served (`lastSuccessIndex`). After one
 transient subscription failure that a metered hop answered, every later call of that member
-starts at the metered hop, exactly as on main (R3). A rejected subscription LOGIN is never routed
-onto a metered hop (only subscription hops are tried after a terminal credential verdict), which
-the notice says when a member's chain mixes the two. When a call is served by a hop whose billing
+starts at the metered hop, exactly as on main (R3). A rejected subscription credential (expired,
+wrong or revoked) moves the call on to the next hop, metered included, the same rule as a main
+request (owner, 2026-10-21; `routing.md`): the panel uses the advisor handler set's
+`FallbackHandler`, so `announceCredentialRejection` prints its stderr line once per provider and
+upstream status, and the startup notice says so when a member's chain mixes the two billings
+(`(if the subscription login is rejected, calls move on to the metered hop)`). Until then a rejected
+login was never routed onto a metered hop. When a call is served by a hop whose billing
 differs from the hop the notice named, one line is written per change
 (`warnWhenServedUnlikePlan`, `handlers/native-handler-advisor.ts:2771`):
 
@@ -553,7 +557,7 @@ off the main status line by design.
 ```
 [claudish] --advisor is on for this launch
   panel (each model is routed like a main-model request):
-    gpt-6.1-sol -> OpenAI Codex (subscription); then OpenAI (metered, billed per token) (a rejected subscription login is reported, never routed onto a metered hop)
+    gpt-6.1-sol -> OpenAI Codex (subscription); then OpenAI (metered, billed per token) (if the subscription login is rejected, calls move on to the metered hop)
     sonnet -> api.anthropic.com (subscription: your Claude Code login; if a request carries none: its x-api-key or ANTHROPIC_API_KEY, metered, billed per token)
   collector:  none — haiku is a Claude model; this launch gives the advisor no Claude login (…), and no ANTHROPIC_API_KEY was found in env, config, keychain or 1Password. …; panel answers will be concatenated
   main model: your Claude Code session

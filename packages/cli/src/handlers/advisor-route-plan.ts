@@ -691,8 +691,11 @@ export function describeAdvisorPlan(plan: AdvisorModelPlan, build?: AdvisorChain
     .map((hop) => hop.displayName);
   for (const name of notBuilt) parts.push(` (not built: ${name}; see the debug log)`);
 
+  // `FallbackHandler` moves past a rejected subscription credential to the
+  // next hop, metered included (routing.md), so a mixed chain says so here;
+  // the per-call warning (`warnWhenServedUnlikePlan`) names the hop that served.
   if (first.billing === "subscription" && laterMetered) {
-    parts.push(" (a rejected subscription login is reported, never routed onto a metered hop)");
+    parts.push(" (if the subscription login is rejected, calls move on to the metered hop)");
   }
   return parts.join("");
 }

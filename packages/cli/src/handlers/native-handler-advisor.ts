@@ -2794,8 +2794,9 @@ async function runRoutedMember(
  * The hop that last served each routed member, when its billing differs from
  * the hop the startup notice named, keyed `"<role>:<spec>"`. `FallbackHandler`
  * starts every later call at the last hop that served (`lastSuccessIndex`), so
- * after one transient subscription failure that a metered hop answered, every
- * later call of that member is metered too — exactly as on main routing (R3).
+ * after one transient subscription failure or one rejected subscription
+ * credential that a metered hop answered, every later call of that member is
+ * metered too — exactly as on main routing (R3).
  * That is accepted, but never silent: one line per change.
  */
 const servedUnlikePlan = new Map<string, string>();
