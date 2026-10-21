@@ -16,7 +16,10 @@
  */
 
 import {
+  constants,
+  accessSync,
   existsSync,
+  lstatSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -563,12 +566,37 @@ export async function probeSocket(sockPath: string, magmuxMayLive: boolean): Pro
     );
     return { state: "inconclusive", code: "ETIMEDOUT" };
   } catch (e) {
-    const code = (e as { errno?: string | null; code?: string }).errno ?? "unknown";
+    const code = dialErrno((e as { errno?: string | null }).errno ?? "unknown", sockPath);
     const stale = code === "ENOENT" || (code === "ECONNREFUSED" && !magmuxMayLive);
     return stale ? { state: "stale", code } : { state: "inconclusive", code };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * A failed dial's errno, with ENOENT checked against the path itself. Bun before 1.4
+ * reports ENOENT for EVERY failed unix connect (measured, 1.3.10 on darwin: a refused
+ * socket, a mode-000 socket and a plain file all answer ENOENT), so ENOENT alone would
+ * read a live pane's socket as gone. The path decides instead: missing → ENOENT; not a
+ * socket → ENOTSOCK; not writable → EACCES; any other socket → ECONNREFUSED, which is
+ * stale only with pid evidence that its magmux is dead (`probeSocket`).
+ */
+function dialErrno(reported: string, sockPath: string): string {
+  if (reported !== "ENOENT") return reported;
+  let isSocket: boolean;
+  try {
+    isSocket = lstatSync(sockPath).isSocket();
+  } catch {
+    return "ENOENT";
+  }
+  if (!isSocket) return "ENOTSOCK";
+  try {
+    accessSync(sockPath, constants.W_OK);
+  } catch {
+    return "EACCES";
+  }
+  return "ECONNREFUSED";
 }
 
 /**

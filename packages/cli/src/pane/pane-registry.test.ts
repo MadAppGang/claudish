@@ -10,10 +10,10 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -101,15 +101,25 @@ function alive(pid: number): boolean {
 }
 
 /**
- * A socket inode nothing listens on, as a SIGKILLed magmux leaves it: a dial is refused
- * with ECONNREFUSED. (A plain file there answers ENOTSOCK, which is not proof of a stale
- * socket.)
+ * A socket inode nothing listens on, made the way a magmux leaves one: a child binds it and
+ * is SIGKILLed, so no close() runs and the kernel keeps the file. A dial is then refused
+ * with ECONNREFUSED. Closing an in-process server instead is not portable: Bun 1.3.10 (the
+ * CI pin) removes the file, and the dial answers ENOENT. (A plain file there answers
+ * ENOTSOCK, which is not proof of a stale socket.)
  */
 async function staleSocket(path: string): Promise<void> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(`${path}.live`, resolve));
-  renameSync(`${path}.live`, path);
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `require("node:net").createServer().listen(${JSON.stringify(path)}, () => console.log("up"));`,
+    ],
+    { stdout: "pipe", stderr: "inherit" }
+  );
+  await child.stdout.getReader().read(); // "up": bound and listening
+  child.kill("SIGKILL");
+  await child.exited;
+  expect(lstatSync(path).isSocket()).toBe(true);
 }
 
 function deadPid(): number {
@@ -945,8 +955,9 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
     }
   }, 30_000);
 
-  test("a dead owner's recordless socket without a table: only ENOENT removes it", async () => {
-    // no table names its magmux, so ECONNREFUSED is inconclusive here
+  test("a dead owner's recordless socket without a table: kept, whatever the dial reports", async () => {
+    // no table names its magmux, so a refusal is inconclusive; an ENOENT while the socket
+    // is still on disk is a refusal too (old Bun reports ENOENT for every failed connect)
     for (const code of [...INCONCLUSIVE, ...STALE]) {
       const t = env();
       const root = ensureSockRoot(t.sockRoot);
@@ -956,15 +967,51 @@ describe("with the process table unavailable (a sandbox refuses ps): owners judg
       const r = await withDialError(code, () =>
         withProcessTableUnavailable(() => sweepOrphanPanes(root))
       );
-      const removed = code === "ENOENT";
-      expect({ code, kept: r.kept, cleaned: r.cleaned }).toEqual({
-        code,
-        kept: removed ? [] : [id],
-        cleaned: removed ? [id] : [],
-      });
-      expect(`${code} ${existsSync(sock)}`).toBe(`${code} ${!removed}`);
+      expect({ code, kept: r.kept, cleaned: r.cleaned }).toEqual({ code, kept: [id], cleaned: [] });
+      expect(`${code} ${existsSync(sock)}`).toBe(`${code} true`);
     }
   }, 30_000);
+});
+
+describe("a dial that reports ENOENT is checked against the path (Bun < 1.4 reports it for every failure)", () => {
+  // replays Bun 1.3.10 on any Bun: every failed unix connect answers ENOENT
+  async function probeWithEnoent(path: string, magmuxMayLive: boolean) {
+    const prev = setSocketDialForTest(() =>
+      Promise.reject(new MagmuxConnectError("connect ENOENT", "ENOENT"))
+    );
+    try {
+      return await probeSocket(path, magmuxMayLive);
+    } finally {
+      setSocketDialForTest(prev);
+    }
+  }
+
+  test("missing → stale; plain file → ENOTSOCK; mode 000 → EACCES; any other socket → a refusal", async () => {
+    const t = env();
+    const root = ensureSockRoot(t.sockRoot);
+    const refused = join(root, "magmux-refused.sock");
+    await staleSocket(refused);
+    const locked = join(root, "magmux-locked.sock");
+    await staleSocket(locked);
+    chmodSync(locked, 0o000);
+    const plain = join(root, "magmux-plain.sock");
+    writeFileSync(plain, "");
+    expect(await probeWithEnoent(join(root, "magmux-none.sock"), true)).toEqual({
+      state: "stale",
+      code: "ENOENT",
+    });
+    expect(await probeWithEnoent(plain, false)).toEqual({
+      state: "inconclusive",
+      code: "ENOTSOCK",
+    });
+    expect(await probeWithEnoent(locked, false)).toEqual({ state: "inconclusive", code: "EACCES" });
+    // a refusal is stale only with the pane's magmux proven dead
+    expect(await probeWithEnoent(refused, true)).toEqual({
+      state: "inconclusive",
+      code: "ECONNREFUSED",
+    });
+    expect(await probeWithEnoent(refused, false)).toEqual({ state: "stale", code: "ECONNREFUSED" });
+  }, 20_000);
 });
 
 describe("the pane-socket probe: ENOENT, or ECONNREFUSED with magmux proven dead, is stale", () => {
