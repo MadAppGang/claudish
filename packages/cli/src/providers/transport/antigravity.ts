@@ -192,6 +192,29 @@ export function resolveAntigravityModelId(
   return req;
 }
 
+/**
+ * The id a request for `requested` is SENT as: {@link resolveAntigravityModelId}
+ * over the account's full dynamic models catalog (`servedIds`), with the cloud models catalog's family default
+ * (`lookupFamilyDefaultVariant`) as its second rule.
+ *
+ * The ONE resolution the transport, the credential (which builds the primary
+ * envelope) and the routing availability check (`providerServesModel`) share.
+ * The check used to match the requested id exactly, so `ag@gemini-3.8-flash`
+ * read as not served on an account serving only `gemini-3.8-flash-tiered`,
+ * which the transport would have sent, and a bare name lost its `ag@` hop.
+ */
+export function resolveAntigravityServedModel(
+  requested: string,
+  served: { servedIds: string[]; defaultId: string | null }
+): string {
+  return resolveAntigravityModelId(
+    requested,
+    served.servedIds,
+    served.defaultId,
+    lookupFamilyDefaultVariant(requested, "antigravity")
+  );
+}
+
 /** Generate a short random request ID (matches the Antigravity CLI activity logger) */
 function createActivityRequestId(): string {
   return Math.random().toString(36).substring(7);
@@ -346,9 +369,6 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   private servedModels: string[] = [];
 
-  /** The backend-provided default served model id (from fetchAvailableModels). */
-  private defaultServedModel: string | null = null;
-
   constructor(modelName: string) {
     this.modelName = modelName;
     // Resolved against the account's dynamic models catalog in refreshAuth();
@@ -431,15 +451,10 @@ export class AntigravityProviderTransport implements ProviderTransport {
     // reflect what THIS subscription actually serves today.
     const served = await getServedAntigravityModels(this.accessToken, this.projectId);
     this.servedModels = served.servedIds;
-    this.defaultServedModel = served.defaultId;
-    // Resolve the requested id to a served id against the live set (mirrors the
-    // credential provider, which builds the primary envelope).
-    this.servedModelName = resolveAntigravityModelId(
-      this.modelName,
-      this.servedModels,
-      this.defaultServedModel,
-      lookupFamilyDefaultVariant(this.modelName, "antigravity")
-    );
+    // Resolve the requested id to a served id against the live set, with the
+    // function the credential provider (which builds the primary envelope) and
+    // the routing availability check also use.
+    this.servedModelName = resolveAntigravityServedModel(this.modelName, served);
     log(
       `[Antigravity] Auth refreshed, project: ${this.projectId}, tier: ${this._displayName}, ` +
         `model: ${this.modelName} -> ${this.servedModelName}, served: ${this.servedModels.join(",") || "(none)"}`
