@@ -238,7 +238,8 @@ module runs (measured on Bun 1.4.0), so any repository the user runs claudish in
 variables and receive the login, which may be the one copied from the Muse Code CLI's Keychain
 item. No environment-based switch can be trusted, so there is none. The catalog wire handler also
 pins the base URL to `${MUSE_CODE_BASE_URL}/v1`, ignoring both the registry's base URL and a user
-base-URL override for `meta-muse-code`. Tests use the mint's injected `fetch` seam.
+base-URL override for `meta-muse-code`, even when the registry omits the Responses base URL.
+An ignored user base URL is logged with the pinned host. Tests use the mint's injected `fetch` seam.
 
 ## The mint is the entitlement evidence
 

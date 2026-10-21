@@ -374,14 +374,21 @@ export function buildKnownWireHandler(
   connection: ResolvedConnection,
   wire: KnownWire
 ): ModelHandler | null {
-  const registryBase = connectionBaseUrl(connection, wire.api);
+  const registryBase = requestBaseUrl(connection, wire.api);
   if (!registryBase) return null;
   const definition = getProviderByName(definitionName);
   // Muse keys stay on Meta, regardless of registry or user base URLs.
   const { baseUrl, overridden } =
     definitionName === "meta-muse-code"
-      ? { baseUrl: `${MUSE_CODE_BASE_URL}/v1`, overridden: false }
+      ? { baseUrl: registryBase, overridden: false }
       : effectiveBaseUrl(registryBase, definition?.baseUrl, ctx.provider.baseUrl);
+  if (
+    definitionName === "meta-muse-code" &&
+    ctx.provider.baseUrl &&
+    ctx.provider.baseUrl !== definition?.baseUrl
+  ) {
+    log(`[Wire] meta-muse-code: user base URL ignored → ${baseUrl}`);
+  }
   const url = wireRequestUrl(baseUrl, wire.api, connection.externalModelId);
   if (overridden) log(`[Wire] ${definitionName}: base URL overridden by user config → ${baseUrl}`);
 
