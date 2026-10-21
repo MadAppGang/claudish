@@ -856,7 +856,7 @@ Claude Code's inbound bearer and `x-api-key` to the main request's lease when it
 
 | Request | Installed by | Released when |
 |---|---|---|
-| Every session-app route | `app.use("*", …)` (`proxy-server.ts:793`) sets `SIGNING_SECRETS_KEY` | the response body is fully read, cancelled (after the cancel is forwarded to the source) or errors; at once for no body (`releaseWhenBodyEnds`, `handlers/shared/call-context.ts:186`) |
+| Every session-app route | `app.use("*", …)` (`proxy-server.ts:793`) sets `SIGNING_SECRETS_KEY` | the response body is fully read, cancelled or errors; at once for no body (`releaseWhenBodyEnds`, `handlers/shared/call-context.ts`). A cancel releases only after the parser has cancelled its upstream reader AND its read loop has settled (`cancelEndsUpstreamWork`, `stream-parsers/upstream-cancel.ts`): a flag-only parser cancel left the loop reading and logging frames after the release. On a throw that reaches the middleware (only when an inner `onError` itself threw: hono's compose answers a route's Error inside `next()`), the error's message and stack are redacted against this request's own set before the release |
 | An advisor panel call | the panel gateway (`handlers/advisor-panel-gateway.ts`) | when the call's work settles, after the body was read and redacted; a timed-out call's aborted work can still log |
 | A Claude advisor call | `runClaudeAdvisorCall`, for its own headers | when it returns (the login value is also on the main request's lease) |
 | A Context nothing installed (tests) | `signingSecretsOf` (`call-context.ts:57`) | never: retention costs redaction, never exposure |
@@ -872,7 +872,7 @@ is parsed and logged long after the handler returned.
 | `--debug` file, always-on `~/.claudish/logs/`, stderr, `DiagOutput` | `log()` and `logStderr()` call `redactSigningValues` before any write (`logger.ts:282`, `:320`); `logStructured`/`logRecovery` go through them. This covers the queue's 429 line, the parsers' frame and error lines, the auth-refresh exception and `FallbackHandler`'s stderr |
 | `CLAUDISH_UPSTREAM_ERROR_LOG`, team/pane/MCP error text | `redactSecrets` runs the registry pass before its shape rules (`redact.ts:246`) |
 | Telemetry report | `buildReport` runs it before `sanitizeMessage` (`telemetry.ts:439`, `:473`) |
-| Text sent back to Claude Code | `redactForClient` (`redact.ts:235`) at each client-body family: `ComposedHandler`'s error bodies, the Responses leg issuer, the error frames of every stream parser (`anthropic-sse`, `openai-sse`, `gemini-sse`, `ollama-jsonl`, `devin-connect`, `responses/claude-sse-sink`), `FallbackHandler`'s combined body and thrown messages, the proxy's catch and `onError` bodies |
+| Text sent back to Claude Code | `redactForClient` (`redact.ts:235`) at each client-body family: `ComposedHandler`'s error bodies, the Responses leg issuer, the error frames of every stream parser (`anthropic-sse`, `openai-sse`, `gemini-sse`, `ollama-jsonl`, `devin-connect`, `responses/claude-sse-sink`), `FallbackHandler`'s combined body and thrown messages, the auth-failure bodies (`respondAuthFailure`), the 7b/7c stream-head failure bodies (`surfaced` and `provider_message`), the proxy's catch and `onError` bodies |
 | An advisor result | the gateway redacts the whole body by value against the call's own set (`redactExactValues`, `redact.ts:215`) before the reason reaches records, warnings or the tool result |
 
 A new sink that writes upstream text without going through `log`, `logStderr` or
