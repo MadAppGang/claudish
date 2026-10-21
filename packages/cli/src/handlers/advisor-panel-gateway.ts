@@ -23,6 +23,7 @@
  */
 
 import { type Context, Hono } from "hono";
+import type { ChildAuthControl } from "../claude-runner.js";
 import { log } from "../logger.js";
 import { redactExactValues, redactForClient } from "../redact.js";
 import {
@@ -52,6 +53,12 @@ export interface AdvisorRuntime {
   /** Keyed `"<role>:<spec>"` (`advisorChainKey`). */
   plans: ReadonlyMap<string, AdvisorModelPlan>;
   chains: ReadonlyMap<string, AdvisorChainBuild>;
+  /**
+   * The launch's `childAuthControl` decision, the one the Claude plans were
+   * made with: the decorator lets Claude Code's bearer sign a Claude call only
+   * when it says claudish controls the child's auth.
+   */
+  childAuth: ChildAuthControl;
 }
 
 /** The URL of the synthetic request. Never resolved: the app is called in process. */

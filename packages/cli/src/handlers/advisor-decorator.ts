@@ -46,18 +46,20 @@ import type { Context } from "hono";
 // `metadata.user_id`'s JSON `session_id`. NOT the same-named function in
 // session-events/index.ts, which takes the metadata object instead.
 import { extractSessionId } from "../behavior/harness.js";
+import type { ChildAuthControl } from "../claude-runner.js";
 import { log, logStderr } from "../logger.js";
+import type { AdvisorPanelGateway } from "./advisor-route-plan.js";
 import {
-  type AdvisorApiKeys,
-  type AdvisorRouteKind,
   type AdvisorSwapConfig,
   type AdvisorToolResult,
+  type ClaudeAdvisorAuth,
+  type ClaudeRequestFacts,
   NO_SESSION_BUCKET,
-  advisorCredentialsFor,
+  type RunAdvisorCallParams,
+  claudeRequestFacts,
   createAdvisorStreamScanner,
   findPendingAdvisorToolResults,
   getAdvisorCall,
-  isPlaceholderAnthropicKey,
   joinOrStartAdvisorCall,
   logAdvisorEvent,
   markAdvisorCallConsumed,
@@ -67,6 +69,7 @@ import {
   recoverUnassociatedAdvisorResult,
   reportUnrecordedAdvisorCalls,
   resolveAdvisorCredential,
+  resolveClaudeAdvisorAuth,
   rewriteAdvisorToolResults,
   runAdvisorCall,
   stubAdvisorAdvice,
@@ -98,43 +101,6 @@ const ADVISOR_TOOL_NAME = "advisor";
  * holding an unbounded copy.
  */
 const MAX_JSON_SCAN_CHARS = 16 * 1024 * 1024;
-
-// ---------------------------------------------------------------------------
-// Advisor credentials
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the advisor keys for one request through `resolveAdvisorCredential`
- * (native-handler-advisor.ts) — the SAME function the `--advisor` startup
- * check asks, so a launch startup accepted is a launch this can sign, and a
- * launch it refuses is one that really has no key. They used to be two
- * lookups, and the runtime's extra GOOGLE_API_KEY fallback made startup refuse
- * launches the runtime would have served.
- *
- * Only the credentials the configured routes need (`advisorCredentialsFor`)
- * are resolved, so an unused provider never triggers a 1Password handshake.
- *
- * The one rule that belongs HERE and not in the shared resolver: for the
- * Anthropic collector, this request's own inbound `x-api-key` wins when it is
- * a real key. The inbound `authorization` header is Claude Code's OAuth bearer
- * and is NEVER sent to a collector.
- */
-export async function resolveAdvisorKeys(
-  needed: ReadonlySet<AdvisorRouteKind>,
-  inboundApiKey: string | undefined
-): Promise<AdvisorApiKeys> {
-  const anthropicKey = async (): Promise<string | undefined> => {
-    if (inboundApiKey && !isPlaceholderAnthropicKey(inboundApiKey)) return inboundApiKey;
-    return resolveAdvisorCredential("anthropic");
-  };
-  const [openrouter, google, openai, anthropic] = await Promise.all([
-    needed.has("openrouter") ? resolveAdvisorCredential("openrouter") : undefined,
-    needed.has("google") ? resolveAdvisorCredential("google") : undefined,
-    needed.has("openai") ? resolveAdvisorCredential("openai") : undefined,
-    needed.has("anthropic") ? anthropicKey() : undefined,
-  ]);
-  return { openrouter, google, openai, anthropic };
-}
 
 // ---------------------------------------------------------------------------
 // P10 — the advisor tool stopped arriving
@@ -210,12 +176,39 @@ export interface AdvisorSwapDeps {
    * (the classifier passthrough) whose requests must not count.
    */
   presence?: AdvisorPresenceMonitor;
-  /** Advisor key resolution; defaults to the credential authority. */
-  resolveKeys?: (
-    needed: ReadonlySet<AdvisorRouteKind>,
-    inboundApiKey: string | undefined
-  ) => Promise<AdvisorApiKeys>;
+  /**
+   * The panel gateway over the startup plans and chains. Absent ⇒ nothing was
+   * planned for this launch, and every member of a panel call is S7.
+   */
+  panel?: AdvisorPanelGateway;
+  /** What a Claude member may sign with. Absent ⇒ the bearer is never used. */
+  claude?: ClaudeAdvisorSwapDeps;
 }
+
+/** The decorator's inputs for Claude members and the Claude collector. */
+export interface ClaudeAdvisorSwapDeps {
+  /**
+   * This launch's `childAuthControl(config, env)`, decided at startup. Only a
+   * launch where claudish controls the child's auth lets the bearer sign.
+   */
+  childAuth: ChildAuthControl;
+  /** ANTHROPIC_API_KEY lookup; defaults to the advisor's own credential lookup. */
+  anthropicKey?: () => Promise<string | undefined>;
+  /** Read for ANTHROPIC_AUTH_TOKEN; defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+  /** Test seam for the Anthropic call; defaults to the global fetch. */
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * Used when the decorator was given no Claude inputs: the launch's auth is
+ * unknown, so the bearer is treated as not provably the Claude login.
+ */
+const UNKNOWN_CHILD_AUTH: ChildAuthControl = {
+  controlled: false,
+  reason: "proxy-auth",
+  where: "unknown (no launch decision was passed to the advisor)",
+};
 
 /**
  * Wraps `inner` so its requests carry claudish's advisor function tool and its
@@ -257,13 +250,7 @@ export class AdvisorSwapHandler implements ModelHandler {
       // a monitoring fault must never fail the request
     }
 
-    await applyAdvisorRequestSide(
-      c,
-      payload,
-      this.cfg,
-      sessionId,
-      this.deps.resolveKeys ?? resolveAdvisorKeys
-    );
+    await applyAdvisorRequestSide(c, payload, this.cfg, sessionId, this.deps);
 
     const response = await this.inner.handle(c, payload);
     return tapAdvisorResponse(response, this.cfg, sessionId);
@@ -275,6 +262,25 @@ export class AdvisorSwapHandler implements ModelHandler {
 }
 
 /**
+ * What `runAdvisorCall` gets from this decorator: the panel gateway, and the
+ * Claude credential for this main request, resolved only when a Claude member
+ * runs (runAdvisorCall memoises it per call).
+ */
+function advisorCallDeps(
+  deps: AdvisorSwapDeps,
+  facts: ClaudeRequestFacts
+): Pick<RunAdvisorCallParams, "gateway" | "claude"> {
+  const anthropicKey = deps.claude?.anthropicKey ?? (() => resolveAdvisorCredential("anthropic"));
+  return {
+    ...(deps.panel ? { gateway: deps.panel } : {}),
+    claude: {
+      resolveAuth: (): Promise<ClaudeAdvisorAuth> => resolveClaudeAdvisorAuth(facts, anthropicKey),
+      ...(deps.claude?.fetchImpl ? { fetchImpl: deps.claude.fetchImpl } : {}),
+    },
+  };
+}
+
+/**
  * The request half: tool swap, advisor tool_result rewrite, stub path S10,
  * body dump. Mutates `payload` in place before any converter reads it.
  */
@@ -283,7 +289,7 @@ async function applyAdvisorRequestSide(
   payload: Record<string, unknown>,
   cfg: AdvisorSwapConfig,
   sessionId: string | undefined,
-  resolveKeys: NonNullable<AdvisorSwapDeps["resolveKeys"]>
+  deps: AdvisorSwapDeps
 ): Promise<void> {
   const target = payload.model;
   const sessionLabel = sessionId ?? NO_SESSION_BUCKET;
@@ -326,26 +332,28 @@ async function applyAdvisorRequestSide(
       // evicted while the panel ran, which would otherwise take stub path S2
       // although the advice is right here.
       const delivered = new Map<string, AdvisorToolResult>();
-      let apiKeys: AdvisorApiKeys | undefined;
+      // Read ONCE per main request, before any panel runs: it registers every
+      // real inbound credential on this request's signing lease, so any line
+      // the request logs from here on is redacted against it.
+      const facts: ClaudeRequestFacts = claudeRequestFacts(c, payload, {
+        childAuth: deps.claude?.childAuth ?? UNKNOWN_CHILD_AUTH,
+        ...(deps.claude?.env ? { env: deps.claude.env } : {}),
+      });
+      const callDeps = advisorCallDeps(deps, facts);
       for (const id of pendingIds) {
         if (cachedResult(id)) continue;
 
         // One panel run per (session, tool_use id), even if Claude Code has
-        // two requests in flight for it — see joinOrStartAdvisorCall. Key
-        // resolution is inside, so a retry cannot race past it either.
+        // two requests in flight for it — see joinOrStartAdvisorCall.
         const runPanel = async (): Promise<AdvisorToolResult> => {
-          apiKeys ??= await resolveKeys(
-            advisorCredentialsFor(models, cfg.collector),
-            c.req.header("x-api-key")
-          );
           const outcome = await runAdvisorCall({
             toolUseId: id,
             sessionId,
             messages: payload.messages as any[],
             models,
             collector: cfg.collector ?? null,
-            apiKeys,
             cfg,
+            ...callDeps,
           });
           // The false return is honoured, never dropped: an answer claudish
           // cannot attach to the call is an answer the model will not receive,

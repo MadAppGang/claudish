@@ -308,12 +308,22 @@ export async function createProxyServer(
    * launch without the advisor never reaches the wrapper.
    */
   const advisorPresence = createAdvisorPresenceMonitor();
+  // The advisor panel gateway: an in-process Hono app that is never served,
+  // over the chains startup built from the advisor plans. It shares nothing
+  // with `app` below — no lease middleware (the gateway owns one lease per
+  // call), no `resolveHandlerForRequest` (no monitor branch, slot map or
+  // `--model` remap), no advisor wrapper.
+  const advisorRuntime = options.advisorRuntime;
+  const advisorPanel = advisorRuntime ? createAdvisorPanelGateway(advisorRuntime) : undefined;
   const withAdvisor = (handler: ModelHandler, presence?: AdvisorPresenceMonitor): ModelHandler =>
     withAdvisorSwap(
       handler,
       loadAdvisorSwapConfig(options.advisorModels, options.advisorCollector),
       {
         presence,
+        ...(advisorPanel ? { panel: advisorPanel } : {}),
+        // Without a runtime no launch decision exists, so no bearer may sign.
+        ...(advisorRuntime ? { claude: { childAuth: advisorRuntime.childAuth } } : {}),
       }
     );
   /**
@@ -1063,14 +1073,6 @@ export async function createProxyServer(
       return c.json(wrapAnthropicError(500, redactForClient(String(e))), 500);
     }
   });
-
-  // The advisor panel gateway: an in-process Hono app that is never served,
-  // over the chains startup built from the advisor plans. It shares nothing
-  // with `app` above — no lease middleware (the gateway owns one lease per
-  // call), no `resolveHandlerForRequest` (no monitor branch, slot map or
-  // `--model` remap), no advisor wrapper.
-  const advisorRuntime = options.advisorRuntime;
-  const advisorPanel = advisorRuntime ? createAdvisorPanelGateway(advisorRuntime) : undefined;
 
   // Bun's NATIVE server — not @hono/node-server.
   //

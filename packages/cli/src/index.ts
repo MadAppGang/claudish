@@ -1046,13 +1046,12 @@ async function runCli() {
     //   "skipped"   — local model or --models-skip-update
     //   "hard_fail" — missing cache + network failure → exit 1
     //
-    // AHEAD OF THE --advisor CHECK, deliberately. That check decides whether
-    // each panel model is routable, and every one of its answers is read from
-    // the catalog (`advisorRouteFor` → `lookupOpenRouterId`). With a cold
-    // catalog nothing is known, so the router falls back to passthrough and an
-    // UNROUTABLE panel model cannot be refused — it fails on the first advisor
-    // call instead, which is exactly the refusal this ordering exists to make
-    // possible (`kimi-k3` is refused only because the catalog was warm).
+    // AHEAD OF THE --advisor CHECK, deliberately. That check plans every panel
+    // member through `explainRoute` (`planAdvisorModel`), which reads its route
+    // candidates from the catalog. With a cold catalog a bare member has no
+    // candidates and is refused (`catalog-unreadable`), and an explicit one is
+    // taken as written; warming first is what lets startup plan, and refuse,
+    // from real data.
     const warmOutcome = await traceSpan("startup:catalog-warm", () =>
       warmCatalogIfNeeded(cliConfig)
     );
@@ -1097,6 +1096,11 @@ async function runCli() {
     // belongs to Claude Code alone, and the cost line (N2) is not optional.
     // `cliConfig.advisor` is set only by the --advisor flag on this command line
     // (N1); nothing stored can turn it on. Decision logic: advisor-startup.ts.
+    //
+    // Startup PLANS every member and BUILDS every routed member's chain here,
+    // before the port exists; the proxy's panel gateway runs on exactly that
+    // runtime (no lazy path), and owns its handlers from then on.
+    let advisorRuntime: import("./handlers/advisor-panel-gateway.js").AdvisorRuntime | undefined;
     if (cliConfig.advisor) {
       const { evaluateAdvisorStartup } = await import("./advisor-startup.js");
       const decision = await traceSpan("startup:advisor-check", () =>
@@ -1112,23 +1116,31 @@ async function runCli() {
         // A DEFAULTED collector that cannot be called is dropped here, before
         // createProxyServer reads advisorCollector, so no doomed call is made.
         cliConfig.advisorCollector = decision.effectiveCollector;
+        advisorRuntime = decision.runtime;
         // The warm step above ran first and hard-fails out, so the catalog is
         // normally populated by now. It can still be COLD — `--models-skip-update`,
         // a local main model (both "skipped"), or a cache claudish could not read.
-        // Then `advisorRouteFor` had no data to check any panel model against, so
-        // "routable" was not decided, it was assumed. Say which models that leaves
-        // unverified instead of proceeding as though they had passed.
+        // A BARE member is then refused above (routing answers `catalog-unreadable`),
+        // so only an explicit `provider@model` member can have passed without the
+        // catalog: its provider was taken as written. Say which ones.
         const { getCatalogEntries } = await import("./providers/catalog-client.js");
         if (getCatalogEntries() === null) {
-          const panel = cliConfig.advisorModels ?? [];
-          decision.notice.push(
-            `  WARNING: the model catalog is not loaded (catalog warm: ${warmOutcome}), so claudish ` +
-              `could not verify that ${panel.length === 1 ? "this panel model is" : "these panel models are"} ` +
-              `routable: ${panel.join(", ")}. An unroutable one fails on its first advisor call instead ` +
-              "of being refused here. Run `claudish --models-refresh` to check them at launch."
-          );
+          const unverified = [...decision.runtime.plans.values()]
+            .filter((p) => p.kind === "routed" && p.invocationMode === "explicit-model")
+            .map((p) => p.spec);
+          if (unverified.length > 0) {
+            decision.notice.push(
+              `  WARNING: the model catalog is not loaded (catalog warm: ${warmOutcome}), so claudish ` +
+                `could not check what ${unverified.length === 1 ? "this model's provider" : "these models' providers"} ` +
+                `publish: ${unverified.join(", ")}. A model the provider does not serve fails on its first ` +
+                "advisor call instead of being refused here. Run `claudish --models-refresh` to check at launch."
+            );
+          }
         }
         process.stderr.write(`${decision.notice.join("\n")}\n`);
+        // The debug and always-on logs get the notice too, so a run's log shows
+        // what the launch promised next to what each advisor call did.
+        for (const line of decision.notice) log(`[advisor-notice] ${line}`);
       }
     }
 
@@ -1223,6 +1235,7 @@ async function runCli() {
           isInteractive: cliConfig.interactive,
           advisorModels: cliConfig.advisorModels,
           advisorCollector: cliConfig.advisorCollector,
+          ...(advisorRuntime ? { advisorRuntime } : {}),
           // Present only when `--model` was a pinned chain; `explicitModel` above
           // is its first element, so the proxy can match the two.
           modelChain: cliConfig.monitor ? undefined : cliConfig.modelChain,

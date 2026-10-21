@@ -49,7 +49,6 @@ function createInner(
 function wrap(inner: ModelHandler, warn: (message: string) => void = () => {}): ModelHandler {
   return withAdvisorSwap(inner, cfg, {
     presence: createAdvisorPresenceMonitor(warn),
-    resolveKeys: async () => ({}),
   });
 }
 
@@ -122,7 +121,7 @@ describe("withAdvisorSwap", () => {
     const inner = createInner();
     const warn = mock((_message: string) => {});
     const presence = createAdvisorPresenceMonitor(warn);
-    const deps = { presence, resolveKeys: async () => ({}) };
+    const deps = { presence };
     const firstWrapper = withAdvisorSwap(inner, cfg, deps);
     const forwardingHandler: ModelHandler = {
       handle: (context, payload) => firstWrapper.handle(context, payload),
