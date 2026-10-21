@@ -13,6 +13,11 @@ import type { Context } from "hono";
 import { log } from "../../../logger.js";
 import { redactForClient } from "../../../redact.js";
 import { messageStartUsage } from "./message-start-usage.js";
+import {
+  type ParserSource,
+  type UpstreamReaderSlot,
+  cancelEndsUpstreamWork,
+} from "./upstream-cancel.js";
 
 export function createOllamaJsonlStream(
   _c: Context,
@@ -29,7 +34,8 @@ export function createOllamaJsonlStream(
   let isClosed = false;
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
-  const stream = new ReadableStream({
+  const upstream: UpstreamReaderSlot = {};
+  const source: ParserSource<Uint8Array> = {
     async start(controller) {
       const send = (event: string, data: any) => {
         if (!isClosed) {
@@ -129,6 +135,7 @@ export function createOllamaJsonlStream(
 
       try {
         const reader = response.body!.getReader();
+        upstream.reader = reader;
         let buffer = "";
 
         while (true) {
@@ -185,6 +192,8 @@ export function createOllamaJsonlStream(
         finalize("error", String(error));
       }
     },
+    // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
+    // after this and resolves only once the read loop above has settled.
     cancel() {
       isClosed = true;
       if (pingInterval) {
@@ -192,7 +201,8 @@ export function createOllamaJsonlStream(
         pingInterval = null;
       }
     },
-  });
+  };
+  const stream = new ReadableStream(cancelEndsUpstreamWork(upstream, source));
 
   return new Response(stream, {
     headers: {

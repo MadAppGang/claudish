@@ -13,6 +13,11 @@ import type { MiddlewareManager } from "../../../middleware/manager.js";
 import { redactForClient } from "../../../redact.js";
 import { messageStartUsage } from "./message-start-usage.js";
 import { sseDataPayload } from "./sse-line.js";
+import {
+  type ParserSource,
+  type UpstreamReaderSlot,
+  cancelEndsUpstreamWork,
+} from "./upstream-cancel.js";
 
 export interface GeminiSseOptions {
   modelName: string;
@@ -55,7 +60,8 @@ export function createGeminiSseStream(
   let isClosed = false;
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
-  const stream = new ReadableStream({
+  const upstream: UpstreamReaderSlot = {};
+  const source: ParserSource<Uint8Array> = {
     async start(controller) {
       const send = (event: string, data: any) => {
         if (!isClosed) {
@@ -191,6 +197,7 @@ export function createGeminiSseStream(
 
       try {
         const reader = response.body!.getReader();
+        upstream.reader = reader;
         let buffer = "";
 
         while (true) {
@@ -384,6 +391,8 @@ export function createGeminiSseStream(
         await finalize("error", String(e));
       }
     },
+    // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
+    // after this and resolves only once the read loop above has settled.
     cancel() {
       isClosed = true;
       if (pingInterval) {
@@ -391,7 +400,8 @@ export function createGeminiSseStream(
         pingInterval = null;
       }
     },
-  });
+  };
+  const stream = new ReadableStream(cancelEndsUpstreamWork(upstream, source));
 
   return new Response(stream, {
     headers: {

@@ -20,6 +20,7 @@ import { wrapAnthropicError } from "../anthropic-error.js";
 import type { UsageCacheDetail } from "../token-tracker.js";
 import { ClaudeSseSink } from "./responses/claude-sse-sink.js";
 import { type ResponsesRetryOptions, runResponsesTurn } from "./responses/responses-turn.js";
+import { type ParserSource, cancelEndsUpstreamWork } from "./upstream-cancel.js";
 
 export type { ResponsesRetryOptions } from "./responses/responses-turn.js";
 export type { CodeModeTurnHooks, ExecTurnStep } from "../../../code-mode/types.js";
@@ -180,7 +181,7 @@ export function createResponsesStreamHandler(
   }
 
   let sink: ClaudeSseSink | undefined;
-  const stream = new ReadableStream<Uint8Array>({
+  const source: ParserSource<Uint8Array> = {
     start: async (controller) => {
       sink = new ClaudeSseSink(controller, {
         modelName: opts.modelName,
@@ -214,10 +215,14 @@ export function createResponsesStreamHandler(
     // otherwise enqueue on a closed controller and throw from a timer callback,
     // killing the proxy process), and aborts the turn: the upstream reader is
     // cancelled rather than left streaming to completion with nobody reading.
+    // cancelEndsUpstreamWork then waits for runResponsesTurn to settle before
+    // the cancel resolves, so the lease outlives everything the turn logs while
+    // stopping. No upstream reader is passed: the turn's legs read their own.
     cancel() {
       sink?.cancel();
     },
-  });
+  };
+  const stream = new ReadableStream<Uint8Array>(cancelEndsUpstreamWork({}, source));
 
   return new Response(stream, {
     headers: {

@@ -59,6 +59,11 @@ import {
 } from "../../../providers/devin/proto-codec.js";
 import { redactForClient } from "../../../redact.js";
 import { messageStartUsage } from "./message-start-usage.js";
+import {
+  type ParserSource,
+  type UpstreamReaderSlot,
+  cancelEndsUpstreamWork,
+} from "./upstream-cancel.js";
 
 /** Response field numbers. Protocol constants, not model data. */
 const FIELD_TEXT = 3;
@@ -149,7 +154,8 @@ export function createDevinConnectStream(
   let isClosed = false;
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
-  const stream = new ReadableStream({
+  const upstream: UpstreamReaderSlot = {};
+  const source: ParserSource<Uint8Array> = {
     async start(controller) {
       const send = (event: string, data: any) => {
         if (!isClosed) {
@@ -481,6 +487,7 @@ export function createDevinConnectStream(
         }
 
         const reader = body.getReader();
+        upstream.reader = reader;
         const nextFrames = createFrameReader();
 
         while (true) {
@@ -520,6 +527,8 @@ export function createDevinConnectStream(
         finalize("error", String(e));
       }
     },
+    // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
+    // after this and resolves only once the read loop above has settled.
     cancel() {
       isClosed = true;
       if (pingInterval) {
@@ -527,7 +536,8 @@ export function createDevinConnectStream(
         pingInterval = null;
       }
     },
-  });
+  };
+  const stream = new ReadableStream(cancelEndsUpstreamWork(upstream, source));
 
   return new Response(stream, {
     headers: {

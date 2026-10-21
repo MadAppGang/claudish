@@ -9,6 +9,10 @@ import {
   stripAdvisorBeta,
 } from "./native-handler-advisor.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
+import {
+  type UpstreamReaderSlot,
+  cancelEndsUpstreamWork,
+} from "./shared/stream-parsers/upstream-cancel.js";
 import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
 import type { ModelHandler } from "./types.js";
 
@@ -133,38 +137,44 @@ export class NativeHandler implements ModelHandler {
       // Handle streaming
       if (contentType.includes("text/event-stream")) {
         log("[Native] Streaming response detected");
+        // A downstream cancel cancels this reader and waits for the loop below
+        // (which logs the whole stream at its end) before it resolves.
+        const upstream: UpstreamReaderSlot = {};
         return c.body(
-          new ReadableStream({
-            async start(controller) {
-              const reader = anthropicResponse.body?.getReader();
-              if (!reader) throw new Error("No reader");
+          new ReadableStream(
+            cancelEndsUpstreamWork<Uint8Array>(upstream, {
+              async start(controller) {
+                const reader = anthropicResponse.body?.getReader();
+                if (!reader) throw new Error("No reader");
+                upstream.reader = reader;
 
-              const decoder = new TextDecoder();
-              let buffer = "";
-              let eventLog = "";
+                const decoder = new TextDecoder();
+                let buffer = "";
+                let eventLog = "";
 
-              try {
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
+                try {
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
 
-                  controller.enqueue(value);
+                    controller.enqueue(value);
 
-                  // Basic logging
-                  const chunkText = decoder.decode(value, { stream: true });
-                  buffer += chunkText;
-                  const lines = buffer.split("\n");
-                  buffer = lines.pop() || "";
-                  for (const line of lines) if (line.trim()) eventLog += `${line}\n`;
+                    // Basic logging
+                    const chunkText = decoder.decode(value, { stream: true });
+                    buffer += chunkText;
+                    const lines = buffer.split("\n");
+                    buffer = lines.pop() || "";
+                    for (const line of lines) if (line.trim()) eventLog += `${line}\n`;
+                  }
+                  if (eventLog) log(eventLog);
+                  controller.close();
+                } catch (e) {
+                  log(`[Native] Stream Error: ${e}`);
+                  controller.close();
                 }
-                if (eventLog) log(eventLog);
-                controller.close();
-              } catch (e) {
-                log(`[Native] Stream Error: ${e}`);
-                controller.close();
-              }
-            },
-          }),
+              },
+            })
+          ),
           {
             headers: {
               "Content-Type": contentType,

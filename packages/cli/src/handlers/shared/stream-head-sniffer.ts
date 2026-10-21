@@ -133,10 +133,9 @@ export async function sniffResponsesStreamHead(
           } catch {}
         }
       },
-      cancel: () => {
-        // Downstream went away — release the upstream connection.
-        void reader.cancel().catch(() => {});
-      },
+      // Downstream went away — release the upstream connection, and resolve
+      // only once it is released, so the parser's cancel can wait for it.
+      cancel: () => reader.cancel().catch(() => {}),
     });
     return new Response(body, {
       status: response.status,

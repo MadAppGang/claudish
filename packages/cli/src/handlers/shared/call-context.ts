@@ -182,6 +182,11 @@ export function credentialValuesFromRequest(
  *
  * A cancel is forwarded to the source reader FIRST, so an upstream still
  * generating stops, and whatever it logs while stopping is still redacted.
+ * `release` waits for that cancel's promise, and every stream parser resolves
+ * it only after cancelling its upstream reader AND after its read loop has
+ * settled (`cancelEndsUpstreamWork`, `stream-parsers/upstream-cancel.ts`); a
+ * flag-only parser cancel let the loop keep reading and logging frames after
+ * the lease was gone.
  */
 export function releaseWhenBodyEnds(response: Response, release: () => void): Response {
   const source = response.body;

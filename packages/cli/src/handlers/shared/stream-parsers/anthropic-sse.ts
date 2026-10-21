@@ -14,6 +14,7 @@ import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { log } from "../../../logger.js";
 import { redactForClient } from "../../../redact.js";
 import { sseDataPayload } from "./sse-line.js";
+import { type UpstreamReaderSlot, cancelEndsUpstreamWork } from "./upstream-cancel.js";
 
 interface AnthropicPassthroughOpts {
   modelName: string;
@@ -287,210 +288,141 @@ export function createAnthropicPassthroughStream(
     }
   };
 
+  const upstream: UpstreamReaderSlot = {};
   return c.body(
-    new ReadableStream({
-      async start(controller) {
-        const sendPing = () => {
-          if (!isClosed) {
-            controller.enqueue(encoder.encode('event: ping\ndata: {"type":"ping"}\n\n'));
-          }
-        };
-
-        sendPing();
-
-        pingInterval = setInterval(() => {
-          if (!isClosed && Date.now() - lastActivity > 1000) {
-            sendPing();
-          }
-        }, 1000);
-
-        try {
-          const reader = response.body!.getReader();
-          let buffer = "";
-
-          let totalLines = 0;
-          let textChunks = 0;
-          let toolUseBlocks = 0;
-
-          // Thinking-block filtering state
-          let insideThinkingBlock = false;
-          /** How many thinking blocks have been suppressed so far. */
-          let thinkingBlocksSuppressed = 0;
-          /** A frame was just dropped — swallow its trailing blank separator too. */
-          let suppressedFrame = false;
-
-          // Content block index tracking — detect out-of-range indices
-          // that would cause "Content block not found" on the client side.
-          let highestSeenIndex = -1;
-          /**
-           * Original → remapped index for blocks whose content_block_start
-           * index jumped (e.g. z.ai 0 → 2). Every later frame of that block
-           * (deltas, stop) still carries the original index, so the remap
-           * must follow the block until it closes.
-           */
-          const remappedBlocks = new Map<number, number>();
-          const trackIndex = (idx: number) => {
-            if (idx > highestSeenIndex) highestSeenIndex = idx;
+    new ReadableStream(
+      cancelEndsUpstreamWork<Uint8Array>(upstream, {
+        async start(controller) {
+          const sendPing = () => {
+            if (!isClosed) {
+              controller.enqueue(encoder.encode('event: ping\ndata: {"type":"ping"}\n\n'));
+            }
           };
 
-          /**
-           * THE single index-mapping layer. Every indexed content_block frame
-           * goes through here, on both the thinking-filtered and unfiltered
-           * paths, because Claude Code's rule is the same either way: a delta
-           * or stop may only name an index some `content_block_start` already
-           * opened, and the opened indices must run 0,1,2,… with no gaps.
-           *
-           * Three upstream shapes it repairs:
-           *   - a start whose index jumps (z.ai sends 0 then 2) is remapped to
-           *     the next sequential slot, and the mapping is remembered so the
-           *     block's own deltas and stop follow it;
-           *   - a delta or stop naming a block that was never opened (MiniMax
-           *     emits an implicit signature block with no start) is DROPPED
-           *     whole rather than clamped, since re-attaching it to another
-           *     block would corrupt that block's content;
-           *   - a suppressed thinking block simply never calls `trackIndex`,
-           *     so the next real block lands on the slot the suppressed one
-           *     would have taken. That is why no "subtract the suppressed
-           *     count" arithmetic is needed: the renumbering falls out of
-           *     `highestSeenIndex` instead of being counted separately.
-           *
-           * Emitting through `enqueueData` with the REWRITTEN object matters:
-           * it records lifecycle against the index the client actually saw,
-           * which is what `finalizeAbandonedStream` later closes.
-           */
-          const emitIndexed = (controller: any, data: any, line: string): void => {
-            if (typeof data.index !== "number") {
-              enqueueData(controller, data, line);
-              return;
-            }
+          sendPing();
 
-            if (data.type === "content_block_start") {
-              const expected = highestSeenIndex + 1;
-              if (data.index !== expected) {
+          pingInterval = setInterval(() => {
+            if (!isClosed && Date.now() - lastActivity > 1000) {
+              sendPing();
+            }
+          }, 1000);
+
+          try {
+            const reader = response.body!.getReader();
+            upstream.reader = reader;
+            let buffer = "";
+
+            let totalLines = 0;
+            let textChunks = 0;
+            let toolUseBlocks = 0;
+
+            // Thinking-block filtering state
+            let insideThinkingBlock = false;
+            /** How many thinking blocks have been suppressed so far. */
+            let thinkingBlocksSuppressed = 0;
+            /** A frame was just dropped — swallow its trailing blank separator too. */
+            let suppressedFrame = false;
+
+            // Content block index tracking — detect out-of-range indices
+            // that would cause "Content block not found" on the client side.
+            let highestSeenIndex = -1;
+            /**
+             * Original → remapped index for blocks whose content_block_start
+             * index jumped (e.g. z.ai 0 → 2). Every later frame of that block
+             * (deltas, stop) still carries the original index, so the remap
+             * must follow the block until it closes.
+             */
+            const remappedBlocks = new Map<number, number>();
+            const trackIndex = (idx: number) => {
+              if (idx > highestSeenIndex) highestSeenIndex = idx;
+            };
+
+            /**
+             * THE single index-mapping layer. Every indexed content_block frame
+             * goes through here, on both the thinking-filtered and unfiltered
+             * paths, because Claude Code's rule is the same either way: a delta
+             * or stop may only name an index some `content_block_start` already
+             * opened, and the opened indices must run 0,1,2,… with no gaps.
+             *
+             * Three upstream shapes it repairs:
+             *   - a start whose index jumps (z.ai sends 0 then 2) is remapped to
+             *     the next sequential slot, and the mapping is remembered so the
+             *     block's own deltas and stop follow it;
+             *   - a delta or stop naming a block that was never opened (MiniMax
+             *     emits an implicit signature block with no start) is DROPPED
+             *     whole rather than clamped, since re-attaching it to another
+             *     block would corrupt that block's content;
+             *   - a suppressed thinking block simply never calls `trackIndex`,
+             *     so the next real block lands on the slot the suppressed one
+             *     would have taken. That is why no "subtract the suppressed
+             *     count" arithmetic is needed: the renumbering falls out of
+             *     `highestSeenIndex` instead of being counted separately.
+             *
+             * Emitting through `enqueueData` with the REWRITTEN object matters:
+             * it records lifecycle against the index the client actually saw,
+             * which is what `finalizeAbandonedStream` later closes.
+             */
+            const emitIndexed = (controller: any, data: any, line: string): void => {
+              if (typeof data.index !== "number") {
+                enqueueData(controller, data, line);
+                return;
+              }
+
+              if (data.type === "content_block_start") {
+                const expected = highestSeenIndex + 1;
+                if (data.index !== expected) {
+                  log(
+                    `[AnthropicSSE] content_block_start index ${data.index} remapped to ${expected} (model=${opts.modelName})`
+                  );
+                  remappedBlocks.set(data.index, expected);
+                  const remapped = { ...data, index: expected };
+                  enqueueData(controller, remapped, `data: ${JSON.stringify(remapped)}`);
+                } else {
+                  enqueueData(controller, data, line);
+                }
+                trackIndex(expected);
+                return;
+              }
+
+              const remapped = remappedBlocks.get(data.index);
+              if (data.type === "content_block_stop") remappedBlocks.delete(data.index);
+              if (remapped !== undefined) {
+                const modified = { ...data, index: remapped };
+                enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
+              } else if (data.index > highestSeenIndex) {
                 log(
-                  `[AnthropicSSE] content_block_start index ${data.index} remapped to ${expected} (model=${opts.modelName})`
+                  `[AnthropicSSE] Dropping orphan ${data.type} at index ${data.index} (no open block — model=${opts.modelName})`
                 );
-                remappedBlocks.set(data.index, expected);
-                const remapped = { ...data, index: expected };
-                enqueueData(controller, remapped, `data: ${JSON.stringify(remapped)}`);
+                pendingEventLine = null; // swallow the event: line too
+                suppressedFrame = true; // ...and the blank separator that follows it
               } else {
                 enqueueData(controller, data, line);
               }
-              trackIndex(expected);
-              return;
-            }
+            };
 
-            const remapped = remappedBlocks.get(data.index);
-            if (data.type === "content_block_stop") remappedBlocks.delete(data.index);
-            if (remapped !== undefined) {
-              const modified = { ...data, index: remapped };
-              enqueueData(controller, modified, `data: ${JSON.stringify(modified)}`);
-            } else if (data.index > highestSeenIndex) {
-              log(
-                `[AnthropicSSE] Dropping orphan ${data.type} at index ${data.index} (no open block — model=${opts.modelName})`
-              );
-              pendingEventLine = null; // swallow the event: line too
-              suppressedFrame = true; // ...and the blank separator that follows it
-            } else {
-              enqueueData(controller, data, line);
-            }
-          };
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              lastActivity = Date.now();
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            lastActivity = Date.now();
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
+              for (const line of lines) {
+                totalLines++;
 
-            for (const line of lines) {
-              totalLines++;
+                // Tolerates both `data: {...}` and the bare `data:{...}` form.
+                const payload = sseDataPayload(line);
 
-              // Tolerates both `data: {...}` and the bare `data:{...}` form.
-              const payload = sseDataPayload(line);
-
-              // ── Thinking-block filtering ──────────────────────────────
-              if (filterThinking && payload !== null) {
-                try {
-                  const data = JSON.parse(payload);
-
-                  // ── In-stream error detection (GitHub #106) ──
-                  // Some anthropic-compat providers (Z.AI, MiniMax, Kimi) return
-                  // HTTP 200 with {"error":{...}} embedded in the SSE payload.
-                  // Detect and surface as a proper error event.
-                  if (data.error) {
-                    const errMsg = data.error.message || JSON.stringify(data.error);
-                    log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
-                    if (!isClosed) {
-                      controller.enqueue(
-                        encoder.encode(
-                          `event: error\ndata: ${JSON.stringify({
-                            type: "error",
-                            error: { type: "api_error", message: redactForClient(errMsg) },
-                          })}\n\n`
-                        )
-                      );
-                      isClosed = true;
-                      if (pingInterval) {
-                        clearInterval(pingInterval);
-                        pingInterval = null;
-                      }
-                      controller.close();
-                    }
-                    return; // stop processing further lines
-                  }
-
-                  // Track: entering a thinking block
-                  if (
-                    data.type === "content_block_start" &&
-                    data.content_block?.type === "thinking"
-                  ) {
-                    insideThinkingBlock = true;
-                    thinkingBlocksSuppressed++;
-                    log(`[AnthropicSSE] Filtering thinking block at index ${data.index}`);
-                    pendingEventLine = null;
-                    suppressedFrame = true;
-                    continue; // suppress this line
-                  }
-
-                  // Track: exiting a thinking block
-                  if (insideThinkingBlock && data.type === "content_block_stop") {
-                    insideThinkingBlock = false;
-                    pendingEventLine = null;
-                    suppressedFrame = true;
-                    continue; // suppress this line
-                  }
-
-                  // Suppress all deltas while inside a thinking block
-                  // (thinking_delta, signature_delta)
-                  if (insideThinkingBlock) {
-                    pendingEventLine = null;
-                    suppressedFrame = true;
-                    continue;
-                  }
-
-                  // Renumber whatever survived the thinking filter through the
-                  // SAME index-mapping layer the unfiltered path uses. No
-                  // `continue` here: frames must fall through to the
-                  // usage/text tracking below, which still reads the ORIGINAL
-                  // data rather than the rewritten frame.
-                  emitIndexed(controller, data, line);
-                } catch {
-                  // Unparseable — pass through
-                  if (!isClosed) {
-                    flushPendingEvent(controller);
-                    controller.enqueue(encoder.encode(`${line}\n`));
-                  }
-                }
-              } else {
-                // Non-data lines (event: lines, blank lines) or no filtering
-                if (!filterThinking && payload !== null) {
-                  // Parse data lines BEFORE enqueuing to detect in-stream errors
+                // ── Thinking-block filtering ──────────────────────────────
+                if (filterThinking && payload !== null) {
                   try {
                     const data = JSON.parse(payload);
 
                     // ── In-stream error detection (GitHub #106) ──
+                    // Some anthropic-compat providers (Z.AI, MiniMax, Kimi) return
+                    // HTTP 200 with {"error":{...}} embedded in the SSE payload.
+                    // Detect and surface as a proper error event.
                     if (data.error) {
                       const errMsg = data.error.message || JSON.stringify(data.error);
                       log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
@@ -513,171 +445,246 @@ export function createAnthropicPassthroughStream(
                       return; // stop processing further lines
                     }
 
-                    // No error — check index bounds before passing through
-                    // (still via the tool interceptor, which is a no-op unless
-                    // a rule asked for this tool).
-                    emitIndexed(controller, data, line);
-
-                    // Usage/debug tracking, in its OWN try. The outer catch
-                    // re-enqueues the raw line, which is right for a data line
-                    // that would not parse — but by this point the frame has
-                    // already been emitted, rewritten, or deliberately dropped.
-                    // Letting a tracking throw reach that catch emits it a
-                    // second time: a double frame, or a resurrected orphan
-                    // carrying the very index the layer just removed. The
-                    // filtered path already isolates its tracking this way.
-                    try {
-                      if (data.message?.usage) {
-                        inputTokens = data.message.usage.input_tokens || inputTokens;
-                        outputTokens = data.message.usage.output_tokens || outputTokens;
-                      }
-                      if (data.usage) {
-                        inputTokens = data.usage.input_tokens || inputTokens;
-                        outputTokens = data.usage.output_tokens || outputTokens;
-                      }
-                      if (
-                        data.type === "content_block_delta" &&
-                        data.delta?.type === "text_delta"
-                      ) {
-                        const txt = data.delta.text || "";
-                        opts.onAssistantText?.(txt, "text");
-                        textChunks++;
-                        log(
-                          `[AnthropicSSE] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
-                        );
-                      }
-                      if (
-                        data.type === "content_block_start" &&
-                        data.content_block?.type === "tool_use"
-                      ) {
-                        toolUseBlocks++;
-                        opts.onToolCallObserved?.(data.content_block.name);
-                        log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
-                      }
-                      if (data.type === "message_delta" && data.delta?.stop_reason) {
-                        stopReason = data.delta.stop_reason;
-                      }
-                    } catch {
-                      // Observation must never change the wire.
+                    // Track: entering a thinking block
+                    if (
+                      data.type === "content_block_start" &&
+                      data.content_block?.type === "thinking"
+                    ) {
+                      insideThinkingBlock = true;
+                      thinkingBlocksSuppressed++;
+                      log(`[AnthropicSSE] Filtering thinking block at index ${data.index}`);
+                      pendingEventLine = null;
+                      suppressedFrame = true;
+                      continue; // suppress this line
                     }
+
+                    // Track: exiting a thinking block
+                    if (insideThinkingBlock && data.type === "content_block_stop") {
+                      insideThinkingBlock = false;
+                      pendingEventLine = null;
+                      suppressedFrame = true;
+                      continue; // suppress this line
+                    }
+
+                    // Suppress all deltas while inside a thinking block
+                    // (thinking_delta, signature_delta)
+                    if (insideThinkingBlock) {
+                      pendingEventLine = null;
+                      suppressedFrame = true;
+                      continue;
+                    }
+
+                    // Renumber whatever survived the thinking filter through the
+                    // SAME index-mapping layer the unfiltered path uses. No
+                    // `continue` here: frames must fall through to the
+                    // usage/text tracking below, which still reads the ORIGINAL
+                    // data rather than the rewritten frame.
+                    emitIndexed(controller, data, line);
                   } catch {
-                    // Unparseable data line — pass through
+                    // Unparseable — pass through
                     if (!isClosed) {
+                      flushPendingEvent(controller);
                       controller.enqueue(encoder.encode(`${line}\n`));
                     }
                   }
                 } else {
-                  // Non-data line — an `event:` header or the blank separator —
-                  // on EITHER path.
-                  //
-                  // The header is held for exactly one line because its `data:`
-                  // line may still be dropped, and a header already on the wire
-                  // cannot be recalled. Claude Code rejects a header with no
-                  // body outright: `Could not parse message into JSON: From
-                  // chunk: [ "event:content_block_start" ]` kills the whole turn.
-                  //
-                  // This used to be conditional on `filterThinking`, on the
-                  // reasoning that only the thinking filter ever dropped a
-                  // frame. That stopped being true when the index layer began
-                  // dropping orphans, which it does on BOTH paths — and the
-                  // unfiltered one is the common case for z.ai, Kimi and qwen,
-                  // i.e. exactly the providers whose jumped indices the layer
-                  // exists to repair. Measured before this change: an orphaned
-                  // delta+stop pair left two bare `event:` lines on the wire.
-                  if (line.startsWith("event:")) {
-                    pendingEventLine = line;
-                  } else if (line.trim() === "" && suppressedFrame) {
-                    suppressedFrame = false; // swallow the dropped frame's separator
-                  } else if (!isClosed) {
-                    controller.enqueue(encoder.encode(`${line}\n`));
+                  // Non-data lines (event: lines, blank lines) or no filtering
+                  if (!filterThinking && payload !== null) {
+                    // Parse data lines BEFORE enqueuing to detect in-stream errors
+                    try {
+                      const data = JSON.parse(payload);
+
+                      // ── In-stream error detection (GitHub #106) ──
+                      if (data.error) {
+                        const errMsg = data.error.message || JSON.stringify(data.error);
+                        log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
+                        if (!isClosed) {
+                          controller.enqueue(
+                            encoder.encode(
+                              `event: error\ndata: ${JSON.stringify({
+                                type: "error",
+                                error: { type: "api_error", message: redactForClient(errMsg) },
+                              })}\n\n`
+                            )
+                          );
+                          isClosed = true;
+                          if (pingInterval) {
+                            clearInterval(pingInterval);
+                            pingInterval = null;
+                          }
+                          controller.close();
+                        }
+                        return; // stop processing further lines
+                      }
+
+                      // No error — check index bounds before passing through
+                      // (still via the tool interceptor, which is a no-op unless
+                      // a rule asked for this tool).
+                      emitIndexed(controller, data, line);
+
+                      // Usage/debug tracking, in its OWN try. The outer catch
+                      // re-enqueues the raw line, which is right for a data line
+                      // that would not parse — but by this point the frame has
+                      // already been emitted, rewritten, or deliberately dropped.
+                      // Letting a tracking throw reach that catch emits it a
+                      // second time: a double frame, or a resurrected orphan
+                      // carrying the very index the layer just removed. The
+                      // filtered path already isolates its tracking this way.
+                      try {
+                        if (data.message?.usage) {
+                          inputTokens = data.message.usage.input_tokens || inputTokens;
+                          outputTokens = data.message.usage.output_tokens || outputTokens;
+                        }
+                        if (data.usage) {
+                          inputTokens = data.usage.input_tokens || inputTokens;
+                          outputTokens = data.usage.output_tokens || outputTokens;
+                        }
+                        if (
+                          data.type === "content_block_delta" &&
+                          data.delta?.type === "text_delta"
+                        ) {
+                          const txt = data.delta.text || "";
+                          opts.onAssistantText?.(txt, "text");
+                          textChunks++;
+                          log(
+                            `[AnthropicSSE] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
+                          );
+                        }
+                        if (
+                          data.type === "content_block_start" &&
+                          data.content_block?.type === "tool_use"
+                        ) {
+                          toolUseBlocks++;
+                          opts.onToolCallObserved?.(data.content_block.name);
+                          log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
+                        }
+                        if (data.type === "message_delta" && data.delta?.stop_reason) {
+                          stopReason = data.delta.stop_reason;
+                        }
+                      } catch {
+                        // Observation must never change the wire.
+                      }
+                    } catch {
+                      // Unparseable data line — pass through
+                      if (!isClosed) {
+                        controller.enqueue(encoder.encode(`${line}\n`));
+                      }
+                    }
+                  } else {
+                    // Non-data line — an `event:` header or the blank separator —
+                    // on EITHER path.
+                    //
+                    // The header is held for exactly one line because its `data:`
+                    // line may still be dropped, and a header already on the wire
+                    // cannot be recalled. Claude Code rejects a header with no
+                    // body outright: `Could not parse message into JSON: From
+                    // chunk: [ "event:content_block_start" ]` kills the whole turn.
+                    //
+                    // This used to be conditional on `filterThinking`, on the
+                    // reasoning that only the thinking filter ever dropped a
+                    // frame. That stopped being true when the index layer began
+                    // dropping orphans, which it does on BOTH paths — and the
+                    // unfiltered one is the common case for z.ai, Kimi and qwen,
+                    // i.e. exactly the providers whose jumped indices the layer
+                    // exists to repair. Measured before this change: an orphaned
+                    // delta+stop pair left two bare `event:` lines on the wire.
+                    if (line.startsWith("event:")) {
+                      pendingEventLine = line;
+                    } else if (line.trim() === "" && suppressedFrame) {
+                      suppressedFrame = false; // swallow the dropped frame's separator
+                    } else if (!isClosed) {
+                      controller.enqueue(encoder.encode(`${line}\n`));
+                    }
                   }
                 }
-              }
 
-              // ── Usage/debug tracking for filtered path ────────────────
-              // We need this even when filtering, but the data was already parsed
-              // above in the filterThinking branch. Re-parse for tracking only.
-              if (filterThinking && payload !== null) {
-                try {
-                  const data = JSON.parse(payload);
-                  if (data.message?.usage) {
-                    inputTokens = data.message.usage.input_tokens || inputTokens;
-                    outputTokens = data.message.usage.output_tokens || outputTokens;
-                  }
-                  if (data.usage) {
-                    inputTokens = data.usage.input_tokens || inputTokens;
-                    outputTokens = data.usage.output_tokens || outputTokens;
-                  }
-                  if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
-                    opts.onAssistantText?.(data.delta.text || "", "text");
-                    textChunks++;
-                  }
-                  if (
-                    data.type === "content_block_start" &&
-                    data.content_block?.type === "tool_use"
-                  ) {
-                    toolUseBlocks++;
-                    opts.onToolCallObserved?.(data.content_block.name);
-                    log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
-                  }
-                  if (data.type === "message_delta" && data.delta?.stop_reason) {
-                    stopReason = data.delta.stop_reason;
-                  }
-                } catch {}
+                // ── Usage/debug tracking for filtered path ────────────────
+                // We need this even when filtering, but the data was already parsed
+                // above in the filterThinking branch. Re-parse for tracking only.
+                if (filterThinking && payload !== null) {
+                  try {
+                    const data = JSON.parse(payload);
+                    if (data.message?.usage) {
+                      inputTokens = data.message.usage.input_tokens || inputTokens;
+                      outputTokens = data.message.usage.output_tokens || outputTokens;
+                    }
+                    if (data.usage) {
+                      inputTokens = data.usage.input_tokens || inputTokens;
+                      outputTokens = data.usage.output_tokens || outputTokens;
+                    }
+                    if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
+                      opts.onAssistantText?.(data.delta.text || "", "text");
+                      textChunks++;
+                    }
+                    if (
+                      data.type === "content_block_start" &&
+                      data.content_block?.type === "tool_use"
+                    ) {
+                      toolUseBlocks++;
+                      opts.onToolCallObserved?.(data.content_block.name);
+                      log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
+                    }
+                    if (data.type === "message_delta" && data.delta?.stop_reason) {
+                      stopReason = data.delta.stop_reason;
+                    }
+                  } catch {}
+                }
               }
             }
-          }
 
-          log(
-            `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}${filterThinking ? `, filtered ${thinkingBlocksSuppressed} thinking blocks` : ""}`
-          );
+            log(
+              `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}${filterThinking ? `, filtered ${thinkingBlocksSuppressed} thinking blocks` : ""}`
+            );
 
-          opts.onTurnEnd?.();
-
-          if (opts.onTokenUpdate) {
-            opts.onTokenUpdate(inputTokens, outputTokens);
-          }
-
-          if (!isClosed) {
-            isClosed = true;
-            if (pingInterval) {
-              clearInterval(pingInterval);
-              pingInterval = null;
-            }
-            controller.close();
-          }
-        } catch (e) {
-          log(`[AnthropicSSE] Stream error: ${e}`);
-          // The upstream socket dropped mid-answer (Z.AI, MiniMax and Kimi all do
-          // this under load). Closing the controller here without a terminal event
-          // handed Claude Code a stream that stopped but never ended, and the turn
-          // hung. Emit the tail first, then close, and still run the turn-end hooks
-          // so Layer 4 and the token file see a completed turn rather than nothing.
-          finalizeAbandonedStream(controller);
-          try {
             opts.onTurnEnd?.();
-          } catch {}
-          try {
-            opts.onTokenUpdate?.(inputTokens, outputTokens);
-          } catch {}
-          if (!isClosed) {
-            isClosed = true;
-            if (pingInterval) {
-              clearInterval(pingInterval);
-              pingInterval = null;
+
+            if (opts.onTokenUpdate) {
+              opts.onTokenUpdate(inputTokens, outputTokens);
             }
-            controller.close();
+
+            if (!isClosed) {
+              isClosed = true;
+              if (pingInterval) {
+                clearInterval(pingInterval);
+                pingInterval = null;
+              }
+              controller.close();
+            }
+          } catch (e) {
+            log(`[AnthropicSSE] Stream error: ${e}`);
+            // The upstream socket dropped mid-answer (Z.AI, MiniMax and Kimi all do
+            // this under load). Closing the controller here without a terminal event
+            // handed Claude Code a stream that stopped but never ended, and the turn
+            // hung. Emit the tail first, then close, and still run the turn-end hooks
+            // so Layer 4 and the token file see a completed turn rather than nothing.
+            finalizeAbandonedStream(controller);
+            try {
+              opts.onTurnEnd?.();
+            } catch {}
+            try {
+              opts.onTokenUpdate?.(inputTokens, outputTokens);
+            } catch {}
+            if (!isClosed) {
+              isClosed = true;
+              if (pingInterval) {
+                clearInterval(pingInterval);
+                pingInterval = null;
+              }
+              controller.close();
+            }
           }
-        }
-      },
-      cancel() {
-        isClosed = true;
-        if (pingInterval) {
-          clearInterval(pingInterval);
-          pingInterval = null;
-        }
-      },
-    }),
+        },
+        // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
+        // after this and resolves only once the read loop above has settled.
+        cancel() {
+          isClosed = true;
+          if (pingInterval) {
+            clearInterval(pingInterval);
+            pingInterval = null;
+          }
+        },
+      })
+    ),
     {
       headers: {
         "Content-Type": "text/event-stream",
