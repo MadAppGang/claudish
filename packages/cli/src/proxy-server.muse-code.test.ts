@@ -269,7 +269,7 @@ process.on("unhandledRejection", error => { console.error(error); realExit(1); }
 }
 
 for (const transportAvailable of [true, false]) {
-  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+  // MTL-189: meta/muse-code-subscription must stay bound.
   test(`N5: isolated-home Muse probe-discover with subscription binding and transport=${transportAvailable}; borrowed concurrent requests never read Keychain`, async () => {
     const scenario = async (transportAvailable: boolean) => {
       const { createProxyServer } = await import("./proxy-server.js");

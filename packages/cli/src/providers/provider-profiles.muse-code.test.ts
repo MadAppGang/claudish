@@ -127,7 +127,7 @@ afterEach(async () => {
   restoreHarness();
 });
 
-// REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+// MTL-189: meta/muse-code-subscription must stay bound.
 test("T4: Muse binds its subscription route and still builds an explicit profile handler", async () => {
   const { museCodeProfile } = await import("./provider-profiles.js");
   const { catalogRouteForProvider } = await import("./catalog-route-bindings.js");
@@ -164,7 +164,6 @@ test("T4: Muse binds its subscription route and still builds an explicit profile
   }
 });
 
-// REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
 test.each(["https://api.meta.ai/v1", "https://override.invalid/v1"])(
   "T4: explicit Wonder Full pins the Meta responses URL with provider baseUrl=%s",
   async (baseUrl) => {

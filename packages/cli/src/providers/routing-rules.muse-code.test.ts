@@ -195,7 +195,7 @@ describe("R1/R3: catalog candidate boundaries", () => {
     }
   );
 
-  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+  // MTL-189: meta/muse-code-subscription must stay bound.
   test("R1: explicit muse@ builds without a published subscription profile", () => {
     installWithoutMuseProfile();
     expect(routing.buildRoutingChain(["muse@muse-spark-1.3"], "muse-spark-1.3", cachePath)).toEqual(
@@ -313,7 +313,6 @@ describe("R1/R3: catalog candidate boundaries", () => {
     }
   );
 
-  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
   test("R1: explicit muse@ passes credential filtering without a published subscription profile", async () => {
     installWithoutMuseProfile();
     const plan = await routing.route("muse@muse-spark-1.3", {}, "openrouter", cachePath);
@@ -367,7 +366,6 @@ describe("R1/R3: catalog candidate boundaries", () => {
     expect(plan.primary.provider).toBe(shortcut === "meta" ? "meta" : "opencode-zen-go");
   });
 
-  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
   test("R2: bare Wonder Full routes first to Muse without contributor wire ids", async () => {
     installMuseCatalog();
     fakeAvailability.set("meta-muse-code", true);
@@ -390,7 +388,6 @@ describe("R1/R3: catalog candidate boundaries", () => {
     ).toBe(true);
   });
 
-  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
   test("R2: bare Spark routes Muse subscription before metered Meta", async () => {
     installMuseCatalog();
     fakeAvailability.set("meta-muse-code", true);
@@ -404,7 +401,6 @@ describe("R1/R3: catalog candidate boundaries", () => {
     expect(providers.indexOf("meta-muse-code")).toBeLessThan(providers.indexOf("meta"));
   });
 
-  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
   test("R2: Muse Code plan membership serves Wonder Full", () => {
     installMuseCatalog();
     expect(resolveSubscriptionRouting("muse-wonder-full", "meta-muse-code", cachePath)).toEqual({
