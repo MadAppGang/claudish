@@ -106,6 +106,14 @@ HDR = re.compile(r"^#\s*parser=(\S+)\s+model=(\S+)\s+reqN=(\d+)\s+pid=(\d+)", re
 CONTENTS_OF = re.compile(r"Contents of ([^\n]+?)(?: \(([^)]*)\))?:\n")
 RESP_TS = re.compile(r"resp-\d+-r\d+-(\d{4}-\d{2}-\d{2}T[\d-]+Z)-")
 
+# #555 : natif = `claude-*` (pin #218) OU role nu servi verbatim (natif non
+# pinné) ; les lanes budget servent toujours leur id resolu, jamais un role nu.
+BARE_ROLE_RE = re.compile(r"^(?:opus|fable|sonnet|haiku)$", re.I)
+
+
+def is_native_served(model):
+    return model.lower().startswith("claude") or bool(BARE_ROLE_RE.match(model))
+
 
 def capture_ts(ts):
     """`2026-08-20T19-10-11-203Z` -> datetime UTC.
@@ -311,7 +319,7 @@ def main():
         # dans `non appariees`, qui mesure l'echec d'appariement, pas la portee.
         if machine is not None and req.get("machine") != machine:
             continue
-        if not all_parsers and not model.lower().startswith("claude"):
+        if not all_parsers and not is_native_served(model):
             continue  # natives seulement : leur usage est compte par le tokenizer d'Anthropic
         body = req.get("body") or {}
         hbs = harness_blocks(body)
