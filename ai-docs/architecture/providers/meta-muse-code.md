@@ -371,14 +371,18 @@ expired Muse login answers 400 with the login hint, and the chain never walks on
 Jack's decision (2026-10-16): **a contributor wire id is never chosen implicitly, on any route.** A
 user who types `provider@<id>-contributor` gets it verbatim.
 
-`isOptInWireId` (`providers/content-use.ts`, `d9193383`) matches `-contributor` and
-`-contributor-free` on the last path segment. Where catalog data enters memory, the matching
-connections move from `aggregators[]` to `optInConnections[]`, which only exact-id readers
-(`allConnections`) consult. [`routing.md`](../routing.md) lists the entry points and readers.
+Jack's follow-up decision (2026-10-22): a connection's `contentUse` field wins over its wire id.
+`contributor` means opt-in; `standard` never means opt-in, even for an id ending in
+`-contributor`. Without the field, `isOptInWireId` (`providers/content-use.ts`) matches
+`-contributor` and `-contributor-free` on the last path segment. Where catalog data enters
+memory, `splitOptInConnections` applies this connection rule and moves opt-in connections from
+`aggregators[]` to `optInConnections[]`, which only exact-id readers (`allConnections`) consult.
+Readers holding only a wire id keep the suffix rule. [`routing.md`](../routing.md) lists the
+entry points and readers.
 
-**Remove the guard when models-index publishes a content-use field on every route (backend M3).**
-It is the one wire-id name rule claudish keeps. The trigger is that field, not Meta: OpenCode Zen's
-`-contributor-free` ids are covered by the same regex.
+**Remove the suffix fallback when models-index publishes `contentUse` on every connection
+(backend M3).** Until then it is the one wire-id name rule claudish keeps. The trigger is field
+coverage, not Meta: OpenCode Zen's `-contributor-free` ids are covered by the same regex.
 
 ## Backend tasks (models-index)
 
@@ -387,13 +391,14 @@ Filed in `ai-docs/reports/BACKEND_TASKS_meta_muse_code_route-20261016.md`, origi
 `g-20261021063612126-17350b71`. That generation also publishes a `contentUse` field (`standard` or
 `contributor`) on 735 of 1924 connections, including all 11 `-contributor` connections (routes
 `meta/direct-api`, `meta/muse-code-subscription`, `opencode/go-subscription`,
-`openrouter/gateway`). claudish does not read it yet: the guard below still matches the suffix.
+`openrouter/gateway`). claudish reads that field first and uses the suffix only where the field
+is absent.
 
 | Task | What | Status / unblocks |
 |---|---|---|
 | M1 | a subscription route profile on route `meta`, `apis: [responses]`, its own credential profile | published; binding row done (MTL-189) |
 | M2 | plan `meta-muse-code` to `supported` with that route | published; membership gating now reads this route binding |
-| M3 | one mapped connection per member, wire id as `/muse-code/models` spells it; contributor ids marked by a field, not only the suffix | mapped connections and `contentUse` published; moving the contributor guard from the suffix to the field is not done |
+| M3 | one mapped connection per member, wire id as `/muse-code/models` spells it; contributor ids marked by a field, not only the suffix | mapped connections and partial `contentUse` published; field-first guard implemented, suffix fallback remains until every connection carries the field |
 | M4 | a model record `muse-wonder-full`, wire id `muse-wonder-full-1.0` | bare `muse-wonder-full` |
 | M5 | per-connection limits and effort from `/muse-code/models` | the effort and window gaps above |
 | M6 | per-tier membership: Wonder Full is Power and Maximum only | no 4xx candidate on a lower tier |

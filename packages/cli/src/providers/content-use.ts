@@ -32,21 +32,27 @@
  * lookup, `findConnection`'s exact step, the availability reverse lookup and the
  * registry validation.
  *
- * This is the ONE wire-id name rule claudish keeps. It is removed when the
- * catalog publishes a content-use field on every route (models-index M3).
+ * The connection's `contentUse` field wins: `contributor` opts in, `standard`
+ * does not (2026-10-22). Missing fields and bare wire ids use the suffix rule,
+ * the ONE wire-id name rule claudish keeps until every connection carries the
+ * field (models-index M3).
  */
 import type { AggregatorEntry } from "../model-loader.js";
 
 /**
  * A wire id that opts the request's content into the vendor's product-improvement use.
- * Replace with the catalog field when models-index publishes one (M3, every route).
+ * Fallback for a connection without `contentUse`, or a reader holding only a wire id.
  */
 export function isOptInWireId(wireId: string): boolean {
   return /-contributor(?:-free)?$/i.test(wireId.split("/").pop() ?? wireId);
 }
 
-/** Whether one catalog connection's wire id opts content in. */
+/** Whether one catalog connection opts content in; its field wins over the suffix. */
 function isOptInConnection(connection: AggregatorEntry): boolean {
+  if ("contentUse" in connection) {
+    if (connection.contentUse === "contributor") return true;
+    if (connection.contentUse === "standard") return false;
+  }
   return (
     typeof connection.externalModelId === "string" && isOptInWireId(connection.externalModelId)
   );
