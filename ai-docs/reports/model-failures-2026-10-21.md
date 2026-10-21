@@ -1,86 +1,128 @@
 # Failed models in the 2026-10-21 preflight run
 
-One `preflight` run (claudish MCP server, global claudish 12.1.2, `probe: true`) over every model in
-the recommended list plus four explicit specs: **27 models, 12 live, 11 failed, 4 native (not
-probed)**. Each failure was then checked against the branch build of `worktree-investgiage-gpt-file`
-(HEAD `e6bbdda5`, `bun packages/cli/dist/index.js --probe`). This report separates claudish
-defects from account and configuration states.
+One `preflight` run (claudish MCP server, `probe: true`) over every model in the recommended list
+plus four explicit specs: **27 models, 12 live, 11 failed, 4 native (not probed)**. Each failure was
+traced read-only in the source of `worktree-investgiage-gpt-file` (HEAD `e6bbdda5`, 171 commits
+behind `origin/main` 13.2.0; the traced logic is the same on main, only line numbers shift) and
+re-run with a fresh process (`bun packages/cli/dist/index.js --probe …`). Owner review on the same
+day reclassified three first-draft "account" rows as claudish behaviour; this version records that.
 
 ## Every failure
 
-| Model / spec | 12.1.2 preflight | Class |
-|---|---|---|
-| `grok-4.7`, `gk@grok-4.7` | `Grok token refresh failed: Refresh token has been revoked` | D1 after re-login; account before it |
-| `muse-wonder-full` | OpenRouter: `muse-wonder-full is not a valid model ID` | D2, D3 |
-| `gemini-4-argon` | Zen Go HTTP 401 `This API key has expired` | account |
-| `deepseek-v4-pro` | same Zen Go 401 | account |
-| `deepseek-v4.1-flash` | same Zen Go 401 | account |
-| `mimo-v2.6-pro` | same Zen Go 401 | account |
-| `mimo-v2.6-flash` | same Zen Go 401 | account |
-| `muse-spark-1.3` | same Zen Go 401 | account |
-| `ag@gemini-3.8-flash` | no route: `Antigravity does not serve "gemini-3.8-flash"` | account (dynamic models catalog) |
-| `go@gemini-3.8-flash` | no route: `No credentials configured for "go"` | configuration |
+| Model / spec | preflight answer | Cause | Item |
+|---|---|---|---|
+| `grok-4.7`, `gk@grok-4.7` | `Refresh token has been revoked` | revoked before the owner re-logged; after the login the long-lived MCP server kept the old token | D1 |
+| `muse-wonder-full` | OpenRouter: `not a valid model ID` | recommended list advertises a model no route serves | D3 |
+| `gemini-4-argon`, `deepseek-v4-pro`, `deepseek-v4.1-flash`, `mimo-v2.6-pro`, `mimo-v2.6-flash`, `muse-spark-1.3` | Zen Go HTTP 401 `This API key has expired` | expired Zen Go key (account) + preflight probes only hop 1 + a rejected subscription key never reaches metered hops | D6, D7 |
+| `ag@gemini-3.8-flash` | `Antigravity does not serve "gemini-3.8-flash"` | availability check skips the Antigravity id resolver; the account serves `gemini-3.8-flash-tiered` | D8 |
+| `go@gemini-3.8-flash` | `No credentials configured for "go"` | `go@` was removed in v7.36.0; the message blames credentials for an unknown shortcut | D9 |
 
-## claudish defects
+## claudish defects and changes
 
 ### D1 — a long-lived claudish process keeps a revoked Grok refresh token after `claudish login grok`
 
-Observed: the owner ran `claudish login grok`; `~/.claudish/grok-oauth.json` was rewritten at
-23:27:20 local. A fresh process then served the subscription:
-`bun packages/cli/dist/index.js --probe gk@grok-4.7` → `Grok Build (subscription) · 1/1 live`,
-1.35 s. The claudish MCP server, started before the login, still answered every later
-`preflight` for `gk@grok-4.7` and `grok-4.7` with
-`Grok token refresh failed: Refresh token has been revoked. Run claudish login grok to sign in.`
+After the login rewrote `~/.claudish/grok-oauth.json` (23:27:20 local), a fresh process served
+`gk@grok-4.7` (`--probe`: `Grok Build (subscription) · 1/1 live`, 1.35 s). The MCP server, started
+earlier, kept answering `Grok token refresh failed: Refresh token has been revoked. Run claudish
+login grok to sign in.` Expected: re-read `grok-oauth.json` when its mtime changed. Workaround:
+restart the MCP server. Four `claudish --mcp` processes on this machine (started 13:25, 19:47, 21:51,
+21:53) predate the 22:55 install of 13.2.0 and run whatever code they loaded.
 
-Effect: every `team` / `create_session` / `preflight` through that MCP server reports SuperGrok as
-logged out until the server restarts, and the message tells the user to do what they already did.
+### D2 — 12.1.2 resolved the explicit spec `meta@muse-wonder-full` to OllamaCloud
 
-Expected: after a refresh failure (or on each refresh), the Grok credential re-reads
-`grok-oauth.json` when its mtime changed, as a fresh process does.
-
-### D2 — 12.1.2 resolves the explicit spec `meta@muse-wonder-full` to OllamaCloud
-
-Observed (12.1.2 `preflight`, `probe: false`): `meta@muse-wonder-full` → provider `OllamaCloud`,
-wire id `oc@muse-wonder-full`, metered. An explicit `provider@model` spec must pin its provider.
-The branch build answers `explicit · Meta`, so the defect may already be fixed after 12.1.2. To do:
-reproduce on `main` before fixing; if `main` is correct, close as fixed by the next release.
+The MCP `preflight` (`probe: false`) answered provider `OllamaCloud`, wire id `oc@muse-wonder-full`.
+A fresh branch build answers `explicit · Meta`. Probably a stale MCP process (D1's note); reproduce on
+`main` before fixing.
 
 ### D3 — the recommended list advertises `muse-wonder-full`, which no route serves
 
-Observed: `list_models` lists `muse-wonder-full` under Flagship with `Access: muse-wonder-full`.
-12.1.2 routes the bare name to OpenRouter, which rejects it (`not a valid model ID`). The branch
-build answers `No route (catalog-empty): No provider in the catalog serves "muse-wonder-full"`,
-while `zengo@muse-wonder-full` plans on OpenCode Zen Go (subscription). A recommendation must name
-a model that a route can serve; either the catalog lacks the Zen Go route candidate for the bare
-name, or the recommendation filter does not require one. Owner of the data: models-index (check the
-`muse-wonder-full` record's connections before changing claudish).
+`list_models` lists it under Flagship with `Access: muse-wonder-full`. A fresh branch build answers
+`No route (catalog-empty)`, while `zengo@muse-wonder-full` plans on Zen Go. Check the models-index
+record's connections, then whether the recommendation filter requires a serving route.
+
+### D6 — `preflight` probes only the first hop, then says "Drop or replace"
+
+`mcp-server.ts:1330` plans with `route(model)`, the same plan `--probe` prints, but probes only
+`plan.primary` as an explicit `provider@model` spec (`mcp-server.ts:1366-1376`,
+`probe-live.ts:211-227`): a one-hop request with no fallback. The fallback hops are only counted
+(`:1390`). A model whose hop 1 fails lands in `failedModels` and gets "Drop or replace before
+running" (`:1408-1412`) even when a later hop would serve. Expected: probe through the chain, or
+each hop until one serves, and report which hop would serve.
+
+### D7 — a rejected subscription key blocks every metered hop (owner rule change)
+
+Owner rule (2026-10-21): an expired subscription key must not block the routing chain; the request
+moves to the next provider. Today: a subscription's 401 is remapped to 400 with
+`x-claudish-auth-verdict: terminal` (`composed-handler.ts:2631-2654`, via `isCredentialRejection`,
+`auth-failure.ts:107-113`, which does not distinguish expired from wrong or revoked). `FallbackHandler`
+then records `credentialStop`, skips every hop not in `SUBSCRIPTION_PROVIDERS`
+(`fallback-handler.ts:68`), tries only later subscription hops (`:168-206`), and returns the
+provider's login 400 when none serves (`:251-256`); `isRetryableError` refuses terminal verdicts
+(`:382`, `:422`). This was deliberate (owner decisions 2026-10-16 and 2026-10-20) and is pinned by
+`fallback-handler.subscription-only.test.ts`, `routing.md:406-411` and `adapters.md:611-635`.
+
+Change: advance past a terminal subscription credential verdict onto the next hop, metered included,
+with a loud stderr notice naming the provider, the next hop and "billed per token", and the login or
+key-renewal hint. Keep the connection, recovery-hold and stream-failure verdicts ahead of it
+(`fallback-handler.ts:134-153`, `:366-370`) so a network fault never walks onto metered billing
+(CLAUDE.md's five-site invariant). Open question for the owner: all credential rejections, or only
+an expired key (needs a new expiry predicate beside `isCredentialRejection`). Impact: every bare-name
+chain with a subscription hop (Kimi, Grok Build, Zen Go, Token Plan, Devin, Antigravity, `cx@`).
+
+Note: bare `gemini-4-argon` is not affected today. Its chain on the branch and on 13.2.0 is
+`g@gemini-4-argon` → OpenRouter `google/gemini-4-argon` → `zen@gemini-4-argon`; the Zen Go candidate
+`gemini-4-argon-contributor` is excluded for a bare name (`excluded-by-content-use`,
+`route-candidates.ts:267-291`). The Zen-Go-first chain in the preflight above did not reproduce in a
+fresh process, so it most likely came from a stale MCP server (D1's note).
+
+### D8 — the availability check ignores Antigravity's id resolver
+
+`ag@gemini-3.8-flash` → `explainExplicitSpec` (`routing-rules.ts:681`) → `providerServesModel`
+(`model-availability.ts:113-134`) matches exactly against the account's dynamic models catalog, after
+`expandSelection`, which returns the name unchanged because Antigravity has no resolver
+(`model-resolvers/registry.ts:22-30`). The account serves `gemini-3.8-flash-tiered`, so the check says
+not-served, while the transport would have sent `gemini-3.8-flash-tiered`
+(`resolveAntigravityModelId`, `transport/antigravity.ts:164-192`). The same check filters bare-name
+chains (`routing-rules.ts:1169`), so a bare `gemini-3.8-flash` loses its `ag@` subscription hop and
+goes to the metered `g@` or OpenRouter. Fix: resolve with the transport's rule before matching (the
+check and the transport must resolve identically). Test: `ag@gemini-3.8-flash` against a served list
+of only `gemini-3.8-flash-tiered` returns `serves`.
+
+The account's live Antigravity list today (Gemini, after exclusions): `gemini-2.5-flash`,
+`gemini-2.5-flash-lite`, `gemini-2.5-flash-thinking`, `gemini-2.5-pro`, `gemini-3-flash`,
+`gemini-3-flash-agent`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-extra-low`,
+`gemini-3.5-flash-lite`, `gemini-3.5-flash-low`, `gemini-3.8-flash-tiered`. No `gemini-4*`, `3.6` or
+`3.7`. Where the owner sees Gemini 4 (picker or config) is open: if a view built from the cloud models
+catalog shows it under Antigravity, that view does not reflect entitlement. Latent risk: after a fetch
+error `getServedAntigravityModels` keeps the last good list forever (`auth/antigravity-user.ts:435`).
+
+### D9 — an unknown provider shortcut is reported as missing credentials
+
+`go@` (Gemini Code Assist) was removed in v7.36.0 (`8258e1fb`); `~/.claudish/gemini-oauth.json` is a
+leftover ignored on purpose (`auth/oauth-registry.ts:77-87`). `model-parser.ts:239` passes an unknown
+shortcut through as explicit; the authority finds no registry entry (`authority.ts:150`), and routing
+prints `No credentials configured for "go"` (`routing-rules.ts:706-710`, `:1458`), while `--probe`
+already labels the tier `unregistered provider`. Expected: "unknown provider shortcut" with the valid
+shortcuts, e.g. `ag@` for Gemini on a subscription, `google@` for the metered API.
 
 ## Test-suite defects found in the same session
 
 ### D4 — `routing-rules.test.ts` is not hermetic to `POE_API_KEY`
 
-`ENV_KEYS_TO_CLEAR` (`routing-rules.test.ts:635-660`) omits `POE_API_KEY`. In a shell that has it,
-two tests fail: `claude-opus-4-7 with only OPENROUTER_API_KEY → primary openrouter` (receives
-`poe`) and `claude-opus-4-7 with no credentials → no-route` (receives `ok`). Removing only
-`POE_API_KEY` from the environment makes the unchanged file pass (116 pass, 0 fail).
+`ENV_KEYS_TO_CLEAR` (`routing-rules.test.ts:635-660`) omits it. With it set, two tests fail
+(`claude-opus-4-7 with only OPENROUTER_API_KEY → primary openrouter` receives `poe`;
+`… with no credentials → no-route` receives `ok`). Unset: 116 pass, 0 fail.
 
 ### D5 — tests run inside a claudish pane write their fake upstream errors into that pane's session log
 
-The Phase 6 runner session (`a32f7e7a`) ran the suite inside a claudish pane. Its `get_diagnostics`
-then listed dozens of upstream errors from test doubles (`Sakana Fugu fugu-ultra`, `Ep-one m-one`,
-`fixture-upstream-error`, `stub`). The suite inherits the pane's session environment and appends to
-`~/.claudish/sessions/<id>/upstream-errors.jsonl`, so a session's diagnostics are polluted by the
-tests it ran. The test setup should scrub the session variables (as it scrubs credentials).
+The suite inherits the pane's session environment and appends to
+`~/.claudish/sessions/<id>/upstream-errors.jsonl`, so the runner session's `get_diagnostics` listed
+test doubles (`Sakana Fugu fugu-ultra`, `fixture-upstream-error`, `stub`). Test setup should scrub
+the session variables.
 
-## Account and configuration actions (no code change)
+## Account actions
 
 | Action | Unblocks |
 |---|---|
-| Renew the OpenCode Zen Go key (OpenCode Console) | `gemini-4-argon`, `deepseek-v4-pro`, `deepseek-v4.1-flash`, `mimo-v2.6-pro`, `mimo-v2.6-flash`, `muse-spark-1.3` |
-| Restart the claudish MCP server (until D1 is fixed) | `grok-4.7`, `gk@grok-4.7` through MCP |
-| Configure `go@` (Gemini Code Assist) if wanted | `go@gemini-*` |
-
-`ag@` serving no tested Gemini model is the account's dynamic models catalog, not a defect.
-Each Zen Go model shows `+2`..`+8` fallback hops. `preflight` probes only the first hop, so this run
-does not show whether a rejected Zen Go key stays off the metered hops; the `rejected-sub` scenario
-of `ai-docs/benches/advisor-subscription/` measures that for an advisor panel call.
+| Renew the OpenCode Zen Go key (OpenCode Console) | the six Zen Go models above |
+| Restart the claudish MCP servers (until D1 is fixed) | Grok through MCP; a current routing build |
