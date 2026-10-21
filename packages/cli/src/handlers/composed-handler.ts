@@ -134,7 +134,10 @@ import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-un
 import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
-import { isSubscriptionProvider } from "./shared/remote-provider-types.js";
+import {
+  CREDENTIAL_DECIDED_PROVIDERS,
+  isSubscriptionProvider,
+} from "./shared/remote-provider-types.js";
 import {
   CONTEXT_OVERFLOW_PHRASE,
   isContextOverflowError,
@@ -597,12 +600,24 @@ export class ComposedHandler implements ModelHandler {
   /**
    * Fill a hop-log entry once the request is signed: the arm from the
    * binding the credential half returned (`RequestAuth.arm`, never inferred
-   * from a resolved object's truthiness), and the billing the provider has
-   * now, which for `openai-codex` reflects the arm just recorded.
+   * from a resolved object's truthiness), and the billing.
+   *
+   * For a provider whose billing the signing credential decides
+   * (`CREDENTIAL_DECIDED_PROVIDERS`, i.e. `openai-codex`) the billing is THIS
+   * request's arm: `oauth` is the subscription, anything else (absent
+   * included) is metered. It is never `isSubscriptionProvider(name)`, whose
+   * probe reads a process-wide last-signed arm that a concurrent main request
+   * can overwrite between this request's refresh and this line. Every other
+   * provider's billing is its fixed category (`SUBSCRIPTION_PROVIDERS`
+   * membership), whatever arm signs: a flat-rate key is still flat-rate.
    */
   private markHopSigned(hop: HopAttempt, binding: AuthBinding | undefined): void {
     hop.arm = binding?.auth?.arm ?? null;
-    hop.billing = isSubscriptionProvider(this.provider.name) ? "subscription" : "metered";
+    const name = this.provider.name.toLowerCase();
+    const subscription = CREDENTIAL_DECIDED_PROVIDERS.has(name)
+      ? hop.arm === "oauth"
+      : isSubscriptionProvider(name);
+    hop.billing = subscription ? "subscription" : "metered";
   }
 
   /**

@@ -359,7 +359,7 @@ export function abortedResponse(): Response {
  */
 export const HOP_LOG_KEY = "claudishHopLog" as const;
 
-/** How a hop bills: by the provider's subscription status right after signing. */
+/** How a hop bills, decided right after signing (see `HopAttempt.billing`). */
 export type HopBilling = "subscription" | "metered";
 
 /**
@@ -374,7 +374,12 @@ export interface HopAttempt {
   wireModel: string;
   /** The arm that signed (`RequestAuth.arm`); null until signed, or when the transport names none. */
   arm: CredentialArm | null;
-  /** `isSubscriptionProvider(provider)` right after signing; null until signed. */
+  /**
+   * Set right after signing; null until signed. For a credential-decided
+   * provider (`openai-codex`) it is the arm that signed (`oauth` =
+   * subscription); for every other provider its `SUBSCRIPTION_PROVIDERS`
+   * membership (`ComposedHandler.markHopSigned`).
+   */
   billing: HopBilling | null;
   /**
    * The planned hop's provider uid, stamped by a caller that knows which

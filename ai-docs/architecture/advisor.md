@@ -502,8 +502,11 @@ value:
 ### Billing and stats
 
 `billing` is decided by the arm that signed, never by the provider name: routed calls read it
-from the hop log after signing (`HopAttempt.billing` = `isSubscriptionProvider` once the
-credential arm is known, so `openai-codex` bills by the credential that signed); Claude calls
+from the hop log after signing (`HopAttempt.billing`, set by `markHopSigned`: for
+`openai-codex`, the one credential-decided provider, it is that request's own
+`RequestAuth.arm`, `oauth` = subscription and anything else metered, never the name check, whose
+probe reads a process-wide last-signed arm; for every other provider it is its
+`SUBSCRIPTION_PROVIDERS` membership); Claude calls
 are `subscription` iff `arm === "oauth"` (`native-anthropic` is in neither billing set). That is
 the $0 evidence with stats on or off: `getModelPricing` returns zero exactly when
 `isSubscriptionProvider` is true.
