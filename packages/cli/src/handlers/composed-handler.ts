@@ -885,7 +885,14 @@ export class ComposedHandler implements ModelHandler {
     // without this gate `--probe` and the config TUI's Test All would each
     // hold an unreachable link open for the full deadline and then misreport
     // it as a timeout — breaking the two tools that diagnose this exact fault.
-    if (c.req.header("x-claudish-no-recovery") === "1") return "probe";
+    //
+    // `advisor` is the panel gateway's own value. An advisor call has a 60 s
+    // budget a multi-minute hold cannot fit, and a tier-2 503 means nothing to
+    // an internal caller; it is named for itself so the skip line in the log
+    // says which kind of request skipped the ladder.
+    const noRecovery = c.req.header("x-claudish-no-recovery");
+    if (noRecovery === "1") return "probe";
+    if (noRecovery === "advisor") return "advisor";
     // The CI / scripted-`-p` master switch. Off restores today's behaviour
     // everywhere, byte for byte.
     if (!resolveRecoveryEnabled()) return "recovery-disabled";
