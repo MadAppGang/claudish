@@ -1241,6 +1241,7 @@ async function applyCandidateFilters(
  * `deepseek-v4-pro`, while the catalog id carries a date suffix).
  */
 function wireIdOf(route: Route): string {
+  if (route.provider === "openrouter") return route.modelSpec;
   const at = route.modelSpec.indexOf("@");
   return at === -1 ? route.modelSpec : route.modelSpec.slice(at + 1);
 }
