@@ -42,7 +42,12 @@ import { resolveConnection } from "../providers/connection-resolver.js";
 import type { KnownWire, WireApi } from "../providers/connection-wire.js";
 import { getProviderByName } from "../providers/provider-definitions.js";
 import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
-import { acquireSigningLease, redactExactValues, redactForClient } from "../redact.js";
+import {
+  acquireSigningLease,
+  redactExactValues,
+  redactForClient,
+  redactSigningValues,
+} from "../redact.js";
 import type { StatsEvent } from "../stats-otlp.js";
 import { recordStats } from "../stats.js";
 import { isBillingHeaderText } from "../transform.js";
@@ -276,7 +281,10 @@ export function logAdvisorEvent(cfg: AdvisorSwapConfig, event: Record<string, un
   const record = { ts, ...event };
   let line: string;
   try {
-    line = scrubSecrets(JSON.stringify(record));
+    // The exact-value registry first (every signing value a live request
+    // holds), then the shape rules. `appendLine` writes the advisor log and the
+    // always-on log directly, not through `log()`, so this is their only pass.
+    line = scrubSecrets(redactSigningValues(JSON.stringify(record)));
   } catch {
     // a record that will not serialize is a logging problem only
     return;
