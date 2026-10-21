@@ -225,6 +225,24 @@ and merge it, or `git push origin HEAD:main` after `git rebase origin/main`. Eit
 the MERGE COMMIT, never the branch head CI did not validate. After any rebase merge, verify
 `git show origin/main:packages/cli/package.json | grep version` really carries your bump.
 
+## Linear tickets
+
+Planning lives in Linear only: project **Claudish** (`P-MTL-73`), team **MAG Tools** (`MTL-`). The
+milestones are delivery waves (`Wave 0 — Now, no blocker` … `Wave 5 — Low priority`); the order and
+the dependencies are in the project document "Claudish delivery flow". Every open GitHub issue has
+exactly one Linear ticket that links it.
+
+- **Start a task:** find its ticket (search the project, and the GitHub issue's mirror). If there is
+  none, create one in the Claudish project with a milestone, a priority and the evidence. Then set it
+  **In Progress** before the first edit. An In Progress ticket is how parallel sessions see that the
+  work is taken; work with no ticket is invisible and gets done twice.
+- **While working:** record what changes the plan on the ticket: a narrowed cause, a new blocker
+  (`blocks` / `blockedBy`, not prose), a split-out follow-up as its own ticket.
+- **Finish a task:** set the ticket **Done** only after the fix is merged and verified, with a
+  comment naming the commit or PR and the verification. Stopped or obsolete work goes to
+  **Canceled** with the reason, never left In Progress. A ticket that tracks a GitHub issue closes
+  together with that issue.
+
 ## Session artifacts
 
 `ai-docs/` is TRACKED; `ai-docs/sessions/{task-slug}-{YYYYMMDD-HHMMSS}-{hash}/` is GITIGNORED and
