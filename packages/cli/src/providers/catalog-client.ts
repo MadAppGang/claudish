@@ -9,6 +9,7 @@ import {
   writeAllModelsCache,
   writeRouteRegistry,
 } from "./all-models-cache.js";
+import { catalogUrl, plansUrl } from "./catalog-endpoints.js";
 import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, type CatalogV3Envelope, parseCatalogV3Envelope } from "./catalog-v3.js";
 import {
@@ -19,29 +20,8 @@ import {
 import { allConnections, splitOptInConnections } from "./content-use.js";
 import { _clearChatCapabilityIndex } from "./transport/probe-discovery.js";
 
-const DEFAULT_CATALOG_URL =
-  "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=all&catalog=slim&includeRouteVariants=true&limit=1000";
 const MAX_CATALOG_PAGES = 40;
 const CATALOG_PAGE_LIMIT = 1000;
-
-function catalogUrl(): string {
-  return process.env.CLAUDISH_CATALOG_URL ?? DEFAULT_CATALOG_URL;
-}
-
-function derivePlansUrl(modelsUrl: string): string {
-  try {
-    const url = new URL(modelsUrl);
-    url.pathname = url.pathname.replace(/\/queryModels$/, "/queryPlans");
-    url.search = "";
-    return url.toString();
-  } catch {
-    return "https://us-central1-claudish-6da10.cloudfunctions.net/queryPlans";
-  }
-}
-
-function plansUrl(): string {
-  return process.env.CLAUDISH_PLANS_URL ?? derivePlansUrl(catalogUrl());
-}
 
 /** `queryModels?catalog=routes&generationId=<id>` on the same host as the model list. */
 export function buildRoutesUrl(modelsUrl: string, generationId: string): string {
@@ -392,9 +372,16 @@ async function refreshCatalogOnce(
   const seenCursors = new Set<string>();
   let expectedTotal: number | undefined;
 
+  // Resolved once for the whole refresh, for the same reason `generationId` is
+  // pinned across pages: every page, and the route registry fetched after them,
+  // has to describe one catalog. Reading the setting again lets a change
+  // mid-refresh assemble a single cache out of two services, and the result is
+  // indistinguishable from one service that served all of it.
+  const base = catalogUrl();
+
   for (;;) {
     const result = await fetchEnvelope<ModelsPageData>(
-      buildCatalogPageUrl(catalogUrl(), cursor, CATALOG_PAGE_LIMIT, generationId),
+      buildCatalogPageUrl(base, cursor, CATALOG_PAGE_LIMIT, generationId),
       timeoutMs
     );
     if (!result.ok) {
@@ -455,7 +442,7 @@ async function refreshCatalogOnce(
     return { kind: "fetch_failed", reason: planResult.reason };
   }
 
-  const registryResult = await fetchRouteRegistry(timeoutMs, generationId);
+  const registryResult = await fetchRouteRegistry(timeoutMs, generationId, base);
   if (!registryResult.ok) {
     if (registryResult.reason === "incompatible") {
       return { kind: "incompatible", serverContractVersion: registryResult.serverContractVersion };
@@ -561,14 +548,15 @@ async function fetchSubscriptionPlans(
 
 async function fetchRouteRegistry(
   timeoutMs: number,
-  generationId: string
+  generationId: string,
+  modelsUrl: string
 ): Promise<
   | { ok: true; registry: RouteRegistry }
   | FetchFailure
   | { ok: false; reason: "empty" | "generation_mismatch" }
 > {
   const result = await fetchEnvelope<{ mode?: string; registry?: unknown }>(
-    buildRoutesUrl(catalogUrl(), generationId),
+    buildRoutesUrl(modelsUrl, generationId),
     timeoutMs
   );
   if (!result.ok) return result;
@@ -612,7 +600,7 @@ export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> 
   // rewrote the models): fetch only the routes of THIS generation — one small
   // request instead of the whole refresh.
   if (cache && !catalogWarmDisabled()) {
-    const result = await fetchRouteRegistry(timeoutMs, cache.catalogGenerationId);
+    const result = await fetchRouteRegistry(timeoutMs, cache.catalogGenerationId, catalogUrl());
     if (result.ok) {
       const routeRegistry = { generationId: cache.catalogGenerationId, registry: result.registry };
       if (wiresMatchRegistry(cache.entries, routeRegistry, cache.catalogGenerationId)) {
