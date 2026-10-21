@@ -1,61 +1,53 @@
 /**
  * Local Model Request Queue
  *
- * Singleton queue for controlling concurrency to local models (Ollama, LM Studio, vLLM, MLX, etc.)
- * to prevent GPU overload. Implements configurable parallelism with FIFO ordering.
+ * Controls concurrency to local models (Ollama, LM Studio, vLLM, MLX, etc.) to
+ * prevent GPU overload. Unlike the rate-limit queues, this one focuses on
+ * concurrency: a configurable number of parallel requests, a small delay between
+ * dispatches, and a one-shot retry when the GPU reports out-of-memory. The
+ * FIFO/concurrency mechanics live in the shared RequestQueue base; this class
+ * supplies the local-GPU policy.
  *
- * Unlike the OpenRouter queue which focuses on rate limiting (429 errors), this queue
- * focuses on concurrency control to prevent GPU memory exhaustion.
- *
- * All local model requests are processed through this queue with:
- * - Configurable max parallel requests (default 1 = sequential)
- * - FIFO ordering for fairness
- * - OOM error detection and retry logic
- * - Automatic queue size management (max 100 requests)
- * - Minimal delay between dispatches (100ms)
- *
- * New: Concurrency can be specified per-model using the model syntax:
- *   ollama@llama3.2:3    - Allow 3 concurrent requests
- *   ollama@llama3.2:0    - Unlimited concurrency (bypass queue)
+ * Concurrency can be specified per-model with the model syntax:
+ *   ollama@llama3.2:3    - allow 3 concurrent requests
+ *   ollama@llama3.2:0    - unlimited concurrency (bypass queue)
  *
  * Environment variables:
- * - CLAUDISH_LOCAL_MAX_PARALLEL: Max concurrent requests (1-8, default: 1)
- * - CLAUDISH_LOCAL_QUEUE_ENABLED: Enable/disable queue (default: true)
+ * - CLAUDISH_LOCAL_MAX_PARALLEL: max concurrent requests (1-8, default: 1)
+ * - CLAUDISH_LOCAL_QUEUE_ENABLED: enable/disable queue (default: true)
  */
 
-import { getLogLevel, log } from "../../logger.js";
+import { log } from "../../logger.js";
+import { RequestQueue, toAbortError } from "./request-queue.js";
+
+const OOM_PATTERNS = [
+  "failed to allocate memory",
+  "cuda out of memory",
+  "oom",
+  "out of memory",
+  "memory allocation failed",
+  "insufficient memory",
+  "gpu memory",
+];
 
 /**
- * Queued request with Promise callbacks
+ * Read and validate CLAUDISH_LOCAL_MAX_PARALLEL. Returns max parallel requests
+ * (1-8 range, default: 1).
  */
-interface QueuedRequest {
-  fetchFn: () => Promise<Response>;
-  resolve: (response: Response) => void;
-  reject: (error: Error) => void;
-  providerId: string; // For debugging/stats (e.g., "ollama", "lmstudio")
-  /**
-   * Set when the caller can be cancelled while still QUEUED — a connection
-   * retry bounded by a per-attempt clamp, or a client that went away.
-   *
-   * This is the only queue whose ACTIVE request may legally run for ten
-   * minutes (local inference), so it is the only one where an admission wait
-   * can outlive the caller's own budget. Without it an aborted attempt's entry
-   * stayed in the queue and its `fetchFn` fired later, against a provider
-   * nobody was waiting on.
-   */
-  signal?: AbortSignal;
-  /** Detaches the abort listener. Always called, on every exit path. */
-  detach?: () => void;
-  /** True once the abort listener has rejected this entry. */
-  abandoned?: boolean;
-}
+function maxParallelFromEnv(): number {
+  const envValue = process.env.CLAUDISH_LOCAL_MAX_PARALLEL;
+  if (!envValue) return 1; // Default: sequential
 
-/** Normalise an abort reason into an Error the queue's `reject` accepts. */
-function toAbortError(reason: unknown): Error {
-  if (reason instanceof Error) return reason;
-  const err = new Error("Request aborted while queued");
-  err.name = "AbortError";
-  return err;
+  const parsed = Number.parseInt(envValue, 10);
+  if (Number.isNaN(parsed) || parsed < 1) {
+    log(`[LocalQueue] Invalid CLAUDISH_LOCAL_MAX_PARALLEL: ${envValue}, using default: 1`);
+    return 1;
+  }
+  if (parsed > 8) {
+    log(`[LocalQueue] CLAUDISH_LOCAL_MAX_PARALLEL too high: ${parsed}, capping at 8`);
+    return 8;
+  }
+  return parsed;
 }
 
 /**
@@ -71,14 +63,7 @@ export interface QueueStats {
 }
 
 /**
- * Singleton request queue for local models
- *
- * Implements concurrency control to prevent GPU overload by limiting
- * the number of simultaneous requests to local models.
- *
- * Concurrency can be overridden per-model using the :N suffix in model spec:
- * - :0 = bypass queue entirely (unlimited)
- * - :N = override max parallel to N for this model
+ * Singleton request queue for local models.
  *
  * @example
  * ```typescript
@@ -89,35 +74,17 @@ export interface QueueStats {
  * const response = await queue.enqueue(() => fetch(url, options), "ollama", 3);
  * ```
  */
-export class LocalModelQueue {
+export class LocalModelQueue extends RequestQueue {
   private static instance: LocalModelQueue | null = null;
-  private queue: QueuedRequest[] = [];
-  private activeRequests = 0;
-
-  // Configuration
-  private readonly defaultMaxParallel: number; // From CLAUDISH_LOCAL_MAX_PARALLEL
-  private maxParallel: number; // Current effective max (can be overridden)
-  private readonly maxQueueSize = 100;
-  private readonly requestDelay = 100; // Small delay between dispatches (ms)
-
-  // Statistics
-  private totalProcessed = 0;
-  private totalErrors = 0;
   private totalOOMErrors = 0;
 
   private constructor() {
-    this.defaultMaxParallel = this.getMaxParallelFromEnv();
-    this.maxParallel = this.defaultMaxParallel;
-    if (getLogLevel() === "debug") {
-      log(
-        `[LocalQueue] Queue initialized with maxParallel=${this.maxParallel}, maxQueueSize=${this.maxQueueSize}`
-      );
-    }
+    super({ name: "Local", maxParallel: maxParallelFromEnv(), dispatchDelayMs: 100 });
+    this.debug(
+      `Queue initialized with maxParallel=${this.maxParallel}, maxQueueSize=${this.maxQueueSize}`
+    );
   }
 
-  /**
-   * Get singleton instance
-   */
   static getInstance(): LocalModelQueue {
     if (!LocalModelQueue.instance) {
       LocalModelQueue.instance = new LocalModelQueue();
@@ -126,7 +93,7 @@ export class LocalModelQueue {
   }
 
   /**
-   * Check if queue is enabled via environment variable
+   * Check if the queue is enabled via environment variable.
    */
   static isEnabled(): boolean {
     const enabled = process.env.CLAUDISH_LOCAL_QUEUE_ENABLED;
@@ -135,254 +102,80 @@ export class LocalModelQueue {
   }
 
   /**
-   * Enqueue a request to be processed
+   * Enqueue a request to be processed.
    *
-   * @param fetchFn - Function that performs the fetch request
-   * @param providerId - Provider identifier for debugging (e.g., "ollama", "lmstudio")
-   * @param concurrencyOverride - Optional concurrency override from model spec
-   *   - undefined: use default max parallel
-   *   - 0: bypass queue entirely (direct execution)
-   *   - N: use N as max parallel for this request
-   * @returns Promise that resolves with the response
-   * @throws Error if queue is full
+   * @param concurrencyOverride - from the model spec's `:N` suffix:
+   *   undefined = use the default max parallel; 0 = bypass the queue entirely
+   *   (direct execution); N = raise max parallel to N (capped at 8).
+   * @param signal - cancels the request while it waits for a slot; once it is
+   *   running, the fetch that was handed the same signal ends itself.
+   * @throws Error if the queue is full, or an AbortError if `signal` has
+   *   already aborted
    */
-  async enqueue(
+  enqueue(
     fetchFn: () => Promise<Response>,
     providerId: string,
     concurrencyOverride?: number,
     signal?: AbortSignal
   ): Promise<Response> {
-    // Already cancelled before we even got here: never occupy a slot for it.
+    // Already cancelled before we even got here, bypass included, which never
+    // reaches the queue's own check: never occupy a slot or start a fetch for it.
     if (signal?.aborted) {
       throw toAbortError(signal.reason);
     }
-    // Handle concurrency override
     if (concurrencyOverride !== undefined) {
       if (concurrencyOverride === 0) {
-        // :0 means bypass queue entirely - execute directly
-        if (getLogLevel() === "debug") {
-          log(`[LocalQueue] Bypassing queue for ${providerId} (concurrency=0)`);
-        }
+        this.debug(`Bypassing queue for ${providerId} (concurrency=0)`);
         return fetchFn();
       }
-
-      // Override max parallel for this session
       if (concurrencyOverride !== this.maxParallel && concurrencyOverride > 0) {
         const newMax = Math.min(concurrencyOverride, 8); // Cap at 8
-        if (getLogLevel() === "debug") {
-          log(
-            `[LocalQueue] Overriding maxParallel: ${this.maxParallel} -> ${newMax} for ${providerId}`
-          );
-        }
+        this.debug(`Overriding maxParallel: ${this.maxParallel} -> ${newMax} for ${providerId}`);
         this.maxParallel = newMax;
       }
     }
+    return this.enqueueInternal(fetchFn, providerId, signal);
+  }
 
-    // Check queue size limit
-    if (this.queue.length >= this.maxQueueSize) {
-      if (getLogLevel() === "debug") {
-        log(
-          `[LocalQueue] Queue full (${this.queue.length}/${this.maxQueueSize}), rejecting request`
-        );
-      }
+  protected override queueFullMessage(): string {
+    return `Local model queue full (${this.queue.length}/${this.maxQueueSize}). GPU is overloaded. Please wait for current requests to complete.`;
+  }
+
+  protected override async shouldRetry(response: Response, attempt: number): Promise<boolean> {
+    // Retry a GPU out-of-memory failure exactly once.
+    if (attempt !== 0) return false;
+    if (!(await this.isOOMResponse(response))) return false;
+    this.totalOOMErrors++;
+    this.debug(
+      `GPU out-of-memory detected. Consider reducing CLAUDISH_LOCAL_MAX_PARALLEL (current: ${this.maxParallel})`
+    );
+    return true;
+  }
+
+  protected override retryDelayMs(): number {
+    return 2000; // 2-second delay before the OOM retry
+  }
+
+  protected override async onResponse(response: Response): Promise<void> {
+    // If OOM survived the retry, fail with an actionable message.
+    if (await this.isOOMResponse(response)) {
       throw new Error(
-        `Local model queue full (${this.queue.length}/${this.maxQueueSize}). GPU is overloaded. Please wait for current requests to complete.`
+        "GPU out-of-memory error persisted after retry. Try setting CLAUDISH_LOCAL_MAX_PARALLEL=1 for sequential processing."
       );
     }
-
-    // Create promise for this request
-    return new Promise<Response>((resolve, reject) => {
-      const queuedRequest: QueuedRequest = {
-        fetchFn,
-        resolve,
-        reject,
-        providerId,
-        signal,
-      };
-
-      if (signal) {
-        const onAbort = () => {
-          queuedRequest.abandoned = true;
-          queuedRequest.detach?.();
-          queuedRequest.detach = undefined;
-          // Splice it OUT. Leaving it in and merely rejecting the promise
-          // still lets processQueue invoke its fetchFn later, firing a request
-          // whose caller is already gone.
-          const i = this.queue.indexOf(queuedRequest);
-          if (i !== -1) this.queue.splice(i, 1);
-          reject(toAbortError(signal.reason));
-        };
-        queuedRequest.detach = () => signal.removeEventListener("abort", onAbort);
-        signal.addEventListener("abort", onAbort, { once: true });
-      }
-
-      this.queue.push(queuedRequest);
-      if (getLogLevel() === "debug") {
-        log(
-          `[LocalQueue] Request enqueued for ${providerId} (queue length: ${this.queue.length}, active: ${this.activeRequests}/${this.maxParallel})`
-        );
-      }
-
-      // Start processing queue if there are available slots
-      this.processQueue();
-    });
   }
 
-  /**
-   * Worker loop that processes queued requests with concurrency control
-   * Processes requests while:
-   * 1. Queue has items
-   * 2. Active requests < maxParallel
-   */
-  private async processQueue(): Promise<void> {
-    // Process requests while queue has items AND slots available
-    while (this.queue.length > 0 && this.activeRequests < this.maxParallel) {
-      const request = this.queue.shift();
-      if (!request) break;
-
-      // Aborted while it waited. The listener has already rejected the caller;
-      // all that is left is to not run its fetchFn.
-      if (request.abandoned || request.signal?.aborted) {
-        request.detach?.();
-        request.detach = undefined;
-        continue;
-      }
-
-      if (getLogLevel() === "debug") {
-        log(
-          `[LocalQueue] Processing request for ${request.providerId} (${this.queue.length} remaining in queue, ${this.activeRequests + 1}/${this.maxParallel} active)`
-        );
-      }
-
-      // Execute in parallel (don't await here) to allow concurrent processing
-      this.executeRequest(request).catch((err) => {
-        if (getLogLevel() === "debug") {
-          log(`[LocalQueue] Request execution failed: ${err}`);
-        }
-      });
-
-      // Small delay between dispatches to avoid race conditions
-      await this.delay(this.requestDelay);
-    }
-  }
-
-  /**
-   * Execute a single request with OOM error handling
-   */
-  private async executeRequest(request: QueuedRequest): Promise<void> {
-    this.activeRequests++;
-    // Past admission, the caller's signal is the fetch's business, not the
-    // queue's — the fetch was handed the same signal and will end itself.
-    request.detach?.();
-    request.detach = undefined;
-
+  /** Detect a GPU out-of-memory failure from a 500 response body. */
+  private async isOOMResponse(response: Response): Promise<boolean> {
+    if (response.status !== 500) return false;
     try {
-      const response = await request.fetchFn();
-
-      // Check for OOM error (GPU out of memory)
-      if (response.status === 500) {
-        const errorBody = await response.clone().text();
-        if (this.isOOMError(errorBody)) {
-          this.totalOOMErrors++;
-          if (getLogLevel() === "debug") {
-            log(
-              `[LocalQueue] GPU out-of-memory detected for ${request.providerId}. Consider reducing CLAUDISH_LOCAL_MAX_PARALLEL (current: ${this.maxParallel})`
-            );
-          }
-
-          // Retry once after a delay
-          await this.delay(2000); // 2-second delay before retry
-          const retryResponse = await request.fetchFn();
-
-          // Check retry response
-          if (retryResponse.status === 500) {
-            const retryErrorBody = await retryResponse.clone().text();
-            if (this.isOOMError(retryErrorBody)) {
-              // OOM persisted after retry - fail with helpful message
-              throw new Error(
-                "GPU out-of-memory error persisted after retry. Try setting CLAUDISH_LOCAL_MAX_PARALLEL=1 for sequential processing."
-              );
-            }
-          }
-
-          // Retry succeeded
-          this.totalProcessed++;
-          request.resolve(retryResponse);
-          return;
-        }
-      }
-
-      // Success (no OOM)
-      this.totalProcessed++;
-      request.resolve(response);
-    } catch (error) {
-      // Network error or other exception
-      this.totalErrors++;
-      if (getLogLevel() === "debug") {
-        log(`[LocalQueue] Request failed for ${request.providerId}: ${error}`);
-      }
-      request.reject(error instanceof Error ? error : new Error(String(error)));
-    } finally {
-      this.activeRequests--;
-
-      // Trigger next batch if queue still has items
-      if (this.queue.length > 0) {
-        this.processQueue();
-      }
+      const body = (await response.clone().text()).toLowerCase();
+      return OOM_PATTERNS.some((pattern) => body.includes(pattern));
+    } catch {
+      return false;
     }
   }
 
-  /**
-   * Detect GPU out-of-memory errors from response body
-   * Checks for common OOM error messages from various providers
-   */
-  private isOOMError(errorBody: string): boolean {
-    const oomPatterns = [
-      "failed to allocate memory",
-      "CUDA out of memory",
-      "OOM",
-      "out of memory",
-      "memory allocation failed",
-      "insufficient memory",
-      "GPU memory",
-    ];
-
-    const bodyLower = errorBody.toLowerCase();
-    return oomPatterns.some((pattern) => bodyLower.includes(pattern.toLowerCase()));
-  }
-
-  /**
-   * Read and validate CLAUDISH_LOCAL_MAX_PARALLEL environment variable
-   * Returns max parallel requests (1-8 range, default: 1)
-   */
-  private getMaxParallelFromEnv(): number {
-    const envValue = process.env.CLAUDISH_LOCAL_MAX_PARALLEL;
-    if (!envValue) return 1; // Default: sequential
-
-    const parsed = Number.parseInt(envValue, 10);
-    if (Number.isNaN(parsed) || parsed < 1) {
-      log(`[LocalQueue] Invalid CLAUDISH_LOCAL_MAX_PARALLEL: ${envValue}, using default: 1`);
-      return 1;
-    }
-
-    if (parsed > 8) {
-      log(`[LocalQueue] CLAUDISH_LOCAL_MAX_PARALLEL too high: ${parsed}, capping at 8`);
-      return 8;
-    }
-
-    return parsed;
-  }
-
-  /**
-   * Utility: delay for specified milliseconds
-   */
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Get current queue statistics for monitoring
-   */
   getStats(): QueueStats {
     return {
       queueLength: this.queue.length,
