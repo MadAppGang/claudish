@@ -340,6 +340,7 @@ export const SUBCOMMAND_WORDS = [
   "serve",
   "providers",
   "keychain",
+  "subscription",
   "hooks",
   "team",
   "login",

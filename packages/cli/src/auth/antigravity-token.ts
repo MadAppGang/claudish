@@ -34,6 +34,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log, logStderr } from "../logger.js";
+import { findGenericPasswordPresence, startGenericPasswordRead } from "../providers/keychain.js";
 import {
   agyClientVersionReadFor,
   getAgyClientVersion,
@@ -340,6 +341,97 @@ const defaultDeps: AntigravityTokenDeps = {
   readAgyVersion: defaultReadAgyVersion,
   now: () => Date.now(),
 };
+
+/**
+ * A fresh copy of the real deps, for a caller that wraps some of them, for
+ * example to record whether `runAgyRefresh` ran and what it reported. A copy,
+ * so wrapping one never changes what the other callers of this module get.
+ */
+export function defaultAntigravityTokenDeps(): AntigravityTokenDeps {
+  return { ...defaultDeps };
+}
+
+// ---------------------------------------------------------------------------
+// Classified, bounded store read (for callers that must not block or guess)
+// ---------------------------------------------------------------------------
+
+/**
+ * The outcome of one bounded read of the shared token item.
+ *
+ * `defaultReadStore` maps every `security` failure to null, so to its callers
+ * a LOCKED keychain reads as "not signed in". It also has no deadline. A caller
+ * with no user to answer a dialog needs the two told apart, and a deadline.
+ */
+export type AntigravityStoreRead =
+  | { kind: "present"; raw: string }
+  | { kind: "absent" }
+  | { kind: "locked" }
+  | { kind: "timeout" }
+  | { kind: "failed" };
+
+/**
+ * `security` exit codes that mean the keychain is locked or would have to ask:
+ * the low byte of the negated OSStatus. 128 is errSecUserCanceled, which a
+ * locked file answers to a `-w` read when the unlock request is cancelled
+ * (measured on a temporary keychain, 2026-10-21). 36 is
+ * errSecInteractionNotAllowed and 51 is errSecAuthFailed; both are derived
+ * from the same arithmetic, which reproduces the measured 44 for "not found".
+ */
+const KEYCHAIN_LOCKED_EXIT_CODES: ReadonlySet<number> = new Set([36, 51, 128]);
+
+/** Race `work` against an absolute deadline. The loser is left running, never killed. */
+async function raceDeadline<T>(work: Promise<T>, deadlineAt: number): Promise<T | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), Math.max(0, deadlineAt - Date.now()));
+  });
+  try {
+    return await Promise.race([work, timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function classifyKeychainFailure(code: number): AntigravityStoreRead {
+  return KEYCHAIN_LOCKED_EXIT_CODES.has(code) ? { kind: "locked" } : { kind: "failed" };
+}
+
+/**
+ * Read the shared token item, bounded by `deadlineMs`, and say WHY when there
+ * is no value. Never kills `security`: a `security` killed mid-transaction once
+ * made macOS restart `securityd` (keychain.md). When the deadline passes, the
+ * caller stops waiting and `security` finishes on its own.
+ *
+ * Two steps, through `providers/keychain.ts`:
+ * 1. Presence (no `-w`) reads no item data. It separates "absent" (exit 44)
+ *    from the rest. It is NOT a lock probe: a locked keychain still answers
+ *    it with exit 0 (measured).
+ * 2. The value read (`-w`) is what a locked keychain refuses.
+ *
+ * `security`'s stderr is never carried in the result. Nothing here writes to
+ * the store, reads stdin, or opens a browser. `CLAUDISH_DISABLE_KEYCHAIN=1` (the
+ * test suite's escape hatch) answers `failed` without spawning anything.
+ */
+export async function readAntigravityStoreClassified(
+  deadlineMs: number
+): Promise<AntigravityStoreRead> {
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return { kind: "failed" };
+  const deadlineAt = Date.now() + deadlineMs;
+  const query = { service: KC_SERVICE, account: KC_ACCOUNT };
+
+  const presence = await raceDeadline(findGenericPasswordPresence(query), deadlineAt);
+  if (presence === "timeout") return { kind: "timeout" };
+  if (presence.kind === "absent") return { kind: "absent" };
+  if (presence.kind === "failed") return classifyKeychainFailure(presence.code);
+
+  const read = await raceDeadline(startGenericPasswordRead(query).done, deadlineAt);
+  if (read === "timeout") return { kind: "timeout" };
+  if (read.kind === "absent") return { kind: "absent" };
+  if (read.kind === "failed") return classifyKeychainFailure(read.code);
+  // Trimmed like `defaultReadStore`, so both reads hand `parseRecord` the same string.
+  const raw = (read.value ?? "").trim();
+  return raw.length > 0 ? { kind: "present", raw } : { kind: "absent" };
+}
 
 // ---------------------------------------------------------------------------
 // Encode / decode

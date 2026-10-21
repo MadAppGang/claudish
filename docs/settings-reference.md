@@ -101,6 +101,7 @@ These are top-level subcommands recognized before flag parsing begins (checked i
 | `claudish hooks init [dir]` | Write `example-hook.ts` and `claudish-hooks.d.ts` into `dir` (default `~/.claudish/hooks`); never overwrites |
 | `claudish hooks corpus [--write] [--json]` | Replay recorded transcripts offline and count plan-mode divergences per model |
 | `claudish hooks telemetry [--enable\|--disable]` | Show or set `hooks.telemetry.enabled` |
+| `claudish subscription models antigravity --raw --json` | Print the account's raw Antigravity `fetchAvailableModels` response text as one JSON line (schema `claudish.subscription-model-list.v1`), for the models-index wire-probe runner. macOS only; never prompts. Every exit prints exactly one line: exit 0 on any answer from the backend, 3–7 per failure class, 2 on a usage error, 1 on an internal error. Contract: `ai-docs/architecture/providers/antigravity.md` § Raw model list for models-index |
 
 **macOS Keychain (macOS only).** Keys are stored as one generic-password item per environment
 variable under the service name `claudish`, so each is individually visible and deletable in

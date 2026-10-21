@@ -2318,6 +2318,9 @@ ${h("SUBCOMMANDS")}
   ${green("claudish providers")} ${yellow("[--json]")}             Show provider credential status (no key material)
   ${green("claudish quota")} ${yellow("[provider]")}              Show remaining quota/usage (alias: usage)
   ${green("claudish serve")} ${yellow("--port <n> --models <p>")}  Run the Claude Desktop redirect gateway
+  ${green("claudish subscription models antigravity")} ${yellow("--raw --json")}
+                                          Print the raw Antigravity fetchAvailableModels
+                                          ${dim("body as one JSON line (for models-index)")}
   ${green("claudish update")}                        Check for updates and install the latest version
 
   ${bold("Profiles:")}
