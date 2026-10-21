@@ -711,3 +711,68 @@ export interface AdvisorPanelGateway {
   /** Run one routed call through its startup-built chain. Never rejects. */
   call(req: AdvisorPanelCall): Promise<AdvisorPanelResult>;
 }
+
+// ---------------------------------------------------------------------------
+// Advice extraction
+// ---------------------------------------------------------------------------
+
+/** Why a 2xx answer carried no advice text. */
+export type AdvisorEmptyReason =
+  | "no-content"
+  | "reasoning-only"
+  | "max-tokens-before-text"
+  | "max-tokens-during-reasoning";
+
+export interface ExtractedAdvice {
+  /** Every `text` block, joined with a blank line and trimmed; absent when empty. */
+  text?: string;
+  emptyReason?: AdvisorEmptyReason;
+  /** The message's `stop_reason`, verbatim. */
+  stopReason?: string;
+  usage?: { input_tokens: number; output_tokens: number };
+}
+
+/**
+ * The advice in one Anthropic-shaped message, or the named reason there is
+ * none. Every text block counts, not only the first. No text: `max_tokens`
+ * with a non-empty thinking block is "max-tokens-during-reasoning", without
+ * one "max-tokens-before-text"; otherwise a thinking block makes it
+ * "reasoning-only", and nothing at all "no-content".
+ */
+export function extractAdvice(message: unknown): ExtractedAdvice {
+  const m = (message && typeof message === "object" ? message : {}) as {
+    content?: unknown;
+    stop_reason?: unknown;
+    usage?: { input_tokens?: unknown; output_tokens?: unknown };
+  };
+  const blocks = Array.isArray(m.content) ? (m.content as Array<Record<string, unknown>>) : [];
+  const stopReason = typeof m.stop_reason === "string" ? m.stop_reason : undefined;
+  const inputTokens = m.usage?.input_tokens;
+  const outputTokens = m.usage?.output_tokens;
+  const usage =
+    typeof inputTokens === "number" && typeof outputTokens === "number"
+      ? { input_tokens: inputTokens, output_tokens: outputTokens }
+      : undefined;
+  const base = {
+    ...(stopReason !== undefined ? { stopReason } : {}),
+    ...(usage ? { usage } : {}),
+  };
+
+  const text = blocks
+    .filter((b) => b?.type === "text" && typeof b.text === "string")
+    .map((b) => b.text as string)
+    .join("\n\n")
+    .trim();
+  if (text) return { text, ...base };
+
+  const thought = blocks.some(
+    (b) => b?.type === "thinking" && typeof b.thinking === "string" && b.thinking.trim() !== ""
+  );
+  let emptyReason: AdvisorEmptyReason;
+  if (stopReason === "max_tokens") {
+    emptyReason = thought ? "max-tokens-during-reasoning" : "max-tokens-before-text";
+  } else {
+    emptyReason = thought ? "reasoning-only" : "no-content";
+  }
+  return { emptyReason, ...base };
+}

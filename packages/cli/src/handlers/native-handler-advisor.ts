@@ -35,7 +35,9 @@ import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings
  */
 
 import { appendFileSync } from "node:fs";
+import type { Context } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
+import type { ChildAuthControl, ChildAuthSource } from "../claude-runner.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
 import { type SlimModelEntry, readAllModelsCache } from "../providers/all-models-cache.js";
 import { getCatalogEntries } from "../providers/catalog-client.js";
@@ -44,8 +46,21 @@ import { type KnownWire, type WireApi, wireRequestUrl } from "../providers/conne
 import { parseModelSpec } from "../providers/model-parser.js";
 import { nativeRouteFor } from "../providers/native-route.js";
 import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
-import { claudeAdvisorModelFor } from "./advisor-claude-route.js";
+import { acquireSigningLease } from "../redact.js";
+import { isBillingHeaderText } from "../transform.js";
+import {
+  ANTHROPIC_API_HOST,
+  ANTHROPIC_MESSAGES_URL,
+  claudeAdvisorModelFor,
+} from "./advisor-claude-route.js";
+import {
+  type AdvisorBilling,
+  type AdvisorEmptyReason,
+  type AdvisorTurn,
+  extractAdvice,
+} from "./advisor-route-plan.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
+import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
 
 const ADVISOR_SERVER_TOOL_TYPE = "advisor_20260301";
 const ADVISOR_BETA_FLAG = "advisor-tool-2026-03-01";
@@ -2394,6 +2409,567 @@ async function callCollectorModel(
     );
   }
   return executeAdvisorFetch(plan, fetchImpl);
+}
+
+// ---------------------------------------------------------------------------
+// Claude advisor calls: the Claude Code login arm
+// ---------------------------------------------------------------------------
+//
+// A Claude panel member or collector is ONE request to the fixed
+// `ANTHROPIC_MESSAGES_URL`. On a launch where claudish controls the child's
+// auth (`childAuthControl`, claude-runner.ts) it is signed with the bearer
+// Claude Code sent, which can then only be the claude.ai login; on every
+// other launch the bearer is never used, and the call signs with the inbound
+// `x-api-key` if real, else ANTHROPIC_API_KEY, metered. The request on the
+// login arm is S0 shape A: the inbound identity block, then the advisor prompt
+// (test-fixtures/advisor/replay-results-*.json: A0, the prompt alone, is
+// refused on every tier; A is accepted on opus, sonnet, haiku and fable).
+//
+// The bearer reaches exactly one function, `runClaudeAdvisorCall`, which takes
+// no URL. It is held in `ClaudeLogin`, which prints as `[redacted]`, and its
+// value is registered on the main request's signing lease the moment it is
+// read, so every log line of that request is redacted against it.
+
+/**
+ * Claude Code's inbound `authorization` value, held so it cannot print:
+ * `String()`, `JSON.stringify` and `Bun.inspect` all give `[redacted]`. Only
+ * `headerValue()` yields it, and only `runClaudeAdvisorCall` calls that.
+ */
+export class ClaudeLogin {
+  readonly #value: string;
+
+  constructor(authorizationHeader: string) {
+    this.#value = authorizationHeader;
+  }
+
+  /** The `authorization` header value, verbatim (`Bearer …`). */
+  headerValue(): string {
+    return this.#value;
+  }
+
+  toString(): string {
+    return REDACTED;
+  }
+
+  toJSON(): string {
+    return REDACTED;
+  }
+
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return REDACTED;
+  }
+}
+
+/**
+ * Why a bearer on the request was not used as the Claude login:
+ * - `placeholder`: claudish's own placeholder (a proxy-auth launch);
+ * - `user-auth-token`: it equals this process's ANTHROPIC_AUTH_TOKEN;
+ * - `launch-auth-not-claudish-controlled`: this launch lets the child sign
+ *   with something other than the login (`childAuthControl`), so no bearer
+ *   can be placed.
+ */
+export type ClaudeLoginSkipped =
+  | "placeholder"
+  | "user-auth-token"
+  | "launch-auth-not-claudish-controlled";
+
+/** What a Claude advisor call may sign with, read once from the MAIN request. */
+export interface ClaudeRequestFacts {
+  /** Present only when every provenance check passed. */
+  login?: ClaudeLogin;
+  /** Set when a bearer was present but not used. */
+  loginSkipped?: ClaudeLoginSkipped;
+  /** The launch's non-login credential source, when that is why the bearer was skipped. */
+  authSource?: { reason: ChildAuthSource; where: string };
+  /** The inbound `x-api-key`, when it is a real key (never a placeholder). */
+  inboundApiKey?: string;
+  /** Inbound `anthropic-beta`, verbatim; the call strips the advisor flag. */
+  anthropicBeta?: string;
+  anthropicVersion?: string;
+  /** The first inbound system text block that is not the billing block and is one line. */
+  identityBlock?: string;
+}
+
+export interface ClaudeRequestFactsDeps {
+  /** This launch's `childAuthControl(config, env)`. */
+  childAuth: ChildAuthControl;
+  /** Read for ANTHROPIC_AUTH_TOKEN; defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/** Not global: no `lastIndex`. */
+const BEARER_PREFIX = /^Bearer\s+/i;
+
+/**
+ * Claude Code's identity block: the first system text block that is not the
+ * billing-header block and spans one line, copied without its `cache_control`.
+ * Absent for a string system or when no block qualifies (the call then sends
+ * the advisor prompt alone, `systemHead: "none"`).
+ */
+export function claudeIdentityBlock(system: unknown): string | undefined {
+  if (!Array.isArray(system)) return undefined;
+  for (const block of system) {
+    const text = (block as { type?: unknown; text?: unknown } | null)?.text;
+    if ((block as { type?: unknown } | null)?.type !== "text" || typeof text !== "string") continue;
+    if (isBillingHeaderText(text)) continue;
+    return text.includes("\n") || text.trim() === "" ? undefined : text;
+  }
+  return undefined;
+}
+
+/**
+ * Read what a Claude advisor call may sign with from the MAIN request, once,
+ * and register every real credential value on that request's signing lease.
+ *
+ * The login arm needs ALL of: an inbound `Bearer` that is not a claudish
+ * placeholder; a value that is not this process's ANTHROPIC_AUTH_TOKEN; and a
+ * launch where claudish controls the child's auth. A request cannot prove
+ * provenance on its own (the OAuth beta is client-declared, S0), so the third
+ * check is the launch's decision, made in claude-runner.ts.
+ */
+export function claudeRequestFacts(
+  c: Context,
+  payload: unknown,
+  deps: ClaudeRequestFactsDeps
+): ClaudeRequestFacts {
+  const authorization = c.req.header("authorization")?.trim();
+  const bearer = authorization?.replace(BEARER_PREFIX, "").trim();
+  const apiKey = c.req.header("x-api-key")?.trim();
+  const realApiKey = apiKey && !isPlaceholderAnthropicKey(apiKey) ? apiKey : undefined;
+  const realBearer = bearer && !isPlaceholderAnthropicKey(bearer) ? bearer : undefined;
+  addSigningSecrets(
+    c,
+    [realBearer, realApiKey].filter((v): v is string => Boolean(v))
+  );
+
+  const facts: ClaudeRequestFacts = {
+    ...(realApiKey ? { inboundApiKey: realApiKey } : {}),
+    ...(c.req.header("anthropic-beta") ? { anthropicBeta: c.req.header("anthropic-beta") } : {}),
+    ...(c.req.header("anthropic-version")
+      ? { anthropicVersion: c.req.header("anthropic-version") }
+      : {}),
+  };
+  const identity = claudeIdentityBlock((payload as { system?: unknown } | null)?.system);
+  if (identity !== undefined) facts.identityBlock = identity;
+
+  if (!authorization || !bearer || !BEARER_PREFIX.test(authorization)) return facts;
+  if (!realBearer) return { ...facts, loginSkipped: "placeholder" };
+  const env = deps.env ?? process.env;
+  if (realBearer === env.ANTHROPIC_AUTH_TOKEN?.trim()) {
+    return { ...facts, loginSkipped: "user-auth-token" };
+  }
+  if (!deps.childAuth.controlled) {
+    return {
+      ...facts,
+      loginSkipped: "launch-auth-not-claudish-controlled",
+      authSource: { reason: deps.childAuth.reason, where: deps.childAuth.where },
+    };
+  }
+  return { ...facts, login: new ClaudeLogin(authorization) };
+}
+
+/** Where a Claude advisor call's credential came from: a label, never a value. */
+export type ClaudeCredentialSource =
+  | "claude-code-login"
+  | "inbound-x-api-key"
+  | "ANTHROPIC_API_KEY";
+
+export type ClaudeAdvisorAuth =
+  | { arm: "oauth"; source: "claude-code-login"; login: ClaudeLogin; facts: ClaudeRequestFacts }
+  | {
+      arm: "api-key";
+      source: "inbound-x-api-key" | "ANTHROPIC_API_KEY";
+      apiKey: string;
+      facts: ClaudeRequestFacts;
+      /** Why a present bearer was not used; the call warns with it (never silent). */
+      warning?: string;
+    }
+  | { arm: null; reason: string; facts: ClaudeRequestFacts; warning?: string };
+
+/** The reason a skipped bearer was not used, as a clause. */
+function loginSkippedPhrase(facts: ClaudeRequestFacts): string {
+  switch (facts.loginSkipped) {
+    case "user-auth-token":
+      return "it is your ANTHROPIC_AUTH_TOKEN, not a Claude login";
+    case "launch-auth-not-claudish-controlled":
+      return facts.authSource
+        ? `${facts.authSource.reason} (${facts.authSource.where}) lets Claude Code sign with something other than your login, so claudish cannot tell which it is`
+        : "this launch lets Claude Code sign with something other than your login";
+    default:
+      return "it is claudish's placeholder";
+  }
+}
+
+/**
+ * The credential for one Claude advisor call, by presence and provenance on
+ * the request, never by failure: the login when `facts.login` exists; else the
+ * inbound `x-api-key` if real; else ANTHROPIC_API_KEY (`anthropicKey`, the
+ * advisor's own lookup, asked only now). A real bearer that failed a check, or
+ * a request with no bearer at all, is never moved to a metered key silently:
+ * the result carries a warning naming the reason. claudish's own placeholder
+ * (a proxy-auth launch, whose startup notice already says metered) is not a
+ * credential and only shows in the record (`loginSkipped`).
+ */
+export async function resolveClaudeAdvisorAuth(
+  facts: ClaudeRequestFacts,
+  anthropicKey: () => Promise<string | undefined> = () => resolveAdvisorCredential("anthropic")
+): Promise<ClaudeAdvisorAuth> {
+  if (facts.login) {
+    return { arm: "oauth", source: "claude-code-login", login: facts.login, facts };
+  }
+  const skipped =
+    facts.loginSkipped === undefined
+      ? "this request carries no Claude login"
+      : facts.loginSkipped !== "placeholder"
+        ? `Claude Code's bearer was not used (${loginSkippedPhrase(facts)})`
+        : undefined;
+  if (facts.inboundApiKey) {
+    return {
+      arm: "api-key",
+      source: "inbound-x-api-key",
+      apiKey: facts.inboundApiKey,
+      facts,
+      ...(skipped ? { warning: `${skipped}; billed per token on the request's x-api-key` } : {}),
+    };
+  }
+  const key = await anthropicKey();
+  if (key) {
+    return {
+      arm: "api-key",
+      source: "ANTHROPIC_API_KEY",
+      apiKey: key,
+      facts,
+      ...(skipped ? { warning: `${skipped}; billed per token on ANTHROPIC_API_KEY` } : {}),
+    };
+  }
+  return {
+    arm: null,
+    reason:
+      "no Claude credential: this request carries no Claude login and no ANTHROPIC_API_KEY was found",
+    facts,
+    ...(skipped ? { warning: skipped } : {}),
+  };
+}
+
+/**
+ * HTTP 429 `rate_limit_error` with the message "Error" and none of the
+ * `anthropic-ratelimit-unified-*` headers every real limit carries: Anthropic
+ * refusing the request's SHAPE on the Claude login (S0: shape A0 on every
+ * tier), not quota exhaustion. Never retried as a rate limit, never a reason
+ * to cool anything down; the call becomes a stub saying so.
+ *
+ * `status` must be the recovered upstream status (`extractUpstreamStatus(body)
+ * ?? response.status`), which is what the caller passes.
+ */
+export function isClaudeShapeRefusal(status: number, bodyText: string, headers: Headers): boolean {
+  if (status !== 429) return false;
+  let unifiedLimitHeader = false;
+  headers.forEach((_value, name) => {
+    if (name.toLowerCase().startsWith("anthropic-ratelimit-unified-")) unifiedLimitHeader = true;
+  });
+  if (unifiedLimitHeader) return false;
+  try {
+    const error = (JSON.parse(bodyText) as { error?: { type?: unknown; message?: unknown } }).error;
+    return error?.type === "rate_limit_error" && error.message === "Error";
+  } catch {
+    return false;
+  }
+}
+
+/** One Claude advisor call's outcome: the common fields plus what signed and how it billed. */
+export interface ClaudeAdvisorOutcome extends AdvisorModelOutcome {
+  credentialSource: ClaudeCredentialSource | null;
+  /** The arm that signed; null when no credential was found. */
+  servedArm: "oauth" | "api-key" | null;
+  /** Arm-derived: `subscription` iff the login signed; null when nothing served. */
+  billing: AdvisorBilling | null;
+  loginSkipped?: ClaudeLoginSkipped;
+  /** Login arm only: the system head actually sent. */
+  systemHead?: "none" | "identity";
+  usage?: { input_tokens: number; output_tokens: number };
+  emptyReason?: AdvisorEmptyReason;
+  stopReason?: string;
+  /** True for the 429 "Error" shape refusal (`isClaudeShapeRefusal`). */
+  shapeRefusal?: boolean;
+}
+
+export interface ClaudeAdvisorCallParams {
+  role: "panel" | "collector";
+  /** The spec as the user named it. */
+  spec: string;
+  /** The resolved Anthropic model id. */
+  model: string;
+  auth: ClaudeAdvisorAuth;
+  /** The advisor or collector prompt. */
+  system: string;
+  turns: AdvisorTurn[];
+  timeoutMs: number;
+  /** Test seam; defaults to the global fetch at call time. */
+  fetchImpl?: typeof fetch;
+  /** Test seam for the provenance warning; defaults to `warnAdvisor`. */
+  warn?: (message: string) => void;
+}
+
+/** The record route of every Claude advisor call: the fixed Anthropic endpoint. */
+function claudeAdvisorRoute(model: string): AdvisorRoute {
+  return {
+    kind: "anthropic",
+    host: ANTHROPIC_API_HOST,
+    url: ANTHROPIC_MESSAGES_URL,
+    credential: "anthropic",
+    wireModel: model,
+    api: "anthropic-messages",
+  };
+}
+
+/** Headers and body for the arm `auth` names. The login arm sends S0 shape A. */
+function claudeAdvisorRequestInit(
+  params: ClaudeAdvisorCallParams,
+  auth: Exclude<ClaudeAdvisorAuth, { arm: null }>
+): {
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+  systemHead?: "none" | "identity";
+} {
+  if (auth.arm === "api-key") {
+    // Today's metered request, byte for byte, shaped by the connection's wire
+    // when the catalog publishes one.
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "x-api-key": auth.apiKey,
+      "anthropic-version": "2023-06-01",
+    };
+    const body: Record<string, unknown> = {
+      model: params.model,
+      system: params.system,
+      messages: params.turns,
+      max_tokens: ADVISOR_MAX_OUTPUT_TOKENS,
+    };
+    const resolution = resolveConnection("anthropic", params.model);
+    if (resolution.ok && resolution.connection.wire.status === "known") {
+      const shaped = shapeRequestFromWire(body, resolution.connection.wire, {
+        maxTokens: ADVISOR_MAX_OUTPUT_TOKENS,
+        hasTools: false,
+      });
+      mergeWireHeaders(headers, shaped.headers);
+    }
+    return { headers, body };
+  }
+  const { facts } = auth;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    authorization: auth.login.headerValue(),
+    "anthropic-version": facts.anthropicVersion || "2023-06-01",
+  };
+  const beta = stripAdvisorBeta(facts.anthropicBeta).stripped;
+  if (beta) headers["anthropic-beta"] = beta;
+  const prompt = { type: "text", text: params.system };
+  const identity = facts.identityBlock;
+  return {
+    headers,
+    body: {
+      model: params.model,
+      system: identity ? [{ type: "text", text: identity }, prompt] : [prompt],
+      messages: params.turns,
+      max_tokens: ADVISOR_MAX_OUTPUT_TOKENS,
+    },
+    systemHead: identity ? "identity" : "none",
+  };
+}
+
+/**
+ * One Claude advisor call. Never rejects. The URL is the module constant
+ * `ANTHROPIC_MESSAGES_URL` and cannot be changed by the caller, so the login
+ * bearer goes nowhere else. Immediately before the fetch it logs one boundary
+ * line read from the `Request` being sent, never a value:
+ * `[advisor] Calling API: <url> (role, auth: bearer|x-api-key, source, systemHead)`.
+ *
+ * A failed login (401, 429) is reported with Anthropic's message; it is never
+ * retried on a metered key.
+ */
+export async function runClaudeAdvisorCall(
+  params: ClaudeAdvisorCallParams
+): Promise<ClaudeAdvisorOutcome> {
+  const { auth, role } = params;
+  const base = { role, requestedModel: params.spec, route: claudeAdvisorRoute(params.model) };
+  const stubPaths =
+    role === "panel"
+      ? { empty: ADVISOR_STUB_PATHS.PANEL_EMPTY, error: ADVISOR_STUB_PATHS.PANEL_ERROR }
+      : {
+          empty: ADVISOR_STUB_PATHS.ANTHROPIC_COLLECTOR_EMPTY,
+          error: ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
+        };
+  const labels = {
+    credentialSource: auth.arm === null ? null : auth.source,
+    servedArm: auth.arm,
+    ...(auth.facts.loginSkipped ? { loginSkipped: auth.facts.loginSkipped } : {}),
+  };
+  const warning = auth.arm === "oauth" ? undefined : auth.warning;
+  if (warning) (params.warn ?? warnAdvisor)(`${params.spec}: ${warning}`);
+  if (auth.arm === null) {
+    return {
+      ...stubOutcome(base, stubPaths.error, auth.reason, 0, []),
+      ...labels,
+      billing: null,
+    };
+  }
+
+  const init = claudeAdvisorRequestInit(params, auth);
+  const extra = { ...labels, ...(init.systemHead ? { systemHead: init.systemHead } : {}) };
+  // Held for this call's own log lines; the login value is also on the main
+  // request's lease from the moment it was read.
+  const lease = acquireSigningLease();
+  const secrets = credentialValuesFromRequest(init.headers);
+  lease.add(secrets);
+  const started = performance.now();
+  const elapsed = () => Math.round(performance.now() - started);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), params.timeoutMs);
+  try {
+    const request = new Request(ANTHROPIC_MESSAGES_URL, {
+      method: "POST",
+      headers: init.headers,
+      body: JSON.stringify(init.body),
+      signal: controller.signal,
+    });
+    log(
+      `[advisor] Calling API: ${request.url} (role: ${role}, auth: ${request.headers.has("authorization") ? "bearer" : "x-api-key"}, source: ${auth.source}${init.systemHead ? `, systemHead: ${init.systemHead}` : ""})`
+    );
+    const outcome = await fetchClaudeAdvice(request, params, base, stubPaths, secrets, elapsed);
+    const billing: AdvisorBilling | null =
+      outcome.origin === "upstream" ? (auth.arm === "oauth" ? "subscription" : "metered") : null;
+    return { ...outcome, ...extra, billing };
+  } finally {
+    clearTimeout(timer);
+    lease.release();
+  }
+}
+
+type ClaudeCallBase = Pick<AdvisorModelOutcome, "role" | "requestedModel" | "route">;
+type ClaudeFetchOutcome = AdvisorModelOutcome &
+  Pick<ClaudeAdvisorOutcome, "usage" | "emptyReason" | "stopReason" | "shapeRefusal">;
+
+/** Send the request and classify the answer; the stub reasons are sanitised by value. */
+async function fetchClaudeAdvice(
+  request: Request,
+  params: ClaudeAdvisorCallParams,
+  base: ClaudeCallBase,
+  stubPaths: { empty: AdvisorStubPath; error: AdvisorStubPath },
+  secrets: readonly string[],
+  elapsed: () => number
+): Promise<ClaudeFetchOutcome> {
+  let resp: Response;
+  let bodyText: string;
+  try {
+    resp = await (params.fetchImpl ?? fetch)(request);
+  } catch (err) {
+    return stubOutcome(
+      base,
+      stubPaths.error,
+      describeFetchError(err, params.timeoutMs),
+      elapsed(),
+      secrets
+    );
+  }
+  try {
+    bodyText = await resp.text();
+  } catch (err) {
+    return stubOutcome(
+      base,
+      stubPaths.error,
+      `HTTP ${resp.status} but the body could not be read: ${describeFetchError(err, params.timeoutMs)}`,
+      elapsed(),
+      secrets,
+      { status: resp.status, source: "http_status", bytes: 0 }
+    );
+  }
+  const bodyStatus = extractUpstreamStatus(bodyText);
+  const observed: ObservedResponse = {
+    status: bodyStatus ?? resp.status,
+    source: bodyStatus !== undefined ? "error.upstream_status" : "http_status",
+    bytes: new TextEncoder().encode(bodyText).byteLength,
+  };
+  if (!resp.ok || (bodyStatus !== undefined && bodyStatus >= 400)) {
+    if (isClaudeShapeRefusal(observed.status, bodyText, resp.headers)) {
+      log(
+        `[advisor] ${params.spec}: Anthropic refused the request shape (429 "Error"); not retried`
+      );
+      return {
+        ...stubOutcome(
+          base,
+          stubPaths.error,
+          `HTTP ${observed.status} rate_limit_error "Error" with no unified rate-limit headers: Anthropic refused this request's shape on the Claude login; this is not a quota limit and was not retried`,
+          elapsed(),
+          secrets,
+          observed
+        ),
+        shapeRefusal: true,
+      };
+    }
+    return stubOutcome(
+      base,
+      stubPaths.error,
+      `HTTP ${observed.status}: ${summarizeErrorBody(bodyText)}`,
+      elapsed(),
+      secrets,
+      observed
+    );
+  }
+  return claudeAdviceOutcome(bodyText, base, stubPaths.empty, secrets, observed, elapsed);
+}
+
+/** A 2xx answer: the advice, or an empty-stub naming why there is none. */
+function claudeAdviceOutcome(
+  bodyText: string,
+  base: ClaudeCallBase,
+  emptyStubPath: AdvisorStubPath,
+  secrets: readonly string[],
+  observed: ObservedResponse,
+  elapsed: () => number
+): ClaudeFetchOutcome {
+  let data: unknown;
+  try {
+    data = JSON.parse(bodyText);
+  } catch {
+    return stubOutcome(
+      base,
+      emptyStubPath,
+      `HTTP ${observed.status} but the response body is not JSON`,
+      elapsed(),
+      secrets,
+      observed
+    );
+  }
+  const advice = extractAdvice(data);
+  const fields = {
+    ...(advice.usage ? { usage: advice.usage } : {}),
+    ...(advice.stopReason !== undefined ? { stopReason: advice.stopReason } : {}),
+  };
+  if (!advice.text) {
+    return {
+      ...stubOutcome(
+        base,
+        emptyStubPath,
+        `HTTP ${observed.status} but the response carried no advice text (${advice.emptyReason})`,
+        elapsed(),
+        secrets,
+        observed
+      ),
+      ...fields,
+      ...(advice.emptyReason ? { emptyReason: advice.emptyReason } : {}),
+    };
+  }
+  return {
+    ...base,
+    upstreamStatus: observed.status,
+    upstreamStatusSource: observed.source,
+    responseBytes: observed.bytes,
+    latencyMs: elapsed(),
+    origin: "upstream",
+    stubPath: null,
+    text: advice.text,
+    ...fields,
+  };
 }
 
 /** The panel section for a model that produced no advice. Names model and reason. */
