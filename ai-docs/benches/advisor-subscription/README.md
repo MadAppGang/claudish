@@ -39,6 +39,7 @@ which madbench appends after the Bench's. claudish keeps the last `--model`;
 |---|---|---|---|
 | `routed-codex` (L1, L2, L4, L6) | `cx@gpt-6.1-sol`, code mode auto | `gpt-6.1-sol,cx@gpt-6.1-sol,kc@k3:` | the answer carries `REF: heron-5521` (only in `plan.md`) and an `ADVICE:` line; `plan.md` was read; every record of `gpt-6.1-sol` and `cx@gpt-6.1-sol` is `upstream` and served by `openai-codex`, `servedBy.arm` `oauth`, billing `subscription`; every `kc@k3` record is `upstream`, `kimi-coding`, `subscription`; each member's notice line says `(subscription` and names the provider that served; no notice line says "never use a subscription"; every `Calling API:` goes to `chatgpt.com/backend-api/codex/` or the Kimi Coding host (`api.kimi.ai/coding/`, what the catalog's kimi-coding connection publishes; `api.kimi.com/coding/` is the built-in default), both present; no `was served by … not … as the notice said` line; code mode on from discovery and every relayed exec resumed |
 | `routed-grok` (L3 grok) | `cx@gpt-6.1-sol` | `grok-4.7,gk@grok-4.7:` | the answer has an `ADVICE:` line; every record of both members is `upstream`, served by `grok-subscription`, billing `subscription`; both notice lines say `Grok Build (subscription` and name the provider that served; every `Calling API:` goes to `chatgpt.com/backend-api/codex/` or `cli-chat-proxy.grok.com`, both present, none to `api.x.ai` or OpenRouter; no served-unlike line |
+| `routed-antigravity` (fix D8) | `cx@gpt-6.1-sol` | `ag@gemini-3.8-flash` | the answer has an `ADVICE:` line; the launch was not refused (`not_refused`: the notice says `--advisor is on for this launch`, no `--advisor cannot work in this launch` line); every record is `upstream`, served by `antigravity`, billing `subscription`; the notice line says `Antigravity` and `(subscription`; `wire_id_resolved`: on every `[Antigravity] Auth refreshed, … model: <requested> -> <sent>, served: <list>` line, `<requested>` is `gemini-3.8-flash`, `<sent>` is in `<list>`, and `<sent>` is `gemini-3.8-flash` or a `gemini-3.8-flash-*` variant (the account's dynamic models catalog lists only suffixed variants, so before D8 the availability check matched the bare id exactly and dropped the `ag@` hop). No variant is pinned: which one is sent is the account's choice (2026-10-21: it listed `-high`, `-medium`, `-low` and `-tiered`, and the resolver sent `-high`); every `Calling API:` goes to `chatgpt.com/backend-api/codex/` or `daily-cloudcode-pa.googleapis.com`, both present, none to `generativelanguage.googleapis.com`, OpenRouter or `api.openai.com`; no served-unlike line |
 | `rejected-sub` (L3 gemini) | `cx@gpt-6.1-sol` | `gemini-4-argon` | **an observation, not a verdict.** What an expired subscription key should do to the chain is not settled, so only two Checks grade: the answer has a `STATUS:` line (the session completed) and an `advisor_call` record exists. Readouts record the rest: `chain_observed` (hops tried in order, statuses, servedBy, stub reason, `[advisor]` warnings, the `Calling API:` sequence), `stubbed_on_401`, `hosts_subscription_only` and `notice_observed` (the earlier expectation: a stub carrying 401, no metered host). On 2026-10-21 the plan had no Zen Go hop at all (`content-use opt-in id only`), and the call was served metered by Gemini |
 | `claude-login` (L7) | `claude-sonnet-5-5`, native: claudish controls the child's auth | `cx@gpt-6.1-sol,sonnet:haiku` | the answer has an `ADVICE:` line; `cx@gpt-6.1-sol` served by `openai-codex` on `oauth`; `sonnet` and the collector `haiku` are `upstream`, `servedBy.arm` `oauth`, billing `subscription`, `credentialSource: claude-code-login`; the notice says `sonnet -> api.anthropic.com (subscription: your Claude Code login` and has a collector line for `haiku` on the subscription, and never the uncontrolled form `metered, billed per token: ANTHROPIC_API_KEY`; one `[advisor] Calling API: https://api.anthropic.com/v1/messages (role: panel, auth: bearer, source: claude-code-login` line and one with `role: collector`; no `auth: bearer` line to any other host; no log line matches `Bearer sk-ant`, `sk-ant-oat` or `sk-ant-api` |
 | `refusal` (L5) | `cx@gpt-6.1-sol`, no advisor | none in the session | see below |
@@ -67,12 +68,17 @@ record an error, never a grade). Instead the Scenario sets `ADVISOR_REFUSAL_PROB
 bun <repo>/packages/cli/dist/index.js --debug-claudish --log-level debug --advisor "<spec>" -p "hi"
 ```
 
-with a 60 s `timeout`, once for `ag@gemini-4-argon` and once for `opusplan`, each in its own
+with a 60 s `timeout`, once for `ag@gemini-0-nonexistent` and once for `opusplan`, each in its own
 `refusal/<name>/` directory, recording `exit.txt`, `stdout.txt`, `stderr.txt` and its own
 `logs/`. The Checks pass when the exit code is 1, stderr carries `--advisor cannot work in this
-launch` and names the member and its reason (`does not serve` / no route for Antigravity;
-`switches tier` for the `opusplan` Claude selector), and that directory's log has no `Calling
-API:` line. The mock harness never runs the shim, so under `madbench check` the files are absent
+launch` and names the member (and, for the `opusplan` Claude selector, its reason `switches tier`),
+and that directory's log has no `Calling API:` line.
+
+The Antigravity member is `ag@gemini-0-nonexistent`, a family that does not exist, so no account can ever
+serve a variant of it. It was `ag@gemini-4-argon` until 2026-10-21, when the account's Antigravity dynamic
+models catalog began listing `gemini-4-argon-high`, `-medium` and `-low`; since fix D8 the availability check
+resolves a bare family id to a served variant, so that launch was planned, not refused. A refusal member must
+not depend on what one account happens to serve today. The mock harness never runs the shim, so under `madbench check` the files are absent
 and both Checks fail.
 
 ## Grok needs a live login
@@ -85,14 +91,16 @@ which can hold a stale token in memory.
 
 When bare `gemini-4-argon` has no usable subscription candidate (the 2026-10-21 run: Antigravity
 does not serve it, Zen Go is skipped as `content-use opt-in id only`), its chain is metered and
-the call bills the Google key. Skip it with `--scenario` when that must not happen.
+the call bills the Google key. Skip it with `--scenario` when that must not happen. madbench 0.53.1
+takes one `--scenario`: a repeated flag silently keeps only the last value, and a comma list
+selects nothing (exit 1). Run one madbench per Scenario, each with its own `--report-json`.
 
 ## Running it
 
 ```bash
 madbench list      ai-docs/benches/advisor-subscription/madbench.yaml
 madbench preflight ai-docs/benches/advisor-subscription/madbench.yaml
-madbench check     ai-docs/benches/advisor-subscription/madbench.yaml   # 33/33 failed as required
+madbench check     ai-docs/benches/advisor-subscription/madbench.yaml   # 41/41 failed as required
 ADVISOR_SUB_KEEP_LOGS=<dir> madbench ai-docs/benches/advisor-subscription/madbench.yaml --report-json <out.json>
 ```
 

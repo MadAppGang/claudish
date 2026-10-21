@@ -41,7 +41,7 @@ if [ "${ADVISOR_REFUSAL_PROBE:-}" = "1" ]; then
     echo "$rc" > "refusal/$name/exit.txt"
     echo "spec=$spec" > "refusal/$name/spec.txt"
   }
-  probe ag-gemini "ag@gemini-4-argon"
+  probe ag-gemini "ag@gemini-0-nonexistent"
   probe opusplan "opusplan"
 fi
 

@@ -184,6 +184,78 @@ scenarios:
       - *not_served_unlike
       - *provenance
 
+  # ── routed-antigravity: D8 — ag@gemini-3.8-flash resolves to the served variant ──
+  # Before fix D8 the availability check matched `gemini-3.8-flash` exactly
+  # against the Antigravity account's dynamic models catalog, which lists only
+  # suffixed variants (`gemini-3.8-flash-high`, `-tiered`, …), so the ag@ hop
+  # was dropped and the launch was refused. The check now resolves the id the
+  # way the transport does.
+  - name: routed-antigravity
+    description: "main cx@; panel ag@gemini-3.8-flash planned and served by Antigravity on the subscription, sent as a gemini-3.8-flash variant the account serves"
+    testdata: ./testdata/plain
+    harness:
+      args: ["--advisor", "ag@gemini-3.8-flash"]
+    prompt: "Read question.md, then call the advisor tool exactly once with that question. Then reply with one line that starts with the word ADVICE and a colon, followed by the first sentence of the advice the advisor returned."
+    checks:
+      - type: regex
+        metric: answer
+        value: 'ADVICE:\s*\S'
+      # The launch was not refused: the notice says the advisor is on, and no
+      # startup refusal line is in the log.
+      - type: exec
+        metric: not_refused
+        cmd: 'L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" && grep -h "\[advisor-notice\] .*--advisor is on for this launch" $L && ! grep -h -- "--advisor cannot work in this launch" $L'
+      - type: ts
+        metric: panel_served
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: records
+          members:
+            - { model: ag@gemini-3.8-flash, origin: upstream, provider: antigravity, billing: subscription }
+      - type: ts
+        metric: notice_matches
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: notice
+          lines:
+            - { startsWith: "ag@gemini-3.8-flash -> ", contains: ["Antigravity", "(subscription"] }
+          forbid: ["never use a subscription"]
+      # D8 itself: the Antigravity transport resolved the requested id to a
+      # variant the account serves (`[Antigravity] Auth refreshed, … model:
+      # <requested> -> <sent>, served: <list>`). Which variant is the
+      # account's choice (2026-10-21 it listed -high/-medium/-low/-tiered and
+      # the resolver sent -high), so no variant is pinned: on every such line
+      # <requested> is gemini-3.8-flash, <sent> is in <list>, and <sent> is
+      # gemini-3.8-flash or a gemini-3.8-flash-* variant of that family.
+      - type: exec
+        metric: wire_id_resolved
+        cmd: |
+          L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" || exit 1
+          grep -h "\[Antigravity\] Auth refreshed" $L | sed "s/, served: .*//" | head -n 3
+          grep -h "\[Antigravity\] Auth refreshed" $L | tr -d '\r' | awk '
+            { seen++
+              if (!match($0, /model: [^ ]+ -> [^,]+, served: .*$/)) { print "no model/served fields: " substr($0, 1, 200); bad++; next }
+              s = substr($0, RSTART + 7); split(s, a, " -> "); req = a[1]; rest = a[2]
+              i = index(rest, ", served: "); sent = substr(rest, 1, i - 1); list = substr(rest, i + 10)
+              n = split(list, srv, ","); inlist = 0
+              for (k = 1; k <= n; k++) { gsub(/^ +| +$/, "", srv[k]); if (srv[k] == sent) inlist = 1 }
+              fam = (sent == "gemini-3.8-flash" || index(sent, "gemini-3.8-flash-") == 1)
+              printf "requested=%s sent=%s sent_in_served=%d same_family=%d\n", req, sent, inlist, fam
+              if (req != "gemini-3.8-flash" || !inlist || !fam) bad++ }
+            END { exit (seen > 0 && bad == 0) ? 0 : 1 }'
+      # Main on the Codex backend, the panel on Antigravity's host; never the
+      # metered Gemini API, OpenRouter or OpenAI.
+      - type: ts
+        metric: hosts
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: hosts
+          allow: ['^https://chatgpt\.com/backend-api/codex/', '^https://daily-cloudcode-pa\.googleapis\.com/']
+          require: ['Calling API: https://chatgpt\.com/backend-api/codex/', 'Calling API: https://daily-cloudcode-pa\.googleapis\.com/']
+          forbid: ['generativelanguage\.googleapis\.com', 'openrouter', 'api\.openai\.com']
+      - *not_served_unlike
+      - *provenance
+
   # ── rejected-sub: L3 gemini — a rejected subscription login is never moved onto a metered hop ──
   - name: rejected-sub
     description: "panel gemini-4-argon plans OpenCode Zen Go (subscription) first and its key is expired (401): OBSERVED, what the chain does next is recorded, not graded"
@@ -310,7 +382,7 @@ scenarios:
   # must be refused (ADVISOR_REFUSAL_PROBE=1) before the session starts, from
   # madbench's clean environment, and records each one under refusal/.
   - name: refusal
-    description: "--advisor ag@gemini-4-argon and --advisor opusplan exit 1 before spawning, naming the member and the reason"
+    description: "--advisor ag@gemini-0-nonexistent and --advisor opusplan exit 1 before spawning, naming the member"
     testdata: ./testdata/plain
     sandbox:
       level: workspace
@@ -319,9 +391,13 @@ scenarios:
     timeout: 300s
     prompt: "Reply with the single word ready, in capital letters, and nothing else."
     checks:
+      # ag@gemini-0-nonexistent: a family that does not exist, so no account
+      # can ever serve a variant of it. (ag@gemini-4-argon was the member
+      # until 2026-10-21, when the account began listing gemini-4-argon-high/
+      # -medium/-low and D8 resolved the bare id to one: not refused.)
       - type: exec
         metric: refusal_antigravity
-        cmd: 'd=refusal/ag-gemini; test -f $d/exit.txt && cat $d/spec.txt && echo "exit=$(cat $d/exit.txt)" && cat $d/stderr.txt && test "$(cat $d/exit.txt)" = 1 && grep -q -- "--advisor cannot work in this launch" $d/stderr.txt && grep -q "gemini-4-argon" $d/stderr.txt && grep -Eqi "does not serve|no route|not served" $d/stderr.txt && ! grep -rqs "Calling API:" $d/logs'
+        cmd: 'd=refusal/ag-gemini; test -f $d/exit.txt && cat $d/spec.txt && echo "exit=$(cat $d/exit.txt)" && cat $d/stderr.txt && test "$(cat $d/exit.txt)" = 1 && grep -q -- "--advisor cannot work in this launch" $d/stderr.txt && grep -q "gemini-0-nonexistent" $d/stderr.txt && ! grep -rqs "Calling API:" $d/logs'
       - type: exec
         metric: refusal_claude_selector
         cmd: 'd=refusal/opusplan; test -f $d/exit.txt && cat $d/spec.txt && echo "exit=$(cat $d/exit.txt)" && cat $d/stderr.txt && test "$(cat $d/exit.txt)" = 1 && grep -q -- "--advisor cannot work in this launch" $d/stderr.txt && grep -q "opusplan" $d/stderr.txt && grep -q "switches tier" $d/stderr.txt && ! grep -rqs "Calling API:" $d/logs'
