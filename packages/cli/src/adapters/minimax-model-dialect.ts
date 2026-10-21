@@ -103,7 +103,9 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
    *   passthrough (default) — send exactly what the client asked for
    *   disabled              — force `thinking: {"type":"disabled"}` (⚠ M3.1-Flash
    *                           rejects this with 400/2013 — it cannot think less
-   *                           than adaptive; use effort:low on Flash)
+   *                           than adaptive; use effort:low on Flash. The Flash
+ *                           guard below rewrites the disabled to adaptive, so
+ *                           the request survives)
    *   forced[:<n>]          — force `{"type":"enabled","budget_tokens":<n>}`
    *                           (default n=16000) when the client did not itself
    *                           ask for thinking; a client that asked (enabled OR
@@ -187,6 +189,28 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
           `[MiniMaxModelDialect] thinking not forced for this request (max_tokens ${maxTokensRaw} <= budget ${policy.budget})`
         );
       }
+    }
+
+    // M3.1-Flash cannot think less than adaptive: a `thinking.type:"disabled"`
+    // that reaches the wire is a 400/2013 ("requires adaptive thinking;
+    // thinking.type='disabled' … is not allowed"). Measured live 2026-10-21:
+    // WebFetch one-shots (msgs=1, haiku role) send `{"type":"disabled"}` and
+    // took the 400 straight back. This is a MODEL constraint, not an operator
+    // preference — it applies under every policy (the effort block above
+    // deliberately never touches `thinking`, which is exactly how the client's
+    // disabled reached the wire) and runs AFTER the policy block, so an
+    // operator `disabled` armed on Flash is caught too. `adaptive` is the
+    // minimum the model accepts; dropping the field instead would reset Flash
+    // to its MAX-when-omitted default.
+    if (
+      ctx?.wireFormat === "anthropic-sse" &&
+      /m3\.1/i.test(String(this.modelId ?? "")) &&
+      request.thinking?.type === "disabled"
+    ) {
+      request.thinking = { type: "adaptive" };
+      log(
+        `[MiniMaxModelDialect] M3.1-Flash rejects thinking.type=disabled (400/2013) — sending adaptive instead (model ${this.modelId})`
+      );
     }
 
     return request;

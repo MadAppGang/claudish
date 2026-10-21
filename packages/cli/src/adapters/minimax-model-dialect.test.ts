@@ -157,11 +157,11 @@ describe("MiniMaxModelDialect — effort policy (M3.1-Flash thinking depth)", ()
     expect(payload.output_config).toEqual({ effort: "medium" });
   });
 
-  it("effort does NOT rewrite the client's thinking value — depth is orthogonal to the switch", () => {
+  it("effort never rewrites a thinking VALUE — but the Flash 2013 guard below rewrites disabled (see dedicated describe)", () => {
     process.env.CLAUDISH_MINIMAX_THINKING = "effort:low";
     const payload: any = { max_tokens: 32000, thinking: { type: "disabled" } };
     flash().prepareRequest(payload, { thinking: { type: "disabled" } }, ANTHROPIC);
-    expect(payload.thinking).toEqual({ type: "disabled" });
+    expect(payload.thinking).toEqual({ type: "adaptive" }); // 400/2013 guard, not the effort policy
     expect(payload.output_config).toEqual({ effort: "low" });
   });
 
@@ -212,6 +212,64 @@ describe("MiniMaxModelDialect — effort policy (M3.1-Flash thinking depth)", ()
     expect(
       flash().preserveThinkingBlock({ type: "thinking", thinking: "…", signature: ANTHROPIC_BLOB })
     ).toBe(false);
+  });
+});
+
+describe("MiniMaxModelDialect — M3.1-Flash disabled guard (400/2013)", () => {
+  /**
+   * Flash cannot think less than adaptive: `thinking.type:"disabled"` on the
+   * wire is a 400/2013 ("requires adaptive thinking; thinking.type='disabled'
+   * … is not allowed"). Claude Code's WebFetch one-shots (msgs=1, haiku role)
+   * send disabled; under the deployed effort:medium policy nothing rewrote it
+   * (effort deliberately never touches `thinking`), and the client took the
+   * 400 straight back (measured 2026-10-21 20:47Z, 9 requests 16:21Z→).
+   * The guard is a MODEL constraint: every policy, after the policy block.
+   */
+  const flash = () => new MiniMaxModelDialect("MiniMax-M3.1-Flash");
+
+  it("passthrough: a client-disabled request is rewritten to adaptive", () => {
+    delete process.env.CLAUDISH_MINIMAX_THINKING;
+    const payload: any = { max_tokens: 32000, thinking: { type: "disabled" } };
+    flash().prepareRequest(payload, { thinking: { type: "disabled" } }, ANTHROPIC);
+    expect(payload.thinking).toEqual({ type: "adaptive" });
+  });
+
+  it("operator disabled on Flash is caught too — the guard runs AFTER the policy block", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "disabled";
+    const payload: any = { max_tokens: 32000 };
+    flash().prepareRequest(payload, {}, ANTHROPIC);
+    expect(payload.thinking).toEqual({ type: "adaptive" });
+  });
+
+  it("M3 (non-Flash) keeps disabled — it accepts the off switch", () => {
+    delete process.env.CLAUDISH_MINIMAX_THINKING;
+    const payload: any = { max_tokens: 32000, thinking: { type: "disabled" } };
+    dialect().prepareRequest(payload, { thinking: { type: "disabled" } }, ANTHROPIC);
+    expect(payload.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("inert on the OpenAI wire — `thinking` is not the switch that endpoint reads", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "effort:medium";
+    const payload: any = { max_tokens: 32000, thinking: { type: "disabled" } };
+    flash().prepareRequest(payload, { thinking: { type: "disabled" } }, OPENAI);
+    expect(payload.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("client adaptive and enabled pass through untouched", () => {
+    delete process.env.CLAUDISH_MINIMAX_THINKING;
+    const adaptive: any = { max_tokens: 32000, thinking: { type: "adaptive" } };
+    flash().prepareRequest(adaptive, { thinking: { type: "adaptive" } }, ANTHROPIC);
+    expect(adaptive.thinking).toEqual({ type: "adaptive" });
+    const enabled: any = { max_tokens: 32000, thinking: { type: "enabled", budget_tokens: 4096 } };
+    flash().prepareRequest(enabled, { thinking: { type: "enabled", budget_tokens: 4096 } }, ANTHROPIC);
+    expect(enabled.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+  });
+
+  it("no ctx — the guard stays inert (same scope guard as the policy blocks)", () => {
+    delete process.env.CLAUDISH_MINIMAX_THINKING;
+    const payload: any = { max_tokens: 32000, thinking: { type: "disabled" } };
+    flash().prepareRequest(payload, { thinking: { type: "disabled" } });
+    expect(payload.thinking).toEqual({ type: "disabled" });
   });
 });
 
