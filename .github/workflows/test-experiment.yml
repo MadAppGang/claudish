@@ -1,0 +1,73 @@
+name: Tests experiment
+
+# MEASUREMENT ONLY, deleted before merge. Answers two questions for the hermetic-job split:
+# 1. Which test files pass on Linux runners (20 concurrent jobs on the free plan, against 5 macOS)?
+# 2. How long each group takes when the three groups run concurrently on ONE macOS runner.
+# Both write junit, so per-file and per-test times come from the reports, not log timestamps.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  linux-probe:
+    name: linux probe · ${{ matrix.group }}
+    if: startsWith(github.head_ref, 'ci/hermetic-under-4min')
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [pane, idle, rest]
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      - uses: ./.github/actions/install-magmux
+        with:
+          token: ${{ github.token }}
+      - name: Tests (${{ matrix.group }})
+        working-directory: packages/cli
+        continue-on-error: true
+        run: bun scripts/ci-tests.ts --group ${{ matrix.group }} -- --reporter=junit --reporter-outfile=junit-{group}.xml
+        timeout-minutes: 40
+        env:
+          CLAUDISH_SKIP_LIVE_E2E: "1"
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: junit-linux-${{ matrix.group }}
+          path: packages/cli/junit-*.xml
+
+  mac-lanes:
+    name: macOS lanes · pane + idle + rest concurrently
+    if: startsWith(github.head_ref, 'ci/hermetic-under-4min')
+    runs-on: macos-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      - uses: ./.github/actions/install-magmux
+        with:
+          token: ${{ github.token }}
+      - name: sysctl
+        run: sysctl -n hw.ncpu hw.memsize machdep.cpu.brand_string
+      - name: Tests (three groups at once)
+        working-directory: packages/cli
+        continue-on-error: true
+        run: bun scripts/ci-tests.ts --group pane,idle,rest -- --reporter=junit --reporter-outfile=junit-{group}.xml
+        timeout-minutes: 40
+        env:
+          CLAUDISH_SKIP_LIVE_E2E: "1"
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: junit-mac-lanes
+          path: packages/cli/junit-*.xml
