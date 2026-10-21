@@ -57,6 +57,13 @@
         "X-Forwarded-For": "standard HTTP header (RFC 7239 vocabulary)",
         "agent-sdk/X": "client user-agent value in the billing header (pattern, not a repo symbol)"
       }
+    },
+    {
+      "match": "docs/reference/traffic-analysis.md",
+      "reason": "single-document scope (#535): the Windows-management cmdlet cited by the hairpin reading rule lives in the DnsClient module that ships with the OS — external to this repo by nature. Scoped to the one doc that adjudicated it (arbitration 20/10, queue 12:00Z); under any other doc the token stays red.",
+      "tokens": {
+        "Resolve-DnsName": "Windows PowerShell cmdlet (DnsClient module, ships with the OS) — the doc names the tool, not a repo symbol (#535)"
+      }
     }
   ]
 }

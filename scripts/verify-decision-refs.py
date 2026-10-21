@@ -335,7 +335,13 @@ def audit_allowlist() -> int:
             if any(ch in part for ch in "*?["):
                 break
             root = root / part
-        candidates = root.rglob("*.md") if root.is_dir() else []
+        # A scope pattern may name one doc exactly (no glob segment) -- the
+        # literal-prefix walk then lands ON the file, and rglob would find
+        # nothing, flagging every token in that scope stale forever.
+        if root.is_file():
+            candidates = [root]
+        else:
+            candidates = root.rglob("*.md") if root.is_dir() else []
         for doc in candidates:
             rel = doc.resolve().relative_to(REPO_ROOT).as_posix()
             if not fnmatch.fnmatch(rel, pattern):
