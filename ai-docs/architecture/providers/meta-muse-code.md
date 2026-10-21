@@ -337,8 +337,10 @@ continues. A network or transient fault warns and continues.
 ## Classification at the auth sites
 
 The terminal/transient contract every subscription now follows is in [`adapters.md`](../adapters.md)
-("A subscription's credential failure stops the chain"). For `muse@` the consequence is direct: an
-expired Muse login answers 400 with the login hint, and the chain never walks onto metered `meta@`.
+("A subscription's credential failure"). For `muse@` the consequence is direct: an expired Muse
+login answers 400 with the login hint. An explicit `muse@` stops there; since 2026-10-21 a routing
+chain moves on to its next hop, metered `meta@` included, with a stderr notice naming that hop and
+its billing.
 
 `probe-live.ts` lists `meta-muse-code` in `OAUTH_PROVIDERS`. A login-fixable failure gets the
 `claudish login muse` hint. An unsubscribed account gets `subscribe at <url>` instead.

@@ -406,11 +406,19 @@ seven chains lost only their subscription hop (`zengo@` for `qwen3.7-max`, `glm-
 `qwen3.6-plus`, `minimax-m2.5`, `omen-alpha`; `qtoken@` for `deepseek-v3.2`,
 `deepseek-v4-flash`).
 
-**A subscription's terminal credential failure stops the chain.** An expired or revoked login on
-any `SUBSCRIPTION_PROVIDERS` member (and `openai-codex` when its OAuth arm signed) answers 400
-with its login hint and never walks onto the next, usually metered, hop. A model the plan does not
-carry and a spent allowance still advance. The mechanism is in `adapters.md` ("A subscription's
-credential failure stops the chain").
+**A subscription's rejected credential moves the chain to its next hop, metered included**
+(owner, 2026-10-21). An expired, wrong or revoked credential on any `SUBSCRIPTION_PROVIDERS`
+member (and `openai-codex` when its OAuth arm signed) answers 400 with its login hint and the
+terminal verdict. An explicit spec stops there. A routing chain moves on to its next hop, whatever
+that hop bills, and prints one stderr notice per provider and upstream status naming the next hop
+and its billing (`subscription` or `metered, billed per token`) with the login or renewal hint.
+The reason: an expired key must not block the chain, and a metered key the user configured is
+consent to be billed by it. The rule it replaced (2026-10-16, amended 2026-10-20) stopped the
+chain, then tried only later subscription hops, so one stale key on a plan the user had stopped
+paying for hid every metered key they held. Billing follows the signing arm of the hop that
+served. Connection faults, the recovery hold and stream failures still hold the chain, so a network
+fault never walks onto metered billing. The mechanism is in `adapters.md` ("A subscription's
+credential failure").
 
 The backend recommendation projection supplies canonical model IDs and exact
 route/profile identities. Claudish resolves them against the generation-pinned

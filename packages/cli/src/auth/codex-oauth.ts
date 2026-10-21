@@ -214,16 +214,30 @@ export class CodexOAuth {
   }
 
   /**
-   * Force refresh the access token
+   * Force refresh the access token.
+   *
+   * Single-flighted through the same `refreshPromise` lock as `getAccessToken`:
+   * a rotated refresh token is single-use, so two concurrent forced refreshes
+   * (two requests answered 401 at once) that each spent it would leave the
+   * second holding a token the server already invalidated. A refresh already
+   * in flight is joined, never duplicated.
    */
   async refreshToken(): Promise<void> {
+    if (this.refreshPromise) {
+      log("[CodexOAuth] Joining in-progress refresh");
+      await this.refreshPromise;
+      return;
+    }
     if (!this.credentials) {
       throw new Error(
         "No OpenAI Codex OAuth credentials found. Please run `claudish login codex` first."
       );
     }
 
-    await this.doRefreshToken();
+    this.refreshPromise = this.doRefreshToken().finally(() => {
+      this.refreshPromise = null;
+    });
+    await this.refreshPromise;
   }
 
   /**

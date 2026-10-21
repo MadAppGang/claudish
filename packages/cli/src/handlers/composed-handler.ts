@@ -33,7 +33,7 @@ import {
   type EffortLevel,
 } from "../adapters/base-api-format.js";
 import { MiniMaxModelDialect } from "../adapters/minimax-model-dialect.js";
-import type { ProviderTransport, StreamFormat } from "../providers/transport/types.js";
+import type { AuthBinding, ProviderTransport, StreamFormat } from "../providers/transport/types.js";
 import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
@@ -41,6 +41,21 @@ import { lookupModelAcceptsImages, lookupModelForProvider } from "../adapters/mo
 import type { QuotaAdapter } from "../auth/quota/adapter.js";
 import { resolveQuotaAdapter } from "../auth/quota/registry.js";
 import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
+import { accountKeyFromBinding } from "../code-mode/ids.js";
+import { type CodeModeSetting, DEFAULT_CODE_MODE_SETTING } from "../code-mode/policy.js";
+import { createCodeModeTurnHooks } from "../code-mode/relay.js";
+import {
+  type CodeModePayloadContext,
+  type PreparedCodeMode,
+  isLiteRejection,
+  prepareCodeModeRequest,
+  rebuildAsClassic,
+  withoutLiteHeader,
+} from "../code-mode/request.js";
+import { resumeFromToolResults } from "../code-mode/resume.js";
+import { loadQuickJSModule } from "../code-mode/sandbox/quickjs-loader.js";
+import { getCodeModeStores, peekCodeModeStores } from "../code-mode/stores.js";
+import { conversationMessages } from "../code-mode/types.js";
 import { getHookEngine } from "../hooks/index.js";
 import { type RawStreamTap, statsNames } from "../hooks/raw.js";
 import type { UpstreamFacts } from "../hooks/registry.js";
@@ -75,7 +90,8 @@ import {
   noteTargetReachable,
   uiLeaseValid,
 } from "../recovery/coordinator.js";
-import { resolveRecoveryEnabled } from "../recovery/settings.js";
+import { resolveRecoveryEnabled, resolveTier1DeadlineMs } from "../recovery/settings.js";
+import { redactForClient } from "../redact.js";
 import {
   type OpenAIImageBlock,
   type VisionProxyAuthHeaders,
@@ -100,6 +116,19 @@ import {
   isCredentialRejection,
   respondAuthFailure,
 } from "./shared/auth-failure.js";
+import {
+  type HopAttempt,
+  abortedResponse,
+  addSigningSecrets,
+  callAbortError,
+  callAbortSignal,
+  callAborted,
+  credentialValuesFromRequest,
+  raceCallAbort,
+  recordHopEntry,
+  sleepUnlessAborted,
+  withCallSignal,
+} from "./shared/call-context.js";
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
 import type { ConnectionErrorKind } from "./shared/connection-error.js";
 import {
@@ -112,19 +141,35 @@ import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-un
 import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
-import { isSubscriptionProvider } from "./shared/remote-provider-types.js";
+import {
+  CREDENTIAL_DECIDED_PROVIDERS,
+  type RequestBilling,
+  isSubscriptionProvider,
+} from "./shared/remote-provider-types.js";
 import {
   CONTEXT_OVERFLOW_PHRASE,
   isContextOverflowError,
   isRequestShapeError,
 } from "./shared/request-shape.js";
+import {
+  type LegAuthBinding,
+  createLegIssuer,
+  isSameCredentialSilo,
+} from "./shared/responses-leg-issuer.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createDevinConnectStream } from "./shared/stream-parsers/devin-connect.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
-import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
+import {
+  type CodeModeTurnHooks,
+  type ResponsesRetryOptions,
+  createResponsesStreamHandler,
+  createSyntheticToolUseReply,
+  resolveStallPolicy,
+} from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
+import { notifyOnDownstreamCancel } from "./shared/stream-parsers/upstream-cancel.js";
 import { TokenTracker, type UsageCacheDetail } from "./shared/token-tracker.js";
 import {
   type ConnectionErrorInfo,
@@ -144,6 +189,20 @@ import { captureUpstreamError } from "./shared/upstream-error-capture.js";
  * lasted minutes, so the useful attempts are the late ones.
  */
 const STREAM_RETRY_DELAYS_MS = [3_000, 15_000, 30_000];
+
+/**
+ * A retry leg's binding: the request's `AuthBinding` plus the account it names
+ * (`accountKeyFromBinding`), which the leg issuer compares between legs.
+ */
+type LegBinding = AuthBinding & LegAuthBinding;
+
+/** What `handle()` builds for a Responses turn and `handleStream` hands the parser. */
+interface ResponsesTurnWiring {
+  retry: ResponsesRetryOptions;
+  onTurnSummary: (s: { legs: number; legRetries: number }) => void;
+  /** Code mode for this turn (`openai-codex`, decided at 5d). */
+  codeMode?: CodeModeTurnHooks;
+}
 
 /**
  * One request's running account of what network recovery cost it. Mutable, and
@@ -221,6 +280,12 @@ export interface ComposedHandlerOptions {
    */
   proOnUltracode?: boolean;
   /**
+   * Code mode for `openai-codex` (`auto` | `on` | `off`), resolved by the CLI
+   * from `--code-mode` > `CLAUDISH_CODE_MODE` > `codeMode` config. Absent ⇒
+   * `DEFAULT_CODE_MODE_SETTING` (`auto`). Read only on the `openai-codex` request path.
+   */
+  codeMode?: CodeModeSetting;
+  /**
    * Test seam for the session-event registry. Defaults to the process-wide
    * singleton. Only tests should pass this.
    */
@@ -245,6 +310,16 @@ export interface ComposedHandlerOptions {
   wireMode?: WireMode;
   /** `#<speed>` on the model spec, refused where the wire does not publish it. */
   wireSpeed?: WireSpeed;
+  /**
+   * Who issues requests through this handler. `"advisor"` marks a handler built
+   * for `--advisor` panel and collector calls, which claudish issues itself:
+   * it writes no status-line token file (the main session owns it), skips the
+   * plan-usage scrape and poll (that reading belongs on the main status line
+   * too), runs no hooks (a panel call is not a harness turn), and
+   * tags every stats event `request_role: "advisor"`. Absent on every handler
+   * that serves Claude Code's own requests.
+   */
+  requestRole?: "advisor";
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -375,7 +450,21 @@ export class ComposedHandler implements ModelHandler {
       providerName: provider.name,
       modelName: this.bareModelName,
       providerDisplayName: provider.displayName,
+      ...(options.requestRole === "advisor" ? { writesTokenFile: false } : {}),
     });
+  }
+
+  /**
+   * The endpoint a binding signs for, read only for its credential query
+   * parameters (Gemini's `?key=`). Never throws: a transport that cannot name
+   * its endpoint here simply contributes no query value.
+   */
+  private signedEndpoint(binding: AuthBinding | undefined): string | undefined {
+    try {
+      return this.provider.getEndpoint(this.targetModel, binding);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -513,6 +602,89 @@ export class ComposedHandler implements ModelHandler {
   }
 
   /**
+   * The ONE writer of this handler's stats events. Every `recordStats` call in
+   * this class goes through here, so a field that must be on every event (the
+   * request role of an advisor handler) is added in one place and cannot be
+   * missed by a site added later.
+   */
+  private emitStats(event: Parameters<typeof recordStats>[0]): void {
+    recordStats(
+      this.options.requestRole ? { ...event, request_role: this.options.requestRole } : event
+    );
+  }
+
+  /**
+   * Fill a hop-log entry once the request is signed: the arm from the
+   * binding the credential half returned (`RequestAuth.arm`, never inferred
+   * from a resolved object's truthiness), and the billing.
+   *
+   * For a provider whose billing the signing credential decides
+   * (`CREDENTIAL_DECIDED_PROVIDERS`, i.e. `openai-codex`) the billing is THIS
+   * request's arm: `oauth` is the subscription, anything else (absent
+   * included) is metered. It is never `isSubscriptionProvider(name)`, whose
+   * probe reads a process-wide last-signed arm that a concurrent main request
+   * can overwrite between this request's refresh and this line. Every other
+   * provider's billing is its fixed category (`SUBSCRIPTION_PROVIDERS`
+   * membership), whatever arm signs: a flat-rate key is still flat-rate.
+   */
+  private markHopSigned(hop: HopAttempt, binding: AuthBinding | undefined): void {
+    hop.arm = binding?.auth?.arm ?? null;
+    hop.billing = this.signedBilling(binding).subscription ? "subscription" : "metered";
+  }
+
+  /**
+   * The billing of a request signed with `binding`, by the rule above: the
+   * signing arm for a credential-decided provider, the fixed category for
+   * every other one. The ONE derivation shared by the hop label
+   * (`markHopSigned`) and the request's cost updates (`handleStream`), so the
+   * two cannot disagree.
+   */
+  private signedBilling(binding: AuthBinding | undefined): RequestBilling {
+    const name = this.provider.name.toLowerCase();
+    return {
+      subscription: CREDENTIAL_DECIDED_PROVIDERS.has(name)
+        ? binding?.auth?.arm === "oauth"
+        : isSubscriptionProvider(name),
+    };
+  }
+
+  /**
+   * The answer when an internal call's deadline passed (`call-context.ts`).
+   * No classification, no recovery, nothing on stderr: the caller has already
+   * stopped waiting and reports the timeout itself. One failure stats event,
+   * so the attempt is still counted. Unreachable on a main request, which
+   * never carries a call signal.
+   */
+  private respondCallAborted(
+    startTime: number,
+    fallbackMeta?: { chain: string[]; attempts: number }
+  ): Response {
+    log(`[${this.provider.displayName}] call stopped: its deadline passed`);
+    try {
+      this.emitStats({
+        model_id: this.targetModel,
+        provider_name: this.provider.name,
+        stream_format: this.provider.streamFormat,
+        latency_ms: Math.round(performance.now() - startTime),
+        success: false,
+        http_status: 408,
+        error_class: "timeout",
+        error_code: "call_aborted",
+        token_strategy: this.options.tokenStrategy ?? "standard",
+        adapter_name: this.getActiveAdapterName(),
+        middleware_names: this.rawStatsNames(),
+        fallback_used: fallbackMeta !== undefined,
+        fallback_chain: fallbackMeta?.chain,
+        fallback_attempts: fallbackMeta?.attempts,
+        invocation_mode: this.options.invocationMode ?? "auto-route",
+      });
+    } catch {
+      // Stats must never crash claudish
+    }
+    return abortedResponse();
+  }
+
+  /**
    * The ONE response shape for "claudish could not reach the host".
    *
    * Every outbound call in this handler that can throw without a Response must
@@ -583,7 +755,7 @@ export class ComposedHandler implements ModelHandler {
     });
     try {
       const { error_class, error_code } = classifyError(error, undefined);
-      recordStats({
+      this.emitStats({
         model_id: this.targetModel,
         provider_name: this.provider.name,
         stream_format: this.provider.streamFormat,
@@ -683,7 +855,7 @@ export class ComposedHandler implements ModelHandler {
     const msg = buildRecoveryHoldMessage(reason, ctx.attempts, ctx.recoveryMs);
     try {
       const { error_class, error_code } = classifyError(error, undefined);
-      recordStats({
+      this.emitStats({
         model_id: this.targetModel,
         provider_name: this.provider.name,
         stream_format: this.provider.streamFormat,
@@ -756,7 +928,14 @@ export class ComposedHandler implements ModelHandler {
     // without this gate `--probe` and the config TUI's Test All would each
     // hold an unreachable link open for the full deadline and then misreport
     // it as a timeout — breaking the two tools that diagnose this exact fault.
-    if (c.req.header("x-claudish-no-recovery") === "1") return "probe";
+    //
+    // `advisor` is the panel gateway's own value. An advisor call has a 60 s
+    // budget a multi-minute hold cannot fit, and a tier-2 503 means nothing to
+    // an internal caller; it is named for itself so the skip line in the log
+    // says which kind of request skipped the ladder.
+    const noRecovery = c.req.header("x-claudish-no-recovery");
+    if (noRecovery === "1") return "probe";
+    if (noRecovery === "advisor") return "advisor";
     // The CI / scripted-`-p` master switch. Off restores today's behaviour
     // everywhere, byte for byte.
     if (!resolveRecoveryEnabled()) return "recovery-disabled";
@@ -984,7 +1163,7 @@ export class ComposedHandler implements ModelHandler {
         "releasing the request"
     );
     try {
-      recordStats({
+      this.emitStats({
         model_id: this.targetModel,
         provider_name: this.provider.name,
         stream_format: this.provider.streamFormat,
@@ -1056,6 +1235,15 @@ export class ComposedHandler implements ModelHandler {
     // several at once. It stays all-zero and contributes NOTHING to any stats
     // record unless a classified connection failure actually occurs.
     const recoveryTally = ComposedHandler.newRecoveryTally();
+    // An internal call's deadline (the advisor panel gateway installs it).
+    // Undefined on every request from Claude Code, and then every use below
+    // collapses to the expression that ran before it existed.
+    const callSignal = callAbortSignal(c);
+    // This hop's entry in an internal call's hop log (advisor gateway only):
+    // pushed on entry, so the log lists every hop whose handle() ran, and
+    // filled with the signing arm once 5b has signed.
+    const hop = recordHopEntry(c, this.provider.name, this.bareModelName);
+    if (callSignal?.aborted) return this.respondCallAborted(startTime, fallbackMeta);
     // 1. Transform incoming Claude-format request
     const transformed = transformOpenAIToClaude(payload);
     const { droppedParams } = transformed;
@@ -1067,7 +1255,11 @@ export class ComposedHandler implements ModelHandler {
     // attempts). Before conversion, so a system note reaches every route:
     // chat-completions adapters copy `system` into messages[0] at step 2 and
     // build their payload from `messages` alone.
-    const hooks = requestHooksOf(c);
+    // An advisor handler runs none: a panel call is not a harness turn, and its
+    // request carries no session id whose pending notes it could consume. The
+    // panel gateway's never-served context carries no hooks either; this check
+    // keeps that true if an advisor handler is ever reached another way.
+    const hooks = this.options.requestRole === "advisor" ? undefined : requestHooksOf(c);
     const hookScope: HookRequestScope | undefined = hooks
       ? await hooks.beginAttempt(c, {
           claudeRequest,
@@ -1354,9 +1546,21 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 5b. Refresh auth / health check (must happen before transformPayload, which may use auth state)
+    //
+    // `binding` is THIS request's auth: a transport that mints a per-request
+    // artifact (`openai-codex`) returns it, and every later auth-dependent call
+    // of this request (5c, the endpoint, every header fetch, the 401 retry, the
+    // retry legs) is handed it back, so a concurrent request's refresh on the
+    // same handler can never change what this one signs with. Undefined for a
+    // transport that returns nothing (every other one), which then behaves
+    // exactly as before.
+    let binding: AuthBinding | undefined;
     if (this.provider.refreshAuth) {
       try {
-        await this.provider.refreshAuth();
+        // Raced, not cancelled: a refresh is single-flight and shared with
+        // other requests, so an aborted call stops WAITING for it and nothing
+        // more.
+        binding = (await raceCallAbort(this.provider.refreshAuth(), callSignal)) || undefined;
         // Quota is DELIBERATELY not fetched here.
         //
         // This used to await getQuotaRemaining with a 2s cap on every single
@@ -1378,6 +1582,8 @@ export class ComposedHandler implements ModelHandler {
         // user across every provider in the chain — off a subscription onto
         // metered billing — for an outage on their own machine.
         //
+        // A stopped call is not a failure to classify: no verdict, no stderr.
+        if (callAborted(c)) return this.respondCallAborted(startTime, fallbackMeta);
         const conn = classifyConnectionError(err);
         if (conn) {
           // The refresh path's deadline is DELIBERATELY earlier than the fetch
@@ -1404,7 +1610,9 @@ export class ComposedHandler implements ModelHandler {
             "401"
           );
           if (outcome.kind === "respond") return outcome.response;
-          // Recovered: fall through as if the first refresh had succeeded.
+          // Recovered: fall through as if the first refresh had succeeded,
+          // bound to the artifact the successful attempt minted.
+          binding = outcome.value || undefined;
         } else {
           log(`[${this.provider.displayName}] Auth/health check failed: ${err.message}`);
           logStderr(
@@ -1446,6 +1654,7 @@ export class ComposedHandler implements ModelHandler {
         this.tokenTracker.setProviderDisplayName(this.provider.displayName);
       }
     }
+    if (hop) this.markHopSigned(hop, binding);
     // Update context window if provider dynamically discovered it
     // (e.g., from OpenRouter model catalog or local model API).
     //
@@ -1463,15 +1672,101 @@ export class ComposedHandler implements ModelHandler {
       }
     }
 
+    // 5r. Code-mode resume (`openai-codex`): tool_results answering a suspended
+    // exec script's batch feed the script. After 5b, so the account is THIS
+    // request's; after 3b, so a synthetic reply gets the same raw hooks (the
+    // response seam above this handler applies the closed tool hooks to it).
+    // Synchronous from record lookup to state transition. A script that
+    // blocked again is answered here with its next batch — no upstream call,
+    // no further auth, no stats record (nothing was billed) — through the same
+    // exit as step 8. Anything else continues. A store that was never created
+    // (no code-mode request in this process) is created here only when the
+    // last message answers nested ids — the first request after a restart —
+    // so the lost script's tombstone exists before 5d builds the input.
+    if (this.provider.name === "openai-codex") {
+      const resume = (mayRequestModule: boolean) =>
+        resumeFromToolResults(
+          claudeRequest,
+          binding,
+          peekCodeModeStores(),
+          claudeRequest?.tool_choice,
+          {
+            setting: this.options.codeMode ?? DEFAULT_CODE_MODE_SETTING,
+            createStores: getCodeModeStores,
+            mayRequestModule,
+          }
+        );
+      let resumed = resume(true);
+      if (resumed.kind === "needs-module") {
+        // A lost script can replay, but its module was dropped (retired,
+        // poisoned, recycled). 5r never awaits: load here, then run 5r once
+        // more — never a third time, so a failed load ends in the tombstone.
+        await loadQuickJSModule();
+        resumed = resume(false);
+      }
+      if (resumed.kind === "reply") {
+        const sse = createSyntheticToolUseReply(resumed.blocks, {
+          modelName: this.bareModelName,
+          priorInputTokens: this.tokenTracker.getLastInputTokens(),
+          onToolCallObserved: (name: string) => this.tokenTracker.recordToolUse(name),
+          raw: hookScope?.raw.streamTap(),
+        });
+        return payload?.stream === true ? sse : sseResponseToJson(sse, this.bareModelName);
+      }
+    }
+
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)
     if (this.provider.transformPayload) {
-      requestPayload = this.provider.transformPayload(requestPayload, claudeRequest);
+      requestPayload = this.provider.transformPayload(requestPayload, claudeRequest, binding);
+    }
+
+    // 5d. Code mode (`openai-codex` only; by default `auto`, on where
+    // discovery reports `code_mode_only`; `--code-mode` / CLAUDISH_CODE_MODE /
+    // `codeMode` override it). After 5c, so the Codex fields 5c added are
+    // kept; decided from THIS request's binding. A lite
+    // request's header joins `wireHeaders`, so every header fetch below
+    // carries it. Never throws: a failed decision or build leaves the request
+    // exactly as 5c produced it.
+    //
+    // `codeModeShape` is the shape actually sent (`lite` falls back to
+    // `classic` in the 4xx block when the backend rejects it); the clone and
+    // context are what that fallback rebuilds from.
+    let codeModeShape: "lite" | "classic" | undefined;
+    let codeModePrePayload: any;
+    let codeModeContext: CodeModePayloadContext | undefined;
+    let codeModeTurn: PreparedCodeMode["turn"];
+    if (this.provider.name === "openai-codex") {
+      const prepared = await prepareCodeModeRequest({
+        providerName: this.provider.name,
+        setting: this.options.codeMode ?? DEFAULT_CODE_MODE_SETTING,
+        binding,
+        api:
+          wire?.status === "known"
+            ? wire.api
+            : this.resolveStreamFormat() === "openai-responses-sse"
+              ? "responses"
+              : undefined,
+        claudeRequest,
+        payload: requestPayload,
+      });
+      if (prepared.request) {
+        requestPayload = prepared.request.payload;
+        codeModeShape = prepared.request.shape;
+        codeModePrePayload = prepared.prePayload;
+        codeModeContext = prepared.context;
+        codeModeTurn = prepared.turn;
+        wireHeaders = [...wireHeaders, ...prepared.request.headers];
+        // 5a'. --model-params again, only for a code-mode payload: the user's
+        // explicit fields still win over what 5d wrote (idempotent deep merge).
+        if (this.options.modelParams) deepMergeParams(requestPayload, this.options.modelParams);
+      }
     }
 
     // (Raw providerRequest hooks ran at step 3b, before buildPayload — see the
     // note there for why they cannot run at this point.)
 
-    const endpoint = this.provider.getEndpoint(this.targetModel);
+    // `let`: the 401 branch replaces `binding` and recomputes the endpoint from it.
+    let endpoint = this.provider.getEndpoint(this.targetModel, binding);
     // The ORIGINAL inbound body, not the normalized `claudeRequest` clone: a
     // header carrying conversation identity must see what Claude Code sent.
     //
@@ -1488,20 +1783,51 @@ export class ComposedHandler implements ModelHandler {
     // The touch is refresh-conditional, which makes this rare, not safe.
     // Every header fetch below goes through this, so a header the wire requires
     // (a beta token next to the field it wrote) survives the auth retries too.
+    //
+    // Signed by the binding passed, never by shared transport state: the
+    // primary fetch and parameter retry pass this request's `binding`, the 401
+    // retry the one `forceRefreshAuth` just returned, a retry leg its own.
+    //
     // The headers of THIS request's latest attempt — the one whose answer is
     // returned (primary, parameter re-fetch or auth retry), recorded on this
     // call's own `signing` record so a concurrent request on the same handler
     // cannot replace it. `handle` names the signer from them (`signingCredential`).
-    const fetchHeaders = async (): Promise<Record<string, string>> => {
-      const fetched = await this.provider.getHeaders(payload);
+    //
+    // Every attempt's credential values are registered for redaction right
+    // here, before any of them can be echoed back: the primary fetch, the
+    // parameter re-fetch, the 401 retry's fresh token and every Responses leg
+    // sign through this one function. From now until the inbound request's
+    // body ends, every log sink and every `redactSecrets` caller replaces them.
+    //
+    // A transport's out-of-header secrets (`redactionSecrets`: Devin's key reads
+    // env, config and a file) are read once per binding of this request: a
+    // forced refresh returns a new binding and is read again (Antigravity's
+    // access token changes with it), the post-serialize registration below
+    // reuses the read.
+    let transportSecretsRead = false;
+    let transportSecretsBinding: AuthBinding | undefined;
+    let transportSecretsValue: string[] = [];
+    const transportSecrets = (b: AuthBinding | undefined): string[] => {
+      if (!this.provider.redactionSecrets) return [];
+      if (transportSecretsRead && transportSecretsBinding === b) return transportSecretsValue;
+      transportSecretsRead = true;
+      transportSecretsBinding = b;
+      transportSecretsValue = this.provider.redactionSecrets();
+      return transportSecretsValue;
+    };
+    const fetchHeaders = async (b: AuthBinding | undefined): Promise<Record<string, string>> => {
+      const fetched = await this.provider.getHeaders(payload, b);
       mergeWireHeaders(fetched, wireHeaders);
+      addSigningSecrets(c, credentialValuesFromRequest(fetched, this.signedEndpoint(b)));
+      addSigningSecrets(c, transportSecrets(b));
       signing.headers = fetched;
       return fetched;
     };
     let headers: Record<string, string>;
     try {
-      headers = await fetchHeaders();
+      headers = await raceCallAbort(fetchHeaders(binding), callSignal);
     } catch (err: any) {
+      if (callAborted(c)) return this.respondCallAborted(startTime, fallbackMeta);
       const conn = classifyConnectionError(err);
       if (!conn) {
         // A credential failure this site can place is answered here — terminal
@@ -1517,7 +1843,7 @@ export class ComposedHandler implements ModelHandler {
         err,
         conn,
         this.connectionEndpointFor(err, endpoint),
-        fetchHeaders,
+        () => fetchHeaders(binding),
         {
           startTime,
           // An auth site with the unclamped primary fetch still ahead of it —
@@ -1544,6 +1870,9 @@ export class ComposedHandler implements ModelHandler {
     // replaces the payload and re-encodes it here, so the 401 auth retry below
     // never resends bytes the provider already rejected.
     let serialized = this.provider.serializeBody?.(requestPayload);
+    // A credential the transport put in the BODY (Devin) is registered as soon
+    // as the bytes exist (the read `fetchHeaders` made for this binding).
+    addSigningSecrets(c, transportSecrets(binding));
     headers["Content-Type"] = serialized?.contentType ?? "application/json";
 
     log(`[${this.provider.displayName}] Calling API: ${endpoint}`);
@@ -1561,8 +1890,14 @@ export class ComposedHandler implements ModelHandler {
     // from turning a slow answer into a re-issued one.
     const deadlineAt = tier1DeadlineAt(c);
     const clamp = deadlineClamp(deadlineAt);
-    const doFetch = () =>
-      fetch(
+    //
+    // An internal call's deadline reaches this closure twice: a pre-start
+    // check, so a queue that admits it late (or a transport retry that calls it
+    // again) never starts a fetch, and the signal on the fetch, which also
+    // governs the body read after `clamp.disarm()`.
+    const doFetch = () => {
+      if (callSignal?.aborted) return Promise.reject(callAbortError());
+      return fetch(
         endpoint,
         mergeSignalIntoInit(
           {
@@ -1571,22 +1906,30 @@ export class ComposedHandler implements ModelHandler {
             body: serialized?.body ?? JSON.stringify(requestPayload),
             ...requestInit,
           },
-          clamp.signal
+          withCallSignal(clamp.signal, callSignal)
         )
       );
+    };
+    // Every queue admission of this request: with the call's signal when one
+    // is installed, so a queue that honours it drops the call while it waits;
+    // called exactly as before otherwise.
+    const enqueue = (fn: () => Promise<Response>): Promise<Response> =>
+      callSignal
+        ? this.provider.enqueueRequest!(fn, { signal: callSignal })
+        : this.provider.enqueueRequest!(fn);
 
     let response: Response;
     try {
       try {
-        response = this.provider.enqueueRequest
-          ? await this.provider.enqueueRequest(doFetch)
-          : await doFetch();
+        response = this.provider.enqueueRequest ? await enqueue(doFetch) : await doFetch();
       } finally {
         // Before a byte of the body is read, so the ceiling can only ever bound
         // connect-and-headers — never cut a response already arriving.
         clamp.disarm();
       }
     } catch (error: any) {
+      // A stopped call first: no classification, no stderr, no recovery.
+      if (callAborted(c)) return this.respondCallAborted(startTime, fallbackMeta);
       // A failure to even REACH the provider (DNS can't resolve, connection
       // refused, host unreachable) is a LOCAL network problem, not an upstream
       // server error. Surface it as a connection_error with an honest,
@@ -1749,16 +2092,40 @@ export class ComposedHandler implements ModelHandler {
           (a, i, all): a is BaseModelAdapter => !!a?.recoverFromRejection && all.indexOf(a) === i
         );
         const errorText =
-          candidates.length > 0 || wireBorrowed.length > 0 ? await response.clone().text() : "";
+          candidates.length > 0 || wireBorrowed.length > 0 || codeModeShape === "lite"
+            ? await response.clone().text()
+            : "";
+        let recovery: { payload: any; note: string } | null = null;
+        // A code-mode LITE request the backend rejects for the lite header or
+        // `reasoning.context` (the raw upstream status, before the terminal
+        // remap): resend it once in the code-mode CLASSIC shape — the same exec
+        // tool and input, never the non-code-mode function tools — without the
+        // header (a classic body with it is itself a 400, variant D). The model
+        // stays on classic for the discovery TTL. Checked first: nothing else
+        // in this request is suspect yet.
+        if (
+          codeModeShape === "lite" &&
+          codeModeContext &&
+          codeModePrePayload !== undefined &&
+          isLiteRejection(response.status, errorText)
+        ) {
+          wireHeaders = withoutLiteHeader(wireHeaders);
+          const classic = rebuildAsClassic(
+            codeModePrePayload,
+            codeModeContext,
+            typeof requestPayload?.model === "string" ? requestPayload.model : this.targetModel
+          );
+          codeModeShape = classic.shape;
+          if (this.options.modelParams) deepMergeParams(classic.payload, this.options.modelParams);
+          recovery = { payload: classic.payload, note: "lite request rejected; classic shape" };
+        }
         // Fields borrowed from the owner's connection (this connection's own
         // value is unknown) are the first suspects: tried in turn, dropped on the
         // 400 that names them. Only those fields — never one the wire published.
-        let recovery: { payload: any; note: string } | null = recoverBorrowedWireFields(
-          requestPayload,
-          wireBorrowed,
-          errorText
-        );
-        if (recovery) wireBorrowed = [];
+        if (!recovery) {
+          recovery = recoverBorrowedWireFields(requestPayload, wireBorrowed, errorText);
+          if (recovery) wireBorrowed = [];
+        }
         for (const candidate of recovery ? [] : candidates) {
           recovery = candidate.recoverFromRejection(requestPayload, errorText);
           if (recovery) break;
@@ -1783,7 +2150,8 @@ export class ComposedHandler implements ModelHandler {
           // UNCLASSIFIED throw is rethrown unchanged, so the existing 500 route
           // out of here is untouched.
           const doParamRetry = async (sig?: AbortSignal): Promise<Response> => {
-            const retryHeaders = await fetchHeaders();
+            if (callSignal?.aborted) throw callAbortError();
+            const retryHeaders = await raceCallAbort(fetchHeaders(binding), callSignal);
             retryHeaders["Content-Type"] = retrySerialized?.contentType ?? "application/json";
             return fetch(
               endpoint,
@@ -1794,7 +2162,7 @@ export class ComposedHandler implements ModelHandler {
                   body: retrySerialized?.body ?? JSON.stringify(requestPayload),
                   ...(this.provider.getRequestInit?.() || {}),
                 },
-                sig
+                withCallSignal(sig, callSignal)
               )
             );
           };
@@ -1802,6 +2170,7 @@ export class ComposedHandler implements ModelHandler {
           try {
             retryResp = await doParamRetry();
           } catch (err: any) {
+            if (callAborted(c)) return this.respondCallAborted(startTime, fallbackMeta);
             const conn = classifyConnectionError(err);
             if (!conn) {
               // The re-fetch re-reads the headers, so a credential failure can
@@ -1862,17 +2231,59 @@ export class ComposedHandler implements ModelHandler {
 
     if (!response.ok) {
       // 401: retry with forced auth refresh (OAuth token expiry)
-      if (response.status === 401 && this.provider.forceRefreshAuth) {
+      // Only for a request with no binding (every transport but `openai-codex`,
+      // unchanged) or one bound to the OAuth arm: a forced OAuth refresh cannot
+      // fix an API key, so an `openai-codex` api-key request takes the ordinary
+      // error path below.
+      if (
+        response.status === 401 &&
+        this.provider.forceRefreshAuth &&
+        (binding === undefined || binding.auth?.arm === "oauth")
+      ) {
         log(`[${this.provider.displayName}] Got 401, forcing auth refresh and retrying`);
         // The forced refresh AND the retry fetch that follows it, as one
         // re-issuable operation. Both are network calls and either can fail
         // transiently, so a ladder that could only re-run one of them would
         // leave the other exactly as exposed as it was.
+        /** Answers that never reached the upstream (another credential silo): reported as such. */
+        const notResentResponses = new WeakSet<Response>();
         const doAuthRetry = async (sig?: AbortSignal): Promise<Response> => {
-          // The headers of the request the upstream rejected, so a transport can
+          // A returned binding replaces this request's: the retry, and every
+          // retry leg after it, sign with the artifact just minted. The headers
+          // of the request the upstream rejected go with it, so a transport can
           // tell a stale failure from one naming the credential it holds now.
-          await this.provider.forceRefreshAuth!({ rejectedHeaders: headers });
-          const retryHeaders = await fetchHeaders();
+          if (callSignal?.aborted) throw callAbortError();
+          const refreshed = await raceCallAbort(
+            this.provider.forceRefreshAuth!({ rejectedHeaders: headers }),
+            callSignal
+          );
+          if (refreshed) {
+            // The body was built for THIS binding's account (code mode renders
+            // its encrypted reasoning and keys its records by it): a refresh
+            // onto another arm or account must not resend it. Answered with
+            // the upstream's own 401, never a throw: inside the recovery
+            // ladder an unclassified throw escapes `handle()`.
+            if (
+              binding &&
+              !isSameCredentialSilo(
+                { auth: binding.auth, accountKey: accountKeyFromBinding(binding) },
+                { auth: refreshed.auth, accountKey: accountKeyFromBinding(refreshed) }
+              )
+            ) {
+              log(`[${this.provider.displayName}] sign-in changed during the request; not resent`);
+              const notResent = new Response(
+                "Codex sign-in changed during the request; it was not resent",
+                { status: response.status }
+              );
+              notResentResponses.add(notResent);
+              return notResent;
+            }
+            binding = refreshed;
+            // A re-sign replaces the arm on this hop's entry in place.
+            if (hop) this.markHopSigned(hop, binding);
+            endpoint = this.provider.getEndpoint(this.targetModel, binding);
+          }
+          const retryHeaders = await raceCallAbort(fetchHeaders(binding), callSignal);
           // Same serialization as the primary request — this is a separate call
           // site and the easy one to forget, which is why both are pinned by
           // the same assertion.
@@ -1887,7 +2298,7 @@ export class ComposedHandler implements ModelHandler {
                 body: serialized?.body ?? JSON.stringify(requestPayload),
                 ...retryInit,
               },
-              sig
+              withCallSignal(sig, callSignal)
             )
           );
         };
@@ -1896,10 +2307,19 @@ export class ComposedHandler implements ModelHandler {
           if (retryResp.ok) {
             response = retryResp; // fall through to stream handling below
           } else {
-            const errorText = await retryResp.text();
-            log(`[${this.provider.displayName}] Retry failed: ${errorText}`);
+            // Redacted at the read, so the returned body, the logs, the capture
+            // and the stats classification all see the same credential-free text.
+            const errorText = redactForClient(await retryResp.text());
+            // Not resent: the refresh signed in another account. No key is
+            // wrong and no retry went out, so neither message may say so.
+            const resent = !notResentResponses.has(retryResp);
+            log(
+              `[${this.provider.displayName}] ${resent ? "Retry failed" : "Not resent"}: ${errorText}`
+            );
             logStderr(
-              `Error [${this.provider.displayName}]: HTTP ${retryResp.status} after auth retry. Check API key.`
+              resent
+                ? `Error [${this.provider.displayName}]: HTTP ${retryResp.status} after auth retry. Check API key.`
+                : `Error [${this.provider.displayName}]: HTTP ${retryResp.status}; the sign-in changed to another account during the request, so it was not resent.`
             );
             reportError({
               error: new Error(errorText),
@@ -1909,7 +2329,7 @@ export class ComposedHandler implements ModelHandler {
               modelId: this.targetModel,
               httpStatus: retryResp.status,
               isStreaming: false,
-              retryAttempted: true,
+              retryAttempted: resent,
               isInteractive: this.isInteractive,
               authType: "oauth",
             });
@@ -1919,7 +2339,7 @@ export class ComposedHandler implements ModelHandler {
                 retryResp.status,
                 errorText
               );
-              recordStats({
+              this.emitStats({
                 model_id: this.targetModel,
                 provider_name: this.provider.name,
                 stream_format: this.provider.streamFormat,
@@ -1945,7 +2365,10 @@ export class ComposedHandler implements ModelHandler {
             // the terminal verdict and the same hint and wording as the generic
             // remap below, so the login line lands inline and the chain stops.
             // 401/403 ONLY: Antigravity's terminal 429 keeps its own route.
-            if (retryResp.status === 401 || retryResp.status === 403) {
+            // A RESENT request only: a not-resent answer (the refresh signed in
+            // another account) proves nothing about the login, so it keeps its
+            // own 401 and message rather than "the login was rejected".
+            if (resent && (retryResp.status === 401 || retryResp.status === 403)) {
               const transportTerminal = this.provider.classifyTerminalError?.(
                 retryResp.status,
                 errorText
@@ -1998,6 +2421,7 @@ export class ComposedHandler implements ModelHandler {
           const answered = await settleAuthRetry(await doAuthRetry());
           if (answered) return answered;
         } catch (err: any) {
+          if (callAborted(c)) return this.respondCallAborted(startTime, fallbackMeta);
           // CLASSIFY FIRST, exactly as in the refreshAuth catch above, and for a
           // sharper reason: this path covers BOTH `forceRefreshAuth()` AND the
           // raw retry `fetch` that follows it, so "the network dropped while we
@@ -2050,7 +2474,7 @@ export class ComposedHandler implements ModelHandler {
             });
             try {
               const { error_class, error_code } = classifyError(err, 401, err.message);
-              recordStats({
+              this.emitStats({
                 model_id: this.targetModel,
                 provider_name: this.provider.name,
                 stream_format: this.provider.streamFormat,
@@ -2081,7 +2505,9 @@ export class ComposedHandler implements ModelHandler {
           }
         }
       } else {
-        const errorText = await response.text();
+        // Redacted at the read: the returned body, the logs, the capture and the
+        // stats classification below all use this one credential-free text.
+        const errorText = redactForClient(await response.text());
         log(`[${this.provider.displayName}] Error: ${errorText}`);
         // Durable copy, opt-in via CLAUDISH_UPSTREAM_ERROR_LOG. `log()` only
         // persists under --debug, so without this the body that distinguishes a
@@ -2169,7 +2595,7 @@ export class ComposedHandler implements ModelHandler {
             response.status,
             errorText
           );
-          recordStats({
+          this.emitStats({
             model_id: this.targetModel,
             provider_name: this.provider.name,
             stream_format: this.provider.streamFormat,
@@ -2218,10 +2644,11 @@ export class ComposedHandler implements ModelHandler {
               ? CONTEXT_OVERFLOW_PHRASE
               : undefined,
           });
-          // A SUBSCRIPTION's rejected credential stops the routing chain here
-          // (`auth-failure.ts`): the next hop would bill the user per token for a
-          // login they can fix. A spent allowance (402/429) is not a credential
-          // failure and still advances, with its warning.
+          // A SUBSCRIPTION's rejected credential carries the terminal verdict
+          // (`auth-failure.ts`): an explicit spec stops with the login hint, and
+          // a routing chain moves to its next hop with a notice naming that
+          // hop's billing (`FallbackHandler`). A spent allowance (402/429) is
+          // not a credential failure and advances with its own warning.
           // A model the provider does not carry (Zen Go's 401 "Model <id> is not
           // supported") is NOT a credential rejection and keeps advancing.
           const verdictHeaders =
@@ -2264,21 +2691,41 @@ export class ComposedHandler implements ModelHandler {
     // when all of them fail hand back a 503 the client will retry itself. Without
     // this, `server_is_overloaded` became an assistant text block with
     // stop_reason end_turn — a retryable failure frozen into the transcript.
+    // The stall guard's zero: when the response the parser will read had its
+    // headers. Stamped here (a 200 reaches this line the moment its fetch
+    // resolved) and again by each 7b re-issue, so the sniff window counts
+    // against the guard rather than adding to it.
+    let responseHeadersAt = Date.now();
     if (this.resolveStreamFormat() === "openai-responses-sse") {
-      const settled = await this.settleResponsesStreamHead(response, () =>
-        this.provider.enqueueRequest ? this.provider.enqueueRequest(doFetch) : doFetch()
+      const settled = await this.settleResponsesStreamHead(
+        response,
+        async () => {
+          const next = await (this.provider.enqueueRequest ? enqueue(doFetch) : doFetch());
+          responseHeadersAt = Date.now();
+          return next;
+        },
+        // Ends the backoff wait when an internal call's deadline passes.
+        callSignal
       );
+      if (callAborted(c)) {
+        if (settled.kind === "ok") await settled.response.body?.cancel().catch(() => {});
+        return this.respondCallAborted(startTime, fallbackMeta);
+      }
       if (settled.kind === "exhausted") {
         const waited = STREAM_RETRY_DELAYS_MS.slice(0, settled.attempts).reduce(
           (sum, ms) => sum + ms,
           0
         );
+        // The upstream's own text, before it reaches any body sent to Claude
+        // Code: an error frame can echo the credential this request signed with.
+        const upstreamCode = redactForClient(settled.code);
+        const upstreamMessage = redactForClient(settled.message);
         const surfaced =
-          `${this.provider.displayName} is overloaded upstream (${settled.code}): ${settled.message} ` +
+          `${this.provider.displayName} is overloaded upstream (${upstreamCode}): ${upstreamMessage} ` +
           `claudish retried ${settled.attempts}× over ${Math.round(waited / 1000)}s without success.`;
         logStderr(`Error: ${surfaced}`);
         try {
-          recordStats({
+          this.emitStats({
             model_id: this.targetModel,
             provider_name: this.provider.name,
             stream_format: this.provider.streamFormat,
@@ -2286,7 +2733,7 @@ export class ComposedHandler implements ModelHandler {
             success: false,
             http_status: 503,
             error_class: "server_error",
-            error_code: settled.code,
+            error_code: upstreamCode,
             token_strategy: this.options.tokenStrategy ?? "standard",
             adapter_name: this.getActiveAdapterName(),
             middleware_names: this.rawStatsNames(),
@@ -2299,11 +2746,11 @@ export class ComposedHandler implements ModelHandler {
         } catch {
           // Stats must never crash claudish
         }
-        // `settled.message` is the upstream's own text; `surfaced` wraps it in
+        // `upstreamMessage` is the upstream's own text; `surfaced` wraps it in
         // claudish's retry narration. Both travel, so a probe row can lead with
         // the provider's words.
         return c.json(
-          wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
+          wrapAnthropicError(503, surfaced, "overloaded_error", undefined, upstreamMessage),
           503 as any,
           settled.unreachable ? connectionFaultHeaders() : undefined
         );
@@ -2317,14 +2764,21 @@ export class ComposedHandler implements ModelHandler {
     // as a 400 rendered inline rather than a status Claude Code silently retries.
     if (this.resolveStreamFormat() === "connect-proto") {
       const settled = await this.settleDevinStreamHead(response, () =>
-        this.provider.enqueueRequest ? this.provider.enqueueRequest(doFetch) : doFetch()
+        this.provider.enqueueRequest ? enqueue(doFetch) : doFetch()
       );
+      if (callAborted(c)) {
+        if (settled.kind === "ok") await settled.response.body?.cancel().catch(() => {});
+        return this.respondCallAborted(startTime, fallbackMeta);
+      }
       if (settled.kind !== "ok") {
         const isTerminal = settled.kind === "terminal";
         const httpStatus = isTerminal ? 400 : 503;
+        // Redacted before any body, log line or report is composed from it.
+        const upstreamCode = redactForClient(settled.code);
+        const upstreamMessage = redactForClient(settled.message);
         const surfaced = isTerminal
-          ? `${this.provider.displayName} rejected the request (${settled.code}): ${settled.message}`
-          : `${this.provider.displayName} is overloaded upstream (${settled.code}): ${settled.message} ` +
+          ? `${this.provider.displayName} rejected the request (${upstreamCode}): ${upstreamMessage}`
+          : `${this.provider.displayName} is overloaded upstream (${upstreamCode}): ${upstreamMessage} ` +
             `claudish retried ${settled.attempts}× over ` +
             `${Math.round(
               STREAM_RETRY_DELAYS_MS.slice(0, settled.attempts).reduce((sum, ms) => sum + ms, 0) /
@@ -2332,7 +2786,7 @@ export class ComposedHandler implements ModelHandler {
             )}s without success.`;
         logStderr(`Error: ${surfaced}`);
         reportError({
-          error: new Error(settled.message),
+          error: new Error(upstreamMessage),
           providerName: this.provider.name,
           providerDisplayName: this.provider.displayName,
           streamFormat: this.provider.streamFormat,
@@ -2341,10 +2795,10 @@ export class ComposedHandler implements ModelHandler {
           isStreaming: true,
           retryAttempted: !isTerminal,
           isInteractive: this.isInteractive,
-          providerErrorType: settled.code,
+          providerErrorType: upstreamCode,
         });
         try {
-          recordStats({
+          this.emitStats({
             model_id: this.targetModel,
             provider_name: this.provider.name,
             stream_format: this.provider.streamFormat,
@@ -2352,7 +2806,7 @@ export class ComposedHandler implements ModelHandler {
             success: false,
             http_status: httpStatus,
             error_class: isTerminal ? "client_error" : "server_error",
-            error_code: settled.code,
+            error_code: upstreamCode,
             token_strategy: this.options.tokenStrategy ?? "standard",
             adapter_name: this.getActiveAdapterName(),
             middleware_names: this.rawStatsNames(),
@@ -2372,12 +2826,12 @@ export class ComposedHandler implements ModelHandler {
                 surfaced,
                 "invalid_request_error",
                 undefined,
-                settled.message
+                upstreamMessage
               ),
               400 as any
             )
           : c.json(
-              wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
+              wrapAnthropicError(503, surfaced, "overloaded_error", undefined, upstreamMessage),
               503 as any,
               settled.kind === "exhausted" && settled.unreachable
                 ? connectionFaultHeaders()
@@ -2409,16 +2863,122 @@ export class ComposedHandler implements ModelHandler {
     // parser reports them via onApiError; capture it here so the turn is recorded
     // as a failure, not a success. Per-request local — safe under concurrency.
     let streamApiError: { code: string; message: string } | null = null;
+    // Set when Claude Code cancels the response body. A parser's cancelled
+    // finalize still reports usage the provider had sent (what was billed is
+    // billed), which fires onStreamComplete; this keeps that record from
+    // reading as a completed turn. Per-request local, like streamApiError.
+    let clientCancelled = false;
+
+    // Legs 2..n of a Responses turn: a degenerate `parallel` wrapper is retried
+    // inside the same downstream message (responses-turn.ts). Built from THIS
+    // request's header builder, body and transport hooks, so a leg is the
+    // primary fetch again, with its own ceiling and the turn's abort signal.
+    // Per-request locals — safe under concurrency on a shared handler.
+    let legRetries = 0;
+    let responsesTurn: ResponsesTurnWiring | undefined;
+    if (this.resolveStreamFormat() === "openai-responses-sse") {
+      // Each leg is bound like the primary fetch: the issuer re-runs
+      // `refreshAuth`, refuses a binding whose arm or account differs from the
+      // turn's ("Codex sign-in changed during the turn"), and signs the leg
+      // with the binding it just checked. A transport that returns no binding
+      // keeps the no-binding path, which is exactly the primary fetch's.
+      // biome-ignore lint/suspicious/noConfusingVoidType: refreshAuth() and forceRefreshAuth() resolve to `AuthBinding | void`
+      const toLegBinding = (b: AuthBinding | void): LegBinding | undefined =>
+        b ? { auth: b.auth, accountKey: accountKeyFromBinding(b) } : undefined;
+      let legBinding = toLegBinding(binding);
+      const refreshAuth = this.provider.refreshAuth?.bind(this.provider);
+      // Same gate as the primary 401 branch; the arm cannot change mid-turn
+      // (the issuer refuses a leg on another arm), so it is decided once here.
+      const forceRefreshAuth =
+        binding === undefined || binding.auth?.arm === "oauth"
+          ? this.provider.forceRefreshAuth?.bind(this.provider)
+          : undefined;
+      const issueLeg = createLegIssuer<LegBinding>({
+        providerDisplayName: this.provider.displayName,
+        getBinding: () => legBinding,
+        setBinding: (b) => {
+          legBinding = b;
+        },
+        refreshAuth: refreshAuth ? async () => toLegBinding(await refreshAuth()) : undefined,
+        forceRefreshAuth: forceRefreshAuth
+          ? async () => toLegBinding(await forceRefreshAuth())
+          : undefined,
+        getEndpoint: (b) => this.provider.getEndpoint(this.targetModel, b),
+        fetchHeaders: (b) => fetchHeaders(b),
+        // `requestPayload` as it stands now: parameter recovery may have
+        // dropped fields, and a leg re-sends the body that was accepted.
+        serializeBody: (body) => {
+          const b = body ?? requestPayload;
+          const s = this.provider.serializeBody?.(b);
+          return {
+            body: s?.body ?? JSON.stringify(b),
+            contentType: s?.contentType ?? "application/json",
+          };
+        },
+        getRequestInit: () => (this.provider.getRequestInit?.() || {}) as Record<string, unknown>,
+        enqueueRequest: this.provider.enqueueRequest
+          ? (fn, o) => this.provider.enqueueRequest!(fn, o)
+          : undefined,
+        settleStreamHead: (res, reissue, signal) =>
+          this.settleResponsesStreamHead(res, reissue, signal),
+        legDeadlineAt: () => recoveryClock().now() + resolveTier1DeadlineMs(),
+      });
+      responsesTurn = {
+        retry: {
+          // A leg composes its turn signal with an internal call's deadline,
+          // and the issuer returns `aborted` before it starts once either fired.
+          issueLeg: callSignal
+            ? (body, turnSignal) => issueLeg(body, AbortSignal.any([turnSignal, callSignal]))
+            : issueLeg,
+          // Default scope: `openai-codex` on the subscription arm, the only
+          // backend the stall data comes from; CLAUDISH_RESPONSES_STALL_MS
+          // overrides it everywhere.
+          stall: resolveStallPolicy({
+            env: process.env,
+            providerName: this.provider.name,
+            arm: binding?.auth?.arm,
+          }),
+          firstHeadersAt: responseHeadersAt,
+          // A code-mode continuation leg appends to the body that was accepted.
+          primaryBody: () => requestPayload,
+        },
+        onTurnSummary: (s) => {
+          legRetries = s.legRetries;
+        },
+        // Code mode (decided at 5d): exec calls run in the sandbox and their
+        // batches are relayed as tool_use blocks; `codeModeShape` is read at
+        // exec time because the lite → classic fallback may have changed it.
+        codeMode: codeModeTurn
+          ? createCodeModeTurnHooks({
+              stores: getCodeModeStores(),
+              accountKey: codeModeTurn.accountKey,
+              sessionKey: codeModeTurn.sessionKey,
+              shape: () => codeModeShape ?? "classic",
+              names: codeModeTurn.names,
+              allTools: codeModeTurn.allTools,
+              defaultMaxOutputTokens: codeModeTurn.defaultMaxOutputTokens,
+              // The last user/assistant message, as the input builder reads
+              // the message before a text-only answer (a trailing system
+              // message would anchor the turn record where no render looks).
+              previousMessage: conversationMessages(claudeRequest?.messages).at(-1),
+            })
+          : undefined,
+      };
+    }
+
     const onStreamComplete = () => {
       try {
         const isFreeModel = this.tokenTracker.getTotalCost() === 0;
-        recordStats({
+        this.emitStats({
           model_id: this.targetModel,
           provider_name: this.provider.name,
           stream_format: this.provider.streamFormat,
           latency_ms: latencyMs,
-          success: streamApiError === null,
+          success: streamApiError === null && !clientCancelled,
           http_status: httpStatus,
+          // A turn the client abandoned is not a completed one; the existing
+          // error pair marks it, so no new StatsEvent field is needed.
+          ...(clientCancelled ? { error_class: "cancelled", error_code: "client_cancelled" } : {}),
           input_tokens: this.tokenTracker.getInputTokens(),
           output_tokens: this.tokenTracker.getOutputTokens(),
           estimated_cost: this.tokenTracker.getTotalCost(),
@@ -2431,6 +2991,8 @@ export class ComposedHandler implements ModelHandler {
           fallback_attempts: fallbackMeta?.attempts,
           invocation_mode: this.options.invocationMode ?? "auto-route",
           ...this.recoveryStats(recoveryTally),
+          // Absent on a turn that needed no retry, like the recovery fields.
+          ...(legRetries > 0 ? { leg_retries: legRetries } : {}),
         });
       } catch {
         // Stats must never crash claudish
@@ -2447,17 +3009,27 @@ export class ComposedHandler implements ModelHandler {
       }
     };
 
-    const streamed = this.handleStream(
-      c,
-      response,
-      adapter,
-      claudeRequest,
-      toolNameMap,
-      onStreamComplete,
-      (code, message) => {
-        streamApiError = { code, message };
-      },
-      hookScope?.raw.streamTap()
+    const streamed = notifyOnDownstreamCancel(
+      this.handleStream(
+        c,
+        response,
+        adapter,
+        claudeRequest,
+        // Decided from the binding this request was finally signed with (a 401
+        // re-sign replaced it above); every leg of a Responses turn signs on
+        // that same arm, or the leg issuer refuses it.
+        this.signedBilling(binding),
+        toolNameMap,
+        onStreamComplete,
+        (code, message) => {
+          streamApiError = { code, message };
+        },
+        hookScope?.raw.streamTap(),
+        responsesTurn
+      ),
+      () => {
+        clientCancelled = true;
+      }
     );
 
     // A client that did not ask for a stream gets the single JSON message the
@@ -2488,7 +3060,9 @@ export class ComposedHandler implements ModelHandler {
    */
   private async settleResponsesStreamHead(
     initial: Response,
-    reissue: () => Promise<Response>
+    reissue: () => Promise<Response>,
+    /** A retry leg's turn signal: an abort ends the backoff wait at once. */
+    signal?: AbortSignal
   ): Promise<
     | { kind: "ok"; response: Response }
     | { kind: "exhausted"; code: string; message: string; attempts: number; unreachable?: true }
@@ -2517,7 +3091,9 @@ export class ComposedHandler implements ModelHandler {
         `[${this.provider.displayName}] in-stream ${verdict.code} before any output — ` +
           `retry ${attempt + 1}/${STREAM_RETRY_DELAYS_MS.length} in ${delayMs / 1000}s`
       );
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (await sleepUnlessAborted(delayMs, signal)) {
+        return { kind: "exhausted", code: verdict.code, message: "aborted", attempts: attempt };
+      }
 
       let next: Response;
       try {
@@ -2539,7 +3115,7 @@ export class ComposedHandler implements ModelHandler {
       // The fault graduated to a status-level failure. The !response.ok handling
       // is already behind us, so stop here rather than re-entering it.
       if (!next.ok) {
-        const body = await next.text().catch(() => "");
+        const body = redactForClient(await next.text().catch(() => ""));
         log(`[${this.provider.displayName}] retry returned HTTP ${next.status}`);
         return {
           kind: "exhausted",
@@ -2635,7 +3211,7 @@ export class ComposedHandler implements ModelHandler {
       // The fault graduated to a status-level failure. The !response.ok handling
       // is already behind us, so stop here rather than re-entering it.
       if (!next.ok) {
-        const body = await next.text().catch(() => "");
+        const body = redactForClient(await next.text().catch(() => ""));
         log(`[${this.provider.displayName}] retry returned HTTP ${next.status}`);
         return {
           kind: "exhausted",
@@ -2701,11 +3277,13 @@ export class ComposedHandler implements ModelHandler {
     response: Response,
     adapter: BaseModelAdapter,
     claudeRequest: any,
+    billing: RequestBilling,
     toolNameMap?: Map<string, string>,
     onComplete?: () => void,
     onApiError?: (code: string, message: string) => void,
     /** The raw `providerChunk`/`providerStreamEnd` tap for this stream, when one applies. */
-    raw?: RawStreamTap
+    raw?: RawStreamTap,
+    responsesTurn?: ResponsesTurnWiring
   ): Response {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
     // without reassigning the function parameter.
@@ -2715,20 +3293,24 @@ export class ComposedHandler implements ModelHandler {
     // same number and is used for COST ONLY; see UsageCacheDetail and
     // `context-window.md`, which records what happens when a reduced count
     // reaches the context accounting (auto-compaction silently disarms).
+    //
+    // `billing` is THIS request's signing decision, passed into every cost
+    // update rather than read from the tracker's pricing lookup, whose
+    // credential-decided answer is the process-wide last-signed arm.
     const onTokenUpdate = (input: number, output: number, detail?: UsageCacheDetail) => {
       const strategy = this.options.tokenStrategy || "standard";
       switch (strategy) {
         case "accumulate-both":
-          this.tokenTracker.accumulateBoth(input, output, detail);
+          this.tokenTracker.accumulateBoth(input, output, detail, billing);
           break;
         case "delta-aware":
-          this.tokenTracker.updateWithDelta(input, output, detail);
+          this.tokenTracker.updateWithDelta(input, output, detail, billing);
           break;
         case "local":
           this.tokenTracker.updateLocal(input, output, detail);
           break;
         default:
-          this.tokenTracker.update(input, output, detail);
+          this.tokenTracker.update(input, output, detail, billing);
           break;
       }
       // Fire onComplete after token update so recordStats() sees the final token counts.
@@ -2793,11 +3375,25 @@ export class ComposedHandler implements ModelHandler {
           // shared by two conversations the adapter's own map may already
           // belong to the next request by now.
           toolNameMap,
+          // Claude Code's own tool names: a function_call named `parallel` is the
+          // parallel wrapper only when none of these is called that.
+          declaredToolNames: Array.isArray(claudeRequest?.tools)
+            ? claudeRequest.tools
+                .map((t: { name?: unknown } | null) => t?.name)
+                .filter((n: unknown): n is string => typeof n === "string")
+            : [],
           contextWindow: lookupModelForProvider(this.bareModelName, this.provider.name),
           onApiError,
           priorInputTokens,
           raw,
           onToolCallObserved: observeToolCall,
+          retry: responsesTurn?.retry,
+          // Earlier legs of a retried turn: cost only, before the stats snapshot
+          // that onTokenUpdate fires.
+          onExtraBilledInput: (input, detail) =>
+            this.tokenTracker.addBilledInputTokens(input, detail, billing),
+          onTurnSummary: responsesTurn?.onTurnSummary,
+          codeMode: responsesTurn?.codeMode,
         });
 
       case "anthropic-sse":
@@ -2871,6 +3467,15 @@ export class ComposedHandler implements ModelHandler {
   }
 
   /**
+   * The claudish provider this handler signs for (`provider.name`): the name
+   * its hop-log entries carry (`recordHopEntry`), so a caller that built the
+   * handler can map those entries back to its own plan.
+   */
+  getProviderName(): string {
+    return this.provider.name;
+  }
+
+  /**
    * Read plan usage out of a response the session already received.
    *
    * Synchronous and I/O-free by construction: the headers are in hand, so
@@ -2880,6 +3485,8 @@ export class ComposedHandler implements ModelHandler {
    * disturbing a turn over.
    */
   private capturePlanUsage(response: Response): void {
+    // The plan reading feeds the main status line; an advisor handler has none.
+    if (this.options.requestRole === "advisor") return;
     try {
       const adapter = resolveQuotaAdapter(this.provider.name);
       if (!adapter) return;

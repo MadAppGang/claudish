@@ -1,4 +1,3 @@
-import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 /**
  * Advisor-tool transformer for NativeHandler (monitor mode).
  *
@@ -35,16 +34,40 @@ import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings
  */
 
 import { appendFileSync } from "node:fs";
+import type { Context } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
+import type { ChildAuthControl, ChildAuthSource } from "../child-auth-types.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
-import { type SlimModelEntry, readAllModelsCache } from "../providers/all-models-cache.js";
-import { getCatalogEntries, latestAnthropicTierModelId } from "../providers/catalog-client.js";
-import { findEntryByAlias } from "../providers/catalog-query.js";
-import { resolveConnection, resolveRouteProfile } from "../providers/connection-resolver.js";
-import { type KnownWire, type WireApi, wireRequestUrl } from "../providers/connection-wire.js";
-import { parseModelSpec } from "../providers/model-parser.js";
+import { resolveConnection } from "../providers/connection-resolver.js";
+import type { KnownWire, WireApi } from "../providers/connection-wire.js";
+import { getProviderByName } from "../providers/provider-definitions.js";
 import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
+import {
+  acquireSigningLease,
+  redactExactValues,
+  redactForClient,
+  redactSigningValues,
+} from "../redact.js";
+import type { StatsEvent } from "../stats-otlp.js";
+import { recordStats } from "../stats.js";
+import { isBillingHeaderText } from "../transform.js";
+import { ANTHROPIC_API_HOST, ANTHROPIC_MESSAGES_URL } from "./advisor-claude-route.js";
+import {
+  type AdvisorBilling,
+  type AdvisorEmptyReason,
+  type AdvisorModelPlan,
+  type AdvisorPanelGateway,
+  type AdvisorPanelResult,
+  type AdvisorTurn,
+  type ExtractedAdvice,
+  buildAdvisorPanelPayload,
+  describeAdvisorRefusal,
+  extractAdvice,
+  hopLabel,
+} from "./advisor-route-plan.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
+import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
+import { calculateCost } from "./shared/remote-provider-types.js";
 
 const ADVISOR_SERVER_TOOL_TYPE = "advisor_20260301";
 const ADVISOR_BETA_FLAG = "advisor-tool-2026-03-01";
@@ -221,33 +244,14 @@ export function sanitizeAdvisorReason(
   text: string,
   secretValues: Iterable<string | undefined> = []
 ): string {
-  let out = text;
+  const values: string[] = [];
   for (const secret of secretValues) {
     const value = secret?.trim();
-    if (!value || value.length < MIN_REDACTABLE_SECRET_LENGTH) continue;
-    out = out.split(value).join(REDACTED);
+    if (value && value.length >= MIN_REDACTABLE_SECRET_LENGTH) values.push(value);
   }
-  return scrubSecrets(out);
-}
-
-/**
- * The credential values a request actually presented, read back from the very
- * headers that were sent. Taking them from the headers rather than from
- * `AdvisorApiKeys` is deliberate: it is the exact string on the wire, so a
- * provider echoing it back is matched character for character.
- */
-function credentialValuesInHeaders(headers: Record<string, string>): string[] {
-  const values: string[] = [];
-  const bearer = headers.Authorization ?? headers.authorization;
-  if (bearer) values.push(bearer.replace(/^Bearer\s+/i, "").trim());
-  const apiKey = headers["x-api-key"];
-  if (apiKey) values.push(apiKey.trim());
-  return values;
-}
-
-/** Every key an advisor call could have signed with, for by-value redaction. */
-function credentialValuesOf(apiKeys: AdvisorApiKeys): string[] {
-  return Object.values(apiKeys).filter((v): v is string => typeof v === "string");
+  // The registry's matcher: verbatim, JSON-escaped (once and twice) and
+  // URL-encoded forms, longest first. A plain split missed an escaped echo.
+  return scrubSecrets(redactExactValues(text, values));
 }
 
 /**
@@ -277,7 +281,10 @@ export function logAdvisorEvent(cfg: AdvisorSwapConfig, event: Record<string, un
   const record = { ts, ...event };
   let line: string;
   try {
-    line = scrubSecrets(JSON.stringify(record));
+    // The exact-value registry first (every signing value a live request
+    // holds), then the shape rules. `appendLine` writes the advisor log and the
+    // always-on log directly, not through `log()`, so this is their only pass.
+    line = scrubSecrets(redactSigningValues(JSON.stringify(record)));
   } catch {
     // a record that will not serialize is a logging problem only
     return;
@@ -1018,6 +1025,7 @@ export function _debug_resetTrackedAdvisorIds(): void {
   inFlightByToolUseId.clear();
   streamFrameBuffer.reset();
   reportedUnrecorded.clear();
+  servedUnlikePlan.clear();
   clock = Date.now;
   lastSweepAt = Number.NEGATIVE_INFINITY;
 }
@@ -1485,21 +1493,13 @@ same coding problem. Synthesize them into a single, coherent response that:
 - Produces a clear, actionable recommendation
 Be concise. Do not attribute advice to specific models.`;
 
-/** Provider keys the advisor executor can sign with. */
-export interface AdvisorApiKeys {
-  openrouter?: string;
-  google?: string;
-  openai?: string;
-  anthropic?: string;
-}
-
-/** The four places an advisor or collector request can be sent. */
+/** The credentials `resolveAdvisorCredential` can look up. */
 export type AdvisorRouteKind = "google" | "openai" | "openrouter" | "anthropic";
 
 /**
- * Where one advisor model's request goes, and what signs it. The ONE place
- * the advisor's provider branching lives: request building, the collector
- * choice, key resolution, the P7 log and startup checks all read this.
+ * The fixed endpoint of a Claude advisor call (`claudeAdvisorRoute`). A routed
+ * member has no such route: its chain was built at startup from
+ * `planAdvisorModel`, and its record names the planned chain instead.
  */
 export interface AdvisorRoute {
   kind: AdvisorRouteKind;
@@ -1507,7 +1507,7 @@ export interface AdvisorRoute {
   host: string;
   /** Full endpoint URL the request is POSTed to. */
   url: string;
-  /** Which `AdvisorApiKeys` entry signs the request. */
+  /** Which advisor credential signs the request. */
   credential: AdvisorRouteKind;
   /** The model id placed in the request body, after catalog resolution. */
   wireModel: string;
@@ -1518,320 +1518,6 @@ export interface AdvisorRoute {
   api: WireApi;
   /** The connection's known wire, when the catalog publishes one. */
   wire?: KnownWire;
-  /**
-   * Set to the ALIAS when `wireModel` is one the live catalog could not resolve
-   * to an id the endpoint accepts — `haiku` with a cold catalog. Such a route
-   * must NEVER be POSTed: `haiku` is claudish/Claude Code vocabulary, and
-   * api.anthropic.com rejects it. Startup refuses a collector the user named
-   * and drops a DEFAULTED one; the runtime reports it as a collector failure.
-   */
-  unresolvedAlias?: string;
-}
-
-/**
- * The provider documentation's endpoints, used ONLY when no route registry is
- * cached (a cold catalog): every other request takes its URL from the
- * connection's registry profile, like any claudish request.
- */
-const ADVISOR_COLD_CATALOG_ENDPOINTS: Readonly<Record<AdvisorRouteKind, string>> = Object.freeze({
-  google: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-  openai: "https://api.openai.com/v1/chat/completions",
-  openrouter: "https://openrouter.ai/api/v1/chat/completions",
-  anthropic: "https://api.anthropic.com/v1/messages",
-});
-
-/** The claudish provider whose catalog connection an advisor route uses. */
-const ADVISOR_CATALOG_PROVIDER: Readonly<Record<AdvisorRouteKind, string>> = Object.freeze({
-  google: "google",
-  openai: "openai",
-  openrouter: "openrouter",
-  anthropic: "anthropic",
-});
-
-function routeOf(kind: AdvisorRouteKind, wireModel: string): AdvisorRoute {
-  const provider = ADVISOR_CATALOG_PROVIDER[kind];
-  const resolution = resolveConnection(provider, wireModel);
-  let api: WireApi | undefined;
-  let wire: KnownWire | undefined;
-  let baseUrl: string | undefined;
-  if (resolution.ok && resolution.connection.wire.status === "known") {
-    wire = resolution.connection.wire;
-    api = wire.api;
-    baseUrl = resolution.connection.profile.apis[api]?.baseUrl;
-  } else {
-    // Not published for this provider, or its wire unknown: the profile's
-    // Chat Completions (Messages for Anthropic), with nothing else sent.
-    const profile = resolveRouteProfile(provider)?.profile;
-    api = kind === "anthropic" ? "anthropic-messages" : "chat-completions";
-    baseUrl = profile?.apis[api]?.baseUrl;
-  }
-  const url = baseUrl
-    ? wireRequestUrl(baseUrl, api, wireModel, false)
-    : ADVISOR_COLD_CATALOG_ENDPOINTS[kind];
-  if (!baseUrl) {
-    api = kind === "anthropic" ? "anthropic-messages" : "chat-completions";
-    log(`[Advisor] no route registry for ${provider}; using the documented endpoint ${url}`);
-  }
-  return {
-    kind,
-    host: new URL(url).host,
-    url,
-    credential: kind,
-    wireModel,
-    api,
-    ...(wire ? { wire } : {}),
-  };
-}
-
-/**
- * Resolves an advisor model spec to its route. Pure: reads only the spec and
- * the catalog cache, performs no I/O.
- *
- * - `google@`/`gemini@` (and bare `gemini-*`) → the direct Gemini API.
- * - `openai@`/`oai@` (and bare `gpt-*`) → api.openai.com with the metered
- *   OPENAI_API_KEY, never the Codex login.
- * - a Claude model (`claude-*`, `haiku`, `sonnet`, `opus`, `anthropic@`) →
- *   the Anthropic Messages API, but ONLY as the collector. A Claude panel
- *   member goes to OpenRouter, as it always did.
- * - everything else (e.g. `grok-4.6` → `x-ai`) → OpenRouter, the id resolved
- *   through the catalog.
- *
- * Not subscription routing: the advisor never goes through `route()`.
- */
-export function advisorRouteFor(modelSpec: string, role: "panel" | "collector"): AdvisorRoute {
-  const parsed = parseModelSpec(modelSpec);
-
-  if (role === "collector" && isAnthropicModel(parsed)) {
-    const model = parsed.model;
-    const tier = anthropicTierAlias(model);
-    if (!tier) return routeOf("anthropic", model);
-    // Two LIVE sources, no pinned id: the catalog's own alias table, then the
-    // "newest `claude-<tier>-*` the catalog lists" rule `--probe` already uses.
-    // The alias itself is never the answer — it used to fall through as
-    // `?? model`, so the default collector POSTed the literal `haiku` to
-    // api.anthropic.com, which rejects it, after the notice had told the user
-    // `haiku -> api.anthropic.com (ANTHROPIC_API_KEY, billed per token)`.
-    const resolved = findEntryByAlias(model)?.modelId ?? latestAnthropicTierModelId(tier);
-    if (!resolved) return { ...routeOf("anthropic", model), unresolvedAlias: model };
-    return routeOf("anthropic", resolved);
-  }
-
-  const provider = parsed.provider;
-  if (provider === "google" || provider === "gemini") return routeOf("google", parsed.model);
-  if (provider === "openai" || provider === "oai") return routeOf("openai", parsed.model);
-
-  // Everything else -> OpenRouter
-  if (!parsed.isExplicitProvider || provider === "openrouter") {
-    return routeOf("openrouter", openRouterWireModelFor(null, parsed.model));
-  }
-  return routeOf("openrouter", openRouterWireModelFor(provider, parsed.model));
-}
-
-/**
- * The id OPENROUTER itself publishes for a catalog entry, or null.
- *
- * ONLY the two places the catalog records an OpenRouter id are read: the
- * `openrouter` aggregator row and the `openrouter-api` source. Deliberately
- * NARROWER than `externalIdFor(entry, "openrouter")`, whose last resort is "any
- * source carrying a vendor-prefixed id" — for a model OpenRouter does not serve
- * that returns ANOTHER VENDOR's external id, because a Fireworks id
- * (`accounts/fireworks/models/kimi-k3`) also contains a slash. That is exactly
- * what shipped: the bare panel name `kimi-k3` went on the wire to OpenRouter as
- * `accounts/fireworks/models/kimi-k3` and every call 400'd
- * ("is not a valid model ID"). A wire id for OpenRouter may only ever come from
- * OpenRouter's own catalog data.
- */
-function openRouterIdOf(entry: SlimModelEntry): string | null {
-  return (
-    entry.aggregators?.find((a) => catalogRouteMatchesProvider(a.route, "openrouter"))
-      ?.externalModelId ?? null
-  );
-}
-
-/**
- * What the LIVE catalog knows about serving `name` on OpenRouter.
- *
- * `not-served` is a positive fact, not an absence: the catalog HAS the model and
- * publishes no OpenRouter id for it. It is the one case that must never be
- * turned into a wire id — see `openRouterIdOf`.
- */
-type OpenRouterIdLookup =
-  | { kind: "id"; id: string }
-  /** The catalog knows this model and lists no OpenRouter id for it. */
-  | { kind: "not-served" }
-  /** Cold catalog, or a name it has never heard of: nothing is known. */
-  | { kind: "unknown" };
-
-/**
- * Resolves a model NAME to the id OpenRouter serves, from live catalog data
- * only. The chain mirrors `resolveExternalId`'s (exact id, alias, then the
- * provider's own ids), but every id it can return comes from `openRouterIdOf`.
- *
- * An already-slashed name is the user naming a full OpenRouter id: it is kept,
- * because OpenRouter can serve a model newer than the last catalog refresh.
- */
-function lookupOpenRouterId(name: string): OpenRouterIdLookup {
-  const entries = getCatalogEntries();
-  if (!entries) return { kind: "unknown" };
-  const lower = name.toLowerCase();
-
-  if (name.includes("/")) {
-    const match = entries.find((e) => openRouterIdOf(e)?.toLowerCase() === lower);
-    return { kind: "id", id: match ? (openRouterIdOf(match) as string) : name };
-  }
-
-  // Exact canonical id is AUTHORITATIVE, including its "OpenRouter does not
-  // serve this" answer: falling through would resolve a different model that
-  // merely shares part of the name.
-  const byModelId = entries.find((e) => e.modelId.toLowerCase() === lower);
-  if (byModelId) {
-    const id = openRouterIdOf(byModelId);
-    return id ? { kind: "id", id } : { kind: "not-served" };
-  }
-
-  // An alias identifies one model just as its canonical id does, so its answer
-  // is final too — including "not served".
-  const byAlias = entries.find((e) => e.aliases.some((a) => a.toLowerCase() === lower));
-  if (byAlias) {
-    const id = openRouterIdOf(byAlias);
-    return id ? { kind: "id", id } : { kind: "not-served" };
-  }
-
-  // The name may be the tail of an OpenRouter id (`grok-4.6` → `x-ai/grok-4.6`).
-  const suffix = `/${lower}`;
-  for (const entry of entries) {
-    const id = openRouterIdOf(entry);
-    if (id && (id.toLowerCase() === lower || id.toLowerCase().endsWith(suffix))) {
-      return { kind: "id", id };
-    }
-  }
-
-  return { kind: "unknown" };
-}
-
-/**
- * Is `vendor` a namespace OpenRouter actually publishes — the `x-ai` of
- * `x-ai/grok-4.6`? Answered from the LIVE catalog's own OpenRouter external
- * ids, never from a provider's model list in this repo (a pinned model list is exactly
- * what goes stale, and CLAUDE.md forbids one).
- *
- * A namespace match rather than an exact-id match on purpose: a model released
- * after the last catalog refresh must still be callable under a vendor the
- * catalog does know.
- */
-function isOpenRouterVendorNamespace(vendor: string): boolean {
-  const entries = getCatalogEntries();
-  if (!entries) return false;
-  const prefix = `${vendor.toLowerCase()}/`;
-  return entries.some((e) => openRouterIdOf(e)?.toLowerCase().startsWith(prefix));
-}
-
-/**
- * The OpenRouter vendor namespaces the catalog associates with a SUBSCRIPTION
- * routing identity — `queryPlans[].routing.nativeModelProviders`, e.g.
- * `openai-codex` → `["openai"]`, `grok-subscription` → `["x-ai"]`. Live data,
- * published by the catalog for exactly this translation.
- */
-function nativeVendorsForProvider(providerUid: string): string[] {
-  const vendors = new Set<string>();
-  try {
-    for (const plan of readAllModelsCache()?.plans ?? []) {
-      if (plan.routeStatus !== "supported" || !catalogRouteMatchesProvider(plan.route, providerUid))
-        continue;
-      if (plan.route?.routeId) vendors.add(plan.route.routeId);
-    }
-  } catch {
-    // a cache that will not read is the cold case below
-  }
-  return [...vendors];
-}
-
-/**
- * The id OpenRouter accepts for one advisor spec — `provider` is the EXPLICIT
- * prefix the user typed (`cx@gpt-5.6-sol`), or null for a bare name.
- *
- * The old rule was `${provider}/${model}` for every explicit provider. That is
- * only true when the prefix happens to be an OpenRouter VENDOR namespace. A
- * subscription provider uid is not one, so `cx@gpt-5.6-sol` became the
- * nonexistent OpenRouter id `openai-codex/gpt-5.6-sol` and `gk@grok-4.6` became
- * `grok-subscription/grok-4.6` — startup checked only the OpenRouter key,
- * declared the model callable, and the first panel call failed or answered from
- * no named model. (The advisor never routes through `route()`, so a
- * subscription prefix here can only ever mean "which model", never "bill it to
- * my subscription": panel calls are metered by design.)
- *
- * Resolution order, all of it live catalog metadata:
- *   1. the prefix IS an OpenRouter vendor namespace → keep `vendor/model`;
- *   2. the catalog's own OpenRouter external id for that model name;
- *   3. the vendor namespaces the catalog publishes for this subscription uid
- *      (`routing.nativeModelProviders`);
- *   4. cold catalog → the historical id, because nothing is known and nothing
- *      can therefore be declared invalid;
- *   5. otherwise REFUSE. Never construct a wire id already known to be invalid.
- *
- * A BARE name (`provider === null`) has no prefix to consult, so only steps 2
- * and 4 apply: the catalog's OpenRouter id, else the name unchanged when the
- * catalog has never heard of it (it may be newer than the last refresh), else
- * REFUSE — which `evaluateAdvisorStartup` turns into a startup refusal naming
- * the model. It used to be `resolveModelNameSync(model, "openrouter")`, whose
- * fallback answers with ANY vendor-prefixed external id the entry carries, so
- * `kimi-k3` — a model OpenRouter does not serve — went on the wire as the
- * Fireworks id `accounts/fireworks/models/kimi-k3` and 400'd on every call.
- */
-function openRouterWireModelFor(provider: string | null, model: string): string {
-  const lookup = lookupOpenRouterId(model);
-
-  if (provider === null || provider === "openrouter") {
-    if (lookup.kind === "id") return lookup.id;
-    if (lookup.kind === "unknown") return model;
-    throw new Error(
-      `${model} cannot be used as an advisor model: the catalog lists no OpenRouter id for it ` +
-        "(OpenRouter is where every unprefixed advisor model is called), so claudish has no id " +
-        "OpenRouter would accept. Name a model OpenRouter serves, or give the id in full " +
-        '("openrouter@vendor/model").'
-    );
-  }
-
-  const vendorPrefixed = `${provider}/${model}`;
-  if (isOpenRouterVendorNamespace(provider)) return vendorPrefixed;
-
-  if (lookup.kind === "id") return lookup.id;
-
-  for (const vendor of nativeVendorsForProvider(provider)) {
-    if (isOpenRouterVendorNamespace(vendor)) return `${vendor}/${model}`;
-  }
-
-  if (getCatalogEntries() === null) return vendorPrefixed;
-
-  throw new Error(
-    `${provider}@${model} cannot be resolved to a model OpenRouter serves: "${provider}" is not an ` +
-      "OpenRouter vendor namespace, and the catalog lists no OpenRouter id for " +
-      `"${model}". Advisor panel models are always called metered, so a subscription prefix ` +
-      `buys nothing here — use the bare model name ("${model}"), or name the OpenRouter id ` +
-      'in full ("openrouter@vendor/model").'
-  );
-}
-
-/**
- * The credentials an advisor configuration can use: every panel model's, plus
- * the collector's when one can run (it needs more than one panel model).
- * A spec that fails to resolve is skipped; its call reports the failure.
- */
-export function advisorCredentialsFor(
-  models: string[],
-  collector: string | null | undefined
-): Set<AdvisorRouteKind> {
-  const needed = new Set<AdvisorRouteKind>();
-  const add = (spec: string, role: "panel" | "collector") => {
-    try {
-      needed.add(advisorRouteFor(spec, role).credential);
-    } catch {
-      // reported by the call itself
-    }
-  };
-  for (const m of models) add(m, "panel");
-  if (collector && models.length > 1) add(collector, "collector");
-  return needed;
 }
 
 /**
@@ -1923,86 +1609,6 @@ export async function resolveAdvisorCredential(
 const ADVISOR_MAX_OUTPUT_TOKENS = 2048;
 
 /**
- * One advisor or collector request, built for the route's API and shaped by
- * its connection's wire — the same step a session request takes (output-limit
- * field, reasoning encoding), so the advisor never sends a field the catalog
- * did not publish for that connection. Without a known wire, no output limit
- * and no reasoning field is sent.
- */
-function buildAdvisorRequest(
-  route: AdvisorRoute,
-  messages: any[],
-  apiKeys: AdvisorApiKeys,
-  systemPrompt: string = ADVISOR_SYSTEM_PROMPT,
-  userText?: string
-): { headers: Record<string, string>; body: any; extractText: (data: any) => string | undefined } {
-  const key = apiKeys[route.credential] ?? "";
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (route.kind === "openrouter") {
-    headers["HTTP-Referer"] = "https://claudish.com";
-    headers["X-Title"] = "Claudish Advisor";
-  }
-  const turns: Array<{ role: string; content: string }> =
-    userText !== undefined
-      ? [{ role: "user", content: userText }]
-      : convertToOpenAIMessages(messages).map((m: any) => ({
-          role: m.role,
-          content: typeof m.content === "string" ? m.content : extractBlocksAsText(m.content),
-        }));
-
-  let body: Record<string, unknown>;
-  let extractText: (data: any) => string | undefined;
-  switch (route.api) {
-    case "anthropic-messages":
-      headers["x-api-key"] = key;
-      headers["anthropic-version"] = "2023-06-01";
-      // The Messages API REQUIRES `max_tokens` (it is the protocol's only limit
-      // field); a known wire writes the same field again below.
-      body = {
-        model: route.wireModel,
-        system: systemPrompt,
-        messages: turns,
-        max_tokens: ADVISOR_MAX_OUTPUT_TOKENS,
-      };
-      extractText = extractAnthropicText;
-      break;
-    case "responses":
-      headers.Authorization = `Bearer ${key}`;
-      body = { model: route.wireModel, instructions: systemPrompt, input: turns, stream: false };
-      extractText = extractResponsesText;
-      break;
-    case "gemini":
-      headers["x-goog-api-key"] = key;
-      body = {
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: turns.map((t) => ({
-          role: t.role === "assistant" ? "model" : "user",
-          parts: [{ text: t.content }],
-        })),
-        generationConfig: { maxOutputTokens: ADVISOR_MAX_OUTPUT_TOKENS },
-      };
-      extractText = extractGeminiText;
-      break;
-    default:
-      headers.Authorization = `Bearer ${key}`;
-      body = {
-        model: route.wireModel,
-        messages: [{ role: "system", content: systemPrompt }, ...turns],
-      };
-      extractText = extractChatCompletionText;
-  }
-
-  if (route.wire) {
-    const shaped = shapeRequestFromWire(body, route.wire, {
-      maxTokens: ADVISOR_MAX_OUTPUT_TOKENS,
-      hasTools: false,
-    });
-    mergeWireHeaders(headers, shaped.headers);
-  }
-  return { headers, body, extractText };
-}
-
-/**
  * What one panel or collector call actually did. Provenance is part of the
  * data type, never reconstructed from placeholder strings: `text` exists only
  * when `origin` is `upstream`, `reason` and `stubPath` only when it is not.
@@ -2023,6 +1629,34 @@ export interface AdvisorModelOutcome {
   stubPath: AdvisorStubPath | null;
   text?: string;
   reason?: string;
+  /** How the record names the route: the planned chain, or the fixed Claude host. */
+  recordRoute?: AdvisorRecordRoute;
+  /** Who served the call; null when nothing served (`origin` is not `upstream`). */
+  servedBy?: AdvisorServedBy | null;
+  /** The serving hop's wire model, or the resolved Anthropic id. */
+  routedModel?: string | null;
+  /** Routed only: provider uids whose `handle()` was entered, in order, once each. */
+  hopsTried?: string[];
+  /** `servedBy.billing`; null when nothing served. */
+  billing?: AdvisorBilling | null;
+  usage?: { input_tokens: number; output_tokens: number };
+  emptyReason?: AdvisorEmptyReason;
+  stopReason?: string;
+}
+
+/** The `route` field of an advisor record. */
+export type AdvisorRecordRoute =
+  | { kind: "routed"; plannedChain: string[] }
+  | { kind: "claude-native"; host: string };
+
+/** The `servedBy` field of an advisor record: labels only, never a credential. */
+export interface AdvisorServedBy {
+  /** The claudish provider that served the call. */
+  provider: string;
+  displayName: string;
+  /** The arm that signed: `oauth` for a subscription login, `api-key` otherwise; null when unknown. */
+  arm: string | null;
+  billing: AdvisorBilling | null;
 }
 
 /** One advisor call end to end: every model's outcome and the delivered result. */
@@ -2038,21 +1672,6 @@ export interface AdvisorCallOutcome {
   /** The aggregate stub path when `resultOrigin` is not `upstream`. */
   stubPath: AdvisorStubPath | null;
   result: AdvisorToolResult;
-}
-
-interface AdvisorFetchPlan {
-  role: AdvisorModelOutcome["role"];
-  requestedModel: string;
-  route: AdvisorRoute;
-  headers: Record<string, string>;
-  body: any;
-  /** Abort after this long; undefined = no timeout. */
-  timeoutMs?: number;
-  extractText: (data: any) => string | undefined;
-  /** Stub path when the call answered 2xx without usable advice text. */
-  emptyStubPath: AdvisorStubPath;
-  /** Stub path when the call failed outright. */
-  errorStubPath: AdvisorStubPath;
 }
 
 /** Abort a panel call after this long; a failure like any other (stub path S7). */
@@ -2125,285 +1744,691 @@ function describeFetchError(err: unknown, timeoutMs?: number): string {
   return `request failed: ${e?.message ?? String(err)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Claude advisor calls: the Claude Code login arm
+// ---------------------------------------------------------------------------
+//
+// A Claude panel member or collector is ONE request to the fixed
+// `ANTHROPIC_MESSAGES_URL`. On a launch where claudish controls the child's
+// auth (`childAuthControl`, claude-runner.ts) it is signed with the bearer
+// Claude Code sent, which can then only be the claude.ai login; on every
+// other launch the bearer is never used, and the call signs with the inbound
+// `x-api-key` if real, else ANTHROPIC_API_KEY, metered. The request on the
+// login arm is S0 shape A: the inbound identity block, then the advisor prompt
+// (test-fixtures/advisor/replay-results-*.json: A0, the prompt alone, is
+// refused on every tier; A is accepted on opus, sonnet, haiku and fable).
+//
+// The bearer reaches exactly one function, `runClaudeAdvisorCall`, which takes
+// no URL. It is held in `ClaudeLogin`, which prints as `[redacted]`, and its
+// value is registered on the main request's signing lease the moment it is
+// read, so every log line of that request is redacted against it.
+
 /**
- * Performs one advisor HTTP call and classifies it. Never rejects: every
- * failure becomes a `stub` outcome carrying its stub path and reason.
- *
- * The status is read from the body first because the advisor path uses bare
- * `fetch`, not a claudish handler: `extractUpstreamStatus` only finds
- * `error.upstream_status` when some remapping layer wrote it, so normally the
- * source is `http_status`. No status is invented when no response arrived.
+ * Claude Code's inbound `authorization` value, held so it cannot print:
+ * `String()`, `JSON.stringify` and `Bun.inspect` all give `[redacted]`. Only
+ * `headerValue()` yields it, and only `runClaudeAdvisorCall` calls that.
  */
-async function executeAdvisorFetch(
-  plan: AdvisorFetchPlan,
-  fetchImpl?: typeof fetch
-): Promise<AdvisorModelOutcome> {
-  const base = { role: plan.role, requestedModel: plan.requestedModel, route: plan.route };
-  // The exact credential values this request presents, for by-value redaction
-  // of anything the provider echoes back.
-  const secrets = credentialValuesInHeaders(plan.headers);
-  const started = performance.now();
-  const elapsed = () => Math.round(performance.now() - started);
-  const controller = plan.timeoutMs ? new AbortController() : undefined;
-  const timer = controller ? setTimeout(() => controller.abort(), plan.timeoutMs) : undefined;
-  // Resolved per call, so an omitted seam is exactly the global fetch of today.
-  const doFetch = fetchImpl ?? fetch;
+export class ClaudeLogin {
+  readonly #value: string;
 
-  try {
-    let resp: Response;
-    try {
-      resp = await doFetch(plan.route.url, {
-        method: "POST",
-        headers: plan.headers,
-        body: JSON.stringify(plan.body),
-        signal: controller?.signal,
-      });
-    } catch (err) {
-      return stubOutcome(
-        base,
-        plan.errorStubPath,
-        describeFetchError(err, plan.timeoutMs),
-        elapsed(),
-        secrets
-      );
-    }
+  constructor(authorizationHeader: string) {
+    this.#value = authorizationHeader;
+  }
 
-    let bodyText: string;
-    try {
-      bodyText = await resp.text();
-    } catch (err) {
-      return stubOutcome(
-        base,
-        plan.errorStubPath,
-        `HTTP ${resp.status} but the body could not be read: ${describeFetchError(err, plan.timeoutMs)}`,
-        elapsed(),
-        secrets,
-        { status: resp.status, source: "http_status", bytes: 0 }
-      );
-    }
+  /** The `authorization` header value, verbatim (`Bearer …`). */
+  headerValue(): string {
+    return this.#value;
+  }
 
-    const bodyStatus = extractUpstreamStatus(bodyText);
-    const observed: ObservedResponse = {
-      status: bodyStatus ?? resp.status,
-      source: bodyStatus !== undefined ? "error.upstream_status" : "http_status",
-      bytes: new TextEncoder().encode(bodyText).byteLength,
-    };
+  toString(): string {
+    return REDACTED;
+  }
 
-    if (!resp.ok || (bodyStatus !== undefined && bodyStatus >= 400)) {
-      return stubOutcome(
-        base,
-        plan.errorStubPath,
-        `HTTP ${observed.status}: ${summarizeErrorBody(bodyText)}`,
-        elapsed(),
-        secrets,
-        observed
-      );
-    }
+  toJSON(): string {
+    return REDACTED;
+  }
 
-    let data: unknown;
-    try {
-      data = JSON.parse(bodyText);
-    } catch {
-      return stubOutcome(
-        base,
-        plan.emptyStubPath,
-        `HTTP ${observed.status} but the response body is not JSON`,
-        elapsed(),
-        secrets,
-        observed
-      );
-    }
-
-    const text = plan.extractText(data);
-    if (typeof text !== "string" || text.trim().length === 0) {
-      return stubOutcome(
-        base,
-        plan.emptyStubPath,
-        `HTTP ${observed.status} but the response carried no advice text`,
-        elapsed(),
-        secrets,
-        observed
-      );
-    }
-
-    return {
-      ...base,
-      upstreamStatus: observed.status,
-      upstreamStatusSource: observed.source,
-      responseBytes: observed.bytes,
-      latencyMs: elapsed(),
-      origin: "upstream",
-      stubPath: null,
-      text,
-    };
-  } finally {
-    if (timer) clearTimeout(timer);
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return REDACTED;
   }
 }
 
-/** Advice text from an OpenAI chat-completions body. */
-function extractChatCompletionText(data: any): string | undefined {
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    const joined = content.map((p: any) => (typeof p?.text === "string" ? p.text : "")).join("");
-    return joined || undefined;
+/**
+ * Why a bearer on the request was not used as the Claude login:
+ * - `placeholder`: claudish's own placeholder (a proxy-auth launch);
+ * - `user-auth-token`: it equals this process's ANTHROPIC_AUTH_TOKEN;
+ * - `launch-auth-not-claudish-controlled`: this launch lets the child sign
+ *   with something other than the login (`childAuthControl`), so no bearer
+ *   can be placed.
+ */
+export type ClaudeLoginSkipped =
+  | "placeholder"
+  | "user-auth-token"
+  | "launch-auth-not-claudish-controlled";
+
+/** What a Claude advisor call may sign with, read once from the MAIN request. */
+export interface ClaudeRequestFacts {
+  /** Present only when every provenance check passed. */
+  login?: ClaudeLogin;
+  /** Set when a bearer was present but not used. */
+  loginSkipped?: ClaudeLoginSkipped;
+  /** The launch's non-login credential source, when that is why the bearer was skipped. */
+  authSource?: { reason: ChildAuthSource; where: string };
+  /** The inbound `x-api-key`, when it is a real key (never a placeholder). */
+  inboundApiKey?: string;
+  /** Inbound `anthropic-beta`, verbatim; the call strips the advisor flag. */
+  anthropicBeta?: string;
+  anthropicVersion?: string;
+  /** The first inbound system text block that is not the billing block and is one line. */
+  identityBlock?: string;
+}
+
+export interface ClaudeRequestFactsDeps {
+  /** This launch's `childAuthControl(config, env)`. */
+  childAuth: ChildAuthControl;
+  /** Read for ANTHROPIC_AUTH_TOKEN; defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/** Not global: no `lastIndex`. */
+const BEARER_PREFIX = /^Bearer\s+/i;
+
+/**
+ * Claude Code's identity block: the first system text block that is not the
+ * billing-header block and spans one line, copied without its `cache_control`.
+ * Absent for a string system or when no block qualifies (the call then sends
+ * the advisor prompt alone, `systemHead: "none"`).
+ */
+export function claudeIdentityBlock(system: unknown): string | undefined {
+  if (!Array.isArray(system)) return undefined;
+  for (const block of system) {
+    const text = (block as { type?: unknown; text?: unknown } | null)?.text;
+    if ((block as { type?: unknown } | null)?.type !== "text" || typeof text !== "string") continue;
+    if (isBillingHeaderText(text)) continue;
+    return text.includes("\n") || text.trim() === "" ? undefined : text;
   }
   return undefined;
 }
 
-/** Advice text from a Responses body: its output_text parts, joined. */
-function extractResponsesText(data: any): string | undefined {
-  if (typeof data?.output_text === "string" && data.output_text) return data.output_text;
-  const parts = (Array.isArray(data?.output) ? data.output : [])
-    .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
-    .filter((c: any) => c?.type === "output_text" && typeof c.text === "string")
-    .map((c: any) => c.text);
-  return parts.length > 0 ? parts.join("") : undefined;
-}
+/**
+ * Read what a Claude advisor call may sign with from the MAIN request, once,
+ * and register every real credential value on that request's signing lease.
+ *
+ * The login arm needs ALL of: an inbound `Bearer` that is not a claudish
+ * placeholder; a value that is not this process's ANTHROPIC_AUTH_TOKEN; and a
+ * launch where claudish controls the child's auth. A request cannot prove
+ * provenance on its own (the OAuth beta is client-declared, S0), so the third
+ * check is the launch's decision, made in claude-runner.ts.
+ */
+export function claudeRequestFacts(
+  c: Context,
+  payload: unknown,
+  deps: ClaudeRequestFactsDeps
+): ClaudeRequestFacts {
+  const authorization = c.req.header("authorization")?.trim();
+  const bearer = authorization?.replace(BEARER_PREFIX, "").trim();
+  const apiKey = c.req.header("x-api-key")?.trim();
+  const realApiKey = apiKey && !isPlaceholderAnthropicKey(apiKey) ? apiKey : undefined;
+  const realBearer = bearer && !isPlaceholderAnthropicKey(bearer) ? bearer : undefined;
+  addSigningSecrets(
+    c,
+    [realBearer, realApiKey].filter((v): v is string => Boolean(v))
+  );
 
-/** Advice text from a Gemini generateContent body: its first candidate's text parts. */
-function extractGeminiText(data: any): string | undefined {
-  const parts = data?.candidates?.[0]?.content?.parts;
-  if (!Array.isArray(parts)) return undefined;
-  const text = parts
-    .filter((p: any) => typeof p?.text === "string" && !p.thought)
-    .map((p: any) => p.text)
-    .join("");
-  return text || undefined;
-}
+  const facts: ClaudeRequestFacts = {
+    ...(realApiKey ? { inboundApiKey: realApiKey } : {}),
+    ...(c.req.header("anthropic-beta") ? { anthropicBeta: c.req.header("anthropic-beta") } : {}),
+    ...(c.req.header("anthropic-version")
+      ? { anthropicVersion: c.req.header("anthropic-version") }
+      : {}),
+  };
+  const identity = claudeIdentityBlock((payload as { system?: unknown } | null)?.system);
+  if (identity !== undefined) facts.identityBlock = identity;
 
-/** Advice text from an Anthropic messages body: its first text block. */
-function extractAnthropicText(data: any): string | undefined {
-  const blocks = data?.content;
-  if (!Array.isArray(blocks)) return undefined;
-  const text = blocks.find((b: any) => b?.type === "text")?.text;
-  return typeof text === "string" ? text : undefined;
-}
-
-function errorMessageOf(err: unknown): string {
-  return (err as { message?: string } | undefined)?.message ?? String(err);
-}
-
-async function callAdvisorModel(
-  modelSpec: string,
-  messages: any[],
-  apiKeys: AdvisorApiKeys,
-  fetchImpl?: typeof fetch
-): Promise<AdvisorModelOutcome> {
-  let plan: AdvisorFetchPlan;
-  try {
-    const route = advisorRouteFor(modelSpec, "panel");
-    const { headers, body, extractText } = buildAdvisorRequest(route, messages, apiKeys);
-    plan = {
-      role: "panel",
-      requestedModel: modelSpec,
-      route,
-      headers,
-      body,
-      timeoutMs: ADVISOR_PANEL_TIMEOUT_MS,
-      extractText,
-      emptyStubPath: ADVISOR_STUB_PATHS.PANEL_EMPTY,
-      errorStubPath: ADVISOR_STUB_PATHS.PANEL_ERROR,
-    };
-  } catch (err) {
-    const base = { role: "panel" as const, requestedModel: modelSpec, route: null };
-    return stubOutcome(
-      base,
-      ADVISOR_STUB_PATHS.PANEL_ERROR,
-      `could not build the request: ${errorMessageOf(err)}`,
-      0,
-      credentialValuesOf(apiKeys)
-    );
+  if (!authorization || !bearer || !BEARER_PREFIX.test(authorization)) return facts;
+  if (!realBearer) return { ...facts, loginSkipped: "placeholder" };
+  const env = deps.env ?? process.env;
+  if (realBearer === env.ANTHROPIC_AUTH_TOKEN?.trim()) {
+    return { ...facts, loginSkipped: "user-auth-token" };
   }
-  return executeAdvisorFetch(plan, fetchImpl);
+  if (!deps.childAuth.controlled) {
+    return {
+      ...facts,
+      loginSkipped: "launch-auth-not-claudish-controlled",
+      authSource: { reason: deps.childAuth.reason, where: deps.childAuth.where },
+    };
+  }
+  return { ...facts, login: new ClaudeLogin(authorization) };
+}
+
+/** Where a Claude advisor call's credential came from: a label, never a value. */
+export type ClaudeCredentialSource =
+  | "claude-code-login"
+  | "inbound-x-api-key"
+  | "ANTHROPIC_API_KEY";
+
+export type ClaudeAdvisorAuth =
+  | { arm: "oauth"; source: "claude-code-login"; login: ClaudeLogin; facts: ClaudeRequestFacts }
+  | {
+      arm: "api-key";
+      source: "inbound-x-api-key" | "ANTHROPIC_API_KEY";
+      apiKey: string;
+      facts: ClaudeRequestFacts;
+      /** Why a present bearer was not used; the call warns with it (never silent). */
+      warning?: string;
+    }
+  | { arm: null; reason: string; facts: ClaudeRequestFacts; warning?: string };
+
+/** The reason a skipped bearer was not used, as a clause. */
+function loginSkippedPhrase(facts: ClaudeRequestFacts): string {
+  switch (facts.loginSkipped) {
+    case "user-auth-token":
+      return "it is your ANTHROPIC_AUTH_TOKEN, not a Claude login";
+    case "launch-auth-not-claudish-controlled":
+      return facts.authSource
+        ? `${facts.authSource.reason} (${facts.authSource.where}) lets Claude Code sign with something other than your login, so claudish cannot tell which it is`
+        : "this launch lets Claude Code sign with something other than your login";
+    default:
+      return "it is claudish's placeholder";
+  }
 }
 
 /**
- * The Claude Code TIER an advisor spec names as a bare alias (`haiku`), or null
- * for anything already spelled as a model id (`claude-haiku-4-5`). Only an
- * alias needs resolving; an id is passed through as the user wrote it, because
- * the API may serve a model newer than the catalog.
+ * The credential for one Claude advisor call, by presence and provenance on
+ * the request, never by failure: the login when `facts.login` exists; else the
+ * inbound `x-api-key` if real; else ANTHROPIC_API_KEY (`anthropicKey`, the
+ * advisor's own lookup, asked only now). A real bearer that failed a check, or
+ * a request with no bearer at all, is never moved to a metered key silently:
+ * the result carries a warning naming the reason. claudish's own placeholder
+ * (a proxy-auth launch, whose startup notice already says metered) is not a
+ * credential and only shows in the record (`loginSkipped`).
  */
-function anthropicTierAlias(model: string): "opus" | "sonnet" | "haiku" | null {
-  const m = model.toLowerCase();
-  return m === "opus" || m === "sonnet" || m === "haiku" ? m : null;
+export async function resolveClaudeAdvisorAuth(
+  facts: ClaudeRequestFacts,
+  anthropicKey: () => Promise<string | undefined> = () => resolveAdvisorCredential("anthropic")
+): Promise<ClaudeAdvisorAuth> {
+  if (facts.login) {
+    return { arm: "oauth", source: "claude-code-login", login: facts.login, facts };
+  }
+  const skipped =
+    facts.loginSkipped === undefined
+      ? "this request carries no Claude login"
+      : facts.loginSkipped !== "placeholder"
+        ? `Claude Code's bearer was not used (${loginSkippedPhrase(facts)})`
+        : undefined;
+  if (facts.inboundApiKey) {
+    return {
+      arm: "api-key",
+      source: "inbound-x-api-key",
+      apiKey: facts.inboundApiKey,
+      facts,
+      ...(skipped ? { warning: `${skipped}; billed per token on the request's x-api-key` } : {}),
+    };
+  }
+  const key = await anthropicKey();
+  if (key) {
+    return {
+      arm: "api-key",
+      source: "ANTHROPIC_API_KEY",
+      apiKey: key,
+      facts,
+      ...(skipped ? { warning: `${skipped}; billed per token on ANTHROPIC_API_KEY` } : {}),
+    };
+  }
+  return {
+    arm: null,
+    reason:
+      "no Claude credential: this request carries no Claude login and no ANTHROPIC_API_KEY was found",
+    facts,
+    ...(skipped ? { warning: skipped } : {}),
+  };
 }
 
-function isAnthropicModel(parsed: ReturnType<typeof parseModelSpec>): boolean {
-  const m = parsed.model.toLowerCase();
-  return (
-    parsed.provider === "anthropic" ||
-    m.startsWith("claude-") ||
-    m === "haiku" ||
-    m === "sonnet" ||
-    m === "opus"
-  );
-}
-
-async function callCollectorModel(
-  collectorSpec: string,
-  advice: Array<{ model: string; text: string }>,
-  apiKeys: AdvisorApiKeys,
-  fetchImpl?: typeof fetch
-): Promise<AdvisorModelOutcome> {
-  let plan: AdvisorFetchPlan;
+/**
+ * HTTP 429 `rate_limit_error` with the message "Error" and none of the
+ * `anthropic-ratelimit-unified-*` headers every real limit carries: Anthropic
+ * refusing the request's SHAPE on the Claude login (S0: shape A0 on every
+ * tier), not quota exhaustion. Never retried as a rate limit, never a reason
+ * to cool anything down; the call becomes a stub saying so.
+ *
+ * `status` must be the recovered upstream status (`extractUpstreamStatus(body)
+ * ?? response.status`), which is what the caller passes.
+ */
+export function isClaudeShapeRefusal(status: number, bodyText: string, headers: Headers): boolean {
+  if (status !== 429) return false;
+  let unifiedLimitHeader = false;
+  headers.forEach((_value, name) => {
+    if (name.toLowerCase().startsWith("anthropic-ratelimit-unified-")) unifiedLimitHeader = true;
+  });
+  if (unifiedLimitHeader) return false;
   try {
-    const adviceText = advice
-      .map((a, i) => `### Advisor ${i + 1} (${a.model})\n${a.text}`)
-      .join("\n\n");
+    const error = (JSON.parse(bodyText) as { error?: { type?: unknown; message?: unknown } }).error;
+    return error?.type === "rate_limit_error" && error.message === "Error";
+  } catch {
+    return false;
+  }
+}
 
-    const route = advisorRouteFor(collectorSpec, "collector");
+/** One Claude advisor call's outcome: the common fields plus what signed and how it billed. */
+export interface ClaudeAdvisorOutcome extends AdvisorModelOutcome {
+  credentialSource: ClaudeCredentialSource | null;
+  /** The arm that signed; null when no credential was found. */
+  servedArm: "oauth" | "api-key" | null;
+  /** Arm-derived: `subscription` iff the login signed; null when nothing served. */
+  billing: AdvisorBilling | null;
+  loginSkipped?: ClaudeLoginSkipped;
+  /** Login arm only: the system head actually sent. */
+  systemHead?: "none" | "identity";
+  usage?: { input_tokens: number; output_tokens: number };
+  emptyReason?: AdvisorEmptyReason;
+  stopReason?: string;
+  /** True for the 429 "Error" shape refusal (`isClaudeShapeRefusal`). */
+  shapeRefusal?: boolean;
+}
 
-    // An alias the catalog could not resolve is refused HERE rather than POSTed:
-    // startup normally refuses or drops such a collector first, so this covers
-    // the paths that never ran it (legacy env-var mode, a cache that went cold
-    // after launch). The panel's own answers are still delivered.
-    if (route.unresolvedAlias) {
-      throw new Error(
-        `"${route.unresolvedAlias}" is a claudish alias, not a model id ${route.host} accepts, and ` +
-          "the model catalog holds no id for it, so claudish refused to send it. Name the " +
-          'collector by its full model id (for example "claude-haiku-4-5"), or refresh the ' +
-          "catalog (`claudish --models-refresh`)."
-      );
+export interface ClaudeAdvisorCallParams {
+  role: "panel" | "collector";
+  /** The spec as the user named it. */
+  spec: string;
+  /** The resolved Anthropic model id. */
+  model: string;
+  auth: ClaudeAdvisorAuth;
+  /** The advisor or collector prompt. */
+  system: string;
+  turns: AdvisorTurn[];
+  timeoutMs: number;
+  /** Test seam; defaults to the global fetch at call time. */
+  fetchImpl?: typeof fetch;
+  /** Test seam for the provenance warning; defaults to `warnAdvisor`. */
+  warn?: (message: string) => void;
+}
+
+/** The record route of every Claude advisor call: the fixed Anthropic endpoint. */
+function claudeAdvisorRoute(model: string): AdvisorRoute {
+  return {
+    kind: "anthropic",
+    host: ANTHROPIC_API_HOST,
+    url: ANTHROPIC_MESSAGES_URL,
+    credential: "anthropic",
+    wireModel: model,
+    api: "anthropic-messages",
+  };
+}
+
+/** Headers and body for the arm `auth` names. The login arm sends S0 shape A. */
+function claudeAdvisorRequestInit(
+  params: ClaudeAdvisorCallParams,
+  auth: Exclude<ClaudeAdvisorAuth, { arm: null }>
+): {
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+  systemHead?: "none" | "identity";
+} {
+  if (auth.arm === "api-key") {
+    // Today's metered request, byte for byte, shaped by the connection's wire
+    // when the catalog publishes one.
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "x-api-key": auth.apiKey,
+      "anthropic-version": "2023-06-01",
+    };
+    const body: Record<string, unknown> = {
+      model: params.model,
+      system: params.system,
+      messages: params.turns,
+      max_tokens: ADVISOR_MAX_OUTPUT_TOKENS,
+    };
+    const resolution = resolveConnection("anthropic", params.model);
+    if (resolution.ok && resolution.connection.wire.status === "known") {
+      const shaped = shapeRequestFromWire(body, resolution.connection.wire, {
+        maxTokens: ADVISOR_MAX_OUTPUT_TOKENS,
+        hasTools: false,
+      });
+      mergeWireHeaders(headers, shaped.headers);
     }
+    return { headers, body };
+  }
+  const { facts } = auth;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    authorization: auth.login.headerValue(),
+    "anthropic-version": facts.anthropicVersion || "2023-06-01",
+  };
+  const beta = stripAdvisorBeta(facts.anthropicBeta).stripped;
+  if (beta) headers["anthropic-beta"] = beta;
+  const prompt = { type: "text", text: params.system };
+  const identity = facts.identityBlock;
+  return {
+    headers,
+    body: {
+      model: params.model,
+      system: identity ? [{ type: "text", text: identity }, prompt] : [prompt],
+      messages: params.turns,
+      max_tokens: ADVISOR_MAX_OUTPUT_TOKENS,
+    },
+    systemHead: identity ? "identity" : "none",
+  };
+}
 
-    const { headers, body, extractText } = buildAdvisorRequest(
-      route,
-      [],
-      apiKeys,
-      COLLECTOR_SYSTEM_PROMPT,
-      adviceText
+/**
+ * The (Claude member, warning) pairs, `"<role>:<spec>\n<warning>"`, that have
+ * already printed the "cannot use the bearer / no bearer, signing with a
+ * metered key" warning. Every request of a launch whose login is skipped (a
+ * Console-key login, say) gives the same answer, so the line is printed once
+ * per launch per member and reason, not once per advisor call. Keyed by the
+ * text too, so a later DIFFERENT reason for the same member (no bearer, then a
+ * skipped one; the request's x-api-key, then ANTHROPIC_API_KEY) is printed
+ * rather than hidden. The text names only a reason and a key source, never a
+ * value, so the set stays bounded. The per-call record still carries
+ * `loginSkipped` and the arm.
+ */
+const claudeAuthWarned = new Set<string>();
+
+/** Test seam: let every Claude member warn again. */
+export function _debug_resetClaudeAuthWarnings(): void {
+  claudeAuthWarned.clear();
+}
+
+/**
+ * One Claude advisor call. Never rejects. The URL is the module constant
+ * `ANTHROPIC_MESSAGES_URL` and cannot be changed by the caller, so the login
+ * bearer goes nowhere else. Immediately before the fetch it logs one boundary
+ * line read from the `Request` being sent, never a value:
+ * `[advisor] Calling API: <url> (role, auth: bearer|x-api-key, source, systemHead)`.
+ *
+ * A failed login (401, 429) is reported with Anthropic's message; it is never
+ * retried on a metered key.
+ */
+export async function runClaudeAdvisorCall(
+  params: ClaudeAdvisorCallParams
+): Promise<ClaudeAdvisorOutcome> {
+  const { auth, role } = params;
+  const base = { role, requestedModel: params.spec, route: claudeAdvisorRoute(params.model) };
+  const stubPaths =
+    role === "panel"
+      ? { empty: ADVISOR_STUB_PATHS.PANEL_EMPTY, error: ADVISOR_STUB_PATHS.PANEL_ERROR }
+      : {
+          empty: ADVISOR_STUB_PATHS.ANTHROPIC_COLLECTOR_EMPTY,
+          error: ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
+        };
+  const labels = {
+    credentialSource: auth.arm === null ? null : auth.source,
+    servedArm: auth.arm,
+    ...(auth.facts.loginSkipped ? { loginSkipped: auth.facts.loginSkipped } : {}),
+  };
+  const warning = auth.arm === "oauth" ? undefined : auth.warning;
+  const warnedKey = `${role}:${params.spec}\n${warning}`;
+  if (warning && !claudeAuthWarned.has(warnedKey)) {
+    claudeAuthWarned.add(warnedKey);
+    (params.warn ?? warnAdvisor)(`${params.spec}: ${warning}`);
+  }
+  if (auth.arm === null) {
+    return {
+      ...stubOutcome(base, stubPaths.error, auth.reason, 0, []),
+      ...labels,
+      billing: null,
+    };
+  }
+
+  const init = claudeAdvisorRequestInit(params, auth);
+  const extra = { ...labels, ...(init.systemHead ? { systemHead: init.systemHead } : {}) };
+  // Held for this call's own log lines; the login value is also on the main
+  // request's lease from the moment it was read.
+  const lease = acquireSigningLease();
+  const secrets = credentialValuesFromRequest(init.headers);
+  lease.add(secrets);
+  const started = performance.now();
+  const elapsed = () => Math.round(performance.now() - started);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), params.timeoutMs);
+  try {
+    const request = new Request(ANTHROPIC_MESSAGES_URL, {
+      method: "POST",
+      headers: init.headers,
+      body: JSON.stringify(init.body),
+      signal: controller.signal,
+    });
+    log(
+      `[advisor] Calling API: ${request.url} (role: ${role}, auth: ${request.headers.has("authorization") ? "bearer" : "x-api-key"}, source: ${auth.source}${init.systemHead ? `, systemHead: ${init.systemHead}` : ""})`
     );
-    plan = {
-      role: "collector",
-      requestedModel: collectorSpec,
-      route,
-      headers,
-      body,
-      timeoutMs: ADVISOR_COLLECTOR_TIMEOUT_MS,
-      extractText,
-      emptyStubPath:
-        route.kind === "anthropic"
-          ? ADVISOR_STUB_PATHS.ANTHROPIC_COLLECTOR_EMPTY
-          : ADVISOR_STUB_PATHS.COLLECTOR_EMPTY,
-      errorStubPath: ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
-    };
+    const outcome = await fetchClaudeAdvice(request, params, base, stubPaths, secrets, elapsed);
+    const billing: AdvisorBilling | null =
+      outcome.origin === "upstream" ? (auth.arm === "oauth" ? "subscription" : "metered") : null;
+    recordClaudeAdvisorStats(params.model, auth.arm, outcome);
+    return { ...outcome, ...extra, billing };
+  } finally {
+    clearTimeout(timer);
+    lease.release();
+  }
+}
+
+/**
+ * The running cost of this launch's Claude advisor calls, per model id. Main
+ * requests report `estimated_cost` as their handler's running total and
+ * `is_free_model` as "that total is 0" (`TokenTracker`); a Claude advisor call
+ * has no handler, so this accumulator gives its events the same meaning. The
+ * login arm adds 0; an API-key arm adds `calculateCost("native-anthropic", …)`,
+ * the oracle every tracker prices with. Output tokens accumulate and input
+ * tokens are the latest call's, as the standard token strategy reports them.
+ */
+const claudeAdvisorSpend = new Map<string, { cost: number; outputTokens: number }>();
+
+/** Test seam: forget the Claude advisor spend accumulated so far. */
+export function _debug_resetClaudeAdvisorSpend(): void {
+  claudeAdvisorSpend.clear();
+}
+
+/**
+ * The stats event for one Claude advisor request sent, updating the launch's
+ * accumulator (`request_role: "advisor"`, `provider_name: "native-anthropic"`,
+ * no token file). A 2xx with usage adds to the accumulator, empty advice
+ * included (the tokens were spent); any other answer is `success: false` with
+ * its status and leaves the accumulator unchanged.
+ */
+export function claudeAdvisorStatsEvent(
+  model: string,
+  arm: "oauth" | "api-key",
+  outcome: Pick<AdvisorModelOutcome, "upstreamStatus" | "latencyMs"> & {
+    usage?: { input_tokens: number; output_tokens: number };
+  }
+): Partial<StatsEvent> {
+  const status = outcome.upstreamStatus;
+  const success = status !== null && status >= 200 && status < 300;
+  const acc = claudeAdvisorSpend.get(model) ?? { cost: 0, outputTokens: 0 };
+  const usage = success ? outcome.usage : undefined;
+  if (usage) {
+    acc.cost +=
+      arm === "oauth"
+        ? 0
+        : calculateCost("native-anthropic", model, usage.input_tokens, usage.output_tokens);
+    acc.outputTokens += usage.output_tokens;
+    claudeAdvisorSpend.set(model, acc);
+  }
+  return {
+    model_id: model,
+    provider_name: "native-anthropic",
+    stream_format: "anthropic-messages",
+    latency_ms: outcome.latencyMs,
+    success,
+    http_status: status ?? 0,
+    input_tokens: usage?.input_tokens ?? 0,
+    output_tokens: usage ? acc.outputTokens : 0,
+    estimated_cost: acc.cost,
+    is_free_model: acc.cost === 0,
+    token_strategy: "standard",
+    adapter_name: "none",
+    fallback_used: false,
+    request_role: "advisor",
+  };
+}
+
+function recordClaudeAdvisorStats(
+  model: string,
+  arm: "oauth" | "api-key",
+  outcome: AdvisorModelOutcome & { usage?: { input_tokens: number; output_tokens: number } }
+): void {
+  try {
+    recordStats(claudeAdvisorStatsEvent(model, arm, outcome));
+  } catch {
+    // Stats must never break an advisor call
+  }
+}
+
+type ClaudeCallBase = Pick<AdvisorModelOutcome, "role" | "requestedModel" | "route">;
+type ClaudeFetchOutcome = AdvisorModelOutcome &
+  Pick<ClaudeAdvisorOutcome, "usage" | "emptyReason" | "stopReason" | "shapeRefusal">;
+
+/** Send the request and classify the answer; the stub reasons are sanitised by value. */
+async function fetchClaudeAdvice(
+  request: Request,
+  params: ClaudeAdvisorCallParams,
+  base: ClaudeCallBase,
+  stubPaths: { empty: AdvisorStubPath; error: AdvisorStubPath },
+  secrets: readonly string[],
+  elapsed: () => number
+): Promise<ClaudeFetchOutcome> {
+  let resp: Response;
+  let bodyText: string;
+  try {
+    resp = await (params.fetchImpl ?? fetch)(request);
   } catch (err) {
-    const base = {
-      role: "collector" as const,
-      requestedModel: collectorSpec,
-      route: null,
-    };
     return stubOutcome(
       base,
-      ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
-      `could not build the request: ${errorMessageOf(err)}`,
-      0,
-      credentialValuesOf(apiKeys)
+      stubPaths.error,
+      describeFetchError(err, params.timeoutMs),
+      elapsed(),
+      secrets
     );
   }
-  return executeAdvisorFetch(plan, fetchImpl);
+  let responseBytes: number;
+  try {
+    const raw = await resp.text();
+    responseBytes = new TextEncoder().encode(raw).byteLength;
+    // The panel gateway's two passes (advisor-panel-gateway.ts), applied before
+    // the body is parsed, summarised or returned as advice: every value the
+    // registry holds, then this call's own values in every form. Advice text
+    // can reach a collector of another vendor, so an echoed Claude credential
+    // must not survive into it.
+    bodyText = redactExactValues(redactForClient(raw), secrets);
+  } catch (err) {
+    return stubOutcome(
+      base,
+      stubPaths.error,
+      `HTTP ${resp.status} but the body could not be read: ${describeFetchError(err, params.timeoutMs)}`,
+      elapsed(),
+      secrets,
+      { status: resp.status, source: "http_status", bytes: 0 }
+    );
+  }
+  const bodyStatus = extractUpstreamStatus(bodyText);
+  const observed: ObservedResponse = {
+    status: bodyStatus ?? resp.status,
+    source: bodyStatus !== undefined ? "error.upstream_status" : "http_status",
+    bytes: responseBytes,
+  };
+  if (!resp.ok || (bodyStatus !== undefined && bodyStatus >= 400)) {
+    if (isClaudeShapeRefusal(observed.status, bodyText, resp.headers)) {
+      log(
+        `[advisor] ${params.spec}: Anthropic refused the request shape (429 "Error"); not retried`
+      );
+      return {
+        ...stubOutcome(
+          base,
+          stubPaths.error,
+          `HTTP ${observed.status} rate_limit_error "Error" with no unified rate-limit headers: Anthropic refused this request's shape on the Claude login; this is not a quota limit and was not retried`,
+          elapsed(),
+          secrets,
+          observed
+        ),
+        shapeRefusal: true,
+      };
+    }
+    return stubOutcome(
+      base,
+      stubPaths.error,
+      `HTTP ${observed.status}: ${summarizeErrorBody(bodyText)}`,
+      elapsed(),
+      secrets,
+      observed
+    );
+  }
+  return claudeAdviceOutcome(bodyText, base, stubPaths.empty, secrets, observed, elapsed);
+}
+
+/** What each empty-answer reason means, for the stub text the model and the user read. */
+const EMPTY_ADVICE_PHRASE: Readonly<Record<AdvisorEmptyReason, string>> = {
+  "no-content": "the answer had no content",
+  "reasoning-only": "the model returned reasoning only, and no text",
+  "max-tokens-before-text": `the ${ADVISOR_MAX_OUTPUT_TOKENS}-token output limit was reached before any text`,
+  "max-tokens-during-reasoning": `the ${ADVISOR_MAX_OUTPUT_TOKENS}-token output limit was reached while the model was still reasoning`,
+};
+
+/**
+ * The S4/S5/S6 reason for a 2xx answer with no advice text, naming why:
+ * `HTTP 200 but the response carried no advice text (reasoning-only: the
+ * model returned reasoning only, and no text; stop_reason end_turn)`. A
+ * reasoning-only or max-tokens reply is never reported as a bare "no advice".
+ */
+function emptyAdviceReason(status: number, advice: ExtractedAdvice): string {
+  const why = advice.emptyReason
+    ? `${advice.emptyReason}: ${EMPTY_ADVICE_PHRASE[advice.emptyReason]}`
+    : "no-content";
+  const stop = advice.stopReason !== undefined ? `; stop_reason ${advice.stopReason}` : "";
+  return `HTTP ${status} but the response carried no advice text (${why}${stop})`;
+}
+
+/** A 2xx answer: the advice, or an empty-stub naming why there is none. */
+function claudeAdviceOutcome(
+  bodyText: string,
+  base: ClaudeCallBase,
+  emptyStubPath: AdvisorStubPath,
+  secrets: readonly string[],
+  observed: ObservedResponse,
+  elapsed: () => number
+): ClaudeFetchOutcome {
+  let data: unknown;
+  try {
+    data = JSON.parse(bodyText);
+  } catch {
+    return stubOutcome(
+      base,
+      emptyStubPath,
+      `HTTP ${observed.status} but the response body is not JSON`,
+      elapsed(),
+      secrets,
+      observed
+    );
+  }
+  const advice = extractAdvice(data);
+  const fields = {
+    ...(advice.usage ? { usage: advice.usage } : {}),
+    ...(advice.stopReason !== undefined ? { stopReason: advice.stopReason } : {}),
+  };
+  if (!advice.text) {
+    return {
+      ...stubOutcome(
+        base,
+        emptyStubPath,
+        emptyAdviceReason(observed.status, advice),
+        elapsed(),
+        secrets,
+        observed
+      ),
+      ...fields,
+      ...(advice.emptyReason ? { emptyReason: advice.emptyReason } : {}),
+    };
+  }
+  return {
+    ...base,
+    upstreamStatus: observed.status,
+    upstreamStatusSource: observed.source,
+    responseBytes: observed.bytes,
+    latencyMs: elapsed(),
+    origin: "upstream",
+    stubPath: null,
+    text: advice.text,
+    ...fields,
+  };
 }
 
 /** The panel section for a model that produced no advice. Names model and reason. */
@@ -2443,9 +2468,21 @@ function modelCallRecord(
     sessionId: call.sessionId,
     role: outcome.role,
     requestedModel: outcome.requestedModel,
-    provider: outcome.route?.kind ?? null,
-    route: outcome.route ? { kind: outcome.route.kind, host: outcome.route.host } : null,
-    routedModel: outcome.route?.wireModel ?? null,
+    // The claudish provider that SERVED the call, never the planned one.
+    provider: outcome.servedBy?.provider ?? null,
+    route:
+      outcome.recordRoute ??
+      (outcome.route ? { kind: outcome.route.kind, host: outcome.route.host } : null),
+    routedModel: outcome.routedModel ?? outcome.route?.wireModel ?? null,
+    servedBy: outcome.servedBy ?? null,
+    billing: outcome.billing ?? null,
+    ...(outcome.hopsTried ? { hopsTried: outcome.hopsTried } : {}),
+    ...claudeRecordFields(outcome),
+    ...(outcome.usage ? { usage: outcome.usage } : {}),
+    ...(outcome.emptyReason ? { emptyReason: outcome.emptyReason } : {}),
+    ...(outcome.stopReason !== undefined && outcome.origin !== "upstream"
+      ? { stopReason: outcome.stopReason }
+      : {}),
     upstreamStatus: outcome.upstreamStatus,
     upstreamStatusSource: outcome.upstreamStatusSource,
     responseBytes: outcome.responseBytes,
@@ -2453,6 +2490,17 @@ function modelCallRecord(
     origin: outcome.origin,
     stubPath: outcome.stubPath,
     reason: outcome.reason ?? null,
+  };
+}
+
+/** The Claude-only record fields (labels, never a value), when the outcome carries them. */
+function claudeRecordFields(outcome: AdvisorModelOutcome): Record<string, unknown> {
+  const claude = outcome as Partial<ClaudeAdvisorOutcome>;
+  return {
+    ...(claude.credentialSource !== undefined ? { credentialSource: claude.credentialSource } : {}),
+    ...(claude.loginSkipped ? { loginSkipped: claude.loginSkipped } : {}),
+    ...(claude.systemHead ? { systemHead: claude.systemHead } : {}),
+    ...(claude.shapeRefusal ? { shapeRefusal: true } : {}),
   };
 }
 
@@ -2595,6 +2643,19 @@ export function recoverUnassociatedAdvisorResult(
   return result;
 }
 
+/** What a Claude member or collector needs from the main request, supplied by the decorator. */
+export interface ClaudeAdvisorDeps {
+  /**
+   * The credential for this advisor call's Claude members, by presence and
+   * provenance on the main request (`resolveClaudeAdvisorAuth`). Called only
+   * when a Claude member runs, and memoised per advisor call, so a routed-only
+   * panel never resolves an Anthropic key.
+   */
+  resolveAuth: () => Promise<ClaudeAdvisorAuth>;
+  /** Test seam; defaults to the global fetch at call time. */
+  fetchImpl?: typeof fetch;
+}
+
 export interface RunAdvisorCallParams {
   toolUseId: string;
   /** Claude Code session id of the request that consumed the call. */
@@ -2602,15 +2663,15 @@ export interface RunAdvisorCallParams {
   messages: any[];
   models: string[];
   collector: string | null;
-  apiKeys: AdvisorApiKeys;
   /** When given, the P7 records are written to its advisor log. */
   cfg?: AdvisorSwapConfig;
   /**
-   * Test seam: HTTP client for panel and collector calls. Defaults to the
-   * global fetch, resolved at call time. Production callers leave it unset;
-   * it exists so tests can drive the failure paths (S4-S9) without a network.
+   * The startup plans and the routed members' chains. Absent ⇒ nothing was
+   * planned for this launch, and every member is S7 (there is no lazy path).
    */
-  fetchImpl?: typeof fetch;
+  gateway?: AdvisorPanelGateway;
+  /** Absent ⇒ a Claude member has no credential and reports S7. */
+  claude?: ClaudeAdvisorDeps;
   /**
    * Test seam: receives the per-failure warning. Defaults to the sanctioned
    * warning channel (`warnAdvisor` -> `logStderr`, which adds the `[advisor] `
@@ -2620,9 +2681,337 @@ export interface RunAdvisorCallParams {
   warn?: (message: string) => void;
 }
 
+/** The plan for one member; a launch with no gateway planned nothing. */
+function memberPlan(
+  gateway: AdvisorPanelGateway | undefined,
+  spec: string,
+  role: "panel" | "collector"
+): AdvisorModelPlan {
+  return (
+    gateway?.plan(spec, role) ?? {
+      kind: "refused",
+      spec,
+      role,
+      cause: "no-callable-hop",
+      reason: "advisor runtime not planned for this launch",
+    }
+  );
+}
+
+/** The stub paths one role uses for an empty answer and for a failure. */
+function stubPathsFor(
+  role: "panel" | "collector",
+  claude: boolean
+): { empty: AdvisorStubPath; error: AdvisorStubPath } {
+  if (role === "panel") {
+    return { empty: ADVISOR_STUB_PATHS.PANEL_EMPTY, error: ADVISOR_STUB_PATHS.PANEL_ERROR };
+  }
+  return {
+    empty: claude
+      ? ADVISOR_STUB_PATHS.ANTHROPIC_COLLECTOR_EMPTY
+      : ADVISOR_STUB_PATHS.COLLECTOR_EMPTY,
+    error: ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
+  };
+}
+
+/** One member's request: who to ask, what to ask, and how long to wait. */
+interface MemberRequest {
+  spec: string;
+  role: "panel" | "collector";
+  system: string;
+  turns: AdvisorTurn[];
+  timeoutMs: number;
+}
+
+/**
+ * Run one panel member or the collector by its startup plan: a refused plan
+ * is S7/S9 with its refusal; a routed plan goes through the gateway's chain; a
+ * Claude plan is one call to api.anthropic.com on the arm its credential
+ * allows. Never rejects.
+ */
+async function runAdvisorMember(
+  req: MemberRequest,
+  params: Pick<RunAdvisorCallParams, "gateway" | "claude" | "warn">,
+  claudeAuth: () => Promise<ClaudeAdvisorAuth>
+): Promise<AdvisorModelOutcome> {
+  const plan = memberPlan(params.gateway, req.spec, req.role);
+  switch (plan.kind) {
+    case "refused":
+      return {
+        ...stubOutcome(
+          { role: req.role, requestedModel: req.spec, route: null },
+          stubPathsFor(req.role, false).error,
+          describeAdvisorRefusal(plan),
+          0,
+          []
+        ),
+        servedBy: null,
+        billing: null,
+      };
+    case "routed":
+      return runRoutedMember(plan, req, params.gateway, params.warn);
+    case "claude-native":
+      return runClaudeMember(plan, req, params, claudeAuth);
+  }
+}
+
+async function runRoutedMember(
+  plan: Extract<AdvisorModelPlan, { kind: "routed" }>,
+  req: MemberRequest,
+  gateway: AdvisorPanelGateway | undefined,
+  warn?: (message: string) => void
+): Promise<AdvisorModelOutcome> {
+  const recordRoute: AdvisorRecordRoute = {
+    kind: "routed",
+    plannedChain: plan.hops.map((hop) => hop.displayName),
+  };
+  const base = { role: req.role, requestedModel: req.spec, route: null };
+  const paths = stubPathsFor(req.role, false);
+  if (!gateway) {
+    return {
+      ...stubOutcome(base, paths.error, "advisor gateway unavailable", 0, []),
+      recordRoute,
+      servedBy: null,
+      billing: null,
+    };
+  }
+  const result = await gateway.call({
+    plan,
+    payload: buildAdvisorPanelPayload(
+      plan.hops[0].modelSpec,
+      req.system,
+      req.turns,
+      ADVISOR_MAX_OUTPUT_TOKENS
+    ),
+    timeoutMs: req.timeoutMs,
+  });
+  const outcome = classifyPanelResult(result, base, paths);
+  warnWhenServedUnlikePlan(req, result.plannedHop, outcome.servedBy, warn);
+  return { ...outcome, recordRoute };
+}
+
+/**
+ * The hop that last served each routed member, when its billing differs from
+ * the hop the startup notice named, keyed `"<role>:<spec>"`. `FallbackHandler`
+ * starts every later call at the last hop that served (`lastSuccessIndex`), so
+ * after one transient subscription failure or one rejected subscription
+ * credential that a metered hop answered, every later call of that member is
+ * metered too — exactly as on main routing (R3).
+ * That is accepted, but never silent: one line per change.
+ */
+const servedUnlikePlan = new Map<string, string>();
+
+/**
+ * Warn once per change when a routed call was served by a hop whose billing
+ * differs from the startup notice's first callable hop:
+ * `[advisor] <spec> was served by <displayName> (<billing>), not <planned> as
+ * the notice said; later calls start there (routing keeps the last hop that
+ * served)`. A call served as planned clears the record, so a later drift warns
+ * again.
+ */
+function warnWhenServedUnlikePlan(
+  req: MemberRequest,
+  planned: AdvisorPanelResult["plannedHop"],
+  servedBy: AdvisorServedBy | null | undefined,
+  warn: (message: string) => void = warnAdvisor
+): void {
+  if (!planned || !servedBy?.billing) return;
+  const key = `${req.role}:${req.spec}`;
+  if (servedBy.billing === planned.billing) {
+    servedUnlikePlan.delete(key);
+    return;
+  }
+  const served = `${servedBy.provider}:${servedBy.billing}`;
+  if (servedUnlikePlan.get(key) === served) return;
+  servedUnlikePlan.set(key, served);
+  warn(
+    `${req.spec} was served by ${hopLabel(servedBy.displayName, servedBy.billing)}, ` +
+      `not ${hopLabel(planned.displayName, planned.billing)} as the notice said; later ` +
+      "calls start there (routing keeps the last hop that served)"
+  );
+}
+
+/** The hop-log facts of a routed call: which hops were entered, and the last one. */
+function routedHopFacts(result: AdvisorPanelResult): {
+  hopsTried: string[];
+  last: AdvisorPanelResult["hops"][number] | undefined;
+} {
+  const hopsTried: string[] = [];
+  for (const hop of result.hops) {
+    const uid = hop.uid ?? hop.provider;
+    if (!hopsTried.includes(uid)) hopsTried.push(uid);
+  }
+  return { hopsTried, last: result.hops[result.hops.length - 1] };
+}
+
+/** The outcome of a routed call that answered with no advice: a stub on one of the role's paths. */
+function routedStub(
+  base: Pick<AdvisorModelOutcome, "role" | "requestedModel" | "route">,
+  stubPath: AdvisorStubPath,
+  reason: string,
+  result: AdvisorPanelResult,
+  hopsTried: string[],
+  observed?: ObservedResponse
+): AdvisorModelOutcome {
+  return {
+    ...stubOutcome(base, stubPath, reason, result.latencyMs, [], observed),
+    hopsTried,
+    servedBy: null,
+    billing: null,
+  };
+}
+
+/**
+ * A gateway result as an outcome. The body was already redacted by value
+ * against every credential the chain signed with; the reason is sanitised by
+ * shape on top (`stubOutcome`). Status reads are `extractUpstreamStatus(body)
+ * ?? status`, so a terminal error the 400 remap rewrote is reported with the
+ * provider's own status.
+ */
+function classifyPanelResult(
+  result: AdvisorPanelResult,
+  base: Pick<AdvisorModelOutcome, "role" | "requestedModel" | "route">,
+  paths: { empty: AdvisorStubPath; error: AdvisorStubPath }
+): AdvisorModelOutcome {
+  const { hopsTried, last } = routedHopFacts(result);
+  if (result.failure || result.status === null) {
+    const reason = result.failure?.message ?? "the advisor call produced no response";
+    return routedStub(base, paths.error, reason, result, hopsTried);
+  }
+  const bodyStatus = extractUpstreamStatus(result.bodyText);
+  const observed: ObservedResponse = {
+    status: bodyStatus ?? result.status,
+    source: bodyStatus !== undefined ? "error.upstream_status" : "http_status",
+    bytes: new TextEncoder().encode(result.bodyText).byteLength,
+  };
+  const summary = summarizeErrorBody(result.bodyText);
+  if (result.streamFailure) {
+    const reason = `the stream failed after HTTP ${result.status}: ${summary}`;
+    return routedStub(base, paths.error, reason, result, hopsTried, observed);
+  }
+  const httpOk = result.status >= 200 && result.status < 300;
+  if (!httpOk || (bodyStatus !== undefined && bodyStatus >= 400)) {
+    const reason = `HTTP ${observed.status}: ${summary}`;
+    return routedStub(base, paths.error, reason, result, hopsTried, observed);
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(result.bodyText);
+  } catch {
+    const reason = `HTTP ${observed.status} but the response body is not JSON`;
+    return routedStub(base, paths.empty, reason, result, hopsTried, observed);
+  }
+  const advice = extractAdvice(data);
+  const usage = advice.usage ? { usage: advice.usage } : {};
+  if (!advice.text) {
+    return {
+      ...routedStub(
+        base,
+        paths.empty,
+        emptyAdviceReason(observed.status, advice),
+        result,
+        hopsTried,
+        observed
+      ),
+      ...usage,
+      ...(advice.emptyReason ? { emptyReason: advice.emptyReason } : {}),
+      ...(advice.stopReason !== undefined ? { stopReason: advice.stopReason } : {}),
+    };
+  }
+  const servedBy: AdvisorServedBy | null = last
+    ? {
+        provider: last.uid ?? last.provider,
+        displayName: last.displayName,
+        arm: last.arm,
+        billing: last.billing,
+      }
+    : null;
+  return {
+    ...base,
+    upstreamStatus: observed.status,
+    upstreamStatusSource: observed.source,
+    responseBytes: observed.bytes,
+    latencyMs: result.latencyMs,
+    origin: "upstream",
+    stubPath: null,
+    text: advice.text,
+    hopsTried,
+    servedBy,
+    billing: servedBy?.billing ?? null,
+    routedModel: last?.wireModel ?? null,
+    ...usage,
+  };
+}
+
+/** The display name of the native Anthropic provider, for `servedBy`. */
+function nativeAnthropicDisplayName(): string {
+  return getProviderByName("native-anthropic")?.displayName ?? "Anthropic (Native)";
+}
+
+async function runClaudeMember(
+  plan: Extract<AdvisorModelPlan, { kind: "claude-native" }>,
+  req: MemberRequest,
+  params: Pick<RunAdvisorCallParams, "claude" | "warn">,
+  claudeAuth: () => Promise<ClaudeAdvisorAuth>
+): Promise<AdvisorModelOutcome> {
+  const outcome = await runClaudeAdvisorCall({
+    role: req.role,
+    spec: req.spec,
+    model: plan.model,
+    auth: await claudeAuth(),
+    system: req.system,
+    turns: req.turns,
+    timeoutMs: req.timeoutMs,
+    ...(params.claude?.fetchImpl ? { fetchImpl: params.claude.fetchImpl } : {}),
+    ...(params.warn ? { warn: params.warn } : {}),
+  });
+  const served = outcome.origin === "upstream" && outcome.servedArm !== null;
+  return {
+    ...outcome,
+    recordRoute: { kind: "claude-native", host: ANTHROPIC_API_HOST },
+    routedModel: plan.model,
+    servedBy: served
+      ? {
+          provider: "native-anthropic",
+          displayName: nativeAnthropicDisplayName(),
+          arm: outcome.servedArm,
+          billing: outcome.billing,
+        }
+      : null,
+  };
+}
+
+/** One credential resolution per advisor call, and none unless a Claude member asks. */
+function memoClaudeAuth(claude: ClaudeAdvisorDeps | undefined): () => Promise<ClaudeAdvisorAuth> {
+  let pending: Promise<ClaudeAdvisorAuth> | undefined;
+  return () => {
+    pending ??= claude
+      ? claude.resolveAuth()
+      : Promise.resolve({
+          arm: null,
+          reason: "no Claude credential: the advisor was given no access to the main request",
+          facts: {},
+        });
+    return pending;
+  };
+}
+
+/** The panel's turns: the prepared transcript flattened to text. */
+function panelTurns(panelMessages: any[]): AdvisorTurn[] {
+  return convertToOpenAIMessages(panelMessages).map((m) => ({
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: m.content,
+  }));
+}
+
 /**
  * Runs one advisor call: every panel model in parallel, then the collector
  * when there is more than one answer to synthesize. Never rejects.
+ *
+ * Each member runs by its startup plan (`gateway.plan`): a routed member as
+ * one in-process request through its startup-built chain, a Claude member as
+ * one call to api.anthropic.com. The Claude credential is resolved at most
+ * once per call, and only when a Claude member runs.
  *
  * The success path produces exactly the text it always did (R4): a single
  * model's answer as-is, the collector's synthesis, or — with no collector —
@@ -2631,16 +3020,29 @@ export interface RunAdvisorCallParams {
  * warning.
  */
 export async function runAdvisorCall(params: RunAdvisorCallParams): Promise<AdvisorCallOutcome> {
-  const { toolUseId, messages, models, collector, apiKeys, fetchImpl } = params;
+  const { toolUseId, messages, models, collector } = params;
+  const claudeAuth = memoClaudeAuth(params.claude);
 
   // What the panel is ASKED: the transcript with claudish's own "No such tool"
   // plumbing for THIS call neutralised, and the advisor's question stated last.
   // Built once and shared by every panel model, so they all answer the same
   // question. Never mutates `messages` — it is the live upstream payload.
-  const panelMessages = prepareAdvisorPanelMessages(messages, toolUseId);
+  const turns = panelTurns(prepareAdvisorPanelMessages(messages, toolUseId));
 
   const panel = await Promise.all(
-    models.map((m) => callAdvisorModel(m, panelMessages, apiKeys, fetchImpl))
+    models.map((spec) =>
+      runAdvisorMember(
+        {
+          spec,
+          role: "panel",
+          system: ADVISOR_SYSTEM_PROMPT,
+          turns,
+          timeoutMs: ADVISOR_PANEL_TIMEOUT_MS,
+        },
+        params,
+        claudeAuth
+      )
+    )
   );
   const successful = panel.filter(
     (o): o is AdvisorModelOutcome & { text: string } => o.origin === "upstream"
@@ -2667,11 +3069,19 @@ export async function runAdvisorCall(params: RunAdvisorCallParams): Promise<Advi
     result = { text: sections.join("\n\n"), isError: false };
     resultOrigin = "upstream";
   } else {
-    collectorOutcome = await callCollectorModel(
-      collector,
-      successful.map((o) => ({ model: o.requestedModel, text: o.text })),
-      apiKeys,
-      fetchImpl
+    const adviceText = successful
+      .map((o, i) => `### Advisor ${i + 1} (${o.requestedModel})\n${o.text}`)
+      .join("\n\n");
+    collectorOutcome = await runAdvisorMember(
+      {
+        spec: collector,
+        role: "collector",
+        system: COLLECTOR_SYSTEM_PROMPT,
+        turns: [{ role: "user", content: adviceText }],
+        timeoutMs: ADVISOR_COLLECTOR_TIMEOUT_MS,
+      },
+      params,
+      claudeAuth
     );
     if (collectorOutcome.origin === "upstream" && collectorOutcome.text !== undefined) {
       result = { text: collectorOutcome.text, isError: false };
@@ -2707,19 +3117,4 @@ export async function runAdvisorCall(params: RunAdvisorCallParams): Promise<Advi
   if (params.cfg) logAdvisorCallOutcome(params.cfg, outcome);
   warnOnAdvisorFailures(outcome, params.warn);
   return outcome;
-}
-
-/**
- * The original entry point, kept for compatibility: the delivered text only.
- * Prefer `runAdvisorCall`, which also reports provenance and `isError`.
- */
-export async function fetchMultiModelAdvice(
-  toolUseId: string,
-  messages: any[],
-  models: string[],
-  collector: string | null,
-  apiKeys: AdvisorApiKeys
-): Promise<string> {
-  const outcome = await runAdvisorCall({ toolUseId, messages, models, collector, apiKeys });
-  return outcome.result.text;
 }

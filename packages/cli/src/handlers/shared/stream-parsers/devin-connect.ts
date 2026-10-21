@@ -57,7 +57,13 @@ import {
   readString,
   readVarintValue,
 } from "../../../providers/devin/proto-codec.js";
+import { redactForClient } from "../../../redact.js";
 import { messageStartUsage } from "./message-start-usage.js";
+import {
+  type ParserSource,
+  type UpstreamReaderSlot,
+  cancelEndsUpstreamWork,
+} from "./upstream-cancel.js";
 
 /** Response field numbers. Protocol constants, not model data. */
 const FIELD_TEXT = 3;
@@ -127,9 +133,12 @@ export function createDevinConnectStream(
 ): Response {
   const encoder = new TextEncoder();
   let isClosed = false;
+  // Set by `cancel()` only: the client went away (see finalize).
+  let cancelled = false;
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
-  const stream = new ReadableStream({
+  const upstream: UpstreamReaderSlot = {};
+  const source: ParserSource<Uint8Array> = {
     async start(controller) {
       const send = (event: string, data: any) => {
         if (!isClosed) {
@@ -217,6 +226,22 @@ export function createDevinConnectStream(
         if (finalized) return;
         finalized = true;
 
+        // The client cancelled: the read ended because claudish cancelled the
+        // upstream reader, not because Devin sent an end-of-stream frame. No
+        // turn-end hook, no stream-error log, and no zero-token update; usage
+        // only when Devin sent it.
+        if (cancelled) {
+          log(
+            `[DevinConnect] Client cancelled the stream for ${opts.modelName} (loop ended: ${reason}); usage ${sawUsage ? "reported" : "not received, not recorded"}`
+          );
+          if (sawUsage) opts.onTokenUpdate?.(inputTokens, outputTokens);
+          if (pingInterval) {
+            clearInterval(pingInterval);
+            pingInterval = null;
+          }
+          return;
+        }
+
         closeCurrentTool();
         closeThinking();
         closeText();
@@ -236,7 +261,13 @@ export function createDevinConnectStream(
 
         if (reason === "error") {
           log(`[DevinConnect] stream error: ${errorMessage}`);
-          send("error", { type: "error", error: { type: "api_error", message: errorMessage } });
+          send("error", {
+            type: "error",
+            error: {
+              type: "api_error",
+              message: errorMessage === undefined ? errorMessage : redactForClient(errorMessage),
+            },
+          });
         } else {
           send("message_delta", {
             type: "message_delta",
@@ -428,6 +459,7 @@ export function createDevinConnectStream(
         }
 
         const reader = body.getReader();
+        upstream.reader = reader;
         const nextFrames = createFrameReader();
 
         while (true) {
@@ -467,14 +499,18 @@ export function createDevinConnectStream(
         finalize("error", String(e));
       }
     },
+    // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
+    // after this and resolves only once the read loop above has settled.
     cancel() {
+      cancelled = true;
       isClosed = true;
       if (pingInterval) {
         clearInterval(pingInterval);
         pingInterval = null;
       }
     },
-  });
+  };
+  const stream = new ReadableStream(cancelEndsUpstreamWork(upstream, source));
 
   return new Response(stream, {
     headers: {

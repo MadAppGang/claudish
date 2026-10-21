@@ -171,6 +171,26 @@ past the subscription to a metered provider.
 Routing is unchanged: `resolveAntigravityModelId` and the transport resolve
 against the full `servedIds`, so a typed `ag@gemini-2.5-pro` still works.
 
+**The availability check resolves ids the way the transport does** (2026-10-21,
+`ai-docs/reports/model-failures-2026-10-21.md` D8). `providerServesModel` used to
+match the requested id exactly against the dynamic models catalog, because
+Antigravity has no entry in the resolver registry. On an account serving only
+`gemini-3.8-flash-tiered`, `ag@gemini-3.8-flash` therefore read as not served and
+`--advisor` refused it, while the transport would have sent the tiered variant; a
+bare `gemini-3.8-flash` lost its `ag@` hop the same way and went to a metered
+provider. The transport, the credential and the check now share one function,
+`resolveAntigravityServedModel` (`transport/antigravity.ts`):
+`resolveAntigravityModelId` with the cloud models catalog's family default
+(`lookupFamilyDefaultVariant`). The check feeds it the transport's own inputs, the
+full `servedIds` and the backend's `defaultAgentModelId`, from the `getServedAntigravityModels` cache
+the discovery just filled (`peekServedAntigravityModels`), and then asks whether
+the resolved id is in the dynamic models catalog. An id the backend declares
+unselectable therefore still reads as not served. With no cache (a fetch that
+never succeeded under this client version) it resolves against the dynamic models
+catalog's ids with no backend default. Antigravity stays out of the resolver
+registry: a resolver there receives neither the full `servedIds` nor the backend
+default.
+
 ## Ordering: cloud models catalog dates are poison for Antigravity's models
 
 Antigravity rows set `ignoreCatalogReleaseDate`. `compareByReleaseDateDesc` sorts

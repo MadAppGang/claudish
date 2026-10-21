@@ -176,3 +176,53 @@ export function isRecoveryHoldResponse(
 ): boolean {
   return hasRecoveryMarker(response?.headers);
 }
+
+/**
+ * The THIRD marker: a stream that failed AFTER claudish flushed a 200.
+ *
+ * Once a stream parser has sent `message_start`, the only way left to report a
+ * failure is an SSE `error` event; Claude Code then discards the message and
+ * retries the turn. A NON-streamed request (`stream` absent or false) has no
+ * SSE: `sseResponseToJson` folds the parser's events into one JSON answer, and
+ * it answers such a failure with the Anthropic error body for the event's own
+ * error type. That answer must behave like the streamed form of the same
+ * failure, which never reaches `FallbackHandler` as an error at all:
+ *
+ * - it is not a provider's verdict on the request (the provider already
+ *   answered 200), so it must never ADVANCE a routing chain. A status rule
+ *   cannot hold it: a leg error quotes the upstream body, and
+ *   `isRetryableError` reads quota wording before any status;
+ * - it must not be FOLDED by `formatCombinedError` with earlier candidates'
+ *   errors either, which would replace its status.
+ *
+ * So `FallbackHandler.handle` returns a response carrying this header verbatim
+ * before reading the body, and `isRetryableError` answers `false` for it as its
+ * first statement. Unforgeable by the argument at the top of this file:
+ * `sseResponseToJson` builds a new `Response` whose headers start empty, and no
+ * upstream header is ever copied onto it.
+ */
+export const STREAM_FAILURE_HEADER = "x-claudish-stream-failure";
+
+/** The headers the collector's stream-failure answer carries. */
+export function streamFailureHeaders(): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    [STREAM_FAILURE_HEADER]: RECOVERY_MARKER_VALUE,
+  };
+}
+
+/** Does this header bag carry the stream-failure marker? */
+export function hasStreamFailureMarker(headers: Headers | undefined | null): boolean {
+  try {
+    return headers?.get(STREAM_FAILURE_HEADER) === RECOVERY_MARKER_VALUE;
+  } catch {
+    return false;
+  }
+}
+
+/** Is this response a non-streamed turn whose stream ended on an SSE `error`? */
+export function isStreamFailureResponse(
+  response: { headers?: Headers } | null | undefined
+): boolean {
+  return hasStreamFailureMarker(response?.headers);
+}

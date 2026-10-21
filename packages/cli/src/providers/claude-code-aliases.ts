@@ -81,7 +81,7 @@ export const CLAUDE_CODE_MODEL_ALIASES = [
 ] as const;
 
 /** Claude Code's 1M-context selector, appended to an alias or a `claude-` id: `sonnet[1m]`. */
-const ONE_MILLION_CONTEXT_SUFFIX = "[1m]";
+export const ONE_MILLION_CONTEXT_SUFFIX = "[1m]";
 
 /**
  * Whether Claude Code owns this bare name: one of its aliases, optionally with the

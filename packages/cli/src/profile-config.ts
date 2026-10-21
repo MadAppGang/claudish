@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
+import { type CodeModeSetting, parseCodeModeSetting } from "./code-mode/policy.js";
 import { activeGlobalConfigFile, getConfigFileOverride } from "./config-override.js";
 
 // Config directory and file paths
@@ -268,6 +269,16 @@ export interface ClaudishProfileConfig {
   proOnUltracode?: boolean;
 
   /**
+   * Code mode for `openai-codex` (`auto` | `on` | `off`, default `auto`): Claude
+   * Code's tools are offered to the model as one freeform `exec` tool running
+   * a script, the protocol the official Codex client uses.
+   * Precedence: --code-mode flag > CLAUDISH_CODE_MODE env > project
+   * `.claudish.json` > this field > auto. The scoped read is `readCodeMode()`,
+   * NOT this allowlist — same reason as `proOnUltracode`.
+   */
+  codeMode?: CodeModeSetting;
+
+  /**
    * Master switch for connection RECOVERY itself — the retry ladder claudish
    * runs when it cannot even reach the provider. Default ON. Turning it off
    * restores the immediate `connection_error` 400 everywhere.
@@ -434,6 +445,10 @@ export function loadConfig(): ClaudishProfileConfig {
     if (config.proOnUltracode !== undefined) {
       merged.proOnUltracode = config.proOnUltracode;
     }
+    // Same trap: omitted here, `codeMode` is dropped at the first global save.
+    if (config.codeMode !== undefined) {
+      merged.codeMode = config.codeMode;
+    }
     // Same trap again, for both recovery switches. Omitted here, the field
     // survives on disk until the first global save and is then silently
     // dropped — turning the user's off-switch back ON with no error.
@@ -559,6 +574,32 @@ export function readProOnUltracode(
       if (!existsSync(path)) continue;
       const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
       if (typeof parsed?.proOnUltracode === "boolean") return parsed.proOnUltracode;
+    } catch {
+      // Garbled/unreadable file → skip this scope rather than fail the run.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Read `codeMode` from the project file, else the global file.
+ *
+ * A RAW per-file read, for the same reason `readProOnUltracode` is one: a
+ * project `.claudish.json` that sets only this key is invisible to
+ * `loadConfig`. A value other than `auto`/`on`/`off` is skipped (that scope
+ * states nothing). Returns undefined when neither scope states a setting —
+ * the caller then applies the default (`off`).
+ */
+export function readCodeMode(
+  paths: ScopedConfigPaths = defaultScopedConfigPaths
+): CodeModeSetting | undefined {
+  for (const pathFn of [paths.project, paths.global]) {
+    try {
+      const path = pathFn();
+      if (!existsSync(path)) continue;
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+      const setting = parseCodeModeSetting(parsed?.codeMode);
+      if (setting) return setting;
     } catch {
       // Garbled/unreadable file → skip this scope rather than fail the run.
     }

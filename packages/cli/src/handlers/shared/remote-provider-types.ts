@@ -356,6 +356,17 @@ export function registerDynamicPricingLookup(
 }
 
 /**
+ * How one signed request is billed, decided when it was signed. For a
+ * `CREDENTIAL_DECIDED_PROVIDERS` member that is the arm of the credential that
+ * signed it (`RequestAuth.arm === "oauth"` ⇒ subscription); for every other
+ * provider it is its fixed `SUBSCRIPTION_PROVIDERS` category. Carried with the
+ * request into its cost updates, never stored on a shared object.
+ */
+export interface RequestBilling {
+  subscription: boolean;
+}
+
+/**
  * Get pricing for a model.
  * Lookup order:
  *   1. Subscription providers → zero cost, isSubscription: true. Via
@@ -370,12 +381,21 @@ export function registerDynamicPricingLookup(
  * measured dead — see the FREE_PROVIDERS tombstone above for the re-entry test a
  * genuinely free provider would have to meet. A provider that charges nothing but
  * is not listed here lands on step 3's estimate, which is a visible guess.
+ *
+ * `billing` is the decision of ONE signed request (`RequestBilling`). When it is
+ * given, it replaces step 1's `isSubscriptionProvider` call, whose answer for a
+ * credential-decided provider is the process-wide last-signed arm, which a
+ * concurrent request can change before this request's usage arrives.
  */
-export function getModelPricing(provider: string, modelName: string): ModelPricing {
+export function getModelPricing(
+  provider: string,
+  modelName: string,
+  billing?: RequestBilling
+): ModelPricing {
   const p = provider.toLowerCase();
 
   // 1. Subscription providers
-  if (isSubscriptionProvider(p)) {
+  if (billing ? billing.subscription : isSubscriptionProvider(p)) {
     return { inputCostPer1M: 0, outputCostPer1M: 0, isSubscription: true };
   }
 

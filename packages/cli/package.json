@@ -1,6 +1,6 @@
 {
   "name": "claudish",
-  "version": "13.4.0",
+  "version": "14.0.0",
   "description": "Run Claude Code with any model - OpenRouter, Ollama, LM Studio & local models",
   "type": "module",
   "main": "./dist/index.js",
@@ -33,10 +33,12 @@
     "@1password/sdk": "0.4.1-beta.1",
     "@inquirer/prompts": "^8.0.1",
     "@inquirer/search": "^4.0.1",
+    "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "@opentui/core": "^0.1.107",
     "@opentui/react": "^0.1.107",
     "dotenv": "^17.2.3",
+    "quickjs-emscripten-core": "^0.32.0",
     "react": "^19.2.4",
     "zod": "^4.1.13"
   },

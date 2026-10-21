@@ -94,7 +94,11 @@ Located in `handlers/shared/stream-parsers/`:
 - `anthropic-sse.ts` — Anthropic SSE passthrough (MiniMax, Kimi direct)
 - `gemini-sse.ts` — Gemini SSE → Claude SSE
 - `ollama-jsonl.ts` — Ollama JSONL → Claude SSE
-- `openai-responses-sse.ts` — OpenAI Responses API → Claude SSE (Codex)
+- `openai-responses-sse.ts` — OpenAI Responses API → Claude SSE (Codex). The module entry point
+  only; the work is under `responses/`: `claude-sse-sink.ts` (the one writer of Claude SSE for a
+  downstream message), `responses-leg.ts` (one upstream body → a `LegOutcome`), `responses-turn.ts`
+  (how the message ends, in-turn retry, usage), `parallel-wrapper.ts`, `stall-guard.ts`. See
+  "Codex tool calls" below.
 
 ## Gemini tool schemas are protobuf, not JSON Schema (`handlers/shared/gemini-schema.ts`)
 
@@ -282,6 +286,174 @@ models-index subagent `acd91c47262e06a7a`, `gpt-5.6-sol` via `openai-codex`, 202
 
 **The fix:** when `openToolBlocks` is non-empty in the parser's catch block, end the turn with an SSE `error` event instead of `end_turn`. No completed `tool_use` reaches the client, and a dead socket is transient, so the client's own retry is the right remedy. `devin-connect.ts` ends a mid-stream fault the same way. With no tool call in flight the inline `[Stream error: ...]` text block is kept — partial prose is harmless and visible.
 
+Since the leg/turn split the catch block is `responses-leg.ts` (it reports `stream-error` with
+`openToolBlock`) and the ending is chosen in `responses-turn.ts`; the rule is unchanged.
+
+## Codex tool calls: zero-delta arguments, the `parallel` wrapper, retry within the turn
+
+`cx@` sessions (claudish provider `openai-codex`, the ChatGPT Codex backend) failed parallel tool
+calls with `InputValidationError: … The required parameter 'file_path' is missing`. Three
+mechanisms, each with its own evidence; the measurements are in
+`ai-docs/reports/codex-parallel-wrapper-degeneration-2026-10.md` and the session evidence it cites.
+
+### Zero-delta function calls
+
+Since 2026-07-29 the Codex backend sends every MULTI-call turn with zero
+`response.function_call_arguments.delta` events (100% of multi-call turns in the B replays). The
+arguments exist only in `response.function_call_arguments.done` and in the `output_item.done`
+item. The parser forwarded arguments only from deltas, so Claude Code got `{}`.
+
+Each call now counts the bytes it forwarded (`forwardedBytes`) and keeps the `.done` string. At
+`output_item.done` the final arguments are `.done ?? item.arguments ?? accumulator`:
+
+| what the deltas carried | what goes out at `output_item.done` |
+|---|---|
+| nothing (Codex multi-call) | the final string as ONE `input_json_delta`; log `zero-delta function_call <name>: emitted <n> bytes from <done\|item>` |
+| a strict prefix of the final string | the missing suffix only (logged) |
+| the whole final string (native `openai@`, single-call Codex) | nothing more |
+| something that is not a prefix | nothing more; log `done arguments diverge from streamed deltas for <name>` |
+
+A buffered call (plan-mode Write/Edit) hands the final string to `onToolCall`, then one delta.
+`BehaviorSession.repairToolCall` ignores an empty argument string: reading it as `{}` journalled
+false `tool_call/ignored` entries.
+
+### The `parallel` wrapper
+
+About 1% of turns end with a function_call named `parallel` (the model's built-in
+`multi_tool_use.parallel`), which no tool in the request declares. In every observed case its
+arguments are a degenerate 41–96 KB string (`a.ts.tsaaa.ts.ts…`) that arrives in ONE burst after a
+361–484 s keepalive-only stall, then `response.incomplete` `max_output_tokens`. The B experiment
+found no request factor (effort low/medium, 4 tools, `strict:false`) significantly better
+(Fisher p = 1.000), so the remedy is in claudish, not in the request.
+
+`isParallelWrapperName(name, declaredNames)` is true for `parallel` / `multi_tool_use.parallel`
+(optional `functions.` prefix) only when no tool Claude Code declared has that name, so a user tool
+really called `parallel` is untouched. Such a call is HELD (no `content_block_start`), and the
+pending reasoning moves into it. At `output_item.done`:
+
+- a valid `{tool_uses:[{recipient_name, parameters}]}` becomes one tool_use block per entry (name
+  `functions.`-stripped and decoded through `toolNameMap`, id `toolu_<call id>_p<k>`). The
+  reasoning is remembered under the `_p0` id ONLY, so the next request replays it exactly once.
+  No valid wrapper has ever been captured (the backend unpacks those itself), so this branch rests
+  on the documented shape, not on a capture;
+- anything else (unparseable, wrong shape, empty, or still held at `response.incomplete` or at the
+  end of the stream) is degenerate and never reaches Claude Code. A wrapper judged degenerate at its
+  `output_item.done` does not end the leg there: the leg keeps reading, emitting nothing, until the
+  terminal event (at most `EXEC_DRAIN_MS = 10 s`, the exec's drain), because that event carries the
+  usage the provider billed. In the V0-21 capture `response.incomplete` came six lines later with
+  39,429 input and 32,000 output tokens, which an immediate stop dropped from the accounting.
+
+There is no byte-level repetition detector: the degenerate string is never streamed, so a streaming
+detector has nothing to observe on the real failure, and its low-diversity condition is met by
+legitimate repetitive Write content.
+
+### Retry within the turn
+
+A degenerate leg is retried by re-sending the SAME body while the downstream message stays open
+(`responses-turn.ts`); the next leg continues at the next block index on the same `ClaudeSseSink`.
+`MAX_LEG_RETRIES = 2` (3 attempts). Tool blocks have three states on the sink (started, arguments
+complete, stopped), and a leg is issued only while no tool_use was emitted:
+
+| state of the message when the trigger fires | action |
+|---|---|
+| `message_start` + pings, or closed text/thinking only | retry (repeated commentary is possible, cosmetic, logged) |
+| ≥ 1 tool_use stopped with its arguments, none cut off | no retry: end `stop_reason: tool_use` for those calls — re-emitting could run a side-effecting Bash twice |
+| any tool_use started but cut off | no retry: SSE `error` (the cut-off rule above) |
+| retries exhausted | SSE `error`: `degenerate parallel tool wrapper after 3 attempts` / `no output for 300 s after 3 attempts` |
+
+Log: `[ResponsesTurn] <stall 150s|degenerate NB> — retry k/2`.
+
+**Why the parser layer, and nowhere else.** Not 7b: the status is already flushed. Not
+`FallbackHandler`: a model fault must never move a subscription user onto a metered hop. Not the
+transport. After the flush every failure ends with an SSE `error`; no status is invented, no
+network-recovery hold starts, and the five auth sites are untouched.
+
+**Legs 2..n** come from `createLegIssuer` (`handlers/shared/responses-leg-issuer.ts`), built in
+`handle()` from THIS request's header builder, current body (after parameter recovery) and
+transport hooks. Per leg: `refreshAuth`, and when the returned binding's arm or account differs
+from the turn's (`isSameCredentialSilo`), stop ("Codex sign-in changed during the turn") rather
+than continue on another credential silo (`openai-codex` returns a binding from `refreshAuth` and
+`forceRefreshAuth`; a transport that returns none keeps the no-binding path, identical to the
+primary fetch, and the primary 401 retry applies the same check before it resends the body); its
+own `deadlineClamp` ceiling merged with the turn signal (the primary's clamp is disarmed at
+headers and bounds nothing later); one `forceRefreshAuth` re-fetch on 401; any
+other non-200 → SSE `error` carrying the status and the first 500 body bytes (`HTTP 429 on retry
+leg 2: …`), no parameter recovery; the 7b settle, abortable; a throw is classified for the log only.
+The previous leg's reader is cancelled (awaited) first, so two upstream streams never overlap.
+
+**Usage.** Each leg reads its own usage, including `input_tokens_details.cached_tokens`. At turn
+end, in this order: `onExtraBilledInput` (input of EARLIER legs that reported usage) →
+`TokenTracker.addBilledInputTokens` (cost and billed input only, never the context figures, same
+cache clamp as `update()`); `onTurnSummary`; then `onTokenUpdate(final leg's input, every leg's
+output)`, which fires the request's ONE stats record, so it already contains both. Each earlier leg
+was a separate request the provider billed in full; under `delta-aware` the last leg is still
+charged only its growth, which is that strategy's model of the conversation, not of a retry. On the
+default stall scope (subscription) this is $0. StatsEvent `leg_retries` (absent when 0) is pushed in
+`eventToLogRecord` as `llm.leg_retries`.
+
+### The stall guard (`stall-guard.ts`)
+
+The leak's keepalive-only wait (361–484 s) is not bounded by `API_TIMEOUT_MS`, which does not bound
+a flushed, pinging stream (the leak ran 472 s). A leg with no output-bearing event
+(`output_item.added` of any type, or any `*.delta`; NOT `created`, `in_progress`, keepalives,
+metadata) within the threshold after its RESPONSE HEADERS is cut off and retried like a degenerate
+leg.
+
+| sample (all `openai-codex`, ChatGPT backend) | n | headers → first output item |
+|---|---|---|
+| real sessions, 19 debug logs, 2026-07-15..10-16 | 8,239 | p50 1.2 s, p90 3.6 s, p99 8.5 s, p99.9 28.3 s, healthy max 61.7 s |
+| B experiment, healthy legs | 297 | max 7.38 s (from `response.created`) |
+| leaks | 4 | 361 s, 456 s, 484.5 s, > 150 s (aborted) |
+
+The clock starts at the headers, not at `response.created`: in the 61.7 s legs the backend held
+`response.created` until the first item. ComposedHandler stamps it where the 200 arrives and again
+on each 7b re-issue, so the 12 s sniff window counts against the guard. Thresholds: 150 s for
+attempts 1..n-1 (2.4× the healthy max, 2.4× below the fastest leak), 300 s for the final attempt
+(4.9× the healthy max, still below the fastest leak). Worst case 150 + 150 + 300 s, against an
+unbounded wait; a single stall costs ~150 s plus one healthy leg, against 361–484 s.
+
+**Scope.** The data is from the ChatGPT backend only, so the default is exactly that: claudish
+provider `openai-codex` AND the arm that signs this request is `oauth` (the request's
+`binding.auth.arm`, from the binding `refreshAuth` returned at 5b). Native `openai@`, the
+`openai-codex` api-key arm and custom `responses` endpoints are unarmed unless
+`CLAUDISH_RESPONSES_STALL_MS` is set: > 0 arms it everywhere (final attempt 2×), `0` disarms it
+everywhere.
+
+### Downstream cancel
+
+`cancel()` on the downstream stream (Claude Code disconnected, aborted, timed out) used to stop only
+the ping, and the upstream response kept streaming to completion with nobody reading it. Now the
+sink aborts the turn's `AbortController`: the leg cancels its reader, the signal reaches
+`issueLeg` (a leg fetch or 7b backoff in progress is aborted), and the driver issues nothing more.
+Usage is recorded after a cancel only if a leg had already reported it (what was billed is billed).
+
+## A non-streamed turn that ends in an SSE error (`collect-sse-message.ts`)
+
+`sseResponseToJson` folds every ComposedHandler stream into one JSON message for a request with
+`stream` absent or false (`/compact`). It had no `error` case: a stream that ended on an SSE
+`error` came back as 200 with partial or empty-input content and an inferred `stop_reason`, while
+the streamed form of the same failure made Claude Code discard the message and retry.
+
+Now, when the folded stream carried an SSE `error`, every collected block is discarded and the
+answer is the Anthropic error body `{type:"error", error:{type, message}}` with the status the
+Messages API defines for that type (`invalid_request_error` 400, `api_error` 500,
+`overloaded_error` 529, any other 500) and the header `x-claudish-stream-failure: 1`. This is the
+error the event declares, not an upstream status claim, so `extractUpstreamStatus` does not apply.
+
+**Scope is every parser, deliberately.** openai-responses-sse, openai-sse, gemini-sse,
+ollama-jsonl, devin-connect and anthropic-sse all emit SSE `error` from their terminal failure path,
+so the contract reaches all of them: the non-streamed 200-with-partial-content was the
+inconsistent case, not the new one. The Responses parser's non-tool stream error (an inline text
+block, `end_turn`) emits no SSE `error` and still returns 200.
+
+**Why a marker.** A stream-failure answer is not a provider's verdict on the request and must never
+advance a routing chain. A status cannot hold it, because `isRetryableError` reads quota wording
+before any status and a retry leg's error quotes the upstream body. So `FallbackHandler.handle`
+returns it verbatim before reading the body (beside the recovery marker), and `isRetryableError`
+returns `false` for it above the wording match. Unforgeable for the recovery marker's reason: the
+collector builds a new `Response` whose headers start empty. See `network-recovery.md`, "A third
+marker".
+
 ## The remap has a downstream reader: `upstream_status` (v7.62.0, #148)
 
 The 400-not-503 remap is right for the CLIENT and wrong for anything downstream that
@@ -436,7 +608,7 @@ The exclusion rested on "a 503 cannot silently switch the user off a pinned mode
   (found by the 10.3.0 release review, source-traced; the status alone could not tell a
   connection fault from an overload).
 
-### A subscription's credential failure stops the chain (2026-10-16)
+### A subscription's credential failure (2026-10-16, replaced 2026-10-21)
 
 The `upstream_status` recovery above made a remapped 401/403 advance the chain, on the reasoning
 that a revoked key on one provider is exactly when the next should be tried. For a SUBSCRIPTION
@@ -456,7 +628,31 @@ tries only the remaining subscription ones. Any failure of those is logged and p
 serves, the answer is the FIRST rejection's response unchanged (its status, verdict header and
 "log in" message), never a combined `all_providers_failed`. An explicit spec (`zengo@glm-5.3`) has
 one candidate, so it still stops. A transient verdict, and a terminal verdict from a metered
-candidate, still return at once. Tests: `fallback-handler.subscription-only.test.ts`.
+candidate, still return at once.
+
+**Replaced 2026-10-21: the chain moves on to its next hop, metered included.** The preflight run of
+that day (`ai-docs/reports/model-failures-2026-10-21.md`, D7) showed what the subscription-only
+rule cost: one expired subscription key blocked every metered hop of the chain, although the user
+had configured those keys. Jack: an expired key must not block the chain; a configured metered key
+is consent to be billed by it. So a subscription candidate's terminal verdict (or a headerless
+401/403 credential rejection, `isSubscriptionCredentialRejection`) is retryable:
+`isRetryableError` returns `true` for both, and `FallbackHandler.handle` advances to the next hop
+whatever it bills. `announceCredentialRejection` says so on stderr once per (provider uid,
+upstream status) per process, and in the log every time:
+
+```
+[claudish] Kimi Coding rejected its credential (401: Invalid token) — moving to OpenRouter (metered, billed per token). The Kimi Coding login was rejected (HTTP 401). Run `claudish login kimi` to sign in again.
+```
+
+The next hop's billing comes from `isSubscriptionProvider` on its uid; a hop with no uid reads
+metered. When every hop fails, the answer is the usual combined `all_providers_failed`, with the
+first rejection's message appended to `error.message` (the per-attempt list clips at 200
+characters, which cut the login line off). When the rejection was the only failure, its own
+response is returned unchanged. Unchanged and still ahead of this rule: connection verdicts, the
+recovery hold and stream failures return before any credential reading, so a network fault never
+walks onto metered billing; a transient verdict and a metered hop's terminal verdict return at
+once. Billing follows the signing arm of the hop that served. Tests:
+`fallback-handler.subscription-only.test.ts`, `fallback-handler.muse-code.test.ts`.
 
 **The verdict rides a header, `x-claudish-auth-verdict`** (`terminal` or `transient`), from
 `handlers/shared/auth-failure.ts`. The status cannot carry it: a terminal failure is answered 400
@@ -477,8 +673,8 @@ in one order:
 | unknown, subscription | anything else | 503 `overloaded_error`, verdict `transient` (retried on the same hop, never walked) |
 | unknown, metered | anything else | 401 at `refreshAuth` and `forceRefreshAuth` only; other sites rethrow |
 
-**The rule: a dead or unsubscribed credential is a terminal 400 that stops the chain; an
-unclassified failure is a retryable 503.** It holds because the PRODUCERS say what their failure
+**The rule: a dead or unsubscribed credential is a terminal 400 (an explicit spec stops on it; a
+chain moves past a subscription's, above); an unclassified failure is a retryable 503.** It holds because the PRODUCERS say what their failure
 is, through `auth/credentials/credential-error.ts` (`d86e3d86`): a missing login or a rejected
 grant is `terminalCredentialError`, a token host's 429/5xx is `credentialHttpError` (transient,
 with its `upstreamStatus`). Kimi's "No Kimi OAuth credentials found. Please run `claudish login
@@ -646,3 +842,101 @@ Two things this uncovered:
    the always-on structural log only through `isStructuralLogWorthy`, a whitelist.
    Use `-d` / `--debug-claudish` (which writes `./logs/`), not `--debug` — the
    latter is passed through to Claude Code and tells you nothing about the proxy.
+
+## A credential a request signed with is redacted by value in every sink (`redact.ts`)
+
+A provider can echo the key it received: in a 401 body, in an error frame of a 200 stream, in the
+message of a token-refresh exception, in an OpenRouter 429. Shape rules (`sk-…`, `Bearer …`)
+cannot recognise an opaque key, and patching each sink leaves the next `log(` call open. So the
+exact values a request signed with are held in ONE process-wide registry and applied at the few
+places text leaves claudish.
+
+**The registry.** `acquireSigningLease()` (`redact.ts:165`) returns a lease; `lease.add(values)`
+holds each value (8 characters or more) refcounted in one module-level map (`:116`), in its
+verbatim, JSON-escaped, twice-JSON-escaped and URL-encoded forms (`holdSigningValue`, `:154`);
+`release()` drops the lease's hold once. `redactSigningValues(text)` (`:197`) returns the text
+untouched when nothing is held and otherwise replaces every held form, longest first, with
+`[redacted]` by plain substring replacement (no regex, so no stateful predicate). Replacements
+only shorten, so JSON stays JSON. There is **no timer**: a lease lives until its work ends. A fixed
+TTL could expire under a stream that is still producing frames.
+
+Why one process-wide union and not a per-request `AsyncLocalStorage` scope:
+`OpenRouterRequestQueue`'s loop runs in the async context of whichever request first started it,
+so its 429 line for request B would be attributed to request A's scope. Over-redaction across
+concurrent requests is harmless; a missed value is not.
+
+**Where values come from.** Every header fetch of a request, through `ComposedHandler`'s one
+choke point `fetchHeaders` (`composed-handler.ts:1755`): `credentialValuesFromRequest` takes
+every credential-bearing header (authorization, `x-api-key`, `api-key`, `x-goog-api-key`,
+cookie values, any header whose name contains `token`, `secret` or `key`), with and without its
+scheme word, plus the endpoint's credential query parameters. That covers the primary fetch, the
+parameter re-fetch, the 401 retry's fresh token and every Responses leg. A transport that signs
+outside its headers exposes the value through `redactionSecrets?()`: Devin (the key is in the
+body) and Antigravity (its capacity fallback sends the access token itself). The advisor adds
+Claude Code's inbound bearer and `x-api-key` to the main request's lease when it reads them
+(`claudeRequestFacts`, `handlers/native-handler-advisor.ts`). The native passthrough registers the
+exact headers it sends (the inbound bearer or key, or its fallback key) on EVERY native request,
+before its fetch (`NativeHandler.handle`), so an ordinary native turn's lease is not empty.
+
+**Who holds a lease, and when it is released.**
+
+| Request | Installed by | Released when |
+|---|---|---|
+| Every session-app route | `app.use("*", …)` (`proxy-server.ts:793`) sets `SIGNING_SECRETS_KEY` | the response body is fully read, cancelled or errors; at once for no body (`releaseWhenBodyEnds`, `handlers/shared/call-context.ts`). A cancel releases only after the parser has cancelled its upstream reader AND its read loop has settled (`cancelEndsUpstreamWork`, `stream-parsers/upstream-cancel.ts`): a flag-only parser cancel left the loop reading and logging frames after the release. A cancel owns the release once it has begun: cancelling resolves an outstanding read with `done` before the source's cancel settles, so `releaseWhenBodyEnds` sets `cancelling` before `reader.cancel()` and a pull that wakes during it never releases. A parser's `cancel()` sets its own `cancelled` flag, and its finalize then writes one neutral "Client cancelled the stream" line, with no ending classification, no turn-end hook and a token update only for usage the provider sent. That token update still fires `ComposedHandler`'s stats callback, so the handler wraps its streamed body in `notifyOnDownstreamCancel` (`stream-parsers/upstream-cancel.ts`), which flags the cancel BEFORE forwarding it; the record of a cancelled turn carries `success: false`, `error_class: "cancelled"`, `error_code: "client_cancelled"` (the existing error pair, no new `StatsEvent` field), and a cancelled turn without provider usage records nothing. On a throw that reaches the middleware (only when an inner `onError` itself threw: hono's compose answers a route's Error inside `next()`), the error's message and stack are redacted against this request's own set before the release |
+| An advisor panel call | the panel gateway (`handlers/advisor-panel-gateway.ts`) | when the call's work settles, after the body was read and redacted; a timed-out call's aborted work can still log |
+| A Claude advisor call | `runClaudeAdvisorCall`, for its own headers | when it returns (the login value is also on the main request's lease) |
+| A Context nothing installed (tests) | `signingSecretsOf` (`call-context.ts:57`) | never: retention costs redaction, never exposure |
+
+The lease belongs to the INBOUND request, never to one hop, because `FallbackHandler` logs its
+combined error after every hop has returned; and it outlives `handle()`, because a streamed body
+is parsed and logged long after the handler returned.
+
+**Every sink, and how it is covered.**
+
+| Sink | Covered by |
+|---|---|
+| `--debug` file, always-on `~/.claudish/logs/`, stderr, `DiagOutput` | `log()` and `logStderr()` call `redactSigningValues` before any write (`logger.ts:282`, `:320`); `logStructured`/`logRecovery` go through them. This covers the queue's 429 line, the parsers' frame and error lines, the auth-refresh exception and `FallbackHandler`'s stderr |
+| `CLAUDISH_UPSTREAM_ERROR_LOG`, team/pane/MCP error text | `redactSecrets` runs the registry pass before its shape rules (`redact.ts:246`) |
+| Telemetry report | `buildReport` runs it before `sanitizeMessage` (`telemetry.ts:439`, `:473`) |
+| Text sent back to Claude Code | `redactForClient` (`redact.ts:235`) at each client-body family: the native passthrough's non-success JSON body and the data lines of an SSE error event (every other byte passes unchanged). The passthrough holds each SSE event until its blank separator and only then decides: SSE fixes an event's type at dispatch and `event:` may legally follow the `data:` it names, so redacting line by line once `event: error` had been seen let `data: …` then `event: error` through unredacted. An event is an error when its LAST `event:` names `error` or its data is JSON with `type: "error"` (`redactSseErrorEvent`, `handlers/native-handler.ts`); a non-error event is forwarded byte for byte, one event late at most, `ComposedHandler`'s error bodies, the Responses leg issuer, the error frames of every stream parser (`anthropic-sse`, `openai-sse`, `gemini-sse`, `ollama-jsonl`, `devin-connect`, `responses/claude-sse-sink`), `FallbackHandler`'s combined body and thrown messages, the auth-failure bodies (`respondAuthFailure`), the 7b/7c stream-head failure bodies (`surfaced` and `provider_message`), the proxy's catch and `onError` bodies |
+| An advisor result | the gateway redacts the whole body by value against the call's own set (`redactExactValues`, `redact.ts:215`) before the reason reaches records, warnings or the tool result |
+
+**Parser rule: close last.** On a normal end the lease is released when the consumer reads
+`done`, which follows the parser's `controller.close()`. A parser that awaits anything, or logs
+upstream-derived text, after its close does so with the lease possibly gone. Every parser here
+closes in its teardown, after its last log line; keep it that way.
+
+A new sink that writes upstream text without going through `log`, `logStderr` or
+`redactSecrets`, or a client body built from upstream text without `redactForClient`, reopens
+credential echo, and nothing errors. A refresh token the credential layer sends to a token host
+is not a signing value of the model request and is not registered; that layer formats its own
+errors through its shape redactor.
+
+## An internal call's deadline reaches every piece of upstream work (`handlers/shared/call-context.ts`)
+
+An advisor panel call has a deadline (60 s, 30 s for the collector). `Promise.race` alone would
+stop the WAITING, not the work: the chain would advance to its next hop, a queued request would
+still start, and a retry sleep would still fire, all billed. The gateway therefore installs an
+abort signal on the call's Context (`CALL_ABORT_SIGNAL_KEY`, `call-context.ts:241`), and every
+place upstream work can start or wait checks it. Main requests never install it, so
+`callAbortSignal(c)` is `undefined` and every expression below collapses to the main path's code.
+
+| Upstream work | Reach point |
+|---|---|
+| Handler entry | already aborted → `abortedResponse()` (`composed-handler.ts:1203`) |
+| Token refresh (5b), header fetch | `raceCallAbort(...)` (`:1515`, `:1762`); the shared single-flight refresh is not cancelled (unbilled), the handler stops waiting; `raceCallAbort` owns the losing promise's rejection |
+| Queued work | `doFetch` rejects with `AbortError` before calling `fetch` when the signal is aborted (`:1833`); every `enqueueRequest` call gets `{signal}` (`:1852`, `:1931`); the OpenRouter and Gemini queues drop a waiting entry on abort and reject an aborted entry before and after their rate-limit wait (`shared/openrouter-queue.ts`, `shared/gemini-queue.ts`); `LocalModelQueue` already honoured it |
+| Primary fetch and its body | the signal is composed with the deadline clamp (`withCallSignal`, `:1843`), so it still governs the body read after the clamp is disarmed; an abort returns before any connection-error classification, stderr line or recovery (`:1866`) |
+| Parameter re-fetch, 401 auth retry | pre-start check, `raceCallAbort` on the forced refresh, composed fetch signal (`:2087`, `:2189`) |
+| 7b stream-head re-issue and its backoff | `sleepUnlessAborted` ends the wait (`:3002`); the re-issue uses `doFetch` |
+| Responses legs | `AbortSignal.any([turnSignal, callSignal])` (`:2851`) |
+| Antigravity retries and capacity fallback | signal checked before each attempt and each fallback candidate, passed to the candidate `fetch`; the retry sleep is `sleepUnlessAborted` (`providers/transport/antigravity.ts:614`); the quota reads are raced, not cancelled |
+| OpenAI and anthropic-compat retry waits | `sleepUnlessAborted(delay, opts.signal)` (`providers/transport/openai.ts:149`, `anthropic-compat.ts:203`) |
+| Routing chain advancement | `FallbackHandler` checks at the top of each iteration, right after `handle()` returns (returning that response before `isRetryableError` or any `[Fallback] … failed` line), and in its catch (`fallback-handler.ts:71`, `:90`, `:241`) |
+
+`abortedResponse()` (`call-context.ts:332`) is HTTP 408, error type `timeout_error`, header
+`x-claudish-call-aborted: 1`. Nothing classifies it by status, it writes nothing to stderr, and
+main requests never produce it. Accepted residuals: the 7c Devin re-issue's backoff sleep can
+outlive the deadline by one delay (no upstream work starts after it), and the tier-1 recovery
+re-issue is not given the signal, because advisor calls skip tier 1
+(`x-claudish-no-recovery: advisor`) and the primary catch returns on abort before recovery.

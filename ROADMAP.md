@@ -407,62 +407,26 @@ vocabulary Claude Code emits, and the clamp table is what maps it onto each prov
 
 ---
 
-## Route `--advisor` panel calls through subscription-aware routing
-
-Status: not started. Deliberately out of scope for the any-model advisor work.
-
-Every `--advisor` panel model and collector is called through `advisorRouteFor`
-(`handlers/native-handler-advisor.ts`) with a raw metered API key: api.openai.com with
-`OPENAI_API_KEY`, the direct Gemini API with `GEMINI_API_KEY`, api.anthropic.com with
-`ANTHROPIC_API_KEY` for a Claude collector, and OpenRouter with `OPENROUTER_API_KEY` for
-everything else. It never calls `route()`. So a Codex, SuperGrok or Antigravity subscriber pays
-per token for panel calls, and a `cx@` or `gk@` panel spec goes to OpenRouter.
-
-This is visible, not silent: the startup notice prints each panel model's host and key with
-"billed per token" under "panel calls never use a subscription", and a panel model with no key
-is refused at startup.
-
-**Why parked.** Making the panel subscription-aware means sending each panel call through the
-routing chain (the credential authority's OAuth arms, per-provider transports,
-`SUBSCRIPTION_PROVIDERS` billing) instead of one bare `fetch` per model. That rewrites the advice
-retrieval path, which the stub paths and origin records were built around, and the feature's
-out-of-scope list protected panel behaviour.
-
-**Trigger condition** (either is sufficient):
-
-1. A user asks to run the panel on their subscription, or reports unexpected metered spend from
-   panel calls.
-2. The panel's advice retrieval path is being reworked for another reason.
-
-**Must still hold after the change:** origin records still separate `upstream` from `stub` per
-model; billing is decided by the credential that signed (`RequestAuth.arm`), never by the
-provider name (CLAUDE.md invariants); the startup refusal and notice keep reading the same single
-routing function as the runtime.
-
-**Effort**: medium to large.
-
-Reference: `ai-docs/architecture/advisor.md` ("Panel routing and billing");
-`ai-docs/reports/advisor-scope-decisions-20260910.md`.
-
----
-
 ## `--advisor`: a reasoning-only panel reply is recorded as a stub
 
-Status: not started. Recorded as a known limitation of the any-model advisor work.
+Status: not started. Recorded as a known limitation of the any-model advisor work; the reply is
+now NAMED, not accepted.
 
-`extractChatCompletionText` (`packages/cli/src/handlers/native-handler-advisor.ts:2179-2187`)
-reads only `choices[0].message.content`, as a string or as an array of text parts. If a
-reasoning model answers HTTP 200 with its text in a reasoning field and `content` null or empty,
-the check at `:2152` records `origin: "stub"` with "HTTP 200 but the response carried no advice
-text". The main model then receives a failure, not advice, for a call that was billed.
+A routed panel member's answer arrives as an Anthropic message from its chain, and
+`extractAdvice` (`packages/cli/src/handlers/advisor-route-plan.ts`) takes only `text` blocks. A
+reply with reasoning and no text is S4 with `emptyReason: "reasoning-only"` (or
+`max-tokens-during-reasoning` when the output limit cut it off), and the stub text says so
+(`emptyAdviceReason`, `handlers/native-handler-advisor.ts`). The main model receives a failure, not
+advice, for a call that was billed (or drew on a subscription).
 
-This is visible, not silent: the failure text names the model, the call raises one warning, and
-the `advisor_call` record says `stub`.
+This is visible, not silent: the failure text names the model and the reason, the call raises one
+warning, and the `advisor_call` record says `stub` with `emptyReason` and `stopReason`.
 
-**Why parked.** Two questions come first. The field that carries reasoning differs between
-providers, so the shape must come from a real captured response, never a guessed one (fixtures
-come from real debug logs). And reasoning without a final answer is the model's working, not its
-conclusion; whether it counts as advice is a product decision.
+**Why parked.** The shape question is settled: each chain's stream parser hands reasoning to the
+advisor as a `thinking` block. What remains is a product decision: reasoning without a final
+answer is the model's working, not its conclusion, and whether it counts as advice is the owner's
+call. If `max-tokens-during-reasoning` is what real runs show, the first remedy is the lowest
+advertised reasoning effort for the advisor handler set, before a larger output budget.
 
 **Trigger condition**: a real run shows a panel model returning reasoning with empty content, or
 a user reports stub advice from a reasoning model.

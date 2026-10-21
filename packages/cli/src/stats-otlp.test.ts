@@ -268,6 +268,7 @@ const OPTIONAL_WIRE = {
     sample: 5,
     value: { intValue: "5" },
   },
+  leg_retries: { attribute: "llm.leg_retries", sample: 2, value: { intValue: "2" } },
   recovery_ms: {
     attribute: "llm.recovery_ms",
     sample: 201_900,
@@ -287,6 +288,11 @@ const OPTIONAL_WIRE = {
     attribute: "llm.recovery_outcome",
     sample: "handoff",
     value: { stringValue: "handoff" },
+  },
+  request_role: {
+    attribute: "llm.request_role",
+    sample: "advisor",
+    value: { stringValue: "advisor" },
   },
 } satisfies Record<OptionalStatsKey, { attribute: string; sample: unknown; value: unknown }>;
 

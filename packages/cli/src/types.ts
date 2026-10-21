@@ -1,5 +1,8 @@
 // Claudish type definitions
 
+import type { CodeModeSetting } from "./code-mode/policy.js";
+import type { AdvisorPanelGateway } from "./handlers/advisor-route-plan.js";
+
 // Model ID type - any valid OpenRouter model string
 export type OpenRouterModel = string;
 
@@ -85,6 +88,8 @@ export interface ClaudishConfig {
   modelParams?: Record<string, unknown>;
   /** --pro-on-ultracode: apply the model's catalog provider-preset while in ultracode (opt-in) */
   proOnUltracode?: boolean;
+  /** --code-mode auto|on|off: code mode for `openai-codex` (resolved; default auto) */
+  codeMode?: CodeModeSetting;
 
   // Cost tracking
   costTracking?: boolean;
@@ -225,6 +230,13 @@ export interface ProxyServer {
    * mask the very case this measures.
    */
   modelRequestCount: () => number;
+  /**
+   * The in-process advisor panel gateway, present only when the launch handed
+   * the proxy an advisor runtime (`ProxyServerOptions.advisorRuntime`). The
+   * advisor decorator calls routed panel members through it; tests drive it
+   * directly.
+   */
+  advisorPanel?: AdvisorPanelGateway;
 }
 
 // Model Handler interface

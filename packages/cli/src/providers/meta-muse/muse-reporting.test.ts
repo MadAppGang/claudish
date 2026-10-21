@@ -495,7 +495,7 @@ async function responseScenario(
           { name: "meta@muse-spark-1.3", provider: "meta", handler: {
             handle: async () => {
               await credentials.getRequestAuth("meta", { model: "muse-spark-1.3" });
-              return new Response("unexpected metered fallback");
+              return new Response("metered fallback");
             }, shutdown: async () => {},
           } },
         ]);
@@ -630,18 +630,18 @@ describe("revision 2: HTTP reporting and terminal routing", () => {
 
   for (const status of [401, 403]) {
     for (const kind of ["own-login", "borrowed-copy"] as const) {
-      test(`${kind} mint ${status}: terminal 400 keeps status and file without metered signing`, async () => {
+      // Owner rule 2026-10-21: a rejected subscription login moves a routing
+      // chain on to its next hop, metered included. This test pinned the
+      // earlier stop (no metered signing) and was updated.
+      test(`${kind} mint ${status}: the chain moves past the rejected login to metered Meta and keeps the file`, async () => {
         const result = await responseScenario("rejected", status, kind);
         const response = result.results[0];
-        expect(response.status).toBe(400);
-        expect(response.verdict).toBe("terminal");
-        expect(response.upstreamStatus).toBe(status);
-        expect(JSON.parse(response.body).error.upstream_status).toBe(status);
-        expect(response.body).toContain(rejectedMessage(status));
+        expect(response.status).toBe(200);
+        expect(response.body).toBe("metered fallback");
         expect(response.body).not.toContain("dca:");
         expect(result.fileKept).toBe(true);
         expect(result.mintTokens).toEqual([kind === "own-login" ? OWN : BORROWED]);
-        expect(result.meteredSigns).toBe(0);
+        expect(result.meteredSigns).toBe(1);
         expect(result.inferenceCalls).toBe(0);
         expect(result.keychainUses).toBe(0);
         expect(result.valueReads).toBe(0);

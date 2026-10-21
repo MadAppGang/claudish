@@ -26,30 +26,64 @@
 
 import { normalizeCodexModel } from "../../adapters/codex-api-format.js";
 import { lookupModelForProvider } from "../../adapters/model-catalog.js";
+import { CodexOAuth } from "../../auth/codex-oauth.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import { recordSignedArm } from "../../auth/credentials/billing-probe.js";
+import { CodexOAuthHalf } from "../../auth/credentials/codex-credential.js";
 import { isTransientCredentialError } from "../../auth/credentials/credential-error.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
+import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { conversationKey } from "./conversation-key.js";
 import { OpenAIProviderTransport } from "./openai.js";
+import type { AuthBinding } from "./types.js";
+
+/**
+ * What `forceRefreshAuth` uses of the Codex OAuth login. Injectable so a test
+ * never touches the real singleton (a test suite once deleted the real Codex
+ * login through a singleton reset); production passes nothing.
+ */
+export interface CodexOAuthRefresher {
+  /** Rotate the OAuth token (single-flight through CodexOAuth's refresh lock). */
+  refreshToken(): Promise<unknown>;
+  /** Mint a request artifact from the OAuth half ONLY. */
+  mintOAuthAuth(): Promise<RequestAuth | null>;
+}
+
+const defaultCodexOAuthRefresher: CodexOAuthRefresher = {
+  refreshToken: () => CodexOAuth.getInstance().refreshToken(),
+  mintOAuthAuth: () => new CodexOAuthHalf().getRequestAuth({ model: "" }),
+};
 
 export class OpenAICodexTransport extends OpenAIProviderTransport {
   /**
-   * The per-request auth artifact, populated by refreshAuth() (called before
-   * getEndpoint/getHeaders/transformPayload): the OAuth artifact, or the
-   * endpoint-less api-key artifact when there is no OAuth login. Null only
-   * before the first refreshAuth(); a refreshAuth() that throws never reaches
-   * getHeaders().
+   * The last auth artifact refreshAuth() minted: the OAuth artifact, or the
+   * endpoint-less api-key artifact when there is no OAuth login. Shared by
+   * every request on this transport, so the request path never reads it:
+   * ComposedHandler passes the request's own `AuthBinding` instead. Read only
+   * by callers that pass no binding (probes, tests). Null only before the first
+   * refreshAuth(); a refreshAuth() that throws never reaches getHeaders().
    */
   private cachedAuth: RequestAuth | null = null;
+
+  private readonly oauthRefresher: CodexOAuthRefresher;
+
+  constructor(
+    provider: RemoteProvider,
+    modelName: string,
+    apiKey: string,
+    oauthRefresher: CodexOAuthRefresher = defaultCodexOAuthRefresher
+  ) {
+    super(provider, modelName, apiKey);
+    this.oauthRefresher = oauthRefresher;
+  }
 
   /**
    * Resolve OAuth (or fall through to api-key) via the credential authority and
    * cache the artifact. composed-handler calls this before getEndpoint/getHeaders.
    * The Codex credential ignores ctx.model, so "" is fine.
    */
-  async refreshAuth(): Promise<void> {
+  async refreshAuth(): Promise<AuthBinding> {
     try {
       this.cachedAuth = await credentials.getRequestAuth("openai-codex", { model: "" });
     } catch (err) {
@@ -99,18 +133,59 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
     // spend is the one error that costs them (remote-provider-types.ts).
     const signedWithOAuth = this.cachedAuth?.arm === "oauth";
     recordSignedArm("openai-codex", signedWithOAuth ? "subscription" : "metered");
+    // The artifact just minted, bound to THIS request. ComposedHandler passes it
+    // back to transformPayload/getEndpoint/getHeaders, so a concurrent request's
+    // refresh (which replaces `cachedAuth`) cannot change what this one signs with.
+    return { auth: this.cachedAuth };
+  }
+
+  /**
+   * After a 401 on the subscription arm: rotate the Codex OAuth token and mint
+   * a fresh artifact from the OAuth half ONLY.
+   *
+   * The api-key half is never consulted, so a 401 retry can never change arm:
+   * an expired subscription token must not quietly re-sign the request with
+   * OPENAI_CODEX_API_KEY on the metered `api.openai.com`. ComposedHandler calls
+   * this only when the request's binding is the `"oauth"` arm.
+   *
+   * `refreshToken()` single-flights through CodexOAuth's refresh lock, so
+   * concurrent 401s on one login spend the (single-use) refresh token once.
+   * Every throw propagates unchanged: a connection failure reaches the
+   * `forceRefreshAuth` site in composed-handler, which classifies it (one of
+   * the five auth sites); swallowing it here would be a sixth site that hides
+   * an outage.
+   */
+  async forceRefreshAuth(): Promise<AuthBinding> {
+    await this.oauthRefresher.refreshToken();
+    const auth = await this.oauthRefresher.mintOAuthAuth();
+    // Kept for callers that pass no binding; the request path uses the return.
+    this.cachedAuth = auth;
+    return { auth };
+  }
+
+  /**
+   * The artifact a call reads: the request's binding when one is passed (its
+   * `auth`, even when null), else `cachedAuth` for callers that pass none.
+   * Null ⇒ the OpenAI base transport's api-key path.
+   */
+  private authFor(binding: AuthBinding | undefined): RequestAuth | null {
+    return binding ? binding.auth : this.cachedAuth;
   }
 
   /**
    * OAuth tokens only work with chatgpt.com/backend-api (endpoint comes from the
-   * cached auth artifact). API keys use the standard OpenAI endpoint (super).
+   * auth artifact). API keys use the standard OpenAI endpoint (super).
    */
-  override getEndpoint(_targetModel?: string): string {
-    return this.cachedAuth?.endpoint ?? super.getEndpoint();
+  override getEndpoint(_targetModel?: string, binding?: AuthBinding): string {
+    return this.authFor(binding)?.endpoint ?? super.getEndpoint();
   }
 
-  override async getHeaders(): Promise<Record<string, string>> {
-    if (this.cachedAuth) return { ...this.cachedAuth.headers };
+  override async getHeaders(
+    _claudeRequest?: unknown,
+    binding?: AuthBinding
+  ): Promise<Record<string, string>> {
+    const auth = this.authFor(binding);
+    if (auth) return { ...auth.headers };
     // Fall back to API key auth (Bearer <OPENAI_CODEX_API_KEY>).
     return super.getHeaders();
   }
@@ -123,7 +198,7 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
    * The auth-derived bits (store:false / include reasoning) come from the cached
    * auth artifact's transformPayload, applied only when OAuth is active.
    */
-  transformPayload(payload: any, claudeRequest?: any): any {
+  transformPayload(payload: any, claudeRequest?: any, binding?: AuthBinding): any {
     let normalizedPayload = payload;
     if (payload?.model) {
       const normalized = normalizeCodexModel(payload.model);
@@ -147,7 +222,7 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
       }
     }
     // Auth-derived store:false / include reasoning bits, only under OAuth.
-    return this.cachedAuth?.transformPayload?.(normalizedPayload) ?? normalizedPayload;
+    return this.authFor(binding)?.transformPayload?.(normalizedPayload) ?? normalizedPayload;
   }
 
   /**

@@ -180,8 +180,11 @@ const subscriptions = [
   "grok-subscription",
 ];
 
-describe("subscription-only routing after a login failure", () => {
-  test("rule 1: either login failure skips every later metered candidate", async () => {
+// Owner rule 2026-10-21: a subscription's rejected credential advances the
+// chain to its NEXT hop, metered included. (Until then only later
+// subscription hops were tried; these tests pinned that and were updated.)
+describe("routing after a subscription credential rejection", () => {
+  test("rule 1: either rejection advances to the next hop, metered included", async () => {
     for (const provider of subscriptions) {
       for (const failure of loginFailures) {
         const result = await runChain([
@@ -193,14 +196,14 @@ describe("subscription-only routing after a login failure", () => {
           },
           { provider: "z-ai", response: new Response("metered z-ai success") },
         ]);
-        expect(result.calls).toEqual([1, 0, 1, 0]);
+        expect(result.calls).toEqual([1, 1, 0, 0]);
         expect(result.status).toBe(200);
-        expect(result.body).toBe("remaining subscription success");
+        expect(result.body).toBe("metered glm success");
       }
     }
   });
 
-  test("rule 2: returns the later subscription's successful response", async () => {
+  test("rule 2: returns the next subscription's successful response", async () => {
     const body = JSON.stringify({ answer: "served by kimi-coding" });
     const result = await runChain([
       { provider: "opencode-zen-go", response: terminalLoginFailure() },
@@ -212,47 +215,37 @@ describe("subscription-only routing after a login failure", () => {
     expect(result.calls).toEqual([1, 1, 0]);
   });
 
-  test("rule 3: later login, usage-limit, and server failures continue to subscriptions", async () => {
+  test("rule 3: later hops follow the ordinary retry rules", async () => {
     const laterFailures = [
       () => terminalLoginFailure("Later subscription login failed"),
       rawLoginFailure,
       usageLimit,
-      () => new Response("Internal Server Error", { status: 500 }),
     ];
     for (const laterFailure of laterFailures) {
       const result = await runChain([
         { provider: "opencode-zen-go", response: terminalLoginFailure() },
-        { provider: "deepseek", response: new Response("metered deepseek success") },
         { provider: "kimi-coding", response: laterFailure() },
-        { provider: "openrouter", response: new Response("metered openrouter success") },
+        { provider: "deepseek", response: new Response("metered deepseek success") },
         { provider: "qwen-token-plan", response: new Response("subscription success") },
-        { provider: "poe", response: new Response("metered poe success") },
       ]);
       expect(result.status).toBe(200);
-      expect(result.body).toBe("subscription success");
-      expect(result.calls).toEqual([1, 0, 1, 0, 1, 0]);
+      expect(result.body).toBe("metered deepseek success");
+      expect(result.calls).toEqual([1, 1, 1, 0]);
     }
   });
 
-  test("rule 4: exhausted subscriptions return the first login failure unchanged", async () => {
+  test("rule 4: an exhausted chain keeps the first rejection's message", async () => {
     for (const failure of loginFailures) {
-      const firstFailure = failure.response();
-      const firstBody = await firstFailure.clone().text();
       const result = await runChain([
-        { provider: "opencode-zen-go", response: firstFailure },
-        { provider: "meta", response: new Response("metered meta success") },
+        { provider: "opencode-zen-go", response: failure.response() },
         { provider: "kimi-coding", response: terminalLoginFailure("Later login failed") },
         { provider: "qwen-token-plan", response: usageLimit() },
-        { provider: "glm-coding", response: new Response("Server failure", { status: 500 }) },
-        { provider: "openrouter", response: new Response("metered openrouter success") },
+        { provider: "openrouter", response: new Response("Not found", { status: 404 }) },
       ]);
-      expect(result.status).toBe(failure.status);
-      expect(result.verdict).toBe(failure.verdict);
-      expect(result.body).toBe(firstBody);
-      expect(result.body).toContain(failure.message);
-      expect(result.body).not.toContain("all_providers_failed");
-      expect(result.body).not.toContain("Later login failed");
-      expect(result.calls).toEqual([1, 0, 1, 1, 1, 0]);
+      expect(result.status).toBe(400);
+      expect(result.body).toContain("all_providers_failed");
+      expect(JSON.parse(result.body).error.message).toContain(failure.message);
+      expect(result.calls).toEqual([1, 1, 1, 1]);
     }
   });
 
@@ -307,17 +300,14 @@ describe("subscription-only routing after a login failure", () => {
     const result = await runChain([
       { provider: "glm-coding", response: usageLimit() },
       { provider: "opencode-zen-go", response: terminalLoginFailure() },
-      { provider: "glm", response: new Response("metered glm success") },
       { provider: "kimi-coding", response: rawLoginFailure() },
-      { provider: "z-ai", response: new Response("metered z-ai success") },
       { provider: "minimax-coding", response: usageLimit() },
-      { provider: "qwen-coding", response: new Response("Server failure", { status: 500 }) },
+      { provider: "glm", response: new Response("metered glm success") },
       { provider: "qwen-token-plan", response: new Response("subscription success") },
-      { provider: "poe", response: new Response("metered poe success") },
     ]);
     expect(result.status).toBe(200);
-    expect(result.body).toBe("subscription success");
-    expect(result.calls).toEqual([1, 1, 0, 1, 0, 1, 1, 1, 0]);
+    expect(result.body).toBe("metered glm success");
+    expect(result.calls).toEqual([1, 1, 1, 1, 1, 0]);
     for (const count of result.calls) expect(count).toBeLessThanOrEqual(1);
   });
 
@@ -340,14 +330,14 @@ describe("subscription-only routing after a login failure", () => {
     expect(result.calls).toEqual([1, 1, 1, 0, 0]);
   });
 
-  test("real interleaved chain: terminal Zen Go skips metered DeepSeek before Qwen", async () => {
+  test("real interleaved chain: rejected Zen Go key moves on to metered DeepSeek", async () => {
     const result = await runChain([
       { provider: "opencode-zen-go", response: terminalLoginFailure() },
       { provider: "deepseek", response: new Response("metered deepseek success") },
       { provider: "qwen-token-plan", response: new Response("qwen-token-plan success") },
     ]);
     expect(result.status).toBe(200);
-    expect(result.body).toBe("qwen-token-plan success");
-    expect(result.calls).toEqual([1, 0, 1]);
+    expect(result.body).toBe("metered deepseek success");
+    expect(result.calls).toEqual([1, 1, 0]);
   });
 });

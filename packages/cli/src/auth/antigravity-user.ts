@@ -644,6 +644,20 @@ export async function getServedAntigravityModels(
   return { servedIds: [], defaultId: null, meta: {} };
 }
 
+/**
+ * The `servedIds` and `defaultId` the last fetch cached under this process's client version,
+ * without fetching; null when there is none. For the routing availability
+ * check (`providerServesModel`), which runs right after discovery fetched this
+ * set and must resolve against the same `servedIds` and `defaultId` the
+ * transport resolves against (`resolveAntigravityServedModel`). The discovery
+ * list it also reads has the backend's unselectable ids removed, so it cannot
+ * stand in for them.
+ */
+export function peekServedAntigravityModels(): AntigravityServedModels | null {
+  if (!agServedCache || agServedCacheVersion !== antigravityClientVersion()) return null;
+  return agServedCache;
+}
+
 /** Test seam: clear the Antigravity served-models cache between tests. */
 export function _resetAntigravityServedModelsCache(): void {
   agServedCache = null;

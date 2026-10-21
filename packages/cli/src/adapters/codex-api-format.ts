@@ -12,6 +12,7 @@
  */
 
 import { mapToolChoiceToResponsesAPI } from "../handlers/shared/format/openai-tools.js";
+import { filterIdentity } from "../handlers/shared/openai-compat.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
@@ -103,8 +104,21 @@ export class CodexAPIFormat extends BaseAPIFormat {
       ...(this.codexExtras ? { store: false, include: ["reasoning.encrypted_content"] } : {}),
     };
 
+    // Flattened (a block array joined with "\n\n", as the Chat Completions
+    // converter does) and identity-filtered, as Gemini filters its system
+    // instruction. Sent raw before, the field carried Claude Code's "You are
+    // Claude Code, Anthropic's official CLI" identity to a non-Claude model;
+    // the filtered system message convertMessages builds never reaches the
+    // Responses payload (convertMessagesToResponsesAPI skips it).
     if (claudeRequest.system) {
-      payload.instructions = claudeRequest.system;
+      const system = Array.isArray(claudeRequest.system)
+        ? claudeRequest.system
+            .map((block: { text?: string } | string) =>
+              typeof block === "string" ? block : block.text || ""
+            )
+            .join("\n\n")
+        : claudeRequest.system;
+      payload.instructions = filterIdentity(system);
     }
 
     if (tools.length > 0) {

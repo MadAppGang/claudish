@@ -16,7 +16,11 @@ import { TOOL_NAME_SHAPE } from "../../adapters/tool-name-utils.js";
 import { type PlanUsage, isPlanStale } from "../../auth/quota/types.js";
 import { log } from "../../logger.js";
 import { resolveTokenFilePath } from "../../session/token-file.js";
-import { type ModelPricing, getModelPricing } from "./remote-provider-types.js";
+import {
+  type ModelPricing,
+  type RequestBilling,
+  getModelPricing,
+} from "./remote-provider-types.js";
 
 export interface TokenTrackerConfig {
   contextWindow: number;
@@ -24,6 +28,13 @@ export interface TokenTrackerConfig {
   modelName: string;
   /** Display name for the provider (e.g., "OpenAI", "Gemini") */
   providerDisplayName?: string;
+  /**
+   * `false` keeps every counter but never writes the status-line token file.
+   * An `--advisor` panel handler sets it: the file is keyed by
+   * `CLAUDISH_TOKEN_FILE` before the port, so no port value can keep a panel
+   * call from repainting the main session's status line. Default `true`.
+   */
+  writesTokenFile?: boolean;
 }
 
 /**
@@ -97,6 +108,15 @@ export function computeCacheReadDiscount(
   return (discountedTokens / 1_000_000) * perMillionSaved;
 }
 
+/**
+ * Every cost-bearing update below takes an optional `billing`: the decision of
+ * the request whose usage it records (`RequestBilling`, decided when that
+ * request was signed). Absent, pricing falls back to `isSubscriptionProvider`,
+ * which for a credential-decided provider (`openai-codex`) reads the
+ * process-wide last-signed arm. The tracker never stores it: one tracker is
+ * shared by every request of its handler, so a stored arm would be the same
+ * race one level down.
+ */
 export class TokenTracker {
   private port: number;
   private config: TokenTrackerConfig;
@@ -248,14 +268,19 @@ export class TokenTracker {
    * Standard update: assign input (latest context), accumulate output.
    * Used by most remote providers (Gemini, AnthropicCompat, Vertex, RemoteProvider, etc.)
    */
-  update(inputTokens: number, outputTokens: number, detail?: UsageCacheDetail): void {
+  update(
+    inputTokens: number,
+    outputTokens: number,
+    detail?: UsageCacheDetail,
+    billing?: RequestBilling
+  ): void {
     this.sessionInputTokens = inputTokens;
     this.lastInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
     this.sessionBilledInputTokens += inputTokens;
     this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
 
-    const pricing = this.getPricing();
+    const pricing = this.getPricing(billing);
     // This strategy charges the whole context every turn, so the whole context
     // is what the cache discount is clamped against.
     const cost =
@@ -264,20 +289,25 @@ export class TokenTracker {
       this.cacheReadDiscount(pricing, inputTokens, detail);
     this.sessionTotalCost += cost;
 
-    this.writeFile(inputTokens, this.sessionOutputTokens, pricing.isEstimate);
+    this.writeFile(inputTokens, this.sessionOutputTokens, pricing.isEstimate, pricing);
   }
 
   /**
    * Accumulate both input and output tokens.
    * Used by OllamaCloud where cost is calculated on cumulative totals.
    */
-  accumulateBoth(inputTokens: number, outputTokens: number, detail?: UsageCacheDetail): void {
+  accumulateBoth(
+    inputTokens: number,
+    outputTokens: number,
+    detail?: UsageCacheDetail,
+    billing?: RequestBilling
+  ): void {
     this.sessionInputTokens += inputTokens;
     this.lastInputTokens = this.sessionInputTokens;
     this.sessionOutputTokens += outputTokens;
     this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
 
-    const pricing = this.getPricing();
+    const pricing = this.getPricing(billing);
     // ASSIGNED from cumulative totals, so the discount must be cumulative too: a
     // per-turn subtraction here would be thrown away by the next turn's
     // assignment. `sessionCacheReadTokens` is the running total, clamped against
@@ -295,7 +325,39 @@ export class TokenTracker {
     // already sums input itself, so `+=` here would count every earlier turn again.
     this.sessionBilledInputTokens = this.sessionInputTokens;
 
-    this.writeFile(this.sessionInputTokens, this.sessionOutputTokens, pricing.isEstimate);
+    this.writeFile(this.sessionInputTokens, this.sessionOutputTokens, pricing.isEstimate, pricing);
+  }
+
+  /**
+   * Charge input that an EARLIER upstream leg of the current request already
+   * consumed: cost and the billed-input counter only.
+   *
+   * A Responses turn whose leg was retried (a stalled or degenerate leg, see
+   * `responses-turn.ts`) sent the same body more than once. The last leg is
+   * charged by the strategy as usual (`onTokenUpdate`); each earlier leg was a
+   * separate upstream request that the provider billed in full (minus cache),
+   * and nothing else in the session will ever charge it. Strategy-independent
+   * on purpose: under `delta-aware` the last leg is still charged only its
+   * growth over the session high-water, which is that strategy's model of the
+   * conversation, not of a retry.
+   *
+   * Never touches the context figures (`sessionInputTokens`, `lastInputTokens`)
+   * or output, and does not write the token file: the strategy update that
+   * follows does. The cache discount uses the same clamp as `update()`, so a
+   * retry that re-sent a cached body is charged as cached.
+   */
+  addBilledInputTokens(
+    inputTokens: number,
+    detail?: UsageCacheDetail,
+    billing?: RequestBilling
+  ): void {
+    if (!(inputTokens > 0)) return;
+    this.sessionBilledInputTokens += inputTokens;
+    this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
+    const pricing = this.getPricing(billing);
+    this.sessionTotalCost +=
+      (inputTokens / 1_000_000) * pricing.inputCostPer1M -
+      this.cacheReadDiscount(pricing, inputTokens, detail);
   }
 
   /**
@@ -305,7 +367,12 @@ export class TokenTracker {
    * inputTokens = full context size from the API (not incremental)
    * Only charges for the delta (new tokens added since last request).
    */
-  updateWithDelta(inputTokens: number, outputTokens: number, detail?: UsageCacheDetail): void {
+  updateWithDelta(
+    inputTokens: number,
+    outputTokens: number,
+    detail?: UsageCacheDetail,
+    billing?: RequestBilling
+  ): void {
     let incrementalInputTokens: number;
 
     // The status file always reports THIS request's context, even when the
@@ -340,7 +407,7 @@ export class TokenTracker {
     this.sessionOutputTokens += outputTokens;
     this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
 
-    const pricing = this.getPricing();
+    const pricing = this.getPricing(billing);
     this.sessionBilledInputTokens += incrementalInputTokens;
     // The clamp matters MOST here: this strategy charges only the growth, which
     // on a cached continuation is a handful of tokens against a cache read of
@@ -352,7 +419,7 @@ export class TokenTracker {
       this.cacheReadDiscount(pricing, incrementalInputTokens, detail);
     this.sessionTotalCost += cost;
 
-    this.writeFile(inputTokens, this.sessionOutputTokens, pricing.isEstimate);
+    this.writeFile(inputTokens, this.sessionOutputTokens, pricing.isEstimate, pricing);
   }
 
   /**
@@ -363,7 +430,8 @@ export class TokenTracker {
     inputTokens: number,
     outputTokens: number,
     actualCost: number | undefined,
-    detail?: UsageCacheDetail
+    detail?: UsageCacheDetail,
+    billing?: RequestBilling
   ): void {
     this.sessionInputTokens = inputTokens;
     this.lastInputTokens = inputTokens;
@@ -380,14 +448,14 @@ export class TokenTracker {
     } else {
       // The computed fallback is the `update` arithmetic, so it takes the
       // `update` treatment: full context charged, discount clamped against it.
-      const pricing = this.getPricing();
+      const pricing = this.getPricing(billing);
       const inputCost = (inputTokens / 1_000_000) * pricing.inputCostPer1M;
       const outputCost = (outputTokens / 1_000_000) * pricing.outputCostPer1M;
       this.sessionTotalCost +=
         inputCost + outputCost - this.cacheReadDiscount(pricing, inputTokens, detail);
     }
 
-    this.writeFile(inputTokens, this.sessionOutputTokens);
+    this.writeFile(inputTokens, this.sessionOutputTokens, undefined, this.getPricing(billing));
   }
 
   /**
@@ -442,8 +510,8 @@ export class TokenTracker {
     return this.sessionOutputTokens;
   }
 
-  private getPricing(): ModelPricing {
-    return getModelPricing(this.config.providerName, this.config.modelName);
+  private getPricing(billing?: RequestBilling): ModelPricing {
+    return getModelPricing(this.config.providerName, this.config.modelName, billing);
   }
 
   /** Instance shim over `computeCacheReadDiscount` — see that function. */
@@ -464,7 +532,14 @@ export class TokenTracker {
     return name.charAt(0).toUpperCase() + name.slice(1);
   }
 
-  private writeFile(inputTokens: number, outputTokens: number, isEstimate?: boolean): void {
+  private writeFile(
+    inputTokens: number,
+    outputTokens: number,
+    isEstimate?: boolean,
+    requestPricing?: ModelPricing
+  ): void {
+    // The choke point of every write: each update path ends here.
+    if (this.config.writesTokenFile === false) return;
     try {
       const total = inputTokens + outputTokens;
       const cw = this.config.contextWindow;
@@ -482,7 +557,9 @@ export class TokenTracker {
       const leftPct =
         cw > 0 ? Math.max(0, Math.min(100, Math.round(((cw - inputTokens) / cw) * 100))) : -1;
 
-      const pricing = this.getPricing();
+      // The pricing of the update that is writing, when it has one, so the
+      // published rates match the request just charged.
+      const pricing = requestPricing ?? this.getPricing();
       const isFreeModel =
         pricing.isFree || (pricing.inputCostPer1M === 0 && pricing.outputCostPer1M === 0);
 

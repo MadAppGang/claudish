@@ -2,6 +2,8 @@ import type { Context } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
 import { requestHooksOf } from "../hooks/request-stage.js";
 import { log, maskCredential } from "../logger.js";
+import { redactForClient } from "../redact.js";
+import { ANTHROPIC_API_ORIGIN } from "./advisor-claude-route.js";
 import { ADVISOR_SWAPPED_CONTEXT_KEY } from "./advisor-decorator.js";
 import {
   loadAdvisorSwapConfig,
@@ -9,8 +11,64 @@ import {
   stripAdvisorBeta,
 } from "./native-handler-advisor.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
+import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
+import {
+  type UpstreamReaderSlot,
+  cancelEndsUpstreamWork,
+} from "./shared/stream-parsers/upstream-cancel.js";
 import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
 import type { ModelHandler } from "./types.js";
+
+/** One SSE line split into its field name and value (one leading space dropped), per the SSE spec. */
+function sseField(line: string): { name: string; value: string } {
+  const bare = line.endsWith("\r") ? line.slice(0, -1) : line;
+  const colon = bare.indexOf(":");
+  if (colon < 0) return { name: bare, value: "" };
+  const value = bare.slice(colon + 1);
+  return { name: bare.slice(0, colon), value: value.startsWith(" ") ? value.slice(1) : value };
+}
+
+/**
+ * Whether one complete SSE event is an error: its FINAL `event:` name is
+ * `error` (the last `event:` field wins, wherever it sits relative to the
+ * data), or its data payload is JSON whose `type` is `"error"` — the shape
+ * Anthropic puts in an error frame even when no `event:` line names it.
+ */
+function isSseErrorEvent(lines: readonly string[]): boolean {
+  let eventName = "";
+  const data: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith(":")) continue; // comment
+    const { name, value } = sseField(line);
+    if (name === "event") eventName = value;
+    else if (name === "data") data.push(value);
+  }
+  if (eventName.trim() === "error") return true;
+  if (data.length === 0) return false;
+  try {
+    const parsed: unknown = JSON.parse(data.join("\n"));
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as { type?: unknown }).type === "error"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The lines of one complete SSE event (each without its "\n"; the blank
+ * separator, when present, is the last), ready to forward. An error event's
+ * `data:` lines carry upstream text that may echo the request's credential, so
+ * each is passed through `redactForClient` (exact-value replacement, so the
+ * JSON stays valid); every other line, and every line of a non-error event, is
+ * returned unchanged, so the framing and the bytes are preserved.
+ */
+export function redactSseErrorEvent(lines: string[]): string[] {
+  if (!isSseErrorEvent(lines)) return lines;
+  return lines.map((line) => (sseField(line).name === "data" ? redactForClient(line) : line));
+}
 
 export class NativeHandler implements ModelHandler {
   private apiKey?: string;
@@ -20,8 +78,8 @@ export class NativeHandler implements ModelHandler {
 
   constructor(apiKey?: string, advisorModels?: string[], advisorCollector?: string | null) {
     this.apiKey = apiKey;
-    // Always forward to real Anthropic API
-    this.baseUrl = "https://api.anthropic.com";
+    // Always forward to real Anthropic API (the origin the advisor's Claude call uses too)
+    this.baseUrl = ANTHROPIC_API_ORIGIN;
     this.advisorModels = advisorModels;
     this.advisorCollector = advisorCollector;
   }
@@ -127,6 +185,15 @@ export class NativeHandler implements ModelHandler {
       }
     }
 
+    // Register every credential value this request sends (the inbound Claude
+    // bearer or key passed through, or the fallback key) on the request's
+    // signing lease, for EVERY native request: the lease lives until the body
+    // has been delivered or cancelled (`releaseWhenBodyEnds`), so each log line
+    // and each echoed error below is redacted against them. The advisor
+    // decorator registers the inbound values only on a turn with pending advisor
+    // results; an ordinary native turn had an empty lease.
+    addSigningSecrets(c, credentialValuesFromRequest(headers));
+
     // Execute fetch
     try {
       const anthropicResponse = await fetch(`${this.baseUrl}/v1/messages`, {
@@ -140,38 +207,98 @@ export class NativeHandler implements ModelHandler {
       // Handle streaming
       if (contentType.includes("text/event-stream")) {
         log("[Native] Streaming response detected");
+        // A downstream cancel cancels this reader and waits for the loop below
+        // (which logs the whole stream at its end) before it resolves.
+        const upstream: UpstreamReaderSlot = {};
+        let cancelled = false;
         return c.body(
-          new ReadableStream({
-            async start(controller) {
-              const reader = anthropicResponse.body?.getReader();
-              if (!reader) throw new Error("No reader");
+          new ReadableStream(
+            cancelEndsUpstreamWork<Uint8Array>(upstream, {
+              async start(controller) {
+                const reader = anthropicResponse.body?.getReader();
+                if (!reader) throw new Error("No reader");
+                upstream.reader = reader;
 
-              const decoder = new TextDecoder();
-              let buffer = "";
-              let eventLog = "";
+                const decoder = new TextDecoder();
+                const encoder = new TextEncoder();
+                // Bytes after the last newline, held until their line completes.
+                let pending = "";
+                // The complete lines of the current SSE event, held until its
+                // blank separator: SSE fixes an event's type only at dispatch,
+                // and `event:` may legally FOLLOW the `data:` it names, so no
+                // line of an event can be forwarded before the whole event is
+                // known (redactSseErrorEvent).
+                let held: string[] = [];
+                let eventLog = "";
 
-              try {
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-
-                  controller.enqueue(value);
-
-                  // Basic logging
-                  const chunkText = decoder.decode(value, { stream: true });
-                  buffer += chunkText;
-                  const lines = buffer.split("\n");
-                  buffer = lines.pop() || "";
+                const forward = (lines: string[], text: string) => {
                   for (const line of lines) if (line.trim()) eventLog += `${line}\n`;
+                  if (cancelled || !text) return;
+                  controller.enqueue(encoder.encode(text));
+                };
+                // Forward the held event, plus `tail` (bytes with no newline
+                // yet, only at the end of the stream). Every held line had its
+                // own "\n", so the framing is rebuilt byte for byte.
+                const flushHeld = (tail = "") => {
+                  if (held.length === 0 && !tail) return;
+                  const lines = redactSseErrorEvent(tail ? [...held, tail] : held);
+                  held = [];
+                  forward(lines, tail ? lines.join("\n") : `${lines.join("\n")}\n`);
+                };
+
+                try {
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const text = pending + decoder.decode(value, { stream: true });
+                    const cut = text.lastIndexOf("\n");
+                    if (cut < 0) {
+                      pending = text;
+                      continue;
+                    }
+                    pending = text.slice(cut + 1);
+                    // Each complete event in this chunk is forwarded as soon as
+                    // its blank separator arrives; an unfinished one stays held.
+                    const lines: string[] = [];
+                    let out = "";
+                    for (const line of text.slice(0, cut).split("\n")) {
+                      held.push(line);
+                      if (line === "" || line === "\r") {
+                        const event = redactSseErrorEvent(held);
+                        held = [];
+                        lines.push(...event);
+                        out += `${event.join("\n")}\n`;
+                      }
+                    }
+                    forward(lines, out);
+                  }
+                  flushHeld(pending + decoder.decode());
+                  if (eventLog) log(eventLog);
+                  if (!cancelled) controller.close();
+                } catch (e) {
+                  // The lines already read are forwarded, as they were before
+                  // events were held; the incomplete line is dropped.
+                  try {
+                    flushHeld();
+                  } catch {}
+                  if (eventLog) log(eventLog);
+                  log(`[Native] Stream Error: ${redactForClient(String(e))}`);
+                  if (!cancelled) {
+                    try {
+                      controller.close();
+                    } catch {}
+                  }
                 }
-                if (eventLog) log(eventLog);
-                controller.close();
-              } catch (e) {
-                log(`[Native] Stream Error: ${e}`);
-                controller.close();
-              }
-            },
-          }),
+              },
+              // Downstream went away: nothing more is enqueued, and the loop
+              // above still logs what it read before cancelEndsUpstreamWork
+              // resolves the cancel.
+              cancel() {
+                cancelled = true;
+              },
+            })
+          ),
           {
             headers: {
               "Content-Type": contentType,
@@ -183,8 +310,11 @@ export class NativeHandler implements ModelHandler {
         );
       }
 
-      // Handle JSON
-      const data = await anthropicResponse.json();
+      // Handle JSON. A non-success body is upstream text that may echo the
+      // request's credential, so it is redacted before it is logged or returned;
+      // a success body is parsed exactly as it arrived.
+      const raw = await anthropicResponse.text();
+      const data = JSON.parse(anthropicResponse.ok ? raw : redactForClient(raw));
       log("\n=== [NATIVE] Response ===");
       log(JSON.stringify(data, null, 2));
 
@@ -195,8 +325,9 @@ export class NativeHandler implements ModelHandler {
 
       return c.json(data, { status: anthropicResponse.status as any, headers: responseHeaders });
     } catch (error) {
-      log(`[Native] Fetch Error: ${error}`);
-      return c.json(wrapAnthropicError(500, String(error)), 500);
+      const message = redactForClient(String(error));
+      log(`[Native] Fetch Error: ${message}`);
+      return c.json(wrapAnthropicError(500, message), 500);
     }
   }
 

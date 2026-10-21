@@ -19,6 +19,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
+import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
 import { getHookEngine } from "./hooks/index.js";
@@ -349,6 +350,231 @@ export function isProxyAuthMode(config: ClaudishConfig): boolean {
   return !config.monitor && !isAdvisorNativeSession(config) && !shouldPreserveNativeAuth(config);
 }
 
+// The decision's types live in a module with no imports, so the advisor
+// handlers that take a decision do not pull this launcher (and through it the
+// pane launcher and cli.ts) into every program that imports a handler.
+export type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
+
+/** Injectable reads for {@link childAuthControl}; defaults read the real files. */
+export interface ChildAuthControlDeps {
+  readFile?: (path: string) => string;
+  cwd?: string;
+  home?: string;
+}
+
+/**
+ * Does claudish itself control the child's Anthropic auth on this launch?
+ *
+ * The advisor may sign its own Claude call with the bearer Claude Code sends
+ * only when that bearer can be nothing but Claude Code's claude.ai login. The
+ * request cannot prove it: the `oauth-2025-04-20` beta that login requests
+ * carry is client-declared (`ANTHROPIC_BETAS` adds it to any bearer) and the
+ * server does not require it (measured 2026-10-21, S0). So the decision is
+ * made HERE, at launch, from what this launch hands the child, and every other
+ * launch keeps the bearer off the advisor path.
+ *
+ * Controlled only when ALL hold, as far as claudish can see before spawning:
+ *   1. a native-auth launch (`isProxyAuthMode` false), so no placeholder pair;
+ *   2. no user ANTHROPIC_AUTH_TOKEN and no real ANTHROPIC_API_KEY reaches the
+ *      child. The monitor / no-model `--advisor` branch deletes both
+ *      (`runClaudeWithProxy`, "Handle API key and model based on mode"); the
+ *      native-mapping branch scrubs only claudish's placeholders, keeps a
+ *      user's token, and hides an API key only per
+ *      `shouldHideIncidentalAnthropicKey`;
+ *   3. ANTHROPIC_CUSTOM_HEADERS carries no auth header;
+ *   4. no Claude Code settings layer claudish can read — managed settings, the
+ *      user file (and `$CLAUDE_CONFIG_DIR/settings.json`), the project and
+ *      project-local files, and every `--settings` value in either spelling —
+ *      names an `apiKeyHelper` or sets an Anthropic credential in its `env`
+ *      block, and no `--settings` value the child receives is unreadable.
+ *
+ * What it cannot see, and therefore does not claim: settings delivered by a
+ * mechanism claudish does not read (an MDM profile, a file Claude Code adds
+ * later). Mirrors the env builder without editing it: the two must change
+ * together.
+ */
+export function childAuthControl(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ChildAuthControlDeps = {}
+): ChildAuthControl {
+  if (isProxyAuthMode(config)) {
+    return { controlled: false, reason: "proxy-auth", where: "environment" };
+  }
+  // The shouldPreserveNativeAuth branch keeps what the monitor branch deletes.
+  if (!config.monitor && !isAdvisorNativeSession(config)) {
+    if (isRealAnthropicEnvCredential(env, "ANTHROPIC_AUTH_TOKEN")) {
+      return { controlled: false, reason: "user-auth-token", where: "environment" };
+    }
+    if (
+      isRealAnthropicEnvCredential(env, "ANTHROPIC_API_KEY") &&
+      !shouldHideIncidentalAnthropicKey(config, env)
+    ) {
+      return { controlled: false, reason: "user-api-key", where: "environment" };
+    }
+  }
+  if (customHeadersCarryAuth(env.ANTHROPIC_CUSTOM_HEADERS)) {
+    return {
+      controlled: false,
+      reason: "custom-headers",
+      where: "environment",
+      sendsApiKey: customHeaderAuthNames(env.ANTHROPIC_CUSTOM_HEADERS).has("x-api-key"),
+    };
+  }
+  for (const { where, settings } of readableClaudeSettingsLayers(config, env, deps)) {
+    const reason = settings === null ? "settings-unreadable" : settingsAuthSource(settings);
+    if (reason === "custom-headers" && settings) {
+      const sendsApiKey = customHeaderAuthNames(settingsCustomHeaders(settings)).has("x-api-key");
+      return { controlled: false, reason, where, sendsApiKey };
+    }
+    if (reason) return { controlled: false, reason, where };
+  }
+  return { controlled: true };
+}
+
+/** One `--settings` occurrence in the passthrough args, in either spelling. */
+interface SettingsArgOccurrence {
+  /** Index of the flag token in the args. */
+  index: number;
+  /** The value; undefined when the flag is the last token. */
+  value: string | undefined;
+  /** `separate` = `--settings <v>` (two tokens); `inline` = `--settings=<v>`. */
+  spelling: "separate" | "inline";
+}
+
+/**
+ * Every `--settings` occurrence in argv order, in both spellings Claude Code
+ * accepts. `--settings=<v>` is split on the first `=` only, so a value that
+ * itself contains `=` survives.
+ */
+function settingsArgOccurrences(args: readonly string[]): SettingsArgOccurrence[] {
+  const out: SettingsArgOccurrence[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const token = args[index];
+    if (token === "--settings") {
+      out.push({ index, value: args[index + 1], spelling: "separate" });
+      index++; // the next token is this flag's value, never a flag of its own
+    } else if (token.startsWith("--settings=")) {
+      out.push({ index, value: token.slice("--settings=".length), spelling: "inline" });
+    }
+  }
+  return out;
+}
+
+/** The auth header names (lowercase) an ANTHROPIC_CUSTOM_HEADERS value (one `Name: value` per line) sets. */
+function customHeaderAuthNames(value: unknown): Set<"authorization" | "x-api-key"> {
+  const names = new Set<"authorization" | "x-api-key">();
+  if (typeof value !== "string" || !value) return names;
+  for (const line of value.split(/\r?\n/)) {
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    const name = line.slice(0, colon).trim().toLowerCase();
+    if (name === "authorization" || name === "x-api-key") names.add(name);
+  }
+  return names;
+}
+
+/** True when an ANTHROPIC_CUSTOM_HEADERS value sets an auth header. */
+function customHeadersCarryAuth(value: unknown): boolean {
+  return customHeaderAuthNames(value).size > 0;
+}
+
+/** The `ANTHROPIC_CUSTOM_HEADERS` a settings object's `env` block sets, if any. */
+function settingsCustomHeaders(settings: Record<string, unknown>): unknown {
+  return settings.env && typeof settings.env === "object"
+    ? (settings.env as Record<string, unknown>).ANTHROPIC_CUSTOM_HEADERS
+    : undefined;
+}
+
+/** The non-login credential source one settings object declares, or null. */
+function settingsAuthSource(settings: Record<string, unknown>): ChildAuthSource | null {
+  const env =
+    settings.env && typeof settings.env === "object"
+      ? (settings.env as Record<string, unknown>)
+      : {};
+  const realValue = (name: "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY"): boolean => {
+    const value = env[name];
+    return (
+      typeof value === "string" &&
+      value.trim().length > 0 &&
+      !isClaudishPlaceholderCredential(name, value)
+    );
+  };
+  if (realValue("ANTHROPIC_AUTH_TOKEN")) return "settings-auth-token";
+  if (typeof settings.apiKeyHelper === "string" && settings.apiKeyHelper.trim()) {
+    return "api-key-helper";
+  }
+  if (realValue("ANTHROPIC_API_KEY")) return "settings-api-key";
+  if (customHeadersCarryAuth(env.ANTHROPIC_CUSTOM_HEADERS)) return "custom-headers";
+  return null;
+}
+
+/**
+ * Every Claude Code settings layer claudish can read for this launch, parsed.
+ * A missing, unreadable or malformed settings FILE is skipped (Claude Code does
+ * not apply a file it cannot parse either). `where` is the path, or `--settings`.
+ *
+ * `--settings` values follow the launcher exactly (`runClaudeWithProxy`):
+ * `mergeUserSettingsIfPresent` takes only the FIRST two-token `--settings <v>`
+ * (`indexOf`), merges it into claudish's temp file and splices it out — when it
+ * cannot be parsed it is dropped, so the child never sees it and it is skipped
+ * here too. Every other occurrence (a later `--settings <v>`, any
+ * `--settings=<v>`) is forwarded to the child verbatim with the passthrough
+ * args, so each one is inspected, and one claudish cannot read or parse is
+ * returned with `settings: null` — the child may still apply it, and unknown
+ * provenance never counts as controlled (A1).
+ */
+function readableClaudeSettingsLayers(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv,
+  deps: ChildAuthControlDeps
+): Array<{ where: string; settings: Record<string, unknown> | null }> {
+  const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
+  const home = deps.home ?? homedir();
+  const cwd = deps.cwd ?? process.cwd();
+  const files = [
+    managedSettingsPath(),
+    join(home, ".claude", "settings.json"),
+    ...(env.CLAUDE_CONFIG_DIR ? [join(env.CLAUDE_CONFIG_DIR, "settings.json")] : []),
+    join(cwd, ".claude", "settings.json"),
+    join(cwd, ".claude", "settings.local.json"),
+  ];
+  const layers: Array<{ where: string; settings: Record<string, unknown> | null }> = [];
+  for (const file of files) {
+    const settings = readSettingsSource(file, readFile);
+    if (settings) layers.push({ where: file, settings });
+  }
+  const occurrences = settingsArgOccurrences(config.claudeArgs ?? []);
+  const merged = occurrences.find((o) => o.spelling === "separate");
+  occurrences.forEach((occurrence, i) => {
+    // `where` never carries the value: an inline `--settings` may hold a secret.
+    const where = occurrences.length > 1 ? `--settings (occurrence ${i + 1})` : "--settings";
+    // Merge's own guard: a missing or empty value is neither merged nor read.
+    if (!occurrence.value) return;
+    const settings = readSettingsSource(occurrence.value, readFile);
+    if (occurrence === merged && !settings) return; // dropped by the merge
+    layers.push({ where, settings });
+  });
+  return layers;
+}
+
+/**
+ * One settings source, parsed: inline JSON (a `--settings` value starting with
+ * `{`) or a file path. Null when it cannot be read or is not a JSON object.
+ */
+function readSettingsSource(
+  source: string,
+  readFile: (path: string) => string
+): Record<string, unknown> | null {
+  try {
+    const raw = source.trimStart().startsWith("{") ? source : readFile(source);
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * OS-specific path to Claude Code's *managed* settings file — the highest-precedence
  * tier, which "cannot be overridden by anything" (not even our --settings overlay).
@@ -401,8 +627,8 @@ function isWindows(): boolean {
 export function createStatusLineScript(tokenFilePath: string): string {
   const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
   const claudishDir = join(homeDir, ".claudish");
-  const timestamp = Date.now();
-  const scriptPath = join(claudishDir, `status-${timestamp}.js`);
+  // pid + timestamp, like the settings file: unique across same-millisecond launches.
+  const scriptPath = join(claudishDir, `status-${process.pid}-${Date.now()}.js`);
 
   // Escape backslashes for Windows paths in the script
   const escapedTokenPath = tokenFilePath.replace(/\\/g, "\\\\");
@@ -847,8 +1073,10 @@ export function createTempSettingsFile(
     // Directory may already exist
   }
 
-  const timestamp = Date.now();
-  const tempPath = join(claudishDir, `settings-${timestamp}.json`);
+  // The pid keeps the name unique across processes started in the same millisecond
+  // (madbench, team slots): with the timestamp alone they shared one file and each
+  // Claude Code loaded the last writer's status line and hooks.
+  const tempPath = join(claudishDir, `settings-${process.pid}-${Date.now()}.json`);
 
   // The file the proxy's TokenTracker writes: one a parent ASSIGNED (a team slot's or
   // MCP session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.

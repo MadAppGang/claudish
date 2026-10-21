@@ -10,8 +10,14 @@ import type { Context } from "hono";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import type { RawStreamTap } from "../../../hooks/raw.js";
 import { log } from "../../../logger.js";
+import { redactForClient } from "../../../redact.js";
 import { messageStartUsage } from "./message-start-usage.js";
 import { sseDataPayload } from "./sse-line.js";
+import {
+  type ParserSource,
+  type UpstreamReaderSlot,
+  cancelEndsUpstreamWork,
+} from "./upstream-cancel.js";
 
 export interface GeminiSseOptions {
   modelName: string;
@@ -42,9 +48,12 @@ export function createGeminiSseStream(
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   let isClosed = false;
+  // Set by `cancel()` only: the client went away (see finalize).
+  let cancelled = false;
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
-  const stream = new ReadableStream({
+  const upstream: UpstreamReaderSlot = {};
+  const source: ParserSource<Uint8Array> = {
     async start(controller) {
       const send = (event: string, data: any) => {
         if (!isClosed) {
@@ -114,6 +123,23 @@ export function createGeminiSseStream(
         }
         finalized = true;
 
+        // The client cancelled: the upstream reader was cancelled under the loop,
+        // so its read ended without the provider ending the turn. No turn-end
+        // hook and no zero-token update; usage only when the provider sent it.
+        if (cancelled) {
+          try {
+            log(
+              `[GeminiSSE] Client cancelled the stream for ${opts.modelName} (loop ended: ${reason}); usage ${usage ? "reported" : "not received, not recorded"}`
+            );
+            if (usage && opts.onTokenUpdate) {
+              opts.onTokenUpdate(usage.promptTokenCount || 0, usage.candidatesTokenCount || 0);
+            }
+          } finally {
+            teardown();
+          }
+          return;
+        }
+
         try {
           if (thinkingStarted) {
             send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
@@ -143,7 +169,10 @@ export function createGeminiSseStream(
 
           if (reason === "error") {
             log(`[GeminiSSE] Stream error: ${err}`);
-            send("error", { type: "error", error: { type: "api_error", message: err } });
+            send("error", {
+              type: "error",
+              error: { type: "api_error", message: err === undefined ? err : redactForClient(err) },
+            });
           } else {
             const hasToolCalls = toolCalls.size > 0;
             // Anthropic's contract for a cut-off turn is "max_tokens". Reporting
@@ -174,6 +203,7 @@ export function createGeminiSseStream(
 
       try {
         const reader = response.body!.getReader();
+        upstream.reader = reader;
         let buffer = "";
 
         while (true) {
@@ -353,14 +383,18 @@ export function createGeminiSseStream(
         await finalize("error", String(e));
       }
     },
+    // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
+    // after this and resolves only once the read loop above has settled.
     cancel() {
+      cancelled = true;
       isClosed = true;
       if (pingInterval) {
         clearInterval(pingInterval);
         pingInterval = null;
       }
     },
-  });
+  };
+  const stream = new ReadableStream(cancelEndsUpstreamWork(upstream, source));
 
   return new Response(stream, {
     headers: {

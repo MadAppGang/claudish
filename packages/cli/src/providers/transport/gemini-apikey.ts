@@ -42,9 +42,12 @@ export class GeminiProviderTransport implements ProviderTransport {
    * Rate-limited request via GeminiRequestQueue singleton.
    * Serializes all Gemini requests to prevent quota exhaustion.
    */
-  async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
+  async enqueueRequest(
+    fetchFn: () => Promise<Response>,
+    opts?: { signal?: AbortSignal }
+  ): Promise<Response> {
     const queue = GeminiRequestQueue.getInstance();
-    return queue.enqueue(fetchFn);
+    return queue.enqueue(fetchFn, opts);
   }
 }
 
