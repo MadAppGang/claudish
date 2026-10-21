@@ -23,9 +23,15 @@
  * now waits for the upstream work to end.
  */
 
-/** Where the parse loop publishes the upstream reader it reads. */
+/**
+ * Where the parse loop publishes the upstream reader it reads. Typed by the one
+ * method used here rather than as `ReadableStreamDefaultReader`: the macOS
+ * bridge typechecks these files under another bun-types version and without the
+ * DOM lib, where that name differs (`readMany`) and `UnderlyingDefaultSource`
+ * does not exist.
+ */
 export interface UpstreamReaderSlot {
-  reader?: ReadableStreamDefaultReader<Uint8Array>;
+  reader?: { cancel(reason?: unknown): Promise<void> };
 }
 
 /** A parser source: an async `start` that runs the whole loop, and an optional flag-setting `cancel`. */
@@ -37,7 +43,10 @@ export interface ParserSource<T> {
 export function cancelEndsUpstreamWork<T>(
   upstream: UpstreamReaderSlot,
   source: ParserSource<T>
-): UnderlyingDefaultSource<T> {
+): {
+  start(controller: ReadableStreamDefaultController<T>): Promise<void>;
+  cancel(reason?: unknown): Promise<void>;
+} {
   let task: Promise<void> | undefined;
   return {
     start(controller) {
