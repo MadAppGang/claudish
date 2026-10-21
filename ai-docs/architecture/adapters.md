@@ -850,13 +850,15 @@ parameter re-fetch, the 401 retry's fresh token and every Responses leg. A trans
 outside its headers exposes the value through `redactionSecrets?()`: Devin (the key is in the
 body) and Antigravity (its capacity fallback sends the access token itself). The advisor adds
 Claude Code's inbound bearer and `x-api-key` to the main request's lease when it reads them
-(`claudeRequestFacts`, `handlers/native-handler-advisor.ts`).
+(`claudeRequestFacts`, `handlers/native-handler-advisor.ts`). The native passthrough registers the
+exact headers it sends (the inbound bearer or key, or its fallback key) on EVERY native request,
+before its fetch (`NativeHandler.handle`), so an ordinary native turn's lease is not empty.
 
 **Who holds a lease, and when it is released.**
 
 | Request | Installed by | Released when |
 |---|---|---|
-| Every session-app route | `app.use("*", …)` (`proxy-server.ts:793`) sets `SIGNING_SECRETS_KEY` | the response body is fully read, cancelled or errors; at once for no body (`releaseWhenBodyEnds`, `handlers/shared/call-context.ts`). A cancel releases only after the parser has cancelled its upstream reader AND its read loop has settled (`cancelEndsUpstreamWork`, `stream-parsers/upstream-cancel.ts`): a flag-only parser cancel left the loop reading and logging frames after the release. On a throw that reaches the middleware (only when an inner `onError` itself threw: hono's compose answers a route's Error inside `next()`), the error's message and stack are redacted against this request's own set before the release |
+| Every session-app route | `app.use("*", …)` (`proxy-server.ts:793`) sets `SIGNING_SECRETS_KEY` | the response body is fully read, cancelled or errors; at once for no body (`releaseWhenBodyEnds`, `handlers/shared/call-context.ts`). A cancel releases only after the parser has cancelled its upstream reader AND its read loop has settled (`cancelEndsUpstreamWork`, `stream-parsers/upstream-cancel.ts`): a flag-only parser cancel left the loop reading and logging frames after the release. A cancel owns the release once it has begun: cancelling resolves an outstanding read with `done` before the source's cancel settles, so `releaseWhenBodyEnds` sets `cancelling` before `reader.cancel()` and a pull that wakes during it never releases. A parser's `cancel()` sets its own `cancelled` flag, and its finalize then writes one neutral "Client cancelled the stream" line, with no ending classification, no turn-end hook and a token update only for usage the provider sent. On a throw that reaches the middleware (only when an inner `onError` itself threw: hono's compose answers a route's Error inside `next()`), the error's message and stack are redacted against this request's own set before the release |
 | An advisor panel call | the panel gateway (`handlers/advisor-panel-gateway.ts`) | when the call's work settles, after the body was read and redacted; a timed-out call's aborted work can still log |
 | A Claude advisor call | `runClaudeAdvisorCall`, for its own headers | when it returns (the login value is also on the main request's lease) |
 | A Context nothing installed (tests) | `signingSecretsOf` (`call-context.ts:57`) | never: retention costs redaction, never exposure |
@@ -872,8 +874,13 @@ is parsed and logged long after the handler returned.
 | `--debug` file, always-on `~/.claudish/logs/`, stderr, `DiagOutput` | `log()` and `logStderr()` call `redactSigningValues` before any write (`logger.ts:282`, `:320`); `logStructured`/`logRecovery` go through them. This covers the queue's 429 line, the parsers' frame and error lines, the auth-refresh exception and `FallbackHandler`'s stderr |
 | `CLAUDISH_UPSTREAM_ERROR_LOG`, team/pane/MCP error text | `redactSecrets` runs the registry pass before its shape rules (`redact.ts:246`) |
 | Telemetry report | `buildReport` runs it before `sanitizeMessage` (`telemetry.ts:439`, `:473`) |
-| Text sent back to Claude Code | `redactForClient` (`redact.ts:235`) at each client-body family: `ComposedHandler`'s error bodies, the Responses leg issuer, the error frames of every stream parser (`anthropic-sse`, `openai-sse`, `gemini-sse`, `ollama-jsonl`, `devin-connect`, `responses/claude-sse-sink`), `FallbackHandler`'s combined body and thrown messages, the auth-failure bodies (`respondAuthFailure`), the 7b/7c stream-head failure bodies (`surfaced` and `provider_message`), the proxy's catch and `onError` bodies |
+| Text sent back to Claude Code | `redactForClient` (`redact.ts:235`) at each client-body family: the native passthrough's non-success JSON body and the data lines of an SSE `error` event (every other byte passes unchanged), `ComposedHandler`'s error bodies, the Responses leg issuer, the error frames of every stream parser (`anthropic-sse`, `openai-sse`, `gemini-sse`, `ollama-jsonl`, `devin-connect`, `responses/claude-sse-sink`), `FallbackHandler`'s combined body and thrown messages, the auth-failure bodies (`respondAuthFailure`), the 7b/7c stream-head failure bodies (`surfaced` and `provider_message`), the proxy's catch and `onError` bodies |
 | An advisor result | the gateway redacts the whole body by value against the call's own set (`redactExactValues`, `redact.ts:215`) before the reason reaches records, warnings or the tool result |
+
+**Parser rule: close last.** On a normal end the lease is released when the consumer reads
+`done`, which follows the parser's `controller.close()`. A parser that awaits anything, or logs
+upstream-derived text, after its close does so with the lease possibly gone. Every parser here
+closes in its teardown, after its last log line; keep it that way.
 
 A new sink that writes upstream text without going through `log`, `logStderr` or
 `redactSecrets`, or a client body built from upstream text without `redactForClient`, reopens

@@ -534,7 +534,10 @@ probe reads a process-wide last-signed arm; for every other provider it is its
 `SUBSCRIPTION_PROVIDERS` membership); Claude calls
 are `subscription` iff `arm === "oauth"` (`native-anthropic` is in neither billing set). That is
 the $0 evidence with stats on or off: `getModelPricing` returns zero exactly when
-`isSubscriptionProvider` is true.
+`isSubscriptionProvider` is true, or, for a `ComposedHandler` request, when that request's own
+`RequestBilling` says subscription. The hop label and the token cost share one derivation
+(`ComposedHandler.signedBilling`), passed per call into every `TokenTracker` cost update,
+retry-leg input included, so a concurrent request's signing cannot reprice this one.
 
 Every advisor call records stats with `request_role: "advisor"`, with main's semantics:
 `estimated_cost` is the emitting handler's running total for the launch and `is_free_model` is
