@@ -338,6 +338,7 @@ export const SUBCOMMAND_WORDS = [
   "telemetry",
   "stats",
   "serve",
+  "daemon",
   "providers",
   "keychain",
   "subscription",

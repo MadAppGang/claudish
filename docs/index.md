@@ -105,6 +105,7 @@ Then just ask Claude:
 - **[MCP Server Mode](usage/mcp-server.md)** - Use external models as tools inside Claude Code
 - **[Monitor Mode](usage/monitor-mode.md)** - Debug by watching real Anthropic API traffic
 - **[Muse Code](usage/muse-code.md)** - Meta's Muse models on your Muse Code subscription (`muse@`), or metered with `META_API_KEY` (`meta@`)
+- **[Daemon Mode](usage/daemon-mode.md)** - Run Claude Code's background sessions and agent view through claudish
 
 ### Models
 - **[Choosing Models](models/choosing-models.md)** - Which model for which task? I'll share my picks
