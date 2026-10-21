@@ -43,6 +43,7 @@ without auditing them is how the second design broke configuration A at launch:
 | `modelChain` passed to the proxy | dropped | kept | kept |
 | classifier passthrough | skipped | can run | can run |
 | `managedSettingsForcesClaudeAi` abort | skipped | skipped | runs for C |
+| unserved paths forwarded (`isPassthroughSession`, [first-party.md](first-party.md)) | yes, unless `--advisor` is also given | not inherited | not inherited |
 
 The four bold rows are the "four launch bits". Without them A cannot start:
 

@@ -38,6 +38,7 @@ lives in `ROADMAP.md`.
   watcher and identity-checked reap, socket traps, one level of nesting (`CLAUDISH_PANE_CHILD` kept,
   the nested refusal), the frozen mod contract v1, the session registry read as telemetry (and why no
   in-child mod or argv prompt). Read before editing `pane/`, team spawn or MCP session spawn
+- `first-party.md` — what Claude Code gates on trusting its base URL, why a `--monitor` session can be given that trust, and what the proxy then owes each request; read before editing native forwarding
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
