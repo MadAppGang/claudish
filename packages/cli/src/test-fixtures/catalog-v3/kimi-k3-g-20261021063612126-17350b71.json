@@ -1,0 +1,1816 @@
+{
+  "version": 3,
+  "lastUpdated": "2026-10-21T06:36:12.126Z",
+  "entries": [
+    {
+      "contractVersion": 3,
+      "modelId": "kimi-k3",
+      "displayName": "Kimi K3",
+      "provider": "moonshotai",
+      "aliases": [
+        "moonshotai/kimi-k3",
+        "moonshotai/kimi-k3:batch",
+        "moonshotai/Kimi-K3",
+        "accounts/fireworks/models/kimi-k3",
+        "k3"
+      ],
+      "status": "active",
+      "releaseDate": "2026-07-16",
+      "contextWindow": 1048576,
+      "subscriptionPlanIds": [
+        "kimi-code",
+        "llm-gateway-devpass",
+        "ollama-cloud",
+        "opencode-go",
+        "opencode-go-plus"
+      ],
+      "inputModalities": ["video"],
+      "outputModalities": ["text"],
+      "aggregators": [
+        {
+          "sourceProviderId": "fireworks",
+          "sourceCollectorId": "fireworks-api",
+          "confidence": "aggregator_reported",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "fireworks",
+            "routeProfileId": "gateway"
+          },
+          "externalModelId": "accounts/fireworks/models/kimi-k3",
+          "pricing": {
+            "type": "unavailable"
+          },
+          "reasoning": {
+            "mode": {
+              "status": "rejected"
+            },
+            "request": {
+              "status": "supported",
+              "api": "chat-completions",
+              "evidenceSourceUrl": "https://docs.fireworks.ai/api-reference/post-chatcompletions.md",
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": "max"
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "not_applicable"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": "max"
+              },
+              "mode": {
+                "status": "rejected",
+                "path": "/reasoning/mode"
+              }
+            },
+            "speed": {
+              "status": "supported",
+              "path": "/service_tier",
+              "values": {
+                "priority": "priority"
+              },
+              "default": "standard",
+              "headers": [],
+              "echo": {
+                "status": "not_applicable"
+              },
+              "access": "open"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_1839019a7da1a7499627c0b16dac7237",
+                "method": "api",
+                "sourceUrl": "https://api.fireworks.ai/inference/v1/models",
+                "observedAt": "2026-10-21T06:35:11.429Z"
+              },
+              {
+                "evidenceId": "wev_499e08d004bf254386ad88fd1069c756",
+                "method": "api",
+                "sourceUrl": "https://api.moonshot.ai/v1/models",
+                "observedAt": "2026-10-21T06:35:11.542Z"
+              },
+              {
+                "evidenceId": "wev_0e5d92cc2578bde4a965bf92e3b2c1f4",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_3de4e092299b3198bcefd398a79d7928",
+                "method": "docs",
+                "sourceUrl": "https://docs.fireworks.ai/api-reference/post-chatcompletions.md",
+                "observedAt": "2026-10-21T06:35:16.331Z"
+              },
+              {
+                "evidenceId": "wev_96faed81a0e5cddfa70603040be95c37",
+                "method": "docs",
+                "sourceUrl": "https://docs.fireworks.ai/api-reference/post-chatcompletions.md",
+                "observedAt": "2026-10-21T06:35:16.331Z"
+              },
+              {
+                "evidenceId": "wev_a7dba9263a387cdb22816aab40e5c217",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_aa52a85b40e027f84055a1df2f475ebd",
+                "method": "docs",
+                "sourceUrl": "https://docs.fireworks.ai/serverless/serverless-modes.md",
+                "observedAt": "2026-10-21T06:35:29.916Z"
+              },
+              {
+                "evidenceId": "wev_ad6789e872865960897cbc751e0eb9b2",
+                "method": "docs",
+                "sourceUrl": "https://docs.fireworks.ai/tools-sdks/openai-compatibility.md",
+                "observedAt": "2026-10-21T06:35:40.608Z"
+              },
+              {
+                "evidenceId": "wev_ef6950bb3b5e7a8ff7777b2141465b4f",
+                "method": "docs",
+                "sourceUrl": "https://docs.fireworks.ai/serverless/pricing.md",
+                "observedAt": "2026-10-21T06:35:29.916Z"
+              },
+              {
+                "evidenceId": "wev_f27c0e598aaaf60100041c3b84f68c0a",
+                "method": "docs",
+                "sourceUrl": "https://docs.fireworks.ai/api-reference/post-chatcompletions.md",
+                "observedAt": "2026-10-21T06:35:16.331Z"
+              },
+              {
+                "evidenceId": "wev_3918ae665d7f97d06e39bd46c97c639d",
+                "method": "probe",
+                "observedAt": "2026-10-13T12:39:04.119Z"
+              },
+              {
+                "evidenceId": "wev_84590856181637bbe0324fb7163ecb24",
+                "method": "probe",
+                "observedAt": "2026-10-13T12:39:27.061Z"
+              },
+              {
+                "evidenceId": "wev_96588014b20c1de2f4b04db95b5bd6f4",
+                "method": "probe",
+                "observedAt": "2026-10-13T12:39:22.815Z"
+              },
+              {
+                "evidenceId": "wev_f1ca26181a086cf336495036f5658a0c",
+                "method": "probe",
+                "observedAt": "2026-10-13T12:39:27.061Z"
+              }
+            ]
+          }
+        },
+        {
+          "sourceProviderId": "kimi-code",
+          "sourceCollectorId": "kimi-code-models",
+          "confidence": "gateway_official",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "moonshotai",
+            "routeProfileId": "kimi-code-subscription"
+          },
+          "externalModelId": "k3",
+          "reasoning": {
+            "request": {
+              "status": "supported",
+              "api": "chat-completions",
+              "evidenceSourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": "high"
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_completion_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "unknown"
+              },
+              "disable": [
+                {
+                  "path": "/reasoning_effort",
+                  "value": "none"
+                }
+              ],
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": "high"
+              },
+              "mode": {
+                "status": "not_applicable"
+              },
+              "warnings": [
+                {
+                  "code": "served_model_changes",
+                  "part": "disable",
+                  "servedModel": "K2.8 Preview",
+                  "evidence": [
+                    {
+                      "evidenceId": "wev_d47364e2f32d6d849775521ef3b18329",
+                      "method": "docs",
+                      "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+                      "observedAt": "2026-10-21T06:35:39.956Z"
+                    },
+                    {
+                      "evidenceId": "wev_d68dd1d98ae6dee8dfa71ca57c453a36",
+                      "method": "probe",
+                      "observedAt": "2026-10-15T22:50:43.921Z"
+                    }
+                  ]
+                }
+              ]
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_07b993cc1976ff89bde2ad9975968383",
+                "method": "docs",
+                "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+                "observedAt": "2026-10-21T06:35:39.956Z"
+              },
+              {
+                "evidenceId": "wev_20d7c2bd1df3bb17df5df4bc9a9ac6c9",
+                "method": "docs",
+                "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+                "observedAt": "2026-10-21T06:35:39.956Z"
+              },
+              {
+                "evidenceId": "wev_6c35b172e1d5abed2a49f40e65259107",
+                "method": "docs",
+                "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+                "observedAt": "2026-10-21T06:35:39.956Z"
+              },
+              {
+                "evidenceId": "wev_7e20f7f733024b64ea4c8ad152a236c5",
+                "method": "docs",
+                "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+                "observedAt": "2026-10-21T06:35:39.956Z"
+              },
+              {
+                "evidenceId": "wev_83ab7d61d4d41609092cc3f750afbca8",
+                "method": "docs",
+                "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+                "observedAt": "2026-10-21T06:35:39.956Z"
+              },
+              {
+                "evidenceId": "wev_d47364e2f32d6d849775521ef3b18329",
+                "method": "docs",
+                "sourceUrl": "https://www.kimi.com/code/docs/en/kimi-code/models.html",
+                "observedAt": "2026-10-21T06:35:39.956Z"
+              },
+              {
+                "evidenceId": "wev_85805a51e04abe0e02e21626fd9d97a2",
+                "method": "probe",
+                "observedAt": "2026-10-15T22:50:37.292Z"
+              },
+              {
+                "evidenceId": "wev_d68dd1d98ae6dee8dfa71ca57c453a36",
+                "method": "probe",
+                "observedAt": "2026-10-15T22:50:43.921Z"
+              }
+            ]
+          }
+        },
+        {
+          "sourceProviderId": "moonshotai",
+          "sourceCollectorId": "moonshot-api",
+          "confidence": "api_official",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "moonshotai",
+            "routeProfileId": "direct-api"
+          },
+          "externalModelId": "kimi-k3",
+          "pricing": {
+            "type": "unavailable"
+          },
+          "reasoning": {
+            "request": {
+              "status": "supported",
+              "api": "chat-completions",
+              "evidenceSourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": "max"
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_completion_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "not_applicable"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": "max"
+              },
+              "mode": {
+                "status": "not_applicable"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_2635b1e1285f3930ed228e1a8fc3cd7e",
+                "method": "api",
+                "sourceUrl": "https://api.moonshot.ai/v1/models",
+                "observedAt": "2026-10-21T06:35:11.542Z"
+              },
+              {
+                "evidenceId": "wev_958d67adef66789e568bc6d17823b7c3",
+                "method": "api",
+                "sourceUrl": "https://api.moonshot.ai/v1/models",
+                "observedAt": "2026-10-21T06:35:11.542Z"
+              },
+              {
+                "evidenceId": "wev_b3c8da97f4416d78ae39c90dd424d101",
+                "method": "api",
+                "sourceUrl": "https://api.moonshot.ai/v1/models",
+                "observedAt": "2026-10-21T06:35:11.542Z"
+              },
+              {
+                "evidenceId": "wev_1b1eb232866836788091508db3d6ef1b",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_5d9d832f784dff3105a6ede12ce1a18e",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_a06262889db87006f755bfcbbc5c7c48",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_b26f07d6e89857cbbe3c74f8861fd0a2",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_b74bb66ed67a7e4b2e4dadfc887cbaff",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_d2c1042c860d4acb8ad19f2147722c83",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_fd948f88b9681843035b8d485154c545",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_3dd589d95db0d5e6b15ac8d2a9a6a50a",
+                "method": "probe",
+                "observedAt": "2026-10-13T14:33:26.250Z"
+              },
+              {
+                "evidenceId": "wev_c128619f1b947bb8aa6b36c4f1eff2fc",
+                "method": "probe",
+                "observedAt": "2026-10-13T14:33:29.158Z"
+              }
+            ]
+          }
+        },
+        {
+          "sourceProviderId": "ollamacloud",
+          "sourceCollectorId": "ollama-cloud-api",
+          "confidence": "gateway_official",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "ollama",
+            "routeProfileId": "cloud"
+          },
+          "externalModelId": "kimi-k3",
+          "pricing": {
+            "type": "flat",
+            "input": 3,
+            "output": 15,
+            "cachedRead": 0.3
+          },
+          "reasoning": {
+            "request": {
+              "status": "supported",
+              "api": "chat-completions",
+              "evidenceSourceUrl": "https://ollama.com/api/show",
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": "max"
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "not_applicable"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": "max"
+              },
+              "mode": {
+                "status": "not_applicable"
+              }
+            },
+            "speed": {
+              "status": "not_applicable"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_22434ae809230da4aefe572f276cb3a5",
+                "method": "api",
+                "sourceUrl": "https://api.moonshot.ai/v1/models",
+                "observedAt": "2026-10-21T06:35:11.542Z"
+              },
+              {
+                "evidenceId": "wev_68e2167b0fbf1cd2a1d3ebd0cb558c3a",
+                "method": "api",
+                "sourceUrl": "https://api.moonshot.ai/v1/models",
+                "observedAt": "2026-10-21T06:35:11.542Z"
+              },
+              {
+                "evidenceId": "wev_7d5f782b83c2215ac4cb608e3c90989d",
+                "method": "api",
+                "sourceUrl": "https://ollama.com/api/show",
+                "observedAt": "2026-10-21T06:35:11.515Z"
+              },
+              {
+                "evidenceId": "wev_963c7eee354dd1b352800f70c1ff890a",
+                "method": "api",
+                "sourceUrl": "https://ollama.com/api/show",
+                "observedAt": "2026-10-21T06:35:11.515Z"
+              },
+              {
+                "evidenceId": "wev_a25d18b3e4d7b50e2c285da65b6e637c",
+                "method": "api",
+                "sourceUrl": "https://ollama.com/api/show",
+                "observedAt": "2026-10-21T06:35:11.515Z"
+              },
+              {
+                "evidenceId": "wev_252e71f9344d986e0b076d6d54e9b03f",
+                "method": "docs",
+                "sourceUrl": "https://ollama.com/pricing",
+                "observedAt": "2026-10-21T06:35:34.206Z"
+              },
+              {
+                "evidenceId": "wev_2c24344b66cd539a4b702dc9db614e7f",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_86d45eb7e51cbf77aed54f5a86eba94f",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_4d815e62e9e3bc16437ae51b2e3dded0",
+                "method": "probe",
+                "observedAt": "2026-10-13T13:22:15.185Z"
+              },
+              {
+                "evidenceId": "wev_86cf4b3058d5ed8bf6bb595a1557580d",
+                "method": "probe",
+                "observedAt": "2026-10-13T13:21:38.142Z"
+              },
+              {
+                "evidenceId": "wev_98095d0bc77fd42c0aea361efd40ada1",
+                "method": "probe",
+                "observedAt": "2026-10-13T13:22:15.185Z"
+              }
+            ]
+          }
+        },
+        {
+          "sourceProviderId": "opencode-go",
+          "sourceCollectorId": "popular-coding-subscriptions",
+          "confidence": "gateway_official",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "opencode",
+            "routeProfileId": "go-subscription"
+          },
+          "externalModelId": "kimi-k3",
+          "reasoning": {
+            "mode": {
+              "status": "unknown"
+            },
+            "request": {
+              "status": "supported",
+              "api": "chat-completions",
+              "evidenceSourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                }
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_completion_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "not_applicable"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": {
+                  "status": "unknown"
+                }
+              },
+              "mode": {
+                "status": "unknown"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_5dbbeed1c962d3d232b23b406b0b7152",
+                "method": "api",
+                "sourceUrl": "https://api.moonshot.ai/v1/models",
+                "observedAt": "2026-10-21T06:35:11.542Z"
+              },
+              {
+                "evidenceId": "wev_eade9d0225240c9459acb7b1ea3971d5",
+                "method": "api",
+                "sourceUrl": "https://api.moonshot.ai/v1/models",
+                "observedAt": "2026-10-21T06:35:11.542Z"
+              },
+              {
+                "evidenceId": "wev_2874731457f72c577f2afaf115edc4c4",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_8ad939cb182711115c219dd3f6976a33",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_f8713cc00bc5ce7797fb73d12b34a8d0",
+                "method": "endpoint-table",
+                "sourceUrl": "https://opencode.ai/v2/docs/console/go",
+                "observedAt": "2026-10-21T06:35:16.451Z"
+              },
+              {
+                "evidenceId": "wev_8c5f6d9edada03dab030e825df0b84a0",
+                "method": "probe",
+                "observedAt": "2026-10-13T19:50:24.988Z"
+              },
+              {
+                "evidenceId": "wev_c3e6980c40d72e257dc63b1726420cbd",
+                "method": "probe",
+                "observedAt": "2026-10-13T19:50:43.352Z"
+              }
+            ]
+          },
+          "contentUse": "standard"
+        },
+        {
+          "sourceProviderId": "opencode-zen",
+          "sourceCollectorId": "opencode-zen-api",
+          "confidence": "gateway_official",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "opencode",
+            "routeProfileId": "zen"
+          },
+          "externalModelId": "kimi-k3",
+          "pricing": {
+            "type": "flat",
+            "input": 3,
+            "output": 15,
+            "cachedRead": 0.3
+          },
+          "reasoning": {
+            "mode": {
+              "status": "rejected"
+            },
+            "request": {
+              "status": "supported",
+              "api": "chat-completions",
+              "evidenceSourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                }
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_completion_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": {
+                "status": "not_applicable"
+              },
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning_effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": {
+                  "status": "unknown"
+                }
+              },
+              "mode": {
+                "status": "rejected",
+                "path": "/reasoning/mode"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_656a7813adf4c986b82d2ddafbd3c44b",
+                "method": "api",
+                "sourceUrl": "https://api.moonshot.ai/v1/models",
+                "observedAt": "2026-10-21T06:35:11.542Z"
+              },
+              {
+                "evidenceId": "wev_f66076b5b67132f915df266b7568efa6",
+                "method": "api",
+                "sourceUrl": "https://api.moonshot.ai/v1/models",
+                "observedAt": "2026-10-21T06:35:11.542Z"
+              },
+              {
+                "evidenceId": "wev_0f79175d59126ff01fc902c101bb7c34",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_43655b66038b5b0ea6cf45c20f847ed3",
+                "method": "docs",
+                "sourceUrl": "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart.md",
+                "observedAt": "2026-10-21T06:35:36.912Z"
+              },
+              {
+                "evidenceId": "wev_c7a7cb1492a103f070fb9770f787c572",
+                "method": "endpoint-table",
+                "sourceUrl": "https://opencode.ai/v2/docs/console/models",
+                "observedAt": "2026-10-21T06:35:13.029Z"
+              },
+              {
+                "evidenceId": "wev_3c24a29e1741aff308a8e3a57b6d7a57",
+                "method": "probe",
+                "observedAt": "2026-10-20T19:52:00.649Z"
+              },
+              {
+                "evidenceId": "wev_7617080df7a62316003535d40d9d6d03",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:48:49.658Z"
+              },
+              {
+                "evidenceId": "wev_81efb692b836b0a79416ea2f685cfe1f",
+                "method": "probe",
+                "observedAt": "2026-10-20T19:52:00.649Z"
+              }
+            ]
+          },
+          "contentUse": "standard"
+        },
+        {
+          "sourceProviderId": "openrouter",
+          "sourceCollectorId": "openrouter-api",
+          "confidence": "aggregator_reported",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "openrouter",
+            "routeProfileId": "gateway"
+          },
+          "externalModelId": "moonshotai/kimi-k3",
+          "pricing": {
+            "type": "flat",
+            "input": 0.239,
+            "output": 11.936,
+            "cachedRead": 0.21
+          },
+          "reasoning": {
+            "request": {
+              "status": "supported",
+              "api": "chat-completions",
+              "evidenceSourceUrl": "https://openrouter.ai/api/v1/models",
+              "enable": [
+                {
+                  "path": "/reasoning/enabled",
+                  "value": true
+                }
+              ],
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": "max"
+              }
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "supported",
+              "enable": [
+                {
+                  "path": "/reasoning/enabled",
+                  "value": true
+                }
+              ],
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "path": "/reasoning/effort",
+                "values": {
+                  "max": "max",
+                  "high": "high",
+                  "low": "low"
+                },
+                "default": "max"
+              },
+              "mode": {
+                "status": "not_applicable"
+              }
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_29da428366813cd49224933658cc98ec",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_2ed9b2873d078dd0c838af545dced469",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_aa90c012207ebd2977eb16593e233521",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_bb294abf2ea846787514ee3362be80ee",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_d204130af3154afe01c716485f5d51a4",
+                "method": "api",
+                "sourceUrl": "https://openrouter.ai/api/v1/models",
+                "observedAt": "2026-10-21T06:35:11.236Z"
+              },
+              {
+                "evidenceId": "wev_2149f63531d6335ed22c3e464839ebd4",
+                "method": "docs",
+                "sourceUrl": "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens",
+                "observedAt": "2026-10-21T06:35:41.955Z"
+              },
+              {
+                "evidenceId": "wev_e7b54d8ffe93af19df8d470c5f92835f",
+                "method": "docs",
+                "sourceUrl": "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens",
+                "observedAt": "2026-10-21T06:35:41.955Z"
+              },
+              {
+                "evidenceId": "wev_eadade75dce86cba94b895d51c03dc8d",
+                "method": "docs",
+                "sourceUrl": "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens",
+                "observedAt": "2026-10-21T06:35:41.955Z"
+              },
+              {
+                "evidenceId": "wev_623986c887dd966a4883b434d75da502",
+                "method": "probe",
+                "observedAt": "2026-10-17T19:34:26.332Z"
+              },
+              {
+                "evidenceId": "wev_a71c0c3658428c2c778e0f3d458235d8",
+                "method": "probe",
+                "observedAt": "2026-10-17T19:34:39.931Z"
+              }
+            ]
+          },
+          "contentUse": "standard"
+        },
+        {
+          "sourceProviderId": "openrouter",
+          "sourceCollectorId": "openrouter-api",
+          "confidence": "aggregator_reported",
+          "routeStatus": "unknown",
+          "reason": "unverified_mapping",
+          "observedExternalModelId": "moonshotai/kimi-k3:batch"
+        },
+        {
+          "sourceProviderId": "poe",
+          "sourceCollectorId": "poe-api",
+          "confidence": "aggregator_reported",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "poe",
+            "routeProfileId": "gateway"
+          },
+          "externalModelId": "kimi-k3",
+          "pricing": {
+            "type": "flat",
+            "input": 3.0303,
+            "output": 15.1515,
+            "cachedRead": 0.303
+          },
+          "probeEligible": true,
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "unknown"
+            },
+            "speed": {
+              "status": "rejected",
+              "path": "/service_tier"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_36cd640eb8722fb3d6d9cbd8caff4b26",
+                "method": "docs",
+                "sourceUrl": "https://creator.poe.com/docs/external-applications/openai-compatible-api",
+                "observedAt": "2026-10-21T06:35:27.642Z"
+              },
+              {
+                "evidenceId": "wev_426daf24b7e4b6fa94d4999c6ceb8d77",
+                "method": "docs",
+                "sourceUrl": "https://creator.poe.com/docs/external-applications/openai-compatible-api",
+                "observedAt": "2026-10-21T06:35:27.642Z"
+              },
+              {
+                "evidenceId": "wev_23887d051a43dd1746ea635e29bff888",
+                "method": "probe",
+                "observedAt": "2026-10-15T20:25:52.887Z"
+              },
+              {
+                "evidenceId": "wev_b495aaf65fce5eb80f7265def87a7642",
+                "method": "probe",
+                "observedAt": "2026-10-15T20:25:52.887Z"
+              },
+              {
+                "evidenceId": "wev_cf8a412dc09b30415cc2c3040a5e7916",
+                "method": "probe",
+                "observedAt": "2026-10-15T20:25:49.422Z"
+              }
+            ]
+          }
+        },
+        {
+          "sourceProviderId": "together-ai",
+          "sourceCollectorId": "together-ai-api",
+          "confidence": "gateway_official",
+          "routeStatus": "mapped",
+          "route": {
+            "routeId": "together-ai",
+            "routeProfileId": "gateway"
+          },
+          "externalModelId": "moonshotai/Kimi-K3",
+          "pricing": {
+            "type": "flat",
+            "input": 3,
+            "output": 15
+          },
+          "probeEligible": true,
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "wire": {
+            "status": "known",
+            "api": "chat-completions",
+            "tokenParam": "max_tokens",
+            "toolsWithReasoning": "ok",
+            "reasoning": {
+              "status": "unknown"
+            },
+            "speed": {
+              "status": "not_applicable"
+            },
+            "evidence": [
+              {
+                "evidenceId": "wev_30fc206804bc9a0f7450f03eeb6263fb",
+                "method": "docs",
+                "sourceUrl": "https://docs.together.ai/docs/inference/openai-compatibility.md",
+                "observedAt": "2026-10-21T06:35:32.705Z"
+              },
+              {
+                "evidenceId": "wev_40c32dcb90823a39338ebdc888a26efb",
+                "method": "docs",
+                "sourceUrl": "https://docs.together.ai/docs/inference/openai-compatibility.md",
+                "observedAt": "2026-10-21T06:35:32.705Z"
+              },
+              {
+                "evidenceId": "wev_721e68d23458d1b30dd2351e98c97b47",
+                "method": "docs",
+                "sourceUrl": "https://docs.together.ai/docs/inference/chat/parameters.md",
+                "observedAt": "2026-10-21T06:35:32.695Z"
+              },
+              {
+                "evidenceId": "wev_e4821c2c52cfeba604f7ed64fa35d9eb",
+                "method": "docs",
+                "sourceUrl": "https://docs.together.ai/reference/chat-completions.md",
+                "observedAt": "2026-10-21T06:35:40.793Z"
+              },
+              {
+                "evidenceId": "wev_4336df2dce14fd8f320f0c0ba38f115a",
+                "method": "probe",
+                "observedAt": "2026-10-21T05:42:41.495Z"
+              }
+            ]
+          }
+        }
+      ],
+      "supportsVision": true,
+      "supportsTools": true,
+      "supportsThinking": true,
+      "videoInput": true,
+      "videoOutput": false,
+      "reasoning": {
+        "supported": true,
+        "mandatory": true,
+        "control": "effort",
+        "efforts": ["max", "high", "low"],
+        "defaultEffort": "max"
+      },
+      "endpoints": {
+        "openai": {
+          "api": "chat-completions",
+          "toolsWithReasoning": "ok"
+        }
+      },
+      "tokenParam": "max_completion_tokens"
+    }
+  ],
+  "models": [
+    {
+      "id": "kimi-k3"
+    }
+  ],
+  "plans": [
+    {
+      "contractVersion": 3,
+      "id": "kimi-code",
+      "displayName": "Kimi Code",
+      "provider": "moonshotai",
+      "pricing": [
+        {
+          "period": "yearly",
+          "price": 180,
+          "currency": "USD",
+          "description": "Plus: Efficiency upgrade",
+          "tier": "Plus"
+        },
+        {
+          "period": "yearly",
+          "price": 372,
+          "currency": "USD",
+          "description": "Pro: Pro choiceRecommended",
+          "tier": "Pro"
+        },
+        {
+          "period": "yearly",
+          "price": 948,
+          "currency": "USD",
+          "description": "Max",
+          "tier": "Max"
+        },
+        {
+          "period": "yearly",
+          "price": 1908,
+          "currency": "USD",
+          "description": "Ultra",
+          "tier": "Ultra"
+        }
+      ],
+      "modelDiscovery": "hybrid",
+      "inclusions": [
+        {
+          "kind": "provider_model",
+          "sourceText": "k3",
+          "provider": "moonshotai",
+          "externalModelId": "k3",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "kimi-k3"
+          }
+        },
+        {
+          "kind": "provider_model",
+          "sourceText": "k3-256k",
+          "provider": "moonshotai",
+          "externalModelId": "k3-256k",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "kimi-k3-256k"
+          }
+        },
+        {
+          "kind": "provider_model",
+          "sourceText": "kimi-for-coding",
+          "provider": "moonshotai",
+          "externalModelId": "kimi-for-coding",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "kimi-k2.8-preview"
+          }
+        },
+        {
+          "kind": "provider_model",
+          "sourceText": "kimi-for-coding-highspeed",
+          "provider": "moonshotai",
+          "externalModelId": "kimi-for-coding-highspeed",
+          "resolution": {
+            "status": "mapped",
+            "modelId": "kimi-k2.7-code-highspeed"
+          }
+        }
+      ],
+      "features": [
+        "Regularly refreshed usage quotas with multi-device login, allowing you to share your plan across devices and work efficiently on multiple projects",
+        "Ample limits and increased concurrency caps, providing a high-value solution for advanced users",
+        "Generous credits for everyday work and intensive development",
+        "Our highest credit allowance for complex projects and large codebases"
+      ],
+      "lastUpdated": "2026-10-21T06:35:14.851Z",
+      "routeStatus": "supported",
+      "route": {
+        "routeId": "moonshotai",
+        "routeProfileId": "kimi-code-subscription"
+      },
+      "membershipRequirements": [
+        {
+          "membershipId": "kimi-code-live",
+          "authority": "authoritative",
+          "requiredForActivation": true,
+          "maxAgeHours": 48
+        }
+      ],
+      "membershipCoverage": {
+        "status": "complete",
+        "observedAt": "2026-10-21T06:35:14.851Z",
+        "expiresAt": "2026-10-23T06:35:14.851Z"
+      }
+    }
+  ],
+  "catalogGenerationId": "g-20261021063612126-17350b71",
+  "routeRegistry": {
+    "generationId": "g-20261021063612126-17350b71",
+    "registry": {
+      "contractVersion": 3,
+      "registryVersion": "3.7.0",
+      "routes": {
+        "anthropic": {
+          "routeId": "anthropic",
+          "consumerProviderId": "anthropic",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "anthropic-direct",
+              "credentialProfileId": "anthropic-api-key",
+              "nativeModelProviders": ["anthropic"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.anthropic.com/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://api.anthropic.com/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "claude-code-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "anthropic-claude-code",
+              "credentialProfileId": "anthropic-claude-code-oauth",
+              "nativeModelProviders": ["anthropic"],
+              "apis": {
+                "anthropic-messages": {
+                  "baseUrl": "https://api.anthropic.com/v1"
+                }
+              },
+              "admission": "docs_roster"
+            }
+          }
+        },
+        "openai": {
+          "routeId": "openai",
+          "consumerProviderId": "openai",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "openai-direct",
+              "credentialProfileId": "openai-api-key",
+              "nativeModelProviders": ["openai"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.openai.com/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://api.openai.com/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "codex-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "openai-codex",
+              "credentialProfileId": "openai-codex-oauth",
+              "nativeModelProviders": ["openai"],
+              "apis": {
+                "responses": {
+                  "baseUrl": "https://chatgpt.com/backend-api/codex"
+                }
+              },
+              "admission": "docs_roster"
+            }
+          }
+        },
+        "google": {
+          "routeId": "google",
+          "consumerProviderId": "google",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "google-gemini-direct",
+              "credentialProfileId": "google-gemini-api-key",
+              "nativeModelProviders": ["google"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai"
+                },
+                "gemini": {
+                  "baseUrl": "https://generativelanguage.googleapis.com/v1beta"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "antigravity-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "google-antigravity",
+              "credentialProfileId": "google-antigravity-oauth",
+              "nativeModelProviders": ["google"],
+              "apis": {},
+              "admission": "docs_roster"
+            }
+          }
+        },
+        "x-ai": {
+          "routeId": "x-ai",
+          "consumerProviderId": "x-ai",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "xai-direct",
+              "credentialProfileId": "xai-api-key",
+              "nativeModelProviders": ["x-ai"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.x.ai/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://api.x.ai/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "supergrok-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "xai-grok-build",
+              "credentialProfileId": "xai-grok-build-oauth",
+              "nativeModelProviders": ["x-ai"],
+              "apis": {},
+              "admission": "docs_roster"
+            }
+          }
+        },
+        "mistralai": {
+          "routeId": "mistralai",
+          "consumerProviderId": "mistralai",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "mistral-direct",
+              "credentialProfileId": "mistral-api-key",
+              "nativeModelProviders": ["mistralai"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.mistral.ai/v1"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        },
+        "moonshotai": {
+          "routeId": "moonshotai",
+          "consumerProviderId": "moonshotai",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "moonshot-direct",
+              "credentialProfileId": "moonshot-api-key",
+              "nativeModelProviders": ["moonshotai"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.moonshot.ai/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://api.moonshot.ai/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://api.moonshot.ai/anthropic/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "kimi-code-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "kimi-code",
+              "credentialProfileId": "kimi-code-membership-token",
+              "nativeModelProviders": ["moonshotai"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.kimi.ai/coding/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://api.kimi.ai/coding/v1"
+                }
+              },
+              "admission": "docs_roster"
+            }
+          }
+        },
+        "minimax": {
+          "routeId": "minimax",
+          "consumerProviderId": "minimax",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "minimax-direct",
+              "credentialProfileId": "minimax-api-key",
+              "nativeModelProviders": ["minimax"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.minimax.io/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://api.minimax.io/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://api.minimax.io/anthropic/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "coding-plan-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "minimax-coding-plan",
+              "credentialProfileId": "minimax-subscription-key",
+              "nativeModelProviders": ["minimax"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.minimax.io/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://api.minimax.io/anthropic/v1"
+                }
+              },
+              "admission": "docs_roster"
+            }
+          }
+        },
+        "deepseek": {
+          "routeId": "deepseek",
+          "consumerProviderId": "deepseek",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "deepseek-direct",
+              "credentialProfileId": "deepseek-api-key",
+              "nativeModelProviders": ["deepseek"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.deepseek.com"
+                },
+                "responses": {
+                  "baseUrl": "https://api.deepseek.com"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        },
+        "qwen": {
+          "routeId": "qwen",
+          "consumerProviderId": "qwen",
+          "profiles": {
+            "dashscope-direct": {
+              "kind": "direct",
+              "endpointProfileId": "dashscope-direct",
+              "credentialProfileId": "dashscope-api-key",
+              "nativeModelProviders": ["qwen"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://dashscope-intl.aliyuncs.com/apps/anthropic/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "realtime-websocket": {
+              "kind": "direct",
+              "endpointProfileId": "modelstudio-realtime-websocket",
+              "credentialProfileId": "dashscope-api-key",
+              "nativeModelProviders": ["qwen"],
+              "apis": {},
+              "admission": "api_roster"
+            },
+            "modelstudio-coding-plan": {
+              "kind": "subscription",
+              "endpointProfileId": "modelstudio-coding-plan",
+              "credentialProfileId": "modelstudio-coding-plan-key",
+              "nativeModelProviders": ["qwen"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://coding-intl.dashscope.aliyuncs.com/v1"
+                }
+              },
+              "admission": "docs_roster"
+            },
+            "qwencloud-token-plan": {
+              "kind": "subscription",
+              "endpointProfileId": "qwencloud-token-plan",
+              "credentialProfileId": "qwencloud-token-plan-key",
+              "nativeModelProviders": ["qwen"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1"
+                }
+              },
+              "admission": "docs_roster"
+            }
+          }
+        },
+        "z-ai": {
+          "routeId": "z-ai",
+          "consumerProviderId": "z-ai",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "zai-direct",
+              "credentialProfileId": "zai-api-key",
+              "nativeModelProviders": ["z-ai"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.z.ai/api/paas/v4"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "glm-coding-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "zai-glm-coding",
+              "credentialProfileId": "zai-glm-coding-token",
+              "nativeModelProviders": ["z-ai"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.z.ai/api/coding/paas/v4"
+                },
+                "responses": {
+                  "baseUrl": "https://api.z.ai/api/v1"
+                }
+              },
+              "admission": "docs_roster"
+            }
+          }
+        },
+        "openrouter": {
+          "routeId": "openrouter",
+          "consumerProviderId": "openrouter",
+          "profiles": {
+            "gateway": {
+              "kind": "gateway",
+              "endpointProfileId": "openrouter-gateway",
+              "credentialProfileId": "openrouter-api-key",
+              "nativeModelProviders": [],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://openrouter.ai/api/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://openrouter.ai/api/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://openrouter.ai/api/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "decisions": {
+              "kind": "gateway",
+              "endpointProfileId": "openrouter-decisions",
+              "credentialProfileId": "openrouter-api-key",
+              "nativeModelProviders": [],
+              "apis": {},
+              "admission": "api_roster"
+            }
+          }
+        },
+        "together-ai": {
+          "routeId": "together-ai",
+          "consumerProviderId": "together-ai",
+          "profiles": {
+            "gateway": {
+              "kind": "gateway",
+              "endpointProfileId": "together-inference",
+              "credentialProfileId": "together-api-key",
+              "nativeModelProviders": [],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.together.ai/v1"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        },
+        "fireworks": {
+          "routeId": "fireworks",
+          "consumerProviderId": "fireworks",
+          "profiles": {
+            "gateway": {
+              "kind": "gateway",
+              "endpointProfileId": "fireworks-inference",
+              "credentialProfileId": "fireworks-api-key",
+              "nativeModelProviders": [],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.fireworks.ai/inference/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://api.fireworks.ai/inference/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://api.fireworks.ai/inference/v1"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        },
+        "poe": {
+          "routeId": "poe",
+          "consumerProviderId": "poe",
+          "profiles": {
+            "gateway": {
+              "kind": "gateway",
+              "endpointProfileId": "poe-api",
+              "credentialProfileId": "poe-api-key",
+              "nativeModelProviders": [],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.poe.com/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://api.poe.com/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://api.poe.com/v1"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        },
+        "vertex": {
+          "routeId": "vertex",
+          "consumerProviderId": "vertex",
+          "profiles": {
+            "google-cloud": {
+              "kind": "gateway",
+              "endpointProfileId": "vertex-google-cloud",
+              "credentialProfileId": "vertex-auth",
+              "nativeModelProviders": [],
+              "apis": {},
+              "admission": "docs_roster"
+            }
+          }
+        },
+        "opencode": {
+          "routeId": "opencode",
+          "consumerProviderId": "opencode",
+          "profiles": {
+            "zen": {
+              "kind": "gateway",
+              "endpointProfileId": "opencode-zen",
+              "credentialProfileId": "opencode-zen-api-key",
+              "nativeModelProviders": [],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://opencode.ai/inference/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://opencode.ai/inference/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://opencode.ai/inference/v1"
+                },
+                "gemini": {
+                  "baseUrl": "https://opencode.ai/inference/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "systemone": {
+              "kind": "gateway",
+              "endpointProfileId": "opencode-zen-systemone",
+              "credentialProfileId": "opencode-zen-api-key",
+              "nativeModelProviders": [],
+              "apis": {},
+              "admission": "api_roster"
+            },
+            "go-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "opencode-go",
+              "credentialProfileId": "opencode-go-token",
+              "nativeModelProviders": [],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://opencode.ai/inference/go/openai/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://opencode.ai/inference/go/openai/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://opencode.ai/inference/go/anthropic/v1"
+                },
+                "gemini": {
+                  "baseUrl": "https://opencode.ai/inference/go/google/v1beta"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        },
+        "sakana": {
+          "routeId": "sakana",
+          "consumerProviderId": "sakana",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "sakana-direct",
+              "credentialProfileId": "sakana-api-key",
+              "nativeModelProviders": ["sakana"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.sakana.ai/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://api.sakana.ai/v1"
+                }
+              },
+              "admission": "api_roster"
+            },
+            "fugu-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "sakana-fugu",
+              "credentialProfileId": "sakana-subscription-key",
+              "nativeModelProviders": ["sakana"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.sakana.ai/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://api.sakana.ai/v1"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        },
+        "ollama": {
+          "routeId": "ollama",
+          "consumerProviderId": "ollama",
+          "profiles": {
+            "cloud": {
+              "kind": "gateway",
+              "endpointProfileId": "ollama-cloud",
+              "credentialProfileId": "ollama-cloud-token",
+              "nativeModelProviders": [],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://ollama.com/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://ollama.com/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://ollama.com/v1"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        },
+        "cognition": {
+          "routeId": "cognition",
+          "consumerProviderId": "cognition",
+          "profiles": {
+            "devin-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "cognition-devin-connect",
+              "credentialProfileId": "cognition-devin-session",
+              "nativeModelProviders": ["cognition"],
+              "apis": {},
+              "admission": "docs_roster"
+            }
+          }
+        },
+        "meta": {
+          "routeId": "meta",
+          "consumerProviderId": "meta",
+          "profiles": {
+            "direct-api": {
+              "kind": "direct",
+              "endpointProfileId": "meta-direct",
+              "credentialProfileId": "meta-api-key",
+              "nativeModelProviders": ["meta"],
+              "apis": {
+                "chat-completions": {
+                  "baseUrl": "https://api.meta.ai/v1"
+                },
+                "responses": {
+                  "baseUrl": "https://api.meta.ai/v1"
+                },
+                "anthropic-messages": {
+                  "baseUrl": "https://api.meta.ai/v1"
+                }
+              },
+              "admission": "docs_roster"
+            },
+            "muse-code-subscription": {
+              "kind": "subscription",
+              "endpointProfileId": "meta-muse-code",
+              "credentialProfileId": "meta-muse-code-oauth",
+              "nativeModelProviders": ["meta"],
+              "apis": {
+                "responses": {
+                  "baseUrl": "https://api.meta.ai/v1"
+                }
+              },
+              "admission": "api_roster"
+            }
+          }
+        }
+      }
+    }
+  }
+}
