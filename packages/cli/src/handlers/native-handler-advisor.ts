@@ -38,12 +38,12 @@ import { appendFileSync } from "node:fs";
 import { credentials } from "../auth/credentials/authority.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
 import { type SlimModelEntry, readAllModelsCache } from "../providers/all-models-cache.js";
-import { getCatalogEntries, latestAnthropicTierModelId } from "../providers/catalog-client.js";
-import { findEntryByAlias } from "../providers/catalog-query.js";
+import { getCatalogEntries } from "../providers/catalog-client.js";
 import { resolveConnection, resolveRouteProfile } from "../providers/connection-resolver.js";
 import { type KnownWire, type WireApi, wireRequestUrl } from "../providers/connection-wire.js";
 import { parseModelSpec } from "../providers/model-parser.js";
 import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
+import { claudeAdvisorModelFor } from "./advisor-claude-route.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
 
 const ADVISOR_SERVER_TOOL_TYPE = "advisor_20260301";
@@ -1602,18 +1602,13 @@ export function advisorRouteFor(modelSpec: string, role: "panel" | "collector"):
   const parsed = parseModelSpec(modelSpec);
 
   if (role === "collector" && isAnthropicModel(parsed)) {
-    const model = parsed.model;
-    const tier = anthropicTierAlias(model);
-    if (!tier) return routeOf("anthropic", model);
-    // Two LIVE sources, no pinned id: the catalog's own alias table, then the
-    // "newest `claude-<tier>-*` the catalog lists" rule `--probe` already uses.
-    // The alias itself is never the answer — it used to fall through as
-    // `?? model`, so the default collector POSTed the literal `haiku` to
-    // api.anthropic.com, which rejects it, after the notice had told the user
-    // `haiku -> api.anthropic.com (ANTHROPIC_API_KEY, billed per token)`.
-    const resolved = findEntryByAlias(model)?.modelId ?? latestAnthropicTierModelId(tier);
-    if (!resolved) return { ...routeOf("anthropic", model), unresolvedAlias: model };
-    return routeOf("anthropic", resolved);
+    // The Anthropic id comes from `claudeAdvisorModelFor` (the leaf shared with
+    // the startup planner); an alias the catalog cannot resolve is marked, never
+    // POSTed.
+    const claude = claudeAdvisorModelFor(parsed.model);
+    if (claude.refused)
+      return { ...routeOf("anthropic", claude.alias), unresolvedAlias: claude.alias };
+    return routeOf("anthropic", claude.id);
   }
 
   const provider = parsed.provider;
@@ -2317,17 +2312,6 @@ async function callAdvisorModel(
     );
   }
   return executeAdvisorFetch(plan, fetchImpl);
-}
-
-/**
- * The Claude Code TIER an advisor spec names as a bare alias (`haiku`), or null
- * for anything already spelled as a model id (`claude-haiku-4-5`). Only an
- * alias needs resolving; an id is passed through as the user wrote it, because
- * the API may serve a model newer than the catalog.
- */
-function anthropicTierAlias(model: string): "opus" | "sonnet" | "haiku" | null {
-  const m = model.toLowerCase();
-  return m === "opus" || m === "sonnet" || m === "haiku" ? m : null;
 }
 
 function isAnthropicModel(parsed: ReturnType<typeof parseModelSpec>): boolean {

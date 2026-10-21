@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
 import { log, maskCredential } from "../logger.js";
+import { ANTHROPIC_API_ORIGIN } from "./advisor-claude-route.js";
 import { ADVISOR_SWAPPED_CONTEXT_KEY } from "./advisor-decorator.js";
 import {
   loadAdvisorSwapConfig,
@@ -19,8 +20,8 @@ export class NativeHandler implements ModelHandler {
 
   constructor(apiKey?: string, advisorModels?: string[], advisorCollector?: string | null) {
     this.apiKey = apiKey;
-    // Always forward to real Anthropic API
-    this.baseUrl = "https://api.anthropic.com";
+    // Always forward to real Anthropic API (the origin the advisor's Claude call uses too)
+    this.baseUrl = ANTHROPIC_API_ORIGIN;
     this.advisorModels = advisorModels;
     this.advisorCollector = advisorCollector;
   }
