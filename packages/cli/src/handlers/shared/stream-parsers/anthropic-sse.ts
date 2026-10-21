@@ -135,6 +135,8 @@ export function createAnthropicPassthroughStream(
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   let isClosed = false;
+  // Set by `cancel()` only: the client went away (see `endCancelled`).
+  let cancelled = false;
   let lastActivity = Date.now();
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -285,6 +287,24 @@ export function createAnthropicPassthroughStream(
     } catch {
       // The controller may already be errored by whatever aborted the stream.
       // Failing to emit the tail must not mask the original error.
+    }
+  };
+
+  /**
+   * The end of a stream the CLIENT cancelled: the upstream reader was cancelled
+   * under the loop, so its read ended (or threw) without upstream ending the
+   * turn. No turn-end hook, no stream-error log; usage only when upstream sent
+   * some (message_start carries input_tokens, so a started turn usually has it).
+   */
+  const endCancelled = (): void => {
+    const sawUsage = inputTokens > 0 || outputTokens > 0;
+    log(
+      `[AnthropicSSE] Client cancelled the stream for ${opts.modelName}; usage ${sawUsage ? "reported" : "not received, not recorded"}`
+    );
+    if (sawUsage) opts.onTokenUpdate?.(inputTokens, outputTokens);
+    if (pingInterval) {
+      clearInterval(pingInterval);
+      pingInterval = null;
     }
   };
 
@@ -632,6 +652,11 @@ export function createAnthropicPassthroughStream(
               }
             }
 
+            if (cancelled) {
+              endCancelled();
+              return;
+            }
+
             log(
               `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}${filterThinking ? `, filtered ${thinkingBlocksSuppressed} thinking blocks` : ""}`
             );
@@ -651,6 +676,10 @@ export function createAnthropicPassthroughStream(
               controller.close();
             }
           } catch (e) {
+            if (cancelled) {
+              endCancelled();
+              return;
+            }
             log(`[AnthropicSSE] Stream error: ${e}`);
             // The upstream socket dropped mid-answer (Z.AI, MiniMax and Kimi all do
             // this under load). Closing the controller here without a terminal event
@@ -677,6 +706,7 @@ export function createAnthropicPassthroughStream(
         // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
         // after this and resolves only once the read loop above has settled.
         cancel() {
+          cancelled = true;
           isClosed = true;
           if (pingInterval) {
             clearInterval(pingInterval);

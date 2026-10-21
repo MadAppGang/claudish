@@ -58,6 +58,8 @@ export function createGeminiSseStream(
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   let isClosed = false;
+  // Set by `cancel()` only: the client went away (see finalize).
+  let cancelled = false;
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
   const upstream: UpstreamReaderSlot = {};
@@ -130,6 +132,23 @@ export function createGeminiSseStream(
           return;
         }
         finalized = true;
+
+        // The client cancelled: the upstream reader was cancelled under the loop,
+        // so its read ended without the provider ending the turn. No turn-end
+        // hook and no zero-token update; usage only when the provider sent it.
+        if (cancelled) {
+          try {
+            log(
+              `[GeminiSSE] Client cancelled the stream for ${opts.modelName} (loop ended: ${reason}); usage ${usage ? "reported" : "not received, not recorded"}`
+            );
+            if (usage && opts.onTokenUpdate) {
+              opts.onTokenUpdate(usage.promptTokenCount || 0, usage.candidatesTokenCount || 0);
+            }
+          } finally {
+            teardown();
+          }
+          return;
+        }
 
         try {
           if (thinkingStarted) {
@@ -394,6 +413,7 @@ export function createGeminiSseStream(
     // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
     // after this and resolves only once the read loop above has settled.
     cancel() {
+      cancelled = true;
       isClosed = true;
       if (pingInterval) {
         clearInterval(pingInterval);

@@ -302,6 +302,9 @@ export function createStreamingResponseHandler(
   };
   log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
   let isClosed = false;
+  // Set by `cancel()` only: the client went away. `isClosed` alone cannot say
+  // that, because teardown sets it on every normal end too.
+  let cancelled = false;
   let ping: NodeJS.Timeout | null = null;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -440,6 +443,24 @@ export function createStreamingResponseHandler(
             }
           };
 
+          /** Report the usage the provider sent. Only called when `state.usage` is set. */
+          const reportProviderUsage = () => {
+            if (!onTokenUpdate || !state.usage) return;
+            log(
+              `[Streaming] Final usage: prompt=${state.usage.prompt_tokens || 0}, completion=${state.usage.completion_tokens || 0}`
+            );
+            // FIRST ARGUMENT STAYS `prompt_tokens`: the tracker's input number
+            // is the context-occupancy figure the status line renders and the
+            // billing baseline the delta strategy compares against. The split
+            // goes in the third argument, where only the cost arithmetic sees
+            // it.
+            const costSplit = splitPromptTokens(state.usage);
+            onTokenUpdate(state.usage.prompt_tokens || 0, state.usage.completion_tokens || 0, {
+              cacheReadTokens: costSplit.cacheReadTokens,
+              cacheCreationTokens: costSplit.cacheCreationTokens,
+            });
+          };
+
           const finalize = async (reason: string, err?: string) => {
             // A second call still has to tear down: the first may have thrown
             // before reaching its own `finally`.
@@ -448,6 +469,23 @@ export function createStreamingResponseHandler(
               return;
             }
             state.finalized = true;
+
+            // The client cancelled: the upstream reader was cancelled under the
+            // loop, so its read resolved `done` (or threw) without the provider
+            // having ended anything. Not a truncation and not a failure, and the
+            // user abandoned the turn, so no ending classification, no estimate,
+            // no turn-end hook. Usage is recorded only when the provider sent it.
+            if (cancelled) {
+              try {
+                log(
+                  `[Streaming] Client cancelled the stream for ${target} (loop ended: ${reason}); usage ${state.usage ? "reported" : "not received, not recorded"}`
+                );
+                reportProviderUsage();
+              } finally {
+                teardown();
+              }
+              return;
+            }
 
             try {
               // Release anything the think-tag splitter is still holding — at most
@@ -804,23 +842,7 @@ export function createStreamingResponseHandler(
               // Update token counts - use actual usage if available, otherwise estimate
               if (onTokenUpdate) {
                 if (state.usage) {
-                  log(
-                    `[Streaming] Final usage: prompt=${state.usage.prompt_tokens || 0}, completion=${state.usage.completion_tokens || 0}`
-                  );
-                  // FIRST ARGUMENT STAYS `prompt_tokens`: the tracker's input number
-                  // is the context-occupancy figure the status line renders and the
-                  // billing baseline the delta strategy compares against. The split
-                  // goes in the third argument, where only the cost arithmetic sees
-                  // it.
-                  const costSplit = splitPromptTokens(state.usage);
-                  onTokenUpdate(
-                    state.usage.prompt_tokens || 0,
-                    state.usage.completion_tokens || 0,
-                    {
-                      cacheReadTokens: costSplit.cacheReadTokens,
-                      cacheCreationTokens: costSplit.cacheCreationTokens,
-                    }
-                  );
+                  reportProviderUsage();
                 } else {
                   // Estimate tokens for local models that don't return usage data
                   // Rough estimate: ~4 characters per token
@@ -1239,6 +1261,7 @@ export function createStreamingResponseHandler(
         // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
         // after this and resolves only once the read loop above has settled.
         cancel() {
+          cancelled = true;
           isClosed = true;
           if (ping) clearInterval(ping);
         },

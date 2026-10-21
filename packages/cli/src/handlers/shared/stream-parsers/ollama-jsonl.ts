@@ -32,6 +32,8 @@ export function createOllamaJsonlStream(
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   let isClosed = false;
+  // Set by `cancel()` only: the client went away (see finalize).
+  let cancelled = false;
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
   const upstream: UpstreamReaderSlot = {};
@@ -99,6 +101,21 @@ export function createOllamaJsonlStream(
           return;
         }
         finalized = true;
+
+        // The client cancelled: the read ended because claudish cancelled the
+        // upstream reader, not because Ollama finished. Usage arrives only on the
+        // `done` chunk, which finalizes before any cancel can, so nothing is
+        // recorded here: no zero-token update over the real context figure.
+        if (cancelled) {
+          try {
+            log(
+              `[OllamaJSONL] Client cancelled the stream for ${opts.modelName} (loop ended: ${reason})`
+            );
+          } finally {
+            teardown();
+          }
+          return;
+        }
 
         try {
           if (textStarted) {
@@ -188,13 +205,14 @@ export function createOllamaJsonlStream(
         // Stream ended without done=true
         finalize("done");
       } catch (error) {
-        log(`[OllamaJSONL] Stream error: ${error}`);
+        if (!cancelled) log(`[OllamaJSONL] Stream error: ${error}`);
         finalize("error", String(error));
       }
     },
     // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
     // after this and resolves only once the read loop above has settled.
     cancel() {
+      cancelled = true;
       isClosed = true;
       if (pingInterval) {
         clearInterval(pingInterval);

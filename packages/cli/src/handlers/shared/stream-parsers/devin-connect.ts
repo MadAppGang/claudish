@@ -152,6 +152,8 @@ export function createDevinConnectStream(
 ): Response {
   const encoder = new TextEncoder();
   let isClosed = false;
+  // Set by `cancel()` only: the client went away (see finalize).
+  let cancelled = false;
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
   const upstream: UpstreamReaderSlot = {};
@@ -263,6 +265,22 @@ export function createDevinConnectStream(
       const finalize = (reason: "done" | "error", errorMessage?: string) => {
         if (finalized) return;
         finalized = true;
+
+        // The client cancelled: the read ended because claudish cancelled the
+        // upstream reader, not because Devin sent an end-of-stream frame. No
+        // turn-end hook, no stream-error log, and no zero-token update; usage
+        // only when Devin sent it.
+        if (cancelled) {
+          log(
+            `[DevinConnect] Client cancelled the stream for ${opts.modelName} (loop ended: ${reason}); usage ${sawUsage ? "reported" : "not received, not recorded"}`
+          );
+          if (sawUsage) opts.onTokenUpdate?.(inputTokens, outputTokens);
+          if (pingInterval) {
+            clearInterval(pingInterval);
+            pingInterval = null;
+          }
+          return;
+        }
 
         closeCurrentTool();
         closeThinking();
@@ -530,6 +548,7 @@ export function createDevinConnectStream(
     // Downstream went away: cancelEndsUpstreamWork cancels the upstream reader
     // after this and resolves only once the read loop above has settled.
     cancel() {
+      cancelled = true;
       isClosed = true;
       if (pingInterval) {
         clearInterval(pingInterval);
