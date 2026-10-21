@@ -41,6 +41,7 @@
  */
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { redactForClient } from "../../redact.js";
 import { wrapAnthropicError } from "./anthropic-error.js";
 import { classifyConnectionError } from "./connection-error.js";
 import { hasModelUnsupportedWording } from "./model-unsupported.js";
@@ -184,12 +185,21 @@ export function classifyAuthFailure(err: unknown): AuthFailure {
  *   the two sites that already answered 401 (refreshAuth, forceRefreshAuth)
  *   may ask for this; every other site rethrows an unknown metered failure
  *   unchanged rather than invent a status.
+ *
+ * Every body goes to Claude Code, so the message passes through
+ * `redactForClient` before it is interpolated: a refresh exception or an auth
+ * host's error can quote the credential the rejected attempt signed with.
+ * Only the message changes; the kind, status and verdict header do not.
  */
 export function respondAuthFailure(
   c: Context,
-  failure: AuthFailure,
+  classified: AuthFailure,
   opts: { isSubscription: boolean; providerDisplayName: string }
 ): Response | null {
+  const failure: AuthFailure =
+    classified.kind === "connection"
+      ? classified
+      : { ...classified, message: redactForClient(classified.message) };
   switch (failure.kind) {
     case "connection":
       return null;
