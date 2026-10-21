@@ -380,6 +380,16 @@ E13, which depends on Claude Code's undocumented install-row keying); project `.
 `.claude/commands` and `.mcp.json`; project hooks with relative paths, which resolve against
 `work_dir`. `team` needs none of this: its slots run in the server's cwd.
 
+An inherited layer also turns on the caller's plugin hooks in the child, and those hooks keep
+per-cwd state: in the live run they wrote `.claude/.coaching/state.json` and `.mnemex/` into the
+sandbox. A `work_dir` that must stay pristine needs `setup_from: null`.
+
+To re-measure the table, ask Claude Code for an agent that does not exist:
+`(cd <dir> && env -u CLAUDECODE claude <flags> --agent __probe__ -p hi </dev/null)` prints
+`--agent '__probe__' not found. Available agents: …` and exits before any model request, so a
+matrix of cwds and flag sets costs nothing. `env -u CLAUDECODE` lets it run from inside a
+session.
+
 ## MCP Tools (15 total)
 
 - **Low-level** (3): `run_prompt`, `list_models`, `search_models`
