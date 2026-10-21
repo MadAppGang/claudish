@@ -47,6 +47,8 @@ import { parseModelSpec } from "../providers/model-parser.js";
 import { nativeRouteFor } from "../providers/native-route.js";
 import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
 import { acquireSigningLease } from "../redact.js";
+import type { StatsEvent } from "../stats-otlp.js";
+import { recordStats } from "../stats.js";
 import { isBillingHeaderText } from "../transform.js";
 import {
   ANTHROPIC_API_HOST,
@@ -61,6 +63,7 @@ import {
 } from "./advisor-route-plan.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
 import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
+import { calculateCost } from "./shared/remote-provider-types.js";
 
 const ADVISOR_SERVER_TOOL_TYPE = "advisor_20260301";
 const ADVISOR_BETA_FLAG = "advisor-tool-2026-03-01";
@@ -2838,10 +2841,83 @@ export async function runClaudeAdvisorCall(
     const outcome = await fetchClaudeAdvice(request, params, base, stubPaths, secrets, elapsed);
     const billing: AdvisorBilling | null =
       outcome.origin === "upstream" ? (auth.arm === "oauth" ? "subscription" : "metered") : null;
+    recordClaudeAdvisorStats(params.model, auth.arm, outcome);
     return { ...outcome, ...extra, billing };
   } finally {
     clearTimeout(timer);
     lease.release();
+  }
+}
+
+/**
+ * The running cost of this launch's Claude advisor calls, per model id. Main
+ * requests report `estimated_cost` as their handler's running total and
+ * `is_free_model` as "that total is 0" (`TokenTracker`); a Claude advisor call
+ * has no handler, so this accumulator gives its events the same meaning. The
+ * login arm adds 0; an API-key arm adds `calculateCost("native-anthropic", …)`,
+ * the oracle every tracker prices with. Output tokens accumulate and input
+ * tokens are the latest call's, as the standard token strategy reports them.
+ */
+const claudeAdvisorSpend = new Map<string, { cost: number; outputTokens: number }>();
+
+/** Test seam: forget the Claude advisor spend accumulated so far. */
+export function _debug_resetClaudeAdvisorSpend(): void {
+  claudeAdvisorSpend.clear();
+}
+
+/**
+ * The stats event for one Claude advisor request sent, updating the launch's
+ * accumulator (`request_role: "advisor"`, `provider_name: "native-anthropic"`,
+ * no token file). A 2xx with usage adds to the accumulator, empty advice
+ * included (the tokens were spent); any other answer is `success: false` with
+ * its status and leaves the accumulator unchanged.
+ */
+export function claudeAdvisorStatsEvent(
+  model: string,
+  arm: "oauth" | "api-key",
+  outcome: Pick<AdvisorModelOutcome, "upstreamStatus" | "latencyMs"> & {
+    usage?: { input_tokens: number; output_tokens: number };
+  }
+): Partial<StatsEvent> {
+  const status = outcome.upstreamStatus;
+  const success = status !== null && status >= 200 && status < 300;
+  const acc = claudeAdvisorSpend.get(model) ?? { cost: 0, outputTokens: 0 };
+  const usage = success ? outcome.usage : undefined;
+  if (usage) {
+    acc.cost +=
+      arm === "oauth"
+        ? 0
+        : calculateCost("native-anthropic", model, usage.input_tokens, usage.output_tokens);
+    acc.outputTokens += usage.output_tokens;
+    claudeAdvisorSpend.set(model, acc);
+  }
+  return {
+    model_id: model,
+    provider_name: "native-anthropic",
+    stream_format: "anthropic-messages",
+    latency_ms: outcome.latencyMs,
+    success,
+    http_status: status ?? 0,
+    input_tokens: usage?.input_tokens ?? 0,
+    output_tokens: usage ? acc.outputTokens : 0,
+    estimated_cost: acc.cost,
+    is_free_model: acc.cost === 0,
+    token_strategy: "standard",
+    adapter_name: "none",
+    fallback_used: false,
+    request_role: "advisor",
+  };
+}
+
+function recordClaudeAdvisorStats(
+  model: string,
+  arm: "oauth" | "api-key",
+  outcome: AdvisorModelOutcome & { usage?: { input_tokens: number; output_tokens: number } }
+): void {
+  try {
+    recordStats(claudeAdvisorStatsEvent(model, arm, outcome));
+  } catch {
+    // Stats must never break an advisor call
   }
 }
 
