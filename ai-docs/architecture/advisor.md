@@ -362,6 +362,31 @@ The notice, the refusal and the runtime all read those plans and builds. `index.
 startup map lacks is S7 "advisor runtime not planned for this launch". A refusal shuts down every
 handler it built. Plans and chains are frozen per launch, like main's handler caches.
 
+### Credentials are resolved at launch, fallback hops included
+
+Startup planning reads the key of every candidate the routing chain keeps for a configured panel
+or collector model, once, at launch, through the same credential filter main routing runs on each
+request: `explainRoute` asks `credentials.describeReadiness` / `hasCredentialsForProvider` for
+every candidate (`providers/routing-rules.ts:1112-1120`), and `ApiKeyCredentialProvider`
+answers anything that is not in env, config or an OAuth file by resolving the value
+(`auth/credentials/api-key-credential.ts:336` → Keychain read, then op:// through
+`resolveOpKeyForEnvVars` at `:275`). The value is cached (`:234`), so the chain build's
+`getRequestAuth` (`handlers/handler-set.ts:368`) asks no vault a second time. With op:// keys
+this can mean a 1Password prompt at launch for a panel model's fallback hops, which a call may
+never reach.
+
+This is accepted (owner decision, 2026-10-21; requirement N4 is worded accordingly), because
+presence cannot be checked without reading the value: `op-source.ts` offers only `hasOpSources()`
+(`:458`, "is any 1Password source configured at all") and `resolveOpKeyForEnvVars` (`:831`), and
+glob entries and 1Password Environments name their variables only after the fetch, which needs
+the handshake. The Keychain can enumerate for presence (`keychain.md`); 1Password cannot.
+Changing this would mean changing main routing's credential filter for every request. The
+notice says it, on one line printed when any advisor member is routed:
+
+```
+  credentials: each routed advisor model's chain had its keys resolved at launch, including fallback hops (1Password or Keychain may have been asked once)
+```
+
 ### The advisor handler set, and why panel calls never touch the status line
 
 Chains are built in their own `createHandlerSet({requestRole: "advisor", port: 0, …})`
@@ -530,6 +555,7 @@ off the main status line by design.
   main model: your Claude Code session
   CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1 set by claudish
   cost: each advisor call sends the FULL conversation to every panel model, uncached; subscription hops draw on the plan's allowance, metered hops bill per token; routing keeps using the last hop that served
+  credentials: each routed advisor model's chain had its keys resolved at launch, including fallback hops (1Password or Keychain may have been asked once)
 ```
 
 A routed member reads from its BUILT chain (`describeAdvisorPlan`,
