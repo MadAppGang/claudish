@@ -13,7 +13,7 @@ requests with a Muse Code login. Its metered sibling is `meta` (`meta@`, tier `n
 | Credential | `META_API_KEY` | a Meta `dca:` access token, minted into a short-lived `LLM\|` key |
 | `apiKeyEnvVar` | `META_API_KEY` | `""` (load-bearing, see below) |
 | Request | catalog connection on `meta/direct-api` | `POST https://api.meta.ai/v1/responses`, `stream: true`, `store: false` |
-| Route binding | `meta/direct-api` | none yet (backend M1 to M3) |
+| Route binding | `meta/direct-api` | `meta/muse-code-subscription` |
 | Billing | per token, from the connection's `pricing` | `SUBSCRIPTION_PROVIDERS`: `$0`, `SUB` |
 | Models | catalog connections | the account's dynamic models catalog, `GET /muse-code/models` |
 
@@ -236,8 +236,9 @@ a non-Meta host, then the opt-in only from the inherited environment. Each was b
 `.env`, `.env.local` and `.env.<NODE_ENV>` from the working directory before the first claudish
 module runs (measured on Bun 1.4.0), so any repository the user runs claudish in could set both
 variables and receive the login, which may be the one copied from the Muse Code CLI's Keychain
-item. No environment-based switch can be trusted, so there is none. Tests use the mint's injected
-`fetch` seam.
+item. No environment-based switch can be trusted, so there is none. The catalog wire handler also
+pins the base URL to `${MUSE_CODE_BASE_URL}/v1`, ignoring both the registry's base URL and a user
+base-URL override for `meta-muse-code`. Tests use the mint's injected `fetch` seam.
 
 ## The mint is the entitlement evidence
 
@@ -350,14 +351,19 @@ expired Muse login answers 400 with the login hint, and the chain never walks on
 - **Context window.** The transport reads the served window (1,007,997 on the captured account)
   from the dynamic models catalog, memoized, with a 5-minute backoff after a miss. The
   `direct-api` catalog records publish 1,048,576. Both numbers belong to different routes.
-- **Effort borrow** (`muse-wire.ts`, `281caf0a`). With no route binding, no connection describes
-  the `muse@` request shape. `ownerWireForModel` borrows the KNOWN `responses` wire of the same wire
-  id on `meta/direct-api`, after a 5 s registry wait, with its speed and mode forced to `unknown`
-  because those carry entitlement and price (`wire.md`).
-- **The `muse-wonder-full-1.0` gap.** `meta/direct-api` does not publish that id, so it gets no
-  borrowed wire, and its effort is whatever the Responses adapter sends. The `direct-api`
-  contributor rows publish no reasoning support either, so an explicit contributor id gets only the
-  token limit. Both gaps close when backend M3 to M5 publish subscription connections.
+- **Effort borrow.** The route binding now lets `buildWireHandler` use the subscription
+  connection's own known `responses` wire: `max_output_tokens`, effort at `/reasoning/effort`
+  with `minimal` through `max`, default `high`. Mode and speed remain unsent because the
+  subscription wire marks both `unknown`; neither is borrowed. `findOwnerWire` still attaches the
+  same model's direct-API wire for unknown limit or reasoning fields (`wire.md`). The older
+  `muse-wire.ts` borrow (`281caf0a`) is reached only through `museCodeProfile`, when the registry
+  lacks the subscription profile; it borrows the same wire id on `meta/direct-api` after a 5 s
+  registry wait, with mode and speed forced to `unknown`.
+- **The `muse-wonder-full-1.0` gap.** Closed for generation `g-20261021063612126-17350b71`:
+  the subscription connection describes its output-limit field and effort without a
+  `meta/direct-api` connection. Its explicit contributor sibling also has its own known
+  subscription wire with reasoning support. A registry predating the subscription profile still
+  uses the older borrow path, where an id absent from `meta/direct-api` gets no borrowed wire.
 
 ## The contributor guard, and when to remove it
 
@@ -375,22 +381,29 @@ It is the one wire-id name rule claudish keeps. The trigger is that field, not M
 
 ## Backend tasks (models-index)
 
-Filed in `ai-docs/reports/BACKEND_TASKS_meta_muse_code_route-20261016.md`, read against generation
-`g-20261015133900604-fb6199b5`:
+Filed in `ai-docs/reports/BACKEND_TASKS_meta_muse_code_route-20261016.md`, originally read against
+`g-20261015133900604-fb6199b5`. M1, M2 and the mapped-connection part of M3 are published in
+`g-20261021063612126-17350b71`. That generation also publishes a `contentUse` field (`standard` or
+`contributor`) on 735 of 1924 connections, including all 11 `-contributor` connections (routes
+`meta/direct-api`, `meta/muse-code-subscription`, `opencode/go-subscription`,
+`openrouter/gateway`). claudish does not read it yet: the guard below still matches the suffix.
 
-| Task | What | Unblocks |
+| Task | What | Status / unblocks |
 |---|---|---|
-| M1 | a subscription route profile on route `meta`, `apis: [responses]`, its own credential profile | the binding row (architecture phase 17) |
-| M2 | plan `meta-muse-code` to `supported` with that route | membership gating |
-| M3 | one mapped connection per member, wire id as `/muse-code/models` spells it; contributor ids marked by a field, not only the suffix | bare-name routing to `muse@`; removing the contributor guard |
+| M1 | a subscription route profile on route `meta`, `apis: [responses]`, its own credential profile | published; binding row done (MTL-189) |
+| M2 | plan `meta-muse-code` to `supported` with that route | published; membership gating now reads this route binding |
+| M3 | one mapped connection per member, wire id as `/muse-code/models` spells it; contributor ids marked by a field, not only the suffix | mapped connections and `contentUse` published; moving the contributor guard from the suffix to the field is not done |
 | M4 | a model record `muse-wonder-full`, wire id `muse-wonder-full-1.0` | bare `muse-wonder-full` |
 | M5 | per-connection limits and effort from `/muse-code/models` | the effort and window gaps above |
 | M6 | per-tier membership: Wonder Full is Power and Maximum only | no 4xx candidate on a lower tier |
 
-Until M1 to M3 land, a bare `muse-*` name never reaches `muse@`. `meta-muse-code` is tier
-`subscription`, not `dynamic-subscription`, so it makes no namespace claim; with no mapped
-connection the gatherer has nothing to offer. A bare `muse-spark-1.3` goes to `meta@` (with
-`META_API_KEY`), then OpenCode Zen, then OpenRouter.
+With the route binding in place, a bare `muse-*` name with a mapped subscription connection
+leads with `muse@`, subject to membership, credential and availability filters. The account's
+dynamic models catalog decides entitlement, including Wonder Full on lower tiers.
+`meta-muse-code` is tier `subscription`, not `dynamic-subscription`: it is gathered from the
+connection, not a namespace claim. On `g-20261021063612126-17350b71`, bare `muse-wonder-full`
+gathers `muse@muse-wonder-full-1.0`; `muse-spark-1.3` orders candidates as `muse@`, then metered
+`meta@`, then OpenCode Zen and OpenRouter. A user routing rule still takes precedence.
 
 ## Captures
 

@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import type { CredentialProvider } from "../auth/credentials/types.js";
 import type { AggregatorEntry } from "../model-loader.js";
+// Extracted with jq from cloud models catalog generation g-20261021063612126-17350b71.
+import museCatalog from "../test-fixtures/catalog-v3/muse-code-g-20261021063612126-17350b71.json";
 import type { DiskCacheV3, SlimModelEntry } from "./all-models-cache.js";
 
 let home: string;
@@ -154,6 +157,28 @@ function install(entry: SlimModelEntry, unsupportedPlan = true): void {
   catalog._setCatalogEntriesForTest([entry]);
 }
 
+function installWithoutMuseProfile(): void {
+  const data = structuredClone(museCatalog) as DiskCacheV3;
+  delete data.routeRegistry!.registry.routes.meta.profiles["muse-code-subscription"];
+  data.entries = data.entries.map((entry) => ({
+    ...entry,
+    aggregators: entry.aggregators?.filter(
+      (connection) => connection.route?.routeProfileId !== "muse-code-subscription"
+    ),
+  }));
+  data.plans = [];
+  cache.writeAllModelsCache(data, cachePath);
+  expect(cache.readAllModelsCache(cachePath)).not.toBeNull();
+  catalog._setCatalogEntriesForTest(data.entries);
+}
+
+function installMuseCatalog(): void {
+  cache.writeAllModelsCache(structuredClone(museCatalog) as DiskCacheV3, cachePath);
+  const data = cache.readAllModelsCache(cachePath);
+  expect(data).not.toBeNull();
+  catalog._setCatalogEntriesForTest(data!.entries);
+}
+
 describe("R1/R3: catalog candidate boundaries", () => {
   test.each([true, false])(
     "R1: unsupported/missing plan never synthesizes Muse (plan present=%s)",
@@ -170,8 +195,9 @@ describe("R1/R3: catalog candidate boundaries", () => {
     }
   );
 
-  test("R1: explicit muse@ builds without a subscription route binding", () => {
-    install(routingFixture());
+  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+  test("R1: explicit muse@ builds without a published subscription profile", () => {
+    installWithoutMuseProfile();
     expect(routing.buildRoutingChain(["muse@muse-spark-1.3"], "muse-spark-1.3", cachePath)).toEqual(
       [expect.objectContaining({ provider: "meta-muse-code", modelSpec: "muse@muse-spark-1.3" })]
     );
@@ -287,8 +313,9 @@ describe("R1/R3: catalog candidate boundaries", () => {
     }
   );
 
-  test("R1: explicit muse@ passes credential filtering without a plan binding", async () => {
-    install(routingFixture());
+  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+  test("R1: explicit muse@ passes credential filtering without a published subscription profile", async () => {
+    installWithoutMuseProfile();
     const plan = await routing.route("muse@muse-spark-1.3", {}, "openrouter", cachePath);
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") throw new Error(plan.reason);
@@ -340,5 +367,49 @@ describe("R1/R3: catalog candidate boundaries", () => {
     expect(plan.primary.provider).toBe(shortcut === "meta" ? "meta" : "opencode-zen-go");
   });
 
-  test.skip("R2 BLOCKED: future supported-plan binding and membership require coherent public binding seam (phase 17)", () => {});
+  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+  test("R2: bare Wonder Full routes first to Muse without contributor wire ids", async () => {
+    installMuseCatalog();
+    fakeAvailability.set("meta-muse-code", true);
+    const gathered = gathering.gatherRouteCandidates("muse-wonder-full", cachePath);
+    expect(gathered.candidates[0]).toEqual(
+      expect.objectContaining({
+        provider: "meta-muse-code",
+        wireId: "muse-wonder-full-1.0",
+      })
+    );
+    const plan = await routing.route("muse-wonder-full", {}, undefined, cachePath);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") throw new Error(plan.reason);
+    expect(plan.primary.provider).toBe("meta-muse-code");
+    expect(plan.primary.modelSpec.split("@")[1]).toBe("muse-wonder-full-1.0");
+    expect(
+      [plan.primary, ...plan.fallbacks].every(
+        (hop) => !/-contributor(?:-free)?$/i.test(hop.modelSpec.split("@")[1]!)
+      )
+    ).toBe(true);
+  });
+
+  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+  test("R2: bare Spark routes Muse subscription before metered Meta", async () => {
+    installMuseCatalog();
+    fakeAvailability.set("meta-muse-code", true);
+    fakeAvailability.set("meta", true);
+    const plan = await routing.route("muse-spark-1.3", {}, undefined, cachePath);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") throw new Error(plan.reason);
+    const providers = [plan.primary, ...plan.fallbacks].map((hop) => hop.provider);
+    expect(providers).toContain("meta-muse-code");
+    expect(providers).toContain("meta");
+    expect(providers.indexOf("meta-muse-code")).toBeLessThan(providers.indexOf("meta"));
+  });
+
+  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+  test("R2: Muse Code plan membership serves Wonder Full", () => {
+    installMuseCatalog();
+    expect(resolveSubscriptionRouting("muse-wonder-full", "meta-muse-code", cachePath)).toEqual({
+      kind: "serves",
+      externalId: "muse-wonder-full-1.0",
+    });
+  });
 });

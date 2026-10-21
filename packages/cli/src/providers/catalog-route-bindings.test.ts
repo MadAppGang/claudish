@@ -29,6 +29,8 @@ const subscriptionBindings = [
   ["qwen-token-plan", "qwen", "qwencloud-token-plan"],
   ["opencode-zen-go", "opencode", "go-subscription"],
   ["ollamacloud", "ollama", "cloud"],
+  // REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+  ["meta-muse-code", "meta", "muse-code-subscription"],
 ] as const;
 
 const gatewayBindings = [

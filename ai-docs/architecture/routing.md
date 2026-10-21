@@ -41,7 +41,7 @@ claudish --model ollama@<model>:3 "task"   # 3 concurrent requests
 - `dv@`, `devin@` → Devin (Cognition/Codeium subscription — see `ai-docs/architecture/providers/devin.md`)
 - `gk@` → Grok Build subscription (SuperGrok / X Premium+ — see `ai-docs/architecture/providers/grok-subscription.md`). `grok@` stays with the METERED `x-ai` provider
 - `x-ai@`, `xai@`, `grok@` → xAI direct API, metered (`XAI_API_KEY`)
-- `muse@` → Muse Code subscription (`meta-muse-code`: `claudish login muse`, or the Muse CLI's Keychain login; see `ai-docs/architecture/providers/meta-muse-code.md`). No route binding yet, so only an explicit `muse@<wire id>` reaches it
+- `muse@` → Muse Code subscription (`meta-muse-code`: `claudish login muse`, or the Muse CLI's Keychain login; see `ai-docs/architecture/providers/meta-muse-code.md`). Route binding `meta/muse-code-subscription` lets mapped subscription connections lead bare-name routing, subject to membership, credential and availability filters
 - `meta@` → Meta Model API, metered (`meta`, `META_API_KEY`, route `meta/direct-api`). Until `ca4be53b` `meta` was an `ollamacloud` shortcut; it moved with no alias, so an old `meta@llama-…` spec now goes to Meta
 - `llama@`, `oc@` → OllamaCloud
 - `litellm@`, `ll@` → LiteLLM (requires LITELLM_BASE_URL)

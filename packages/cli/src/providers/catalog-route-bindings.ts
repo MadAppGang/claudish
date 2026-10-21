@@ -78,8 +78,9 @@ export const CATALOG_ROUTE_BINDINGS: Readonly<Record<string, CatalogRouteBinding
   vertex: { routeId: "vertex", routeProfileId: "google-cloud" },
   deepseek: { routeId: "deepseek", routeProfileId: "direct-api" },
   mistralai: { routeId: "mistralai", routeProfileId: "direct-api" },
-  // Meta's metered API (META_API_KEY). The Muse Code subscription is bound to
-  // its own profile once models-index publishes one.
+  // Muse Code subscription and Meta's metered API: two credential silos on
+  // the same host, each with its own route binding.
+  "meta-muse-code": { routeId: "meta", routeProfileId: "muse-code-subscription" },
   meta: { routeId: "meta", routeProfileId: "direct-api" },
 };
 

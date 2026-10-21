@@ -2,6 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// Extracted with jq from cloud models catalog generation g-20261021063612126-17350b71.
+import museCatalog from "../test-fixtures/catalog-v3/muse-code-g-20261021063612126-17350b71.json";
+import type { DiskCacheV3 } from "./all-models-cache.js";
 
 let home: string;
 let savedEnv: Record<string, string | undefined>;
@@ -124,7 +127,8 @@ afterEach(async () => {
   restoreHarness();
 });
 
-test("T4: Muse builds an explicit handler without a subscription route binding", async () => {
+// REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+test("T4: Muse binds its subscription route and still builds an explicit profile handler", async () => {
   const { museCodeProfile } = await import("./provider-profiles.js");
   const { catalogRouteForProvider } = await import("./catalog-route-bindings.js");
   const { _resetCatalogClient } = await import("./catalog-client.js");
@@ -132,7 +136,10 @@ test("T4: Muse builds an explicit handler without a subscription route binding",
   try {
     _resetCatalogClient();
     _clearAllModelsCacheMemo();
-    expect(catalogRouteForProvider("meta-muse-code")).toBeUndefined();
+    expect(catalogRouteForProvider("meta-muse-code")).toEqual({
+      routeId: "meta",
+      routeProfileId: "muse-code-subscription",
+    });
     const handler = await museCodeProfile.createHandler({
       provider: {
         name: "meta-muse-code",
@@ -156,6 +163,90 @@ test("T4: Muse builds an explicit handler without a subscription route binding",
     _clearAllModelsCacheMemo();
   }
 });
+
+// REGRESSION: MTL-189 muse-wonder-full has no route; meta/muse-code-subscription unbound — Fixed in /dev:fix session dev-fix-20261021-223935-f1801ee6
+test.each(["https://api.meta.ai/v1", "https://override.invalid/v1"])(
+  "T4: explicit Wonder Full pins the Meta responses URL with provider baseUrl=%s",
+  async (baseUrl) => {
+    const { Hono } = await import("hono");
+    const { createHandlerForProvider } = await import("./provider-profiles.js");
+    const { writeAllModelsCache, readAllModelsCache } = await import("./all-models-cache.js");
+    const { credentials } = await import("../auth/credentials/authority.js");
+    const d = await import("./model-discovery.js");
+    await import("./model-discovery-builtins.js");
+    const previous = credentials.get("meta-muse-code");
+    const previousFetcher = d.getModelDiscoveryFetcher("muse-code-models");
+    if (!previous || !previousFetcher) throw new Error("missing Muse registration");
+    restoreRegistrations.push(() => {
+      credentials.register(previous);
+      credentials.invalidate("meta-muse-code");
+      d.registerModelDiscoveryFetcher("muse-code-models", previousFetcher);
+    });
+    credentials.register({
+      catalogName: "meta-muse-code",
+      isAvailable: async () => true,
+      getRequestAuth: async () => ({
+        headers: { Authorization: "Bearer TEST_MUSE_TOKEN" },
+        arm: "oauth",
+      }),
+    });
+    d.registerModelDiscoveryFetcher("muse-code-models", async () => ({
+      kind: "models",
+      models: [{ id: "muse-wonder-full-1.0", reported: "chat" }],
+    }));
+    const path = join(home, "muse-catalog.json");
+    writeAllModelsCache(structuredClone(museCatalog) as DiskCacheV3, path);
+    expect(readAllModelsCache(path)).not.toBeNull();
+    const requests: { url: string; body: Record<string, unknown> }[] = [];
+    globalThis.fetch = Object.assign(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        requests.push({
+          url: input instanceof Request ? input.url : String(input),
+          body: JSON.parse(String(init?.body)),
+        });
+        return new Response("data: [DONE]\n\n", {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+      { preconnect: () => {} }
+    ) as typeof fetch;
+    const handler = await createHandlerForProvider({
+      provider: {
+        name: "meta-muse-code",
+        baseUrl,
+        apiPath: "/responses",
+        apiKeyEnvVar: "",
+        prefixes: ["muse@"],
+      },
+      modelName: "muse-wonder-full-1.0",
+      targetModel: "muse@muse-wonder-full-1.0",
+      apiKey: "",
+      port: 0,
+      sharedOpts: {},
+      catalogCachePath: path,
+    });
+    if (!handler) throw new Error("Muse handler absent");
+    const app = new Hono();
+    app.post("/", (c) =>
+      handler.handle(c, {
+        model: "muse@muse-wonder-full-1.0",
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: "user", content: "PONG" }],
+      })
+    );
+    try {
+      const response = await app.request("http://localhost/", { method: "POST" });
+      await response.text();
+      expect(response.status).toBe(200);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.url).toBe("https://api.meta.ai/v1/responses");
+      expect(requests[0]!.body.model).toBe("muse-wonder-full-1.0");
+    } finally {
+      await handler.shutdown();
+    }
+  }
+);
 
 test("T4: missing owner wire supplies no fabricated support, including Wonder-full", async () => {
   const { ownerWireForModel } = await import("./meta-muse/muse-wire.js");
