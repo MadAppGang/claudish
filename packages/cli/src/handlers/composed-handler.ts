@@ -110,6 +110,7 @@ import {
   respondAuthFailure,
 } from "./shared/auth-failure.js";
 import {
+  type HopAttempt,
   abortedResponse,
   addSigningSecrets,
   callAbortError,
@@ -117,6 +118,7 @@ import {
   callAborted,
   credentialValuesFromRequest,
   raceCallAbort,
+  recordHopEntry,
   sleepUnlessAborted,
   withCallSignal,
 } from "./shared/call-context.js";
@@ -590,6 +592,17 @@ export class ComposedHandler implements ModelHandler {
     recordStats(
       this.options.requestRole ? { ...event, request_role: this.options.requestRole } : event
     );
+  }
+
+  /**
+   * Fill a hop-log entry once the request is signed: the arm from the
+   * binding the credential half returned (`RequestAuth.arm`, never inferred
+   * from a resolved object's truthiness), and the billing the provider has
+   * now, which for `openai-codex` reflects the arm just recorded.
+   */
+  private markHopSigned(hop: HopAttempt, binding: AuthBinding | undefined): void {
+    hop.arm = binding?.auth?.arm ?? null;
+    hop.billing = isSubscriptionProvider(this.provider.name) ? "subscription" : "metered";
   }
 
   /**
@@ -1176,6 +1189,10 @@ export class ComposedHandler implements ModelHandler {
     // Undefined on every request from Claude Code, and then every use below
     // collapses to the expression that ran before it existed.
     const callSignal = callAbortSignal(c);
+    // This hop's entry in an internal call's hop log (advisor gateway only):
+    // pushed on entry, so the log lists every hop whose handle() ran, and
+    // filled with the signing arm once 5b has signed.
+    const hop = recordHopEntry(c, this.provider.name, this.bareModelName);
     if (callSignal?.aborted) return this.respondCallAborted(startTime, fallbackMeta);
     // 1. Transform incoming Claude-format request
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(payload);
@@ -1582,6 +1599,7 @@ export class ComposedHandler implements ModelHandler {
         this.tokenTracker.setProviderDisplayName(this.provider.displayName);
       }
     }
+    if (hop) this.markHopSigned(hop, binding);
     // Update context window if provider dynamically discovered it
     // (e.g., from OpenRouter model catalog or local model API).
     //
@@ -2188,6 +2206,8 @@ export class ComposedHandler implements ModelHandler {
               return notResent;
             }
             binding = refreshed;
+            // A re-sign replaces the arm on this hop's entry in place.
+            if (hop) this.markHopSigned(hop, binding);
             endpoint = this.provider.getEndpoint(this.targetModel, binding);
           }
           const retryHeaders = await raceCallAbort(fetchHeaders(binding), callSignal);

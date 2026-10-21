@@ -11,6 +11,7 @@
  */
 
 import type { Context } from "hono";
+import type { CredentialArm } from "../../auth/credentials/types.js";
 import { type SigningLease, acquireSigningLease } from "../../redact.js";
 
 // ─── Signing secrets ─────────────────────────────────────────────────────────
@@ -342,4 +343,61 @@ export function abortedResponse(): Response {
       headers: { "content-type": "application/json", [CALL_ABORTED_HEADER]: "1" },
     }
   );
+}
+
+// ─── Hop log ─────────────────────────────────────────────────────────────────
+
+/**
+ * The Context key of an internal call's hop log. Installed ONLY by a caller
+ * that needs to know which hop served it and on which credential arm (the
+ * advisor panel gateway); a main request has none and records nothing.
+ */
+export const HOP_LOG_KEY = "claudishHopLog" as const;
+
+/** How a hop bills: by the provider's subscription status right after signing. */
+export type HopBilling = "subscription" | "metered";
+
+/**
+ * One `handle()` entry of one hop. A closed set of non-secret fields: no
+ * header, no credential, no request body, so a log of these can be printed
+ * or serialised as it is.
+ */
+export interface HopAttempt {
+  /** The handler's claudish provider (`provider.name`). */
+  provider: string;
+  /** The model id this hop sends upstream. */
+  wireModel: string;
+  /** The arm that signed (`RequestAuth.arm`); null until signed, or when the transport names none. */
+  arm: CredentialArm | null;
+  /** `isSubscriptionProvider(provider)` right after signing; null until signed. */
+  billing: HopBilling | null;
+}
+
+declare module "hono" {
+  interface ContextVariableMap {
+    /** An internal call's hop log; see `HOP_LOG_KEY`. */
+    claudishHopLog: HopAttempt[];
+  }
+}
+
+/** The installed hop log, or `undefined` (every main request). */
+export function hopLogOf(c: Context | undefined): HopAttempt[] | undefined {
+  return readCallVar<HopAttempt[]>(c, HOP_LOG_KEY);
+}
+
+/**
+ * Append an unsigned entry for a hop whose `handle()` was just entered, and
+ * return it so the handler can fill `arm` and `billing` once it has signed.
+ * `undefined`, and nothing recorded, when no hop log is installed.
+ */
+export function recordHopEntry(
+  c: Context | undefined,
+  provider: string,
+  wireModel: string
+): HopAttempt | undefined {
+  const hops = hopLogOf(c);
+  if (!hops) return undefined;
+  const entry: HopAttempt = { provider, wireModel, arm: null, billing: null };
+  hops.push(entry);
+  return entry;
 }
