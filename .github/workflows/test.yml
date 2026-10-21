@@ -1,0 +1,60 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pinned, unlike release.yml's `latest`: a CI result must be commensurable
+      # with a seat (CLAUDE.md §Debugging & Tests — "a seat on an older bun is
+      # not commensurable with CI"). Bump deliberately, never drift.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install dependencies (frozen)
+        run: bun install --frozen-lockfile
+
+      # Bun >= 1.4 on POSIX freezes os.homedir() at boot (a runtime HOME
+      # assignment no longer moves it; the builtin namespace is readonly —
+      # measured, see test-preload.ts). The home sandbox must therefore be
+      # set by the LAUNCHER, before bun boots: preset HOME + the preload's
+      # preset mode accept it as the sandbox (#570).
+      # Non-gating while the suite is not green on the runner (#570): the
+      # failure count is reported in the log and the step summary; flip this
+      # to gating (drop continue-on-error) once a run is green.
+      - name: Run test suite (packages/cli)
+        continue-on-error: true
+        env:
+          CLAUDISH_TEST_PRESET_HOME: "1"
+        run: |
+          mkdir -p "$RUNNER_TEMP/claudish-test-home"
+          HOME="$RUNNER_TEMP/claudish-test-home" bun test --cwd packages/cli 2>&1 | tee test-output.txt
+          test ${PIPESTATUS[0]} -eq 0
+
+      - name: Suite summary
+        if: always()
+        run: |
+          {
+            echo "### Test suite (packages/cli, bun 1.4.0, ubuntu-latest)"
+            echo "**Non-gating:** the job concludes success even when tests fail (continue-on-error) — a green check here is NOT a green suite. Read the counts below (#570)."
+            echo '```'
+            grep -E '^ *[0-9]+ (pass|fail|skip)|^Ran [0-9]+ test' test-output.txt || echo "(no summary lines captured — see the test step log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output-${{ github.run_id }}
+          path: test-output.txt
+          retention-days: 14

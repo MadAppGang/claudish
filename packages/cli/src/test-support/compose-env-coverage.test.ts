@@ -94,6 +94,14 @@ const EXEMPT: ReadonlyArray<{ name: string; why: string }> = [
   { name: "CLAUDISH_TEST_ENV_STRICT", why: "test harness gate (test-support/env-gate.ts)" },
   { name: "CLAUDISH_TEST_HOME_SANDBOX", why: "test harness preload (test-preload.ts)" },
   { name: "CLAUDISH_TEST_REAL_HOME", why: "test harness preload (test-preload.ts)" },
+  {
+    name: "CLAUDISH_TEST_PRESET_HOME",
+    why: "test harness preload (test-preload.ts) — launcher-side flag for a preset HOME on bun >= 1.4/POSIX (#570); never a proxy knob",
+  },
+  {
+    name: "CLAUDISH_TEST_SANDBOX_PROOF",
+    why: "test harness preload (test-preload.ts) — which evidence let the run proceed; read by the #242 pin, never a proxy knob",
+  },
 ];
 const EXEMPT_NAMES = new Set(EXEMPT.map((e) => e.name));
 
