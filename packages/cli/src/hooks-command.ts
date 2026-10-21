@@ -47,7 +47,11 @@ function severityColor(sev: string): string {
   return dim(sev);
 }
 
-/** A hook as `list --json` and `check --json` print it (§4.9). */
+/**
+ * A hook as `list --json` and `check --json` print it (§4.9). A built-in selected from catalog
+ * data also carries `catalogSelection`: on a route with a catalog connection the wire APIs and
+ * vendors there decide, and `models` only on a route without one.
+ */
 function hookRow(hook: RegisteredHook, severity: string) {
   return {
     id: hook.id,
@@ -57,9 +61,26 @@ function hookRow(hook: RegisteredHook, severity: string) {
     severity,
     routes: hook.routes,
     models: [...hook.models],
+    ...(hook.selectByUpstream && {
+      catalogSelection: {
+        wireApis: [...hook.selectByUpstream.wireApis],
+        vendors: [...hook.selectByUpstream.vendors],
+      },
+    }),
     order: hook.order,
     unsafe: hook.unsafe,
   };
+}
+
+/** The scope line's selection: catalog facts first when the hook has them, then the name globs. */
+function selectionOf(r: ReturnType<typeof hookRow>): string | null {
+  const globs = r.models.join(", ");
+  if (!r.catalogSelection) return r.models.join(",") !== "*" ? `models ${globs}` : null;
+  const facts = [
+    ...r.catalogSelection.wireApis.map((w) => `wire ${w}`),
+    ...r.catalogSelection.vendors.map((v) => `vendor ${v}`),
+  ].join(" or ");
+  return `catalog ${facts}; without a catalog connection, models ${globs}`;
 }
 
 /* ───────────── list ───────────── */
@@ -107,7 +128,7 @@ async function list(json: boolean): Promise<number> {
       `${r.source}`,
       `events ${r.events.join(", ")}`,
       `routes ${r.routes}`,
-      r.models.join(",") !== "*" ? `models ${r.models.join(", ")}` : null,
+      selectionOf(r),
       r.order !== "normal" ? `order ${r.order}` : null,
     ].filter(Boolean);
     console.log(`  ${dim(scope.join(" · "))}\n`);
