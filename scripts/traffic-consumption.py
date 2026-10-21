@@ -60,7 +60,9 @@ LANES = [
     (re.compile(r"^MiniMax", re.I), "mmc@ MiniMax"),
     (re.compile(r"^qwen", re.I), "qwen-token-plan"),
     (re.compile(r"^deepseek", re.I), "ds@ PAYG"),
-    (re.compile(r"^gpt-5\.6-sol|^codex", re.I), "cx@ Sol (OpenAI Pro)"),
+    # #564: survives minor/major bumps — `gpt-5.6-sol` pinned the lane, `gpt-6.1-sol`
+    # (post-#307 served id) fell through to an unnamed lane.
+    (re.compile(r"^gpt-[5-9][.\d]*-sol|^codex", re.I), "cx@ Sol (OpenAI Pro)"),
     (re.compile(r"^claude-"), "native-anthropic"),
     # #555: a bare role name as the SERVED model only happens on the native lane
     # (every other lane serves its resolved target id); the native pin (#218)

@@ -43,6 +43,11 @@ for served, lane in (
     ("MiniMax-M3.1-Flash", "mmc@ MiniMax"),
     ("deepseek-v4.1-flash-1017", "ds@ PAYG"),
     ("qwen3.8-max", "qwen-token-plan"),
+    # #564: the Sol pattern must survive version bumps — the pre-fix regex
+    # `^gpt-5\.6-sol` missed the post-#307 served id `gpt-6.1-sol`.
+    ("gpt-6.1-sol", "cx@ Sol (OpenAI Pro)"),
+    ("gpt-5.6-sol", "cx@ Sol (OpenAI Pro)"),
+    ("codex-mini-1", "cx@ Sol (OpenAI Pro)"),
 ):
     got = tc.lane_for(served)
     check(f"{served} -> {lane}", got == lane, f"(got {got!r})")
