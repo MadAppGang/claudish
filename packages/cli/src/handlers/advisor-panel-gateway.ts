@@ -122,7 +122,7 @@ export function createAdvisorPanelGateway(runtime: AdvisorRuntime): AdvisorPanel
     const hops: HopAttempt[] = [];
     const snapshot = (): AdvisorPanelResult["hops"] =>
       hops.slice().map((h) => {
-        const hop = build ? planHopForTransport(req.plan, build, h.provider) : null;
+        const hop = build ? planHopForTransport(req.plan, build, h) : null;
         return { ...h, uid: hop?.provider ?? null, displayName: hop?.displayName ?? h.provider };
       });
     if (!build?.handler) {

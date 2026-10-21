@@ -21,6 +21,7 @@
  * lookup the runtime also uses.
  */
 
+import type { Context } from "hono";
 import type { ChildAuthControl, ChildAuthSource } from "../claude-runner.js";
 import { log } from "../logger.js";
 import { ensureCatalogReady } from "../providers/catalog-client.js";
@@ -45,7 +46,7 @@ import { ANTHROPIC_API_HOST, claudeAdvisorModelFor } from "./advisor-claude-rout
 import { ComposedHandler } from "./composed-handler.js";
 import { type FallbackCandidate, FallbackHandler, isRetryableError } from "./fallback-handler.js";
 import type { HandlerSet } from "./handler-set.js";
-import type { HopAttempt, HopBilling } from "./shared/call-context.js";
+import { type HopAttempt, type HopBilling, withPlannedHop } from "./shared/call-context.js";
 import { isSubscriptionProvider } from "./shared/remote-provider-types.js";
 import type { ModelHandler } from "./types.js";
 
@@ -513,7 +514,38 @@ async function classifyHandler(handler: ModelHandler | null, hop: AdvisorHop): P
       : handler instanceof CatalogPendingHandler
         ? "catalog-pending"
         : "other";
-  return { kind: "built-pending", handler, handlerKind };
+  return {
+    kind: "built-pending",
+    handler: new PlannedHopHandler(handler, hop.provider),
+    handlerKind,
+  };
+}
+
+/**
+ * A built-pending hop, carrying its planned identity to call time. The
+ * transport it serves through is chosen per request, and its name need not be
+ * the planned uid (`google` serves through `GeminiProviderTransport`, named
+ * `gemini`), so every hop-log entry recorded while this hop runs carries the
+ * planned uid (`withPlannedHop` → `recordHopEntry`) rather than being matched
+ * back by name. The uid is on the entry from the moment it is pushed, so a
+ * timed-out call's snapshot already has it.
+ *
+ * Wrapping is safe here and nowhere else: `FallbackHandler` reads fallback
+ * metadata only off a `ComposedHandler`, and a pending handler is never one.
+ */
+export class PlannedHopHandler implements ModelHandler {
+  constructor(
+    readonly inner: ModelHandler,
+    readonly plannedUid: string
+  ) {}
+
+  handle(c: Context, payload: unknown): Promise<Response> {
+    return withPlannedHop(c, this.plannedUid, () => this.inner.handle(c, payload));
+  }
+
+  shutdown(): Promise<void> {
+    return this.inner.shutdown();
+  }
 }
 
 function assembleChain(key: string, plan: RoutedPlan, builds: HopBuild[]): AdvisorChainBuild {
@@ -549,16 +581,17 @@ function assembleChain(key: string, plan: RoutedPlan, builds: HopBuild[]): Advis
 }
 
 /**
- * The plan hop a hop-log entry belongs to: through the build's transport-name
- * map for a `built` hop, else by provider uid (a `built-pending` hop's
- * transport is the provider the plan named). Null when neither matches.
+ * The plan hop a hop-log entry belongs to: the planned uid a `built-pending`
+ * hop stamped on it (`PlannedHopHandler`), else the build's transport-name map
+ * for a `built` hop, else the transport name taken as a uid. Null when none
+ * matches.
  */
 export function planHopForTransport(
   plan: RoutedPlan,
   build: AdvisorChainBuild,
-  transportName: string
+  entry: Pick<HopAttempt, "provider" | "plannedUid">
 ): AdvisorHop | null {
-  const uid = build.uidByTransportName.get(transportName) ?? transportName;
+  const uid = entry.plannedUid ?? build.uidByTransportName.get(entry.provider) ?? entry.provider;
   return plan.hops.find((hop) => hop.provider === uid) ?? null;
 }
 

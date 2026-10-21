@@ -376,12 +376,21 @@ export interface HopAttempt {
   arm: CredentialArm | null;
   /** `isSubscriptionProvider(provider)` right after signing; null until signed. */
   billing: HopBilling | null;
+  /**
+   * The planned hop's provider uid, stamped by a caller that knows which
+   * planned hop this entry ran under (the advisor's built-pending hops), so it
+   * is never reconstructed from `provider`: a pending `google` hop serves
+   * through a transport named `gemini`.
+   */
+  plannedUid?: string;
 }
 
 declare module "hono" {
   interface ContextVariableMap {
     /** An internal call's hop log; see `HOP_LOG_KEY`. */
     claudishHopLog: HopAttempt[];
+    /** The planned hop a pending advisor hop runs under; see `PLANNED_HOP_KEY`. */
+    claudishPlannedHop: string | undefined;
   }
 }
 
@@ -402,7 +411,41 @@ export function recordHopEntry(
 ): HopAttempt | undefined {
   const hops = hopLogOf(c);
   if (!hops) return undefined;
-  const entry: HopAttempt = { provider, wireModel, arm: null, billing: null };
+  const plannedUid = readCallVar<string>(c, PLANNED_HOP_KEY);
+  const entry: HopAttempt = {
+    provider,
+    wireModel,
+    arm: null,
+    billing: null,
+    ...(plannedUid ? { plannedUid } : {}),
+  };
   hops.push(entry);
   return entry;
+}
+
+/**
+ * The Context key of the planned hop uid a pending advisor hop is running
+ * under. Set only by `withPlannedHop`, only while a hop log is installed.
+ */
+export const PLANNED_HOP_KEY = "claudishPlannedHop" as const;
+
+/**
+ * Run `work` with `plannedUid` on `c`, so every hop-log entry it records
+ * carries it; the previous value is restored when the work settles (the next
+ * candidate of a chain must not inherit it). Without a hop log, `work` runs
+ * unchanged and nothing is written.
+ */
+export async function withPlannedHop<T>(
+  c: Context,
+  plannedUid: string,
+  work: () => Promise<T>
+): Promise<T> {
+  if (!hopLogOf(c)) return work();
+  const previous = readCallVar<string>(c, PLANNED_HOP_KEY);
+  writeCallVar(c, PLANNED_HOP_KEY, plannedUid);
+  try {
+    return await work();
+  } finally {
+    writeCallVar(c, PLANNED_HOP_KEY, previous);
+  }
 }
