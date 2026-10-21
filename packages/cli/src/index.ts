@@ -658,6 +658,7 @@ async function runCli() {
     checkClaudeInstalled,
     runClaudeWithProxy,
     isAdvisorNativeSession,
+    isPassthroughSession,
     resolveAdvisorToolEnv,
   } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
@@ -1303,6 +1304,7 @@ async function runCli() {
           // Proxy events run in the process that hosts the proxy: a pane child
           // for MCP/team slots, the interactive launcher otherwise.
           hostMode: isPaneChild() ? "pane-child" : cliConfig.interactive ? "interactive" : "other",
+          passthrough: isPassthroughSession(cliConfig),
         }
       )
     );
