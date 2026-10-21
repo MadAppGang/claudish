@@ -42,7 +42,7 @@ import { resolveConnection } from "../providers/connection-resolver.js";
 import type { KnownWire, WireApi } from "../providers/connection-wire.js";
 import { getProviderByName } from "../providers/provider-definitions.js";
 import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
-import { acquireSigningLease } from "../redact.js";
+import { acquireSigningLease, redactExactValues, redactForClient } from "../redact.js";
 import type { StatsEvent } from "../stats-otlp.js";
 import { recordStats } from "../stats.js";
 import { isBillingHeaderText } from "../transform.js";
@@ -239,13 +239,14 @@ export function sanitizeAdvisorReason(
   text: string,
   secretValues: Iterable<string | undefined> = []
 ): string {
-  let out = text;
+  const values: string[] = [];
   for (const secret of secretValues) {
     const value = secret?.trim();
-    if (!value || value.length < MIN_REDACTABLE_SECRET_LENGTH) continue;
-    out = out.split(value).join(REDACTED);
+    if (value && value.length >= MIN_REDACTABLE_SECRET_LENGTH) values.push(value);
   }
-  return scrubSecrets(out);
+  // The registry's matcher: verbatim, JSON-escaped (once and twice) and
+  // URL-encoded forms, longest first. A plain split missed an escaped echo.
+  return scrubSecrets(redactExactValues(text, values));
 }
 
 /**
@@ -2268,8 +2269,16 @@ async function fetchClaudeAdvice(
       secrets
     );
   }
+  let responseBytes: number;
   try {
-    bodyText = await resp.text();
+    const raw = await resp.text();
+    responseBytes = new TextEncoder().encode(raw).byteLength;
+    // The panel gateway's two passes (advisor-panel-gateway.ts), applied before
+    // the body is parsed, summarised or returned as advice: every value the
+    // registry holds, then this call's own values in every form. Advice text
+    // can reach a collector of another vendor, so an echoed Claude credential
+    // must not survive into it.
+    bodyText = redactExactValues(redactForClient(raw), secrets);
   } catch (err) {
     return stubOutcome(
       base,
@@ -2284,7 +2293,7 @@ async function fetchClaudeAdvice(
   const observed: ObservedResponse = {
     status: bodyStatus ?? resp.status,
     source: bodyStatus !== undefined ? "error.upstream_status" : "http_status",
-    bytes: new TextEncoder().encode(bodyText).byteLength,
+    bytes: responseBytes,
   };
   if (!resp.ok || (bodyStatus !== undefined && bodyStatus >= 400)) {
     if (isClaudeShapeRefusal(observed.status, bodyText, resp.headers)) {
