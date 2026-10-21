@@ -88,7 +88,7 @@ export function createGeminiThoughtSignatureHook(): BuiltinHook {
       "Sends Gemini's reasoning_details back with the assistant tool calls they were produced for",
     order: "pre",
     models: ["*gemini*", "*google/*"],
-    selectByUpstream: (upstream) => upstream.wireApi === "gemini" || upstream.vendor === "google",
+    selectByUpstream: { wireApis: ["gemini"], vendors: ["google"] },
     routes: "all",
     defaultSeverity: "fix",
     statsName: GEMINI_THOUGHT_SIGNATURE_STATS_NAME,

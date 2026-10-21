@@ -791,7 +791,7 @@ and requests from team judges, are not held at all.
 
 | Command | What it does | Exit |
 |---|---|---|
-| `claudish hooks list [--json]` | Every hook, built-in and yours, in effective order, with its source, events, default and resolved severity, routes, models, order and `UNSAFE` flag. Then the modules that failed to load, and whether a `behavior` block is still in the config. | 0 |
+| `claudish hooks list [--json]` | Every hook, built-in and yours, in effective order, with its source, events, default and resolved severity, routes, models, order and `UNSAFE` flag. A built-in selected from the model catalog (`gemini/thought-signature`) also shows that selection, the wire API and vendor that pick it when the route has a catalog connection (`catalogSelection` in `--json`); its `models` globs apply only without one. Then the modules that failed to load, and whether a `behavior` block is still in the config. | 0 |
 | `claudish hooks check <file> [--json]` | Loads one module on its own and validates it. | 0 valid, 1 invalid |
 | `claudish hooks init [dir]` | Writes `example-hook.ts` and `claudish-hooks.d.ts` into `dir` (default `~/.claudish/hooks`). Refuses to overwrite either file. | 0, or 1 if a file exists |
 | `claudish hooks corpus [--write] [--json]` | Replays recorded Claude Code transcripts offline and counts plan-mode divergences per model. | 0 |

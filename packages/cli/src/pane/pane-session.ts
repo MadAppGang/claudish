@@ -233,6 +233,17 @@ export const GATE_GRACE_MS = SECONDARY_QUIET_MS;
  * The event stays the primary path (it carries `lastLine`); this is its backstop.
  */
 const GATE_DEAD_BACKSTOP_MS = 1_000;
+/**
+ * The longest a liveness exit (ESRCH while disconnected) waits for magmux to name the code.
+ * magmux keeps a dead pane's code after the socket drops, and whatever dropped the socket can
+ * hold the path away for a moment, so the query redials until this bound rather than asking
+ * once. Two seconds covers a socket that comes back within about a second of the exit being
+ * seen (the liveness check itself runs once a second); it is also all a magmux that is gone,
+ * wedged or slow can add to the finish.
+ */
+const EXIT_CODE_QUERY_MS = 2_000;
+/** The redial period inside EXIT_CODE_QUERY_MS, and the `list` re-ask period. */
+const EXIT_CODE_RETRY_MS = 50;
 /** Gate reasons that carry no dialog kind: a static screen under one is named from its words. */
 const GATE_KINDLESS_REASONS: ReadonlySet<string> = new Set([
   "starting",
@@ -655,6 +666,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private stderrHead = "";
   private paneClosed = false;
   private paneExited = false;
+  /** A liveness exit is asking magmux for the code; the exit path waits for the answer. */
+  private exitCodeQuery = false;
   private reaping = false;
   private fastReap = false;
   private reapPromise: Promise<void> | null = null;
@@ -1283,9 +1296,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
   }
 
-  /** While disconnected, the pane's liveness is `kill(panePid, 0)` every second (X-M12). */
+  /**
+   * While disconnected, the pane's liveness is `kill(panePid, 0)` every second (X-M12).
+   *
+   * ESRCH means magmux has already reaped the child, so magmux knows its exit code even though
+   * our socket is gone. Before finishing, a bounded query asks it (`exitCodeFromMagmux`); the
+   * code is then stored together with `paneExited`, as `onPaneExit` does (H-27). Unreachable or
+   * silent, the exit goes on without a code, exactly as before.
+   */
   private checkLiveness(): void {
-    if (this.client || !this.panePidValue || this.paneExited) return;
+    if (this.client || !this.panePidValue || this.paneExited || this.exitCodeQuery) return;
     const now = Date.now();
     if (now - this.lastLivenessAt < 1000) return;
     this.lastLivenessAt = now;
@@ -1293,10 +1313,64 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       process.kill(this.panePidValue, 0);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ESRCH") {
-        this.paneExited = true;
-        this.applyExitPath(null);
+        this.exitCodeQuery = true;
+        void this.exitCodeFromMagmux().then((code) => {
+          this.exitCodeQuery = false;
+          // a redial that attached meanwhile saw the dead pane and took the exit path with its code
+          if (this.paneExited || isTerminalPhase(this.phase)) return;
+          this.paneExited = true;
+          this.exitCode = code;
+          this.step(() => this.applyExitPath(code));
+        });
       }
     }
+  }
+
+  /**
+   * Pane 0's exit code from magmux over a fresh connection, or null when magmux cannot be
+   * reached, does not answer, or does not report the pane dead with a numeric code within
+   * EXIT_CODE_QUERY_MS. Its own dial loop, not the redial loop: that one backs off to a second
+   * between attempts, and its attach does far more than this needs. Never throws.
+   */
+  private async exitCodeFromMagmux(): Promise<number | null> {
+    const deadline = Date.now() + EXIT_CODE_QUERY_MS;
+    const left = () => deadline - Date.now();
+    const client = await this.dialWithin(left);
+    if (!client) return null;
+    try {
+      // magmux marks the pane dead once it has reaped the child; ESRCH says it has, but the
+      // mark may trail the reap by a moment, so ask again until the bound.
+      while (left() > 0) {
+        const r = await client.request<{ panes?: Array<Record<string, unknown>> }>(
+          { type: "list" },
+          Math.max(1, left())
+        );
+        if (!r.ok) return null;
+        const p0 = r.result.panes?.find((p) => p.pane === 0);
+        if (!p0) return null;
+        if (p0.dead === true) return typeof p0.exitCode === "number" ? p0.exitCode : null;
+        await Bun.sleep(Math.min(EXIT_CODE_RETRY_MS, Math.max(0, left())));
+      }
+      return null;
+    } finally {
+      client.close();
+    }
+  }
+
+  /** A fresh magmux connection, redialled every EXIT_CODE_RETRY_MS while `left()` is positive. */
+  private async dialWithin(left: () => number): Promise<MagmuxClient | null> {
+    while (left() > 0 && !this.reaping && !isTerminalPhase(this.phase)) {
+      try {
+        // a connect that never completes must not outlive the bound either
+        const dial = MagmuxClient.dial(this.sockPath);
+        const client = await Promise.race([dial, Bun.sleep(Math.max(0, left())).then(() => null)]);
+        if (!client) void dial.then((late) => late.close()).catch(() => {});
+        return client;
+      } catch {
+        await Bun.sleep(Math.min(EXIT_CODE_RETRY_MS, Math.max(0, left())));
+      }
+    }
+    return null;
   }
 
   private t(key: keyof NonNullable<PaneSessionOptions["timings"]>, dflt: number): number {
@@ -2950,8 +3024,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   /**
    * §2.2 rule 2: interactive, IDLE, exit 0, after /exit or ≥ 1 settled turn, nothing
-   * admitted. An exit seen only as ESRCH while the socket is lost has no code: after a
-   * delivered /exit that is still the clean exit it asked for.
+   * admitted. An exit seen only as ESRCH while the socket is lost has no code when magmux could
+   * not name it either: after a delivered /exit that is still the clean exit it asked for.
    */
   private cleanIdleExit(code: number | null): boolean {
     if (this.phase !== "IDLE" || this.shape !== "interactive") return false;

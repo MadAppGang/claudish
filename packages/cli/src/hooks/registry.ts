@@ -67,6 +67,23 @@ export interface UpstreamFacts {
   vendor: string | null;
 }
 
+/**
+ * Catalog facts that select a built-in on a route with a catalog connection: the route's wire API
+ * is one of `wireApis`, or its vendor is one of `vendors`. Data, not a predicate, so
+ * `claudish hooks list` can print the selection that actually applies.
+ */
+export interface UpstreamSelector {
+  wireApis: ReadonlyArray<string>;
+  vendors: ReadonlyArray<string>;
+}
+
+export function upstreamSelected(selector: UpstreamSelector, upstream: UpstreamFacts): boolean {
+  return (
+    (upstream.wireApi !== null && selector.wireApis.includes(upstream.wireApi)) ||
+    (upstream.vendor !== null && selector.vendors.includes(upstream.vendor))
+  );
+}
+
 /** A built-in hook. Its id carries no `hook:` prefix. */
 export type BuiltinHook = HookDefinition & {
   /** Name reported in stats `middleware_names` while this raw built-in is active. */
@@ -77,7 +94,7 @@ export type BuiltinHook = HookDefinition & {
    * an opaque gateway id, is then not asked again. Without a connection the
    * `models` globs decide, as for every hook.
    */
-  selectByUpstream?: (upstream: UpstreamFacts) => boolean;
+  selectByUpstream?: UpstreamSelector;
 };
 
 /** A user hook as the loader produced it. */
@@ -109,7 +126,7 @@ export interface RegisteredHook {
   events: ReadonlyArray<HookEventName>;
   statsName?: string;
   /** Built-ins only: see `BuiltinHook.selectByUpstream`. */
-  selectByUpstream?: (upstream: UpstreamFacts) => boolean;
+  selectByUpstream?: UpstreamSelector;
 }
 
 /** A hook selected for one event, with its resolved severity. */
@@ -151,7 +168,7 @@ function register(
   source: RegisteredHook["source"],
   module?: string,
   statsName?: string,
-  selectByUpstream?: (upstream: UpstreamFacts) => boolean
+  selectByUpstream?: UpstreamSelector
 ): RegisteredHook {
   const hook: RegisteredHook = {
     id,
@@ -245,6 +262,6 @@ export class HookRegistry {
 function routeMatches(hook: RegisteredHook, route: RouteInfo, upstream?: UpstreamFacts): boolean {
   if (hook.routes === "native" && !route.native) return false;
   if (hook.routes === "foreign" && route.native) return false;
-  if (upstream && hook.selectByUpstream) return hook.selectByUpstream(upstream);
+  if (upstream && hook.selectByUpstream) return upstreamSelected(hook.selectByUpstream, upstream);
   return hook.models.some((glob) => globMatches(glob, route.modelId));
 }

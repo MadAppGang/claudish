@@ -84,6 +84,7 @@ describe("claudish hooks list --json", () => {
       severity: "fix",
       routes: "all",
       models: ["*gemini*", "*google/*"],
+      catalogSelection: { wireApis: ["gemini"], vendors: ["google"] },
       order: "pre",
       unsafe: true,
     });
