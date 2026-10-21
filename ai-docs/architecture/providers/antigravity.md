@@ -222,15 +222,16 @@ command, uploads stdout, and seals the body as evidence for the connections it p
 - the `ag` shortcut in place of `antigravity`;
 - an extra token.
 
-A usage error exits 2, with stdout empty and one fixed usage line on stderr. The bare form is
-kept free for a later human view.
+A usage error exits 2, with the fixed usage line on stderr and an `internal`/`usage` failure line on
+stdout. The bare form is kept free for a later human view.
 
 ### Schema `claudish.subscription-model-list.v1`
 
-Exactly one JSON object on ONE stdout line, keys in this order:
+**Every exit, 0 and 1 to 7, prints exactly one JSON object on ONE stdout line**, through the awaited
+write before `process.exit`. Keys in this order:
 
 ```
-schema, provider ("antigravity"), claudishVersion,
+schema, provider? ("antigravity"), claudishVersion,
 fetchedAt?, sourceUrl?, clientVersion?, clientVersionSource?,
 tokenRefreshed, httpStatus?, failure?, body?
 ```
@@ -239,12 +240,20 @@ tokenRefreshed, httpStatus?, failure?, body?
 
 | Field | Present when |
 |---|---|
+| `provider` | the provider was determined: every exit except a usage error and the `index.ts` catch |
 | `tokenRefreshed` | always. True when this run asked agy to refresh, even if that refresh failed |
 | `clientVersion`, `clientVersionSource` | a valid token was obtained. The value is the version in the User-Agent actually sent. `"fallback"` means the 1.1.9 floor, which hides every `gemini-4-argon-*` id |
 | `sourceUrl` | `fetchAvailableModels` was attempted. It is `antigravityHost()` (honours `AICODE_ENDPOINT_URL`) with any userinfo stripped |
 | `fetchedAt`, `httpStatus` | `fetchAvailableModels` answered with a status |
-| `body` | success only. It is the 2xx body, verbatim: `JSON.parse`, then `JSON.stringify`, so values and key order are kept |
-| `failure` | `{ class, code, httpStatus? }`. Each is a fixed string, with no error text |
+| `body` | success only. A STRING: the 2xx response text exactly as `res.text()` read it, byte for byte, untrimmed |
+| `failure` | `{ class, code, httpStatus? }`. Each is a fixed string, with no error text; every code matches `^[a-z0-9_.:-]{1,120}$` |
+
+**`body` is the response text, never a re-serialization.** models-index seals it as evidence, and
+`JSON.parse` followed by `JSON.stringify` is not the bytes the backend sent: number spellings,
+escapes and whitespace can change. The success test still parses the text (2xx, valid JSON,
+`models` a non-empty plain object); the parse decides success and is never printed.
+`fetchAntigravityAvailableModelsRaw`'s `json` variant carries both `text` and `value`;
+`getServedAntigravityModels` reads only `value`.
 
 A non-2xx `fetchAvailableModels` answer is **not a failure**: exit 0, with `httpStatus` and no `body`.
 
@@ -260,8 +269,21 @@ A non-2xx `fetchAvailableModels` answer is **not a failure**: exit 0, with `http
 | `network` | `load_code_assist_429`, `load_code_assist_5xx` (with `httpStatus`), `load_code_assist_network_error`, `load_code_assist_timeout` (30 s) | 6 |
 | `network` | `fetch_available_models_network_error` (unreachable, or a 2xx body that could not be read), `fetch_available_models_timeout` (30 s abort) | 6 |
 | `list_incomplete` | `models_absent`, `models_empty`, `body_not_json` (all 2xx, with `httpStatus`) | 7 |
-| outside the contract | usage error | 2, stdout empty |
-| outside the contract | internal error, or the secret guard tripped | 1, stdout empty, one fixed stderr line |
+| `internal` | `usage` | 2 |
+| `internal` | `secret_guard`, `internal_error` | 1 |
+
+Class `internal` keeps the fixed stderr line of each case, and adds the stdout line:
+- `usage`: `schema`, `claudishVersion`, `tokenRefreshed: false`, `failure`. No `provider`: none was
+  determined.
+- `secret_guard`: every field determined so far, and never a `body`. That line is checked against
+  the secrets too; on a hit (it holds no body, so it cannot happen) nothing is printed.
+- `internal_error`: `schema`, `provider`, `claudishVersion`, the `tokenRefreshed` known so far, and
+  `failure`; nothing else the failed run determined. The `index.ts` catch around the whole command
+  prints the same line without `provider` and with `tokenRefreshed: false`. The error text is
+  never printed.
+
+A stdout write that itself fails exits 1 with the stderr line only: a second line after a partial
+write would leave two objects on stdout.
 
 A `loadCodeAssist` 429 or 5xx is `network`, not `mint_failed`: it is transient
 (`credential-error.ts`).
@@ -313,14 +335,16 @@ LaunchAgent, with two effects:
 
 - stdout is built only from the typed envelope. An `err.message` is never printed: messages
   embed vendor text (`loadCodeAssist` bodies) and agy's stderr.
-- Before writing, the serialized line is checked for these values, in full:
+- Before writing, the raw body text AND the serialized line are checked for these values, in
+  full. Checking the raw text too means an escaped form in the line cannot hide a credential.
   - the access token;
   - the raw store value;
   - every refresh token read;
   - the project id.
 
-  A hit exits 1, with stdout empty and the stderr line
-  `[claudish subscription] refused: output contained a credential value`.
+  A hit exits 1 with the stderr line
+  `[claudish subscription] refused: output contained a credential value`, and stdout carries the
+  body-free `internal`/`secret_guard` line instead.
 - `log()` writes only to files, and only after `initLogger`, which this command never calls. The
   project-id log lines in `antigravity-user.ts` therefore go nowhere.
 - stderr carries only fixed lines.
