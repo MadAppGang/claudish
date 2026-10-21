@@ -99,6 +99,7 @@ function classifyStartupKind(): string {
     "stats",
     "providers",
     "keychain",
+    "subscription",
     "login",
     "logout",
     "quota",
@@ -407,6 +408,8 @@ const isServeCommand = firstPositional === "serve";
 const isProvidersCommand = firstPositional === "providers";
 // Keychain subcommand: claudish keychain status|list|import|set|rm|enable|disable
 const isKeychainCommand = firstPositional === "keychain";
+// Subscription subcommand: claudish subscription models antigravity --raw --json
+const isSubscriptionCommand = firstPositional === "subscription";
 // Hooks subcommand: claudish hooks list|check|init|corpus|telemetry
 const isHooksCommand = firstPositional === "hooks";
 // Team subcommand: claudish team run|run-and-judge (multi-model orchestration)
@@ -501,6 +504,19 @@ if (isMcpMode) {
       process.exit(1);
     })
   );
+} else if (isSubscriptionCommand) {
+  // Raw subscription model list for models-index: one JSON line on stdout.
+  // Exit explicitly: an unkilled `security` past its deadline would keep the
+  // loop alive. The catch prints a FIXED line, never the error: its message can
+  // carry vendor text.
+  const subscriptionArgIndex = args.indexOf("subscription");
+  import("./subscription-models-command.js")
+    .then((m) => m.subscriptionModelsCommand(args.slice(subscriptionArgIndex + 1)))
+    .then((code) => process.exit(code))
+    .catch(() => {
+      process.stderr.write("[claudish subscription] internal error\n");
+      process.exit(1);
+    });
 } else if (isLoginCommand) {
   // Auth login subcommand: claudish login [provider]
   const loginProviderArg = args.find((a, i) => i > args.indexOf("login") && !a.startsWith("-"));
