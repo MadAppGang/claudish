@@ -1764,11 +1764,28 @@ export class ComposedHandler implements ModelHandler {
     // parameter re-fetch, the 401 retry's fresh token and every Responses leg
     // sign through this one function. From now until the inbound request's
     // body ends, every log sink and every `redactSecrets` caller replaces them.
+    //
+    // A transport's out-of-header secrets (`redactionSecrets`: Devin's key reads
+    // env, config and a file) are read once per binding of this request: a
+    // forced refresh returns a new binding and is read again (Antigravity's
+    // access token changes with it), the post-serialize registration below
+    // reuses the read.
+    let transportSecretsRead = false;
+    let transportSecretsBinding: AuthBinding | undefined;
+    let transportSecretsValue: string[] = [];
+    const transportSecrets = (b: AuthBinding | undefined): string[] => {
+      if (!this.provider.redactionSecrets) return [];
+      if (transportSecretsRead && transportSecretsBinding === b) return transportSecretsValue;
+      transportSecretsRead = true;
+      transportSecretsBinding = b;
+      transportSecretsValue = this.provider.redactionSecrets();
+      return transportSecretsValue;
+    };
     const fetchHeaders = async (b: AuthBinding | undefined): Promise<Record<string, string>> => {
       const fetched = await this.provider.getHeaders(payload, b);
       mergeWireHeaders(fetched, wireHeaders);
       addSigningSecrets(c, credentialValuesFromRequest(fetched, this.signedEndpoint(b)));
-      addSigningSecrets(c, this.provider.redactionSecrets?.() ?? []);
+      addSigningSecrets(c, transportSecrets(b));
       signing.headers = fetched;
       return fetched;
     };
@@ -1820,8 +1837,8 @@ export class ComposedHandler implements ModelHandler {
     // never resends bytes the provider already rejected.
     let serialized = this.provider.serializeBody?.(requestPayload);
     // A credential the transport put in the BODY (Devin) is registered as soon
-    // as the bytes exist, read from the same source the encoder just used.
-    addSigningSecrets(c, this.provider.redactionSecrets?.() ?? []);
+    // as the bytes exist (the read `fetchHeaders` made for this binding).
+    addSigningSecrets(c, transportSecrets(binding));
     headers["Content-Type"] = serialized?.contentType ?? "application/json";
 
     log(`[${this.provider.displayName}] Calling API: ${endpoint}`);
