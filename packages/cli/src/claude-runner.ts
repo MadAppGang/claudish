@@ -314,6 +314,193 @@ export function isProxyAuthMode(config: ClaudishConfig): boolean {
 }
 
 /**
+ * A credential source, other than Claude Code's own claude.ai login, that this
+ * launch lets the child authenticate with. Names only; no value is ever kept.
+ *
+ * - `proxy-auth`: the child gets claudish's placeholder pair, so no login
+ *   reaches the proxy at all.
+ * - `user-auth-token`: the user's own ANTHROPIC_AUTH_TOKEN stays in the child
+ *   env (the native-mapping branch keeps it); Claude Code sends it as a bearer.
+ * - `user-api-key`: a real ANTHROPIC_API_KEY stays in the child env (sent as
+ *   `x-api-key`).
+ * - `settings-auth-token` / `settings-api-key`: a Claude Code settings file
+ *   sets that variable in its `env` block, which claudish's env builder never
+ *   sees and cannot remove.
+ * - `api-key-helper`: a settings file names an `apiKeyHelper`; Claude Code
+ *   sends its output as a bearer AND as `x-api-key`.
+ * - `custom-headers`: ANTHROPIC_CUSTOM_HEADERS (the environment or a settings
+ *   `env` block) carries an `Authorization` or `x-api-key` header.
+ */
+export type ChildAuthSource =
+  | "proxy-auth"
+  | "user-auth-token"
+  | "user-api-key"
+  | "settings-auth-token"
+  | "settings-api-key"
+  | "api-key-helper"
+  | "custom-headers";
+
+/**
+ * Whether claudish controls the child's Anthropic auth, so that a bearer
+ * arriving at the proxy can only be Claude Code's own claude.ai login.
+ * `where` names the source (`environment`, or the settings file's path),
+ * never a value.
+ */
+export type ChildAuthControl =
+  | { controlled: true }
+  | { controlled: false; reason: ChildAuthSource; where: string };
+
+/** Injectable reads for {@link childAuthControl}; defaults read the real files. */
+export interface ChildAuthControlDeps {
+  readFile?: (path: string) => string;
+  cwd?: string;
+  home?: string;
+}
+
+/**
+ * Does claudish itself control the child's Anthropic auth on this launch?
+ *
+ * The advisor may sign its own Claude call with the bearer Claude Code sends
+ * only when that bearer can be nothing but Claude Code's claude.ai login. The
+ * request cannot prove it: the `oauth-2025-04-20` beta that login requests
+ * carry is client-declared (`ANTHROPIC_BETAS` adds it to any bearer) and the
+ * server does not require it (measured 2026-10-21, S0). So the decision is
+ * made HERE, at launch, from what this launch hands the child, and every other
+ * launch keeps the bearer off the advisor path.
+ *
+ * Controlled only when ALL hold, as far as claudish can see before spawning:
+ *   1. a native-auth launch (`isProxyAuthMode` false), so no placeholder pair;
+ *   2. no user ANTHROPIC_AUTH_TOKEN and no real ANTHROPIC_API_KEY reaches the
+ *      child. The monitor / no-model `--advisor` branch deletes both
+ *      (`runClaudeWithProxy`, "Handle API key and model based on mode"); the
+ *      native-mapping branch scrubs only claudish's placeholders, keeps a
+ *      user's token, and hides an API key only per
+ *      `shouldHideIncidentalAnthropicKey`;
+ *   3. ANTHROPIC_CUSTOM_HEADERS carries no auth header;
+ *   4. no Claude Code settings layer claudish can read — managed settings, the
+ *      user file (and `$CLAUDE_CONFIG_DIR/settings.json`), the project and
+ *      project-local files, and the `--settings` value — names an
+ *      `apiKeyHelper` or sets an Anthropic credential in its `env` block.
+ *
+ * What it cannot see, and therefore does not claim: settings delivered by a
+ * mechanism claudish does not read (an MDM profile, a file Claude Code adds
+ * later). Mirrors the env builder without editing it: the two must change
+ * together.
+ */
+export function childAuthControl(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ChildAuthControlDeps = {}
+): ChildAuthControl {
+  if (isProxyAuthMode(config)) {
+    return { controlled: false, reason: "proxy-auth", where: "environment" };
+  }
+  // The shouldPreserveNativeAuth branch keeps what the monitor branch deletes.
+  if (!config.monitor && !isAdvisorNativeSession(config)) {
+    if (isRealAnthropicEnvCredential(env, "ANTHROPIC_AUTH_TOKEN")) {
+      return { controlled: false, reason: "user-auth-token", where: "environment" };
+    }
+    if (
+      isRealAnthropicEnvCredential(env, "ANTHROPIC_API_KEY") &&
+      !shouldHideIncidentalAnthropicKey(config, env)
+    ) {
+      return { controlled: false, reason: "user-api-key", where: "environment" };
+    }
+  }
+  if (customHeadersCarryAuth(env.ANTHROPIC_CUSTOM_HEADERS)) {
+    return { controlled: false, reason: "custom-headers", where: "environment" };
+  }
+  for (const { where, settings } of readableClaudeSettingsLayers(config, env, deps)) {
+    const reason = settingsAuthSource(settings);
+    if (reason) return { controlled: false, reason, where };
+  }
+  return { controlled: true };
+}
+
+/** True when an ANTHROPIC_CUSTOM_HEADERS value (one `Name: value` per line) sets an auth header. */
+function customHeadersCarryAuth(value: unknown): boolean {
+  if (typeof value !== "string" || !value) return false;
+  return value.split(/\r?\n/).some((line) => {
+    const colon = line.indexOf(":");
+    if (colon <= 0) return false;
+    const name = line.slice(0, colon).trim().toLowerCase();
+    return name === "authorization" || name === "x-api-key";
+  });
+}
+
+/** The non-login credential source one settings object declares, or null. */
+function settingsAuthSource(settings: Record<string, unknown>): ChildAuthSource | null {
+  const env =
+    settings.env && typeof settings.env === "object"
+      ? (settings.env as Record<string, unknown>)
+      : {};
+  const realValue = (name: "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY"): boolean => {
+    const value = env[name];
+    return (
+      typeof value === "string" &&
+      value.trim().length > 0 &&
+      !isClaudishPlaceholderCredential(name, value)
+    );
+  };
+  if (realValue("ANTHROPIC_AUTH_TOKEN")) return "settings-auth-token";
+  if (typeof settings.apiKeyHelper === "string" && settings.apiKeyHelper.trim()) {
+    return "api-key-helper";
+  }
+  if (realValue("ANTHROPIC_API_KEY")) return "settings-api-key";
+  if (customHeadersCarryAuth(env.ANTHROPIC_CUSTOM_HEADERS)) return "custom-headers";
+  return null;
+}
+
+/**
+ * Every Claude Code settings layer claudish can read for this launch, parsed;
+ * a missing, unreadable or malformed one is skipped (Claude Code does not
+ * apply a file it cannot parse either). `where` is the path, or `--settings`.
+ */
+function readableClaudeSettingsLayers(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv,
+  deps: ChildAuthControlDeps
+): Array<{ where: string; settings: Record<string, unknown> }> {
+  const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
+  const home = deps.home ?? homedir();
+  const cwd = deps.cwd ?? process.cwd();
+  const files = [
+    managedSettingsPath(),
+    join(home, ".claude", "settings.json"),
+    ...(env.CLAUDE_CONFIG_DIR ? [join(env.CLAUDE_CONFIG_DIR, "settings.json")] : []),
+    join(cwd, ".claude", "settings.json"),
+    join(cwd, ".claude", "settings.local.json"),
+  ];
+  const layers: Array<{ where: string; settings: Record<string, unknown> }> = [];
+  for (const file of files) {
+    const settings = readSettingsSource(file, readFile);
+    if (settings) layers.push({ where: file, settings });
+  }
+  const idx = config.claudeArgs?.indexOf("--settings") ?? -1;
+  const value = idx === -1 ? undefined : config.claudeArgs[idx + 1];
+  const fromArg = value ? readSettingsSource(value, readFile) : null;
+  if (fromArg) layers.push({ where: "--settings", settings: fromArg });
+  return layers;
+}
+
+/**
+ * One settings source, parsed: inline JSON (a `--settings` value starting with
+ * `{`) or a file path. Null when it cannot be read or is not a JSON object.
+ */
+function readSettingsSource(
+  source: string,
+  readFile: (path: string) => string
+): Record<string, unknown> | null {
+  try {
+    const raw = source.trimStart().startsWith("{") ? source : readFile(source);
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * OS-specific path to Claude Code's *managed* settings file — the highest-precedence
  * tier, which "cannot be overridden by anything" (not even our --settings overlay).
  * https://code.claude.com/docs/en/settings
