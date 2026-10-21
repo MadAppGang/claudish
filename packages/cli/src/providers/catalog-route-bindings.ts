@@ -85,6 +85,13 @@ export const CATALOG_ROUTE_BINDINGS: Readonly<Record<string, CatalogRouteBinding
 };
 
 /**
+ * Subscription profiles the catalog publishes that claudish deliberately does
+ * not route. Each entry must name its route binding and the reason it is unbound.
+ */
+export const UNBOUND_SUBSCRIPTION_PROFILES: readonly (CatalogRouteBinding & { reason: string })[] =
+  [];
+
+/**
  * Names that catalog READS ask about and that no claudish provider answers to.
  *
  * {@link routingProvidersForRoute} never sees this table, so none of these names
