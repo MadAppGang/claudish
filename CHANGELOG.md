@@ -2,6 +2,26 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [13.1.0] - 2026-10-21
+
+### Bug Fixes
+
+- checksum every released binary, and match whole filenames *(release)* ([`e6428ca`](https://github.com/MadAppGang/claudish/commit/e6428ca0b65555c835caba39347aec67535e1675))
+- ask magmux for the exit code when the child dies while the socket is down *(pane)* ([`f0feba3`](https://github.com/MadAppGang/claudish/commit/f0feba30a60e28314ad07234c10592bd590fa334))
+- write journal rows in the order the decisions were made *(hooks)* ([`235affe`](https://github.com/MadAppGang/claudish/commit/235affe92a00b5dd89cfc46ad95f3ac1b5711f18))
+
+### Documentation
+
+- update CHANGELOG.md for v13.0.3([`24d0667`](https://github.com/MadAppGang/claudish/commit/24d0667572ce6c5fa9a47a4092cc3d367018b4fc))
+
+### New Features
+
+- show the catalog selection in `claudish hooks list` *(hooks)* ([`9432c41`](https://github.com/MadAppGang/claudish/commit/9432c41b846aaea6165fdbb7666bd7f89a35c659))
+
+### Other Changes
+
+- v13.1.0 *(release)* ([`8c350e8`](https://github.com/MadAppGang/claudish/commit/8c350e8801c66949a7a868d75b9d769f3da04a02))
+
 ## [13.0.3] - 2026-10-21
 
 ### Bug Fixes
