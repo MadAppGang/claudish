@@ -162,6 +162,7 @@ import {
   resolveStallPolicy,
 } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
+import { notifyOnDownstreamCancel } from "./shared/stream-parsers/upstream-cancel.js";
 import { TokenTracker, type UsageCacheDetail } from "./shared/token-tracker.js";
 import {
   type ConnectionErrorInfo,
@@ -2841,6 +2842,11 @@ export class ComposedHandler implements ModelHandler {
     // parser reports them via onApiError; capture it here so the turn is recorded
     // as a failure, not a success. Per-request local — safe under concurrency.
     let streamApiError: { code: string; message: string } | null = null;
+    // Set when Claude Code cancels the response body. A parser's cancelled
+    // finalize still reports usage the provider had sent (what was billed is
+    // billed), which fires onStreamComplete; this keeps that record from
+    // reading as a completed turn. Per-request local, like streamApiError.
+    let clientCancelled = false;
 
     // Legs 2..n of a Responses turn: a degenerate `parallel` wrapper is retried
     // inside the same downstream message (responses-turn.ts). Built from THIS
@@ -2947,8 +2953,11 @@ export class ComposedHandler implements ModelHandler {
           provider_name: this.provider.name,
           stream_format: this.provider.streamFormat,
           latency_ms: latencyMs,
-          success: streamApiError === null,
+          success: streamApiError === null && !clientCancelled,
           http_status: httpStatus,
+          // A turn the client abandoned is not a completed one; the existing
+          // error pair marks it, so no new StatsEvent field is needed.
+          ...(clientCancelled ? { error_class: "cancelled", error_code: "client_cancelled" } : {}),
           input_tokens: this.tokenTracker.getInputTokens(),
           output_tokens: this.tokenTracker.getOutputTokens(),
           estimated_cost: this.tokenTracker.getTotalCost(),
@@ -2978,22 +2987,27 @@ export class ComposedHandler implements ModelHandler {
       }
     };
 
-    const streamed = this.handleStream(
-      c,
-      response,
-      adapter,
-      claudeRequest,
-      // Decided from the binding this request was finally signed with (a 401
-      // re-sign replaced it above); every leg of a Responses turn signs on
-      // that same arm, or the leg issuer refuses it.
-      this.signedBilling(binding),
-      toolNameMap,
-      onStreamComplete,
-      (code, message) => {
-        streamApiError = { code, message };
-      },
-      behaviorSession,
-      responsesTurn
+    const streamed = notifyOnDownstreamCancel(
+      this.handleStream(
+        c,
+        response,
+        adapter,
+        claudeRequest,
+        // Decided from the binding this request was finally signed with (a 401
+        // re-sign replaced it above); every leg of a Responses turn signs on
+        // that same arm, or the leg issuer refuses it.
+        this.signedBilling(binding),
+        toolNameMap,
+        onStreamComplete,
+        (code, message) => {
+          streamApiError = { code, message };
+        },
+        behaviorSession,
+        responsesTurn
+      ),
+      () => {
+        clientCancelled = true;
+      }
     );
 
     // A client that did not ask for a stream gets the single JSON message the

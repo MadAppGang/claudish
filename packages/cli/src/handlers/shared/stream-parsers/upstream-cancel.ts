@@ -72,3 +72,54 @@ export function cancelEndsUpstreamWork<T>(
     },
   };
 }
+
+/**
+ * `response` with `onCancel` called when its body is cancelled downstream
+ * (Claude Code went away), BEFORE the cancel is forwarded to the source. A
+ * parser's cancelled finalize still reports the usage the provider sent, which
+ * fires the handler's stats callback; this flag is how that callback tells a
+ * client-cancelled turn from a completed one. Same status, headers and bytes,
+ * pulled one chunk at a time (`highWaterMark: 0`); a response with no body is
+ * returned as is.
+ */
+export function notifyOnDownstreamCancel(response: Response, onCancel: () => void): Response {
+  const source = response.body;
+  if (!source) return response;
+  const reader = source.getReader();
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        let result: Awaited<ReturnType<typeof reader.read>>;
+        try {
+          result = await reader.read();
+        } catch (err) {
+          if (!cancelled) controller.error(err);
+          return;
+        }
+        // A read the cancel below woke up: this stream is already closed.
+        if (cancelled) return;
+        if (result.done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(result.value);
+      },
+      async cancel(reason) {
+        cancelled = true;
+        try {
+          onCancel();
+        } catch {
+          // The flag is diagnostics; the upstream cancel below is what matters.
+        }
+        await reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 }
+  );
+  return new Response(stream, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
