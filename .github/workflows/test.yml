@@ -43,8 +43,9 @@ jobs:
   # - pane (real magmux panes) and rest stay on macOS: on ubuntu-latest pane fails 23 tests
   #   and rest 11 (credential, keychain and platform paths written for darwin).
   # The org is on the free plan: 5 macOS jobs at once across every repo, against 20 Linux
-  # ones. So macOS runs two runners, each with several slices as concurrent processes; the
-  # pane slices mostly wait on magmux's fixed send windows, not on CPU.
+  # ones. So macOS runs two pane runners with three slices each as concurrent processes (the
+  # pane slices mostly wait on magmux's fixed send windows, not on CPU), and rest on a third:
+  # beside three pane slices on 3 vCPUs its 352-file load pushed pane timing bounds over.
   #
   # Every bun is the PINNED 1.3.10, not `latest`. Measured on run 31174096977: a newer bun's
   # `bun install` REWRITES packages/cli/package.json (expanding the `files` array), which
@@ -54,6 +55,13 @@ jobs:
   # probes for a usable Claude Code at MODULE LOAD by spawning `claude --version` and
   # awaiting only its `exit` event. A runner has no `claude`, so spawn emits `error`, the
   # promise never settles, and the suite hangs until the job is killed (run 31172281077).
+  #
+  # CLAUDISH_DISABLE_CATALOG_WARM keeps the live catalog service out of the gate. Files that
+  # do not set it start a background fetch of the production catalog (queryModels, ~8 s on a
+  # runner), and when it lands it can replace another file's test catalog: route() answered
+  # no-route in run 39550893135. Every test that needs a warm sets its own env; the rest
+  # group passes 5318/5318 with this set. Other live calls (provider model lists, codeium)
+  # remain and are tracked separately.
   static:
     name: typecheck · lint
     runs-on: ubuntu-latest
@@ -83,6 +91,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -100,19 +109,22 @@ jobs:
           path: packages/cli/junit-*.xml
 
   hermetic:
-    name: hermetic · macOS ${{ matrix.runner }}/2
+    name: hermetic · macOS ${{ matrix.runner }}/3
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: 1
-            runs: pane@1/6,pane@2/6,pane@3/6,rest
+            runs: pane@1/6,pane@2/6,pane@3/6
           - runner: 2
             runs: pane@4/6,pane@5/6,pane@6/6
+          - runner: 3
+            runs: rest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -131,7 +143,7 @@ jobs:
         run: bun scripts/ci-tests.ts --run ${{ matrix.runs }} -- --max-concurrency=8 --reporter=junit --reporter-outfile=junit-{label}.xml
         timeout-minutes: 15
       - name: macos-bridge and script tests
-        if: matrix.runner == 2
+        if: matrix.runner == 3
         run: |
           bun run --cwd packages/macos-bridge test
           bun test ./scripts/*.test.ts
