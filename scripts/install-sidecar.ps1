@@ -138,12 +138,12 @@ function Get-ClaudishContainerEnv {
     # block a fresh install. NB: stderr is redirected while $ErrorActionPreference
     # is Stop, which arms PS 5.1's NativeCommandError trap — lowered around the call.
     param([string]$Container)
-    $prev = $ErrorActionPreference
+    $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
         $raw = docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $Container 2>$null
         if ($LASTEXITCODE -ne 0) { return $null }
-    } finally { $ErrorActionPreference = $prev }
+    } finally { $ErrorActionPreference = $prevEap }
     return @($raw | Where-Object { $_ -match '^(CLAUDISH_[A-Z0-9_]+|SEARXNG_URL)=' })
 }
 
@@ -249,23 +249,31 @@ if (Test-Path (Join-Path $RepoDir ".git")) {
     # The default RepoDir is a REAL checkout on several machines (po-2024's clone;
     # ai-01's D:\Dev\claudish, from which a sidecar is actually running), so a run
     # with the default path would silently discard whatever local work sits there.
-    $dirty = @(git -C $RepoDir status --porcelain)
-    if ($dirty.Count -gt 0 -and -not $Force) {
-        Write-Host ($dirty | Select-Object -First 10 | Out-String) -ForegroundColor Yellow
-        Die "$RepoDir has $($dirty.Count) uncommitted change(s) that 'reset --hard' would destroy. Commit/stash them, point -RepoDir at a fresh path, or pass -Force to discard them deliberately."
-    }
-    $ahead = @(git -C $RepoDir log --oneline "origin/main..HEAD" 2>$null)
-    if ($ahead.Count -gt 0 -and -not $Force) {
-        Write-Host ($ahead | Out-String) -ForegroundColor Yellow
-        Die "$RepoDir holds $($ahead.Count) commit(s) not on origin/main and would lose them. Push them, point -RepoDir at a fresh path, or pass -Force."
-    }
-    if ($Force -and ($dirty.Count -gt 0 -or $ahead.Count -gt 0)) {
-        Write-Warn "-Force: discarding $($dirty.Count) local change(s) and $($ahead.Count) unpushed commit(s) in $RepoDir"
-    }
-    git -C $RepoDir fetch origin main --quiet
-    git -C $RepoDir checkout main --quiet 2>$null
-    git -C $RepoDir reset --hard origin/main --quiet
-    if ($LASTEXITCODE -ne 0) { Die "git pull failed in $RepoDir" }
+    # Windows PowerShell 5.1 turns native stderr into a terminating error under
+    # 'Stop' — git writes progress and failure detail on stderr (status/fetch/
+    # checkout). Same motif as #549's clone block: local EAP scoping, judged by
+    # exit code only.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $dirty = @(git -C $RepoDir status --porcelain)
+        if ($dirty.Count -gt 0 -and -not $Force) {
+            Write-Host ($dirty | Select-Object -First 10 | Out-String) -ForegroundColor Yellow
+            Die "$RepoDir has $($dirty.Count) uncommitted change(s) that 'reset --hard' would destroy. Commit/stash them, point -RepoDir at a fresh path, or pass -Force to discard them deliberately."
+        }
+        $ahead = @(git -C $RepoDir log --oneline "origin/main..HEAD" 2>$null)
+        if ($ahead.Count -gt 0 -and -not $Force) {
+            Write-Host ($ahead | Out-String) -ForegroundColor Yellow
+            Die "$RepoDir holds $($ahead.Count) commit(s) not on origin/main and would lose them. Push them, point -RepoDir at a fresh path, or pass -Force."
+        }
+        if ($Force -and ($dirty.Count -gt 0 -or $ahead.Count -gt 0)) {
+            Write-Warn "-Force: discarding $($dirty.Count) local change(s) and $($ahead.Count) unpushed commit(s) in $RepoDir"
+        }
+        git -C $RepoDir fetch origin main --quiet
+        git -C $RepoDir checkout main --quiet 2>$null
+        git -C $RepoDir reset --hard origin/main --quiet
+        if ($LASTEXITCODE -ne 0) { Die "git pull failed in $RepoDir" }
+    } finally { $ErrorActionPreference = $prevEap }
 } else {
     Write-Ok "not found, cloning $RepoUrl"
     New-Item -ItemType Directory -Force -Path (Split-Path $RepoDir) | Out-Null
@@ -436,7 +444,14 @@ try {
     } else {
         Write-Warn "probe returned $($r.Content.Length) bytes but no message_stop — inspect 'docker logs $ContainerName'"
     }
-    $servedLocally = (docker logs --since 90s $ContainerName 2>&1 | Select-String -SimpleMatch "[Request]")
+    # docker logs rides stderr under PS 5.1 EAP 'Stop' even with 2>&1 merged —
+    # the trap would turn the NOMINAL/AUTONOMOUS verdict into a generic catch.
+    # Same motif as #549: local EAP scoping around the native call.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $servedLocally = (docker logs --since 90s $ContainerName 2>&1 | Select-String -SimpleMatch "[Request]")
+    } finally { $ErrorActionPreference = $prevEap }
     if ($servedLocally) {
         Write-Warn "served LOCALLY → the sidecar is AUTONOMOUS: it cannot reach $Upstream."
         Write-Warn "  Check egress FROM THE CONTAINER, not from the host — they differ:"

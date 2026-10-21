@@ -100,6 +100,7 @@ Any hub move must walk this list on every machine. A machine whose only evidence
 1. **Docker** + `docker compose`.
 2. **`config.json`** at `~/.claudish/config.json` with provider keys (`ZAI_API_KEY` / `GLM_CODING_API_KEY` / `MINIMAX_CODING_API_KEY`, routing, profiles). The installer refuses to proceed without one — copy from the hub's `~/.claudish/config.json` and adjust per machine.
 3. **Captures dir** (default `D:\claudish-captures`; override with `-CapturesDir` on machines without a D: drive).
+4. **Windows PowerShell 5.1 or PowerShell 7** — the installer runs under both (every native call that redirects stderr is scoped off `$ErrorActionPreference = 'Stop'`, the PS 5.1 NativeCommandError trap — #549/#569).
 
 ## Install (run ON the target machine)
 
