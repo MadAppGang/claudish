@@ -119,6 +119,27 @@ describe("recordDecision", () => {
     });
   });
 
+  it("keeps unawaited same-tick appends in call order, so the last line implies the earlier ones", async () => {
+    // The request path fires recordDecision without awaiting it. Unchained, the appends raced
+    // on stat/mkdir and landed shuffled; repeat on fresh journals to make a reorder near-certain.
+    for (let attempt = 0; attempt < 50; attempt++) {
+      await inTempDir(async (dir) => {
+        const path = join(dir, ".claudish", "behavior-journal.jsonl");
+        const actions = ["removeText", "replaceText", "appendText", "prependText"];
+        const pending = actions.map((action) =>
+          recordDecision(journalEntry({ surface: "response", decision: "matched", action }), path)
+        );
+        await pending.at(-1);
+        const landed = readFileSync(path, "utf8")
+          .trimEnd()
+          .split("\n")
+          .map((line) => JSON.parse(line).action);
+        expect(landed).toEqual(actions);
+        await Promise.all(pending);
+      });
+    }
+  });
+
   it("resolves when the journal path is unwritable", async () => {
     await inTempDir(async (dir) => {
       const parentFile = join(dir, "not-a-directory");

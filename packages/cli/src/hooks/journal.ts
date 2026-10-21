@@ -237,9 +237,33 @@ async function prune(path: string): Promise<void> {
 }
 
 /**
- * Append one decision. Never throws, never awaited by the request path.
+ * The last pending append per journal path in this process.
+ *
+ * The request path fires `recordDecision` without awaiting it, so one hook step's actions start
+ * several appends in the same tick. Each append first awaits a `stat` (and on a fresh journal a
+ * `mkdir`), and those settle in no particular order: unchained, the lines reached the file in a
+ * shuffled order, and the last decision could be on disk while an earlier one was still pending.
+ * Chaining keeps the file in decision order, so a reader that sees a line also sees every line
+ * this process decided before it. Cross-process appends stay unordered, as before.
  */
-export async function recordDecision(entry: JournalEntry, path = journalPath()): Promise<void> {
+const pendingAppends = new Map<string, Promise<void>>();
+
+/**
+ * Append one decision. Never throws, never awaited by the request path. Appends from one process
+ * reach the file in call order.
+ */
+export function recordDecision(entry: JournalEntry, path = journalPath()): Promise<void> {
+  const previous = pendingAppends.get(path) ?? Promise.resolve();
+  const next = previous.then(() => appendDecision(entry, path));
+  pendingAppends.set(path, next);
+  // Drop the entry once the chain is idle, so the map holds at most one promise per busy path.
+  void next.then(() => {
+    if (pendingAppends.get(path) === next) pendingAppends.delete(path);
+  });
+  return next;
+}
+
+async function appendDecision(entry: JournalEntry, path: string): Promise<void> {
   try {
     const size = await stat(path).then(
       (s) => s.size,
