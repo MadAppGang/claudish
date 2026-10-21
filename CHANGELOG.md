@@ -2,6 +2,28 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [13.0.2] - 2026-10-21
+
+### Bug Fixes
+
+- keep a socket whose lstat fails for a reason other than ENOENT *(pane)* ([`84e461c`](https://github.com/MadAppGang/claudish/commit/84e461c1ecc2ef8f1454311d5350ebb71d19b1e3))
+- check a dial's ENOENT against the socket path *(pane)* ([`63859b5`](https://github.com/MadAppGang/claudish/commit/63859b52f9add8931a36b60b9485ac07fc9af623))
+- list a live owner's pane as kept when only kill(pid, 0) vouches for it *(pane)* ([`f01a155`](https://github.com/MadAppGang/claudish/commit/f01a155ed8817b551b5e04115c61a67086cc4108))
+- treat a refused pane socket as stale only when its magmux is dead *(pane)* ([`a7f3d93`](https://github.com/MadAppGang/claudish/commit/a7f3d9320817a552533ea5066d7d2991af852a97))
+- keep pane files when a socket probe is inconclusive *(pane)* ([`dee6a09`](https://github.com/MadAppGang/claudish/commit/dee6a098d98ef5d30c627e8b5d54848554fe0356))
+- stop dead owners' records filling the pane limit without ps *(pane)* ([`3713ac1`](https://github.com/MadAppGang/claudish/commit/3713ac19dcb7738c712c3199132ed3439890be68))
+- check a pane owner's start time from etime, not lstart *(pane)* ([`2b35fb3`](https://github.com/MadAppGang/claudish/commit/2b35fb372eee199766a4b21885686efa363b5f0a))
+- skip the stats banner in a pane child *(pane)* ([`7a210bf`](https://github.com/MadAppGang/claudish/commit/7a210bffcf8953e2c3b47eac390f9c760dfbe574))
+- keep the MCP server alive when ps cannot run in a sandbox *(pane)* ([`72f3c62`](https://github.com/MadAppGang/claudish/commit/72f3c624fdea6aa25eee8b3a23959db4bc052a4e))
+
+### Documentation
+
+- update CHANGELOG.md for v13.0.1([`546b9bc`](https://github.com/MadAppGang/claudish/commit/546b9bc6d583928df92306ba80b0c8bd9bb18ba1))
+
+### Other Changes
+
+- v13.0.2 *(release)* ([`a3c4b9d`](https://github.com/MadAppGang/claudish/commit/a3c4b9d54bbb0300c6acabdb51c79488485be69a))
+
 ## [13.0.1] - 2026-10-21
 
 ### Bug Fixes
