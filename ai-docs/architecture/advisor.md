@@ -238,7 +238,7 @@ served and how it billed, as labels, never a credential value:
 |---|---|
 | `provider` | the claudish provider that SERVED the call (`openai-codex`, `native-anthropic`); null when none served |
 | `route` | `{kind: "routed", plannedChain: [display names]}` or `{kind: "claude-native", host: "api.anthropic.com"}` |
-| `routedModel` | the serving hop's wire model, or the resolved Anthropic id |
+| `routedModel` | the serving hop's planned wire id, or the resolved Anthropic id. A transport that resolves the id again records only the planned one here: Antigravity sends a served variant (`gemini-3.8-flash` → `gemini-3.8-flash-high`, measured 2026-10-22) and names it on its own `[Antigravity] ... model: <planned> -> <sent>` log line |
 | `servedBy` | `{provider, displayName, arm, billing}` when `origin` is `upstream`, else null |
 | `billing` | `servedBy.billing`: `subscription` or `metered`; null when nothing served |
 | `hopsTried` | routed only: provider uids whose `handle()` was entered, in order, once each |
