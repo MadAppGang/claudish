@@ -2,6 +2,26 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [13.4.0] - 2026-10-21
+
+### Bug Fixes
+
+- reject a setup_from that is not an existing directory *(mcp)* ([`174743f`](https://github.com/MadAppGang/claudish/commit/174743feff097edc7be81e3ec03f425be25cf72d))
+
+### Documentation
+
+- record the agent probe and sandbox hook state for work_dir *(mcp)* ([`2274999`](https://github.com/MadAppGang/claudish/commit/227499999270114dc2f2a4a695468041c40856ce))
+- mark the release playbook verified by v13.3.0 *(release)* ([`27d8956`](https://github.com/MadAppGang/claudish/commit/27d8956cf32c679093c54d683ef899824208a97f))
+- update CHANGELOG.md for v13.3.0([`c4654e9`](https://github.com/MadAppGang/claudish/commit/c4654e921bdba1b5b2e65429204a765bd4853d38))
+
+### New Features
+
+- inherit the caller's settings in a create_session work_dir *(mcp)* ([`df8e124`](https://github.com/MadAppGang/claudish/commit/df8e124dcd696e1985da892381defa4df8a1e80c))
+
+### Other Changes
+
+- v13.4.0 *(release)* ([`633d188`](https://github.com/MadAppGang/claudish/commit/633d18848379b82726f4bcba86bbcb0854a7f0d9))
+
 ## [13.3.0] - 2026-10-21
 
 ### Bug Fixes
