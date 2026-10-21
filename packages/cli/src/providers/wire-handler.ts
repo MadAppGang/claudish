@@ -78,6 +78,13 @@ export function effectiveBaseUrl(
   return { baseUrl: resolvedBaseUrl.replace(/\/+$/, ""), overridden: true };
 }
 
+/** The registry base, except Muse Code's credentials must stay on the pinned host. */
+function requestBaseUrl(connection: ResolvedConnection, api: WireApi): string | undefined {
+  return connection.provider === "meta-muse-code"
+    ? `${MUSE_CODE_BASE_URL}/v1`
+    : connectionBaseUrl(connection, api);
+}
+
 /**
  * One line saying how a connection is called, for `--probe`: the API and URL,
  * the output-limit field, the reasoning encoding, and the modes and speeds it
@@ -91,7 +98,7 @@ export function describeConnectionWire(connection: ResolvedConnection): string {
     const apis = Object.keys(connection.profile.apis).join(", ") || "none";
     return `${where}: wire unknown — tries ${apis} in turn`;
   }
-  const base = connectionBaseUrl(connection, wire.api);
+  const base = requestBaseUrl(connection, wire.api);
   const url = base ? wireRequestUrl(base, wire.api, connection.externalModelId) : "no base URL";
   const status = (value: string | { status: string }) =>
     typeof value === "string" ? value : value.status;
