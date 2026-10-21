@@ -9,7 +9,10 @@ import {
 import { PROVIDER_TO_PREFIX } from "./providers/auto-route.js";
 import { FIREBASE_CACHE_TTL_HOURS } from "./providers/cache-ttl.js";
 import { ensureCatalogReady } from "./providers/catalog-client.js";
-import { providerForCatalogRoute } from "./providers/catalog-route-bindings.js";
+import {
+  catalogRouteMatchesProvider,
+  providerForCatalogRoute,
+} from "./providers/catalog-route-bindings.js";
 import {
   CATALOG_V3_ACCEPT,
   type CatalogV3Envelope,
@@ -18,6 +21,7 @@ import {
 import type { ConnectionWire } from "./providers/connection-wire.js";
 import { normaliseCatalogPayload } from "./providers/content-use.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
+import { nativeProviderForVendor } from "./providers/route-candidates.js";
 import type { OpenRouterModel } from "./types.js";
 
 // ─── Firebase Model Catalog Types ────────────────────────────────────────────
@@ -105,6 +109,8 @@ export interface RecommendedModelEntry {
   supportsVision?: boolean;
   isModerated?: boolean;
   recommended?: boolean;
+  /** Whether the model has a mapped connection on its vendor's native route. */
+  nativeRouteAvailable?: boolean;
   subscription?: RecommendedSubscriptionRoute;
   /**
    * Every executable subscription route for this model, in preference order.
@@ -360,8 +366,9 @@ const FIREBASE_RECOMMENDED_URL = `${FIREBASE_BASE_URL}?catalog=recommended`;
  * Bumped when {@link projectRecommendations} would answer differently for the
  * same generation. 1: content-use opt-in wire ids are never a `command`
  * (`content-use.ts`); a projection written before that may hold one.
+ * 2: native shortcuts require a mapped connection on the vendor's native route.
  */
-export const RECOMMENDED_PROJECTION_VERSION = 1;
+export const RECOMMENDED_PROJECTION_VERSION = 2;
 
 /**
  * The projected recommended-models list, on disk.
@@ -536,6 +543,15 @@ export function projectRecommendations(
     rankByTier.set(recommended.tier, priority);
 
     const rich = richById.get(recommended.modelId);
+    const nativeProvider = nativeProviderForVendor(rich?.provider ?? model.provider ?? "");
+    const nativeRouteAvailable = Boolean(
+      nativeProvider &&
+        model.aggregators?.some(
+          (connection) =>
+            connection.routeStatus === "mapped" &&
+            catalogRouteMatchesProvider(connection.route, nativeProvider)
+        )
+    );
     const subscription =
       recommended.tier === "subscription"
         ? subscriptionRouteFor(recommended, model, catalog.plans)
@@ -545,6 +561,7 @@ export function projectRecommendations(
       name: rich?.displayName ?? model.displayName ?? recommended.modelId,
       description: rich?.description ?? "",
       provider: rich?.provider ?? model.provider ?? "",
+      nativeRouteAvailable,
       recommendationTier: recommended.tier,
       priority,
       pricing: {
@@ -910,7 +927,7 @@ export function collectRoutingPrefixes(
   getNativePrefix: (firebaseSlug: string) => string | null
 ): string[] {
   const slug = (group.primary.provider || "").toLowerCase();
-  const native = getNativePrefix(slug);
+  const native = group.primary.nativeRouteAvailable === false ? null : getNativePrefix(slug);
   const seen = new Set<string>();
   const out: string[] = [];
   if (native) {
