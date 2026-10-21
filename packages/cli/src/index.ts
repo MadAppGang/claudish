@@ -507,16 +507,22 @@ if (isMcpMode) {
 } else if (isSubscriptionCommand) {
   // Raw subscription model list for models-index: one JSON line on stdout.
   // Exit explicitly: an unkilled `security` past its deadline would keep the
-  // loop alive. The catch prints a FIXED line, never the error: its message can
-  // carry vendor text.
+  // loop alive. The catch prints the `internal_error` line (awaited) and a
+  // FIXED stderr line, never the error: its message can carry vendor text.
   const subscriptionArgIndex = args.indexOf("subscription");
-  import("./subscription-models-command.js")
+  const subscriptionModule = () => import("./subscription-models-command.js");
+  subscriptionModule()
     .then((m) => m.subscriptionModelsCommand(args.slice(subscriptionArgIndex + 1)))
-    .then((code) => process.exit(code))
-    .catch(() => {
-      process.stderr.write("[claudish subscription] internal error\n");
-      process.exit(1);
-    });
+    .catch(() =>
+      subscriptionModule()
+        .then((m) => m.reportSubscriptionInternalError())
+        .catch(() => {
+          // The module itself would not load: no line can be built.
+          process.stderr.write("[claudish subscription] internal error\n");
+          return 1;
+        })
+    )
+    .then((code) => process.exit(code));
 } else if (isLoginCommand) {
   // Auth login subcommand: claudish login [provider]
   const loginProviderArg = args.find((a, i) => i > args.indexOf("login") && !a.startsWith("-"));

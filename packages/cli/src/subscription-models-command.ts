@@ -16,15 +16,16 @@
  *
  * Contract (ai-docs/architecture/providers/antigravity.md, "Raw model list for
  * models-index"):
- * - stdout carries exactly one JSON object built from the typed envelope, and
- *   nothing else. An error message is never printed: messages embed vendor
- *   text and agy's stderr.
+ * - Every exit (0 and 1 to 7) writes exactly one JSON object built from the
+ *   typed envelope to stdout, and nothing else. An error message is never
+ *   printed: messages embed vendor text and agy's stderr.
  * - A field appears exactly when this run determined it.
  * - A non-2xx `fetchAvailableModels` answer is not a failure (exit 0, no body).
  * - Each failure carries a fixed `class` and `code`, and the class decides the
  *   exit code.
  * - Before anything is written, the raw body text and the line are checked for
- *   the access token, the refresh token and the project id. A hit exits 1.
+ *   the access token, the refresh token and the project id. A hit exits 1 and
+ *   prints a body-free `secret_guard` failure instead.
  * - No prompt: stdin is never read, no browser path is reachable, claudish
  *   never writes the keychain, and every wait is bounded.
  */
@@ -59,7 +60,8 @@ export type FailureClass =
   | "keychain_locked"
   | "mint_failed"
   | "network"
-  | "list_incomplete";
+  | "list_incomplete"
+  | "internal";
 
 /** Every fixed `failure.code`, grouped by the class it belongs to. */
 export const FAILURE_CODES = {
@@ -83,13 +85,14 @@ export const FAILURE_CODES = {
     "fetch_available_models_timeout",
   ],
   list_incomplete: ["models_absent", "models_empty", "body_not_json"],
+  internal: ["usage", "secret_guard", "internal_error"],
 } as const satisfies Record<FailureClass, readonly string[]>;
 
 export type FailureCode = (typeof FAILURE_CODES)[FailureClass][number];
 
 /**
- * Exit codes. 0 includes a non-2xx `fetchAvailableModels` answer. 1 and 2 are
- * outside the contract, and stdout is empty for both.
+ * Exit codes. 0 includes a non-2xx `fetchAvailableModels` answer. Class
+ * `internal` exits 2 for `usage` and 1 for `secret_guard` and `internal_error`.
  */
 export const EXIT = {
   ok: 0,
@@ -100,7 +103,13 @@ export const EXIT = {
   mint_failed: 5,
   network: 6,
   list_incomplete: 7,
-} as const satisfies Record<FailureClass | "ok" | "internal" | "usage", number>;
+} as const satisfies Record<FailureClass | "ok" | "usage", number>;
+
+/** The exit code a failure decides: its class, except that `usage` exits 2. */
+export function exitCodeFor(failure: SubscriptionModelListFailure): number {
+  if (failure.class === "internal") return failure.code === "usage" ? EXIT.usage : EXIT.internal;
+  return EXIT[failure.class];
+}
 
 export interface SubscriptionModelListFailure {
   class: FailureClass;
@@ -115,7 +124,8 @@ export interface SubscriptionModelListFailure {
  */
 export interface SubscriptionModelListEnvelope {
   schema: typeof SUBSCRIPTION_MODEL_LIST_SCHEMA;
-  provider: "antigravity";
+  /** Present whenever the provider was determined; absent on a usage error. */
+  provider?: "antigravity";
   claudishVersion: string;
   /** ISO-8601 UTC, once `fetchAvailableModels` answered. */
   fetchedAt?: string;
@@ -136,13 +146,13 @@ export interface SubscriptionModelListEnvelope {
   body?: string;
 }
 
-/** The fixed usage line (stderr, exit 2). */
+/** The fixed usage line (stderr, exit 2; stdout carries the `usage` failure). */
 export const SUBSCRIPTION_MODELS_USAGE =
   "usage: claudish subscription models antigravity --raw --json";
-/** The fixed line when the secret guard trips (stderr, exit 1). */
+/** The fixed line when the secret guard trips (stderr, exit 1; stdout carries `secret_guard`). */
 export const SECRET_GUARD_MESSAGE =
   "[claudish subscription] refused: output contained a credential value";
-/** The fixed line for any unexpected error (stderr, exit 1). */
+/** The fixed line for any unexpected error (stderr, exit 1; stdout carries `internal_error`). */
 export const INTERNAL_ERROR_MESSAGE = "[claudish subscription] internal error";
 
 // ---------------------------------------------------------------------------
@@ -217,6 +227,7 @@ export function parseSubscriptionModelsArgs(argv: readonly string[]): Subscripti
 
 /** What this run has determined so far: the envelope's optional fields. */
 interface Facts {
+  provider?: "antigravity";
   fetchedAt?: string;
   sourceUrl?: string;
   clientVersion?: string;
@@ -242,7 +253,7 @@ function buildEnvelope(
 ): SubscriptionModelListEnvelope {
   return {
     schema: SUBSCRIPTION_MODEL_LIST_SCHEMA,
-    provider: "antigravity",
+    ...(facts.provider !== undefined ? { provider: facts.provider } : {}),
     claudishVersion: VERSION,
     ...(facts.fetchedAt !== undefined ? { fetchedAt: facts.fetchedAt } : {}),
     ...(facts.sourceUrl !== undefined ? { sourceUrl: facts.sourceUrl } : {}),
@@ -366,7 +377,81 @@ interface RunResult {
 }
 
 function fail(facts: Facts, failure: SubscriptionModelListFailure): RunResult {
-  return { envelope: buildEnvelope(facts, failure), exitCode: EXIT[failure.class] };
+  return { envelope: buildEnvelope(facts, failure), exitCode: exitCodeFor(failure) };
+}
+
+/** One serialized envelope line, trailing newline included. */
+function lineOf(envelope: SubscriptionModelListEnvelope): string {
+  return `${JSON.stringify(envelope)}\n`;
+}
+
+/** Whether any of `texts` contains a secret value, in full. */
+function containsSecret(secrets: Secrets, ...texts: (string | undefined)[]): boolean {
+  for (const secret of secrets.values) {
+    if (texts.some((text) => text?.includes(secret))) return true;
+  }
+  return false;
+}
+
+/** A stderr write that never throws. It carries only fixed lines. */
+function safeStderr(deps: SubscriptionModelsDeps, line: string): void {
+  try {
+    deps.writeStderr(line);
+  } catch {
+    // Nowhere left to report it.
+  }
+}
+
+type InternalCode = (typeof FAILURE_CODES)["internal"][number];
+
+/**
+ * Write the fixed stderr line, then a class-`internal` failure line through the
+ * awaited `writeStdout`, and return the exit code. Never throws.
+ *
+ * The line holds only `facts` and fixed strings, never a body. It is still
+ * checked against `secrets`; a hit (which cannot happen) prints nothing.
+ */
+async function writeInternalFailure(
+  deps: SubscriptionModelsDeps,
+  facts: Facts,
+  code: InternalCode,
+  stderrLine: string,
+  secrets?: Secrets
+): Promise<number> {
+  const failure = failureOf("internal", code);
+  safeStderr(deps, `${stderrLine}\n`);
+  const line = lineOf(buildEnvelope(facts, failure));
+  if (!secrets || !containsSecret(secrets, line)) {
+    try {
+      await deps.writeStdout(line);
+    } catch {
+      // stdout is unusable; the stderr line already says what happened.
+    }
+  }
+  return exitCodeFor(failure);
+}
+
+/**
+ * The `internal_error` exit for a caller with no run state: the `index.ts`
+ * catch around the whole command. The line has no `provider` (none was
+ * determined) and `tokenRefreshed: false`. Never throws.
+ */
+export async function reportSubscriptionInternalError(
+  deps?: SubscriptionModelsDeps
+): Promise<number> {
+  let resolved: SubscriptionModelsDeps;
+  try {
+    resolved = deps ?? defaultSubscriptionModelsDeps();
+  } catch {
+    process.stderr.write(`${INTERNAL_ERROR_MESSAGE}\n`);
+    return EXIT.internal;
+  }
+  return writeInternalFailure(
+    resolved,
+    { tokenRefreshed: false },
+    "internal_error",
+    INTERNAL_ERROR_MESSAGE
+  );
 }
 
 type TokenStep = { ok: true; accessToken: string } | { ok: false; result: RunResult };
@@ -472,9 +557,11 @@ function classifyAvailableModels(
 }
 
 /** Steps 2-7 of the sequence: determine the envelope and its exit code. */
-async function determine(deps: SubscriptionModelsDeps, secrets: Secrets): Promise<RunResult> {
-  const facts: Facts = { tokenRefreshed: false };
-
+async function determine(
+  deps: SubscriptionModelsDeps,
+  secrets: Secrets,
+  facts: Facts
+): Promise<RunResult> {
   if (deps.platform() !== "darwin") {
     return fail(facts, failureOf("credential_missing", "platform_unsupported"));
   }
@@ -515,34 +602,44 @@ async function determine(deps: SubscriptionModelsDeps, secrets: Secrets): Promis
 
 /**
  * Determine the envelope, run the secret guard, write ONE flushed line, and
- * return the exit code. Never throws. Exits 1 with empty stdout and a fixed
- * stderr line on an internal error or a secret-guard hit.
+ * return the exit code. Never throws.
+ *
+ * Both exit-1 paths write their fixed stderr line and a class-`internal` line:
+ * - an unexpected error: `internal_error`, with `provider` and the
+ *   `tokenRefreshed` known so far, and nothing else the failed run determined;
+ * - a secret-guard hit: `secret_guard`, with every fact determined so far and
+ *   never a body.
  */
 export async function runAntigravityRawModelList(deps: SubscriptionModelsDeps): Promise<number> {
   const secrets: Secrets = { values: new Set() };
+  const facts: Facts = { provider: "antigravity", tokenRefreshed: false };
   let line: string;
   let exitCode: number;
   let bodyText: string | undefined;
   try {
-    const result = await determine(deps, secrets);
-    line = `${JSON.stringify(result.envelope)}\n`;
+    const result = await determine(deps, secrets, facts);
+    line = lineOf(result.envelope);
     exitCode = result.exitCode;
     bodyText = result.bodyText;
   } catch {
-    deps.writeStderr(`${INTERNAL_ERROR_MESSAGE}\n`);
-    return EXIT.internal;
+    return writeInternalFailure(
+      deps,
+      { provider: facts.provider, tokenRefreshed: facts.tokenRefreshed },
+      "internal_error",
+      INTERNAL_ERROR_MESSAGE,
+      secrets
+    );
   }
-  for (const secret of secrets.values) {
-    // The raw text too: an escaped form in the line cannot hide a credential.
-    if (line.includes(secret) || bodyText?.includes(secret)) {
-      deps.writeStderr(`${SECRET_GUARD_MESSAGE}\n`);
-      return EXIT.internal;
-    }
+  // The raw text too: an escaped form in the line cannot hide a credential.
+  if (containsSecret(secrets, line, bodyText)) {
+    return writeInternalFailure(deps, facts, "secret_guard", SECRET_GUARD_MESSAGE, secrets);
   }
   try {
     await deps.writeStdout(line);
   } catch {
-    deps.writeStderr(`${INTERNAL_ERROR_MESSAGE}\n`);
+    // Not followed by an `internal_error` line: a write that failed part-way
+    // would leave a second object on stdout.
+    safeStderr(deps, `${INTERNAL_ERROR_MESSAGE}\n`);
     return EXIT.internal;
   }
   return exitCode;
@@ -557,8 +654,13 @@ export async function subscriptionModelsCommand(
   deps: SubscriptionModelsDeps = defaultSubscriptionModelsDeps()
 ): Promise<number> {
   if (!parseSubscriptionModelsArgs(argv).ok) {
-    deps.writeStderr(`${SUBSCRIPTION_MODELS_USAGE}\n`);
-    return EXIT.usage;
+    // No provider was determined, so the line omits it.
+    return writeInternalFailure(
+      deps,
+      { tokenRefreshed: false },
+      "usage",
+      SUBSCRIPTION_MODELS_USAGE
+    );
   }
   return runAntigravityRawModelList(deps);
 }
