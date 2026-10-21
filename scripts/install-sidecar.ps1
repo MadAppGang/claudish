@@ -269,8 +269,15 @@ if (Test-Path (Join-Path $RepoDir ".git")) {
 } else {
     Write-Ok "not found, cloning $RepoUrl"
     New-Item -ItemType Directory -Force -Path (Split-Path $RepoDir) | Out-Null
-    git clone --branch main --depth 1 $RepoUrl $RepoDir 2>&1 | Out-Host
-    if ($LASTEXITCODE -ne 0) { Die "git clone failed" }
+    # Windows PowerShell 5.1 turns native stderr into a terminating error under
+    # 'Stop' — git clone prints its progress on stderr. Same motif as the
+    # compose block below: local EAP scoping, judged by exit code only.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        git clone --branch main --depth 1 $RepoUrl $RepoDir 2>&1 | Out-Host
+        if ($LASTEXITCODE -ne 0) { Die "git clone failed" }
+    } finally { $ErrorActionPreference = $prevEap }
 }
 
 # ── 2. Host dirs ────────────────────────────────────────────────────
@@ -375,10 +382,14 @@ if ($WriteEnvOnly) {
 # ── 4. Build + start ────────────────────────────────────────────────
 Write-Step "docker compose up -d --build"
 Push-Location $RepoDir
+$prevEap = $ErrorActionPreference
 try {
+    # Windows PowerShell 5.1 turns native stderr into a terminating error under
+    # 'Stop' — docker compose prints build progress on stderr, so judge by exit code.
+    $ErrorActionPreference = 'Continue'
     docker compose up -d --build 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) { Die "docker compose up failed" }
-} finally { Pop-Location }
+} finally { $ErrorActionPreference = $prevEap; Pop-Location }
 
 # ── 5. Healthcheck ──────────────────────────────────────────────────
 Write-Step "Waiting for /health on :$ProxyPort"
