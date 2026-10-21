@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
 import { log, maskCredential } from "../logger.js";
+import { redactForClient } from "../redact.js";
 import { ANTHROPIC_API_ORIGIN } from "./advisor-claude-route.js";
 import { ADVISOR_SWAPPED_CONTEXT_KEY } from "./advisor-decorator.js";
 import {
@@ -9,6 +10,7 @@ import {
   stripAdvisorBeta,
 } from "./native-handler-advisor.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
+import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
 import {
   type UpstreamReaderSlot,
   cancelEndsUpstreamWork,
@@ -124,6 +126,15 @@ export class NativeHandler implements ModelHandler {
       }
     }
 
+    // Register every credential value this request sends (the inbound Claude
+    // bearer or key passed through, or the fallback key) on the request's
+    // signing lease, for EVERY native request: the lease lives until the body
+    // has been delivered or cancelled (`releaseWhenBodyEnds`), so each log line
+    // and each echoed error below is redacted against them. The advisor
+    // decorator registers the inbound values only on a turn with pending advisor
+    // results; an ordinary native turn had an empty lease.
+    addSigningSecrets(c, credentialValuesFromRequest(headers));
+
     // Execute fetch
     try {
       const anthropicResponse = await fetch(`${this.baseUrl}/v1/messages`, {
@@ -140,6 +151,7 @@ export class NativeHandler implements ModelHandler {
         // A downstream cancel cancels this reader and waits for the loop below
         // (which logs the whole stream at its end) before it resolves.
         const upstream: UpstreamReaderSlot = {};
+        let cancelled = false;
         return c.body(
           new ReadableStream(
             cancelEndsUpstreamWork<Uint8Array>(upstream, {
@@ -149,29 +161,75 @@ export class NativeHandler implements ModelHandler {
                 upstream.reader = reader;
 
                 const decoder = new TextDecoder();
-                let buffer = "";
+                const encoder = new TextEncoder();
+                // Bytes after the last newline, held until their line completes:
+                // an `error` event's data line is redacted whole, never in parts.
+                let pending = "";
+                // The current SSE event's name; a blank line ends the event.
+                let eventName = "";
                 let eventLog = "";
+
+                // Every line passes through unchanged except the data lines of
+                // an `error` event, which carry upstream text that may echo the
+                // request's credential (redactForClient). Framing unchanged.
+                const passLine = (line: string): string => {
+                  const bare = line.endsWith("\r") ? line.slice(0, -1) : line;
+                  if (bare === "") {
+                    eventName = "";
+                    return line;
+                  }
+                  if (bare.startsWith("event:")) {
+                    eventName = bare.slice(6).trim();
+                    return line;
+                  }
+                  if (eventName === "error" && bare.startsWith("data:")) {
+                    return redactForClient(line);
+                  }
+                  return line;
+                };
+                const forward = (lines: string[], text: string) => {
+                  for (const line of lines) if (line.trim()) eventLog += `${line}\n`;
+                  if (cancelled || !text) return;
+                  controller.enqueue(encoder.encode(text));
+                };
 
                 try {
                   while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    controller.enqueue(value);
-
-                    // Basic logging
-                    const chunkText = decoder.decode(value, { stream: true });
-                    buffer += chunkText;
-                    const lines = buffer.split("\n");
-                    buffer = lines.pop() || "";
-                    for (const line of lines) if (line.trim()) eventLog += `${line}\n`;
+                    const text = pending + decoder.decode(value, { stream: true });
+                    const cut = text.lastIndexOf("\n");
+                    if (cut < 0) {
+                      pending = text;
+                      continue;
+                    }
+                    pending = text.slice(cut + 1);
+                    const lines = text.slice(0, cut).split("\n").map(passLine);
+                    forward(lines, `${lines.join("\n")}\n`);
+                  }
+                  const tail = pending + decoder.decode();
+                  if (tail) {
+                    const line = passLine(tail);
+                    forward([line], line);
                   }
                   if (eventLog) log(eventLog);
-                  controller.close();
+                  if (!cancelled) controller.close();
                 } catch (e) {
-                  log(`[Native] Stream Error: ${e}`);
-                  controller.close();
+                  if (eventLog) log(eventLog);
+                  log(`[Native] Stream Error: ${redactForClient(String(e))}`);
+                  if (!cancelled) {
+                    try {
+                      controller.close();
+                    } catch {}
+                  }
                 }
+              },
+              // Downstream went away: nothing more is enqueued, and the loop
+              // above still logs what it read before cancelEndsUpstreamWork
+              // resolves the cancel.
+              cancel() {
+                cancelled = true;
               },
             })
           ),
@@ -186,8 +244,11 @@ export class NativeHandler implements ModelHandler {
         );
       }
 
-      // Handle JSON
-      const data = await anthropicResponse.json();
+      // Handle JSON. A non-success body is upstream text that may echo the
+      // request's credential, so it is redacted before it is logged or returned;
+      // a success body is parsed exactly as it arrived.
+      const raw = await anthropicResponse.text();
+      const data = JSON.parse(anthropicResponse.ok ? raw : redactForClient(raw));
       log("\n=== [NATIVE] Response ===");
       log(JSON.stringify(data, null, 2));
 
@@ -198,8 +259,9 @@ export class NativeHandler implements ModelHandler {
 
       return c.json(data, { status: anthropicResponse.status as any, headers: responseHeaders });
     } catch (error) {
-      log(`[Native] Fetch Error: ${error}`);
-      return c.json(wrapAnthropicError(500, String(error)), 500);
+      const message = redactForClient(String(error));
+      log(`[Native] Fetch Error: ${message}`);
+      return c.json(wrapAnthropicError(500, message), 500);
     }
   }
 
