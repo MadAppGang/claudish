@@ -1,0 +1,48 @@
+#!/bin/sh
+# harness.binary for this Bench: THIS worktree's built claudish
+# (packages/cli/dist/index.js, the output of `bun run build`), never the
+# claudish on PATH. The path is derived from this file's own location, so a
+# run cannot pick up a global install by accident.
+#
+# Before handing over it writes claudish-provenance.txt into the workspace
+# (the agent's cwd); the `provenance` Check reads it back, so the report
+# records which build ran and the exact argv madbench handed over (the
+# Scenario's own `harness.args`, e.g. --advisor, come last).
+#
+# ADVISOR_REFUSAL_PROBE=1 (set by the `refusal` Scenario's sandbox.env): before
+# the session starts, run two launches that claudish must REFUSE at startup,
+# each in its own directory under refusal/, recording exit code, stdout,
+# stderr and its own debug log. The `refusal_*` Checks grade those files. The
+# mock harness never runs this file, so under `madbench check` the files are
+# absent and the Checks fail, as they must.
+#
+# Then it adds the debug-log flags every Check that reads logs/claudish_*.log
+# depends on, and `-q`, which returns before claudish's update prompt.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../../.." && pwd)
+dist="$root/packages/cli/dist/index.js"
+{
+  echo "dist=$dist"
+  echo "version=$(bun "$dist" --version 2>/dev/null | head -n 1)"
+  echo "head=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)"
+  echo "dist_mtime=$(stat -f %Sm -t %Y-%m-%dT%H:%M:%S "$dist")"
+  echo "argv=$*"
+} > claudish-provenance.txt
+
+if [ "${ADVISOR_REFUSAL_PROBE:-}" = "1" ]; then
+  probe() {
+    name=$1
+    spec=$2
+    mkdir -p "refusal/$name"
+    rc=0
+    (cd "refusal/$name" && timeout 60 bun "$dist" --debug-claudish --log-level debug \
+      --advisor "$spec" -p "hi" > stdout.txt 2> stderr.txt < /dev/null) || rc=$?
+    echo "$rc" > "refusal/$name/exit.txt"
+    echo "spec=$spec" > "refusal/$name/spec.txt"
+  }
+  probe ag-gemini "ag@gemini-4-argon"
+  probe opusplan "opusplan"
+fi
+
+exec bun "$dist" --debug-claudish --log-level debug -q "$@"

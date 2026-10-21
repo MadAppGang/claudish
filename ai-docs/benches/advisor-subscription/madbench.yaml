@@ -1,0 +1,328 @@
+description: "advisor-subscription: --advisor panel members route like main requests, on the subscription, and the notice matches what served"
+
+# Real Claude Code -> this worktree's claudish build (--advisor) -> the REAL
+# subscription backends: ChatGPT Codex (cx@, OAuth), Kimi Coding (kc@), the
+# Claude Code login. No mock upstream, no metered key may serve a live call.
+# README.md explains each Check and how to read a failure.
+#
+# Every claim that matters is in claudish's debug log, not in the answer: the
+# `[advisor-origin]` records say who served each panel call and how it billed,
+# the `[advisor-notice]` lines say what the launch promised, and the
+# `Calling API:` lines say where every request went. The Checks read
+# logs/claudish_*.log, which claudish writes into the workspace because
+# claudish-under-test passes --debug-claudish.
+
+harness:
+  type: claude-code
+  # This worktree's packages/cli/dist/index.js, via a shim that records the
+  # build and argv it ran (claudish-provenance.txt). A path with a `/`
+  # resolves against this file, so the claudish on PATH is never used.
+  binary: ./claudish-under-test
+  model: cx@gpt-6.1-sol
+  # The run bills this machine's Claude Code login or does not run; an
+  # ANTHROPIC_API_KEY madbench resolves is masked rather than handed to
+  # claudish, where it would make a Claude advisor member metered.
+  use_subscription: required
+  # Interactive (the default): Bash parks at an approval menu nobody answers
+  # unless the mode is bypassPermissions. claudish forwards it to claude.
+  args: ["--permission-mode", "bypassPermissions"]
+
+defaults:
+  # workspace, not home: home replaces HOME and hides ~/.claudish, so the
+  # Codex OAuth credential, the Kimi Coding key and the Claude login would
+  # be gone and every member could only sign metered (or not at all).
+  sandbox: workspace
+  # Every prompt is an order, so a question is a defect: fail it by name.
+  driver: false
+  # One advisor call fans out to every panel member (60 s budget each) and a
+  # collector (30 s); an interactive cold start adds Claude Code's boot.
+  timeout: 480s
+
+scenarios:
+  # ── routed-codex: L1 (bare gpt-*), L2 (cx@), L4 (notice), L6 (code mode) ──
+  - name: routed-codex
+    description: "main cx@ in code mode; panel gpt-6.1-sol, cx@gpt-6.1-sol, kc@k3 all served on their subscriptions"
+    testdata: ./testdata/routed-codex
+    # The trailing ':' names NO collector. Without it a 3-member panel gets
+    # the default collector haiku, which on a cx@ launch has no Claude login
+    # and would sign with an ANTHROPIC_API_KEY if one is found: metered.
+    harness:
+      args: ["--advisor", "gpt-6.1-sol,cx@gpt-6.1-sol,kc@k3:"]
+    prompt: "Use the Read tool to read plan.md. Then call the advisor tool exactly once, asking whether the plan in plan.md is sound. Then reply in exactly two lines. The first line starts with the word REF and a colon, followed by the reference code written in plan.md. The second line starts with the word ADVICE and a colon, followed by the first sentence of the advice the advisor returned."
+    checks:
+      - type: regex
+        metric: answer
+        value: 'REF:\s*heron-5521[\s\S]*ADVICE:\s*\S'
+      - type: session:file-read
+        metric: read_plan
+        value: plan.md
+      # One advisor_call record per member, and every record of that member
+      # served upstream by the named subscription provider, signed with the
+      # OAuth credential (`signedBy` is compared with the record's
+      # servedBy signing field).
+      - type: ts
+        metric: panel_served
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: records
+          members:
+            - { model: gpt-6.1-sol, origin: upstream, provider: openai-codex, signedBy: oauth, billing: subscription }
+            - { model: cx@gpt-6.1-sol, origin: upstream, provider: openai-codex, signedBy: oauth, billing: subscription }
+            - { model: kc@k3, origin: upstream, provider: kimi-coding, billing: subscription }
+      # L4: the notice names each member's provider as a subscription, never
+      # says panel calls skip the subscription, and promised what served.
+      - type: ts
+        metric: notice_matches
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: notice
+          lines:
+            - { startsWith: "gpt-6.1-sol -> ", contains: ["(subscription"] }
+            - { startsWith: "cx@gpt-6.1-sol -> ", contains: ["(subscription"] }
+            - { startsWith: "kc@k3 -> ", contains: ["(subscription"] }
+          forbid: ["never use a subscription"]
+          servedByMatches: [gpt-6.1-sol, cx@gpt-6.1-sol, kc@k3]
+      # Every upstream request (main and panel) went to the Codex backend or
+      # the Kimi Coding host; nothing to api.openai.com or OpenRouter. The
+      # catalog's kimi-coding connection publishes api.kimi.ai/coding/v1
+      # (measured 2026-10-21); the built-in default is api.kimi.com/coding/v1.
+      - type: ts
+        metric: hosts
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: hosts
+          allow: ['^https://chatgpt\.com/backend-api/codex/', '^https://api\.kimi\.(ai|com)/coding/']
+          require: ['Calling API: https://chatgpt\.com/backend-api/codex/', 'Calling API: https://api\.kimi\.(ai|com)/coding/']
+      # No routed call was served by a hop unlike the notice's (stickiness
+      # warning). A positive Check: the log must hold an advisor_rewrite.
+      - &not_served_unlike
+        type: exec
+        metric: no_served_unlike
+        cmd: 'L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" && grep -h "\[advisor-origin\].*\"advisor_rewrite\"" $L | head -n 3 | cut -c1-600 && ! grep -h "was served by .* not .* as the notice said" $L'
+      - &code_mode_on
+        type: exec
+        metric: code_mode_on
+        # auto chose code mode from Codex /models discovery (codex-code-mode bench).
+        cmd: 'L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" && grep -h "\[CodeMode\] on (" $L && grep -q "\[CodeMode\] on ([a-z]*, discovery: " $L'
+      - &resumed
+        type: exec
+        metric: resumed
+        # Every exec relayed to Claude Code as tool_use blocks later logs
+        # `exec <id>: resumed;` and no script took the lost-state path
+        # (codex-code-mode bench, the D1 detector).
+        cmd: |
+          L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" || exit 1
+          grep -h -e "relayed as" -e ": resumed;" -e "script lost" -e "answered as Script failed" $L | sed "s/^\[[^]]*\] //"
+          awk '
+            /\[ResponsesTurn\] exec call_[A-Za-z0-9]+ relayed as/ { id=$0; sub(/.*\] exec /,"",id); sub(/ .*/,"",id); r[id]=1 }
+            /\[CodeMode\] exec call_[A-Za-z0-9]+: resumed;/ { id=$0; sub(/.*\] exec /,"",id); sub(/:.*/,"",id); if (id in r) s[id]=1 }
+            /script lost|answered as Script failed/ { lost++ }
+            END { n=0; m=0; for (i in r) { n++; if (i in s) m++ }
+                  printf "relayed=%d resumed=%d lost=%d\n", n, m, lost+0
+                  exit (n > 0 && m == n && lost == 0) ? 0 : 1 }' $L
+      - &provenance
+        type: exec
+        metric: provenance
+        # The shim ran, so this worktree's dist/index.js is what claudish was.
+        #
+        # The first line keeps the evidence: madbench deletes the workspace
+        # after grading and has no retention flag; its documented answer is
+        # "have a Check copy it out" (madbench docs/sandbox-and-testdata.md,
+        # "No workspace retention flag"). With ADVISOR_SUB_KEEP_LOGS=<dir> set,
+        # the logs, the provenance file and refusal/ are copied to
+        # <dir>/<workspace name>/ (map it to a Scenario by the report's
+        # session.work_dir). Unset, it does nothing.
+        cmd: |
+          if [ -n "${ADVISOR_SUB_KEEP_LOGS:-}" ]; then d="$ADVISOR_SUB_KEEP_LOGS/$(basename "$PWD")"; mkdir -p "$d" && cp claudish-provenance.txt logs/claudish_*.log "$d/" 2>/dev/null; [ -d refusal ] && cp -R refusal "$d/" 2>/dev/null; true; fi
+          cat claudish-provenance.txt && grep -q "^dist=/.*/packages/cli/dist/index.js$" claudish-provenance.txt && grep -q "^version=claudish version " claudish-provenance.txt
+      # Measures whether Claude Code recorded an advisor tool call at all; the
+      # log records above are the graded evidence.
+      - type: session:tool-used
+        metric: advisor_tool_seen
+        value: advisor
+        readout: true
+
+  # ── routed-grok: L3 grok — bare grok-4.7 and gk@grok-4.7 on the SuperGrok subscription ──
+  - name: routed-grok
+    description: "main cx@; panel grok-4.7 (bare) and gk@grok-4.7 (explicit) both served by Grok Build on the subscription"
+    testdata: ./testdata/plain
+    harness:
+      args: ["--advisor", "grok-4.7,gk@grok-4.7:"]
+    prompt: "Read question.md, then call the advisor tool exactly once with that question. Then reply with one line that starts with the word ADVICE and a colon, followed by the first sentence of the advice the advisor returned."
+    checks:
+      - type: regex
+        metric: answer
+        value: 'ADVICE:\s*\S'
+      - type: ts
+        metric: panel_served
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: records
+          members:
+            - { model: grok-4.7, origin: upstream, provider: grok-subscription, billing: subscription }
+            - { model: gk@grok-4.7, origin: upstream, provider: grok-subscription, billing: subscription }
+      - type: ts
+        metric: notice_matches
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: notice
+          lines:
+            - { startsWith: "grok-4.7 -> ", contains: ["Grok Build (subscription"] }
+            - { startsWith: "gk@grok-4.7 -> ", contains: ["Grok Build (subscription"] }
+          forbid: ["never use a subscription"]
+          servedByMatches: [grok-4.7, gk@grok-4.7]
+      # Main on the Codex backend, panel on the SuperGrok host; never the
+      # metered x.ai API or OpenRouter.
+      - type: ts
+        metric: hosts
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: hosts
+          allow: ['^https://chatgpt\.com/backend-api/codex/', '^https://cli-chat-proxy\.grok\.com/']
+          require: ['Calling API: https://chatgpt\.com/backend-api/codex/', 'Calling API: https://cli-chat-proxy\.grok\.com/']
+          forbid: ['api\.x\.ai', 'openrouter']
+      - *not_served_unlike
+      - *provenance
+
+  # ── rejected-sub: L3 gemini — a rejected subscription login is never moved onto a metered hop ──
+  - name: rejected-sub
+    description: "panel gemini-4-argon plans OpenCode Zen Go (subscription) first and its key is expired (401): OBSERVED, what the chain does next is recorded, not graded"
+    testdata: ./testdata/plain
+    harness:
+      args: ["--advisor", "gemini-4-argon"]
+    prompt: "Read question.md, then call the advisor tool exactly once with that question. Then reply with one line that starts with the word STATUS and a colon, saying whether the advisor returned advice or an error, and quoting the first sentence of what it returned."
+    # What an expired subscription key should do to the chain is not settled
+    # (2026-10-21: the owner says it must NOT block the chain; the design note
+    # says a rejected subscription login is never routed onto a metered hop).
+    # So only "the session completed" and "the call was recorded" grade; the
+    # rest are readouts that record what happened.
+    checks:
+      - type: regex
+        metric: answer
+        value: 'STATUS:\s*\S'
+      # Graded: an advisor_call record exists for the member.
+      - type: ts
+        metric: panel_recorded
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: records
+          members:
+            - { model: gemini-4-argon }
+      # Readout: hops tried in order, each status, which hop served or the
+      # stub reason, servedBy billing, every [advisor] warning line.
+      - type: ts
+        metric: chain_observed
+        readout: true
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: observe
+          members:
+            - { model: gemini-4-argon }
+      # Readout: did the design note's expectation hold (stub carrying the 401,
+      # no metered host)? Recorded either way, never failing the Scenario.
+      - type: ts
+        metric: stubbed_on_401
+        readout: true
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: records
+          members:
+            - { model: gemini-4-argon, origin: stub, stubPath: [PANEL_ERROR, ALL_PANEL_FAILED], status: 401 }
+      - type: ts
+        metric: hosts_subscription_only
+        readout: true
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: hosts
+          allow: ['^https://chatgpt\.com/backend-api/codex/', '^https://opencode\.ai/zen/go/']
+          require: ['Calling API: https://chatgpt\.com/backend-api/codex/', 'Calling API: https://opencode\.ai/zen/go/']
+          forbid: ['generativelanguage\.googleapis\.com', 'openrouter', 'opencode\.ai/zen/v1', 'api\.openai\.com']
+      - type: ts
+        metric: notice_observed
+        readout: true
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: notice
+          lines:
+            - { startsWith: "gemini-4-argon -> ", contains: ["(subscription"] }
+          forbid: ["never use a subscription"]
+      - *provenance
+
+  # ── claude-login: L7 — Claude member and collector on the Claude Code login ──
+  - name: claude-login
+    description: "main claude-sonnet-5-5 (claudish controls the child's auth); panel cx@gpt-6.1-sol + sonnet, collector haiku, both Claude calls on the login"
+    testdata: ./testdata/plain
+    # --model here comes after the Bench's and wins (claudish keeps the last
+    # --model); the provenance file records the argv.
+    harness:
+      args: ["--model", "claude-sonnet-5-5", "--advisor", "cx@gpt-6.1-sol,sonnet:haiku"]
+    prompt: "Read question.md, then call the advisor tool exactly once with that question. Then reply with one line that starts with the word ADVICE and a colon, followed by the first sentence of the advice the advisor returned."
+    checks:
+      - type: regex
+        metric: answer
+        value: 'ADVICE:\s*\S'
+      - type: ts
+        metric: panel_served
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: records
+          members:
+            - { model: cx@gpt-6.1-sol, origin: upstream, provider: openai-codex, signedBy: oauth, billing: subscription }
+            - { model: sonnet, origin: upstream, signedBy: oauth, billing: subscription, credentialSource: claude-code-login }
+          collector: { model: haiku, origin: upstream, signedBy: oauth, billing: subscription, credentialSource: claude-code-login }
+      - type: ts
+        metric: notice_matches
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: notice
+          lines:
+            - { startsWith: "sonnet -> ", contains: ["api.anthropic.com (subscription: your Claude Code login"] }
+            - { startsWith: "cx@gpt-6.1-sol -> ", contains: ["(subscription"] }
+            - { startsWith: "collector:", contains: ["haiku", "subscription"] }
+          # The uncontrolled-launch form of a Claude member reads
+          # "(metered, billed per token: ANTHROPIC_API_KEY; ...)".
+          forbid: ["never use a subscription", "metered, billed per token: ANTHROPIC_API_KEY"]
+          servedByMatches: [cx@gpt-6.1-sol]
+      # The Claude calls carry the login bearer to api.anthropic.com and only
+      # there; one boundary line per role.
+      - type: ts
+        metric: hosts
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: hosts
+          allow: ['^https://chatgpt\.com/backend-api/codex/', '^https://api\.anthropic\.com/v1/messages']
+          require:
+            - '\[advisor\] Calling API: https://api\.anthropic\.com/v1/messages \(role: panel, auth: bearer, source: claude-code-login'
+            - '\[advisor\] Calling API: https://api\.anthropic\.com/v1/messages \(role: collector, auth: bearer, source: claude-code-login'
+          forbid: ['Calling API: (?!https://api\.anthropic\.com/)\S+ \(.*auth: bearer']
+      # No bearer value in any log line or origin record.
+      - type: ts
+        metric: no_bearer_value
+        value: "file://./checks/advisor-log.ts"
+        config:
+          section: secrets
+          forbid: ['Bearer sk-ant', 'sk-ant-oat', 'sk-ant-api']
+      - *not_served_unlike
+      - *provenance
+
+  # ── refusal: L5 — a panel model nothing can serve is refused at launch ──
+  # No advisor in the session itself: the shim runs the two launches that
+  # must be refused (ADVISOR_REFUSAL_PROBE=1) before the session starts, from
+  # madbench's clean environment, and records each one under refusal/.
+  - name: refusal
+    description: "--advisor ag@gemini-4-argon and --advisor opusplan exit 1 before spawning, naming the member and the reason"
+    testdata: ./testdata/plain
+    sandbox:
+      level: workspace
+      env:
+        ADVISOR_REFUSAL_PROBE: "1"
+    timeout: 300s
+    prompt: "Reply with the single word ready, in capital letters, and nothing else."
+    checks:
+      - type: exec
+        metric: refusal_antigravity
+        cmd: 'd=refusal/ag-gemini; test -f $d/exit.txt && cat $d/spec.txt && echo "exit=$(cat $d/exit.txt)" && cat $d/stderr.txt && test "$(cat $d/exit.txt)" = 1 && grep -q -- "--advisor cannot work in this launch" $d/stderr.txt && grep -q "gemini-4-argon" $d/stderr.txt && grep -Eqi "does not serve|no route|not served" $d/stderr.txt && ! grep -rqs "Calling API:" $d/logs'
+      - type: exec
+        metric: refusal_claude_selector
+        cmd: 'd=refusal/opusplan; test -f $d/exit.txt && cat $d/spec.txt && echo "exit=$(cat $d/exit.txt)" && cat $d/stderr.txt && test "$(cat $d/exit.txt)" = 1 && grep -q -- "--advisor cannot work in this launch" $d/stderr.txt && grep -q "opusplan" $d/stderr.txt && grep -q "switches tier" $d/stderr.txt && ! grep -rqs "Calling API:" $d/logs'
+      - *provenance
