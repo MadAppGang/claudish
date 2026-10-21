@@ -164,3 +164,45 @@ tool twice, so the parser preserves partial output and emits a friendly terminal
 `message_stop` instead. Exhausted retries terminate the same way. Runtime-specific diagnostics such
 as Bun's `pass verbose: true` advice remain in proxy logs and never become conversation content. This
 does not add a whole-stream timeout: healthy long responses remain unrestricted after headers.
+
+---
+
+## Admission census over declared context windows (#565)
+
+Measured 2026-10-20: a 1 205-message `/compact` turn (~1.1M estimated tokens, 4.4 MB body) reached the
+hub on the haiku role, the nominal (MiniMax) answered `400 Input too large`, and the client surfaced
+provider jargon — the diagnosing lane spent a thread hunting a remap that did not exist. Every lane in
+the fleet has a window an order of magnitude smaller, so the request was doomed before it left.
+
+`handleWithCascade` now runs `decideContextAdmission(payload, windows)` **before the loop and before
+any handler exists**, in both ingresses (`/v1/messages` and the translated `/v1/chat/completions`):
+
+- **Census**: the nominal target plus every cascade step's provider is looked up in the runtime
+  registry that `loadCustomEndpoints` populates with declared `contextLimit`s. Only DECLARED bounds
+  count — a provider that declares nothing is not assumed unbounded, it is invisible, and a path with
+  no declared window falls open to today's behaviour (every built-in provider, today). The largest
+  declared window is the one weighed: a 32k step on the path must not refuse a prompt a 262k sibling
+  can take (`K22`). A `role:<r>` delegation step carries no `@` provider and is therefore **not
+  weighed** — the omission is fail-open by construction (a delegated role's declared windows can only
+  be missed, never over-refused on), and the refusal text says "no DECLARED window", never "no
+  candidate can serve".
+- **Native carve-out**: a bare (non-`@`, non-`/`) nominal is the native lane, whose 1M window declares
+  nothing — a smaller substitute step must never veto the model the client actually named (`K24`).
+- **Estimate**: `estimateClampTokens`, the media-aware #441 estimator (a 1 MB screenshot scores ~1.6k,
+  not ~750k). For a refusal an inflated estimate is a false refusal, so the `/4` overflow estimator is
+  the wrong instrument here.
+- **Margin**: the refusal must clear the largest window by `contextLimitMarginTokens(est)` — a request
+  merely NEAR a window belongs to the #441 clamp and the learned cap.
+- **Answer**: the #79 recoverable turn (`buildOverflowRecoveryStream` / `buildOverflowRecoveryMessage`),
+  HTTP 200 with the real `input_tokens`, so the client's own compaction fires. A bare 400 would
+  reproduce the `/compact` retry loop #79 closed. The wording must never match `isQuotaExhaustion`
+  (pinned) — a context refusal is not a wall and must not arm a cascade.
+
+Kill switch `CLAUDISH_CONTEXT_ADMISSION=0` (read per request, compose-injected). Pins:
+`handlers/shared/context-admission.test.ts` (decision, wording, knob) and `K20/K20b/K20c/K22/K23/K24` in
+`proxy-server-step-skip-route.test.ts`, each with a mutation proof (`n1`–`n4`); `K20c` runs the
+translated OpenAI ingress end-to-end (a run, not a reading).
+
+Boundary note: #441's "the clamp stands down when the prompt leaves no output budget" stays reachable
+only in the band `window − margin − 4096 < est ≤ window + margin`; above it the admission census has
+already answered. `K15` case 5 was moved into that band.

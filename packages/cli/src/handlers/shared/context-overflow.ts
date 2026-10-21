@@ -185,6 +185,88 @@ export function resetOverflowCapsForTests(): void {
 // single import site.
 export { overflowReportFloor, overflowReportedTokens } from "./overflow-report-floor.js";
 
+// ── #565 — admission census over DECLARED windows ─────────────────────────────
+// Incident 2026-10-20: a 1.2k-message `/compact` turn (~1.1M tokens) reached the
+// hub, the nominal answered a MiniMax 400 ("Input too large"), and the client
+// got provider jargon that sent a whole diagnosis thread down the wrong path.
+// No lane in the fleet has a window anywhere near that size, so the request was
+// doomed at admission — the proxy could have said so itself.
+//
+// Deliberately NOT a rescue: nothing downstream can take the request, the
+// correct outcome IS the refusal. The only question is whether it is announced
+// locally, with numbers, or surfaces as an opaque upstream 400.
+
+/** One candidate window on the request's resolved path. */
+export interface DeclaredWindow {
+  /** Provider (custom-endpoint) name, e.g. `vllm-myia`. */
+  name: string;
+  limit: number;
+}
+
+export interface ContextAdmissionDecision {
+  /** True when every DECLARED window on the path is smaller than the request. */
+  refuse: boolean;
+  estTokens: number;
+  /** The largest declared window seen; undefined when the path declares none. */
+  largest?: DeclaredWindow;
+}
+
+/**
+ * Decide whether a request can be refused at admission.
+ *
+ * `windows` carries ONLY declared bounds (an operator `contextLimit`). A path
+ * that declares none falls open — the census never guesses a window, and an
+ * undeclared candidate is never treated as `0`. The refusal must clear the
+ * largest declared window by the same proportional margin the #441 clamp
+ * reserves (`contextLimitMarginTokens`), so a request merely NEAR a window is
+ * left to the clamp and the learned cap (#79) instead of being refused on
+ * estimator drift.
+ */
+export function decideContextAdmission(
+  payload: unknown,
+  windows: readonly DeclaredWindow[]
+): ContextAdmissionDecision {
+  const declared = windows.filter((w) => Number.isFinite(w.limit) && w.limit > 0);
+  // Nothing declared ⇒ no census at all (estTokens 0, not a measurement): the
+  // estimate walks and re-serialises the whole body, and most requests on most
+  // machines have no declared window to weigh. Pay for it only when it decides.
+  if (declared.length === 0) return { refuse: false, estTokens: 0 };
+  // `estimateClampTokens`, not `estimatePayloadTokens`: the clamp estimator
+  // replaces each image/document base64 block with a fixed allocation, so a
+  // 1 MB screenshot scores ~1.6k instead of the ~750k its base64 chars would.
+  // For a REFUSAL an inflated estimate is a false refusal — the /4 convention
+  // is safe only where over-counting merely compacts earlier.
+  const estTokens = estimateClampTokens(payload);
+  let largest = declared[0];
+  for (const w of declared) if (w.limit > largest.limit) largest = w;
+  const refuse = estTokens > largest.limit + contextLimitMarginTokens(estTokens);
+  return { refuse, estTokens, largest };
+}
+
+/**
+ * The refusal text. States what was measured and what to do — never posture,
+ * never instruct the agent to undo its decisions (doctrine 2026-08-23).
+ *
+ * LOAD-BEARING: this wording must never match `isQuotaExhaustion` (no "quota",
+ * "credit", "balance", "weekly", "usage limit", "plan limit", "exhaust",
+ * "exceed your account") — a context refusal is not a wall and must not arm a
+ * cascade. Pinned by test.
+ */
+export function contextAdmissionRefusalText(estTokens: number, largest: DeclaredWindow): string {
+  return (
+    `[claudish] Input of ~${estTokens} tokens exceeds every declared context window on this route ` +
+    `(largest declared: ${largest.limit} — ${largest.name}). No DECLARED window on this route can ` +
+    `take it (undeclared candidates are not weighed); ` +
+    `the context gauge has been advanced accordingly. Condense the conversation before retrying.`
+  );
+}
+
+/** `CLAUDISH_CONTEXT_ADMISSION=0` restores today's behaviour: no census, no
+ * local refusal. Only an explicit "0" disarms, per house convention. */
+export function contextAdmissionDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.CLAUDISH_CONTEXT_ADMISSION || "").trim() === "0";
+}
+
 // ── Recoverable-turn constructors ─────────────────────────────────────────────
 
 /**

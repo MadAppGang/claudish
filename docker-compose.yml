@@ -188,6 +188,11 @@ services:
       # concurrency slot before skipping forward (ms). Default 2000; 0 = off
       # (unbounded FIFO). The nominal path never reads it. Read-per-request.
       - CLAUDISH_FAILOVER_STEP_BUSY_WAIT_MS=${CLAUDISH_FAILOVER_STEP_BUSY_WAIT_MS:-}
+      # #565 — admission census kill switch: "0" restores the pre-#565 behavior
+      # (a request larger than every DECLARED window pays its doomed round-trip
+      # and surfaces the provider's own 400 instead of a labeled local refusal).
+      # Empty = census ON. Read-per-request.
+      - CLAUDISH_CONTEXT_ADMISSION=${CLAUDISH_CONTEXT_ADMISSION:-}
       # #310 — runtime knobs the proxy reads that were never in this list
       # (same absence class as the #304 failover knobs above: the env file only
       # interpolates, so a value set for a name this list does not carry never

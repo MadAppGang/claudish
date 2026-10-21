@@ -59,7 +59,7 @@ import {
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { applyNativePinOverride } from "./providers/native-pin-auto.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
-import { getRuntimeProviders } from "./providers/runtime-providers.js";
+import { getRuntimeProviders, getDeclaredContextLimit } from "./providers/runtime-providers.js";
 import { loadConfig } from "./profile-config.js";
 import { createStreamTracker, stallThresholdMs } from "./fork/server/stream-registry";
 import { registerForkExtensions, resolveInboundKeys, stripBillingHeaderFromBody, logRequest, createHostnameConfig } from "./fork/index.js";
@@ -105,6 +105,15 @@ import {
   readStepBusyWaitMs,
   markCascadeStepAttempt,
 } from "./handlers/shared/step-skip.js";
+import {
+  decideContextAdmission,
+  contextAdmissionRefusalText,
+  contextAdmissionDisabled,
+  buildOverflowRecoveryStream,
+  buildOverflowRecoveryMessage,
+  type ContextAdmissionDecision,
+  type DeclaredWindow,
+} from "./handlers/shared/context-overflow.js";
 import {
   appendCapabilityQueryToMessage,
   isCapabilityVocabEnabled,
@@ -1294,6 +1303,56 @@ export async function createProxyServer(
     // must all key on the same bucket or the diversion test lies.
     const bucket =
       nominalBucket ?? (rule ? await nominalBucketOfModel(requestedModel) : undefined);
+    // ── #565 — admission census over DECLARED windows ──────────────────────
+    // Placed HERE, before the loop and before any handler is built, because the
+    // decision needs the whole PATH (nominal + every cascade step), not the
+    // attempt that happens to be resolved first: a request no declared window
+    // can take is doomed on every candidate, so paying the first round-trip to
+    // learn it is pure waste — and the client gets MiniMax/vLLM jargon instead
+    // of a number it can act on (hub 2026-10-20: a 1.1M-token `/compact` turn).
+    //
+    // Declared-only, by design: a provider that declares no `contextLimit` is
+    // NOT assumed unbounded — the census simply cannot see it, and the path
+    // falls open to today's behaviour. Refusing on a guessed window would break
+    // the lanes nobody declared (every built-in provider, today).
+    //
+    // The answer is the SAME recoverable turn the #79/#431 paths already use, not
+    // a bare 400: the gauge advances with the real size, so the client's own
+    // compaction fires. A 400 here would reproduce the `/compact` retry loop #79
+    // closed — the client would resend the identical body.
+    if (!contextAdmissionDisabled()) {
+      const windows: DeclaredWindow[] = [];
+      const collectWindow = (target: string | undefined): void => {
+        if (!target) return;
+        const at = target.indexOf("@");
+        if (at <= 0) return; // bare/built-in name or `role:` step — declares nothing
+        const provider = target.slice(0, at);
+        const limit = getDeclaredContextLimit(provider);
+        if (limit !== undefined) windows.push({ name: provider, limit });
+      };
+      const nominalTarget = resolveNominalTarget(requestedModel).target;
+      // A NATIVE nominal is never overruled by a cascade step's smaller declared
+      // bound: `claude-opus-5` on ai-01 is a 1M-context lane that declares
+      // nothing, so a 300k-token prompt a swift step could never take is still
+      // perfectly servable by the model the client actually named. Same
+      // predicate as getHandlerForRequest's native branch (`@` / `/` absent).
+      const nominalIsNative = !nominalTarget.includes("/") && !nominalTarget.includes("@");
+      collectWindow(nominalTarget);
+      for (const s of rule?.steps ?? []) collectWindow(s.target);
+      const admission: ContextAdmissionDecision = nominalIsNative
+        ? { refuse: false, estTokens: 0 }
+        : decideContextAdmission(body, windows);
+      if (admission.refuse && admission.largest) {
+        const text = contextAdmissionRefusalText(admission.estTokens, admission.largest);
+        log(
+          `[ContextAdmission] REFUSE ${requestedModel}: est=${admission.estTokens} > largest declared ${admission.largest.limit} (${admission.largest.name}) — no upstream fetch`,
+          true // forceConsole — operational event, countable marker
+        );
+        return body?.stream === true
+          ? buildOverflowRecoveryStream(text, admission.estTokens, requestedModel)
+          : c.json(buildOverflowRecoveryMessage(text, admission.estTokens, requestedModel));
+      }
+    }
     // #412 — a keyless request whose NOMINAL is native must not be substituted
     // away by the budget failover (review ai-01 08/10, point 1). Two measured
     // shapes, one answer: (a) in-request, the native 429 arms the role and the

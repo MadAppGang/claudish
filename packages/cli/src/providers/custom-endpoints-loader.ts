@@ -32,6 +32,7 @@ import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js
 import {
   registerRuntimeProvider,
   registerRuntimeProfile,
+  registerDeclaredContextLimit,
 } from "./runtime-providers.js";
 import { ComposedHandler } from "../handlers/composed-handler.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
@@ -67,6 +68,11 @@ export function loadCustomEndpoints(config: ClaudishProfileConfig): LoadResult {
       const profile = buildProviderProfile(validated);
       registerRuntimeProvider(def);
       registerRuntimeProfile(name, profile);
+      // #565 — the admission census weighs every candidate on the request's
+      // path before a handler exists, so the declared window is recorded here,
+      // at the single site that knows it, rather than dug back out of an
+      // endpoint the request may never resolve.
+      registerDeclaredContextLimit(name, validated.contextLimit);
       result.registered++;
     } catch (err) {
       const message =

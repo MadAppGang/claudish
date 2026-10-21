@@ -80,6 +80,7 @@ const SANDBOX_ENV_KEYS = [
   "CLAUDISH_PROXY_KEY", "CLAUDISH_PROXY_KEY_PREVIOUS",
   "CLAUDISH_CAPTURE_DIR",
   "CLAUDISH_FAILOVER_STEP_SKIP", "CLAUDISH_FAILOVER_STEP_BUSY_WAIT_MS",
+  "CLAUDISH_CONTEXT_ADMISSION",
 ];
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -257,6 +258,8 @@ beforeEach(() => {
         // K15 (#441): the dynamic contextLimit endpoints.
         "ctx-ep": ep("ctx", { contextLimit: 262144 }),
         "ctx-both-ep": ep("ctxb", { contextLimit: 262144, maxOutputTokens: 8000 }),
+        // K22 (#565): a SMALL declared window that must not drive the census.
+        "small-ep": ep("sm", { contextLimit: 32768 }),
       },
     }),
     "utf-8"
@@ -294,7 +297,12 @@ beforeEach(() => {
   (process.stderr as any).write = ((chunk: any, ...rest: any[]) => {
     const text = typeof chunk === "string" ? chunk : String(chunk);
     for (const line of text.split("\n")) {
-      if (line.includes("[Failover]") || line.includes("[StepBusy]") || line.includes("[ContextGuard]")) {
+      if (
+        line.includes("[Failover]") ||
+        line.includes("[StepBusy]") ||
+        line.includes("[ContextGuard]") ||
+        line.includes("[ContextAdmission]")
+      ) {
         markerLog.push(line);
       }
     }
@@ -303,7 +311,12 @@ beforeEach(() => {
   console.log = ((...args: any[]) => {
     const text = args.map((a) => (typeof a === "string" ? a : String(a))).join(" ");
     for (const line of text.split("\n")) {
-      if (line.includes("[Failover]") || line.includes("[StepBusy]") || line.includes("[ContextGuard]")) {
+      if (
+        line.includes("[Failover]") ||
+        line.includes("[StepBusy]") ||
+        line.includes("[ContextGuard]") ||
+        line.includes("[ContextAdmission]")
+      ) {
         markerLog.push(line);
       }
     }
@@ -568,10 +581,16 @@ describe("#431 — a cascade step that cannot take the request skips forward", (
     await postMessage({ model: "ctx-ep@fake-ctx", maxTokens: 100, content: "say hi" });
     expect(upstreamBodies.ctx[1].max_tokens).toBe(100);
 
-    // 5. Stand-down when the prompt ALONE overflows: estimate past the window
-    //    leaves no output budget — the clamp must not fire (max_tokens
-    //    verbatim); the upstream refusal + context-overflow recovery own it.
-    await postMessage({ model: "ctx-ep@fake-ctx", maxTokens: 16384, content: "z".repeat(1_200_000) });
+    // 5. Stand-down when the prompt leaves no output budget: the clamp must not
+    //    fire (max_tokens verbatim); the upstream refusal + context-overflow
+    //    recovery own it. #565 moved the boundary this case probes: a prompt
+    //    ABOVE the window by more than the proportional margin is now refused
+    //    at admission (K20) and never reaches the endpoint, so the stand-down
+    //    is pinned in the band that still reaches upstream — est just under the
+    //    window, where `contextLimit − est − max(2048, est/64)` goes negative
+    //    (262 144 − 258 250 − 4 035 ≈ −141 body-only; ≈ −160 with the JSON
+    //    wrapper, review 21/10 — same sign, same stand-down branch) but the census does not refuse.
+    await postMessage({ model: "ctx-ep@fake-ctx", maxTokens: 16384, content: "z".repeat(1_033_000) });
     expect(upstreamBodies.ctx[2].max_tokens).toBe(16_384);
   }, 30_000);
 
@@ -791,5 +810,122 @@ describe("#431 — a cascade step that cannot take the request skips forward", (
     expect(calls.s0 ?? 0).toBe(0);
     expect(calls.s1 ?? 0).toBe(0);
     expect(markerLog.some((l) => l.includes("[Failover] SKIP"))).toBe(false);
+  }, 30_000);
+});
+
+/**
+ * #565 — admission census over DECLARED windows.
+ *
+ * Incident 2026-10-20: a 1.2k-message `/compact` turn (~1.1M tokens) reached the
+ * hub and came back as MiniMax's opaque `400 Input too large` — a diagnosis
+ * thread went looking for a remap that did not exist. No lane here has a window
+ * near that size, so the request was doomed at admission; the proxy can say so
+ * itself, with numbers, before paying the round-trip.
+ *
+ * Mutation proofs:
+ *  - n1: drop the census block ⇒ K20 red (the request reaches the endpoint).
+ *  - n2: weigh the SMALLEST declared window instead of the largest ⇒ K22 red
+ *    (a servable 100k prompt is refused because a 32k step sits on the path).
+ *  - n3: drop the native carve-out ⇒ K24 red (a bare claude-* nominal is
+ *    overruled by a cascade step's declared bound).
+ *  - n4: drop the kill-switch gate ⇒ K23 red.
+ */
+describe("#565 — a request no declared window can take is refused at admission", () => {
+  test("K20: oversized prompt on a path with a declared window → labeled recovery turn, ZERO upstream calls", async () => {
+    await spin();
+    // The declared window rides a non-last STEP; the nominal declares nothing.
+    resetCascade(cascadeEnv("ctx-ep@fake-ctx>s1-ep@fake-s1"));
+
+    const r = await postMessage({ session: "sess-adm", content: "x".repeat(1_200_000) }); // est ≈ 300k
+    expect(r.status).toBe(200); // the recoverable turn, never a bare 400 (#79)
+    const text = await responseText(r);
+    expect(text).toContain("[claudish] Input of ~");
+    expect(text).toContain("exceeds every declared context window");
+    expect(text).toContain("262144");
+    expect(text).toContain("ctx-ep");
+    // The whole point: not one round-trip, on any candidate.
+    expect(calls.nm ?? 0).toBe(0);
+    expect(calls.ctx ?? 0).toBe(0);
+    expect(calls.s1 ?? 0).toBe(0);
+    // Countable marker, forceConsole.
+    expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(true);
+  }, 30_000);
+
+  test("K20b (stream:true): the same refusal is a well-formed SSE turn ending in message_stop", async () => {
+    await spin();
+    resetCascade(cascadeEnv("ctx-ep@fake-ctx>s1-ep@fake-s1"));
+
+    const r = await postMessage({ session: "sess-adm-s", stream: true, content: "x".repeat(1_200_000) });
+    expect(r.status).toBe(200);
+    const raw = await r.text();
+    expect(raw).toContain("event: message_start");
+    expect(raw).toContain("event: message_stop"); // never-hang invariant
+    expect(raw).toContain("exceeds every declared context window");
+    expect(calls.ctx ?? 0).toBe(0);
+  }, 30_000);
+
+  test("K20c (/v1/chat/completions): the translated ingress refuses at admission too — zero upstream calls, [DONE]-terminated", async () => {
+    await spin();
+    resetCascade(cascadeEnv("ctx-ep@fake-ctx>s1-ep@fake-s1"));
+
+    // The both-ingresses claim was structurally verified (shared handleWithCascade)
+    // but never RUN for the OpenAI wire — review 21/10, non-blocking 3.
+    const r = await realFetch(`http://127.0.0.1:${PROXY_PORT}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "ctx-ep@fake-ctx",
+        stream: true,
+        messages: [{ role: "user", content: "x".repeat(1_200_000) }], // est ≈ 300k
+      }),
+    });
+    expect(r.status).toBe(200);
+    const raw = await r.text();
+    // A well-formed OpenAI SSE stream that TERMINATES — never a hung stream.
+    expect(raw).toContain("data: ");
+    expect(raw.trimEnd().endsWith("data: [DONE]")).toBe(true);
+    expect(raw).toContain("exceeds every declared context window");
+    // The whole point survives the translation: no round-trip on any candidate.
+    expect(calls.ctx ?? 0).toBe(0);
+    expect(calls.s1 ?? 0).toBe(0);
+    expect(calls.nm ?? 0).toBe(0);
+  }, 30_000);
+
+  test("K22: the LARGEST declared window decides — a servable prompt is not refused by a small step", async () => {
+    await spin();
+    resetCascade(cascadeEnv("small-ep@fake-sm>ctx-ep@fake-ctx"));
+    // `small-ep` is declared separately below with a 32k window.
+    const r = await postMessage({ session: "sess-adm-ok", content: "q".repeat(400_000) }); // est ≈ 100k
+    expect(r.status).toBe(200);
+    // Served, not refused: the 100k prompt fits ctx-ep's 262 144, so the
+    // census weighs the largest window and lets the request through.
+    expect(await responseText(r)).not.toContain("exceeds every declared context window");
+    expect(calls.nm ?? 0).toBe(1); // not armed ⇒ the nominal serves, as today
+    expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(false);
+  }, 30_000);
+
+  test("K23: kill switch CLAUDISH_CONTEXT_ADMISSION=0 restores today's behaviour", async () => {
+    await spin();
+    resetCascade(cascadeEnv("ctx-ep@fake-ctx>s1-ep@fake-s1"));
+    process.env.CLAUDISH_CONTEXT_ADMISSION = "0";
+
+    const r = await postMessage({ session: "sess-adm-off", content: "x".repeat(1_200_000) });
+    expect(r.status).toBe(200);
+    expect(await responseText(r)).not.toContain("exceeds every declared context window");
+    expect(calls.nm ?? 0).toBe(1); // the doomed round-trip happens again — today's behaviour
+    expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(false);
+  }, 30_000);
+
+  test("K24: a NATIVE nominal is never overruled by a cascade step's declared bound", async () => {
+    // An EMPTY modelMap: `claude-sonnet-5` stays a bare string, so the nominal
+    // target is the native lane — whose window (1M on the Claude 5 family)
+    // declares nothing and dwarfs the 262 144 on this role's cascade step. The
+    // census must therefore stand down: the client named a model that can take
+    // the prompt, and a smaller substitute step must not veto it.
+    await spin({});
+    resetCascade(cascadeEnv("ctx-ep@fake-ctx>s1-ep@fake-s1"));
+    const r = await postMessage({ model: "claude-sonnet-5", session: "sess-adm-native", content: "x".repeat(1_200_000) });
+    expect(await responseText(r)).not.toContain("exceeds every declared context window");
+    expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(false);
   }, 30_000);
 });
