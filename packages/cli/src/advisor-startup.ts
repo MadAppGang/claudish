@@ -333,6 +333,15 @@ function memberNoticeLines(
   return lines;
 }
 
+/**
+ * A refusal reason without its closing full stop, for a sentence that goes on
+ * after it. Several reasons end in one ("…that carries it.", "…or a model
+ * id."), and the refusal printed `….. Remove…`.
+ */
+function clause(reason: string): string {
+  return reason.trimEnd().replace(/\.+$/, "");
+}
+
 /** The `claudish --probe` hint of a refusal: the first refused member's spec. */
 function probeHint(specs: string[]): string {
   return `claudish --probe ${specs[0] ?? "<model>"} shows the routing decision`;
@@ -361,7 +370,7 @@ function decideCollector(
     return {
       kind: "refuse",
       reason:
-        `collector ${refusal}. ` +
+        `collector ${clause(refusal)}. ` +
         'Name another collector ("a,b:collector"), or end the value with ":" for no collector ' +
         `(${probeHint([cp.spec])}).`,
     };
@@ -374,7 +383,7 @@ function decideCollector(
   return {
     kind: "keep",
     effectiveCollector: null,
-    lines: [`none — ${refusal}; panel answers will be concatenated`],
+    lines: [`none — ${clause(refusal)}; panel answers will be concatenated`],
   };
 }
 
@@ -394,7 +403,7 @@ export function decideAdvisorStartup(facts: AdvisorLaunchFacts): AdvisorStartupD
       kind: "refuse",
       reason:
         `advisor panel model${refused.length > 1 ? "s" : ""} cannot be called: ` +
-        `${refused.map((r) => r.reason).join("; ")}. ` +
+        `${refused.map((r) => clause(r.reason)).join("; ")}. ` +
         "Remove the model from --advisor, or fix what the reason names " +
         `(${probeHint(refused.map((r) => r.plan.spec))}).`,
     };

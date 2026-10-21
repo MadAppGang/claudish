@@ -193,7 +193,8 @@ describe("decideAdvisorStartup", () => {
       expect(decision.kind).toBe("refuse");
       if (decision.kind === "refuse") {
         expect(decision.reason).toBe(
-          `advisor panel model cannot be called: ${model}: ${reason} ${hint}. Remove the model from --advisor, or fix what the reason names (claudish --probe ${model} shows the routing decision).`
+          // One full stop: the hint's own ends the reason (it printed `..`).
+          `advisor panel model cannot be called: ${model}: ${reason} ${hint} Remove the model from --advisor, or fix what the reason names (claudish --probe ${model} shows the routing decision).`
         );
       }
     }
