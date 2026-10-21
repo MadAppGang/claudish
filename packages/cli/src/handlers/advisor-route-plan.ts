@@ -22,6 +22,7 @@
  */
 
 import type { ChildAuthControl, ChildAuthSource } from "../claude-runner.js";
+import { log } from "../logger.js";
 import { ensureCatalogReady } from "../providers/catalog-client.js";
 import { nativeRouteFor } from "../providers/native-route.js";
 import type { RouteTier } from "../providers/provider-definitions.js";
@@ -31,10 +32,22 @@ import {
   type RouteExplanation,
   explainRoute,
 } from "../providers/routing-rules.js";
-import { WireMarkerError, type WireMarkers, splitWireMarkers } from "../providers/wire-markers.js";
+import { CatalogPendingHandler, RefusingHandler } from "../providers/wire-handler.js";
+import {
+  WireMarkerError,
+  WireMarkerHandler,
+  type WireMarkers,
+  splitWireMarkers,
+} from "../providers/wire-markers.js";
+import { TryInTurnHandler } from "../providers/wire-try-in-turn.js";
+import { redactSecrets } from "../redact.js";
 import { ANTHROPIC_API_HOST, claudeAdvisorModelFor } from "./advisor-claude-route.js";
+import { ComposedHandler } from "./composed-handler.js";
+import { type FallbackCandidate, FallbackHandler, isRetryableError } from "./fallback-handler.js";
+import type { HandlerSet } from "./handler-set.js";
 import type { HopBilling } from "./shared/call-context.js";
 import { isSubscriptionProvider } from "./shared/remote-provider-types.js";
+import type { ModelHandler } from "./types.js";
 
 export type AdvisorRole = "panel" | "collector";
 export type AdvisorBilling = HopBilling;
@@ -322,16 +335,318 @@ export function describeClaudeAdvisorPlan(
   );
 }
 
-/** The refusal sentence for a refused plan. */
+type RoutedPlan = Extract<AdvisorModelPlan, { kind: "routed" }>;
+type RefusedPlan = Extract<AdvisorModelPlan, { kind: "refused" }>;
+
+/**
+ * The refusal sentence for a refused plan, or for a routed plan whose built
+ * chain has no callable hop (every hop's outcome is named).
+ */
 export function describeAdvisorRefusal(
-  plan: Extract<AdvisorModelPlan, { kind: "refused" }>
+  refusal: RefusedPlan | { plan: RoutedPlan; build: AdvisorChainBuild }
 ): string {
-  switch (plan.cause) {
+  if ("build" in refusal) {
+    const { plan, build } = refusal;
+    const outcomes = plan.hops.map((hop, i) => {
+      const b = build.builds[i];
+      const what =
+        b?.kind === "refused"
+          ? b.message
+          : b?.kind === "failed"
+            ? `could not be built: ${b.message}`
+            : b?.kind === "not-built" || !b
+              ? "could not be built"
+              : "built, but a refusing hop before it stops the chain";
+      return `${hop.displayName}: ${what}`;
+    });
+    return `${plan.spec}: no hop could be built — ${outcomes.join("; ")}`;
+  }
+  switch (refusal.cause) {
     case "claude-selector":
     case "unresolved-alias":
     case "claude-no-credential":
-      return plan.reason;
+      return refusal.reason;
     default:
-      return `${plan.spec}: ${plan.reason}${plan.hint ? ` ${plan.hint}` : ""}`;
+      return `${refusal.spec}: ${refusal.reason}${refusal.hint ? ` ${refusal.hint}` : ""}`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Chains: built once, at startup, from the plan, with main routing's dispatch
+// ---------------------------------------------------------------------------
+
+/**
+ * What building one planned hop produced. Every handler a getter can return
+ * has a case (round-3 A3), and `provider.name` is read only off a
+ * `ComposedHandler`, the one type known to have a transport:
+ *
+ * - `built`: a `ComposedHandler`; `transportName` is its provider's name, the
+ *   name its hop-log entries carry.
+ * - `built-pending`: a handler whose transport is chosen per request (a
+ *   `TryInTurnHandler` for a wire the catalog does not publish, a
+ *   `CatalogPendingHandler` while no route registry is readable). The serving
+ *   transport is attributed from the hop log at call time.
+ * - `refused`: a `RefusingHandler`; asked once at build (no network), and
+ *   `chainContinues` is `FallbackHandler`'s own `isRetryableError` on its answer.
+ * - `not-built`: the getter returned null.
+ * - `failed`: the getter or a profile factory threw; `message` is redacted.
+ */
+export type HopBuild =
+  | { kind: "built"; handler: ModelHandler; transportName: string }
+  | {
+      kind: "built-pending";
+      handler: ModelHandler;
+      handlerKind: "try-in-turn" | "catalog-pending" | "other";
+    }
+  | { kind: "refused"; handler: ModelHandler; message: string; chainContinues: boolean }
+  | { kind: "not-built" }
+  | { kind: "failed"; message: string };
+
+export interface AdvisorChainBuild {
+  /** `"<role>:<spec>"`. */
+  key: string;
+  /** Index-aligned with `plan.hops`. */
+  builds: HopBuild[];
+  /** The runtime handler (a `FallbackHandler` when more than one hop runs); null when nothing can run. */
+  handler: ModelHandler | null;
+  /** Index into `plan.hops` of the first hop a call can reach and that can serve; null ⇒ refusal. */
+  firstCallableHop: number | null;
+  /** Hop-log provider name → plan hop uid, for every `built` hop. */
+  uidByTransportName: ReadonlyMap<string, string>;
+}
+
+/** The key a plan's build is stored under. */
+export function advisorChainKey(role: AdvisorRole, spec: string): string {
+  return `${role}:${spec}`;
+}
+
+/**
+ * Build every routed plan's chain with the getters main routing uses,
+ * STRICTLY SEQUENTIALLY (plans in order, hops in order, each awaited): a
+ * getter may resolve a credential value (1Password, Keychain), and concurrent
+ * handshakes are what 1Password refuses.
+ *
+ * Dispatch copies the proxy's: a `poe:` spec → the Poe getter (step 3); an
+ * `openrouter` hop → the OpenRouter getter (2c); everything else → the remote
+ * getter (2c), and only for an explicit single-hop plan whose remote build
+ * returned null, the local getter (steps 4 → 5). A `poe@<wire>` hop therefore
+ * goes through the remote getter and the Poe profile, never through the
+ * legacy `poe:` strip. No advisor wrapper is ever applied.
+ */
+export async function buildAdvisorChains(
+  plans: readonly RoutedPlan[],
+  set: HandlerSet
+): Promise<Map<string, AdvisorChainBuild>> {
+  const out = new Map<string, AdvisorChainBuild>();
+  for (const plan of plans) {
+    const key = advisorChainKey(plan.role, plan.spec);
+    if (out.has(key)) continue;
+    const builds: HopBuild[] = [];
+    for (const hop of plan.hops) {
+      builds.push(await buildHop(plan, hop, set));
+    }
+    out.set(key, assembleChain(key, plan, builds));
+  }
+  return out;
+}
+
+async function buildHop(plan: RoutedPlan, hop: AdvisorHop, set: HandlerSet): Promise<HopBuild> {
+  const mode = plan.invocationMode;
+  let handler: ModelHandler | null;
+  try {
+    if (hop.modelSpec.startsWith("poe:")) {
+      handler = await set.poe(hop.modelSpec, mode);
+    } else if (hop.provider === "openrouter") {
+      handler = set.openRouter(hop.modelSpec, mode);
+    } else {
+      handler = await set.remote(hop.modelSpec, mode);
+      if (!handler && mode === "explicit-model" && plan.hops.length === 1) {
+        handler = set.local(hop.modelSpec, mode);
+      }
+    }
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    log(`[advisor] build failed: ${plan.spec} hop ${hop.displayName}: ${message}`);
+    return { kind: "failed", message };
+  }
+  return classifyHandler(handler, hop);
+}
+
+/** The refusal text inside a `RefusingHandler`'s answer, without its `claudish: ` prefix. */
+function refusalMessageOf(body: string): string {
+  try {
+    const message = (JSON.parse(body) as { error?: { message?: unknown } }).error?.message;
+    if (typeof message === "string") return message.replace(/^claudish: /, "");
+  } catch {
+    // not JSON: use the body as it is
+  }
+  return body;
+}
+
+async function classifyHandler(handler: ModelHandler | null, hop: AdvisorHop): Promise<HopBuild> {
+  if (!handler) return { kind: "not-built" };
+  if (handler instanceof RefusingHandler) {
+    // Asked once, here: it answers locally and sends nothing.
+    const response = await handler.handle();
+    const body = await response.text();
+    return {
+      kind: "refused",
+      handler,
+      message: refusalMessageOf(body),
+      chainContinues: isRetryableError(
+        response.status,
+        body,
+        hop.displayName,
+        response.headers,
+        hop.provider
+      ),
+    };
+  }
+  if (handler instanceof ComposedHandler) {
+    return { kind: "built", handler, transportName: handler.getProviderName() };
+  }
+  const handlerKind =
+    handler instanceof TryInTurnHandler
+      ? "try-in-turn"
+      : handler instanceof CatalogPendingHandler
+        ? "catalog-pending"
+        : "other";
+  return { kind: "built-pending", handler, handlerKind };
+}
+
+function assembleChain(key: string, plan: RoutedPlan, builds: HopBuild[]): AdvisorChainBuild {
+  let firstCallableHop: number | null = null;
+  for (let i = 0; i < builds.length; i++) {
+    const b = builds[i];
+    if (b.kind === "refused" && !b.chainContinues) break;
+    if (b.kind === "built" || b.kind === "built-pending") {
+      firstCallableHop = i;
+      break;
+    }
+  }
+
+  const uidByTransportName = new Map<string, string>();
+  const candidates: FallbackCandidate[] = [];
+  builds.forEach((b, i) => {
+    if (b.kind === "not-built" || b.kind === "failed") return;
+    const hop = plan.hops[i];
+    // Every runtime hop, a refusing one included, exactly as main routing's
+    // step 2c pushes every non-null handler.
+    candidates.push({ name: hop.displayName, provider: hop.provider, handler: b.handler });
+    if (b.kind === "built" && !uidByTransportName.has(b.transportName)) {
+      uidByTransportName.set(b.transportName, hop.provider);
+    }
+  });
+
+  let handler: ModelHandler | null = null;
+  if (firstCallableHop !== null && candidates.length > 0) {
+    handler = candidates.length > 1 ? new FallbackHandler(candidates) : candidates[0].handler;
+    if (plan.markers) handler = new WireMarkerHandler(handler, plan.markers);
+  }
+  return { key, builds, handler, firstCallableHop, uidByTransportName };
+}
+
+/**
+ * The plan hop a hop-log entry belongs to: through the build's transport-name
+ * map for a `built` hop, else by provider uid (a `built-pending` hop's
+ * transport is the provider the plan named). Null when neither matches.
+ */
+export function planHopForTransport(
+  plan: RoutedPlan,
+  build: AdvisorChainBuild,
+  transportName: string
+): AdvisorHop | null {
+  const uid = build.uidByTransportName.get(transportName) ?? transportName;
+  return plan.hops.find((hop) => hop.provider === uid) ?? null;
+}
+
+/**
+ * Shut down every handler a set of builds holds, each once. For a startup
+ * that refuses after building, and for the proxy's own shutdown.
+ */
+export async function shutdownAdvisorChains(builds: Iterable<AdvisorChainBuild>): Promise<void> {
+  const handlers = new Set<ModelHandler>();
+  for (const build of builds) {
+    for (const b of build.builds) {
+      if (b.kind === "built" || b.kind === "built-pending" || b.kind === "refused") {
+        handlers.add(b.handler);
+      }
+    }
+  }
+  for (const handler of handlers) {
+    try {
+      await handler.shutdown();
+    } catch (err) {
+      log(`[advisor] handler shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+/**
+ * The `; then …` parts for the hops after the first callable one, up to a
+ * refusing hop the chain stops at, and whether any of them bills per token.
+ */
+function laterHopParts(
+  plan: RoutedPlan,
+  build: AdvisorChainBuild,
+  firstCallableHop: number
+): { parts: string[]; metered: boolean } {
+  const parts: string[] = [];
+  let metered = false;
+  for (let i = firstCallableHop + 1; i < plan.hops.length; i++) {
+    const b = build.builds[i];
+    const hop = plan.hops[i];
+    if (b.kind === "refused") {
+      const stops = b.chainContinues ? "" : "; the chain stops here";
+      parts.push(`; then ${hop.displayName} (refuses: ${b.message}${stops})`);
+      if (!b.chainContinues) break;
+      continue;
+    }
+    if (b.kind !== "built" && b.kind !== "built-pending") continue;
+    parts.push(`; then ${hop.displayName} (${billingWord(hop.billing)})`);
+    if (hop.billing === "metered") metered = true;
+  }
+  return { parts, metered };
+}
+
+/**
+ * The notice line for any plan. A routed plan is described from its BUILT
+ * chain: the first callable hop, every later hop a call can reach, the
+ * subscription candidates routing skipped and why, and the hops that could
+ * not be built. A refused plan reads as its refusal.
+ */
+export function describeAdvisorPlan(plan: AdvisorModelPlan, build?: AdvisorChainBuild): string {
+  if (plan.kind === "claude-native") return describeClaudeAdvisorPlan(plan);
+  if (plan.kind === "refused") return describeAdvisorRefusal(plan);
+  if (!build || build.firstCallableHop === null) {
+    return build ? describeAdvisorRefusal({ plan, build }) : `${plan.spec} -> (not built)`;
+  }
+
+  const first = plan.hops[build.firstCallableHop];
+  const later = laterHopParts(plan, build, build.firstCallableHop);
+  const parts = [
+    `${plan.spec} -> ${first.displayName} (${billingWord(first.billing)})`,
+    ...later.parts,
+  ];
+  const laterMetered = later.metered;
+
+  const skipped = plan.explanation.candidates
+    .filter(
+      (c) =>
+        c.outcome !== "kept" && (c.tier === "subscription" || c.tier === "dynamic-subscription")
+    )
+    .map(
+      (c) => `${c.displayName} — ${SKIPPED_PHRASE[c.outcome as Exclude<CandidateOutcome, "kept">]}`
+    );
+  if (skipped.length > 0) parts.push(` (skipped: ${skipped.join("; ")})`);
+
+  const notBuilt = plan.hops
+    .filter((_, i) => build.builds[i].kind === "not-built" || build.builds[i].kind === "failed")
+    .map((hop) => hop.displayName);
+  for (const name of notBuilt) parts.push(` (not built: ${name}; see the debug log)`);
+
+  if (first.billing === "subscription" && laterMetered) {
+    parts.push(" (a rejected subscription login is reported, never routed onto a metered hop)");
+  }
+  return parts.join("");
 }

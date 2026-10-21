@@ -3418,6 +3418,15 @@ export class ComposedHandler implements ModelHandler {
   }
 
   /**
+   * The claudish provider this handler signs for (`provider.name`): the name
+   * its hop-log entries carry (`recordHopEntry`), so a caller that built the
+   * handler can map those entries back to its own plan.
+   */
+  getProviderName(): string {
+    return this.provider.name;
+  }
+
+  /**
    * Read plan usage out of a response the session already received.
    *
    * Synchronous and I/O-free by construction: the headers are in hand, so
