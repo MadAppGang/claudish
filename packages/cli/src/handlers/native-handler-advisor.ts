@@ -1,4 +1,3 @@
-import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 /**
  * Advisor-tool transformer for NativeHandler (monitor mode).
  *
@@ -39,23 +38,15 @@ import type { Context } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
 import type { ChildAuthControl, ChildAuthSource } from "../claude-runner.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
-import { type SlimModelEntry, readAllModelsCache } from "../providers/all-models-cache.js";
-import { getCatalogEntries } from "../providers/catalog-client.js";
-import { resolveConnection, resolveRouteProfile } from "../providers/connection-resolver.js";
-import { type KnownWire, type WireApi, wireRequestUrl } from "../providers/connection-wire.js";
-import { parseModelSpec } from "../providers/model-parser.js";
-import { nativeRouteFor } from "../providers/native-route.js";
+import { resolveConnection } from "../providers/connection-resolver.js";
+import type { KnownWire, WireApi } from "../providers/connection-wire.js";
 import { getProviderByName } from "../providers/provider-definitions.js";
 import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
 import { acquireSigningLease } from "../redact.js";
 import type { StatsEvent } from "../stats-otlp.js";
 import { recordStats } from "../stats.js";
 import { isBillingHeaderText } from "../transform.js";
-import {
-  ANTHROPIC_API_HOST,
-  ANTHROPIC_MESSAGES_URL,
-  claudeAdvisorModelFor,
-} from "./advisor-claude-route.js";
+import { ANTHROPIC_API_HOST, ANTHROPIC_MESSAGES_URL } from "./advisor-claude-route.js";
 import {
   type AdvisorBilling,
   type AdvisorEmptyReason,
@@ -1493,13 +1484,13 @@ same coding problem. Synthesize them into a single, coherent response that:
 - Produces a clear, actionable recommendation
 Be concise. Do not attribute advice to specific models.`;
 
-/** The four places an advisor or collector request can be sent. */
+/** The credentials `resolveAdvisorCredential` can look up. */
 export type AdvisorRouteKind = "google" | "openai" | "openrouter" | "anthropic";
 
 /**
- * Where one advisor model's request goes, and what signs it. The ONE place
- * the advisor's provider branching lives: request building, the collector
- * choice, key resolution, the P7 log and startup checks all read this.
+ * The fixed endpoint of a Claude advisor call (`claudeAdvisorRoute`). A routed
+ * member has no such route: its chain was built at startup from
+ * `planAdvisorModel`, and its record names the planned chain instead.
  */
 export interface AdvisorRoute {
   kind: AdvisorRouteKind;
@@ -1518,298 +1509,6 @@ export interface AdvisorRoute {
   api: WireApi;
   /** The connection's known wire, when the catalog publishes one. */
   wire?: KnownWire;
-  /**
-   * Set to the ALIAS when `wireModel` is one the live catalog could not resolve
-   * to an id the endpoint accepts — `haiku` with a cold catalog. Such a route
-   * must NEVER be POSTed: `haiku` is claudish/Claude Code vocabulary, and
-   * api.anthropic.com rejects it. Startup refuses a collector the user named
-   * and drops a DEFAULTED one; the runtime reports it as a collector failure.
-   */
-  unresolvedAlias?: string;
-}
-
-/**
- * The provider documentation's endpoints, used ONLY when no route registry is
- * cached (a cold catalog): every other request takes its URL from the
- * connection's registry profile, like any claudish request.
- */
-const ADVISOR_COLD_CATALOG_ENDPOINTS: Readonly<Record<AdvisorRouteKind, string>> = Object.freeze({
-  google: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-  openai: "https://api.openai.com/v1/chat/completions",
-  openrouter: "https://openrouter.ai/api/v1/chat/completions",
-  anthropic: "https://api.anthropic.com/v1/messages",
-});
-
-/** The claudish provider whose catalog connection an advisor route uses. */
-const ADVISOR_CATALOG_PROVIDER: Readonly<Record<AdvisorRouteKind, string>> = Object.freeze({
-  google: "google",
-  openai: "openai",
-  openrouter: "openrouter",
-  anthropic: "anthropic",
-});
-
-function routeOf(kind: AdvisorRouteKind, wireModel: string): AdvisorRoute {
-  const provider = ADVISOR_CATALOG_PROVIDER[kind];
-  const resolution = resolveConnection(provider, wireModel);
-  let api: WireApi | undefined;
-  let wire: KnownWire | undefined;
-  let baseUrl: string | undefined;
-  if (resolution.ok && resolution.connection.wire.status === "known") {
-    wire = resolution.connection.wire;
-    api = wire.api;
-    baseUrl = resolution.connection.profile.apis[api]?.baseUrl;
-  } else {
-    // Not published for this provider, or its wire unknown: the profile's
-    // Chat Completions (Messages for Anthropic), with nothing else sent.
-    const profile = resolveRouteProfile(provider)?.profile;
-    api = kind === "anthropic" ? "anthropic-messages" : "chat-completions";
-    baseUrl = profile?.apis[api]?.baseUrl;
-  }
-  const url = baseUrl
-    ? wireRequestUrl(baseUrl, api, wireModel, false)
-    : ADVISOR_COLD_CATALOG_ENDPOINTS[kind];
-  if (!baseUrl) {
-    api = kind === "anthropic" ? "anthropic-messages" : "chat-completions";
-    log(`[Advisor] no route registry for ${provider}; using the documented endpoint ${url}`);
-  }
-  return {
-    kind,
-    host: new URL(url).host,
-    url,
-    credential: kind,
-    wireModel,
-    api,
-    ...(wire ? { wire } : {}),
-  };
-}
-
-/**
- * Resolves an advisor model spec to its route. Pure: reads only the spec and
- * the catalog cache, performs no I/O.
- *
- * - `google@`/`gemini@` (and bare `gemini-*`) → the direct Gemini API.
- * - `openai@`/`oai@` (and bare `gpt-*`) → api.openai.com with the metered
- *   OPENAI_API_KEY, never the Codex login.
- * - a Claude model (`claude-*`, any name Claude Code owns such as `haiku` or
- *   `internal`, `anthropic@`) → the Anthropic Messages API, but ONLY as the
- *   collector. A Claude panel member goes to OpenRouter, as it always did.
- * - everything else (e.g. `grok-4.6` → `x-ai`) → OpenRouter, the id resolved
- *   through the catalog.
- *
- * Throws for a Claude Code selector that names no model id the API accepts
- * (`opusplan`, `best`, any `[1m]` form): startup refuses the launch with the
- * message, and the runtime collector reports it as its failure.
- *
- * Not subscription routing: the advisor never goes through `route()`.
- */
-export function advisorRouteFor(modelSpec: string, role: "panel" | "collector"): AdvisorRoute {
-  const parsed = parseModelSpec(modelSpec);
-
-  if (role === "collector" && (isAnthropicModel(parsed) || nativeRouteFor(modelSpec))) {
-    // The Anthropic id comes from `claudeAdvisorModelFor` (the leaf shared with
-    // the startup planner). A selector is refused outright; an alias the
-    // catalog cannot resolve is marked, never POSTed.
-    const claude = claudeAdvisorModelFor(parsed.model);
-    if (claude.refused && claude.cause === "claude-selector") throw new Error(claude.reason);
-    if (claude.refused)
-      return { ...routeOf("anthropic", claude.alias), unresolvedAlias: claude.alias };
-    return routeOf("anthropic", claude.id);
-  }
-
-  const provider = parsed.provider;
-  if (provider === "google" || provider === "gemini") return routeOf("google", parsed.model);
-  if (provider === "openai" || provider === "oai") return routeOf("openai", parsed.model);
-
-  // Everything else -> OpenRouter
-  if (!parsed.isExplicitProvider || provider === "openrouter") {
-    return routeOf("openrouter", openRouterWireModelFor(null, parsed.model));
-  }
-  return routeOf("openrouter", openRouterWireModelFor(provider, parsed.model));
-}
-
-/**
- * The id OPENROUTER itself publishes for a catalog entry, or null.
- *
- * ONLY the two places the catalog records an OpenRouter id are read: the
- * `openrouter` aggregator row and the `openrouter-api` source. Deliberately
- * NARROWER than `externalIdFor(entry, "openrouter")`, whose last resort is "any
- * source carrying a vendor-prefixed id" — for a model OpenRouter does not serve
- * that returns ANOTHER VENDOR's external id, because a Fireworks id
- * (`accounts/fireworks/models/kimi-k3`) also contains a slash. That is exactly
- * what shipped: the bare panel name `kimi-k3` went on the wire to OpenRouter as
- * `accounts/fireworks/models/kimi-k3` and every call 400'd
- * ("is not a valid model ID"). A wire id for OpenRouter may only ever come from
- * OpenRouter's own catalog data.
- */
-function openRouterIdOf(entry: SlimModelEntry): string | null {
-  return (
-    entry.aggregators?.find((a) => catalogRouteMatchesProvider(a.route, "openrouter"))
-      ?.externalModelId ?? null
-  );
-}
-
-/**
- * What the LIVE catalog knows about serving `name` on OpenRouter.
- *
- * `not-served` is a positive fact, not an absence: the catalog HAS the model and
- * publishes no OpenRouter id for it. It is the one case that must never be
- * turned into a wire id — see `openRouterIdOf`.
- */
-type OpenRouterIdLookup =
-  | { kind: "id"; id: string }
-  /** The catalog knows this model and lists no OpenRouter id for it. */
-  | { kind: "not-served" }
-  /** Cold catalog, or a name it has never heard of: nothing is known. */
-  | { kind: "unknown" };
-
-/**
- * Resolves a model NAME to the id OpenRouter serves, from live catalog data
- * only. The chain mirrors `resolveExternalId`'s (exact id, alias, then the
- * provider's own ids), but every id it can return comes from `openRouterIdOf`.
- *
- * An already-slashed name is the user naming a full OpenRouter id: it is kept,
- * because OpenRouter can serve a model newer than the last catalog refresh.
- */
-function lookupOpenRouterId(name: string): OpenRouterIdLookup {
-  const entries = getCatalogEntries();
-  if (!entries) return { kind: "unknown" };
-  const lower = name.toLowerCase();
-
-  if (name.includes("/")) {
-    const match = entries.find((e) => openRouterIdOf(e)?.toLowerCase() === lower);
-    return { kind: "id", id: match ? (openRouterIdOf(match) as string) : name };
-  }
-
-  // Exact canonical id is AUTHORITATIVE, including its "OpenRouter does not
-  // serve this" answer: falling through would resolve a different model that
-  // merely shares part of the name.
-  const byModelId = entries.find((e) => e.modelId.toLowerCase() === lower);
-  if (byModelId) {
-    const id = openRouterIdOf(byModelId);
-    return id ? { kind: "id", id } : { kind: "not-served" };
-  }
-
-  // An alias identifies one model just as its canonical id does, so its answer
-  // is final too — including "not served".
-  const byAlias = entries.find((e) => e.aliases.some((a) => a.toLowerCase() === lower));
-  if (byAlias) {
-    const id = openRouterIdOf(byAlias);
-    return id ? { kind: "id", id } : { kind: "not-served" };
-  }
-
-  // The name may be the tail of an OpenRouter id (`grok-4.6` → `x-ai/grok-4.6`).
-  const suffix = `/${lower}`;
-  for (const entry of entries) {
-    const id = openRouterIdOf(entry);
-    if (id && (id.toLowerCase() === lower || id.toLowerCase().endsWith(suffix))) {
-      return { kind: "id", id };
-    }
-  }
-
-  return { kind: "unknown" };
-}
-
-/**
- * Is `vendor` a namespace OpenRouter actually publishes — the `x-ai` of
- * `x-ai/grok-4.6`? Answered from the LIVE catalog's own OpenRouter external
- * ids, never from a provider's model list in this repo (a pinned model list is exactly
- * what goes stale, and CLAUDE.md forbids one).
- *
- * A namespace match rather than an exact-id match on purpose: a model released
- * after the last catalog refresh must still be callable under a vendor the
- * catalog does know.
- */
-function isOpenRouterVendorNamespace(vendor: string): boolean {
-  const entries = getCatalogEntries();
-  if (!entries) return false;
-  const prefix = `${vendor.toLowerCase()}/`;
-  return entries.some((e) => openRouterIdOf(e)?.toLowerCase().startsWith(prefix));
-}
-
-/**
- * The OpenRouter vendor namespaces the catalog associates with a SUBSCRIPTION
- * routing identity — `queryPlans[].routing.nativeModelProviders`, e.g.
- * `openai-codex` → `["openai"]`, `grok-subscription` → `["x-ai"]`. Live data,
- * published by the catalog for exactly this translation.
- */
-function nativeVendorsForProvider(providerUid: string): string[] {
-  const vendors = new Set<string>();
-  try {
-    for (const plan of readAllModelsCache()?.plans ?? []) {
-      if (plan.routeStatus !== "supported" || !catalogRouteMatchesProvider(plan.route, providerUid))
-        continue;
-      if (plan.route?.routeId) vendors.add(plan.route.routeId);
-    }
-  } catch {
-    // a cache that will not read is the cold case below
-  }
-  return [...vendors];
-}
-
-/**
- * The id OpenRouter accepts for one advisor spec — `provider` is the EXPLICIT
- * prefix the user typed (`cx@gpt-5.6-sol`), or null for a bare name.
- *
- * The old rule was `${provider}/${model}` for every explicit provider. That is
- * only true when the prefix happens to be an OpenRouter VENDOR namespace. A
- * subscription provider uid is not one, so `cx@gpt-5.6-sol` became the
- * nonexistent OpenRouter id `openai-codex/gpt-5.6-sol` and `gk@grok-4.6` became
- * `grok-subscription/grok-4.6` — startup checked only the OpenRouter key,
- * declared the model callable, and the first panel call failed or answered from
- * no named model. (The advisor never routes through `route()`, so a
- * subscription prefix here can only ever mean "which model", never "bill it to
- * my subscription": panel calls are metered by design.)
- *
- * Resolution order, all of it live catalog metadata:
- *   1. the prefix IS an OpenRouter vendor namespace → keep `vendor/model`;
- *   2. the catalog's own OpenRouter external id for that model name;
- *   3. the vendor namespaces the catalog publishes for this subscription uid
- *      (`routing.nativeModelProviders`);
- *   4. cold catalog → the historical id, because nothing is known and nothing
- *      can therefore be declared invalid;
- *   5. otherwise REFUSE. Never construct a wire id already known to be invalid.
- *
- * A BARE name (`provider === null`) has no prefix to consult, so only steps 2
- * and 4 apply: the catalog's OpenRouter id, else the name unchanged when the
- * catalog has never heard of it (it may be newer than the last refresh), else
- * REFUSE — which `evaluateAdvisorStartup` turns into a startup refusal naming
- * the model. It used to be `resolveModelNameSync(model, "openrouter")`, whose
- * fallback answers with ANY vendor-prefixed external id the entry carries, so
- * `kimi-k3` — a model OpenRouter does not serve — went on the wire as the
- * Fireworks id `accounts/fireworks/models/kimi-k3` and 400'd on every call.
- */
-function openRouterWireModelFor(provider: string | null, model: string): string {
-  const lookup = lookupOpenRouterId(model);
-
-  if (provider === null || provider === "openrouter") {
-    if (lookup.kind === "id") return lookup.id;
-    if (lookup.kind === "unknown") return model;
-    throw new Error(
-      `${model} cannot be used as an advisor model: the catalog lists no OpenRouter id for it ` +
-        "(OpenRouter is where every unprefixed advisor model is called), so claudish has no id " +
-        "OpenRouter would accept. Name a model OpenRouter serves, or give the id in full " +
-        '("openrouter@vendor/model").'
-    );
-  }
-
-  const vendorPrefixed = `${provider}/${model}`;
-  if (isOpenRouterVendorNamespace(provider)) return vendorPrefixed;
-
-  if (lookup.kind === "id") return lookup.id;
-
-  for (const vendor of nativeVendorsForProvider(provider)) {
-    if (isOpenRouterVendorNamespace(vendor)) return `${vendor}/${model}`;
-  }
-
-  if (getCatalogEntries() === null) return vendorPrefixed;
-
-  throw new Error(
-    `${provider}@${model} cannot be resolved to a model OpenRouter serves: "${provider}" is not an ` +
-      "OpenRouter vendor namespace, and the catalog lists no OpenRouter id for " +
-      `"${model}". Advisor panel models are always called metered, so a subscription prefix ` +
-      `buys nothing here — use the bare model name ("${model}"), or name the OpenRouter id ` +
-      'in full ("openrouter@vendor/model").'
-  );
 }
 
 /**
@@ -2034,17 +1733,6 @@ function describeFetchError(err: unknown, timeoutMs?: number): string {
     return `timed out after ${Math.round(timeoutMs / 1000)}s`;
   }
   return `request failed: ${e?.message ?? String(err)}`;
-}
-
-function isAnthropicModel(parsed: ReturnType<typeof parseModelSpec>): boolean {
-  const m = parsed.model.toLowerCase();
-  return (
-    parsed.provider === "anthropic" ||
-    m.startsWith("claude-") ||
-    m === "haiku" ||
-    m === "sonnet" ||
-    m === "opus"
-  );
 }
 
 // ---------------------------------------------------------------------------
