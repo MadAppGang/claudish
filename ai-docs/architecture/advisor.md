@@ -202,10 +202,10 @@ something other than real advice is now a named constant in `ADVISOR_STUB_PATHS`
 | S1 | `LEGACY_STUB` | `CLAUDISH_SWAP_ADVISOR=1` with no panel; the canary stub is delivered |
 | S2 | `PREPARED_RESULT_MISSING` | a recorded call reached the rewrite with no prepared result (internal error) |
 | S3 | `DISABLED_STUB` | the canary text itself (`stubAdvisorAdvice`) |
-| S4 | `PANEL_EMPTY` | a panel model returned 2xx with no extractable text |
-| S5 | `ANTHROPIC_COLLECTOR_EMPTY` | the Anthropic collector returned 2xx with no text block |
-| S6 | `COLLECTOR_EMPTY` | another collector returned 2xx with no text |
-| S7 | `PANEL_ERROR` | a panel model failed: non-2xx, network error or timeout |
+| S4 | `PANEL_EMPTY` | a panel model returned 2xx with no text block; the reason names why (below) |
+| S5 | `ANTHROPIC_COLLECTOR_EMPTY` | a Claude collector returned 2xx with no text block |
+| S6 | `COLLECTOR_EMPTY` | a routed collector returned 2xx with no text |
+| S7 | `PANEL_ERROR` | a panel model failed: non-2xx, network error, timeout, a stream that failed after its 200, no hop could be built, a refused plan (Claude selector, no route), no Claude credential on the request, the Claude shape refusal, or "advisor runtime not planned for this launch" |
 | S8 | `ALL_PANEL_FAILED` | every panel model failed |
 | S9 | `COLLECTOR_FAILED` | the collector failed |
 | S10 | `NOT_REWRITTEN` | Claude Code's `No such tool available: advisor` was never rewritten |
@@ -216,9 +216,37 @@ reports any advisor tool result still carrying that error for an id this session
 `origin` is `upstream` (real, non-empty bytes from the named model), `stub` (claudish produced
 the text) or `absent` (no call was made). `resultOrigin` is `upstream` only when at least one panel
 model was upstream AND the collector, if it ran, was upstream. `upstreamStatus` is
-`extractUpstreamStatus(body) ?? response.status`, with `upstreamStatusSource` saying which.
-`extractUpstreamStatus` alone always returns `undefined` here, because the advisor calls
-providers with a bare `fetch` and no claudish handler writes `error.upstream_status` on that path.
+`extractUpstreamStatus(body) ?? response.status`, with `upstreamStatusSource` saying which. A
+routed call now goes through `ComposedHandler`, whose 400 remap writes `error.upstream_status`,
+so `upstreamStatusSource: "error.upstream_status"` is a normal value: a terminal 401 from a
+subscription arrives as HTTP 400 and is recorded as 401 (`classifyPanelResult`,
+`handlers/native-handler-advisor.ts:2830`).
+
+An empty 2xx is never a bare "no advice". `extractAdvice` (`handlers/advisor-route-plan.ts:744`)
+joins every text block and, when there is none, names the reason: `no-content`,
+`reasoning-only` (a thinking block and no text), `max-tokens-before-text` or
+`max-tokens-during-reasoning` (stop reason `max_tokens`, with or without a thinking block). The
+stub reads e.g. `HTTP 200 but the response carried no advice text (max-tokens-during-reasoning:
+the 2048-token output limit was reached while the model was still reasoning; stop_reason
+max_tokens)` (`emptyAdviceReason`, `:2332`), and the record carries `emptyReason` and
+`stopReason`.
+
+Each `advisor_call` / `advisor_collector_call` record (`modelCallRecord`, `:2419`) also says who
+served and how it billed, as labels, never a credential value:
+
+| Field | Meaning |
+|---|---|
+| `provider` | the claudish provider that SERVED the call (`openai-codex`, `native-anthropic`); null when none served |
+| `route` | `{kind: "routed", plannedChain: [display names]}` or `{kind: "claude-native", host: "api.anthropic.com"}` |
+| `routedModel` | the serving hop's wire model, or the resolved Anthropic id |
+| `servedBy` | `{provider, displayName, arm, billing}` when `origin` is `upstream`, else null |
+| `billing` | `servedBy.billing`: `subscription` or `metered`; null when nothing served |
+| `hopsTried` | routed only: provider uids whose `handle()` was entered, in order, once each |
+| `usage` | `{input_tokens, output_tokens}` when the answer carried it |
+| `credentialSource` | Claude only: `claude-code-login`, `inbound-x-api-key` or `ANTHROPIC_API_KEY` |
+| `loginSkipped` | Claude only, a bearer was present but not used: `placeholder`, `user-auth-token` or `launch-auth-not-claudish-controlled` |
+| `systemHead` | Claude login arm only: `identity` or `none` (the system head actually sent) |
+| `shapeRefusal` | Claude only: the 429 "Error" shape refusal (see "Panel routing and billing") |
 
 Records are written by `logAdvisorEvent`, one per panel model (`advisor_call`), one per collector
 run (`advisor_collector_call`) and one per call (`advisor_rewrite`):
@@ -287,46 +315,231 @@ settings, `/advisor`). The variable alone yields no advisor.
 
 ## Panel routing and billing
 
-Panel and collector calls never go through `route()`. `advisorRouteFor(modelSpec, role)` is the
-only place the branching lives. Request building, key resolution (`advisorCredentialsFor`), the
-origin records and the startup checks all read it, so startup cannot drift from runtime.
+Through v12.1.2 every panel and collector call was one bare `fetch` with a metered key chosen by a
+hand-written `advisorRouteFor`: a Codex, SuperGrok or Antigravity subscriber paid per token, `cx@`
+and `gk@` went to OpenRouter, a Claude panel member went to OpenRouter, and no panel spend reached
+stats. That function is gone. Each member is now planned by the function main routing is derived
+from, and called through the same handler machinery as a main-model request. Session
+`dev-feature-advisor-subscription-20261020-233354-f7e4` holds the design (`architecture.md`, its
+amendments A1–A9) and the S0 measurement; the session directory is gitignored, so the load-bearing
+facts are copied here.
 
-| Spec | Host | Key |
-|---|---|---|
-| `gemini-*`, `google@`, `gemini@` | generativelanguage.googleapis.com | `GEMINI_API_KEY` (`GOOGLE_API_KEY` as last-resort env fallback) |
-| `gpt-*`, `openai@`, `oai@` | api.openai.com | `OPENAI_API_KEY`, never the Codex login |
-| Claude model, as COLLECTOR only | api.anthropic.com | inbound `x-api-key` if real, else `ANTHROPIC_API_KEY` |
-| everything else, including `grok-*`, `cx@`, `gk@` | openrouter.ai | `OPENROUTER_API_KEY` |
+### One routing function, planned and built before the port exists
 
-Every panel call is billed per token on a raw API key. A Codex or SuperGrok subscriber pays
-metered rates for panel calls, and a `cx@` or `gk@` panel spec goes to OpenRouter. The startup
-notice says so on every launch:
+`planAdvisorModel(spec, role, deps)` (`handlers/advisor-route-plan.ts:149`) decides each member,
+in this order:
+
+1. `splitWireMarkers` — a marker error (`+pro`, `#fast` misuse) is a refused plan.
+2. `nativeRouteFor` FIRST, as the proxy does (CLAUDE.md invariant). A Claude name becomes a
+   `claude-native` plan (`planClaudeMember`, `:214`) and never reaches `explainRoute`; Claude Code
+   selectors are refused (`claudeAdvisorModelFor`, `handlers/advisor-claude-route.ts`):
+   `opusplan`, `best` and any `[1m]` form name no single model id the API accepts; `internal` and
+   `default` resolve to the opus tier; a tier alias resolves through the catalog alias, then the
+   newest `claude-<tier>-*` id; a concrete `claude-*` id is passed through.
+3. `ensureCatalogReady(5000)`, the proxy's wait.
+4. `explainRoute(model)` — the function `route()` is derived from. `no-route` is a refused plan
+   with routing's own cause, reason and hint; otherwise the plan's hops are the `kept` candidates
+   in chain order, each billed by `isSubscriptionProvider` at plan time.
+
+An explicit `anthropic@…` spec is NOT native (explicit specs never are, in the proxy either), so
+it is planned through `explainRoute`; only a bare Claude name takes the Claude arm.
+
+`evaluateAdvisorStartup` (`advisor-startup.ts:494`) plans every member strictly one after
+another, panel then collector, each in its own trace span (`startup:advisor-plan:<role>:<i>`),
+then builds every routed member's chain with `buildAdvisorChains`
+(`handlers/advisor-route-plan.ts:436`, span `startup:advisor-build`), also strictly sequential:
+a build may resolve a credential value (1Password, Keychain), and concurrent handshakes are what
+1Password refuses. The builder copies the proxy's dispatch (a `poe:` spec to the Poe getter, an
+`openrouter` hop to the OpenRouter getter, everything else to the remote getter, and the local
+getter only for an explicit single-hop plan) and classifies each hop: `built` (a
+`ComposedHandler`), `built-pending` (a `TryInTurnHandler` or `CatalogPendingHandler`, whose
+transport is chosen per request), `refused` (a `RefusingHandler`, asked once at build, no
+network; whether the chain continues past it is `FallbackHandler`'s own `isRetryableError` on its
+answer), `not-built` (getter returned null) or `failed` (getter threw; message redacted).
+
+The notice, the refusal and the runtime all read those plans and builds. `index.ts` hands them to
+`createProxyServer` as `advisorRuntime` (`index.ts:1119`); there is **no lazy path**: a spec the
+startup map lacks is S7 "advisor runtime not planned for this launch". A refusal shuts down every
+handler it built. Plans and chains are frozen per launch, like main's handler caches.
+
+### The advisor handler set, and why panel calls never touch the status line
+
+Chains are built in their own `createHandlerSet({requestRole: "advisor", port: 0, …})`
+(`advisor-startup.ts`). A handler owns a `TokenTracker` with cumulative counters, and one instance
+serving both main and panel traffic would mix them; the advisor set also has its own
+`FallbackHandler`s, so `lastSuccessIndex` never crosses between main and panel requests.
+`requestRole: "advisor"` on a `ComposedHandler`:
+
+- writes no token file (`composed-handler.ts:470` → `TokenTracker.writeFile` returns at once,
+  `shared/token-tracker.ts:504`), so the main status line is never repainted with the panel model.
+  A port cannot isolate it: `CLAUDISH_TOKEN_FILE` outranks the port;
+- skips the plan-usage scrape (`composed-handler.ts:3440`) and Layer 4 (`:1360`): a panel call is
+  not a harness turn;
+- tags every stats event `request_role: "advisor"` (`:593`).
+
+`requestRole` must stay in `sharedOpts`' `Pick` (`providers/provider-profiles.ts`); a
+profile-built handler without it writes the token file again, and nothing errors.
+
+### The panel gateway: a never-served Hono app
+
+`createAdvisorPanelGateway` (`handlers/advisor-panel-gateway.ts:83`) is two functions: `plan`
+(the startup map only) and `call`, which never rejects. `call` POSTs the payload to an internal
+Hono app that is never passed to `Bun.serve`, whose one route installs the call's abort signal,
+hop log and signing secrets on a real `Context` and hands it to the startup-built chain. It never
+goes through `resolveHandlerForRequest`, so the monitor branch, the `serve` slot map and the
+`--model` remap cannot touch a panel call, and no advisor wrapper is applied (no recursion). A
+loopback `fetch(proxy.url)` was rejected for exactly that reason: the `--model` remap would
+re-route the panel request to the main model.
+
+The synthetic request carries no auth header (and `ComposedHandler` forwards no inbound
+`authorization`), so Claude Code's bearer cannot reach a panel hop. Its payload is exactly
+`{model, system, messages, max_tokens: 2048, stream: false}` (`buildAdvisorPanelPayload`,
+`handlers/advisor-route-plan.ts:679`): no tools and no session id, so code mode stays off and
+Layer 4 has nothing to drain. The body is read inside the deadline (60 s panel, 30 s collector)
+and redacted by value against every credential the chain signed with, before the call's lease is
+released when its work settles (`:170`). A timeout aborts every piece of upstream work the chain
+started (`adapters.md`, "An internal call's deadline reaches every piece of upstream work").
+
+Deliberate deviations from main routing:
+
+- **Tier-1 network recovery is skipped** (`x-claudish-no-recovery: advisor`,
+  `composed-handler.ts:895`). Routing, classification and the connection verdict are identical;
+  only the hold ladder is skipped, because a 60 s budget cannot use a multi-minute hold and a
+  tier-2 503 means nothing to an internal caller.
+- **Explicit specs get the availability check at startup**, stricter than a main request. Where
+  the provider cannot answer (`openai-codex` has no discovery), the hop is kept, as on main; a
+  model the Codex account lacks is then an S7 carrying Codex's own (redacted) message.
+- **A cold catalog refuses a bare member at launch** (`catalog-unreadable`), which is the
+  runtime's answer too. The cold-catalog WARNING (`index.ts`) names only explicit-spec members,
+  whose provider was taken as written.
+
+### Stickiness is main routing's, and it is not silent
+
+`FallbackHandler` starts each call at the last hop that served (`lastSuccessIndex`). After one
+transient subscription failure that a metered hop answered, every later call of that member
+starts at the metered hop, exactly as on main (R3). A rejected subscription LOGIN is never routed
+onto a metered hop (only subscription hops are tried after a terminal credential verdict), which
+the notice says when a member's chain mixes the two. When a call is served by a hop whose billing
+differs from the hop the notice named, one line is written per change
+(`warnWhenServedUnlikePlan`, `handlers/native-handler-advisor.ts:2771`):
+
+```
+[advisor] gpt-x was served by OpenAI (metered, billed per token), not OpenAI Codex (subscription) as the notice said; later calls start there (routing keeps the last hop that served)
+```
+
+### Claude members and the Claude collector
+
+A Claude member is one request to the fixed `ANTHROPIC_MESSAGES_URL` (`https://api.anthropic.com/
+v1/messages`, `handlers/advisor-claude-route.ts`; `NativeHandler` imports the same origin), sent
+by `runClaudeAdvisorCall` (`handlers/native-handler-advisor.ts:2114`), which takes no URL
+parameter. The advisor applies the native passthrough's forwarding RULE here, not through a
+`NativeHandler` instance: that handler's fetch has no abort signal and records no stats, and its
+no-auth fallback hands out `ANTHROPIC_AUTH_TOKEN`.
+
+**These are claudish-composed requests signed with the Claude Code login, not Claude Code's own
+requests** (unlike `team` native slots, which are Claude Code's requests passed through). The
+owner can judge them against Anthropic's terms for subscription use with that stated plainly.
+
+**The login signs only on a launch where claudish controls the child's auth.** S0 (below) showed
+that a request cannot prove its bearer is the claude.ai login: the `oauth-2025-04-20` beta that
+login requests carry is client-declared (`ANTHROPIC_BETAS` adds it to any bearer) and the server
+does not require it. So the decision is made at launch by `childAuthControl(config, env)`
+(`claude-runner.ts:390`): controlled only when the launch is native-auth (no foreign `--model`
+handing the child claudish's placeholder), no user `ANTHROPIC_AUTH_TOKEN` and no real
+`ANTHROPIC_API_KEY` reaches the child, `ANTHROPIC_CUSTOM_HEADERS` carries no auth header, and no
+settings layer claudish can read (managed settings, `~/.claude/settings.json`,
+`$CLAUDE_CONFIG_DIR/settings.json`, the project and project-local files, `--settings`) names an
+`apiKeyHelper` or sets an Anthropic credential in its `env`. It cannot see settings delivered by a
+mechanism it does not read (an MDM profile). The decision travels in `AdvisorRuntime.childAuth`
+to the decorator (`proxy-server.ts:326`); a decorator given none treats the launch as not
+controlled.
+
+Per main request, the decorator reads the Claude facts once, before any member runs
+(`claudeRequestFacts`, `handlers/native-handler-advisor.ts:1854`), which also registers every real
+inbound bearer and `x-api-key` on that request's signing lease. The login arm needs ALL of: an
+inbound `Bearer` that is not a claudish placeholder; a value that is not this process's
+`ANTHROPIC_AUTH_TOKEN`; and `childAuth.controlled`. The value is held in `ClaudeLogin` (`:1762`),
+whose `String()`, `toJSON()` and inspect print `[redacted]`; only `runClaudeAdvisorCall` reads it.
+
+The credential for one advisor call is chosen by presence and provenance, never by failure
+(`resolveClaudeAdvisorAuth`, `:1937`), and resolved at most once per call and only when a Claude
+member runs (a routed-only panel never resolves an Anthropic key):
+
+1. the login, when every check passed — `arm: oauth`, `billing: subscription`;
+2. else the inbound `x-api-key` when it is real — metered;
+3. else `ANTHROPIC_API_KEY` through `resolveAdvisorCredential` (env, config, Keychain,
+   1Password; never `ANTHROPIC_AUTH_TOKEN`, never a placeholder) — metered;
+4. else S7/S9 "no Claude credential".
+
+A real bearer that failed a check, or a request with no bearer, is never moved to a metered key
+silently: the call writes an `[advisor]` warning naming the reason. claudish's own placeholder (a
+proxy-auth launch, whose notice already says metered) is not a credential and only shows as
+`loginSkipped: "placeholder"`. A login the API rejects (401, 429) is reported with Anthropic's
+message and never retried on a metered key, as the native passthrough never does.
+
+**Request shape on the login arm** (S0 shape A): `authorization` (inbound, verbatim),
+`anthropic-version` (inbound, else `2023-06-01`), `anthropic-beta` (inbound, through
+`stripAdvisorBeta`), `content-type`; no `x-api-key`. `system` is `[identity block, advisor
+prompt]`, where the identity block is the first inbound system text block that is not Claude
+Code's billing-header block and spans one line, copied without its `cache_control`
+(`claudeIdentityBlock`). With no such block the prompt is sent alone and the record says
+`systemHead: "none"`. The API-key arms send the earlier metered request byte for byte: `x-api-key`,
+`anthropic-version: 2023-06-01`, a string `system`, shaped by the connection's wire when known
+(`claudeAdvisorRequestInit`, `:2050`).
+
+**HTTP 429 `rate_limit_error` "Error" with no `anthropic-ratelimit-unified-*` header is a shape
+refusal, not quota exhaustion** (`isClaudeShapeRefusal`, `:1988`). S0 got it for the prompt alone
+(shape A0) on every tier, deterministically, with `x-should-retry: true`. It is never retried and
+never cools anything down; the stub says so and the record carries `shapeRefusal: true`.
+
+Immediately before the fetch, one boundary line is logged from the `Request` being sent, never a
+value:
+
+```
+[advisor] Calling API: https://api.anthropic.com/v1/messages (role: panel, auth: bearer, source: claude-code-login, systemHead: identity)
+```
+
+### Billing and stats
+
+`billing` is decided by the arm that signed, never by the provider name: routed calls read it
+from the hop log after signing (`HopAttempt.billing` = `isSubscriptionProvider` once the
+credential arm is known, so `openai-codex` bills by the credential that signed); Claude calls
+are `subscription` iff `arm === "oauth"` (`native-anthropic` is in neither billing set). That is
+the $0 evidence with stats on or off: `getModelPricing` returns zero exactly when
+`isSubscriptionProvider` is true.
+
+Every advisor call records stats with `request_role: "advisor"`, with main's semantics:
+`estimated_cost` is the emitting handler's running total for the launch and `is_free_model` is
+"that total is 0". Routed calls get it from their advisor-set `TokenTracker`; Claude calls from a
+per-launch accumulator per model id (`claudeAdvisorSpend`, `:2182`), which adds 0 on the login arm
+and `calculateCost("native-anthropic", …)` on an API-key arm. A launch's advisor spend is the last
+`estimated_cost` per `(model_id, provider_name)` with `request_role = advisor`. Panel spend stays
+off the main status line by design.
+
+### The notice
 
 ```
 [claudish] --advisor is on for this launch
-  panel (panel calls never use a subscription):
-    gpt-5.6-sol -> api.openai.com (OPENAI_API_KEY, billed per token)
-  collector:  none
+  panel (each model is routed like a main-model request):
+    gpt-6.1-sol -> OpenAI Codex (subscription); then OpenAI (metered, billed per token) (a rejected subscription login is reported, never routed onto a metered hop)
+    sonnet -> api.anthropic.com (subscription: your Claude Code login; if a request carries none: its x-api-key or ANTHROPIC_API_KEY, metered, billed per token)
+  collector:  none — haiku is a Claude model; this launch gives the advisor no Claude login (…), and no ANTHROPIC_API_KEY was found in env, config, keychain or 1Password. …; panel answers will be concatenated
   main model: your Claude Code session
   CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1 set by claudish
-  cost: each advisor call sends the FULL conversation to every panel model, uncached; cost grows with panel size and transcript length
+  cost: each advisor call sends the FULL conversation to every panel model, uncached; subscription hops draw on the plan's allowance, metered hops bill per token; routing keeps using the last hop that served
 ```
 
-Subscription-aware panel routing is parked in `ROADMAP.md`: it rewrites the retrieval path, and
-the origin records above were built around one bare `fetch` per model.
-
-Keys resolve through the credential authority (env, config, keychain, 1Password), and only for the
-routes the configuration uses, so an unused provider never triggers a 1Password handshake. The
-Anthropic collector never receives the inbound `authorization` header (Claude Code's OAuth bearer)
-or `ANTHROPIC_AUTH_TOKEN`. Before this work it read only the inbound `x-api-key`, which an OAuth
-session does not send, so it got a 401 and fell back to concatenation, and only the debug log said
-so.
-
-The same trace found a bug that broke every OpenRouter panel member: `resolveModelNameSync` was
-called with its arguments swapped, and its result is an object that is never nullish, so
-`?? rawModelId` never fired and the request body carried an object as `model`. The body was typed
-`any`, so the type checker missed it. `advisorRouteFor` now calls
-`resolveModelNameSync(rawModelId, "openrouter").resolvedId`.
+A routed member reads from its BUILT chain (`describeAdvisorPlan`,
+`handlers/advisor-route-plan.ts:618`): the first callable hop, each later hop a call can reach, a
+refusing hop the chain stops at, the subscription candidates routing skipped and why
+(`skipped: … — no credential`), and hops that could not be built. A routed member's
+`subscription-not-served` / `subscription-credential-unreadable` warnings print under it as
+`note:` lines, because `route()`'s per-request notices never run for a panel call. A Claude
+member on a launch claudish does not control reads `<spec> -> api.anthropic.com (metered, billed
+per token: ANTHROPIC_API_KEY; <why there is no login>, so the advisor never signs with a bearer on
+this launch. <how to restore it>)` (`describeClaudeAdvisorPlan`, `:317`). `index.ts` writes the
+notice to stderr and logs each line as `[advisor-notice] <line>`, so a run's log shows what the
+launch promised next to what each call did.
 
 ## Startup refusals vs runtime warnings
 
@@ -343,26 +556,31 @@ Refusals, in order:
    OllamaCloud refuses. There is no model list, so a format that learns tools lifts the refusal
    with no edit. `resolveMainModelFact` checks `nativeRouteFor` first, per the CLAUDE.md invariant.
 3. An empty panel.
-4. Any panel model whose credential does not resolve. Every missing one is listed.
-5. A collector the user NAMED whose credential does not resolve.
+4. Any panel member that cannot be called (`advisorMemberRefusal`, `advisor-startup.ts:299`):
+   a refused plan (routing's no-route cause with its reason and hint, a wire-marker error, a
+   Claude selector, an unresolved Claude alias, a Claude member on a launch with no login and no
+   `ANTHROPIC_API_KEY`), or a routed plan whose built chain has no callable hop (each hop named
+   with its outcome). Every one is listed.
+5. A collector the user NAMED that cannot be called, by the same rule.
 
-Checks 1 to 3 need no credentials and run first, so a launch that is refused anyway never opens a
-1Password prompt.
+Checks 1 to 3 need no planning and run first, so a launch that is refused anyway never routes,
+resolves a credential or opens a 1Password prompt. A refusal after building shuts down every
+handler the build created.
 
 ```
-[claudish] Error: --advisor cannot work in this launch: advisor panel model cannot be called: gpt-5.6-sol calls api.openai.com and needs OPENAI_API_KEY; none found in env, config, keychain or 1Password. Set the key, or remove the model from --advisor.
+[claudish] Error: --advisor cannot work in this launch: advisor panel model cannot be called: gpt-x: no hop could be built — OpenAI Codex: could not be built. Remove the model from --advisor, or fix what the reason names (claudish --probe gpt-x shows the routing decision).
 ```
 
 **Default vs named collector.** `parseAdvisorFlag` defaults the collector to `haiku` when the
 panel has two or more models and the value has no `:`, and records `collectorDefaulted`
-(launch-only, never in `ClaudishProfileConfig`). An OAuth session usually has no
-`ANTHROPIC_API_KEY`, so "refuse when the collector has no key" would refuse every default
-multi-model panel.
+(launch-only, never in `ClaudishProfileConfig`). A launch with a non-Claude `--model` has no
+Claude login and usually no `ANTHROPIC_API_KEY`, so "refuse when the collector cannot be called"
+would refuse every default multi-model panel there (`decideCollector`, `advisor-startup.ts:345`).
 
-| Collector | Credential missing at launch | Result |
+| Collector | Cannot be called at launch | Result |
 |---|---|---|
 | named by the user | yes | refuse; the user asked for it |
-| defaulted `haiku` | yes | proceed with no collector; the notice says the answers will be concatenated |
+| defaulted `haiku` | yes | proceed with no collector; the notice reads `collector:  none — <reason>; panel answers will be concatenated` |
 
 The defaulted case ends where it always did (concatenation), but visibly and without the doomed
 call. `index.ts` applies `effectiveCollector` to the config before `createProxyServer` reads it.
@@ -370,6 +588,10 @@ call. `index.ts` applies `effectiveCollector` to the config before `createProxyS
 Runtime warnings are only for what the child decides:
 
 - one `[advisor]` warning per call in which a model failed;
+- one warning when a Claude call cannot use the bearer the request carried, or the request
+  carried none, and signs with a metered key instead;
+- one warning per change when a routed call is served by a hop whose billing differs from the
+  notice's (stickiness, above);
 - one warning per unrecorded call (S10);
 - one warning, once per proxy, after `ADVISOR_ABSENT_WARN_AFTER` (3) consecutive requests that
   offer tools but no advisor (`createAdvisorPresenceMonitor`). A request with no `tools[]` neither
@@ -410,7 +632,9 @@ Anthropic "credential" is a placeholder no longer counts as having one.
 
 Two looser checks exist elsewhere, and both only decide whether claudish itself uses a key: the
 cli.ts scrub of `process.env.ANTHROPIC_API_KEY` under `--monitor` or `--advisor` (substring
-`"placeholder"`), and the decorator's collector-key filter (`/placeholder/i`).
+`"placeholder"`), and the advisor's `isPlaceholderAnthropicKey` (`/placeholder/i`), which
+`claudeRequestFacts` applies to the inbound bearer and `x-api-key` before either can sign a Claude
+advisor call.
 
 ## What the reviews caught
 
@@ -510,6 +734,34 @@ log, every `data:` payload parses, and the longest lines are 571 to 578
 characters, past the old 300-character cut. Replacing the corrupt fixture with a
 clean capture turned the four failing capture tests green **without editing
 them**, which is the proof that the tests were right and the fixture was wrong.
+
+### Subscription-aware routing: S0, the login-arm request shape (2026-10-21)
+
+Measured before the Claude login arm was written, from an INTERACTIVE Claude Code 2.1.305 (TUI in
+a terminal pane, not `claude -p`) whose `ANTHROPIC_BASE_URL` pointed at a local capture proxy. The
+login bearer was held in process memory only; non-login scenarios used fake tokens and were never
+forwarded. Captures, redacted before they touched disk, are committed as test data in
+`packages/cli/src/test-fixtures/advisor/` (`inbound-{login,oauthenv,authenv,settingsenv,helper,
+authbetas}.jsonl`, `replay-results-*.json`).
+
+| Tier | A0: advisor prompt alone | A: identity block + prompt | B: billing + identity + prompt |
+|---|---|---|---|
+| `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-1` | 429 `rate_limit_error` "Error", no unified rate-limit headers (haiku repeated: deterministic) | 200 | 200 |
+
+- Shape A is accepted on every tier and is what the login arm sends; B adds nothing (same input
+  tokens; the billing line appears to be stripped server-side). The login bearer with
+  `oauth-2025-04-20` removed from the beta list still got 200 on shape A.
+- The inbound system layout is `[billing-header block, one-line identity block, main prompt]`;
+  the interactive 2.1.305 billing line carries no `cch=`.
+- `oauth-2025-04-20` was present on every login request (keychain login and
+  `CLAUDE_CODE_OAUTH_TOKEN`) and absent from `ANTHROPIC_AUTH_TOKEN`, settings-`env` and
+  `apiKeyHelper` requests, but `ANTHROPIC_BETAS=oauth-2025-04-20` put it on a non-login bearer on
+  all 12 requests. It is a client declaration, not provenance, which is why the login arm is
+  decided by the launch (`childAuthControl`) and not by the request.
+
+The live checks of the routed panel (L1–L7: a Codex panel member served by `openai-codex` on the
+subscription, the notice matching `servedBy`, launch refusals, code mode unaffected, the Claude
+login arm on a no-model launch) are a separate madbench Bench, `ai-docs/benches/advisor-subscription/`.
 
 ### Evidence files
 
