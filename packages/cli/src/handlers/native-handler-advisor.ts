@@ -42,6 +42,7 @@ import { getCatalogEntries } from "../providers/catalog-client.js";
 import { resolveConnection, resolveRouteProfile } from "../providers/connection-resolver.js";
 import { type KnownWire, type WireApi, wireRequestUrl } from "../providers/connection-wire.js";
 import { parseModelSpec } from "../providers/model-parser.js";
+import { nativeRouteFor } from "../providers/native-route.js";
 import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
 import { claudeAdvisorModelFor } from "./advisor-claude-route.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
@@ -1590,22 +1591,27 @@ function routeOf(kind: AdvisorRouteKind, wireModel: string): AdvisorRoute {
  * - `google@`/`gemini@` (and bare `gemini-*`) → the direct Gemini API.
  * - `openai@`/`oai@` (and bare `gpt-*`) → api.openai.com with the metered
  *   OPENAI_API_KEY, never the Codex login.
- * - a Claude model (`claude-*`, `haiku`, `sonnet`, `opus`, `anthropic@`) →
- *   the Anthropic Messages API, but ONLY as the collector. A Claude panel
- *   member goes to OpenRouter, as it always did.
+ * - a Claude model (`claude-*`, any name Claude Code owns such as `haiku` or
+ *   `internal`, `anthropic@`) → the Anthropic Messages API, but ONLY as the
+ *   collector. A Claude panel member goes to OpenRouter, as it always did.
  * - everything else (e.g. `grok-4.6` → `x-ai`) → OpenRouter, the id resolved
  *   through the catalog.
+ *
+ * Throws for a Claude Code selector that names no model id the API accepts
+ * (`opusplan`, `best`, any `[1m]` form): startup refuses the launch with the
+ * message, and the runtime collector reports it as its failure.
  *
  * Not subscription routing: the advisor never goes through `route()`.
  */
 export function advisorRouteFor(modelSpec: string, role: "panel" | "collector"): AdvisorRoute {
   const parsed = parseModelSpec(modelSpec);
 
-  if (role === "collector" && isAnthropicModel(parsed)) {
+  if (role === "collector" && (isAnthropicModel(parsed) || nativeRouteFor(modelSpec))) {
     // The Anthropic id comes from `claudeAdvisorModelFor` (the leaf shared with
-    // the startup planner); an alias the catalog cannot resolve is marked, never
-    // POSTed.
+    // the startup planner). A selector is refused outright; an alias the
+    // catalog cannot resolve is marked, never POSTed.
     const claude = claudeAdvisorModelFor(parsed.model);
+    if (claude.refused && claude.cause === "claude-selector") throw new Error(claude.reason);
     if (claude.refused)
       return { ...routeOf("anthropic", claude.alias), unresolvedAlias: claude.alias };
     return routeOf("anthropic", claude.id);
