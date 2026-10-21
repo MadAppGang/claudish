@@ -34,6 +34,9 @@ import type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 
 const sha8 = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 8);
 
+/** A later admission's bound for the tests that wait one out: one magmux send budget. */
+const LATER_ADMIT_BOUND_MS = 16_000;
+
 /** Runs not yet finished: a test that throws before `finish` is cleaned up at the end. */
 const open = new Set<Run>();
 afterAll(async () => {
@@ -969,12 +972,15 @@ describe.skipIf(!MAGMUX)(
       );
 
       test(
-        "promptless_first_send_ignored: unconfirmed fails the later admission loudly at 30 s, then accepts the next prompt",
+        "promptless_first_send_ignored: unconfirmed fails the later admission loudly at its bound, then accepts the next prompt",
         async () => {
+          // The production 30 s bound is proven in pane-gated-delivery (DA-1); this test is about
+          // what happens when a later admission's bound expires, at a bound with room for one send.
           const r = await start("promptless_first_send_ignored", {
             shape: "interactive",
             initialPrompt: undefined,
             decide: () => "continue",
+            timings: { admitTimeoutMs: LATER_ADMIT_BOUND_MS },
           });
           await r.s.ready;
           const sends = traceInput(r);
@@ -983,9 +989,9 @@ describe.skipIf(!MAGMUX)(
           await until(
             r,
             (s) => s.anomalies.includes("send_not_accepted") && s.state === "AWAITING_INPUT",
-            35_000
+            LATER_ADMIT_BOUND_MS + 5_000
           );
-          expect(Date.now() - at).toBeGreaterThanOrEqual(29_000);
+          expect(Date.now() - at).toBeGreaterThanOrEqual(LATER_ADMIT_BOUND_MS - 1_000);
           expect(r.s.diagnostics().lastSend?.reason).toBe("unconfirmed");
           expect(r.s.snapshot().anomalies).not.toContain("degraded_mode");
           expect(sends.filter(({ message }) => typeof message.text === "string")).toHaveLength(1);
