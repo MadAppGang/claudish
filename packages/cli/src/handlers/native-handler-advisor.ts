@@ -63,6 +63,7 @@ import {
   type AdvisorPanelGateway,
   type AdvisorPanelResult,
   type AdvisorTurn,
+  type ExtractedAdvice,
   billingWord,
   buildAdvisorPanelPayload,
   describeAdvisorRefusal,
@@ -2626,6 +2627,28 @@ async function fetchClaudeAdvice(
   return claudeAdviceOutcome(bodyText, base, stubPaths.empty, secrets, observed, elapsed);
 }
 
+/** What each empty-answer reason means, for the stub text the model and the user read. */
+const EMPTY_ADVICE_PHRASE: Readonly<Record<AdvisorEmptyReason, string>> = {
+  "no-content": "the answer had no content",
+  "reasoning-only": "the model returned reasoning only, and no text",
+  "max-tokens-before-text": `the ${ADVISOR_MAX_OUTPUT_TOKENS}-token output limit was reached before any text`,
+  "max-tokens-during-reasoning": `the ${ADVISOR_MAX_OUTPUT_TOKENS}-token output limit was reached while the model was still reasoning`,
+};
+
+/**
+ * The S4/S5/S6 reason for a 2xx answer with no advice text, naming why:
+ * `HTTP 200 but the response carried no advice text (reasoning-only: the
+ * model returned reasoning only, and no text; stop_reason end_turn)`. A
+ * reasoning-only or max-tokens reply is never reported as a bare "no advice".
+ */
+function emptyAdviceReason(status: number, advice: ExtractedAdvice): string {
+  const why = advice.emptyReason
+    ? `${advice.emptyReason}: ${EMPTY_ADVICE_PHRASE[advice.emptyReason]}`
+    : "no-content";
+  const stop = advice.stopReason !== undefined ? `; stop_reason ${advice.stopReason}` : "";
+  return `HTTP ${status} but the response carried no advice text (${why}${stop})`;
+}
+
 /** A 2xx answer: the advice, or an empty-stub naming why there is none. */
 function claudeAdviceOutcome(
   bodyText: string,
@@ -2658,7 +2681,7 @@ function claudeAdviceOutcome(
       ...stubOutcome(
         base,
         emptyStubPath,
-        `HTTP ${observed.status} but the response carried no advice text (${advice.emptyReason})`,
+        emptyAdviceReason(observed.status, advice),
         elapsed(),
         secrets,
         observed
@@ -3152,8 +3175,19 @@ function classifyPanelResult(
   const advice = extractAdvice(data);
   const usage = advice.usage ? { usage: advice.usage } : {};
   if (!advice.text) {
-    const reason = `HTTP ${observed.status} but the response carried no advice text`;
-    return { ...routedStub(base, paths.empty, reason, result, hopsTried, observed), ...usage };
+    return {
+      ...routedStub(
+        base,
+        paths.empty,
+        emptyAdviceReason(observed.status, advice),
+        result,
+        hopsTried,
+        observed
+      ),
+      ...usage,
+      ...(advice.emptyReason ? { emptyReason: advice.emptyReason } : {}),
+      ...(advice.stopReason !== undefined ? { stopReason: advice.stopReason } : {}),
+    };
   }
   const servedBy: AdvisorServedBy | null = last
     ? {
