@@ -45,7 +45,7 @@ import { ANTHROPIC_API_HOST, claudeAdvisorModelFor } from "./advisor-claude-rout
 import { ComposedHandler } from "./composed-handler.js";
 import { type FallbackCandidate, FallbackHandler, isRetryableError } from "./fallback-handler.js";
 import type { HandlerSet } from "./handler-set.js";
-import type { HopBilling } from "./shared/call-context.js";
+import type { HopAttempt, HopBilling } from "./shared/call-context.js";
 import { isSubscriptionProvider } from "./shared/remote-provider-types.js";
 import type { ModelHandler } from "./types.js";
 
@@ -649,4 +649,65 @@ export function describeAdvisorPlan(plan: AdvisorModelPlan, build?: AdvisorChain
     parts.push(" (a rejected subscription login is reported, never routed onto a metered hop)");
   }
   return parts.join("");
+}
+
+// ---------------------------------------------------------------------------
+// The panel gateway's contract (implemented in advisor-panel-gateway.ts)
+// ---------------------------------------------------------------------------
+
+/** One turn of the conversation a panel member is asked about, flattened to text. */
+export interface AdvisorTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** The Anthropic-shaped body a routed panel call sends through its chain. */
+export interface AdvisorPanelPayload {
+  model: string;
+  system: string;
+  messages: AdvisorTurn[];
+  max_tokens: number;
+  stream: false;
+}
+
+/**
+ * The body of a routed advisor call. Deliberately nothing but these keys: no
+ * `tools`, `tool_choice`, `metadata`, `thinking` or `output_config`. Without
+ * tools and a session id, code mode stays off (`decideCodeMode`), Layer 4 has
+ * no session to drain, and the panel cannot call back into the advisor.
+ */
+export function buildAdvisorPanelPayload(
+  hop0ModelSpec: string,
+  system: string,
+  turns: AdvisorTurn[],
+  maxTokens: number
+): AdvisorPanelPayload {
+  return { model: hop0ModelSpec, system, messages: turns, max_tokens: maxTokens, stream: false };
+}
+
+export interface AdvisorPanelCall {
+  plan: RoutedPlan;
+  payload: AdvisorPanelPayload;
+  /** 60 000 for a panel member, 30 000 for the collector. */
+  timeoutMs: number;
+}
+
+export interface AdvisorPanelResult {
+  /** The answer's HTTP status; null on timeout or an internal error. */
+  status: number | null;
+  /** The WHOLE body, read inside the deadline and redacted by value. */
+  bodyText: string;
+  /** `isStreamFailureResponse(response)`: a 200 whose stream ended on an error. */
+  streamFailure: boolean;
+  /** Snapshot of the hop log: every hop whose `handle()` was entered, in order. */
+  hops: Array<HopAttempt & { uid: string | null; displayName: string }>;
+  failure?: { kind: "timeout" | "internal"; message: string };
+  latencyMs: number;
+}
+
+export interface AdvisorPanelGateway {
+  /** The startup plan for a spec; a spec the startup map lacks is a refused plan. */
+  plan(spec: string, role: AdvisorRole): AdvisorModelPlan;
+  /** Run one routed call through its startup-built chain. Never rejects. */
+  call(req: AdvisorPanelCall): Promise<AdvisorPanelResult>;
 }

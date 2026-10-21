@@ -15,6 +15,11 @@ import {
   createAdvisorPresenceMonitor,
   withAdvisorSwap,
 } from "./handlers/advisor-decorator.js";
+import {
+  type AdvisorRuntime,
+  createAdvisorPanelGateway,
+} from "./handlers/advisor-panel-gateway.js";
+import { shutdownAdvisorChains } from "./handlers/advisor-route-plan.js";
 import type { ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
@@ -160,6 +165,13 @@ export interface ProxyServerOptions {
    * Absent ⇒ `DEFAULT_CODE_MODE_SETTING` (`auto`).
    */
   codeMode?: CodeModeSetting;
+  /**
+   * Every `--advisor` member's startup plan and every routed member's chain,
+   * built before the port was bound (advisor-route-plan.ts). Present ⇒ the
+   * proxy exposes `advisorPanel` and owns the chains: `shutdown` shuts them
+   * down. Absent ⇒ no gateway; nothing is planned lazily.
+   */
+  advisorRuntime?: AdvisorRuntime;
 }
 
 /**
@@ -1052,6 +1064,14 @@ export async function createProxyServer(
     }
   });
 
+  // The advisor panel gateway: an in-process Hono app that is never served,
+  // over the chains startup built from the advisor plans. It shares nothing
+  // with `app` above — no lease middleware (the gateway owns one lease per
+  // call), no `resolveHandlerForRequest` (no monitor branch, slot map or
+  // `--model` remap), no advisor wrapper.
+  const advisorRuntime = options.advisorRuntime;
+  const advisorPanel = advisorRuntime ? createAdvisorPanelGateway(advisorRuntime) : undefined;
+
   // Bun's NATIVE server — not @hono/node-server.
   //
   // claudish only ever runs under Bun (bin/claudish.cjs is a Node bootstrapper
@@ -1098,10 +1118,13 @@ export async function createProxyServer(
     port: resolvedPort,
     url: `http://127.0.0.1:${resolvedPort}`,
     modelRequestCount: () => modelRequestCount,
+    ...(advisorPanel ? { advisorPanel } : {}),
     shutdown: async () => {
       // `true` = close active connections too, so a streamed request in flight
       // can't keep the port alive after shutdown resolves.
       await server.stop(true);
+      // The advisor chains were handed over at startup; the proxy owns them.
+      if (advisorRuntime) await shutdownAdvisorChains(advisorRuntime.chains.values());
       // "No episode may outlive the process that owns its timers" —
       // `closeAllEpisodes`'s own doc, which until now nothing but tests
       // invoked. `server.stop(true)` aborts the client signals, so waiters

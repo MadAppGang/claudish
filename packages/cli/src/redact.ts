@@ -207,6 +207,27 @@ export function redactSigningValues(text: string): string {
 }
 
 /**
+ * Replace every form of every value in `values` with `[redacted]`, longest
+ * first: the same forms and the same minimum length as the registry, for a
+ * holder that keeps its own set and must redact after its lease is released
+ * (the advisor gateway's result). Exact substring matching, no regex.
+ */
+export function redactExactValues(text: string, values: Iterable<string>): string {
+  if (!text) return text;
+  const forms = new Set<string>();
+  for (const value of values) {
+    if (typeof value !== "string" || value.length < SIGNING_VALUE_MIN_LENGTH) continue;
+    for (const form of signingValueForms(value)) forms.add(form);
+  }
+  if (forms.size === 0) return text;
+  let out = text;
+  for (const form of [...forms].sort((a, b) => b.length - a.length)) {
+    if (out.includes(form)) out = out.split(form).join(SIGNING_MASK);
+  }
+  return out;
+}
+
+/**
  * The registry pass for text sent back to Claude Code (an error body, an SSE
  * error frame). A response body is not a log line, so it never passes through
  * `log`; every site that puts upstream text into one calls this instead.
