@@ -81,6 +81,22 @@ describe("stats module — showMonthlyBanner", () => {
     expect(stderrOutput).toContain("claudish");
   });
 
+  it("does not show the first-run banner in a pane child, and leaves it due for a terminal run", async () => {
+    const cfg = { version: "1.0.0", defaultProfile: "default", profiles: {} };
+    writeFileSync(CONFIG_FILE, JSON.stringify(cfg), "utf-8");
+    const { showMonthlyBanner } = await import("./stats.js");
+
+    // the claudish a create_session / team pane launcher started (pane-launch.ts env)
+    showMonthlyBanner({ CLAUDISH_PANE_CHILD: "1", CLAUDISH_PANE_CWD: "/tmp" });
+    expect(stderrOutput).toBe("");
+    const after = JSON.parse(require("node:fs").readFileSync(CONFIG_FILE, "utf-8"));
+    expect(after.stats?.lastMonthlyPrompt).toBeUndefined();
+
+    // a person at a terminal still sees it
+    showMonthlyBanner({});
+    expect(stderrOutput).toContain("Help improve claudish");
+  });
+
   it("does not show banner when CLAUDISH_STATS=0", async () => {
     process.env.CLAUDISH_STATS = "0";
     stderrOutput = "";

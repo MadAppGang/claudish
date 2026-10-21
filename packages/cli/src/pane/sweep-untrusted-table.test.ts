@@ -147,7 +147,7 @@ describe("sweep with an untrusted process table", () => {
     const root = makeRoot();
     const rec = makeLiveRecord(root);
     expect(recordFiles(root, rec)).toEqual(allRecordFilesPresent);
-    expect(readProcessTable().some((row) => row.pid === process.pid)).toBe(true);
+    expect(readProcessTable()?.some((row) => row.pid === process.pid)).toBe(true);
 
     const result = await sweepOrphanPanes(root);
     expect({

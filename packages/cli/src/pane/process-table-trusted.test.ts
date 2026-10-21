@@ -22,7 +22,7 @@ describe("processTableTrusted", () => {
   });
 
   test("A1: the real process table is trusted in an unsandboxed run", () => {
-    const table = readProcessTable();
+    const table = readProcessTable() ?? [];
     expect(table.some((entry) => entry.pid === process.pid)).toBe(true);
     expect(processTableTrusted(table)).toBe(true);
   });
