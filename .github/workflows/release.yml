@@ -309,7 +309,10 @@ jobs:
           node -e "
             const pkg = require('./package.json');
             delete pkg.dependencies['@claudish/core'];
-            pkg.files = ['dist/', 'AI_AGENT_GUIDE.md', 'skills/'];
+            // bin/ is more than the launcher: claudish.cjs requires its siblings
+            // (env-files.cjs). npm always ships the bin entry itself, so leaving
+            // bin/ out drops only the siblings and every install fails to start.
+            pkg.files = ['dist/', 'bin/', 'AI_AGENT_GUIDE.md', 'skills/'];
             // Sync optionalDependencies versions to release version
             if (pkg.optionalDependencies) {
               for (const key of Object.keys(pkg.optionalDependencies)) {
@@ -322,6 +325,20 @@ jobs:
           "
           echo 'Modified package.json:'
           cat package.json
+
+      # Install the exact tarball npm will receive and start it. The tests run the
+      # source tree, so a file the files list leaves out is invisible to them;
+      # 13.0.0 shipped without bin/env-files.cjs and could not start at all.
+      - name: Smoke-test the packed package
+        run: |
+          cd packages/cli
+          TARBALL="$PWD/$(npm pack --silent)"
+          SMOKE="$(mktemp -d)"
+          cd "$SMOKE"
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund "$TARBALL"
+          node node_modules/claudish/bin/claudish.cjs --version
+          rm -f "$TARBALL"
 
       - name: Publish to npm
         run: cd packages/cli && npm publish --access public --provenance
