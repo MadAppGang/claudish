@@ -136,6 +136,18 @@ export function createAdvisorPanelGateway(runtime: AdvisorRuntime): AdvisorPanel
       };
     }
 
+    const plannedIndex = build.firstCallableHop;
+    const plannedHop = plannedIndex === null ? undefined : req.plan.hops[plannedIndex];
+    const planned = plannedHop
+      ? {
+          plannedHop: {
+            provider: plannedHop.provider,
+            displayName: plannedHop.displayName,
+            billing: plannedHop.billing,
+          },
+        }
+      : {};
+
     const secrets = createSigningSecrets();
     const controller = new AbortController();
     const request = new Request(ADVISOR_INTERNAL_URL, {
@@ -170,6 +182,7 @@ export function createAdvisorPanelGateway(runtime: AdvisorRuntime): AdvisorPanel
           bodyText: "",
           streamFailure: false,
           hops: snapshot(),
+          ...planned,
           failure: {
             kind: "timeout",
             message: `timed out after ${Math.round(req.timeoutMs / 1000)}s`,
@@ -182,6 +195,7 @@ export function createAdvisorPanelGateway(runtime: AdvisorRuntime): AdvisorPanel
         bodyText: outcome.text,
         streamFailure: isStreamFailureResponse(outcome.res),
         hops: snapshot(),
+        ...planned,
         latencyMs: latencyMs(),
       };
     } catch (err) {
@@ -190,6 +204,7 @@ export function createAdvisorPanelGateway(runtime: AdvisorRuntime): AdvisorPanel
         bodyText: "",
         streamFailure: false,
         hops: snapshot(),
+        ...planned,
         failure: {
           kind: "internal",
           message: redactExactValues(redactForClient(errorMessage(err)), secrets.values),

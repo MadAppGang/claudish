@@ -701,6 +701,8 @@ export interface AdvisorPanelResult {
   streamFailure: boolean;
   /** Snapshot of the hop log: every hop whose `handle()` was entered, in order. */
   hops: Array<HopAttempt & { uid: string | null; displayName: string }>;
+  /** The chain's first callable hop at startup: what the notice promised this member. */
+  plannedHop?: { provider: string; displayName: string; billing: AdvisorBilling };
   failure?: { kind: "timeout" | "internal"; message: string };
   latencyMs: number;
 }

@@ -63,6 +63,7 @@ import {
   type AdvisorPanelGateway,
   type AdvisorPanelResult,
   type AdvisorTurn,
+  billingWord,
   buildAdvisorPanelPayload,
   describeAdvisorRefusal,
   extractAdvice,
@@ -1023,6 +1024,7 @@ export function _debug_resetTrackedAdvisorIds(): void {
   inFlightByToolUseId.clear();
   streamFrameBuffer.reset();
   reportedUnrecorded.clear();
+  servedUnlikePlan.clear();
   clock = Date.now;
   lastSweepAt = Number.NEGATIVE_INFINITY;
 }
@@ -2996,7 +2998,7 @@ async function runAdvisorMember(
         billing: null,
       };
     case "routed":
-      return runRoutedMember(plan, req, params.gateway);
+      return runRoutedMember(plan, req, params.gateway, params.warn);
     case "claude-native":
       return runClaudeMember(plan, req, params, claudeAuth);
   }
@@ -3005,7 +3007,8 @@ async function runAdvisorMember(
 async function runRoutedMember(
   plan: Extract<AdvisorModelPlan, { kind: "routed" }>,
   req: MemberRequest,
-  gateway: AdvisorPanelGateway | undefined
+  gateway: AdvisorPanelGateway | undefined,
+  warn?: (message: string) => void
 ): Promise<AdvisorModelOutcome> {
   const recordRoute: AdvisorRecordRoute = {
     kind: "routed",
@@ -3031,7 +3034,49 @@ async function runRoutedMember(
     ),
     timeoutMs: req.timeoutMs,
   });
-  return { ...classifyPanelResult(result, base, paths), recordRoute };
+  const outcome = classifyPanelResult(result, base, paths);
+  warnWhenServedUnlikePlan(req, result.plannedHop, outcome.servedBy, warn);
+  return { ...outcome, recordRoute };
+}
+
+/**
+ * The hop that last served each routed member, when its billing differs from
+ * the hop the startup notice named, keyed `"<role>:<spec>"`. `FallbackHandler`
+ * starts every later call at the last hop that served (`lastSuccessIndex`), so
+ * after one transient subscription failure that a metered hop answered, every
+ * later call of that member is metered too — exactly as on main routing (R3).
+ * That is accepted, but never silent: one line per change.
+ */
+const servedUnlikePlan = new Map<string, string>();
+
+/**
+ * Warn once per change when a routed call was served by a hop whose billing
+ * differs from the startup notice's first callable hop:
+ * `[advisor] <spec> was served by <displayName> (<billing>), not <planned> as
+ * the notice said; later calls start there (routing keeps the last hop that
+ * served)`. A call served as planned clears the record, so a later drift warns
+ * again.
+ */
+function warnWhenServedUnlikePlan(
+  req: MemberRequest,
+  planned: AdvisorPanelResult["plannedHop"],
+  servedBy: AdvisorServedBy | null | undefined,
+  warn: (message: string) => void = warnAdvisor
+): void {
+  if (!planned || !servedBy?.billing) return;
+  const key = `${req.role}:${req.spec}`;
+  if (servedBy.billing === planned.billing) {
+    servedUnlikePlan.delete(key);
+    return;
+  }
+  const served = `${servedBy.provider}:${servedBy.billing}`;
+  if (servedUnlikePlan.get(key) === served) return;
+  servedUnlikePlan.set(key, served);
+  warn(
+    `${req.spec} was served by ${servedBy.displayName} (${billingWord(servedBy.billing)}), ` +
+      `not ${planned.displayName} (${billingWord(planned.billing)}) as the notice said; later ` +
+      "calls start there (routing keeps the last hop that served)"
+  );
 }
 
 /** The hop-log facts of a routed call: which hops were entered, and the last one. */
