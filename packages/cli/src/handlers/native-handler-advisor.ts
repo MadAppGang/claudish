@@ -2111,6 +2111,21 @@ function claudeAdvisorRequestInit(
 }
 
 /**
+ * The Claude members (`"<role>:<spec>"`) that have already printed the
+ * "cannot use the bearer / no bearer, signing with a metered key" warning.
+ * Every request of a launch whose login is skipped (a Console-key login, say)
+ * gives the same answer, so the line is printed once per launch per member,
+ * not once per advisor call. The per-call record still carries
+ * `loginSkipped` and the arm.
+ */
+const claudeAuthWarned = new Set<string>();
+
+/** Test seam: let every Claude member warn again. */
+export function _debug_resetClaudeAuthWarnings(): void {
+  claudeAuthWarned.clear();
+}
+
+/**
  * One Claude advisor call. Never rejects. The URL is the module constant
  * `ANTHROPIC_MESSAGES_URL` and cannot be changed by the caller, so the login
  * bearer goes nowhere else. Immediately before the fetch it logs one boundary
@@ -2138,7 +2153,11 @@ export async function runClaudeAdvisorCall(
     ...(auth.facts.loginSkipped ? { loginSkipped: auth.facts.loginSkipped } : {}),
   };
   const warning = auth.arm === "oauth" ? undefined : auth.warning;
-  if (warning) (params.warn ?? warnAdvisor)(`${params.spec}: ${warning}`);
+  const member = `${role}:${params.spec}`;
+  if (warning && !claudeAuthWarned.has(member)) {
+    claudeAuthWarned.add(member);
+    (params.warn ?? warnAdvisor)(`${params.spec}: ${warning}`);
+  }
   if (auth.arm === null) {
     return {
       ...stubOutcome(base, stubPaths.error, auth.reason, 0, []),
