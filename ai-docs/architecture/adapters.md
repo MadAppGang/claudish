@@ -818,3 +818,94 @@ Two things this uncovered:
    the always-on structural log only through `isStructuralLogWorthy`, a whitelist.
    Use `-d` / `--debug-claudish` (which writes `./logs/`), not `--debug` — the
    latter is passed through to Claude Code and tells you nothing about the proxy.
+
+## A credential a request signed with is redacted by value in every sink (`redact.ts`)
+
+A provider can echo the key it received: in a 401 body, in an error frame of a 200 stream, in the
+message of a token-refresh exception, in an OpenRouter 429. Shape rules (`sk-…`, `Bearer …`)
+cannot recognise an opaque key, and patching each sink leaves the next `log(` call open. So the
+exact values a request signed with are held in ONE process-wide registry and applied at the few
+places text leaves claudish.
+
+**The registry.** `acquireSigningLease()` (`redact.ts:165`) returns a lease; `lease.add(values)`
+holds each value (8 characters or more) refcounted in one module-level map (`:116`), in its
+verbatim, JSON-escaped, twice-JSON-escaped and URL-encoded forms (`holdSigningValue`, `:154`);
+`release()` drops the lease's hold once. `redactSigningValues(text)` (`:197`) returns the text
+untouched when nothing is held and otherwise replaces every held form, longest first, with
+`[redacted]` by plain substring replacement (no regex, so no stateful predicate). Replacements
+only shorten, so JSON stays JSON. There is **no timer**: a lease lives until its work ends. A fixed
+TTL could expire under a stream that is still producing frames.
+
+Why one process-wide union and not a per-request `AsyncLocalStorage` scope:
+`OpenRouterRequestQueue`'s loop runs in the async context of whichever request first started it,
+so its 429 line for request B would be attributed to request A's scope. Over-redaction across
+concurrent requests is harmless; a missed value is not.
+
+**Where values come from.** Every header fetch of a request, through `ComposedHandler`'s one
+choke point `fetchHeaders` (`composed-handler.ts:1755`): `credentialValuesFromRequest` takes
+every credential-bearing header (authorization, `x-api-key`, `api-key`, `x-goog-api-key`,
+cookie values, any header whose name contains `token`, `secret` or `key`), with and without its
+scheme word, plus the endpoint's credential query parameters. That covers the primary fetch, the
+parameter re-fetch, the 401 retry's fresh token and every Responses leg. A transport that signs
+outside its headers exposes the value through `redactionSecrets?()`: Devin (the key is in the
+body) and Antigravity (its capacity fallback sends the access token itself). The advisor adds
+Claude Code's inbound bearer and `x-api-key` to the main request's lease when it reads them
+(`claudeRequestFacts`, `handlers/native-handler-advisor.ts`).
+
+**Who holds a lease, and when it is released.**
+
+| Request | Installed by | Released when |
+|---|---|---|
+| Every session-app route | `app.use("*", …)` (`proxy-server.ts:793`) sets `SIGNING_SECRETS_KEY` | the response body is fully read, cancelled (after the cancel is forwarded to the source) or errors; at once for no body (`releaseWhenBodyEnds`, `handlers/shared/call-context.ts:186`) |
+| An advisor panel call | the panel gateway (`handlers/advisor-panel-gateway.ts`) | when the call's work settles, after the body was read and redacted; a timed-out call's aborted work can still log |
+| A Claude advisor call | `runClaudeAdvisorCall`, for its own headers | when it returns (the login value is also on the main request's lease) |
+| A Context nothing installed (tests) | `signingSecretsOf` (`call-context.ts:57`) | never: retention costs redaction, never exposure |
+
+The lease belongs to the INBOUND request, never to one hop, because `FallbackHandler` logs its
+combined error after every hop has returned; and it outlives `handle()`, because a streamed body
+is parsed and logged long after the handler returned.
+
+**Every sink, and how it is covered.**
+
+| Sink | Covered by |
+|---|---|
+| `--debug` file, always-on `~/.claudish/logs/`, stderr, `DiagOutput` | `log()` and `logStderr()` call `redactSigningValues` before any write (`logger.ts:282`, `:320`); `logStructured`/`logRecovery` go through them. This covers the queue's 429 line, the parsers' frame and error lines, the auth-refresh exception and `FallbackHandler`'s stderr |
+| `CLAUDISH_UPSTREAM_ERROR_LOG`, team/pane/MCP error text | `redactSecrets` runs the registry pass before its shape rules (`redact.ts:246`) |
+| Telemetry report | `buildReport` runs it before `sanitizeMessage` (`telemetry.ts:439`, `:473`) |
+| Text sent back to Claude Code | `redactForClient` (`redact.ts:235`) at each client-body family: `ComposedHandler`'s error bodies, the Responses leg issuer, the error frames of every stream parser (`anthropic-sse`, `openai-sse`, `gemini-sse`, `ollama-jsonl`, `devin-connect`, `responses/claude-sse-sink`), `FallbackHandler`'s combined body and thrown messages, the proxy's catch and `onError` bodies |
+| An advisor result | the gateway redacts the whole body by value against the call's own set (`redactExactValues`, `redact.ts:215`) before the reason reaches records, warnings or the tool result |
+
+A new sink that writes upstream text without going through `log`, `logStderr` or
+`redactSecrets`, or a client body built from upstream text without `redactForClient`, reopens
+credential echo, and nothing errors. A refresh token the credential layer sends to a token host
+is not a signing value of the model request and is not registered; that layer formats its own
+errors through its shape redactor.
+
+## An internal call's deadline reaches every piece of upstream work (`handlers/shared/call-context.ts`)
+
+An advisor panel call has a deadline (60 s, 30 s for the collector). `Promise.race` alone would
+stop the WAITING, not the work: the chain would advance to its next hop, a queued request would
+still start, and a retry sleep would still fire, all billed. The gateway therefore installs an
+abort signal on the call's Context (`CALL_ABORT_SIGNAL_KEY`, `call-context.ts:241`), and every
+place upstream work can start or wait checks it. Main requests never install it, so
+`callAbortSignal(c)` is `undefined` and every expression below collapses to the main path's code.
+
+| Upstream work | Reach point |
+|---|---|
+| Handler entry | already aborted → `abortedResponse()` (`composed-handler.ts:1203`) |
+| Token refresh (5b), header fetch | `raceCallAbort(...)` (`:1515`, `:1762`); the shared single-flight refresh is not cancelled (unbilled), the handler stops waiting; `raceCallAbort` owns the losing promise's rejection |
+| Queued work | `doFetch` rejects with `AbortError` before calling `fetch` when the signal is aborted (`:1833`); every `enqueueRequest` call gets `{signal}` (`:1852`, `:1931`); the OpenRouter and Gemini queues drop a waiting entry on abort and reject an aborted entry before and after their rate-limit wait (`shared/openrouter-queue.ts`, `shared/gemini-queue.ts`); `LocalModelQueue` already honoured it |
+| Primary fetch and its body | the signal is composed with the deadline clamp (`withCallSignal`, `:1843`), so it still governs the body read after the clamp is disarmed; an abort returns before any connection-error classification, stderr line or recovery (`:1866`) |
+| Parameter re-fetch, 401 auth retry | pre-start check, `raceCallAbort` on the forced refresh, composed fetch signal (`:2087`, `:2189`) |
+| 7b stream-head re-issue and its backoff | `sleepUnlessAborted` ends the wait (`:3002`); the re-issue uses `doFetch` |
+| Responses legs | `AbortSignal.any([turnSignal, callSignal])` (`:2851`) |
+| Antigravity retries and capacity fallback | signal checked before each attempt and each fallback candidate, passed to the candidate `fetch`; the retry sleep is `sleepUnlessAborted` (`providers/transport/antigravity.ts:614`); the quota reads are raced, not cancelled |
+| OpenAI and anthropic-compat retry waits | `sleepUnlessAborted(delay, opts.signal)` (`providers/transport/openai.ts:149`, `anthropic-compat.ts:203`) |
+| Routing chain advancement | `FallbackHandler` checks at the top of each iteration, right after `handle()` returns (returning that response before `isRetryableError` or any `[Fallback] … failed` line), and in its catch (`fallback-handler.ts:71`, `:90`, `:241`) |
+
+`abortedResponse()` (`call-context.ts:332`) is HTTP 408, error type `timeout_error`, header
+`x-claudish-call-aborted: 1`. Nothing classifies it by status, it writes nothing to stderr, and
+main requests never produce it. Accepted residuals: the 7c Devin re-issue's backoff sleep can
+outlive the deadline by one delay (no upstream work starts after it), and the tier-1 recovery
+re-issue is not given the signal, because advisor calls skip tier 1
+(`x-claudish-no-recovery: advisor`) and the primary catch returns on abort before recovery.
