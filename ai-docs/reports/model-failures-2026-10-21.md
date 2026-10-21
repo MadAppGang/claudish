@@ -7,6 +7,17 @@ behind `origin/main` 13.2.0; the traced logic is the same on main, only line num
 re-run with a fresh process (`bun packages/cli/dist/index.js --probe …`). Owner review on the same
 day reclassified three first-draft "account" rows as claudish behaviour; this version records that.
 
+## Status (2026-10-22)
+
+| Item | Status |
+|---|---|
+| D3 | fixed on main: `56df54b5 fix(muse): route bare muse-wonder-full to the muse@ subscription` (13.3.0) |
+| D7 | fixed in 14.0.0: `9ace3fe5`, `2f282101`; the connection-fault exclusion `f8e09504` |
+| D8 | fixed in 14.0.0: `8452d275`; verified live 2026-10-22 (`ag@gemini-3.8-flash` served by Antigravity, sent `gemini-3.8-flash-high`) |
+| D1, D2, D4, D5, D6, D9 | open |
+
+Details: `advisor-subscription-routing-2026-10.md`.
+
 ## Every failure
 
 | Model / spec | preflight answer | Cause | Item |
