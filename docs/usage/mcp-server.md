@@ -340,6 +340,7 @@ is interactive and waits for `send_input`.
 - `agent` (optional) - Claude Code subagent the session runs as, e.g. `dev:reviewer`
 - `claude_flags` (optional) - Other Claude Code / claudish flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`; a value after a Claude Code switch, as in `--brief now`, would be the session's first prompt and is refused). Flags the pane owns (`-p`, `--resume`, `--model`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
 - `work_dir` (optional) - Working directory for the session (default: current directory)
+- `setup_from` (optional) - Directory whose `.claude/settings.json` and `settings.local.json` the session inherits, so a session in another `work_dir` keeps your project's plugins and agents. Default: your project directory, when `work_dir` differs from it. `null` keeps the session on `work_dir`'s own settings only
 
 **Returns:** `{ session_id: "...", state: "STARTING" }` as soon as the pane exists; Claude Code then boots in it.
 
