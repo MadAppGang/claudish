@@ -136,6 +136,7 @@ import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exha
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
 import {
   CREDENTIAL_DECIDED_PROVIDERS,
+  type RequestBilling,
   isSubscriptionProvider,
 } from "./shared/remote-provider-types.js";
 import {
@@ -613,11 +614,23 @@ export class ComposedHandler implements ModelHandler {
    */
   private markHopSigned(hop: HopAttempt, binding: AuthBinding | undefined): void {
     hop.arm = binding?.auth?.arm ?? null;
+    hop.billing = this.signedBilling(binding).subscription ? "subscription" : "metered";
+  }
+
+  /**
+   * The billing of a request signed with `binding`, by the rule above: the
+   * signing arm for a credential-decided provider, the fixed category for
+   * every other one. The ONE derivation shared by the hop label
+   * (`markHopSigned`) and the request's cost updates (`handleStream`), so the
+   * two cannot disagree.
+   */
+  private signedBilling(binding: AuthBinding | undefined): RequestBilling {
     const name = this.provider.name.toLowerCase();
-    const subscription = CREDENTIAL_DECIDED_PROVIDERS.has(name)
-      ? hop.arm === "oauth"
-      : isSubscriptionProvider(name);
-    hop.billing = subscription ? "subscription" : "metered";
+    return {
+      subscription: CREDENTIAL_DECIDED_PROVIDERS.has(name)
+        ? binding?.auth?.arm === "oauth"
+        : isSubscriptionProvider(name),
+    };
   }
 
   /**
@@ -2970,6 +2983,10 @@ export class ComposedHandler implements ModelHandler {
       response,
       adapter,
       claudeRequest,
+      // Decided from the binding this request was finally signed with (a 401
+      // re-sign replaced it above); every leg of a Responses turn signs on
+      // that same arm, or the leg issuer refuses it.
+      this.signedBilling(binding),
       toolNameMap,
       onStreamComplete,
       (code, message) => {
@@ -3245,6 +3262,7 @@ export class ComposedHandler implements ModelHandler {
     response: Response,
     adapter: BaseModelAdapter,
     claudeRequest: any,
+    billing: RequestBilling,
     toolNameMap?: Map<string, string>,
     onComplete?: () => void,
     onApiError?: (code: string, message: string) => void,
@@ -3259,20 +3277,24 @@ export class ComposedHandler implements ModelHandler {
     // same number and is used for COST ONLY; see UsageCacheDetail and
     // `context-window.md`, which records what happens when a reduced count
     // reaches the context accounting (auto-compaction silently disarms).
+    //
+    // `billing` is THIS request's signing decision, passed into every cost
+    // update rather than read from the tracker's pricing lookup, whose
+    // credential-decided answer is the process-wide last-signed arm.
     const onTokenUpdate = (input: number, output: number, detail?: UsageCacheDetail) => {
       const strategy = this.options.tokenStrategy || "standard";
       switch (strategy) {
         case "accumulate-both":
-          this.tokenTracker.accumulateBoth(input, output, detail);
+          this.tokenTracker.accumulateBoth(input, output, detail, billing);
           break;
         case "delta-aware":
-          this.tokenTracker.updateWithDelta(input, output, detail);
+          this.tokenTracker.updateWithDelta(input, output, detail, billing);
           break;
         case "local":
           this.tokenTracker.updateLocal(input, output, detail);
           break;
         default:
-          this.tokenTracker.update(input, output, detail);
+          this.tokenTracker.update(input, output, detail, billing);
           break;
       }
       // Fire onComplete after token update so recordStats() sees the final token counts.
@@ -3366,7 +3388,7 @@ export class ComposedHandler implements ModelHandler {
           // Earlier legs of a retried turn: cost only, before the stats snapshot
           // that onTokenUpdate fires.
           onExtraBilledInput: (input, detail) =>
-            this.tokenTracker.addBilledInputTokens(input, detail),
+            this.tokenTracker.addBilledInputTokens(input, detail, billing),
           onTurnSummary: responsesTurn?.onTurnSummary,
           codeMode: responsesTurn?.codeMode,
         });
