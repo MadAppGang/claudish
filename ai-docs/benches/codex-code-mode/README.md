@@ -100,8 +100,7 @@ madbench madbench.yaml --harness mock           # offline dry run
 The real run, in a visible terminal (not piped, not backgrounded):
 
 ```bash
-CODEX_CODE_MODE_KEEP_LOGS=<dir> \
-  madbench madbench.yaml --concurrency 4 --trials 5 --report-json <out.json>
+madbench madbench.yaml --concurrency 4 --trials 5 --report-json <out.json>
 ```
 
 - **Concurrency needs a claudish build with `1066489b`** (see "Concurrency" below). An older
@@ -176,9 +175,6 @@ the `relayed= resumed= lost=` tally), so most failures can be read straight from
 
 ## Keeping the logs
 
-An `exec` Check keeps its output only on failure, and madbench deletes the workspace after the run,
-so a passing Check keeps none of the log lines it passed on. Until madbench keeps that output in the
-report (MadAppGang/madbench#142), the `provenance` Check carries a TEMPORARY first
-line: with `CODEX_CODE_MODE_KEEP_LOGS=<dir>` set it copies `logs/claudish_*.log` and
-`claudish-provenance.txt` to `<dir>/<workspace name>/`. Match a folder to its Scenario with the
-report's `.results[].session.work_dir`. Delete that line when madbench ships the feature.
+madbench deletes the workspace after the run, but an `exec` Check keeps its command's output in the
+report's Evidence whether it passes or fails (MadAppGang/madbench#142). The log lines a Check passed
+on are therefore in the report itself; read them there.

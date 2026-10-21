@@ -88,17 +88,7 @@ scenarios:
         type: exec
         metric: provenance
         # The shim ran, so this worktree's dist/index.js is what claudish was.
-        #
-        # TEMPORARY — the first line of this cmd stands in for
-        # MadAppGang/madbench#142 (exec: keep the command's output in Evidence
-        # when the Check passes; README.md, "Keeping the logs"). Delete it when
-        # madbench ships it. An exec Check records its output only on failure and the
-        # workspace is deleted after the run, so a PASS keeps none of the log
-        # lines that proved it. With CODEX_CODE_MODE_KEEP_LOGS=<dir> set, the
-        # logs are copied to <dir>/<workspace name>/ (map it to a Scenario by
-        # the report's session.work_dir). Unset, it does nothing.
         cmd: |
-          if [ -n "${CODEX_CODE_MODE_KEEP_LOGS:-}" ]; then d="$CODEX_CODE_MODE_KEEP_LOGS/$(basename "$PWD")"; mkdir -p "$d" && cp claudish-provenance.txt logs/claudish_*.log "$d/" 2>/dev/null; fi
           cat claudish-provenance.txt && grep -q "^dist=/.*/packages/cli/dist/index.js$" claudish-provenance.txt && grep -q "^version=claudish version " claudish-provenance.txt
 
   # ── auto: code mode by discovery, the D1 regression ─────────────────────────
