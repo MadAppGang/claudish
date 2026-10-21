@@ -1098,7 +1098,10 @@ wait $child
           await until(() => ctl.calls.length === 1, "settle()");
           const t0 = Date.now();
           const end = await c.terminal();
-          expect(Date.now() - t0).toBeLessThan(1_000);
+          // The anomaly below names the watchdog as the cause; this bound only separates the
+          // 300 ms watchdog (plus the turn's own finish, 1074 ms on a loaded CI runner) from a
+          // hold left to the 30 s default.
+          expect(Date.now() - t0).toBeLessThan(2_000);
           expect(end.state).toBe("COMPLETED");
           expect(c.anomalies()).toContain("hook_hold_watchdog");
           expect(ctl.calls[0]?.signal.reason).toBe("watchdog");

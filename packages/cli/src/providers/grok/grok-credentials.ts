@@ -400,6 +400,14 @@ function persistRefreshedToken(
  */
 let refreshInFlight: Promise<string> | null = null;
 
+/** The refresh ceiling: TOKEN_REFRESH_TIMEOUT_MS, unless a test shortens it. */
+let refreshTimeoutMs = TOKEN_REFRESH_TIMEOUT_MS;
+
+/** Shorten the refresh ceiling (tests only). Pass `null` to restore TOKEN_REFRESH_TIMEOUT_MS. */
+export function setGrokRefreshTimeoutForTesting(ms: number | null): void {
+  refreshTimeoutMs = ms ?? TOKEN_REFRESH_TIMEOUT_MS;
+}
+
 /**
  * Exchange the refresh token for a new access token and persist the result.
  *
@@ -426,7 +434,7 @@ async function performRefresh(cred: GrokCredential): Promise<string> {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
       // Bounds the single-flight latch below — see TOKEN_REFRESH_TIMEOUT_MS.
-      signal: AbortSignal.timeout(TOKEN_REFRESH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(refreshTimeoutMs),
     });
   } catch (error) {
     // A network failure is NOT terminal — it can self-heal, so let the normal

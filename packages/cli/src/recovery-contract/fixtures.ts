@@ -438,7 +438,9 @@ export interface StartProxyOptions {
 
 /**
  * Start a real proxy against a temp config file, exactly as `proxy-server.test.ts`
- * does — the config-file override, never a write to the developer's real config.
+ * does — the config-file override, never a write to the developer's real config, and
+ * no catalog warm: the fixtures are declared endpoints, and the warm fetches the live
+ * catalog service (about 8 s on a CI runner), which the first request then waits on.
  */
 export async function startProxy(
   config: Record<string, unknown>,
@@ -448,6 +450,8 @@ export async function startProxy(
   const configPath = join(dir, "config.json");
   writeFileSync(configPath, JSON.stringify(config), "utf8");
   setConfigFileOverride(configPath);
+  const restoreCatalogWarm = envSnapshot(["CLAUDISH_DISABLE_CATALOG_WARM"]);
+  process.env.CLAUDISH_DISABLE_CATALOG_WARM = "1";
 
   const captured: string[] = [];
   const realWrite = process.stderr.write.bind(process.stderr);
@@ -467,6 +471,7 @@ export async function startProxy(
   } catch (err) {
     if (options.captureStderr) process.stderr.write = realWrite;
     setConfigFileOverride(null);
+    restoreCatalogWarm();
     rmSync(dir, { recursive: true, force: true });
     throw err;
   }
@@ -481,6 +486,7 @@ export async function startProxy(
         await proxy.shutdown();
       } finally {
         setConfigFileOverride(null);
+        restoreCatalogWarm();
         rmSync(dir, { recursive: true, force: true });
       }
     },

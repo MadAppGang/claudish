@@ -31,117 +31,135 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: typecheck · lint · hermetic tests
-    # macOS, not ubuntu — deliberate. Measured on ubuntu-latest (run
-    # 31173939734): the credential-equivalence suite and the magmux e2e fail
-    # wholesale because claudish's credential authority reaches for macOS
-    # facilities (keychain, `ioreg` screen-lock probe) and the magmux bridge
-    # binary is a macOS artifact the release workflow downloads separately.
-    # The suite has only ever been developed and run on darwin. Gating on the
-    # platform it is actually written for gives a HONEST signal; gating on
-    # ubuntu would mean permanently-red checks people learn to ignore.
-    # Linux portability of the test suite is a separate piece of work.
-    runs-on: macos-latest
+  # The hermetic suite is cut into slices that run at the same time, so the gate takes as
+  # long as its slowest slice, not as long as the whole suite (about 25 minutes run whole).
+  # packages/cli/scripts/ci-tests.ts owns the file list, the groups and the slices; the
+  # slices are balanced by scripts/ci-test-times.json (refresh it from these jobs' junit:
+  # `bun scripts/ci-tests.ts --update-times junit-*.xml`).
+  #
+  # WHERE EACH GROUP RUNS, measured on PR #328 (run 39545203694):
+  # - idle (recovery ladders, the grok refresh ceiling) passes 54/54 on ubuntu and is CPU-idle,
+  #   so it runs there, in three slices.
+  # - pane (real magmux panes) and rest stay on macOS: on ubuntu-latest pane fails 23 tests
+  #   and rest 11 (credential, keychain and platform paths written for darwin).
+  # The org is on the free plan: 5 macOS jobs at once across every repo, against 20 Linux
+  # ones. So macOS runs two pane runners with three slices each as concurrent processes (the
+  # pane slices mostly wait on magmux's fixed send windows, not on CPU), and rest on a third:
+  # beside three pane slices on 3 vCPUs its 352-file load pushed pane timing bounds over.
+  #
+  # Every bun is the PINNED 1.3.10, not `latest`. Measured on run 31174096977: a newer bun's
+  # `bun install` REWRITES packages/cli/package.json (expanding the `files` array), which
+  # biome then fails as a format error. `latest` also lets a bun release break CI overnight.
+  #
+  # CLAUDISH_SKIP_LIVE_E2E is REQUIRED wherever tests run. mcp-session/e2e-sessions.test.ts
+  # probes for a usable Claude Code at MODULE LOAD by spawning `claude --version` and
+  # awaiting only its `exit` event. A runner has no `claude`, so spawn emits `error`, the
+  # promise never settles, and the suite hangs until the job is killed (run 31172281077).
+  #
+  # CLAUDISH_DISABLE_CATALOG_WARM keeps the live catalog service out of the gate. Files that
+  # do not set it start a background fetch of the production catalog (queryModels, ~8 s on a
+  # runner), and when it lands it can replace another file's test catalog: route() answered
+  # no-route in run 39550893135. Every test that needs a warm sets its own env; the rest
+  # group passes 5318/5318 with this set. Other live calls (provider model lists, codeium)
+  # remain and are tracked separately.
+  static:
+    name: typecheck · lint
+    runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v5
-
-      # PINNED, not `latest`. Measured on run 31174096977: a newer bun's
-      # `bun install` REWRITES packages/cli/package.json (expanding the `files`
-      # array), which biome then fails as a format error — a red gate caused by
-      # an upstream release rather than by the code under test. `latest` also
-      # means a bun release can break CI overnight with no commit to blame.
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.10"
-
-      # Root install — `workspaces: ["packages/*"]`, so this covers cli AND
-      # macos-bridge. The root scripts below span both packages; running
-      # `--cwd packages/cli` instead would silently drop macos-bridge.
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      # The pane suites run against the SAME magmux the release ships: the tag and
-      # checksums in .github/magmux.env, which release.yml reads too. The Homebrew
-      # tap served whatever was current, so CI could go green against 0.15 while
-      # 0.14.0 shipped untested. Installed to /usr/local/bin, a path
-      # findMagmuxForTest() and the launcher both search (no Homebrew copy exists on
-      # the runner, so nothing earlier in the search shadows it).
-      - name: Install the pinned magmux (pane suites)
-        run: |
-          set -a; . .github/magmux.env; set +a
-          ARCH=$(uname -m); case "$ARCH" in (arm64|aarch64) ARCH=arm64;; (x86_64) ARCH=amd64;; esac
-          ASSET="magmux_darwin_${ARCH}.tar.gz"
-          WANT=$(eval echo "\$MAGMUX_SHA256_darwin_${ARCH}")
-          gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --dir /tmp
-          echo "${WANT}  /tmp/${ASSET}" | shasum -a 256 -c -
-          tar xzf "/tmp/${ASSET}" -C /tmp
-          sudo install -m 0755 /tmp/magmux /usr/local/bin/magmux
-          magmux --version | grep -q "${MAGMUX_TAG#v}" || { echo "installed magmux is not ${MAGMUX_TAG}"; magmux --version; exit 1; }
-        env:
-          GH_TOKEN: ${{ github.token }}
-
+      # Root install — `workspaces: ["packages/*"]`, so this covers cli AND macos-bridge.
+      - run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run typecheck
-
-      # Fails on ERRORS only. The suite currently carries ~797 warnings
-      # (noExplicitAny, noExcessiveCognitiveComplexity) which are pre-existing
-      # style debt, not defects — biome exits 0 for those, so this gate catches
-      # genuine regressions without demanding a 300-file cleanup first.
+      # Fails on ERRORS only. The ~800 warnings (noExplicitAny,
+      # noExcessiveCognitiveComplexity) are pre-existing style debt, which biome exits 0 for.
       - name: Lint
         run: bun run lint
 
-      # CLAUDISH_SKIP_LIVE_E2E is REQUIRED here, and not just an optimisation.
-      # mcp-session/e2e-sessions.test.ts probes for a usable Claude Code at MODULE
-      # LOAD by spawning `claude --version` and awaiting only its `exit` event.
-      # A runner has no `claude` binary, so spawn emits `error` instead, the
-      # promise never settles, and the whole suite hangs until the job is
-      # killed (observed: >12 min on run 31172281077 before cancellation).
-      # The file's own flag short-circuits that probe.
-      #
-      # The timeout is the backstop: a hang should fail in 25 minutes, not burn a
-      # 6-hour runner slot. "A healthy run is ~60s" stopped being true long ago:
-      # measured locally (M-series, 2026-10-06) packages/cli alone takes 697 s
-      # before the pane suites and 832-846 s with them (bun 1.4.0 and the pinned
-      # 1.3.10), already past 10 minutes; the recovery-contract black-box suites
-      # and the real-magmux pane suites dominate. On the CI runner main took 1088 s
-      # (2026-10-20, run 39383777717) and the gated-delivery suite for magmux's input
-      # gate adds ~310 s, so ~26 minutes; 40 minutes leaves ~1.5x headroom.
-      #
-      # src/hooks/blind is EXCLUDED here and runs in the blind-hooks job below.
-      # This is the root `bun run test` spelled out, because Bun 1.3.10 has no way
-      # to ignore a path: no --path-ignore-patterns flag, and bunfig's
-      # test.pathIgnorePatterns is not read (both measured on 1.3.10). So the cli
-      # files are listed explicitly, with Bun's own test-file name rule, and the
-      # list must not come back empty. They are passed WITHOUT a leading `./`: Bun
-      # then reads them as filters on its own discovery and keeps a bare `bun
-      # test`'s file order (measured: same 431 files, same order). `./` paths run
-      # in argument order instead, and a few suites share process state across
-      # files, so a new order is a new suite.
-      - name: Hermetic tests
-        shell: bash
+  idle:
+    name: hermetic · idle ${{ matrix.slice }}/3
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3]
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      - name: Tests
+        working-directory: packages/cli
+        run: bun scripts/ci-tests.ts --run idle@${{ matrix.slice }}/3 -- --reporter=junit --reporter-outfile=junit-{label}.xml
+        timeout-minutes: 10
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: junit-idle-${{ matrix.slice }}
+          path: packages/cli/junit-*.xml
+
+  hermetic:
+    name: hermetic · macOS ${{ matrix.runner }}/3
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: 1
+            runs: pane@1/6,pane@2/6,pane@3/6
+          - runner: 2
+            runs: pane@4/6,pane@5/6,pane@6/6
+          - runner: 3
+            runs: rest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CLAUDISH_SKIP_LIVE_E2E: "1"
+      CLAUDISH_DISABLE_CATALOG_WARM: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      - run: bun install --frozen-lockfile
+      # The pane suites run against the SAME magmux the release ships (.github/magmux.env).
+      - uses: ./.github/actions/install-magmux
+        with:
+          token: ${{ github.token }}
+      # --max-concurrency bounds each process's concurrent tests (Bun's default is 20). The
+      # runner has 3 vCPUs and runs several processes: at 20, pane-hooks' concurrent describes
+      # boot 20 panes beside the other slices and miss their settle bounds (run 39547642291).
+      - name: Tests (${{ matrix.runs }})
+        working-directory: packages/cli
+        run: bun scripts/ci-tests.ts --run ${{ matrix.runs }} -- --max-concurrency=8 --reporter=junit --reporter-outfile=junit-{label}.xml
+        timeout-minutes: 15
+      - name: macos-bridge and script tests
+        if: matrix.runner == 3
         run: |
-          cd packages/cli
-          FILES=$(find . -name node_modules -prune -o -path ./src/hooks/blind -prune -o -type f -print \
-            | grep -E '(\.test|_test_|\.spec|_spec_)[^/]*\.[cm]?[jt]sx?$' | sed 's|^\./||')
-          [ -n "$FILES" ] || { echo "no cli test files found"; exit 1; }
-          # shellcheck disable=SC2086  # one argument per file; no path holds a space
-          bun test $FILES
-          cd ../..
           bun run --cwd packages/macos-bridge test
           bun test ./scripts/*.test.ts
-        timeout-minutes: 40
-        env:
-          CLAUDISH_SKIP_LIVE_E2E: "1"
+        timeout-minutes: 5
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: junit-macos-${{ matrix.runner }}
+          path: packages/cli/junit-*.xml
 
   # The blind hook tests, on Bun 1.4.0 instead of the pinned 1.3.10. Two of them
   # fail on 1.3.10 because of bugs in Bun's TEST client, not in claudish, and pass
   # 20 of 20 on 1.4.0 (reproduced on 1.3.10 with no claudish code in the loop):
   # C-17, a fetch reader.cancel() that never closes the connection, and X-12, a
   # paused-then-resumed node:child_process reader that drops every byte. The
-  # blind TYPECHECK stays in the job above, under the pinned Bun. This job does
+  # blind TYPECHECK stays in the static job, under the pinned Bun. This job does
   # not lint, so a newer bun rewriting packages/cli/package.json on install does
   # not matter here.
   blind-hooks:
@@ -159,21 +177,10 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Same pinned magmux as the job above, so the blind tests run in the same
-      # environment the hermetic job gives the rest of the suite.
-      - name: Install the pinned magmux (pane suites)
-        run: |
-          set -a; . .github/magmux.env; set +a
-          ARCH=$(uname -m); case "$ARCH" in (arm64|aarch64) ARCH=arm64;; (x86_64) ARCH=amd64;; esac
-          ASSET="magmux_darwin_${ARCH}.tar.gz"
-          WANT=$(eval echo "\$MAGMUX_SHA256_darwin_${ARCH}")
-          gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --dir /tmp
-          echo "${WANT}  /tmp/${ASSET}" | shasum -a 256 -c -
-          tar xzf "/tmp/${ASSET}" -C /tmp
-          sudo install -m 0755 /tmp/magmux /usr/local/bin/magmux
-          magmux --version | grep -q "${MAGMUX_TAG#v}" || { echo "installed magmux is not ${MAGMUX_TAG}"; magmux --version; exit 1; }
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # Same pinned magmux as the hermetic jobs, so the blind tests run in the same environment.
+      - uses: ./.github/actions/install-magmux
+        with:
+          token: ${{ github.token }}
 
       - name: Blind hook tests
         working-directory: packages/cli
@@ -184,7 +191,7 @@ jobs:
 
   # S1: a user hook module (.ts type import, .ts value import through the
   # Bun.plugin virtual module, .js) loads from a `--target bun` bundle and from a
-  # `--compile` binary. The hermetic job above runs the same test on macOS with
+  # `--compile` binary. The hermetic jobs run the same test on macOS with
   # the pinned 1.3.10; this job runs it on every OS/arch release.yml builds a
   # binary for, with the Bun release.yml builds with (`latest`), because that is
   # the binary magus installs. The test imports no dependency, so there is no

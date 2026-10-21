@@ -1,0 +1,26 @@
+name: Install the pinned magmux
+description: >
+  Installs the magmux release pinned in .github/magmux.env (the one release.yml ships) to
+  /usr/local/bin, after checking its sha256 against the pin. A path findMagmuxForTest() and the
+  launcher both search; nothing earlier in that search exists on a runner.
+inputs:
+  token:
+    description: GitHub token for gh release download
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -a; . .github/magmux.env; set +a
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m); case "$ARCH" in (arm64|aarch64) ARCH=arm64;; (x86_64) ARCH=amd64;; esac
+        ASSET="magmux_${OS}_${ARCH}.tar.gz"
+        WANT=$(eval echo "\$MAGMUX_SHA256_${OS}_${ARCH}")
+        gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --dir /tmp
+        echo "${WANT}  /tmp/${ASSET}" | shasum -a 256 -c -
+        tar xzf "/tmp/${ASSET}" -C /tmp
+        sudo install -m 0755 /tmp/magmux /usr/local/bin/magmux
+        magmux --version | grep -q "${MAGMUX_TAG#v}" || { echo "installed magmux is not ${MAGMUX_TAG}"; magmux --version; exit 1; }

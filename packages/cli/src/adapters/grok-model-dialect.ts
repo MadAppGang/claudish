@@ -21,7 +21,6 @@ import {
 import {
   acceptsReasoningEffort,
   acceptsReasoningEffortValue,
-  catalogReasoningFor,
   fallbackReasoningEffortValue,
   isReasoningEffortRejection,
   rejectedReasoningEffortValue,
@@ -149,7 +148,7 @@ export class GrokModelDialect extends BaseAPIFormat {
 
     // CATALOG FIRST — same rule OpenAIAPIFormat follows, and for the same
     // measured reason: a name rule is wrong in both directions.
-    const reasoning = catalogReasoningFor(this.modelId);
+    const reasoning = this.lookupReasoningCapability();
     const clamped = reasoning ? this.clampToAdvertisedEffort(effort, reasoning) : undefined;
     if (clamped) {
       value = clamped;
