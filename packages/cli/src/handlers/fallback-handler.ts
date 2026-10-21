@@ -165,12 +165,22 @@ export class FallbackHandler implements ModelHandler {
         // metered included (project owner, 2026-10-21). An expired key must not
         // block the chain, and a metered key the user configured is consent to
         // be billed by it. The move is announced, once per provider and status
-        // (`announceCredentialRejection`). The connection, recovery-hold and
-        // stream-failure verdicts above still answer first, so a network fault
-        // never walks onto metered billing.
+        // (`announceCredentialRejection`). The recovery hold and the
+        // stream-failure marker are returned above, before this point. The 400
+        // arm's connection marker (`x-claudish-connection-error`) is not, so it
+        // is excluded here from BOTH the header case and the body-wording case.
+        // With a credential verdict header it is returned verbatim just below;
+        // without one it reaches `isRetryableError`, which refuses it first, and
+        // it is folded or returned as any other stop. A network fault
+        // therefore never walks onto metered billing, even when its body quotes
+        // an upstream 401 in credential wording.
+        const connectionFault = isClaudishConnectionVerdict(response.headers);
         const verdict = authVerdict(response.headers);
         const subscriptionRejected =
-          verdict === "terminal" && !!provider && isSubscriptionProvider(provider);
+          !connectionFault &&
+          verdict === "terminal" &&
+          !!provider &&
+          isSubscriptionProvider(provider);
         if (verdict && !subscriptionRejected) {
           if (errors.length > 0) {
             logStderr(
@@ -185,7 +195,8 @@ export class FallbackHandler implements ModelHandler {
 
         if (
           subscriptionRejected ||
-          isSubscriptionCredentialRejection(response.status, errorBody, provider)
+          (!connectionFault &&
+            isSubscriptionCredentialRejection(response.status, errorBody, provider))
         ) {
           errors.push({ provider: name, status: response.status, message: errorBody });
           if (!firstRejection) firstRejection = { name, response, body: errorBody };
