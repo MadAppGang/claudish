@@ -123,9 +123,12 @@ jobs:
       - uses: ./.github/actions/install-magmux
         with:
           token: ${{ github.token }}
+      # --max-concurrency bounds each process's concurrent tests (Bun's default is 20). The
+      # runner has 3 vCPUs and runs several processes: at 20, pane-hooks' concurrent describes
+      # boot 20 panes beside the other slices and miss their settle bounds (run 39547642291).
       - name: Tests (${{ matrix.runs }})
         working-directory: packages/cli
-        run: bun scripts/ci-tests.ts --run ${{ matrix.runs }} -- --reporter=junit --reporter-outfile=junit-{label}.xml
+        run: bun scripts/ci-tests.ts --run ${{ matrix.runs }} -- --max-concurrency=8 --reporter=junit --reporter-outfile=junit-{label}.xml
         timeout-minutes: 15
       - name: macos-bridge and script tests
         if: matrix.runner == 2
