@@ -121,6 +121,14 @@ Three diagnostic scripts:
 bun test --cwd . ./packages/cli/src/channel/*.test.ts
 ```
 
-65 tests across 5 files: scrollback-buffer (11), signal-watcher (12), session-manager (21), e2e-channel (15), channel-wire-format (6). The wire-format tests run without an API key by using the fake-claudish PATH shim, so they execute on every CI run.
+68 tests across 5 files: scrollback-buffer (11), signal-watcher (12), session-manager (21), e2e-channel (15), channel-wire-format (9). The wire-format tests run without an API key by using the fake-claudish PATH shim, so they execute on every CI run.
 
 E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for isolation. SessionManager tests use a fake-claudish PATH shim (`channel/test-helpers/fake-claudish.ts`).
+
+### win32 measured counts (bun 1.4.2, 2026-10-20)
+
+**68 tests — 43 pass / 0 fail / 25 skip.** Per file: channel-wire-format 9/0/0 (de-gated by the `claudish.cmd` PATH wrapper), scrollback-buffer 11/0/0, signal-watcher 12/0/0, session-manager 0/0/21, e2e-channel 11/0/4. Skip classes:
+
+- **`posix-path-shim` (21)** — all of session-manager: the `#!/bin/sh` extension-less shim cannot be spawned on win32 (`spawn` resolves `.exe`/`.cmd` only). The wire-format file left this class when it gained a `.cmd` wrapper; what it still gates is session-manager's kill/signal semantics through cmd.exe, unproven until a compiled `.exe` shim lands (#533).
+- **`real-cc-e2e` (3)** — budget opt-in (`CLAUDISH_E2E_REAL_CC=1`), not a machine class: a complete machine does not run these by default.
+- **`OPENROUTER_API_KEY` skipIf (1)** — the e2e SDK lifecycle test, key-gated.

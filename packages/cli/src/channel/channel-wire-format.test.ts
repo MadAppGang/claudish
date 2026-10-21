@@ -37,9 +37,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 const BUN = process.execPath;
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
-import { envDescribe } from "../test-support/env-gate";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -53,13 +52,27 @@ const ORIGINAL_PATH = process.env.PATH ?? "";
 
 beforeAll(() => {
   shimDir = mkdtempSync(join(tmpdir(), "claudish-shim-wireformat-"));
-  const shimPath = join(shimDir, "claudish");
-  writeFileSync(
-    shimPath,
-    `#!/bin/sh\nexec bun run "${FAKE_CLAUDISH_TS}" "$@"\n`,
-    { mode: 0o755 }
-  );
-  process.env.PATH = `${shimDir}:${ORIGINAL_PATH}`;
+  if (process.platform === "win32") {
+    // win32 port of the PATH shim: spawn(shell: false) resolves .cmd, never
+    // an extension-less sh script, so the wrapper is a cmd.exe batch that
+    // re-execs the SAME bun running this suite (process.execPath — the #175
+    // trick: a bare "bun" is an npm shim with no .exe for CreateProcess).
+    // Paths quoted (tmpdir may contain spaces); %* forwards every argument.
+    writeFileSync(
+      join(shimDir, "claudish.cmd"),
+      `@echo off\r\n"${BUN}" run "${FAKE_CLAUDISH_TS}" %*\r\n`,
+    );
+  } else {
+    const shimPath = join(shimDir, "claudish");
+    writeFileSync(
+      shimPath,
+      `#!/bin/sh\nexec bun run "${FAKE_CLAUDISH_TS}" "$@"\n`,
+      { mode: 0o755 }
+    );
+  }
+  // path.delimiter (";" on win32, ":" on POSIX): the hardcoded ":" joined
+  // the shim dir and the inherited PATH into ONE nonexistent entry on win32.
+  process.env.PATH = `${shimDir}${delimiter}${ORIGINAL_PATH}`;
 });
 
 afterAll(() => {
@@ -195,15 +208,12 @@ async function captureSessionFrames(opts: {
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
-envDescribe(
-  {
-    id: "posix-path-shim",
-    active: process.platform !== "win32",
-    reason: "the #!/bin/sh PATH shim (extension-less `claudish`) cannot be spawned on win32 — spawn resolves .exe/.cmd only, so the MCP server under test never launches its fake claudish session",
-    activation: "run on a POSIX host, or port the shim to a claudish.cmd wrapper",
-  },
-  "Channel notification wire format"
-)((test) => {
+// De-gated (was envDescribe "posix-path-shim"): the shim setup above now
+// writes a claudish.cmd wrapper on win32 (spawn resolves .cmd; args and stdio
+// flow through cmd.exe), so this file runs on both platforms. The
+// session-manager and timeout-repro files stay gated — their kill/signal
+// semantics through cmd.exe are unproven (compiled .exe shim is the route).
+describe("Channel notification wire format", () => {
   test(
     "emits well-formed notifications/claude/channel JSON-RPC frames",
     async () => {
@@ -322,6 +332,22 @@ envDescribe(
 
       const ids = new Set(captured.notifications.map((n) => n.params.meta.session_id));
       expect(ids.size).toBe(1);
+    },
+    20_000
+  );
+
+  test(
+    "the PATH shim served: a self-exiting fake session reaches running -> completed",
+    async () => {
+      // Every other test here accepts "failed" as a terminal event, so a shim
+      // that never launches the fake (wrong PATH delimiter, unresolvable
+      // wrapper, bad quoting) still yields well-formed `failed` frames and
+      // passes. fake-claudish `--lines N` exits 0, so only a SERVED shim can
+      // produce this pair -- this pin is what makes the shim load-bearing.
+      const captured = await captureSessionFrames({ shimArgs: ["--lines", "2"] });
+      const events = captured.notifications.map((n) => n.params.meta.event);
+      expect(events).toContain("running");
+      expect(events[events.length - 1]).toBe("completed");
     },
     20_000
   );
