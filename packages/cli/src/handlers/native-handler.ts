@@ -18,6 +18,57 @@ import {
 import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
 import type { ModelHandler } from "./types.js";
 
+/** One SSE line split into its field name and value (one leading space dropped), per the SSE spec. */
+function sseField(line: string): { name: string; value: string } {
+  const bare = line.endsWith("\r") ? line.slice(0, -1) : line;
+  const colon = bare.indexOf(":");
+  if (colon < 0) return { name: bare, value: "" };
+  const value = bare.slice(colon + 1);
+  return { name: bare.slice(0, colon), value: value.startsWith(" ") ? value.slice(1) : value };
+}
+
+/**
+ * Whether one complete SSE event is an error: its FINAL `event:` name is
+ * `error` (the last `event:` field wins, wherever it sits relative to the
+ * data), or its data payload is JSON whose `type` is `"error"` — the shape
+ * Anthropic puts in an error frame even when no `event:` line names it.
+ */
+function isSseErrorEvent(lines: readonly string[]): boolean {
+  let eventName = "";
+  const data: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith(":")) continue; // comment
+    const { name, value } = sseField(line);
+    if (name === "event") eventName = value;
+    else if (name === "data") data.push(value);
+  }
+  if (eventName.trim() === "error") return true;
+  if (data.length === 0) return false;
+  try {
+    const parsed: unknown = JSON.parse(data.join("\n"));
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as { type?: unknown }).type === "error"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The lines of one complete SSE event (each without its "\n"; the blank
+ * separator, when present, is the last), ready to forward. An error event's
+ * `data:` lines carry upstream text that may echo the request's credential, so
+ * each is passed through `redactForClient` (exact-value replacement, so the
+ * JSON stays valid); every other line, and every line of a non-error event, is
+ * returned unchanged, so the framing and the bytes are preserved.
+ */
+export function redactSseErrorEvent(lines: string[]): string[] {
+  if (!isSseErrorEvent(lines)) return lines;
+  return lines.map((line) => (sseField(line).name === "data" ? redactForClient(line) : line));
+}
+
 export class NativeHandler implements ModelHandler {
   private apiKey?: string;
   private baseUrl: string;
@@ -162,35 +213,29 @@ export class NativeHandler implements ModelHandler {
 
                 const decoder = new TextDecoder();
                 const encoder = new TextEncoder();
-                // Bytes after the last newline, held until their line completes:
-                // an `error` event's data line is redacted whole, never in parts.
+                // Bytes after the last newline, held until their line completes.
                 let pending = "";
-                // The current SSE event's name; a blank line ends the event.
-                let eventName = "";
+                // The complete lines of the current SSE event, held until its
+                // blank separator: SSE fixes an event's type only at dispatch,
+                // and `event:` may legally FOLLOW the `data:` it names, so no
+                // line of an event can be forwarded before the whole event is
+                // known (redactSseErrorEvent).
+                let held: string[] = [];
                 let eventLog = "";
 
-                // Every line passes through unchanged except the data lines of
-                // an `error` event, which carry upstream text that may echo the
-                // request's credential (redactForClient). Framing unchanged.
-                const passLine = (line: string): string => {
-                  const bare = line.endsWith("\r") ? line.slice(0, -1) : line;
-                  if (bare === "") {
-                    eventName = "";
-                    return line;
-                  }
-                  if (bare.startsWith("event:")) {
-                    eventName = bare.slice(6).trim();
-                    return line;
-                  }
-                  if (eventName === "error" && bare.startsWith("data:")) {
-                    return redactForClient(line);
-                  }
-                  return line;
-                };
                 const forward = (lines: string[], text: string) => {
                   for (const line of lines) if (line.trim()) eventLog += `${line}\n`;
                   if (cancelled || !text) return;
                   controller.enqueue(encoder.encode(text));
+                };
+                // Forward the held event, plus `tail` (bytes with no newline
+                // yet, only at the end of the stream). Every held line had its
+                // own "\n", so the framing is rebuilt byte for byte.
+                const flushHeld = (tail = "") => {
+                  if (held.length === 0 && !tail) return;
+                  const lines = redactSseErrorEvent(tail ? [...held, tail] : held);
+                  held = [];
+                  forward(lines, tail ? lines.join("\n") : `${lines.join("\n")}\n`);
                 };
 
                 try {
@@ -205,17 +250,30 @@ export class NativeHandler implements ModelHandler {
                       continue;
                     }
                     pending = text.slice(cut + 1);
-                    const lines = text.slice(0, cut).split("\n").map(passLine);
-                    forward(lines, `${lines.join("\n")}\n`);
+                    // Each complete event in this chunk is forwarded as soon as
+                    // its blank separator arrives; an unfinished one stays held.
+                    const lines: string[] = [];
+                    let out = "";
+                    for (const line of text.slice(0, cut).split("\n")) {
+                      held.push(line);
+                      if (line === "" || line === "\r") {
+                        const event = redactSseErrorEvent(held);
+                        held = [];
+                        lines.push(...event);
+                        out += `${event.join("\n")}\n`;
+                      }
+                    }
+                    forward(lines, out);
                   }
-                  const tail = pending + decoder.decode();
-                  if (tail) {
-                    const line = passLine(tail);
-                    forward([line], line);
-                  }
+                  flushHeld(pending + decoder.decode());
                   if (eventLog) log(eventLog);
                   if (!cancelled) controller.close();
                 } catch (e) {
+                  // The lines already read are forwarded, as they were before
+                  // events were held; the incomplete line is dropped.
+                  try {
+                    flushHeld();
+                  } catch {}
                   if (eventLog) log(eventLog);
                   log(`[Native] Stream Error: ${redactForClient(String(e))}`);
                   if (!cancelled) {
