@@ -278,6 +278,8 @@ export function noLoginPhrase(source: { reason: ChildAuthSource; where: string }
       return `a Claude Code settings file (${source.where}) names an apiKeyHelper`;
     case "custom-headers":
       return `ANTHROPIC_CUSTOM_HEADERS (${source.where}) sets an auth header`;
+    case "settings-unreadable":
+      return `a ${source.where} value Claude Code receives could not be read, so its auth cannot be ruled out`;
   }
 }
 

@@ -330,6 +330,9 @@ export function isProxyAuthMode(config: ClaudishConfig): boolean {
  *   sends its output as a bearer AND as `x-api-key`.
  * - `custom-headers`: ANTHROPIC_CUSTOM_HEADERS (the environment or a settings
  *   `env` block) carries an `Authorization` or `x-api-key` header.
+ * - `settings-unreadable`: a `--settings` value the child receives verbatim
+ *   could not be read or parsed by claudish, so what it sets is unknown.
+ *   Unknown provenance is never treated as controlled.
  */
 export type ChildAuthSource =
   | "proxy-auth"
@@ -338,7 +341,8 @@ export type ChildAuthSource =
   | "settings-auth-token"
   | "settings-api-key"
   | "api-key-helper"
-  | "custom-headers";
+  | "custom-headers"
+  | "settings-unreadable";
 
 /**
  * Whether claudish controls the child's Anthropic auth, so that a bearer
@@ -379,8 +383,9 @@ export interface ChildAuthControlDeps {
  *   3. ANTHROPIC_CUSTOM_HEADERS carries no auth header;
  *   4. no Claude Code settings layer claudish can read — managed settings, the
  *      user file (and `$CLAUDE_CONFIG_DIR/settings.json`), the project and
- *      project-local files, and the `--settings` value — names an
- *      `apiKeyHelper` or sets an Anthropic credential in its `env` block.
+ *      project-local files, and every `--settings` value in either spelling —
+ *      names an `apiKeyHelper` or sets an Anthropic credential in its `env`
+ *      block, and no `--settings` value the child receives is unreadable.
  *
  * What it cannot see, and therefore does not claim: settings delivered by a
  * mechanism claudish does not read (an MDM profile, a file Claude Code adds
@@ -411,10 +416,39 @@ export function childAuthControl(
     return { controlled: false, reason: "custom-headers", where: "environment" };
   }
   for (const { where, settings } of readableClaudeSettingsLayers(config, env, deps)) {
-    const reason = settingsAuthSource(settings);
+    const reason = settings === null ? "settings-unreadable" : settingsAuthSource(settings);
     if (reason) return { controlled: false, reason, where };
   }
   return { controlled: true };
+}
+
+/** One `--settings` occurrence in the passthrough args, in either spelling. */
+interface SettingsArgOccurrence {
+  /** Index of the flag token in the args. */
+  index: number;
+  /** The value; undefined when the flag is the last token. */
+  value: string | undefined;
+  /** `separate` = `--settings <v>` (two tokens); `inline` = `--settings=<v>`. */
+  spelling: "separate" | "inline";
+}
+
+/**
+ * Every `--settings` occurrence in argv order, in both spellings Claude Code
+ * accepts. `--settings=<v>` is split on the first `=` only, so a value that
+ * itself contains `=` survives.
+ */
+function settingsArgOccurrences(args: readonly string[]): SettingsArgOccurrence[] {
+  const out: SettingsArgOccurrence[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const token = args[index];
+    if (token === "--settings") {
+      out.push({ index, value: args[index + 1], spelling: "separate" });
+      index++; // the next token is this flag's value, never a flag of its own
+    } else if (token.startsWith("--settings=")) {
+      out.push({ index, value: token.slice("--settings=".length), spelling: "inline" });
+    }
+  }
+  return out;
 }
 
 /** True when an ANTHROPIC_CUSTOM_HEADERS value (one `Name: value` per line) sets an auth header. */
@@ -452,15 +486,25 @@ function settingsAuthSource(settings: Record<string, unknown>): ChildAuthSource 
 }
 
 /**
- * Every Claude Code settings layer claudish can read for this launch, parsed;
- * a missing, unreadable or malformed one is skipped (Claude Code does not
- * apply a file it cannot parse either). `where` is the path, or `--settings`.
+ * Every Claude Code settings layer claudish can read for this launch, parsed.
+ * A missing, unreadable or malformed settings FILE is skipped (Claude Code does
+ * not apply a file it cannot parse either). `where` is the path, or `--settings`.
+ *
+ * `--settings` values follow the launcher exactly (`runClaudeWithProxy`):
+ * `mergeUserSettingsIfPresent` takes only the FIRST two-token `--settings <v>`
+ * (`indexOf`), merges it into claudish's temp file and splices it out — when it
+ * cannot be parsed it is dropped, so the child never sees it and it is skipped
+ * here too. Every other occurrence (a later `--settings <v>`, any
+ * `--settings=<v>`) is forwarded to the child verbatim with the passthrough
+ * args, so each one is inspected, and one claudish cannot read or parse is
+ * returned with `settings: null` — the child may still apply it, and unknown
+ * provenance never counts as controlled (A1).
  */
 function readableClaudeSettingsLayers(
   config: ClaudishConfig,
   env: NodeJS.ProcessEnv,
   deps: ChildAuthControlDeps
-): Array<{ where: string; settings: Record<string, unknown> }> {
+): Array<{ where: string; settings: Record<string, unknown> | null }> {
   const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
   const home = deps.home ?? homedir();
   const cwd = deps.cwd ?? process.cwd();
@@ -471,15 +515,22 @@ function readableClaudeSettingsLayers(
     join(cwd, ".claude", "settings.json"),
     join(cwd, ".claude", "settings.local.json"),
   ];
-  const layers: Array<{ where: string; settings: Record<string, unknown> }> = [];
+  const layers: Array<{ where: string; settings: Record<string, unknown> | null }> = [];
   for (const file of files) {
     const settings = readSettingsSource(file, readFile);
     if (settings) layers.push({ where: file, settings });
   }
-  const idx = config.claudeArgs?.indexOf("--settings") ?? -1;
-  const value = idx === -1 ? undefined : config.claudeArgs[idx + 1];
-  const fromArg = value ? readSettingsSource(value, readFile) : null;
-  if (fromArg) layers.push({ where: "--settings", settings: fromArg });
+  const occurrences = settingsArgOccurrences(config.claudeArgs ?? []);
+  const merged = occurrences.find((o) => o.spelling === "separate");
+  occurrences.forEach((occurrence, i) => {
+    // `where` never carries the value: an inline `--settings` may hold a secret.
+    const where = occurrences.length > 1 ? `--settings (occurrence ${i + 1})` : "--settings";
+    // Merge's own guard: a missing or empty value is neither merged nor read.
+    if (!occurrence.value) return;
+    const settings = readSettingsSource(occurrence.value, readFile);
+    if (occurrence === merged && !settings) return; // dropped by the merge
+    layers.push({ where, settings });
+  });
   return layers;
 }
 
