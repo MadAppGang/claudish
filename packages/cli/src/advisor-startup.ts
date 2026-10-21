@@ -445,6 +445,18 @@ export function decideAdvisorStartup(facts: AdvisorLaunchFacts): AdvisorStartupD
       "subscription hops draw on the plan's allowance, metered hops bill per token; " +
       "routing keeps using the last hop that served"
   );
+  // Planning ran main routing's credential filter for every routed member:
+  // each candidate the chain keeps had its key resolved once, now, not on first
+  // use (advisor.md, "Credentials are resolved at launch").
+  const routedMembers = [...facts.panelPlans, ...(cp ? [cp] : [])].some(
+    (plan) => plan.kind === "routed"
+  );
+  if (routedMembers) {
+    notice.push(
+      "  credentials: each routed advisor model's chain had its keys resolved at launch, " +
+        "including fallback hops (1Password or Keychain may have been asked once)"
+    );
+  }
 
   const plans = new Map<string, AdvisorModelPlan>();
   for (const plan of facts.panelPlans) plans.set(advisorChainKey("panel", plan.spec), plan);
