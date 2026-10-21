@@ -10,6 +10,7 @@
 import { mkdirSync } from "fs";
 import { writeFile } from "fs/promises";
 import { inboundKeyFor } from "../../handlers/shared/inbound-keys.js";
+import { HOPS_HEADER } from "../server/relay.js";
 
 // Capture writes are FIRE-AND-FORGET on purpose. The old writeFileSync stalled the
 // ENTIRE event loop on every request (Bun is single-threaded) — over a Docker
@@ -152,6 +153,19 @@ export function logRequest(
   // the capture side is what the traffic-*.ps1 analysis scripts attribute by.
   const machine = req.headers.get("x-claudish-machine") || "";
 
+  // #566 — the relay's hop chain (the same header #156/#279 appends for loop
+  // detection), captured so a relayed request is distinguishable from a direct
+  // one after the fact. `src` cannot answer that: a LAN relay hop leaves no
+  // X-Forwarded-For, so both land as `src=direct`. Ids only — each entry is a
+  // proxy process's instance id, which names WHICH sidecar forwarded the
+  // request. Sanitized and bounded: the value is client-supplied, and captures
+  // are written to disk and read back by the traffic-*.ps1 analyzers.
+  const hops = (req.headers.get(HOPS_HEADER) || "")
+    .split(",")
+    .map((h) => h.trim().replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 64))
+    .filter(Boolean)
+    .slice(0, 8);
+
   // #400 — scoped inbound keys attribute by KEY NAME, not IP (an external's IP
   // is dynamic; the name is stable and revocation-scoped). Marked by the auth
   // middleware off the same raw Request object.
@@ -172,7 +186,27 @@ export function logRequest(
     const safeSrc = src.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const file = `${captureDir}/req-${process.pid}-${String(n).padStart(4, "0")}-${ts}-${safeSrc}.json`;
-    const payload = JSON.stringify({ ts, src, machine, ...(inboundKey ? { inbound_key: inboundKey } : {}), model, pid: process.pid, ...extractAttributionFields(body), body });
+    // `hops` is ALWAYS written — `[]` on a direct request — so the corpus stays
+    // readable three ways: `[]` = direct, non-empty = relayed by that sidecar,
+    // key ABSENT = capture written before #566 (unknown, not "direct"). Omitting
+    // the key would make the first two indistinguishable from the third.
+    //
+    // Order matters: `hops` comes AFTER model/pid/attribution, just before the
+    // body. It is a client-supplied value, and the leak-policy method reads
+    // attribution from the head of the capture (machine + model within the
+    // first 300-400 bytes) — seating it earlier lets a long fake chain push
+    // `model` out of that window (measured: offset 73 → 618).
+    const payload = JSON.stringify({
+      ts,
+      src,
+      machine,
+      ...(inboundKey ? { inbound_key: inboundKey } : {}),
+      model,
+      pid: process.pid,
+      ...extractAttributionFields(body),
+      hops,
+      body,
+    });
     // Never block the request path: fire-and-forget with a silent catch.
     writeFile(file, payload).catch((e) => {
       process.stdout.write(`  [capture] error: ${String(e)}\n`);

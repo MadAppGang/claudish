@@ -223,6 +223,116 @@ describe("request-logger capture (fork)", () => {
     expect(json.workload).toBeUndefined();
     expect(json.device_id8).toBeUndefined();
   });
+
+  it("records the relay hop chain so relayed vs direct is measurable after the fact (#566)", async () => {
+    mkdirSync(capDir, { recursive: true });
+    process.env.CLAUDISH_CAPTURE_DIR = capDir;
+
+    logRequest(
+      { model: "claude-haiku-4-5-20251001", messages: [] },
+      "test-handler",
+      mkRequest({ "x-claudish-machine": "myia-test", "x-claudish-hops": "node-a,node-b" }),
+      new WeakMap()
+    );
+
+    const file = await waitForCapture(capDir);
+    expect(file).not.toBeNull();
+    const json = JSON.parse(readFileSync(file!, "utf8"));
+    // ids only, in order, split off the header the relay appends (#156/#279)
+    expect(json.hops).toEqual(["node-a", "node-b"]);
+  });
+
+  it("writes `hops: []` when the request carried no relay hop (#566)", async () => {
+    mkdirSync(capDir, { recursive: true });
+    process.env.CLAUDISH_CAPTURE_DIR = capDir;
+
+    logRequest(
+      { model: "claude-haiku-4-5-20251001", messages: [] },
+      "test-handler",
+      mkRequest({ "x-claudish-machine": "myia-test" }),
+      new WeakMap()
+    );
+
+    const file = await waitForCapture(capDir);
+    expect(file).not.toBeNull();
+    const json = JSON.parse(readFileSync(file!, "utf8"));
+    // `[]` = direct. It must be PRESENT: omitting the key would make a direct
+    // request indistinguishable from a capture written before #566, which is
+    // exactly the blind spot the issue opened with.
+    expect(json.hops).toEqual([]);
+  });
+
+  it("keeps model inside the head window even with a maximal client hop chain (#566 B2)", async () => {
+    mkdirSync(capDir, { recursive: true });
+    process.env.CLAUDISH_CAPTURE_DIR = capDir;
+
+    logRequest(
+      { model: "claude-opus-5-5", messages: [] },
+      "test-handler",
+      mkRequest({
+        "x-claudish-machine": "myia-test",
+        // the worst case the sanitizer admits: 8 ids of 64 chars
+        "x-claudish-hops": Array.from({ length: 8 }, (_, i) => String(i).repeat(64)).join(","),
+      }),
+      new WeakMap()
+    );
+
+    const file = await waitForCapture(capDir);
+    expect(file).not.toBeNull();
+    const raw = readFileSync(file!, "utf8");
+    const json = JSON.parse(raw);
+    // The leak-policy attribution method reads machine+model from the first
+    // 300-400 bytes. A client-supplied value must not be able to push `model`
+    // out of that window (measured 618 before the reorder).
+    expect(raw.indexOf('"model":"')).toBeLessThan(400);
+    expect(json.hops.length).toBe(8);
+  });
+
+  it("sanitizes client-supplied hop values instead of echoing the header verbatim (#566)", async () => {
+    mkdirSync(capDir, { recursive: true });
+    process.env.CLAUDISH_CAPTURE_DIR = capDir;
+
+    logRequest(
+      { model: "claude-haiku-4-5-20251001", messages: [] },
+      "test-handler",
+      mkRequest({
+        // A client can set any header: quotes/commas/newlines must not reach
+        // the capture file, and an over-long id is bounded.
+        "x-claudish-hops": '  evil"id  , ,<script>,' + "z".repeat(200),
+      }),
+      new WeakMap()
+    );
+
+    const file = await waitForCapture(capDir);
+    expect(file).not.toBeNull();
+    const json = JSON.parse(readFileSync(file!, "utf8"));
+    expect(json.hops).toEqual(["evilid", "script", "z".repeat(64)]);
+    // the raw header text never lands in the file
+    expect(readFileSync(file!, "utf8")).not.toContain("<script>");
+  });
+
+  it("writes no header material other than the documented attribution fields (#566)", async () => {
+    mkdirSync(capDir, { recursive: true });
+    process.env.CLAUDISH_CAPTURE_DIR = capDir;
+
+    logRequest(
+      { model: "claude-haiku-4-5-20251001", messages: [] },
+      "test-handler",
+      mkRequest({
+        authorization: "Bearer sk-secret-must-not-be-captured",
+        "x-proxy-key": "cluster-key-must-not-be-captured",
+        "x-claudish-hops": "node-a",
+      }),
+      new WeakMap()
+    );
+
+    const file = await waitForCapture(capDir);
+    expect(file).not.toBeNull();
+    const raw = readFileSync(file!, "utf8");
+    // Echoing request headers wholesale would ship credentials to disk.
+    expect(raw).not.toContain("sk-secret-must-not-be-captured");
+    expect(raw).not.toContain("cluster-key-must-not-be-captured");
+  });
 });
 
 // Pinning of the stdout `[Request]` line — the contract the RSM consumer
