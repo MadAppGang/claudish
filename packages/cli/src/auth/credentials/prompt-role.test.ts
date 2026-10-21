@@ -129,6 +129,26 @@ describe("P1: permission to read a credential", () => {
       expect(roles.decideLaunchRole(facts)).toBe("never");
     });
   }
+  describe("decideTuiRole", () => {
+    test("standalone TUI receives tui rights", () => {
+      expect(roles.decideTuiRole({})).toBe("tui");
+    });
+    test("MCP session marker denies TUI rights without a cwd", () => {
+      expect(roles.decideTuiRole({ CLAUDISH_PANE_CHILD: "1" })).toBe("never");
+    });
+    test("MCP session marker denies TUI rights with a cwd", () => {
+      expect(roles.decideTuiRole({ CLAUDISH_PANE_CHILD: "1", CLAUDISH_PANE_CWD: "/x" })).toBe(
+        "never"
+      );
+    });
+    test("MCP session TUI role cannot later be raised to tui", () => {
+      roles._resetCredentialPromptRoleForTest();
+      roles.setCredentialPromptRole(roles.decideTuiRole({ CLAUDISH_PANE_CHILD: "1" }));
+      expect(roles.credentialPromptRole()).toBe("never");
+      roles.setCredentialPromptRole("tui");
+      expect(roles.credentialPromptRole()).toBe("never");
+    });
+  });
   test("never role cannot gain rights from prompt:true", async () => {
     await expect(core.ensureMuseCredentialReady({ prompt: true })).rejects.toThrow("login");
     expect(reads).toBe(0);
@@ -173,7 +193,12 @@ describe("P1: permission to read a credential", () => {
   });
   test("P1: only the exact pane session marker identifies an MCP session", async () => {
     const pane = await import("../../pane/child-env.js");
-    expect(pane.PANE_LAUNCH_VARS).toEqual(["CLAUDISH_PANE_ENV", "CLAUDISH_PANE_CWD"]);
+    expect(pane.PANE_LAUNCH_VARS).toEqual([
+      "CLAUDISH_PANE_ENV",
+      "CLAUDISH_PANE_CWD",
+      "CLAUDISH_HOOK_INBOX",
+      "CLAUDISH_HOOK_SESSION",
+    ]);
     for (const marker of ["1", "0", "", "true", undefined]) {
       const env = marker === undefined ? {} : { CLAUDISH_PANE_CHILD: marker };
       expect(pane.inMcpSession(env)).toBe(marker === "1");

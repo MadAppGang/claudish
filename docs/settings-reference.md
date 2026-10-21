@@ -96,6 +96,12 @@ These are top-level subcommands recognized before flag parsing begins (checked i
 | `claudish keychain set <ENV_VAR>` | Store one key — prompted, or piped on stdin; never passed in argv |
 | `claudish keychain rm <ENV_VAR>` | Remove one key from the Keychain |
 | `claudish keychain enable\|disable` | Turn the backend on/off. Moves no secrets; stored items are left untouched |
+| `claudish hooks list [--json]` | Every hook, built-in and user, in the order their actions apply, with severity, scope and load errors |
+| `claudish hooks check <file> [--json]` | Load one hook module on its own and validate it; exit 1 when invalid |
+| `claudish hooks init [dir]` | Write `example-hook.ts` and `claudish-hooks.d.ts` into `dir` (default `~/.claudish/hooks`); never overwrites |
+| `claudish hooks corpus [--write] [--json]` | Replay recorded transcripts offline and count plan-mode divergences per model |
+| `claudish hooks telemetry [--enable\|--disable]` | Show or set `hooks.telemetry.enabled` |
+| `claudish subscription models antigravity --raw --json` | Print the account's raw Antigravity `fetchAvailableModels` response text as one JSON line (schema `claudish.subscription-model-list.v1`), for the models-index wire-probe runner. macOS only; never prompts. Every exit prints exactly one line: exit 0 on any answer from the backend, 3–7 per failure class, 2 on a usage error, 1 on an internal error. Contract: `ai-docs/architecture/providers/antigravity.md` § Raw model list for models-index |
 
 **macOS Keychain (macOS only).** Keys are stored as one generic-password item per environment
 variable under the service name `claudish`, so each is individually visible and deletable in
@@ -141,7 +147,17 @@ be stored.
 
 ## 3. Environment Variables
 
-Claudish automatically loads `.env` from the current working directory at startup using dotenv. All variables below can be set in `.env`.
+Claudish loads `.env` from the current working directory at startup, the way dotenv does: a variable already set in your environment is never overwritten, and no `$` expansion is applied. It reads that one file. `.env.local`, `.env.<NODE_ENV>` and `.env.<NODE_ENV>.local` are not read: claudish starts Bun with `--no-env-file`, so Bun's own env-file loading is off.
+
+A `.env` may set **only provider API keys and claudish model settings**:
+
+- each provider's key variable and its aliases (§3.3, plus the bundled endpoints' vendor keys), and every `CUSTOM_<NAME>_KEY` (§7.5). This list is taken from claudish's provider definitions, so a new provider's key is covered when it ships;
+- `ANTHROPIC_API_KEY` and `VERTEX_LOCATION`;
+- `CLAUDISH_MODEL`, `CLAUDISH_MODEL_OPUS`, `CLAUDISH_MODEL_SONNET`, `CLAUDISH_MODEL_HAIKU` and `CLAUDISH_MODEL_SUBAGENT`.
+
+Every other variable in the file is ignored, with one stderr line naming them (names only, never values); set those in your shell or an MCP server's `env`. That includes every `*_BASE_URL`, `OLLAMA_HOST`, `CLAUDISH_PORT` and `CLAUDISH_RECOVERY`, and a custom endpoint key named anything but `CUSTOM_<NAME>_KEY` (an `apiKey` of `"${MY_CUSTOM_API_KEY}"` reads it from your shell). The working directory is often a checkout you have not reviewed, and several variables choose what code runs or where your data goes: `CLAUDE_PATH` names the Claude Code executable claudish starts, `BUN_OPTIONS` and `NODE_OPTIONS` load a module into every child, a base URL or host would send your existing key to whatever server it names, and `GOOGLE_APPLICATION_CREDENTIALS` points gcloud at a credentials file (an `external_account` JSON can name a local file and a `token_url` gcloud uploads it to), so it is shell-only like the base URLs.
+
+The **control variables** steer claudish itself: `CLAUDISH_CONFIG`, `CLAUDISH_PANE_CHILD`, `CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD`, `CLAUDISH_HOOK_INBOX`, `CLAUDISH_HOOK_SESSION` and `CLAUDISH_BIN`. They count only from your shell, an MCP server's `env`, or the parent claudish that started the process. If Bun was started without `--no-env-file` (a hand-typed `bun <path>/index.js`, or `bun <path>/claudish.cjs`), claudish cannot tell a file's value from yours: it drops every control variable and every name that directory's env files set, then reads the provider API keys and model settings in `.env` as usual, with one stderr line (see [Config File Override](#44-config-file-override---config)).
 
 ### 3.1 Claudish-Specific Variables
 
@@ -198,19 +214,19 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `MINIMAX_API_KEY` | MiniMax (`mm@`, `mmax@`) | | https://platform.minimax.io/user-center/basic-information/interface-key (China platform: https://www.minimaxi.com/, and set `MINIMAX_BASE_URL`) |
 | `MINIMAX_CODING_API_KEY` | MiniMax Coding Plan (`mmc@`) | | https://platform.minimax.io/ |
 | `MOONSHOT_API_KEY` | Kimi/Moonshot (`kimi@`, `moon@`) | `KIMI_API_KEY` | https://platform.moonshot.cn/ |
-| `KIMI_CODING_API_KEY` | Kimi Coding Plan (`kc@`); also accepts OAuth via `claudish --kimi-login` | | https://kimi.com/code |
+| `KIMI_CODING_API_KEY` | Kimi Coding Plan (`kc@`); also accepts OAuth via `claudish --kimi-login` | | https://www.kimi.com/code |
 | `ZHIPU_API_KEY` | GLM/Zhipu direct API (`glm@`, `zhipu@`) | `GLM_API_KEY` | https://open.bigmodel.cn/ |
 | `GLM_CODING_API_KEY` | GLM Coding Plan at Z.AI (`gc@`) | `ZAI_CODING_API_KEY` | https://z.ai/subscribe |
-| `ZAI_API_KEY` | Z.AI Anthropic-compatible API (`zai@`) | | https://z.ai/ |
+| `ZAI_API_KEY` | Z.AI Anthropic-compatible API (`zai@`) | | https://z.ai/manage-apikey/apikey-list |
 | `SAKANA_API_KEY` | Sakana Fugu API / token plan (`sakana@`, `fugu@`) | | https://console.sakana.ai/get-started |
 | `SAKANA_CODING_API_KEY` | Sakana Fugu Subscription (`sc@`) | `SAKANA_API_KEY` | https://console.sakana.ai/get-started |
 | `QWEN_TOKEN_PLAN_API_KEY` | Alibaba Token Plan (`qtoken@`) — Model Studio subscription, metered in Credits | _(none by design — see the note below)_ | https://docs.qwencloud.com/token-plan/overview |
 | `QWEN_CODING_PLAN_API_KEY` | Alibaba Coding Plan (`qcode@`) — Model Studio subscription, metered in requests | _(none by design — see the note below)_ | https://www.alibabacloud.com/help/en/model-studio/coding-plan |
 | `META_API_KEY` | Meta Model API, metered (`meta@`). Never signs the `muse@` subscription, which uses `claudish login muse` or the Muse Code CLI's Keychain login | | https://dev.meta.ai |
 | `DASHSCOPE_API_KEY` | Alibaba PAYG (`qpay@`) — Model Studio pay-as-you-go, billed per token | _(none by design — see the note below)_ | https://www.alibabacloud.com/help/en/model-studio/get-api-key |
-| `OLLAMA_API_KEY` | OllamaCloud hosted API (`oc@`, `llama@`, `lc@`) | | https://ollama.com/account |
-| `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) — **required** | | https://opencode.ai/ |
-| `OPENCODE_GO_API_KEY` | OpenCode Zen Go plan (`zgo@`, `zengo@`) — **required** | | https://opencode.ai/ |
+| `OLLAMA_API_KEY` | OllamaCloud hosted API (`oc@`, `llama@`, `lc@`) | | https://ollama.com/settings/keys |
+| `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) — **required** | | https://opencode.ai/console (Settings > Service accounts) |
+| `OPENCODE_GO_API_KEY` | OpenCode Zen Go plan (`zgo@`, `zengo@`) — **required** | | https://opencode.ai/console (Settings > Service accounts) |
 | `XAI_API_KEY` | xAI / Grok (direct API, detected in model selector) | | https://x.ai/ |
 | `LITELLM_API_KEY` | LiteLLM proxy (`ll@`, `litellm@`) | | https://docs.litellm.ai/ |
 | `POE_API_KEY` | Poe (`poe@`) | | https://poe.com/ |
@@ -355,6 +371,47 @@ These are only needed if you want to use your own Google Cloud OAuth application
   - **`askedAt`**: ISO 8601 timestamp of when the user was last prompted. Absent means never prompted.
   - **`promptedVersion`**: Claudish version string at time of prompting.
 - **`routing`**: Custom routing rules (see Section 7). Absent means use default auto-routing chain.
+- **`hooks`**: The hook system. Read from this file (or the `--config` override) only. Full guide:
+  [Hooks](advanced/hooks.md).
+
+  ```jsonc
+  "hooks": {
+    "modules": ["~/.claudish/hooks/verify-tests.ts"],   // absolute, "~/…", or relative to this file's directory
+    "severity": { "plan-mode/*": "warn", "hook:verify-tests/*": "fix" },
+    "injection": { "maxConsecutive": 3 },              // 1..20, default 3
+    "observer": { "enabled": false, "mode": "off" },    // mode: "off" | "suggest"
+    "telemetry": { "enabled": false }                   // upload consent; default off
+  }
+  ```
+
+  - **`modules`**: Hook modules (`.ts` or `.js`), loaded in order. A module that fails to load is
+    skipped with one stderr line; claudish always starts.
+  - **`severity`**: `"[modelGlob:]hookIdGlob"` → `"off"` | `"warn"` | `"fix"`. Model-scoped keys
+    beat unscoped keys; within each group an exact id beats a glob and a longer glob beats a shorter
+    one. User hook ids are `hook:<module file name>/<id>`.
+  - **`injection.maxConsecutive`**: The most hook-caused turns in a row in one session. A turn the
+    caller or a person starts resets the count.
+  - **`observer`**: The built-in `observer/divergence` hook: `enabled`, `mode`, `model`,
+    `timeoutMs`, `watchTools`.
+  - **`telemetry.enabled`**: Consent to upload behaviour telemetry. Separate from the top-level
+    `telemetry` consent. Local journaling (`~/.claudish/behavior-journal.jsonl`) is always on.
+
+  An invalid `hooks` block prints one `[claudish] hooks config:` line per problem and runs with
+  built-in hooks only.
+- **`behavior`** (removed): The earlier hook config block. claudish no longer reads it. When the
+  global config still has one, claudish prints once per process what each key moved to, and ignores
+  it otherwise:
+
+  ```
+  [claudish] the "behavior" config block is no longer read. Move it to "hooks":
+  [claudish]   behavior.rules → hooks.severity
+  ```
+
+  The moves are `behavior.rules` → `hooks.severity`; `behavior.hooks` → `hooks.modules` (each module
+  rewritten to `apiVersion: 1`); `behavior.observer` → `hooks.observer`; `behavior.telemetry` →
+  `hooks.telemetry` (consent is **not** carried over); `behavior.preset` → removed. The block stays
+  in the file, and saves keep it, until you delete it. `claudish hooks list` reports whether it is
+  still there.
 
 ### 4.2 `.claudish.json` (Local/Project Configuration)
 
@@ -365,6 +422,9 @@ Same schema as `~/.claudish/config.json`. Placed in the project root directory (
 - Default profile: local `defaultProfile` takes precedence if the local config exists and specifies one.
 - Custom routing rules: local `routing` key **entirely replaces** global routing rules (no merge).
 - Local config does not include `telemetry` (consent is global only).
+- A `hooks` key in `.claudish.json` is ignored, with one stderr line:
+  `[claudish] hooks in <path> ignored: hooks are read from the global config only`. A project file
+  is controlled by the repository, and claudish does not run code it names.
 
 **Note**: The default profile in the local config is looked up first in local profiles, then in global profiles. A local config can reference global profiles by name.
 
@@ -380,6 +440,10 @@ Same schema as `~/.claudish/config.json`. Placed in the project root directory (
 | `meta-muse-borrowed.json` | claudish's copy of the Muse Code CLI's login, so `team` slots and MCP sessions can sign without a Keychain dialog (0600) | After an interactive launch reads the Keychain and Meta confirms the subscription; deleted by `claudish logout muse` |
 | `muse-keychain-read.lock` | Held while one process waits on the Muse Keychain dialog, so other processes wait instead of opening a second one | Removed when the read ends |
 | `logs/` | Debug log files (created when `--debug-claudish` is used) | Per session |
+| `hooks/` | Default directory of `claudish hooks init` | On `claudish hooks init` |
+| `behavior-journal.jsonl` | Local journal of every hook decision | On every hook decision |
+| `behavior-outbox.jsonl` | Behaviour-telemetry reports waiting for upload (only with `hooks.telemetry.enabled`) | At exit; drained by a later run |
+| `behavior-divergences.jsonl` | Verdicts of the built-in observer | When the observer is on |
 
 ### 4.4 Config File Override (`--config`)
 
@@ -396,9 +460,10 @@ CLAUDISH_CONFIG=/abs/qa-config.json claudish --model glm@glm-4.6 "task"
 |---|---|
 | Precedence | The `--config` flag wins over `CLAUDISH_CONFIG`; a dangling `--config` (or one followed by another flag) is a usage error, not a silent fallback |
 | Flag visibility | Consumed and stripped before `parseArgs()`, so the child `claude` process never sees it |
-| Child processes | Re-exported as an absolute `CLAUDISH_CONFIG`, so `claudish` children spawned by team and MCP sessions inherit the same override |
+| Child processes | Re-exported as an absolute `CLAUDISH_CONFIG` and set explicitly in the environment of every `claudish` child that team and MCP sessions spawn, so each child reads the same file, whatever the child's working directory holds |
 | Writes | `claudish config` saves target the override file — the machine config is never mutated with override-derived data |
 | Env vars | Still resolve first: a shell env var or `.env` entry beats the override file's `apiKeys` |
+| `.env` | `CLAUDISH_CONFIG` must come from the shell, an MCP server's `env`, or a parent claudish: it names the hook modules claudish imports, the endpoints your keys are sent to, and the 1Password sources it reads. No env file in the working directory can set it. claudish starts Bun with `--no-env-file`, and its own `.env` load sets provider API keys and model settings only, ignoring `CLAUDISH_CONFIG` with one stderr line. If Bun loaded the directory's env files anyway (started without `--no-env-file`), `CLAUDISH_CONFIG` is ignored for the whole run, with one stderr line; use `--config` then |
 | Scope | Config only. OAuth credential files (`kimi-oauth.json`, `gemini-oauth.json`, …) stay machine-level |
 
 **It is substitution, not "1Password off".** The override does not suppress 1Password — it changes
@@ -899,7 +964,7 @@ For local Qwen models, setting `CLAUDISH_QWEN_NO_THINK=1` prepends `/no_think` t
 | `~/.claudish/litellm-models-{hash}.json` | LiteLLM model list (one file per unique `LITELLM_BASE_URL`) | On each LiteLLM model list fetch |
 | `~/.claudish/kimi-oauth.json` | Kimi OAuth access + refresh tokens | `claudish --kimi-login` |
 | `.claudish.json` | Local/project config | Profile commands with `--local` |
-| `.env` | Environment variables (auto-loaded at startup) | Manual |
+| `.env` | Provider API keys and claudish model settings (loaded at startup; every other variable is ignored, see §3) | Manual |
 
 Cache files can be force-refreshed with `claudish --models --models-refresh` or `claudish --models-top --models-refresh`. The `--models-refresh` flag deletes `all-models.json`, `pricing-cache.json`, `recommended-models-cache-v2.json`, and all `litellm-models-*.json` files before fetching fresh data.
 

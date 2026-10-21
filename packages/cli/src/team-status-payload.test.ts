@@ -176,6 +176,7 @@ describe("buildTeamStatusPayload", () => {
       captureSource: null,
       turnSource: "transcript",
       pendingInputs: 0,
+      pendingHookInputs: 0,
       connected: true,
       startedAt: "2026-10-06T00:59:00.000Z",
       endedAt: null,

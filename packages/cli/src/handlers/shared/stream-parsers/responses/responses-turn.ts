@@ -119,7 +119,6 @@ export interface ResponsesTurnOptions
    * the final leg's input (the context figure) and the output of every leg.
    */
   onTokenUpdate?: (input: number, output: number) => void;
-  onTurnEnd?: () => void;
   /** Absent ⇒ one leg per turn, exactly as before retries existed. */
   retry?: ResponsesRetryOptions;
   /**
@@ -298,7 +297,7 @@ class ResponsesTurn {
   }
 
   /**
-   * A callback threw (`primaryBody`, `onApiError`, a usage or middleware
+   * A callback threw (`primaryBody`, `onApiError`, a usage or raw
    * hook); the leg itself never throws. A message with no ending yet still
    * gets one: closed without `message_stop` or `error`, the non-streamed path
    * folded it into a silent 200 partial.
@@ -396,21 +395,6 @@ class ResponsesTurn {
     await this.finishCompleted("end_turn");
   }
 
-  /** The behavior layer's one chance to rewrite a buffered nested call. */
-  private repairNested(name: string, args: string): string {
-    if (this.opts.shouldBufferTool?.(name) !== true) return args;
-    try {
-      const repaired = this.opts.onToolCall?.(name, args);
-      if (typeof repaired === "string" && repaired !== args) {
-        log(`[ResponsesSSE] tool call repaired: ${name}`);
-        return repaired;
-      }
-    } catch (err) {
-      log(`[ResponsesSSE] onToolCall threw for ${name}: ${err}`);
-    }
-    return args;
-  }
-
   private abandon(callId: string): void {
     try {
       this.opts.codeMode?.onTurnAbandoned(callId);
@@ -471,7 +455,7 @@ class ResponsesTurn {
       this.sink.emitToolUse(
         block.id,
         block.name,
-        relayNestedInput(block, (name, args) => this.repairNested(name, args))
+        relayNestedInput(block, (_name, args) => args)
       );
     }
     log(`[ResponsesTurn] exec ${outcome.callId} relayed as ${blocks.length} tool_use block(s)`);
@@ -575,8 +559,8 @@ class ResponsesTurn {
   }
 
   /**
-   * A completed turn: `message_delta` + `message_stop`, usage, then the turn
-   * hooks. Never a `tool_use` finish over a cut-off block (the cut-off rule),
+   * A completed turn: `message_delta` + `message_stop`, usage, then the raw
+   * `providerStreamEnd` hooks. Never a `tool_use` finish over a cut-off block (the cut-off rule),
    * whichever path got here: an SSE `error` instead, so Claude Code runs none
    * of the message's tools and retries.
    */
@@ -589,13 +573,7 @@ class ResponsesTurn {
     }
     this.sink.endMessage(stopReason, this.wireUsage);
     this.reportUsage();
-    if (this.opts.middlewareManager) {
-      await this.opts.middlewareManager.afterStreamComplete(
-        this.opts.modelName,
-        this.opts.streamMetadata
-      );
-    }
-    this.opts.onTurnEnd?.();
+    if (this.opts.raw) await this.opts.raw.streamEnd();
   }
 
   private async finish(outcome: LegOutcome): Promise<void> {

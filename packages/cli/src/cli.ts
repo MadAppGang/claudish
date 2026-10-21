@@ -50,7 +50,13 @@ import type {
   ProbeStepState,
 } from "./probe/probe-tui-app.js";
 import { startProbeTui } from "./probe/probe-tui-runtime.js";
-import { getModelMapping, loadConfig, readCodeMode, readProOnUltracode } from "./profile-config.js";
+import {
+  getRunModelMapping,
+  loadConfig,
+  readCodeMode,
+  readProOnUltracode,
+} from "./profile-config.js";
+import { usableProfileModels } from "./project-models.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
 import { normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
@@ -1131,7 +1137,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     !config.modelHaiku ||
     !config.modelSubagent
   ) {
-    const profileModels = getModelMapping(config.profile);
+    // A project profile's raw-URL tiers are dropped here (project-models.ts).
+    const profileModels = usableProfileModels(getRunModelMapping(config.profile));
 
     // Apply profile models only if not set by CLI flags
     if (!config.modelOpus && profileModels.opus) {
@@ -1873,7 +1880,8 @@ async function probeModelRouting(
           false,
           process.env.ANTHROPIC_API_KEY,
           undefined,
-          { quiet: true }
+          // Hooks never see --probe traffic.
+          { quiet: true, hooks: false }
         );
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -1984,7 +1992,8 @@ async function probeModelRouting(
           false,
           process.env.ANTHROPIC_API_KEY,
           undefined,
-          { quiet: true }
+          // Hooks never see --probe traffic.
+          { quiet: true, hooks: false }
         );
         updateStep("Starting probe proxy", "done");
       } catch {
@@ -2342,6 +2351,9 @@ ${h("SUBCOMMANDS")}
   ${green("claudish providers")} ${yellow("[--json]")}             Show provider credential status (no key material)
   ${green("claudish quota")} ${yellow("[provider]")}              Show remaining quota/usage (alias: usage)
   ${green("claudish serve")} ${yellow("--port <n> --models <p>")}  Run the Claude Desktop redirect gateway
+  ${green("claudish subscription models antigravity")} ${yellow("--raw --json")}
+                                          Print the raw Antigravity fetchAvailableModels
+                                          ${dim("body as one JSON line (for models-index)")}
   ${green("claudish update")}                        Check for updates and install the latest version
 
   ${bold("Profiles:")}

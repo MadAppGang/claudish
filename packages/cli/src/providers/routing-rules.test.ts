@@ -661,6 +661,25 @@ const ENV_KEYS_TO_CLEAR = [
 
 const savedEnv: Record<string, string | undefined> = {};
 
+/**
+ * Route `modelId` against a catalog that publishes it through `providers` only. Without a
+ * catalog path, route() reads the real ~/.claudish catalog: whatever that machine last
+ * fetched, and nothing at all on a fresh runner.
+ */
+async function routeOnCatalog(modelId: string, providers: string[]): Promise<RoutePlan> {
+  const { path, cleanup } = makeTempCatalog(
+    { modelId, externalId: modelId },
+    undefined,
+    {},
+    providers
+  );
+  try {
+    return await route(modelId, {}, undefined, path);
+  } finally {
+    cleanup();
+  }
+}
+
 describe("route()", () => {
   let previousKeychainGuard: string | undefined;
 
@@ -705,7 +724,7 @@ describe("route()", () => {
 
   test("claude-opus-4-7 with ANTHROPIC_API_KEY → primary native-anthropic", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    const plan = await route("claude-opus-4-7", {});
+    const plan = await routeOnCatalog("claude-opus-4-7", ["native-anthropic", "openrouter"]);
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("native-anthropic");
@@ -729,14 +748,14 @@ describe("route()", () => {
 
   test("claude-opus-4-7 with only OPENROUTER_API_KEY → primary openrouter", async () => {
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("claude-opus-4-7", {});
+    const plan = await routeOnCatalog("claude-opus-4-7", ["native-anthropic", "openrouter"]);
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openrouter");
   });
 
   test("claude-opus-4-7 with no credentials → no-route, hint mentions both providers", async () => {
-    const plan = await route("claude-opus-4-7", {});
+    const plan = await routeOnCatalog("claude-opus-4-7", ["native-anthropic", "openrouter"]);
     expect(plan.kind).toBe("no-route");
     if (plan.kind !== "no-route") return;
     expect(plan.hint).toBeDefined();
@@ -781,7 +800,7 @@ describe("route()", () => {
     if (existsSync(codexOauth)) return;
 
     process.env.OPENAI_API_KEY = "sk-openai-test";
-    const plan = await route("gpt-5", {});
+    const plan = await routeOnCatalog("gpt-5", ["openai-codex", "openai"]);
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openai");

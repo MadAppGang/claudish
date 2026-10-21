@@ -25,8 +25,15 @@ test("keeps settings paths and contents separate across processes in the same mi
   const modulePath = join(import.meta.dir, "claude-runner.ts");
   writeFileSync(
     preloadPath,
+    // A data: URL is not network: claude-runner's import graph reaches
+    // @opentui/core, whose yoga-layout loads its wasm with fetch(data:…).
     `Date.now = () => ${pinnedNow};
-    globalThis.fetch = () => { throw new Error("Network is forbidden in the settings collision test"); };
+    const localFetch = globalThis.fetch;
+    globalThis.fetch = (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.startsWith("data:")) return localFetch(input, init);
+      throw new Error("Network is forbidden in the settings collision test");
+    };
     `
   );
   writeFileSync(

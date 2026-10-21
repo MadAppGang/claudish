@@ -1,5 +1,8 @@
 // ─── MCP Session Types ───────────────────────────────────────────────────────
 
+import type { HookEngine } from "../hooks/engine.js";
+import type { SessionInfo as HookSessionInfo } from "../hooks/public.js";
+import type { SessionHookBinding } from "../hooks/session/binding.js";
 import type { FailureReason, PaneSessionOptions, SlotState, SlotStep } from "../pane/index.js";
 
 /**
@@ -189,4 +192,20 @@ export interface SessionManagerOptions {
   parentEnv?: Record<string, string | undefined>;
   /** @internal test-only pane timing seams (X-M7); production never passes them. */
   paneTimings?: PaneSessionOptions["timings"];
+  /**
+   * The hook engine pane bindings are built from. Default: the process engine
+   * (`loadHooksOnce()`), awaited before the first pane spawn. Tests pass their own.
+   */
+  hookEngine?: () => Promise<HookEngine | null>;
+  /** @internal test seam: the magmux binary every pane is spawned with (H-6) */
+  magmuxBinary?: string;
+  /**
+   * @internal test seam (§11.5): the binding for one session, instead of the real one.
+   * Return null for no binding.
+   */
+  hookBinding?: (ctx: {
+    session: HookSessionInfo;
+    inboxPath: string | null;
+    engine: HookEngine | null;
+  }) => SessionHookBinding | null;
 }

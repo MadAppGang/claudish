@@ -88,7 +88,7 @@ classic. Never persisted. Discovery is not an auth site: every throw resolves to
 | header | `x-openai-internal-codex-responses-lite: true` through `wireHeaders`, so every header fetch (primary, parameter retry, 401 retry, legs) carries it | none |
 | both | `parallel_tool_calls: false` (parallelism lives in the script), `tool_choice: "auto"`, `input` from the input builder | |
 
-The system text is Claude Code's system prompt (identity-filtered at step 4, after Layer 4) plus a
+The system text is Claude Code's system prompt (identity-filtered at step 4, after hook request stage A) plus a
 three-line claudish note — not the 21.7 KB Codex persona. Step 5a' re-applies `--model-params`
 only to a code-mode payload, so the user's explicit fields still win. A build that throws sends
 that request non-code-mode (logged); it never refuses.
@@ -134,7 +134,7 @@ can change in-process (`reloadCredentials`).
 
 The definition is the official one (`type:"custom"`, `name:"exec"`, the lark grammar with the
 `// @exec:` pragma). The description lists only what claudish implements (`text()`, `exit()`,
-`tools`, `ALL_TOOLS`) and one section per tool rendered from `claudeRequest.tools` AFTER Layer 4,
+`tools`, `ALL_TOOLS`) and one section per tool rendered from `claudeRequest.tools` AFTER the hook request stages,
 so names are Claude Code's own, never the step-5 encoded wire names. Schemas become TypeScript
 declarations (property descriptions as `//` comments, depth ≤ 4, else `unknown`). Identifiers are
 normalised to `[A-Za-z0-9_$]` with the later of two colliding names skipped, as Codex does. Budget:
@@ -160,8 +160,8 @@ downstream Claude message) — the same mechanism that retries a degenerate leg
   so its retry is safe, where `end_turn` would stop the agent.
 - The hooks (`code-mode/relay.ts`) create the record, pin the session and run the script:
   - **blocked** on N nested calls → N whole `tool_use` blocks `toolu_cx_<hex>_<seq>` (Claude Code's
-    tool names; buffered tools repaired through Layer 4; `onToolCallObserved` once per nested
-    block, never for `exec`), the message's Responses items stored as a turn record, `stop_reason:
+    tool names; `onToolCallObserved` once per nested block, never for `exec`; a `toolCall` hook
+    repairs them at the response seam above the parser, like any other tool block), the message's Responses items stored as a turn record, `stop_reason:
     tool_use`. Claude Code runs the tools under its own permissions.
   - **finished** without blocking → its output is stored and another leg is issued: the current
     leg's body with this leg's items and the exec call + output appended to `input`.
@@ -180,8 +180,9 @@ parallel wrapper's `toolu_<id>_p<k>` never decode, so history grouping never dep
 
 ### Step 5r: resuming a script (`code-mode/resume.ts`)
 
-After 5b (the account is THIS request's) and after 3c (a synthetic reply gets the same Layer 4
-hooks), before 5c. Synchronous from record lookup to state transition, so two concurrent requests
+After 5b (the account is THIS request's) and after 3b (a synthetic reply gets the same raw
+hooks, and the response seam above the handler applies the closed tool hooks to it as to a driver
+batch), before 5c. Synchronous from record lookup to state transition, so two concurrent requests
 for one record serialise. Guard: `openai-codex`, `oauth` arm, an account key, a session id, ≥ 1
 declared tool (5d's `no-tools` gate: a tool-less compaction or summary request is never code mode,
 so it must not consume a batch, end other scripts, or get tool_use blocks), `tool_choice` absent or
@@ -210,7 +211,7 @@ last and as a string once a turn follows it, so it can never anchor a turn recor
 | consumed batch, same `batchHash` (a duplicate request) | the memoised step: the same synthetic reply, or the stored completion. The reply goes to the OWNER only: a fork asking while the owner's next batch is pending gets the forked-script `Script failed` below, never that batch (its tools would run twice) |
 | consumed batch, different `batchHash` (a rewind that re-ran tools) | lost path, tombstone under the new completion key |
 | suspended, owned by ANOTHER session (a fork) | untouched; the fork gets `Script failed` "this script belongs to the session this one was forked from; claudish cannot run it twice"; the owner's later run output wins every lookup |
-| record lost, source kept, owned by this session, the request answers its LAST round | **replay** (`replay.ts`): the source re-runs in a fresh runtime (when no module is loaded — the first answer after a retire, a poison or a recycle — 5r answers `needs-module` without touching anything, the handler awaits `loadQuickJSModule()`, about 3 ms, and runs 5r once more; 5r itself never awaits) and each batch is answered from history, provided batch k is exactly the k-th round (same ids, names and canonical inputs — or, for a call Layer 4 repaired when it was relayed, the script's input and history's input equal the hashes recorded then); then as the first row. The emitter writes a repaired input back onto the record's block (the script's own kept as `scriptInput`), so a duplicate reply re-sends exactly what was relayed, repaired once. `Math.random` is seeded by the call id; a script that branches on `Date` diverges |
+| record lost, source kept, owned by this session, the request answers its LAST round | **replay** (`replay.ts`): the source re-runs in a fresh runtime (when no module is loaded — the first answer after a retire, a poison or a recycle — 5r answers `needs-module` without touching anything, the handler awaits `loadQuickJSModule()`, about 3 ms, and runs 5r once more; 5r itself never awaits) and each batch is answered from history, provided batch k is exactly the k-th round (same ids, names and canonical inputs — or, for a call recorded as repaired when it was relayed, the script's input and history's input equal the hashes recorded then); then as the first row. The emitter writes a repaired input back onto the record's block (the script's own kept as `scriptInput`), so a duplicate reply re-sends exactly what was relayed, repaired once. Since hooks replaced the behavior layer, repair happens at the response seam, after the relay, and the relay passes the script's input unchanged: no repair is recorded, so a round whose call a `toolCall` hook repaired does not match on replay and the script is tombstoned instead of resumed. `Math.random` is seeded by the call id; a script that branches on `Date` diverges |
 | record lost (eviction, poisoned module, or a replay that diverged) or none (restart, another account) | `Script failed` "claudish lost this script's state (proxy restart or eviction); the nested tool results it was waiting for follow" + the results, stored as a TOMBSTONE (a minimal record when none) |
 | late results for a settled record | nothing; history renders its output |
 

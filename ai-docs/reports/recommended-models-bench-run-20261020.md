@@ -82,3 +82,65 @@ madbench experiments/flagship.cli.experiment.yaml experiments/cost_efficient.cli
 
 and the same with `.mcp.`. Only the 8 failing rows need a re-run once the credentials are
 fixed: add `--variant <model>` per row.
+
+## Re-run of the 8 rows, 2026-10-20 after the credential fixes
+
+Jack renewed the GLM Coding Plan and replaced the OpenCode Go key (`OPENCODE_GO_API_KEY`,
+Keychain item changed 2026-10-20T12:38:19Z). `qtoken@qwen3.8-max` also probes `live` now.
+claudish 12.2.0 (subscription-only routing after a login failure, #310), madbench 0.47.0, same
+Experiments, `--variant` for the 7 model names (8 rows).
+
+| | CLI Bench | MCP Bench |
+|---|---|---|
+| Summary (report JSON) | 8 rows: 8 pass | 24 rows: 21 pass, 3 fail |
+
+The 3 MCP failures are wrong answers from the model, relayed correctly by claudish. The task
+was `4817 + 2906` (7723); the only failed Check is `session:match` on `\b7723\b`:
+
+| Row | Scenario | Served by | Answer |
+|---|---|---|---|
+| `deepseek-v4-pro` (flagship) | `team` | Zen Go | `8308` |
+| `mimo-v2.6-pro` (cost_efficient) | `create-session` | Zen Go | `7713` |
+| `deepseek-v4.1-flash` (lightweight) | `team` | Zen Go | `7713` |
+
+With the earlier 16 passing rows, every one of the 24 recommended rows passes the CLI Bench,
+and every model passes at least two of the three MCP Scenarios on one run. The `qwen3.8-max`
+pass came from its first hop serving; it does not exercise the #310 routing change, whose
+evidence is `fallback-handler.subscription-only.test.ts`.
+
+## Why the three MCP answers were wrong (measured 2026-10-21)
+
+**Repeat with `--trials 3`** (the three models, all three MCP Scenarios; 27 Sessions): every
+Session completed and relayed the model's answer. Wrong answers, all digit slips:
+
+| Model | `run_prompt` | `create-session` | `team` |
+|---|---|---|---|
+| `deepseek-v4-pro` | 3/3 | 1/3 (`7713`, `7713`) | 2/3 (`7183`) |
+| `deepseek-v4.1-flash` | 3/3 | 3/3 | 2/3 (`7713`) |
+| `mimo-v2.6-pro` (both tiers) | 6/6 | 6/6 | 6/6 |
+
+**What claudish sends.** A forwarding recorder on `OPENCODE_GO_BASE_URL` captured the real
+request of an interactive claudish 12.2.0 session to `https://opencode.ai/inference/go/openai/v1/chat/completions`:
+`{"model":"deepseek-v4-pro","temperature":1,"stream":true,"stream_options":{…},"max_tokens":32000}`
+and no reasoning field, although Claude Code showed `xhigh effort`. That is the wire rule
+(`wire.md`, decisions table): the catalog's `go-subscription` connection declares
+`wire.reasoning.status: "unknown"`, and the owner's direct connection is on the `responses` API,
+not the same API, so nothing is borrowed. MiMo's request also has no `max_tokens`
+(`tokenParam` unknown).
+
+**Replaying that exact body to Zen Go, 10 times per setting** (fresh `x-opencode-session` each):
+
+| Body | `deepseek-v4-pro` correct | `deepseek-v4.1-flash` correct | `mimo-v2.6-pro` correct |
+|---|---|---|---|
+| as claudish sends it | 2/10 (8 replies had 0 reasoning tokens; all 8 wrong) | 9/10 | 9/10 |
+| `+ reasoning_effort: "high"` | 5/10 | not run | 10/10 |
+| `+ reasoning_effort: "max"` | 10/10 (reasoning 15-78 tokens) | 9/10 (0 reasoning tokens every time) | not run |
+| `+ thinking: {"type":"enabled"}` | 6/10 | 10/10 (0 reasoning tokens) | 10/10 |
+
+Conclusion: the wrong numbers come from the models, not from claudish. `deepseek-v4-pro` on Zen Go
+guesses whenever it skips reasoning, and Zen Go honours `reasoning_effort` for it on Chat
+Completions. With that field published in the catalog wire, claudish would clamp Claude Code's
+`xhigh` to `max` and send it. That is catalog data for the `opencode`/`go-subscription` connection,
+owned by models-index; claudish needs no change. `deepseek-v4.1-flash` never reasons on Zen Go
+under any setting tried, and slips about 1 in 20. MiMo slips about 1 in 10 with no setting and
+0 in 20 with reasoning requested.

@@ -29,7 +29,6 @@ if (process.env.CLAUDISH_T2_CANCEL_CHILD !== "1") {
 } else {
   const { Hono } = await import("hono");
   const { DefaultAPIFormat } = await import("../../../adapters/base-api-format.js");
-  const { MiddlewareManager } = await import("../../../middleware/manager.js");
   const logger = await import("../../../logger.js");
   const { acquireSigningLease, redactSigningValues } = await import("../../../redact.js");
   const { releaseWhenBodyEnds } = await import("../call-context.js");
@@ -98,53 +97,53 @@ if (process.env.CLAUDISH_T2_CANCEL_CHILD !== "1") {
 
   interface Hooks {
     tokens: (input: number, output: number) => void;
-    turnEnd: () => void;
-    text: (text: string) => void;
-    middlewareComplete: () => void;
+    /**
+     * The raw tier's `providerStreamEnd`: the one end-of-turn hook left at the
+     * parser level. The closed `responseEnd` runs at the response seam above
+     * every parser, and only on a `message_stop` (hooks/seam-tap.ts).
+     */
+    streamEnd: () => void;
   }
+  /** A raw-tier tap that commits every chunk unchanged and records its stream end. */
+  const rawTap = (h: Hooks) => ({
+    chunk: <T>(chunk: T): T => chunk,
+    streamEnd: async () => {
+      h.streamEnd();
+    },
+  });
   type Factory = (c: Context, response: Response, hooks: Hooks) => Response;
   const factories: Record<string, Factory> = {
-    "openai-sse": (c, r, h) => {
-      const middleware = new MiddlewareManager();
-      spyOn(middleware, "afterStreamComplete").mockImplementation(async () => {
-        h.middlewareComplete();
-      });
-      return createStreamingResponseHandler(
+    "openai-sse": (c, r, h) =>
+      createStreamingResponseHandler(
         c,
         r,
         new DefaultAPIFormat("t2"),
         "t2",
-        middleware,
+        rawTap(h),
         h.tokens,
         undefined,
         undefined,
         undefined,
-        { onTurnEnd: h.turnEnd, onAssistantText: h.text }
-      );
-    },
+        {}
+      ),
     "gemini-sse": (c, r, h) =>
       createGeminiSseStream(c, r, {
         modelName: "t2",
         unwrapResponse: true,
+        raw: rawTap(h),
         onTokenUpdate: h.tokens,
-        onTurnEnd: h.turnEnd,
-        onAssistantText: h.text,
       }),
+    // No raw tap on these wires: the parser has no end-of-turn hook at all.
     "anthropic-sse": (c, r, h) =>
       createAnthropicPassthroughStream(c, r, {
         modelName: "t2",
         onTokenUpdate: h.tokens,
-        onTurnEnd: h.turnEnd,
-        onAssistantText: h.text,
       }),
     "devin-connect": (c, r, h) =>
       createDevinConnectStream(c, r, {
         modelName: "t2",
         onTokenUpdate: h.tokens,
-        onTurnEnd: h.turnEnd,
-        onAssistantText: h.text,
       }),
-    // The public Ollama factory exposes no behavior-layer hook.
     "ollama-jsonl": (c, r, h) =>
       createOllamaJsonlStream(c, r, { modelName: "t2", onTokenUpdate: h.tokens }),
   };
@@ -152,10 +151,23 @@ if (process.env.CLAUDISH_T2_CANCEL_CHILD !== "1") {
   function hooks(): Hooks {
     return {
       tokens: mock(() => {}),
-      turnEnd: mock(() => {}),
-      text: mock(() => {}),
-      middlewareComplete: mock(() => {}),
+      streamEnd: mock(() => {}),
     };
+  }
+
+  /** Read the downstream body until `pattern` appears in what was delivered. */
+  async function readUntil(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    pattern: RegExp
+  ): Promise<string> {
+    const decoder = new TextDecoder();
+    let seen = "";
+    while (!pattern.test(seen)) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      seen += decoder.decode(value, { stream: true });
+    }
+    return seen;
   }
 
   function captureLogs() {
@@ -188,17 +200,19 @@ if (process.env.CLAUDISH_T2_CANCEL_CHILD !== "1") {
           name === "openai-sse" ? openaiPrefix : name === "anthropic-sse" ? anthropicPrefix : "";
         const source = upstream(prefix);
         const response = await parse(factories[name], source.response, h);
-        await source.waiting.promise;
-        await ticks();
+        const reader = response.body!.getReader();
         try {
-          if (prefix) expect(h.text).toHaveBeenCalled();
+          // The prefix's content reached the client before it left.
+          const seen = prefix ? await readUntil(reader, /content_block_delta/) : "";
+          await source.waiting.promise;
+          await ticks();
+          if (prefix) expect(seen).toMatch(/content_block_delta/);
         } finally {
-          await response.body!.cancel("client left");
+          await reader.cancel("client left");
         }
         expect(source.events).toEqual(["upstream-cancel", "upstream-settled"]);
         expect(h.tokens).not.toHaveBeenCalled();
-        expect(h.turnEnd).not.toHaveBeenCalled();
-        expect(h.middlewareComplete).not.toHaveBeenCalled();
+        expect(h.streamEnd).not.toHaveBeenCalled();
         expect(
           lines.filter((line) =>
             /Stream ending error|silent-truncation|ending.*failure/i.test(line)
@@ -224,8 +238,7 @@ if (process.env.CLAUDISH_T2_CANCEL_CHILD !== "1") {
         await ticks();
         await response.body!.cancel("client left");
         expect(h.tokens).toHaveBeenCalledTimes(1);
-        expect(h.turnEnd).not.toHaveBeenCalled();
-        expect(h.middlewareComplete).not.toHaveBeenCalled();
+        expect(h.streamEnd).not.toHaveBeenCalled();
         expect(lines.filter((line) => line.includes("Stream ending error"))).toEqual([]);
         expect(lines.filter((line) => line.includes("Client cancelled the stream"))).toHaveLength(
           1

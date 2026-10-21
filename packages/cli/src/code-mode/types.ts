@@ -54,14 +54,14 @@ export interface NestedToolUse {
   id: string;
   /** Claude Code's own tool name. */
   name: string;
-  /** The input as relayed to Claude Code (after a Layer 4 repair, when one applied). */
+  /** The input as relayed to Claude Code (after a recorded repair, when one applied). */
   input: Record<string, unknown>;
-  /** The script's own input, set only when Layer 4 repaired what was relayed. */
+  /** The script's own input, set only when a recorded repair changed what was relayed. */
   scriptInput?: Record<string, unknown>;
 }
 
 /**
- * The input JSON Claude Code gets for `block`: `repair` (Layer 4) applied ONCE
+ * The input JSON Claude Code gets for `block`: `repair` applied ONCE
  * to the script's input. A repaired input is written back onto the block — the
  * exec record holds the same object — with the script's own kept as
  * `scriptInput`, so a duplicate reply re-sends exactly what was relayed and a

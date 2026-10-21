@@ -18,14 +18,14 @@
  *            `tool_choice: "auto"`, `input` from `buildCodeModeInput`.
  *
  * The system text is the step-4 `instructions` (Claude Code's system prompt,
- * identity-filtered, after Layer 4) plus a short claudish note — not the
+ * identity-filtered, after hook stage A) plus a short claudish note — not the
  * 21.7 KB Codex persona. Everything here degrades: a build that throws sends
  * the request non-code-mode (logged), never refuses it; discovery and the
  * sandbox resolve to "off" on any failure.
  */
 
 import { createHash } from "node:crypto";
-import { extractSessionId } from "../behavior/harness.js";
+import { extractSessionId } from "../hooks/harness.js";
 import { log } from "../logger.js";
 import {
   type CodexModelInfo,
@@ -216,7 +216,7 @@ export interface PrepareCodeModeInput {
   /** THIS request's auth binding (step 5b). */
   binding: AuthBinding | undefined;
   api: WireApi | undefined;
-  /** Claude Code's request after Layer 4 (`tools`, `messages`, `tool_choice`, `metadata`). */
+  /** Claude Code's request after the hook request stages (`tools`, `messages`, `tool_choice`, `metadata`). */
   claudeRequest: any;
   /** The upstream payload after 5c. */
   payload: any;

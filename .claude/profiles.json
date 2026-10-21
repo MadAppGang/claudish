@@ -69,7 +69,24 @@
       },
       "createdAt": "2026-09-28T04:06:00.113Z",
       "settings": {
-        "outputStyle": "composed"
+        "outputStyle": "composed",
+        "code-search": {
+          "engine": "codegraph",
+          "setup": "active",
+          "engines": {
+            "codegraph": {
+              "command": "codegraph",
+              "args": [
+                "serve",
+                "--mcp"
+              ],
+              "env": {
+                "CODEGRAPH_MCP_TOOLS": "explore,node,search,callers,callees,impact,files,status"
+              },
+              "callTimeoutMs": 30000
+            }
+          }
+        }
       }
     }
   },

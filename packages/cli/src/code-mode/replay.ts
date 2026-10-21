@@ -95,8 +95,8 @@ function entriesOf(
 
 /**
  * The batch the script blocked on is exactly this history round: the same
- * ids and names, and each input either equal to history's or the one Layer 4
- * repaired into history's (`repairs`, recorded when the batch was relayed).
+ * ids and names, and each input either equal to history's or the one a recorded repair turned
+ * into history's (`repairs`, recorded when the batch was relayed).
  */
 function matchesRound(
   execKey: string,

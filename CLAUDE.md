@@ -16,7 +16,11 @@ lives in `ROADMAP.md`.
 - `network-recovery.md` — the two-tier connection hold: the DERIVED deadline (`API_TIMEOUT_MS`, not a
   watchdog), why tier 2 answers 503 and never 429, why the banner is magmux's `overlay` and never a
   pane of ours (closing a pane wedged Claude Code), the five auth sites
-- `behavior-layer.md` — Layer 4, the harness-conformance supervisor
+- `hooks.md` — the hook system (`hooks/`): closed actions and severity, the unsafe raw tier and its
+  transactional containment, the response seam and opt-in buffering, cross-process injection through
+  the owner-created inbox, the `SETTLING` hold and turn chains, the interactive driver, and the
+  harness-conformance supervisor with its plan-mode measurement. Read before editing `hooks/`, a stream
+  parser's raw tap, or the settle path. User guide: `docs/advanced/hooks.md`
 - `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10 and the record fields, Claude Code's gates; panel routing through `planAdvisorModel` + `buildAdvisorChains` before the port (no lazy path), the advisor handler set, the never-served panel gateway, stickiness, and the Claude rule (login only where `childAuthControl` says claudish controls the child's auth, S0 request shape, the 429 "Error" shape refusal); read before editing advisor, decorator, panel gateway, `planAdvisorModel`/`buildAdvisorChains`, monitor-launch or native-auth code
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `providers/meta-muse-code.md`: `muse@` on a Muse Code subscription and its metered sibling `meta@`: the mint
@@ -39,8 +43,8 @@ lives in `ROADMAP.md`.
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
 - `mcp-sessions.md` — the 15-tool MCP surface and its four groups, the 4-tool nested mode, sessions
-  on panes (`send_input` queueing, `capture_session`, `resize_session`, the session records the
-  magus monitor reads), `run_prompt`'s Claude Code print path, progress keepalive
+  on panes (`send_input` queueing, `capture_session`, `resize_session`, the on-disk session records
+  and who reads them), `run_prompt`'s Claude Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
   assistant message of its turn, from the transcript, starting after the task file was read
 - `team-lifecycle.md` — why no slot is ever killed on a timer, why `run` returns once every
@@ -225,6 +229,24 @@ and merge it, or `git push origin HEAD:main` after `git rebase origin/main`. Eit
 the MERGE COMMIT, never the branch head CI did not validate. After any rebase merge, verify
 `git show origin/main:packages/cli/package.json | grep version` really carries your bump.
 
+## Linear tickets
+
+Planning lives in Linear only: project **Claudish** (`P-MTL-73`), team **MAG Tools** (`MTL-`). The
+milestones are delivery waves (`Wave 0 — Now, no blocker` … `Wave 5 — Low priority`); the order and
+the dependencies are in the project document "Claudish delivery flow". Every open GitHub issue has
+exactly one Linear ticket that links it.
+
+- **Start a task:** find its ticket (search the project, and the GitHub issue's mirror). If there is
+  none, create one in the Claudish project with a milestone, a priority and the evidence. Then set it
+  **In Progress** before the first edit. An In Progress ticket is how parallel sessions see that the
+  work is taken; work with no ticket is invisible and gets done twice.
+- **While working:** record what changes the plan on the ticket: a narrowed cause, a new blocker
+  (`blocks` / `blockedBy`, not prose), a split-out follow-up as its own ticket.
+- **Finish a task:** set the ticket **Done** only after the fix is merged and verified, with a
+  comment naming the commit or PR and the verification. Stopped or obsolete work goes to
+  **Canceled** with the reason, never left In Progress. A ticket that tracks a GitHub issue closes
+  together with that issue.
+
 ## Session artifacts
 
 `ai-docs/` is TRACKED; `ai-docs/sessions/{task-slug}-{YYYYMMDD-HHMMSS}-{hash}/` is GITIGNORED and
@@ -255,3 +277,42 @@ for rationale. Three write-ups already died this way.
   Set work aside with a temporary WIP commit, or copy the file out and back. To revert a
   file for a mutation test, copy it — do not use git.
 - Deep rationale goes in `ai-docs/architecture/`, not here. Add it there and name the trigger in the list above.
+
+## Code Search
+
+Added by the `code-search` plugin.
+
+### The tool surface
+
+| Tool | Present | Takes |
+|---|---|---|
+| `code_search` | always | `query` (free-form), `intent`, `scope` |
+| `find_dependencies`, `find_dependents`, `call_tree`, `find_implementations`, `impact` | only when the configured engine genuinely supports that operation | `symbol`, `depth` / `max_depth`, `scope` |
+| `Read`, `Grep`, `Glob` | always | — |
+
+**Read the tool list; never assume a structural tool exists.** Absence means the configured
+engine cannot answer that class of question at all — not that it would be slower or
+approximate. Say so in the report and answer with what is present.
+
+`code_search` infers intent from the query, so write the real question. Pass `intent` only to
+override an inference you have watched go wrong. Every response names the capability that
+served it — read that field.
+
+### Routing
+
+| The request is about | Route to |
+|---|---|
+| meaning, behaviour or a flow | `code_search` |
+| the shape of the system, or a **named** symbol and what touches it | `code_search`, then the structural tools |
+| an exact literal, an occurrence count, or a filename pattern | `Grep` / `Glob` |
+
+Text search is the correct tool for the third row — that is routing, not a fallback. The rule
+is to name the method behind each finding, never to avoid a tool.
+
+### Discipline
+
+- Search before reading. Three or more files in one investigation means one ranked query first.
+- Read only the line ranges returned, and re-resolve them before acting — edits move them.
+- Never rank-truncate a result set; narrow with `scope` instead.
+- An error and an empty result look alike and mean opposite things. Establish which you have.
+- Centrality is tiers, not a threshold. Absent centrality means unknown, not low.

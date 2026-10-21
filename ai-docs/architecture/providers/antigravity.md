@@ -17,7 +17,7 @@ Two separate Gemini flows, deliberately split:
 
 The Antigravity half of the old `auth/gemini-oauth.ts` was extracted to **`auth/antigravity-user.ts`** (project/tier resolution, `retrieveUserQuota`, live discovery of the account's dynamic models catalog) before that file was deleted — Antigravity depends on it, so deleting wholesale would have taken `ag@` down too. All three calls now share ONE identity (the Antigravity User-Agent). `retrieveUserQuota` used to keep the gemini-cli UA it was written with; measured 2026-08-18 on a real Ultra account, same token and project, only the UA varying — the gemini-cli UA returned 4 quota buckets (the membership of the retired free Code Assist plan) and the Antigravity UA returned 24. This backend gates its ANSWER on request identity, not just the tier label it displays.
 
-**Why not just spoof the identity:** the backend has two independent gates. `loadCodeAssist` gates the visible *tier* on request identity (`User-Agent` + `metadata.ideType: ANTIGRAVITY`), but `streamGenerateContent` gates *generation* on the OAuth **client that minted the token** — headers can't fake it (403 PERMISSION_DENIED). So claudish does not spoof; it **reuses the user's own Antigravity token**.
+**Why not just spoof the identity:** the backend has two independent gates. `loadCodeAssist` gates the visible *tier* on request identity (`User-Agent` + `metadata.ideType: ANTIGRAVITY`), but `streamGenerateContent` gates *generation* on the OAuth **client that minted the token** — headers can't fake it (403 PERMISSION_DENIED). So claudish does not spoof; it **reuses the user's own Antigravity token**. A third gate sits on top of both: the client VERSION in the User-Agent decides which models exist at all — see [The client version gates discovery AND generation](#the-client-version-gates-discovery-and-generation-2026-10-14).
 
 ## THE HOST IS NOT `cloudcode-pa` (v7.66.0)
 
@@ -111,6 +111,66 @@ dropped a real model from the picker.
 
 Only `tab_*` needs a prefix rule; it appears in no list and carries no flag.
 
+## The client version gates discovery AND generation (2026-10-14)
+
+claudish sent `antigravity/cli/1.1.9` from a hard-coded literal while the
+installed `agy` was 1.3.5. Same token, project and host, only the version in the
+User-Agent varying:
+
+| UA version | `fetchAvailableModels` | `defaultAgentModelId` | `streamGenerateContent` `gemini-4-argon-low` |
+|---|---|---|---|
+| 1.1.9 | 23 ids; no `gemini-4*`, no `gemini-3.8-flash-{high,medium,low}` | `claude-opus-5-5-low` | **404** |
+| 1.3.5 | 29 ids; + `gemini-4-argon-{high,medium,low}`, + `gemini-3.8-flash-{high,medium,low}` | `gemini-4-argon-medium` | **200** |
+
+So the version is not cosmetic: a pinned one hides every model released after
+the pin, from the picker AND from generation, with nothing in the response to say
+so. The earlier claim that the UA "does not gate generation" was true only for
+models old enough to predate every version claudish ever sent.
+
+**The version is read from agy, once per auth session.** agy auto-updates, and
+claudish already depends on it for the token, so the installed agy's version is
+the one value that cannot drift. `auth/antigravity-token.ts` runs `agy --version`
+(prints `1.3.5`, 0.04 s) whenever `getValidAntigravityAccessToken` or
+`forceRefreshAntigravityToken` hands out an access token that differs from the
+one the last read was made for — a new token means agy just ran, which is when it
+may have updated. Same token → the cached value, at the cost of a string compare.
+The value lives in `auth/antigravity-client-version.ts`; `buildAntigravityUserAgent`
+reads it.
+
+- **A failed read keeps the previous good version.** It never demotes a session to
+  the floor, and it is not retried until the token changes.
+- **`1.1.9` remains only as a floor** for when agy cannot be read at all (not
+  installed, broken). It is not a target; nothing ever pins to it again.
+- **The served-models cache is keyed to the version.** `getServedAntigravityModels`
+  drops a cache fetched under another version, because that answer is a different
+  dynamic models catalog, not a stale copy of the same one.
+
+## The picker lists `agentModelSorts`, routing lists `models`
+
+`agy models` prints exactly `agentModelSorts[*].groups[*].modelIds`, in that
+order — on the 2026-10-14 account, 13 ids. The `models` dict carries more: older
+generations (`gemini-2.5-*`, `gemini-3-*`, `gemini-3.5-*`) and
+`gemini-3.8-flash-tiered`, which agy does not offer for selection.
+
+`getServedAntigravityModels` returns that list as `agentModelIds` (flattened over
+every sort and group, order kept, deduplicated). The `ag@` picker then lists
+exactly those ids that are also served and not declared excluded, in agy's order.
+When the field is absent or empty the picker falls back to every selectable served
+id, newest first — absent means unknown, not "none".
+
+**The narrowing happens in the picker, not in the discovery fetcher.**
+`fetchAntigravityModelsCatalog` still returns every selectable id; agy's ids lead
+and carry `providerOrder` (their position), the rest carry none.
+`buildRowsFromDiscovered` keeps only the rows that carry it, in that order. The
+fetcher's list is not the picker's alone: `providerServesModel` — the routing
+chain's availability filter — and `discoverContextWindow` read it too, and a
+dynamic models catalog is the one source allowed to answer "not-served", which
+REMOVES a hop. Narrowing the fetcher would have routed a bare `gemini-2.5-pro`
+past the subscription to a metered provider.
+
+Routing is unchanged: `resolveAntigravityModelId` and the transport resolve
+against the full `servedIds`, so a typed `ag@gemini-2.5-pro` still works.
+
 ## Ordering: cloud models catalog dates are poison for Antigravity's models
 
 Antigravity rows set `ignoreCatalogReleaseDate`. `compareByReleaseDateDesc` sorts
@@ -127,12 +187,168 @@ Six dated of nineteen was worse than zero: a partial signal ranked confidently o
 incomplete evidence. Suppressed, the whole dynamic models catalog falls through to version-parts
 and orders 3.7 > 3.6 > 3.5 > 3.1 > 3 > 2.5.
 
+That rule now governs only the fallback list. When the backend sends
+`agentModelSorts`, the picker shows agy's own order instead (previous section).
+
 
 **Token lifecycle** (`auth/antigravity-token.ts`, macOS):
 - **Shared store**: the same keychain item the `agy` CLI uses — `service=gemini, account=antigravity`, value `go-keyring-base64:<base64(JSON)>` (zalando/go-keyring). claudish reads AND writes it, so both tools reuse one live token.
-- **Self-refresh**: when the token is expired, POST `oauth2/token` with `grant_type=refresh_token`. The Antigravity client_id/secret are **never shipped** — they're extracted at runtime from the user's own local `agy` binary (`strings` for the `…apps.googleusercontent.com` id + `GOCSPX-` secret; the working combo is discovered by first-200 and cached). The refreshed (and possibly rotated) token is written back to the shared store.
+- **Refresh is delegated to `agy`**: when the access token is expired or within 2 minutes of expiry, claudish runs `agy models` (12 s timeout). That lightweight, authed command makes `agy` mint a fresh token with its OWN current client secret and write it back to the shared store, and claudish then re-reads the store. claudish never handles the Antigravity client secret in any form: no embed, no scrape, no token exchange. The secret is a literal inside `agy`, and `agy` auto-updates, so each release rotates it and Google revokes the old one. Any copy claudish held would break within days. The refresh outcome (`ran` / `not-installed` / `timeout` / `failed`, with agy's stderr) decides the error: a slow or failing `agy` is retryable, while a missing `agy` or a session that is still stale after a clean run is terminal.
 - **Degradation**: no store (agy not installed / not signed in) or non-macOS → actionable error pointing at `g@` + `GEMINI_API_KEY`.
 
 **Model ids — LIVE discovery, no hardcoded map**: the Antigravity backend requires a reasoning-tier suffix (bare `gemini-3.6-flash` → 404), but which variants a subscription serves is **per-account and drifts**, so claudish never hardcodes a model list. `getServedAntigravityModels()` fetches the live set from the backend's own `v1internal:fetchAvailableModels` (body `{project}`) — the served ids are the response `models` keys, plus a backend `defaultAgentModelId` — cached with a TTL. `resolveAntigravityModelId(requested, servedIds, defaultId)` then resolves against that LIVE set: exact match passes through; a bare family (e.g. `gemini-3.6-flash`) resolves to the backend's `defaultAgentModelId` when it's a variant of that family, else to the strongest reasoning tier by a *rank rule* (`high>medium>low>extra-low>tiered` — a rule, like `rankCodeAssistModel`, not pinned ids); anything else passes through to the F1–F7 404 rewrite. The only literals are the tier-rank ordering and endpoint strings — no concrete model ids in source.
 
 **Identity strings**: `User-Agent: antigravity/cli/<ver> (aidev_client; os_type=<platform>; arch=<arch>; auth_method=consumer)` + `metadata: { ideType: "ANTIGRAVITY" }`. The transport keeps all the F1–F7 improvements from the old codeassist path (terminal-error → 400 surfaced inline, the 404 rewrite that checks the dynamic models catalog, `rankCodeAssistModel`). Full reverse-engineering write-up: `ai-docs/sessions/antigravity-refactor-20260803-125333-d0791562/architecture.md` (write-up lost — predates the ai-docs tracking fix).
+
+## Raw model list for models-index (`claudish subscription models antigravity --raw --json`)
+
+**Why it exists.** The models-index catalog publishes no exact connections on route
+`google/antigravity-subscription`, so a bare `gemini-4-argon` routes to the metered Gemini API.
+The models-index wire-probe runner (a nightly macOS LaunchAgent with no TTY and no browser) runs this
+command, uploads stdout, and seals the body as evidence for the connections it publishes. Code:
+`subscription-models-command.ts`.
+
+**It reuses the `ag@` path; it does not copy it.**
+- `readAntigravityStoreClassified` is the bounded keychain read.
+- `getValidAntigravityAccessToken` (with observed deps) refreshes through `agy models` when the
+  token is expired.
+- `setupAntigravityUser` resolves the project.
+- `fetchAntigravityAvailableModelsRaw` returns the body BEFORE any processing.
+  `getServedAntigravityModels` calls the same function and processes its result: exclusions,
+  displayName, `agentModelSorts`. There is no cache, so every run is a live fetch.
+
+`--raw` and `--json` are both required in v1. Each of these is a usage error:
+- a missing flag;
+- the `ag` shortcut in place of `antigravity`;
+- an extra token.
+
+A usage error exits 2, with the fixed usage line on stderr and an `internal`/`usage` failure line on
+stdout. The bare form is kept free for a later human view.
+
+### Schema `claudish.subscription-model-list.v1`
+
+**Every exit, 0 and 1 to 7, prints exactly one JSON object on ONE stdout line**, through the awaited
+write before `process.exit`. Keys in this order:
+
+```
+schema, provider? ("antigravity"), claudishVersion,
+fetchedAt?, sourceUrl?, clientVersion?, clientVersionSource?,
+tokenRefreshed, httpStatus?, failure?, body?
+```
+
+**Field-presence rule:** a field appears exactly when this run determined it.
+
+| Field | Present when |
+|---|---|
+| `provider` | the provider was determined: every exit except a usage error and the `index.ts` catch |
+| `tokenRefreshed` | always. True when this run asked agy to refresh, even if that refresh failed |
+| `clientVersion`, `clientVersionSource` | a valid token was obtained. The value is the version in the User-Agent actually sent. `"fallback"` means the 1.1.9 floor, which hides every `gemini-4-argon-*` id |
+| `sourceUrl` | `fetchAvailableModels` was attempted. It is `antigravityHost()` (honours `AICODE_ENDPOINT_URL`) with any userinfo stripped |
+| `fetchedAt`, `httpStatus` | `fetchAvailableModels` answered with a status |
+| `body` | success only. A STRING: the 2xx response text exactly as `res.text()` read it, byte for byte, untrimmed |
+| `failure` | `{ class, code, httpStatus? }`. Each is a fixed string, with no error text; every code matches `^[a-z0-9_.:-]{1,120}$` |
+
+**`body` is the response text, never a re-serialization.** models-index seals it as evidence, and
+`JSON.parse` followed by `JSON.stringify` is not the bytes the backend sent: number spellings,
+escapes and whitespace can change. The success test still parses the text (2xx, valid JSON,
+`models` a non-empty plain object); the parse decides success and is never printed.
+`fetchAntigravityAvailableModelsRaw`'s `json` variant carries both `text` and `value`;
+`getServedAntigravityModels` reads only `value`.
+
+A non-2xx `fetchAvailableModels` answer is **not a failure**: exit 0, with `httpStatus` and no `body`.
+
+### Failure taxonomy and exit codes
+
+| Class | `code` | Exit |
+|---|---|---|
+| — (success, or a non-2xx answer) | — | 0 |
+| `credential_missing` | `platform_unsupported`, `keychain_item_absent`, `token_unparseable` | 3 |
+| `keychain_locked` | `keychain_locked` (security exit 36/51/128), `keychain_read_timeout` (10 s), `keychain_read_failed` (any other exit) | 4 |
+| `mint_failed` | `agy_missing`, `agy_refresh_failed`, `agy_refresh_timeout`, `agy_refresh_no_valid_token` | 5 |
+| `mint_failed` | `load_code_assist_4xx` (with `httpStatus`), `load_code_assist_no_project`, `load_code_assist_bad_body` | 5 |
+| `network` | `load_code_assist_429`, `load_code_assist_5xx` (with `httpStatus`), `load_code_assist_network_error`, `load_code_assist_timeout` (30 s) | 6 |
+| `network` | `fetch_available_models_network_error` (unreachable, or a 2xx body that could not be read), `fetch_available_models_timeout` (30 s abort) | 6 |
+| `list_incomplete` | `models_absent`, `models_empty`, `body_not_json` (all 2xx, with `httpStatus`) | 7 |
+| `internal` | `usage` | 2 |
+| `internal` | `secret_guard`, `internal_error` | 1 |
+
+Class `internal` keeps the fixed stderr line of each case, and adds the stdout line:
+- `usage`: `schema`, `claudishVersion`, `tokenRefreshed: false`, `failure`. No `provider`: none was
+  determined.
+- `secret_guard`: every field determined so far, and never a `body`. That line is checked against
+  the secrets too; on a hit (it holds no body, so it cannot happen) nothing is printed.
+- `internal_error`: `schema`, `provider`, `claudishVersion`, the `tokenRefreshed` known so far, and
+  `failure`; nothing else the failed run determined. The `index.ts` catch around the whole command
+  prints the same line without `provider` and with `tokenRefreshed: false`. The error text is
+  never printed.
+
+A stdout write that itself fails exits 1 with the stderr line only: a second line after a partial
+write would leave two objects on stdout.
+
+A `loadCodeAssist` 429 or 5xx is `network`, not `mint_failed`: it is transient
+(`credential-error.ts`).
+
+A refresh failure is classified from what the run OBSERVED, never from message text. The command
+records whether `runAgyRefresh` was called, and its `AgyRefreshOutcome`:
+- No refresh was called: `token_unparseable`.
+- `not-installed`, `timeout` or `failed`: the matching `agy_*` code.
+- `ran`, but the re-read token is still stale: `agy_refresh_no_valid_token`.
+
+### Keychain lock handling
+
+`defaultReadStore` maps every `security` failure to null, so a locked keychain reads as "not signed
+in", and it has no deadline. The command uses `readAntigravityStoreClassified(10 s)` instead.
+
+**Step 1, presence.** `find-generic-password` without `-w` reads no item data.
+- Exit 44 is `absent`.
+- It is NOT a lock probe: on a locked temporary keychain it answered exit 0 with the full attribute
+  dump (measured 2026-10-21).
+
+**Step 2, the value read (`-w`).** This is the step a locked keychain refuses. Measured on a locked
+temporary keychain: exit **128** (errSecUserCanceled), empty stderr, after 1.5 s, and no call left
+running. `security` exits with the low byte of the negated OSStatus:
+- 44 (errSecItemNotFound) is measured.
+- 36 (errSecInteractionNotAllowed) and 51 (errSecAuthFailed) are derived from the same arithmetic.
+
+All three map to `keychain_locked`.
+
+Both steps race one 10 s deadline. **`security` is never killed** (keychain.md: a killed `security`
+once made macOS restart `securityd`). A LaunchAgent in the Aqua session may get a real unlock dialog.
+Then the deadline reports `keychain_read_timeout`, the dialog is left to the user, and the command
+exits explicitly, because the unkilled child would otherwise keep the event loop alive.
+
+The pre-read value is handed to the token module as its first `readStore` answer, so that module
+never spawns an unbounded read of its own. The one re-read after a refresh uses the default
+synchronous read, which has no deadline. This is accepted and recorded as risk R4 of the design.
+
+### LaunchAgent PATH
+
+`locateAgyBinary()` runs `which agy`, then `~/.local/bin/agy`. launchd's default PATH has no
+Homebrew prefix. An `agy` installed only under `/opt/homebrew/bin` is therefore invisible to a
+LaunchAgent, with two effects:
+- the version reads as `clientVersionSource: "fallback"`;
+- an expired token fails as `agy_missing`.
+
+**The plist must set PATH** to include the directory `agy` lives in.
+
+### Secret guard
+
+- stdout is built only from the typed envelope. An `err.message` is never printed: messages
+  embed vendor text (`loadCodeAssist` bodies) and agy's stderr.
+- Before writing, the raw body text AND the serialized line are checked for these values, in
+  full. Checking the raw text too means an escaped form in the line cannot hide a credential.
+  - the access token;
+  - the raw store value;
+  - every refresh token read;
+  - the project id.
+
+  A hit exits 1 with the stderr line
+  `[claudish subscription] refused: output contained a credential value`, and stdout carries the
+  body-free `internal`/`secret_guard` line instead.
+- `log()` writes only to files, and only after `initLogger`, which this command never calls. The
+  project-id log lines in `antigravity-user.ts` therefore go nowhere.
+- stderr carries only fixed lines.
+
+The write is awaited before `process.exit`. Measured: an unawaited `process.stdout.write` of the
+200 KB line followed by `process.exit` reaches a pipe as exactly 65,536 bytes, 3 runs of 3. Awaiting
+the write callback delivers all of it.

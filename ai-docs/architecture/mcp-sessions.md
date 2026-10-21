@@ -155,8 +155,8 @@ not answered (RB2).
 open; `to` is the session event of the new state (`sessionEventFor`: `running`, `tool_executing`,
 `completed`, `failed`, `cancelled`, `timeout`, …), never another wait (the phase table has no
 wait-to-wait edge). The vocabulary outlived the push it was named for: the field is a record
-contract the monitor reads, so it keeps those words. It is append-only because an observer polling the directory (the magus
-`claudish` plugin monitor) must see a wait that opened and closed between two of its reads — a
+contract outside observers read, so it keeps those words. It is append-only because an observer polling the directory
+must see a wait that opened and closed between two of its reads — a
 marker file that exists only during the wait cannot give it that.
 
 The writer is the pane's `onTransition` hook: synchronous, every wire-state change, never
@@ -192,10 +192,10 @@ every runtime file (`output.log`, `events.jsonl`, `tokens.json`, `waits.jsonl`, 
 }
 ```
 
-It exists for observers OUTSIDE this process — the magus `claudish` plugin monitor polls the
-sessions directory and reports progress to the Claude Code window that started a run.
+It exists for observers OUTSIDE this process, which poll the sessions directory to report
+progress to the Claude Code window that started a run.
 `claudeSessionId` is the pane's `--session-id` uuid, the transcript's basename. For a pane session
-`mcpPid` is also the pane record's owner, and the watchers make the monitor's liveness inference
+`mcpPid` is also the pane record's owner, and the watchers make an observer's liveness inference
 sound: when the writer dies, its panes die with it.
 
 **`hostPid` is structural, computed once at startup** (`hostPidFrom`, `mcp-session/parent-session.ts`).
@@ -242,9 +242,11 @@ server's own `hostPid`.
 ### `meta.json` — the final record, and `events.jsonl`'s assistant lines
 
 `meta.json` is written once, at the terminal transition and before the pane is reaped, through
-`toMetaRecord`. It keeps every 10.4.0 key under its 10.4.0 name, because the monitor reads
-`status` (an unknown value reads as `failed`), `terminalReason`, `elapsedSeconds`,
-`turnsCompleted`, `toolCallCount`, `costUsd` and `exitCode`:
+`toMetaRecord`. Its existence is the run's end record: the magus `claudish-usage` skill and the
+multimodel `team` and `delegate` commands wait, bounded, for this file to appear. It keeps every
+10.4.0 key under its 10.4.0 name, because the monitor reads `status` (an unknown value reads as
+`failed`), `terminalReason`, `elapsedSeconds`, `turnsCompleted`, `toolCallCount`, `costUsd` and
+`exitCode`:
 
 - `status`: COMPLETED → `completed`; FAILED and EMPTY → `failed`; CANCELLED → `cancelled`;
   TIMEOUT → `timeout`;
@@ -260,6 +262,22 @@ server's own `hostPid`.
 
 `events.jsonl` carries one `assistant` line per main-chain message id, first-seen order, each once,
 which is exactly what the monitor counts as replies (RB5).
+
+### Hook records in an MCP session
+
+When hooks are loaded ([`hooks.md`](hooks.md)), an MCP session's records gain these, all
+additive:
+
+- `<sessionDir>/hook-inbox.jsonl`, created (0600) for **every** child before it spawns and named in
+  the child's `CLAUDISH_HOOK_INBOX`. The child's proxy appends `stop`, `inject`, `annotate`, `end` and
+  `capped` lines; the server reads it at each settle and deletes it at reap.
+- `events.jsonl` anomaly keys: `hook_injection_delivered`, `hook_injection_dropped:<reason>`,
+  `hook_injection_not_read`, `hook_hold_error`, `hook_hold_watchdog`.
+- `get_diagnostics` adds `pendingHookInputs`, and its `phase` can read `SETTLING` while
+  `sessionIdle` hooks run. The row `state` stays `RUNNING`, with activity `hook`, which `sessionEventFor`
+  reports as `running`, never `tool_executing`. `pendingInputs` still counts caller input only.
+- A one-shot session that a hook extends stays `RUNNING` across its turn chain, and its output grows
+  turn by turn: each chain turn's answer is appended when the turn is recorded, before any hook runs.
 
 ### Diagnostics are captured unconditionally, and reachable from the API
 
@@ -343,7 +361,7 @@ what a caller cannot see from the model id.
 answers the session's current screen `{seq, cols, rows, cursor, lines, final, spans?}` (160×50 at
 launch), or `{unchanged:true, seq, final}` when `since_seq` is still current — a memory read, meant
 for polling at about 1 Hz. `resize_session` answers `{session_id, cols, rows, changed, seq,
-pending?}`: the size actually set after clamping to 80–9999 × 24–9999 and at most 4 000 000 cells, and the screen `seq` once the
+pending?}`: the size actually set after clamping to 40–9999 × 24–9999 and at most 4 000 000 cells, and the screen `seq` once the
 redraw at that size has landed, so a capture with that `since_seq` already sees it. Their errors
 are a JSON `ContractError`; `resize` is the only verb that emits the two codes it added,
 `resize_unsupported` (the magmux has no `resize` op) and `delivery_unavailable` (magmux refused, or
@@ -532,7 +550,7 @@ the same facts from the records. The frames were never a keepalive either (next 
 
 Where the facts are now: `list_sessions` rows (`state`, `activity`, `idle_seconds`, accounting),
 `get_output`, `get_diagnostics`, `capture_session`, and the session records (`spawn.json`,
-`waits.jsonl`, `meta.json`, `events.jsonl`, `screen.txt`), which the magus monitor reads and which
+`waits.jsonl`, `meta.json`, `events.jsonl`, `screen.txt`), which outside observers read and which
 are byte-identical to before. `waits.jsonl` keeps the same event names in its `to` field.
 `team` progress is `team(mode:"status")`. The `notifications/progress` keepalive stays.
 

@@ -8,7 +8,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { extractSessionId } from "../../behavior/harness.js";
+import { extractSessionId } from "../../hooks/harness.js";
 
 /**
  * Fallback conversation key, minted once per process.

@@ -57,7 +57,7 @@ A worked example, which is the reason this exists:
 > to a bare yes/no, stripping the only option that grants elevated permissions. Nothing failed.
 > Nothing logged an error.
 
-Claudish now has a **Layer 4 behaviour supervisor** that detects these divergences and repairs
+Claudish now has **built-in supervisor hooks** (the hook system) that detect these divergences and repair
 some of them deterministically. Writing a rule requires evidence: *which* models violate *which*
 convention, *how often*, and *under what conditions*. We reproduced the case above from 1129
 local transcripts on one machine — but that is one developer's models on one developer's
@@ -77,7 +77,7 @@ error reporting.
 | **Fires when** | a provider call **failed** | everything **succeeded** |
 | **Question it answers** | "is this provider broken?" | "which model misbehaved, and how often?" |
 | **Trigger** | per error | per session |
-| **Consent flag** | `telemetry.enabled` | `behavior.telemetry.enabled` (separate) |
+| **Consent flag** | `telemetry.enabled` | `hooks.telemetry.enabled` (separate) |
 
 Different trigger, different schema, different consent. Mixing them makes both harder to query
 and would mean an error-reporting consent silently authorised behavioural collection.
@@ -190,9 +190,12 @@ You need it only to group rows and to deduplicate retried deliveries.
 
 ## 6. What claudish will NEVER send
 
-Enforced client-side by an **allow-list projection** (`toUploadable()` in
-`packages/cli/src/behavior/journal.ts`), not a deny-list — a field added by a future contributor
-cannot leak by default, it has to be added to the projection explicitly.
+Enforced client-side by an **allow-list**, not a deny-list: the session report is built only from
+the named fields of `recordTelemetryDecision` (`packages/cli/src/hooks/telemetry/aggregate.ts`), so a
+field a future contributor adds to the local journal cannot leak by default — it has to be added to
+the report explicitly. The hook engine's `journal()` fan-out (`packages/cli/src/hooks/engine.ts`) is
+its only caller, and it sends a user-written hook's id as `"user"` and withholds an `mcp__` tool
+name on such a row.
 
 Treat this as a contract you can rely on when reasoning about retention, access, and where this
 data is allowed to live:
@@ -210,7 +213,7 @@ storing it.
 
 ## 7. Delivery semantics the client guarantees
 
-- **Opt-in, default off** (`behavior.telemetry.enabled`), deliberately separate from the
+- **Opt-in, default off** (`hooks.telemetry.enabled`), deliberately separate from the
   existing error-reporting consent
 - Fire-and-forget with a 3s timeout, matching `/v1/report`
 - Any failure is silently discarded and never affects the user's request
@@ -271,6 +274,7 @@ projection and the consent flag exist, the `fetch` deliberately does not.
 
 ## References
 
-- Client design: `CLAUDE.md` → "Layer 4: Behavior Compatibility Layer"
-- Allow-list projection: `packages/cli/src/behavior/journal.ts` → `toUploadable()`
+- Client design: `ai-docs/architecture/hooks.md` → "Telemetry: the cross-user corpus"
+- Allow-list: `packages/cli/src/hooks/telemetry/aggregate.ts` → `recordTelemetryDecision()`, fed by
+  the `journal()` fan-out in `packages/cli/src/hooks/engine.ts`
 - Existing bug-report endpoint, for contrast: `packages/cli/src/telemetry.ts`

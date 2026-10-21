@@ -343,7 +343,7 @@ claudish [OPTIONS] <claude-args...>
 
 ### Environment Variables
 
-Claudish automatically loads `.env` from the current directory at startup. For the full list, see [Settings Reference](docs/settings-reference.md).
+Claudish loads provider API keys and model settings (`CLAUDISH_MODEL`, `CLAUDISH_MODEL_*`) from `.env` in the current directory at startup; any other variable there is ignored, so set the rest in your shell. For the full list, see [Settings Reference](docs/settings-reference.md).
 
 #### API Keys (at least one required for cloud models)
 
@@ -482,7 +482,7 @@ Claudish uses a two-scope configuration system:
 |------|-------|---------|
 | `~/.claudish/config.json` | Global | Profiles, telemetry, routing rules (shared across projects) |
 | `.claudish.json` | Local | Project-specific profiles and routing rules (overrides global) |
-| `.env` | Local | Environment variables (auto-loaded at startup) |
+| `.env` | Local | Provider API keys and model settings (auto-loaded at startup) |
 
 **Profile configuration** (`~/.claudish/config.json`):
 

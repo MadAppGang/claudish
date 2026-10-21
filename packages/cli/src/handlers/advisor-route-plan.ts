@@ -22,7 +22,7 @@
  */
 
 import type { Context } from "hono";
-import type { ChildAuthControl, ChildAuthSource } from "../claude-runner.js";
+import type { ChildAuthControl, ChildAuthSource } from "../child-auth-types.js";
 import { log } from "../logger.js";
 import { ensureCatalogReady } from "../providers/catalog-client.js";
 import { nativeRouteFor } from "../providers/native-route.js";

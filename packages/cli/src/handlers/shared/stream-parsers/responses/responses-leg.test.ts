@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Context } from "hono";
+import { HookEngine } from "../../../../hooks/engine.js";
+import { UnavailableSink } from "../../../../hooks/injection/sinks.js";
+import type { HookDefinition } from "../../../../hooks/public.js";
+import { HookRegistry } from "../../../../hooks/registry.js";
+import { RequestHooks } from "../../../../hooks/request-stage.js";
+import { applyResponseSeam } from "../../../../hooks/response-seam.js";
 import { collectSseMessage } from "../../collect-sse-message.js";
 import { createResponsesStreamHandler } from "../openai-responses-sse.js";
 
@@ -87,15 +93,51 @@ describe("REQ-1/REQ-2 Responses final arguments", () => {
   });
 
   test("REQ-2 TEST-3 buffers final real arguments before repair and JSON collection", async () => {
+    // Tool-argument repair runs at the hook response seam, above every parser:
+    // a fix-severity toolCall hook there must see each call's final real
+    // arguments, not the empty string a zero-delta call streams.
     const observed: string[] = [];
-    const result = await collectSseMessage(
-      translated(zero(), {
-        shouldBufferTool: () => true,
-        onToolCall: (_name, args) => {
-          observed.push(args);
-          return null;
+    const def = {
+      apiVersion: 1,
+      id: "observe-repair-input",
+      on: {
+        toolCall: {
+          tools: ["*"],
+          handle: (ctx) => {
+            observed.push(ctx.tool.rawArgs);
+            return [];
+          },
         },
-      }),
+      },
+    } satisfies HookDefinition;
+    const engine = new HookEngine({
+      registry: new HookRegistry(
+        [],
+        [{ id: "hook:t/observe", module: "/t.ts", moduleIndex: 0, exportIndex: 0, def }],
+        undefined
+      ),
+      config: {},
+      hostMode: "other",
+      journalSink: () => {},
+      warn: () => {},
+      drainTelemetryOutbox: false,
+    });
+    const vars = new Map<string, unknown>();
+    const context = {
+      get: (k: string) => vars.get(k),
+      set: (k: string, v: unknown) => vars.set(k, v),
+    };
+    const scope = await new RequestHooks(engine, null, new UnavailableSink(() => {})).beginAttempt(
+      context as never,
+      {
+        claudeRequest: { messages: [{ role: "user", content: "read" }] },
+        route: { modelId: "capture-model", provider: "openai-codex", native: false },
+        model: "capture-model",
+        stream: true,
+      }
+    );
+    const result = await collectSseMessage(
+      await applyResponseSeam(translated(zero()), scope),
       "capture-model"
     );
     expect(observed.map((s) => JSON.parse(s))).toEqual(

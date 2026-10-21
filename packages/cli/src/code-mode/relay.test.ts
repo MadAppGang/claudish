@@ -7,6 +7,12 @@ import {
   createSyntheticToolUseReply,
 } from "../handlers/shared/stream-parsers/openai-responses-sse.js";
 import type { StallClock } from "../handlers/shared/stream-parsers/responses/stall-guard.js";
+import { HookEngine } from "../hooks/engine.js";
+import { UnavailableSink } from "../hooks/injection/sinks.js";
+import { type HookDefinition, act } from "../hooks/public.js";
+import { HookRegistry } from "../hooks/registry.js";
+import { RequestHooks } from "../hooks/request-stage.js";
+import { applyResponseSeam } from "../hooks/response-seam.js";
 import { accountKeyFromBinding, sessionKeyFor } from "./ids.js";
 import { createCodeModeTurnHooks } from "./relay.js";
 import { loadQuickJSModule, resetQuickJSLoaderForTests } from "./sandbox/quickjs-loader.js";
@@ -292,20 +298,57 @@ describe("T4 code-mode relay through the public Responses handler", () => {
   }, 20000);
 
   test("REQ-26 TEST-32 synthetic replies share repair, prior usage and the JSON exit", async () => {
-    const sse = createSyntheticToolUseReply(
-      [
-        {
-          id: "toolu_cx_0123456789abcdef0123456789abcdef_1",
-          name: "Read",
-          input: { file_path: "f1" },
+    // Tool-argument repair runs at the hook response seam (`withHooks` wraps the
+    // handler's Response, a 5r synthetic reply included), so the reply goes
+    // through the seam exactly as a driver batch does.
+    const def = {
+      apiVersion: 1,
+      id: "repair-read",
+      on: {
+        toolCall: {
+          tools: ["Read"],
+          handle: (ctx) => [act.repairToolArgs({ ...ctx.tool.args, repaired: true }, "test")],
         },
-      ],
+      },
+    } satisfies HookDefinition;
+    const engine = new HookEngine({
+      registry: new HookRegistry(
+        [],
+        [{ id: "hook:t/repair", module: "/t.ts", moduleIndex: 0, exportIndex: 0, def }],
+        undefined
+      ),
+      config: {},
+      hostMode: "other",
+      journalSink: () => {},
+      warn: () => {},
+      drainTelemetryOutbox: false,
+    });
+    const vars = new Map<string, unknown>();
+    const context = {
+      get: (k: string) => vars.get(k),
+      set: (k: string, v: unknown) => vars.set(k, v),
+    };
+    const scope = await new RequestHooks(engine, null, new UnavailableSink(() => {})).beginAttempt(
+      context as never,
       {
-        modelName,
-        priorInputTokens: 1234,
-        shouldBufferTool: (name) => name === "Read",
-        onToolCall: (_name, args) => JSON.stringify({ ...JSON.parse(args), repaired: true }),
+        claudeRequest: { messages: [{ role: "user", content: "read" }] },
+        route: { modelId: modelName, provider: "openai-codex", native: false },
+        model: modelName,
+        stream: true,
       }
+    );
+    const sse = await applyResponseSeam(
+      createSyntheticToolUseReply(
+        [
+          {
+            id: "toolu_cx_0123456789abcdef0123456789abcdef_1",
+            name: "Read",
+            input: { file_path: "f1" },
+          },
+        ],
+        { modelName, priorInputTokens: 1234 }
+      ),
+      scope
     );
     const json = await sseResponseToJson(sse, modelName);
     expect(json.status).toBe(200);

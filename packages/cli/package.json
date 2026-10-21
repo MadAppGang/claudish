@@ -1,21 +1,29 @@
 {
   "name": "claudish",
-  "version": "12.1.2",
+  "version": "13.2.0",
   "description": "Run Claude Code with any model - OpenRouter, Ollama, LM Studio & local models",
   "type": "module",
   "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./hooks": {
+      "types": "./dist/hooks.d.ts",
+      "import": "./dist/hooks.js"
+    }
+  },
   "bin": {
     "claudish": "bin/claudish.cjs"
   },
   "scripts": {
-    "dev": "bun run src/index.ts",
-    "dev:mcp": "bun run src/index.ts --mcp",
-    "dev:grok": "bun run src/index.ts --interactive --model x-ai/grok-code-fast-1",
-    "dev:grok:debug": "bun run src/index.ts --interactive --debug --log-level info --model x-ai/grok-code-fast-1",
-    "dev:info": "bun run src/index.ts --interactive --monitor",
-    "build": "bun run scripts/generate-version.ts && bun build src/index.ts --outdir dist --target bun --external '@opentui/core' --external '@opentui/core-*' --external '@opentui/react' --external react --external 'react/*' && chmod +x dist/index.js",
-    "build:binary": "bun run scripts/generate-version.ts && bun build src/index.ts --compile --outfile claudish",
-    "typecheck": "tsc --noEmit",
+    "dev": "bun --no-env-file run src/index.ts",
+    "dev:mcp": "bun --no-env-file run src/index.ts --mcp",
+    "dev:grok": "bun --no-env-file run src/index.ts --interactive --model x-ai/grok-code-fast-1",
+    "dev:grok:debug": "bun --no-env-file run src/index.ts --interactive --debug --log-level info --model x-ai/grok-code-fast-1",
+    "dev:info": "bun --no-env-file run src/index.ts --interactive --monitor",
+    "build": "bun run scripts/generate-version.ts && bun run scripts/generate-hooks-dts.ts && bun build src/index.ts --outdir dist --target bun --external '@opentui/core' --external '@opentui/core-*' --external '@opentui/react' --external react --external 'react/*' && chmod +x dist/index.js && bun run build:hooks",
+    "build:hooks": "bun build src/hooks/public.ts --outfile dist/hooks.js --target bun && tsc -p tsconfig.hooks.json && mv dist/.hooks-types/public.d.ts dist/hooks.d.ts && rm -rf dist/.hooks-types",
+    "build:binary": "bun run scripts/generate-version.ts && bun run scripts/generate-hooks-dts.ts && bun build src/index.ts --compile --no-compile-autoload-dotenv --outfile claudish",
+    "typecheck": "tsc --noEmit && bun run scripts/typecheck-blind.ts",
     "lint": "biome check .",
     "format": "biome format --write .",
     "test": "bun test",

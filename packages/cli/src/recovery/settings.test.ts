@@ -406,26 +406,39 @@ describe("claude-runner asks that gate, and not the UI switch alone", () => {
   // not enough, so a guard that did not strip them would pass on reverted code.
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
-  test("the magmux wrap ternary consults recoverySurfaceAllowed()", () => {
-    const gate = /const wrap =\s*([\s\S]{0,160}?)\?\s*\n?\s*planMagmuxWrap/.exec(code)?.[1];
-    expect(gate, "could not find the wrap ternary in claude-runner.ts").toBeTruthy();
-    expect(gate).toContain("recoverySurfaceAllowed()");
-    expect(gate).toContain('paneCapability.kind === "wrap"');
+  // Since the hook system (architecture §3.2, §7.5) the gate is planned in ONE call,
+  // `planInteractiveSurfaces({capability, recoveryAllowed, sessionHooksNeedDriver})`,
+  // whose rules `hooks/session/interactive-launch.test.ts` pins. These guards check that
+  // claude-runner feeds it the two-switch predicate and uses its answer at both sites.
+  const plan = /planInteractiveSurfaces\(\{([\s\S]{0,400}?)\}\)/.exec(code)?.[1];
+
+  test("the surface plan is asked with recoverySurfaceAllowed(), and the wrap ternary obeys it", () => {
+    expect(
+      plan,
+      "could not find the planInteractiveSurfaces call in claude-runner.ts"
+    ).toBeTruthy();
+    expect(plan).toContain("recoveryAllowed: recoverySurfaceAllowed()");
+    expect(plan).toContain("capability: paneCapability");
     // The reverted form, named explicitly so the failure says what went wrong
     // rather than which substring is missing.
     expect(
-      /\bresolveRecoveryUi\(\)/.test(gate as string)
-        ? "the wrap gate asks resolveRecoveryUi() — --no-recovery will still wrap the session in magmux"
+      /\bresolveRecoveryUi\(\)/.test(plan as string)
+        ? "the surface plan asks resolveRecoveryUi() — --no-recovery will still wrap the session in magmux"
         : null
     ).toBeNull();
+    const gate = /const wrap =\s*([\s\S]{0,160}?)\?\s*\n?\s*planMagmuxWrap/.exec(code)?.[1];
+    expect(gate, "could not find the wrap ternary in claude-runner.ts").toBeTruthy();
+    expect(gate).toContain("surfaces.wrap");
+    expect(gate).toContain('paneCapability.kind === "wrap"');
+    expect(/\bresolveRecoveryUi\(\)/.test(gate as string)).toBe(false);
   });
 
-  test("the ambient-magmux branch consults it too", () => {
+  test("the ambient-magmux branch installs the recovery UI from that plan", () => {
     const branch = code
       .split("\n")
       .find((l) => l.includes("else if") && /ambient|MAGMUX_SOCK/.test(l));
     expect(branch, "could not find the ambient branch in claude-runner.ts").toBeTruthy();
-    expect(branch).toContain("recoverySurfaceAllowed()");
+    expect(branch).toContain('surfaces.recoveryUi === "ambient"');
     expect(
       /\bresolveRecoveryUi\(\)/.test(branch as string)
         ? "the ambient branch asks resolveRecoveryUi() — --no-recovery still installs the recovery UI in a grid pane"
@@ -437,12 +450,13 @@ describe("claude-runner asks that gate, and not the UI switch alone", () => {
     // `network-recovery.md`: one predicate decides the surface. The ambient branch
     // used to restate it as `config.interactive && process.env.MAGMUX_SOCK`, so a
     // case added to `magmuxPaneCapability()` (the pane child, D22) would still
-    // install the recovery UI here.
+    // install the recovery UI here. The plan takes `paneCapability` whole.
     const branch = code
       .split("\n")
       .find((l) => l.includes("else if") && /ambient|MAGMUX_SOCK/.test(l));
     expect(branch, "could not find the ambient branch in claude-runner.ts").toBeTruthy();
-    expect(branch).toContain('paneCapability.kind === "ambient"');
     expect(branch).not.toContain("MAGMUX_SOCK");
+    expect(plan).toContain("capability: paneCapability");
+    expect(plan).not.toContain("MAGMUX_SOCK");
   });
 });

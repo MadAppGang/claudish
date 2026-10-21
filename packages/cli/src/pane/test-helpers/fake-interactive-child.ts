@@ -19,11 +19,26 @@
  *   - "claude" mode (`--fake-as-claude` first, via a CLAUDE_PATH wrapper): the REAL claudish
  *     launches it as Claude Code; it dumps argv, env, cwd and the `--settings` content to
  *     `FAKE_CLAUDE_DUMP`, then emulates the REPL in marker mode.
+ *   - proxied "claude" mode (`FAKE_CLAUDE_PROXY=1`, hook-system §11.2): each delivered
+ *     prompt is POSTed as a streaming `/v1/messages` to `ANTHROPIC_BASE_URL` (the real
+ *     child claudish's proxy) with `metadata.user_id` carrying the `--session-id`; the
+ *     SSE that comes back is folded, and the RECEIVED text is written as the assistant
+ *     record, then `turn_duration`. Whatever the proxy did, rewriting included, is in
+ *     the transcript. `FAKE_CLAUDE_SIDE=<text>` also fires one side request on turn 1
+ *     that is NOT awaited (a background subagent's stream) before the turn ends.
  *
  * A file-delivered prompt (the fixed template) is read back exactly as Read returns it
  * (numbered lines, `toolUseResult.file`), reconstructed (split markers joined), and
  * answered `ANSWER <model> <sha1(reconstructed)[0..8]>`, so a test can compare the hash
  * with sha1 of the caller's prompt and see any loss. A typed line hashes the line.
+ *
+ * Scripted mode (`--model fake-scripted`, hook-system §11.5): `FAKE_SCRIPT` is a JSON array
+ * with one entry per submitted turn (see `TurnScript`), so a test fixes each turn's answer,
+ * a partial answer that never ends, a dialog, a missing witness, an unread task file, a
+ * re-wake after the answer, or an exit. `FAKE_KEYLOG` names a file that receives every
+ * submitted line and every Esc, so a test can prove what was (never) typed.
+ * `FAKE_INITIAL_PROMPT` is a prompt given on the command line: its user record is written
+ * before the REPL is first drawn (scripted mode).
  *
  * Gaps come from `FAKE_GAP_MS_<NAME>` so scenarios keep their ORDER at a fraction of real
  * time. `CONTRACT_FAKE_MAX_MS` (default 20 s) is a safety exit so a broken test never
@@ -535,6 +550,78 @@ function finishedRow(): string {
   return "✻ Cogitated for 1s";
 }
 
+/* ───────────────────────────── scripted turns ───────────────────────────── */
+
+/** One turn of `FAKE_SCRIPT` (scenario `scripted`). Every field is optional. */
+interface TurnScript {
+  /** the exact answer text (default: `ANSWER <model> <sha8>`) */
+  say?: string;
+  /** stream this text with no ending stop_reason and no end record, then hang */
+  partial?: string;
+  /** write this text (if non-empty), then open an AskUserQuestion and wait for Esc */
+  ask?: string;
+  /**
+   * the turn is never accepted: no user record and no echo in the conversation, so neither
+   * claudish's witness nor magmux's input gate (whose `history` evidence is that echo) has
+   * evidence it was submitted
+   */
+  noWitness?: boolean;
+  /** exit with this code as soon as the line is submitted (before any witness) */
+  exitOnSubmit?: number;
+  /** a file-delivered prompt is not read at all */
+  noRead?: boolean;
+  /** the turn ends with this API error record instead of an answer */
+  apiError?: string;
+  /** wait this long before the answer */
+  delayMs?: number;
+  /**
+   * after the answer and its end record: a background notification, then a continuation.
+   * `workingMs`: the working row shows this long BEFORE any record of the re-wake is
+   * written (the screen leads the transcript). `quietMs`: the re-wake's records are
+   * written and the screen is not redrawn for this long, so a reader sees them only by
+   * polling the transcript. `gateFile`: the re-wake waits for this file to exist before
+   * its `delayMs`, so a test starts it at a point it chose (a hold it observed).
+   * `clearWithRecords` (with `workingMs`): the cleared row is drawn in the same instant
+   * the records are written, so the frame that shows an idle screen is the first sign of
+   * the re-wake, and only a transcript read made after it sees the records.
+   */
+  rewake?: {
+    delayMs: number;
+    say: string;
+    workingMs?: number;
+    quietMs?: number;
+    gateFile?: string;
+    clearWithRecords?: boolean;
+  };
+  /** after the answer: exit with this code, `exitDelayMs` (default 20) later */
+  exitAfter?: number;
+  exitDelayMs?: number;
+}
+
+const SCRIPT: TurnScript[] = (() => {
+  try {
+    const v = JSON.parse(env.FAKE_SCRIPT ?? "[]");
+    return Array.isArray(v) ? (v as TurnScript[]) : [];
+  } catch {
+    return [];
+  }
+})();
+
+function scriptOf(n: number): TurnScript {
+  return SCRIPT[n - 1] ?? {};
+}
+
+/** Every submitted line and every Esc, one per line, for "never typed" assertions. */
+function keylog(entry: string): void {
+  const f = env.FAKE_KEYLOG;
+  if (!f) return;
+  try {
+    appendFileSync(f, `${entry}\n`);
+  } catch {
+    // diagnostics only
+  }
+}
+
 /* ───────────────────────────── turns ───────────────────────────── */
 
 const TEMPLATE_RE = /^Your task is in the file `([^`]+)`\./;
@@ -613,6 +700,7 @@ function deliveredOf(line: string): Delivered {
   if (!m) return { content: line, file: null };
   const file = m[1] as string;
   if (scenario === "no_read") return { content: "", file };
+  if (scenario === "scripted" && scriptOf(turn).noRead) return { content: "", file };
   const content = readTurnFile(file, line, {
     narrate: scenario === "narrate_then_read",
     partial: scenario === "partial_read",
@@ -643,7 +731,63 @@ function effectiveScenario(content: string): string {
   return scenario;
 }
 
+/* ───────────────────────────── proxied "claude" mode ───────────────────────────── */
+
+const PROXIED = asClaude && env.FAKE_CLAUDE_PROXY === "1";
+
+/** One streaming /v1/messages to the child claudish's proxy; the folded text of the reply. */
+async function proxiedAnswer(content: string): Promise<string> {
+  const base = (env.ANTHROPIC_BASE_URL ?? "").replace(/\/$/, "");
+  const res = await fetch(`${base}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": env.ANTHROPIC_API_KEY ?? "placeholder",
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: model,
+      max_tokens: 1024,
+      stream: true,
+      messages: [{ role: "user", content }],
+      metadata: { user_id: JSON.stringify({ session_id: sessionId }) },
+    }),
+  });
+  const raw = await res.text();
+  if (!res.ok) return `PROXY ERROR ${res.status}: ${raw.slice(0, 200)}`;
+  let text = "";
+  for (const event of raw.split(/\r?\n\r?\n/)) {
+    for (const line of event.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      try {
+        const d = JSON.parse(line.slice(5).trim()) as {
+          type?: string;
+          delta?: { type?: string; text?: string };
+        };
+        if (d.type === "content_block_delta" && d.delta?.type === "text_delta")
+          text += d.delta.text ?? "";
+      } catch {
+        // [DONE] or a keepalive
+      }
+    }
+  }
+  return text;
+}
+
+let sideFired = false;
+
 async function answerTurn(content: string): Promise<void> {
+  if (PROXIED) {
+    if (env.FAKE_CLAUDE_SIDE && !sideFired) {
+      sideFired = true;
+      void proxiedAnswer(env.FAKE_CLAUDE_SIDE).catch(() => "");
+    }
+    const text = await proxiedAnswer(content).catch((e) => `PROXY FAILED ${String(e)}`);
+    rec.text(text);
+    rec.td();
+    showHistory(`⏺ ${text}`, finishedRow());
+    return;
+  }
   rec.text(answerFor(content));
   rec.td();
   showHistory(`⏺ ${answerFor(content)}`, finishedRow());
@@ -653,6 +797,60 @@ function waitEsc(): Promise<void> {
   return new Promise((r) => {
     pendingEsc = r;
   });
+}
+
+/** A settled turn woken by a background notification, then continued (`TurnScript.rewake`). */
+async function rewakeAfter(rw: NonNullable<TurnScript["rewake"]>): Promise<void> {
+  if (rw.gateFile) while (!existsSync(rw.gateFile)) await sleep(20);
+  await sleep(rw.delayMs);
+  if (rw.workingMs) {
+    S.working = "✶ Simmering… (thinking)";
+    render();
+    await sleep(rw.workingMs);
+    S.working = null;
+  }
+  emit(T.bgNotify);
+  rec.text(rw.say);
+  rec.td();
+  if (rw.clearWithRecords) render();
+  if (rw.quietMs) await sleep(rw.quietMs);
+  showHistory(`⏺ ${rw.say}`, finishedRow());
+}
+
+/** One scripted turn (`FAKE_SCRIPT`): the transcript and screen of a real REPL turn. */
+async function runScripted(sc: TurnScript, d: Delivered): Promise<void> {
+  const c = d.content;
+  if (sc.delayMs) await sleep(sc.delayMs);
+  if (sc.partial !== undefined) {
+    rec.text(sc.partial, null);
+    S.history.push(`⏺ ${sc.partial}`);
+    S.working = "✶ Simmering… (thinking)";
+    render();
+    await new Promise(() => {});
+    return;
+  }
+  if (sc.ask !== undefined) {
+    if (sc.ask) {
+      rec.text(sc.ask, "tool_use");
+      S.history.push(`⏺ ${sc.ask}`);
+    }
+    return askUser("ask_user", c);
+  }
+  if (sc.apiError !== undefined) {
+    rec.apiError(sc.apiError);
+    rec.td();
+    showHistory(`⏺ ${sc.apiError}`, finishedRow());
+    return;
+  }
+  const text = sc.say ?? answerFor(c);
+  rec.text(text);
+  rec.td();
+  showHistory(`⏺ ${text}`, finishedRow());
+  if (sc.rewake) await rewakeAfter(sc.rewake);
+  if (sc.exitAfter !== undefined) {
+    await sleep(sc.exitDelayMs ?? 20);
+    return quit(sc.exitAfter);
+  }
 }
 
 async function runScenario(name: string, d: Delivered): Promise<void> {
@@ -992,7 +1190,7 @@ async function localCommandTurn(name: string, args: string): Promise<void> {
   showHistory(`  ⎿  ${stdout.replace(/\x1b\[[0-9;]*m/g, "")}`);
 }
 
-async function submit(line: string): Promise<void> {
+async function submit(line: string, opts: { argv?: boolean } = {}): Promise<void> {
   turn++;
   busy = true;
   try {
@@ -1006,6 +1204,24 @@ async function submit(line: string): Promise<void> {
       ].includes(scenario)
     )
       return await screenOnlyTurn(line);
+    if (scenario === "scripted") {
+      const sc = scriptOf(turn);
+      if (sc.exitOnSubmit !== undefined) {
+        await sleep(30);
+        return await quit(sc.exitOnSubmit);
+      }
+      if (sc.noWitness) return;
+      // A command-line prompt is written at once, before the REPL is drawn.
+      if (!opts.argv) await sleep(gap("WITNESS", 50));
+      rec.user(line);
+      S.history.push(`❯ ${line.split("\n")[0]}`);
+      S.working = "✶ Simmering… (thinking)";
+      render();
+      await sleep(gap("THINK", 50));
+      const d = deliveredOf(line);
+      S.working = null;
+      return await runScripted(sc, d);
+    }
     if (scenario === "slow_prompt_hook") {
       S.working = "✶ Blanching… (running UserPromptSubmit hook · 2s)";
       render();
@@ -1051,6 +1267,8 @@ function onEnter(): void {
   const text = S.box;
   if (!text.trim() || S.vim) return;
   if (ignoredEnters++ < ignoredEnterLimit || scenario === "never_submit_transcript_off") return;
+  // only a line Enter submits is logged: an ignored Enter submitted nothing
+  keylog(text);
   if (scenario === "menu_eats_enter" && !menuEaten) {
     menuEaten = true; // the first Enter only closes a menu (phase-2 keylog: Esc/Enter on menus)
     S.menu = null;
@@ -1090,6 +1308,7 @@ function acceptText(text: string): void {
 }
 
 function onEsc(): void {
+  keylog("<ESC>");
   if (swallowUntilEsc) {
     swallowUntilEsc = false;
     S.full = null;
@@ -1325,6 +1544,10 @@ async function boot(): Promise<void> {
     mkdirSync(dirname(transcript), { recursive: true });
     writeFileSync(transcript, "");
   }
+  // `claude "<prompt>"`: Claude Code may write the prompt's record before the REPL
+  // is drawn (hook-system §7.5: the interactive driver's first turn opens at offset 0).
+  const initial = env.FAKE_INITIAL_PROMPT;
+  if (initial) void submit(initial, { argv: true });
   process.stdout.write("\x1b[?1049h\x1b[?2004h");
   S.booted = true;
   S.ghost = scenario === "idle_suggestion";

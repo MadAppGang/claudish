@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChildAuthControl } from "../claude-runner.js";
+import type { ChildAuthControl } from "../child-auth-types.js";
 import type { ClaudeAdvisorAuth, ClaudeRequestFacts } from "./native-handler-advisor.js";
 import type { SigningSecrets } from "./shared/call-context.js";
 

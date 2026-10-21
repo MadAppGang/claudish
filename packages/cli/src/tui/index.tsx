@@ -5,22 +5,45 @@ import { createRoot } from "@opentui/react";
 import { _resetAntigravityTokenState } from "../auth/antigravity-token.js";
 import { getCodexOAuth } from "../auth/codex-oauth.js";
 import { credentials } from "../auth/credentials/authority.js";
-import { setCredentialPromptRole } from "../auth/credentials/prompt-role.js";
+import { decideTuiRole, setCredentialPromptRole } from "../auth/credentials/prompt-role.js";
 import { getKimiOAuth } from "../auth/kimi-oauth.js";
+import { resetVertexProjectDiscovery } from "../auth/vertex-auth.js";
+import { getConfigFileOverride } from "../config-override.js";
+import { NO_ENV_FILE_FLAG, isCompiledEntry } from "../launch-env.js";
 import { setStderrQuiet } from "../logger.js";
-import { applyRendererThemeMode } from "../theme/renderer-theme.js";
-import type { ProviderDef } from "./providers.js";
-
-/** The `claudish login <slug>` argument, derived from the provider catalog. */
-type LoginSlug = NonNullable<ProviderDef["oauthSlug"]>;
 import { ensureEndpointsRegistered } from "../providers/endpoint-registration.js";
 import { resetMuseCredentialState } from "../providers/meta-muse/muse-credentials.js";
+import { _clearVertexDiscoveryCache } from "../providers/transport/vertex-discovery.js";
+import { applyRendererThemeMode } from "../theme/renderer-theme.js";
 import { App } from "./App.js";
 import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.js";
+import type { ProviderLoginAction } from "./providers.js";
+
+export function gcloudCommand(platform: NodeJS.Platform): string {
+  return platform === "win32" ? "gcloud.cmd" : "gcloud";
+}
 
 /**
- * Start the config TUI. Re-entrant: if App requests an OAuth login,
- * we tear down the renderer, spawn `claudish login {slug}` as a CHILD
+ * The `claudish login <slug>` child of this process. Bun runs the script with
+ * `--no-env-file`, as every claudish launch does (launch-env.ts), so the working
+ * directory's env files stay out and the child keeps this run's config: an active
+ * `--config` is passed on as the flag. A compiled binary is its own script, takes no
+ * Bun flags, and reads no env files.
+ */
+export function loginCommand(
+  slug: string,
+  execPath: string,
+  entry: string,
+  configFile: string | null
+): { command: string; args: string[] } {
+  const tail = ["login", slug, ...(configFile ? ["--config", configFile] : [])];
+  if (isCompiledEntry(entry)) return { command: execPath, args: tail };
+  return { command: execPath, args: [NO_ENV_FILE_FLAG, entry, ...tail] };
+}
+
+/**
+ * Start the config TUI. Re-entrant: if App requests a login,
+ * we tear down the renderer, spawn the login command as a CHILD
  * process (clean stdio so the OAuth callback server doesn't fight with
  * OpenTUI's lifecycle), wait for it to exit, then start a fresh TUI.
  *
@@ -36,8 +59,8 @@ import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.
 export async function startConfigTui(): Promise<void> {
   // The config TUI may read a credential only inside an explicit user action,
   // in-process, before that action issues any proxy request
-  // (`auth/credentials/prompt-role.ts`).
-  setCredentialPromptRole("tui");
+  // (`auth/credentials/prompt-role.ts`), and never inside an MCP session.
+  setCredentialPromptRole(decideTuiRole());
   // Register bundled endpoints before the first render: the Providers tab is
   // built from `getAllProviders()`, so a catalog vendor the user has a key for
   // must already be in the provider list or it simply is not there to configure.
@@ -51,15 +74,12 @@ export async function startConfigTui(): Promise<void> {
   // screen (the renderer can't invalidate cells it didn't draw).
   setStderrQuiet(true);
 
-  // Derived from the catalog's `oauthLoginSlug` — see the note on
-  // `ProviderDef.oauthSlug`. These were hand-written unions that had drifted to
-  // name a removed provider (`gemini`) while missing newer slugs.
-  const loginRequest: { slug: LoginSlug | null } = {
-    slug: null,
+  const loginRequest: { action: ProviderLoginAction | null } = {
+    action: null,
   };
 
-  const requestLogin = (slug: LoginSlug): void => {
-    loginRequest.slug = slug;
+  const requestLogin = (action: ProviderLoginAction): void => {
+    loginRequest.action = action;
   };
 
   const renderer = await createCliRenderer({
@@ -88,20 +108,55 @@ export async function startConfigTui(): Promise<void> {
   // messages on quit). Re-suppressed at the top of the next recursive call.
   setStderrQuiet(false);
 
-  if (loginRequest.slug !== null) {
-    const slug = loginRequest.slug;
-    console.log(`\nLaunching: claudish login ${slug}\n`);
-    // Spawn the same runtime + script with `login {slug}`. stdio: "inherit"
-    // gives the child our terminal so inquirer prompts and the OAuth
-    // callback server work normally.
-    const result = spawnSync(process.argv[0], [process.argv[1], "login", slug], {
-      stdio: "inherit",
-    });
+  if (loginRequest.action !== null) {
+    const action = loginRequest.action;
+    const command =
+      action.kind === "gcloud-adc"
+        ? "gcloud auth application-default login"
+        : `claudish login ${action.slug}`;
+    console.log(`\nLaunching: ${command}\n`);
+    // stdio: "inherit" gives the child our terminal so inquirer prompts
+    // and the OAuth callback server work normally.
+    let result: ReturnType<typeof spawnSync>;
+    if (action.kind === "gcloud-adc") {
+      result = spawnSync(
+        gcloudCommand(process.platform),
+        ["auth", "application-default", "login"],
+        {
+          stdio: "inherit",
+          // Windows .cmd scripts require a shell to execute.
+          shell: process.platform === "win32",
+        }
+      );
+    } else {
+      const login = loginCommand(
+        action.slug,
+        process.execPath,
+        process.argv[1],
+        getConfigFileOverride()
+      );
+      result = spawnSync(login.command, login.args, { stdio: "inherit" });
+    }
     if (result.error) {
-      console.error(`\n❌ Failed to spawn login: ${result.error.message}\n`);
+      if (
+        action.kind === "gcloud-adc" &&
+        (result.error as NodeJS.ErrnoException).code === "ENOENT"
+      ) {
+        console.error(
+          "\ngcloud not found — install the Google Cloud CLI (https://cloud.google.com/sdk/docs/install)\n"
+        );
+      } else {
+        console.error(`\n❌ Failed to spawn login: ${result.error.message}\n`);
+      }
     } else if (result.status !== 0) {
       console.error(`\n❌ Login exited with status ${result.status}\n`);
+    } else if (action.kind === "gcloud-adc") {
+      resetVertexProjectDiscovery();
+      credentials.invalidate("vertex");
+      _clearVertexDiscoveryCache();
+      invalidateProbeProxyHandlers("vertex");
     } else {
+      const slug = action.slug;
       // Login succeeded IN A CHILD PROCESS, which wrote a fresh token file this
       // long-lived parent never re-reads (the OAuth singletons load once at
       // startup). Reload the relevant singleton from disk so the re-entered TUI's

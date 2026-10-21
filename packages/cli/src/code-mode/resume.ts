@@ -2,8 +2,8 @@
  * Step 5r: resume a suspended exec script from the tool_results Claude Code
  * sends back (architecture §5.9).
  *
- * Runs after 5b, so the account is THIS request's (its binding), and after 3c,
- * so a synthetic reply gets the same Layer 4 hooks as a driver batch. It is
+ * Runs after 5b, so the account is THIS request's (its binding), and after 3b,
+ * so a synthetic reply gets the same hooks as a driver batch. It is
  * synchronous from the record lookup to the state transition (no `await` in
  * between), so two concurrent requests for one record serialise: the second
  * sees the batch already consumed.
@@ -47,8 +47,8 @@
  * session id; compaction) is left alone: TTL and LRU end it.
  */
 
-import { extractSessionId } from "../behavior/harness.js";
 import type { ClaudeToolChoice } from "../handlers/shared/format/openai-tools.js";
+import { extractSessionId } from "../hooks/harness.js";
 import { log } from "../logger.js";
 import type { AuthBinding } from "../providers/transport/types.js";
 import type { ClaudeToolLike } from "./exec-tool.js";

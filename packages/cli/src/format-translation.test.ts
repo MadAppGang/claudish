@@ -524,14 +524,10 @@ describe("Regression: Anthropic SSE abandoned streams emit a terminal tail", () 
         delta: { type: "text_delta", text: "answer" },
       }),
     ]);
-    let turnEndCalls = 0;
     let tokenUpdate: [number, number] | null = null as [number, number] | null;
 
     const response = createAnthropicPassthroughStream(createMockContext(), fixture, {
       modelName: "test-model",
-      onTurnEnd: () => {
-        turnEndCalls++;
-      },
       onTokenUpdate: (input, output) => {
         tokenUpdate = [input, output];
       },
@@ -548,7 +544,6 @@ describe("Regression: Anthropic SSE abandoned streams emit a terminal tail", () 
 
       expect(extractText(events)).toBe("partial answer");
       expect(events.some((event) => event.data?.type === "message_stop")).toBe(true);
-      expect(turnEndCalls).toBe(1);
       expect(tokenUpdate).toEqual([12, 0]);
     } finally {
       if (timeout) clearTimeout(timeout);

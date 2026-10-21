@@ -83,9 +83,10 @@ model provider is experiencing issues" on GLM, while `gpt-5.6-luna` silently tol
 assistant turn with text *and* N tool calls is encoded as **N+1** messages (one text, then one per
 call); a pure tool call carries field 6 and no field 3.
 
-**Layer 4 is force-armed.** The devin profile sets `forceForeignModel: true`, because Devin serves
-uids like `claude-sonnet-5-medium` that match ComposedHandler's `^claude-` "native Anthropic" test —
-which would switch the behavior supervisor OFF for exactly the models most likely to need it. The
+**The supervisor hooks stay on for Devin.** The devin profile sets `forceForeignModel: true`, because
+Devin serves uids like `claude-sonnet-5-medium` that match the `^claude-` "native Anthropic" test in
+`RouteInfo.native` — which would switch the foreign-route built-in hooks (`plan-mode/*`,
+`session-context/*`) OFF for exactly the models most likely to need them. The
 87/87 plan-mode measurement behind that rule is about Claude reached through Anthropic's own harness
 and says nothing about a `claude-*` uid re-served over a reverse-engineered endpoint. The flag is
 opt-in per profile; every other provider is untouched.

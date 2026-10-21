@@ -7,17 +7,23 @@
  *
  * Flow:
  *   1. transformOpenAIToClaude(payload)          — normalize incoming request
+ *   1a. hook request stage A                      — system / message / tool-set actions
  *   2. adapter.convertMessages(claudeRequest)    — Claude → target format
  *   3. adapter.convertTools(claudeRequest)        — tool schema conversion
- *   3b. middleware.beforeRequest(...)             — pre-flight hooks
+ *   3a. hook request stage B                      — tool descriptions, both representations
+ *   3b. raw providerRequest hooks                 — unsafe tier, on committed clones
  *   4. adapter.buildPayload(...)                  — assemble full request body
  *   5. adapter.prepareRequest(payload, original)  — tool name truncation, etc.
  *   6. fetch via provider (with optional queue)   — HTTP request
  *   7. stream parser by provider.streamFormat     — response → Claude SSE
  *
- * Step 3b must stay ahead of step 4: buildPayload does not reliably alias
- * `messages`/`tools`, so hooks that run after it are silently discarded on the
- * Codex/Responses path.
+ * Steps 3a and 3b must stay ahead of step 4: buildPayload does not reliably
+ * alias `messages`/`tools`, so anything that runs after it is silently
+ * discarded on the Codex/Responses path. Stage A runs BEFORE conversion so a
+ * system note reaches chat-completions routes, whose payload is built from the
+ * converted `messages` alone; stage B runs AFTER `convertTools` so
+ * `summarizeTools` can never cut a description append. The hook stages run only
+ * when `withHooks` (hooks/response-seam.ts) put the request hooks on the context.
  */
 
 import type { Context } from "hono";
@@ -35,8 +41,6 @@ import { lookupModelAcceptsImages, lookupModelForProvider } from "../adapters/mo
 import type { QuotaAdapter } from "../auth/quota/adapter.js";
 import { resolveQuotaAdapter } from "../auth/quota/registry.js";
 import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
-import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
-import { getBehaviorEngine } from "../behavior/index.js";
 import { accountKeyFromBinding } from "../code-mode/ids.js";
 import { type CodeModeSetting, DEFAULT_CODE_MODE_SETTING } from "../code-mode/policy.js";
 import { createCodeModeTurnHooks } from "../code-mode/relay.js";
@@ -52,6 +56,10 @@ import { resumeFromToolResults } from "../code-mode/resume.js";
 import { loadQuickJSModule } from "../code-mode/sandbox/quickjs-loader.js";
 import { getCodeModeStores, peekCodeModeStores } from "../code-mode/stores.js";
 import { conversationMessages } from "../code-mode/types.js";
+import { getHookEngine } from "../hooks/index.js";
+import { type RawStreamTap, statsNames } from "../hooks/raw.js";
+import type { UpstreamFacts } from "../hooks/registry.js";
+import { type HookRequestScope, isNativeRoute, requestHooksOf } from "../hooks/request-stage.js";
 import {
   getLogLevel,
   log,
@@ -60,7 +68,6 @@ import {
   logStructured,
   truncateContent,
 } from "../logger.js";
-import { GeminiThoughtSignatureMiddleware, MiddlewareManager } from "../middleware/index.js";
 import { deepMergeParams } from "../model-params.js";
 import type { ResolvedConnection } from "../providers/connection-resolver.js";
 import type { WireHeader } from "../providers/connection-wire.js";
@@ -240,7 +247,8 @@ export interface ComposedHandlerOptions {
   /** Whether the current session is interactive (gates consent prompt). */
   isInteractive?: boolean;
   /**
-   * Force the Layer 4 behavior supervisor ON regardless of the model's name.
+   * Treat this route as FOREIGN for hooks (`RouteInfo.native` false) regardless
+   * of the model's name, so foreign-scoped built-in hooks stay armed.
    *
    * The default rule reads `claude-*` as "native Claude, already follows these
    * conventions" — a naming rule that holds for models reached through
@@ -307,7 +315,7 @@ export interface ComposedHandlerOptions {
    * for `--advisor` panel and collector calls, which claudish issues itself:
    * it writes no status-line token file (the main session owns it), skips the
    * plan-usage scrape and poll (that reading belongs on the main status line
-   * too), starts no Layer 4 session (a panel call is not a harness turn), and
+   * too), runs no hooks (a panel call is not a harness turn), and
    * tags every stats event `request_role: "advisor"`. Absent on every handler
    * that serves Claude Code's own requests.
    */
@@ -321,14 +329,12 @@ export class ComposedHandler implements ModelHandler {
   private explicitAdapter?: BaseModelAdapter;
   /** Model-specific adapter (GLM, Grok, etc.) — handles model quirks independent of provider */
   private modelAdapter?: BaseModelAdapter;
-  private middlewareManager: MiddlewareManager;
-  private behaviorEngine: BehaviorEngine;
   private tokenTracker: TokenTracker;
   /** Full routed model string (e.g. "zai@glm-4.7"). Used for provider routing and display echo. */
   private targetModel: string;
   /**
    * Bare model name (e.g. "glm-4.7"), provider prefix stripped. Used for model identity:
-   * dialect selection, catalog lookup, middleware routing, context tracking. Never contains '@'.
+   * dialect selection, catalog lookup, raw-hook routing, context tracking. Never contains '@'.
    * @invariant !bareModelName.includes("@")
    */
   private readonly bareModelName: string;
@@ -421,34 +427,6 @@ export class ComposedHandler implements ModelHandler {
     this.resolvedDialect.setResponseWireFormat(responseWire);
     this.explicitAdapter?.setResponseWireFormat(responseWire);
 
-    // Initialize middleware (only register model-specific middleware when applicable).
-    // Use bareModelName for the middleware gate — .includes() works identically for
-    // "google@gemini-2.5-flash" and "gemini-2.5-flash", and bare form is the invariant.
-    this.middlewareManager = new MiddlewareManager();
-    // With a connection, from data: a Gemini-API wire, or a Google model behind
-    // a gateway (OpenRouter carries its thought signatures in reasoning_details).
-    const connectionWire = options.connection?.wire;
-    if (
-      options.connection
-        ? (connectionWire?.status === "known" && connectionWire.api === "gemini") ||
-          options.connection.vendor === "google"
-        : this.bareModelName.includes("gemini") || this.bareModelName.includes("google/")
-    ) {
-      // Selected from data when there is a connection: the middleware's own
-      // name gate must not re-filter an opaque gateway id out again.
-      this.middlewareManager.register(
-        new GeminiThoughtSignatureMiddleware({ alwaysHandle: !!options.connection })
-      );
-    }
-    this.middlewareManager
-      .initialize()
-      .catch((err) => log(`[ComposedHandler:${this.bareModelName}] Middleware init error: ${err}`));
-
-    // Layer 4: harness-convention conformance. The engine is stateless and
-    // process-wide; per-request state lives on the session created in handle(),
-    // because this handler is cached per model and can serve overlapping requests.
-    this.behaviorEngine = getBehaviorEngine();
-
     // `--effort`: install the pin on EVERY dialect this handler can route
     // through. getAdapter() picks explicitAdapter or resolvedDialect at request
     // time and modelAdapter runs in addition to it, so pinning only one leaves
@@ -487,6 +465,42 @@ export class ComposedHandler implements ModelHandler {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * The route hooks are scoped by. `native` is the exact rule the plan-mode
+   * supervisor has always used: `claude-*` names and the `anthropic` provider,
+   * unless the provider profile sets `forceForeignModel`.
+   */
+  private routeInfo(): { modelId: string; provider: string; native: boolean } {
+    return {
+      modelId: this.bareModelName,
+      provider: this.provider.name,
+      native: isNativeRoute(this.bareModelName, this.provider.name, this.options.forceForeignModel),
+    };
+  }
+
+  /**
+   * `middleware_names` for stats: the built-in raw hooks (the Gemini
+   * thought-signature hook, today) that apply to this route. User hooks never
+   * appear, so the OTLP `llm.middleware` attribute is unchanged for them.
+   */
+  private rawStatsNames(): string[] {
+    return statsNames(getHookEngine(), this.routeInfo(), this.upstreamFacts());
+  }
+
+  /**
+   * What the catalog says about this handler's upstream, for built-ins selected
+   * from data rather than by model name (`BuiltinHook.selectByUpstream`). Only
+   * with a catalog connection: without one the hooks' name globs decide.
+   */
+  private upstreamFacts(): UpstreamFacts | undefined {
+    const connection = this.options.connection;
+    if (!connection) return undefined;
+    return {
+      wireApi: connection.wire.status === "known" ? connection.wire.api : null,
+      vendor: connection.vendor ?? null,
+    };
   }
 
   /** Provider adapter — handles transport format (messages, tools, payload) */
@@ -658,7 +672,7 @@ export class ComposedHandler implements ModelHandler {
         error_code: "call_aborted",
         token_strategy: this.options.tokenStrategy ?? "standard",
         adapter_name: this.getActiveAdapterName(),
-        middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+        middleware_names: this.rawStatsNames(),
         fallback_used: fallbackMeta !== undefined,
         fallback_chain: fallbackMeta?.chain,
         fallback_attempts: fallbackMeta?.attempts,
@@ -752,7 +766,7 @@ export class ComposedHandler implements ModelHandler {
         error_code,
         token_strategy: this.options.tokenStrategy ?? "standard",
         adapter_name: this.getActiveAdapterName(),
-        middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+        middleware_names: this.rawStatsNames(),
         fallback_used: ctx.fallbackMeta !== undefined,
         fallback_chain: ctx.fallbackMeta?.chain,
         fallback_attempts: ctx.fallbackMeta?.attempts,
@@ -852,7 +866,7 @@ export class ComposedHandler implements ModelHandler {
         error_code,
         token_strategy: this.options.tokenStrategy ?? "standard",
         adapter_name: this.getActiveAdapterName(),
-        middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+        middleware_names: this.rawStatsNames(),
         fallback_used: ctx.fallbackMeta !== undefined,
         fallback_chain: ctx.fallbackMeta?.chain,
         fallback_attempts: ctx.fallbackMeta?.attempts,
@@ -1160,7 +1174,7 @@ export class ComposedHandler implements ModelHandler {
         error_code: "client_disconnected",
         token_strategy: this.options.tokenStrategy ?? "standard",
         adapter_name: this.getActiveAdapterName(),
-        middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+        middleware_names: this.rawStatsNames(),
         fallback_used: fallbackMeta !== undefined,
         fallback_chain: fallbackMeta?.chain,
         fallback_attempts: fallbackMeta?.attempts,
@@ -1231,14 +1245,37 @@ export class ComposedHandler implements ModelHandler {
     const hop = recordHopEntry(c, this.provider.name, this.bareModelName);
     if (callSignal?.aborted) return this.respondCallAborted(startTime, fallbackMeta);
     // 1. Transform incoming Claude-format request
-    const { claudeRequest, droppedParams } = transformOpenAIToClaude(payload);
+    const transformed = transformOpenAIToClaude(payload);
+    const { droppedParams } = transformed;
+    // `let`: a raw `providerRequest` hook's committed copies replace it (3b).
+    let claudeRequest = transformed.claudeRequest;
+
+    // 1a. Hook request stage A, on this attempt's own deep copy (each
+    // FallbackHandler candidate gets a fresh one, so nothing leaks between
+    // attempts). Before conversion, so a system note reaches every route:
+    // chat-completions adapters copy `system` into messages[0] at step 2 and
+    // build their payload from `messages` alone.
+    // An advisor handler runs none: a panel call is not a harness turn, and its
+    // request carries no session id whose pending notes it could consume. The
+    // panel gateway's never-served context carries no hooks either; this check
+    // keeps that true if an advisor handler is ever reached another way.
+    const hooks = this.options.requestRole === "advisor" ? undefined : requestHooksOf(c);
+    const hookScope: HookRequestScope | undefined = hooks
+      ? await hooks.beginAttempt(c, {
+          claudeRequest,
+          route: this.routeInfo(),
+          upstream: this.upstreamFacts(),
+          model: typeof payload?.model === "string" ? payload.model : this.bareModelName,
+          stream: payload?.stream === true,
+        })
+      : undefined;
 
     // 2. Get adapter and reset state
     const adapter = this.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
 
     // 3. Convert messages and tools
-    const messages = adapter.convertMessages(claudeRequest, filterIdentity);
+    let messages = adapter.convertMessages(claudeRequest, filterIdentity);
     let tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
     // Per-API tool-count cap (e.g. OpenAI Chat Completions hard-caps `tools` at
@@ -1360,52 +1397,34 @@ export class ComposedHandler implements ModelHandler {
       }
     }
 
-    // 3b. Middleware before request.
+    // 3a. Hook request stage B: tool-description actions, on the Claude-format
+    // tools AND the converted ones, after convertTools (so `summarizeTools`,
+    // which keeps only a description's first sentence, cannot cut an append)
+    // and after the tool-count cap (a description action on a capped tool
+    // changes the Claude-format copy only, journaled `capped`). It runs before
+    // the raw tier on purpose: a raw `providerRequest` hook sees the request the
+    // closed actions produced.
+    hookScope?.applyToolDescriptions(claudeRequest.tools ?? [], tools);
+
+    // 3b. Raw `providerRequest` hooks (the unsafe tier; the Gemini
+    // thought-signature built-in lives here), after stage B so they see the
+    // request the closed actions produced.
     //
     // MUST run before buildPayload. buildPayload is not guaranteed to keep a
     // reference to `messages`/`tools`: the Chat Completions adapter assigns them
-    // straight onto the payload (so in-place edits happened to survive), but the
-    // Codex/Responses adapter deep-copies both (convertMessagesToResponsesAPI +
-    // .map()) and lifts the system prompt out of `claudeRequest.system` into
-    // `payload.instructions`. Running this hook after buildPayload therefore
-    // discarded every mutation on exactly the path gpt-5.x uses, silently.
+    // straight onto the payload, but the Codex/Responses adapter deep-copies
+    // both and lifts the system prompt out of `claudeRequest.system` into
+    // `payload.instructions`. A hook run after buildPayload would lose every
+    // change on exactly the path gpt-5.x uses.
     //
-    // Use bareModelName — must match the key used by getActiveNames() and
-    // afterStreamComplete() so the same set of middlewares is selected at both ends.
-    await this.middlewareManager.beforeRequest({
-      modelId: this.bareModelName,
-      messages,
-      tools,
-      stream: true,
-      claudeRequest,
-      claudeTools: claudeRequest.tools ?? [],
-    });
-
-    // 3c. Layer 4 — harness-convention conformance. Session is per-request so
-    // two concurrent turns on this cached handler cannot share detected state.
-    // An advisor handler starts none: a panel call is not a harness turn, and
-    // its request carries no session id whose corrections it could drain.
-    const behaviorSession =
-      this.options.requestRole === "advisor"
-        ? undefined
-        : this.behaviorEngine.startSession({
-            modelId: this.bareModelName,
-            providerName: this.provider.name,
-            // A naming rule, not a pinned model list: Claude models are `claude-*`, and
-            // they already follow these conventions (measured 87/87 on plan mode).
-            //
-            // `forceForeignModel` is the one escape hatch, and it exists because the
-            // name is not always evidence: a subscription aggregator can serve uids
-            // like `claude-sonnet-5-medium` that match this test while being reached
-            // over a foreign protocol, where the 87/87 measurement says nothing. The
-            // flag is opt-in per provider profile, so the global rule — and every
-            // other provider's behaviour — is unchanged.
-            isNativeAnthropic:
-              !this.options.forceForeignModel &&
-              (/^claude[-.]/i.test(this.bareModelName) || this.provider.name === "anthropic"),
-          });
-    if (behaviorSession && !behaviorSession.isNoop) {
-      behaviorSession.applyRequest(claudeRequest, claudeRequest.tools ?? [], tools, messages);
+    // Each hook works on clones, committed only when its call succeeds within
+    // its timeout; a throw, rejection or timeout leaves the request as it was.
+    if (hookScope) {
+      ({ claudeRequest, messages, tools } = await hookScope.raw.providerRequest({
+        claudeRequest,
+        messages,
+        tools,
+      }));
     }
 
     // 4. Build request payload
@@ -1655,7 +1674,8 @@ export class ComposedHandler implements ModelHandler {
 
     // 5r. Code-mode resume (`openai-codex`): tool_results answering a suspended
     // exec script's batch feed the script. After 5b, so the account is THIS
-    // request's; after 3c, so a synthetic reply gets the same Layer 4 hooks.
+    // request's; after 3b, so a synthetic reply gets the same raw hooks (the
+    // response seam above this handler applies the closed tool hooks to it).
     // Synchronous from record lookup to state transition. A script that
     // blocked again is answered here with its next batch — no upstream call,
     // no further auth, no stats record (nothing was billed) — through the same
@@ -1688,8 +1708,8 @@ export class ComposedHandler implements ModelHandler {
         const sse = createSyntheticToolUseReply(resumed.blocks, {
           modelName: this.bareModelName,
           priorInputTokens: this.tokenTracker.getLastInputTokens(),
-          middlewareManager: this.middlewareManager,
-          ...this.responsesHooks(behaviorSession),
+          onToolCallObserved: (name: string) => this.tokenTracker.recordToolUse(name),
+          raw: hookScope?.raw.streamTap(),
         });
         return payload?.stream === true ? sse : sseResponseToJson(sse, this.bareModelName);
       }
@@ -1742,8 +1762,8 @@ export class ComposedHandler implements ModelHandler {
       }
     }
 
-    // (Middleware beforeRequest ran at step 3b, before buildPayload — see the
-    // note there for why it cannot run at this point.)
+    // (Raw providerRequest hooks ran at step 3b, before buildPayload — see the
+    // note there for why they cannot run at this point.)
 
     // `let`: the 401 branch replaces `binding` and recomputes the endpoint from it.
     let endpoint = this.provider.getEndpoint(this.targetModel, binding);
@@ -2330,7 +2350,7 @@ export class ComposedHandler implements ModelHandler {
                 error_code,
                 token_strategy: this.options.tokenStrategy ?? "standard",
                 adapter_name: this.getActiveAdapterName(),
-                middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+                middleware_names: this.rawStatsNames(),
                 fallback_used: fallbackMeta !== undefined,
                 fallback_chain: fallbackMeta?.chain,
                 fallback_attempts: fallbackMeta?.attempts,
@@ -2465,7 +2485,7 @@ export class ComposedHandler implements ModelHandler {
                 error_code,
                 token_strategy: this.options.tokenStrategy ?? "standard",
                 adapter_name: this.getActiveAdapterName(),
-                middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+                middleware_names: this.rawStatsNames(),
                 fallback_used: fallbackMeta !== undefined,
                 fallback_chain: fallbackMeta?.chain,
                 fallback_attempts: fallbackMeta?.attempts,
@@ -2586,7 +2606,7 @@ export class ComposedHandler implements ModelHandler {
             error_code,
             token_strategy: this.options.tokenStrategy ?? "standard",
             adapter_name: this.getActiveAdapterName(),
-            middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+            middleware_names: this.rawStatsNames(),
             fallback_used: fallbackMeta !== undefined,
             fallback_chain: fallbackMeta?.chain,
             fallback_attempts: fallbackMeta?.attempts,
@@ -2715,7 +2735,7 @@ export class ComposedHandler implements ModelHandler {
             error_code: upstreamCode,
             token_strategy: this.options.tokenStrategy ?? "standard",
             adapter_name: this.getActiveAdapterName(),
-            middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+            middleware_names: this.rawStatsNames(),
             fallback_used: fallbackMeta !== undefined,
             fallback_chain: fallbackMeta?.chain,
             fallback_attempts: fallbackMeta?.attempts,
@@ -2788,7 +2808,7 @@ export class ComposedHandler implements ModelHandler {
             error_code: upstreamCode,
             token_strategy: this.options.tokenStrategy ?? "standard",
             adapter_name: this.getActiveAdapterName(),
-            middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+            middleware_names: this.rawStatsNames(),
             fallback_used: fallbackMeta !== undefined,
             fallback_chain: fallbackMeta?.chain,
             fallback_attempts: fallbackMeta?.attempts,
@@ -2964,7 +2984,7 @@ export class ComposedHandler implements ModelHandler {
           is_free_model: isFreeModel,
           token_strategy: this.options.tokenStrategy ?? "standard",
           adapter_name: this.getActiveAdapterName(),
-          middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+          middleware_names: this.rawStatsNames(),
           fallback_used: fallbackMeta !== undefined,
           fallback_chain: fallbackMeta?.chain,
           fallback_attempts: fallbackMeta?.attempts,
@@ -2977,11 +2997,12 @@ export class ComposedHandler implements ModelHandler {
         // Stats must never crash claudish
       }
       try {
-        // Layer 4 turn denominator. getInputTokens() is the FULL conversation
-        // context for this request (assignment, not accumulation — see the
-        // context-tracking note in CLAUDE.md), which is exactly the figure the
-        // context bucket wants. No-op unless behaviour telemetry is opted in.
-        behaviorSession?.noteTurnComplete(this.tokenTracker.getInputTokens());
+        // Hook telemetry's turn denominator. getInputTokens() is the FULL
+        // conversation context for this request (assignment, not accumulation
+        // — see the context-tracking note in CLAUDE.md), which is exactly the
+        // figure the context bucket wants. No-op unless behaviour telemetry is
+        // opted in.
+        hookScope?.noteTurnComplete(this.tokenTracker.getInputTokens());
       } catch {
         // Telemetry must never crash claudish
       }
@@ -3002,7 +3023,7 @@ export class ComposedHandler implements ModelHandler {
         (code, message) => {
           streamApiError = { code, message };
         },
-        behaviorSession,
+        hookScope?.raw.streamTap(),
         responsesTurn
       ),
       () => {
@@ -3250,27 +3271,6 @@ export class ComposedHandler implements ModelHandler {
     );
   }
 
-  /**
-   * The Layer 4 and tool-count hooks every Responses message is written with:
-   * driver legs (`createResponsesStreamHandler`) and 5r synthetic replies alike.
-   * `onToolCallObserved` counts the tool whether or not a behaviour session
-   * exists (see `observeToolCall` in handleStream).
-   */
-  private responsesHooks(behaviorSession?: BehaviorSession) {
-    return {
-      shouldBufferTool: (name: string) => behaviorSession?.interceptsTool(name) ?? false,
-      onToolCall: (name: string, argsJson: string) =>
-        behaviorSession?.repairToolCall(name, argsJson) ?? null,
-      onAssistantText: (text: string, kind?: "text" | "reasoning") =>
-        behaviorSession?.observeText(text, kind),
-      onToolCallObserved: (name: string): void => {
-        this.tokenTracker.recordToolUse(name);
-        behaviorSession?.observeToolCall(name);
-      },
-      onTurnEnd: () => behaviorSession?.finishTurn(),
-    };
-  }
-
   private handleStream(
     c: Context,
     response: Response,
@@ -3280,7 +3280,8 @@ export class ComposedHandler implements ModelHandler {
     toolNameMap?: Map<string, string>,
     onComplete?: () => void,
     onApiError?: (code: string, message: string) => void,
-    behaviorSession?: BehaviorSession,
+    /** The raw `providerChunk`/`providerStreamEnd` tap for this stream, when one applies. */
+    raw?: RawStreamTap,
     responsesTurn?: ResponsesTurnWiring
   ): Response {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
@@ -3324,8 +3325,7 @@ export class ComposedHandler implements ModelHandler {
     };
 
     const streamFormat = this.resolveStreamFormat();
-    // Stream parsers receive bareModelName: it is used both as the middleware-identity
-    // key (must match beforeRequest() / getActiveNames()) AND as the value echoed in
+    // Stream parsers receive bareModelName: it is the value echoed in
     // `message_start.message.model` for display. Passing the routed form here was the
     // latent second part of #102 — the parameter was named `modelName` but received
     // the full routed string.
@@ -3335,18 +3335,16 @@ export class ComposedHandler implements ModelHandler {
     const priorInputTokens = this.tokenTracker.getLastInputTokens();
 
     /**
-     * The ONE place a completed tool call is observed, for both consumers.
+     * The ONE place a completed tool call is observed. Tool counting feeds the
+     * end-of-session summary, which must work for every model on every wire, so
+     * every parser below gets it unconditionally.
      *
-     * It deliberately does NOT depend on `behaviorSession`. Tool counting feeds the
-     * end-of-session summary, which must work for every model on every wire — including
-     * native Claude and any run with the behaviour layer switched off, where
-     * `behaviorSession` is undefined. Gating the count on it (as the four call sites
-     * below each used to) would have made the summary silently report zero tools for
-     * exactly those sessions.
+     * The parsers carry no tool buffering, argument repair or output
+     * observation: tool interception is the hook response seam's job, above
+     * every parser (`hooks/response-seam.ts`).
      */
     const observeToolCall = (name: string): void => {
       this.tokenTracker.recordToolUse(name);
-      behaviorSession?.observeToolCall(name);
     };
 
     switch (streamFormat) {
@@ -3356,23 +3354,15 @@ export class ComposedHandler implements ModelHandler {
           response,
           adapter,
           this.bareModelName,
-          this.middlewareManager,
+          raw,
           onTokenUpdate,
           claudeRequest.tools,
           toolNameMap,
           priorInputTokens,
-          // Always pass the options object, never `behaviorSession && {…}`. The
-          // optional-chained hooks below already no-op without a session, and the
-          // conditional form meant `onToolCallObserved` was not even installed on the
-          // busiest wire in claudish (GLM, Kimi, Grok, DeepSeek, Qwen, OpenRouter,
-          // LiteLLM) whenever the behaviour layer was off.
-          {
-            shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
-            onToolCall: (name, argsJson) => behaviorSession?.repairToolCall(name, argsJson) ?? null,
-            onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
-            onToolCallObserved: observeToolCall,
-            onTurnEnd: () => behaviorSession?.finishTurn(),
-          }
+          // Always pass the options object: without it `onToolCallObserved` is not
+          // installed on the busiest wire in claudish (GLM, Kimi, Grok, DeepSeek,
+          // Qwen, OpenRouter, LiteLLM).
+          { onToolCallObserved: observeToolCall }
         );
 
       case "openai-responses-sse":
@@ -3394,10 +3384,8 @@ export class ComposedHandler implements ModelHandler {
           contextWindow: lookupModelForProvider(this.bareModelName, this.provider.name),
           onApiError,
           priorInputTokens,
-          middlewareManager: this.middlewareManager,
-          // The same builder as a 5r synthetic reply, so a resumed batch gets
-          // exactly the hooks a driver batch gets.
-          ...this.responsesHooks(behaviorSession),
+          raw,
+          onToolCallObserved: observeToolCall,
           retry: responsesTurn?.retry,
           // Earlier legs of a retried turn: cost only, before the stats snapshot
           // that onTokenUpdate fires.
@@ -3422,12 +3410,7 @@ export class ComposedHandler implements ModelHandler {
           // do the same to the base's wire-keyed `true` for every other model
           // on this wire (qtoken@'s qwen / glm / deepseek models).
           adapter: (this.modelAdapter ?? adapter) as BaseAPIFormat,
-          shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
-          repairToolArgs: (name, argsJson) =>
-            behaviorSession?.repairToolCall(name, argsJson) ?? null,
-          onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
           onToolCallObserved: observeToolCall,
-          onTurnEnd: () => behaviorSession?.finishTurn(),
         });
 
       case "gemini-sse": {
@@ -3440,14 +3423,10 @@ export class ComposedHandler implements ModelHandler {
         return createGeminiSseStream(c, response, {
           modelName: this.bareModelName,
           adapter,
-          middlewareManager: this.middlewareManager,
+          raw,
           onTokenUpdate,
           onToolCall,
-          repairToolArgs: (name, argsJson) =>
-            behaviorSession?.repairToolCall(name, argsJson) ?? null,
-          onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
           onToolCallObserved: observeToolCall,
-          onTurnEnd: () => behaviorSession?.finishTurn(),
           unwrapResponse: this.options.unwrapGeminiResponse,
           priorInputTokens,
         });
@@ -3466,13 +3445,7 @@ export class ComposedHandler implements ModelHandler {
           onServedModel: (uid) => {
             if (uid !== this.bareModelName) this.tokenTracker.setActiveModelName(uid);
           },
-          // Layer 4 — the same hooks the gemini-sse case passes.
-          repairToolArgs: (name, argsJson) =>
-            behaviorSession?.repairToolCall(name, argsJson) ?? null,
-          shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
-          onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
           onToolCallObserved: observeToolCall,
-          onTurnEnd: () => behaviorSession?.finishTurn(),
         });
 
       case "ollama-jsonl":

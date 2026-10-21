@@ -176,6 +176,7 @@ export async function serveCommand(args: string[]): Promise<void> {
     {
       slotMap,
       servedSlotIds: slotIds,
+      hostMode: "serve",
     }
   );
 

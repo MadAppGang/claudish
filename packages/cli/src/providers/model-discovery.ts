@@ -79,6 +79,20 @@ export interface DiscoveredModel {
    */
   ignoreCatalogReleaseDate?: boolean;
   /**
+   * The row's position in the provider's OWN model picker (0 = first), when the
+   * provider publishes one. When any row of a dynamic models catalog carries it,
+   * the claudish picker lists exactly the rows that do, in this order, instead
+   * of every row newest first.
+   *
+   * Antigravity is the case: `agy models` prints `agentModelSorts`, a curated
+   * subset in a curated order, and the picker is asked to match that list
+   * exactly. The rows WITHOUT it stay in the dynamic models catalog on purpose:
+   * the routing availability filter (`providerServesModel`) and
+   * `discoverContextWindow` read the same list, and a row missing there would
+   * read as "not served". Presentation only — routing never reads this field.
+   */
+  providerOrder?: number;
+  /**
    * What the PROVIDER said about whether this model answers chat turns, when it
    * said anything. Set by the discovery fetcher that holds the evidence, and read
    * by every caller that filters a dynamic models catalog for chat models.
@@ -720,7 +734,8 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
       detail: `no base URL resolved — check ${overrides || "the provider's baseUrl"}`,
     });
   }
-  const endpoint = registryModelsEndpoint(providerName, def) ?? `${baseUrl}${descriptor.path}`;
+  const definitionEndpoint = `${baseUrl}${descriptor.path}`;
+  let endpoint = registryModelsEndpoint(providerName, def) ?? definitionEndpoint;
 
   // Auth via the credential authority — it owns OAuth-vs-API-key precedence
   // (Kimi Coding prefers an OAuth token over a stale KIMI_CODING_API_KEY) and
@@ -779,13 +794,24 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
     ...headers,
   };
 
+  const fetchList = (url: string) =>
+    fetch(url, { method: "GET", headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+
   let response: Response;
   try {
-    response = await fetch(endpoint, {
-      method: "GET",
-      headers,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
+    response = await fetchList(endpoint);
+    // The registry publishes API bases, not a model-list URL, so the registry
+    // endpoint is DERIVED (`<chat base>/models`). That holds for Zen
+    // (`inference/v1`) but not for Zen Go, whose APIs split by family
+    // (`inference/go/openai/v1`) while its list sits at `inference/go/v1/models`.
+    // Measured 2026-10-20, one key: the derived URL answers 404, the
+    // definition's `zen/go/v1/models` answers 200 with 37 models. A 404 says
+    // "no list at this address", never anything about entitlement, so the
+    // definition's URL gets one try before the failure is recorded.
+    if (response.status === 404 && endpoint !== definitionEndpoint) {
+      endpoint = definitionEndpoint;
+      response = await fetchList(endpoint);
+    }
   } catch (e: unknown) {
     return recordFailure({
       kind: "unreachable",
@@ -849,7 +875,7 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
 
   _failures.delete(providerName);
   log(
-    `[model-discovery:${providerName}] discovered ${models.length} models: ` +
+    `[model-discovery:${providerName}] discovered ${models.length} models from ${endpoint}: ` +
       models.map((m) => `${m.id}(${m.contextWindow ?? "?"})`).join(", ")
   );
   _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });

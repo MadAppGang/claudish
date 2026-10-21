@@ -5,6 +5,10 @@ import { loadScreen } from "./test-helpers/fixtures.js";
 
 // Literal row indexes read from the real captures, independent of either locator.
 const BOX_SCREENS = [
+  ["size-40x24-answer-short", 17, 19, 18],
+  ["size-40x24-repl-boot-empty", 17, 19, 18],
+  ["size-40x24-working", 17, 19, 18],
+  ["size-40x24-repl-typed-long", 14, 19, 18],
   ["api-error", 45, 47, 46],
   ["ask-user-question-declined", 45, 47, 46],
   ["background-agent-wait", 45, 47, 46],
@@ -56,6 +60,9 @@ const BOX_SCREENS = [
 ] as const;
 
 const NO_BOX_SCREENS = [
+  "size-40x24-ask-user-question",
+  "size-40x24-permission-bash",
+  "size-40x24-permission-write-long-path",
   "agent-rejected",
   "ask-user-question",
   "dialog-bypass",
@@ -97,10 +104,10 @@ function withRuleDistances(above: number, below: number): ScreenState {
 }
 
 describe("U5 locateBox at captured widths", () => {
-  test("accounts for all 69 supplied screens without duplicate names", () => {
+  test("accounts for all 76 supplied screens without duplicate names", () => {
     const names = [...BOX_SCREENS.map(([name]) => name), ...NO_BOX_SCREENS];
-    expect(names).toHaveLength(69);
-    expect(new Set(names).size).toBe(69);
+    expect(names).toHaveLength(76);
+    expect(new Set(names).size).toBe(76);
   });
 
   test.each(BOX_SCREENS)("%s: locates the captured REPL box", (name, top, bottom, caretRow) => {
@@ -238,6 +245,7 @@ describe("U6 isRuleRow without a width test", () => {
 
   test("locates 20-cell boundaries at every captured width without proportional sizing", () => {
     for (const [name, top, bottom, caretRow] of [
+      ["size-40x24-repl-boot-empty", 17, 19, 18],
       ["size-80x24-repl-boot-empty", 20, 22, 21],
       ["size-120x40-repl-boot-empty", 36, 38, 37],
       ["repl-boot-empty", 45, 47, 46],

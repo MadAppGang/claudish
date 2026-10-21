@@ -149,7 +149,8 @@ export interface SlotRow {
   /** seconds since last_activity_at; null in terminal states */
   idle_seconds: number | null;
   /** RUNNING: tool name, "thinking", "background" (waiting on background agents), or "finishing" (the
-   * model's message ended; waiting for Claude Code's end-of-turn record, typically while Stop hooks run);
+   * model's message ended; waiting for Claude Code's end-of-turn record, typically while Stop hooks run),
+   * or "hook" (the turn settled and claudish's session hooks run before the verdict);
    * AWAITING_PERMISSION: blocked tool; AWAITING_INPUT on a question: "AskUserQuestion"; otherwise null.
    * Treat unknown values as "busy". */
   activity: string | null;
@@ -262,7 +263,7 @@ export interface CaptureUnchanged {
 }
 
 /**
- * F — `resize_session`. `cols`/`rows` are the size SET (the request clamped to cols 80–9999,
+ * F — `resize_session`. `cols`/`rows` are the size SET (the request clamped to cols 40–9999,
  * rows 24–9999 and at most 4 000 000 cells, magmux's limits: `clampPaneSize`); `changed` = the pane's size moved; `seq` = the screen's seq after the
  * resize (the first capture at the new size once `changed`). `pending: true` = the socket
  * is reconnecting (or the pane is still starting): the size is stored and applied on the

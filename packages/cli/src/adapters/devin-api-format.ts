@@ -8,14 +8,13 @@
  * inherited `convertMessagesToOpenAI` / `convertToolsToOpenAI` already handle
  * the hard parts of Claude Messages (block arrays, `tool_use`/`tool_result`
  * pairing, system extraction, identity filtering) — and, decisively, they
- * produce the shape that every middleware and every Layer 4 rule already
+ * produce the shape that every raw hook and every built-in hook already
  * understands:
  *
- * - `middlewareManager.beforeRequest({ messages, tools, … })` mutates
- *   OpenAI-shaped objects at ComposedHandler step 3b.
- * - `behaviorSession.applyRequest(claudeRequest, claudeTools, tools, messages)`
- *   reads OpenAI-shaped tools for `rewriteToolDescription` — the mechanism the
- *   `plan-mode/plan-file-path` rule depends on.
+ * - raw `providerRequest` hooks edit OpenAI-shaped `messages` and `tools` at
+ *   ComposedHandler step 3b.
+ * - request stage B reads OpenAI-shaped tools for `rewriteToolDescription` —
+ *   the mechanism the `plan-mode/plan-file-path` hook depends on.
  *
  * Inventing a bespoke Devin message shape here would silently disable both for
  * this provider. {@link buildPayload} therefore does the Devin-specific mapping

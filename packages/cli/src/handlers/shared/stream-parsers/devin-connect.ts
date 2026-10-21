@@ -104,29 +104,12 @@ export interface DevinConnectOptions {
   /** The uid the backend reports serving (field `7.9`), when it differs from the request. */
   onServedModel?: (uid: string) => void;
 
-  // ── Layer 4 — the same five hooks the gemini-sse case passes ──────────────
   /**
-   * Behavior-layer tool-call repair. Consulted once per COMPLETED tool call
-   * with the fully accumulated argument JSON; return replacement JSON, or
-   * null/undefined to leave it untouched.
-   *
-   * Only reached for tools `shouldBufferTool` opted in — see below.
+   * Called once per `tool_use` block start, for the token tracker's tool count.
+   * Tool-argument interception is not this parser's job: it happens at the hook
+   * response seam, above every parser.
    */
-  repairToolArgs?: (name: string, argsJson: string) => string | null | undefined;
-  /**
-   * Whether a tool's arguments must be withheld until the call completes.
-   *
-   * Repair is only POSSIBLE for buffered calls: this backend emits argument
-   * fragments the instant they arrive, so by the time a call is complete its
-   * arguments are already on the wire. Buffering is therefore opt-in per tool
-   * AND per request — outside an armed rule nothing is buffered and streaming is
-   * byte-for-byte what it would have been.
-   */
-  shouldBufferTool?: (name: string) => boolean;
-  /** Normalized observation, so rules never have to understand this wire. */
-  onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
   onToolCallObserved?: (name: string) => void;
-  onTurnEnd?: () => void;
   /** Restore truncated tool names (Layer 1 may have shortened them). */
   toolNameMap?: Map<string, string>;
 }
@@ -136,9 +119,7 @@ interface StreamingToolCall {
   id: string;
   name: string;
   blockIndex: number;
-  /** Withhold `input_json_delta` until the call completes so it can be repaired. */
-  buffered: boolean;
-  /** Accumulated argument JSON (always tracked — cheap, and repair needs it). */
+  /** Accumulated argument JSON: an empty one gets an explicit `{}` at close. */
   args: string;
   /** Incremental UTF-8 decoder: a multi-byte char can straddle two fragments. */
   decoder: TextDecoder;
@@ -221,34 +202,13 @@ export function createDevinConnectStream(
         textStarted = false;
       };
 
-      /** Close the in-flight tool call, repairing + flushing buffered arguments. */
+      /** Close the in-flight tool call. */
       const closeCurrentTool = () => {
         if (!current || current.closed) return;
         const call = current;
         current = null;
 
-        if (call.buffered) {
-          let args = call.args;
-          if (opts.repairToolArgs) {
-            try {
-              const repaired = opts.repairToolArgs(call.name, args);
-              if (typeof repaired === "string" && repaired !== args) {
-                log(`[DevinConnect] tool call repaired: ${call.name}`);
-                args = repaired;
-              }
-            } catch (err) {
-              // A failing rule must never corrupt the stream.
-              log(`[DevinConnect] repairToolArgs threw for ${call.name}: ${err}`);
-            }
-          }
-          send("content_block_delta", {
-            type: "content_block_delta",
-            index: call.blockIndex,
-            // An empty argument object is still valid JSON the client can parse;
-            // an empty string is not.
-            delta: { type: "input_json_delta", partial_json: args || "{}" },
-          });
-        } else if (!call.args) {
+        if (!call.args) {
           // A no-argument tool emitted no fragments at all. Claude Code needs a
           // parseable object, so supply the empty one explicitly.
           send("content_block_delta", {
@@ -324,7 +284,6 @@ export function createDevinConnectStream(
               output_tokens: outputTokens,
             },
           });
-          opts.onTurnEnd?.();
           send("message_stop", { type: "message_stop" });
         }
 
@@ -394,7 +353,6 @@ export function createDevinConnectStream(
             id: toolId,
             name: restored,
             blockIndex,
-            buffered: opts.shouldBufferTool?.(restored) ?? false,
             args: "",
             decoder: new TextDecoder(),
             closed: false,
@@ -421,13 +379,11 @@ export function createDevinConnectStream(
           return;
         }
         current.args += chunk;
-        if (!current.buffered) {
-          send("content_block_delta", {
-            type: "content_block_delta",
-            index: current.blockIndex,
-            delta: { type: "input_json_delta", partial_json: chunk },
-          });
-        }
+        send("content_block_delta", {
+          type: "content_block_delta",
+          index: current.blockIndex,
+          delta: { type: "input_json_delta", partial_json: chunk },
+        });
       };
 
       /** One protobuf message frame (`flags = 0`). */
@@ -449,7 +405,6 @@ export function createDevinConnectStream(
               });
               textStarted = true;
             }
-            opts.onAssistantText?.(text, "text");
             send("content_block_delta", {
               type: "content_block_delta",
               index: textIdx,
@@ -470,7 +425,6 @@ export function createDevinConnectStream(
               });
               thinkingStarted = true;
             }
-            opts.onAssistantText?.(thinking, "reasoning");
             send("content_block_delta", {
               type: "content_block_delta",
               index: thinkingIdx,

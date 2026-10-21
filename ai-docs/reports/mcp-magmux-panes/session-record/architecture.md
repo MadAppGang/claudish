@@ -1958,6 +1958,7 @@ a fresh `~/.claude.json` every foreign-model pane meets the API-key dialog and f
 (frequency: once per machine/config dir, until answered once). Pre-seeding `customApiKeyResponses` or an
 `apiKeyHelper` through the same `CLAUDISH_PANE_CHILD`-gated overlay would remove it, but it changes auth
 behaviour; it is recorded in `ROADMAP.md` with this trigger, and R15 verifies the reported reason and text.
+Resolved 2026-10-21: the pane child sets no ANTHROPIC_API_KEY.
 
 ---
 

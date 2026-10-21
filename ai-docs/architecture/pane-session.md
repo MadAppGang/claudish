@@ -235,7 +235,10 @@ pane; for a declared wrapper its `editorOverride` is `delegated` ("the wrapper m
 mode itself"). If vim mode is on anyway, the gate refuses to type (`vim_mode`) and the prompt fails
 with `vim editing mode is on` — at once when the published view already says so, else after the
 in-flight send's ready wait (≤ 10 s) — instead of sitting unsent. The API-key dialog was not recaptured on 2.1.290 (it needs a foreign route with
-`ANTHROPIC_API_KEY` set); its marker is the verbatim 2.1.287 text.
+`ANTHROPIC_API_KEY` set); its marker is the verbatim 2.1.287 text. It cannot occur in a pure-proxy
+pane: such a pane child sets no `ANTHROPIC_API_KEY` (and deletes an inherited one), only the placeholder
+`ANTHROPIC_AUTH_TOKEN`, which alone suppresses login (`applyProxyPlaceholderAuth`; verified on
+Claude Code 2.1.304, where an env key raised "Detected a custom API key in your environment").
 
 **An unknown `--agent` is refused by the child itself**, which is why the old `claude -p` agent
 probe was deleted (D11): with two validators the cheap one always decides and the real one is never
@@ -610,8 +613,10 @@ run the user's profile.
 
 - **The snapshot.** The owner passes its environment as JSON in `CLAUDISH_PANE_ENV` — inherited,
   never written to disk, the same exposure class as the variables themselves. The child claudish
-  (`pane/child-env.ts`, imported first by `index.ts`) sets every snapshot key, removes every key the
-  snapshot lacks except the shell-managed ones, then deletes `CLAUDISH_PANE_ENV`. A profile that
+  (`pane/child-env.ts`, imported by `index.ts` right after `launch-guard.ts`) sets every snapshot
+  key, removes every key the snapshot lacks except the shell-managed ones, then deletes
+  `CLAUDISH_PANE_ENV`. The markers and the snapshot are control variables: no env file in the
+  child's cwd can set them (`launch-env.ts`, `ai-docs/architecture/hooks.md`). A profile that
   re-exports `OPENAI_API_KEY` or `CLAUDE_CONFIG_DIR` is undone. On Linux a snapshot over 131,000
   bytes fails the start (`MAX_ARG_STRLEN` is 131,072 per string).
 - **The shim.** `SHELL=<ctl>/sh-shim`, set after the snapshot is taken: `[ "$1" = -l ] && shift;
@@ -628,7 +633,9 @@ run the user's profile.
   `CLAUDISH_UPSTREAM_ERROR_LOG`, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` when the owner left
   it unset (it suppresses side calls billed on the routed model), with `CLAUDE_CODE_NATIVE_CURSOR=1`
   under the same rule (traffic off makes Claude self-draw a reverse-video cursor on the faint
-  placeholder, which the input gate reads as `box_not_empty`).
+  placeholder, which the input gate reads as `box_not_empty`). For every child, also
+  `CLAUDISH_HOOK_INBOX` (the owner-created hook inbox) and `CLAUDISH_HOOK_SESSION`
+  (`{"kind","id","role"}`); see [`hooks.md`](hooks.md).
 - **`MAGMUX_*` survives in the child.** magmux injects `MAGMUX_SOCK` into the pane; it is excluded
   from the snapshot and kept when the snapshot is applied, so the child knows it is already inside a
   multiplexer and never wraps itself in a second magmux.
@@ -639,8 +646,10 @@ run the user's profile.
   argv, and any positional token or `--`, by claudish's own value-consumption rule). After
   `parseArgs` the child asserts it is interactive, not a team run, with no positional prompt;
   otherwise it prints `claudish: pane child refused: <reason>` and exits 64 (FAILED `child_exited`).
-- `CLAUDISH_PANE_ENV` and `CLAUDISH_PANE_CWD` (`PANE_LAUNCH_VARS`) are deleted from Claude Code's
-  own environment. `CLAUDISH_PANE_CHILD` is KEPT there; the next section says why.
+- `CLAUDISH_PANE_CHILD`, `CLAUDISH_PANE_CWD`, `CLAUDISH_HOOK_INBOX` and `CLAUDISH_HOOK_SESSION`
+  survive the snapshot. `CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD` and the two hook markers
+  (`PANE_LAUNCH_VARS`) are deleted from Claude Code's own environment, so the model never sees the
+  inbox path. `CLAUDISH_PANE_CHILD` is KEPT there; the next section says why.
 
 **One level of nesting.** A `create_session` child (gpt-6.1-sol) once called the claudish MCP
 `create_session` itself; that session (#969aa2) failed `prompt_not_accepted`. It was a claudish MCP
@@ -709,10 +718,26 @@ inline 400 and the slot is FAILED `api_error`.
 **The size is the viewer's, not ours.** Every pane used to be born 160×50 and stay there, so a
 docked viewer either showed empty rows below the screen or cut every line. 160×50 is now only the
 launch default (`pane/pane-size.ts`); `resize_session` and `team(mode:"resize")` set it at any time,
-mid-turn included, clamped to cols 80–9999 × rows 24–9999 and at most 4 000 000 cells. The floor is
-claudish's and is not arbitrary: at 80 columns every closed-list dialog marker still fits one row's
-width, and 24 rows still hold a full permission or trust dialog, so boot and blocked-screen
-detection keep working. The ceiling is magmux's own (`mux/size.go`), so a clamped size can never
+mid-turn included, clamped to cols 40–9999 × rows 24–9999 and at most 4 000 000 cells. The floor is
+claudish's and is measured, not arbitrary. It was 80, the width at which every closed-list marker
+still fit one row. MTL-140 lowered it to 40 on real Claude Code 2.1.304 screens in magmux 0.18.0
+(`size-40x24-*`):
+
+- magmux's gate still answers `dialog:permission` (Write and Bash) and `dialog:question`, a ready
+  empty box, and `box_not_empty` for a typed line. Claude Code shortens what it prints in a narrow
+  dialog (`Do you want to create hello.txt?`, not the path), so the runtime markers stay on one row.
+- The gate's `dismissable` drops for the question dialog, whose footer wraps as
+  `Enter to select · ↑/↓ to navigate · Esc` / `to cancel`, so magmux's one-row `Esc to cancel`
+  check fails. claudish never reads that flag: it sends Escape itself from its `QUESTION` or
+  `PERMISSION` phase.
+- A boot marker such as `Is this a project you created or one you trust` (46 characters) cannot
+  fit one 40-column row, so magmux's per-row marker table misses it. claudish names it from the
+  flattened screen (`nameBootScreen`), which is the path `bootBlock` takes when the gate has no
+  boot kind. Not captured live at 40 columns: the capturing account trusts `/`, so no trust
+  prompt appears.
+- 24 rows still hold the tallest captured dialog (Bash permission, rows 6–23 of 24).
+
+The ceiling is magmux's own (`mux/size.go`), so a clamped size can never
 earn its `too_small`/`too_large`: the `resize` op refuses a side over 10 000, but the launch size it
 parses from `COLUMNS`/`LINES` is EXCLUSIVE of 10 000, and a size requested while the pane is
 starting goes through those variables, so 9 999 is the largest side valid on both paths; the
@@ -757,7 +782,7 @@ as `since_seq` never reads a pre-resize frame as current.
 at other widths its checks are width-proof: echo prefixes are `min(40, cols − 4)` long and compared
 against box text with row breaks removed, dialog markers match the dialog region joined into one
 string, and the working row tolerates a wrapped tail. They are validated on real Claude Code screens
-captured at 80, 120 and 250 columns; `locateBox` also at 350 and 500 (`box-locate.test.ts`). A
+captured at 40, 80, 120 and 250 columns; `locateBox` also at 350 and 500 (`box-locate.test.ts`). A
 resize redraw moves the above-box region, which only DELAYS settle (it restarts its quiet clocks)
 and never completes it; during the redraw the cursor can be stale for a frame, and the answer for
 that frame is "box not located", an unknown, never a wrong box. A resize during an admission only
@@ -802,6 +827,15 @@ on its panes: without them a SIGKILLed MCP server would leave REPLs running and 
    first spawn on a root, a process sweeps it once (`ensureSwept`): records whose owner is dead and
    whose watcher is gone are killed after identity checks and removed; a recordless
    `magmux-c<pid>-*.sock` whose owner is dead is probed and cleaned.
+
+   **A process table without this process decides nothing.** Every table read maps a `ps` failure
+   to `[]` (EPERM in a macOS sandbox that refuses the setuid `/bin/ps`, EAGAIN/EMFILE, `maxBuffer`),
+   and an empty table reads as "owner dead, watcher gone". So the sweep checks
+   `processTableTrusted` on each read and, when this process is absent, keeps the pane: no kill,
+   no unlink. Measured 2026-10-21: in the madbench home sandbox a voter's nested MCP server ran the
+   sweep on the shared root and deleted a live voter's launch dir and record about 4 s after it
+   started. A nested MCP server also does not sweep at all: it registers no session tools and never
+   spawns a pane.
 3. **Shutdown hooks.** SIGINT, SIGTERM, SIGHUP and, for the MCP server, stdin EOF/close run the
    owner's `before` (the MCP server ends its session and team records there) and then reap every pane
    in parallel, then exit 128 + n (0 for stdin). `stats-buffer.ts` used to exit synchronously on
@@ -895,8 +929,9 @@ terminals absorb, so a late pane `exit` cannot overturn a CANCELLED or TIMEOUT.
 | phase | wire state | leaves by |
 |---|---|---|
 | BOOTING | STARTING | gate `ready` (IDLE, or ADMITTING with a queued prompt); boot dialog, blocked screen, 90 s → FAILED; binding check failed → FAILED `pane_lost` |
-| ADMITTING | STARTING for the prompt the session was created with, else RUNNING | gate `ok` with history evidence, or the witness → RUNNING; a stop row (vim mode, boot dialog, `bad_request`, an unexpected code), a panel command, or 30 s → FAILED `prompt_not_accepted` / `first_run_dialog` (created prompt) or back to IDLE with `send_not_accepted` (a later send) |
-| RUNNING | RUNNING | question → QUESTION; permission → PERMISSION; `decide` → IDLE (`continue`) or COMPLETED / EMPTY / FAILED |
+| ADMITTING | STARTING for the prompt the session was created with, else RUNNING | gate `ok` with history evidence, or the witness → RUNNING; a stop row (vim mode, boot dialog, `bad_request`, an unexpected code), a panel command, or 30 s → FAILED `prompt_not_accepted` / `first_run_dialog` (created prompt) or back to IDLE with `send_not_accepted` (a later send); an unaccepted hook injection in a one-shot session → SETTLING (`hook_admit_abandoned`), which concludes on the chain so far |
+| RUNNING | RUNNING | question → QUESTION; permission → PERMISSION; `decide` → IDLE (`continue`) or COMPLETED / EMPTY / FAILED; with a hook binding and idle work, `settle_hold` → SETTLING |
+| SETTLING | RUNNING (activity `hook`) | only with a hook binding: the settled turn is recorded and `sessionIdle` runs. `hold_inject` → IDLE (an injection is admitted next); `hold_rewake` → RUNNING (same turn); `turn_continue` → IDLE; the verdict → COMPLETED / EMPTY / FAILED. See [`hooks.md`](hooks.md) |
 | IDLE | AWAITING_INPUT | queued send → ADMITTING; background re-wake → RUNNING (same turn); clean exit after `/exit` or ≥ 1 settled turn → COMPLETED |
 | QUESTION | AWAITING_INPUT | the tool resolves → RUNNING; `onBlocked` verdict → FAILED |
 | PERMISSION | AWAITING_PERMISSION | same as QUESTION |
@@ -921,7 +956,8 @@ type and new fields may only be added.
   and out, `cost_usd` (always null for native Claude routes — Claude Code's own cost is API-rate
   pricing, fictional spend for a subscription user; D12), tool calls, turns completed,
   `last_activity_at`, `idle_seconds`, `activity` (`thinking`, `background`, `finishing`, a tool name,
-  `AskUserQuestion`; unknown values mean busy) and `pane`.
+  `AskUserQuestion`, `hook` while a settled turn's hooks run; unknown values mean busy) and `pane`.
+  `hook` needed no version change, because an unknown value already meant busy.
 - `reason_detail` (added within v1, 2026-10-16) is one line, at most 160 characters, saying why
   `reason`: for `api_error` the provider's `error.message` from the LAST record of the upstream-error
   capture (`errors/<slot>-upstream.jsonl` for team, `upstream-errors.jsonl` for a session), else the

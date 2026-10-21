@@ -40,6 +40,17 @@ describe("scrubChildEnv", () => {
       scrubChildEnv(env, { interactive });
       expect(env).toEqual({ CLAUDISH_PANE_CHILD: "1", CLAUDISH_TOKEN_FILE: "/run/a.json" });
     });
+
+    test(`the hook inbox and session never reach Claude Code (interactive: ${interactive})`, () => {
+      // hook-system §2.3 step 2: the model's Bash tool must never see the inbox path
+      const env: Record<string, string | undefined> = {
+        CLAUDISH_HOOK_INBOX: "/s/hook-inbox.jsonl",
+        CLAUDISH_HOOK_SESSION: '{"kind":"channel","id":"a","role":null}',
+        KEEP: "me",
+      };
+      scrubChildEnv(env, { interactive });
+      expect(env).toEqual({ KEEP: "me" });
+    });
   }
 });
 

@@ -15,6 +15,7 @@
  * Env var override: CLAUDISH_STATS=0|false|off disables all collection.
  */
 
+import { isPaneChild } from "./pane/child-env.js";
 import { loadConfig, saveConfig } from "./profile-config.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import {
@@ -325,10 +326,15 @@ export async function flushStats(): Promise<void> {
  * - First run (never prompted): opt-in nudge
  * - Monthly — enabled: thank-you
  * - Monthly — disabled: re-engagement nudge
+ *
+ * Never in a pane child (`isPaneChild`): its stderr is the headless pane's screen, which
+ * no person reads, and the boot classifier fails the session on the banner as a
+ * `first_run_dialog`. `lastMonthlyPrompt` stays unset, so the next run at a terminal
+ * still shows it.
  */
-export function showMonthlyBanner(): void {
+export function showMonthlyBanner(env: Record<string, string | undefined> = process.env): void {
   try {
-    if (isStatsDisabledByEnv()) return;
+    if (isStatsDisabledByEnv() || isPaneChild(env)) return;
 
     const profileConfig = loadConfig();
     const consent = profileConfig.stats;

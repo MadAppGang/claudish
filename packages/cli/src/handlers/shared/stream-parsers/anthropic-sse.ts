@@ -22,101 +22,11 @@ interface AnthropicPassthroughOpts {
   /** Optional adapter — used to check shouldFilterThinking(). */
   adapter?: BaseAPIFormat;
   /**
-   * Behavior layer (Layer 4) tool-call repair.
-   *
-   * This parser is a byte-level passthrough, so interception here is strictly
-   * opt-in per tool: only a tool that `shouldBufferTool` names has its
-   * `input_json_delta` frames withheld and rewritten. Every other block — text,
-   * thinking, and any tool no rule cares about — is forwarded untouched, so the
-   * passthrough contract is preserved for everything the layer is not targeting.
+   * Called once per `tool_use` block start, for the token tracker's tool count.
+   * Tool-argument interception is not this parser's job: it happens at the hook
+   * response seam, above every parser.
    */
-  shouldBufferTool?: (name: string) => boolean;
-  repairToolArgs?: (name: string, argsJson: string) => string | null | undefined;
-  /** Layer 4 observation — normalized text, not raw frames. */
-  onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
   onToolCallObserved?: (name: string) => void;
-  onTurnEnd?: () => void;
-}
-
-/**
- * Build the tool-repair frame interceptor for one stream.
- *
- * Returns a function that maps a parsed frame to the exact bytes to enqueue
- * (trailing newline included, matching the passthrough's `${line}\n`
- * convention), or null to suppress the frame.
- *
- * Only three frame shapes are ever diverted, and only for tools a rule named
- * via `shouldBufferTool`. Everything else — text, thinking, and any untargeted
- * tool — round-trips byte-for-byte, which is what keeps this a passthrough.
- *
- * Module-level (not nested in the stream closure) so it is independently
- * testable and does not inflate the stream function's complexity.
- */
-function createToolRepairInterceptor(
-  opts: Pick<AnthropicPassthroughOpts, "shouldBufferTool" | "repairToolArgs">
-): (data: any, line: string) => string | null {
-  /** Withheld tool blocks, keyed by the content-block index upstream assigned. */
-  const heldTools = new Map<number, { name: string; args: string }>();
-
-  const flush = (index: number, stopFrame: string): string => {
-    const held = heldTools.get(index);
-    if (!held) return stopFrame;
-    heldTools.delete(index);
-
-    let finalArgs = held.args;
-    try {
-      const repaired = opts.repairToolArgs?.(held.name, finalArgs);
-      if (typeof repaired === "string" && repaired !== finalArgs) {
-        log(`[AnthropicSSE] tool call repaired: ${held.name}`);
-        finalArgs = repaired;
-      }
-    } catch (err) {
-      // A failing rule must never corrupt the stream — emit what the model sent.
-      log(`[AnthropicSSE] repairToolArgs threw for ${held.name}: ${err}`);
-    }
-
-    const deltaFrame = `event: content_block_delta\ndata: ${JSON.stringify({
-      type: "content_block_delta",
-      index,
-      delta: { type: "input_json_delta", partial_json: finalArgs },
-    })}\n\n`;
-    return `${deltaFrame}${stopFrame}`;
-  };
-
-  /** Start withholding a tool block if a rule named it. */
-  const noteToolStart = (data: any): void => {
-    if (data.content_block?.type !== "tool_use") return;
-    const name = data.content_block.name;
-    if (typeof name !== "string") return;
-    if (!opts.shouldBufferTool?.(name)) return;
-    heldTools.set(data.index, { name, args: "" });
-  };
-
-  /** Accumulate a withheld fragment. Returns true if the frame was swallowed. */
-  const absorbFragment = (data: any): boolean => {
-    if (data.delta?.type !== "input_json_delta") return false;
-    const held = heldTools.get(data.index);
-    if (!held) return false;
-    held.args += data.delta.partial_json ?? "";
-    return true;
-  };
-
-  return (data: any, line: string): string | null => {
-    const asIs = `${line}\n`;
-    if (!opts.repairToolArgs || !opts.shouldBufferTool) return asIs;
-
-    switch (data?.type) {
-      case "content_block_start":
-        noteToolStart(data);
-        return asIs; // the start frame itself is always forwarded
-      case "content_block_delta":
-        return absorbFragment(data) ? null : asIs;
-      case "content_block_stop":
-        return heldTools.has(data.index) ? flush(data.index, asIs) : asIs;
-      default:
-        return asIs;
-    }
-  };
 }
 
 /**
@@ -141,8 +51,6 @@ export function createAnthropicPassthroughStream(
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
   const filterThinking = opts.adapter?.shouldFilterThinking() ?? false;
-
-  const interceptToolFrame = createToolRepairInterceptor(opts);
 
   /**
    * An `event:` line held back until we know whether its `data:` line survives.
@@ -216,18 +124,11 @@ export function createAnthropicPassthroughStream(
     pendingEventLine = null;
   };
 
-  /** Enqueue a parsed data line through the tool interceptor. */
+  /** Enqueue a parsed data line, preceded by its held `event:` line. */
   const enqueueData = (controller: any, data: any, line: string): void => {
     if (isClosed) return;
-    const out = interceptToolFrame(data, line);
-    if (out === null) {
-      // Frame withheld by the tool interceptor — discard its event line too,
-      // for the same reason the thinking filter must.
-      pendingEventLine = null;
-      return;
-    }
     flushPendingEvent(controller);
-    controller.enqueue(encoder.encode(out));
+    controller.enqueue(encoder.encode(`${line}\n`));
     noteLifecycle(data, typeof data?.index === "number" ? data.index : null);
   };
 
@@ -537,9 +438,7 @@ export function createAnthropicPassthroughStream(
                         return; // stop processing further lines
                       }
 
-                      // No error — check index bounds before passing through
-                      // (still via the tool interceptor, which is a no-op unless
-                      // a rule asked for this tool).
+                      // No error — check index bounds before passing through.
                       emitIndexed(controller, data, line);
 
                       // Usage/debug tracking, in its OWN try. The outer catch
@@ -564,7 +463,6 @@ export function createAnthropicPassthroughStream(
                           data.delta?.type === "text_delta"
                         ) {
                           const txt = data.delta.text || "";
-                          opts.onAssistantText?.(txt, "text");
                           textChunks++;
                           log(
                             `[AnthropicSSE] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
@@ -633,7 +531,6 @@ export function createAnthropicPassthroughStream(
                       outputTokens = data.usage.output_tokens || outputTokens;
                     }
                     if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
-                      opts.onAssistantText?.(data.delta.text || "", "text");
                       textChunks++;
                     }
                     if (
@@ -661,8 +558,6 @@ export function createAnthropicPassthroughStream(
               `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}${filterThinking ? `, filtered ${thinkingBlocksSuppressed} thinking blocks` : ""}`
             );
 
-            opts.onTurnEnd?.();
-
             if (opts.onTokenUpdate) {
               opts.onTokenUpdate(inputTokens, outputTokens);
             }
@@ -684,12 +579,9 @@ export function createAnthropicPassthroughStream(
             // The upstream socket dropped mid-answer (Z.AI, MiniMax and Kimi all do
             // this under load). Closing the controller here without a terminal event
             // handed Claude Code a stream that stopped but never ended, and the turn
-            // hung. Emit the tail first, then close, and still run the turn-end hooks
-            // so Layer 4 and the token file see a completed turn rather than nothing.
+            // hung. Emit the tail first, then close, and still report the tokens so
+            // the token file sees a completed turn rather than nothing.
             finalizeAbandonedStream(controller);
-            try {
-              opts.onTurnEnd?.();
-            } catch {}
             try {
               opts.onTokenUpdate?.(inputTokens, outputTokens);
             } catch {}

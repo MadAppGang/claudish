@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  MAX_AUTO_COMPACT_WINDOW,
   MIN_AUTO_COMPACT_WINDOW,
   computeMainThreadContextWindow,
   resolveContextWindowEnv,
@@ -157,6 +158,29 @@ describe("computeMainThreadContextWindow", () => {
 });
 
 describe("resolveContextWindowEnv", () => {
+  test("exposes the Claude Code auto-compaction ceiling", () => {
+    expect(MAX_AUTO_COMPACT_WINDOW).toBe(1_000_000);
+  });
+
+  test("clamps a 1,050,000-token auto-compact window while preserving the real max-context cap", () => {
+    const { vars } = resolveContextWindowEnv(1_050_000, {});
+
+    expect(vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]).toBe("1000000");
+    expect(vars[ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS]).toBe("1050000");
+  });
+
+  test("sets the auto-compact window exactly at the ceiling", () => {
+    const { vars } = resolveContextWindowEnv(1_000_000, {});
+
+    expect(vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]).toBe("1000000");
+  });
+
+  test("preserves a 372,000-token auto-compact window below the ceiling", () => {
+    const { vars } = resolveContextWindowEnv(372_000, {});
+
+    expect(vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]).toBe("372000");
+  });
+
   test("regression: setting the max-context cap fails without the clamp fix", () => {
     const { vars } = resolveContextWindowEnv(1_048_576, {});
 
@@ -168,7 +192,7 @@ describe("resolveContextWindowEnv", () => {
 
     const { vars, notice } = resolveContextWindowEnv(realWindow, {});
 
-    expect(vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]).toBe("1048576");
+    expect(vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]).toBe("1000000");
     expect(notice).toContain(`${realWindow.toLocaleString()} tokens`);
   });
 
@@ -222,7 +246,7 @@ describe("resolveContextWindowEnv", () => {
     const { vars } = resolveContextWindowEnv(1_048_576, processEnv);
 
     expect(vars).not.toHaveProperty(ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS);
-    expect(vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]).toBe("1048576");
+    expect(vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]).toBe("1000000");
   });
 
   test("returns no variables or notice when both values are user-overridden", () => {

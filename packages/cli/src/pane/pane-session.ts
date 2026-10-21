@@ -15,11 +15,37 @@
  * No claudish timer ends a turn after its prompt was accepted (D10). The only bounds are
  * boot (90 s) and admission of the CREATED prompt (30 s), before any work exists, and a
  * MCP session's own `timeoutMs`.
+ *
+ * Session hooks (architecture §7.3). With a `hooks` binding, a settled turn is RECORDED
+ * first (its answer published through `onTurnRecorded`, before any transition) and
+ * CONCLUDED later: between the two the pane sits in `SETTLING` (wire RUNNING) while
+ * `binding.settle()` runs. The phase is the latch: the ticker never re-settles a held
+ * turn, and every way out of the hold is a table edge that aborts it with a reason. An
+ * injection the hold returns becomes the next turn of the session's TURN CHAIN; the
+ * verdict is taken once, at the end, on the session's current shape. Without a binding
+ * none of this runs: `finishTurn` is today's code path exactly.
  */
 
 import type { ChildProcess } from "node:child_process";
 import { readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getConfigFileOverride } from "../config-override.js";
+import {
+  type HookQueueItem,
+  type InjectionQueueState,
+  type QueueItem,
+  afterAdmission,
+  callerCount,
+  emptyQueueState,
+  hookCount,
+  next as nextQueueDecision,
+} from "../hooks/injection/queue.js";
+import type {
+  HoldAbortReason,
+  HoldInjection,
+  HoldResult,
+  SessionHookBinding,
+} from "../hooks/session/binding.js";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { waitForExit } from "../process-tree.js";
 import { redactSecrets } from "../redact.js";
@@ -98,12 +124,14 @@ import {
   sockPathOf,
   verifiedGroupSnapshot,
 } from "./process-identity.js";
-import { type Delivery, planDelivery, writeTurnFile } from "./prompt-delivery.js";
+import { type Delivery, deliveryRefusal, planDelivery, writeTurnFile } from "./prompt-delivery.js";
 import {
   agentRejectedLine,
   choiceDialog,
   dialogText,
   flatText,
+  hasChoiceDialog,
+  inputBox,
   isWorking,
   menuAbove,
   nameBootScreen,
@@ -205,6 +233,17 @@ export const GATE_GRACE_MS = SECONDARY_QUIET_MS;
  * The event stays the primary path (it carries `lastLine`); this is its backstop.
  */
 const GATE_DEAD_BACKSTOP_MS = 1_000;
+/**
+ * The longest a liveness exit (ESRCH while disconnected) waits for magmux to name the code.
+ * magmux keeps a dead pane's code after the socket drops, and whatever dropped the socket can
+ * hold the path away for a moment, so the query redials until this bound rather than asking
+ * once. Two seconds covers a socket that comes back within about a second of the exit being
+ * seen (the liveness check itself runs once a second); it is also all a magmux that is gone,
+ * wedged or slow can add to the finish.
+ */
+const EXIT_CODE_QUERY_MS = 2_000;
+/** The redial period inside EXIT_CODE_QUERY_MS, and the `list` re-ask period. */
+const EXIT_CODE_RETRY_MS = 50;
 /** Gate reasons that carry no dialog kind: a static screen under one is named from its words. */
 const GATE_KINDLESS_REASONS: ReadonlySet<string> = new Set([
   "starting",
@@ -233,6 +272,8 @@ const REGISTRY_MISSING_MS = 5_000;
 const MAX_ANOMALY_KEYS = 64;
 /** Settled answers kept for `turnAnswer` (owners read the current or the last one). */
 const KEPT_ANSWERS = 4;
+/** `hooks.injection.maxConsecutive` when the binding does not say (§4.7 rule 5). */
+const DEFAULT_MAX_CONSECUTIVE = 3;
 
 export interface PaneBlock {
   kind: "question" | "permission";
@@ -265,6 +306,14 @@ export interface PaneSessionOptions {
   admitTimeoutMs?: number;
   /** whole-session deadline → TIMEOUT (MCP sessions only; team never passes it) */
   timeoutMs?: number;
+  /** the session's hook binding (§7.3); absent → today's code path exactly */
+  hooks?: SessionHookBinding;
+  /**
+   * Synchronous, in the step that records a settled turn, before any transition of that
+   * step (binding present only): the answer reaches the owner before anything can end
+   * the session.
+   */
+  onTurnRecorded?: (turn: SettledTurn) => void;
   /** coalesced ≤ 4/s */
   onChange?: (snap: PaneSnapshot, prev: SlotState) => void;
   /** every wire-state change, synchronously, never coalesced, NET of one event-processing step */
@@ -289,6 +338,14 @@ export interface PaneSessionOptions {
     bootStaticMs?: number;
     /** @deprecated ignored: boot readiness is magmux's `input.ready` (see `REPL_STABLE_MS`) */
     replStableMs?: number;
+    /** H-31: hold the exit-path screen capture this long, as a slow magmux reply does */
+    exitCaptureDelayMs?: number;
+    /** a LATER admission's bound, through owners that do not pass `admitTimeoutMs` (H-13 … H-15) */
+    admitTimeoutMs?: number;
+    /** a frame polls the transcript only this long after the last poll (default 250) */
+    pollDebounceMs?: number;
+    /** with no frame, the transcript is polled this often (default 1 000) */
+    pollBackstopMs?: number;
   };
 }
 
@@ -360,6 +417,8 @@ export interface PaneSession {
    */
   resize(cols: number, rows: number): Promise<PaneResizeOutcome>;
   turnAnswer(index: number): string;
+  /** The recorded chain answers plus the running chain turn's partial, joined like chainAnswerOf. */
+  chainText(): string;
   /** main-chain assistant message ids the transcript has shown, first-seen order, each once */
   assistantMessageIds(): readonly string[];
   diagnostics(): PaneDiagnostics;
@@ -387,6 +446,8 @@ type SubmittedUnproven =
 
 interface Admission {
   index: number;
+  /** a hook item's admission takes the hook routes when it is never accepted (§7.3 step 7) */
+  item: QueueItem;
   text: string;
   plan: Delivery;
   /** the one line every gated send of this admission types */
@@ -433,6 +494,9 @@ interface ResizeWaiter {
   resolve: (r: PaneResizeOutcome) => void;
   reject: (e: unknown) => void;
 }
+
+/** A settled turn before the chain fields are added (§4.10). */
+type TurnCore = Omit<SettledTurn, "chainAnswers" | "chainDelivery" | "hookTurns" | "hookCaused">;
 
 interface ScreenTurn {
   echo: string;
@@ -494,7 +558,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private initialDelivery = false;
   private initialPending: boolean;
   private shape: "one-shot" | "interactive";
-  private queue: string[] = [];
+  /** caller and hook items (§7.2); the policy is the pure `hooks/injection/queue.ts` */
+  private q: InjectionQueueState;
   private screen: ScreenState;
   private final = false;
   private turnIndex = 0;
@@ -573,6 +638,27 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /** a later send abandoned unwitnessed: a witness arriving in IDLE re-wakes this turn (§5.3) */
   private abandonedIndex: number | null = null;
 
+  /* session hooks (§7.3); untouched without a binding */
+  private readonly hooks: SessionHookBinding | null;
+  /** the turn chain: every recorded answer since the last caller admission */
+  private chain: Array<{ index: number; answer: string }> = [];
+  private chainHead: SettledTurn["delivery"] | null = null;
+  private hookTurns = 0;
+  /** the current turn was admitted from a hook item */
+  private turnHookCaused = false;
+  /** recorded, not yet concluded */
+  private heldTurn: SettledTurn | null = null;
+  private holdGen = 0;
+  private holdController: AbortController | null = null;
+  private holdWatchdog: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The hold's result, waiting in SETTLING until the screen shows the session idle
+   *. Applied, or handed back to the binding by `endHold`; never both.
+   */
+  private heldResult: { result: HoldResult; since: number } | null = null;
+  /** `callerAdmitted` when sessionStart fired: its injections survive the initial prompt */
+  private startCallerSeq = 0;
+
   private magmux: ChildProcess | null = null;
   private watcher: ChildProcess | null = null;
   private client: MagmuxClient | null = null;
@@ -580,6 +666,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private stderrHead = "";
   private paneClosed = false;
   private paneExited = false;
+  /** A liveness exit is asking magmux for the code; the exit path waits for the answer. */
+  private exitCodeQuery = false;
   private reaping = false;
   private fastReap = false;
   private reapPromise: Promise<void> | null = null;
@@ -614,7 +702,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.appliedSize = { ...size };
     this.screen = emptyScreen(size.cols, size.rows);
     this.initialPending = !!o.initialPrompt;
-    if (o.initialPrompt) this.queue.push(o.initialPrompt);
+    this.hooks = o.hooks ?? null;
+    this.q = emptyQueueState(this.hooks?.maxConsecutive ?? DEFAULT_MAX_CONSECUTIVE);
+    if (o.initialPrompt) this.q.items.push({ kind: "caller", text: o.initialPrompt });
+    this.hooks?.attach?.({
+      queueInjections: (items) => this.step(() => this.queueHookInjections(items)),
+    });
     this.secondaryQuietMs = o.timings?.secondaryQuietMs ?? SECONDARY_QUIET_MS;
     this.corroborationMs = o.timings?.corroborationMs ?? CORROBORATION_MS;
     this.follower = new TranscriptFollower(
@@ -884,7 +977,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.panePidValue = pid;
     updateRecord(this.root, this.paneId, { panePid: pid });
     // never a synchronous ps on the event loop: a stalled loop gets our socket dropped as a slow consumer
-    void readProcessTableAsync().then((t) => refreshGroupOf(this, t));
+    void readProcessTableAsync().then((t) => {
+      if (t) refreshGroupOf(this, t);
+    });
   }
 
   private onFrame(f: MagmuxFrame): void {
@@ -945,23 +1040,37 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (this.reaping || isTerminalPhase(this.phase)) return;
     this.step(() => {
       this.pollFollower(true);
+      const detail = `magmux exited (${sig ?? `code ${code}`}) without reporting the pane's exit${this.stderrHead ? `; stderr: ${this.stderrHead.trim().slice(0, 500)}` : ""}`;
+      // §7.3 step 6 (M-1a): a held turn is concluded on its settled chain. A one-shot
+      // gets its verdict; an interactive session goes to IDLE and then, as from IDLE today,
+      // reports the lost pane.
+      if (this.phase === "SETTLING") {
+        this.endHold("exit");
+        this.conclude(`magmux exited (${sig ?? `code ${code}`})`);
+        if (!isTerminalPhase(this.phase)) this.fire("pane_lost", { detail });
+        return;
+      }
       if (this.phase === "RUNNING" && this.exitSettle()) {
         this.applyExitPath(null);
         return;
       }
-      this.fire("pane_lost", {
-        detail: `magmux exited (${sig ?? `code ${code}`}) without reporting the pane's exit${this.stderrHead ? `; stderr: ${this.stderrHead.trim().slice(0, 500)}` : ""}`,
-      });
+      this.fire("pane_lost", { detail });
     });
   }
 
   /** The pane child exited (magmux `exit` event, or a dead pane found on reconnect). */
   private async onPaneExit(e: { exitCode?: unknown; lastLine?: unknown }): Promise<void> {
     if (this.paneExited || isTerminalPhase(this.phase)) return;
-    this.paneExited = true;
     const code = typeof e?.exitCode === "number" ? e.exitCode : null;
     const lastLine = typeof e?.lastLine === "string" ? e.lastLine : "";
+    // The code is stored with the exit itself, not after the capture below: a tick that
+    // settles the turn inside that window concludes with this code (H-27).
+    this.paneExited = true;
+    this.exitCode = code;
+    this.exitLastLine = lastLine;
     // The final screen, with scrollback, so a long agent list cannot hide the refusal (L8).
+    const slow = this.o.timings?.exitCaptureDelayMs;
+    if (slow) await Bun.sleep(slow);
     if (this.client) {
       const cap = await this.client.request<MagmuxCapture>(
         { type: "capture", pane: 0, offset: 200 },
@@ -974,11 +1083,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       )
         this.exitScrollback = cap.result.text ?? "";
     }
-    this.step(() => {
-      this.exitCode = code;
-      this.exitLastLine = lastLine;
-      this.applyExitPath(code);
-    });
+    this.step(() => this.applyExitPath(code));
   }
 
   /* ───────────────────────────── the step ───────────────────────────── */
@@ -1057,11 +1162,19 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   /* ───────────────────────────── evaluation ───────────────────────────── */
 
-  /** Poll on a frame (debounced 250 ms) and on a 1 s backstop (FR4). */
+  /**
+   * Poll on a frame (debounced 250 ms) and on a 1 s backstop (FR4). The returned view
+   * can be that old: a step about to type into the pane reads with `force`.
+   */
   private pollFollower(force = false): TranscriptView {
     const now = Date.now();
     const since = now - this.lastPollAt;
-    if (force || (this.framePending && since >= TICK_MS) || since >= POLL_BACKSTOP_MS) {
+    const debounce = this.t("pollDebounceMs", TICK_MS);
+    if (
+      force ||
+      (this.framePending && since >= debounce) ||
+      since >= this.t("pollBackstopMs", POLL_BACKSTOP_MS)
+    ) {
       this.follower.poll();
       this.lastPollAt = now;
       this.framePending = false;
@@ -1080,7 +1193,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (transcriptSavingOff(this.screen)) this.follower.markSavingOff();
     const view = this.pollFollower();
     this.checkLiveness();
-    switch (this.phase) {
+    const phase = this.phase;
+    switch (phase) {
       case "BOOTING":
         this.evalBoot();
         break;
@@ -1092,9 +1206,20 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       case "PERMISSION":
         this.evalRunning(view);
         break;
+      case "SETTLING":
+        this.evalSettling(view);
+        break;
       case "IDLE":
         this.evalIdle(view);
         break;
+      case "COMPLETED":
+      case "FAILED":
+      case "CANCELLED":
+      case "TIMEOUT":
+      case "EMPTY":
+        break;
+      default:
+        assertNever(phase);
     }
     this.checkRegistry();
     this.pump();
@@ -1171,9 +1296,16 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
   }
 
-  /** While disconnected, the pane's liveness is `kill(panePid, 0)` every second (X-M12). */
+  /**
+   * While disconnected, the pane's liveness is `kill(panePid, 0)` every second (X-M12).
+   *
+   * ESRCH means magmux has already reaped the child, so magmux knows its exit code even though
+   * our socket is gone. Before finishing, a bounded query asks it (`exitCodeFromMagmux`); the
+   * code is then stored together with `paneExited`, as `onPaneExit` does (H-27). Unreachable or
+   * silent, the exit goes on without a code, exactly as before.
+   */
   private checkLiveness(): void {
-    if (this.client || !this.panePidValue || this.paneExited) return;
+    if (this.client || !this.panePidValue || this.paneExited || this.exitCodeQuery) return;
     const now = Date.now();
     if (now - this.lastLivenessAt < 1000) return;
     this.lastLivenessAt = now;
@@ -1181,14 +1313,84 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       process.kill(this.panePidValue, 0);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ESRCH") {
-        this.paneExited = true;
-        this.applyExitPath(null);
+        this.exitCodeQuery = true;
+        void this.exitCodeFromMagmux().then((code) => {
+          this.exitCodeQuery = false;
+          // a redial that attached meanwhile saw the dead pane and took the exit path with its code
+          if (this.paneExited || isTerminalPhase(this.phase)) return;
+          this.paneExited = true;
+          this.exitCode = code;
+          this.step(() => this.applyExitPath(code));
+        });
       }
     }
   }
 
+  /**
+   * Pane 0's exit code from magmux over a fresh connection, or null when magmux cannot be
+   * reached, does not answer, or does not report the pane dead with a numeric code within
+   * EXIT_CODE_QUERY_MS. Its own dial loop, not the redial loop: that one backs off to a second
+   * between attempts, and its attach does far more than this needs. Never throws.
+   */
+  private async exitCodeFromMagmux(): Promise<number | null> {
+    const deadline = Date.now() + EXIT_CODE_QUERY_MS;
+    const left = () => deadline - Date.now();
+    const client = await this.dialWithin(left);
+    if (!client) return null;
+    try {
+      // magmux marks the pane dead once it has reaped the child; ESRCH says it has, but the
+      // mark may trail the reap by a moment, so ask again until the bound.
+      while (left() > 0) {
+        const r = await client.request<{ panes?: Array<Record<string, unknown>> }>(
+          { type: "list" },
+          Math.max(1, left())
+        );
+        if (!r.ok) return null;
+        const p0 = r.result.panes?.find((p) => p.pane === 0);
+        if (!p0) return null;
+        if (p0.dead === true) return typeof p0.exitCode === "number" ? p0.exitCode : null;
+        await Bun.sleep(Math.min(EXIT_CODE_RETRY_MS, Math.max(0, left())));
+      }
+      return null;
+    } finally {
+      client.close();
+    }
+  }
+
+  /** A fresh magmux connection, redialled every EXIT_CODE_RETRY_MS while `left()` is positive. */
+  private async dialWithin(left: () => number): Promise<MagmuxClient | null> {
+    while (left() > 0 && !this.reaping && !isTerminalPhase(this.phase)) {
+      try {
+        // a connect that never completes must not outlive the bound either
+        const dial = MagmuxClient.dial(this.sockPath);
+        const client = await Promise.race([dial, Bun.sleep(Math.max(0, left())).then(() => null)]);
+        if (!client) void dial.then((late) => late.close()).catch(() => {});
+        return client;
+      } catch {
+        await Bun.sleep(Math.min(EXIT_CODE_RETRY_MS, Math.max(0, left())));
+      }
+    }
+    return null;
+  }
+
   private t(key: keyof NonNullable<PaneSessionOptions["timings"]>, dflt: number): number {
     return this.o.timings?.[key] ?? dflt;
+  }
+
+  /** The owner's admission bound, else the test seam, else `ADMIT_TIMEOUT_MS`. */
+  private admitTimeoutMs(): number {
+    return this.o.admitTimeoutMs ?? this.o.timings?.admitTimeoutMs ?? ADMIT_TIMEOUT_MS;
+  }
+
+  /**
+   * An admission's bound. `admitTimeoutMs` bounds only the CREATED prompt's admission, as its
+   * option says; the test-only `timings.admitTimeoutMs` bounds only a LATER one (an injected
+   * turn, H-13 … H-15), for owners that do not pass `admitTimeoutMs`. A bound must leave room
+   * for one gated send (`readyTimeoutFor`), else no attempt is made at all.
+   */
+  private admitBoundMs(initial: boolean): number {
+    if (initial) return this.o.admitTimeoutMs ?? ADMIT_TIMEOUT_MS;
+    return this.o.timings?.admitTimeoutMs ?? ADMIT_TIMEOUT_MS;
   }
 
   /**
@@ -1254,40 +1456,57 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private bootReady(): void {
     this.bootReadyAtMs = Date.now();
-    if (this.queue.length === 0) {
+    const head = this.q.items.find((i) => i.kind === "caller");
+    if (!head || isControl(head.text)) {
       this.fire("boot_ready_idle");
-      return;
-    }
-    const head = this.queue[0] as string;
-    if (isControl(head)) {
-      this.fire("boot_ready_idle");
+      this.fireSessionStart();
       return;
     }
     const initial = this.initialPending;
     this.initialPending = false;
     this.initialDelivery = initial;
-    this.queue.shift();
+    this.q.items = this.q.items.filter((i) => i !== head);
     this.fire("boot_ready_admit");
     this.startAdmission(head, initial);
+    this.fireSessionStart();
+  }
+
+  /** §7.3: right after the initial prompt's admission started (or boot found no prompt). */
+  private fireSessionStart(): void {
+    if (!this.hooks) return;
+    this.startCallerSeq = this.q.callerAdmitted;
+    try {
+      this.hooks.fireStart();
+    } catch {
+      // a binding's failure must not break the session
+    }
   }
 
   /** IDLE (or boot-ready) with a queued item: admit synchronously, then deliver. */
   private pump(): void {
     if (isTerminalPhase(this.phase) || this.admission) return;
-    if (this.phase === "IDLE" && this.queue.length > 0) {
-      const head = this.queue.shift() as string;
-      if (isControl(head)) {
+    if (this.q.items.length === 0) return;
+    const d = nextQueueDecision(this.q, Date.now(), this.phase, this.canDeliver);
+    if (this.phase === "IDLE") {
+      // a hook item is typed only on current evidence; it stays queued until then
+      if (d.deliver?.kind === "hook" && !this.idleForHookItem()) return;
+      this.q.items = d.remaining;
+      this.dropHookItems(d.drop);
+      const item = d.deliver;
+      if (!item) return;
+      if (item.kind === "caller" && isControl(item.text)) {
         this.exitRequested = true;
-        void this.submitControl(head.trim());
+        void this.submitControl(item.text.trim());
         return;
       }
       this.fire("admit");
-      this.startAdmission(head, false);
+      this.startAdmission(item, false);
       return;
     }
+    // A queue holding only hook items never presses Esc (§7.2).
     if (
       (this.phase === "QUESTION" || this.phase === "PERMISSION") &&
-      this.queue.length > 0 &&
+      d.pressEscape &&
       this.escapeArmed &&
       this.escapeSentAt === null
     ) {
@@ -1298,7 +1517,58 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
   }
 
-  private startAdmission(text: string, initial: boolean): void {
+  /**
+   * What the interactive driver's gate reads, read NOW. The transcript first: a
+   * re-wake written since the last tick moves the session to RUNNING (`evalIdle`). Then
+   * the screen: the box drawn and empty, no menu, no dialog, no working row.
+   */
+  private idleForHookItem(): boolean {
+    this.evalIdle(this.pollFollower(true));
+    return this.phase === "IDLE" && this.screenIdle();
+  }
+
+  /**
+   * The box is drawn and empty with no menu, no dialog and no working row. The box is the
+   * one located by the cursor (any terminal width), else the rule-drawn one; a dialog is the
+   * input gate's (`dialog:<kind>`), else the screen's. The gated send that follows still
+   * waits for the gate's own readiness.
+   */
+  private screenIdle(): boolean {
+    if (!this.client) return false;
+    if (this.gateNow()?.dialog) return false;
+    const s = this.screen;
+    const located = locateBox(s);
+    const drawn = located ? null : inputBox(s);
+    const top = located?.top ?? drawn?.top;
+    if (top === undefined) return false;
+    const text = located ? locatedBoxText(s, located) : (drawn?.text ?? "");
+    if (text !== "" || menuAbove(s.lines, top).menuOpen) return false;
+    return !hasChoiceDialog(s) && !isWorking(s);
+  }
+
+  /**
+   * The merged hook text can be delivered: a plain line, or a file the child can Read.
+   * Never a slash command: hook text goes as typed text or a file, not through
+   * the command or control path a caller's `/model` or `/exit` takes.
+   */
+  private readonly canDeliver = (text: string): boolean =>
+    !text.trimStart().startsWith("/") && deliveryRefusal(text, this.o.readAvailable) === null;
+
+  private startAdmission(item: QueueItem, initial: boolean): void {
+    const text = item.text;
+    // §7.2 L1: both counters change here, when the item leaves the queue
+    Object.assign(this.q, afterAdmission(this.q, item));
+    if (item.kind === "caller") {
+      this.chain = [];
+      this.chainHead = null;
+      this.hookTurns = 0;
+      this.turnHookCaused = false;
+    } else {
+      this.hookTurns++;
+      this.turnHookCaused = true;
+      this.hooks?.noteDelivered?.(item);
+      this.anomaly("hook_injection_delivered");
+    }
     this.follower.poll();
     this.lastPollAt = Date.now();
     const offset = this.follower.size(); // mark BEFORE deliver: the single turn boundary
@@ -1315,6 +1585,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (plan.mode === "refused" || plan.mode === "control") {
       this.anomaly(`delivery_refused:${plan.mode === "refused" ? plan.reason : "control"}`);
       this.admission = null;
+      if (item.kind === "hook") {
+        this.hookAdmissionFailed(item);
+        return;
+      }
       this.fire(initial ? "admit_deadline" : "admit_abandoned", {
         detail: plan.mode === "refused" ? plan.reason : undefined,
       });
@@ -1332,9 +1606,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         ? { file: plan.file, text: plan.fileContent }
         : null;
     this.follower.openTurn({ index, offset, witness: plan.witness, delivery });
-    // the test seam bounds only the CREATED prompt's admission, as its option says
-    const bound = initial ? (this.o.admitTimeoutMs ?? ADMIT_TIMEOUT_MS) : ADMIT_TIMEOUT_MS;
-    const adm = newAdmission({ index, text, plan, initial, bound });
+    const adm = newAdmission({
+      index,
+      item,
+      text,
+      plan,
+      initial,
+      bound: this.admitBoundMs(initial),
+    });
     this.admission = adm;
     void this.runAdmission(adm);
   }
@@ -1666,6 +1945,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         this.fire("admit_deadline", { reason, detail: `${detail}\n${screenTailOf(this.screen)}` });
         return;
       }
+      if (adm.item.kind === "hook") {
+        this.hookAdmissionFailed(adm.item);
+        return;
+      }
       this.anomaly("send_not_accepted");
       this.abandonedIndex = adm.index;
       this.fire("admit_abandoned");
@@ -1915,6 +2198,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         this.fire("admit_deadline", {
           detail: `${adm.text.trim()} opened a panel and wrote no transcript record`,
         });
+      else if (adm.item.kind === "hook") this.hookAdmissionFailed(adm.item);
       else this.fire("admit_abandoned");
       return;
     }
@@ -1941,9 +2225,33 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       });
       return;
     }
+    if (adm.item.kind === "hook") {
+      this.hookAdmissionFailed(adm.item);
+      return;
+    }
     this.anomaly("send_not_accepted");
     // a witness that still arrives re-wakes the session as this turn (evalIdle)
     this.abandonedIndex = adm.index;
+    this.fire("admit_abandoned");
+  }
+
+  /**
+   * §7.3 step 7: an injected turn never accepted (refused, no witness in time, a panel,
+   * a stop row, or the pane exited first). A one-shot chain ends with a verdict on what it
+   * has; an interactive session waits for input as after any turn.
+   */
+  private hookAdmissionFailed(item: HookQueueItem): void {
+    this.admission = null;
+    this.anomaly("hook_injection_dropped:send_not_accepted");
+    this.hooks?.noteDropped?.(item, "send_not_accepted");
+    // The turn the injection followed is still held only on a one-shot chain, or on one a
+    // send_input converted to interactive during this admission: it is concluded
+    // now, on the current shape, so decide() runs for it either way.
+    if (this.heldTurn) {
+      this.fire("hook_admit_abandoned");
+      this.conclude(null);
+      return;
+    }
     this.fire("admit_abandoned");
   }
 
@@ -2065,7 +2373,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private checkEscape(): void {
     if (this.escapeSentAt === null) return;
-    if (Date.now() - this.escapeSentAt < (this.o.admitTimeoutMs ?? ADMIT_TIMEOUT_MS)) return;
+    if (Date.now() - this.escapeSentAt < this.admitTimeoutMs()) return;
     this.anomaly("escape_not_effective");
     this.escapeSentAt = null;
   }
@@ -2127,6 +2435,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.activity = pending.name;
     // the screen supplies only the words; with no frame yet there are none to give
     const text = blockText(pending, this.screen.seq > 0 ? dialogText(this.screen) || null : null);
+    try {
+      this.hooks?.fireBlocked({ kind, text });
+    } catch {
+      // a binding's failure must not break the session
+    }
     let v: FinalVerdict | "wait";
     try {
       v = this.o.onBlocked({ kind, tool: pending.name, text });
@@ -2170,7 +2483,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   /* ───────────────────────────── settle ───────────────────────────── */
 
-  private settledTurnOf(t: TurnView, decision: SettleDecision & { settled: true }): SettledTurn {
+  private settledTurnOf(t: TurnView, decision: SettleDecision & { settled: true }): TurnCore {
     const d = this.currentDelivery;
     // R3-M3: a file-carrying COMMAND turn hands its text to the command's own expansion,
     // which may never Read the pointer file (directly or through a subagent). Zero Reads is
@@ -2209,7 +2522,18 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.finishTurn(this.settledTurnOf(t, decision), t.lastChatOffset, exitCode);
   }
 
-  private finishTurn(turn: SettledTurn, chatOffset: number | null, exitCode: number | null): void {
+  private finishTurn(core: TurnCore, chatOffset: number | null, exitCode: number | null): void {
+    if (this.hooks) {
+      this.recordTurn(core, chatOffset, exitCode);
+      return;
+    }
+    const turn: SettledTurn = {
+      ...core,
+      chainAnswers: [],
+      chainDelivery: core.delivery,
+      hookTurns: 0,
+      hookCaused: false,
+    };
     this.turnEndMissing = false;
     this.agentMismatch = null;
     this.answers.set(turn.index, turn.answer);
@@ -2234,7 +2558,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       return;
     }
     if (exitCode !== null || this.paneExited) {
-      const note = `pane child exited${exitCode === null ? "" : ` ${exitCode}`}`;
+      const note = exitNoteOf(exitCode ?? this.exitCode);
       verdict = { ...verdict, detail: verdict.detail ? `${verdict.detail} · ${note}` : note };
     }
     this.applyVerdict(verdict);
@@ -2242,6 +2566,314 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   private applyVerdict(v: FinalVerdict): void {
     this.fire(VERDICT_EVENT[v.state], { reason: v.reason, detail: v.detail });
+  }
+
+  /* ───────────────────────────── record, hold, conclude (§7.3) ───────────────────────────── */
+
+  /**
+   * Step 1, synchronously in the settling step: store the answer, extend the chain,
+   * PUBLISH it through `onTurnRecorded` before any transition, then hold (step 3) or
+   * conclude at once (step 2).
+   */
+  private recordTurn(core: TurnCore, chatOffset: number | null, exitCode: number | null): void {
+    this.turnEndMissing = false;
+    this.answers.set(core.index, core.answer);
+    for (const k of this.answers.keys()) if (k <= core.index - KEPT_ANSWERS) this.answers.delete(k);
+    this.lastCaptureSource = core.captureSource;
+    this.activity = null;
+    if (!this.rewakeOfSettled) {
+      this.turnsCompleted++;
+      this.follower.markSettled();
+    }
+    const last = this.chain[this.chain.length - 1];
+    if (last && last.index === core.index) last.answer = core.answer;
+    else this.chain.push({ index: core.index, answer: core.answer });
+    if (!this.turnHookCaused) this.chainHead = core.delivery;
+    const turn: SettledTurn = {
+      ...core,
+      chainAnswers: this.chain.slice(0, -1).map((c) => c.answer),
+      chainDelivery: this.chainHead ?? core.delivery,
+      hookTurns: this.hookTurns,
+      hookCaused: this.turnHookCaused,
+    };
+    this.heldTurn = turn;
+    try {
+      this.o.onTurnRecorded?.(turn);
+    } catch {
+      // an owner's callback must not break the session
+    }
+    this.settledChatOffset = chatOffset ?? -1;
+    if (turn.hookCaused && turn.delivery.complete === false)
+      this.anomaly("hook_injection_not_read");
+    // Step 2: no hold when nothing can come of it, and never into a dead pane.
+    const exited = exitCode !== null || this.paneExited;
+    let work = false;
+    if (!exited) {
+      try {
+        work = this.hooks?.hasIdleWork(hookCount(this.q) > 0) ?? false;
+      } catch {
+        work = false;
+      }
+    }
+    if (!work) {
+      this.conclude(exited ? exitNoteOf(exitCode ?? this.exitCode) : null);
+      return;
+    }
+    this.startHold(turn);
+  }
+
+  /** Step 3: SETTLING, `settle()` in flight, a watchdog at `holdBoundMs()`. */
+  private startHold(turn: SettledTurn): void {
+    const binding = this.hooks as SessionHookBinding;
+    this.holdGen++;
+    const gen = this.holdGen;
+    this.fire("settle_hold");
+    this.activity = "hook";
+    const ctl = new AbortController();
+    this.holdController = ctl;
+    let bound: number;
+    try {
+      bound = binding.holdBoundMs();
+    } catch {
+      bound = 0;
+    }
+    let p: Promise<{ injections: HoldInjection[]; error?: string; anomalies?: string[] }>;
+    try {
+      p = Promise.resolve(
+        binding.settle(
+          {
+            index: turn.index,
+            answer: turn.answer,
+            stopReason: turn.stopReason,
+            apiError: turn.apiError !== null,
+            hookCaused: turn.hookCaused,
+            consecutiveHookTurns: this.q.consecutiveHookTurns,
+            callerInputPending: callerCount(this.q) > 0,
+            shape: this.shape,
+          },
+          ctl.signal
+        )
+      );
+    } catch (e) {
+      p = Promise.reject(e);
+    }
+    p.catch((err: unknown) => ({ injections: [], error: String(err), rejected: true }))
+      .then((r) => this.step(() => this.completeHold(gen, r)))
+      .catch(() => {});
+    this.holdWatchdog = setTimeout(
+      () => this.step(() => this.completeHold(gen, { injections: [], error: "watchdog" })),
+      Math.max(0, bound)
+    );
+  }
+
+  /**
+   * End the hold this step leaves `SETTLING` by: no result of it is applied afterwards. A
+   * settle still running learns `reason` through its signal; a result already returned
+   * and waiting for the screen goes back to the binding under the same reason.
+   */
+  private endHold(reason: HoldAbortReason): void {
+    this.holdGen++;
+    if (this.holdWatchdog) clearTimeout(this.holdWatchdog);
+    this.holdWatchdog = null;
+    const ctl = this.holdController;
+    this.holdController = null;
+    if (ctl && !ctl.signal.aborted) ctl.abort(reason);
+    const held = this.heldResult;
+    this.heldResult = null;
+    if (held) {
+      try {
+        this.hooks?.abandon?.(held.result, reason);
+      } catch {
+        // journaling never breaks the session
+      }
+    }
+  }
+
+  /** Step 4: the hold's result (or the watchdog's) arrives, in its own step. */
+  private completeHold(gen: number, r: HoldResult & { rejected?: boolean }): void {
+    if (gen !== this.holdGen || this.phase !== "SETTLING") return;
+    for (const a of r.anomalies ?? []) this.anomaly(a);
+    // The pane child exited while the hold ran: onPaneExit's step concludes with the real
+    // exit code within its capture window. Nothing is queued or typed into a dead pane.
+    if (this.paneExited) {
+      for (const i of r.injections) this.dropInjection(i, "pane_exited");
+      this.holdGen++;
+      if (this.holdWatchdog) clearTimeout(this.holdWatchdog);
+      this.holdWatchdog = null;
+      return;
+    }
+    const failed = r.error !== undefined;
+    if (!failed) this.heldResult = { result: r, since: Date.now() };
+    // the last tick's poll can be up to a second old. A re-wake written since ends
+    // the hold HERE, as a tick during the hold would have, and a returned result is
+    // carried under `rewake` (endHold) instead of being typed over the running turn.
+    if (this.rewokeDuringHold(this.pollFollower(true))) return;
+    if (failed) {
+      const watchdog = r.error === "watchdog" && !r.rejected;
+      this.anomaly(watchdog ? "hook_hold_watchdog" : "hook_hold_error");
+      this.endHold(watchdog ? "watchdog" : "error");
+      // the failed settle offers nothing; hook items queued earlier may still go
+      this.heldResult = { result: { injections: [] }, since: Date.now() };
+    } else {
+      // ended normally: clear the bound, nothing to abort
+      this.holdGen++;
+      if (this.holdWatchdog) clearTimeout(this.holdWatchdog);
+      this.holdWatchdog = null;
+      this.holdController = null;
+    }
+    this.applyHeldResult();
+  }
+
+  /**
+   * Step 4, applied: from `completeHold`, and from each `evalSettling` tick while the
+   * screen still shows work. The phase is SETTLING throughout. An injection that
+   * survives the queue policy is admitted only when `screenIdle()`; until then the result
+   * waits, for at most the admission bound, after which it is abandoned as the
+   * watchdog's would be and the turn concludes.
+   */
+  private applyHeldResult(): void {
+    const held = this.heldResult;
+    if (!held) return;
+    const r = held.result;
+    // Guard: caller input normally ends the hold in send()'s own step (4a).
+    if (callerCount(this.q) > 0) {
+      this.heldResult = null;
+      for (const i of r.injections) this.dropInjection(i, "stale");
+      this.conclude(null);
+      return;
+    }
+    const items = [...this.q.items, ...r.injections.map((i) => this.hookItemOf(i, held.since))];
+    const now = Date.now();
+    const d = nextQueueDecision({ ...this.q, items }, now, "IDLE", this.canDeliver);
+    const inject = d.deliver?.kind === "hook" ? d.deliver : null;
+    if (inject && this.heldAdmission(held.since, now) !== "admit") return;
+    this.heldResult = null;
+    this.q.items = d.remaining;
+    this.dropHookItems(d.drop);
+    if (!inject) {
+      this.conclude(null);
+      return;
+    }
+    if (this.shape === "interactive") {
+      // the turn the injection follows gets its own verdict first (decide(): an
+      // API error fails the session, an unread task file is prompt_not_read). `continue`
+      // takes it to IDLE, from which the injection is admitted in this same step.
+      this.conclude(null);
+      if (this.phase !== "IDLE") {
+        this.dropInjection(inject, "session_ended");
+        return;
+      }
+    } else {
+      this.fire("hold_inject");
+      this.activity = null;
+    }
+    this.fire("admit");
+    this.startAdmission(inject, false);
+  }
+
+  /**
+   * Whether a held result's injection may be typed now. `wait`: the screen still shows
+   * work, within the admission bound. `ended`: the hold ended here, the bound passed (the
+   * watchdog's outcome) or a re-wake was found, and the result went back to the binding.
+   */
+  private heldAdmission(since: number, now: number): "admit" | "wait" | "ended" {
+    if (!this.screenIdle()) {
+      if (now - since < this.admitTimeoutMs()) return "wait";
+      this.anomaly("hook_hold_watchdog");
+      this.endHold("watchdog");
+      this.conclude(null);
+      return "ended";
+    }
+    // About to type: read the transcript now, as `idleForHookItem` does. The view an
+    // `evalSettling` tick passed in can be a poll debounce old, and a re-wake whose
+    // records landed as the screen cleared ends the hold here, its result carried.
+    return this.rewokeDuringHold(this.pollFollower(true)) ? "ended" : "admit";
+  }
+
+  /**
+   * Step 5: today's `finishTurn` tail, on the held turn and the session's CURRENT shape
+   * (a send during the hold converted it). Legal from RUNNING (no hold) and SETTLING.
+   */
+  private conclude(exitNote: string | null): void {
+    const held = this.heldTurn;
+    if (!held) return;
+    this.heldTurn = null;
+    this.activity = null;
+    const turn: SettledTurn = { ...held, shape: this.shape };
+    let verdict: FinalVerdict | "continue";
+    try {
+      verdict = this.o.decide(turn);
+    } catch (e) {
+      verdict = { state: "FAILED", reason: "child_exited", detail: `decide() threw: ${String(e)}` };
+    }
+    if (verdict === "continue") {
+      // an unread hook-turn file is hook_injection_not_read, never the caller's prompt_not_read
+      if (!turn.hookCaused && turn.delivery.complete === false) this.anomaly("prompt_not_read");
+      this.fire("turn_continue");
+      return;
+    }
+    const note = exitNote ?? (this.paneExited ? exitNoteOf(this.exitCode) : null);
+    if (note)
+      verdict = { ...verdict, detail: verdict.detail ? `${verdict.detail} · ${note}` : note };
+    this.applyVerdict(verdict);
+  }
+
+  private evalSettling(view: TranscriptView): void {
+    if (this.paneExited) return;
+    if (this.rewokeDuringHold(view)) return;
+    this.applyHeldResult();
+  }
+
+  /**
+   * §7.3: a re-wake during the hold abandons it; the same turn runs on and settles again.
+   * True when `view` shows one (and the hold has ended).
+   */
+  private rewokeDuringHold(view: TranscriptView): boolean {
+    const t = view.current;
+    if (!t || this.settledChatOffset === null) return false;
+    if (t.lastChatOffset === null || t.lastChatOffset <= this.settledChatOffset) return false;
+    this.endHold("rewake");
+    this.heldTurn = null;
+    this.rewakeOfSettled = true;
+    this.fire("hold_rewake");
+    this.activity = "thinking";
+    return true;
+  }
+
+  /** A sessionStart dispatch no hold took (§7.3 "other session events"). */
+  private queueHookInjections(items: HoldInjection[]): void {
+    if (isTerminalPhase(this.phase)) {
+      for (const i of items) this.dropInjection(i, "session_ended");
+      return;
+    }
+    const now = Date.now();
+    for (const i of items) this.q.items.push(this.hookItemOf(i, now));
+    this.pump();
+  }
+
+  private hookItemOf(i: HoldInjection, now: number): HookQueueItem {
+    return {
+      kind: "hook",
+      text: i.text,
+      hookIds: [...i.hookIds],
+      queuedAt: now,
+      // a sessionStart injection is queued as of its dispatch: it survives the initial prompt
+      callerSeq: i.source === "sessionStart" ? this.startCallerSeq : this.q.callerAdmitted,
+      source: i.source,
+    };
+  }
+
+  private dropHookItems(drops: ReadonlyArray<{ item: HookQueueItem; reason: string }>): void {
+    for (const { item, reason } of drops) this.dropInjection(item, reason);
+  }
+
+  private dropInjection(item: { text: string; hookIds: string[] }, reason: string): void {
+    this.anomaly(`hook_injection_dropped:${reason}`);
+    try {
+      this.hooks?.noteDropped?.(item, reason);
+    } catch {
+      // journaling never breaks the session
+    }
   }
 
   /* ───────────────────────────── degraded (screen) turn ───────────────────────────── */
@@ -2365,6 +2997,18 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const view = this.pollFollower(true);
     // a witness written just before the exit is still an acceptance
     if (this.phase === "ADMITTING" && this.admission && this.witnessed(view.current)) this.accept();
+    // §7.3 step 7 (M-1c): an unwitnessed HOOK admission is abandoned first, so an
+    // injection never turns a settled chain or a clean exit into a failure.
+    const adm = this.admission;
+    if (this.phase === "ADMITTING" && adm && adm.item.kind === "hook")
+      this.hookAdmissionFailed(adm.item);
+    // §7.3 step 6 (H1): a held turn is concluded with the exit code. An interactive
+    // session then takes today's IDLE exit rules below.
+    if (this.phase === "SETTLING") {
+      this.endHold("exit");
+      this.conclude(exitNoteOf(code));
+      if (isTerminalPhase(this.phase)) return;
+    }
     if (this.phase === "RUNNING") {
       const d = this.exitSettle();
       const t = this.follower.view().current;
@@ -2380,8 +3024,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   /**
    * §2.2 rule 2: interactive, IDLE, exit 0, after /exit or ≥ 1 settled turn, nothing
-   * admitted. An exit seen only as ESRCH while the socket is lost has no code: after a
-   * delivered /exit that is still the clean exit it asked for.
+   * admitted. An exit seen only as ESRCH while the socket is lost has no code when magmux could
+   * not name it either: after a delivered /exit that is still the clean exit it asked for.
    */
   private cleanIdleExit(code: number | null): boolean {
     if (this.phase !== "IDLE" || this.shape !== "interactive") return false;
@@ -2432,7 +3076,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       exitCode: this.exitCode,
       captureSource: this.lastCaptureSource,
       turnSource: this.turnSource,
-      pendingInputs: this.queue.length,
+      pendingInputs: callerCount(this.q),
+      pendingHookInputs: hookCount(this.q),
       connected: this.client !== null,
       startedAt: iso(this.startedAtMs),
       endedAt: this.endedAtMs ? iso(this.endedAtMs) : null,
@@ -2453,15 +3098,27 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   }
 
   private phaseActivity(): string | null {
-    switch (this.phase) {
+    const phase = this.phase;
+    switch (phase) {
       case "RUNNING":
         return this.activity ?? "thinking";
+      case "SETTLING":
+        return this.activity ?? "hook";
       case "QUESTION":
         return "AskUserQuestion";
       case "PERMISSION":
         return this.activity;
-      default:
+      case "BOOTING":
+      case "ADMITTING":
+      case "IDLE":
+      case "COMPLETED":
+      case "FAILED":
+      case "CANCELLED":
+      case "TIMEOUT":
+      case "EMPTY":
         return null;
+      default:
+        return assertNever(phase);
     }
   }
 
@@ -2488,17 +3145,24 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const plan = planDelivery(text, this.turnDir, 0, this.o.readAvailable);
     if (plan.mode === "refused") return { ok: false, reason: "delivery_unavailable" };
     if (this.shape === "one-shot") this.shape = "interactive";
-    this.queue.push(text);
+    this.q.items.push({ kind: "caller", text });
     this.escapeArmed = true;
     // Read the transcript first: a turn whose end record already landed settles HERE, and
     // its owner must see the converted shape (SettledTurn.shape) and the queued text.
     this.step(() => {
       this.pollFollower(true);
+      // §7.3 step 4a (L-5): caller input ends a hold at once, in this step. The held
+      // turn concludes on the converted shape (continue → IDLE) and the pump admits the
+      // caller's text below; whatever settle() returns later fails the generation check.
+      if (this.phase === "SETTLING" && !this.paneExited) {
+        this.endHold("caller");
+        this.conclude(null);
+      }
       this.evaluate();
     });
     // Never report a queued prompt for a session this very step ended.
     if (isTerminalPhase(this.phase)) return { ok: false, reason: "terminal" };
-    return { ok: true, queued: this.queue.length };
+    return { ok: true, queued: callerCount(this.q) };
   }
 
   async resize(cols: number, rows: number): Promise<PaneResizeOutcome> {
@@ -2669,6 +3333,15 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return cur && cur.index === index ? cur.assistantText.join("\n\n") : "";
   }
 
+  chainText(): string {
+    const parts = this.chain.map((c) => c.answer);
+    const lastIndex = this.chain[this.chain.length - 1]?.index ?? 0;
+    const cur = this.follower.view().current;
+    // the running chain turn: one above the last recorded index, not yet recorded
+    if (cur && cur.index > lastIndex) parts.push(cur.assistantText.join("\n\n"));
+    return parts.filter((a) => a !== "").join("\n\n");
+  }
+
   assistantMessageIds(): readonly string[] {
     return this.follower.assistantMessageIds();
   }
@@ -2728,6 +3401,19 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.final = true;
     this.admission = null;
     if (this.timeoutTimer) clearTimeout(this.timeoutTimer);
+    if (this.hooks) {
+      // every way out of SETTLING aborts the hold with its reason (§4.10)
+      this.endHold("terminal");
+      this.heldTurn = null;
+      for (const item of this.q.items)
+        if (item.kind === "hook") this.dropInjection(item, "session_ended");
+      this.q.items = this.q.items.filter((i) => i.kind === "caller");
+      try {
+        this.hooks.fireEnd({ state: this.wire(), reason: this.reason, exitCode: this.exitCode });
+      } catch {
+        // never delays the terminal state or the reap
+      }
+    }
     if (!this.readySettled) {
       this.readySettled = true;
       this.resolveReady();
@@ -2784,6 +3470,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /** Step 0: refresh the verified group while its members still carry their identity. */
   private async captureGroupBeforeReap(): Promise<void> {
     const table = await readProcessTableAsync();
+    if (!table) return;
     if (!this.panePidValue && this.magmux?.pid) {
       const lead = table.find((r) => r.ppid === this.magmux?.pid && r.pgid === r.pid);
       if (lead) {
@@ -2794,10 +3481,14 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     refreshGroupOf(this, table);
   }
 
-  /** The verified group, or a recorded escaped descendant (own process group), is alive. */
+  /**
+   * The verified group, or a recorded escaped descendant (own process group), is alive.
+   * True while the table is unavailable: the reap stays unverified and keeps its files.
+   */
   private async groupAlive(): Promise<boolean> {
     if (!this.group) return false;
     const table = await readProcessTableAsync();
+    if (!table) return true;
     return groupCheck(table, this.group) || liveEscaped(table, this.group).length > 0;
   }
 
@@ -2805,6 +3496,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private async backstopTargets(): Promise<number[]> {
     if (!this.group) return [];
     const table = await readProcessTableAsync();
+    if (!table) return [];
     return [
       ...(groupCheck(table, this.group) ? [-this.group.pgid] : []),
       ...liveEscaped(table, this.group),
@@ -2888,6 +3580,7 @@ function launchSize(o: PaneSessionOptions): PaneSize {
 /** A fresh admission of a typed, file or command plan; its first step follows the plan's kind. */
 function newAdmission(a: {
   index: number;
+  item: QueueItem;
   text: string;
   plan: Extract<Delivery, { mode: "typed" | "file" | "command" }>;
   initial: boolean;
@@ -2896,6 +3589,7 @@ function newAdmission(a: {
   const now = Date.now();
   return {
     index: a.index,
+    item: a.item,
     text: a.text,
     plan: a.plan,
     line: a.plan.line,
@@ -3014,6 +3708,11 @@ function describeLastReply(
   }
 }
 
+/** The verdict note of a conclusion on the exit path. */
+function exitNoteOf(code: number | null): string {
+  return `pane child exited${code === null ? "" : ` ${code}`}`;
+}
+
 function isControl(text: string): boolean {
   const t = text.trim();
   return t === "/exit" || t === "/quit";
@@ -3072,6 +3771,7 @@ function preparePane(
       slotEnv: o.slotEnv,
       cwd,
       ctlDir: dirs.ctlDir,
+      configFile: getConfigFileOverride(),
       ...launchSize(o),
     });
     return { paneId, sockPath, cwd, ...dirs, magmuxEnv };

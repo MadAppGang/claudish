@@ -3,8 +3,6 @@ import { join } from "node:path";
 import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { isEffortLevel } from "./adapters/base-api-format.js";
-import { loadHookRules } from "./behavior/hooks.js";
-import { parseBehaviorConfig, registerHookRules } from "./behavior/index.js";
 import {
   isAutoModeClassifierRequest,
   rewriteClassifierForNative,
@@ -33,6 +31,10 @@ import {
   releaseWhenBodyEnds,
 } from "./handlers/shared/call-context.js";
 import type { ModelHandler } from "./handlers/types.js";
+import type { HookEngine } from "./hooks/engine.js";
+import { loadHooksOnce } from "./hooks/index.js";
+import type { HostMode } from "./hooks/public.js";
+import { withHooks } from "./hooks/response-seam.js";
 import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
@@ -172,6 +174,18 @@ export interface ProxyServerOptions {
    * down. Absent ⇒ no gateway; nothing is planned lazily.
    */
   advisorRuntime?: AdvisorRuntime;
+  /**
+   * Run hooks on this proxy's `/v1/messages` traffic. Default true. `--probe`
+   * passes false: hooks never see probe traffic. Monitor mode and the
+   * classifier passthrough never run hooks whatever this says.
+   */
+  hooks?: boolean;
+  /**
+   * Which host this process is, for hook loading and `ctx.host.mode`: the
+   * interactive launcher, a pane child, `serve`, the MCP server, or other.
+   * Default `"other"`. The first proxy of a process decides it.
+   */
+  hostMode?: HostMode;
 }
 
 /**
@@ -276,17 +290,26 @@ export async function createProxyServer(
     );
   }
 
-  // Load behavior-layer hook rules before any handler is constructed: the
-  // engine is memoized on first use, and registering rules after that point
-  // would leave already-built handlers on a stale rule set.
-  try {
-    const hookRules = await loadHookRules(parseBehaviorConfig(loadConfig().behavior).hooks);
-    if (hookRules.length > 0) registerHookRules(hookRules);
-  } catch (err) {
-    // Same posture as customEndpoints: a broken optional extension warns and is
-    // skipped, it never blocks startup.
-    log(`[Proxy] behavior hooks load skipped: ${err instanceof Error ? err.message : String(err)}`);
+  // Load the hook engine before any handler is built and before the first
+  // request, so no request sees a half-loaded registry. Memoised per process.
+  // Monitor mode forwards everything to Anthropic untouched, so it runs no hooks.
+  let hookEngine: HookEngine | null = null;
+  if (options.hooks !== false && !monitorMode) {
+    try {
+      hookEngine = await loadHooksOnce({ hostMode: options.hostMode ?? "other" });
+    } catch (err) {
+      // loadHooksOnce never rejects; same posture as customEndpoints if it did:
+      // a broken optional extension is skipped, it never blocks startup.
+      log(`[Proxy] hooks load skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
+  /**
+   * `withHooks` goes on the RESOLVED handler, inside the advisor — never inside
+   * `getHandlerForRequest` and never on a FallbackHandler candidate, for the same
+   * `instanceof` reasons as the advisor below. Not on the classifier passthrough.
+   */
+  const withRequestHooks = (handler: ModelHandler): ModelHandler =>
+    hookEngine ? withHooks(handler, hookEngine) : handler;
 
   // Define handlers for different roles
   const nativeHandler = new NativeHandler(
@@ -1065,8 +1088,12 @@ export async function createProxyServer(
       }
 
       // The advisor wrapper goes on the RESOLVED handler (FallbackHandler
-      // included), once per request. See `withAdvisor` above.
-      const handler = withAdvisor(await getHandlerForRequest(body.model), advisorPresence);
+      // included), once per request, around the hooks. See `withAdvisor` and
+      // `withRequestHooks` above.
+      const handler = withAdvisor(
+        withRequestHooks(await getHandlerForRequest(body.model)),
+        advisorPresence
+      );
 
       // Route. The `await` is load-bearing: `return handler.handle(...)` hands
       // the promise back BEFORE it settles, so a rejection escapes this

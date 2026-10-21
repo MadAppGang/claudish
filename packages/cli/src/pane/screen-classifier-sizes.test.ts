@@ -7,6 +7,7 @@ import {
   hasEcho,
   inputBox,
   isWorking,
+  nameBootScreen,
   readBoot,
   screenAnswer,
 } from "./screen-classifier.js";
@@ -31,12 +32,17 @@ const STATES = [
 ] as const;
 
 for (const [cols, rows] of [
+  [40, 24],
   [80, 24],
   [120, 40],
   [250, 60],
 ] as const) {
   describe(`${cols}x${rows} real Claude Code captures`, () => {
-    test.each([...STATES])("%s", (state) => {
+    test.each(
+      STATES.filter(
+        (state) => cols !== 40 || (state !== "dialog-trust" && state !== "echo-submitted")
+      )
+    )("%s", (state) => {
       const screen = loadScreen(`size-${cols}x${rows}-${state}`);
       expect(screen.cols).toBe(cols);
       expect(screen.rows).toBe(rows);
@@ -72,6 +78,30 @@ for (const [cols, rows] of [
   });
 }
 
+test("40x24 bash permission identifies a permission dialog", () => {
+  const screen = loadScreen("size-40x24-permission-bash");
+  expect(choiceDialog(screen)?.kind).toBe("permission");
+});
+
+test("40x24 wrapped question footer identifies a choice screen", () => {
+  const screen = loadScreen("size-40x24-ask-user-question");
+  // The footer wraps after "Esc", with "to cancel" on the next row.
+  expect(choiceDialog(screen)?.kind).toBe("question");
+  expect(nameBootScreen(screen).kind).toBe("choice");
+});
+
+test.each(["size-40x24-working", "size-40x24-answer-short"])(
+  "%s echo matches the 36-character submitted prompt prefix",
+  (name) => {
+    const screen = loadScreen(name);
+    expect(echoHeadLength(40)).toBe(36);
+    const head = echoHead(SUBMITTED_PROMPT, 40);
+    expect(head).toBe(SUBMITTED_PROMPT.slice(0, 36));
+    expect(head.length).toBe(36);
+    expect(hasEcho(screen.lines, head)).toBe(true);
+  }
+);
+
 test("80x24 working-tail", () => {
   expect(isWorking(loadScreen("size-80x24-working-tail"))).toBe(true);
 });
@@ -98,12 +128,12 @@ test("80x24 wrapped permission header identifies a permission dialog", () => {
 });
 
 describe("echoHeadLength", () => {
-  test.each([80, 120, 160, 250])("%i columns use min(40, cols - 4)", (cols) => {
+  test.each([40, 80, 120, 160, 250])("%i columns use min(40, cols - 4)", (cols) => {
     expect(echoHeadLength(cols)).toBe(Math.min(40, cols - 4));
   });
 
-  // Supported pane widths all hit the 40-character cap. Exercise the helper's
-  // width-dependent branch separately, without inventing a screen fixture.
+  // At the supported 40-column minimum, the echo prefix is 36 characters.
+  // Exercise a narrower helper input separately, without inventing a screen fixture.
   test("32 columns shorten the echo prefix to 28 characters", () => {
     expect(echoHeadLength(32)).toBe(28);
     expect(echoHead(SUBMITTED_PROMPT, 32)).toBe(SUBMITTED_PROMPT.slice(0, 28));

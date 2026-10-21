@@ -104,7 +104,7 @@ export interface ExecBatch {
    */
   blocks?: NestedToolUse[];
   /**
-   * The Layer 4 repairs of this batch, by nested id: hashes of the script's
+   * The recorded repairs of this batch, by nested id: hashes of the script's
    * own input and of the input relayed instead. Taken from `blocks` when they
    * are dropped, so a replay can accept history's repaired input for a call.
    */

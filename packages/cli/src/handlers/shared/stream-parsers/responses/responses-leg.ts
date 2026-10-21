@@ -29,6 +29,7 @@ import {
   rememberReasoningForCall,
 } from "../../../../adapters/reasoning-cache.js";
 import type { ResponsesItem } from "../../../../code-mode/types.js";
+import type { RawStreamTap } from "../../../../hooks/raw.js";
 import { getLogLevel, log } from "../../../../logger.js";
 import type { UsageCacheDetail } from "../../token-tracker.js";
 import { formatRawSseLogPayload } from "../openai-sse.js";
@@ -105,14 +106,13 @@ export interface ResponsesLegContext {
   toolNameMap?: Map<string, string>;
   /** Claude Code's own tool names; see isParallelWrapperName. */
   declaredToolNames: string[];
-  // biome-ignore lint/suspicious/noExplicitAny: MiddlewareManager is untyped on every parser
-  middlewareManager?: any;
-  /** Shared across every chunk hook of the turn; handed to afterStreamComplete. */
-  // biome-ignore lint/suspicious/noExplicitAny: middleware metadata is free-form
-  streamMetadata: Map<string, any>;
-  onToolCall?: (name: string, argsJson: string) => string | null | undefined;
-  shouldBufferTool?: (name: string) => boolean;
-  onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
+  /**
+   * The raw-tier tap (`providerChunk`), shared by every leg of the turn. The
+   * Responses API has no `delta` object of its own, so the event stands in for
+   * both. Tool-argument interception is not this parser's job: it happens at
+   * the hook response seam, above every parser.
+   */
+  raw?: RawStreamTap | null;
   /**
    * This leg's stall guard (stall-guard.ts): fires `thresholdMs` after
    * `headersAt` (this leg's response headers, on `clock`) unless an
@@ -144,12 +144,10 @@ type FnCall = {
   arguments: string;
   index: number;
   claudeId?: string;
-  /** Withhold input_json_delta until the call completes so it can be repaired. */
-  buffered?: boolean;
   /**
    * Bytes of `arguments` already sent downstream as `input_json_delta`. Zero
-   * for a buffered call until it completes, and zero for every call of a Codex
-   * multi-call turn, which streams no argument deltas at all.
+   * for every call of a Codex multi-call turn, which streams no argument
+   * deltas at all.
    */
   forwardedBytes: number;
   /** `response.function_call_arguments.done`'s complete argument string. */
@@ -356,7 +354,7 @@ class ResponsesLeg {
           if (getLogLevel() === "debug") {
             log(`[SSE:responses] ${formatRawSseLogPayload(data)}`);
           }
-          // A malformed frame, or a handler or middleware that throws on one
+          // A malformed frame, or a handler or raw hook that throws on one
           // event, costs that event only, never the turn.
           let stop: Stop | undefined;
           try {
@@ -451,18 +449,11 @@ class ResponsesLeg {
     return { kind: "degenerate-wrapper", reason, bytes, usage: this.usage };
   }
 
-  private async dispatch(event: ResponsesEvent): Promise<Stop | undefined> {
-    // Response-side observation point. The Responses API has no `delta`
-    // object of its own, so the event stands in for both — observers here key
-    // off `event.type`.
-    if (this.ctx.middlewareManager) {
-      await this.ctx.middlewareManager.afterStreamChunk({
-        modelId: this.ctx.modelName,
-        chunk: event,
-        delta: event,
-        metadata: this.ctx.streamMetadata,
-      });
-    }
+  private async dispatch(parsed: ResponsesEvent): Promise<Stop | undefined> {
+    // Raw-tier tap, before anything reads the event: what it returns is the
+    // committed object, and every read below is of it. The Responses API has
+    // no `delta` object of its own, so the event stands in for both.
+    const event = this.ctx.raw ? this.ctx.raw.chunk(parsed, (e: ResponsesEvent) => e) : parsed;
     if (getLogLevel() === "debug" && event.type) {
       log(`[ResponsesSSE] Event: ${event.type}`);
     }
@@ -515,7 +506,6 @@ class ResponsesLeg {
   }
 
   private onTextDelta(event: ResponsesEvent): void {
-    this.ctx.onAssistantText?.(event.delta ?? "", "text");
     this.closeReasoning();
     if (this.textIdx < 0) {
       this.textIdx = this.sink.nextIndex();
@@ -622,7 +612,6 @@ class ResponsesLeg {
       arguments: "",
       index: this.sink.nextIndex(),
       claudeId: callId,
-      buffered: this.ctx.shouldBufferTool?.(fnName) === true,
       forwardedBytes: 0,
     };
     this.functionCalls.set(openaiCallId, fnCall);
@@ -640,7 +629,6 @@ class ResponsesLeg {
   }
 
   private onReasoningDelta(event: ResponsesEvent): void {
-    this.ctx.onAssistantText?.(event.delta ?? "", "reasoning");
     // Reasoning is the model's chain of thought, not its answer — it belongs
     // in a thinking block, or Claude Code renders it as the reply.
     const summaryIndex =
@@ -672,12 +660,8 @@ class ResponsesLeg {
       return;
     }
     fnCall.arguments += event.delta || "";
-    // Buffered calls emit nothing here — the whole argument object goes out in
-    // one delta at output_item.done, after any repair.
-    if (!fnCall.buffered) {
-      this.sink.delta(fnCall.index, { type: "input_json_delta", partial_json: event.delta || "" });
-      fnCall.forwardedBytes += (event.delta || "").length;
-    }
+    this.sink.delta(fnCall.index, { type: "input_json_delta", partial_json: event.delta || "" });
+    fnCall.forwardedBytes += (event.delta || "").length;
   }
 
   private onArgumentsDone(event: ResponsesEvent): void {
@@ -726,15 +710,7 @@ class ResponsesLeg {
     const fnCall = this.functionCalls.get(callId) || this.functionCalls.get(item.id);
     if (!fnCall || !this.openToolBlocks.has(fnCall)) return undefined;
     const final = fnCall.doneArgs ?? itemArgs ?? fnCall.arguments;
-    if (fnCall.buffered) {
-      // Give the behavior layer its one chance to rewrite the call, then emit
-      // the complete argument object as a single delta.
-      const finalArgs = this.repairBufferedCall(fnCall.name, final);
-      this.sink.delta(fnCall.index, { type: "input_json_delta", partial_json: finalArgs });
-      fnCall.forwardedBytes = finalArgs.length;
-    } else {
-      this.emitUnforwardedArguments(fnCall, final, fnCall.doneArgs !== undefined ? "done" : "item");
-    }
+    this.emitUnforwardedArguments(fnCall, final, fnCall.doneArgs !== undefined ? "done" : "item");
     this.sink.markToolArgsComplete(fnCall.index);
     this.sink.stopToolBlock(fnCall.index);
     this.openToolBlocks.delete(fnCall);
@@ -766,26 +742,9 @@ class ResponsesLeg {
     return undefined;
   }
 
-  /** The behavior layer's one chance to rewrite a buffered call. A throwing rule changes nothing. */
-  private repairBufferedCall(name: string, args: string): string {
-    if (this.ctx.shouldBufferTool?.(name) !== true) return args;
-    try {
-      const repaired = this.ctx.onToolCall?.(name, args);
-      if (typeof repaired === "string" && repaired !== args) {
-        log(`[ResponsesSSE] tool call repaired: ${name}`);
-        return repaired;
-      }
-    } catch (err) {
-      // A failing rule must never corrupt the stream — emit the model's
-      // original arguments and carry on.
-      log(`[ResponsesSSE] onToolCall threw for ${name}: ${err}`);
-    }
-    return args;
-  }
-
   /**
    * Emit a valid wrapper's entries as ordinary tool_use blocks, one complete
-   * argument delta each (a buffered tool goes through onToolCall first). The
+   * argument delta each. The
    * wrapper's reasoning is remembered under the FIRST expanded id only, so the
    * next request replays it exactly once, before that call.
    */
@@ -794,7 +753,7 @@ class ResponsesLeg {
     this.closeText();
     calls.forEach((call, k) => {
       const id = `${held.claudeBaseId}_p${k}`;
-      const args = this.repairBufferedCall(call.name, call.arguments);
+      const args = call.arguments;
       const index = this.sink.nextIndex();
       this.sink.startToolBlock(index, id, call.name);
       this.sink.delta(index, { type: "input_json_delta", partial_json: args });
@@ -808,7 +767,7 @@ class ResponsesLeg {
   }
 
   /**
-   * At `output_item.done` of a non-buffered call, send whatever part of the
+   * At `output_item.done` of a call, send whatever part of the
    * final arguments the deltas did not carry. The Codex backend sends every
    * call of a multi-call turn with ZERO argument deltas: the arguments exist
    * only in `function_call_arguments.done` and the done item, so forwarding
@@ -860,17 +819,11 @@ class ResponsesLeg {
 
   private closeTools(): void {
     for (const fnCall of this.openToolBlocks) {
-      // A buffered call that never reached output_item.done (truncated or
-      // failed stream) still has to emit what it accumulated. Withholding it
-      // would turn "partial arguments" into "no arguments", which is strictly
-      // worse — the non-buffered path would already have streamed the same
-      // fragments. What the client then DOES with malformed JSON is decided by
-      // how the turn ends: only an `error` event reliably stops Claude Code
-      // executing the fragment. The block stays not-ARGS-COMPLETE on the sink.
-      const accumulated = fnCall.doneArgs ?? fnCall.arguments;
-      if (fnCall.buffered && accumulated) {
-        this.sink.delta(fnCall.index, { type: "input_json_delta", partial_json: accumulated });
-      }
+      // A call that never reached output_item.done (truncated or failed
+      // stream) has already streamed its fragments. What the client then DOES
+      // with malformed JSON is decided by how the turn ends: only an `error`
+      // event reliably stops Claude Code executing the fragment. The block
+      // stays not-ARGS-COMPLETE on the sink.
       this.sink.stopToolBlock(fnCall.index);
     }
     this.openToolBlocks.clear();

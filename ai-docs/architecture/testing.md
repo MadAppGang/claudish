@@ -221,8 +221,8 @@ MCP `team` slots and `create_session` run as interactive Claude Code in headless
 magmux would test our model of it instead.
 
 **The child is the fake, never Claude Code.** `pane/test-helpers/fake-interactive-child.ts` is
-started through `CLAUDISH_BIN` (a `*.ts` value becomes `bun run <file>`). It draws the REPL with
-lines copied from the phase-2 screen fixtures, reads raw keystrokes with the key semantics measured
+started through `CLAUDISH_BIN` (a `*.ts` value becomes `bun --no-env-file run <file>`). It draws
+the REPL with lines copied from the phase-2 screen fixtures, reads raw keystrokes with the key semantics measured
 from the real REPL, and writes its transcript by TEMPLATING real records — never hand-written ones.
 A scenario is chosen by `--model fake-<scenario>`, or, in the contract suites' marker mode
 (`contract-fake-model`), by markers in the prompt: `@@TOOL@@`, `@@HANG@@` (accepted, never

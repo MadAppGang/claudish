@@ -90,7 +90,7 @@ has finished, and closes the pane when the slot or session ends.
 A capture carries a `seq` that grows with every visible change; pass it back as `since_seq` and an
 unchanged screen answers `{unchanged: true}`, so polling about once a second is cheap.
 
-A pane starts at 160×50. A viewer can resize it at any time (cols 80–9999, rows 24–9999,
+A pane starts at 160×50. A viewer can resize it at any time (cols 40–9999, rows 24–9999,
 at most 4 000 000 cells, clamped);
 the next capture carries the new `cols`/`rows`. Resizing needs a magmux that ships the `resize`
 verb (MIN_MAGMUX_VERSION); an older magmux answers `resize_unsupported` and the pane stays 160×50.

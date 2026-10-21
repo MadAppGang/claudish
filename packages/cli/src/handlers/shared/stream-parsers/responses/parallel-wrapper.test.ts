@@ -128,7 +128,6 @@ test("REQ-20 TEST-25 degenerate usage drain is bounded to 10000 ms on the inject
     sink,
     modelName: "capture-model",
     declaredToolNames: [],
-    streamMetadata: new Map(),
     drainClock: clock,
   }).then((outcome) => {
     settled = true;
@@ -168,7 +167,6 @@ describe("REQ-4 malformed wrappers remain invisible", () => {
                 sink,
                 modelName: "capture-model",
                 declaredToolNames: [],
-                streamMetadata: new Map(),
                 drainClock: { now: () => 0, setTimeout: () => 1, clearTimeout: () => {} },
               });
               expect(outcome.kind).toBe("degenerate-wrapper");

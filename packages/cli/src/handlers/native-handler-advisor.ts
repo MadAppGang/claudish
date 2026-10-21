@@ -36,7 +36,7 @@
 import { appendFileSync } from "node:fs";
 import type { Context } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
-import type { ChildAuthControl, ChildAuthSource } from "../claude-runner.js";
+import type { ChildAuthControl, ChildAuthSource } from "../child-auth-types.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
 import { resolveConnection } from "../providers/connection-resolver.js";
 import type { KnownWire, WireApi } from "../providers/connection-wire.js";

@@ -20,7 +20,7 @@
  * `tools`, `ALL_TOOLS`); Codex's `image()`, `store()`, `notify()`, timers and
  * yield are absent, so the model is never told about a helper that would throw.
  *
- * Sections are rendered from `claudeRequest.tools` AFTER Layer 4 (step 3c) has
+ * Sections are rendered from `claudeRequest.tools` AFTER the hook request stages (1a, 3a) have
  * rewritten descriptions, so names are Claude Code's own, never the step-5
  * encoded names. A size budget keeps the description bounded on sessions with
  * many MCP tools: a section is at most `perToolBytes` (its description is cut to

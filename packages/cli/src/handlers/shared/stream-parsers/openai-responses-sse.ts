@@ -16,6 +16,7 @@ import {
   type NestedToolUse,
   relayNestedInput,
 } from "../../../code-mode/types.js";
+import type { RawStreamTap } from "../../../hooks/raw.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 import type { UsageCacheDetail } from "../token-tracker.js";
 import { ClaudeSseSink } from "./responses/claude-sse-sink.js";
@@ -28,34 +29,22 @@ export { resolveStallPolicy, type StallPolicy } from "./responses/stall-guard.js
 
 /**
  * A code-mode script blocked again at step 5r: answer with its next batch as
- * tool_use blocks, with NO upstream call. Written by the same sink and the
- * same hooks as a driver batch (repair for buffered tools, one
- * `onToolCallObserved` per block, middleware `afterStreamComplete`,
- * `onTurnEnd`). `message_start` and `message_delta` carry the previous
- * request's input and 0 output; nothing was billed, so no usage callback fires.
+ * tool_use blocks, with NO upstream call. Written by the same sink as a driver
+ * batch (one `onToolCallObserved` per block, the raw `providerStreamEnd`
+ * hooks). Tool-argument repair is the hook response seam's job, above every
+ * parser, so a synthetic reply gets it exactly as a driver batch does.
+ * `message_start` and `message_delta` carry the previous request's input and 0
+ * output; nothing was billed, so no usage callback fires.
  */
 export function createSyntheticToolUseReply(
   blocks: ReadonlyArray<NestedToolUse>,
   opts: {
     modelName: string;
     priorInputTokens?: number;
-    shouldBufferTool?: (name: string) => boolean;
-    onToolCall?: (name: string, argsJson: string) => string | null | undefined;
     onToolCallObserved?: (name: string) => void;
-    onTurnEnd?: () => void;
-    // biome-ignore lint/suspicious/noExplicitAny: MiddlewareManager is untyped on every parser
-    middlewareManager?: any;
+    raw?: RawStreamTap | null;
   }
 ): Response {
-  const repair = (name: string, args: string): string => {
-    if (opts.shouldBufferTool?.(name) !== true) return args;
-    try {
-      const repaired = opts.onToolCall?.(name, args);
-      return typeof repaired === "string" ? repaired : args;
-    } catch {
-      return args;
-    }
-  };
   const stream = new ReadableStream<Uint8Array>({
     start: async (controller) => {
       const sink = new ClaudeSseSink(controller, {
@@ -66,13 +55,14 @@ export function createSyntheticToolUseReply(
       try {
         sink.start();
         for (const block of blocks) {
-          sink.emitToolUse(block.id, block.name, relayNestedInput(block, repair));
+          sink.emitToolUse(
+            block.id,
+            block.name,
+            relayNestedInput(block, (_name, args) => args)
+          );
         }
         sink.endMessage("tool_use", { input_tokens: opts.priorInputTokens ?? 0, output_tokens: 0 });
-        if (opts.middlewareManager) {
-          await opts.middlewareManager.afterStreamComplete(opts.modelName, new Map());
-        }
-        opts.onTurnEnd?.();
+        if (opts.raw) await opts.raw.streamEnd();
       } catch (err) {
         // A throwing hook must not leave the downstream open.
         sink.endWithError(`claudish: the synthetic reply failed: ${err}`);
@@ -130,37 +120,18 @@ export function createResponsesStreamHandler(
      */
     priorInputTokens?: number;
     /**
-     * Middleware chain, so the Responses path gets the same response-side hooks
-     * the Chat Completions path has had. Previously absent, which left the Codex
-     * models with no observation point at all.
+     * The raw-tier tap (`providerChunk` / `providerStreamEnd`), so the Responses
+     * path has the same raw hook points as the Chat Completions path. The
+     * Responses API has no `delta` object of its own, so the event stands in for
+     * both.
      */
-    // biome-ignore lint/suspicious/noExplicitAny: MiddlewareManager is untyped on every parser
-    middlewareManager?: any;
+    raw?: RawStreamTap | null;
     /**
-     * Behavior-layer tool-call interception. Called once per completed tool call
-     * with the fully accumulated argument JSON; return replacement JSON to repair
-     * the call, or null/undefined to leave it untouched.
-     *
-     * Only consulted for tools that `shouldBufferTool` opted in — see below.
+     * Called once per `tool_use` block start, for the token tracker's tool
+     * count. Tool-argument interception is not this parser's job: it happens at
+     * the hook response seam, above every parser.
      */
-    onToolCall?: (name: string, argsJson: string) => string | null | undefined;
-    /**
-     * Whether a tool's arguments must be withheld until the call completes.
-     *
-     * Repair is only possible for buffered calls: this parser streams
-     * `input_json_delta` the instant each fragment arrives, so by the time a call
-     * is complete its arguments are already on the wire to the client. Buffering
-     * is therefore opt-in PER TOOL — a tool no rule cares about keeps streaming
-     * incrementally, so the default path keeps its current latency profile.
-     */
-    shouldBufferTool?: (name: string) => boolean;
-    /**
-     * Behavior-layer observation (Layer 4). Called with normalized text so rules
-     * never have to understand this parser's event shape.
-     */
-    onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
     onToolCallObserved?: (name: string) => void;
-    onTurnEnd?: () => void;
     /**
      * The request's tool names as Claude Code sent them (decoded, not the
      * encoded wire names). A function_call named `parallel` is treated as the
@@ -194,15 +165,10 @@ export function createResponsesStreamHandler(
         modelName: opts.modelName,
         toolNameMap: opts.toolNameMap,
         declaredToolNames: opts.declaredToolNames ?? [...(opts.toolNameMap?.values() ?? [])],
-        middlewareManager: opts.middlewareManager,
-        streamMetadata: new Map(),
-        onToolCall: opts.onToolCall,
-        shouldBufferTool: opts.shouldBufferTool,
-        onAssistantText: opts.onAssistantText,
+        raw: opts.raw,
         contextWindow: opts.contextWindow,
         onApiError: opts.onApiError,
         onTokenUpdate: opts.onTokenUpdate,
-        onTurnEnd: opts.onTurnEnd,
         retry: opts.retry,
         onExtraBilledInput: opts.onExtraBilledInput,
         onTurnSummary: opts.onTurnSummary,

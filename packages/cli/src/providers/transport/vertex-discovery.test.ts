@@ -1,6 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { credentials } from "../../auth/credentials/authority.js";
 import { resetVertexProjectDiscovery } from "../../auth/vertex-auth.js";
+import { type DiskCacheV3, writeAllModelsCache } from "../all-models-cache.js";
+import { _resetCatalogClient, _setCatalogEntriesForTest } from "../catalog-client.js";
+import { _setChatCapabilityCachePathForTest } from "./probe-discovery.js";
 import { _clearVertexDiscoveryCache, discoverVertexProbeModel } from "./vertex-discovery.js";
 import { parseVertexModel } from "./vertex-oauth.js";
 
@@ -23,6 +29,42 @@ const listedModels = [
       "projects/{project}/locations/{location}/publishers/google/models/gemini-2.5-flash",
   },
 ];
+
+/**
+ * The catalog rows discovery reads: chat capability (from the output modality) and the release
+ * date that ranks 3.8 above 2.5. Seeded here, because without them discovery reads the real
+ * ~/.claudish catalog — present on a developer's machine, absent on a fresh runner.
+ */
+const catalogEntries = [
+  {
+    modelId: "gemini-3.8-flash",
+    aliases: [],
+    inputModalities: ["text"],
+    outputModalities: ["text"],
+    releaseDate: "2026-08-01",
+  },
+  {
+    modelId: "gemini-2.5-flash",
+    aliases: [],
+    inputModalities: ["text"],
+    outputModalities: ["text"],
+    releaseDate: "2025-06-17",
+  },
+] as DiskCacheV3["entries"];
+const catalogDir = mkdtempSync(join(tmpdir(), "vertex-discovery-catalog-"));
+const catalogPath = join(catalogDir, "catalog.json");
+writeAllModelsCache(
+  {
+    version: 3,
+    catalogGenerationId: "test-generation",
+    lastUpdated: new Date().toISOString(),
+    entries: catalogEntries,
+    models: [],
+    plans: [],
+  },
+  catalogPath
+);
+afterAll(() => rmSync(catalogDir, { recursive: true, force: true }));
 
 function installHttpFixture(statuses: Record<string, number>): string[] {
   const requests: string[] = [];
@@ -54,9 +96,13 @@ describe.serial("Vertex discovery confirmation", () => {
     credentials.getRequestAuth = async () => ({
       headers: { Authorization: "Bearer offline-vertex-test-token" },
     });
+    _setCatalogEntriesForTest(catalogEntries);
+    _setChatCapabilityCachePathForTest(catalogPath);
   });
 
   afterEach(() => {
+    _setChatCapabilityCachePathForTest(undefined);
+    _resetCatalogClient();
     globalThis.fetch = originalFetch;
     credentials.getRequestAuth = originalGetRequestAuth;
     if (originalProject === undefined) delete process.env.VERTEX_PROJECT;

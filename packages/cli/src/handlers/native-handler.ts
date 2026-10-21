@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
+import { requestHooksOf } from "../hooks/request-stage.js";
 import { log, maskCredential } from "../logger.js";
 import { redactForClient } from "../redact.js";
 import { ANTHROPIC_API_ORIGIN } from "./advisor-claude-route.js";
@@ -83,7 +84,14 @@ export class NativeHandler implements ModelHandler {
     this.advisorCollector = advisorCollector;
   }
 
-  async handle(c: Context, payload: any): Promise<Response> {
+  async handle(c: Context, incoming: any): Promise<Response> {
+    // Hook request stages A and B, first, and only when `withHooks` put the
+    // request hooks on the context. A native request is never in a fallback
+    // chain, but its payload object is shared with `withAdvisor`, so the stages
+    // run on a copy-on-write VIEW: `system`, `messages` and `tools` are replaced
+    // on the view, never mutated in place. With no conversion there is one tool
+    // representation, so stage B applies to it alone.
+    const payload = await this.applyRequestHooks(c, incoming);
     const originalHeaders = c.req.header();
     const target = payload.model;
 
@@ -321,6 +329,28 @@ export class NativeHandler implements ModelHandler {
       log(`[Native] Fetch Error: ${message}`);
       return c.json(wrapAnthropicError(500, message), 500);
     }
+  }
+
+  // biome-ignore lint/suspicious/noExplicitAny: the Messages API payload is untyped at this layer
+  private async applyRequestHooks(c: Context, payload: any): Promise<any> {
+    const hooks = requestHooksOf(c);
+    if (!hooks || !payload || typeof payload !== "object") return payload;
+    const view = { ...payload };
+    const model = typeof payload.model === "string" ? payload.model : "";
+    const scope = await hooks.beginAttempt(c, {
+      claudeRequest: view,
+      route: { modelId: model, provider: "anthropic", native: true },
+      model,
+      stream: payload.stream === true,
+    });
+    if (scope.hasToolDescriptionWork) {
+      // Stage B replaces ELEMENTS of the array it is given; this one may still
+      // be the shared payload's own. With no tools at all the actions are
+      // journaled `unknown_tool` and the payload keeps having no `tools`.
+      if (Array.isArray(view.tools)) view.tools = [...view.tools];
+      scope.applyToolDescriptions(Array.isArray(view.tools) ? view.tools : [], null);
+    }
+    return view;
   }
 
   async shutdown(): Promise<void> {

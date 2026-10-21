@@ -163,7 +163,7 @@ It replaced a module-global `Set<string>` of ids.
 **Keyed by session**, because `serve` and the MCP path run several conversations through one
 proxy. With one shared 256-entry set, one conversation could evict another's pending id, and
 generated `tool_<ts>_<idx>` ids can collide across conversations. The key comes from
-`extractSessionId` in `behavior/harness.ts`, which takes the whole request and reads the
+`extractSessionId` in `hooks/harness.ts`, which takes the whole request and reads the
 `session_id` inside `metadata.user_id`. A different function with the same name exists in
 `session-events/index.ts` and takes the metadata object; the import names the path.
 
@@ -398,8 +398,9 @@ serving both main and panel traffic would mix them; the advisor set also has its
 - writes no token file (`composed-handler.ts:470` → `TokenTracker.writeFile` returns at once,
   `shared/token-tracker.ts:504`), so the main status line is never repainted with the panel model.
   A port cannot isolate it: `CLAUDISH_TOKEN_FILE` outranks the port;
-- skips the plan-usage scrape (`composed-handler.ts:3440`) and Layer 4 (`:1360`): a panel call is
-  not a harness turn;
+- skips the plan-usage scrape (`capturePlanUsage`) and every hook (`requestHooksOf` is not read
+  for an advisor handler, and the panel gateway's never-served context carries no hooks anyway): a
+  panel call is not a harness turn;
 - tags every stats event `request_role: "advisor"` (`:593`).
 
 `requestRole` must stay in `sharedOpts`' `Pick` (`providers/provider-profiles.ts`); a
@@ -420,7 +421,7 @@ The synthetic request carries no auth header (and `ComposedHandler` forwards no 
 `authorization`), so Claude Code's bearer cannot reach a panel hop. Its payload is exactly
 `{model, system, messages, max_tokens: 2048, stream: false}` (`buildAdvisorPanelPayload`,
 `handlers/advisor-route-plan.ts:679`): no tools and no session id, so code mode stays off and
-Layer 4 has nothing to drain. The body is read inside the deadline (60 s panel, 30 s collector)
+no hook has pending notes to apply. The body is read inside the deadline (60 s panel, 30 s collector)
 and redacted by value against every credential the chain signed with, before the call's lease is
 released when its work settles (`:170`). A timeout aborts every piece of upstream work the chain
 started (`adapters.md`, "An internal call's deadline reaches every piece of upstream work").

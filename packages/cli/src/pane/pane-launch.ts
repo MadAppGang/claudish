@@ -177,6 +177,12 @@ export interface PaneEnvInput {
   cwd: string;
   /** the control directory holding `sh-shim` */
   ctlDir: string;
+  /**
+   * This process's active `--config` / `CLAUDISH_CONFIG` file (`getConfigFileOverride()`),
+   * or null. Set as the child's `CLAUDISH_CONFIG`, so the child reads the config its
+   * parent reads, whatever `parentEnv` carries.
+   */
+  configFile: string | null;
   platform?: NodeJS.Platform;
   /** the pane's size at launch (already clamped); DEFAULT_PANE_COLS × DEFAULT_PANE_ROWS when absent */
   cols?: number;
@@ -185,8 +191,11 @@ export interface PaneEnvInput {
 
 /**
  * magmux's environment: the parent's minus the stripped, terminal-identity and host-
- * identity keys, plus the geometry, the slot env, the pane markers, the snapshot, and
- * finally `SHELL=<ctlDir>/sh-shim` (after the snapshot, which keeps the real `SHELL`).
+ * identity keys, plus the geometry, the slot env, the parent's config file, the pane
+ * markers, the snapshot, and finally `SHELL=<ctlDir>/sh-shim` (after the snapshot,
+ * which keeps the real `SHELL`). The markers and the config travel only here, in the
+ * spawn environment: the child honours them because no env file can set them
+ * (launch-env.ts).
  */
 export function buildPaneEnv(input: PaneEnvInput): { magmuxEnv: Record<string, string> } {
   const env: Record<string, string> = {};
@@ -208,6 +217,7 @@ export function buildPaneEnv(input: PaneEnvInput): { magmuxEnv: Record<string, s
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   if (input.parentEnv.CLAUDE_CODE_NATIVE_CURSOR === undefined) env.CLAUDE_CODE_NATIVE_CURSOR = "1";
   Object.assign(env, input.slotEnv);
+  if (input.configFile !== null) env.CLAUDISH_CONFIG = input.configFile;
   env[ENV.CLAUDISH_PANE_CHILD] = "1";
   env[ENV.CLAUDISH_PANE_CWD] = input.cwd;
   delete env[ENV.CLAUDISH_PANE_ENV];
@@ -330,7 +340,8 @@ export const SUBCOMMAND_WORDS = [
   "serve",
   "providers",
   "keychain",
-  "behavior",
+  "subscription",
+  "hooks",
   "team",
   "login",
   "logout",
@@ -585,7 +596,7 @@ export class ClaudishNotFoundError extends Error {
   readonly code = "pane_lost";
 }
 
-/** Which claudish the launcher `exec`s: `CLAUDISH_BIN` (`*.ts` → `<bun> run <file>`), else PATH. */
+/** Which claudish the launcher `exec`s: `CLAUDISH_BIN` (`*.ts` → `<bun> --no-env-file run <file>`), else PATH. */
 export function resolveClaudishLaunch(
   parentEnv: Record<string, string | undefined>
 ): ClaudishLaunch {

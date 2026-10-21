@@ -1,12 +1,16 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -15,8 +19,19 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
+import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
+import { getHookEngine } from "./hooks/index.js";
+import { InProcessSink, setProcessSink } from "./hooks/injection/sinks.js";
+import { sessionHooksNeedBinding } from "./hooks/session/binding.js";
+import { InteractiveDriver } from "./hooks/session/interactive-driver.js";
+import {
+  driverLeadingArgs,
+  planInteractiveSurfaces,
+  sessionFlagsOf,
+} from "./hooks/session/interactive-launch.js";
+import { type NoSurfaceSession, startNoSurfaceSession } from "./hooks/session/no-surface.js";
 import {
   STRIPPED_CHILD_VARS,
   magmuxPaneCapability,
@@ -26,13 +41,19 @@ import {
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
 import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
+import { flagsRemoveRead } from "./pane/pane-launch.js";
 import { loadConfig } from "./profile-config.js";
 import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
-import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
+import {
+  installRecoveryUi,
+  recoveryOverlayHeld,
+  shutdownRecoveryUi,
+} from "./recovery/magmux-ui.js";
 import { applyRetryWatchdog, recoverySurfaceAllowed } from "./recovery/settings.js";
+import { projectsDir } from "./session/session-discovery.js";
 import { assignedTokenFile, resolveTokenFilePath } from "./session/token-file.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
@@ -183,6 +204,22 @@ export const CLAUDISH_PLACEHOLDER_API_KEY =
 export const CLAUDISH_PLACEHOLDER_AUTH_TOKEN = "placeholder-token-not-used-proxy-handles-auth";
 
 /**
+ * Pure proxy mode's placeholder credentials. The token alone suppresses Claude Code's
+ * login (verified on Claude Code 2.1.304). An env ANTHROPIC_API_KEY raises "Detected a
+ * custom API key" on a config that has not answered it, and a headless pane cannot
+ * answer, so the pane child sets no key at all and deletes an inherited one. Other
+ * launches keep the pair unchanged.
+ */
+export function applyProxyPlaceholderAuth(
+  env: Record<string, string | undefined>,
+  paneChild: boolean = isPaneChild()
+): void {
+  env.ANTHROPIC_AUTH_TOKEN = CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
+  if (paneChild) delete env.ANTHROPIC_API_KEY;
+  else env.ANTHROPIC_API_KEY = CLAUDISH_PLACEHOLDER_API_KEY;
+}
+
+/**
  * Remove claudish's OWN placeholder credentials that were inherited from a parent
  * proxied session.
  *
@@ -313,57 +350,10 @@ export function isProxyAuthMode(config: ClaudishConfig): boolean {
   return !config.monitor && !isAdvisorNativeSession(config) && !shouldPreserveNativeAuth(config);
 }
 
-/**
- * A credential source, other than Claude Code's own claude.ai login, that this
- * launch lets the child authenticate with. Names only; no value is ever kept.
- *
- * - `proxy-auth`: the child gets claudish's placeholder pair, so no login
- *   reaches the proxy at all.
- * - `user-auth-token`: the user's own ANTHROPIC_AUTH_TOKEN stays in the child
- *   env (the native-mapping branch keeps it); Claude Code sends it as a bearer.
- * - `user-api-key`: a real ANTHROPIC_API_KEY stays in the child env (sent as
- *   `x-api-key`).
- * - `settings-auth-token` / `settings-api-key`: a Claude Code settings file
- *   sets that variable in its `env` block, which claudish's env builder never
- *   sees and cannot remove.
- * - `api-key-helper`: a settings file names an `apiKeyHelper`; Claude Code
- *   sends its output as a bearer AND as `x-api-key`.
- * - `custom-headers`: ANTHROPIC_CUSTOM_HEADERS (the environment or a settings
- *   `env` block) carries an `Authorization` or `x-api-key` header.
- * - `settings-unreadable`: a `--settings` value the child receives verbatim
- *   could not be read or parsed by claudish, so what it sets is unknown.
- *   Unknown provenance is never treated as controlled.
- */
-export type ChildAuthSource =
-  | "proxy-auth"
-  | "user-auth-token"
-  | "user-api-key"
-  | "settings-auth-token"
-  | "settings-api-key"
-  | "api-key-helper"
-  | "custom-headers"
-  | "settings-unreadable";
-
-/**
- * Whether claudish controls the child's Anthropic auth, so that a bearer
- * arriving at the proxy can only be Claude Code's own claude.ai login.
- * `where` names the source (`environment`, or the settings file's path),
- * never a value.
- */
-export type ChildAuthControl =
-  | { controlled: true }
-  | {
-      controlled: false;
-      reason: ChildAuthSource;
-      where: string;
-      /**
-       * `custom-headers` only: whether the headers set `x-api-key`, so Claude
-       * Code itself sends a real key the advisor can sign with. False when they
-       * set only `Authorization`, whose bearer the advisor never uses on an
-       * uncontrolled launch.
-       */
-      sendsApiKey?: boolean;
-    };
+// The decision's types live in a module with no imports, so the advisor
+// handlers that take a decision do not pull this launcher (and through it the
+// pane launcher and cli.ts) into every program that imports a handler.
+export type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 
 /** Injectable reads for {@link childAuthControl}; defaults read the real files. */
 export interface ChildAuthControlDeps {
@@ -1256,11 +1246,13 @@ export function createTempSettingsFile(
  * writes no transcript. Only the magmux-wrap path stripped it before. Print mode is
  * left as it was.
  *
- * Every launch loses `CLAUDISH_PANE_ENV` and `CLAUDISH_PANE_CWD` (`PANE_LAUNCH_VARS`).
- * They describe THIS claudish (an MCP pane child), not Claude Code; inherited, a
- * claudish started from the slot's Bash tool would take itself for the pane child
- * (re-apply a stale environment snapshot, chdir). They stay in this process's own
- * `process.env`, which `isPaneChild()` and `magmuxPaneCapability()` read.
+ * Every launch loses `CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD`, `CLAUDISH_HOOK_INBOX`
+ * and `CLAUDISH_HOOK_SESSION` (`PANE_LAUNCH_VARS`). They describe THIS claudish (an
+ * MCP pane child), not Claude Code; inherited, a claudish started from the slot's Bash
+ * tool would take itself for the pane child (re-apply a stale environment snapshot,
+ * chdir), and the model's Bash tool would see the hook inbox path. They stay in this
+ * process's own `process.env`, which `isPaneChild()`, `magmuxPaneCapability()` and the
+ * child's proxy read.
  *
  * `CLAUDISH_PANE_CHILD` is KEPT. It says "this session was started by a claudish
  * owner", which is true of everything the session starts: a claudish run from its
@@ -1445,6 +1437,21 @@ export function mergeUserSettingsIfPresent(
 export const MIN_AUTO_COMPACT_WINDOW = 200_000;
 
 /**
+ * Claude Code's ceiling for `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. A larger value is
+ * clamped to it, but Claude Code also prints a warning on EVERY launch:
+ *
+ *   CLAUDE_CODE_AUTO_COMPACT_WINDOW="1050000" is too large, so Claude Code
+ *   treats it as the 1M maximum. ...
+ *
+ * Measured 2026-10-20, Claude Code 2.1.304: `cx@gpt-6.1-sol` (catalog window
+ * 1,050,000) and `muse@muse-spark-1.3` (1,007,997). Sending the ceiling changes
+ * no compaction point, since Claude Code uses it anyway, and drops the warning.
+ * `CLAUDE_CODE_MAX_CONTEXT_TOKENS` printed no warning at the same values, so it
+ * keeps the real window.
+ */
+export const MAX_AUTO_COMPACT_WINDOW = 1_000_000;
+
+/**
  * How long `computeMainThreadContextWindow` will wait on the cloud catalog before
  * giving up and launching with today's behaviour (window unknown → env unset).
  *
@@ -1570,7 +1577,9 @@ export function resolveContextWindowEnv(
   if (processEnv[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]) return { vars };
 
   if (realWindow >= MIN_AUTO_COMPACT_WINDOW) {
-    vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(realWindow);
+    vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(
+      Math.min(realWindow, MAX_AUTO_COMPACT_WINDOW)
+    );
     return {
       vars,
       notice:
@@ -2162,11 +2171,11 @@ export async function runClaudeWithProxy(
       // is dead weight. Forwarding one is actively harmful: Claude Code then
       // reports "API Usage Billing", and pairing it with the placeholder token
       // trips "Both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set · auth may
-      // not work as expected". So overwrite unconditionally with placeholders —
+      // not work as expected". So overwrite any real key with placeholders —
       // their only job is suppressing the login dialog (#13: a placeholder API
-      // key alone still redirected to the payment page, hence the token too).
-      env.ANTHROPIC_API_KEY = CLAUDISH_PLACEHOLDER_API_KEY;
-      env.ANTHROPIC_AUTH_TOKEN = CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
+      // key alone still redirected to the payment page, hence the token). A pane
+      // child gets the token only; see applyProxyPlaceholderAuth.
+      applyProxyPlaceholderAuth(env);
 
       // Drive Claude Code's NATIVE auto-compaction to fire before a backend whose
       // real context window is smaller than the model's advertised spec rejects
@@ -2185,7 +2194,7 @@ export async function runClaudeWithProxy(
       // above go on the CHILD's env, while the proxy runs here in the parent and
       // only knows the model's spec window. No-op unless telemetry is opted in.
       try {
-        const { setSessionContextWindow } = await import("./behavior/telemetry/aggregate.js");
+        const { setSessionContextWindow } = await import("./hooks/telemetry/aggregate.js");
         setSessionContextWindow(realWindow);
       } catch {
         // Telemetry must never affect launching Claude Code.
@@ -2343,8 +2352,40 @@ export async function runClaudeWithProxy(
   // `paneCapability` was resolved before the environment was finalised, and is
   // re-used rather than re-derived: the watchdog above is exported on exactly
   // the launches that reach `planMagmuxWrap` or the ambient branch below.
+  //
+  // SESSION HOOKS are the wrap's SECOND reason (hook-system §7.5). A loaded hook that
+  // declares `responseEnd` or a session event needs the `InteractiveDriver`, which
+  // needs a pane, so `--no-recovery` no longer removes the surface such a hook needs.
+  // That reason plans the wrap and starts the driver and NOTHING else: the recovery UI
+  // and the retry watchdog (exported above by `applyRetryWatchdog`, which asks
+  // `recoverySurfaceAllowed()` itself) stay gated on the recovery switches alone. The
+  // hook engine is the proxy's, already loaded by `createProxyServer`; null when the
+  // proxy runs no hooks (monitor mode).
+  const hookEngine = getHookEngine();
+  const surfaces = planInteractiveSurfaces({
+    capability: paneCapability,
+    recoveryAllowed: recoverySurfaceAllowed(),
+    sessionHooksNeedDriver: hookEngine !== null && sessionHooksNeedBinding(hookEngine),
+  });
+  const sessionFlags = sessionFlagsOf(config.claudeArgs);
+  let driverLaunch: { sink: InProcessSink; turnDir: string; sessionId: string | null } | null =
+    null;
+  if (surfaces.driver) {
+    // The transcript path must be known from boot, so claudish mints the session id
+    // unless the user named one or asked Claude Code to resume. Long injections go to a
+    // turn file the model Reads from the `--add-dir` directory (no prompt there: S2b).
+    const minted = sessionFlags.sessionId || sessionFlags.resumes ? null : randomUUID();
+    const turnDir = mkdtempSync(join(tmpdir(), "claudish-turns-"));
+    chmodSync(turnDir, 0o700);
+    claudeArgs.unshift(...driverLeadingArgs({ mintedSessionId: minted, turnDir }));
+    const sink = new InProcessSink();
+    // Installed before Claude Code starts, so its first request already reports here.
+    setProcessSink(sink);
+    driverLaunch = { sink, turnDir, sessionId: minted ?? sessionFlags.sessionId };
+  }
+
   const wrap =
-    recoverySurfaceAllowed() && paneCapability.kind === "wrap"
+    surfaces.wrap && paneCapability.kind === "wrap"
       ? planMagmuxWrap({
           claudeBinary,
           claudeArgs,
@@ -2366,6 +2407,8 @@ export async function runClaudeWithProxy(
 
   if (wrap) {
     wrap.watch(proc);
+  }
+  if (wrap && surfaces.recoveryUi === "wrap") {
     // Hand the control socket to the proxy as an EXPLICIT input. It cannot be
     // discovered: claudish is magmux's parent and `MAGMUX_SOCK` is exported
     // downward only, so the `--id` path — fixed before magmux starts — is the
@@ -2378,7 +2421,7 @@ export async function runClaudeWithProxy(
       // after the user had already quit.
       void shutdownRecoveryUi();
     });
-  } else if (recoverySurfaceAllowed() && paneCapability.kind === "ambient") {
+  } else if (surfaces.recoveryUi === "ambient") {
     // Already inside someone else's magmux — `team --grid --mode interactive`,
     // or a user who launched claudish in a pane by hand. There is nothing to
     // wrap, but there IS a multiplexer to ask for a pane, so the recovery UI
@@ -2393,6 +2436,56 @@ export async function runClaudeWithProxy(
     // `config.interactive && process.env.MAGMUX_SOCK` — two statements of one
     // rule, which `network-recovery.md` forbids because they drift.
     installRecoveryUi(null);
+  }
+
+  // The session-hook host of this launch: the driver on a pane, or the lifecycle-only
+  // session when there is no pane (`sessionStart` now, `sessionEnd` at exit).
+  let driver: InteractiveDriver | null = null;
+  let noSurfaceSession: NoSurfaceSession | null = null;
+  const sessionModel = modelDisplayName;
+  if (driverLaunch && hookEngine && surfaces.driver) {
+    const sockPath =
+      surfaces.driver === "wrap" && wrap
+        ? wrap.controlSocket
+        : paneCapability.kind === "ambient"
+          ? paneCapability.sock
+          : null;
+    if (sockPath) {
+      const d = new InteractiveDriver({
+        mode: surfaces.driver,
+        sockPath,
+        // A wrap has exactly one `-e` pane, so Claude Code is pane 0; an ambient
+        // pane is found by ancestry.
+        ...(surfaces.driver === "wrap" ? { pane: 0 } : {}),
+        cwd: process.cwd(),
+        sessionId: driverLaunch.sessionId,
+        projectsRoot: projectsDir(env),
+        turnDir: driverLaunch.turnDir,
+        readAvailable: !flagsRemoveRead(config.claudeArgs),
+        model: sessionModel,
+        sink: driverLaunch.sink,
+        engine: hookEngine,
+        overlayHeld: recoveryOverlayHeld,
+      });
+      driver = d;
+      void d.start();
+      wrap?.onClaudeExit((code) => {
+        void d.stop(sessionOutcomeOf(code));
+      });
+    } else {
+      // No socket to drive after all: nothing would ever drain the sink.
+      driverLaunch.sink.markUnavailable();
+    }
+  } else if (surfaces.noSurfaceSession && hookEngine) {
+    noSurfaceSession = startNoSurfaceSession(hookEngine, {
+      kind: "interactive",
+      role: null,
+      id: sessionFlags.sessionId ?? "",
+      claudeSessionId: sessionFlags.sessionId,
+      model: sessionModel,
+      cwd: process.cwd(),
+      shape: config.interactive ? "interactive" : "one-shot",
+    });
   }
 
   if (filterChildStderr && proc.stderr) {
@@ -2465,6 +2558,19 @@ export async function runClaudeWithProxy(
   });
   wrap?.cleanup();
 
+  // `sessionEnd`, awaited at most 1.5 s before the caller shuts the proxy down (§4.4).
+  // The driver's stop is idempotent: in a wrap it began at the pane's exit announcement.
+  if (driver) await driver.stop(sessionOutcomeOf(exitCode));
+  if (noSurfaceSession) await noSurfaceSession.end(sessionOutcomeOf(exitCode));
+  if (driverLaunch) {
+    setProcessSink(null);
+    try {
+      rmSync(driverLaunch.turnDir, { recursive: true, force: true });
+    } catch {
+      // a leftover 0700 temp dir of turn files is harmless
+    }
+  }
+
   // The only durable record of WHY the run ended. The always-on session log
   // carries proxy traffic, so a session that died before its first request left
   // nothing but "[Proxy] Server started" behind, and the caller's error notice
@@ -2491,6 +2597,17 @@ export async function runClaudeWithProxy(
   }
 
   return exitCode;
+}
+
+/** `sessionEnd`'s outcome for the interactive launcher: Claude Code's exit. */
+function sessionOutcomeOf(exitCode: number | null): {
+  state: string;
+  reason: string | null;
+  exitCode: number | null;
+} {
+  return exitCode === 0
+    ? { state: "COMPLETED", reason: null, exitCode }
+    : { state: "FAILED", reason: "child_exited", exitCode };
 }
 
 /**

@@ -1,0 +1,532 @@
+{
+  "kind": "gemini-middleware",
+  "id": "gemini-thought-signature.openai-sse",
+  "modelId": "google/gemini-3.1-pro-preview",
+  "toolSchemas": [
+    {
+      "name": "Read",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string"
+          }
+        },
+        "required": ["file_path"]
+      }
+    }
+  ],
+  "applicability": [
+    {
+      "modelId": "google/gemini-3.1-pro-preview",
+      "shouldHandle": true,
+      "activeNames": ["GeminiThoughtSignature"]
+    },
+    {
+      "modelId": "gemini-2.5-flash",
+      "shouldHandle": true,
+      "activeNames": ["GeminiThoughtSignature"]
+    },
+    {
+      "modelId": "google/gemma-3-27b-it",
+      "shouldHandle": true,
+      "activeNames": ["GeminiThoughtSignature"]
+    },
+    {
+      "modelId": "gpt-5.6-sol",
+      "shouldHandle": false,
+      "activeNames": []
+    },
+    {
+      "modelId": "claude-opus-5",
+      "shouldHandle": false,
+      "activeNames": []
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "tool-call-with-reasoning",
+      "description": "reasoning_details accumulated across two chunks are cached against the turn's tool_call id and injected into the matching assistant message of the next request; an assistant tool call with no cached id is left alone",
+      "streams": [
+        {
+          "input": {
+            "encoding": "utf8",
+            "chunks": [
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Reading it.\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"\",\"signature\":\"SIG-A-0\",\"format\":\"google-gemini-v1\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"\",\"signature\":\"SIG-A-1\",\"format\":\"google-gemini-v1\",\"index\":1}],\"tool_calls\":[{\"index\":0,\"id\":\"call_gem_a\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"\"}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"file_path\\\":\\\"/tmp/a\\\"}\"}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":12,\"total_tokens\":52}}\n\n",
+              "data: [DONE]\n\n"
+            ]
+          },
+          "output": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_<ID>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"google/gemini-3.1-pro-preview\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":100,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Reading it.\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_gem_a\",\"name\":\"Read\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"file_path\\\":\\\"/tmp/a\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":40,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0,\"output_tokens\":12}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\ndata: [DONE]\n\n\n",
+          "outputUnchangedByMiddleware": true
+        }
+      ],
+      "nextRequest": {
+        "before": [
+          {
+            "role": "system",
+            "content": "You are a coding agent."
+          },
+          {
+            "role": "user",
+            "content": "Read the file."
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_gem_a",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_gem_a\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_gem_a",
+            "content": "contents of call_gem_a"
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_unknown",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_unknown\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_unknown",
+            "content": "contents of call_unknown"
+          },
+          {
+            "role": "user",
+            "content": "Thanks."
+          }
+        ],
+        "after": [
+          {
+            "role": "system",
+            "content": "You are a coding agent."
+          },
+          {
+            "role": "user",
+            "content": "Read the file."
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_gem_a",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_gem_a\"}"
+                }
+              }
+            ],
+            "reasoning_details": [
+              {
+                "type": "reasoning.text",
+                "text": "",
+                "signature": "SIG-A-0",
+                "format": "google-gemini-v1",
+                "index": 0
+              },
+              {
+                "type": "reasoning.text",
+                "text": "",
+                "signature": "SIG-A-1",
+                "format": "google-gemini-v1",
+                "index": 1
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_gem_a",
+            "content": "contents of call_gem_a"
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_unknown",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_unknown\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_unknown",
+            "content": "contents of call_unknown"
+          },
+          {
+            "role": "user",
+            "content": "Thanks."
+          }
+        ]
+      }
+    },
+    {
+      "id": "two-turns",
+      "description": "two streams cache two entries; each assistant message receives the reasoning_details of its own turn only",
+      "streams": [
+        {
+          "input": {
+            "encoding": "utf8",
+            "chunks": [
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Reading it.\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"\",\"signature\":\"SIG-A-0\",\"format\":\"google-gemini-v1\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"\",\"signature\":\"SIG-A-1\",\"format\":\"google-gemini-v1\",\"index\":1}],\"tool_calls\":[{\"index\":0,\"id\":\"call_gem_a\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"\"}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"file_path\\\":\\\"/tmp/a\\\"}\"}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":12,\"total_tokens\":52}}\n\n",
+              "data: [DONE]\n\n"
+            ]
+          },
+          "output": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_<ID>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"google/gemini-3.1-pro-preview\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":100,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Reading it.\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_gem_a\",\"name\":\"Read\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"file_path\\\":\\\"/tmp/a\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":40,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0,\"output_tokens\":12}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\ndata: [DONE]\n\n\n",
+          "outputUnchangedByMiddleware": true
+        },
+        {
+          "input": {
+            "encoding": "utf8",
+            "chunks": [
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Reading it.\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"\",\"signature\":\"SIG-B-0\",\"format\":\"google-gemini-v1\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"\",\"signature\":\"SIG-B-1\",\"format\":\"google-gemini-v1\",\"index\":1}],\"tool_calls\":[{\"index\":0,\"id\":\"call_gem_b\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"\"}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"file_path\\\":\\\"/tmp/b\\\"}\"}}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-golden\",\"object\":\"chat.completion.chunk\",\"model\":\"google/gemini-3.1-pro-preview\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":12,\"total_tokens\":52}}\n\n",
+              "data: [DONE]\n\n"
+            ]
+          },
+          "output": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_<ID>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"google/gemini-3.1-pro-preview\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":100,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Reading it.\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_gem_b\",\"name\":\"Read\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"file_path\\\":\\\"/tmp/b\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":40,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0,\"output_tokens\":12}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\ndata: [DONE]\n\n\n",
+          "outputUnchangedByMiddleware": true
+        }
+      ],
+      "nextRequest": {
+        "before": [
+          {
+            "role": "system",
+            "content": "You are a coding agent."
+          },
+          {
+            "role": "user",
+            "content": "Read the file."
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_gem_a",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_gem_a\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_gem_a",
+            "content": "contents of call_gem_a"
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_gem_b",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_gem_b\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_gem_b",
+            "content": "contents of call_gem_b"
+          },
+          {
+            "role": "user",
+            "content": "Thanks."
+          }
+        ],
+        "after": [
+          {
+            "role": "system",
+            "content": "You are a coding agent."
+          },
+          {
+            "role": "user",
+            "content": "Read the file."
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_gem_a",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_gem_a\"}"
+                }
+              }
+            ],
+            "reasoning_details": [
+              {
+                "type": "reasoning.text",
+                "text": "",
+                "signature": "SIG-A-0",
+                "format": "google-gemini-v1",
+                "index": 0
+              },
+              {
+                "type": "reasoning.text",
+                "text": "",
+                "signature": "SIG-A-1",
+                "format": "google-gemini-v1",
+                "index": 1
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_gem_a",
+            "content": "contents of call_gem_a"
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_gem_b",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_gem_b\"}"
+                }
+              }
+            ],
+            "reasoning_details": [
+              {
+                "type": "reasoning.text",
+                "text": "",
+                "signature": "SIG-B-0",
+                "format": "google-gemini-v1",
+                "index": 0
+              },
+              {
+                "type": "reasoning.text",
+                "text": "",
+                "signature": "SIG-B-1",
+                "format": "google-gemini-v1",
+                "index": 1
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_gem_b",
+            "content": "contents of call_gem_b"
+          },
+          {
+            "role": "user",
+            "content": "Thanks."
+          }
+        ]
+      }
+    },
+    {
+      "id": "reasoning-without-tool-call",
+      "description": "a recorded OpenRouter Gemini stream with reasoning_details and no tool call caches nothing; the next request is unchanged",
+      "streams": [
+        {
+          "input": {
+            "encoding": "utf8",
+            "chunks": [
+              ": OPENROUTER PROCESSING\n\n",
+              ": OPENROUTER PROCESSING\n\n",
+              ": OPENROUTER PROCESSING\n\n",
+              ": OPENROUTER PROCESSING\n\n",
+              ": OPENROUTER PROCESSING\n\n",
+              ": OPENROUTER PROCESSING\n\n",
+              "data: {\"id\":\"gen-1786019222-rxepGMSzUjKHovdSBvao\",\"object\":\"chat.completion.chunk\",\"created\":1786019222,\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi marker x\",\"role\":\"assistant\"},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-1786019222-rxepGMSzUjKHovdSBvao\",\"object\":\"chat.completion.chunk\",\"created\":1786019222,\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"signature\":\"AY89a1/7m6PhGCXRUL92eU92u6fzL+acUwWK5MMWEOheIkr+a3zfbjDXzbacH86H5Lxx1HDY80t9UTpPV+jxs+k1rlFoFvVUYNSsFZ1DyfncDFu6xSwMS+vTg1VpJdrVuCWYGqfu8vNVWoDeImDMsdPMH69ko3v1AwEXJqZkcaSgR1H1GucgSH2NyhLWNTtS9HOjUytLl83GVRSqmjpfS4kPYIdEZ+jkA5pWOKZVPkM+8p5/VQVuBIEOnCOpRh0ICjjB8spGh8RpEAluvDCXNJKS3oucIOPb+U6j3iPEMW6NY7P7/S64TfBTj5kN5qPM6vcLsMBO42QPSlyxX7r0F/RO89k9df8C9UcrZko0beMyGNUqnVdvB9xufikwUxAiutmRaRfXvh6S5TOosXF67PPToZUm\",\"format\":\"google-gemini-v1\",\"index\":0}]},\"finish_reason\":null,\"native_finish_reason\":null}]}\n\n",
+              "data: {\"id\":\"gen-1786019222-rxepGMSzUjKHovdSBvao\",\"object\":\"chat.completion.chunk\",\"created\":1786019222,\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"reasoning\":null},\"finish_reason\":\"length\",\"native_finish_reason\":\"MAX_TOKENS\"}]}\n\n",
+              "data: {\"id\":\"gen-1786019222-rxepGMSzUjKHovdSBvao\",\"object\":\"chat.completion.chunk\",\"created\":1786019222,\"model\":\"google/gemini-3.1-pro-preview\",\"provider\":\"Google\",\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"length\",\"native_finish_reason\":\"MAX_TOKENS\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":60,\"total_tokens\":68,\"cost\":0.000736,\"is_byok\":false,\"prompt_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0,\"audio_tokens\":0,\"video_tokens\":0},\"cost_details\":{\"upstream_inference_cost\":0.000736,\"upstream_inference_prompt_cost\":0.000016,\"upstream_inference_completions_cost\":0.00072},\"completion_tokens_details\":{\"reasoning_tokens\":57,\"image_tokens\":0,\"audio_tokens\":0}}}\n\n",
+              "data: [DONE]\n\n"
+            ]
+          },
+          "output": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_<ID>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"google/gemini-3.1-pro-preview\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":100,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi marker x\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":8,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0,\"output_tokens\":60}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\ndata: [DONE]\n\n\n",
+          "outputUnchangedByMiddleware": true
+        }
+      ],
+      "nextRequest": {
+        "before": [
+          {
+            "role": "system",
+            "content": "You are a coding agent."
+          },
+          {
+            "role": "user",
+            "content": "Read the file."
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_gem_a",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_gem_a\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_gem_a",
+            "content": "contents of call_gem_a"
+          },
+          {
+            "role": "user",
+            "content": "Thanks."
+          }
+        ],
+        "after": [
+          {
+            "role": "system",
+            "content": "You are a coding agent."
+          },
+          {
+            "role": "user",
+            "content": "Read the file."
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_gem_a",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_gem_a\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_gem_a",
+            "content": "contents of call_gem_a"
+          },
+          {
+            "role": "user",
+            "content": "Thanks."
+          }
+        ]
+      }
+    },
+    {
+      "id": "no-prior-stream",
+      "description": "with an empty cache, beforeRequest leaves the request unchanged",
+      "streams": [],
+      "nextRequest": {
+        "before": [
+          {
+            "role": "system",
+            "content": "You are a coding agent."
+          },
+          {
+            "role": "user",
+            "content": "Read the file."
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_gem_a",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_gem_a\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_gem_a",
+            "content": "contents of call_gem_a"
+          },
+          {
+            "role": "user",
+            "content": "Thanks."
+          }
+        ],
+        "after": [
+          {
+            "role": "system",
+            "content": "You are a coding agent."
+          },
+          {
+            "role": "user",
+            "content": "Read the file."
+          },
+          {
+            "role": "assistant",
+            "content": "Reading it.",
+            "tool_calls": [
+              {
+                "id": "call_gem_a",
+                "type": "function",
+                "function": {
+                  "name": "Read",
+                  "arguments": "{\"file_path\":\"/tmp/call_gem_a\"}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_gem_a",
+            "content": "contents of call_gem_a"
+          },
+          {
+            "role": "user",
+            "content": "Thanks."
+          }
+        ]
+      }
+    }
+  ]
+}

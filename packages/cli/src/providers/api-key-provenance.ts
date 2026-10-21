@@ -3,7 +3,8 @@
  *
  * Resolution order (first non-empty wins):
  *   1. process.env (shell profile, e.g. ~/.config/env-keys.sh sourced by .zshenv)
- *   2. .env file in CWD (loaded by dotenv at startup, does NOT override existing env vars)
+ *   2. .env file in CWD (loaded at startup through the allowlist in dotenv-allowlist.ts,
+ *      does NOT override existing env vars; read here through the same allowlist)
  *   3. ~/.claudish/config.json apiKeys (loaded at startup, does NOT override existing env vars)
  *
  * Since dotenv and config.json never override, the value in process.env at runtime
@@ -25,7 +26,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { parse as parseDotenv } from "dotenv";
 import { isKeychainHydratedVar } from "../auth/credentials/keychain-source.js";
 import {
   VERTEX_NO_PROJECT_REMEDY,
@@ -36,6 +36,7 @@ import {
   peekVertexProjectOrigin,
 } from "../auth/vertex-auth.js";
 import { activeGlobalConfigFile, getConfigFileOverride } from "../config-override.js";
+import { readAllowedDotenv } from "../dotenv-allowlist.js";
 import { isOpHydratedVar } from "./onepassword.js";
 
 /**
@@ -339,7 +340,7 @@ function readDotenvKey(envVars: string[]): string | null {
   try {
     const dotenvPath = resolve(".env");
     if (!existsSync(dotenvPath)) return null;
-    const parsed = parseDotenv(readFileSync(dotenvPath, "utf-8"));
+    const parsed = readAllowedDotenv(readFileSync(dotenvPath, "utf-8"));
     for (const v of envVars) {
       if (parsed[v]) return parsed[v];
     }

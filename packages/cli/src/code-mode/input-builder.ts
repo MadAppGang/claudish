@@ -582,7 +582,7 @@ class InputBuilder {
 }
 
 /**
- * The Responses `input` for `messages` (Claude Code's own, after Layer 4),
+ * The Responses `input` for `messages` (Claude Code's own, after hook stage A),
  * reading this account's and session's records from `stores`. Pure for a given
  * history and store state.
  */

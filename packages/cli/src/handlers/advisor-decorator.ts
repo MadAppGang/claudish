@@ -45,8 +45,8 @@ import type { Context } from "hono";
 // The HARNESS extractSessionId: takes the whole request and reads
 // `metadata.user_id`'s JSON `session_id`. NOT the same-named function in
 // session-events/index.ts, which takes the metadata object instead.
-import { extractSessionId } from "../behavior/harness.js";
-import type { ChildAuthControl } from "../claude-runner.js";
+import type { ChildAuthControl } from "../child-auth-types.js";
+import { extractSessionId } from "../hooks/harness.js";
 import { log, logStderr } from "../logger.js";
 import type { AdvisorPanelGateway } from "./advisor-route-plan.js";
 import {

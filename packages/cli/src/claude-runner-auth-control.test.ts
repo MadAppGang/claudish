@@ -80,7 +80,12 @@ if (process.env.T4_ISOLATED_FILE !== FILE) {
   });
 
   beforeAll(async () => {
-    globalThis.fetch = (() => {
+    // A `data:` URL is not network: claude-runner's import graph reaches
+    // @opentui/core, whose yoga-layout loads its wasm with fetch(data:…).
+    const local = globalThis.fetch;
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.startsWith("data:")) return local(input, init);
       throw new Error("T4 forbids network");
     }) as unknown as typeof fetch;
     ({ childAuthControl, CLAUDISH_PLACEHOLDER_AUTH_TOKEN: placeholder } = await import(

@@ -23,7 +23,7 @@
  */
 
 import { type Context, Hono } from "hono";
-import type { ChildAuthControl } from "../claude-runner.js";
+import type { ChildAuthControl } from "../child-auth-types.js";
 import { log } from "../logger.js";
 import { redactExactValues, redactForClient } from "../redact.js";
 import {
