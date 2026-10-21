@@ -69,7 +69,7 @@ import {
   splitWireMarkers,
 } from "./providers/wire-markers.js";
 import { closeAllEpisodes } from "./recovery/coordinator.js";
-import { redactForClient } from "./redact.js";
+import { redactExactValues, redactForClient } from "./redact.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import type { ProxyServer } from "./types.js";
 
@@ -797,6 +797,20 @@ export async function createProxyServer(
     try {
       await next();
     } catch (err) {
+      // Hono's compose calls `onError` at the layer that caught a thrown Error,
+      // so a route's throw is answered inside `next()` with this lease live.
+      // An error reaches HERE only when that inner `onError` itself threw;
+      // compose then calls `onError` again for this layer, AFTER the release
+      // below. Redact this request's own values out of the error first, so
+      // that second pass (its log lines and its 500 body) cannot carry them.
+      if (err instanceof Error) {
+        try {
+          err.message = redactExactValues(err.message, secrets.values);
+          if (err.stack) err.stack = redactExactValues(err.stack, secrets.values);
+        } catch {
+          // A read-only message (DOMException): onError's registry pass stays.
+        }
+      }
       release();
       throw err;
     }
