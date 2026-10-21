@@ -4,7 +4,7 @@
 > a request: from the catalog's per-connection `wire` and the route registry, never from a
 > model name. Read before touching `providers/connection-*.ts`, `providers/wire-*.ts`,
 > `providers/declared-wire.ts`, `ComposedHandler` step 5w, an adapter's token or reasoning
-> fields, or the advisor's request building.
+> fields, or the advisor's Claude call.
 
 Spec: Models Index `ai-docs/claudish-wire-requirements.md` (R1–R13) and
 `ai-docs/claudish-catalog-3.7.0.md`. Plan and gap counts: `ai-docs/reports/wire-reader-plan-20261012.md`.
@@ -113,9 +113,15 @@ wire overwrote it. With no wire the adapter now fills from the same catalog fiel
   One model quirk no wire field describes stays, keyed on the catalog VENDOR: a `minimax` model
   on any connection gets the MiniMax dialect for its temperature clamp (its reasoning fields are
   overwritten by step 5w). Dropping it with the name dialects was caught in test review.
-- **The advisor** resolves the same connection, follows `wire.api` (Chat, Responses, Messages or
-  Gemini, non-streamed), takes its URL from the registry and shapes the body with the same step.
-  The provider docs' endpoints remain only as the cold-catalog fallback, logged when used.
+- **The advisor** builds no request of its own for a routed panel member or collector: each runs
+  through the chain startup built for it, so `ComposedHandler` step 5w shapes it from the
+  connection's `wire` like any main request (`advisor.md`, "Panel routing and billing"). The
+  advisor sends only an Anthropic-shaped `{model, system, messages, max_tokens: 2048, stream:
+  false}` into that chain. The one hand-built request is a Claude member's call to the fixed
+  `https://api.anthropic.com/v1/messages`: on an API-key arm it is shaped by the `anthropic`
+  connection's wire when the catalog publishes one; on the Claude Code login arm it is the
+  S0-measured body, with no wire shaping (`claudeAdvisorRequestInit`,
+  `handlers/native-handler-advisor.ts`). There is no cold-catalog endpoint table any more.
 - **Discovery** (`model-discovery.ts`) lists models from the registry base + `/models` for a
   catalog-routed provider (OpenCode moved Zen to `opencode.ai/inference/v1` on 2026-10-12);
   a user base-URL override keeps the definition's path.
