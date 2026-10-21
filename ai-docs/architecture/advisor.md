@@ -617,9 +617,12 @@ call. `index.ts` applies `effectiveCollector` to the config before `createProxyS
 Runtime warnings are only for what the child decides:
 
 - one `[advisor]` warning per call in which a model failed;
-- one warning per launch per Claude member when a call cannot use the bearer the request
-  carried, or the request carried none, and signs with a metered key instead (every request of
-  such a launch gives the same answer; each call's record still carries `loginSkipped`);
+- one warning per launch per Claude member AND reason when a call cannot use the bearer the
+  request carried, or the request carried none, and signs with a metered key instead (every
+  request of such a launch gives the same answer; each call's record still carries
+  `loginSkipped`). Keyed by the warning text, which names only the reason and the key source,
+  never a value, so a later different reason (no bearer, then a skipped one; the request's
+  x-api-key, then ANTHROPIC_API_KEY) is printed too and the set stays bounded;
 - one warning per change when a routed call is served by a hop whose billing differs from the
   notice's (stickiness, above);
 - one warning per unrecorded call (S10);

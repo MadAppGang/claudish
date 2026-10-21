@@ -2111,11 +2111,15 @@ function claudeAdvisorRequestInit(
 }
 
 /**
- * The Claude members (`"<role>:<spec>"`) that have already printed the
- * "cannot use the bearer / no bearer, signing with a metered key" warning.
- * Every request of a launch whose login is skipped (a Console-key login, say)
- * gives the same answer, so the line is printed once per launch per member,
- * not once per advisor call. The per-call record still carries
+ * The (Claude member, warning) pairs, `"<role>:<spec>\n<warning>"`, that have
+ * already printed the "cannot use the bearer / no bearer, signing with a
+ * metered key" warning. Every request of a launch whose login is skipped (a
+ * Console-key login, say) gives the same answer, so the line is printed once
+ * per launch per member and reason, not once per advisor call. Keyed by the
+ * text too, so a later DIFFERENT reason for the same member (no bearer, then a
+ * skipped one; the request's x-api-key, then ANTHROPIC_API_KEY) is printed
+ * rather than hidden. The text names only a reason and a key source, never a
+ * value, so the set stays bounded. The per-call record still carries
  * `loginSkipped` and the arm.
  */
 const claudeAuthWarned = new Set<string>();
@@ -2153,9 +2157,9 @@ export async function runClaudeAdvisorCall(
     ...(auth.facts.loginSkipped ? { loginSkipped: auth.facts.loginSkipped } : {}),
   };
   const warning = auth.arm === "oauth" ? undefined : auth.warning;
-  const member = `${role}:${params.spec}`;
-  if (warning && !claudeAuthWarned.has(member)) {
-    claudeAuthWarned.add(member);
+  const warnedKey = `${role}:${params.spec}\n${warning}`;
+  if (warning && !claudeAuthWarned.has(warnedKey)) {
+    claudeAuthWarned.add(warnedKey);
     (params.warn ?? warnAdvisor)(`${params.spec}: ${warning}`);
   }
   if (auth.arm === null) {
