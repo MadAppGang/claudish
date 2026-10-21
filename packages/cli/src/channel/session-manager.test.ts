@@ -17,15 +17,15 @@
  * recognise.
  */
 
-import { expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { compileFakeExe } from "../test-support/compile-fake";
 import { SessionManager } from "./session-manager.js";
-import type { SessionManagerOptions, ChannelEvent } from "./types.js";
-import { envDescribe } from "../test-support/env-gate";
+import type { ChannelEvent, SessionManagerOptions } from "./types.js";
 
 // ─── Setup: PATH shim ────────────────────────────────────────────────────────
 
@@ -44,12 +44,23 @@ beforeAll(() => {
   // Create a temp directory for the shim
   shimDir = mkdtempSync(join(tmpdir(), "claudish-shim-"));
 
-  // Write a `claudish` wrapper that calls the fake via bun
-  const shimPath = join(shimDir, "claudish");
-  writeFileSync(shimPath, `#!/bin/sh\nexec bun run "${FAKE_CLAUDISH_TS}" "$@"\n`, { mode: 0o755 });
+  if (process.platform === "win32") {
+    // #533: a compiled claudish.exe in the PATH is resolved natively by
+    // spawn — kill/signal semantics reach the process itself instead of a
+    // cmd.exe wrapper whose grandchild can survive the kill. The tmpdir is
+    // the compile cache for the lifetime of this file.
+    compileFakeExe(FAKE_CLAUDISH_TS, shimDir);
+  } else {
+    // Write a `claudish` wrapper that calls the fake via bun
+    const shimPath = join(shimDir, "claudish");
+    writeFileSync(shimPath, `#!/bin/sh\nexec bun run "${FAKE_CLAUDISH_TS}" "$@"\n`, {
+      mode: 0o755,
+    });
+  }
 
   // Prepend shim directory to PATH so our fake is found first
-  process.env.PATH = `${shimDir}:${ORIGINAL_PATH}`;
+  // (path.delimiter — ":" on POSIX, ";" on win32)
+  process.env.PATH = `${shimDir}${delimiter}${ORIGINAL_PATH}`;
 });
 
 afterAll(() => {
@@ -102,15 +113,12 @@ function quickSession(
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-envDescribe(
-  {
-    id: "posix-path-shim",
-    active: process.platform !== "win32",
-    reason: "the #!/bin/sh PATH shim (extension-less `claudish`) cannot be spawned on win32 — spawn resolves .exe/.cmd only, so every SessionManager test hits ENOENT on the fake claudish",
-    activation: "run on a POSIX host, or port the shim to a claudish.cmd wrapper",
-  },
-  "SessionManager"
-)((test) => {
+// De-gated (was envDescribe "posix-path-shim"): on win32 the beforeAll above
+// now compiles a standalone claudish.exe into the shim dir (#533) — spawn
+// resolves it natively and kill/signal semantics reach the process itself,
+// which is what the cancel/timeout tests below exercise. The POSIX arm keeps
+// the #!/bin/sh shim.
+describe("SessionManager", () => {
   let manager: SessionManager;
 
   beforeEach(() => {
@@ -332,6 +340,28 @@ envDescribe(
     expect(info.completedAt).not.toBeNull();
     // Process was killed: status is "failed" (watcher overrides the transient "timeout")
     expect(["failed", "timeout"]).toContain(info.status);
+  }, 10000);
+
+  test("after the kill, the child process is actually dead (#533 pin)", async () => {
+    // The test above asserts manager STATE; this pin asserts the OS fact —
+    // the kill must reach the compiled claudish.exe itself, not a wrapper.
+    // If the PID still answers signal 0 after "killed", the status lied and
+    // the child leaks (the 0-orphan AC of #533).
+    const id = manager.createSession({
+      model: "test-model",
+      timeoutSeconds: 1,
+      claudishFlags: ["--sleep", "60"],
+    });
+    await waitUntil(() => manager.getSession(id).completedAt !== null, 4000, 100);
+    const pid = manager.getSession(id).pid;
+    expect(pid).not.toBeNull();
+    let alive = true;
+    try {
+      process.kill(pid!, 0);
+    } catch {
+      alive = false; // ESRCH: the PID no longer exists
+    }
+    expect(alive).toBe(false);
   }, 10000);
 
   // ── 12. onStateChange callback fires ─────────────────────────────────────

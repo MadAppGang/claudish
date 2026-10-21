@@ -121,14 +121,15 @@ Three diagnostic scripts:
 bun test --cwd . ./packages/cli/src/channel/*.test.ts
 ```
 
-70 tests across 6 files: scrollback-buffer (11), signal-watcher (12), session-manager (21), e2e-channel (15), channel-wire-format (9), trace-gate (2). The wire-format tests run without an API key by using the fake-claudish PATH shim, so they execute on every CI run.
+71 tests across 6 files: scrollback-buffer (11), signal-watcher (12), session-manager (22), e2e-channel (15), channel-wire-format (9), trace-gate (2). The wire-format tests run without an API key by using the fake-claudish PATH shim, so they execute on every CI run.
 
 E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for isolation. SessionManager tests use a fake-claudish PATH shim (`channel/test-helpers/fake-claudish.ts`).
 
 ### win32 measured counts (bun 1.4.2, 2026-10-21)
 
-**70 tests — 45 pass / 0 fail / 25 skip.** Per file: channel-wire-format 9/0/0 (de-gated by the `claudish.cmd` PATH wrapper), trace-gate 2/0/0 (the `CLAUDISH_CHANNEL_TRACE` OFF pin, #567), scrollback-buffer 11/0/0, signal-watcher 12/0/0, session-manager 0/0/21, e2e-channel 11/0/4. Skip classes:
+**71 tests — 67 pass / 0 fail / 4 skip.** Per file: channel-wire-format 9/0/0 (de-gated by the `claudish.cmd` PATH wrapper), trace-gate 2/0/0 (the `CLAUDISH_CHANNEL_TRACE` OFF pin, #567), scrollback-buffer 11/0/0, signal-watcher 12/0/0, session-manager 22/0/0 (de-gated by the compiled-exe shim, #533 — the original 21 plus the after-kill PID pin), e2e-channel 11/0/4. Skip classes:
 
-- **`posix-path-shim` (21 in `channel/`, 26 in the repo with the 5 of `team-timeout-repro.test.ts`)** — all of session-manager: the `#!/bin/sh` extension-less shim cannot be spawned on win32 (`spawn` resolves `.exe`/`.cmd` only). The wire-format file left this class when it gained a `.cmd` wrapper; what it still gates is session-manager's kill/signal semantics through cmd.exe, unproven until a compiled `.exe` shim lands (#533).
 - **`real-cc-e2e` (3)** — budget opt-in (`CLAUDISH_E2E_REAL_CC=1`), not a machine class: a complete machine does not run these by default.
 - **`OPENROUTER_API_KEY` skipIf (1)** — the e2e SDK lifecycle test, key-gated.
+
+The `posix-path-shim` class (21 here, plus 5 in `team-timeout-repro.test.ts`) is **empty since #533**: both files now run against a `bun build --compile` fake (`test-support/compile-fake.ts`), which `spawn` resolves natively — kill and timeout semantics reach the process itself instead of a `cmd.exe` wrapper whose grandchild can survive. Porting `team-timeout-repro` to win32 also exposed a real event-order race in `team-orchestrator` (stream `close` before child `exit` → every successful model reported `FAILED`); it is closed on `main` by #558's two-signal `settle()`, and the de-gated tests pin it.
