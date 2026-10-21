@@ -2,6 +2,29 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [13.3.0] - 2026-10-21
+
+### Bug Fixes
+
+- show a native shortcut only where its route serves it *(listing)* ([`7c32c50`](https://github.com/MadAppGang/claudish/commit/7c32c508717e3d4bc6acefc0ee1f77d39112c56e))
+- pin the muse@ base URL before the registry base check *(muse)* ([`be348bb`](https://github.com/MadAppGang/claudish/commit/be348bb6f1cd97c01959cb9760eae4a3f13a955d))
+- show the pinned api.meta.ai URL for muse@ connections *(probe)* ([`54dd3b3`](https://github.com/MadAppGang/claudish/commit/54dd3b35054c81e23e4c1951a225b3dd35947d8d))
+- read a bare name's context window by its routed wire id *(runner)* ([`ddf7880`](https://github.com/MadAppGang/claudish/commit/ddf7880f56bbee3b412b0a760851e92d617d22b4))
+- route bare muse-wonder-full to the muse@ subscription *(muse)* ([`56df54b`](https://github.com/MadAppGang/claudish/commit/56df54b547f5cb5f386a0286de7ffa59d4541a19))
+
+### Documentation
+
+- record the MTL-189 findings and live verification *(muse)* ([`dfa65e8`](https://github.com/MadAppGang/claudish/commit/dfa65e8121e4d373b62c10f9ebecf7b4cd34bb14))
+- update CHANGELOG.md for v13.2.0([`9c9a90f`](https://github.com/MadAppGang/claudish/commit/9c9a90fb9ab4ebfb7182c5db38b08bfb89c76168))
+
+### New Features
+
+- decide contributor connections by their contentUse field *(routing)* ([`07662ff`](https://github.com/MadAppGang/claudish/commit/07662fffc62ac8481c4b74db356150f3c18446ee))
+
+### Other Changes
+
+- v13.3.0 *(release)* ([`8188437`](https://github.com/MadAppGang/claudish/commit/818843728e7230c54060d1741f7cf41919a0c694))
+
 ## [13.2.0] - 2026-10-21
 
 ### Documentation
