@@ -117,7 +117,7 @@ const INSTRUCTIONS = `Claudish MCP server gives you access to external AI models
 
 ## Which tool
 
-- run_prompt: one quick prompt to one model's API. One request, one answer; no tools, no files, no session.
+- run_prompt: one quick prompt to one model's API. One request, one answer; no tools, no session, and files only as contents appended through its files parameter.
 - create_session: one model doing a task as a full Claude Code session (tools, files, several turns).
 - team: several models on the same task, each a full Claude Code session, with optional blind judging.
 
@@ -306,6 +306,28 @@ export function parseAnthropicSse(raw: string): {
   }
 
   return { text, usage: hasUsage ? { input: inputTokens, output: outputTokens } : undefined };
+}
+
+/**
+ * Append the contents of local files to a prompt as labeled fenced blocks.
+ *
+ * Paths resolve against the process working directory. An unreadable or missing
+ * file does not fail the call: it is reported inline as a short warning line so
+ * the model still sees which file was requested, and the readable files are
+ * appended regardless. Returns the prompt unchanged when no files are given.
+ */
+export function appendFilesToPrompt(prompt: string, files: string[] | undefined): string {
+  if (!Array.isArray(files) || files.length === 0) return prompt;
+  const blocks = files.map((file) => {
+    try {
+      const contents = readFileSync(file, "utf-8");
+      return `--- ${file} ---\n\`\`\`\n${contents}\n\`\`\``;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return `--- ${file} (could not be read: ${msg}) ---`;
+    }
+  });
+  return `${prompt}\n\n${blocks.join("\n\n")}`;
 }
 
 /**
@@ -931,8 +953,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     name: "run_prompt",
     description:
       "One quick prompt, straight to one model's API: a single request and its answer. No " +
-      "Claude Code session, no tools, no files, no conversation state — this is not subagent " +
-      "work. For a task that needs tools, files or more than one turn, use create_session " +
+      "Claude Code session, no tools, no conversation state, and files only as contents " +
+      "appended with `files` — this is not subagent work. For a task that needs tools, files " +
+      "or more than one turn, use create_session " +
       "(one model) or team (several models). Non-Claude models (Kimi, GLM, Qwen, MiniMax, " +
       "Gemini, GPT, Grok, …) go through claudish's routing straight to the provider's API. " +
       "A Claude model name (claude-*, opus, sonnet, haiku) runs as one Claude Code " +
@@ -951,6 +974,12 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         },
         prompt: { type: "string", description: "The prompt to send to the model" },
         system_prompt: { type: "string", description: "Optional system prompt" },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Local file paths whose contents are appended to the prompt as labeled code blocks",
+        },
       },
       required: ["model", "prompt"],
     },
@@ -962,7 +991,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       try {
         const result = await runPrompt(
           args.model as string,
-          args.prompt as string,
+          appendFilesToPrompt(args.prompt as string, args.files as string[] | undefined),
           args.system_prompt as string | undefined,
           ctx.signal
         );
@@ -1154,6 +1183,12 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         },
         prompt: { type: "string", description: "The prompt to send to all models" },
         system_prompt: { type: "string", description: "Optional system prompt" },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Local file paths whose contents are appended to the prompt as labeled code blocks",
+        },
       },
       required: ["models", "prompt"],
     },
@@ -1164,7 +1199,10 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     heartbeat: true,
     handler: async (args, ctx) => {
       const modelIds = args.models as string[];
+      // `prompt` stays the user's text for the comparison header and progress
+      // notes; the file-augmented form is what each model actually receives.
       const prompt = args.prompt as string;
+      const promptWithFiles = appendFilesToPrompt(prompt, args.files as string[] | undefined);
       const systemPrompt = args.system_prompt as string | undefined;
 
       // Ordering: ARGUMENT order, deliberately. The caller chose this sequence
@@ -1178,7 +1216,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       }> = [];
       for (const model of modelIds) {
         try {
-          const result = await runPrompt(model, prompt, systemPrompt, ctx.signal);
+          const result = await runPrompt(model, promptWithFiles, systemPrompt, ctx.signal);
           results.push({ model, response: result.content, tokens: result.usage });
         } catch (error) {
           results.push({

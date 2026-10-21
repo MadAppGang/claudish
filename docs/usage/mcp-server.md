@@ -58,15 +58,16 @@ Claude will use the `run_prompt` tool to call Grok.
 ### `run_prompt`
 
 One quick prompt, straight to one model's API: a single request and its answer. No Claude Code
-session, no tools, no files, no conversation state — this is not subagent work. For a task that
-needs tools, files or more than one turn, use `create_session` (one model) or `team` (several
-models). Non-Claude models (Kimi, GLM, Qwen, MiniMax, Gemini, GPT, Grok, …) go through claudish's
+session, no tools, no conversation state, and files only as contents appended with `files` — this
+is not subagent work. For a task that needs tools, files or more than one turn, use
+`create_session` (one model) or `team` (several models). Non-Claude models (Kimi, GLM, Qwen, MiniMax, Gemini, GPT, Grok, …) go through claudish's
 routing straight to the provider's API.
 
 **Parameters:**
 - `model` (required) - Model name or model spec. A bare name auto-routes to the best provider (e.g., `kimi-k3`, `glm-5.3`); `provider@model` pins the provider (e.g., `google@gemini-4-argon`, `or@x-ai/grok-4.7`).
 - `prompt` (required) - The prompt to send
 - `system_prompt` (optional) - System prompt for context
+- `files` (optional) - Local file paths, resolved against the working directory, whose contents are appended to the prompt as labeled code blocks; a file that cannot be read becomes a one-line warning in its place
 
 There is no output-limit parameter. The request carries no `max_tokens`, so the provider applies
 its own default.
@@ -147,6 +148,7 @@ a blind-judged multi-model run, or `create_session` for one model doing a task.
 - `models` (required) - Array of model names or model specs, in the order to run them
 - `prompt` (required) - The prompt to compare
 - `system_prompt` (optional) - System prompt
+- `files` (optional) - As for `run_prompt`; every model receives the same appended contents, and the comparison header keeps the prompt as given
 
 **Example:**
 ```
