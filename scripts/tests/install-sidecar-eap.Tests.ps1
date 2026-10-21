@@ -25,7 +25,11 @@
       1. an `$ErrorActionPreference = 'Continue'` assignment textually before
          it in one of its enclosing statement-blocks (both placements used in
          the file: before the try, or inside the try body — the compose block);
-      2. an enclosing try whose finally reassigns $ErrorActionPreference.
+      2. an enclosing try whose finally restores $ErrorActionPreference to a
+         variable captured FROM it before the block (the $prevEap motif). The
+         restore site alone is not enough: `finally { $ErrorActionPreference =
+         'Continue' }` reassigns EAP but leaves the script-wide 'Stop' lowered
+         after the block — the X7 mutant survived that weaker check.
 
     "Native" = git/docker by name (the installer's two natives, floor keeps
     the guard PATH-independent) plus anything resolving to an Application on
@@ -99,7 +103,6 @@ BeforeAll {
 
             $cmdOffset = $cmd.Extent.StartOffset
             $sawContinue = $false
-            $sawGuardedTry = $false
 
             # Rule 1: a 'Continue' assignment before the command in an ENCLOSING
             # statement-block (innermost walk — containment, not file order, is
@@ -126,33 +129,141 @@ BeforeAll {
                 $node = $node.Parent
             }
 
-            # Rule 2: an ancestor try whose finally reassigns EAP (the restore).
+            # Capture walk (full walk, no early exit — the compose block's
+            # capture sits OUTSIDE the try, past where Rule 1 stops): variables
+            # assigned FROM $ErrorActionPreference before the command, in any
+            # enclosing statement container. These are the only legal restore
+            # targets for Rule 2.
+            $capturedVars = @()
             $node = $cmd
-            while ($null -ne $node -and -not $sawGuardedTry) {
-                if ($node -is [System.Management.Automation.Language.TryStatementAst] -and
-                    $null -ne $node.Finally) {
-                    $restore = $node.Finally.FindAll({ param($a)
-                        $a -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-                        $a.Left -is
-                            [System.Management.Automation.Language.VariableExpressionAst] -and
-                        $a.Left.VariablePath.UserPath -eq 'ErrorActionPreference' }, $true)
-                    if (@($restore).Count -gt 0) { $sawGuardedTry = $true }
+            while ($null -ne $node) {
+                if ($node -is [System.Management.Automation.Language.StatementBlockAst] -or
+                    $node -is [System.Management.Automation.Language.NamedBlockAst]) {
+                    foreach ($stmt in $node.Statements) {
+                        if ($stmt.Extent.StartOffset -ge $cmdOffset) { break }
+                        if ($stmt -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                            $stmt.Left -is
+                                [System.Management.Automation.Language.VariableExpressionAst]) {
+                            $rhs = $stmt.Right
+                            if ($rhs -is [System.Management.Automation.Language.CommandExpressionAst]) {
+                                $rhs = $rhs.Expression
+                            }
+                            if ($rhs -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                                $rhs.VariablePath.UserPath -eq 'ErrorActionPreference') {
+                                $capturedVars += $stmt.Left.VariablePath.UserPath
+                            }
+                        }
+                    }
                 }
                 $node = $node.Parent
             }
 
-            if (-not ($sawContinue -and $sawGuardedTry)) {
+            # Rule 2: an ancestor try whose finally restores EAP to one of the
+            # captured variables (the $prevEap motif). The restore SITE alone
+            # is not enough — `finally { $ErrorActionPreference = 'Continue' }`
+            # reassigns EAP but leaves the script-wide 'Stop' lowered (X7).
+            $sawRestoreSite = $false
+            $sawCapturedRestore = $false
+            $node = $cmd
+            while ($null -ne $node -and -not $sawCapturedRestore) {
+                if ($node -is [System.Management.Automation.Language.TryStatementAst] -and
+                    $null -ne $node.Finally) {
+                    $restores = @($node.Finally.FindAll({ param($a)
+                        $a -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                        $a.Left -is
+                            [System.Management.Automation.Language.VariableExpressionAst] -and
+                        $a.Left.VariablePath.UserPath -eq 'ErrorActionPreference' }, $true))
+                    if ($restores.Count -gt 0) {
+                        $sawRestoreSite = $true
+                        foreach ($r in $restores) {
+                            $rhs = $r.Right
+                            if ($rhs -is [System.Management.Automation.Language.CommandExpressionAst]) {
+                                $rhs = $rhs.Expression
+                            }
+                            if ($rhs -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                                $capturedVars -contains $rhs.VariablePath.UserPath) {
+                                $sawCapturedRestore = $true
+                            }
+                        }
+                    }
+                }
+                $node = $node.Parent
+            }
+
+            if (-not ($sawContinue -and $sawCapturedRestore)) {
                 $violations += [pscustomobject]@{
                     Line = $cmd.Extent.StartLineNumber
                     Name = $name
                     Rule = if (-not $sawContinue) { 'no Continue scope' }
-                           elseif (-not $sawGuardedTry) { 'no finally restore' }
-                           else { '?' }
+                           elseif (-not $sawRestoreSite) { 'no finally restore' }
+                           else { 'restore not the captured variable' }
                     Text = ($cmd.Extent.Text -replace '\s+', ' ')
                 }
             }
         }
         return ,@($violations)
+    }
+
+    function Test-FetchGuarded {
+        # Structural half of the #569 follow-up: in the update path, the
+        # statement IMMEDIATELY after `git … fetch origin main` must be
+        # `if ($LASTEXITCODE -ne 0) { Die … }` — proving a failing fetch Dies
+        # BEFORE checkout/reset can mask it on the stale origin/main.
+        param([string]$Source)
+        $tokens = $null; $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput(
+            $Source, [ref]$tokens, [ref]$parseErrors)
+        if ($parseErrors.Count -gt 0) {
+            throw "source does not parse: $($parseErrors[0].Extent.StartLineNumber): $($parseErrors[0].Message)"
+        }
+        $fetch = @($ast.FindAll({ param($a)
+                $a -is [System.Management.Automation.Language.CommandAst] -and
+                $a.GetCommandName() -eq 'git' }, $true)) |
+            Where-Object { $_.Extent.Text -match '\sfetch\s' -and $_.Extent.Text -match 'origin\s+main' } |
+            Select-Object -First 1
+        if ($null -eq $fetch) { return $false }
+        $stmt = $fetch
+        while ($null -ne $stmt -and
+               $stmt -isnot [System.Management.Automation.Language.StatementAst]) {
+            $stmt = $stmt.Parent
+        }
+        # Quirk: CommandAst itself satisfies StatementAst, but a single-command
+        # line's STATEMENT slot in the container's Statements is its wrapping
+        # PipelineAst — climb to it or the IndexOf below misses (-1).
+        if ($null -ne $stmt.Parent -and
+            $stmt.Parent -is [System.Management.Automation.Language.PipelineAst]) {
+            $stmt = $stmt.Parent
+        }
+        if ($null -eq $stmt) { return $false }
+        $container = $stmt.Parent
+        while ($null -ne $container -and
+               $container -isnot [System.Management.Automation.Language.StatementBlockAst] -and
+               $container -isnot [System.Management.Automation.Language.NamedBlockAst]) {
+            $container = $container.Parent
+        }
+        if ($null -eq $container) { return $false }
+        $idx = [System.Array]::IndexOf(@($container.Statements), $stmt)
+        if ($idx -lt 0 -or ($idx + 1) -ge $container.Statements.Count) { return $false }
+        $next = $container.Statements[$idx + 1]
+        if ($next -isnot [System.Management.Automation.Language.IfStatementAst]) { return $false }
+        # PS 5.1's IfStatementAst exposes Clauses (if + elseif pairs) whose
+        # items are RAW Tuples — Item1 = condition, Item2 = body. The friendly
+        # Condition/Body names read as $null there.
+        $mentionsExitCode = $false
+        $callsDie = $false
+        foreach ($clause in @($next.Clauses)) {
+            if (@($clause.Item1.FindAll({ param($a)
+                    $a -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                    $a.VariablePath.UserPath -eq 'LASTEXITCODE' }, $true)).Count -gt 0) {
+                $mentionsExitCode = $true
+            }
+            if (@($clause.Item2.FindAll({ param($a)
+                    $a -is [System.Management.Automation.Language.CommandAst] -and
+                    $a.GetCommandName() -eq 'Die' }, $true)).Count -gt 0) {
+                $callsDie = $true
+            }
+        }
+        return ($mentionsExitCode -and $callsDie)
     }
 
     $script:NativeNames = Get-NativeCommandNames
@@ -196,6 +307,38 @@ docker logs foo 2>&1 | Out-Host
         $v = Get-EapViolations -Source (ConvertTo-Lf $synthetic) -NativeNames $script:NativeNames
         @($v).Count | Should -Be 1
         $v[0].Rule | Should -Be 'no finally restore'
+    }
+
+    It "positive control: a finally restoring to literal 'Continue' IS reported (X7)" {
+        # Reassigning EAP in the finally is NOT a restore: the script-wide
+        # 'Stop' stays lowered after the block. This mutant passed the first
+        # version of the guard (ai-01 review, X7).
+        $synthetic = @'
+$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
+try {
+    docker logs foo 2>&1 | Out-Host
+} finally { $ErrorActionPreference = 'Continue' }
+'@
+        $v = Get-EapViolations -Source (ConvertTo-Lf $synthetic) -NativeNames $script:NativeNames
+        @($v).Count | Should -Be 1
+        $v[0].Rule | Should -Be 'restore not the captured variable'
+    }
+
+    It "positive control: a finally restoring to an uncaptured variable IS reported" {
+        # Same defect through another shape: $unrelated exists in the finally
+        # but was never assigned FROM $ErrorActionPreference, so restoring to
+        # it does not bring the original 'Stop' back.
+        $synthetic = @'
+$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
+try {
+    docker logs foo 2>&1 | Out-Host
+} finally { $ErrorActionPreference = $unrelated }
+'@
+        $v = Get-EapViolations -Source (ConvertTo-Lf $synthetic) -NativeNames $script:NativeNames
+        @($v).Count | Should -Be 1
+        $v[0].Rule | Should -Be 'restore not the captured variable'
     }
 
     Context "mutations: each removed wrap must go red (the #549 revert stayed green pre-guard)" {
@@ -266,6 +409,21 @@ docker logs foo 2>&1 | Out-Host
             @($v | Where-Object Name -eq 'docker').Count | Should -BeGreaterThan 0
         }
 
+        It "X7: restoring the update-path finally to literal 'Continue' is caught" {
+            $needle = ConvertTo-Lf @'
+        if ($LASTEXITCODE -ne 0) { Die "git pull failed in $RepoDir" }
+    } finally { $ErrorActionPreference = $prevEap }
+'@
+            $replacement = ConvertTo-Lf @'
+        if ($LASTEXITCODE -ne 0) { Die "git pull failed in $RepoDir" }
+    } finally { $ErrorActionPreference = 'Continue' }
+'@
+            $mutated = $script:Source.Replace($needle, $replacement)
+            $mutated | Should -Not -Be $script:Source
+            $v = Get-EapViolations -Source $mutated -NativeNames $script:NativeNames
+            @($v | Where-Object Rule -eq 'restore not the captured variable').Count | Should -BeGreaterThan 0
+        }
+
         It "unwrapping the mode-assertion docker logs call is caught" {
             $needle = ConvertTo-Lf @'
     $prevEap = $ErrorActionPreference
@@ -304,5 +462,23 @@ Pop-Location
             $v = Get-EapViolations -Source $mutated -NativeNames $script:NativeNames
             @($v | Where-Object Name -eq 'docker').Count | Should -BeGreaterThan 0
         }
+    }
+}
+
+Describe "install-sidecar fetch exit-code pin (#569 follow-up)" {
+    It "a failing fetch Dies before checkout/reset can mask it" {
+        # fetch → checkout → reset used to share one $LASTEXITCODE test: a
+        # failed fetch was masked by a successful reset on the stale
+        # origin/main. The pin: the statement right after the fetch call is
+        # an if ($LASTEXITCODE) { Die … } — structural, like the rest of this
+        # suite (the installer cannot be executed inside Pester).
+        Test-FetchGuarded -Source $script:Source | Should -BeTrue
+    }
+
+    It "mutation: dropping the post-fetch Die guard goes red" {
+        $needle = '        if ($LASTEXITCODE -ne 0) { Die "git fetch failed in $RepoDir (stale origin/main would be silently deployed)" }'
+        $mutated = $script:Source.Replace($needle, '        # mutated: guard removed')
+        $mutated | Should -Not -Be $script:Source
+        Test-FetchGuarded -Source $mutated | Should -BeFalse
     }
 }

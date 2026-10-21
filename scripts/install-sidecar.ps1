@@ -270,6 +270,10 @@ if (Test-Path (Join-Path $RepoDir ".git")) {
             Write-Warn "-Force: discarding $($dirty.Count) local change(s) and $($ahead.Count) unpushed commit(s) in $RepoDir"
         }
         git -C $RepoDir fetch origin main --quiet
+        # A failed fetch must Die HERE: checkout+reset would still succeed on
+        # the stale origin/main and mask it (the shared exit-code test below
+        # only sees reset's) — #569 follow-up.
+        if ($LASTEXITCODE -ne 0) { Die "git fetch failed in $RepoDir (stale origin/main would be silently deployed)" }
         git -C $RepoDir checkout main --quiet 2>$null
         git -C $RepoDir reset --hard origin/main --quiet
         if ($LASTEXITCODE -ne 0) { Die "git pull failed in $RepoDir" }
