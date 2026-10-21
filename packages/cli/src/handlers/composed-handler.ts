@@ -2649,8 +2649,12 @@ export class ComposedHandler implements ModelHandler {
           (sum, ms) => sum + ms,
           0
         );
+        // The upstream's own text, before it reaches any body sent to Claude
+        // Code: an error frame can echo the credential this request signed with.
+        const upstreamCode = redactForClient(settled.code);
+        const upstreamMessage = redactForClient(settled.message);
         const surfaced =
-          `${this.provider.displayName} is overloaded upstream (${settled.code}): ${settled.message} ` +
+          `${this.provider.displayName} is overloaded upstream (${upstreamCode}): ${upstreamMessage} ` +
           `claudish retried ${settled.attempts}× over ${Math.round(waited / 1000)}s without success.`;
         logStderr(`Error: ${surfaced}`);
         try {
@@ -2662,7 +2666,7 @@ export class ComposedHandler implements ModelHandler {
             success: false,
             http_status: 503,
             error_class: "server_error",
-            error_code: settled.code,
+            error_code: upstreamCode,
             token_strategy: this.options.tokenStrategy ?? "standard",
             adapter_name: this.getActiveAdapterName(),
             middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
@@ -2675,11 +2679,11 @@ export class ComposedHandler implements ModelHandler {
         } catch {
           // Stats must never crash claudish
         }
-        // `settled.message` is the upstream's own text; `surfaced` wraps it in
+        // `upstreamMessage` is the upstream's own text; `surfaced` wraps it in
         // claudish's retry narration. Both travel, so a probe row can lead with
         // the provider's words.
         return c.json(
-          wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
+          wrapAnthropicError(503, surfaced, "overloaded_error", undefined, upstreamMessage),
           503 as any,
           settled.unreachable ? connectionFaultHeaders() : undefined
         );
@@ -2702,9 +2706,12 @@ export class ComposedHandler implements ModelHandler {
       if (settled.kind !== "ok") {
         const isTerminal = settled.kind === "terminal";
         const httpStatus = isTerminal ? 400 : 503;
+        // Redacted before any body, log line or report is composed from it.
+        const upstreamCode = redactForClient(settled.code);
+        const upstreamMessage = redactForClient(settled.message);
         const surfaced = isTerminal
-          ? `${this.provider.displayName} rejected the request (${settled.code}): ${settled.message}`
-          : `${this.provider.displayName} is overloaded upstream (${settled.code}): ${settled.message} ` +
+          ? `${this.provider.displayName} rejected the request (${upstreamCode}): ${upstreamMessage}`
+          : `${this.provider.displayName} is overloaded upstream (${upstreamCode}): ${upstreamMessage} ` +
             `claudish retried ${settled.attempts}× over ` +
             `${Math.round(
               STREAM_RETRY_DELAYS_MS.slice(0, settled.attempts).reduce((sum, ms) => sum + ms, 0) /
@@ -2712,7 +2719,7 @@ export class ComposedHandler implements ModelHandler {
             )}s without success.`;
         logStderr(`Error: ${surfaced}`);
         reportError({
-          error: new Error(settled.message),
+          error: new Error(upstreamMessage),
           providerName: this.provider.name,
           providerDisplayName: this.provider.displayName,
           streamFormat: this.provider.streamFormat,
@@ -2721,7 +2728,7 @@ export class ComposedHandler implements ModelHandler {
           isStreaming: true,
           retryAttempted: !isTerminal,
           isInteractive: this.isInteractive,
-          providerErrorType: settled.code,
+          providerErrorType: upstreamCode,
         });
         try {
           this.emitStats({
@@ -2732,7 +2739,7 @@ export class ComposedHandler implements ModelHandler {
             success: false,
             http_status: httpStatus,
             error_class: isTerminal ? "client_error" : "server_error",
-            error_code: settled.code,
+            error_code: upstreamCode,
             token_strategy: this.options.tokenStrategy ?? "standard",
             adapter_name: this.getActiveAdapterName(),
             middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
@@ -2752,12 +2759,12 @@ export class ComposedHandler implements ModelHandler {
                 surfaced,
                 "invalid_request_error",
                 undefined,
-                settled.message
+                upstreamMessage
               ),
               400 as any
             )
           : c.json(
-              wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
+              wrapAnthropicError(503, surfaced, "overloaded_error", undefined, upstreamMessage),
               503 as any,
               settled.kind === "exhausted" && settled.unreachable
                 ? connectionFaultHeaders()
