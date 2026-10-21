@@ -356,7 +356,9 @@ What `createSession` does now (`mcp-session/inherited-settings.ts`, `session-man
 
 - `setup_from` defaults to the server's cwd (the caller's project) and is skipped when it resolves
   to the child's own cwd, whose files Claude Code already reads. `setup_from: null` opts out: the
-  child's argv and files are byte-for-byte what they were.
+  child's argv and files are byte-for-byte what they were. An explicit `setup_from` that is not an
+  existing directory, or a value that is neither a string nor null, is refused as `invalid_args`;
+  the implicit default is not checked.
 - The layer is `settings.json`, then `settings.local.json`, then every caller `--settings` value
   (both `--settings v` and `--settings=v`), merged in that order: objects deep, arrays
   concatenated without duplicates, scalars later-wins.

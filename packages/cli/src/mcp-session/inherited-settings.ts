@@ -11,7 +11,7 @@
  * settings layer.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 type SettingsLayer = Record<string, unknown>;
@@ -129,6 +129,10 @@ export function buildInheritedSettingsLayer(
  * The setup directory a create_session call uses: `null` opts out, a string is
  * resolved, `undefined` is the server's cwd (the caller's project). Undefined when
  * that is the child's own directory, whose files Claude Code already reads natively.
+ *
+ * An explicit string must name an existing directory and any other non-null value is
+ * refused, both as `invalid_args:`: a mistyped path would otherwise inherit nothing
+ * and look like success. The implicit default is not checked.
  */
 export function resolveSetupFrom(
   arg: unknown,
@@ -136,6 +140,14 @@ export function resolveSetupFrom(
   serverCwd: string
 ): string | undefined {
   if (arg === null) return undefined;
-  const setupFrom = typeof arg === "string" ? resolve(arg) : serverCwd;
+  let setupFrom = serverCwd;
+  if (typeof arg === "string") {
+    setupFrom = resolve(arg);
+    if (!statSync(setupFrom, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new Error(`invalid_args: setup_from ${setupFrom} is not an existing directory`);
+    }
+  } else if (arg !== undefined) {
+    throw new Error("invalid_args: setup_from must be a directory path or null");
+  }
   return setupFrom === resolve(workDir ?? serverCwd) ? undefined : setupFrom;
 }

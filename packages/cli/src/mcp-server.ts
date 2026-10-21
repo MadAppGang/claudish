@@ -1991,7 +1991,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           description:
             "Directory whose .claude/settings.json and settings.local.json the session " +
             "inherits (enabled plugins, permissions, env), so a session in another work_dir " +
-            "keeps the caller's plugins and agents. Default: the caller's project directory, " +
+            "keeps the caller's plugins and agents; an explicit path must be an existing " +
+            "directory. Default: the caller's project directory, " +
             "when work_dir differs from it. null keeps the session on work_dir's own settings only.",
         },
       },

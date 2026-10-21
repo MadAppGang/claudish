@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import {
   buildInheritedSettingsLayer,
@@ -313,14 +313,19 @@ describe("resolveSetupFrom", () => {
 
   test("resolves a relative setup directory against the process cwd", () => {
     // REGRESSION: MTL-204/MTL-185 sandbox child lost the caller's plugins — /dev:fix session dev-fix-20261022-023522-f75563b5
-    expect(resolveSetupFrom("rel/x", join(tmp, "work"), join(tmp, "server"))).toBe(
-      resolve("rel/x")
+    const setupFrom = join(tmp, "rel", "x");
+    mkdirSync(setupFrom, { recursive: true });
+    const relativeSetupFrom = relative(process.cwd(), setupFrom);
+
+    expect(resolveSetupFrom(relativeSetupFrom, join(tmp, "work"), join(tmp, "server"))).toBe(
+      resolve(relativeSetupFrom)
     );
   });
 
   test("omits inheritance when work_dir is absent and setup resolves to serverCwd", () => {
     // REGRESSION: MTL-204/MTL-185 sandbox child lost the caller's plugins — /dev:fix session dev-fix-20261022-023522-f75563b5
     const serverCwd = join(tmp, "caller");
+    mkdirSync(serverCwd);
 
     expect(resolveSetupFrom(undefined, undefined, serverCwd)).toBeUndefined();
     expect(resolveSetupFrom(serverCwd, undefined, serverCwd)).toBeUndefined();
@@ -329,8 +334,81 @@ describe("resolveSetupFrom", () => {
   test("omits inheritance when the resolved setup directory equals work_dir", () => {
     // REGRESSION: MTL-204/MTL-185 sandbox child lost the caller's plugins — /dev:fix session dev-fix-20261022-023522-f75563b5
     const workDir = join(tmp, "caller");
+    mkdirSync(workDir);
+    const relativeWorkDir = relative(process.cwd(), workDir);
 
     expect(resolveSetupFrom(`${workDir}/nested/..`, workDir, join(tmp, "server"))).toBeUndefined();
-    expect(resolveSetupFrom(resolve("rel/x"), "rel/x", join(tmp, "server"))).toBeUndefined();
+    expect(
+      resolveSetupFrom(resolve(relativeWorkDir), relativeWorkDir, join(tmp, "server"))
+    ).toBeUndefined();
+  });
+
+  test("rejects an explicit nonexistent setup directory with its resolved path", () => {
+    // REGRESSION: a mistyped setup_from silently disabled inheritance — /dev:fix session dev-fix-20261022-023522-f75563b5
+    const setupFrom = relative(process.cwd(), join(tmp, "missing"));
+    const action = () => resolveSetupFrom(setupFrom, join(tmp, "work"), join(tmp, "server"));
+
+    expectInvalidArgs(action, "setup_from");
+    expect(action).toThrow(resolve(setupFrom));
+  });
+
+  test("rejects an explicit setup path that is a file", () => {
+    // REGRESSION: a mistyped setup_from silently disabled inheritance — /dev:fix session dev-fix-20261022-023522-f75563b5
+    const setupFrom = join(tmp, "setup.txt");
+    writeFileSync(setupFrom, "settings");
+
+    expectInvalidArgs(
+      () => resolveSetupFrom(setupFrom, join(tmp, "work"), join(tmp, "server")),
+      "setup_from"
+    );
+  });
+
+  test("rejects false as setup_from", () => {
+    // REGRESSION: a mistyped setup_from silently disabled inheritance — /dev:fix session dev-fix-20261022-023522-f75563b5
+    expectInvalidArgs(
+      () => resolveSetupFrom(false, join(tmp, "work"), join(tmp, "server")),
+      "setup_from"
+    );
+  });
+
+  test("rejects 0 as setup_from", () => {
+    // REGRESSION: a mistyped setup_from silently disabled inheritance — /dev:fix session dev-fix-20261022-023522-f75563b5
+    expectInvalidArgs(
+      () => resolveSetupFrom(0, join(tmp, "work"), join(tmp, "server")),
+      "setup_from"
+    );
+  });
+
+  test("rejects an object as setup_from", () => {
+    // REGRESSION: a mistyped setup_from silently disabled inheritance — /dev:fix session dev-fix-20261022-023522-f75563b5
+    expectInvalidArgs(
+      () => resolveSetupFrom({}, join(tmp, "work"), join(tmp, "server")),
+      "setup_from"
+    );
+  });
+
+  test("rejects an array as setup_from", () => {
+    // REGRESSION: a mistyped setup_from silently disabled inheritance — /dev:fix session dev-fix-20261022-023522-f75563b5
+    expectInvalidArgs(
+      () => resolveSetupFrom([], join(tmp, "work"), join(tmp, "server")),
+      "setup_from"
+    );
+  });
+
+  test("returns the resolved path of an explicit existing setup directory", () => {
+    // REGRESSION: a mistyped setup_from silently disabled inheritance — /dev:fix session dev-fix-20261022-023522-f75563b5
+    const setupFrom = join(tmp, "setup");
+    mkdirSync(setupFrom);
+
+    expect(resolveSetupFrom(setupFrom, join(tmp, "work"), join(tmp, "server"))).toBe(
+      resolve(setupFrom)
+    );
+  });
+
+  test("returns a nonexistent serverCwd for the implicit default", () => {
+    // REGRESSION: a mistyped setup_from silently disabled inheritance — /dev:fix session dev-fix-20261022-023522-f75563b5
+    const serverCwd = join(tmp, "missing-server");
+
+    expect(resolveSetupFrom(undefined, join(tmp, "work"), serverCwd)).toBe(serverCwd);
   });
 });
