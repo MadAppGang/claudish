@@ -253,6 +253,38 @@ export class CredentialFileState<T extends { access_token: string; refresh_token
     }
   }
 
+  /**
+   * A rejected login (Kimi): delete the file ONLY if it still holds `base`'s lineage.
+   * A login another process wrote since `base` was read is never deleted, and an
+   * unreadable file (possibly a newer login caught mid-write) is left alone.
+   */
+  async deleteIfUnchanged(
+    base: T
+  ): Promise<"deleted" | "newer-on-disk" | "removed" | "unreadable"> {
+    const label = this.opts.label;
+    const sync = await this.settle();
+    if (sync === "removed") return "removed";
+    if (sync === "unreadable") {
+      log(`[${label}] login rejected, but the credential file is unreadable; not deleting it`);
+      return "unreadable";
+    }
+    const onDisk = this.current;
+    if (onDisk === null) return "removed";
+    if (lineageOf(onDisk) !== lineageOf(base)) {
+      log(`[${label}] login rejected, but the credential file changed on disk; not deleting it`);
+      return "newer-on-disk";
+    }
+    const path = this.opts.path();
+    try {
+      unlinkSync(path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") return "unreadable";
+    }
+    this.current = null;
+    this.recorded = { path, stamp: null };
+    return "deleted";
+  }
+
   /** Forget the in-memory credentials (a logout in this process). */
   forget(): void {
     this.current = null;

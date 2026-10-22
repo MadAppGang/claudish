@@ -599,7 +599,7 @@ export class KimiOAuth {
       const grantRejected =
         status === 401 || status === 403 || (status === 400 && text.includes("invalid_grant"));
       if (!grantRejected) throw failure;
-      return this.rejectLogin(failure);
+      return await this.rejectLogin(failure, current);
     }
 
     // A 2xx that is not JSON is a gateway answering for the token host:
@@ -648,13 +648,13 @@ export class KimiOAuth {
    * login cannot recover, so it is deleted, and the caller gets the fallback
    * signal or the login instruction.
    */
-  private rejectLogin(failure: Error): never {
+  private async rejectLogin(failure: Error, rejected: KimiCredentials): Promise<never> {
     log(`[KimiOAuth] Refresh rejected: ${failure.message}`);
-    const credPath = kimiOAuthPath();
-    if (existsSync(credPath)) {
-      unlinkSync(credPath);
-    }
-    this.state.forget();
+    // Delete only the login that was rejected. If another process logged in since
+    // (`claudish login kimi` in another terminal), its file is kept, and
+    // refreshAndCommit adopts it after this throw instead of answering with the
+    // fallback. An unreadable file (possibly that login mid-write) is kept too.
+    await this.state.deleteIfUnchanged(rejected);
 
     // The fallback SIGNAL, always, carrying the login instruction as its cause.
     // WHICH key may answer is not this login's decision: one KimiOAuth serves
