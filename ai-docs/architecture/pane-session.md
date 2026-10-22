@@ -903,6 +903,16 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   to the box-reading path or to print mode: one validator per fact. The release job bundles the
   magmux pinned in `.github/magmux.env` (v0.18.0), test.yml runs the pane suites against that pin,
   and release.yml checks the pin against `MIN_MAGMUX_VERSION`.
+- **The `--version` probe must settle on its own deadline, never on the child's exit.**
+  `assertMagmuxAvailable` shares ONE in-flight probe per binary with every caller, so a probe that
+  never settles hangs every later `create_session` and team run in the process (a long-lived MCP
+  server for its whole life; CI shard pane-1of6 for 15 minutes, run 39713744446). execFile's
+  `timeout` does not bound it: it sends SIGTERM and then waits for the child to close, and a stand-in
+  that ignores SIGTERM held the probe 20 s on bun 1.3.10. `runMagmuxVersion` therefore keeps its own
+  5000 ms timer: on expiry it rejects `magmux_unavailable: <path> --version failed: no answer in
+  5000 ms`, SIGKILLs the child and destroys its pipes (a grandchild may still hold them). The shared
+  entry is cleared on settle, so the next caller probes afresh; only successes are cached. Any new
+  per-process latch on a child process needs the same rule.
 - **Latent, outside this driver:** `team-grid.ts` (CLI `--grid`) does not pass `--sock-dir`, so an
   inherited `MAGMUX_SOCK_DIR` would move its socket (F7).
 

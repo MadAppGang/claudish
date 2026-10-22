@@ -76,6 +76,7 @@ describe("isolateProtocolStdout (spawned process)", () => {
     const mod = join(dir, "user.ts");
     writeFileSync(mod, `export default { apiVersion: 1, id: "u", on: { request: () => [] } };`);
     const proc = Bun.spawn(["bun", join(HELPERS, "capture-child.ts"), "mcp-unbound", mod], {
+      env: { ...process.env },
       cwd: dir,
       stdout: "pipe",
       stderr: "pipe",
@@ -99,6 +100,7 @@ describe("isolateProtocolStdout (spawned process)", () => {
       const dir = tempDir();
       const size = 4 * 1024 * 1024;
       const proc = Bun.spawn(["bun", join(HELPERS, "isolate-child.ts"), String(size)], {
+        env: { ...process.env },
         cwd: dir,
         stdout: "pipe",
         stderr: "pipe",

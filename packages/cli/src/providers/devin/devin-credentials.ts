@@ -24,7 +24,9 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { type FileStamp, sameStamp, statCredentialFile } from "../../auth/credential-file.js";
 import { realValue } from "../../env-placeholder.js";
+import { log } from "../../logger.js";
 import { getApiKey } from "../../profile-config.js";
 
 /** Env var overriding the credential (also honoured by the Devin CLI itself). */
@@ -45,13 +47,18 @@ export const DEFAULT_DEVIN_SERVER_URL = "https://server.codeium.com";
  */
 let credentialsPathOverride: string | null = null;
 
-/** Parsed contents of the credentials file, memoized per resolved path. */
+/** Parsed contents of the credentials file. */
 interface DevinCredentialsFile {
   apiKey?: string;
   serverUrl?: string;
 }
 
-let fileCache: { path: string; value: DevinCredentialsFile } | null = null;
+/**
+ * The last GOOD read, keyed by path and file stamp: re-read when the Devin CLI
+ * rewrites the file (a new `devin login`), never on a timer (`credential-file.ts`).
+ * `stamp: null` records a confirmed absence.
+ */
+let fileCache: { path: string; stamp: FileStamp | null; value: DevinCredentialsFile } | null = null;
 
 /**
  * Point the credentials reader at a specific file (tests only). Pass `null` to
@@ -75,15 +82,27 @@ function readTomlString(source: string, key: string): string | undefined {
 }
 
 /**
- * Read + memoize the credentials file. A missing or unreadable file is an empty
- * record, never a throw: an absent Devin CLI is a normal state for every user
- * who does not have one.
+ * Read the credentials file, re-reading only when its stamp moved. A missing file
+ * is an empty record, never a throw: an absent Devin CLI is a normal state for
+ * every user who does not have one.
+ *
+ * A file that exists but cannot be read, or that lost the key a previous read
+ * found (a write caught half-way), keeps the last good record and records no
+ * stamp, so the next call reads again: a torn read never signs Devin out.
  */
 function readCredentialsFile(): DevinCredentialsFile {
   const path = devinCredentialsPath();
-  if (fileCache && fileCache.path === path) return fileCache.value;
+  const previous = fileCache && fileCache.path === path ? fileCache : null;
+  const stamp = statCredentialFile(path);
 
-  let value: DevinCredentialsFile = {};
+  if (stamp === null) {
+    fileCache = { path, stamp: null, value: {} };
+    return fileCache.value;
+  }
+  if ("error" in stamp) return previous?.value ?? {};
+  if (previous?.stamp && sameStamp(previous.stamp, stamp)) return previous.value;
+
+  let value: DevinCredentialsFile;
   try {
     const source = readFileSync(path, "utf8");
     value = {
@@ -92,10 +111,13 @@ function readCredentialsFile(): DevinCredentialsFile {
       serverUrl: readTomlString(source, "api_server_url"),
     };
   } catch {
-    // Missing / unreadable / not-a-file — all mean "no Devin credential here".
+    // Exists but unreadable (EACCES, a directory): keep the last good record.
+    return previous?.value ?? {};
   }
+  if (!value.apiKey && previous?.value.apiKey) return previous.value;
 
-  fileCache = { path, value };
+  if (previous?.stamp) log("[Devin] credentials file changed on disk; reloaded");
+  fileCache = { path, stamp, value };
   return value;
 }
 
@@ -122,9 +144,9 @@ export function readDevinApiKey(): string | undefined {
 
 /**
  * Whether a Devin credential is available — sync and cheap enough for the TUI's
- * readiness classifier and the routing check. The file read is memoized; env
- * and config are re-read every call so a key hydrated mid-run (1Password) is
- * seen immediately.
+ * readiness classifier and the routing check. The file is re-read only when its
+ * stamp moves; env and config are re-read every call so a key hydrated mid-run
+ * (1Password) is seen immediately.
  */
 export function hasDevinCredentials(): boolean {
   return readDevinApiKey() !== undefined;

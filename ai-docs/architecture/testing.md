@@ -211,6 +211,68 @@ drained the event loop and exited 0 before `process.exit(code)`. The shutdown no
 holds the loop with an interval until the reap ends. A test of an exit code under
 signals needs `--rerun-each`: one run hides a race that loses more often than it wins.
 
+## A test run never writes into a real session's records (the preload)
+
+A suite run inside a claudish pane (a `create_session` runner, a `team` slot) inherits the pane's
+session variables, and `captureUpstreamError` appended the suite's test doubles (`stub`,
+`fixture-upstream-error`) to `~/.claudish/sessions/<id>/upstream-errors.jsonl`, so that session's
+`get_diagnostics` listed them as upstream failures (`model-failures-2026-10-21.md`, D5).
+
+`scripts/test-preload.ts` deletes `SESSION_ENV_VARS` from `process.env` before the first test file
+loads. The six names live in the import-free `scripts/session-env-vars.ts`, each the literal of the
+production constant whose writer follows it: `CLAUDISH_UPSTREAM_ERROR_LOG`, `CLAUDISH_HOOK_INBOX`,
+`CLAUDISH_HOOK_SESSION`, `CLAUDISH_TOKEN_FILE`, `CLAUDISH_PUBLISHED_TOKEN_FILE`,
+`CLAUDISH_PANE_CHILD`. Neither file imports production code: that would load `hooks/`, `config.ts`
+and the token tracker ahead of the module-scope snapshots tests rely on. A new session-record
+writer means a new name in that list.
+
+**Three bunfig.toml files** register the preload: the repo root, `packages/cli` and
+`packages/macos-bridge`. bun reads `bunfig.toml` from the working directory only and never walks
+up (measured on 1.3.10 and 1.4.0), and the suite runs from all three.
+
+**The trap: a child spawned with no `env` option gets the ORIGINAL environment back.** Measured
+2026-10-22: `Bun.spawn`/`Bun.spawnSync` on 1.3.10 and 1.4.0, and `node:child_process` on 1.3.10 (the
+CI pin; 1.4.0's `child_process` sees the deletion). So the preload covers in-process writers (D5's
+observed records) and children given `env: { ...process.env }`, and two more layers close the rest:
+
+- `scripts/guard-real-config.ts` deletes the same names from the OS environment of a `test:safe`
+  run, so no descendant can inherit them.
+- `scripts/spawn-env.test.ts` fails on any `Bun.spawn`, `Bun.spawnSync` or `node:child_process`
+  spawn/exec/fork in test code (`*.test.ts(x)` and anything under a `test-helpers/` directory)
+  whose options are not an object literal with an `env` key. It parses with the TypeScript
+  compiler API, so a comment cannot satisfy it. A site whose options cannot be read statically goes
+  in its allowlist with the file, the line text and the reason. 42 sites lacked `env` when it
+  landed; each got `env: { ...process.env }`.
+
+Two pane tests "fail inside a pane by design" (`launcher/magmux-wrapper.test.ts`,
+`team-grid.e2e.test.ts`). With `CLAUDISH_PANE_CHILD`, `CLAUDISH_PANE_CWD` and `MAGMUX_SOCK` set,
+magmux-wrapper measured 16 pass / 9 fail both before and after the preload: the 9 come from
+`MAGMUX_SOCK` (the ambient-multiplexer branch), which is not a session-record variable and stays
+inherited. team-grid.e2e was 7 / 0 both times in that simulation.
+
+## Clearing provider keys: derive the list, never hand-write it
+
+`routing-rules.test.ts` cleared a hand list of 24 key names that missed `POE_API_KEY` and every
+bundled vendor's key (D4). `test-helpers/provider-credential-env.ts` derives the list:
+`providerCredentialEnvVars()` is every `apiKeyEnvVar`/`apiKeyAliases` in `BUILTIN_PROVIDERS` and
+`PREDEFINED_ENDPOINTS` (`providerKeyEnvVars()`), the credential names no definition declares
+(taken from the reader's constant where one exists: `DEVIN_API_KEY_ENV`,
+`VERTEX_PROJECT_ENV_VARS`), and every `CUSTOM_<NAME>_KEY` present; `providerBaseUrlEnvVars()` is
+every declared `baseUrlEnvVars`. `clearProviderCredentialEnv()` deletes both and returns the
+restore function. A test that needs "no provider key" uses it, so a new provider cannot reopen the
+hole.
+
+## Credential files: seams and a redirected HOME
+
+`GrokOAuth`, `KimiOAuth` and the Devin reader re-read their credential files when they change
+(`credential-files.md`), so a test that reaches one without its path seam reads, and through a
+refresh may write, the developer's real login. Use `setGrokOAuthPathForTesting`,
+`setKimiOAuthPathForTesting`, `setKimiDeviceIdPathForTesting`, `KimiOAuth._resetForTests()` and
+`setDevinCredentialsPathForTesting`. A test file that imports `auth/credentials/authority.ts` or
+`auth/kimi-oauth.ts` should also run in a child spawned with `HOME` set to a temp directory in the
+child's environment (Bun resolves `homedir()` from the environment a process starts with, never
+from an in-process assignment), so a missed seam lands there.
+
 ## Pane tests: a real magmux, a fake child, nothing left behind
 
 MCP `team` slots and `create_session` run as interactive Claude Code in headless magmux panes

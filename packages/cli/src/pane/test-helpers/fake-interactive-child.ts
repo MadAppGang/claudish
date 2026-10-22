@@ -1096,7 +1096,7 @@ async function bgServer(c: string): Promise<void> {
     { template: T.bgBashResult }
   );
   // a real process in the pane group, so the reap can be seen ending "the shell"
-  spawn("sleep", ["300"], { stdio: "ignore" }).unref();
+  spawn("sleep", ["300"], { env: { ...process.env }, stdio: "ignore" }).unref();
   return answerTurn(c);
 }
 
@@ -1106,7 +1106,11 @@ async function bgServer(c: string): Promise<void> {
  * the fake never ends it on exit, so only claudish's reap can.
  */
 async function bgDetached(c: string): Promise<void> {
-  const child = spawn("sleep", ["300"], { stdio: "ignore", detached: true });
+  const child = spawn("sleep", ["300"], {
+    env: { ...process.env },
+    stdio: "ignore",
+    detached: true,
+  });
   child.unref();
   if (env.FAKE_BG_PID_FILE && child.pid) writeFileSync(env.FAKE_BG_PID_FILE, String(child.pid));
   return answerTurn(c);
@@ -1354,7 +1358,10 @@ function dropTyping(ch: string): boolean {
     if (scenario === "late_reset_swallow" && process.stdin.isTTY) {
       process.stdin.setRawMode(false);
       // A swallowed burst must not become kernel-echoed box text while cooked.
-      spawnSync("stty", ["-echo"], { stdio: ["inherit", "ignore", "ignore"] });
+      spawnSync("stty", ["-echo"], {
+        env: { ...process.env },
+        stdio: ["inherit", "ignore", "ignore"],
+      });
       setTimeout(() => process.stdin.setRawMode(true), 120);
     }
     return true;
@@ -1455,7 +1462,10 @@ function installSignals(): void {
   process.on("SIGWINCH", () => {
     try {
       // Bun's stdout dimensions can still be stale inside SIGWINCH; query the pty.
-      const size = spawnSync("stty", ["size"], { stdio: ["inherit", "pipe", "ignore"] });
+      const size = spawnSync("stty", ["size"], {
+        env: { ...process.env },
+        stdio: ["inherit", "pipe", "ignore"],
+      });
       const match =
         size.status === 0
           ? size.stdout
@@ -1526,7 +1536,7 @@ async function boot(): Promise<void> {
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.on("data", onData);
   if (scenario === "orphan_grandchild") {
-    spawn("sleep", ["300"], { stdio: "ignore" }).unref();
+    spawn("sleep", ["300"], { env: { ...process.env }, stdio: "ignore" }).unref();
     setTimeout(() => process.exit(0), gap("ORPHAN", 3000));
   }
   if (scenario.startsWith("dialog_")) {

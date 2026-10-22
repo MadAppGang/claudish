@@ -713,6 +713,27 @@ before the subscription 401 rule. An `"Invalid API key."` 401 or 403 is still a 
 `FallbackCandidate.provider` now carries the claudish provider uid. `isRetryableError` used to
 receive the candidate's DISPLAY name, and `isSubscriptionProvider("Kimi Coding")` is false.
 
+### The hop decision is one function (`handlers/shared/hop-decision.ts`)
+
+What `FallbackHandler.handle` does after a hop that did not answer `ok` is the pure function
+`decideHopFailure`, with `isRetryableError`, `isSubscriptionCredentialRejection` and `isProvider`
+beside it (`fallback-handler.ts` re-exports them). Its reasons, in the handler's order:
+`recovery-hold`, `stream-failure`, `credential-hold` (stop, response verbatim);
+`subscription-credential-rejected` (advance, announced); `retryable` (advance) and `non-retryable`
+(stop); and `thrown` (advance), which the handler's `catch` asks for. It lives in its own module so
+the probe can import it without loading `composed-handler.ts`: `probeLink` sets
+`ProbeResult.chainAction` from it, and MCP `preflight` walks a model's routing chain by it
+(`mcp-sessions.md`). A second copy of the rule is how preflight once said "drop or replace" for a
+model whose later hop served (D6). `handle()` now reads the error body from a clone before deciding,
+also for the three verbatim stops; each is claudish's own small JSON body and is still returned as is.
+
+A probe pins one hop, so no `FallbackHandler` catches a hop that throws: the `/v1/messages` route's
+catch answers 500 with the error text (a pinned hop's throw never reaches `app.onError`, measured).
+That 500 carries `x-claudish-unhandled-error: 1` when the resolved handler itself threw, and so does
+`app.onError`'s; `probeLink` maps the marker to `advance / thrown`, which is what the runtime does
+with a throw inside a chain. A malformed body or a terminal routing failure is not marked. The header
+changes nothing for Claude Code (same status, body and envelope).
+
 ## The catalog's endpoint contract has two halves (v9.0.7)
 
 > **Superseded (10.5.0).** The gate, the name rule and the model-level `tokenParam` read

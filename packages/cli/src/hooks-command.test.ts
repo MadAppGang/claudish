@@ -182,7 +182,10 @@ describe("claudish hooks init", () => {
       })
     );
     const tsc = join(CLI_ROOT, "node_modules", ".bin", "tsc");
-    const proc = Bun.spawnSync([tsc, "-p", join(target, "tsconfig.json")], { cwd: target });
+    const proc = Bun.spawnSync([tsc, "-p", join(target, "tsconfig.json")], {
+      env: { ...process.env },
+      cwd: target,
+    });
     expect(proc.stdout.toString() + proc.stderr.toString()).toBe("");
     expect(proc.exitCode).toBe(0);
   });
@@ -208,6 +211,7 @@ describe("claudish hooks telemetry", () => {
 describe("generated ambient declaration", () => {
   it("src/hooks/ambient-dts.generated.ts matches public.ts", () => {
     const proc = Bun.spawnSync(["bun", "run", "scripts/generate-hooks-dts.ts", "--check"], {
+      env: { ...process.env },
       cwd: CLI_ROOT,
     });
     expect(proc.stderr.toString()).toBe("");

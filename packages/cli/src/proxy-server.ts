@@ -30,6 +30,7 @@ import {
   createSigningSecrets,
   releaseWhenBodyEnds,
 } from "./handlers/shared/call-context.js";
+import { UNHANDLED_ERROR_HEADER } from "./handlers/shared/hop-decision.js";
 import type { ModelHandler } from "./handlers/types.js";
 import type { HookEngine } from "./hooks/engine.js";
 import { loadHooksOnce } from "./hooks/index.js";
@@ -63,6 +64,11 @@ import {
 } from "./providers/routing-rules.js";
 import { discoverProviderProbeModel } from "./providers/transport/provider-model-discovery.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
+import {
+  describeUnknownShortcut,
+  isKnownProviderName,
+  typedShortcutOf,
+} from "./providers/unknown-shortcut.js";
 import { RefusingHandler } from "./providers/wire-handler.js";
 import {
   WireMarkerError,
@@ -775,6 +781,19 @@ export async function createProxyServer(
       const parsedExplicit = parseModelSpec(target);
       // openrouter@... legitimately uses the OpenRouter handler below.
       if (parsedExplicit.provider !== "openrouter") {
+        // A shortcut that names no provider is not a missing credential (D9):
+        // say it is unknown, in the same words routing, preflight and --probe use.
+        if (!isKnownProviderName(parsedExplicit.provider)) {
+          const { reason, hint } = describeUnknownShortcut(
+            typedShortcutOf(parsedExplicit.original),
+            parsedExplicit.model,
+            undefined,
+            parsedExplicit.original
+          );
+          throw new RoutingError(
+            `Explicit model "${target}" could not be routed — ${reason} ${hint}`
+          );
+        }
         // "No handler" has exactly one default explanation here, and for an
         // endpoint provider it is sometimes the wrong one — a malformed
         // base-URL override or a name collision produces no handler too, and
@@ -868,9 +887,12 @@ export async function createProxyServer(
   app.onError((err, c) => {
     logStderr(`[Proxy] Unhandled error on ${c.req.method} ${c.req.path}: ${err?.message ?? err}`);
     log(`[Proxy] Unhandled error stack: ${err?.stack ?? "(no stack)"}`);
+    // Marked so a probe of one pinned hop can tell a throw from an upstream 500
+    // (`UNHANDLED_ERROR_HEADER`); the status and envelope are unchanged.
     return c.json(
       wrapAnthropicError(500, redactForClient(`Proxy error: ${err?.message ?? String(err)}`)),
-      500
+      500,
+      { [UNHANDLED_ERROR_HEADER]: "1" }
     );
   });
 
@@ -1051,6 +1073,9 @@ export async function createProxyServer(
   });
 
   app.post("/v1/messages", async (c) => {
+    // Set when the resolved handler itself threw (not the body parse, not routing):
+    // that 500 is marked `UNHANDLED_ERROR_HEADER`, like `app.onError`'s.
+    let handlerThrew = false;
     try {
       const body = await c.req.json();
       // Request-metadata trace (debug log only — the [RequestMeta] prefix is
@@ -1099,7 +1124,12 @@ export async function createProxyServer(
       // the promise back BEFORE it settles, so a rejection escapes this
       // try/catch entirely and lands in Hono's error handler instead. That is
       // how connect failures bypassed every message we build here.
-      return await handler.handle(c, body);
+      try {
+        return await handler.handle(c, body);
+      } catch (handlerError) {
+        handlerThrew = true;
+        throw handlerError;
+      }
     } catch (e) {
       log(`[Proxy] Error: ${e}`);
       // Routing failures are terminal — surface as a non-retryable 400 so the
@@ -1111,7 +1141,14 @@ export async function createProxyServer(
           400
         );
       }
-      return c.json(wrapAnthropicError(500, redactForClient(String(e))), 500);
+      // A handler that threw is a hop that threw: inside a routing chain
+      // FallbackHandler advances past it, so a probe of one pinned hop must be
+      // able to tell it from an upstream 500 (`UNHANDLED_ERROR_HEADER`).
+      return c.json(
+        wrapAnthropicError(500, redactForClient(String(e))),
+        500,
+        handlerThrew ? { [UNHANDLED_ERROR_HEADER]: "1" } : undefined
+      );
     }
   });
 

@@ -25,6 +25,7 @@ import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 import { getLogFilePath, initLogger, setDiagOutput } from "../logger.js";
 import type { RoutingRules } from "../profile-config.js";
+import { clearProviderCredentialEnv } from "../test-helpers/provider-credential-env.js";
 import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
@@ -632,34 +633,10 @@ describe("normalizeGlmSlug", () => {
 // route() — credential-aware single entry point
 // ---------------------------------------------------------------------------
 
-const ENV_KEYS_TO_CLEAR = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "OPENROUTER_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENAI_CODEX_API_KEY",
-  "GEMINI_API_KEY",
-  "MOONSHOT_API_KEY",
-  "KIMI_API_KEY",
-  "KIMI_CODING_API_KEY",
-  "QWEN_TOKEN_PLAN_API_KEY",
-  "QWEN_CODING_PLAN_API_KEY",
-  "DASHSCOPE_API_KEY",
-  "MINIMAX_API_KEY",
-  "MINIMAX_CODING_API_KEY",
-  "ZHIPU_API_KEY",
-  "GLM_API_KEY",
-  "GLM_CODING_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "XAI_API_KEY",
-  "ZAI_API_KEY",
-  "OLLAMA_API_KEY",
-  "OPENCODE_API_KEY",
-  "OPENCODE_GO_API_KEY",
-  "WINDSURF_API_KEY",
-];
-
-const savedEnv: Record<string, string | undefined> = {};
+// Every provider credential and base-URL variable is cleared before each test, derived
+// from the provider definitions (`clearProviderCredentialEnv`). A hand list here missed
+// POE_API_KEY, and two tests routed to Poe on a machine that had it set (D4).
+let restoreProviderEnv: () => void = () => {};
 
 /**
  * Route `modelId` against a catalog that publishes it through `providers` only. Without a
@@ -696,11 +673,8 @@ describe("route()", () => {
     process.env.CLAUDISH_DISABLE_OP = "1";
     __resetSniffForTests();
     credentials.invalidate();
-    // Snapshot and clear credential env vars so each test starts clean.
-    for (const key of ENV_KEYS_TO_CLEAR) {
-      savedEnv[key] = process.env[key];
-      delete process.env[key];
-    }
+    // Snapshot and clear every provider credential and base-URL variable.
+    restoreProviderEnv = clearProviderCredentialEnv();
   });
 
   afterEach(() => {
@@ -711,14 +685,8 @@ describe("route()", () => {
     }
     delete process.env.CLAUDISH_DISABLE_OP;
     __resetSniffForTests();
-    // Restore env vars (preserves the host's actual config for other tests).
-    for (const key of ENV_KEYS_TO_CLEAR) {
-      if (savedEnv[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = savedEnv[key];
-      }
-    }
+    // Restore them (preserves the host environment for other tests).
+    restoreProviderEnv();
     credentials.invalidate();
   });
 
@@ -1107,10 +1075,7 @@ describe("route() with defaultProvider", () => {
     process.env.CLAUDISH_DISABLE_OP = "1";
     __resetSniffForTests();
     credentials.invalidate();
-    for (const key of ENV_KEYS_TO_CLEAR) {
-      savedEnv[key] = process.env[key];
-      delete process.env[key];
-    }
+    restoreProviderEnv = clearProviderCredentialEnv();
   });
 
   afterEach(() => {
@@ -1121,13 +1086,7 @@ describe("route() with defaultProvider", () => {
     }
     delete process.env.CLAUDISH_DISABLE_OP;
     __resetSniffForTests();
-    for (const key of ENV_KEYS_TO_CLEAR) {
-      if (savedEnv[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = savedEnv[key];
-      }
-    }
+    restoreProviderEnv();
     credentials.invalidate();
   });
 

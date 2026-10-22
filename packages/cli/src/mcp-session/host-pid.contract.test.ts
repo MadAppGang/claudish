@@ -156,6 +156,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("REQ-3 the installed npm path for real (9a)",
   beforeAll(() => {
     if (!existsSync(distEntry)) {
       const build = Bun.spawnSync(["bun", "run", "build"], {
+        env: { ...process.env },
         cwd: PACKAGE_DIR,
         stdout: "pipe",
         stderr: "pipe",

@@ -1,0 +1,5 @@
+# The preload removes the claudish session-identity variables before any test file loads
+# (scripts/test-preload.ts). bun reads bunfig.toml from the working directory only, so
+# packages/cli and packages/macos-bridge carry their own copy of this entry.
+[test]
+preload = ["./scripts/test-preload.ts"]
