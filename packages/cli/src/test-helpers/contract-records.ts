@@ -234,7 +234,7 @@ export function pidAlive(pid: number): boolean {
 
 /** The parent pid of `pid` from the process table, or undefined. */
 export function ppidOf(pid: number): number | undefined {
-  const out = Bun.spawnSync(["ps", "-o", "ppid=", "-p", String(pid)]);
+  const out = Bun.spawnSync(["ps", "-o", "ppid=", "-p", String(pid)], { env: { ...process.env } });
   const n = Number.parseInt(out.stdout.toString().trim(), 10);
   return Number.isFinite(n) ? n : undefined;
 }

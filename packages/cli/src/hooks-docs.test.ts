@@ -88,7 +88,10 @@ describe("docs/advanced/hooks.md examples", () => {
       })
     );
     const tsc = join(CLI_ROOT, "node_modules", ".bin", "tsc");
-    const proc = Bun.spawnSync([tsc, "-p", join(target, "tsconfig.json")], { cwd: target });
+    const proc = Bun.spawnSync([tsc, "-p", join(target, "tsconfig.json")], {
+      env: { ...process.env },
+      cwd: target,
+    });
     expect(proc.stdout.toString() + proc.stderr.toString()).toBe("");
     expect(proc.exitCode).toBe(0);
 

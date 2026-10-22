@@ -489,10 +489,11 @@ async function runClaudeWithMcp(
 let claudeUsable = false;
 if (!SKIP_LIVE_E2E) {
   try {
-    const proc = spawn("claude", ["--version"], { stdio: "pipe" });
+    const proc = spawn("claude", ["--version"], { env: { ...process.env }, stdio: "pipe" });
     const versionOk = (await new Promise<number>((r) => proc.on("exit", (c) => r(c ?? 1)))) === 0;
     if (versionOk) {
       const probe = spawn("claude", ["-p", "--dangerously-skip-permissions", "--bare", "hi"], {
+        env: { ...process.env },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let out = "";

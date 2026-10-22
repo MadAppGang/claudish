@@ -21,7 +21,7 @@ afterEach(async () => {
 
 /** A pid that existed and is gone: spawned, exited and reaped by this process. */
 async function deadPid(): Promise<number> {
-  const child = spawn("true");
+  const child = spawn("true", [], { env: { ...process.env } });
   await new Promise((resolve) => child.once("exit", resolve));
   return child.pid!;
 }

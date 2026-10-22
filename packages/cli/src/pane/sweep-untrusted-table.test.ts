@@ -99,7 +99,7 @@ function sandboxSweep(root: string): SandboxSweep {
   const stdout = execFileSync(
     SANDBOX_EXEC,
     ["-p", SANDBOX_PROFILE, process.execPath, HELPER, root],
-    { encoding: "utf8", timeout: 15_000 }
+    { env: { ...process.env }, encoding: "utf8", timeout: 15_000 }
   );
   return JSON.parse(stdout) as SandboxSweep;
 }

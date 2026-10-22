@@ -62,7 +62,11 @@ describe("pane test fixtures carry no private content", () => {
   });
 
   test("no fixture is git-ignored", () => {
-    const r = spawnSync("git", ["check-ignore", ...all], { cwd: ROOT, encoding: "utf8" });
+    const r = spawnSync("git", ["check-ignore", ...all], {
+      env: { ...process.env },
+      cwd: ROOT,
+      encoding: "utf8",
+    });
     expect(r.stdout.trim()).toBe("");
   });
 });

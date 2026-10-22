@@ -981,6 +981,7 @@ interface ExitObservation {
 
 async function runSignalChild(signal: "SIGTERM" | "SIGINT"): Promise<ExitObservation> {
   const child = spawn(process.execPath, ["run", SIGNAL_CHILD_TS], {
+    env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
     shell: false,
   });

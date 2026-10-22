@@ -41,7 +41,7 @@ async function runChild(
       String(apiTimeoutMs),
       ...(abortAfterMs ? [String(abortAfterMs)] : []),
     ],
-    { stdout: "pipe", stderr: "pipe", stdin: "ignore" }
+    { env: { ...process.env }, stdout: "pipe", stderr: "pipe", stdin: "ignore" }
   );
   const [stdout, stderr] = await Promise.all([
     new Response(child.stdout).text(),
@@ -150,7 +150,7 @@ describe("CP-7 — the process itself lets go", () => {
     const fixture = startRawFixture(port);
     const child = Bun.spawn(
       ["bun", "run", CHILD, "exhaust", `http://127.0.0.1:${port}/v1`, "120000"],
-      { stdout: "pipe", stderr: "pipe", stdin: "ignore" }
+      { env: { ...process.env }, stdout: "pipe", stderr: "pipe", stdin: "ignore" }
     );
     try {
       const deadline = Date.now() + 30_000;
