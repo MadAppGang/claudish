@@ -651,6 +651,15 @@ function Invoke-ClaudishDrainedRestartImpl {
         -ClaudishHome $FreezeClaudishHome -TimeoutSec $FailoverTickTimeoutSec -HealthUrl $tickHealthUrl
 
     $restartAt = Get-Date
+    # No-op detection is CLOCK-FREE (review 2026-10-22): this StartedAt and the
+    # one read after the verb both come from the Docker daemon, so a drift
+    # between the WSL2 VM clock and the Windows host clock cancels — a genuine
+    # restart can never read as a no-op because the VM lags.
+    $prevEapNoOpBefore = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $startedAtBeforeRaw = [string](@(docker inspect --format '{{.State.StartedAt}}' $Container 2>$null) | Select-Object -First 1)
+    } finally { $ErrorActionPreference = $prevEapNoOpBefore }
     # -t must match stop_grace_period (120s, docker-compose.yml): the CLI flag
     # governs how long Docker waits between SIGTERM and SIGKILL, and without it
     # a docker-daemon default (10s) can truncate the graceful window #57 added.
@@ -723,6 +732,30 @@ function Invoke-ClaudishDrainedRestartImpl {
     $restartDoneAt = Get-Date
     $restartSecs = [int](($restartDoneAt - $restartAt).TotalSeconds)
     Write-DrainLog "RESTART ($Reason): $verb returned in ${restartSecs}s — SIGTERM delivered within this window"
+
+    # No-op detection (measured 2026-10-22 01:27Z, hub; clock-free since the
+    # 22/10 review): `-Recreate` runs `docker compose up -d`, which returns 0
+    # WITHOUT touching the container when the compose file did not change —
+    # and a config-only edit lives in a bind mount, which compose never
+    # compares. That run wrote `OUTCOME success` while the process still held
+    # the OLD config (StartedAt 7 h old, uptimeSec 25741, and the inbound key
+    # it was meant to activate answered 401). A false success on a config
+    # change is worse than a failure: nobody retries it. Docker stamps
+    # `.State.StartedAt` at the current run's start, so identity between the
+    # reading taken just before the verb and this one is the cheapest honest
+    # instrument — same daemon clock on both sides, so no VM/host drift can
+    # fake a verdict.
+    $prevEapNoOp = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $startedAtAfterRaw = [string](@(docker inspect --format '{{.State.StartedAt}}' $Container 2>$null) | Select-Object -First 1)
+    } finally { $ErrorActionPreference = $prevEapNoOp }
+    $noOp = Test-ClaudishRestartWasNoOp -StartedAtBeforeRaw $startedAtBeforeRaw -StartedAtAfterRaw $startedAtAfterRaw
+    if ($noOp -eq $true) {
+        Write-DrainLog "RESTART ($Reason): $verb was a NO-OP — container StartedAt is unchanged before and after the gesture ('$startedAtAfterRaw'); the container was not restarted"
+        Write-DrainOutcome "no-op" "${Reason}: $verb left the container untouched (StartedAt '$startedAtAfterRaw' identical before and after) — a config-only change in a bind mount is invisible to compose; use a plain drained 'docker restart' (no -Recreate), or make the compose file change"
+        return $false
+    }
     Start-Sleep -Seconds 20
 
     $after = Get-ClaudishActiveStreams -Url $Url

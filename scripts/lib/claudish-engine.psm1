@@ -2388,6 +2388,78 @@ function Test-DockerLogsSinceCoherence {
 
     return @{ Verdict = 'stale'; Reason = ('newest container line {0} is at-or-after --since {1}, but the --since window holds no such line — the pre-rotation segment was served' -f $tailParsed.Ts, $SinceUtc) }
 }
+
+function Test-ClaudishRestartWasNoOp {
+    <#
+        PURE decision function: no I/O, no clock, no network.
+
+        Answers ONE question: after a restart verb returned 0, did the
+        container actually start again? Docker reports `.State.StartedAt` for
+        the CURRENT run — a verb that touched nothing leaves the old value in
+        place.
+
+        Measured 2026-10-22 01:27Z on the hub: `-Recreate -EnvFile …` ran
+        `docker compose up -d`; compose found no service-definition change and
+        returned 0 WITHOUT replacing the container (a config-only edit lives in
+        a bind mount, which compose never compares). The drain then wrote
+        `OUTCOME success` while the process still held the OLD config —
+        StartedAt 7 h old, uptimeSec 25741, and the new inbound key it was
+        meant to activate answered 401. A false success on a config change is
+        worse than a failure: nobody retries it.
+
+        CLOCK-FREE (review 2026-10-22): StartedAt comes from the Docker
+        daemon's clock — inside the WSL2 VM on Docker Desktop, which is NOT
+        the Windows host's clock and can drift after a host sleep. Comparing
+        StartedAt with a host-side `Get-Date` made a genuine restart read as a
+        no-op whenever the VM lagged past the tolerance, and the caller was
+        then told to restart again: a second stream-killing gesture. Reading
+        StartedAt immediately BEFORE the verb and again immediately AFTER it
+        compares the daemon with itself — drift cancels, and any difference is
+        a new run. Equal ⇒ no-op, whatever the clocks say.
+
+        Returns $null when either timestamp cannot be read (shim/fixture text,
+        a format this parser does not know, an inspect that failed): the
+        caller keeps its previous behaviour rather than inventing a verdict
+        from noise — an unreadable instrument must never be reported as "the
+        gesture failed".
+
+        - StartedAtBeforeRaw : raw `docker inspect --format '{{.State.StartedAt}}'`
+                               value taken immediately BEFORE the verb
+                               (RFC3339 with nanoseconds, e.g.
+                               2026-10-21T23:43:20.912677448Z).
+        - StartedAtAfterRaw  : the same inspect, immediately after the verb.
+
+        A Docker zero-time on the after side (0001-01-01T00:00:00Z, "never
+        started") is never a success: it yields the no-op verdict.
+    #>
+    param(
+        [AllowEmptyString()][string]$StartedAtBeforeRaw,
+        [AllowEmptyString()][string]$StartedAtAfterRaw
+    )
+
+    if (-not $StartedAtBeforeRaw -or -not $StartedAtAfterRaw) { return $null }
+
+    # .NET Framework (PS 5.1) rejects 9 fractional digits — compare at
+    # seconds, which also makes the comparison immune to how a fixture spells
+    # the fractional part.
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    $parsed = @{}
+    foreach ($side in @('before', 'after')) {
+        $raw = if ($side -eq 'before') { $StartedAtBeforeRaw } else { $StartedAtAfterRaw }
+        $m = [regex]::Match($raw.Trim(), '^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})')
+        if (-not $m.Success) { return $null }
+        $dt = [datetime]::MinValue
+        if (-not [datetime]::TryParseExact($m.Groups[1].Value, 'yyyy-MM-ddTHH:mm:ss', $inv, $styles, [ref]$dt)) { return $null }
+        $parsed[$side] = $dt
+    }
+
+    # Zero-time on the after side = the container never started: not a success.
+    if ($parsed['after'] -eq [datetime]::MinValue) { return $true }
+
+    # Both readings come from the same daemon clock: any difference is a new run.
+    return ($parsed['before'] -eq $parsed['after'])
+}
 #endregion
 
 Export-ModuleMember -Function @(
@@ -2448,4 +2520,5 @@ Export-ModuleMember -Function @(
     'Get-ClaudishOptInFileName'
     'Get-ClaudishOptInToken'
     'Get-ClaudishMachineName'
+    'Test-ClaudishRestartWasNoOp'
 )

@@ -1502,3 +1502,47 @@ Describe 'Invoke-GitBounded — dubious ownership (SYSTEM vs operator tree)' {
         }
     }
 }
+
+Describe 'Test-ClaudishRestartWasNoOp' {
+    # Regression for the 2026-10-22 01:27Z hub run: `-Recreate` ran
+    # `docker compose up -d`, compose returned 0 without replacing the
+    # container (bind-mount-only change), and the drain wrote OUTCOME success
+    # while the old config was still loaded.
+    #
+    # CLOCK-FREE (review 2026-10-22): the verdict compares StartedAt read
+    # immediately before the verb with StartedAt read immediately after — both
+    # from the Docker daemon's clock. No host clock, no tolerance window, no
+    # time-zone conversion: a WSL2 VM clock lagging the host can no longer make
+    # a genuine restart read as a no-op.
+
+    It 'an untouched container (StartedAt equal before and after) is a no-op' {
+        Test-ClaudishRestartWasNoOp -StartedAtBeforeRaw '2026-10-21T16:21:54.297089524Z' -StartedAtAfterRaw '2026-10-21T16:21:54.297089524Z' | Should -BeTrue
+    }
+
+    It 'a restarted container (StartedAt differs) is not a no-op, nanoseconds and all' {
+        Test-ClaudishRestartWasNoOp -StartedAtBeforeRaw '2026-10-21T16:21:54.297089524Z' -StartedAtAfterRaw '2026-10-22T01:27:58.912677448Z' | Should -BeFalse
+    }
+
+    It 'a restart whose after-reading looks OLDER than wall-clock time is still a restart (VM skew)' {
+        # The case the clock-free verdict exists for: Docker Desktop's WSL2 VM
+        # clock can lag the host after a sleep. A genuine restart can then
+        # stamp a StartedAt that looks "older than now" — equality with the
+        # BEFORE reading is the only honest discriminant.
+        Test-ClaudishRestartWasNoOp -StartedAtBeforeRaw '2026-10-22T01:20:00.000000000Z' -StartedAtAfterRaw '2026-10-22T01:15:00.000000000Z' | Should -BeFalse
+    }
+
+    It 'compares at second granularity (fractional-part spelling cannot fake a restart)' {
+        Test-ClaudishRestartWasNoOp -StartedAtBeforeRaw '2026-10-21T16:21:54.297089524Z' -StartedAtAfterRaw '2026-10-21T16:21:54.000000000Z' | Should -BeTrue
+    }
+
+    It 'returns $null when EITHER side is unreadable rather than inventing a verdict' {
+        Test-ClaudishRestartWasNoOp -StartedAtBeforeRaw 'true' -StartedAtAfterRaw '2026-10-22T01:27:58.000000000Z' | Should -BeNullOrEmpty
+        Test-ClaudishRestartWasNoOp -StartedAtBeforeRaw '2026-10-21T16:21:54.000000000Z' -StartedAtAfterRaw 'true' | Should -BeNullOrEmpty
+        Test-ClaudishRestartWasNoOp -StartedAtBeforeRaw '' -StartedAtAfterRaw '2026-10-22T01:27:58.000000000Z' | Should -BeNullOrEmpty
+        Test-ClaudishRestartWasNoOp -StartedAtBeforeRaw '2026-10-21T16:21:54.000000000Z' -StartedAtAfterRaw '' | Should -BeNullOrEmpty
+    }
+
+    It 'reads Docker zero-time on the after side as never-started, therefore untouched' {
+        Test-ClaudishRestartWasNoOp -StartedAtBeforeRaw '2026-10-21T16:21:54.000000000Z' -StartedAtAfterRaw '0001-01-01T00:00:00Z' | Should -BeTrue
+    }
+}
