@@ -78,6 +78,18 @@ ingress. Pins: `openai-request-to-anthropic.test.ts` (mapping matrix),
 `stop_reason` maps to `finish_reason`: `end_turn`/`stop_sequence` → `stop`, `tool_use` →
 `tool_calls`, `max_tokens` → `length`.
 
+**A reasoning model can spend the whole `max_tokens` budget before any text** (measured
+2026-10-22, RSM condensation probe): `/v1/chat/completions` with `model: "claude-sonnet-5-5"`
+served by the GLM lane at `max_tokens: 2000` returned **no text with `finish_reason: "length"`**
+after 25.6 s: `reasoning_content` is billed out of the same `max_tokens` as `content`, and the
+reasoning consumed it all before a text block started. On the JSON (non-streaming) response,
+`choices[0].message.content` is then **`null`**; on the streaming response no `content` delta
+arrives. A consumer that reads only `content` gets no answer and no error, and one that calls
+a string method on it throws. Mitigations: raise `max_tokens`, or send `enable_thinking: false`
+or `reasoning_effort` (mapped per #435; honored by the DeepSeek dialect under `passthrough`
+since #612). Alternatively, use `/v1/messages`: it shares the same budget, but exhaustion is
+*visible* there (a `thinking` block plus `stop_reason: "max_tokens"`).
+
 **Never-hang holds on this path**: a malformed stream degrades to a single terminal chunk plus
 `[DONE]` rather than stalling the consumer.
 
