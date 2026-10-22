@@ -71,6 +71,24 @@ Measured traps (2026-10-06, 400 newest captures): `body.metadata` is serialized 
 - **Archives** — `D:\claudish-captures\archive\captures-YYYY-MM-DD.7z` (LZMA2, ~100-130:1 ratio), mirrored to `G:\Mon Drive\Backups-Cloud\claudish\` via Google Drive Desktop (plain Windows file copy, no API; online-only — never pin that folder for offline access). Local retention 0 days: each local archive is deleted as soon as its GDrive copy is size-confirmed, so GDrive is the single home of history (2026-08-27 disk mandate; a DriveFS outage defers the purge, it never deletes unconfirmed).
 - **Heavy analysis is host-saturating — schedule it.** Decompressing a weeks-old 7z and parsing 100k+ `req-*.json` pegs the hub host and produces the HUB-LENT signature (event-loop stall, gateway latency still clean) for minutes at a time. Measured: same signature as a crisis wave, yet with streams ≈ 1 it costs nobody anything. Rule: heavy capture analysis runs in the **05-07Z trough**, extracts to **D: never C:**, and is *expected + attributed* there — not a crisis.
 
+## Client-visible final errors — the pattern that counts
+
+**A `[claudish] Error [Provider]: HTTP NNN` line is NOT, by itself, a client-visible error.** On a cascade the proxy logs one per upstream step it walks, and the walk is the recovery. Counting those lines answers "how many walls did we hit", never "how many clients got an error". The earlier instrument — `grep -E 'returning (4|5)[0-9][0-9]|\[RateLimit\]'` — does not even match this shape, so a window could read "0 client errors" while a client-visible 429 sat in it (measured 2026-10-21 07:31Z, see below).
+
+**The instrument is two passes.** First collect the candidate lines, then classify each one:
+
+```bash
+grep -E 'Error \[|HTTP 4[0-9][0-9]|HTTP 5[0-9][0-9]|returning (4|5)[0-9][0-9]' "$LOG" | grep -v '\[msg:'
+# then, for each: does a [resp] follow for the SAME request?
+grep -E '\[resp\] (anthropic|openai|responses|gemini|ollama)' "$LOG"
+```
+
+**Join key: the wall line has none — the pairing is by adjacency, and the doc says so.** `[claudish] Error […]: HTTP NNN` carries no `reqN` (unlike `[resp]` and `[ttft]`, which do — `composed-handler.ts` logs the wall line without one), so "same request" can only be read temporally. That reading is opposable only where interleaving is visible: a low-traffic window, or a sidecar serving few sessions. When adjacency is ambiguous — a hub under load, where a `[resp]` closing *another* request on another model can follow within the same second — the disambiguator is the walk itself: the `[Failover]` lines between the wall and the candidate `[resp]` name the **role and bucket** being walked, and the closing `[resp]` must be on a **model of that role's cascade**; a `[resp]` on an unrelated model closes a different request. Putting `reqN` on the wall line is the exact-key follow-up, tracked separately.
+
+- **Absorbed (not a client error)** = the wall line is followed by `[Failover] step … walled` / `ARMED bucket …`, and a `[resp]` closes the request on another model. **Negative control, 2026-10-21T12:46:03Z**: `Error [GLM Coding]: HTTP 429` → `ARMED bucket glm-coding (sonnet nominal) → Mistral GLM` → `Error [Mistral]: HTTP 402` → `step sonnet[0] walled` → `Error [Kimi Coding]: HTTP 429` → `step sonnet[1] walled` → `[resp] anthropic model=deepseek-v4.1-flash … stop=tool_use closed=true`. Three walls, **zero** client errors.
+- **Client-visible** = a wall line with **no `[resp]` for that request**. **Positive control, 2026-10-21T07:31:04Z**: `[claudish] Error [GLM Coding]: HTTP 429. Rate limited…` followed only by `[Failover] ARM-GRACE sonnet (glm-coding) — qualifying refusal 1/2` and then the next request's lines — the client received the 429. On that path the retry ladder is deliberately skipped (`429 names a quota/plan wall, not a burst`), so the wall is surfaced rather than absorbed.
+- **Relay context matters**: a request served during an `AUTONOMOUS` episode goes through the **local** cascade, not the hub's. The same wall can therefore be client-visible locally and absorbed hub-side — the mode line at the timestamp is part of the reading, not optional.
+
 ## Turn autopsy (#328 G12)
 
 **`scripts/turn-autopsy.py` answers a question no counter can: what KIND of turn was this?** The July-vs-now investigation (`jsboige/claudish#328`) is "×3.4 requests for ~half the PRs"; the counts decomposed the *what* (`ctx total ×3.68 ≈ ×3.41 requests × ×1.08 harness floor`, 05/07 vs 30/09 — corrected per #414; the earlier ×6.13/×1.80 was a per-field max() artifact mixing usage snapshots, withdrawn) and cannot reach the *why*, because the why is only in the bodies. This tool turns a 400-600 KB request body into a ~1.5 KB reading slice, so a reader classifies 50-100 turns/hour without opening a JSON by hand. It does **not** classify — it extracts, then aggregates the labels the reader wrote.

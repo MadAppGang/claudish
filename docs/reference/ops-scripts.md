@@ -102,6 +102,12 @@ Six measured traps, each of which produced a wrong answer before its fix — the
 
 
 
+## Log lines that are NOT faults (read before escalating)
+
+**`[Catalog] cache write skipped (unwritable path): EROFS: read-only file system, open '/root/.claudish/all-models.json'` is expected on every compose deployment and must not be re-read as a defect each cycle.** The config bind (`~/.claudish` → `/root/.claudish`) is deliberately `read_only: true` — it carries the provider API keys — so the catalog resolver cannot persist its disk cache. The failure is caught (`catalog-resolvers/openrouter.ts`, the `try/catch` added for #270), the in-memory refresh still succeeds, and resolution degrades to the documented path (dynamic catalog → disk cache → passthrough) with the disk step simply absent inside the container.
+
+**Frequency is per catalog REFRESH, not per container start** (corrected 2026-10-21 after an earlier "1 per start" reading was published): measured 22:39, 04:26, 10:18, 12:21, 18:23, 00:30, 01:01 and **07:11Z** — intervals of ~6 h, and the last one fired **6 h 10 after** the container's `StartedAt` with `RestartCount=0`. One line per ~6 h (or at a restart, which resets the timer) is nominal. Two lines within minutes would be the thing to investigate.
+
 ## Review-process analytics (`review-rounds.py`, #445 axis B)
 
 GitHub-side instrument (REST only — GraphQL is chronically exhausted on jsboige, memory `github-graphql-rest-first`; no local corpus needed). Measures the turns metric that replaced the retired "one comment per pushed head" target (coordinator B3, c.6233290794, 17/10): **CR rounds per merged PR**, per calendar month.
