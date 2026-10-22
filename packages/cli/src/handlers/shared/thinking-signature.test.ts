@@ -110,13 +110,56 @@ describe("stripUnsignedThinkingBlocks", () => {
     expect(messages[0].content).toHaveLength(3);
   });
 
-  test("never touches user messages, even if they carry a thinking-shaped block", () => {
+  test("strips a thinking-shaped block on a user message too (no role filter)", () => {
+    // Reconciled with upstream 0e8f3b05: a `thinking` block is invalid on the
+    // Anthropic wire wherever it sits, so leaving one on a user message only
+    // guarantees the request 400s. The fork used to pin the opposite
+    // ("never touches user messages"); that narrowing bought nothing.
     const messages = [
       { role: "user", content: [{ type: "thinking", thinking: "x", signature: "" }] },
     ];
     const removed = stripUnsignedThinkingBlocks(messages);
+    expect(removed).toBe(1);
+    expect(messages[0].content).toEqual([]);
+  });
+
+  test("strips a thinking block whose signature is null", () => {
+    const messages = [
+      { role: "assistant", content: [{ type: "thinking", thinking: "unsigned", signature: null }] },
+    ];
+    const removed = stripUnsignedThinkingBlocks(messages);
+    expect(removed).toBe(1);
+    expect(messages[0].content).toEqual([]);
+  });
+
+  test("preserves the documented foreign 64-hex signature gap (MiniMax)", () => {
+    // A non-empty signature is preserved even when it is a foreign one: on the
+    // MiniMax path these 64-hex blocks ARE the model's own thinking (the dialect
+    // re-sends them via preserveThinkingBlock()), so guessing which non-empty
+    // signatures are genuine is how real thinking gets deleted. They do reach
+    // the client under the `forced` policy (composed-handler-minimax-thinking
+    // .test.ts:131) — the reason to keep them is what they mean on that wire.
+    // Stripping them on the NATIVE path is #597's separate, pinned change.
+    const minimaxSignature = "7caa0d3cc2a449ac1cc68507504693f566245c7b5db3558f6041585e15a848f8";
+    const messages = [
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "MiniMax reasoning", signature: minimaxSignature }],
+      },
+    ];
+    const removed = stripUnsignedThinkingBlocks(messages);
     expect(removed).toBe(0);
-    expect(messages[0].content).toHaveLength(1);
+    expect(messages[0].content[0].signature).toBe(minimaxSignature);
+  });
+
+  test("leaves an untouched message's content array identity intact", () => {
+    const content = [{ type: "text", text: "u" }];
+    const messages = [
+      { role: "assistant", content: [{ type: "text", text: "a" }] },
+      { role: "user", content },
+    ];
+    expect(stripUnsignedThinkingBlocks(messages)).toBe(0);
+    expect(messages[1].content).toBe(content);
   });
 
   test("counts across multiple assistant turns and keeps signed ones", () => {
