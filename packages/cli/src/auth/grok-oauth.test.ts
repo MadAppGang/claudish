@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GrokOAuth, type GrokOAuthCredentials, setGrokOAuthPathForTesting } from "./grok-oauth.js";
@@ -48,6 +48,10 @@ afterEach(() => {
 /** Write the login another process (or an earlier session) left on disk. */
 function seedCredentialFile(credentials: GrokOAuthCredentials): void {
   writeFileSync(credentialPath, JSON.stringify(credentials, null, 2), { mode: 0o600 });
+}
+
+function readCredentialFile(): GrokOAuthCredentials {
+  return JSON.parse(readFileSync(credentialPath, "utf-8")) as GrokOAuthCredentials;
 }
 
 function internals(oauth: GrokOAuth): GrokOAuthTestInternals {
@@ -292,10 +296,7 @@ describe("GrokOAuth refresh", () => {
 
   test("uses a public-client refresh form and persists a rotated refresh token", async () => {
     const oauth = new HermeticGrokOAuth();
-    const state = internals(oauth);
     seedCredentialFile(expiredCredentials());
-    const saveCredentials = mock((_credentials: GrokOAuthCredentials) => {});
-    state.saveCredentials = saveCredentials;
     const fetchMock = mock(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({
         access_token: "tok-aaa",
@@ -320,7 +321,8 @@ describe("GrokOAuth refresh", () => {
     });
     // Public-client refresh must never grow an accidental confidential-client secret.
     expect([...form.keys()].some((key) => /secret/i.test(key))).toBe(false);
-    expect(saveCredentials.mock.calls[0][0]).toMatchObject({
+    // The refresh is committed to the credential file (refreshAndCommit), not to memory only.
+    expect(readCredentialFile()).toMatchObject({
       access_token: "tok-aaa",
       refresh_token: "ref-aaa",
       client_id: "client-aaa",
@@ -329,10 +331,7 @@ describe("GrokOAuth refresh", () => {
 
   test("keeps the existing refresh token when the server does not rotate it", async () => {
     const oauth = new HermeticGrokOAuth();
-    const state = internals(oauth);
     seedCredentialFile(expiredCredentials());
-    const saveCredentials = mock((_credentials: GrokOAuthCredentials) => {});
-    state.saveCredentials = saveCredentials;
     globalThis.fetch = mock(async () =>
       jsonResponse({ access_token: "tok-aaa", expires_in: 3600 })
     ) as unknown as typeof fetch;
@@ -340,7 +339,7 @@ describe("GrokOAuth refresh", () => {
     await expect(oauth.getToken()).resolves.toBe("tok-aaa");
 
     // Dropping the old value here would strand the very next refresh attempt.
-    expect(saveCredentials.mock.calls[0][0].refresh_token).toBe("ref-old");
+    expect(readCredentialFile().refresh_token).toBe("ref-old");
   });
 
   test("names claudish login grok when refresh fails", async () => {

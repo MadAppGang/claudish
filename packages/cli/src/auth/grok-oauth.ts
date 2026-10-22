@@ -183,16 +183,10 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
   /**
    * Exchange the refresh token. Public client: `client_id` in the body, no
    * secret. The IdP may ROTATE the refresh token, so whatever comes back is
-   * persisted — dropping it would strand the next refresh on a dead token.
+   * returned for `refreshAndCommit` to persist — dropping it would strand the next
+   * refresh on a dead token. Nothing is written here.
    */
-  protected async doRefreshToken(): Promise<string> {
-    const current = this.credentials;
-    if (!current) {
-      throw terminalCredentialError(
-        `No Grok credentials found. Please run \`${this.loginHint}\` first.`
-      );
-    }
-
+  protected async doRefreshToken(current: GrokOAuthCredentials): Promise<GrokOAuthCredentials> {
     const body = new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: current.refresh_token,
@@ -262,8 +256,7 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
       client_id: current.client_id || GROK_PUBLIC_CLIENT_ID,
       scope: parsed.scope ?? current.scope,
     };
-    this.saveCredentials(next);
-    return next.access_token;
+    return next;
   }
 
   /**

@@ -14,12 +14,12 @@
 
 import { exec } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, unlinkSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { log } from "../logger.js";
-import { CredentialFileState } from "./credential-file.js";
+import { CredentialFileState, refreshAndCommit } from "./credential-file.js";
 import { terminalCredentialError } from "./credentials/credential-error.js";
 
 const execAsync = promisify(exec);
@@ -52,8 +52,12 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
   /** CLI login command hint (e.g. "claudish login gemini") */
   protected abstract readonly loginHint: string;
 
-  /** Provider-specific token refresh. Must return the new access_token. */
-  protected abstract doRefreshToken(): Promise<string>;
+  /**
+   * Provider-specific token exchange: refresh `current` and RETURN the next
+   * credentials. Never writes them: `refreshAndCommit` commits the result through
+   * `saveRefreshed`, which will not overwrite a newer login another process wrote.
+   */
+  protected abstract doRefreshToken(current: T): Promise<T>;
 
   /** Validate that parsed JSON has all required fields for this provider's credential type. */
   protected abstract validateCredentials(data: unknown): data is T;
@@ -96,17 +100,10 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
     return this.fileState.value;
   }
 
+  /** A LOGIN's credentials: written unconditionally, atomically (temp + rename, 0600). */
   protected saveCredentials(credentials: T): void {
-    OAuthManager.ensureClaudishDir();
-    const credPath = this.getCredentialsPath();
-    const fd = openSync(credPath, "w", 0o600);
-    try {
-      writeSync(fd, JSON.stringify(credentials, null, 2), 0, "utf-8");
-    } finally {
-      closeSync(fd);
-    }
-    this.fileState.adoptWritten(credentials);
-    log(`[${this.providerName}] Credentials saved to ${credPath}`);
+    this.fileState.saveLogin(credentials);
+    log(`[${this.providerName}] Credentials saved to ${this.getCredentialsPath()}`);
   }
 
   protected deleteCredentials(): void {
@@ -157,11 +154,24 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
     }
 
     // Before refresh: the refresh starts from the file's credentials as just synced.
-    this.refreshPromise = this.doRefreshToken().finally(() => {
+    this.refreshPromise = this.refreshAndCommit().finally(() => {
       this.refreshPromise = null;
     });
 
     return this.refreshPromise;
+  }
+
+  /** The shared refresh-and-commit sequence (`credential-file.ts`), for this manager. */
+  private refreshAndCommit(): Promise<string> {
+    return refreshAndCommit(
+      this.fileState,
+      (current) => this.doRefreshToken(current),
+      {
+        isValid: (credentials) => this.isCredentialValid(credentials),
+        noCredentials: () => this.noCredentialsError(),
+      },
+      this.providerName
+    );
   }
 
   /**
@@ -182,12 +192,16 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
       log(`[${this.providerName}] credential file changed on disk; using the newer login`);
       return;
     }
-    await this.doRefreshToken();
+    await this.refreshAndCommit();
   }
 
   protected isTokenValid(): boolean {
-    if (!this.credentials) return false;
-    return Date.now() < this.credentials.expires_at - this.tokenRefreshMargin;
+    const current = this.credentials;
+    return current !== null && this.isCredentialValid(current);
+  }
+
+  protected isCredentialValid(credentials: T): boolean {
+    return Date.now() < credentials.expires_at - this.tokenRefreshMargin;
   }
 
   // ── PKCE Helpers ───────────────────────────────────────────────────────

@@ -23,7 +23,19 @@
  *
  * Never logs a credential value: log lines carry the label and the path only.
  */
-import { readFileSync, statSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { dirname } from "node:path";
 import { log } from "../logger.js";
 
 /** What identifies one version of a file without reading it. */
@@ -52,6 +64,60 @@ export function statCredentialFile(path: string): FileStamp | null | { error: st
 function sameStamp(a: FileStamp, b: FileStamp): boolean {
   return a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 }
+
+/**
+ * Write `data` as JSON: a new temp file (`<path>.tmp-<pid>-<hex>`, opened "wx", mode
+ * 0600), fsync, rename onto `path`. A reader sees the old file or the new one, never a
+ * partial one. Returns the new stamp. Throws with the old file intact on any failure.
+ */
+export function writeCredentialFileAtomic(path: string, data: unknown): FileStamp {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  try {
+    const fd = openSync(tmp, "wx", 0o600);
+    try {
+      writeSync(fd, JSON.stringify(data, null, 2));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Never created, or already renamed.
+    }
+    throw err;
+  }
+  const stamp = statCredentialFile(path);
+  if (!stamp || "error" in stamp) throw new Error(`credential file vanished after write: ${path}`);
+  return stamp;
+}
+
+/**
+ * Which login a credential belongs to. A refresh keeps the lineage when the server
+ * does not rotate the refresh token and moves it when it does; a NEW login always
+ * moves it. With no refresh token the access token stands in.
+ */
+function lineageOf(credentials: { access_token: string; refresh_token?: string }): string {
+  return credentials.refresh_token
+    ? `refresh:${credentials.refresh_token}`
+    : `access:${credentials.access_token}`;
+}
+
+/** What became of a refreshed credential this process tried to write back. */
+export type SaveRefreshedResult<T> =
+  /** The file still held `base`'s lineage; `next` was written. */
+  | { outcome: "saved" }
+  /** Another process wrote a different login during the exchange; nothing written. */
+  | { outcome: "newer-on-disk"; onDisk: T }
+  /** The file was deleted during the exchange (a logout); nothing written. */
+  | { outcome: "removed" }
+  /** Still unreadable after the bounded re-read: it may be a newer login caught mid-write. */
+  | { outcome: "unreadable" }
+  /** The atomic write itself failed (EACCES, ENOSPC); the old file is intact. */
+  | { outcome: "write-failed" };
 
 /**
  * unchanged  : same path, same stamp as the last GOOD read
@@ -134,15 +200,57 @@ export class CredentialFileState<T extends { access_token: string; refresh_token
     return result;
   }
 
-  /**
-   * Hold `next` as this process's credentials after THIS process wrote it to `path`,
-   * recording the file's current stamp so our own write is not read back as a change.
-   */
-  adoptWritten(next: T): void {
+  /** A login: the user's intent, written unconditionally (atomic). */
+  saveLogin(next: T): void {
     const path = this.opts.path();
-    const stamp = statCredentialFile(path);
+    const stamp = writeCredentialFileAtomic(path, next);
     this.current = next;
-    this.recorded = stamp && !("error" in stamp) ? { path, stamp } : null;
+    this.recorded = { path, stamp };
+  }
+
+  /**
+   * Hold `next` in memory WITHOUT writing it or recording a stamp: the next sync
+   * reads the file again, and a newer login that finished writing wins.
+   */
+  keepInMemory(next: T): void {
+    this.current = next;
+  }
+
+  /**
+   * A refresh result. Settles first, then writes `next` ONLY if the file still holds
+   * `base`'s lineage (compare-and-set on the login, not on the stamp: our own
+   * previous write also moves the stamp). A refresh that raced a login therefore
+   * cannot undo the login. Never throws.
+   */
+  async saveRefreshed(base: T, next: T): Promise<SaveRefreshedResult<T>> {
+    const label = this.opts.label;
+    const sync = await this.settle();
+    if (sync === "unreadable") {
+      log(
+        `[${label}] credential file unreadable after the token refresh; kept the refreshed token in memory, not written`
+      );
+      return { outcome: "unreadable" };
+    }
+    const onDisk = this.current;
+    if (sync === "removed" || onDisk === null) return { outcome: "removed" };
+    if (lineageOf(onDisk) !== lineageOf(base)) {
+      log(`[${label}] credential file changed during the token refresh; kept the newer file`);
+      return { outcome: "newer-on-disk", onDisk };
+    }
+    const path = this.opts.path();
+    try {
+      const stamp = writeCredentialFileAtomic(path, next);
+      this.current = next;
+      this.recorded = { path, stamp };
+      log(`[${label}] Credentials saved to ${path}`);
+      return { outcome: "saved" };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | null)?.code ?? "error";
+      log(
+        `[${label}] could not write the refreshed credentials (${path}, ${code}); kept them in memory`
+      );
+      return { outcome: "write-failed" };
+    }
   }
 
   /** Forget the in-memory credentials (a logout in this process). */
@@ -155,5 +263,102 @@ export class CredentialFileState<T extends { access_token: string; refresh_token
       `[${this.opts.label}] credential file unreadable (${path}); kept the last good credentials`
     );
     return "unreadable";
+  }
+}
+
+export interface RefreshAndCommitOptions<T> {
+  /** Whether a credential's access token can still be used without a refresh. */
+  isValid: (credentials: T) => boolean;
+  /** The terminal "No … credentials found. Please run `claudish login …`" error. */
+  noCredentials: () => Error;
+}
+
+/**
+ * Refresh this process's credentials and commit the result to the file, without ever
+ * undoing a login another process wrote meanwhile. ONE implementation, shared by
+ * `OAuthManager` and `KimiOAuth`, so the adopt and retry-once rules cannot drift.
+ *
+ * - `refresh(current)` does the network exchange only and returns the next
+ *   credentials; it never writes.
+ * - A failed refresh is not reported yet: the file is settled first. If it now holds
+ *   a different login (`claudish login` ran elsewhere), that login is used: its token
+ *   when still valid, else ONE refresh from its refresh token. Otherwise the original
+ *   error is rethrown unchanged (same object), so its classification at the auth
+ *   sites is untouched and no status is invented.
+ * - The result is committed with `saveRefreshed`: written only if the file still holds
+ *   the lineage we refreshed from; a newer login on disk is adopted instead; a deleted
+ *   file (logout) is not recreated; an unreadable file or a failed write keeps the
+ *   refreshed token in memory and signs with it.
+ *
+ * Returns the access token to sign with.
+ */
+export async function refreshAndCommit<T extends { access_token: string; refresh_token?: string }>(
+  state: CredentialFileState<T>,
+  refresh: (current: T) => Promise<T>,
+  opts: RefreshAndCommitOptions<T>,
+  label = "credentials"
+): Promise<string> {
+  const base = state.value;
+  if (!base) throw opts.noCredentials();
+
+  let next: T;
+  try {
+    next = await refresh(base);
+  } catch (err) {
+    await state.settle();
+    const now = state.value;
+    if (now && lineageOf(now) !== lineageOf(base)) {
+      log(
+        `[${label}] token refresh failed, but the credential file changed on disk; using the newer login`
+      );
+      return useLogin(state, now, refresh, opts, label, false);
+    }
+    throw err;
+  }
+  return commit(state, base, next, refresh, opts, label, true);
+}
+
+/** Sign with `login` (a login another process wrote): its token if valid, else refresh once. */
+async function useLogin<T extends { access_token: string; refresh_token?: string }>(
+  state: CredentialFileState<T>,
+  login: T,
+  refresh: (current: T) => Promise<T>,
+  opts: RefreshAndCommitOptions<T>,
+  label: string,
+  mayRetry: boolean
+): Promise<string> {
+  if (opts.isValid(login)) return login.access_token;
+  const next = await refresh(login);
+  return commit(state, login, next, refresh, opts, label, mayRetry);
+}
+
+async function commit<T extends { access_token: string; refresh_token?: string }>(
+  state: CredentialFileState<T>,
+  base: T,
+  next: T,
+  refresh: (current: T) => Promise<T>,
+  opts: RefreshAndCommitOptions<T>,
+  label: string,
+  mayRetry: boolean
+): Promise<string> {
+  const result = await state.saveRefreshed(base, next);
+  switch (result.outcome) {
+    case "saved":
+      return next.access_token;
+    case "newer-on-disk":
+      // Discard our result. A newer login that is already expired is refreshed once;
+      // past that one retry, our fresh token signs this request from memory.
+      if (opts.isValid(result.onDisk) || mayRetry) {
+        return useLogin(state, result.onDisk, refresh, opts, label, false);
+      }
+      state.keepInMemory(next);
+      return next.access_token;
+    case "removed":
+      // A logout during the exchange is not undone.
+      throw opts.noCredentials();
+    case "unreadable":
+    case "write-failed":
+      state.keepInMemory(next);
+      return next.access_token;
   }
 }
