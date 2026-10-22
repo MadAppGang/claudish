@@ -61,7 +61,8 @@ export function statCredentialFile(path: string): FileStamp | null | { error: st
   }
 }
 
-function sameStamp(a: FileStamp, b: FileStamp): boolean {
+/** Whether two stamps describe the same version of a file. */
+export function sameStamp(a: FileStamp, b: FileStamp): boolean {
   return a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 }
 
