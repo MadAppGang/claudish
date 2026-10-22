@@ -204,25 +204,13 @@ BeforeAll {
         return ,@($violations)
     }
 
-    function Test-FetchGuarded {
-        # Structural half of the #569 follow-up: in the update path, the
-        # statement IMMEDIATELY after `git … fetch origin main` must be
+    function Test-SingleFetchGuarded {
+        # Per-fetch half of Test-FetchGuarded: the statement IMMEDIATELY after
+        # this `git … fetch origin main` call must be
         # `if ($LASTEXITCODE -ne 0) { Die … }` — proving a failing fetch Dies
         # BEFORE checkout/reset can mask it on the stale origin/main.
-        param([string]$Source)
-        $tokens = $null; $parseErrors = $null
-        $ast = [System.Management.Automation.Language.Parser]::ParseInput(
-            $Source, [ref]$tokens, [ref]$parseErrors)
-        if ($parseErrors.Count -gt 0) {
-            throw "source does not parse: $($parseErrors[0].Extent.StartLineNumber): $($parseErrors[0].Message)"
-        }
-        $fetch = @($ast.FindAll({ param($a)
-                $a -is [System.Management.Automation.Language.CommandAst] -and
-                $a.GetCommandName() -eq 'git' }, $true)) |
-            Where-Object { $_.Extent.Text -match '\sfetch\s' -and $_.Extent.Text -match 'origin\s+main' } |
-            Select-Object -First 1
-        if ($null -eq $fetch) { return $false }
-        $stmt = $fetch
+        param($Fetch)
+        $stmt = $Fetch
         while ($null -ne $stmt -and
                $stmt -isnot [System.Management.Automation.Language.StatementAst]) {
             $stmt = $stmt.Parent
@@ -264,6 +252,31 @@ BeforeAll {
             }
         }
         return ($mentionsExitCode -and $callsDie)
+    }
+
+    function Test-FetchGuarded {
+        # Structural half of the #569 follow-up: EVERY `git … fetch origin
+        # main` in the source must be IMMEDIATELY followed by
+        # `if ($LASTEXITCODE -ne 0) { Die … }`. ALL matches are checked, not
+        # just the first — a second fetch added later ships with the same
+        # guarantee or the pin goes red (po-2027 review of #582: the
+        # first-match-only shape left any future fetch unguarded).
+        param([string]$Source)
+        $tokens = $null; $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput(
+            $Source, [ref]$tokens, [ref]$parseErrors)
+        if ($parseErrors.Count -gt 0) {
+            throw "source does not parse: $($parseErrors[0].Extent.StartLineNumber): $($parseErrors[0].Message)"
+        }
+        $fetches = @($ast.FindAll({ param($a)
+                $a -is [System.Management.Automation.Language.CommandAst] -and
+                $a.GetCommandName() -eq 'git' }, $true)) |
+            Where-Object { $_.Extent.Text -match '\sfetch\s' -and $_.Extent.Text -match 'origin\s+main' }
+        if ($fetches.Count -eq 0) { return $false }
+        foreach ($fetch in $fetches) {
+            if (-not (Test-SingleFetchGuarded -Fetch $fetch)) { return $false }
+        }
+        return $true
     }
 
     $script:NativeNames = Get-NativeCommandNames
@@ -480,5 +493,29 @@ Describe "install-sidecar fetch exit-code pin (#569 follow-up)" {
         $mutated = $script:Source.Replace($needle, '        # mutated: guard removed')
         $mutated | Should -Not -Be $script:Source
         Test-FetchGuarded -Source $mutated | Should -BeFalse
+    }
+
+    It "every fetch is pinned: a second, unguarded fetch fails the check" {
+        # The all-matches pin. If Test-FetchGuarded ever regresses to
+        # first-match-only (the `Select-Object -First 1` this strengthening
+        # removed), this synthetic turns green while fetch #2 ships unguarded
+        # — this test going red IS the regression signal.
+        $synthetic = @'
+git -C $RepoDir fetch origin main --quiet
+if ($LASTEXITCODE -ne 0) { Die "git fetch failed in $RepoDir" }
+git -C $RepoDir fetch origin main --quiet
+Write-Host "second fetch has no guard"
+'@
+        Test-FetchGuarded -Source (ConvertTo-Lf $synthetic) | Should -BeFalse
+    }
+
+    It "every fetch is pinned: both guarded passes" {
+        $synthetic = @'
+git -C $RepoDir fetch origin main --quiet
+if ($LASTEXITCODE -ne 0) { Die "git fetch 1 failed in $RepoDir" }
+git -C $RepoDir fetch origin main --quiet
+if ($LASTEXITCODE -ne 0) { Die "git fetch 2 failed in $RepoDir" }
+'@
+        Test-FetchGuarded -Source (ConvertTo-Lf $synthetic) | Should -BeTrue
     }
 }
