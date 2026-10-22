@@ -48,6 +48,7 @@ claudish --model ollama@<model>:3 "task"   # 3 concurrent requests
 - `ollama@` → Ollama (local)
 - `lmstudio@` → LM Studio (local)
 - Custom endpoint names also work as provider prefixes (e.g., `my-vllm@model-name`) — see `ai-docs/architecture/custom-endpoints.md`
+- **An unknown shortcut is named as unknown** (`providers/unknown-shortcut.ts`). `parseModelSpec` passes an unknown shortcut through as the provider name, so `go@gemini-3.8-flash` (`go@` was removed in v7.36.0) used to reach the credential filter and answer `No credentials configured for "go"` (D9). `explainExplicitSpec` now asks `isKnownProviderName` FIRST, before any credential read (no authority lookup, readiness probe or 1Password attempt for a name that cannot exist), and answers no-route with cause `explicit-unknown-shortcut` and candidate outcome `unknown-provider`. Known means a builtin or runtime-registered provider, a bundled endpoint (even with no key, so `groq@` keeps its credential message), a `customEndpoints` key, or `custom-url`. The one wording, printed by routing, the proxy's step 6b, preflight and `--probe`: `Unknown provider shortcut "go" in "go@gemini-3.8-flash".` plus `Providers that serve gemini-3.8-flash: ag@… (Antigravity, subscription · account decides models) · g@… (Gemini, native API) · … Every shortcut: claudish --help.` The suggestions are the providers `gatherRouteCandidates` returns for the model (catalog connections and namespace claims, chain order, no credential filter, no cap), spelled with `getShortestPrefix`; a model that gathers nothing lists the shortcuts one edit from the typed one. No model list is written anywhere, and a removed shortcut gets no alias. Whoever adds a credential read to `explainExplicitSpec` keeps it BELOW this check
 - **Bundled catalog vendors** each use their own name as their only prefix, and appear only when their key is locally present: `groq@`, `cerebras@`, `together@`, `fireworks@`, `deepinfra@`, `nebius@`, `hyperbolic@`, `sambanova@`, `novita@`, `baseten@`, `perplexity@`, `venice@`, `chutes@`, `featherless@`, `parasail@`, `inference-net@`, `aimlapi@`, `requesty@`, `nanogpt@`, `cohere@`, `scaleway@`, `upstage@`, `writer@`, `moonshot-cn@`, `tuningengines@` — see `ai-docs/architecture/predefined-endpoints.md`. `moonshot-cn@` is the China-region Moonshot product, a DIFFERENT service from the builtin Kimi provider reached by `moonshot@`
 
 ## Local models
@@ -236,7 +237,10 @@ process inherits env, not argv. `--default-provider ""` exports an empty value, 
 the hop. The export runs after `--op-env` and `--op`, which overwrite env unconditionally, so the
 flag still beats a value they hydrate. Children see it only because every claudish child is
 spawned through `node:child_process`, which inherits `process.env`: `Bun.spawn` without an `env`
-option drops in-process env writes.
+option drops in-process env writes. Measured 2026-10-22, that holds on bun 1.4.0 only: on bun
+1.3.10 (the CI pin) a `node:child_process` child spawned with no `env` option ALSO gets the
+original environment, a deletion or an assignment made in-process undone. A child that must see an
+in-process write needs `env: { ...process.env }` on 1.3.10 (`testing.md`, the spawn rule).
 
 **Who reads it.** `route(model)` with no overrides asks the resolver on every call
 (`effectiveDefaultProvider`), and so does `--probe`'s chain, so the two cannot name different
