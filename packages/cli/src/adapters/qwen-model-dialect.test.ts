@@ -113,6 +113,23 @@ describe("QwenModelDialect — OpenAI-compatible wire", () => {
     expect(payload.thinking_budget).toBe(6000);
     expect(payload.thinking).toBeUndefined();
   });
+
+  // upstream 9199adb4: DashScope 400s `reasoning_effort` next to `thinking_budget`.
+  // One pin per policy — `disabled` and `budget` return early, so a scrub placed
+  // after them would cover `passthrough` alone (the #602 review finding).
+  for (const [policy, original] of [
+    [undefined, {}],
+    ["budget:1500", {}],
+    ["passthrough", { thinking: { budget_tokens: 6000 } }],
+  ] as const) {
+    it(`never sends reasoning_effort on the OpenAI wire (policy ${policy ?? "default"})`, () => {
+      if (policy === undefined) delete process.env.CLAUDISH_QWEN_THINKING;
+      else process.env.CLAUDISH_QWEN_THINKING = policy;
+      const payload: any = { reasoning_effort: "high" };
+      dialect().prepareRequest(payload, original, OPENAI);
+      expect(payload.reasoning_effort).toBeUndefined();
+    });
+  }
 });
 
 describe("QwenModelDialect — #435 ingress-mapped thinking", () => {

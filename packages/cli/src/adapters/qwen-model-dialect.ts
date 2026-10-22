@@ -144,6 +144,29 @@ export class QwenModelDialect extends BaseAPIFormat {
       return request;
     }
 
+    // OpenAI-compatible wire: never let `reasoning_effort` ride along.
+    //
+    // DashScope does not merely ignore it next to `thinking_budget`, it REJECTS
+    // the pair:
+    //
+    //   400 [invalid_parameter_error] 'reasoning_effort' and 'thinking_budget'
+    //       cannot be set simultaneously
+    //
+    // Reported 2026-08-19 through Zen Go, which fronts Qwen and passes the
+    // upstream verdict back verbatim (upstream 9199adb4). `reasoning_effort` is
+    // OpenAI's spelling of the same intent the branches below express in
+    // DashScope's spelling, so leaving it is a contradiction on the wire
+    // regardless of who set it — and it costs the whole turn, not just the
+    // reasoning depth. GLMModelDialect already does this ("never leave a depth
+    // knob contradicting the off-switch").
+    //
+    // Placed BEFORE the policy branches, not at the end of the method: the
+    // `disabled` and `budget` branches return early, and `budget` is the one
+    // that sets `thinking_budget` — the exact pair upstream measured. Upstream's
+    // method has no early returns, so its end-of-method placement covered every
+    // path there; on this fork it would cover `passthrough` only.
+    if (request.reasoning_effort !== undefined) delete request.reasoning_effort;
+
     // OpenAI-compatible wire — the historical mapping.
     if (policy.kind === "disabled") {
       request.enable_thinking = false;

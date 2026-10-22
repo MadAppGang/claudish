@@ -58,6 +58,16 @@ describe("DeepSeekModelDialect — thinking policy", () => {
     expect(payload.thinking).toEqual({ type: "disabled" });
   });
 
+  it("drops a contradicting reasoning_effort when the policy is disabled (upstream 19cdaa6f)", () => {
+    // OpenCode Zen 400s `thinking.type='disabled'` next to a non-'none'
+    // `reasoning_effort` for deepseek-v4.1-flash (measured upstream 2026-09-19).
+    process.env.CLAUDISH_DEEPSEEK_THINKING = "disabled";
+    const payload: any = { reasoning_effort: "high" };
+    dialect().prepareRequest(payload, {});
+    expect(payload.thinking).toEqual({ type: "disabled" });
+    expect(payload.reasoning_effort).toBeUndefined();
+  });
+
   it("never emits enable_thinking — DeepSeek ignores that spelling", () => {
     // Measured: enable_thinking:false left reasoning at 128 chars. Emitting it
     // would look like a working switch while changing nothing.

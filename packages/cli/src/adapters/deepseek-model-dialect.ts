@@ -70,6 +70,14 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
 
     if (policy.kind === "disabled") {
       request.thinking = { type: "disabled" };
+      // Never leave a depth knob contradicting the off-switch — the same rule
+      // GLM's dialect applies (upstream 19cdaa6f). `OpenAIAPIFormat` runs first
+      // and may have already set `reasoning_effort`, so the pair can go out
+      // together and OpenCode Zen answers `400 "thinking.type='disabled'
+      // conflicts with a non-'none' reasoning_effort"` for deepseek-v4.1-flash
+      // (measured 2026-09-19 upstream; the same request with effort "low"
+      // returns 200).
+      if (request.reasoning_effort !== undefined) delete request.reasoning_effort;
       log("[DeepSeekModelDialect] thinking disabled (CLAUDISH_DEEPSEEK_THINKING=disabled)");
       return request;
     }
