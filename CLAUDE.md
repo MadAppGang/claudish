@@ -133,7 +133,7 @@ Tests and E2E: `docs/reference/relay-internals.md`.
 
 ## Budget Failover (v7.2+)
 
-Substitutes the *model itself* for a whole **role** (`opus`/`sonnet`/`haiku`/`fable`) when that role's metered plan is exhausted — a subscription concern, distinct from `FallbackHandler` (provider swap, a transport concern). They compose. Every substitution is **announced** (three notice moments, two channels, centralized in `applyFailoverNotices`); none may ever throw. **Notices state facts, never instructions** (doctrine 2026-08-23). Rules, narratives and probe matrices: `docs/reference/budget-failover.md`.
+Substitutes the *model itself* for a whole **role** (`opus`/`sonnet`/`haiku`/`fable`) when that role's metered plan is exhausted — a subscription concern, distinct from `FallbackHandler` (provider swap, a transport concern). They compose. Every substitution is **announced** (centralized in `applyFailoverNotices`); none may ever throw. **Notices state facts, never instructions** (doctrine 2026-08-23). Rules, narratives and probe matrices: `docs/reference/budget-failover.md`.
 
 - **A role's failover is an ordered list of steps** (`CLAUDISH_FAILOVER_<ROLE>`, `>`-separated; the last step is typically PAYG).
 - **A wall is keyed by provider BUCKET, never by role (#275)**: a qualifying refusal while serving the nominal walls `bucket(nominal)`; only a request whose own resolved nominal sits in a walled bucket diverts to *its* role's cascade. A bare `claude-*` takes a per-model native bucket (`anthropic-native/<model>`) and never consults `route()`. Config-arms (`CLAUDISH_FAILOVER_ACTIVE`) divert the whole role — except a `role@machine` piece, which diverts only requests whose `X-Claudish-Machine` names that machine.
@@ -148,8 +148,6 @@ Substitutes the *model itself* for a whole **role** (`opus`/`sonnet`/`haiku`/`fa
 - **A failover target must resolve on the machine that calls the models** — arm cascades on sidecars too. ⚠ Count armed state **by VALUE** (`grep -cE '^CLAUDISH_FAILOVER_[A-Z0-9_]+=.+'`), never by name; `roleFromModelName()` matches only the four role keywords — set `CLAUDISH_FAILOVER_ROLE_MODELS` for bare provider ids.
 - ⚠ **In a compose-deployed container the environment is fixed at create time (#310)** — a name absent from `docker-compose.yml`'s `environment:` list NEVER reaches the process (`compose-env-coverage.test.ts` cross-checks); "read per request" still means a NEW value enters only at the next **recreate**.
 - **A session's UPSTREAM output tokens can be capped (#317 option B, `fork/session-budget.ts`)** — counter per `(X-Claudish-Machine, session_id)` on the dwell seam, 24 h sliding, every cascade attempt counted. Bars `CLAUDISH_SESSION_BUDGET_CEILING` (refusal — local labeled 429 + `retry-after`, **before any upstream is paid**; wording load-bearing, no quota-class word or `isQuotaExhaustion` would arm off our own ceiling) and `CLAUDISH_SESSION_BUDGET_WARN` (marker-only, defaults to 80%); both inert without env — **fleet pose: WARN-only until the user fixes the values** (an agent never arms the ceiling alone). Subagent sid sharing: `docs/reference/budget-failover.md`.
-
-Env knobs (canonical annotated template: `.env.sidecar.example`): cascade, `_LABEL`, `_DIRECTION`, `_NOTE`, `_RESET`, `CLAUDISH_FAILOVER_ROLE_MODELS`, `_ACTIVE`, `_AUTO`, the #91 grace knobs (`_ARM_AFTER`, `_ARM_GRACE_MS`, `_ARM_RETRY_AFTER_CEILING_MS`, `_SESSION_DWELL_MS`, `_RECOVERY_GRACE_MS`), all startup reads (`initFailover`).
 
 ### `CLAUDISH_QWEN_THINKING`
 
