@@ -10,12 +10,17 @@
  * model's own words), the busy wait as a hang.
  *
  * The signal is a response header, `x-claudish-step-skip`, set by
- * ComposedHandler on exactly those two responses:
+ * ComposedHandler on exactly those three responses:
  *   - `context` on the overflow recovery turn (classified from upstream OR
  *     short-circuited by the learned cap), with `est=`/`cap=` detail for the
  *     countable marker;
  *   - `busy` on the bounded 529 the handler answers when the step attempt's
- *     concurrency wait expires, with `wait=`/`label=` detail.
+ *     concurrency wait expires, with `wait=`/`label=` detail;
+ *   - `media` on the engine's per-prompt image cap (#575 — vLLM refuses "At
+ *     most N image(s)"), with `images=`/`cap=`/`param=` detail. The status
+ *     stays 400: nothing about the prompt's SIZE is wrong, so the #79
+ *     recoverable turn (whose whole job is to advance the context gauge)
+ *     would be a false signal — but the step is healthy and must advance.
  *
  * Only `handleWithCascade` ACTS on it, and only for a non-last cascade step
  * with a successor: advance (skip), no failure mark, no dwell pin on the
@@ -27,7 +32,11 @@
 
 export const STEP_SKIP_HEADER = "x-claudish-step-skip";
 
-export type StepSkipReason = "context" | "busy";
+export type StepSkipReason = "context" | "busy" | "media";
+
+/** Every reason the loop will act on. A producer adding one must extend this
+ *  AND `readStepSkip` together — a header the reader drops is a silent no-op. */
+const STEP_SKIP_REASONS: readonly StepSkipReason[] = ["context", "busy", "media"];
 
 export interface StepSkipInfo {
   reason: StepSkipReason;
@@ -54,9 +63,12 @@ export function readStepSkip(response: Response): StepSkipInfo | null {
   if (!raw) return null;
   const semi = raw.indexOf(";");
   const reason = (semi === -1 ? raw : raw.slice(0, semi)).trim();
-  if (reason !== "context" && reason !== "busy") return null;
+  // Membership in ONE list: a reason added to the union but not here reads as
+  // null and the loop silently ignores its header — the failure mode this
+  // constant exists to make impossible to write twice, in two spellings.
+  if (!STEP_SKIP_REASONS.includes(reason as StepSkipReason)) return null;
   const detail = semi === -1 ? undefined : raw.slice(semi + 1).trim() || undefined;
-  return { reason, detail };
+  return { reason: reason as StepSkipReason, detail };
 }
 
 // ── Kill switch + busy-wait knob (both re-read per request) ────────────────────

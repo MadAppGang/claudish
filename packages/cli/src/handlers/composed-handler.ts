@@ -57,7 +57,9 @@ import {
   overflowRecoveryText,
   buildOverflowRecoveryStream,
   buildOverflowRecoveryMessage,
+  countMediaBlocks,
 } from "./shared/context-overflow.js";
+import { classifyMediaCap, mediaCapRefusalText, mediaCapSkipDetail } from "./shared/media-cap.js";
 import {
   STEP_SKIP_HEADER,
   encodeStepSkipHeader,
@@ -1284,6 +1286,39 @@ export class ComposedHandler implements ModelHandler {
           return this.buildOverflowRecoveryResponse(c, payload, est, overflow.used, overflow.limit);
         }
 
+        // #575 — the vLLM per-prompt image cap ("At most 4 image(s) may be
+        // provided in one prompt") is a REQUEST-SHAPE incapacity, not a step
+        // failure: the step is healthy, this prompt's media count is what it
+        // cannot take. Emit the third step-skip class so a non-last step
+        // advances with no failure mark, no bench, no arm (#431), and give the
+        // reader an exact label — the generic "Request format may be
+        // incompatible with provider" is what sent the 20/10 diagnosis thread
+        // hunting a translation bug.
+        //
+        // The status stays 400: nothing about the prompt's SIZE is wrong, so
+        // the #79 recoverable turn (whose whole job is to advance the context
+        // gauge with an input_tokens at or above the real size) would report a
+        // false cause and make the client compact for no reason.
+        const mediaCap = classifyMediaCap(response.status, errorText);
+        if (mediaCap.matched) {
+          const carried = countMediaBlocks(payload);
+          logStderr(
+            `[MediaCap] provider=${this.provider.displayName} model=${this.targetModel} ` +
+              `cap=${mediaCap.max ?? "?"} images=${carried} param=${mediaCap.param ?? "?"} — ` +
+              `request-shape incapacity, not a step failure`,
+            true // forceConsole — operational event
+          );
+          const out = c.json(
+            wrapAnthropicError(400, mediaCapRefusalText(mediaCap.max, carried), "invalid_request_error"),
+            400 as any
+          );
+          out.headers.set(
+            STEP_SKIP_HEADER,
+            encodeStepSkipHeader("media", mediaCapSkipDetail(mediaCap, carried))
+          );
+          return out;
+        }
+
         // (port 196e6f8f) When the body was JSON, `message` already IS the
         // provider's sentence and the field would duplicate it — the `!==` guard
         // keeps provider_message for the case that needs it: the non-JSON
@@ -2036,6 +2071,18 @@ export function getRecoveryHint(status: number, errorText: string, providerName:
     // happens to spell "tokens".
     if (hasModelNamingWording(lower)) {
       return "Model not supported by this provider. Verify model name.";
+    }
+    // #575 — the engine's per-prompt image cap. This body names neither a token
+    // nor a context, so it used to fall to "Request format may be incompatible
+    // with provider" and read as a translation bug (20/10 diagnosis thread).
+    // The cap is a request-shape refusal: the step advances (#431), nothing is
+    // wrong with the wiring.
+    const mediaCap = classifyMediaCap(status, errorText);
+    if (mediaCap.matched) {
+      return (
+        `This step accepts ${mediaCap.max !== undefined ? `at most ${mediaCap.max} image(s)` : "a limited number of images"} ` +
+        `per prompt and refused on the media count — a step-skip, not a failure.`
+      );
     }
     if (lower.includes("context") || lower.includes("too long") || lower.includes("token")) {
       return "Input too large. Reduce message history or use a larger-context model.";

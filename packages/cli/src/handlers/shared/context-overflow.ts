@@ -112,7 +112,36 @@ export const MEDIA_BLOCK_TOKENS = 1600;
  */
 export function estimateClampTokens(payload: unknown): number {
   if (payload === undefined || payload === null) return 0;
-  let mediaBlocks = 0;
+  try {
+    const { stripped, count } = stripMediaData(payload);
+    return Math.ceil(JSON.stringify(stripped).length / 4) + count * MEDIA_BLOCK_TOKENS;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * #575 — how many image/document blocks a payload carries, using the SAME walk
+ * as `estimateClampTokens`: the engine's per-prompt cap counts blocks, and the
+ * number the skip marker reports must be the number the cap will count. A
+ * second, divergent walk would eventually disagree with the estimator that
+ * backs the admission census.
+ */
+export function countMediaBlocks(payload: unknown): number {
+  if (payload === undefined || payload === null) return 0;
+  try {
+    return stripMediaData(payload).count;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Shared media walk: replaces every `source.data` base64 payload with an empty
+ * string (so the JSON length is the text-only size) and counts the blocks.
+ */
+function stripMediaData(payload: unknown): { stripped: unknown; count: number } {
+  let count = 0;
   const strip = (node: unknown): unknown => {
     if (Array.isArray(node)) return node.map(strip);
     if (node === null || typeof node !== "object") return node;
@@ -121,7 +150,7 @@ export function estimateClampTokens(payload: unknown): number {
     const hasMediaData =
       src !== null && typeof src === "object" && typeof src.data === "string" && src.data.length > 0;
     if (hasMediaData) {
-      mediaBlocks++;
+      count++;
       obj.source = { ...src, data: "" };
     }
     for (const k of Object.keys(obj)) {
@@ -130,12 +159,7 @@ export function estimateClampTokens(payload: unknown): number {
     }
     return obj;
   };
-  try {
-    const stripped = strip(payload);
-    return Math.ceil(JSON.stringify(stripped).length / 4) + mediaBlocks * MEDIA_BLOCK_TOKENS;
-  } catch {
-    return 0;
-  }
+  return { stripped: strip(payload), count };
 }
 
 /**

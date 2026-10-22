@@ -89,7 +89,7 @@ const realFetch = globalThis.fetch;
 let calls: Record<string, number> = {};
 /** Captured upstream request bodies by endpoint tag (nm/s0/s1/b0/b1/cap/capa). */
 let upstreamBodies: Record<string, any[]> = {};
-/** All countable markers — [Failover], [StepBusy] and [ContextGuard] (both
+/** All countable markers — [Failover], [StepBusy], [ContextGuard] and [MediaCap] (both
  * console.log and stderr are hooked: `log(..., true)` reaches console.log
  * while logStderr reaches stderr). */
 let markerLog: string[] = [];
@@ -107,6 +107,22 @@ function vllmContextOverflow400(): Response {
       type: "BadRequestError",
       param: null,
       code: 400,
+    }),
+    { status: 400, headers: { "content-type": "application/json" } }
+  );
+}
+
+/** #575 — the engine's per-prompt image cap, verbatim from
+ * `test-fixtures/upstream-errors/vllm-image-cap-400.json` (10 hits, 12–20/10). */
+function vllmImageCap400(): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: "At most 4 image(s) may be provided in one prompt. (parameter=image)",
+        type: "BadRequestError",
+        param: "image",
+        code: 400,
+      },
     }),
     { status: 400, headers: { "content-type": "application/json" } }
   );
@@ -301,7 +317,8 @@ beforeEach(() => {
         line.includes("[Failover]") ||
         line.includes("[StepBusy]") ||
         line.includes("[ContextGuard]") ||
-        line.includes("[ContextAdmission]")
+        line.includes("[ContextAdmission]") ||
+        line.includes("[MediaCap]") // #575
       ) {
         markerLog.push(line);
       }
@@ -315,7 +332,8 @@ beforeEach(() => {
         line.includes("[Failover]") ||
         line.includes("[StepBusy]") ||
         line.includes("[ContextGuard]") ||
-        line.includes("[ContextAdmission]")
+        line.includes("[ContextAdmission]") ||
+        line.includes("[MediaCap]") // #575
       ) {
         markerLog.push(line);
       }
@@ -809,6 +827,77 @@ describe("#431 — a cascade step that cannot take the request skips forward", (
     expect(await responseText(r1)).toContain("exceeded the serving model's maximum prompt size");
     expect(calls.s0 ?? 0).toBe(0);
     expect(calls.s1 ?? 0).toBe(0);
+    expect(markerLog.some((l) => l.includes("[Failover] SKIP"))).toBe(false);
+  }, 30_000);
+
+  test("K25 (#575): the engine's image cap skips forward — no failure mark, no bench", async () => {
+    await spin();
+    resetCascade();
+    upstreamAnswer.nm = () => quotaWall402();
+    upstreamAnswer.s0 = () => vllmImageCap400();
+
+    // Five screenshots: the cap counts BLOCKS, so the marker must report 5
+    // against the engine's stated 4 — the number the client can act on.
+    const five = Array.from({ length: 5 }, () => ({
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: "A".repeat(1024) },
+    }));
+    const r1 = await postMessage({
+      session: "sess-media",
+      contentBlocks: [...five, { type: "text", text: "what do these show?" }],
+    });
+    // The successor's answer, never the engine's 400 — a 400 here would end the
+    // agent turn on a shape the next step serves perfectly.
+    expect(r1.status).toBe(200);
+    expect(await responseText(r1)).toContain("ok-from-s1");
+    expect(calls.s0).toBe(1);
+    expect(calls.s1).toBe(1);
+    const skipLine = markerLog.find((l) => l.includes("[Failover] SKIP sonnet[0]"));
+    expect(skipLine).toBeDefined();
+    expect(skipLine).toContain("reason=media");
+    expect(skipLine).toContain("images=5");
+    expect(skipLine).toContain("cap=4");
+    expect(skipLine).toContain("param=image");
+    expect(markerLog.some((l) => l.includes("[MediaCap]"))).toBe(true);
+
+    // No failure mark (#553's bench is exactly what this class must not arm):
+    // a FRESH session's next request resolves step 0 again.
+    upstreamAnswer.s0 = () => okSse("ok-from-s0-again", "fake-s0");
+    const r2 = await postMessage({ session: "sess-media-2" });
+    expect(await responseText(r2)).toContain("ok-from-s0-again");
+    expect(calls.s0).toBe(2);
+  }, 30_000);
+
+  test("K26 (#575): on the LAST step the 400 surfaces with the exact label and the skip header", async () => {
+    await spin();
+    resetCascade(cascadeEnv("s0-ep@fake-s0")); // single-step cascade — nothing to advance to
+    upstreamAnswer.nm = () => quotaWall402();
+    upstreamAnswer.s0 = () => vllmImageCap400();
+
+    const r1 = await postMessage({
+      session: "sess-media-last",
+      contentBlocks: [
+        ...Array.from({ length: 5 }, () => ({
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: "A".repeat(1024) },
+        })),
+        { type: "text", text: "what do these show?" },
+      ],
+    });
+    expect(r1.status).toBe(400);
+    // The marker rides the surface path too (harmless to a client that ignores
+    // it, greppable for one that looks — same doctrine as the failover notice).
+    expect(r1.headers.get("x-claudish-step-skip")).toContain("media");
+    const body: any = await r1.json();
+    const message = String(body?.error?.message ?? "");
+    // The exact label replaced BOTH the engine's jargon and the generic
+    // "Request format may be incompatible with provider" that sent the 20/10
+    // diagnosis thread hunting a translation bug.
+    expect(message).toContain("at most 4 image(s)");
+    expect(message).toContain("carries 5");
+    expect(message).not.toContain("Request format may be incompatible");
+    // Single round-trip, no SKIP marker: there is no successor to advance to.
+    expect(calls.s0).toBe(1);
     expect(markerLog.some((l) => l.includes("[Failover] SKIP"))).toBe(false);
   }, 30_000);
 });
