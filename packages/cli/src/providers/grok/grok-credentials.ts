@@ -54,6 +54,7 @@ import {
 } from "../../auth/grok-oauth.js";
 import { classifyConnectionError, markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { TOKEN_REFRESH_TIMEOUT_MS } from "../../handlers/shared/transient-retry.js";
+import { log } from "../../logger.js";
 
 /** Base-URL override, the same variable the Grok CLI installer honours. */
 export const GROK_PROXY_URL_ENV = "GROK_PROXY_URL";
@@ -368,9 +369,17 @@ const SIGN_IN_HINT =
  * cares about survive untouched, then temp + rename so a crash mid-write can
  * never leave the user with a truncated credential file. Mode 0600 matches what
  * `grok login` writes.
+ *
+ * Compare-and-set on the refresh token: the entry is written only while it still
+ * holds `refreshedFrom`, the refresh token this refresh presented. If `grok login`
+ * rewrote the entry during the exchange, the newer login is kept and nothing is
+ * written; the caller still signs THIS request with the token it just received (the
+ * server issued it, so it is valid), and the next resolve reads the file again (there
+ * is no cache) and uses the newer entry, refreshing from its own token if needed.
  */
 function persistRefreshedToken(
   scope: string,
+  refreshedFrom: string | undefined,
   next: { key: string; refreshToken?: string; expiresAt?: string }
 ): void {
   const path = grokAuthPath();
@@ -385,6 +394,10 @@ function persistRefreshedToken(
 
   const entry = parsed[scope];
   if (!entry || typeof entry !== "object") return;
+  if (str(entry.refresh_token) !== refreshedFrom) {
+    log("[Grok] ~/.grok/auth.json changed during the token refresh; kept the newer file");
+    return;
+  }
 
   entry.key = next.key;
   if (next.refreshToken) entry.refresh_token = next.refreshToken;
@@ -505,7 +518,7 @@ async function performRefresh(cred: GrokCredential): Promise<string> {
       : undefined;
 
   try {
-    persistRefreshedToken(cred.scope, {
+    persistRefreshedToken(cred.scope, cred.refreshToken, {
       key: accessToken,
       refreshToken: str(parsed.refresh_token),
       expiresAt,
