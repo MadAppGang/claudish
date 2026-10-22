@@ -55,6 +55,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { SESSION_ENV_VARS } from "./session-env-vars.ts";
 
 /**
  * Every real file a test run must give back unchanged. `label` names it in the
@@ -268,12 +269,17 @@ const childEnv: Record<string, string | undefined> = {
   CLAUDISH_DISABLE_CATALOG_WARM: "1",
   CLAUDISH_CATALOG_INCOMPATIBLE_PATH: join(sentinelDir, "catalog-incompatible.json"),
 };
-// `CLAUDISH_PANE_CHILD` reaches everything a claudish-started session runs, a test
-// run included (a runner is often such a session). Inherited, it puts every
-// claudish child and MCP server the suite spawns with `...process.env` into nested
-// mode (four tools, model launches refused with exit 64). The tests drop it
-// themselves; this is the second layer.
-delete childEnv.CLAUDISH_PANE_CHILD;
+// The session-identity variables reach everything a claudish-started session runs,
+// a test run included (a runner is often such a session). Inherited,
+// `CLAUDISH_UPSTREAM_ERROR_LOG` makes the suite append its test doubles to that
+// session's upstream-errors.jsonl (D5), the hook and token-file names point the
+// suite at the session's other records, and `CLAUDISH_PANE_CHILD` puts every
+// claudish child and MCP server the suite spawns into nested mode (four tools,
+// model launches refused with exit 64). The bun test preload deletes them from
+// `process.env` (first layer), but a child spawned with no `env` option gets the
+// ORIGINAL environment back. Deleting them here, from the OS environment of the
+// whole run, is the second layer: no descendant of a guarded run can inherit them.
+for (const name of SESSION_ENV_VARS) delete childEnv[name];
 const child = spawn(cmd[0], cmd.slice(1), {
   stdio: "inherit",
   env: childEnv,
