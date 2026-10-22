@@ -14,8 +14,9 @@ PIEGES encodes (mesures Epic #41 + harness-injection-measure.py) :
 1) (pid, reqN) n'est PAS unique — le compteur repart a 0 a chaque redemarrage
    du container. On indexe par CLE -> LISTE horodatee et on tranche par le
    temps : la requete PRECEDE sa reponse (derniere candidate <= resp_ts).
-2) GLM (wire openai) emet un bloc usage ZERO avant le vrai : on prend le MAX
-   de chaque compteur sur toutes les occurrences, jamais la premiere.
+2) GLM (wire openai) emet un bloc usage ZERO avant le vrai : la selection du
+   triplet coherant (piege 6) ne choisit jamais le bloc zero — son enonce
+   d'entree est vide (in+cr+cc = 0).
 3) Les lanes wire-openai (GLM, DeepSeek, Qwen-api) ne rapportent PAS de cache
    : hit% = n/a (pas 0%) — c'est une absence de donnee, pas un echec de cache.
 4) Le bucket vient du bloc system `x-anthropic-billing-header:` de la REQUETE
@@ -26,6 +27,19 @@ PIEGES encodes (mesures Epic #41 + harness-injection-measure.py) :
    24/08 : 0 cas sur l'echantillon.
 5) Les fichiers geants (1 Mo+) ont leur dernier message_delta AU-DELA de la
    tete lue : on lit tete 200 Ko + queue 100 Ko, jamais seulement la tete.
+6) (#600, le defect G10 de #328) Les compteurs d'ENTREE d'une capture sont lus
+   comme UN triplet coherant, JAMAIS champ par champ : message_start porte une
+   graine (input_tokens = tour precedent de la session) et le message_delta
+   terminal porte le triplet coherent avec le decoupage cache applique — le
+   max par champ melange deux instantanes jamais emis ensemble et double le
+   prompt (mesure 22/10 : graine 250 494 + triplet terminal 117 316 -> x3,1 ;
+   11/42 captures locales gonflees > 5 %). Regle PARTAGEE avec
+   lane-out-trend.py (scan_usage/select_usage, ai-01 review #414) : le
+   DERNIER bloc d'enonce d'entree non vide (in+cr+cc > 0) gagne ENTIERS ;
+   message_start tient lieu si le stream est mort avant lui. output_tokens
+   reste la valeur terminale (cumulatif monotone). La jonction tete+queue du
+   piege 5 peut couper une ligne data: en deux : scan_usage l'ignore (JSON
+   indecodable), le bloc terminal vit dans la queue.
 """
 
 import argparse
@@ -66,6 +80,24 @@ def _load_bare_roles():
     return mod
 
 
+def _load_lane_out_trend():
+    """Lecteur d'usage partage avec lane-out-trend.py (#600 — une seule copie
+    de la regle du triplet coherant, jamais deux qui derivent). Nom de fichier
+    dashé : pas importable en module, spec_from_file_location comme
+    lib/bare_roles.py."""
+    import importlib.util
+    from pathlib import Path
+
+    p = Path(__file__).resolve().parent / "lane-out-trend.py"
+    spec = importlib.util.spec_from_file_location("lane_out_trend", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_LOT = _load_lane_out_trend()
+
+
 # Lane provider par nom de modele servit (l'en-tete resp porte le modele FINAL).
 LANES = [
     (re.compile(r"^glm-"), "gc@ GLM Coding"),
@@ -102,43 +134,33 @@ def capture_dt(ts):
         return None
 
 
-def balanced_object(s, start):
-    depth = 0
-    for i in range(start, len(s)):
-        if s[i] == "{":
-            depth += 1
-        elif s[i] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(s[start:i + 1])
-                except json.JSONDecodeError:
-                    return None
-    return None
+def usage_of(text):
+    """Triplet d'usage COHERANT pour une capture (#600, defect G10 de #328).
 
+    Delegue au lecteur partage de lane-out-trend.py : le max PAR CHAMP est
+    interdit pour les compteurs d'entree (mesure : graine message_start
+    (244812, 0, 0) + delta terminal (67, 244800, 0) -> les maxima lus 489612
+    ou le triplet coherent terminal vaut 244867 — le decoupage cache a DEPLACE
+    la masse, il ne l'a pas doublee). Selection : le DERNIER bloc d'enonce
+    d'entree non vide (in+cr+cc > 0) gagne ENTIERS ; si le stream est mort
+    avant lui, le triplet de message_start tient lieu, coherant, jamais mixe.
+    output_tokens garde la valeur TERMINALE (cumulative monotone : egale le
+    max, mais le contrat est « terminal », pas « plus grand »). Le cas GLM
+    « usage zero puis le vrai » (piege 2) est couvert par construction : un
+    bloc zero n'a pas d'enonce d'entree, il n'est jamais choisi.
 
-def usage_max(text):
-    """MAX de chaque compteur sur toutes les occurrences `usage` du texte.
-
-    Piege 2 : GLM emet un usage zero PUIS le vrai — max, jamais premier/dernier
-    par defaut. En wire anthropic les compteurs de message_delta sont cumulatifs
-    (monotones) : le max reste correct.
+    Retourne (in, out, cache_read, cache_creation), ou None si la capture ne
+    porte AUCUN bloc d'usage.
     """
-    inp = cread = ccre = out = 0
-    seen = False
-    for m in re.finditer(r'"usage"\s*:\s*', text):
-        brace = text.find("{", m.end())
-        if brace < 0:
-            continue
-        u = balanced_object(text, brace)
-        if not isinstance(u, dict):
-            continue
-        seen = True
-        inp = max(inp, u.get("input_tokens") or 0)
-        cread = max(cread, u.get("cache_read_input_tokens") or 0)
-        ccre = max(ccre, u.get("cache_creation_input_tokens") or 0)
-        out = max(out, u.get("output_tokens") or 0)
-    return (inp, out, cread, ccre) if seen else None
+    blocks, _line_fail = _LOT.scan_usage(text)
+    if not blocks:
+        return None
+    chosen, out = _LOT.select_usage(blocks)
+    if chosen is None:
+        # tout bloc zero-seed : aucun enonce d'entree — lu 0, pas None
+        # (None = « la capture ne parle pas d'usage », un autre compteur)
+        return (0, out or 0, 0, 0)
+    return (chosen["in"], out or 0, chosen["cr"], chosen["cc"])
 
 
 def read_head_tail(path, head=HEAD_BYTES, tail=TAIL_BYTES):
@@ -264,7 +286,7 @@ def main():
             n_paired += 1
             bucket = bucket_of(req)
             info = req
-        u = usage_max(txt)
+        u = usage_of(txt)
         if not u:
             n_nousage += 1
             inp = out = cread = ccre = 0

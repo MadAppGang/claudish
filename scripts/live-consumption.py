@@ -10,8 +10,8 @@ matched against what already ships, so that only the real gap is written here:
   -------------------------------------  ---------------------------------------
   req index by (pid, counter)            traffic-consumption.py load_requests()
                                          + traffic-mxws.py pass 1
-  usage MAX per field across blocks      traffic-consumption.py usage_max(),
-                                         traffic-mxws.py pass 2, compaction-trend.py
+  usage triple (coherent terminal, #600)  traffic-consumption.py usage_of()
+  usage MAX per field (pre-#600 copy)     traffic-mxws.py pass 2, compaction-trend.py
   nearest-ts req<->resp join             traffic-consumption.py pick_request()
   machine x workspace x model rollup      traffic-mxws.py aggregate (incl. 7z days)
   session attribution                     billed-attrib.py — NATIVE lane only
