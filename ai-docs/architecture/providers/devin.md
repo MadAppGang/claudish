@@ -17,7 +17,9 @@ Layer 1 is `adapters/devin-api-format.ts`, Layer 3 `providers/transport/devin.ts
 `WINDSURF_API_SERVER_URL` re-points the backend, which is also the cheapest way to capture traffic
 (the CLI validates against the macOS **system** trust store and ignores `SSL_CERT_FILE`, so a
 plain-HTTP forwarder beats a MITM CA). No exchange, no refresh, no keychain. There is **no
-`claudish login devin`** — the Devin CLI mints the token; claudish only reads it.
+`claudish login devin`** — the Devin CLI mints the token; claudish only reads it. The read is
+memoized by path AND file stamp (`credential-files.md`): a long-lived process picks up a new
+`devin login` on its next request, and a file caught half-written keeps the last good key.
 
 **`apiKeyEnvVar` MUST stay `""`.** proxy-server's credential-extraction block runs only for a
 non-empty value and extracts the key by stripping `Bearer ` from `auth.headers.Authorization`.
