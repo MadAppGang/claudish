@@ -42,6 +42,20 @@ describe("DeepSeekModelDialect — thinking policy", () => {
     expect(payload.thinking).toBeUndefined();
   });
 
+  it("passthrough forwards an EXPLICIT client off-switch — absent stays absent (GLM #245 rule, hub 22/10)", () => {
+    delete process.env.CLAUDISH_DEEPSEEK_THINKING;
+    // What #435 makes of `enable_thinking:false` on /v1/chat/completions.
+    const off: any = { model: "deepseek-v4-flash", thinking: { type: "disabled" }, reasoning_effort: "high" };
+    dialect().prepareRequest(off, { thinking: { type: "disabled" } });
+    expect(off.thinking).toEqual({ type: "disabled" });
+    // The off-switch never rides next to a contradicting depth knob.
+    expect(off.reasoning_effort).toBeUndefined();
+    // Control: no client ask ⇒ no field, DeepSeek's default stands.
+    const absent: any = { model: "deepseek-v4-flash" };
+    dialect().prepareRequest(absent, {});
+    expect(absent.thinking).toBeUndefined();
+  });
+
   it("emits {type:'disabled'} when the policy is disabled", () => {
     process.env.CLAUDISH_DEEPSEEK_THINKING = "disabled";
     const payload: any = { model: "deepseek-v4-flash-vision-exp", messages: [] };

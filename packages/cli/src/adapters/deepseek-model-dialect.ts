@@ -53,8 +53,12 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
    * the PAYG plan bills on output, so this is the lever that matters while the
    * cascade's last step is carrying fleet sonnet traffic.
    *
-   *   passthrough (default) — preserve historical behavior: strip the client's
-   *                           thinking object, let DeepSeek reason by default
+   *   passthrough (default) — strip the client's thinking object and let
+   *                           DeepSeek reason by default — EXCEPT an explicit
+   *                           client {"type":"disabled"}, which is forwarded
+   *                           (the GLM #245 rule: dropping an explicit off-switch
+   *                           leaves the model thinking by default, the defect in
+   *                           another shape)
    *   disabled              — force {"type":"disabled"} on every request
    *
    * Safety: disabling thinking does NOT break the reasoning_content round-trip
@@ -68,7 +72,14 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
     // Scrub any anthropic-shaped field first, whatever set it.
     delete request.thinking;
 
-    if (policy.kind === "disabled") {
+    // An explicit client off-switch counts as the operator's under passthrough
+    // (hub 2026-10-22: RSM condensation on deepseek-v4-flash via the OpenAI
+    // ingress sent `enable_thinking:false` — #435 maps it to this shape — and
+    // got HTTP 200 with an EMPTY completion: the default reasoning ate the
+    // small max_tokens). Same shape as GLM's openai-wire rule (#245).
+    const clientDisabled =
+      (originalRequest?.thinking as { type?: string } | undefined)?.type === "disabled";
+    if (policy.kind === "disabled" || clientDisabled) {
       request.thinking = { type: "disabled" };
       // Never leave a depth knob contradicting the off-switch — the same rule
       // GLM's dialect applies (upstream 19cdaa6f). `OpenAIAPIFormat` runs first
@@ -78,7 +89,11 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
       // (measured 2026-09-19 upstream; the same request with effort "low"
       // returns 200).
       if (request.reasoning_effort !== undefined) delete request.reasoning_effort;
-      log("[DeepSeekModelDialect] thinking disabled (CLAUDISH_DEEPSEEK_THINKING=disabled)");
+      log(
+        policy.kind === "disabled"
+          ? "[DeepSeekModelDialect] thinking disabled (CLAUDISH_DEEPSEEK_THINKING=disabled)"
+          : "[DeepSeekModelDialect] thinking disabled (client asked)"
+      );
       return request;
     }
 
