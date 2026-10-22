@@ -2,7 +2,9 @@
  * OAuthManager — shared base class for all OAuth providers.
  *
  * Handles:
- * - Credential file I/O with 0600 permissions
+ * - Credential file I/O with 0600 permissions, through `CredentialFileState`: the
+ *   file is re-read when another process changed it (a new login), never on a timer
+ *   and never in a constructor
  * - Token refresh with promise-based deduplication
  * - Token validity checking with configurable margin
  * - PKCE code verifier/challenge generation
@@ -12,19 +14,12 @@
 
 import { exec } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  unlinkSync,
-  writeSync,
-} from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { log } from "../logger.js";
+import { CredentialFileState } from "./credential-file.js";
 import { terminalCredentialError } from "./credentials/credential-error.js";
 
 const execAsync = promisify(exec);
@@ -46,8 +41,8 @@ export interface BaseCredentials {
  * - `validateCredentials(data)` — check that loaded JSON has required fields
  */
 export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> {
-  protected credentials: T | null = null;
   private refreshPromise: Promise<string> | null = null;
+  private fileStateInstance: CredentialFileState<T> | null = null;
   protected tokenRefreshMargin = 5 * 60 * 1000; // 5 minutes
 
   /** Filename inside ~/.claudish/ (e.g. "gemini-oauth.json") */
@@ -79,22 +74,26 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
 
   // ── Credential File I/O ────────────────────────────────────────────────
 
-  protected loadCredentials(): T | null {
-    const credPath = this.getCredentialsPath();
-    if (!existsSync(credPath)) return null;
-
-    try {
-      const data = JSON.parse(readFileSync(credPath, "utf-8"));
-      if (!this.validateCredentials(data)) {
-        log(`[${this.providerName}] Invalid credentials file structure`);
-        return null;
-      }
-      log(`[${this.providerName}] Loaded credentials from file`);
-      return data;
-    } catch (e: any) {
-      log(`[${this.providerName}] Failed to load credentials: ${e.message}`);
-      return null;
+  /**
+   * This process's copy of the credential file (`credential-file.ts`). Created on
+   * first use, never in a constructor: the subclass's `credentialFile` and
+   * `providerName` are not set yet while the base constructor runs, and no
+   * manager reads its file before something asks for a token (lazy first load).
+   */
+  protected get fileState(): CredentialFileState<T> {
+    if (!this.fileStateInstance) {
+      this.fileStateInstance = new CredentialFileState<T>({
+        path: () => this.getCredentialsPath(),
+        validate: (data): data is T => this.validateCredentials(data),
+        label: this.providerName,
+      });
     }
+    return this.fileStateInstance;
+  }
+
+  /** The last credentials read from (or written to) the file. No I/O. */
+  protected get credentials(): T | null {
+    return this.fileState.value;
   }
 
   protected saveCredentials(credentials: T): void {
@@ -106,6 +105,7 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
     } finally {
       closeSync(fd);
     }
+    this.fileState.adoptWritten(credentials);
     log(`[${this.providerName}] Credentials saved to ${credPath}`);
   }
 
@@ -119,8 +119,22 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
 
   // ── Token Lifecycle ────────────────────────────────────────────────────
 
+  /**
+   * Whether a login is on disk. Asks the file (one stat), so a login written by
+   * another process since this one started answers yes. An unreadable file keeps
+   * the last good credentials (`credential-file.ts`): it never answers no for a
+   * process that was signed in.
+   */
   hasCredentials(): boolean {
-    return this.credentials !== null && !!this.credentials.refresh_token;
+    this.fileState.syncFromDisk();
+    const current = this.credentials;
+    return current !== null && !!current.refresh_token;
+  }
+
+  protected noCredentialsError(): Error {
+    return terminalCredentialError(
+      `No ${this.providerName} credentials found. Please run \`${this.loginHint}\` first.`
+    );
   }
 
   async getAccessToken(): Promise<string> {
@@ -129,16 +143,20 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
       return this.refreshPromise;
     }
 
-    if (!this.credentials) {
-      throw terminalCredentialError(
-        `No ${this.providerName} credentials found. Please run \`${this.loginHint}\` first.`
-      );
-    }
+    // Before use: a newer login written by another process replaces ours, and a
+    // newer valid token is returned with no network call.
+    await this.fileState.settle();
+    // The settle awaited: a refresh another caller started meanwhile is joined.
+    if (this.refreshPromise) return this.refreshPromise;
+
+    const current = this.credentials;
+    if (!current) throw this.noCredentialsError();
 
     if (this.isTokenValid()) {
-      return this.credentials.access_token;
+      return current.access_token;
     }
 
+    // Before refresh: the refresh starts from the file's credentials as just synced.
     this.refreshPromise = this.doRefreshToken().finally(() => {
       this.refreshPromise = null;
     });
@@ -146,11 +164,23 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
     return this.refreshPromise;
   }
 
+  /**
+   * A forced refresh (the transport's 401 retry). The token that drew the 401 is
+   * not passed in, so the proxy for it is the access token held in memory right
+   * before this call's sync: if the file now holds a different one, another
+   * process logged in or refreshed, and that token is adopted with no refresh.
+   * Otherwise the refresh runs. Accepted: a concurrent request in this process may
+   * already have synced the newer token, which costs one redundant refresh, and
+   * never adopts a token that was itself rejected.
+   */
   async refreshToken(): Promise<void> {
-    if (!this.credentials) {
-      throw terminalCredentialError(
-        `No ${this.providerName} credentials found. Please run \`${this.loginHint}\` first.`
-      );
+    const before = this.credentials?.access_token;
+    await this.fileState.settle();
+    const current = this.credentials;
+    if (!current) throw this.noCredentialsError();
+    if (before !== undefined && current.access_token !== before) {
+      log(`[${this.providerName}] credential file changed on disk; using the newer login`);
+      return;
     }
     await this.doRefreshToken();
   }
@@ -299,6 +329,6 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
 
   async logout(): Promise<void> {
     this.deleteCredentials();
-    this.credentials = null;
+    this.fileState.forget();
   }
 }

@@ -46,7 +46,12 @@ import {
   credentialHttpError,
   isTransientCredentialError,
 } from "../../auth/credentials/credential-error.js";
-import { GROK_PUBLIC_CLIENT_ID, GrokOAuth } from "../../auth/grok-oauth.js";
+import {
+  GROK_PUBLIC_CLIENT_ID,
+  GrokOAuth,
+  grokOAuthPath,
+  setGrokOAuthPathForTesting,
+} from "../../auth/grok-oauth.js";
 import { classifyConnectionError, markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { TOKEN_REFRESH_TIMEOUT_MS } from "../../handlers/shared/transient-retry.js";
 
@@ -93,7 +98,7 @@ export function setGrokHomeForTesting(path: string | null): void {
   // Point the OAuth store at a sibling inside the SAME temp home, so a test
   // that seams only `~/.grok` cannot accidentally read the developer's real
   // `claudish login grok` credential and take the wrong branch.
-  claudishOAuthPathOverride = path ? join(path, "claudish-grok-oauth.json") : null;
+  setGrokOAuthPathForTesting(path ? join(path, "claudish-grok-oauth.json") : null);
   liveClientVersion = null;
 }
 
@@ -185,15 +190,15 @@ export function readGrokCredential(): GrokCredential | undefined {
  * happens to be logged in — the same class of machine-state dependency that
  * made `setPeerLockProbe` necessary for the 1Password suite.
  */
-let claudishOAuthPathOverride: string | null = null;
-
 export function setClaudishGrokOAuthPathForTesting(path: string | null): void {
-  claudishOAuthPathOverride = path;
+  // ONE seam: `GrokOAuth` reads the same path, so the readiness check and the
+  // token resolver can never read two different files under a test override.
+  setGrokOAuthPathForTesting(path);
 }
 
 /** claudish's OWN OAuth store, written by `claudish login grok`. */
 export function claudishGrokOAuthPath(): string {
-  return claudishOAuthPathOverride ?? join(homedir(), ".claudish", "grok-oauth.json");
+  return grokOAuthPath();
 }
 
 /**
