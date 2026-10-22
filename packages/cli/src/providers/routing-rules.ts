@@ -25,6 +25,11 @@ import {
   gatherRouteCandidates,
 } from "./route-candidates.js";
 import { buildCredentialHint } from "./routing-hints.js";
+import {
+  describeUnknownShortcut,
+  isKnownProviderName,
+  typedShortcutOf,
+} from "./unknown-shortcut.js";
 
 export interface RoutingRuleSources {
   globalRules: RoutingRules;
@@ -502,7 +507,12 @@ export type CandidateOutcome =
    * The provider maps the model only through a content-use opt-in wire id, which
    * claudish never chooses; typed exactly (`provider@<id>`), it is sent.
    */
-  | "excluded-by-content-use";
+  | "excluded-by-content-use"
+  /**
+   * An explicit spec's shortcut names no claudish provider (`isKnownProviderName`).
+   * Decided before any credential is read.
+   */
+  | "unknown-provider";
 
 /** One route candidate, where the chain placed it, and what became of it. */
 export interface ExplainedCandidate {
@@ -550,6 +560,8 @@ export type NoRouteCause =
   | "no-credential"
   /** The account's dynamic models catalog denied every credentialed candidate. */
   | "not-served"
+  /** An explicit spec's shortcut names no claudish provider (`describeUnknownShortcut`). */
+  | "explicit-unknown-shortcut"
   /** An explicit spec's provider has no credential. */
   | "explicit-no-credential"
   /** An explicit spec's plan membership excludes the model, so no route could be built. */
@@ -685,6 +697,14 @@ async function explainExplicitSpec(
   provider: string,
   cachePath?: string
 ): Promise<RouteExplanation> {
+  // FIRST, ahead of every credential read: a shortcut that names no provider is
+  // answered as unknown, never as "no credentials". No authority lookup, readiness
+  // probe or 1Password attempt runs for a name that cannot exist (D9). This check
+  // must stay ahead of any credential read added to this function later.
+  if (!isKnownProviderName(provider)) {
+    return explainUnknownShortcut(requestedModel, modelSpec, model, provider, cachePath);
+  }
+
   const credentialed = await hasCredentialsForProvider(provider);
 
   // The one candidate is built whatever the credential says, so a display can
@@ -746,6 +766,44 @@ async function explainExplicitSpec(
 
   candidate.availability = availability;
   return explanation;
+}
+
+/**
+ * An explicit spec whose shortcut names no claudish provider. The one candidate
+ * names what was typed, with no tier and no catalog lookup; the outcome carries
+ * `describeUnknownShortcut`'s wording, which every surface prints verbatim.
+ */
+function explainUnknownShortcut(
+  requestedModel: string,
+  modelSpec: string,
+  model: string,
+  provider: string,
+  cachePath?: string
+): RouteExplanation {
+  const { reason, hint } = describeUnknownShortcut(
+    typedShortcutOf(modelSpec),
+    model,
+    cachePath,
+    modelSpec
+  );
+  return {
+    requestedModel,
+    routedModel: model,
+    source: "explicit",
+    via: "model-spec",
+    candidates: [
+      {
+        provider,
+        displayName: provider,
+        modelSpec,
+        wireId: model,
+        position: "candidate",
+        outcome: "unknown-provider",
+      },
+    ],
+    outcome: { kind: "no-route", cause: "explicit-unknown-shortcut", reason, hint },
+    warnings: [],
+  };
 }
 
 /**
@@ -1635,6 +1693,7 @@ const DROPPED_FALLBACK_PHRASE: Record<Exclude<CandidateOutcome, "kept">, string>
   "not-served": "does not serve it",
   "excluded-by-membership": "is outside its plan's membership",
   "excluded-by-content-use": "maps it only through a contributor (content-use opt-in) id",
+  "unknown-provider": "is not a known provider shortcut",
 };
 
 /**

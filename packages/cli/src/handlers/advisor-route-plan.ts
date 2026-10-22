@@ -333,6 +333,7 @@ export const SKIPPED_PHRASE: Readonly<Record<Exclude<CandidateOutcome, "kept">, 
   "not-served": "the account does not serve it",
   "excluded-by-membership": "not in the plan's membership",
   "excluded-by-content-use": "content-use opt-in id only",
+  "unknown-provider": "unknown provider shortcut",
 };
 
 /**

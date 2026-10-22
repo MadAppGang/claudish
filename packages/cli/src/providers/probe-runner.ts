@@ -30,6 +30,7 @@ export const DROPPED_LABEL: Record<DroppedOutcome, string> = {
   "not-served": "account does not serve it",
   "excluded-by-membership": "not in the plan's membership",
   "excluded-by-content-use": "contributor id: content-use opt-in, type it exactly to use it",
+  "unknown-provider": "unknown provider shortcut",
 };
 
 /**
