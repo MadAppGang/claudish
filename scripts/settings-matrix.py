@@ -32,11 +32,13 @@ DEFAULT_MACHINES = [
 # choosing instead of its Anthropic login: the #296 shape-B class (po-2028, 20/10).
 CREDENTIAL_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 # Values with a decided canon: a machine off it is flagged, whatever the others hold.
-# The fleet compaction window sits 856 tokens ABOVE Swift's limit (swift-1.5-27b,
-# 262 144 tokens, onboarded as a haiku lane) -- an open arbitration (coordinator
-# registry Q58), not a settled fit. ai-01 alone runs higher on purpose (user 20/10).
+# The fleet compaction window sits BELOW Swift's limit (swift-1.5-27b, 262 144
+# tokens, onboarded as a haiku lane), with a turn of margin: the previous canon,
+# 263000, sat 856 tokens above it, so compaction could never fire before a
+# vllm-routed session left the window (user 23/10, Q58: "erreur grossiere, oui
+# tu redescends"). ai-01 alone runs higher on purpose (user 20/10).
 CANON = {
-    "env.CLAUDE_CODE_AUTO_COMPACT_WINDOW": {"*": "263000", "myia-ai-01": "330000"},
+    "env.CLAUDE_CODE_AUTO_COMPACT_WINDOW": {"*": "250000", "myia-ai-01": "330000"},
 }
 # Values compared across the fleet; any divergence is listed.
 COMPARED = (
