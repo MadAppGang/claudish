@@ -915,15 +915,22 @@ describe("#431 — a cascade step that cannot take the request skips forward", (
  *  - n1: drop the census block ⇒ K20 red (the request reaches the endpoint).
  *  - n2: weigh the SMALLEST declared window instead of the largest ⇒ K22 red
  *    (a servable 100k prompt is refused because a 32k step sits on the path).
- *  - n3: drop the native carve-out ⇒ K24 red (a bare claude-* nominal is
- *    overruled by a cascade step's declared bound).
+ *  - n3: stop counting a bare/native target as an undeclared candidate ⇒ K24
+ *    red (a bare claude-* nominal is overruled by a cascade step's declared
+ *    bound).
  *  - n4: drop the kill-switch gate ⇒ K23 red.
+ *  - n5 (hub 22/10): ignore the undeclared count (weigh the declared subset)
+ *    ⇒ K25 red — the CoursIA-2 shape, refused while its nominal could serve.
+ *  - n6: collect a `role:` step as its last-refreshed `target` instead of its
+ *    target role's whole path ⇒ K26 red (a doomed, fully-declared delegation
+ *    pays its round-trips); n6b: skip the target role's nominal ⇒ K26b red.
  */
 describe("#565 — a request no declared window can take is refused at admission", () => {
-  test("K20: oversized prompt on a path with a declared window → labeled recovery turn, ZERO upstream calls", async () => {
-    await spin();
-    // The declared window rides a non-last STEP; the nominal declares nothing.
-    resetCascade(cascadeEnv("ctx-ep@fake-ctx>s1-ep@fake-s1"));
+  test("K20: oversized prompt on a path where EVERY candidate declares → labeled recovery turn, ZERO upstream calls", async () => {
+    // The nominal declares 262 144, the step 32 768: nothing on the path is
+    // invisible to the census, so the request is doomed on every candidate.
+    await spin({ sonnet: "ctx-ep@fake-ctx" });
+    resetCascade(cascadeEnv("small-ep@fake-sm"));
 
     const r = await postMessage({ session: "sess-adm", content: "x".repeat(1_200_000) }); // est ≈ 300k
     expect(r.status).toBe(200); // the recoverable turn, never a bare 400 (#79)
@@ -935,14 +942,14 @@ describe("#565 — a request no declared window can take is refused at admission
     // The whole point: not one round-trip, on any candidate.
     expect(calls.nm ?? 0).toBe(0);
     expect(calls.ctx ?? 0).toBe(0);
-    expect(calls.s1 ?? 0).toBe(0);
+    expect(calls.sm ?? 0).toBe(0);
     // Countable marker, forceConsole.
     expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(true);
   }, 30_000);
 
   test("K20b (stream:true): the same refusal is a well-formed SSE turn ending in message_stop", async () => {
-    await spin();
-    resetCascade(cascadeEnv("ctx-ep@fake-ctx>s1-ep@fake-s1"));
+    await spin({ sonnet: "ctx-ep@fake-ctx" });
+    resetCascade(cascadeEnv("small-ep@fake-sm"));
 
     const r = await postMessage({ session: "sess-adm-s", stream: true, content: "x".repeat(1_200_000) });
     expect(r.status).toBe(200);
@@ -980,28 +987,74 @@ describe("#565 — a request no declared window can take is refused at admission
     expect(calls.nm ?? 0).toBe(0);
   }, 30_000);
 
-  test("K22: the LARGEST declared window decides — a servable prompt is not refused by a small step", async () => {
+  test("K25 (hub 22/10): an UNDECLARED candidate on the path stands the census down — the nominal serves", async () => {
+    // The shape that blocked a CoursIA-2 session at ~270k tokens: the nominal
+    // declares nothing, a non-last step declares 262 144, the last step
+    // declares nothing. Refusing on the declared subset vetoed two candidates
+    // the census could not see — and `/compact` with them.
     await spin();
-    resetCascade(cascadeEnv("small-ep@fake-sm>ctx-ep@fake-ctx"));
-    // `small-ep` is declared separately below with a 32k window.
+    resetCascade(cascadeEnv("ctx-ep@fake-ctx>s1-ep@fake-s1"));
+
+    const r = await postMessage({ session: "sess-adm-undecl", content: "x".repeat(1_200_000) }); // est ≈ 300k
+    expect(r.status).toBe(200);
+    expect(await responseText(r)).not.toContain("exceeds every declared context window");
+    expect(calls.nm ?? 0).toBe(1); // the undeclared nominal got its chance
+    expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(false);
+  }, 30_000);
+
+  test("K26: a `role:` step is weighed as its target's WHOLE path — fully declared and too small, it is refused", async () => {
+    // sonnet: ctx-ep (262 144) > small-ep (32 768) > role:haiku, whose nominal
+    // is ctx-ep again and which has no cascade of its own. Every candidate the
+    // delegation can reach declares a window, so the request is doomed. A
+    // census that counted the role step as one opaque candidate would stand
+    // down and pay three round-trips to learn it.
+    await spin({ sonnet: "ctx-ep@fake-ctx", haiku: "ctx-ep@fake-ctx" });
+    resetCascade(cascadeEnv("small-ep@fake-sm>role:haiku"));
+
+    const r = await postMessage({ session: "sess-adm-role", content: "x".repeat(1_200_000) }); // est ≈ 300k
+    expect(r.status).toBe(200);
+    expect(await responseText(r)).toContain("exceeds every declared context window");
+    expect(calls.ctx ?? 0).toBe(0);
+    expect(calls.sm ?? 0).toBe(0);
+    expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(true);
+  }, 30_000);
+
+  test("K26b: a `role:` step whose target path holds an undeclared candidate stands the census down", async () => {
+    // Same path, but haiku's nominal declares nothing: the delegation can reach
+    // a candidate the census cannot see.
+    await spin({ sonnet: "ctx-ep@fake-ctx", haiku: "s1-ep@fake-s1" });
+    resetCascade(cascadeEnv("small-ep@fake-sm>role:haiku"));
+
+    const r = await postMessage({ session: "sess-adm-role-open", content: "x".repeat(1_200_000) });
+    expect(r.status).toBe(200);
+    expect(await responseText(r)).not.toContain("exceeds every declared context window");
+    expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(false);
+  }, 30_000);
+
+  test("K22: the LARGEST declared window decides — a servable prompt is not refused by a small step", async () => {
+    // Every candidate declares (nominal 262 144, step 32 768), so the census
+    // really weighs — an undeclared one would stand it down before n2 matters.
+    await spin({ sonnet: "ctx-ep@fake-ctx" });
+    resetCascade(cascadeEnv("small-ep@fake-sm"));
     const r = await postMessage({ session: "sess-adm-ok", content: "q".repeat(400_000) }); // est ≈ 100k
     expect(r.status).toBe(200);
     // Served, not refused: the 100k prompt fits ctx-ep's 262 144, so the
     // census weighs the largest window and lets the request through.
     expect(await responseText(r)).not.toContain("exceeds every declared context window");
-    expect(calls.nm ?? 0).toBe(1); // not armed ⇒ the nominal serves, as today
+    expect(calls.ctx ?? 0).toBe(1); // not armed ⇒ the nominal serves, as today
     expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(false);
   }, 30_000);
 
   test("K23: kill switch CLAUDISH_CONTEXT_ADMISSION=0 restores today's behaviour", async () => {
-    await spin();
-    resetCascade(cascadeEnv("ctx-ep@fake-ctx>s1-ep@fake-s1"));
+    // K20's fully-declared path, which the census would refuse.
+    await spin({ sonnet: "ctx-ep@fake-ctx" });
+    resetCascade(cascadeEnv("small-ep@fake-sm"));
     process.env.CLAUDISH_CONTEXT_ADMISSION = "0";
 
     const r = await postMessage({ session: "sess-adm-off", content: "x".repeat(1_200_000) });
     expect(r.status).toBe(200);
     expect(await responseText(r)).not.toContain("exceeds every declared context window");
-    expect(calls.nm ?? 0).toBe(1); // the doomed round-trip happens again — today's behaviour
+    expect(calls.ctx ?? 0).toBe(1); // the doomed round-trip happens again — today's behaviour
     expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(false);
   }, 30_000);
 
@@ -1010,9 +1063,10 @@ describe("#565 — a request no declared window can take is refused at admission
     // target is the native lane — whose window (1M on the Claude 5 family)
     // declares nothing and dwarfs the 262 144 on this role's cascade step. The
     // census must therefore stand down: the client named a model that can take
-    // the prompt, and a smaller substitute step must not veto it.
+    // the prompt, and a smaller substitute step must not veto it. Both steps
+    // declare, so the native nominal is the ONLY undeclared candidate.
     await spin({});
-    resetCascade(cascadeEnv("ctx-ep@fake-ctx>s1-ep@fake-s1"));
+    resetCascade(cascadeEnv("ctx-ep@fake-ctx>small-ep@fake-sm"));
     const r = await postMessage({ model: "claude-sonnet-5", session: "sess-adm-native", content: "x".repeat(1_200_000) });
     expect(await responseText(r)).not.toContain("exceeds every declared context window");
     expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(false);

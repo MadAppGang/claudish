@@ -55,6 +55,32 @@ describe("#565 — decideContextAdmission", () => {
     expect(d.largest).toEqual({ name: "large", limit: 262_144 });
   });
 
+  test("ANY undeclared candidate stands the census down — the declared subset never vetoes the path (hub 22/10)", () => {
+    // The haiku path that blocked a CoursIA-2 session at ~270k tokens: an
+    // undeclared nominal (MiniMax), swift declared at 262 144, then
+    // `role:sonnet` and the PAYG terminator, neither declaring. The census used
+    // to refuse on swift alone — `/compact` included, so the session could
+    // never condense its way out.
+    const swiftOnly: DeclaredWindow[] = [{ name: "vllm-myia", limit: 262_144 }];
+    const d = decideContextAdmission(payloadOf(1_200_000), swiftOnly, 2); // est ≈ 300k
+    expect(d.refuse).toBe(false);
+    // Not measured either: standing down costs no body walk.
+    expect(d.estTokens).toBe(0);
+    // Control — the same declared window, with nothing else on the path, refuses.
+    expect(decideContextAdmission(payloadOf(1_200_000), swiftOnly, 0).refuse).toBe(true);
+  });
+
+  test("an invalid entry beside a valid one is an undeclared candidate, never a window of 0", () => {
+    // A lone invalid entry falls open through the empty-declared branch; beside
+    // a VALID window it is the shape where only the subset rule decides.
+    const mixed: DeclaredWindow[] = [
+      { name: "small", limit: 32_768 },
+      { name: "broken", limit: Number.NaN },
+    ];
+    expect(decideContextAdmission(payloadOf(400_000), mixed).refuse).toBe(false); // est ≈ 100k
+    expect(decideContextAdmission(payloadOf(400_000), [{ name: "small", limit: 32_768 }]).refuse).toBe(true);
+  });
+
   test("a request over EVERY declared window is refused, and the largest is named", () => {
     const windows: DeclaredWindow[] = [
       { name: "vllm-myia", limit: 262_144 },

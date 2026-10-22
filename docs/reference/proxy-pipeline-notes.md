@@ -180,14 +180,24 @@ any handler exists**, in both ingresses (`/v1/messages` and the translated `/v1/
 - **Census**: the nominal target plus every cascade step's provider is looked up in the runtime
   registry that `loadCustomEndpoints` populates with declared `contextLimit`s. Only DECLARED bounds
   count — a provider that declares nothing is not assumed unbounded, it is invisible, and a path with
-  no declared window falls open to today's behaviour (every built-in provider, today). The largest
-  declared window is the one weighed: a 32k step on the path must not refuse a prompt a 262k sibling
-  can take (`K22`). A `role:<r>` delegation step carries no `@` provider and is therefore **not
-  weighed** — the omission is fail-open by construction (a delegated role's declared windows can only
-  be missed, never over-refused on), and the refusal text says "no DECLARED window", never "no
+  **any** undeclared candidate falls open to today's behaviour (every built-in provider, today). The
+  census refuses only when EVERY candidate declares a window and the request clears the largest. The
+  largest declared window is the one weighed: a 32k step on the path must not refuse a prompt a 262k
+  sibling can take (`K22`). A `role:<r>` delegation step is weighed as its target's **whole path** —
+  the target's nominal plus its own steps, recursively (acyclic at load) — never as the concrete its
+  `target` was last refreshed to (`K26`/`K26b`). The refusal text says "no DECLARED window", never "no
   candidate can serve".
-- **Native carve-out**: a bare (non-`@`, non-`/`) nominal is the native lane, whose 1M window declares
-  nothing — a smaller substitute step must never veto the model the client actually named (`K24`).
+- **Why any undeclared candidate stands it down** (hub 2026-10-22): the first cut weighed the declared
+  SUBSET, and called omitting a `role:` step "fail-open by construction". It was not — an omitted
+  candidate can only *remove* a window that might have taken the request. On the haiku path
+  `MiniMax (nothing) > vllm-myia (262 144) > role:sonnet > ds@deepseek-flash (nothing)`, swift alone
+  refused every request over 262k — a CoursIA-2 session's `/compact` at ~270k included, so the session
+  could never condense its way out — while the nominal and the PAYG terminator could have served it
+  (`K25`). The trade-off is accepted: on a mixed path an oversized request pays one doomed round-trip
+  again, and the #79 recovery turn still answers it.
+- **Native nominal**: a bare (non-`@`, non-`/`) nominal is the native lane, whose 1M window declares
+  nothing — it is an undeclared candidate like any other, so a smaller substitute step never vetoes the
+  model the client actually named (`K24`).
 - **Estimate**: `estimateClampTokens`, the media-aware #441 estimator (a 1 MB screenshot scores ~1.6k,
   not ~750k). For a refusal an inflated estimate is a false refusal, so the `/4` overflow estimator is
   the wrong instrument here.

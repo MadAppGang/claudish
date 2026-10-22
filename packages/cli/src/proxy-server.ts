@@ -93,6 +93,7 @@ import {
   extractSessionKey,
   recordServedStepForNotices,
   servedStepForNotices,
+  type FailoverRole,
 } from "./fork/failover.js";
 import {
   admitSessionBudget,
@@ -1312,9 +1313,12 @@ export async function createProxyServer(
     // of a number it can act on (hub 2026-10-20: a 1.1M-token `/compact` turn).
     //
     // Declared-only, by design: a provider that declares no `contextLimit` is
-    // NOT assumed unbounded — the census simply cannot see it, and the path
-    // falls open to today's behaviour. Refusing on a guessed window would break
-    // the lanes nobody declared (every built-in provider, today).
+    // NOT assumed unbounded — the census simply cannot see it, and a path with
+    // ANY such candidate falls open to today's behaviour. Refusing on a guessed
+    // window would break the lanes nobody declared (every built-in provider,
+    // today); refusing on the declared SUBSET broke the ones somebody did (hub
+    // 2026-10-22: swift's 262 144 vetoed the haiku path's whole cascade, its
+    // undeclared nominal and PAYG terminator included).
     //
     // The answer is the SAME recoverable turn the #79/#431 paths already use, not
     // a bare 400: the gauge advances with the real size, so the client's own
@@ -1322,26 +1326,44 @@ export async function createProxyServer(
     // closed — the client would resend the identical body.
     if (!contextAdmissionDisabled()) {
       const windows: DeclaredWindow[] = [];
+      let undeclared = 0;
       const collectWindow = (target: string | undefined): void => {
-        if (!target) return;
-        const at = target.indexOf("@");
-        if (at <= 0) return; // bare/built-in name or `role:` step — declares nothing
-        const provider = target.slice(0, at);
-        const limit = getDeclaredContextLimit(provider);
-        if (limit !== undefined) windows.push({ name: provider, limit });
+        const at = target ? target.indexOf("@") : -1;
+        // A bare/built-in name, the NATIVE lane (`claude-opus-5` on ai-01 is a
+        // 1M-context lane that declares nothing — a smaller step must never
+        // veto the model the client named) or an unresolved target: each
+        // declares nothing, and each is a candidate that may take the request.
+        if (!target || at <= 0) {
+          undeclared++;
+          return;
+        }
+        const limit = getDeclaredContextLimit(target.slice(0, at));
+        if (limit !== undefined) windows.push({ name: target.slice(0, at), limit });
+        else undeclared++;
       };
-      const nominalTarget = resolveNominalTarget(requestedModel).target;
-      // A NATIVE nominal is never overruled by a cascade step's smaller declared
-      // bound: `claude-opus-5` on ai-01 is a 1M-context lane that declares
-      // nothing, so a 300k-token prompt a swift step could never take is still
-      // perfectly servable by the model the client actually named. Same
-      // predicate as getHandlerForRequest's native branch (`@` / `/` absent).
-      const nominalIsNative = !nominalTarget.includes("/") && !nominalTarget.includes("@");
-      collectWindow(nominalTarget);
-      for (const s of rule?.steps ?? []) collectWindow(s.target);
-      const admission: ContextAdmissionDecision = nominalIsNative
-        ? { refuse: false, estTokens: 0 }
-        : decideContextAdmission(body, windows);
+      // A `role:<r>` step delegates to r's whole path — its nominal and its own
+      // steps — not to whichever concrete its `target` was last refreshed to.
+      // The delegation graph is proven acyclic at load; `seen` only keeps the
+      // census bounded if that proof is ever bypassed.
+      const seen = new Set<FailoverRole>();
+      const collectSteps = (r: FailoverRole): void => {
+        for (const s of getFailoverRule(r)?.steps ?? []) {
+          if (!s.roleRef) {
+            collectWindow(s.target);
+            continue;
+          }
+          if (seen.has(s.roleRef)) continue;
+          seen.add(s.roleRef);
+          collectWindow(modelMap?.[s.roleRef]);
+          collectSteps(s.roleRef);
+        }
+      };
+      collectWindow(resolveNominalTarget(requestedModel).target);
+      if (role) {
+        seen.add(role);
+        collectSteps(role);
+      }
+      const admission: ContextAdmissionDecision = decideContextAdmission(body, windows, undeclared);
       if (admission.refuse && admission.largest) {
         const text = contextAdmissionRefusalText(admission.estTokens, admission.largest);
         log(

@@ -228,7 +228,7 @@ export interface DeclaredWindow {
 }
 
 export interface ContextAdmissionDecision {
-  /** True when every DECLARED window on the path is smaller than the request. */
+  /** True when every candidate on the path declares a window, and every one is smaller than the request. */
   refuse: boolean;
   estTokens: number;
   /** The largest declared window seen; undefined when the path declares none. */
@@ -238,19 +238,32 @@ export interface ContextAdmissionDecision {
 /**
  * Decide whether a request can be refused at admission.
  *
- * `windows` carries ONLY declared bounds (an operator `contextLimit`). A path
- * that declares none falls open — the census never guesses a window, and an
- * undeclared candidate is never treated as `0`. The refusal must clear the
- * largest declared window by the same proportional margin the #441 clamp
- * reserves (`contextLimitMarginTokens`), so a request merely NEAR a window is
- * left to the clamp and the learned cap (#79) instead of being refused on
- * estimator drift.
+ * `windows` carries ONLY declared bounds (an operator `contextLimit`);
+ * `undeclaredCandidates` counts the candidates on the same path that declare
+ * nothing. A path with ANY undeclared candidate falls open — the census never
+ * guesses a window, and an undeclared candidate is never treated as `0`. The
+ * refusal must clear the largest declared window by the same proportional
+ * margin the #441 clamp reserves (`contextLimitMarginTokens`), so a request
+ * merely NEAR a window is left to the clamp and the learned cap (#79) instead
+ * of being refused on estimator drift.
  */
 export function decideContextAdmission(
   payload: unknown,
-  windows: readonly DeclaredWindow[]
+  windows: readonly DeclaredWindow[],
+  undeclaredCandidates = 0
 ): ContextAdmissionDecision {
   const declared = windows.filter((w) => Number.isFinite(w.limit) && w.limit > 0);
+  // One undeclared candidate is enough to stand down (hub 2026-10-22): the
+  // haiku path `MiniMax (nothing) > vllm-myia (262 144) > role:sonnet > ds@…
+  // (nothing)` refused every request over 262k — `/compact` included, so the
+  // session could never condense its way out — while the nominal and the PAYG
+  // terminator could have taken it. A candidate the census cannot see may be
+  // the one that serves; only a path where EVERY candidate declares a window
+  // too small is doomed. An entry with a non-finite or zero limit is an
+  // undeclared candidate too, never a window of size 0.
+  if (undeclaredCandidates > 0 || declared.length < windows.length) {
+    return { refuse: false, estTokens: 0 };
+  }
   // Nothing declared ⇒ no census at all (estTokens 0, not a measurement): the
   // estimate walks and re-serialises the whole body, and most requests on most
   // machines have no declared window to weigh. Pay for it only when it decides.
@@ -280,7 +293,7 @@ export function contextAdmissionRefusalText(estTokens: number, largest: Declared
   return (
     `[claudish] Input of ~${estTokens} tokens exceeds every declared context window on this route ` +
     `(largest declared: ${largest.limit} — ${largest.name}). No DECLARED window on this route can ` +
-    `take it (undeclared candidates are not weighed); ` +
+    `take it; ` +
     `the context gauge has been advanced accordingly. Condense the conversation before retrying.`
   );
 }
