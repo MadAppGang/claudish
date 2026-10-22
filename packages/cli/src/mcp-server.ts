@@ -19,7 +19,6 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
-import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import { loadHooksOnce } from "./hooks/index.js";
 import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
 import { initLogger, log } from "./logger.js";
@@ -60,11 +59,15 @@ import {
 import { findAvailablePort } from "./port-manager.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
-import { isLocalProviderName } from "./providers/model-parser.js";
-import { NATIVE_NOT_PROBED, nativeRouteFor } from "./providers/native-route.js";
+import { nativeRouteFor } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
-import { isReadyState, probeLink } from "./providers/probe-live.js";
-import { route } from "./providers/routing-rules.js";
+import {
+  type PreflightModelResult,
+  preflightModel,
+  renderPreflightReport,
+} from "./providers/preflight-chain.js";
+import { probeLink } from "./providers/probe-live.js";
+import type { ProbeTarget } from "./providers/probe-runner.js";
 import { createProxyServer } from "./proxy-server.js";
 import { nativeShortcutForVendor, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
@@ -470,46 +473,9 @@ export const NEXT_STEP: Record<FailureReason, string> = {
     "count this slot as a vote",
 };
 
-/**
- * The Details cell of a preflight "no route" row: the reason, then EVERY line
- * of the plan's hint — for a missing credential that is the same login
- * instruction `--probe` prints. Without it the row read only `No credentials
- * configured for "meta-muse-code".`, which an agent cannot act on.
- *
- * Hints come in two shapes. Most are one remedy sentence (explicit-not-served,
- * catalog-unreadable, …), kept whole. `buildCredentialHint`'s is a header
- * (`No credentials found for "<model>". Options:`) and one line per option.
- * Only a line that REPEATS the reason is dropped, and that header is one: it
- * restates the reason's "no credentials" before the options.
- *
- * One table cell, so the kept lines are joined with ` · ` (a space after a
- * line ending in `:`), whitespace runs collapse, and a `|` is escaped.
- */
-export function noRouteCell(reason: string, hint?: string): string {
-  const flat = (s: string) => s.replace(/\s+/g, " ").trim();
-  const lines = (hint ?? "")
-    .split("\n")
-    .map(flat)
-    .filter((line) => line && !repeatsNoRouteReason(line, flat(reason)));
-  // A line ending in ":" introduces the next, so it joins with a space.
-  const joined = lines.reduce(
-    (acc, line, i) => (i === 0 ? line : `${acc}${lines[i - 1].endsWith(":") ? " " : " · "}${line}`),
-    ""
-  );
-  const cell = joined ? `${reason} ${joined}` : reason;
-  return cell.replace(/\|/g, "\\|");
-}
-
-/** A hint line that restates the reason: the same text, or the credential hint's header. */
-function repeatsNoRouteReason(line: string, reason: string): boolean {
-  if (line === reason) return true;
-  return (
-    // "No credentials configured for …" and "No credentialed providers in …".
-    reason.startsWith("No credential") &&
-    line.startsWith("No credentials found for ") &&
-    line.endsWith("Options:")
-  );
-}
+// The preflight "no route" cell moved to `providers/preflight-chain.ts` with the
+// rest of the preflight report; re-exported for existing importers.
+export { noRouteCell } from "./providers/preflight-chain.js";
 
 /** `18864` → `18.4KB`. */
 function fmtSize(n: number): string {
@@ -1248,7 +1214,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         },
         timeout_ms: {
           type: "number",
-          description: "Per-model probe timeout in ms (default 20000).",
+          description:
+            "Probe timeout in ms PER HOP (default 20000). A model whose first hop fails is " +
+            "probed down its routing chain until a hop serves, so it can take hops × this.",
         },
       },
       required: ["models"],
@@ -1288,141 +1256,38 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       // Sync, latched, config-only. Free after the first call.
       ensureEndpointsRegistered();
 
-      const rows: string[] = [];
-      const readyModels: string[] = [];
-      const failedModels: string[] = [];
-      const nativeModels: string[] = [];
-      let subCount = 0;
-      let meteredCount = 0;
+      // Each model is judged by its ROUTING CHAIN (`preflight-chain.ts`): kept hops
+      // in chain order, each probed until one serves, a failed hop followed by the
+      // runtime's own advance/stop rule. A native Claude name is never probed (the
+      // native handler forwards the inbound Claude Code header, which this process
+      // does not have), and counts as neither ready nor failed. `timeout_ms` is per
+      // hop. Metered hops are probed too: the runtime would use them.
+      const probe = proxy
+        ? (target: ProbeTarget) =>
+            probeLink(
+              proxy.url,
+              // A kept hop passed the credential filter, so a miss here would be a
+              // routing bug, not a missing key.
+              { provider: target.provider, modelSpec: target.probeSpec, hasCredentials: true },
+              timeoutMs
+            )
+        : null;
 
+      const results: PreflightModelResult[] = [];
       for (const model of models) {
         ctx.reportProgress(`preflight: ${model}`);
-
-        // A bare Claude name never reaches route(): the proxy serves it on the
-        // harness's own auth and checks for that BEFORE routing. route() cannot
-        // see that path — `native-anthropic` has no credential store, so its
-        // filter drops it and the chain degrades to OpenRouter — and preflight
-        // was reporting subscription models as "no route" / "metered".
-        const native = nativeRouteFor(model);
-        if (native) {
-          // Deliberately NOT probed. The native handler authenticates by forwarding
-          // the INBOUND request's Claude Code header (native-handler.ts) and only
-          // falls back to ANTHROPIC_API_KEY. A synthetic probe from this process
-          // carries neither, so it fails "x-api-key header is required" for a
-          // healthy model and a typo alike — measured on the built bundle. That
-          // result is noise, and reporting it drove the very "drop your own
-          // model" advice this guard exists to stop. Counted in its own bucket,
-          // neither ready nor failed: the proxy will serve it on the session's
-          // auth, and that is all this process can say.
-          nativeModels.push(model);
-          rows.push(
-            `| \`${model}\` | ${native.displayName} | native | ${NATIVE_NOT_PROBED} | \`${native.modelSpec}\` |`
-          );
-          continue;
-        }
-
-        let plan: Awaited<ReturnType<typeof route>>;
-        try {
-          plan = await route(model);
-        } catch (err) {
-          failedModels.push(model);
-          rows.push(
-            `| \`${model}\` | — | — | ❌ route error | ${err instanceof Error ? err.message : String(err)} |`
-          );
-          continue;
-        }
-
-        if (plan.kind === "no-route") {
-          // No credentialed provider can serve this at all. Reported as a FAILURE
-          // rather than omitted, because "none of your credentials reaches this model" is the
-          // single most useful thing to learn before the run rather than during it.
-          failedModels.push(model);
-          rows.push(
-            `| \`${model}\` | — | — | ❌ no route | ${noRouteCell(plan.reason, plan.hint)} |`
-          );
-          continue;
-        }
-
-        const primary = plan.primary;
-        // Billing mode is a property of the PROVIDER, not the model — the same
-        // model can be flat-rate through a plan and metered through a vendor API,
-        // and which one a bare name lands on is exactly what a caller cannot see.
-        const billing = isLocalProviderName(primary.provider)
-          ? "local"
-          : isSubscriptionProvider(primary.provider)
-            ? "SUB"
-            : "metered";
-        if (billing === "SUB") subCount++;
-        else if (billing === "metered") meteredCount++;
-
-        let status = "not probed";
-        let ok = true;
-        if (proxy) {
-          try {
-            const result = await probeLink(
-              proxy.url,
-              {
-                provider: primary.provider,
-                // route() already credential-filtered, so a miss here would be a
-                // routing bug, not a missing key.
-                modelSpec: primary.modelSpec,
-                hasCredentials: true,
-              },
-              timeoutMs
-            );
-            ok = isReadyState(result.state);
-            status = ok
-              ? `✅ ${result.state}`
-              : `❌ ${result.state}${result.errorMessage ? ` — ${result.errorMessage}` : ""}`;
-          } catch (err) {
-            ok = false;
-            status = `❌ probe error — ${err instanceof Error ? err.message : String(err)}`;
-          }
-        }
-
-        if (ok) readyModels.push(model);
-        else failedModels.push(model);
-
-        const fallbacks = plan.fallbacks.length > 0 ? ` (+${plan.fallbacks.length} fallback)` : "";
-        rows.push(
-          `| \`${model}\` | ${primary.displayName}${fallbacks} | ${billing} | ${status} | \`${primary.modelSpec}\` |`
+        results.push(
+          await preflightModel(model, {
+            probe,
+            // The heartbeat names what it is waiting on.
+            onHop: (hop, total) =>
+              ctx.reportProgress(`preflight: ${model} · hop ${hop.index}/${total}`),
+          })
         );
       }
 
-      const lines = [
-        `# Preflight — ${models.length} model${models.length === 1 ? "" : "s"}`,
-        "",
-        `**Ready: ${readyModels.length}** · **Failed: ${failedModels.length}** · ` +
-          (nativeModels.length > 0 ? `native (not probed): ${nativeModels.length} · ` : "") +
-          `subscription: ${subCount} · metered: ${meteredCount}`,
-        "",
-        "| Model | Provider | Billing | Status | Wire id |",
-        "|---|---|---|---|---|",
-        ...rows,
-      ];
-
-      if (failedModels.length > 0) {
-        lines.push(
-          "",
-          `⚠️ Drop or replace before running: ${failedModels.map((m) => `\`${m}\``).join(", ")}`
-        );
-      }
-      if (meteredCount > 0) {
-        lines.push(
-          "",
-          `💸 ${meteredCount} model${meteredCount === 1 ? "" : "s"} will be billed PER TOKEN. ` +
-            "A bare name can land on a metered provider when the subscription that covers it " +
-            "has no credential configured — name the provider explicitly to pin it."
-        );
-      }
-      if (!doProbe) {
-        lines.push(
-          "",
-          "ℹ️ `probe: false` — routing and billing only. Reachability was NOT checked."
-        );
-      }
-
-      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      const text = renderPreflightReport(results, { probed: doProbe });
+      return { content: [{ type: "text" as const, text }] };
     },
   });
 
