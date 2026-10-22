@@ -235,12 +235,14 @@ proxy, `--probe` and every child claudish (team, MCP sessions) read it there. It
 any later, for two reasons: `--probe` runs and exits inside `parseArgs`'s argv loop, and a child
 process inherits env, not argv. `--default-provider ""` exports an empty value, which disables
 the hop. The export runs after `--op-env` and `--op`, which overwrite env unconditionally, so the
-flag still beats a value they hydrate. Children see it only because every claudish child is
-spawned through `node:child_process`, which inherits `process.env`: `Bun.spawn` without an `env`
-option drops in-process env writes. Measured 2026-10-22, that holds on bun 1.4.0 only: on bun
-1.3.10 (the CI pin) a `node:child_process` child spawned with no `env` option ALSO gets the
-original environment, a deletion or an assignment made in-process undone. A child that must see an
-in-process write needs `env: { ...process.env }` on 1.3.10 (`testing.md`, the spawn rule).
+flag still beats a value they hydrate. Children see it because every spawn site of a claudish
+child copies `process.env` explicitly at spawn time: `team-grid.ts` (`env: { ...process.env }`),
+`claude-runner.ts` (its env built from `{ ...process.env, … }`), the pane launch for MCP sessions
+and team slots (`buildPaneEnv(parentEnv)`, `parentEnv = o.parentEnv ?? process.env`) and
+`run-prompt-claude-code.ts` (`opts.parentEnv ?? process.env`). Keep that property in any new spawn
+site: a child spawned with no `env` option does not see in-process writes, with `Bun.spawn` on any
+bun and, measured 2026-10-22, with `node:child_process` too on bun 1.3.10 (the CI pin), where it
+gets the original environment (`testing.md`, the spawn rule).
 
 **Who reads it.** `route(model)` with no overrides asks the resolver on every call
 (`effectiveDefaultProvider`), and so does `--probe`'s chain, so the two cannot name different
