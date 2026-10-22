@@ -63,6 +63,11 @@ import {
 } from "./providers/routing-rules.js";
 import { discoverProviderProbeModel } from "./providers/transport/provider-model-discovery.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
+import {
+  describeUnknownShortcut,
+  isKnownProviderName,
+  typedShortcutOf,
+} from "./providers/unknown-shortcut.js";
 import { RefusingHandler } from "./providers/wire-handler.js";
 import {
   WireMarkerError,
@@ -775,6 +780,19 @@ export async function createProxyServer(
       const parsedExplicit = parseModelSpec(target);
       // openrouter@... legitimately uses the OpenRouter handler below.
       if (parsedExplicit.provider !== "openrouter") {
+        // A shortcut that names no provider is not a missing credential (D9):
+        // say it is unknown, in the same words routing, preflight and --probe use.
+        if (!isKnownProviderName(parsedExplicit.provider)) {
+          const { reason, hint } = describeUnknownShortcut(
+            typedShortcutOf(parsedExplicit.original),
+            parsedExplicit.model,
+            undefined,
+            parsedExplicit.original
+          );
+          throw new RoutingError(
+            `Explicit model "${target}" could not be routed — ${reason} ${hint}`
+          );
+        }
         // "No handler" has exactly one default explanation here, and for an
         // endpoint provider it is sometimes the wrong one — a malformed
         // base-URL override or a name collision produces no handler too, and
