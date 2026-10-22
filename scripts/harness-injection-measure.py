@@ -108,7 +108,20 @@ RESP_TS = re.compile(r"resp-\d+-r\d+-(\d{4}-\d{2}-\d{2}T[\d-]+Z)-")
 
 # #555 : natif = `claude-*` (pin #218) OU role nu servi verbatim (natif non
 # pinné) ; les lanes budget servent toujours leur id resolu, jamais un role nu.
-BARE_ROLE_RE = re.compile(r"^(?:opus|fable|sonnet|haiku)$", re.I)
+# Vocabulaire canonique partagé avec traffic-consumption.py (lib/bare_roles.py)
+# — muter la constante rougit les deux suites (#583 note).
+def _load_bare_roles():
+    import importlib.util
+    from pathlib import Path
+
+    p = Path(__file__).resolve().parent / "lib" / "bare_roles.py"
+    spec = importlib.util.spec_from_file_location("bare_roles", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+BARE_ROLE_RE = _load_bare_roles().BARE_ROLE_RE
 
 
 def is_native_served(model):

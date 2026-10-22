@@ -54,6 +54,18 @@ HEAD_BYTES = 200_000
 TAIL_BYTES = 100_000
 REQ_HEAD_BYTES = 150_000
 
+
+def _load_bare_roles():
+    import importlib.util
+    from pathlib import Path
+
+    p = Path(__file__).resolve().parent / "lib" / "bare_roles.py"
+    spec = importlib.util.spec_from_file_location("bare_roles", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 # Lane provider par nom de modele servit (l'en-tete resp porte le modele FINAL).
 LANES = [
     (re.compile(r"^glm-"), "gc@ GLM Coding"),
@@ -67,7 +79,9 @@ LANES = [
     # #555: a bare role name as the SERVED model only happens on the native lane
     # (every other lane serves its resolved target id); the native pin (#218)
     # normally rewrites it to `claude-*`, this catches the unpinned case.
-    (re.compile(r"^(?:opus|fable|sonnet|haiku)$", re.I), "native-anthropic"),
+    # Vocabulaire canonique partagé avec harness-injection-measure.py
+    # (lib/bare_roles.py) — muter la constante rougit les deux suites (#583 note).
+    (_load_bare_roles().BARE_ROLE_RE, "native-anthropic"),
 ]
 # Les lanes wire-openai ne rapportent aucun champ de cache (piege 3).
 NO_CACHE_LANES = {"gc@ GLM Coding", "ds@ PAYG"}
