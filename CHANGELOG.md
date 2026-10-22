@@ -2,6 +2,47 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.1.0] - 2026-10-22
+
+### Bug Fixes
+
+- kill a magmux --version probe that ignores its timeout *(pane)* ([`8a4d7b0`](https://github.com/MadAppGang/claudish/commit/8a4d7b07e43223a5ef7b96e8fe01a701b209003f))
+- accept provider shortcuts in isKnownProviderName *(routing)* ([`aae2ea0`](https://github.com/MadAppGang/claudish/commit/aae2ea0b19ad8fa2d933db8f06f8c0b55220c49c))
+- reread credentials.toml when the Devin CLI rewrites it *(devin)* ([`80a41d9`](https://github.com/MadAppGang/claudish/commit/80a41d9fc640abe0880a55240a7c51cd9abd27d1))
+- keep a newer kimi-oauth.json when a refresh is rejected *(kimi)* ([`9f4da73`](https://github.com/MadAppGang/claudish/commit/9f4da73239177340449c0ca28b549acf8ddda184))
+- reload kimi-oauth.json when another process logs in *(kimi)* ([`93efa21`](https://github.com/MadAppGang/claudish/commit/93efa21b38e1290eacc1e3beb70d3bc97874da0c))
+- skip the ~/.grok/auth.json write-back when the file changed *(grok)* ([`0ebd646`](https://github.com/MadAppGang/claudish/commit/0ebd64602e6ac505e0392ac9b4096e20186a4ed4))
+- keep a newer grok-oauth.json over a racing token refresh *(grok)* ([`5f0e8aa`](https://github.com/MadAppGang/claudish/commit/5f0e8aaa703938382c01f6e4c5900a8f2404875c))
+- reload grok-oauth.json when another process logs in *(grok)* ([`6a4d111`](https://github.com/MadAppGang/claudish/commit/6a4d111df5a585a0e4c63290ee91ebf31f593e92))
+- probe preflight hops in chain order until one serves *(mcp)* ([`b138f00`](https://github.com/MadAppGang/claudish/commit/b138f00d453ae1ade85c2ce075125f24bc441d6f))
+- name an unknown provider shortcut in explicit-spec errors *(proxy)* ([`6e00ea9`](https://github.com/MadAppGang/claudish/commit/6e00ea93eccaa2ed2f3fab12eddc8a4b1ac57732))
+- name an unknown provider shortcut instead of no credential *(routing)* ([`66180b6`](https://github.com/MadAppGang/claudish/commit/66180b6935d3a33b5486d1cbf5cd1daee13c0f49))
+
+### Documentation
+
+- record the magmux --version probe deadline rule *(pane)* ([`64a6dd8`](https://github.com/MadAppGang/claudish/commit/64a6dd8f96fb602d6a5e303f0b63c279dffe270f))
+- add the credential-file invariant and credential-files.md to CLAUDE.md([`61e51f9`](https://github.com/MadAppGang/claudish/commit/61e51f97f43ce19395c881a0917ba3a58324bbd1))
+- say children get --default-provider from an explicit env copy *(routing)* ([`03c1388`](https://github.com/MadAppGang/claudish/commit/03c1388412a62d23dc49a2c646c688be79ab181d))
+- mark D1, D4, D5, D6 and D9 fixed on the branch *(reports)* ([`9dc09f0`](https://github.com/MadAppGang/claudish/commit/9dc09f076fa07a58097b46471c2978e0f3c47994))
+- record unknown shortcuts and the test preload *(architecture)* ([`988475a`](https://github.com/MadAppGang/claudish/commit/988475a34ea13b23dacf177012bcc71b166cd377))
+- record the preflight chain walk and hop decision *(architecture)* ([`3cc05d8`](https://github.com/MadAppGang/claudish/commit/3cc05d8e21d09a5cd38430097774f75b85116f0a))
+- record credential-file reload and write-back rules *(architecture)* ([`b575e19`](https://github.com/MadAppGang/claudish/commit/b575e191d04a5a4a29049bd5280ba28ffd7ce3b7))
+- update CHANGELOG.md for v14.0.0([`0944cc8`](https://github.com/MadAppGang/claudish/commit/0944cc88306acca293272781e147d2f681cf7613))
+
+### New Features
+
+- report whether a failed hop advances the routing chain *(probe)* ([`346310f`](https://github.com/MadAppGang/claudish/commit/346310f0c4408aabfc806516448b161dd66d15cf))
+- mark unhandled-error 500s with x-claudish-unhandled-error *(proxy)* ([`25763f1`](https://github.com/MadAppGang/claudish/commit/25763f1030f5b7b27edea6eb488db3639970c3d1))
+
+### Other Changes
+
+- v14.1.0 (#337) *(release)* ([`28c0b10`](https://github.com/MadAppGang/claudish/commit/28c0b10834c0fa7b959398defe1ccdbd44dd519a))
+- v14.1.0 *(release)* ([`7fedd34`](https://github.com/MadAppGang/claudish/commit/7fedd34c7d0509d97d3372e41e8693d7a10241aa))
+
+### Refactoring
+
+- extract FallbackHandler's hop decision *(adapters)* ([`a41955b`](https://github.com/MadAppGang/claudish/commit/a41955b455bb3fb3c71fd4d3597d4033d8e17d8e))
+
 ## [14.0.0] - 2026-10-21
 
 ### ⚠ BREAKING CHANGES
