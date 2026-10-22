@@ -24,7 +24,6 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 import {
   CLAUDISH_EXITING_FLAGS,
   CLAUDISH_FLAG_ARITY,
@@ -529,7 +528,6 @@ type MagmuxBinary = { binary: string; version: string };
 const magmuxCache = new Map<string, MagmuxBinary>();
 /** The probe in flight per key: six slots starting at once run `--version` once, not six times. */
 const magmuxProbes = new Map<string, Promise<MagmuxBinary>>();
-const execFileAsync = promisify(execFile);
 
 /** The magmux binary and its version (≥ `MIN_MAGMUX_VERSION`), cached per process. Never a `-p` fallback. */
 export async function assertMagmuxAvailable(binary?: string): Promise<MagmuxBinary> {
@@ -569,20 +567,60 @@ async function probeMagmux(binary?: string): Promise<MagmuxBinary> {
   return { binary: found, version };
 }
 
+/** How long one `magmux --version` run may take before it is killed and counted as no answer. */
+const MAGMUX_VERSION_TIMEOUT_MS = 5000;
+
 /** The `X.Y.Z` from one `<binary> --version` run, read from stdout and stderr together; "" when absent. */
 async function readMagmuxVersion(found: string): Promise<string> {
-  let out = "";
-  try {
-    // async: the first create_session or team run must not stall the MCP server's event
-    // loop for up to 5 s (every other session's frames and socket share it)
-    const r = await execFileAsync(found, ["--version"], { encoding: "utf8", timeout: 5000 });
-    out = `${r.stdout}\n${r.stderr}`;
-  } catch (e) {
-    throw new MagmuxUnavailableError(
-      `magmux_unavailable: ${found} --version failed: ${e instanceof Error ? e.message : String(e)}`
-    );
-  }
+  const out = await runMagmuxVersion(found, MAGMUX_VERSION_TIMEOUT_MS);
   return out.match(/(\d+\.\d+\.\d+)/)?.[1] ?? "";
+}
+
+/**
+ * One `<binary> --version` run, bounded by a deadline that does NOT depend on the child exiting.
+ * execFile's own `timeout` only sends a signal and then waits for the child to close: a child that
+ * ignores SIGTERM (or whose exit is never observed) kept the promise pending, and because
+ * `assertMagmuxAvailable` hands one in-flight probe to every caller, every later pane start in the
+ * process hung with it. On expiry the run rejects at once, the child is SIGKILLed, and its pipes
+ * are released (a grandchild may still hold them open).
+ */
+function runMagmuxVersion(found: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolveRun, rejectRun) => {
+    let settled = false;
+    let child: ChildProcess | undefined;
+    const timer = setTimeout(() => {
+      fail(`no answer in ${timeoutMs} ms`);
+      try {
+        child?.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
+    }, timeoutMs);
+    const settle = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      clearTimeout(timer);
+      return true;
+    };
+    const fail = (detail: string): void => {
+      if (!settle()) return;
+      rejectRun(
+        new MagmuxUnavailableError(`magmux_unavailable: ${found} --version failed: ${detail}`)
+      );
+    };
+    try {
+      // async: the first create_session or team run must not stall the MCP server's event
+      // loop for up to 5 s (every other session's frames and socket share it)
+      child = execFile(found, ["--version"], { encoding: "utf8" }, (error, stdout, stderr) => {
+        if (error) return fail(error.message);
+        if (settle()) resolveRun(`${stdout}\n${stderr}`);
+      });
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
+  });
 }
 
 /* ───────────────────────────── launcher ───────────────────────────── */
