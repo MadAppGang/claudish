@@ -27,6 +27,17 @@ import {
 } from "./recovery-marker.js";
 import { isSubscriptionProvider } from "./remote-provider-types.js";
 
+/**
+ * The marker the proxy puts on a 500 that means a handler THREW instead of answering:
+ * the `/v1/messages` catch when the resolved handler threw, and `app.onError` for a
+ * rejection that escaped it. Inside a routing chain `FallbackHandler` catches a throw
+ * and advances; a probe pins ONE hop, so it gets the 500 instead. Read as a response, a
+ * plain 500 is non-retryable, so the probe would say "the chain stops here" for a hop
+ * the runtime advances past. The marker lets the probe judge it as `thrown`. It changes
+ * nothing for Claude Code: the status, body and envelope are the same.
+ */
+export const UNHANDLED_ERROR_HEADER = "x-claudish-unhandled-error";
+
 /** Why a chain advanced or stopped at a failed hop. */
 export type HopFailureReason =
   /** claudish's own recovery hold (`x-claudish-recovery`): stop, response verbatim. */
