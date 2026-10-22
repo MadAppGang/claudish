@@ -409,6 +409,31 @@ of the PROVIDER, not the model, so the same bare name can be free through a plan
 or billed per token depending on which credential is present — which is precisely
 what a caller cannot see from the model id.
 
+**`preflight` judges a model by its ROUTING CHAIN** (`providers/preflight-chain.ts`). It used to
+plan with `route()` and probe only the primary, so a model whose first hop failed got "❌" and
+"Drop or replace before running" even when a later hop served it (six models behind one expired Zen
+Go key on 2026-10-21; `model-failures-2026-10-21.md`, D6). Now `preflightModel` takes the kept hops
+from `explainRoute` → `probeTargets` (the chain `--probe` shows, in order) and probes each until one
+is live. A failed hop is followed by `ProbeResult.chainAction`, which `probeLink` sets with
+`decideHopFailure`, the SAME function `FallbackHandler` uses (`adapters.md`): advance, or stop here
+because a real request would stop here too (a connection fault, a stream failure, a credential hold
+on a metered hop). Two walker defaults stop rather than guess: a non-live result with no
+`chainAction` (`no-decision`, e.g. `key-missing`), and a probe that throws (`probe-error`). A native
+Claude name is never probed (the third outcome). Metered hops are probed like any other: a configured
+key is consent, and the runtime would use that hop.
+
+Output contract: the table's Provider, Billing and Model spec describe the SERVING hop; Status is
+`✅ live · hop i/n`, `❌ <state> · chain stops at hop i/n` or `❌ every hop failed (n)`, with
+` (+k untried)`; every failed hop is listed under "Failed hops:" with its probe spec, billing word
+and where the chain went; "Drop or replace before running" lists only models no hop serves. The
+billing counts follow the serving hop.
+
+Cost: at most one probe per kept hop, stopping at the first live one, so a model whose first hop
+serves costs what it always did. `timeout_ms` applies PER HOP; the worst case per model is hops ×
+`timeout_ms`, carried by `heartbeat: true` and a progress message per hop
+(`preflight: <model> · hop i/n`). Preflight models a FRESH chain: `FallbackHandler` starts at its
+`lastSuccessIndex` in a long-lived proxy, preflight always at hop 1, which is what a new session sees.
+
 **The polling verbs are the frozen mod contract v1** (`pane/contract.ts`, summarised in
 `pane-session.md`): `list_sessions` answers `{contract_version, capabilities, sessions}` with one
 `SessionRow` per session (state, reason, `reason_detail`, tokens, `cost_usd`, tool calls, turns, `idle_seconds`,
