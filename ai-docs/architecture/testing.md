@@ -18,8 +18,8 @@
 `scripts/guard-real-config.ts` — the thing `bun run test:safe` runs the suite
 under — does two separate jobs, and conflating them is how each keeps decaying.
 
-**It SNAPSHOTS files.** `GUARDED` lists `~/.claudish/config.json` and
-`~/.claudish/all-models.json`. Each is read before the run and compared after.
+**It SNAPSHOTS files.** `GUARDED` lists the config, the catalog caches and sentinel, and
+the credential stores below. Each is read before the run and compared after.
 Present and changed → restored from the snapshot. Absent before and present
 after → DELETED, because on a clean machine a test fixture that survives becomes
 the machine's first real catalog, and a cold cache is indistinguishable from a
@@ -27,6 +27,21 @@ poisoned one to every caller. Present but unreadable → it refuses and says so,
 which is why `snapshot()` establishes presence with `existsSync` separately from
 reading the bytes: folding "unreadable" into "absent" would make the delete
 branch destroy the file.
+
+**Credential files are SECRET entries, and their rule is different.** `codex-oauth.json`,
+`grok-oauth.json`, `gemini-oauth.json`, `kimi-oauth.json`, the Muse stores and
+`accounts/state.json` get no `.guard-backup` sidecar (a second plaintext copy of a real login
+that `claudish logout` never removes); the in-memory snapshot is the only restore path. A secret
+is restored only when the run left it DELETED, unreadable, unparseable or without a non-empty
+`refresh_token`, through a same-directory temp file created 0600 and renamed over it. A secret
+the run left VALID but different is KEPT with a warning, because Codex and Grok rotate refresh
+tokens: a concurrent claudish process may have refreshed during the run, and writing the old
+document back reinstates a consumed refresh token (`refresh_token_reused`, which can revoke the
+grant). Only a mode change the run made is reported; a login that was already 0644 before the run
+is the developer's state. SIGINT and SIGTERM are forwarded to the child so Ctrl-C still restores.
+Added 2026-10-21 after a full run deleted the real `codex-oauth.json`: a test-only singleton reset
+replaced `CodexOAuth`'s instance, the credential authority kept the old one, and a test's
+`credentials.logout()` reached it. Reset singletons IN PLACE.
 
 **It PREVENTS three things outright,** via env vars set on the child:
 

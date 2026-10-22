@@ -19,6 +19,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
+import { claudeCodeKeychainServiceCandidates } from "./auth/claude-code-facts.js";
 import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
@@ -111,31 +112,64 @@ function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
 export type KeychainCredentialProbe = () => boolean;
 
 // Startup-only memo (see hasResolvableAnthropicAuth call graph — at most a couple of
-// evaluations per launch). Tests inject their own probe, so this stays inert there.
-let macosKeychainAnthropicResult: boolean | undefined;
+// evaluations per launch), keyed by the SERVICE NAMES probed so a changed
+// CLAUDE_CONFIG_DIR is not answered from the previous directory's result.
+// Tests inject their own probe, so this stays inert there.
+const macosKeychainAnthropicMemo = new Map<string, boolean>();
 
 /**
- * Existence-only probe for Claude Code's macOS login-Keychain OAuth item (service
- * "Claude Code-credentials"). Returns true iff the item is present. Uses
- * `security find-generic-password` WITHOUT `-w`, so it never requests the secret,
- * needs no Keychain-access prompt, and never touches the token — Claude Code itself
- * still forwards the OAuth once claudish skips the placeholder key. Non-darwin → false
- * (returns before spawning). Best-effort: any error (security absent, non-zero exit,
- * item missing) → false.
+ * Existence-only probe for Claude Code's macOS login-Keychain OAuth item.
+ *
+ * The service is `Claude Code[-<sha256(configDir)[0:8]>]-credentials` — the hash
+ * suffix appears whenever `CLAUDE_CONFIG_DIR` is not the default. This probe
+ * hardcoded the UNSUFFIXED name, so a user with a custom config dir was reported
+ * as having no Claude login however signed in they were, and claudish then
+ * injected a placeholder key over a perfectly good subscription. Each candidate
+ * from {@link claudeCodeKeychainServiceCandidates} is tried in order.
+ *
+ * Uses `security find-generic-password` WITHOUT `-w`, so it reads item ATTRIBUTES
+ * and never item DATA: no secret is requested, no Keychain-access dialog appears,
+ * and the token is never touched — Claude Code itself still forwards the OAuth
+ * once claudish skips the placeholder key. Non-darwin → false (returns before
+ * spawning). Best-effort: any error (security absent, non-zero exit, item
+ * missing) → false.
+ *
+ * `CLAUDISH_DISABLE_KEYCHAIN=1` short-circuits it to false, mirroring
+ * `hasKeychainSource()`. A test run must be able to guarantee it spawns no
+ * `security` at all — see `keychain.md` on why a flag the production code
+ * honours is the only stub that cannot leak.
  */
 export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = () => {
   if (process.platform !== "darwin") return false;
-  if (macosKeychainAnthropicResult !== undefined) return macosKeychainAnthropicResult;
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return false;
+
+  const services = claudeCodeKeychainServiceCandidates();
+  const memoKey = services.join("|");
+  const memoized = macosKeychainAnthropicMemo.get(memoKey);
+  if (memoized !== undefined) return memoized;
+
+  // `CLAUDISH_KEYCHAIN_FILE` redirects every `security` call to a throwaway
+  // keychain, and it must be the LAST argument on any subcommand. Honoured here
+  // so live verification has the same safe target the rest of the keychain code
+  // has.
+  const keychainFile = process.env.CLAUDISH_KEYCHAIN_FILE;
+  let found = false;
   try {
-    // Existence only — NO `-w`, so no secret is requested and no Keychain prompt appears.
-    const res = spawnSync("security", ["find-generic-password", "-s", "Claude Code-credentials"], {
-      stdio: "ignore",
-    });
-    macosKeychainAnthropicResult = !res.error && res.status === 0;
+    for (const service of services) {
+      const args = ["find-generic-password", "-s", service];
+      if (keychainFile) args.push(keychainFile);
+      // Existence only — NO `-w`, so no secret is requested and no prompt appears.
+      const res = spawnSync("security", args, { stdio: "ignore" });
+      if (!res.error && res.status === 0) {
+        found = true;
+        break;
+      }
+    }
   } catch {
-    macosKeychainAnthropicResult = false;
+    found = false;
   }
-  return macosKeychainAnthropicResult;
+  macosKeychainAnthropicMemo.set(memoKey, found);
+  return found;
 };
 
 /**

@@ -208,7 +208,7 @@ afterEach(() => {
   credentials.invalidate("openai-codex");
 });
 
-describe("C1 (REQ-1) — token host unreachable: refreshAuth rejects with a classifiable connection error", () => {
+describe("C1 (REQ-1) — token host unreachable: signRequest rejects with a classifiable connection error", () => {
   test("C1-bare: rejects, and the rejection classifies non-null, when getRequestAuth throws the real fetch failure as-is", async () => {
     const real = await realConnectionFailure();
     const fake = installFakeCodexCredential(async () => {
@@ -216,7 +216,7 @@ describe("C1 (REQ-1) — token host unreachable: refreshAuth rejects with a clas
     });
     const transport = newTransport();
 
-    const outcome = await settle(transport.refreshAuth());
+    const outcome = await settle(transport.signRequest({}));
 
     expect(fake.consulted()).toBeGreaterThan(0);
     // Resolving here means the request proceeds on the metered api-key path.
@@ -232,7 +232,7 @@ describe("C1 (REQ-1) — token host unreachable: refreshAuth rejects with a clas
     });
     const transport = newTransport();
 
-    const outcome = await settle(transport.refreshAuth());
+    const outcome = await settle(transport.signRequest({}));
 
     expect(fake.consulted()).toBeGreaterThan(0);
     expect(outcome.settled).toBe("rejected");
@@ -241,7 +241,7 @@ describe("C1 (REQ-1) — token host unreachable: refreshAuth rejects with a clas
   });
 });
 
-describe("C2 (REQ-2) — refresh REJECTED by the server: refreshAuth rejects without a metered signature", () => {
+describe("C2 (REQ-2) — refresh REJECTED by the server: signRequest rejects without a metered signature", () => {
   test.each([
     ["classified invalid_grant login rejection", invalidGrantRejection],
     ["a bare 400 invalid_grant rejection", bareServerRejection],
@@ -253,7 +253,7 @@ describe("C2 (REQ-2) — refresh REJECTED by the server: refreshAuth rejects wit
       });
       const transport = newTransport();
 
-      const outcome = await settle(transport.refreshAuth());
+      const outcome = await settle(transport.signRequest({}));
       expect(fake.consulted()).toBeGreaterThan(0);
       expect(outcome.settled).toBe("rejected");
       if (outcome.settled === "rejected") {
@@ -264,7 +264,7 @@ describe("C2 (REQ-2) — refresh REJECTED by the server: refreshAuth rejects wit
   );
 });
 
-describe("C3 (REQ-3) — OAuth artifact: refreshAuth resolves and the request goes to the subscription endpoint", () => {
+describe("C3 (REQ-3) — OAuth artifact: signRequest resolves and the request goes to the subscription endpoint", () => {
   test("C3: resolves, and getEndpoint returns the artifact's chatgpt.com endpoint, when getRequestAuth returns an oauth artifact", async () => {
     installFakeCodexCredential(async () => ({
       arm: "oauth",
@@ -273,10 +273,10 @@ describe("C3 (REQ-3) — OAuth artifact: refreshAuth resolves and the request go
     }));
     const transport = newTransport();
 
-    const outcome = await settle(transport.refreshAuth());
+    const auth = await transport.signRequest({});
 
-    expect(outcome).toEqual({ settled: "resolved" });
-    expect(transport.getEndpoint(MODEL)).toBe(SUBSCRIPTION_ENDPOINT);
+    expect(auth.arm).toBe("oauth");
+    expect(transport.getEndpoint(MODEL, { auth })).toBe(SUBSCRIPTION_ENDPOINT);
   });
 });
 

@@ -263,8 +263,9 @@ export const SUBSCRIPTION_PROVIDERS = new Set([
  * account type answers `"payer": "developer"` here; a ChatGPT-plan-backed key,
  * if such a thing exists, was not tested.
  *
- * Membership here means "ask the probe". A provider is METERED until the probe
- * says otherwise. `openai-codex` must NEVER also be added to
+ * Membership here means "ask the probe". No registered probe means METERED;
+ * a registered Codex probe failure conservatively reserves SUB because signing
+ * cannot use a key on unknown account configuration. `openai-codex` must NEVER also be added to
  * SUBSCRIPTION_PROVIDERS above — the name check runs first, so that would
  * short-circuit the probe and report SUB to every API-key user.
  *
@@ -293,7 +294,7 @@ let _subscriptionCredentialProbe: ((provider: string) => boolean) | null = null;
  *
  * The probe is only half the run-scoped state behind this answer. The other half
  * is the signed-arm record (`auth/credentials/billing-probe.ts`), which
- * `OpenAICodexTransport.refreshAuth()` writes on EVERY call — so a test that only
+ * `OpenAICodexTransport.signRequest()` writes on EVERY call — so a test that only
  * meant to pin a transport endpoint or header also decides billing for every
  * later file in the run. `clearSignedArm(provider)` in `afterEach` is
  * review-blocking on the same footing as `register(null)`; the measured leak is
@@ -322,7 +323,14 @@ export function isSubscriptionProvider(provider: string): boolean {
   const p = provider.toLowerCase();
   if (SUBSCRIPTION_PROVIDERS.has(p)) return true;
   if (!CREDENTIAL_DECIDED_PROVIDERS.has(p)) return false;
-  return _subscriptionCredentialProbe?.(p) === true;
+  if (!_subscriptionCredentialProbe) return false;
+  try {
+    return _subscriptionCredentialProbe(p) === true;
+  } catch {
+    // Unknown Codex configuration reserves OAuth; no registration remains metered.
+    // Keep this leaf independent of auth, even for an unexpected callback failure.
+    return p === "openai-codex";
+  }
 }
 
 /** Map provider aliases to canonical names used in PROVIDER_DEFAULTS */

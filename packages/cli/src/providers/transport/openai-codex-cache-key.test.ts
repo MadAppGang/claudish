@@ -16,7 +16,7 @@
  * the api-key half never throws, so nothing here pretends it does. See the sibling
  * file's header for why that distinction is load-bearing.
  *
- * The two tests that call refreshAuth() write the process-wide signed-arm record;
+ * The two tests that call signRequest() write the process-wide signed-arm record;
  * the afterEach clears it. See the sibling file's afterEach.
  */
 
@@ -32,7 +32,7 @@ const FAKE_ACCOUNT = "acct-123";
 const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 
 const CODEX_OAUTH_AUTH = {
-  // Stamped by CodexOAuthHalf; this is what refreshAuth reads to record the SUB
+  // Stamped by CodexOAuthHalf; this is what signRequest reads to record the SUB
   // billing arm. A fixture without it is not the OAuth artifact.
   arm: "oauth" as const,
   headers: {
@@ -123,7 +123,7 @@ beforeEach(() => {
 
 afterEach(() => {
   mock.restore();
-  // refreshAuth() always records a billing arm; this suite is about cache keys
+  // signRequest() always records a billing arm; this suite is about cache keys
   // and must not decide billing for the next file in the Bun run.
   clearSignedArm("openai-codex");
 });
@@ -189,11 +189,12 @@ describe("OpenAICodexTransport prompt_cache_key", () => {
 
   test("coexists with model normalization and OAuth payload transforms", async () => {
     const transport = createTransport();
-    await transport.refreshAuth();
+    const auth = await transport.signRequest({});
 
     const out = transport.transformPayload(
       { model: "cx@gpt-5.1-codex", input: "oauth" },
-      requestForSession("019c7f9e-5555-7000-8000-555555555555")
+      requestForSession("019c7f9e-5555-7000-8000-555555555555"),
+      { auth }
     );
 
     expect(out.model).toBe("gpt-5.1-codex");
@@ -209,11 +210,12 @@ describe("OpenAICodexTransport prompt_cache_key", () => {
     // throw — the composite falls THROUGH to this half rather than failing.
     getRequestAuthMock = mock(async () => API_KEY_AUTH);
     const transport = createTransport();
-    await transport.refreshAuth();
+    const auth = await transport.signRequest({});
 
     const out = transport.transformPayload(
       { input: "api-key" },
-      requestForSession("019c7f9e-6666-7000-8000-666666666666")
+      requestForSession("019c7f9e-6666-7000-8000-666666666666"),
+      { auth }
     );
 
     promptCacheKey(out);

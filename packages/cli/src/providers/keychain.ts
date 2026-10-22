@@ -69,8 +69,25 @@
  * and is the existing precedent for talking to `security` from this codebase.
  */
 
-/** Keychain service name for every item claudish owns. */
+/** Keychain service name for claudish's API-KEY items — one item per env var. */
 export const KEYCHAIN_SERVICE = "claudish";
+
+/**
+ * Keychain service name for the ACCOUNT POOL's OAuth token blobs.
+ *
+ * A separate service, and the separation is load-bearing twice over:
+ *
+ * 1. `hydrateKeychainIntoEnv()` enumerates and reads the `claudish` service and
+ *    writes what it finds into `process.env`, where spawned children inherit it.
+ *    A refresh token stored under that service would be copied into every child's
+ *    environment. Under `claudish-accounts` it can never be.
+ * 2. These items are ONE JSON BLOB PER ACCOUNT, where the api-key service is one
+ *    item per variable. That is not an inconsistency: a token set (access,
+ *    refresh, expiry, generation, fingerprint) is a single atomic unit whose
+ *    parts are meaningless apart and must rotate together, whereas env vars are
+ *    independently resolvable and independently deletable.
+ */
+export const KEYCHAIN_ACCOUNTS_SERVICE = "claudish-accounts";
 
 /** Absolute path — `security` must not be resolved through a mutable PATH. */
 const SECURITY_BIN = "/usr/bin/security";
@@ -444,16 +461,13 @@ function keychainFileArgs(): string[] {
   return file ? [file] : [];
 }
 
-function findArgs(envVar: string): string[] {
-  return [
-    "find-generic-password",
-    "-s",
-    KEYCHAIN_SERVICE,
-    "-a",
-    envVar,
-    "-w",
-    ...keychainFileArgs(),
-  ];
+function findArgs(account: string, service: string = KEYCHAIN_SERVICE): string[] {
+  return ["find-generic-password", "-s", service, "-a", account, "-w", ...keychainFileArgs()];
+}
+
+/** Memo key. Two services can hold the same account name and mean different things. */
+function memoKey(service: string, account: string): string {
+  return `${service} ${account}`;
 }
 
 /** Interpret a `find-generic-password -w` result. Throws on a real failure. */
@@ -477,25 +491,71 @@ function interpretRead(envVar: string, res: KeychainRunResult): string | null {
  * for every provider in one spawn.
  */
 export function readKeychainSecret(envVar: string): string | null {
-  if (!isKeychainSupported()) return null;
-  const cached = valueMemo.get(envVar);
-  const at = now();
-  if (cached && at - cached.at < MEMO_TTL_MS) return cached.value;
-  const value = interpretRead(envVar, deps.run(findArgs(envVar)));
-  // Memoize the MISS too: "not stored" is the answer that repeats hardest,
-  // and it costs a full failed spawn every time.
-  valueMemo.set(envVar, { at, value });
-  return value;
+  return readKeychainItem(KEYCHAIN_SERVICE, envVar);
 }
 
 /** Async twin of {@link readKeychainSecret}, for parallel batch hydration. */
 export async function readKeychainSecretAsync(envVar: string): Promise<string | null> {
+  return readKeychainItemAsync(KEYCHAIN_SERVICE, envVar);
+}
+
+/** Options shared by the generalized `(service, account)` read paths. */
+export interface KeychainReadOptions {
+  /**
+   * Bypass the 3 s burst memo — and do not populate it either.
+   *
+   * MANDATORY on the token-refresh path. The memo exists to collapse a burst
+   * inside one operation; on a refresh it would hand back the PRE-ROTATION token
+   * for up to three seconds after another process rotated it, and exchanging a
+   * revoked refresh token is `invalid_grant` and a logged-out account. Reads for
+   * DISPLAY may use the memo freely.
+   */
+  uncached?: boolean;
+}
+
+/**
+ * Read one item under an explicit service. Throws on a real failure; returns
+ * null only for a CONFIRMED absence (exit 44).
+ *
+ * That distinction is the whole contract: a caller that cannot tell "the
+ * keychain is locked" from "nothing is stored" will treat a locked store as an
+ * unconfigured one.
+ */
+export function readKeychainItem(
+  service: string,
+  account: string,
+  opts: KeychainReadOptions = {}
+): string | null {
   if (!isKeychainSupported()) return null;
-  const cached = valueMemo.get(envVar);
+  const key = memoKey(service, account);
   const at = now();
-  if (cached && at - cached.at < MEMO_TTL_MS) return cached.value;
-  const value = interpretRead(envVar, await deps.runAsync(findArgs(envVar)));
-  valueMemo.set(envVar, { at, value });
+  if (!opts.uncached) {
+    const cached = valueMemo.get(key);
+    if (cached && at - cached.at < MEMO_TTL_MS) return cached.value;
+  }
+  const value = interpretRead(account, deps.run(findArgs(account, service)));
+  // Memoize the MISS too: "not stored" is the answer that repeats hardest, and
+  // it costs a full failed spawn every time. An uncached read populates nothing,
+  // so it cannot install a value a later uncached read is then asked to trust.
+  if (!opts.uncached) valueMemo.set(key, { at, value });
+  return value;
+}
+
+/** Async twin of {@link readKeychainItem}. */
+export async function readKeychainItemAsync(
+  service: string,
+  account: string,
+  opts: KeychainReadOptions = {}
+): Promise<string | null> {
+  if (!isKeychainSupported()) return null;
+  const key = memoKey(service, account);
+  const at = now();
+  if (!opts.uncached) {
+    const cached = valueMemo.get(key);
+    if (cached && at - cached.at < MEMO_TTL_MS) return cached.value;
+  }
+  const value = interpretRead(account, await deps.runAsync(findArgs(account, service)));
+  if (!opts.uncached) valueMemo.set(key, { at, value });
   return value;
 }
 
@@ -696,7 +756,7 @@ export function lookupKeychainVar(envVar: string): { present: boolean; failed: b
   // resolve, the value memo is the fresher of the two, and consulting it avoids
   // a dump for a question that has already been answered exactly. It also
   // answers correctly while enumeration is failing.
-  const cached = valueMemo.get(envVar);
+  const cached = valueMemo.get(memoKey(KEYCHAIN_SERVICE, envVar));
   if (cached && now() - cached.at < MEMO_TTL_MS && cached.value !== null) {
     return { present: true, failed: false };
   }
@@ -745,13 +805,36 @@ function quoteForStdin(value: string): string {
  * holds. ~17 ms extra on an operation that happens once per key.
  */
 export function writeKeychainSecret(envVar: string, value: string): void {
+  // Order preserved from before the `(service, account)` generalization: the
+  // platform check comes first, so a non-macOS user is told the backend is
+  // unavailable rather than that their variable name is wrong.
   const unsupported = keychainUnavailableReason();
   if (unsupported) throw new KeychainError(`Cannot write ${envVar}: ${unsupported}`);
   if (!isValidKeychainVarName(envVar)) {
     throw new KeychainError(`Cannot write "${envVar}": not a valid environment variable name`);
   }
+  writeKeychainItem(KEYCHAIN_SERVICE, envVar, value);
+}
+
+/**
+ * An account name for a non-env-var item: anything printable without the
+ * characters `security -i`'s shell-like tokenizer would have to interpret.
+ *
+ * The api-key path's `ENV_VAR_NAME` cannot be reused here — account ids match
+ * `^[a-z0-9]{12}$` and may legitimately start with a digit, which that pattern
+ * rejects.
+ */
+const KEYCHAIN_ACCOUNT_NAME = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
+
+/** Store (or replace) a value under an explicit service. See {@link writeKeychainSecret}. */
+export function writeKeychainItem(service: string, account: string, value: string): void {
+  const unsupported = keychainUnavailableReason();
+  if (unsupported) throw new KeychainError(`Cannot write ${account}: ${unsupported}`);
+  if (!KEYCHAIN_ACCOUNT_NAME.test(account)) {
+    throw new KeychainError(`Cannot write "${account}": not a valid keychain account name`);
+  }
   const unstorable = describeUnstorableValue(value);
-  if (unstorable) throw new KeychainError(`Cannot store ${envVar}: ${unstorable}`);
+  if (unstorable) throw new KeychainError(`Cannot store ${account}: ${unstorable}`);
 
   // Invalidate BEFORE the write, so a throwing `security` still leaves the memo
   // dropped rather than serving a value the store may or may not still hold.
@@ -760,11 +843,11 @@ export function writeKeychainSecret(envVar: string, value: string): void {
   const cmd = [
     "add-generic-password",
     "-s",
-    quoteForStdin(KEYCHAIN_SERVICE),
+    quoteForStdin(service),
     "-a",
-    quoteForStdin(envVar),
+    quoteForStdin(account),
     "-l",
-    quoteForStdin(`${KEYCHAIN_SERVICE}: ${envVar}`),
+    quoteForStdin(`${service}: ${account}`),
     "-D",
     quoteForStdin("application password"),
     "-j",
@@ -782,16 +865,18 @@ export function writeKeychainSecret(envVar: string, value: string): void {
   const res = deps.run(["-i"], `${cmd}\n`);
   if (res.code !== 0) {
     throw new KeychainError(
-      `Failed to store ${envVar} in the keychain: ${res.stderr.trim() || `security exited ${res.code}`}`,
+      `Failed to store ${account} in the keychain: ${res.stderr.trim() || `security exited ${res.code}`}`,
       res.code
     );
   }
 
   invalidateKeychainCache();
-  const readBack = readKeychainSecret(envVar);
+  // Read back UNCACHED: the memo was just dropped, but an uncached read also
+  // states the intent — this is a verification, not a lookup.
+  const readBack = readKeychainItem(service, account, { uncached: true });
   if (readBack !== value) {
     throw new KeychainError(
-      `Keychain write for ${envVar} did not round-trip — the stored value differs from what was written. ` +
+      `Keychain write for ${account} did not round-trip — the stored value differs from what was written. ` +
         "The item may exceed the keychain's size limit; nothing should be assumed saved."
     );
   }
@@ -803,21 +888,26 @@ export function writeKeychainSecret(envVar: string, value: string): void {
  * succeeding on an already-absent key is the behaviour every caller wants.
  */
 export function deleteKeychainSecret(envVar: string): boolean {
+  return deleteKeychainItem(KEYCHAIN_SERVICE, envVar);
+}
+
+/** Remove one item under an explicit service. See {@link deleteKeychainSecret}. */
+export function deleteKeychainItem(service: string, account: string): boolean {
   if (!isKeychainSupported()) return false;
   invalidateKeychainCache();
   const res = deps.run([
     "delete-generic-password",
     "-s",
-    KEYCHAIN_SERVICE,
+    service,
     "-a",
-    envVar,
+    account,
     ...keychainFileArgs(),
   ]);
   invalidateKeychainCache();
   if (res.code === 0) return true;
   if (res.code === EXIT_ITEM_NOT_FOUND) return false;
   throw new KeychainError(
-    `Failed to delete ${envVar} from the keychain: ${res.stderr.trim() || `security exited ${res.code}`}`,
+    `Failed to delete ${account} from the keychain: ${res.stderr.trim() || `security exited ${res.code}`}`,
     res.code
   );
 }

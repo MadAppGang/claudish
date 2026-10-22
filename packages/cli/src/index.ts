@@ -412,6 +412,8 @@ const isKeychainCommand = firstPositional === "keychain";
 const isSubscriptionCommand = firstPositional === "subscription";
 // Hooks subcommand: claudish hooks list|check|init|corpus|telemetry
 const isHooksCommand = firstPositional === "hooks";
+// Account subcommand: read-only views and transactional Codex management.
+const isAccountCommand = firstPositional === "account";
 // Team subcommand: claudish team run|run-and-judge (multi-model orchestration)
 const isTeamCommand = firstPositional === "team";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
@@ -523,6 +525,15 @@ if (isMcpMode) {
         })
     )
     .then((code) => process.exit(code));
+} else if (isAccountCommand) {
+  // Account views never enroll; only explicit Codex management publishes mutations.
+  const accountArgIndex = args.indexOf("account");
+  import("./account-command.js").then((m) =>
+    m.accountCommand(args.slice(accountArgIndex + 1)).catch((e) => {
+      console.error(`[claudish account] ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    })
+  );
 } else if (isLoginCommand) {
   // Auth login subcommand: claudish login [provider]
   const loginProviderArg = args.find((a, i) => i > args.indexOf("login") && !a.startsWith("-"));

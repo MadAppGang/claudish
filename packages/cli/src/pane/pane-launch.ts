@@ -330,6 +330,7 @@ const MODE_FLAGS = [
  * a subcommand instead of the REPL, which the child-side assertion cannot catch.
  */
 export const SUBCOMMAND_WORDS = [
+  "account",
   "update",
   "init",
   "profile",
