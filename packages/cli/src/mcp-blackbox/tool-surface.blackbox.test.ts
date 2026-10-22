@@ -204,6 +204,7 @@ describe("quick-prompt public surface", () => {
     expect(prompt).toBeDefined();
     expect(compare).toBeDefined();
     expect(Object.keys(prompt?.inputSchema?.properties ?? {}).sort()).toEqual([
+      "files",
       "model",
       "prompt",
       "system_prompt",
@@ -211,6 +212,7 @@ describe("quick-prompt public surface", () => {
     expect(prompt?.inputSchema?.required).toEqual(["model", "prompt"]);
     expect(prompt?.inputSchema?.properties).not.toHaveProperty("max_tokens");
     expect(Object.keys(compare?.inputSchema?.properties ?? {}).sort()).toEqual([
+      "files",
       "models",
       "prompt",
       "system_prompt",
