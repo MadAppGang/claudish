@@ -375,9 +375,9 @@ Claudish loads provider API keys and model settings (`CLAUDISH_MODEL`, `CLAUDISH
 
 #### Bundled Endpoint Catalog
 
-25 extra vendors ship inside the package as predefined endpoints. **Each appears only when its key is already present locally** (env var, alias, or `config.apiKeys`) — set the variable and `vendor@model` starts working with no config file. A key that lives only in 1Password does not activate a row (activation is synchronous); use `predefinedEndpoints.enable` for that case. See [Predefined Endpoints](docs/settings-reference.md#predefined-endpoints).
+26 extra vendors ship inside the package as predefined endpoints. **Each appears only when its key is already present locally** (env var, alias, or `config.apiKeys`) — set the variable and `vendor@model` starts working with no config file. A key that lives only in 1Password does not activate a row (activation is synchronous); use `predefinedEndpoints.enable` for that case. See [Predefined Endpoints](docs/settings-reference.md#predefined-endpoints).
 
-All 25 rows ship *probe*-verified — the configured path was confirmed to reach the vendor's own auth layer, and a bogus sibling path to answer differently. **None is live-verified**: that is strong evidence about routing and weak evidence about a vendor's streaming dialect on a successful turn. The endpoint layer itself was verified end to end against a real API.
+All 26 rows ship *probe*-verified — the configured path was confirmed to reach the vendor's own auth layer, and a bogus sibling path to answer differently. **None is live-verified**: that is strong evidence about routing and weak evidence about a vendor's streaming dialect on a successful turn. The endpoint layer itself was verified end to end against a real API.
 
 | Variable | Provider | Notes |
 |----------|----------|-------|
@@ -406,6 +406,7 @@ All 25 rows ship *probe*-verified — the configured path was confirmed to reach
 | `WRITER_API_KEY` | Writer Palmyra (`writer@`) | |
 | `MOONSHOT_CN_API_KEY` | Moonshot AI China region (`moonshot-cn@`) | Different service from `MOONSHOT_API_KEY` / `moonshot@` above |
 | `TUNING_ENGINES_API_KEY` | Tuning Engines (`tuningengines@`) | Self-hosted: also set `TUNING_ENGINES_BASE_URL` |
+| `CHEAPER_INFERENCE_API_KEY` | Cheaper Inference (`cheaperinference@`) | |
 
 Every one of these also accepts `CUSTOM_<NAME>_KEY` as an alias, and any of them can be replaced outright by a `customEndpoints` entry of the same name.
 

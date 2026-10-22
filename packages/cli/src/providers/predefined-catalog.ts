@@ -345,4 +345,15 @@ export const PREDEFINED_ENDPOINTS: readonly PredefinedEndpoint[] = [
       "Tuning Engines enterprise LLM gateway (tuningengines@); self-hosted instances point TUNING_ENGINES_BASE_URL at their own host",
     evidence: { tier: "probe", verdict: "auth-realm", status: 401, measuredAt: "2026-08-14" },
   },
+  {
+    name: "cheaperinference",
+    displayName: "Cheaper Inference",
+    baseUrl: "https://api.cheaperinference.com",
+    apiPath: "/v1/chat/completions",
+    format: "openai",
+    apiKeyEnvVar: "CHEAPER_INFERENCE_API_KEY",
+    apiKeyUrl: "https://cheaperinference.com/signup",
+    description: "Cheaper Inference OpenAI-compatible LLM gateway (cheaperinference@)",
+    evidence: { tier: "probe", verdict: "auth-realm", status: 401, measuredAt: "2026-10-22" },
+  },
 ];

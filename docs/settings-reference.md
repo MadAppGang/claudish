@@ -872,7 +872,7 @@ Each valid custom endpoint calls `registerRuntimeProvider()` (injects into the p
 
 ### Predefined endpoints
 
-25 vendors ship inside the package as a bundled catalog (`providers/predefined-catalog.ts`). Each row compiles into exactly the complex `customEndpoints` entry documented above and travels the same registration path — there is no separate transport or provider table.
+26 vendors ship inside the package as a bundled catalog (`providers/predefined-catalog.ts`). Each row compiles into exactly the complex `customEndpoints` entry documented above and travels the same registration path — there is no separate transport or provider table.
 
 **A bundled row activates only when its key is already present locally** — the vendor's own env var (e.g. `GROQ_API_KEY`), one of its aliases, `CUSTOM_<NAME>_KEY`, `config.apiKeys`, or (on macOS, when the backend is enabled) the **Keychain**. The check is synchronous. The Keychain qualifies because presence for every vendor is answered by a single enumeration rather than a lookup per vendor; 1Password cannot be reached synchronously at all, so a key stored *only* behind an `op://` reference will not make its vendor appear — use `enable` below, export the variable, or copy it into the Keychain with `claudish keychain import`.
 
