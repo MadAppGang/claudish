@@ -174,6 +174,50 @@ describe("SessionManager", () => {
     manager.cancelSession(id);
   });
 
+  test("killing a session that never read its stdin surfaces no EPIPE (#570)", async () => {
+    // CI run 39618911322 (ubuntu): a child killed before consuming its stdin
+    // made the stdin write stream's destroy-time flush fail with EPIPE, and
+    // the unhandled stream error failed this suite (attributed to the
+    // listSessions test above). createSession's stdin error handler owns the
+    // write side; this pin replays the exact killing sequence.
+    const id = quickSession(manager, ["--sleep", "3"]);
+    manager.cancelSession(id);
+    await waitUntil(() => {
+      const info = manager.getSession(id);
+      return ["cancelled", "completed", "failed"].includes(info.status);
+    });
+    // Let the destroyed stdin stream run its error path inside this test —
+    // with the handler removed, the EPIPE surfaces as an unhandled error.
+    await new Promise((r) => setTimeout(r, 100));
+    const info = manager.getSession(id);
+    expect(["cancelled", "failed"]).toContain(info.status);
+  });
+
+  test("the stdin write-side error handler is attached — deterministic pin (#570 CR)", () => {
+    // ai-01 CR 22/10: the race pin above does not discriminate on every
+    // seat — the detached-handler mutant survived 3/3 runs on ai-01's
+    // win32. An EventEmitter with NO "error" listener throws
+    // synchronously on emit("error"): reaching the live session's stdin
+    // and emitting both death shapes needs no timing and no platform luck.
+    // Detached handler => the emit itself throws => this pin is red.
+    const id = quickSession(manager, ["--sleep", "3"]);
+    const entry = (manager as any).sessions.get(id);
+    const stdin = entry.process.stdin as import("node:events").EventEmitter;
+    expect(stdin).toBeTruthy();
+
+    const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    expect(() => stdin.emit("error", epipe)).not.toThrow(); // handler present
+
+    const eio = Object.assign(new Error("boom"), { code: "EIO" });
+    expect(() => stdin.emit("error", eio)).not.toThrow();
+    // EIO is not EPIPE: it lands in the session's stderr record
+    expect(String(entry.stderr)).toContain("stdin write error: boom");
+    // EPIPE is swallowed by the handler's early return, never logged
+    expect(String(entry.stderr)).not.toContain("write EPIPE");
+
+    manager.cancelSession(id);
+  });
+
   test("listSessions excludes completed sessions when includeCompleted=false", async () => {
     const id = quickSession(manager);
     // Wait until the session completes

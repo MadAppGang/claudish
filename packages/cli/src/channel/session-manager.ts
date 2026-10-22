@@ -143,6 +143,19 @@ export class SessionManager {
       entry.stderr += chunk.toString("utf-8");
     });
 
+    // A child that dies before consuming its stdin turns the write stream's
+    // destroy-time flush into EPIPE (bun pipes the child stdio through a
+    // socket pair on POSIX — the final send hits the closed peer). Without a
+    // handler that error escapes as an unhandled stream error on the host
+    // process (measured: CI run 39618911322, ubuntu — `listSessions includes
+    // active session` failed on the EPIPE of a previous session's stdin). The
+    // exit/error paths above already record the child's death; the write-side
+    // error must not escalate.
+    proc.stdin?.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EPIPE") return;
+      entry.stderr += `stdin write error: ${err.message}\n`;
+    });
+
     // Write prompt to stdin if provided
     if (opts.prompt) {
       proc.stdin?.write(opts.prompt);
