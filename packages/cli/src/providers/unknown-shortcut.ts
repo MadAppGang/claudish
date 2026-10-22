@@ -25,8 +25,10 @@ const CUSTOM_URL_PROVIDER = "custom-url";
 
 /**
  * A name claudish can route an explicit spec to, whether or not it holds a credential:
- * a builtin or runtime-registered provider, a bundled endpoint (known even with no key,
- * so it keeps the credential message), a `customEndpoints` key in the global config
+ * a builtin or runtime-registered provider or one of its declared shortcuts (resolved
+ * through `getShortcuts`, so `g` is known because it names `google`), a bundled
+ * endpoint (known even with no key, so it keeps the credential message), a
+ * `customEndpoints` key in the global config
  * (known even when its registration failed, so the recorded reason still wins), or
  * `custom-url`.
  */
@@ -36,6 +38,8 @@ export function isKnownProviderName(name: string): boolean {
   // Latched and config-only; routing calls it on the same path.
   ensureEndpointsRegistered();
   if (getProviderByName(lower)) return true;
+  const viaShortcut = getShortcuts()[lower];
+  if (viaShortcut !== undefined && getProviderByName(viaShortcut)) return true;
   if (PREDEFINED_ENDPOINTS.some((endpoint) => endpoint.name === lower)) return true;
   const custom = loadConfig().customEndpoints;
   return custom !== undefined && Object.keys(custom).some((key) => key.toLowerCase() === lower);
