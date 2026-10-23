@@ -66,7 +66,7 @@ afterEach(async () => {
   }
 }, 30_000);
 
-async function start(): Promise<McpServer> {
+async function start(extra: Record<string, string | undefined> = {}): Promise<McpServer> {
   // As in provider-fallback.blackbox: keep the actual stdio server, replace only
   // its upstream fetch. Even an accidental gate bypass cannot call a live model.
   const source = `
@@ -91,7 +91,7 @@ async function start(): Promise<McpServer> {
     startMcpServer();
   `;
   server = await McpServer.start({
-    env: serverEnv(layout, { TMPDIR: join(layout.root, "tmp") }),
+    env: serverEnv(layout, { TMPDIR: join(layout.root, "tmp"), ...extra }),
     cwd: layout.cwd,
     command: [process.execPath, "--no-env-file", "-e", source],
   });
@@ -260,6 +260,45 @@ describe("MCP model-choice refusals over isolated stdio", () => {
         [model]: model === "gpt" ? gptIds : ["minimax-m3"],
       });
       assertNothingStarted();
+    },
+    15_000
+  );
+
+  test.each(["k3", "KIMI-K3"])(
+    "run_prompt accepts the recommended catalog spelling %s",
+    async (model) => {
+      copyFileSync(
+        join(dataDir, "catalog-v3/kimi-k3-g-20261021063612126-17350b71.json"),
+        join(layout.home, ".claudish/cloud-models-catalog-v3.json")
+      );
+      expect(listing.models.some((row) => row.id === "kimi-k3")).toBe(true);
+      const mcp = await start();
+      const answer = await mcp.callTool("run_prompt", { model, prompt: "Answer this input." });
+      expect((answer.raw as { error?: unknown }).error).toBeUndefined();
+      expect(answer.text.length).toBeGreaterThan(0);
+      expect(answer.text).not.toStartWith("unknown_model:");
+      expect(answer.text).not.toStartWith("not_recommended:");
+    },
+    15_000
+  );
+
+  test.each(["litellm", undefined])(
+    "run_prompt minimax checks the server's default provider %s",
+    async (defaultProvider) => {
+      const mcp = await start({ CLAUDISH_DEFAULT_PROVIDER: defaultProvider });
+      const answer = await mcp.callTool("run_prompt", {
+        model: "minimax",
+        prompt: "Answer this input.",
+      });
+      if (defaultProvider === undefined) {
+        expectModelChoice(answer, "unknown_model", { minimax: ["minimax-m3"] });
+        assertNothingStarted();
+      } else {
+        expect((answer.raw as { error?: unknown }).error).toBeUndefined();
+        expect(answer.text.length).toBeGreaterThan(0);
+        expect(answer.text).not.toStartWith("unknown_model:");
+        expect(answer.text).not.toStartWith("not_recommended:");
+      }
     },
     15_000
   );
