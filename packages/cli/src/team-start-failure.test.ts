@@ -40,7 +40,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   try {
-    chmodSync(join(sessionPath, "status.json"), 0o644);
+    chmodSync(sessionPath, 0o755);
   } catch {
     // not created
   }
@@ -73,8 +73,8 @@ describe.skipIf(!MAGMUX)("team spawn-loop failure", () => {
       5_000
     );
     await Bun.sleep(600); // its module loads and boot() installs the trap
-    // The next slot's STARTING write now throws.
-    chmodSync(join(sessionPath, "status.json"), 0o444);
+    // The next slot's atomic STARTING status write cannot create its temp file.
+    chmodSync(sessionPath, 0o555);
     const error = await run;
 
     expect(error).toBeInstanceOf(Error);

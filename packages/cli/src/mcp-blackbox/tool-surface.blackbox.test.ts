@@ -204,9 +204,11 @@ describe("quick-prompt public surface", () => {
     expect(prompt).toBeDefined();
     expect(compare).toBeDefined();
     expect(Object.keys(prompt?.inputSchema?.properties ?? {}).sort()).toEqual([
+      "effort",
       "model",
       "prompt",
       "system_prompt",
+      "user_required_provider",
     ]);
     expect(prompt?.inputSchema?.required).toEqual(["model", "prompt"]);
     expect(prompt?.inputSchema?.properties).not.toHaveProperty("max_tokens");
@@ -299,6 +301,7 @@ describe("tool list (FR11, §4)", () => {
       "path",
       "require_pattern",
       "min_output_bytes",
+      "user_required_provider",
     ])
       expect(Object.keys(props)).toContain(p);
 
@@ -306,6 +309,9 @@ describe("tool list (FR11, §4)", () => {
     const capProps = Object.keys(cap?.inputSchema?.properties ?? {}).sort();
     expect(capProps).toEqual(["session_id", "since_seq", "spans"]);
     expect(cap?.inputSchema?.required).toEqual(["session_id"]);
+    expect(
+      tools.find((tool) => tool.name === "create_session")?.inputSchema?.properties
+    ).toHaveProperty("user_required_provider");
   });
 });
 

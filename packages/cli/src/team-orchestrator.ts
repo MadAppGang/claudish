@@ -13,6 +13,7 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { ENV } from "./config.js";
+import { writeFileAtomic } from "./fs-atomic.js";
 import { UPSTREAM_ERROR_LOG_ENV } from "./handlers/shared/upstream-error-capture.js";
 import type { HookEngine } from "./hooks/engine.js";
 import { loadHooksOnce } from "./hooks/index.js";
@@ -26,6 +27,7 @@ import {
   reportOwnerWithoutHooks,
   sessionHooksNeedBinding,
 } from "./hooks/session/binding.js";
+import { log } from "./logger.js";
 import {
   type Accounting,
   type CaptureResult,
@@ -167,6 +169,12 @@ export interface TeamStatus {
 
 export interface TeamRunOptions {
   claudeFlags?: string[]; // extra flags passed to child claudish (checked by checkChildFlags)
+  /**
+   * Reasoning effort per model, keyed by the model string as the run's models give
+   * it. A slot with an entry gets `--effort-override <level>` after `claudeFlags`, so
+   * it wins over one there and its proxy pins that level on every request.
+   */
+  efforts?: Readonly<Record<string, string>>;
   onStatusChange?: (id: string, status: ModelStatus) => void;
   /**
    * Opt-in stub threshold: below this many answer bytes a settled slot is recorded
@@ -1194,7 +1202,7 @@ export function setupSession(sessionPath: string, models: string[], input?: stri
       ])
     ),
   };
-  writeFileSync(join(sessionPath, "status.json"), JSON.stringify(status, null, 2), "utf-8");
+  writeFileAtomic(join(sessionPath, "status.json"), JSON.stringify(status, null, 2));
 
   return manifest;
 }
@@ -1352,7 +1360,7 @@ async function startModelsIn(
     statusCache.models[id] = { ...statusCache.models[id], ...update } as ModelStatus;
   }
   function flushStatus(): void {
-    writeFileSync(statusPath, JSON.stringify(statusCache, null, 2), "utf-8");
+    writeFileAtomic(statusPath, JSON.stringify(statusCache, null, 2));
   }
   function updateModelStatus(id: string, update: Partial<ModelStatus>): void {
     if (aborting) return;
@@ -1377,8 +1385,12 @@ async function startModelsIn(
   let run: LiveTeamRun | null = null;
   const errorLogPathOf = (id: string) => join(path, "errors", `${id}.log`);
   const upstreamLogOf = (id: string) => upstreamLogPath(path, id);
+  const flagsOf = (e: SlotEntry): string[] => {
+    const effort = opts.efforts?.[e.model];
+    return effort ? [...claudeFlags, "--effort-override", effort] : claudeFlags;
+  };
   const commandOf = (e: SlotEntry) =>
-    ["claudish", "-i", "--model", e.spawnModel ?? e.model, "-y", "--quiet", ...claudeFlags].join(
+    ["claudish", "-i", "--model", e.spawnModel ?? e.model, "-y", "--quiet", ...flagsOf(e)].join(
       " "
     );
 
@@ -1592,7 +1604,7 @@ async function startModelsIn(
       session = await startPaneSession({
         kind: "t",
         label: e.id,
-        callerFlags: claudeFlags,
+        callerFlags: flagsOf(e),
         spawnModel: e.spawnModel ?? e.model,
         cwd,
         sessionUuid: uuid,
@@ -1855,8 +1867,12 @@ async function startModelsIn(
       // the `onProgress` convention: a consumer can never fail the run.
       try {
         opts.onSettled?.(statusCache);
-      } catch {
-        // A settle consumer must never be able to fail the run.
+      } catch (err) {
+        // A settle consumer must never be able to fail the run, but its failure
+        // leaves the run record unended, so it is logged.
+        log(
+          `[team] onSettled failed for ${path}: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
       resolveSettled();
     }
@@ -1864,7 +1880,9 @@ async function startModelsIn(
   })();
   // A caller that only polls never touches `done`. Without this an unobserved rejection
   // would take down the MCP server, which hosts every other session too.
-  done.catch(() => {});
+  done.catch((err: unknown) =>
+    log(`[team] run failed at ${path}: ${err instanceof Error ? err.message : String(err)}`)
+  );
 
   return {
     runId,
@@ -1985,8 +2003,13 @@ export function readTeamStatus(sessionPath: string): TeamStatus {
     ) {
       return parsed;
     }
-  } catch {
-    // Unreadable or partial — `status.json` writes are not atomic.
+  } catch (err) {
+    // status.json is written atomically, so anything but its absence is a fault.
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      log(
+        `[team] unreadable status.json at ${sessionPath}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
   return { startedAt: new Date().toISOString(), models: {} };
 }
@@ -2095,7 +2118,11 @@ export function parseJudgeVotes(judgePath: string, responseIds: string[]): VoteR
     let content: string;
     try {
       content = readFileSync(join(judgePath, file), "utf-8");
-    } catch {
+    } catch (err) {
+      // This judge's votes are dropped from the verdict; say so.
+      log(
+        `[team] judge answer ${file} unreadable: ${err instanceof Error ? err.message : String(err)}`
+      );
       continue;
     }
 

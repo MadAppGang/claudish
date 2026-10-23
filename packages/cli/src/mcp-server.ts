@@ -9,16 +9,18 @@
  * Run with: claudish --mcp (stdio transport)
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "./adapters/base-api-format.js";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
+import { writeFileAtomic } from "./fs-atomic.js";
 import { loadHooksOnce } from "./hooks/index.js";
 import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
 import { initLogger, log } from "./logger.js";
@@ -37,7 +39,11 @@ import {
   runPromptViaClaudeCode,
   stopAllClaudeCodePrintChildren,
 } from "./mcp/run-prompt-claude-code.js";
-import { type RecommendedModelsDoc, getRecommendedModels } from "./model-loader.js";
+import {
+  type RecommendedModelsDoc,
+  getRecommendedModels,
+  readLastRecommendedModels,
+} from "./model-loader.js";
 // Imported for the predicate only. child-env's import-time bootstrap is a no-op here:
 // a claudish MCP server is never the pane child (it carries no CLAUDISH_PANE_CWD).
 import { inMcpSession } from "./pane/child-env.js";
@@ -57,8 +63,11 @@ import {
   sockRootFor,
 } from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
+import { readAllModelsCache } from "./providers/all-models-cache.js";
+import { latestEffortRecommendations } from "./providers/effort-recommendations.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
+import { isLocalProviderName, parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { nativeRouteFor } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
 import {
@@ -69,7 +78,7 @@ import {
 import { probeLink } from "./providers/probe-live.js";
 import type { ProbeTarget } from "./providers/probe-runner.js";
 import { createProxyServer } from "./proxy-server.js";
-import { nativeShortcutForVendor, renderRecommendedMarkdown } from "./recommended-listing.js";
+import { renderEffortTableMarkdown, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
 import {
   type ModelStatus,
@@ -228,17 +237,31 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const data = await response.json();
     const models = data.data || [];
-    mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
-    writeFileSync(
-      OPENROUTER_MODELS_CACHE_PATH,
-      JSON.stringify({ lastUpdated: new Date().toISOString(), models }),
-      "utf-8"
-    );
+    try {
+      writeFileAtomic(
+        OPENROUTER_MODELS_CACHE_PATH,
+        JSON.stringify({ lastUpdated: new Date().toISOString(), models })
+      );
+    } catch (err) {
+      // The fetched list is still the answer; only the cache is lost.
+      log(
+        `[mcp] OpenRouter models cache write failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     return models;
-  } catch {
-    if (existsSync(OPENROUTER_MODELS_CACHE_PATH)) {
-      const cacheData = JSON.parse(readFileSync(OPENROUTER_MODELS_CACHE_PATH, "utf-8"));
-      return cacheData.models || [];
+  } catch (err) {
+    log(
+      `[mcp] OpenRouter models fetch failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+    try {
+      if (existsSync(OPENROUTER_MODELS_CACHE_PATH)) {
+        const cacheData = JSON.parse(readFileSync(OPENROUTER_MODELS_CACHE_PATH, "utf-8"));
+        return cacheData.models || [];
+      }
+    } catch (cacheErr) {
+      log(
+        `[mcp] OpenRouter models cache unreadable: ${cacheErr instanceof Error ? cacheErr.message : String(cacheErr)}`
+      );
     }
     return [];
   }
@@ -319,11 +342,16 @@ export function parseAnthropicSse(raw: string): {
  * except on the Messages API, which requires one and gets the catalog's
  * `maxOutputTokens`. No model limit is pinned here
  * (ai-docs/architecture/wire.md "Output limit").
+ *
+ * `effort` goes out as `output_config.effort`, the field Claude Code itself sends,
+ * so step 5w maps it onto the connection's published levels as it does for Claude
+ * Code's own request.
  */
 export async function runPromptViaProxy(
   model: string,
   prompt: string,
-  systemPrompt?: string
+  systemPrompt?: string,
+  effort?: EffortLevel
 ): Promise<RunPromptResult> {
   const proxy = await getProxy();
 
@@ -335,6 +363,9 @@ export async function runPromptViaProxy(
   };
   if (systemPrompt) {
     body.system = systemPrompt;
+  }
+  if (effort) {
+    body.output_config = { effort };
   }
 
   const response = await fetch(`${proxy.url}/v1/messages`, {
@@ -366,17 +397,21 @@ export async function runPromptViaProxy(
  * caller's credential and an MCP call has none. Every other model, including the
  * explicit `anthropic@claude-*` (metered), goes through the in-process proxy. The
  * ORIGINAL model string is passed on; claudish's CLI owns alias normalisation.
+ *
+ * `effort` reaches only the proxy path: on the print path Claude Code sets the
+ * effort of its own Claude model.
  */
 export async function runPrompt(
   model: string,
   prompt: string,
   systemPrompt?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  effort?: EffortLevel
 ): Promise<RunPromptResult> {
   if (nativeRouteFor(model) !== null) {
     return runPromptViaClaudeCode(model, prompt, systemPrompt, { signal });
   }
-  return runPromptViaProxy(model, prompt, systemPrompt);
+  return runPromptViaProxy(model, prompt, systemPrompt, effort);
 }
 
 /** `run_prompt`'s success text: the answer, then a footer of token and auth lines. */
@@ -503,6 +538,179 @@ function fmtSize(n: number): string {
  * Self-delimiting because MCP `resource_link` blocks arrive flattened into the
  * text stream with no separator — a consumer must be able to see where this ends.
  */
+/**
+ * The MCP `effort` argument: undefined when absent, else a canonical level.
+ * Throws a message naming the levels on anything else.
+ */
+export function effortArg(value: unknown): EffortLevel | undefined {
+  if (value === undefined || value === null || value === "" || value === KEEP_EFFORT) {
+    return undefined;
+  }
+  if (isEffortLevel(value)) return value;
+  throw new Error(
+    `Invalid 'effort': ${JSON.stringify(value)}. Expected one of ${EFFORT_LEVELS.join(", ")} ` +
+      `or "${KEEP_EFFORT}" (list_models shows the recommended level per model and task type).`
+  );
+}
+
+/** The `effort` value that keeps Claude Code's own level, answering the clarification. */
+export const KEEP_EFFORT = "default";
+
+/**
+ * When a caller sent no effort, the recommended levels of the models that have
+ * any, by task type: `{model: {taskType: level}}`, keyed as the caller wrote the
+ * model. Undefined when none has a row, so a call with nothing to recommend is
+ * never stopped. A native Claude name is skipped: it ignores the effort.
+ */
+export function effortClarification(
+  specs: readonly string[],
+  efforts:
+    | Readonly<Record<string, Readonly<Record<string, { effort: string }>>>>
+    | undefined = latestEffortRecommendations()?.efforts
+): Record<string, Record<string, string>> | undefined {
+  if (!efforts) return undefined;
+  const out: Record<string, Record<string, string>> = {};
+  for (const spec of specs) {
+    if (nativeRouteFor(spec) !== null) continue;
+    const row = efforts[parseModelSpec(spec).model];
+    if (!row) continue;
+    out[spec] = Object.fromEntries(Object.entries(row).map(([task, rec]) => [task, rec.effort]));
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * The answer that stops a call made with no effort: the caller knows its task,
+ * so it picks the column and calls again. Starts nothing.
+ */
+function needsEffortResult(
+  recommended: Record<string, Record<string, string>>,
+  how: string
+): { content: Array<{ type: "text"; text: string }>; isError: true } {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text:
+          `needs_effort: nothing was started. Map your task to one task type and call again ${how}.\n` +
+          `Recommended levels: ${JSON.stringify(recommended, null, 2)}`,
+      },
+    ],
+    isError: true,
+  };
+}
+
+/**
+ * The MCP `team` `efforts` argument: one canonical level per model, keyed by a
+ * string of `models` exactly. Undefined when absent; throws on a key that is
+ * not in `models` or a value that is not a level, so a typo never runs a slot
+ * at an effort the caller did not choose.
+ */
+export function modelEffortsArg(
+  value: unknown,
+  models: readonly string[]
+): Record<string, EffortLevel> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid 'efforts': expected an object like {"<model>": "<level>"}.`);
+  }
+  const out: Record<string, EffortLevel> = {};
+  for (const [model, level] of Object.entries(value)) {
+    if (!models.includes(model)) {
+      throw new Error(
+        `Invalid 'efforts': ${JSON.stringify(model)} is not one of 'models' ` +
+          `(${models.join(", ")}). Keys must match a 'models' entry exactly.`
+      );
+    }
+    if (!isEffortLevel(level)) {
+      throw new Error(
+        `Invalid 'efforts' for ${model}: ${JSON.stringify(level)}. ` +
+          `Expected one of ${EFFORT_LEVELS.join(", ")}.`
+      );
+    }
+    out[model] = level;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** True when `id` is exactly a canonical model id of the cached cloud models catalog. */
+function isCanonicalCatalogModel(id: string): boolean {
+  return readAllModelsCache()?.entries.some((e) => e.modelId === id) ?? false;
+}
+
+/**
+ * A model spec as claudish routing must see it. The calling agent often writes a
+ * `provider@` the user never asked for (copied from a listing, or guessed), and
+ * that bypasses the user's routing: their providers, preferences and overrides.
+ * So the provider is removed unless the user required it (`required`), and only
+ * where the bare name routes: a single `provider@model` whose model part is a
+ * canonical model id of the cloud models catalog. Markers (`+pro`, `#fast`) stay.
+ * A chain, a local or custom-URL provider, legacy syntax or a wire id the catalog
+ * does not know as a model id (`kc@k3`) is returned unchanged.
+ */
+export function stripUnrequestedProvider(
+  spec: string,
+  required: boolean,
+  isCatalogModel: (id: string) => boolean = isCanonicalCatalogModel
+): string {
+  if (required || parseModelChain(spec).length !== 1) return spec;
+  const parsed = parseModelSpec(spec);
+  if (!parsed.isExplicitProvider || parsed.isLegacySyntax) return spec;
+  if (parsed.provider === "custom-url" || isLocalProviderName(parsed.provider)) return spec;
+  if (!isCatalogModel(parsed.model)) return spec;
+  return spec.slice(spec.indexOf("@") + 1);
+}
+
+/**
+ * The MCP `team` `user_required_provider` argument: the specs, exactly as in
+ * `models` or `judges`, whose provider the user named. Throws on anything else.
+ */
+export function userRequiredProvidersArg(
+  value: unknown,
+  specs: readonly string[]
+): ReadonlySet<string> {
+  if (value === undefined || value === null) return new Set();
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+    throw new Error(`Invalid 'user_required_provider': expected an array of model specs.`);
+  }
+  for (const spec of value as string[]) {
+    if (!specs.includes(spec)) {
+      throw new Error(
+        `Invalid 'user_required_provider': ${JSON.stringify(spec)} is not one of the ` +
+          `models (${specs.join(", ")}). Entries must match a 'models' or 'judges' entry exactly.`
+      );
+    }
+  }
+  return new Set(value as string[]);
+}
+
+/** One `{from, to}` per spec whose provider was removed, for the tool's answer and the log. */
+export function strippedProviders(
+  specs: readonly string[],
+  required: ReadonlySet<string>,
+  isCatalogModel?: (id: string) => boolean
+): { specs: string[]; stripped: Array<{ from: string; to: string }> } {
+  const stripped: Array<{ from: string; to: string }> = [];
+  const out = specs.map((from) => {
+    const to = stripUnrequestedProvider(from, required.has(from), isCatalogModel);
+    if (to !== from) stripped.push({ from, to });
+    return to;
+  });
+  if (stripped.length > 0) {
+    log(`[mcp] provider removed: ${stripped.map((x) => `${x.from} -> ${x.to}`).join(", ")}`);
+  }
+  return { specs: out, stripped };
+}
+
+/** The note a tool answer carries when it removed a provider. */
+function strippedNote(stripped: ReadonlyArray<{ from: string; to: string }>): string | undefined {
+  if (stripped.length === 0) return undefined;
+  return (
+    `Provider removed so claudish routing decides: ${stripped.map((x) => `${x.from} -> ${x.to}`).join(", ")}. ` +
+    "Pass 'user_required_provider' only when the user named the provider."
+  );
+}
+
 /**
  * Build the flag list handed to every child Claude Code process.
  *
@@ -794,7 +1002,13 @@ export function teamStatusAnswer(path: string, runId?: string): Record<string, u
   let status: TeamStatus;
   try {
     status = getStatus(path);
-  } catch {
+  } catch (err) {
+    // An absent status.json is normal before a run starts; a corrupt one is not.
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      log(
+        `[team] unreadable status.json at ${path}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     if (row) return { ...contractMeta(), run: row };
     throw new ContractErrorException(
       "unknown_run",
@@ -911,13 +1125,30 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         model: {
           type: "string",
           description:
-            "Model name or model spec. A bare name auto-routes to the best provider; " +
-            "'provider@model' pins the provider (e.g. 'google@gemini-4-argon', " +
-            "'or@x-ai/grok-4.7'). A bare Claude name (claude-*, opus, sonnet, haiku) runs on " +
-            "Claude Code's own login.",
+            "Model name. Pass the bare name (e.g. 'gemini-4-argon'): claudish routing picks " +
+            "the provider from the user's setup. A 'provider@' on a catalog model is removed " +
+            "unless 'user_required_provider' is true. A bare Claude name (claude-*, opus, " +
+            "sonnet, haiku) runs on Claude Code's own login.",
+        },
+        user_required_provider: {
+          type: "boolean",
+          description:
+            "True only when the USER named the provider ('use OpenRouter for it'): the " +
+            "'provider@model' spec is then sent as given.",
         },
         prompt: { type: "string", description: "The prompt to send to the model" },
         system_prompt: { type: "string", description: "Optional system prompt" },
+        effort: {
+          type: "string",
+          enum: [...EFFORT_LEVELS, KEEP_EFFORT],
+          description:
+            "Reasoning effort for this request. Take it from list_models' " +
+            "'Recommended effort by task type' table: your task's column, this model's row. " +
+            "Omitted for a model that has a row, the call starts nothing and answers " +
+            `'needs_effort' with that row; "${KEEP_EFFORT}" keeps Claude Code's own level. ` +
+            "Mapped onto the levels the model's connection publishes. Ignored for a bare " +
+            "Claude name.",
+        },
       },
       required: ["model", "prompt"],
     },
@@ -927,13 +1158,30 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     heartbeat: true,
     handler: async (args, ctx) => {
       try {
+        const { specs, stripped } = strippedProviders(
+          [args.model as string],
+          new Set(args.user_required_provider === true ? [args.model as string] : [])
+        );
+        // Keyed as the caller wrote the model, like team's 'efforts' keys.
+        const recommended =
+          args.effort === undefined ? effortClarification([args.model as string]) : undefined;
+        if (recommended) {
+          return needsEffortResult(
+            recommended,
+            `with effort: "<level>" (effort: "${KEEP_EFFORT}" keeps Claude Code's own)`
+          );
+        }
         const result = await runPrompt(
-          args.model as string,
+          specs[0],
           args.prompt as string,
           args.system_prompt as string | undefined,
-          ctx.signal
+          ctx.signal,
+          effortArg(args.effort)
         );
-        return { content: [{ type: "text" as const, text: formatRunPromptResult(result) }] };
+        const text = [strippedNote(stripped), formatRunPromptResult(result)]
+          .filter(Boolean)
+          .join("\n\n");
+        return { content: [{ type: "text" as const, text }] };
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         return {
@@ -954,42 +1202,47 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
 
   tools.push({
     name: "list_models",
-    description: "List recommended models for coding tasks",
+    description:
+      "List recommended models for coding tasks, and the catalog's recommended reasoning " +
+      "effort per model and task type (pass it as team 'efforts' or create_session / " +
+      "run_prompt 'effort')",
     inputSchema: { type: "object" },
     group: "low-level",
     handler: async () => {
-      let doc: RecommendedModelsDoc;
+      // A failed fetch falls back to the list last written to disk, of any
+      // generation, and says so; the reason goes to the log, never to stdout.
+      let doc: RecommendedModelsDoc | null = null;
+      let note = "";
       try {
         doc = await getRecommendedModels();
-      } catch {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "No recommended models found. Try search_models instead.",
-            },
-          ],
-        };
+        if (!doc.models || doc.models.length === 0) {
+          log("[mcp] list_models: the recommended list is empty");
+          doc = null;
+        }
+      } catch (err) {
+        log(`[mcp] list_models: ${err instanceof Error ? err.message : String(err)}`);
       }
-      if (!doc.models || doc.models.length === 0) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "No recommended models found. Try search_models instead.",
-            },
-          ],
-        };
+      if (!doc) {
+        doc = readLastRecommendedModels();
+        if (doc) {
+          note =
+            "_The live catalog could not be read; this list is from generation " +
+            `${doc.generationId ?? "unknown"}, the last one this machine stored._`;
+          log(
+            `[mcp] list_models: answered from stored generation ${doc.generationId ?? "unknown"}`
+          );
+        }
       }
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: renderRecommendedMarkdown(doc, nativeShortcutForVendor),
-          },
-        ],
-      };
+      // getRecommendedModels wrote the sidecar on a fetch; an older one still
+      // shows the last generation this machine read.
+      const efforts = latestEffortRecommendations();
+      const effortTable = efforts ? renderEffortTableMarkdown(efforts.efforts) : "";
+      const listing = doc
+        ? renderRecommendedMarkdown(doc)
+        : "No recommended models found. Try search_models instead.";
+      const text = [note, listing, effortTable].filter(Boolean).join("\n\n");
+      return { content: [{ type: "text" as const, text }] };
     },
   });
 
@@ -1381,10 +1634,31 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             "so a native reviewer that never produced the required shape is reported " +
             "EMPTY 'shape_mismatch' instead of silently succeeding.",
         },
+        efforts: {
+          type: "object",
+          additionalProperties: { type: "string", enum: [...EFFORT_LEVELS] },
+          description:
+            "Reasoning effort per model for 'run' and 'run-and-judge', e.g. " +
+            '{"gpt-6-luna": "high", "kimi-k3": "max"}. Keys must match a \'models\' ' +
+            "entry exactly. Take each level from list_models' 'Recommended effort by task " +
+            "type' table: your task's column, the model's row. The slot pins that level on " +
+            "every request (claudish --effort-override); a model without an entry keeps " +
+            "Claude Code's own effort. Omitted while a model has a row, nothing starts and " +
+            "the answer is 'needs_effort' with the rows; {} keeps Claude Code's own for all.",
+        },
         judges: {
           type: "array",
           items: { type: "string" },
           description: "Model IDs to use as judges (default: same as runners)",
+        },
+        user_required_provider: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "The 'models' or 'judges' entries whose provider the USER named ('run Kimi on " +
+            "OpenRouter'), exactly as written there. Every other 'provider@' on a catalog " +
+            "model is removed so claudish routing picks the provider from the user's setup; " +
+            "pass bare names unless the user asked for a provider.",
         },
         input_file: {
           type: "string",
@@ -1474,8 +1748,24 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           throw new Error(`Unknown mode: ${mode}`);
         const path = args.path;
         if (typeof path !== "string" || !path) throw new Error(`'path' is required for '${mode}'`);
-        const models = args.models as string[] | undefined;
-        const judges = args.judges as string[] | undefined;
+        const givenModels = args.models as string[] | undefined;
+        const givenJudges = args.judges as string[] | undefined;
+        const requiredProviders = userRequiredProvidersArg(args.user_required_provider, [
+          ...(givenModels ?? []),
+          ...(givenJudges ?? []),
+        ]);
+        const modelStrip = givenModels
+          ? strippedProviders(givenModels, requiredProviders)
+          : undefined;
+        const judgeStrip = givenJudges
+          ? strippedProviders(givenJudges, requiredProviders)
+          : undefined;
+        const models = modelStrip?.specs;
+        const judges = judgeStrip?.specs;
+        const providerNote = strippedNote([
+          ...(modelStrip?.stripped ?? []),
+          ...(judgeStrip?.stripped ?? []),
+        ]);
         // `input_file` is the preferred form: a team prompt is usually a long
         // brief, and inline text is echoed in full in the caller's terminal.
         // Accepting both would silently pick one and discard the other, which is
@@ -1497,10 +1787,22 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
 
         const resolved = validateSessionPath(path);
 
+        // Keys name the models as the caller wrote them; the slots run the stripped specs.
+        const givenEfforts = givenModels ? modelEffortsArg(args.efforts, givenModels) : undefined;
+        const efforts = givenEfforts
+          ? Object.fromEntries(
+              Object.entries(givenEfforts).map(([m, level]) => [
+                models?.[givenModels?.indexOf(m) ?? -1] ?? m,
+                level,
+              ])
+            )
+          : undefined;
+
         const runOpts = {
           requirePattern,
           minOutputBytes,
           claudeFlags: childFlags,
+          efforts,
           onProgress: (u: { phase: "running" | "settled" }) => {
             // A state change is real news, so refresh the client's idle timer at
             // that moment as well as on the periodic tick. Short phase string only:
@@ -1515,6 +1817,21 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           const existing = join(resolved, "input.md");
           return existsSync(existing) ? readFileSync(existing, "utf-8") : undefined;
         };
+
+        if (
+          (mode === "run" || mode === "run-and-judge") &&
+          givenModels &&
+          args.efforts === undefined
+        ) {
+          // Keyed as the caller wrote the models: that is how 'efforts' keys must read.
+          const recommended = effortClarification(givenModels);
+          if (recommended) {
+            return needsEffortResult(
+              recommended,
+              `with efforts: {"<model>": "<level>"} (efforts: {} keeps Claude Code's own for every model)`
+            );
+          }
+        }
 
         switch (mode) {
           case "run": {
@@ -1596,6 +1913,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
                         cancel: `team(mode:"cancel", path:"${p}", slot:"<id>")`,
                         judge: `team(mode:"judge", path:"${p}") once every slot has finished`,
                       },
+                      ...(providerNote ? { provider_note: providerNote } : {}),
                       note:
                         "Every slot has taken its prompt or failed to. Nothing terminates a " +
                         "working slot on a timer: `status` reports each slot's state, " +
@@ -1611,7 +1929,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           }
           case "judge": {
             const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
-            return { content: [{ type: "text" as const, text: JSON.stringify(verdict, null, 2) }] };
+            const out = providerNote ? { ...verdict, provider_note: providerNote } : verdict;
+            return { content: [{ type: "text" as const, text: JSON.stringify(out, null, 2) }] };
           }
           case "run-and-judge": {
             if (!models?.length) throw new Error("'models' is required for 'run-and-judge' mode");
@@ -1631,7 +1950,16 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
               content: [
                 {
                   type: "text" as const,
-                  text: JSON.stringify({ ...verdict, run_id: handle.runId, run }, null, 2),
+                  text: JSON.stringify(
+                    {
+                      ...verdict,
+                      run_id: handle.runId,
+                      run,
+                      ...(providerNote ? { provider_note: providerNote } : {}),
+                    },
+                    null,
+                    2
+                  ),
                 },
               ],
             };
@@ -1820,7 +2148,15 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         model: {
           type: "string",
           description:
-            "Model identifier (e.g., 'google@gemini-2.0-flash', 'x-ai/grok-code-fast-1')",
+            "Model name. Pass the bare name (e.g. 'gpt-6.1-sol'): claudish routing picks the " +
+            "provider from the user's setup. A 'provider@' on a catalog model is removed " +
+            "unless 'user_required_provider' is true.",
+        },
+        user_required_provider: {
+          type: "boolean",
+          description:
+            "True only when the USER named the provider: the 'provider@model' spec is then " +
+            "used as given.",
         },
         prompt: {
           type: "string",
@@ -1847,6 +2183,16 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             "Flags the pane owns or that only work in print mode are refused. NOTE: split on " +
             "whitespace, so a flag VALUE containing spaces cannot be expressed here.",
         },
+        effort: {
+          type: "string",
+          enum: [...EFFORT_LEVELS, KEEP_EFFORT],
+          description:
+            "Reasoning effort for the whole session. Take it from list_models' " +
+            "'Recommended effort by task type' table: your task's column, this model's row. " +
+            "Pinned on every request (claudish --effort-override), over one in claude_flags. " +
+            "Omitted for a model that has a row, nothing starts and the answer is " +
+            `'needs_effort' with that row; "${KEEP_EFFORT}" keeps Claude Code's own level.`,
+        },
         work_dir: {
           type: "string",
           description: "Working directory for the session (default: current directory)",
@@ -1867,6 +2213,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     handler: async (args) => {
       try {
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
+        const effort = effortArg(args.effort);
+        if (effort) claudishFlags.push("--effort-override", effort);
         // Refusals first, before any credential work: reserved or positional flags, then
         // a missing magmux (its message starts with the code word). An unknown --agent is
         // refused by the child itself, before any model request (D11).
@@ -1887,7 +2235,19 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         // reads project-local config relative to process.cwd(), so the parent
         // would decide with the wrong project's rules. process.chdir() is not
         // an option — it is process-global and races concurrent calls.
-        const requestedModel = args.model as string;
+        const { specs, stripped } = strippedProviders(
+          [args.model as string],
+          new Set(args.user_required_provider === true ? [args.model as string] : [])
+        );
+        const requestedModel = specs[0];
+        const recommended =
+          args.effort === undefined ? effortClarification([args.model as string]) : undefined;
+        if (recommended) {
+          return needsEffortResult(
+            recommended,
+            `with effort: "<level>" (effort: "${KEEP_EFFORT}" keeps Claude Code's own)`
+          );
+        }
         const workDir = args.work_dir as string | undefined;
 
         const plan = await prehydrateCredentialsForSpawn([requestedModel], {
@@ -1921,6 +2281,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
               text: JSON.stringify({
                 session_id: sessionId,
                 state: sessionManager.getSession(sessionId).state,
+                ...(stripped.length > 0
+                  ? { model: requestedModel, note: strippedNote(stripped) }
+                  : {}),
               }),
             },
           ],
@@ -2283,8 +2646,18 @@ async function main() {
   // loader loads no user hook module in this process.
   const iso: ProtocolStdout = isolateProtocolStdout();
 
-  // The debug log is also where hook output and diverted stdout writes go.
-  if (mcpDebugLogEnabled(process.argv.slice(2), process.env)) initLogger(true, "debug", true);
+  // The always-on structural log (~/.claudish/logs/claudish-mcp_*.log, never
+  // stdout) records why a tool answered from a fallback; `--log-off` disables it,
+  // as for every other claudish run. The debug log is also where hook output and
+  // diverted stdout writes go.
+  const argv = process.argv.slice(2);
+  initLogger(
+    mcpDebugLogEnabled(argv, process.env),
+    "debug",
+    argv.includes("--log-off"),
+    "claudish-mcp",
+    500
+  );
   if (!iso.active) log(`[mcp] protocol stdout not isolated: ${iso.reason ?? "unknown"}`);
 
   // Session hooks need the engine without a proxy, so loading starts now, in the
@@ -2414,7 +2787,10 @@ async function main() {
   // pane's own sweep (ensureSwept in startPaneSession) is this one, not a second `ps`.
   // A nested server registers no session tools and never spawns a pane, so it has
   // nothing to sweep.
-  if (!nested) void ensureSwept(sockRootFor()).catch(() => undefined);
+  if (!nested)
+    void ensureSwept(sockRootFor()).catch((err: unknown) =>
+      log(`[mcp] stale pane sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+    );
 }
 
 /**
