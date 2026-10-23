@@ -208,6 +208,7 @@ describe("quick-prompt public surface", () => {
       "model",
       "prompt",
       "system_prompt",
+      "user_required_model",
       "user_required_provider",
     ]);
     expect(prompt?.inputSchema?.required).toEqual(["model", "prompt"]);
@@ -301,6 +302,7 @@ describe("tool list (FR11, §4)", () => {
       "path",
       "require_pattern",
       "min_output_bytes",
+      "user_required_model",
       "user_required_provider",
     ])
       expect(Object.keys(props)).toContain(p);
@@ -312,6 +314,19 @@ describe("tool list (FR11, §4)", () => {
     expect(
       tools.find((tool) => tool.name === "create_session")?.inputSchema?.properties
     ).toHaveProperty("user_required_provider");
+    expect(props.user_required_model).toMatchObject({
+      type: "array",
+      items: { type: "string" },
+    });
+    expect(teamTool?.inputSchema?.required).not.toContain("user_required_model");
+    for (const name of ["run_prompt", "create_session"]) {
+      const tool = tools.find((entry) => entry.name === name);
+      expect(tool?.inputSchema?.properties).toHaveProperty("user_required_model");
+      expect(tool?.inputSchema?.properties?.user_required_model).toMatchObject({
+        type: "boolean",
+      });
+      expect(tool?.inputSchema?.required).not.toContain("user_required_model");
+    }
   });
 });
 
