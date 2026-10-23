@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   type ModelChoiceFacts,
   modelChoiceProblems,
@@ -7,6 +8,7 @@ import {
 } from "./mcp-server.js";
 import type { RecommendedModelsDoc } from "./model-loader.js";
 import { parseModelChain } from "./providers/model-parser.js";
+import { catalogModelId } from "./providers/route-candidates.js";
 
 const captured = JSON.parse(
   readFileSync(
@@ -70,6 +72,60 @@ describe("modelChoiceProblems with captured recommended rows", () => {
   test("a catalog model outside the recommended list answers not_recommended", () => {
     expect(
       modelChoiceProblems(pairs(["gpt-5"]), new Set(), facts({ inCatalog: (id) => id === "gpt-5" }))
+    ).toEqual([{ spec: "gpt-5", kind: "not_recommended", matching: gptIds }]);
+  });
+
+  test.each([
+    { spec: "MiniMax-M3", canonical: "minimax-m3" },
+    { spec: "k3", canonical: "kimi-k3" },
+    { spec: "gemini-4-argon-high", canonical: "gemini-4-argon" },
+  ])("accepts $spec when its canonical id $canonical is recommended", ({ spec, canonical }) => {
+    expect(recommended.some((row) => row.id === canonical)).toBe(true);
+    expect(
+      modelChoiceProblems(
+        pairs([spec]),
+        new Set(),
+        facts({
+          inCatalog: () => true,
+          canonicalId: (model) => (model === spec ? canonical : undefined),
+        })
+      )
+    ).toEqual([]);
+  });
+
+  test("a canonical id outside the recommended list still answers not_recommended", () => {
+    expect(recommended.some((row) => row.id === "gpt-5")).toBe(false);
+    expect(
+      modelChoiceProblems(
+        pairs(["GPT-5"]),
+        new Set(),
+        facts({
+          inCatalog: () => true,
+          canonicalId: (model) => (model === "GPT-5" ? "gpt-5" : undefined),
+        })
+      )
+    ).toEqual([{ spec: "GPT-5", kind: "not_recommended", matching: gptIds }]);
+  });
+
+  test.each([true, false, undefined])(
+    "catalogMissAllowed %j decides an unclaimed catalog miss",
+    (allowed) => {
+      const injected = facts(allowed === undefined ? {} : { catalogMissAllowed: () => allowed });
+      expect(modelChoiceProblems(pairs(["minimax"]), new Set(), injected)).toEqual(
+        allowed === true
+          ? []
+          : [{ spec: "minimax", kind: "unknown_model", matching: ["minimax-m3"] }]
+      );
+    }
+  );
+
+  test("allowing catalog misses never exempts a non-recommended catalog hit", () => {
+    expect(
+      modelChoiceProblems(
+        pairs(["gpt-5"]),
+        new Set(),
+        facts({ inCatalog: () => true, catalogMissAllowed: () => true })
+      )
     ).toEqual([{ spec: "gpt-5", kind: "not_recommended", matching: gptIds }]);
   });
 
@@ -178,6 +234,25 @@ describe("modelChoiceProblems with captured recommended rows", () => {
 
   test("empty input returns no problems", () => {
     expect(modelChoiceProblems([], new Set(), facts())).toEqual([]);
+  });
+});
+
+describe("catalogModelId with the captured Kimi catalog used by the black-box tests", () => {
+  const cachePath = fileURLToPath(
+    new URL("./test-fixtures/catalog-v3/kimi-k3-g-20261021063612126-17350b71.json", import.meta.url)
+  );
+
+  test.each(["kimi-k3", "k3", "KIMI-K3", "K3"])("resolves %s to the canonical id", (model) => {
+    expect(catalogModelId(model, cachePath)).toBe("kimi-k3");
+  });
+
+  test("an unknown name returns undefined", () => {
+    expect(catalogModelId("no-such-model", cachePath)).toBeUndefined();
+  });
+
+  test("an unreadable file path returns undefined", () => {
+    // The parent is a regular captured file, so this child path cannot be read.
+    expect(catalogModelId("kimi-k3", `${cachePath}/unreadable.json`)).toBeUndefined();
   });
 });
 

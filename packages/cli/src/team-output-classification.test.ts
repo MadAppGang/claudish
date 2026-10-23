@@ -205,6 +205,35 @@ describe("classifyRunOutput — in-band API errors", () => {
     expect(result?.detail).toContain("You have no credits remaining");
   });
 
+  it("reports a trailing billing error after an unread turn's preamble as api_error", () => {
+    const result = classifyRunOutput({
+      answer: `I'll read the file.\n\n${answer.trim()}`,
+      apiError: null,
+      promptRead: unread,
+      requirePattern: "VERDICT:",
+    });
+    expect(result).toEqual({
+      state: "FAILED",
+      reason: "api_error",
+      detail: expect.stringContaining("credit_balance_exhausted"),
+    });
+    expect(result?.detail).toContain("You have no credits remaining");
+  });
+
+  it("keeps a read turn's verdict when its answer ends with the same billing marker", () => {
+    const input = {
+      answer: `I'll read the file.\n\n${answer.trim()}`,
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+    };
+    expect(classifyRunOutput(input)).toBeNull();
+    expect(classifyRunOutput({ ...input, requirePattern: "VERDICT:" })).toEqual({
+      state: "EMPTY",
+      reason: "shape_mismatch",
+      detail: expect.stringContaining("VERDICT:"),
+    });
+  });
+
   it("gives the Claude Code apiError status and text precedence over the in-band marker", () => {
     const result = classifyRunOutput({
       answer,
