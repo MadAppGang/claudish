@@ -2,6 +2,33 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.2.0] - 2026-10-23
+
+### Bug Fixes
+
+- add a random suffix to atomic-write temp file names *(catalog)* ([`8529038`](https://github.com/MadAppGang/claudish/commit/85290388ad7691fec14418edec178abe2a84ad62))
+- disable the always-on log when its directory is unwritable *(logging)* ([`cbbad80`](https://github.com/MadAppGang/claudish/commit/cbbad806b85fa40400c47f619a75fe199893ecbb))
+- keep a custom endpoint's or anthropic@ provider in MCP specs *(mcp)* ([`6261395`](https://github.com/MadAppGang/claudish/commit/6261395931802abb69fd38b59e5da689c7af487a))
+- list models in list_models without provider specs *(mcp)* ([`ec80094`](https://github.com/MadAppGang/claudish/commit/ec80094ed97aaa31b9c6290fa83cdeaa8c671ca8))
+- write the models cache and route registry atomically *(catalog)* ([`d27b930`](https://github.com/MadAppGang/claudish/commit/d27b930cbdda40358335e6179340440bc541381e))
+- log refresh failures and retry a refresh that threw *(catalog)* ([`c297881`](https://github.com/MadAppGang/claudish/commit/c297881dee87e182a2b0908feb44a159e3be8ccf))
+
+### Documentation
+
+- document per-model effort, needs_effort and bare model names *(mcp)* ([`7518d4a`](https://github.com/MadAppGang/claudish/commit/7518d4adcf64709699f71c27d702eff467212c80))
+- update CHANGELOG.md for v14.1.0([`0a5e7ac`](https://github.com/MadAppGang/claudish/commit/0a5e7ac909786b9a204826478c5d10d3229d1b29))
+
+### New Features
+
+- accept one reasoning effort per model from the calling agent *(mcp)* ([`09f9cde`](https://github.com/MadAppGang/claudish/commit/09f9cde34cd28cafb3ca88a6f11e15432a3f58be))
+- store the recommended effort per model and task type *(catalog)* ([`acc0c17`](https://github.com/MadAppGang/claudish/commit/acc0c179f314874f0c1e5b1e2670336d0eb3794a))
+- rotate the always-on log per process name *(logging)* ([`80cbf4c`](https://github.com/MadAppGang/claudish/commit/80cbf4c99c3a17d7aa5021a747d27c16b9985f98))
+
+### Other Changes
+
+- v14.2.0 (#342) *(release)* ([`cfbd61a`](https://github.com/MadAppGang/claudish/commit/cfbd61a5a043653880d682446461ff1021018497))
+- v14.2.0 *(release)* ([`5ce42d3`](https://github.com/MadAppGang/claudish/commit/5ce42d33dfad56f0db14f7ce5cea6a4d6bc7c6a9))
+
 ## [14.1.0] - 2026-10-22
 
 ### Bug Fixes
