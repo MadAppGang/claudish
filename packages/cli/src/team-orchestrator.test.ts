@@ -14,11 +14,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   mkdtempSync,
+  mkdirSync,
   writeFileSync,
   existsSync,
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32, posix } from "node:path";
@@ -432,6 +434,99 @@ describe("team-orchestrator", () => {
       const { validateSessionPath } = await getOrchestrator();
 
       expect(() => validateSessionPath("../../etc/hosts")).toThrow();
+    });
+  });
+
+  // ── validateSessionPath: #586 — real paths, not spellings ────────────────
+  //
+  // One pin per code path of the realpath walk. A lexical comparison gets both
+  // directions wrong: it ACCEPTS a link inside cwd that points out of it, and it
+  // REFUSES an alternate spelling of cwd. Both sides are pinned here.
+  //
+  // These tests chdir into their own sandbox, so "cwd" is a directory this file
+  // owns — nothing is created inside the repository checkout.
+
+  describe("validateSessionPath — symlinks and alternate spellings of cwd", () => {
+    let sandbox: string;
+    let previousCwd: string;
+
+    /** Directory links need no elevation on win32 as junctions; POSIX uses "dir". */
+    function makeDirLink(target: string, linkPath: string): void {
+      symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+    }
+
+    beforeEach(() => {
+      previousCwd = process.cwd();
+      sandbox = makeTempDir();
+      mkdirSync(join(sandbox, "base", "inside"), { recursive: true });
+      mkdirSync(join(sandbox, "outside"), { recursive: true });
+      process.chdir(join(sandbox, "base"));
+    });
+
+    afterEach(() => {
+      process.chdir(previousCwd);
+      rmSync(sandbox, { recursive: true, force: true });
+    });
+
+    it("accepts an existing directory inside cwd", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+
+      const inside = join(process.cwd(), "inside");
+      expect(validateSessionPath(inside)).toBe(inside);
+    });
+
+    it("accepts a not-yet-created directory whose parent exists (one tail component)", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+
+      const pending = join(process.cwd(), "inside", "session-001");
+      expect(validateSessionPath(pending)).toBe(pending);
+    });
+
+    it("accepts a path several levels below the nearest existing ancestor", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+
+      const deep = join(process.cwd(), "inside", "a", "b", "c");
+      expect(validateSessionPath(deep)).toBe(deep);
+    });
+
+    it("accepts an alternate spelling of cwd reached through a symlink", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+      const link = join(sandbox, "cwd-alias");
+      makeDirLink(process.cwd(), link);
+
+      // The spelling is outside base lexically, but resolves INSIDE cwd.
+      const aliased = join(link, "inside");
+      expect(() => validateSessionPath(aliased)).not.toThrow();
+      expect(validateSessionPath(aliased)).toBe(aliased);
+    });
+
+    it("refuses a symlink that sits inside cwd and points OUTSIDE it", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+      const escapeHatch = join(process.cwd(), "escape");
+      makeDirLink(join(sandbox, "outside"), escapeHatch);
+
+      // Lexically inside cwd; really outside. This is the traversal hole.
+      expect(() => validateSessionPath(join(escapeHatch, "loot"))).toThrow(
+        /must be within current directory/
+      );
+    });
+
+    it("refuses a dangling symlink — a path it cannot resolve is not a path it can vouch for", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+      const dangling = join(process.cwd(), "dangling");
+      makeDirLink(join(sandbox, "does-not-exist-anywhere"), dangling);
+
+      expect(() => validateSessionPath(join(dangling, "session"))).toThrow(
+        /must be within current directory/
+      );
+    });
+
+    it("still refuses a plainly outside path resolved against the real cwd", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+
+      expect(() => validateSessionPath(join(sandbox, "outside"))).toThrow(
+        /must be within current directory/
+      );
     });
   });
 
