@@ -994,6 +994,18 @@ type and new fields may only be added.
   leave the machine. Null before the first step and on rows built from disk (no live follower,
   as for `activity`); kept after the turn settles until the next turn opens. `pane/slot-steps.ts`
   (`stepOf`), fed by `applyAssistant` in `pane/transcript-follower.ts`.
+- `agent_requested` and `agent` (added within v1, 2026-10-23, MTL-231) say which subagent a slot
+  runs, as two plain values with no "applied" verdict between them. `agent_requested` is the value
+  of the last `--agent` in the child's final flags (`requestedAgentOf`): `buildChildClaudeFlags`
+  has already folded the `agent` argument and any `--agent` in `claude_flags` into one pair, so the
+  flags are the one source. `agent` is the latest `{"type":"agent-setting","agentSetting":…}`
+  record of the child's OWN transcript. Claude Code writes it at line 2, before the first prompt,
+  and repeats it during the session, so `applyRecord` reads it before any turn is open and the last
+  one wins. Null means the transcript has none: no agent, a refused agent (`agent_rejected`: the
+  child exits before writing one), or not written yet. The pair is the mod's whole test: requested
+  and loaded agree, or `agent` is null and `reason` says why. Unlike `recent`, both survive on rows
+  built from disk: team `status.json` and session `meta.json` carry `agentRequested` and `agent`,
+  and `spawn.json` carries `agentRequested` when there is one.
 - Verbs: `team(mode="list")` → `{contract_version, capabilities, runs}`; `team(mode="status")` adds
   `contract_version`, `capabilities` and a `run` row to its payload; `team(mode="cancel")` and
   `cancel_session` return per-slot `{state, changed}`; `team(mode="capture")` and `capture_session`
