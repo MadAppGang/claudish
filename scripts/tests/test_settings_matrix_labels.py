@@ -139,19 +139,26 @@ def test_unpinned_role_without_name_stays_silent():
 
 
 # --------------------------------------------------------------------------
-# Custom option canon: myia-po-2025 only
+# Custom option canon: a Sol id wherever declared (coordinator ACK 23/10,
+# superseding the 22/10 "po-2025 only" rule that measurement falsified)
 # --------------------------------------------------------------------------
 
-def test_custom_option_outside_canon_machines():
-    """qwen3.8-max on po-2027: flagged (never used, too expensive, user 22/10)."""
+def test_custom_option_forbidden_id_is_flagged_on_any_machine():
+    """qwen3.8-max: flagged on every seat alike (never used, too expensive,
+    user 22/10) -- the canon is on the OPTION VALUE, not on the machine."""
     harmonization = {"env.ANTHROPIC_CUSTOM_MODEL_OPTION": "qwen3.8-max"}
     flags = _joined(smx.label_flags(harmonization, "myia-po-2027"))
     assert "custom option" in flags and "qwen3.8-max" in flags, flags
+    # the same forbidden id on the seat that once defined the canon machines
+    flags_on_2025 = _joined(smx.label_flags(harmonization, "myia-po-2025"))
+    assert "custom option" in flags_on_2025 and "qwen3.8-max" in flags_on_2025, flags_on_2025
 
 
-def test_custom_option_on_canon_machine_and_absent_are_fine():
-    """The same option value on po-2025 is canon; absent is the default."""
-    assert smx.label_flags({"env.ANTHROPIC_CUSTOM_MODEL_OPTION": "gpt-6-sol"}, "myia-po-2025") == []
+def test_canon_sol_ids_and_absent_are_fine_on_every_machine():
+    """Both measured Sol ids pass on any seat; absent is the default."""
+    for machine in ("myia-po-2025", "myia-po-2027", "myia-web1"):
+        assert smx.label_flags({"env.ANTHROPIC_CUSTOM_MODEL_OPTION": "gpt-5.6-sol"}, machine) == []
+        assert smx.label_flags({"env.ANTHROPIC_CUSTOM_MODEL_OPTION": "gpt-6-sol"}, machine) == []
     assert smx.label_flags({}, "myia-po-2028") == []
 
 
