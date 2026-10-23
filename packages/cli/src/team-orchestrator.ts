@@ -63,6 +63,7 @@ import {
   readTokenFileCached,
   reasonDetail,
   releasePaneReservations,
+  requestedAgentOf,
   reservePanes,
   resolveProvider,
   sockRootFor,
@@ -153,6 +154,10 @@ export interface ModelStatus {
   toolCalls?: number;
   turnsCompleted?: number;
   lastActivityAt?: string | null;
+  /** SlotRow.agent_requested: the `--agent` the slot was started with; null = none. */
+  agentRequested?: string | null;
+  /** SlotRow.agent: the transcript's `agent-setting`; null = none written. */
+  agent?: string | null;
   /** The child's Claude Code version from its boot banner (R3-M4). */
   claudeCodeVersion?: string | null;
   /** Facts worth a reader's attention that are not failures (R3-M5, truncation). */
@@ -341,6 +346,8 @@ interface SlotEntry {
   id: string;
   model: string;
   spawnModel: string | null;
+  /** SlotRow.agent_requested: the `--agent` in the slot's flags; null = none */
+  agentRequested: string | null;
   tokenFile: string;
   /** null = the pane never spawned (its row is FAILED `pane_lost`, `pane: null`) */
   session: PaneSession | null;
@@ -508,6 +515,8 @@ function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
     activity: null,
     pane: null,
     recent: null,
+    agent_requested: e.agentRequested,
+    agent: null,
   };
 }
 
@@ -515,7 +524,7 @@ function liveSlotRow(run: LiveTeamRun, e: SlotEntry): SlotRow {
   if (!e.session) return neverSpawnedRow(e, run.status.models[e.id]);
   const snap = e.session.snapshot();
   return toSlotRow(
-    { slot: e.id, model: e.model, spawnModel: e.spawnModel },
+    { slot: e.id, model: e.model, spawnModel: e.spawnModel, agentRequested: e.agentRequested },
     snap,
     refreshAccounting(e, snap),
     Date.now(),
@@ -598,6 +607,8 @@ export function teamRunRowFromDisk(path: string, status: TeamStatus): TeamRunRow
         activity: null,
         pane: m?.pane ?? null,
         recent: null,
+        agent_requested: m?.agentRequested ?? null,
+        agent: m?.agent ?? null,
       };
     });
   const settled = slots.length > 0 && slots.every((s) => isTerminalState(s.state));
@@ -1314,6 +1325,7 @@ async function startModelsIn(
   const claudeFlags = opts.claudeFlags ?? [];
   const flagCheck = checkChildFlags(claudeFlags);
   if (!flagCheck.ok) throw new Error(`invalid_args: ${flagCheck.message}`);
+  const agentRequested = requestedAgentOf(claudeFlags);
 
   const path = resolve(sessionPath);
   const manifest: TeamManifest = JSON.parse(readFileSync(join(path, "manifest.json"), "utf-8"));
@@ -1484,6 +1496,7 @@ async function startModelsIn(
       lastActivityAt: snap.lastActivityAt,
       turnsCompleted: snap.turnsCompleted,
       claudeCodeVersion: snap.claudeCodeVersion,
+      agent: snap.agent ?? null,
       anomalies: notableAnomalies(snap),
       ...accountingFields(refreshAccounting(e, snap)),
     };
@@ -1687,6 +1700,7 @@ async function startModelsIn(
         id,
         model: entry.model,
         spawnModel,
+        agentRequested,
         tokenFile,
         session: null,
         acct: emptyAccounting(provider),
@@ -1706,6 +1720,8 @@ async function startModelsIn(
         model: entry.model,
         spawnModel,
         provider,
+        agentRequested,
+        agent: null,
         sessionUuid: uuid,
         transcriptPath,
         pane: null,

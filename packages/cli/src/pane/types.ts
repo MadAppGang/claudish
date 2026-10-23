@@ -96,4 +96,6 @@ export interface PaneSnapshot {
   agentCountMismatch: boolean;
   /** SlotRow.recent: the current turn's last steps; null before its first step */
   recent: SlotStep[] | null;
+  /** SlotRow.agent: the transcript's `agent-setting`; absent or null = none written */
+  agent?: string | null;
 }

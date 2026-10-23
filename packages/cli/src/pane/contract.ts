@@ -161,6 +161,13 @@ export interface SlotRow {
    * turn settles until the next turn starts. Each summary is one line (≤ 100 chars), credentials
    * masked; never a whole tool input and nothing from a tool result. `pane/slot-steps.ts` */
   recent: SlotStep[] | null;
+  /** [additive] the subagent the caller asked for: the `--agent` value claudish passed to the
+   * child (from `agent`, or from `claude_flags`); null when none. `requestedAgentOf` */
+  agent_requested: string | null;
+  /** [additive] the subagent Claude Code actually loaded: the latest `agent-setting` record of the
+   * child's own transcript. null when the transcript has none: no agent, a rejected agent
+   * (`reason: "agent_rejected"`), or not written yet. Kept on rows built from disk. */
+  agent: string | null;
 }
 
 /** One step of a slot's turn: an assistant text, thinking or tool_use block. */

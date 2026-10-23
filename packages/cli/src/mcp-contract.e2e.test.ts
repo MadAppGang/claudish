@@ -32,6 +32,8 @@ const keys = (v: unknown): string[] => Object.keys(v as Json).sort();
 
 const SLOT_ROW_KEYS = [
   "activity",
+  "agent",
+  "agent_requested",
   "cost_usd",
   "idle_seconds",
   "last_activity_at",
@@ -114,6 +116,8 @@ function expectContractMeta(body: Json): void {
 
 function expectSlotRow(row: Json, extended: string[] = SLOT_ROW_KEYS): void {
   expect(keys(row)).toEqual(extended);
+  expect(row.agent_requested).toBeNull();
+  expect(row.agent).toBeNull();
   expect(SLOT_STATES).toContain(row.state as never);
   if (["FAILED", "EMPTY", "CANCELLED", "TIMEOUT"].includes(row.state as string)) {
     expect(row.reason_detail === null || typeof row.reason_detail === "string").toBe(true);

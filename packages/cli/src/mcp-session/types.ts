@@ -87,6 +87,10 @@ export interface SessionInfo {
   activity: string | null;
   /** SlotRow.recent: the current turn's last steps; null before the first and when read from disk. */
   recent: SlotStep[] | null;
+  /** SlotRow.agent_requested: the `--agent` the child was started with; absent or null = none. */
+  agentRequested?: string | null;
+  /** SlotRow.agent: the transcript's `agent-setting`; absent or null = none written. */
+  agent?: string | null;
   /** Set on FAILED / EMPTY / CANCELLED / TIMEOUT; null otherwise (incl. COMPLETED). */
   reason: FailureReason | null;
   detail: string | null;

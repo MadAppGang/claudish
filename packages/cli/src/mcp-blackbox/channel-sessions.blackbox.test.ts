@@ -71,6 +71,8 @@ const FAILURE_REASONS = [
 ];
 const SLOT_ROW_KEYS = [
   "activity",
+  "agent",
+  "agent_requested",
   "cost_usd",
   "idle_seconds",
   "last_activity_at",
