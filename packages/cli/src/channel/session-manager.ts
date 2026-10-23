@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto";
 
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import { SignalWatcher } from "./signal-watcher.js";
+import { writeJsonAtomic } from "./write-json-atomic.js";
 import type {
   SessionInfo,
   SessionStatus,
@@ -183,8 +184,8 @@ export class SessionManager {
         writeFileSync(join(sessionDir, "stderr.log"), entry.stderr, "utf-8");
       }
 
-      // Write meta.json
-      writeFileSync(join(sessionDir, "meta.json"), JSON.stringify(entry.info, null, 2), "utf-8");
+      // Write meta.json — atomic: the file is readable at any instant
+      writeJsonAtomic(join(sessionDir, "meta.json"), entry.info);
 
       this.cleanupSigint();
     });
