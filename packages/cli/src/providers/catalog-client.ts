@@ -1,3 +1,4 @@
+import { log } from "../logger.js";
 import {
   type CachedSubscriptionPlan,
   type DiskCacheV3,
@@ -584,9 +585,22 @@ async function fetchRouteRegistry(
 
 function startCatalogWarm(): Promise<void> {
   if (_warmPromise) return _warmPromise;
-  const promise = refreshCatalog(8000).then((result) => {
-    if (result.kind !== "refreshed" && _warmPromise === promise) _warmPromise = null;
-  });
+  const promise = refreshCatalog(8000).then(
+    (result) => {
+      if (result.kind === "refreshed") return;
+      // Without this line the reason is lost: callers only see "no snapshot".
+      log(
+        `[catalog] refresh failed: ${result.kind === "fetch_failed" ? result.reason : `incompatible contract ${result.serverContractVersion ?? "unknown"}`}`
+      );
+      if (_warmPromise === promise) _warmPromise = null;
+    },
+    (err: unknown) => {
+      // A throw (a cache write refused, a bad CLAUDISH_CATALOG_URL) must not stay
+      // the answer for the life of the process: the next caller tries again.
+      log(`[catalog] refresh threw: ${err instanceof Error ? err.message : String(err)}`);
+      if (_warmPromise === promise) _warmPromise = null;
+    }
+  );
   _warmPromise = promise;
   return promise;
 }
@@ -625,8 +639,16 @@ export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> 
 }
 
 async function waitForCatalogWarm(timeoutMs: number): Promise<void> {
+  let timedOut = false;
   await Promise.race([
     startCatalogWarm(),
-    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    new Promise<void>((resolve) =>
+      setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, timeoutMs)
+    ),
   ]);
+  if (timedOut)
+    log(`[catalog] still refreshing after ${timeoutMs} ms; the caller goes on without it`);
 }
