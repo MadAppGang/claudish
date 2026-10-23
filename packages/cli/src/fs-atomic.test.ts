@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFileAtomic } from "./fs-atomic.js";
@@ -21,7 +21,7 @@ describe("writeFileAtomic", () => {
     writeFileAtomic(path, content);
     expect(readFileSync(path, "utf8")).toBe(content);
     expect(readdirSync(root)).toEqual(["cache.json"]);
-    expect(existsSync(`${path}.tmp.${process.pid}`)).toBe(false);
+    expect(readdirSync(root).filter((name) => name.startsWith("cache.json.tmp."))).toEqual([]);
   });
 
   test("creates parent directories and replaces previous content completely", () => {
@@ -44,8 +44,14 @@ describe("writeFileAtomic", () => {
     expect(error).toBeInstanceOf(Error);
     expect(error?.syscall).toBe("rename");
     expect(error?.code).toBe("EISDIR");
-    expect(error?.path).toBe(`${path}.tmp.${process.pid}`);
-    expect(existsSync(`${path}.tmp.${process.pid}`)).toBe(false);
+    const prefix = `${path}.tmp.${process.pid}.`;
+    expect(error?.path).toStartWith(prefix);
+    expect(error?.path?.slice(prefix.length)).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect(readdirSync(root).filter((name) => name.startsWith("target-directory.tmp."))).toEqual(
+      []
+    );
     expect(readdirSync(root)).toEqual(["target-directory"]);
     expect(readdirSync(path)).toEqual([]);
   });

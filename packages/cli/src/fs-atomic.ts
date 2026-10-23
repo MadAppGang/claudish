@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -9,7 +10,8 @@ import { dirname } from "node:path";
  */
 export function writeFileAtomic(path: string, text: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp.${process.pid}`;
+  // pid alone can repeat across PID namespaces sharing one ~/.claudish (containers).
+  const tmp = `${path}.tmp.${process.pid}.${randomUUID()}`;
   try {
     writeFileSync(tmp, text, "utf-8");
     renameSync(tmp, path);
