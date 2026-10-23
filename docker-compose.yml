@@ -188,6 +188,10 @@ services:
       # concurrency slot before skipping forward (ms). Default 2000; 0 = off
       # (unbounded FIFO). The nominal path never reads it. Read-per-request.
       - CLAUDISH_FAILOVER_STEP_BUSY_WAIT_MS=${CLAUDISH_FAILOVER_STEP_BUSY_WAIT_MS:-}
+      # #553 defect 2 — kill switch for the `!own` step class: "0" reverts every
+      # own-capacity step to the default (quota-sized) backoff ladder while the
+      # suffix stays parseable. Empty = own ladders ON. Read at config load.
+      - CLAUDISH_FAILOVER_OWN_BACKOFF=${CLAUDISH_FAILOVER_OWN_BACKOFF:-}
       # #565 — admission census kill switch: "0" restores the pre-#565 behavior
       # (a request larger than every DECLARED window pays its doomed round-trip
       # and surfaces the provider's own 400 instead of a labeled local refusal).

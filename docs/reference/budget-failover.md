@@ -157,6 +157,29 @@ count 2 → 4, i.e. a 4 h bench, within one second, and the cascade paid the nex
 hours. A mark on a different concrete (a `role:` step whose delegation moved, #331) is a new episode
 and escalates. Pins: `failover.test.ts` "#553: …" (4 mutations executed).
 
+**An own-capacity step benches on its own short ladder — `!own` (#553 defect 2).** A step can declare
+itself OUR OWN capacity by a suffix on the target: `CLAUDISH_FAILOVER_HAIKU=vllm-myia@swift-1.5-27b:8!own>role:sonnet`.
+The suffix is stripped BEFORE the `provider@model[:concurrency]` grammar parses (concurrency still reads
+8), and the class is declared inline so it is visible in `docker inspect` and recovered by
+`-RebuildEnvFromContainer` — a side table keyed by step index was rejected: it drifts on every cascade
+edit and silently re-classes the wrong step. Such a step cannot exhaust a credit; it saturates or is
+down, and retrying it is free — the cost of under-benching is one fast-failing request, the cost of
+over-benching is paid traffic diverted to `role:sonnet`. Its **non-quota** failures therefore bench it on
+`OWN_BACKOFF_MS = [30s, 2m, 5m]`, capped: a sustained outage re-probes every 5 min at most, so a bench
+can never outlive an announced maintenance window by more than one rung — no window plumbing needed.
+Three non-negotiables: (a) **the classifier owns quota semantics** — a QUOTA-shaped refusal on an `!own`
+step keeps the default ladder; (b) **the ladder is recorded on the failure record** (`StepFailure.own`),
+never re-derived at read time, or the short bench would be re-judged with the 10-min quota rung; (c) the
+class travels with the DECLARED step, never through `role:` delegation — a delegated concrete keeps its
+own record's ladder. `initFailover` attests each class at startup (`[Failover] OWN <role>[<i>] (label) —
+own-capacity step: …`) and each `[Failover] step …` line prints `ttl=30s own`. Kill switch
+`CLAUDISH_FAILOVER_OWN_BACKOFF=0` reverts every declaration to the default ladder while the suffix stays
+parseable; an unknown class (`!fast`) warns, is stripped anyway (leaving it in the target would fail as a
+provider error far from its cause) and keeps the default ladder. Measured trigger (ai-01:vllm, 19→20/10):
+**41 × 502** at ~14 min intervals from our own vLLM front, each one benching step 0 for 10 minutes and
+sending the whole haiku lane onto the paid steps. Pins: `failover.test.ts` §"#553 defect 2: own-capacity
+backoff" (6 pins, 6 mutations executed, all killed).
+
 **Reset-time dominance.** The backoff assumes the wall's duration is unknown. When it IS known —
 body-parsed, or declared via `..._RESET` — `StepFailure.resetAt` holds the step skipped until that
 instant, overriding the backoff entirely (a 24h-capped re-probe cycle against an 11-day wall is pure

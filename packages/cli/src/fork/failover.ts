@@ -91,6 +91,13 @@ export interface FailoverStep {
    * probeable again, backoff deciding as for any other step. For walls whose body
    * carries no date (Mistral's subscription 402). */
   resetAt?: Date;
+  /** #553 defect 2: this step is OUR OWN capacity (declared inline as a `!own`
+   * suffix, e.g. `vllm-myia@swift-1.5-27b:8!own`). It cannot exhaust a credit, so a
+   * NON-QUOTA failure benches it on the short capped ladder (30 s → 2 m → 5 m)
+   * instead of the quota-sized one. A QUOTA-SHAPED refusal on an own step keeps the
+   * default ladder (#553 pin 2): the classifier, not the declaration, owns quota
+   * semantics. Absent = metered, the default ladder. */
+  ownBackoff?: true;
 }
 
 export interface FailoverRule {
@@ -139,6 +146,12 @@ interface StepFailure {
    * the next step. The record is replaced whole on each mark, so the flag always
    * reflects the most recent death, never an older episode. */
   nonQuota?: true;
+  /** #553 defect 2: the ladder this episode was marked under. Recorded at MARK time,
+   * never re-derived at read time: whether a failure was quota-shaped is knowledge
+   * the classifier had at that instant, and an `!own` step's 30-s bench must not be
+   * re-judged with the 10-min quota ladder (which would silently keep it benched
+   * ten times longer than it was marked for). Absent = default ladder. */
+  own?: true;
   /** #331: the CONCRETE target this failure was recorded against. For a
    * `role:` step the backoff measures one concrete the delegation happened to
    * resolve to — the delegation itself may have since ADVANCED (the target
@@ -295,6 +308,17 @@ const RECOVERY_CONDENSATIONS = 3;
 const RECOVERY_MAX_MS = 60 * 60 * 1000;
 /** Per-step probe backoff: ~10m, 30m, 1h, 4h, then a 24h cap. */
 const BACKOFF_MS = [10 * 60_000, 30 * 60_000, 60 * 60_000, 4 * 60 * 60_000, 24 * 60 * 60_000];
+/** #553 defect 2: the ladder for a step declared `!own` — our own capacity.
+ * Such a step cannot exhaust a credit, it saturates or is down, and RETRYING IT IS
+ * FREE: the cost of under-benching is one fast-failing request, the cost of
+ * over-benching is paid traffic diverted to `role:sonnet`. So the ladder is short
+ * and capped (30 s → 2 m → 5 m): a sustained outage re-probes every 5 min at most,
+ * which also answers the announced-maintenance case without any window plumbing —
+ * the bench can never outlive the window by more than one rung. Measured input
+ * (ai-01:vllm, 19→20/10): each 502 was a real engine restart under KV saturation,
+ * and the 10-min first rung of the quota ladder sent the whole haiku lane to the
+ * paid steps for 10 minutes per episode. */
+const OWN_BACKOFF_MS = [30_000, 2 * 60_000, 5 * 60_000];
 
 // ─── #91: grace before arming ──────────────────────────────────────────────────
 // One transient refusal used to exile the role for a full AUTO_ARM_TTL_MS and
@@ -344,6 +368,33 @@ function parseDirection(raw: string | undefined): FailoverDirection {
   // turned out to be an upgrade is harmless; the reverse makes the agent over-trust
   // a weaker model.
   return "degraded";
+}
+
+/** #553 defect 2: the inline step classes a routing target may carry. */
+const STEP_CLASSES = ["own"] as const;
+type StepClass = (typeof STEP_CLASSES)[number];
+
+/**
+ * #553 defect 2: split an inline step class off a routing target. The class sits at
+ * the END of the token — `vllm-myia@swift-1.5-27b:8!own` → target `vllm-myia@…:8`,
+ * class `own` — and is stripped BEFORE the `provider@model[:concurrency]` grammar
+ * parses, so nothing downstream ever sees it (pin: concurrency still parses to 8).
+ *
+ * An UNKNOWN class warns and is still stripped: leaving `!fast` in the target would
+ * route to a model name that does not exist and surface as a provider error far from
+ * its cause. The declaration is rejected loudly, the target stays routable.
+ */
+function splitStepClass(raw: string, role: FailoverRole, idx: number): { target: string; cls?: StepClass } {
+  const m = /^(.*?)!([A-Za-z0-9_-]+)$/.exec(raw.trim());
+  if (!m) return { target: raw.trim() };
+  const cls = m[2].toLowerCase();
+  if (!(STEP_CLASSES as readonly string[]).includes(cls)) {
+    logStderr(
+      `[Failover] ${role}[${idx}]: unknown step class '!${m[2]}' — ignored, the step keeps the default backoff ladder. Known classes: ${STEP_CLASSES.map((c) => `!${c}`).join(", ")}.`
+    );
+    return { target: m[1] };
+  }
+  return { target: m[1], cls: cls as StepClass };
 }
 
 /** Split a `>`-separated env value into trimmed non-empty steps. */
@@ -407,6 +458,9 @@ function parseStepResets(raw: string | undefined, count: number, role: FailoverR
 }
 
 function loadRules(env: NodeJS.ProcessEnv): Map<FailoverRole, FailoverRule> {
+  // #553 defect 2 kill switch: `0` reverts every `!own` declaration to the default
+  // ladder while the suffix stays parseable (nothing rewrites a production .env).
+  const ownBackoffEnabled = (env.CLAUDISH_FAILOVER_OWN_BACKOFF || "").trim() !== "0";
   const rawTargets = new Map<FailoverRole, string[]>();
   for (const role of FAILOVER_ROLES) {
     const targets = splitSteps(env[`CLAUDISH_FAILOVER_${role.toUpperCase()}`] || "");
@@ -416,7 +470,11 @@ function loadRules(env: NodeJS.ProcessEnv): Map<FailoverRole, FailoverRule> {
   // resolution must be able to assume the graph terminates.
   const refs = new Map<FailoverRole, FailoverRole[]>();
   for (const [role, targets] of rawTargets) {
-    const r = targets.map(parseRoleRef).filter((x): x is FailoverRole => x !== undefined);
+    // #553: the class suffix is stripped before the delegation form is read, or
+    // `role:sonnet!own` would escape the acyclicity guard (pin 5 class 3).
+    const r = targets
+      .map((t, i) => parseRoleRef(splitStepClass(t, role, i).target))
+      .filter((x): x is FailoverRole => x !== undefined);
     if (r.length > 0) refs.set(role, r);
   }
   const rejected = new Set<FailoverRole>();
@@ -443,7 +501,14 @@ function loadRules(env: NodeJS.ProcessEnv): Map<FailoverRole, FailoverRule> {
         `[Failover] ${role}: ${labels.length} labels vs ${targets.length} targets — padding with defaults. Check ${key}_LABEL.`
       );
     }
-    const steps: FailoverStep[] = targets.map((target, i) => {
+    const steps: FailoverStep[] = targets.map((rawTarget, i) => {
+      const { target, cls } = splitStepClass(rawTarget, role, i);
+      const ownBackoff = cls === "own" && ownBackoffEnabled;
+      if (cls === "own" && !ownBackoffEnabled) {
+        logStderr(
+          `[Failover] ${role}[${i}]: '!own' declared but ignored — CLAUDISH_FAILOVER_OWN_BACKOFF=0 reverts every own step to the default backoff ladder.`
+        );
+      }
       const roleRef = parseRoleRef(target);
       return {
         // A role-step's target starts as the role keyword; the first resolution
@@ -455,6 +520,7 @@ function loadRules(env: NodeJS.ProcessEnv): Map<FailoverRole, FailoverRule> {
         direction: parseDirection(directions[i]),
         note: notes[i]?.trim() || undefined,
         resetAt: resets[i],
+        ...(ownBackoff ? { ownBackoff: true as const } : {}),
       };
     });
     out.set(role, { role, steps });
@@ -502,6 +568,14 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
       if (step.resetAt && Date.now() < step.resetAt.getTime()) {
         logStderr(
           `[Failover] CLOSED ${rule.role}[${i}] (${step.label}) until ${step.resetAt.toISOString()} — operator-declared reset; the step is not selected before that instant (#261).`
+        );
+      }
+      // #553 defect 2: attest every own-capacity step at startup. A declared class
+      // that silently failed to parse would look exactly like a metered step in the
+      // log, and the defect this fixes was a bench length nobody could see.
+      if (step.ownBackoff) {
+        logStderr(
+          `[Failover] OWN ${rule.role}[${i}] (${step.label}) — own-capacity step: non-quota failures bench it on the short ladder [${OWN_BACKOFF_MS.map((ms) => (ms < 60_000 ? `${ms / 1000}s` : `${ms / 60_000}min`)).join(", ")}] (#553).`
         );
       }
     });
@@ -774,9 +848,10 @@ export function resolveDelegationOwner(
 
 // ─── per-step backoff ──────────────────────────────────────────────────────────
 
-function stepTtlMs(count: number): number {
-  const idx = Math.min(Math.max(count, 1), BACKOFF_MS.length) - 1;
-  return BACKOFF_MS[idx];
+function stepTtlMs(count: number, own?: boolean): number {
+  const ladder = own ? OWN_BACKOFF_MS : BACKOFF_MS;
+  const idx = Math.min(Math.max(count, 1), ladder.length) - 1;
+  return ladder[idx];
 }
 
 function isStepTtlFailed(f: StepFailure | undefined, step?: FailoverStep): boolean {
@@ -810,7 +885,7 @@ function isStepTtlFailed(f: StepFailure | undefined, step?: FailoverStep): boole
   // in three hours the morning after its declared reset, taking every sonnet lane in
   // the fleet down with it.
   if (f.resetAt && Date.now() < f.resetAt.getTime()) return true;
-  return Date.now() - f.lastFailure.getTime() < stepTtlMs(f.count);
+  return Date.now() - f.lastFailure.getTime() < stepTtlMs(f.count, f.own === true);
 }
 
 /** #331: does this step's TTL failure still BIND? A `role:` step's backoff was
@@ -892,6 +967,10 @@ export function markStepFailed(
   const resetAt = bodyResetAt ?? rule.steps[idx].resetAt;
   const nonQuota = opts?.nonQuota === true;
   const concrete = opts?.concrete;
+  // #553 defect 2: the short ladder applies to a step declared `!own` — and only to
+  // a NON-QUOTA death. An own step that answers a quota-shaped refusal is marked on
+  // the default ladder (pin 2): a declaration never overrules the classifier.
+  const own = rule.steps[idx].ownBackoff === true && nonQuota;
   const sameEpisode =
     isStepTtlFailed(prev) && (prev.concrete === undefined || concrete === undefined || prev.concrete === concrete);
   arr[idx] = {
@@ -899,9 +978,13 @@ export function markStepFailed(
     lastFailure: new Date(Date.now()),
     resetAt,
     ...(nonQuota ? { nonQuota: true } : {}),
+    ...(own ? { own: true } : {}),
     ...(concrete !== undefined ? { concrete } : {}),
   };
-  const ttlText = resetAt ? `until ${resetAt.toISOString()}` : `${Math.round(stepTtlMs(arr[idx].count) / 60000)}min`;
+  const ttlMs = stepTtlMs(arr[idx].count, arr[idx].own === true);
+  const ttlText = resetAt
+    ? `until ${resetAt.toISOString()}`
+    : `${ttlMs < 60_000 ? `${Math.round(ttlMs / 1000)}s` : `${Math.round(ttlMs / 60000)}min`}${arr[idx].own ? " own" : ""}`;
   logStderr(
     `[Failover] step ${role}[${idx}] (${rule.steps[idx].label}) ${nonQuota ? "failed (non-quota)" : "walled"} — count=${arr[idx].count}${sameEpisode ? " (same episode)" : ""} ttl=${ttlText} (${reason})`
   );
@@ -949,7 +1032,7 @@ export function earliestWalledReprobeAt(role: FailoverRole, bucket?: string): Da
   for (const f of stepFailuresFor(role)) {
     if (!f) continue;
     if (f.resetAt) consider(f.resetAt.getTime());
-    else consider(f.lastFailure.getTime() + stepTtlMs(f.count));
+    else consider(f.lastFailure.getTime() + stepTtlMs(f.count, f.own === true));
   }
   const rule = rules.get(role);
   if (rule) for (const s of rule.steps) if (s.resetAt) consider(s.resetAt.getTime());

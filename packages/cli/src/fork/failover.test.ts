@@ -47,6 +47,7 @@ import {
   resolveDelegationOwner,
   setRoleNominalResolver,
   setRoleNominalBucketResolver,
+  earliestWalledReprobeAt,
   machineArmBucket,
   NATIVE_BUCKET,
 } from "./failover.js";
@@ -672,6 +673,151 @@ describe("per-step backoff", () => {
     expect(isFailoverActive("opus")).toBe(false); // role-arm expired
     expect(armFailover("opus", "still walled")).toBe(true); // re-arm (nominal probe failed)
     expect(resolveFailoverTarget("opus").stepIndex).toBe(1); // step 0 STILL skipped
+  });
+});
+
+// ── #553 defect 2: own-capacity backoff class ──────────────────────────────────
+//
+// A step declared `!own` is OUR OWN capacity: it has no credit to exhaust, it
+// saturates or is down, and retrying it is free. Its non-quota failures bench it on
+// the short capped ladder (30 s → 2 m → 5 m) instead of the quota-sized one, whose
+// first rung (10 min) sent the whole haiku lane to the paid steps for 10 minutes per
+// episode (measured 19→20/10: 41 × 502 from our own vLLM front).
+
+describe("#553 defect 2: own-capacity backoff", () => {
+  const realNow = Date.now;
+  let clock = 1_000_000;
+
+  const OWN_CASCADE = {
+    CLAUDISH_FAILOVER_OPUS: "vllm-myia@swift-1.5-27b:8!own>deepseek@deepseek-payg",
+    CLAUDISH_FAILOVER_OPUS_LABEL: "own swift>DeepSeek PAYG",
+  } as NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    clock = 1_000_000;
+    Date.now = () => clock;
+    initFailover({ ...OWN_CASCADE, CLAUDISH_FAILOVER_ACTIVE: "opus" });
+  });
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  it("pin 1 + 4: the class is stripped before the grammar, so concurrency still parses", () => {
+    const step = getFailoverRule("opus")!.steps[0];
+    expect(step.target).toBe("vllm-myia@swift-1.5-27b:8"); // suffix gone, `:8` kept
+    expect(step.ownBackoff).toBe(true);
+    expect(step.label).toBe("own swift"); // the label is the operator's own text
+  });
+
+  it("pin 1: a non-quota failure benches an own step 30s, then 2m, then 5m, capped", () => {
+    markStepFailed("opus", 0, "own 502", undefined, { nonQuota: true });
+    clock += 29_000; // 29 s — still benched
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(1);
+    clock += 2_000; // 31 s — the first rung is over, re-probe
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+
+    markStepFailed("opus", 0, "own 502 again", undefined, { nonQuota: true }); // episode 2
+    clock += 119_000; // 1 min 59 s — within the 2 min rung
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(1);
+    clock += 2_000;
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+
+    markStepFailed("opus", 0, "own 502 third", undefined, { nonQuota: true }); // episode 3
+    clock += 299_000;
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(1);
+    clock += 2_000;
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+
+    markStepFailed("opus", 0, "own 502 fourth", undefined, { nonQuota: true }); // episode 4
+    clock += 299_000; // CAP: the fourth episode is still 5 min, never a quota rung
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(1);
+    clock += 2_000;
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+  });
+
+  it("pin 2: a QUOTA-shaped failure on an own step keeps the default ladder", () => {
+    // Same step, no `nonQuota` flag: the classifier called it quota, and the
+    // declaration must never overrule the classifier.
+    markStepFailed("opus", 0, "quota wall on our own step");
+    clock += 9 * 60_000; // 9 min — the own 30 s rung is long gone, the 10 min one holds
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(1);
+    clock += 2 * 60_000;
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(0);
+  });
+
+  it("pin 3: the class does not travel through `role:` delegation", () => {
+    initFailover({
+      CLAUDISH_FAILOVER_OPUS: "role:sonnet!own",
+      CLAUDISH_FAILOVER_SONNET: "vllm-myia@swift-1.5-27b>deepseek@deepseek-payg",
+      CLAUDISH_FAILOVER_ACTIVE: "opus",
+    });
+    // The DECLARING step carries the class…
+    expect(getFailoverRule("opus")!.steps[0].ownBackoff).toBe(true);
+    expect(getFailoverRule("opus")!.steps[0].roleRef).toBe("sonnet");
+    // …the resolved role's own steps keep the default ladder.
+    expect(getFailoverRule("sonnet")!.steps[0].ownBackoff).toBeUndefined();
+  });
+
+  it("pin 5: an unknown class warns, strips, and keeps the default ladder", () => {
+    const realWrite = process.stderr.write.bind(process.stderr);
+    const lines: string[] = [];
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      initFailover({
+        CLAUDISH_FAILOVER_OPUS: "vllm-myia@swift-1.5-27b!fast>deepseek@deepseek-payg",
+        CLAUDISH_FAILOVER_ACTIVE: "opus",
+      });
+    } finally {
+      process.stderr.write = realWrite;
+    }
+    const step = getFailoverRule("opus")!.steps[0];
+    expect(step.target).toBe("vllm-myia@swift-1.5-27b"); // stripped, still routable
+    expect(step.ownBackoff).toBeUndefined();
+    expect(lines.join("")).toContain("unknown step class '!fast'");
+  });
+
+  it("pin 6: CLAUDISH_FAILOVER_OWN_BACKOFF=0 reverts to the default ladder, suffix still parses", () => {
+    const realWrite = process.stderr.write.bind(process.stderr);
+    const lines: string[] = [];
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      initFailover({
+        ...OWN_CASCADE,
+        CLAUDISH_FAILOVER_OWN_BACKOFF: "0",
+        CLAUDISH_FAILOVER_ACTIVE: "opus",
+      });
+    } finally {
+      process.stderr.write = realWrite;
+    }
+    const step = getFailoverRule("opus")!.steps[0];
+    expect(step.target).toBe("vllm-myia@swift-1.5-27b:8"); // parseable as ever
+    expect(step.ownBackoff).toBeUndefined();
+    expect(lines.join("")).toContain("'!own' declared but ignored");
+    markStepFailed("opus", 0, "own 502", undefined, { nonQuota: true });
+    clock += 9 * 60_000; // the default 10 min rung holds (not the own 30 s one)
+    expect(resolveFailoverTarget("opus").stepIndex).toBe(1);
+  });
+
+  it("pin 7: the wall-surface re-probe horizon reads the RECORDED ladder — an own bench is announced in 30 s, never 10 min", () => {
+    // Third read site (review of 05:1xZ, blocking m3): `earliestWalledReprobeAt`
+    // feeds the retry-after of the wall-surface 429 (proxy-server.ts:1944), and
+    // Claude Code sleeps for what it announces. Re-deriving the ladder at read
+    // time here would tell the client to wait 600 s through a bench that ends in
+    // 30 — twenty times longer than the mark says.
+    markStepFailed("opus", 0, "own 502", undefined, { nonQuota: true });
+    expect(earliestWalledReprobeAt("opus")!.getTime() - clock).toBe(30_000);
+
+    // The READ side takes the class from the failure RECORD, never from the
+    // declaration: a mark the classifier called QUOTA on the same own step keeps
+    // the 10-min rung, exactly like an ordinary step.
+    markStepFailed("opus", 0, "quota-shaped on our own step");
+    expect(earliestWalledReprobeAt("opus")!.getTime() - clock).toBe(600_000);
   });
 });
 
