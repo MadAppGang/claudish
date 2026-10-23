@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { parseInBandApiError } from "../../../in-band-api-error.js";
 
 import { createResponsesStreamHandler } from "./openai-responses-sse.js";
 
@@ -19,7 +20,7 @@ const REAL_CONTEXT_LENGTH_ERROR =
 const REAL_ERROR_MESSAGE =
   "Your input exceeds the context window of this model. Please adjust your input and try again.";
 
-function contextLengthErrorResponse(): Response {
+function contextLengthErrorResponse(error = REAL_CONTEXT_LENGTH_ERROR): Response {
   const realFixture = readFileSync(
     new URL(
       "../../../test-fixtures/sse-responses/gpt-5.6-sol-responses-turn1.sse",
@@ -28,7 +29,7 @@ function contextLengthErrorResponse(): Response {
     "utf8"
   );
   const responseCreatedOpening = realFixture.split("\n\n", 1)[0];
-  const sse = `${responseCreatedOpening}\n\ndata: ${REAL_CONTEXT_LENGTH_ERROR}\n\n`;
+  const sse = `${responseCreatedOpening}\n\ndata: ${error}\n\n`;
 
   return new Response(sse, {
     status: 200,
@@ -65,7 +66,7 @@ function extractText(events: ClaudeEvent[]): string {
     .join("");
 }
 
-describe("OpenAI Responses SSE context overflow", () => {
+describe("OpenAI Responses SSE — Context limit reached", () => {
   test("emits actionable text with the backend cap and signals the API error", async () => {
     const onApiError = mock((_code: string, _message: string) => {});
     const parsedResponse = createResponsesStreamHandler(
@@ -79,6 +80,14 @@ describe("OpenAI Responses SSE context overflow", () => {
     );
 
     const text = extractText(await parseClaudeSseStream(parsedResponse));
+
+    const error = parseInBandApiError(text);
+    expect(error).toEqual({
+      code: "context_length_exceeded",
+      text: expect.stringContaining("Context limit reached"),
+    });
+    expect(error?.text).toContain("/clear");
+    expect(error?.text).toContain("oai@gpt-5.6-sol");
 
     expect(text).toContain("Context limit reached");
     expect(text).toContain("/clear");
@@ -99,10 +108,38 @@ describe("OpenAI Responses SSE context overflow", () => {
 
     const text = extractText(await parseClaudeSseStream(parsedResponse));
 
+    const error = parseInBandApiError(text);
+    expect(error).toEqual({
+      code: "context_length_exceeded",
+      text: expect.stringContaining("Context limit reached"),
+    });
+    expect(error?.text).toContain("/clear");
+    expect(error?.text).toContain("oai@gpt-5.6-sol");
+
     expect(text).toContain("Context limit reached");
     expect(text).toContain("/clear");
     expect(text).not.toContain("undefined");
     expect(text).not.toContain("NaN");
+  });
+
+  test("preserves the upstream code when only the message identifies a context overflow", async () => {
+    const upstream = JSON.parse(REAL_CONTEXT_LENGTH_ERROR);
+    upstream.error.code = "invalid_request_error";
+    upstream.error.message = "maximum context length is 400000 tokens";
+    const parsedResponse = createResponsesStreamHandler(
+      createMockContext(),
+      contextLengthErrorResponse(JSON.stringify(upstream)),
+      { modelName: "gpt-5.6-sol" }
+    );
+
+    const text = extractText(await parseClaudeSseStream(parsedResponse));
+    const error = parseInBandApiError(text);
+    expect(error).toEqual({
+      code: "invalid_request_error",
+      text: expect.stringContaining("Context limit reached"),
+    });
+    expect(error?.text).toContain("/clear");
+    expect(error?.text).toContain("oai@gpt-5.6-sol");
   });
 });
 

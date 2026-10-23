@@ -2131,6 +2131,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
 
         const runsModels = mode === "run" || mode === "run-and-judge";
         const runsJudges = mode === "judge" || mode === "run-and-judge";
+        // No projectRulesReadable here: team children run in this process's cwd
+        // (team-orchestrator.ts) and `path` must lie inside it, so they route by the
+        // same ./.claudish.json this check reads. create_session's work_dir can differ.
         const choice = modelChoiceStop(
           [
             ...(runsModels && givenModels && models

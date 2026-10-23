@@ -220,6 +220,42 @@ describe("classifyRunOutput — in-band API errors", () => {
     expect(result?.detail).toContain("You have no credits remaining");
   });
 
+  const overflowAnswer =
+    "\n\n[API Error: context_length_exceeded Context limit reached. This model's backend enforces a smaller context window ~372K tokens than its API spec. " +
+    "Run /clear to start fresh (/compact will also fail — it re-sends the full conversation), " +
+    "or route the model via `oai@gpt-5.6-sol` to use the full-size window.]";
+
+  it("reports a whole-answer context overflow as api_error even after the task was read", () => {
+    const result = classifyRunOutput({
+      answer: overflowAnswer,
+      apiError: null,
+      promptRead: delivery({ complete: true }),
+    });
+    expect(result).toEqual({
+      state: "FAILED",
+      reason: "api_error",
+      detail: expect.stringContaining("context_length_exceeded"),
+    });
+    expect(result?.detail).toContain("Context limit reached");
+    expect(result?.detail).toContain("/clear");
+    expect(result?.detail).toContain("oai@gpt-5.6-sol");
+  });
+
+  it("reports a trailing context overflow after an unread turn's preamble as api_error", () => {
+    const result = classifyRunOutput({
+      answer: `I'll read the file.\n\n${overflowAnswer.trim()}`,
+      apiError: null,
+      promptRead: unread,
+      requirePattern: "VERDICT:",
+    });
+    expect(result).toEqual({
+      state: "FAILED",
+      reason: "api_error",
+      detail: expect.stringContaining("context_length_exceeded"),
+    });
+    expect(result?.detail).toContain("Context limit reached");
+  });
+
   it("keeps a read turn's verdict when its answer ends with the same billing marker", () => {
     const input = {
       answer: `I'll read the file.\n\n${answer.trim()}`,
