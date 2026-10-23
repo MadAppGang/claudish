@@ -283,7 +283,7 @@ export function writeEffortRecommendations(
     if (foreign !== undefined) {
       _foreignFormatLogged = true;
       log(
-        `[EffortRecommendations] replacing a sidecar of format ${String(foreign)} with format ${SIDECAR_FORMAT} at ${path}; its generations are dropped`
+        `[effort] replacing a sidecar of format ${String(foreign)} with format ${SIDECAR_FORMAT} at ${path}; its generations are dropped`
       );
     }
   }

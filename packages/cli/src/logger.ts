@@ -247,18 +247,24 @@ export function initLogger(
 ): void {
   // Tier 1: Always-on structural logging (unless --log-off)
   if (!noLogs) {
-    const logsDir = join(homedir(), ".claudish", "logs");
-    if (!existsSync(logsDir)) {
-      mkdirSync(logsDir, { recursive: true });
+    // A log exists for diagnostics: an unwritable ~/.claudish/logs (read-only home,
+    // sandbox, full disk) turns it off instead of failing the process that asked.
+    try {
+      const logsDir = join(homedir(), ".claudish", "logs");
+      if (!existsSync(logsDir)) {
+        mkdirSync(logsDir, { recursive: true });
+      }
+      alwaysOnLogPath = join(logsDir, `${name}_${logFileStamp()}.log`);
+      writeFileSync(
+        alwaysOnLogPath,
+        `Claudish Session Log - ${new Date().toISOString()}\nMode: structural (content redacted)\n${"=".repeat(60)}\n\n`
+      );
+      rotateOldLogs(logsDir, keep, name);
+      // Start flush timer if not already running
+      scheduleFlush();
+    } catch {
+      alwaysOnLogPath = null;
     }
-    alwaysOnLogPath = join(logsDir, `${name}_${logFileStamp()}.log`);
-    writeFileSync(
-      alwaysOnLogPath,
-      `Claudish Session Log - ${new Date().toISOString()}\nMode: structural (content redacted)\n${"=".repeat(60)}\n\n`
-    );
-    rotateOldLogs(logsDir, keep, name);
-    // Start flush timer if not already running
-    scheduleFlush();
   }
 
   // Tier 2: Debug verbose logging (existing behavior, only with --debug-claudish)

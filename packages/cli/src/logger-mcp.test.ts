@@ -25,7 +25,7 @@ async function runLogger(body: string): Promise<void> {
       `
     import { homedir } from "node:os";
     if (homedir() !== process.env.HOME) throw new Error("HOME isolation failed");
-    const { initLogger, log } = await import(${JSON.stringify(loggerUrl)});
+    const { initLogger, log, getAlwaysOnLogPath } = await import(${JSON.stringify(loggerUrl)});
     ${body}
     process.exit(0);
   `,
@@ -113,6 +113,19 @@ describe("MCP always-on file logging", () => {
     expect(mcp[2]).not.toBe(originals.at(-1));
     expect(readFileSync(join(logsDir, other), "utf8")).toBe("session");
     expect(names).toHaveLength(4);
+  });
+
+  test("an unusable logs path disables always-on logging without throwing", async () => {
+    rmSync(logsDir, { recursive: true });
+    writeFileSync(logsDir, "not a directory");
+    await runLogger(`
+      const { strict: assert } = await import("node:assert");
+      assert.doesNotThrow(() => initLogger(false, "info", false, "claudish-mcp"));
+      assert.equal(getAlwaysOnLogPath(), null);
+      log("[mcp] diagnostic entry after logger initialization failed");
+    `);
+    expect(readFileSync(logsDir, "utf8")).toBe("not a directory");
+    expect(readdirSync(join(root, ".claudish"))).toEqual(["logs"]);
   });
 
   test("noLogs suppresses creation of the always-on file on a fresh logger", async () => {
