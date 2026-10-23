@@ -109,6 +109,8 @@ a native Claude name, a name a user routing rule matches (the user's own routing
 claim (`swe-1.7` on Devin: the account decides), and everything when no recommended list is on
 disk (the MCP log says so). The check runs before `needs_effort`.
 
+The refusal carries the effort rows of the matching ids (run13: an agent retried with a level it made up). `search_models` lists the matching recommended models first and its `Use with:` line names only a recommended id (`recommendedSearchMatches`): run13's `gpt-5.5` came from its OpenRouter listing.
+
 ## Which names reach `route()`
 
 **One gate: `proxyRouteDecision`** (`providers/native-route.ts`). The proxy's step 2c asks it

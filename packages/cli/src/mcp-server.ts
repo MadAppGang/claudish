@@ -859,6 +859,30 @@ function recommendedChoices(
 }
 
 /**
+ * The recommended models a `search_models` query names, newest first: an id
+ * containing a query word, of a query word's family, or of a vendor the query
+ * names. Run13: the agent took `gpt-5.5` from the OpenRouter listing, which
+ * the model check then refused.
+ */
+export function recommendedSearchMatches(
+  query: string,
+  recommended: readonly RecommendedModelEntry[]
+): Array<{ id: string; vendor: string; tiers: string[]; released?: string }> {
+  const words = query
+    .toLowerCase()
+    .split(/[\s,/]+/)
+    .filter((w) => w.length >= 2);
+  if (words.length === 0) return [];
+  const hits = recommended.filter((m) => {
+    const id = m.id.toLowerCase();
+    return words.some(
+      (w) => id.includes(w) || familyOf(m.id) === familyOf(w) || m.provider.toLowerCase() === w
+    );
+  });
+  return recommendedChoices([...hits].sort(compareByReleaseDateDesc));
+}
+
+/**
  * The answer that stops a call naming a model the agent should not start
  * unasked. The agent knows the task and what the user asked for, so it picks
  * from the recommended list and calls again. Starts nothing.
@@ -1530,6 +1554,26 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       // name is unroutable — and that inference is exactly what sends callers
       // to a metered route. Always report what the catalog knows alongside it.
       const catalogMatches = searchCatalogModels(query, Math.max(maxResults, 5));
+      // What to pass: only a recommended id. A listing or catalog id outside the
+      // recommended list is refused by team / create_session / run_prompt.
+      const recommendedHits = recommendedSearchMatches(
+        query,
+        readLastRecommendedModels()?.models ?? []
+      );
+      const renderRecommendedSection = (): string => {
+        if (recommendedHits.length === 0) return "";
+        let s = "## Recommended models (pass one of these)\n\n";
+        s += "| Bare name | Vendor | Tiers | Released |\n";
+        s += "|-----------|--------|-------|----------|\n";
+        for (const m of recommendedHits) {
+          s += `| ${m.id} | ${m.vendor} | ${m.tiers.join(", ")} | ${m.released ?? "-"} |\n`;
+        }
+        return `${s}\n`;
+      };
+      const useWith = (): string =>
+        recommendedHits.length > 0
+          ? `\nUse with: run_prompt(model="${recommendedHits[0].id}", prompt="your prompt")`
+          : "\nNo recommended model matches this query: call `list_models` for the recommended set.";
       const renderCatalogSection = (): string => {
         if (catalogMatches.length === 0) return "";
         let s = "\n## Catalog names (what claudish routes)\n\n";
@@ -1548,6 +1592,10 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
 
       if (results.length === 0) {
         const catalog = renderCatalogSection();
+        if (recommendedHits.length > 0) {
+          const text = `No OpenRouter listing matches "${query}".\n\n${renderRecommendedSection()}${catalog}${useWith()}`;
+          return { content: [{ type: "text" as const, text }] };
+        }
         const text = catalog
           ? `No OpenRouter listing matches "${query}", but claudish's catalog knows these:\n${catalog}`
           : `No models found matching "${query}".\n\n` +
@@ -1557,6 +1605,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         return { content: [{ type: "text" as const, text }] };
       }
       let output = `# Search Results for "${query}"\n\n`;
+      output += renderRecommendedSection();
       output += "## OpenRouter listing\n\n";
       output += "| Model | Provider | Pricing | Context |\n";
       output += "|-------|----------|---------|----------|\n";
@@ -1573,12 +1622,10 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         output += `| ${model.id} | ${provider} | ${pricing} | ${context} |\n`;
       }
       output += renderCatalogSection();
-      // Suggest the BARE catalog name, never the top aggregator id. The old
-      // footer recommended whatever the listing ranked first — for "kimi" that
-      // was `accounts/fireworks/routers/kimi-k3-fast`, a metered address, so
-      // the tool's own advice routed users off their subscription.
-      const suggested = catalogMatches[0]?.modelId ?? results[0].model.id;
-      output += `\nUse with: run_prompt(model="${suggested}", prompt="your prompt")`;
+      // Suggest a recommended bare name, never the top aggregator id (for "kimi"
+      // that was `accounts/fireworks/routers/kimi-k3-fast`, a metered address)
+      // nor a catalog id outside the recommended list (run13: `gpt-5.5`).
+      output += useWith();
       return { content: [{ type: "text" as const, text: output }] };
     },
   });

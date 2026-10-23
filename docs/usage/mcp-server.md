@@ -130,7 +130,7 @@ calling agent picks the column for its task and passes each model's cell as `tea
 
 ### `search_models`
 
-Search all OpenRouter models.
+Search all OpenRouter models. The answer starts with the recommended models that match the query (by id, family or vendor, newest first); its `Use with:` line names only a recommended model, or tells you to call `list_models` when none matches. The OpenRouter listing and catalog names below it are for exploring: a bare name outside the recommended list is refused by `team`, `create_session` and `run_prompt` (`not_recommended:`).
 
 **Parameters:**
 - `query` (required) - Search term (name, provider, capability)
