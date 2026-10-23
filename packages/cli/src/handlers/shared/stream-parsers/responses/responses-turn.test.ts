@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Context } from "hono";
+import { formatInBandApiError } from "../../../../in-band-api-error.js";
 import { createResponsesStreamHandler } from "../openai-responses-sse.js";
 import { MAX_LEG_RETRIES } from "./responses-turn.js";
 import type { StallClock } from "./stall-guard.js";
@@ -380,6 +381,48 @@ test("REQ-14 TEST-16 H12 throwing onApiError hook produces terminal SSE error", 
   expect(types(events, "message_delta").some((e) => e.delta.stop_reason === "tool_use")).toBe(
     false
   );
+});
+
+test("a terminal billing error emits exactly the shared in-band marker with end_turn", async () => {
+  // Use the same real Responses error-event path as H12 above, with code/message
+  // taken from session d9560db8's captured billing error rather than a context overflow.
+  const existing = readFileSync(
+    new URL("../openai-responses-sse.test.ts", import.meta.url),
+    "utf8"
+  );
+  const realError = existing.match(/const REAL_CONTEXT_LENGTH_ERROR =\s*'([^']+)'/u)?.[1];
+  if (!realError) throw new Error("Real captured error test data is missing");
+  const marker = readFileSync(
+    new URL(
+      "../../../../test-fixtures/mcp-model-check/credit-balance-exhausted-20261023.txt",
+      import.meta.url
+    ),
+    "utf8"
+  ).trim();
+  const code = "credit_balance_exhausted";
+  const message = marker.slice(`[API Error: ${code} `.length, -1);
+  const errorEvent = JSON.parse(realError);
+  errorEvent.error.code = code;
+  errorEvent.error.message = message;
+  const opening = decode(wire("codex-zero-delta-multicall.sse")).slice(0, 2);
+  const reported: Array<[string, string]> = [];
+  const events = decode(
+    await run(new Response(encode([...opening, errorEvent])), {
+      onApiError(errorCode, errorMessage) {
+        reported.push([errorCode, errorMessage]);
+      },
+    }).text()
+  );
+  const text = types(events, "content_block_delta")
+    .filter((e) => e.delta.type === "text_delta")
+    .map((e) => e.delta.text)
+    .join("");
+  expect(text).toBe(formatInBandApiError(code, message));
+  expect(text).toBe(`\n\n${marker}`);
+  expect(reported).toEqual([[code, message]]);
+  expect(types(events, "error")).toEqual([]);
+  expect(types(events, "message_delta").map((e) => e.delta.stop_reason)).toEqual(["end_turn"]);
+  expect(types(events, "message_stop")).toHaveLength(1);
 });
 
 test("REQ-15 TEST-17 drains degenerate usage and reports earlier billing before one final context update", async () => {

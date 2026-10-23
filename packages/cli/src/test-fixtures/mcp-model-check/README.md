@@ -14,6 +14,19 @@ basis values, and complete `sendableOn` arrays are unchanged. Other generations
 and model rows were omitted; only JSON whitespace was otherwise changed.
 The source sidecar was read, never written.
 
+`credit-balance-exhausted-20261023.txt` is the `[API Error: ...]` line
+copied verbatim from `~/.claudish/sessions/d9560db8/output.log` on 2026-10-23.
+The surrounding blank lines and the subsequent claudish failure diagnostic
+were omitted. The source session log was read, never written.
+
+`openrouter-20261023.json` captures the `openai/gpt-5` and
+`deepseek/deepseek-v4-flash-vision-exp` rows from
+`~/.claudish/openrouter-models.json` on 2026-10-23. Both complete rows and the
+source `lastUpdated` are unchanged; other rows were omitted and JSON whitespace
+was changed. The source cache was read, never written. Tests refresh only the
+timestamp in the isolated HOME copy, so `search_models` reads its OpenRouter
+listing without network access.
+
 The effort-answer case removes `gpt-6-astra` only from its temporary HOME's
 copy to prove that a matching recommended id without an effort row is absent
 from the effort JSON. The MiniMax case uses the captured sidecar unchanged:

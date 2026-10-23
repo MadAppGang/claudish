@@ -45,6 +45,13 @@ beforeEach(() => {
     join(dataDir, "stage5-explain-route-catalog.json"),
     join(config, "cloud-models-catalog-v3.json")
   );
+  const openrouter = JSON.parse(
+    readFileSync(join(dataDir, "mcp-model-check/openrouter-20261023.json"), "utf8")
+  );
+  writeFileSync(
+    join(config, "openrouter-models.json"),
+    JSON.stringify({ ...openrouter, lastUpdated: new Date().toISOString() })
+  );
   fetches = join(layout.root, "fetches.jsonl");
   server = undefined;
 });
@@ -126,6 +133,73 @@ function expectModelChoice(
     released: "2026-09-29",
   });
 }
+
+describe("MCP required string arguments over isolated stdio", () => {
+  test.each([
+    { tool: "get_diagnostics", args: {}, error: "Error: 'session_id' is required" },
+    { tool: "get_output", args: {}, error: "Error: 'session_id' is required" },
+    {
+      tool: "send_input",
+      args: { session_id: "x" },
+      error: "Error: 'text' is required",
+    },
+    {
+      tool: "get_diagnostics",
+      args: { session_id: "" },
+      error: "Error: 'session_id' must be a non-empty string",
+    },
+  ])(
+    "$tool $args returns $error",
+    async ({ tool, args, error }) => {
+      const mcp = await start();
+      const answer = await mcp.callTool(tool, args);
+      expect((answer.raw as { error?: unknown }).error).toBeUndefined();
+      expect(answer.isError).toBe(true);
+      expect(answer.text).toBe(error);
+      expect(answer.text).not.toContain("paths[1]");
+      assertNothingStarted();
+    },
+    15_000
+  );
+});
+
+describe("search_models recommendations over isolated stdio", () => {
+  test("puts recommended GPT ids before the OpenRouter listing and suggests only the first", async () => {
+    const mcp = await start();
+    const answer = await mcp.callTool("search_models", { query: "openai gpt" });
+    expect(answer.isError).toBe(false);
+    const recommendedHeading = "## Recommended models (pass one of these)";
+    const listingHeading = "## OpenRouter listing";
+    expect(answer.text).toContain(recommendedHeading);
+    expect(answer.text).toContain(listingHeading);
+    expect(answer.text.indexOf(recommendedHeading)).toBeLessThan(
+      answer.text.indexOf(listingHeading)
+    );
+    const section = answer.text.split(recommendedHeading)[1].split(listingHeading)[0];
+    const ids = [...section.matchAll(/^\| (gpt-[^ |]+) \|/gm)].map((m) => m[1]);
+    expect(ids).toEqual(gptIds);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(answer.text).toContain("| openai/gpt-5 |");
+    expect(answer.text.trimEnd().split("\n").at(-1)).toBe(
+      `Use with: run_prompt(model="${gptIds[0]}", prompt="your prompt")`
+    );
+    assertNothingStarted();
+  }, 15_000);
+
+  test("a listing match with no recommended match tells the caller to use list_models", async () => {
+    const mcp = await start();
+    const answer = await mcp.callTool("search_models", { query: "vision" });
+    expect(answer.isError).toBe(false);
+    expect(answer.text).toContain("## OpenRouter listing");
+    expect(answer.text).toContain("| deepseek/deepseek-v4-flash-vision-exp |");
+    expect(answer.text).not.toContain("## Recommended models (pass one of these)");
+    expect(answer.text).not.toContain("Use with:");
+    expect(answer.text.trimEnd().split("\n").at(-1)).toBe(
+      "No recommended model matches this query: call `list_models` for the recommended set."
+    );
+    assertNothingStarted();
+  }, 15_000);
+});
 
 describe("MCP model-choice refusals over isolated stdio", () => {
   test.each([

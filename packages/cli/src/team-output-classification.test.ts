@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { SettledTurn } from "./pane/index.js";
 import {
   DEFAULT_MIN_OUTPUT_BYTES,
@@ -182,6 +183,56 @@ describe("classifyRunOutput — prompt_not_read", () => {
     ).toBeNull();
     expect(classifyRunOutput({ answer: "ok", apiError: null, promptRead: delivery() })).toBeNull();
   });
+});
+
+describe("classifyRunOutput — in-band API errors", () => {
+  const answer = readFileSync(
+    new URL(
+      "./test-fixtures/mcp-model-check/credit-balance-exhausted-20261023.txt",
+      import.meta.url
+    ),
+    "utf8"
+  );
+  const unread = delivery({ linesRead: 0, complete: false });
+
+  it("reports the captured billing error as FAILED api_error before prompt_not_read", () => {
+    const result = classifyRunOutput({ answer, apiError: null, promptRead: unread });
+    expect(result).toEqual({
+      state: "FAILED",
+      reason: "api_error",
+      detail: expect.stringContaining("credit_balance_exhausted"),
+    });
+    expect(result?.detail).toContain("You have no credits remaining");
+  });
+
+  it("gives the Claude Code apiError status and text precedence over the in-band marker", () => {
+    const result = classifyRunOutput({
+      answer,
+      apiError: {
+        status: 529,
+        text: "API Error: 529 Our servers are currently overloaded. Please try again later.",
+      },
+      promptRead: unread,
+    });
+    expect(result).toEqual({
+      state: "FAILED",
+      reason: "api_error",
+      detail: expect.stringContaining("status 529"),
+    });
+    expect(result?.detail).toContain("Our servers are currently overloaded");
+    expect(result?.detail).not.toContain("credit_balance_exhausted");
+  });
+
+  it.each([`The provider returned:\n${answer}`, `${answer}\nThis is quoted provider output.`])(
+    "keeps prompt_not_read for a marker embedded in a longer answer: %s",
+    (text) => {
+      expect(classifyRunOutput({ answer: text, apiError: null, promptRead: unread })).toEqual({
+        state: "FAILED",
+        reason: "prompt_not_read",
+        detail: expect.stringContaining("never read"),
+      });
+    }
+  );
 });
 
 describe("classifyRunOutput — requirePattern", () => {
