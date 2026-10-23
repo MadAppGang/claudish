@@ -2,6 +2,24 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.4.1] - 2026-10-23
+
+### Bug Fixes
+
+- classify a context overflow as api_error via the in-band marker (#349) *(team)* ([`6468bd0`](https://github.com/MadAppGang/claudish/commit/6468bd05ed8c649f06496c5160bac74a870014c6))
+- classify a context overflow as api_error via the in-band marker *(team)* ([`412a14d`](https://github.com/MadAppGang/claudish/commit/412a14d980f5192275eb58ffc8d6b1bb6bda683d))
+
+### Documentation
+
+- state why team's model check reads the server's project rules *(mcp)* ([`d62baa1`](https://github.com/MadAppGang/claudish/commit/d62baa10ffbb37aeb56fbf7ad93a2633b8c64dce))
+- update CHANGELOG.md for v14.4.0([`8d13a5f`](https://github.com/MadAppGang/claudish/commit/8d13a5fdabd136e83813bb38c6b809887a21de4a))
+- mark the release playbook verified by v14.4.0 *(release)* ([`fa8eba9`](https://github.com/MadAppGang/claudish/commit/fa8eba93e219b9c95e22870959c9c9e6abb12ee6))
+
+### Other Changes
+
+- v14.4.1 (#350) *(release)* ([`1cb0683`](https://github.com/MadAppGang/claudish/commit/1cb06839149ce66b222fc1aaa7fea570e1f9159d))
+- v14.4.1 *(release)* ([`dc5decf`](https://github.com/MadAppGang/claudish/commit/dc5decfe5e2b55acdfa5009bba7713d3d1ea0307))
+
 ## [14.4.0] - 2026-10-23
 
 ### Bug Fixes
