@@ -20,6 +20,7 @@ export {
   checkChildFlags,
   assertMagmuxAvailable,
   flagsRemoveRead,
+  requestedAgentOf,
   MagmuxUnavailableError,
   MIN_MAGMUX_VERSION,
   SOCK_ROOT,

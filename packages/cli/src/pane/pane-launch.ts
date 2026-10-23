@@ -364,6 +364,22 @@ function reservedMessage(flag: string): string | null {
   return null;
 }
 
+/**
+ * SlotRow.agent_requested: the value of the LAST `--agent` in the child's flags (both
+ * `--agent x` and `--agent=x`); null when there is none. `buildChildClaudeFlags` has
+ * already folded the `agent` argument and any `--agent` in `claude_flags` into one pair.
+ */
+export function requestedAgentOf(flags: readonly string[]): string | null {
+  let agent: string | null = null;
+  for (let i = 0; i < flags.length; i++) {
+    const [name, inline] = splitFlag(flags[i] as string);
+    if (name !== "--agent") continue;
+    const value = inline ?? flags[i + 1];
+    if (value && !value.startsWith("-")) agent = value;
+  }
+  return agent;
+}
+
 /** Whether the flags visibly remove the Read tool (§2.3 rule 4). */
 export function flagsRemoveRead(flags: string[]): boolean {
   for (let i = 0; i < flags.length; i++) {

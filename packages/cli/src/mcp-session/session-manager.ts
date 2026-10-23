@@ -89,6 +89,7 @@ import {
   readTokenFileCached,
   reasonDetail,
   releasePaneReservations,
+  requestedAgentOf,
   reservePanes,
   resolveProvider,
   sockRootFor,
@@ -411,6 +412,8 @@ export function sessionRowOf(
     activity: terminal ? null : info.activity,
     pane: info.pane,
     recent: info.recent,
+    agent_requested: info.agentRequested ?? null,
+    agent: info.agent ?? null,
     session_id: info.sessionId,
     started_at: info.startedAt,
     completed_at: info.completedAt,
@@ -457,6 +460,8 @@ export function toMetaRecord(info: SessionInfo, cwd: string): Record<string, unk
     captureSource: info.captureSource,
     turnSource: info.turnSource,
     timeoutSeconds: info.timeoutSeconds,
+    agentRequested: info.agentRequested ?? null,
+    agent: info.agent ?? null,
     cwd,
   };
 }
@@ -846,6 +851,7 @@ export class SessionManager {
       teamPath?: string;
       slots?: number;
       setupFrom?: string;
+      agentRequested?: string;
     }
   ): void {
     const { kind, sessionId, parentClaudeSessionId, startedAt, ...rest } = record;
@@ -948,6 +954,7 @@ export class SessionManager {
     // Normalised once, here, so `spawn.json`, `SessionInfo` and the pane's timer agree
     // on one value the plugin monitor accepts (an integer in 1..MAX_TIMEOUT).
     const timeout = normaliseTimeoutSeconds(opts.timeoutSeconds);
+    const agentRequested = requestedAgentOf(opts.claudishFlags ?? []);
     const startedAt = new Date().toISOString();
     const sessionDir = opts.sessionDir ?? join(this.sessionsDir, sessionId);
     mkdirSync(sessionDir, { recursive: true });
@@ -964,6 +971,7 @@ export class SessionManager {
       timeoutSeconds: timeout,
       claudeSessionId,
       ...(opts.setupFrom ? { setupFrom: opts.setupFrom } : {}),
+      ...(agentRequested ? { agentRequested } : {}),
     });
     // 0600: the caller's settings.local.json can carry `env` secrets.
     if (inheritedLayer) {
@@ -1001,6 +1009,8 @@ export class SessionManager {
         idleSeconds: null,
         activity: null,
         recent: null,
+        agentRequested,
+        agent: null,
         reason: null,
         detail: null,
         pendingInputs: opts.prompt ? 1 : 0,
@@ -1313,6 +1323,7 @@ export class SessionManager {
     info.idleSeconds = snap.idleSeconds;
     info.activity = snap.activity;
     info.recent = snap.recent;
+    info.agent = snap.agent ?? info.agent ?? null;
     info.reason = snap.reason;
     info.detail = snap.detail;
     info.pendingInputs = snap.pendingInputs;
@@ -2025,6 +2036,8 @@ function diskInfo(d: {
     idleSeconds: null,
     activity: null,
     recent: null,
+    agentRequested: metaString(meta?.agentRequested) ?? metaString(spawnRecord?.agentRequested),
+    agent: metaString(meta?.agent),
     reason,
     detail: meta === null ? NO_TERMINAL_RECORD : metaString(meta.detail),
     pendingInputs: 0,

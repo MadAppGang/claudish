@@ -118,6 +118,8 @@ export interface TranscriptView {
   toolCalls: number;
   lastAppendAt: number | null;
   session: SessionFacts;
+  /** the agent Claude Code loaded: the latest `agent-setting` record; null = none written */
+  agentSetting: string | null;
 }
 
 /* ───────────────────────────── pure reducer ───────────────────────────── */
@@ -174,6 +176,8 @@ export interface FollowerState {
   mainAssistantIds: string[];
   mainAssistantSeen: Set<string>;
   session: SessionFacts;
+  /** `{"type":"agent-setting","agentSetting":"dev:reviewer"}`: written at line 2, repeated later */
+  agentSetting: string | null;
   records: number;
   resolvePath: (p: string) => string;
 }
@@ -188,6 +192,7 @@ export function initialFollowerState(
     mainAssistantIds: [],
     mainAssistantSeen: new Set(),
     session: { stopHooksSeen: false, provenHookless: false },
+    agentSetting: null,
     records: 0,
     resolvePath,
   };
@@ -573,6 +578,8 @@ export function applyRecord(
   recordUsage(state, r);
   if (r.isSidechain) return state;
   noteMainAssistant(state, r);
+  if (r.type === "agent-setting" && typeof r.agentSetting === "string" && r.agentSetting)
+    state.agentSetting = r.agentSetting;
   if (r.type === "system" && r.subtype === "stop_hook_summary") {
     state.session.stopHooksSeen = true;
     state.session.provenHookless = false;
@@ -903,6 +910,7 @@ export class TranscriptFollower {
       toolCalls: this.state.toolUseIds.size,
       lastAppendAt: this.lastAppend,
       session: { ...this.state.session },
+      agentSetting: this.state.agentSetting,
     };
   }
 }

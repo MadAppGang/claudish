@@ -9,7 +9,13 @@ import { reasonDetail } from "./reason-detail.js";
 import type { PaneSnapshot } from "./types.js";
 
 export function toSlotRow(
-  id: { slot: string; model: string; spawnModel: string | null },
+  id: {
+    slot: string;
+    model: string;
+    spawnModel: string | null;
+    /** SlotRow.agent_requested; absent = none */
+    agentRequested?: string | null;
+  },
   snap: PaneSnapshot,
   acct: Accounting,
   now: number = Date.now(),
@@ -50,5 +56,7 @@ export function toSlotRow(
           : snap.activity,
     pane: snap.paneId || null,
     recent: snap.recent,
+    agent_requested: id.agentRequested ?? null,
+    agent: snap.agent ?? null,
   };
 }
