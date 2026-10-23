@@ -160,7 +160,8 @@ function apiErrorText(code: string, message: string, opts: ResponsesTurnOptions)
   // Context-overflow gets an actionable message (with the real per-backend cap
   // when known) instead of the bare error code — otherwise the user just sees a
   // cryptic `context_length_exceeded` and a stuck session (/compact re-sends the
-  // same oversized input).
+  // same oversized input). It stays inside the marker, so a session classifier
+  // reads it as an api_error like every other in-stream error (MTL-237).
   const isCtxOverflow =
     code === "context_length_exceeded" ||
     /context (length|window)|exceeds? the context|too long|maximum context/i.test(message);
@@ -169,10 +170,11 @@ function apiErrorText(code: string, message: string, opts: ResponsesTurnOptions)
     opts.contextWindow && opts.contextWindow > 0
       ? ` ~${Math.round(opts.contextWindow / 1000)}K tokens`
       : "";
-  return (
-    `\n\n[Context limit reached] This model's backend enforces a smaller context window${cap} than its API spec. ` +
-    "Run /clear to start fresh (/compact will also fail — it re-sends the full conversation), " +
-    `or route the model via \`oai@${opts.modelName}\` to use the full-size window.`
+  return formatInBandApiError(
+    code,
+    `Context limit reached. This model's backend enforces a smaller context window${cap} than its API spec. ` +
+      "Run /clear to start fresh (/compact will also fail — it re-sends the full conversation), " +
+      `or route the model via \`oai@${opts.modelName}\` to use the full-size window.`
   );
 }
 
