@@ -1,4 +1,3 @@
-import { constants } from "node:os";
 /**
  * runtime/shutdown.ts — ONE owner and ONE idempotent path for every exit: the quit key,
  * SIGINT, SIGTERM, a fatal signal, normal completion, and a thrown error. Never call
@@ -30,6 +29,7 @@ import { constants } from "node:os";
  * Bridge site B1: imports from core and react, calls no construct. */
 import type { CliRenderer } from "@opentui/core";
 import type { Root } from "@opentui/react";
+import { signalExitCode } from "../../signal-exit-code.js";
 
 /**
  * Every signal `installShutdown` registers: OpenTUI's documented default set, complete,
@@ -58,7 +58,7 @@ export const OWNED_SIGNALS: NodeJS.Signals[] = [
  * quit still feels immediate. */
 const FLUSH_MS = 50;
 
-/**
+/*
  * EXIT CODE POLICY — `128 + signum`, the shell's own convention. Deliberately NOT
  * re-raising the signal, though re-raising is the textbook answer:
  *
@@ -76,11 +76,8 @@ const FLUSH_MS = 50;
  * from a literal (SIGBUS is 10 on darwin, 7 on Linux): SIGINT 130, SIGQUIT 131,
  * SIGABRT 134, SIGBUS 138, SIGPIPE 141, SIGTERM 143. Every one is distinguishable from
  * another and from the 0 of a clean quit — a signal-terminated TUI never reports success.
- * The trade-off accepted: a parent reading `WIFSIGNALED` sees an exit code instead. */
-const signalExitCode = (sig: NodeJS.Signals): number => {
-  const signum = (constants.signals as unknown as Record<string, number | undefined>)[sig];
-  return typeof signum === "number" ? 128 + signum : 128; // unknown here: still never 0
-};
+ * The trade-off accepted: a parent reading `WIFSIGNALED` sees an exit code instead.
+ * `signalExitCode` computes it, for this and every other exit claudish takes on a signal. */
 
 const UNPRINTABLE = "<unprintable throwable>";
 
