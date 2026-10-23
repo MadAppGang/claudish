@@ -60,8 +60,8 @@ export function isNeedsEffort(session: SessionLike, call: ToolCall): boolean {
 }
 
 /**
- * The start call that actually STARTED work: the LAST one whose answer is neither
- * needs_effort nor an `Error:` text (a retry after a failed run supersedes it), else
+ * The start call that actually STARTED work: the LAST one whose answer is not
+ * needs_effort, unknown_model, not_recommended or an `Error:` text (a retry after a failed run supersedes it), else
  * the last call. Also returns the needs_effort answers before it.
  * (run10 graded the FIRST non-needs_effort call; one Session then graded a run of the
  * literal family names "gpt"/"minimax" instead of the agent's working retry.)
@@ -72,7 +72,11 @@ export function startedCall(session: SessionLike, tool: Tool): {
   needsEffortBefore: ToolCall[];
 } {
   const all = startCalls(session, tool);
-  const ok = (c: ToolCall) => !isNeedsEffort(session, c) && !resultText(session, c).trimStart().startsWith("Error");
+  // unknown_model / not_recommended (claudish's model check, run12) also start nothing.
+  const ok = (c: ToolCall) => {
+    const t = resultText(session, c).trimStart();
+    return !isNeedsEffort(session, c) && !t.startsWith("Error") && !t.startsWith("unknown_model:") && !t.startsWith("not_recommended:");
+  };
   let at = -1;
   for (let i = all.length - 1; i >= 0; i--) if (ok(all[i])) { at = i; break; }
   if (at < 0) at = all.length - 1;

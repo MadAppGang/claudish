@@ -25,3 +25,15 @@ variants:
       typo_models: "a GPT model and a MiniMax model"
       typo_named: []
       names_note: ""
+  # The field case: the installed claudish@magus 2.10.0 skill (it predates the
+  # unknown_model / not_recommended rule) with family names only. run10's
+  # team ["gpt","minimax"] came from this shape.
+  - name: installed-family
+    params:
+      ui_models: "two different OpenAI GPT models"
+      ui_named: []
+      review_model: "an OpenAI GPT model"
+      review_named: []
+      typo_models: "a GPT model and a MiniMax model"
+      typo_named: []
+      names_note: ""

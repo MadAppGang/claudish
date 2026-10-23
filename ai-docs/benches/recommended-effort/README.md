@@ -6,14 +6,15 @@ The feature (`ai-docs/architecture/wire.md` § Recommended effort): MCP `list_mo
 column and passes one effort per model: `team` `efforts: {"<model>": "<level>"}`,
 `create_session` `effort`, `run_prompt` `effort`. claudish does not choose a task type.
 
-One Bench, `madbench.yaml`, four Scenarios, and one Experiment, `effort.experiment.yaml`, with
-three variants. The prompts never mention effort (`hint` is empty).
+One Bench, `madbench.yaml`, five Scenarios, and one Experiment, `effort.experiment.yaml`, with
+four variants. The prompts never mention effort (`hint` is empty).
 
 | Variant | Staged claudish plugin (`harness.config.plugins`) | How the user names models |
 |---|---|---|
 | `installed-skill` (baseline) | `plugins/installed/claudish`: the installed `claudish@magus` 2.10.0 `claudish-usage` skill, no effort section | exact ids |
 | `worktree-skill` | `plugins/worktree/claudish`: a copy of this worktree's `packages/cli/skills/claudish-usage/SKILL.md` | exact ids |
 | `worktree-family` | the same worktree copy | families only ("two different OpenAI GPT models", "a GPT model and a MiniMax model"); no MiniMax model has a row, so its effort must still be omitted |
+| `installed-family` | `plugins/installed/claudish` | families only, as `worktree-family`: the field case of a user whose claudish@magus plugin predates the model check (run10's `team ["gpt","minimax"]`) |
 
 The two plugin folders hold the same `plugin.json` and differ only in `SKILL.md`, so the guard
 (`allow: [harness/config/plugins]`) sees one changed file. **Refresh the worktree copy before
@@ -38,6 +39,7 @@ The installed `claudish-usage` skill predates the feature and is not changed.
 | `session-code-review` | `create_session` | `code_review` | `gpt-6-luna` (xhigh); family variant: a GPT model |
 | `run-prompt-pick` | `run_prompt` | `implementation` | the agent picks one recommended OpenAI GPT model (`gpt-6-luna` max, `gpt-6-astra` high, `gpt-6.1-sol` medium) |
 | `team-no-entry` | `team` run | `quick_edit` | `gpt-6-astra` (low) and `minimax-m3`, which has NO row: its effort must be omitted; family variant: a GPT and a MiniMax model |
+| `session-named-old-model` | `create_session` | `code_review` (readout only) | `gpt-5` by its exact name, outside the recommended list: the call must carry `user_required_model: true`. The provider may refuse it (no credit); that is not graded |
 
 The models are Codex subscription (`cx@`) and OpenCode Go (`zengo@minimax-m3`) routes, checked
 live with `bun packages/cli/dist/index.js --probe <model> --json` before the run. All Codex
@@ -46,7 +48,7 @@ connections use the Responses API, which echoes the request's `reasoning.effort`
 
 ## What each Check proves
 
-The effort, bare-name and layer-B Checks grade the call that STARTED work: the last start call answered neither with `needs_effort` nor `Error:` (`startedCall`, `checks/effort-lib.ts`). `ConsultedTable` is a readout: `needs_effort` also hands the agent the rows.
+The effort, bare-name and layer-B Checks grade the call that STARTED work: the last start call answered with none of `needs_effort`, `unknown_model`, `not_recommended`, `Error:` (`startedCall`, `checks/effort-lib.ts`). `ConsultedTable` is a readout: `needs_effort` also hands the agent the rows.
 
 Two layers, kept as separate Checks so one can be read without the other.
 
@@ -58,6 +60,7 @@ Two layers, kept as separate Checks so one can be read without the other.
 | `ts` `checks/needs-effort.ts` (`NeedsEffort`, readout) | A, readout | how many start calls claudish answered with `needs_effort` before the call that started work, whether that call carries the Scenario column's levels, and every column its levels are consistent with | why the agent chose the column |
 | `ts` `checks/bare-names.ts` (`BareNames`) | A | every model in the first start call is a bare name: no `provider@` (no prompt names a provider) and no aggregator-qualified `vendor/model` id | that routing chose a subscription |
 | `session:tool-sequence` [`list_models`, start tool] (`ConsultedTable`) | A | the agent read `list_models` (where the table is) before it started the work | that it read the table, or the right column |
+| `ts` `checks/model-choice.ts` (`ModelChoice`) | A | `expect: recommended`: every id the last STARTED call ran (not answered `unknown_model:` / `not_recommended:` / `needs_effort:` / an error) is in `~/.claudish/recommended-models-cache-v2.json` `models[].id`, read at grading time. `expect: user-named`: it ran the named `model` and marked it in `user_required_model`. Evidence: `modelCheckBefore`, the `unknown_model` / `not_recommended` answers before it | why the agent chose that id |
 | `ts` `checks/effort-args.ts` (`EffortArgs`) | A | the FIRST start call passed, for every model it ran, exactly the table entry of the Scenario's column in the newest sidecar generation, and no effort where the table has no entry; for named-model Scenarios, it ran exactly the named models. Score = fraction of models right | why it chose (the reasoning is not graded) |
 | `ts` `checks/effort-plumbing.ts` stage `flag` (`EffortFlag`) | B | for each (model, level) the agent passed, a child claudish wrote `[ComposedHandler] --effort <level> pinned for <model>`: the child got `--effort-override <level>` | the request body; see `wire` |
 | `ts` `checks/effort-plumbing.ts` stage `wire` (`EffortWire`) | B | the provider's own `response.created` event, logged raw as `[SSE:responses]` in the same process's debug log, echoes `"reasoning":{"effort":"<sent>"}` where `<sent>` is the level, or the level a `[Wire] … effort A → B` note says step 5w mapped it to | anything for a connection that is not the Responses API (no echo) |

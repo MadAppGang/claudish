@@ -58,9 +58,13 @@ subscriptions first, their preferences and manual overrides. Do not choose it yo
    `create_session` / `run_prompt`: `true`).
 3. **User named exact models:** pass them as given. No `preflight` or `search_models`
    call is needed to check them: claudish routes and checks them. You still read
-   `list_models` once for their efforts (next section).
+   `list_models` once for their efforts (next section). A named model outside the
+   recommended list answers `not_recommended`; list it in `user_required_model` (`team`:
+   the entries; `create_session` / `run_prompt`: `true`) and call again.
 4. **User named only a family or vendor** ("a GPT model", "minimax", "latest Grok"): call
-   `list_models` and take the newest model of that family from it, as a bare name.
+   `list_models` and take the newest model of that family from it, as a bare name. A
+   family name (`gpt`) or a model you recall (`gpt-5`) answers `unknown_model` /
+   `not_recommended` with the recommended ids: pick from them and call again.
 
 ### 🎚️ Reasoning Effort per Model
 
