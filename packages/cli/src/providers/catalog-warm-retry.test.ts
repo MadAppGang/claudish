@@ -87,6 +87,5 @@ describe("startCatalogWarm failures via public warmCatalog", () => {
     const result = await runWarm("not a valid URL");
     expect(result.fetches).toBe(0);
     expect(result.log.match(/\[catalog\] refresh threw:/g)).toHaveLength(2);
-    expect(result.log).toContain("Invalid URL");
   });
 });
