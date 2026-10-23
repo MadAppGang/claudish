@@ -130,6 +130,22 @@ export interface ResponsesTurnOptions
   onExtraBilledInput?: (inputTokens: number, detail?: UsageCacheDetail) => void;
   /** Fires after onExtraBilledInput and before onTokenUpdate. */
   onTurnSummary?: (s: { legs: number; legRetries: number }) => void;
+  /**
+   * Fires after onTurnSummary and before onTokenUpdate, under the same
+   * conditions: the turn's billed usage summed over EVERY leg that reported it,
+   * cache detail included, plus the final leg's input (the context figure). The
+   * usage ledger reads it; stats and cost keep reading the two callbacks above.
+   */
+  onTurnBilled?: (u: TurnBilledUsage) => void;
+}
+
+/** One Responses turn's billed usage, over every leg. */
+export interface TurnBilledUsage {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  finalInput: number;
 }
 
 export interface ResponsesRetryOptions {
@@ -240,7 +256,7 @@ class ResponsesTurn {
   /**
    * Report the turn's usage, once, in this order:
    *  1. `onExtraBilledInput` with the input of EARLIER legs that reported usage;
-   *  2. `onTurnSummary`;
+   *  2. `onTurnSummary`, then `onTurnBilled` (every leg's billed usage);
    *  3. `onTokenUpdate(final leg's input, every leg's output)`, which fires the
    *     request's one stats record — so that record already holds 1 and 2.
    * After a client disconnect nothing fires unless a leg had reported usage:
@@ -268,6 +284,13 @@ class ResponsesTurn {
       );
     }
     this.opts.onTurnSummary?.({ legs: this.legUsages.length, legRetries: this.legRetries });
+    this.opts.onTurnBilled?.({
+      input: sum(reported.map((u) => u.inputTokens)),
+      cacheRead: sum(reported.map((u) => u.cacheDetail?.cacheReadTokens ?? 0)),
+      cacheWrite: sum(reported.map((u) => u.cacheDetail?.cacheCreationTokens ?? 0)),
+      output: this.totalOutputTokens,
+      finalInput: this.lastUsage?.inputTokens ?? 0,
+    });
     this.opts.onTokenUpdate?.(this.lastUsage?.inputTokens ?? 0, this.totalOutputTokens);
   }
 

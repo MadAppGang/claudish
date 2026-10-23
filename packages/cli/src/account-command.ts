@@ -6,6 +6,10 @@
  *   claudish account status       usage, thresholds, blockers, diagnostics
  *     --json                      machine-readable, same facts
  *     --refresh                   re-read the account list and state, bypassing caches
+ *   claudish account forecast     the allowance trajectory, alerts and sessions
+ *     --json                      `claudish.allowance.v1`
+ *     --horizon <h|d>             1h–7d, default 7d
+ *     --provider codex            the only provider with a model today
  *
  * Codex add/login/remove/enable/disable delegate to transactional management.
  * Claude mutations, import and use remain unavailable; list/status never enroll.
@@ -207,6 +211,7 @@ function printHuman(reports: ProviderReport[], detailed: boolean): void {
       console.log(
         `  ${dim(`switch at ${pct(pool.switchAt)}${perWindow ? ` (per window: ${perWindow})` : ""}`)}`
       );
+      console.log(`  ${dim(`strategy: ${pool.strategy}`)}`);
       for (const line of renderSources(pool)) console.log(line);
     }
   }
@@ -233,6 +238,7 @@ function toJson(reports: ProviderReport[]): unknown {
             poolEnabled: report.pool.poolEnabled,
             switchAt: report.pool.switchAt,
             switchAtByWindow: report.pool.switchAtByWindow,
+            strategy: report.pool.strategy,
             sources: report.pool.sources,
             dropped: report.pool.dropped,
             accounts: report.pool.accounts.map((row) => ({
@@ -262,6 +268,7 @@ function toJson(reports: ProviderReport[]): unknown {
 
 export const ACCOUNT_HELP = `Usage:
   claudish account [list|status] [--json] [--refresh]
+  claudish account forecast [--json] [--horizon <h|d>] [--provider codex]
   claudish account add codex [--label <label>]
   claudish account login|enable|disable codex <label> [--id <generated-id>]
   claudish account remove codex <label> [--id <generated-id>] [--yes] [--delete-file]
@@ -339,11 +346,88 @@ export function parseAccountMutation(args: string[]): CodexManagementCommand {
   return { verb: v, ...target };
 }
 
-/** `claudish account [list|status] [--json] [--refresh]`, or one explicit Codex mutation. */
+const HOUR_MS = 3_600_000;
+
+/** `36h`, `3d` → ms; null when malformed or outside 1 h–7 d (§3.1). */
+export function parseForecastHorizon(value: string): number | null {
+  const m = /^(\d+(?:\.\d+)?)([hd])$/.exec(value.trim());
+  if (!m) return null;
+  const ms = Number(m[1]) * (m[2] === "d" ? 24 : 1) * HOUR_MS;
+  return ms >= HOUR_MS && ms <= 168 * HOUR_MS ? ms : null;
+}
+
+export const FORECAST_HELP = `Usage:
+  claudish account forecast [--json] [--horizon <h|d>] [--provider codex]
+
+The allowance trajectory, alerts and sessions of a claudish provider's account pool.
+  --json              print the claudish.allowance.v1 report
+  --horizon <h|d>     how far ahead to project, 1h to 7d (default 7d)
+  --provider codex    the claudish provider (openai-codex); the only one with a model today`;
+
+/**
+ * `--provider` → the claudish provider whose model the report reads. A known
+ * provider with no allowance model and an unknown name are refused separately.
+ */
+function forecastProvider(value: string | undefined): AccountProvider | string {
+  if (value === "codex" || value === "openai-codex") return "openai-codex";
+  if (value === undefined || value.startsWith("-")) return "--provider needs a value: codex.";
+  if (value === "claude" || value === "anthropic") {
+    return `account forecast: ${value} has no allowance model yet; use --provider codex.`;
+  }
+  return `account forecast: unknown provider "${value}"; the only provider with an allowance model is codex.`;
+}
+
+/**
+ * `claudish account forecast [--json] [--horizon <h|d>] [--provider codex]`
+ * (allowance §3.1): the service's `report()`, printed as `claudish.allowance.v1`
+ * JSON or through the pure renderer. A view, so it never touches the mutation
+ * parser. `--help` prints FORECAST_HELP and exits 0; bad arguments exit 2.
+ */
+async function forecastCommand(args: string[]): Promise<void> {
+  let horizonMs = 168 * HOUR_MS;
+  let json = false;
+  let provider: AccountProvider = "openai-codex";
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(FORECAST_HELP);
+    return;
+  }
+  const fail = (problem: string) => {
+    console.error(problem);
+    process.exitCode = 2;
+  };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "forecast") continue;
+    if (arg === "--json") json = true;
+    else if (arg === "--horizon") {
+      const parsed = parseForecastHorizon(args[++i] ?? "");
+      if (parsed === null) return fail("--horizon must be between 1h and 7d");
+      horizonMs = parsed;
+    } else if (arg === "--provider") {
+      const resolved = forecastProvider(args[++i]);
+      if (resolved !== "openai-codex") return fail(resolved);
+      provider = resolved;
+    } else return fail(`Unknown account forecast argument: ${arg}\n\n${FORECAST_HELP}`);
+  }
+  const { getAllowanceService } = await import("./auth/accounts/allowance-service.js");
+  const report = await getAllowanceService().report(provider, horizonMs);
+  if (json) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+  const { renderForecast } = await import("./account-forecast-render.js");
+  for (const line of renderForecast(report, { ok, warn, bad, dim, strong })) console.log(line);
+}
+
+/** `claudish account [list|status|forecast] [--json] [--refresh]`, or one explicit Codex mutation. */
 export async function accountCommand(args: string[]): Promise<void> {
   const sub = args.find((a) => !a.startsWith("-")) ?? "status";
   if (sub === "status" && (args.includes("--help") || args.includes("-h"))) {
     console.log(ACCOUNT_HELP);
+    return;
+  }
+  if (sub === "forecast") {
+    await forecastCommand(args);
     return;
   }
 

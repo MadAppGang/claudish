@@ -607,6 +607,10 @@ blocker per account.
   window's recorded reset passes. Revision 1 decayed readings older than 15 min and would have
   re-selected a spent account minutes after it rejected a request.
 - **`unknown-failed` is eligible but ranked last**, never ahead of a known-good account.
+- **An optional `rank` comes from the allowance model** when `subscriptionAccounts[provider].strategy`
+  is `ebr` or `lookahead` and no pin applies: it reorders the eligible accounts after every rule
+  above, and declines (this order decides) whenever its plan is stale or anything fails. The default
+  `sticky` passes no `rank`. Strategies, the tournament gate and its first result: `allowance.md`.
 
 `AccountPool.acquire()` adds lease failover (B8). When the chosen account's token cannot be had, the
 account is excluded, deprioritised for 60 s, and the next one tried, in one bounded pass. A

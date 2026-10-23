@@ -76,7 +76,12 @@ import { readFileSync, statSync } from "node:fs";
 import { log } from "../../logger.js";
 import { activeConfigFile } from "../../profile-config.js";
 import { accountsFaultArmed } from "../../test-upstream.js";
-import { isConfigObject as isRecord, parseAccountsBlock } from "./config-validation.js";
+import type { StrategyName } from "./allowance/types.js";
+import {
+  isConfigObject as isRecord,
+  parseAccountsBlock,
+  withLenientStrategy,
+} from "./config-validation.js";
 import { legacyCodexCredentialsPath } from "./paths.js";
 import {
   ACCOUNT_PROVIDERS,
@@ -221,6 +226,18 @@ export class AccountRegistry {
     this.legacyStamp = undefined;
   }
 
+  /** An unknown `strategy` value reads as sticky; logged once per provider and value. */
+  private readonly warnedStrategy = new Set<string>();
+  private warnUnknownStrategy(provider: string, value: unknown): void {
+    const shown = String(typeof value === "string" ? value : typeof value).slice(0, 32);
+    const key = `${provider}\u0000${shown}`;
+    if (this.warnedStrategy.has(key)) return;
+    this.warnedStrategy.add(key);
+    log(
+      `[accounts] ${provider}: unknown strategy "${shown}" in subscriptionAccounts; selection stays sticky`
+    );
+  }
+
   private logFailure(source: SourceName, message: string): void {
     if (this.loggedFailure[source] === message) return;
     this.loggedFailure[source] = message;
@@ -314,7 +331,13 @@ export class AccountRegistry {
       const raw = JSON.parse(read.text) as unknown;
       if (!isRecord(raw)) throw new Error("config is not an object");
       const settings =
-        raw.subscriptionAccounts === undefined ? {} : parseAccountsBlock(raw.subscriptionAccounts);
+        raw.subscriptionAccounts === undefined
+          ? {}
+          : parseAccountsBlock(
+              withLenientStrategy(raw.subscriptionAccounts, (provider, value) =>
+                this.warnUnknownStrategy(provider, value)
+              )
+            );
       this.lastGoodSettings = settings;
       this.configStatus = { state: "present", path };
       this.loggedFailure.config = undefined;
@@ -542,6 +565,7 @@ export class AccountRegistry {
     enabled: boolean;
     noticeAcceptedAt?: string;
     generation: number;
+    strategy: StrategyName;
   } {
     const entry = this.snapshot(provider).settings[provider];
     return {
@@ -549,6 +573,7 @@ export class AccountRegistry {
       switchAtByWindow: entry?.switchAtByWindow ?? {},
       enabled: entry?.enabled !== false,
       generation: entry?.generation ?? 0,
+      strategy: entry?.strategy ?? "sticky",
       ...(entry?.noticeAcceptedAt ? { noticeAcceptedAt: entry.noticeAcceptedAt } : {}),
     };
   }

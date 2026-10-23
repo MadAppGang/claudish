@@ -11,7 +11,11 @@
 
 export const CONTRACT_VERSION = 1;
 
-/** v1 announces exactly these. `resize` is additive: it needs magmux >= 0.15.1. */
+/**
+ * v1 announces exactly these. `resize` is additive: it needs magmux >= 0.15.1.
+ * `allowance` is additive too: the `allowance_status` tool answers
+ * `claudish.allowance.v1` (allowance architecture §3.4).
+ */
 export const CAPABILITIES = [
   "list",
   "status",
@@ -20,11 +24,12 @@ export const CAPABILITIES = [
   "capture_since_seq",
   "capture_spans",
   "resize",
+  "allowance",
 ] as const;
 
 export interface ContractMeta {
   contract_version: 1;
-  /** v1: exactly CAPABILITIES */
+  /** v1: exactly CAPABILITIES (fields and capabilities are only ever added) */
   capabilities: string[];
 }
 

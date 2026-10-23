@@ -743,6 +743,8 @@ process.stdin.on('end', () => {
       // Plan usage for the subscription actually being spent. Replaces the old
       // scalar quota_remaining, which only ever covered a single model.
       var plan = tokens.plan;
+      // The pool's allowance label (allowance §3.3): epochs only, formatted here.
+      var allowance = tokens.allowance;
     } catch (e) {
       try {
         const json = JSON.parse(input);
@@ -797,7 +799,27 @@ process.stdin.on('end', () => {
         quotaDisplay = ' ' + DIM + '•' + RESET + ' ' + qColor + worst.id + ':' + usedPct + '%' + RESET;
       }
     }
-    console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${modelDisplay}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctxDisplay}\${RESET}\${quotaDisplay}\`);
+    let allowanceDisplay = '';
+    if (allowance && typeof allowance.level === 'string') {
+      const fmtAt = (sec) => {
+        const d = new Date(sec * 1000);
+        return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()] + ' ' +
+          String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      };
+      const start = allowance.gapStartSec, end = allowance.gapEndSec;
+      const hasGap = typeof start === 'number' && typeof end === 'number';
+      if (allowance.level === 'critical' && hasGap) {
+        allowanceDisplay = RED + '⛔ blocked ' + fmtAt(start) + '–' + fmtAt(end) + RESET;
+      } else if (allowance.level === 'warn' && hasGap) {
+        allowanceDisplay = YELLOW + '⚠ gap ' + fmtAt(start) + ' ' + Math.round((end - start) / 3600) + 'h' + RESET;
+      } else if (allowance.level === 'ok' && typeof allowance.remainingPct === 'number') {
+        const left = Math.round(allowance.remainingPct);
+        const aColor = left > 50 ? GREEN : left > 20 ? YELLOW : RED;
+        allowanceDisplay = aColor + 'pool ' + left + '%' + RESET;
+      }
+      if (allowanceDisplay) allowanceDisplay = ' ' + DIM + '•' + RESET + ' ' + allowanceDisplay;
+    }
+    console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${modelDisplay}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctxDisplay}\${RESET}\${quotaDisplay}\${allowanceDisplay}\`);
   } catch (e) {
     console.log('claudish');
   }
@@ -1148,6 +1170,7 @@ export function createTempSettingsFile(
     const YELLOW = light ? "\\033[38;2;161;98;7m" : "\\033[93m";
     const GREEN = light ? "\\033[38;2;21;128;61m" : "\\033[92m";
     const MAGENTA = light ? "\\033[38;2;147;51;234m" : "\\033[95m";
+    const RED = light ? "\\033[38;2;220;38;38m" : "\\033[91m";
     const DIM = "\\033[2m";
     const RESET = "\\033[0m";
     const BOLD = "\\033[1m";
@@ -1177,6 +1200,15 @@ export function createTempSettingsFile(
     // A float `used_pct` truncates to its integer part, which is also harmless;
     // `toUsedPct()` rounds today, so it never arises.
     const readPlanBash = `PLAN_PAIR=$(echo "$TOKENS" | grep -o '"id": *"[^"]*", *"used_pct": *[0-9]*' | sed 's/"id": *"\\([^"]*\\)", *"used_pct": *\\([0-9]*\\)/\\2 \\1/' | sort -rn | head -1); if [ -n "$PLAN_PAIR" ]; then PLAN_PCT="\${PLAN_PAIR%% *}"; PLAN_ID="\${PLAN_PAIR#* }"; case "$PLAN_PCT" in ''|*[!0-9]*) PLAN_PCT="" ;; esac; [ -n "$PLAN_PCT" ] && PLAN_DISPLAY="$PLAN_ID:$PLAN_PCT%"; fi;`;
+
+    // The pool's allowance label (allowance §3.3), from the `allowance` key:
+    // `{level, remainingPct, gapStartSec, gapEndSec}`, epochs in seconds.
+    // Relative text is never stored, so the time is formatted HERE, at render
+    // time, in local time: `pool 58%` (green/yellow/red at 50/80 % used),
+    // `⚠ gap Thu 14:00 43h`, `⛔ blocked Thu 14:00–Sat 09:00`. `date -r` is BSD,
+    // `date -d @` GNU. No key, or a level without its numbers, prints nothing.
+    const readAllowanceBash = `ALLOW=$(echo "$TOKENS" | grep -o '"allowance": *{[^}]*}'); if [ -n "$ALLOW" ]; then A_LEVEL=$(echo "$ALLOW" | grep -o '"level": *"[a-z]*"' | cut -d'"' -f4); A_PCT=$(echo "$ALLOW" | grep -o '"remainingPct": *[0-9]*' | grep -o '[0-9]*$'); A_S=$(echo "$ALLOW" | grep -o '"gapStartSec": *[0-9]*' | grep -o '[0-9]*$'); A_E=$(echo "$ALLOW" | grep -o '"gapEndSec": *[0-9]*' | grep -o '[0-9]*$'); if [ "$A_LEVEL" = "critical" ] && [ -n "$A_S" ] && [ -n "$A_E" ]; then ALLOW_COLOR='${RED}'; ALLOW_DISPLAY="⛔ blocked $(fmt_at "$A_S")–$(fmt_at "$A_E")"; elif [ "$A_LEVEL" = "warn" ] && [ -n "$A_S" ] && [ -n "$A_E" ]; then ALLOW_COLOR='${YELLOW}'; ALLOW_DISPLAY="⚠ gap $(fmt_at "$A_S") $(( (A_E - A_S + 1800) / 3600 ))h"; elif [ "$A_LEVEL" = "ok" ] && [ -n "$A_PCT" ]; then if [ "$A_PCT" -gt 50 ]; then ALLOW_COLOR='${GREEN}'; elif [ "$A_PCT" -gt 20 ]; then ALLOW_COLOR='${YELLOW}'; else ALLOW_COLOR='${RED}'; fi; ALLOW_DISPLAY="pool $A_PCT%"; fi; fi;`;
+    const fmtAtBash = `fmt_at() { LC_ALL=C date -r "$1" '+%a %H:%M' 2>/dev/null || LC_ALL=C date -d "@$1" '+%a %H:%M' 2>/dev/null; }`;
 
     // Both cost and context percentage come from our token file
     // Helper function to format tokens with k/M suffix (pure bash, no awk)
@@ -1219,12 +1251,12 @@ export function createTempSettingsFile(
     // own line already shows it), and the result captured into a variable instead
     // of printed.
     const dirPrelude = `DIR=$(basename "$(pwd)"); [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true; `;
-    const readState = `CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; PLAN_DISPLAY=""; ${formatTokensBash}; ${effWinBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; ${readPlanBash} fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi`;
+    const readState = `CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; PLAN_DISPLAY=""; ALLOW_DISPLAY=""; ALLOW_COLOR=""; ${formatTokensBash}; ${effWinBash}; ${fmtAtBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; ${readPlanBash} ${readAllowanceBash} fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi`;
     // Plan segment, appended only when there is a number to show. Built as a
     // separate printf so the no-plan case emits nothing at all — most providers
     // expose no usage surface, so absence is the common path, and a trailing
     // "• " with nothing after it would be the visible cost of getting it wrong.
-    const planSuffix = `if [ -n "$PLAN_DISPLAY" ]; then printf " ${DIM}•${RESET} ${GREEN}%s${RESET}" "$PLAN_DISPLAY"; fi`;
+    const planSuffix = `if [ -n "$PLAN_DISPLAY" ]; then printf " ${DIM}•${RESET} ${GREEN}%s${RESET}" "$PLAN_DISPLAY"; fi; if [ -n "$ALLOW_DISPLAY" ]; then printf " ${DIM}•${RESET} $ALLOW_COLOR%s${RESET}" "$ALLOW_DISPLAY"; fi`;
 
     const segmentWithDir = `printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"; ${planSuffix}; printf "\\n"`;
     // The CHAINED segment deliberately drops the model name that

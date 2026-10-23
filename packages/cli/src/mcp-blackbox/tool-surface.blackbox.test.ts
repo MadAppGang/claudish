@@ -5,11 +5,13 @@
  * Written from spec.md and the frozen mod contract v1 only. No implementation file was read.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { version as packageVersion } from "../../package.json";
+import { allowanceStatusAnswerSchema } from "../auth/accounts/allowance-report-schema.js";
+import { GOLDEN_ALLOWANCE_CAPABILITIES } from "../auth/accounts/allowance-status-golden.js";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
   McpServer,
@@ -32,10 +34,12 @@ const CAPABILITIES = [
   "capture_since_seq",
   "capture_spans",
   "resize",
+  "allowance",
 ];
 
 // REQ-15: literal sorted sets from architecture-contracts.md, not from implementation.
 const ALL_TOOLS = [
+  "allowance_status",
   "cancel_session",
   "capture_session",
   "compare_models",
@@ -66,7 +70,7 @@ const TOOL_GROUPS: Array<{ value: string | undefined; names: string[] }> = [
   { value: undefined, names: ALL_TOOLS },
   { value: "all", names: ALL_TOOLS },
   { value: "low-level", names: ["list_models", "run_prompt", "search_models"] },
-  { value: "agentic", names: ["preflight", "report_error", "team"] },
+  { value: "agentic", names: ["allowance_status", "preflight", "report_error", "team"] },
   { value: "session", names: SESSION_TOOLS },
   { value: "debug", names: ["compare_models"] },
   // Removed spelling is not a session alias: unrecognized values fall back to all.
@@ -231,6 +235,70 @@ describe("quick-prompt public surface", () => {
   }, 30_000);
 });
 
+describe("allowance_status contract", () => {
+  useStandardServer();
+  test("14b no pool returns a schema-valid additive v1 answer", async () => {
+    const result = await server.callTool("allowance_status", {});
+    expect(result.isError).toBe(false);
+    const answer = allowanceStatusAnswerSchema.parse(JSON.parse(result.text));
+    expect(answer).toMatchObject({
+      contract_version: 1,
+      capabilities: GOLDEN_ALLOWANCE_CAPABILITIES,
+      allowance: null,
+      reason: "no account pool is configured for openai-codex",
+    });
+  });
+  for (const args of [
+    { provider: "claude" },
+    { horizon_hours: 0 },
+    { horizon_hours: 169 },
+    { horizon_hours: "36" },
+  ]) {
+    test("14d rejects invalid allowance arguments " + JSON.stringify(args), async () => {
+      contractError(await server.callTool("allowance_status", args), "invalid_args");
+    });
+  }
+  test("14c configured unused pool returns a schema-valid no-evidence report", async () => {
+    await server.close();
+    const configDir = join(layout.home, ".claudish");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      join(configDir, "config.json"),
+      JSON.stringify({
+        version: "1.0.0",
+        defaultProfile: "default",
+        profiles: {},
+        subscriptionAccounts: {
+          "openai-codex": {
+            generation: 1,
+            accounts: [
+              { id: "aaaaaaaaaaaa", label: "work", store: "file", addedAt: "2026-10-20T00:00:00Z" },
+              { id: "bbbbbbbbbbbb", label: "home", store: "file", addedAt: "2026-10-20T00:00:00Z" },
+            ],
+          },
+        },
+      })
+    );
+    server = await McpServer.start({
+      env: serverEnv(layout, { CLAUDISH_ACCOUNTS_DIR: join(layout.home, "accounts") }),
+      cwd: layout.cwd,
+    });
+    // F1: even a configured read-only tool must not create announcement memory.
+    const memoryPath = join(layout.home, "accounts", "allowance-alerts.json");
+    expect(existsSync(memoryPath)).toBe(false);
+    const result = await server.callTool("allowance_status", { horizon_hours: 36 });
+    expect(result.isError).toBe(false);
+    expect(existsSync(memoryPath)).toBe(false);
+    expect(server.stderrText).not.toContain("Codex allowance:");
+    const answer = allowanceStatusAnswerSchema.parse(JSON.parse(result.text));
+    expect(answer.allowance).toMatchObject({
+      schema: "claudish.allowance.v1",
+      horizonHours: 36,
+      status: "insufficient-evidence",
+    });
+  });
+});
+
 describe("CLAUDISH_MCP_TOOLS startup warnings", () => {
   useStandardServer();
   for (const value of ["channel", "lowlevel", undefined, "all", "session", "debug"]) {
@@ -249,7 +317,7 @@ describe("CLAUDISH_MCP_TOOLS startup warnings", () => {
         .filter((line) => line.includes("CLAUDISH_MCP_TOOLS"));
       if (value === "channel" || value === "lowlevel") {
         expect(tools.map((tool) => tool.name).sort()).toEqual(ALL_TOOLS);
-        expect(tools).toHaveLength(15);
+        expect(tools).toHaveLength(16);
         expect(warnings).toHaveLength(1);
         expect(warnings[0]).toContain(value);
         expect(warnings[0]).toContain("all, low-level, agentic, session, debug");
@@ -267,11 +335,11 @@ describe("CLAUDISH_MCP_TOOLS startup warnings", () => {
 // REQ-20 (TEST-21–TEST-26): preserve the existing pane-free session/team regressions.
 describe("tool list (FR11, §4)", () => {
   useStandardServer();
-  test("15 tools, resize_session among them, team modes are exactly the eight", async () => {
+  test("16 tools, allowance_status among them, team modes are exactly the eight", async () => {
     const tools = await server.listTools();
     const names = tools.map((t) => t.name);
-    expect(names.length).toBe(15);
-    expect(new Set(names).size).toBe(15);
+    expect(names.length).toBe(16);
+    expect(new Set(names).size).toBe(16);
     for (const n of [
       "team",
       "create_session",
@@ -570,11 +638,11 @@ describe("nested MCP server over stdio", () => {
     expect(await paneOrphans(layout)).toEqual({ processes: [], files: [] });
   }, 30_000);
 
-  test("T-MCP-5: without the flag all still exposes 15 tools without an experimental capability", async () => {
+  test("T-MCP-5: without the flag all still exposes 16 tools without an experimental capability", async () => {
     const c = await connect("all", false);
     const tools = (await c.listTools()).tools;
-    expect(tools).toHaveLength(15);
-    expect(new Set(tools.map((tool) => tool.name)).size).toBe(15);
+    expect(tools).toHaveLength(16);
+    expect(new Set(tools.map((tool) => tool.name)).size).toBe(16);
     expect(c.getServerCapabilities()).toHaveProperty("tools");
     expect(c.getServerCapabilities()).not.toHaveProperty("experimental");
     expect(c.getInstructions()).not.toContain("## Nested mode — no sessions");

@@ -285,6 +285,13 @@ export const SubscriptionAccountsEntrySchema = z.object({
   switchAtByWindow: z.record(z.string(), z.number().min(0).max(1)).optional(),
   noticeAcceptedAt: z.string().optional(),
   legacyCodexSuppressed: z.boolean().optional(),
+  /**
+   * The allowance model's selection strategy, exactly `DEPLOYABLE`
+   * (`allowance/strategies/strategy.ts`). Declared here because the entry is a
+   * non-strict object: an undeclared key is stripped on parse and lost on the
+   * first `account add`/`remove` write. Absent means `sticky`.
+   */
+  strategy: z.enum(["sticky", "ebr", "lookahead"]).optional(),
   generation: z.number().int().min(0),
   accounts: z.array(SubscriptionAccountSchema),
 });

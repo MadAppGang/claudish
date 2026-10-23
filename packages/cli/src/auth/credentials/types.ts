@@ -108,6 +108,7 @@ export function redactSecrets(text: string): string {
   );
 }
 
+import type { SelectReason } from "../accounts/policy.js";
 import type { AccountRef, AccountSelectionContext } from "../accounts/types.js";
 
 export interface RequestAuthContext {
@@ -143,6 +144,11 @@ export type CredentialArm = "oauth" | "api-key";
 
 export interface RequestAuth {
   account?: AccountRef;
+  /**
+   * Why the pool chose `account` (`AccountLease.reason`). Data only: the usage
+   * ledger records it, and nothing decides on it.
+   */
+  selectReason?: SelectReason;
   headers: Record<string, string>;
   endpoint?: string;
   transformPayload?(payload: any): any;

@@ -165,6 +165,7 @@ export class CodexPoolHalf implements CredentialProvider {
     return {
       arm: "oauth",
       account: lease.account,
+      selectReason: lease.reason,
       headers: buildOAuthHeaders(lease.accessToken, lease.accountId),
       endpoint: resolveUpstreamUrl(CODEX_RESPONSES_ENDPOINT),
       transformPayload: oauthPayload,

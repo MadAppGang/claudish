@@ -1020,6 +1020,50 @@ type and new fields may only be added.
 - `contract_version: 1` and `capabilities` let the mod tell a pre-contract claudish from an
   unreachable server without parsing prose.
 
+### The `allowance` capability (additive within v1)
+
+The allowance band (multi-subscription pools, `accounts.md`) reaches the mod through one more
+read-only verb. `CAPABILITIES` (`pane/contract.ts`) lists `"allowance"` in the same change that
+registers `allowance_status` (`mcp-server.ts`), and never without it: announcing a capability whose
+verb is unknown would send every mod into the unsupported state for nothing. Every v1 answer's
+`capabilities` now carries it (`list_sessions`, `team` list/status).
+
+- **No version bump.** The installed mod (`claudish-source.ts` `classify`) declines any answer whose
+  `contract_version !== 1`, so a v2 would blank the run band for every user on plugin 2.10.x. The
+  capability is additive, as `resize` was; the plugin bumps its own version (2.11.0) instead.
+- **Verb:** `allowance_status({provider?: "codex", horizon_hours?: number})` →
+  `{contract_version: 1, capabilities, allowance: AllowanceReport | null, reason?: string}`.
+  `AllowanceReport` is the zod schema `claudish.allowance.v1` in
+  `auth/accounts/allowance-report-schema.ts` (`allowanceStatusAnswerSchema` for the whole answer),
+  the same report `claudish account forecast --json` prints. `allowance: null` carries a one-line
+  `reason` (no account pool for the provider, the report failed). Fields are only ever added. It
+  is in the `agentic` group (so in the default `all`) and NOT in `NESTED_MCP_TOOL_NAMES`. Bad
+  arguments (`provider` other than `codex`, `horizon_hours` outside 1–168) are a JSON
+  `ContractError` `invalid_args`.
+- **Model-visible.** The answer reaches the model as a tool result: it carries no project, and a
+  session id is at most 8 characters (the schema rejects a longer one). The tool description says it
+  reports local usage of this machine's claudish sessions.
+- **Discovery lifecycle, independent of runs.** The run poll asks list answers only while a run is
+  watched, so a session that never delegates would never see the capability. The allowance poll
+  therefore has its own lifecycle:
+  1. On mod load and on every claudish MCP server (re)connect, call `allowance_status` once.
+  2. The tool is unknown, the call errors, or `capabilities` lacks `allowance` → state
+     `unsupported`: band hidden, re-probed only on the next reconnect (logged as a decline).
+  3. Supported → poll every 60 s, backing off to 5 min while `status` is `insufficient-evidence`
+     (or `allowance` is null), and stopping while the server is disconnected.
+  4. A list answer that announces `allowance` (a run being watched) moves `unsupported` → probe at
+     once.
+- **Decoding, mod side.** A closed-set check on `level`, finite numbers, every string through
+  `sanitize`, and `trajectory.spark48` drawn only when every character is in the `sparkline` glyph
+  set `▁▂▃▄▅▆▇█▒▓┊` and space (the schema enforces the same set). The band shows only while an alert
+  is ≥ `warn`.
+- **Golden answers.** `auth/accounts/allowance-status-golden.ts` holds the three answers the magus
+  plugin's `fake-claudish.ts` replays verbatim: `GOLDEN_ALLOWANCE_WARN` (band shown),
+  `GOLDEN_ALLOWANCE_NO_EVIDENCE` (`insufficient-evidence`: hidden, 5 min back-off) and
+  `GOLDEN_ALLOWANCE_UNAVAILABLE` (`allowance: null`). The unsupported case is the MCP client's
+  unknown-tool error, not an answer of ours. A contract test validates each golden against the
+  schema, so the fake cannot drift from the server.
+
 ## Where to look
 
 | file | what |
@@ -1039,6 +1083,7 @@ type and new fields may only be added.
 | `pane/child-env.ts` | the pane child: snapshot, cwd, pane-child refusal; `inMcpSession`/`isPaneChild` and the nested refusal |
 | `mcp/nested-mode.ts` | the nested MCP tool list and instructions |
 | `pane/contract.ts` | the frozen mod contract v1 |
+| `auth/accounts/allowance-report-schema.ts`, `auth/accounts/allowance-status-golden.ts` | the `allowance` capability's answer schema (`claudish.allowance.v1`) and its golden answers |
 | `pane/session-registry.ts` | the child's session-registry record, by session id (telemetry) |
 | `scripts/boot-canary.ts` | boot every spawn shape against one Claude Code binary; `.github/workflows/boot-canary.yml` runs it per release on macOS and Linux |
 | `scripts/pane-drive.ts` | drive one session from the command line (`--fake <scenario>` for the hermetic fake) |

@@ -34,23 +34,29 @@ import {
   type EffortLevel,
 } from "../adapters/base-api-format.js";
 import { MiniMaxModelDialect } from "../adapters/minimax-model-dialect.js";
+import { allowanceHintOf, getAllowanceService } from "../auth/accounts/allowance-service.js";
+import type { PlanClass, ResponseOutcome, TokenCounts } from "../auth/accounts/allowance/types.js";
 import { respondAccountsQuotaFailure } from "../auth/accounts/error-surface.js";
 import {
   MeteredEscapeError,
   RefreshUnavailableError,
   isAccountsError,
 } from "../auth/accounts/errors.js";
+import { planClassOf } from "../auth/accounts/ledger/ledger-row.js";
 import {
   type AccountOutcomeFold,
   codexQuotaOutcome,
   reportAccountOutcome,
 } from "../auth/accounts/outcomes.js";
+import type { SelectReason } from "../auth/accounts/policy.js";
 import { getAccountPool } from "../auth/accounts/pool.js";
 import type {
   AccountOutcome,
   AccountRef,
   AccountSelectionContext,
+  UsageSnapshot,
 } from "../auth/accounts/types.js";
+import { sameAccount } from "../auth/accounts/types.js";
 import { snapshotFromCodexHeaders } from "../auth/accounts/usage/codex.js";
 import type { AuthBinding, ProviderTransport, StreamFormat } from "../providers/transport/types.js";
 import type { ModelHandler } from "./types.js";
@@ -75,6 +81,7 @@ import { resumeFromToolResults } from "../code-mode/resume.js";
 import { loadQuickJSModule } from "../code-mode/sandbox/quickjs-loader.js";
 import { getCodeModeStores, peekCodeModeStores } from "../code-mode/stores.js";
 import { conversationMessages } from "../code-mode/types.js";
+import { extractSessionId as extractHarnessSessionId } from "../hooks/harness.js";
 import { getHookEngine } from "../hooks/index.js";
 import { type RawStreamTap, statsNames } from "../hooks/raw.js";
 import type { UpstreamFacts } from "../hooks/registry.js";
@@ -145,6 +152,7 @@ import {
   credentialValuesFromRequest,
   raceCallAbort,
   recordHopEntry,
+  releaseWhenBodyEnds,
   sleepUnlessAborted,
   withCallSignal,
 } from "./shared/call-context.js";
@@ -188,6 +196,7 @@ import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js
 import {
   type CodeModeTurnHooks,
   type ResponsesRetryOptions,
+  type TurnBilledUsage,
   createResponsesStreamHandler,
   createSyntheticToolUseReply,
   resolveStallPolicy,
@@ -248,6 +257,53 @@ interface RecoveryTally {
   clientRetry: number;
   /** How the episode ended for this request, once it has. */
   outcome?: RecoveryOutcome;
+}
+
+/**
+ * One ACCOUNT attempt of one inbound request, for the usage ledger (allowance
+ * architecture §2.2). Opened by `observeResponse` on the subscription arm only,
+ * so an api-key request never has one.
+ */
+interface LedgerAttempt {
+  /** Position in the request's attempt list; part of the row id. */
+  n: number;
+  /** When this attempt's latest response arrived. */
+  at: number;
+  account: AccountRef;
+  reason: SelectReason | undefined;
+  /** `x-codex-plan-type`, mapped into the closed set on arrival; the header text is never kept. */
+  planClass: PlanClass | null;
+  usage?: UsageSnapshot;
+  outcome: ResponseOutcome;
+  written: boolean;
+}
+
+/**
+ * The request's ledger drafts, owned by ONE inbound request (never the handler
+ * or the transport, which serve concurrent turns). `handle()` creates it and
+ * writes every attempt not yet written once the request is over: at once for a
+ * returned answer or a throw, at the end of the body for a stream.
+ */
+interface LedgerDraft {
+  requestId: string;
+  session: string | null;
+  attempts: LedgerAttempt[];
+  /** This request's billed tokens, every Responses leg included (`onTurnBilled`). */
+  billed: TokenCounts | undefined;
+  finalInput: number;
+  /** Set when the answer is a stream: how the stream ended, read once its body ends. */
+  streamOutcome?: () => ResponseOutcome;
+  /** Ends this request's in-flight mark in the allowance service; idempotent. */
+  releaseFlight: () => void;
+}
+
+/** Marks one inbound request in flight for the allowance service (§2.4); never throws. */
+function startAllowanceFlight(): () => void {
+  try {
+    return getAllowanceService().requestStarted();
+  } catch {
+    return () => {};
+  }
 }
 
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
@@ -1223,15 +1279,140 @@ export class ComposedHandler implements ModelHandler {
    */
   async handle(c: Context, payload: any): Promise<Response> {
     const signing: { headers?: Record<string, string> } = {};
-    const response = await this.handleSigned(c, payload, signing);
+    const ledger: LedgerDraft = {
+      requestId: "",
+      session: null,
+      attempts: [],
+      billed: undefined,
+      finalInput: 0,
+      releaseFlight: startAllowanceFlight(),
+    };
+    let response: Response;
+    try {
+      response = await this.handleSigned(c, payload, signing, ledger);
+    } catch (err) {
+      this.finalizeLedger(ledger, "error");
+      throw err;
+    }
+    response = this.settleLedger(response, ledger);
     if (!signing.headers || !this.provider.signingCredential) return response;
     return withSignerHeader(response, this.provider.signingCredential(signing.headers));
+  }
+
+  /**
+   * Every early exit passes through here: an answer returned at once (an
+   * upstream error, a capacity 429, an aborted call) finalizes its attempts
+   * now, a stream when its body ends (done, cancelled or errored). A request
+   * with no attempt (not the subscription arm) is returned untouched.
+   */
+  private settleLedger(response: Response, ledger: LedgerDraft): Response {
+    if (ledger.attempts.every((a) => a.written)) {
+      this.settleAllowance(ledger);
+      return response;
+    }
+    const streamOutcome = ledger.streamOutcome;
+    if (!streamOutcome) {
+      this.finalizeLedger(ledger, "error");
+      return response;
+    }
+    return releaseWhenBodyEnds(response, () => this.finalizeLedger(ledger, streamOutcome()));
+  }
+
+  /**
+   * Write every attempt not yet written: the last with the request's billed
+   * tokens and `lastOutcome`, any earlier one as `error`. Synchronous and
+   * never throws; a ledger can never change a response.
+   */
+  private finalizeLedger(ledger: LedgerDraft, lastOutcome: ResponseOutcome): void {
+    try {
+      const last = ledger.attempts[ledger.attempts.length - 1];
+      for (const attempt of ledger.attempts) {
+        if (attempt.written) continue;
+        attempt.written = true;
+        const isLast = attempt === last;
+        attempt.outcome = isLast ? lastOutcome : "error";
+        this.recordLedgerAttempt(ledger, attempt, isLast);
+      }
+    } catch {
+      // The ledger is observational.
+    }
+    this.settleAllowance(ledger);
+  }
+
+  /**
+   * Tell the allowance service this request is over, once per provider its
+   * attempts used. Only now may it read the ledger: a row written mid-request
+   * (a quota attempt before a rotation) only buffers.
+   */
+  private settleAllowance(ledger: LedgerDraft): void {
+    try {
+      // Released first: the settle below may schedule a ledger read, which waits for no request in flight.
+      ledger.releaseFlight();
+      const service = getAllowanceService();
+      for (const provider of new Set(ledger.attempts.map((a) => a.account.provider))) {
+        service.requestSettled(provider);
+      }
+    } catch {
+      // The ledger is observational.
+    }
+  }
+
+  private recordLedgerAttempt(ledger: LedgerDraft, attempt: LedgerAttempt, billed: boolean): void {
+    try {
+      const service = getAllowanceService();
+      // The session's status line shows the pool's allowance label (§3.3); an
+      // advisor handler writes no token file.
+      if (this.options.requestRole !== "advisor") {
+        service.attachLabelSink(attempt.account.provider, this.tokenTracker);
+      }
+      service.record({
+        requestId: ledger.requestId,
+        attempt: attempt.n,
+        at: attempt.at,
+        account: attempt.account,
+        planClass: attempt.planClass,
+        session: ledger.session,
+        model: this.targetModel,
+        reason: attempt.reason,
+        outcome: attempt.outcome,
+        tokens: billed ? (ledger.billed ?? null) : null,
+        finalInput: billed ? ledger.finalInput : null,
+        usage: attempt.usage,
+      });
+    } catch {
+      // The ledger is observational.
+    }
+  }
+
+  /**
+   * The open attempt for `account`: the last one, unless it belongs to another
+   * account or is already written, in which case a new one is opened.
+   */
+  private ledgerAttemptFor(
+    ledger: LedgerDraft,
+    account: AccountRef,
+    reason: SelectReason | undefined
+  ): LedgerAttempt {
+    const open = ledger.attempts[ledger.attempts.length - 1];
+    if (open && !open.written && sameAccount(open.account, account)) return open;
+    const attempt: LedgerAttempt = {
+      n: ledger.attempts.length,
+      at: Date.now(),
+      account,
+      reason,
+      planClass: null,
+      outcome: "ok",
+      written: false,
+    };
+    ledger.attempts.push(attempt);
+    return attempt;
   }
 
   private async handleSigned(
     c: Context,
     payload: any,
-    signing: { headers?: Record<string, string> }
+    signing: { headers?: Record<string, string> },
+    ledger: LedgerDraft
   ): Promise<Response> {
     const startTime = performance.now();
     // Stamp the recovery deadline's ZERO POINT here, and not wherever something
@@ -1288,12 +1469,16 @@ export class ComposedHandler implements ModelHandler {
       requestId: randomUUID(),
       outcomes: new Map() as AccountOutcomeFold,
       observedResponses: new WeakSet<Response>(),
+      ledger,
     };
+    ledger.requestId = state.requestId;
     // 1. Transform incoming Claude-format request
     const transformed = transformOpenAIToClaude(payload);
     const { droppedParams } = transformed;
     // `let`: a raw `providerRequest` hook's committed copies replace it (3b).
     let claudeRequest = transformed.claudeRequest;
+    // The WHOLE request: `extractSessionId` reads `metadata.user_id` itself.
+    ledger.session = extractHarnessSessionId(claudeRequest) ?? null;
 
     // 1a. Hook request stage A, on this attempt's own deep copy (each
     // FallbackHandler candidate gets a fresh one, so nothing leaks between
@@ -1610,7 +1795,12 @@ export class ComposedHandler implements ModelHandler {
       const signOrRefresh = async (): Promise<AuthBinding | undefined> => {
         if (this.provider.signRequest) {
           if (this.provider.name === "openai-codex") {
-            state.selectionContext ??= getAccountPool("openai-codex").createSelectionContext();
+            // The allowance thread hint (§2.2) comes from the request as it
+            // arrived, before any hook edit: a per-turn system note must not
+            // move a thread to a new key. Built only under `ebr`/`lookahead`.
+            state.selectionContext ??= getAccountPool("openai-codex").createSelectionContext(() =>
+              allowanceHintOf(ledger.session, transformed.claudeRequest)
+            );
           }
           const signed = await this.provider.signRequest({
             requireOAuth: state.requireOAuth,
@@ -1984,6 +2174,19 @@ export class ComposedHandler implements ModelHandler {
     const reportQuota = async (limit: CodexUsageLimit, quotaHeaders: Headers): Promise<void> => {
       const account = pooledAccount();
       if (!account) return;
+      // The ledger row for this attempt goes to disk NOW, before a rotation
+      // opens the next account's attempt.
+      try {
+        const attempt = this.ledgerAttemptFor(state.ledger, account, binding?.auth?.selectReason);
+        attempt.usage = snapshotFromCodexHeaders(quotaHeaders) ?? attempt.usage;
+        attempt.planClass = planClassOf(quotaHeaders.get("x-codex-plan-type")) ?? attempt.planClass;
+        attempt.at = Date.now();
+        attempt.outcome = "quota";
+        attempt.written = true;
+        this.recordLedgerAttempt(state.ledger, attempt, false);
+      } catch {
+        // The ledger is observational.
+      }
       try {
         await reportAccountOutcome(
           {
@@ -2045,6 +2248,15 @@ export class ComposedHandler implements ModelHandler {
       const account = auth.account;
       try {
         const usage = snapshotFromCodexHeaders(received.headers) ?? undefined;
+        try {
+          const attempt = this.ledgerAttemptFor(state.ledger, account, auth.selectReason);
+          attempt.at = Date.now();
+          if (usage) attempt.usage = usage;
+          attempt.planClass =
+            planClassOf(received.headers.get("x-codex-plan-type")) ?? attempt.planClass;
+        } catch {
+          // The ledger is observational.
+        }
         // A 200 head may still contain quota: only settled success resets estimates.
         const outcome: AccountOutcome = received.ok
           ? !final && usage
@@ -3571,12 +3783,31 @@ export class ComposedHandler implements ModelHandler {
           streamApiError = { code, message };
         },
         hookScope?.raw.streamTap(),
-        responsesTurn
+        responsesTurn,
+        (u) => {
+          ledger.billed = {
+            input: u.input,
+            cacheRead: u.cacheRead,
+            cacheWrite: u.cacheWrite,
+            output: u.output,
+          };
+          ledger.finalInput = u.finalInput;
+        }
       ),
       () => {
         clientCancelled = true;
       }
     );
+
+    // How this stream ended, read once its body ends (`settleLedger`): a client
+    // cancel, an in-stream API error, or a turn that never reported usage is
+    // not a completed one.
+    ledger.streamOutcome = () =>
+      clientCancelled
+        ? "cancelled"
+        : streamApiError !== null || ledger.billed === undefined
+          ? "error"
+          : "ok";
 
     // A client that did not ask for a stream gets the single JSON message the
     // Messages API defines, not SSE. `=== true` rather than `!== false` because
@@ -3873,11 +4104,18 @@ export class ComposedHandler implements ModelHandler {
     onApiError?: (code: string, message: string) => void,
     /** The raw `providerChunk`/`providerStreamEnd` tap for this stream, when one applies. */
     raw?: RawStreamTap,
-    responsesTurn?: ResponsesTurnWiring
+    responsesTurn?: ResponsesTurnWiring,
+    /**
+     * This request's billed usage, for the usage ledger. A Responses turn
+     * reports it once over every leg (`onTurnBilled`); every other format
+     * reports it from `onTokenUpdate`.
+     */
+    onBilled?: (u: TurnBilledUsage) => void
   ): Response {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
     // without reassigning the function parameter.
     let pendingOnComplete = onComplete;
+    const billedPerTurn = this.resolveStreamFormat() === "openai-responses-sse";
     // `input` is the FULL context size, always — never the cache-reduced figure
     // that rides on the wire. `detail` is the optional cached breakdown of that
     // same number and is used for COST ONLY; see UsageCacheDetail and
@@ -3902,6 +4140,19 @@ export class ComposedHandler implements ModelHandler {
         default:
           this.tokenTracker.update(input, output, detail, billing);
           break;
+      }
+      if (onBilled && !billedPerTurn) {
+        try {
+          onBilled({
+            input,
+            cacheRead: detail?.cacheReadTokens ?? 0,
+            cacheWrite: detail?.cacheCreationTokens ?? 0,
+            output,
+            finalInput: input,
+          });
+        } catch {
+          // The ledger is observational.
+        }
       }
       // Fire onComplete after token update so recordStats() sees the final token counts.
       if (pendingOnComplete) {
@@ -3983,6 +4234,7 @@ export class ComposedHandler implements ModelHandler {
           onExtraBilledInput: (input, detail) =>
             this.tokenTracker.addBilledInputTokens(input, detail, billing),
           onTurnSummary: responsesTurn?.onTurnSummary,
+          onTurnBilled: onBilled,
           codeMode: responsesTurn?.codeMode,
         });
 
@@ -4136,6 +4388,11 @@ export class ComposedHandler implements ModelHandler {
   }
 
   async shutdown(): Promise<void> {
+    try {
+      getAllowanceService().detachLabelSink(this.tokenTracker);
+    } catch {
+      // The label is advisory.
+    }
     if (this.provider.shutdown) {
       await this.provider.shutdown();
     }

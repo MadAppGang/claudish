@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -84,6 +85,10 @@ function patchedGuard(fixture: ScratchHome, before: string, after: string): stri
   const source = readFileSync(GUARD_SCRIPT, "utf8");
   expect(source.split(before)).toHaveLength(2);
   const path = join(fixture.home, "guard-copy.ts");
+  copyFileSync(
+    join(import.meta.dir, "session-env-vars.ts"),
+    join(fixture.home, "session-env-vars.ts")
+  );
   writeFileSync(path, source.replace(before, after));
   return path;
 }

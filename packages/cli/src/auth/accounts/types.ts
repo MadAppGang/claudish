@@ -10,6 +10,7 @@
  * exactly one import to speak it.
  */
 
+import type { StrategyName } from "./allowance/types.js";
 import type { AccountBlocker } from "./errors.js";
 
 export type {
@@ -113,6 +114,20 @@ export interface AccountSelectionContext {
   /** Captured process ranking evidence, updated only by this request's leases. */
   leaseFailures: Map<string, AccountLeaseFailure>;
   reauthAttempts: Map<string, number>;
+  /**
+   * The allowance model's thread hint (architecture §2.2), set only while the
+   * provider's `strategy` is `ebr` or `lookahead`. Data only: `policy.ts` never
+   * reads it. `contextTokens` is THIS request's input estimate, never the
+   * thread's history.
+   */
+  allowance?: AllowanceSelectionHint;
+}
+
+export interface AllowanceSelectionHint {
+  sessionKey: string | null;
+  /** `sessionId:fnv1a32(system + "\0" + whole first user message)`; null without a session. */
+  threadKey: string | null;
+  contextTokens: number | null;
 }
 
 export function sameAccount(a: AccountRef, b: AccountRef): boolean {
@@ -195,6 +210,8 @@ export interface SubscriptionAccountsEntry {
   noticeAcceptedAt?: string;
   /** Durable opt-out from synthesizing the legacy Codex file after removal. */
   legacyCodexSuppressed?: boolean;
+  /** The allowance model's selection strategy. Absent means `sticky`. */
+  strategy?: StrategyName;
   /** Bumped by every account-list mutation, so a reader can detect one. */
   generation: number;
   accounts: Array<{

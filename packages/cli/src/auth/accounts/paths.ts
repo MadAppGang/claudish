@@ -6,6 +6,8 @@
  * ~/.claudish/accounts/state.lock                          the state lock
  * ~/.claudish/accounts/locks/<provider>/<id>.lock          the refresh gate
  * ~/.claudish/accounts/tokens/<provider>/<id>.json   (0600) the file token store
+ * ~/.claudish/accounts/usage/{raw,hourly}/<day>.jsonl (0600) the usage ledger
+ * ~/.claudish/accounts/allowance-alerts.json         (0600) shared allowance alert memory
  * ~/.claudish/codex-oauth.json                             the LEGACY Codex account
  * ~/.claudish/config.json                                  the account list (no secrets)
  * ```
@@ -101,6 +103,65 @@ export function statePath(env: NodeJS.ProcessEnv = process.env): string {
 /** The lock guarding {@link statePath}'s read-modify-write. */
 export function stateLockFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return join(accountsDir(env), "state.lock");
+}
+
+/**
+ * The usage ledger's root (allowance architecture §2.1):
+ *
+ * ```
+ * usage/raw/YYYY-MM-DD.jsonl     (0600) one UTC day of rows, appended
+ * usage/hourly/YYYY-MM-DD.jsonl  (0600) the hourly rollup of ONE closed day
+ * usage/compact.lock                    the compaction lock
+ * ```
+ */
+export function usageDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(accountsDir(env), "usage");
+}
+
+/** `usage/raw/`, one segment per UTC day. */
+export function usageRawDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(usageDir(env), "raw");
+}
+
+/** `usage/hourly/`, one rollup per closed UTC day. */
+export function usageHourlyDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(usageDir(env), "hourly");
+}
+
+/** `YYYY-MM-DD` is the only name a segment may have, so no row can choose a path. */
+const USAGE_DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function assertUsageDay(day: string): void {
+  if (!USAGE_DAY_PATTERN.test(day)) {
+    throw new UnsafeAccountPathError(`usage day ${shown(day)} is not YYYY-MM-DD`);
+  }
+}
+
+/** The raw segment of one UTC day. */
+export function usageRawPath(day: string, env: NodeJS.ProcessEnv = process.env): string {
+  assertUsageDay(day);
+  return join(usageRawDir(env), `${day}.jsonl`);
+}
+
+/** The hourly rollup of one closed UTC day. */
+export function usageHourlyPath(day: string, env: NodeJS.ProcessEnv = process.env): string {
+  assertUsageDay(day);
+  return join(usageHourlyDir(env), `${day}.jsonl`);
+}
+
+/** The compaction lock: a try-lock, never waited on. */
+export function usageCompactLockPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(usageDir(env), "compact.lock");
+}
+
+/** The shared alert memory and the announced transition ids (allowance §2.4). */
+export function allowanceAlertsPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(accountsDir(env), "allowance-alerts.json");
+}
+
+/** The try-lock around the alert memory's read-modify-write (allowance §2.4). */
+export function allowanceAlertsLockPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(accountsDir(env), "allowance-alerts.lock");
 }
 
 /**

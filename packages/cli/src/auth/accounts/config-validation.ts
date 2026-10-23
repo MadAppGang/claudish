@@ -93,6 +93,33 @@ export function parseAccountsBlock(block: unknown): SubscriptionAccountsConfig {
   return settings;
 }
 
+const STRATEGY_NAMES: readonly string[] = ["sticky", "ebr", "lookahead"];
+
+/**
+ * The READER's view of the block: an unknown `strategy` (a typo such as
+ * `"EBR"`) is removed, so it reads as `sticky`, and reported through
+ * `onUnknown`. An advisory knob must never make the account list unreadable
+ * and fail every pooled request. Writers keep the strict enum
+ * (`validateRawConfig`). Returns `block` itself when nothing is unknown.
+ */
+export function withLenientStrategy(
+  block: unknown,
+  onUnknown: (provider: string, value: unknown) => void
+): unknown {
+  if (!isConfigObject(block)) return block;
+  let copy: Record<string, unknown> | undefined;
+  for (const provider of ACCOUNT_PROVIDERS) {
+    const entry = block[provider];
+    if (!isConfigObject(entry) || entry.strategy === undefined) continue;
+    if (typeof entry.strategy === "string" && STRATEGY_NAMES.includes(entry.strategy)) continue;
+    onUnknown(provider, entry.strategy);
+    const { strategy: _dropped, ...rest } = entry;
+    copy ??= { ...block };
+    copy[provider] = rest;
+  }
+  return copy ?? block;
+}
+
 /** Validate raw JSON without replacing it with Zod's unknown-field-stripped copy. */
 export function validateRawConfig(raw: unknown): asserts raw is Record<string, unknown> {
   if (!isConfigObject(raw)) throw new Error("config is not an object");

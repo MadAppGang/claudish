@@ -58,9 +58,11 @@ import {
   closeSync,
   copyFileSync,
   fchmodSync,
+  lstatSync,
   mkdtempSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
@@ -182,6 +184,14 @@ const GUARDED = [
       "child process spawned with its own HOME; assigning process.env.HOME does not move homedir()",
   },
   {
+    // The allowance model's shared alert memory and announced transition ids.
+    path: join(homedir(), ".claudish", "accounts", "allowance-alerts.json"),
+    label: "REAL ALLOWANCE ALERT MEMORY",
+    remedy:
+      "point CLAUDISH_ACCOUNTS_DIR at a temp accounts directory instead of evaluating alerts " +
+      "against the real one",
+  },
+  {
     path: join(homedir(), ".claudish", "catalog-incompatible.json"),
     label: "REAL CATALOG CONTRACT SENTINEL",
     remedy:
@@ -189,6 +199,76 @@ const GUARDED = [
       "refresh in a child process with its own HOME, instead of writing the real sentinel",
   },
 ] as const;
+
+/**
+ * Real DIRECTORIES a run must leave as it found them, compared by their file set
+ * and sizes. The usage ledger is append-only JSONL written by every pooled
+ * request, so a test that drives one without pinning `CLAUDISH_ACCOUNTS_DIR`
+ * mixes test rows into the developer's real usage history, where no later
+ * reader can tell them apart. Nothing is restored: truncating a segment back
+ * to its old size would also delete rows a concurrent real claudish appended
+ * during the run. The guard reports and fails.
+ */
+const GUARDED_DIRS = [
+  {
+    path: join(homedir(), ".claudish", "accounts", "usage"),
+    label: "REAL USAGE LEDGER",
+    remedy:
+      "pin CLAUDISH_ACCOUNTS_DIR to a temp accounts directory before any pooled request or " +
+      "exhausted pool runs (Bun ignores an in-process HOME)",
+  },
+] as const;
+
+/** Relative path → size of every file under `dir`; null when the directory is absent. */
+function dirSnapshot(dir: string): Map<string, number> | null {
+  const files = new Map<string, number>();
+  const walk = (current: string, prefix: string): void => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const abs = join(current, entry.name);
+      if (entry.isDirectory()) walk(abs, rel);
+      else {
+        try {
+          files.set(rel, lstatSync(abs).size);
+        } catch {
+          files.set(rel, -1);
+        }
+      }
+    }
+  };
+  try {
+    statSync(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") return null;
+    files.set("<unreadable>", -1);
+    return files;
+  }
+  try {
+    walk(dir, "");
+  } catch {
+    files.set("<unreadable>", -1);
+  }
+  return files;
+}
+
+/** What changed between two directory snapshots, one line per file. */
+function describeDirDelta(
+  before: Map<string, number> | null,
+  after: Map<string, number> | null
+): string[] {
+  if (before === null && after === null) return [];
+  if (before === null) return ["  - CREATED  the directory", ...describeDirDelta(new Map(), after)];
+  if (after === null) return ["  - REMOVED  the directory"];
+  const notes: string[] = [];
+  for (const name of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+    const a = before.get(name);
+    const b = after.get(name);
+    if (a === undefined) notes.push(`  - added    ${name} (${b} bytes)`);
+    else if (b === undefined) notes.push(`  - REMOVED  ${name}`);
+    else if (a !== b) notes.push(`  - changed  ${name} (${a} -> ${b} bytes)`);
+  }
+  return notes;
+}
 
 interface Snapshot {
   existed: boolean;
@@ -278,6 +358,7 @@ if (cmd.length === 0) {
 }
 
 const before = new Map(GUARDED.map((g) => [g.path, snapshot(g.path)]));
+const dirsBefore = new Map(GUARDED_DIRS.map((g) => [g.path, dirSnapshot(g.path)]));
 /**
  * A credential store gets no `.guard-backup` sidecar and is restored 0600: a
  * sidecar would be a second plaintext copy of a real login that `claudish
@@ -527,6 +608,20 @@ function finish(code: number | null, signal: NodeJS.Signals | null = null): void
     if (!changed) continue;
     mutated = true;
     reportAndRestore(g, after);
+  }
+  for (const g of GUARDED_DIRS) {
+    const delta = describeDirDelta(dirsBefore.get(g.path) ?? null, dirSnapshot(g.path));
+    if (delta.length === 0) continue;
+    mutated = true;
+    process.stderr.write(
+      `\n\x1b[31m✗ ${g.label} MUTATED\x1b[0m — something in that command changed ${g.path}\n`
+    );
+    for (const line of delta) process.stderr.write(`${line}\n`);
+    process.stderr.write(
+      "\n  Not restored: a concurrent claudish may have appended real rows during the run.\n" +
+        `  Tests must ${g.remedy}.\n` +
+        "  See scripts/guard-real-config.ts for the history.\n\n"
+    );
   }
   rmSync(sentinelDir, { recursive: true, force: true });
 

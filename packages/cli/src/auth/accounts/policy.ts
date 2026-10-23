@@ -33,6 +33,7 @@
  *   preference to one with a known-good snapshot.
  */
 
+import type { ChooseReason } from "./allowance/types.js";
 import type { AccountBlocker } from "./errors.js";
 import type { AccountRef, UsageSnapshot, UsageWindow } from "./types.js";
 import { DEFAULT_SWITCH_AT } from "./types.js";
@@ -71,12 +72,32 @@ export interface SelectOptions {
   switchAtByWindow?: Record<string, number>;
   exclude?: AccountRef[];
   pin?: AccountRef;
+  /**
+   * The allowance model's ranker (`strategy` `ebr` or `lookahead`). It only
+   * REORDERS accounts already eligible here; absent, this function is today's
+   * code path exactly.
+   */
+  rank?: AllowanceRank;
 }
 
-export type SelectReason = "pinned" | "sticky" | "first-under-threshold" | "lowest-pressure";
+export type SelectReason =
+  | "pinned"
+  | "sticky"
+  | "first-under-threshold"
+  | "lowest-pressure"
+  | ChooseReason;
+
+/**
+ * Pick one of the eligible accounts, or decline with null. A decline, a throw
+ * or an id that is not among them all revert to the sticky order with
+ * `reverted` set — a ranker can never block a request or change who pays.
+ */
+export type AllowanceRank = (
+  eligible: AccountCandidate[]
+) => { id: string; reason: SelectReason } | null;
 
 export type SelectResult =
-  | { kind: "selected"; candidate: AccountCandidate; reason: SelectReason }
+  | { kind: "selected"; candidate: AccountCandidate; reason: SelectReason; reverted?: string }
   | { kind: "none"; blockers: AccountBlocker[] };
 
 /**
@@ -281,7 +302,29 @@ export function selectAccount(candidates: AccountCandidate[], opts: SelectOption
   // Accounts this process just failed to lease are a last resort: the normal
   // order runs over the rest, and only when nothing else is eligible over them.
   const preferred = eligible.filter((c) => !c.recentCredentialFailure);
-  return selectAmong(preferred.length > 0 ? preferred : eligible, opts);
+  const pool = preferred.length > 0 ? preferred : eligible;
+  if (opts.rank) {
+    try {
+      const r = opts.rank(pool);
+      const hit = r && pool.find((c) => c.ref.id === r.id);
+      if (hit && r) return { kind: "selected", candidate: hit, reason: r.reason };
+      return reverted(
+        selectAmong(pool, opts),
+        r ? "rank chose an ineligible account" : "rank declined"
+      );
+    } catch (err) {
+      return reverted(
+        selectAmong(pool, opts),
+        `rank threw: ${String((err as Error)?.message ?? err).slice(0, 120)}`
+      );
+    }
+  }
+  return selectAmong(pool, opts);
+}
+
+/** The sticky result, marked as a revert from the ranker. */
+function reverted(result: SelectResult, why: string): SelectResult {
+  return result.kind === "selected" ? { ...result, reverted: why } : result;
 }
 
 /** Steps 2-4 of the order, over accounts already known to be eligible. */

@@ -38,6 +38,8 @@
 
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 import { log } from "../../logger.js";
+import { getAllowanceService, safeRanker } from "./allowance-service.js";
+import type { StrategyName } from "./allowance/types.js";
 import { exchangeFor } from "./exchange.js";
 import { accountRefreshLockPath } from "./paths.js";
 import {
@@ -68,6 +70,7 @@ import {
   type AccountSelectionContext,
   type AccountsError,
   AllAccountsExhaustedError,
+  type AllowanceSelectionHint,
   DEFAULT_SWITCH_AT,
   NeedsReauthError,
   NoUsableAccountError,
@@ -108,6 +111,8 @@ interface PoolEvaluation {
   candidates: AccountCandidate[];
   options: SelectOptions;
   selection: SelectResult;
+  /** True when the allowance model's ranker took part (`strategy` `ebr`/`lookahead`, no pin). */
+  ranked: boolean;
 }
 
 /**
@@ -198,6 +203,8 @@ export interface PoolDescription {
   accounts: AccountDescription[];
   switchAt: number;
   switchAtByWindow: Record<string, number>;
+  /** The selection strategy in config (`sticky` when unset), allowance §2.5. */
+  strategy: StrategyName;
   poolEnabled: boolean;
   /** Selection-relevant state updates this process could not persist. */
   dropped: readonly { field: string; account: string; reason: string }[];
@@ -274,14 +281,38 @@ export class AccountPool {
     return { provider: this.provider, id: record.id, label: record.label };
   }
 
-  /** Capture process ranking facts once; another request cannot change this map. */
-  createSelectionContext(): AccountSelectionContext {
-    return {
+  /**
+   * Capture process ranking facts once; another request cannot change this map.
+   *
+   * `allowance` builds the request's thread hint (§2.2). It runs only while the
+   * provider's `strategy` is `ebr` or `lookahead`, so a sticky pool pays for no
+   * hashing, and a throw from it leaves the hint absent.
+   */
+  createSelectionContext(allowance?: () => AllowanceSelectionHint): AccountSelectionContext {
+    const context: AccountSelectionContext = {
       provider: this.provider,
       failed: new Map(),
       leaseFailures: new Map(this.leaseFailures),
       reauthAttempts: new Map(this.lastReauthAttempt),
     };
+    if (allowance && this.allowanceStrategyOn()) {
+      try {
+        context.allowance = allowance();
+      } catch {
+        /* advisory: no hint, the ranker sees an unknown thread */
+      }
+    }
+    return context;
+  }
+
+  /** `strategy` is `ebr` or `lookahead`. Never throws: an unreadable list reads as sticky. */
+  private allowanceStrategyOn(): boolean {
+    try {
+      const strategy = this.registry.snapshot(this.provider).settings[this.provider]?.strategy;
+      return strategy !== undefined && strategy !== "sticky";
+    } catch {
+      return false;
+    }
   }
 
   /** One registry read, one shared-state read, one evaluation time. No token I/O. */
@@ -324,7 +355,17 @@ export class AccountPool {
         exclude: [...(opts.exclude ?? []), ...Array.from(context.failed.values(), (b) => b.ref)],
         ...(opts.pin ? { pin: opts.pin } : {}),
       };
-      return { records, candidates, options, selection: selectAccount(candidates, options) };
+      // The allowance model (§2.3). Absent `strategy` or `sticky` adds nothing,
+      // so `selectAccount` runs the same code path as before the model existed.
+      // `safeRanker` is total: it can decline, never throw.
+      const ranked =
+        settings?.strategy !== undefined && settings.strategy !== "sticky" && !opts.pin;
+      const rank = ranked
+        ? safeRanker(this.provider, context.allowance ?? null, options)
+        : undefined;
+      const selectOptions: SelectOptions = rank ? { ...options, rank } : options;
+      const selection = selectAccount(candidates, selectOptions);
+      return { records, candidates, options, selection, ranked: rank !== undefined };
     } catch (err) {
       return rethrowSelectionFailure(err);
     }
@@ -378,7 +419,7 @@ export class AccountPool {
     // Check exact pins before any heal can read another account's store.
     let evaluation = this.evaluate(opts, context);
     if (opts.pin && evaluation.selection.kind === "none")
-      throw this.noEligibleError(evaluation, context);
+      throw this.acquireNoEligibleError(evaluation, context, opts);
     await this.healReauthMarks(context, opts.pin);
     evaluation = this.evaluate(opts, context);
     // One bounded pass, including removals between selection and lease.
@@ -386,7 +427,7 @@ export class AccountPool {
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (attempt > 0) evaluation = this.evaluate(opts, context);
       const selection = evaluation.selection;
-      if (selection.kind === "none") throw this.noEligibleError(evaluation, context);
+      if (selection.kind === "none") throw this.acquireNoEligibleError(evaluation, context, opts);
       const { candidate, reason } = selection;
       const record = this.accounts().find(
         (a) => sameAccount(this.refOf(a), candidate.ref) && a.enabled
@@ -426,8 +467,23 @@ export class AccountPool {
       this.leaseFailures.delete(record.id);
       context.leaseFailures.delete(record.id);
       // Only successful leases may change stickiness; capacity queries never do.
-      if (!candidate.isActive) {
+      // Under the allowance model a threaded request keeps its stickiness in the
+      // service's thread map instead, so two threads on different accounts do
+      // not rewrite `active` on alternate requests (§2.3).
+      const threadKey = evaluation.ranked ? (context.allowance?.threadKey ?? null) : null;
+      if (!candidate.isActive && !threadKey) {
         await this.state.setActive(this.provider, record.id, this.state.activeId(this.provider));
+      }
+      if (evaluation.ranked) {
+        if (selection.reverted !== undefined)
+          log(
+            `[accounts] ${this.provider}: allowance model reverted to sticky (${selection.reverted})`
+          );
+        try {
+          getAllowanceService().noteSelection(this.provider, threadKey, record.id, at);
+        } catch {
+          /* the thread map is advisory; a broken service never fails a lease */
+        }
       }
       log(`[accounts] ${this.provider}: selected ${record.label} (${reason})`);
       return {
@@ -439,8 +495,29 @@ export class AccountPool {
       };
     }
     evaluation = this.evaluate(opts, context);
-    if (evaluation.selection.kind === "none") throw this.noEligibleError(evaluation, context);
+    if (evaluation.selection.kind === "none")
+      throw this.acquireNoEligibleError(evaluation, context, opts);
     throw new RefreshUnavailableError("account list changed during selection");
+  }
+
+  /**
+   * `noEligibleError` for `acquire`'s throw path, which is the ONE place a
+   * pool-wide block reaches the usage ledger: an `AllAccountsExhaustedError`
+   * opens a censored interval there (allowance architecture §2.2). Never from
+   * `describe()` or `errorIfNoEligible()`, which are capacity queries. The
+   * record is synchronous and cannot throw, so the error thrown is unchanged.
+   */
+  private acquireNoEligibleError(
+    evaluation: PoolEvaluation,
+    context: AccountSelectionContext,
+    opts: AcquireOptions
+  ): AccountsError {
+    const error = this.noEligibleError(evaluation, context);
+    // A PINNED account's exhaustion is not a pool-wide block: other accounts may still serve.
+    if (error instanceof AllAccountsExhaustedError && !opts.pin) {
+      getAllowanceService().recordNoEligible(this.provider, this.now());
+    }
+    return error;
   }
 
   private async tryLease(
@@ -744,6 +821,7 @@ export class AccountPool {
       accounts,
       switchAt: settings.switchAt,
       switchAtByWindow: settings.switchAtByWindow,
+      strategy: settings.strategy,
       poolEnabled: settings.enabled,
       dropped: this.state.dropped(),
       sources: this.registry.sources(),
