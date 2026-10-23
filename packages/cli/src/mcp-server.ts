@@ -889,6 +889,15 @@ function modelChoiceResult(
   }
   const matching = Object.fromEntries(problems.map((p) => [p.spec, p.matching]));
   lines.push(`Matching recommended ids: ${JSON.stringify(matching, null, 2)}`);
+  // run13: an agent retried with an effort it made up, so needs_effort never
+  // answered and the table's level never reached it. The rows go with the ids.
+  const efforts = effortClarification([...new Set(problems.flatMap((p) => p.matching))]);
+  if (efforts) {
+    lines.push(
+      "Recommended effort for those ids, by task type (pass your task's level with the model " +
+        `you pick): ${JSON.stringify(efforts, null, 2)}`
+    );
+  }
   lines.push(`Recommended models: ${JSON.stringify(recommendedChoices(recommended), null, 2)}`);
   return { content: [{ type: "text" as const, text: lines.join("\n") }], isError: true };
 }
