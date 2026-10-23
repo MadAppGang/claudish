@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { RecommendedModelsDoc } from "../model-loader.js";
+import type { CachedEffortRecommendations } from "../providers/effort-recommendations.js";
 import {
   MAGMUX_AVAILABLE,
   McpServer,
@@ -18,6 +26,9 @@ const dataDir = join(sourceDir, "test-fixtures");
 const listingPath = join(dataDir, "mcp-model-check/recommended-20261023.json");
 const listing = JSON.parse(readFileSync(listingPath, "utf8")) as RecommendedModelsDoc;
 const gptIds = ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"];
+const effortPath = join(dataDir, "mcp-model-check/efforts-20261023.json");
+const capturedEfforts = JSON.parse(readFileSync(effortPath, "utf8")) as CachedEffortRecommendations;
+const effortHeading = "Recommended effort for those ids, by task type";
 const responsePath = join(dataDir, "sse-responses/minimax-m25-turn1-thinking-text-tool.sse");
 
 let layout: TempLayout;
@@ -96,9 +107,10 @@ function expectModelChoice(
   expect((answer.raw as { error?: unknown }).error).toBeUndefined();
   expect(answer.isError).toBe(true);
   expect(answer.text).toStartWith(kind + ":");
-  const [matches, choices] = answer.text
+  const [matchingAndEfforts, choices] = answer.text
     .split("Matching recommended ids: ")[1]
     .split("\nRecommended models: ");
+  const [matches] = matchingAndEfforts.split(`\n${effortHeading}`);
   expect(JSON.parse(matches)).toEqual(matching);
   const rows = JSON.parse(choices) as Array<{
     id: string;
@@ -188,6 +200,56 @@ describe("MCP model-choice refusals over isolated stdio", () => {
     },
     15_000
   );
+
+  test("run_prompt gpt-5 includes matching effort rows and omits an id without a row", async () => {
+    const sidecar = structuredClone(capturedEfforts);
+    for (const generation of Object.values(sidecar.generations)) {
+      delete (generation.efforts as Record<string, unknown>)[gptIds[2]];
+    }
+    writeFileSync(
+      join(layout.home, ".claudish/cloud-models-catalog-v3.efforts.json"),
+      JSON.stringify(sidecar)
+    );
+    const mcp = await start();
+    const answer = await mcp.callTool("run_prompt", {
+      model: "gpt-5",
+      prompt: "Answer this input.",
+    });
+    expectModelChoice(answer, "not_recommended", { "gpt-5": gptIds });
+    expect(answer.text).toContain(`\n${effortHeading}`);
+    const section = answer.text.split(`\n${effortHeading}`)[1].split("\nRecommended models: ")[0];
+    const rows = JSON.parse(section.slice(section.indexOf("{")));
+    const captured = Object.values(capturedEfforts.generations)[0].efforts;
+    const expected = Object.fromEntries(
+      gptIds
+        .slice(0, 2)
+        .map((id) => [
+          id,
+          Object.fromEntries(
+            Object.entries(captured[id]).map(([task, cell]) => [task, cell.effort])
+          ),
+        ])
+    );
+    expect(Object.keys(rows)).toEqual(gptIds.slice(0, 2));
+    expect(rows).toEqual(expected);
+    expect(rows).not.toHaveProperty(gptIds[2]);
+    assertNothingStarted();
+  }, 15_000);
+
+  test("team minimax omits the effort line when no matching id has a row", async () => {
+    copyFileSync(effortPath, join(layout.home, ".claudish/cloud-models-catalog-v3.efforts.json"));
+    const mcp = await start();
+    const path = join(layout.cwd, "must-not-exist");
+    const answer = await mcp.callTool("team", {
+      mode: "run",
+      path,
+      models: ["minimax"],
+      input: "Answer this input.",
+    });
+    expectModelChoice(answer, "unknown_model", { minimax: ["minimax-m3"] });
+    expect(answer.text).not.toContain(effortHeading);
+    assertNothingStarted(path);
+  }, 15_000);
 
   test("run_prompt user_required_model true passes the model check for gpt-5", async () => {
     const mcp = await start();
