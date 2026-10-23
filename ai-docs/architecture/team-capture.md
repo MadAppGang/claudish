@@ -40,6 +40,8 @@ Detection, then:
 Two ordering decisions worth keeping:
 
 1. **The shape check runs LAST**, after `api_error`, `prompt_not_read`, `refused`, the whitespace-only `empty_output` and `min_output_bytes`. A turn that hit one of those would fail the shape check too, and reporting "no `vote` block" for what is really an API error sends the caller after the wrong problem.
+
+   An `api_error` is also an answer that is exactly claudish's in-band marker `[API Error: <code> <message>]` (`in-band-api-error.ts`). The Responses parser writes a terminal in-stream error as that text, ending `end_turn`, so Claude Code never flags it `isApiErrorMessage`. Without this rule a billing failure (`credit_balance_exhausted`, recommended-effort bench run12) fell through to `prompt_not_read`. The marker counts only as the WHOLE answer; inside a longer answer it is the model's text.
 2. **The pattern is matched against the WHOLE answer**, never a bounded tail — a contract whose marker sits near the START of a long answer would otherwise silently never match. `new RegExp(pattern)`, no flags.
 
 ## The answer is every assistant message of the turn, from the transcript

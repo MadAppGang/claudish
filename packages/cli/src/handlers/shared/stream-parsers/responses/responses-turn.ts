@@ -51,6 +51,7 @@ import {
   type ResponsesItem,
   relayNestedInput,
 } from "../../../../code-mode/types.js";
+import { formatInBandApiError } from "../../../../in-band-api-error.js";
 import { log } from "../../../../logger.js";
 import type { LegResponse } from "../../responses-leg-issuer.js";
 import type { UsageCacheDetail } from "../../token-tracker.js";
@@ -163,7 +164,7 @@ function apiErrorText(code: string, message: string, opts: ResponsesTurnOptions)
   const isCtxOverflow =
     code === "context_length_exceeded" ||
     /context (length|window)|exceeds? the context|too long|maximum context/i.test(message);
-  if (!isCtxOverflow) return `\n\n[API Error: ${code} ${message}]`;
+  if (!isCtxOverflow) return formatInBandApiError(code, message);
   const cap =
     opts.contextWindow && opts.contextWindow > 0
       ? ` ~${Math.round(opts.contextWindow / 1000)}K tokens`
