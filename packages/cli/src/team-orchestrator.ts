@@ -157,6 +157,38 @@ export function validateSessionPath(sessionPath: string): string {
   return resolved;
 }
 
+// ─── Child stdin guard ───────────────────────────────────────────────────────
+
+/** The slice of a child's stdin this module needs — injectable for tests. */
+export interface StdinLike {
+  on(event: "error", listener: (err: NodeJS.ErrnoException) => void): unknown;
+}
+
+/**
+ * Guard the write end of a child's stdin (#586, ported from upstream 03409b25).
+ *
+ * A slot cancelled — or a child that exits — before it drains stdin closes the
+ * pipe under a pending write. Node surfaces that as an `error` event on the
+ * stream, and an unhandled `error` event is an uncaught exception in the
+ * ORCHESTRATOR, not in the child: one cancelled slot would take down the whole
+ * run instead of just itself.
+ *
+ * EPIPE means only "the reader went away", which the exit/close handlers
+ * already report, so it is swallowed. Any other stdin error is forwarded to the
+ * slot's captured stderr, so it lands in the error log next to the child's own
+ * output instead of vanishing.
+ */
+export function attachStdinErrorGuard(
+  stdin: StdinLike | null | undefined,
+  anonId: string,
+  appendStderr: (text: string) => void
+): void {
+  stdin?.on("error", (err: NodeJS.ErrnoException) => {
+    if (err?.code === "EPIPE") return;
+    appendStderr(`[claudish] stdin error for slot ${anonId}: ${err?.message ?? String(err)}\n`);
+  });
+}
+
 // ─── Sentinel Model Validation ───────────────────────────────────────────────
 
 /**
@@ -364,7 +396,11 @@ export async function runModels(
       stderr += chunk.toString();
     });
 
-    // Pipe input to stdin
+    // Pipe input to stdin — the error guard must be attached BEFORE the write:
+    // a listener added afterwards never sees the failure it was meant to catch.
+    attachStdinErrorGuard(proc.stdin, anonId, (text) => {
+      stderr += text;
+    });
     proc.stdin?.write(inputContent);
     proc.stdin?.end();
 

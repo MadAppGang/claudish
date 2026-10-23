@@ -23,8 +23,13 @@ import {
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, win32, posix } from "node:path";
+import { join, resolve, win32, posix, dirname } from "node:path";
+import { EventEmitter } from "node:events";
+import { fileURLToPath } from "node:url";
 import type { VoteResult } from "./team-orchestrator.js";
+
+/** This file's own directory — lets a pin read the module under test as text. */
+const here = dirname(fileURLToPath(import.meta.url));
 
 // ─── Dynamic imports (resolved at runtime so the module doesn't need to exist
 //     until the tests actually run) ──────────────────────────────────────────
@@ -527,6 +532,88 @@ describe("team-orchestrator", () => {
       expect(() => validateSessionPath(join(sandbox, "outside"))).toThrow(
         /must be within current directory/
       );
+    });
+  });
+
+  // ── attachStdinErrorGuard: #586 — a cancelled slot must not kill the run ──
+  //
+  // The defect: `startModels()` wrote to the child's stdin with no `error`
+  // listener. A slot cancelled (or a child exiting) before it drains stdin
+  // closes the pipe under the write, Node emits `error` on the stream, and an
+  // unhandled `error` event is an uncaught exception in the ORCHESTRATOR.
+
+  describe("attachStdinErrorGuard", () => {
+    /** A stream stub carrying only the surface the guard touches. */
+    function fakeStdin(): EventEmitter {
+      return new EventEmitter();
+    }
+
+    function withCode(message: string, code: string): NodeJS.ErrnoException {
+      return Object.assign(new Error(message), { code });
+    }
+
+    it("CONTROL: an unguarded stream throws on `error` — this is the defect being fixed", () => {
+      const bare = fakeStdin();
+
+      // Reproduction, not decoration: Node's EventEmitter throws for an
+      // unhandled `error` event, and inside startModels that throw is the
+      // orchestrator's, not the child's.
+      expect(() => bare.emit("error", withCode("write EPIPE", "EPIPE"))).toThrow();
+    });
+
+    it("swallows EPIPE — the reader went away, which exit/close already reports", async () => {
+      const { attachStdinErrorGuard } = await getOrchestrator();
+      const stdin = fakeStdin();
+      const lines: string[] = [];
+
+      attachStdinErrorGuard(stdin as never, "anon-1", (t) => lines.push(t));
+      expect(() => stdin.emit("error", withCode("write EPIPE", "EPIPE"))).not.toThrow();
+      expect(lines).toEqual([]);
+    });
+
+    it("forwards any other stdin error to the slot's stderr sink", async () => {
+      const { attachStdinErrorGuard } = await getOrchestrator();
+      const stdin = fakeStdin();
+      const lines: string[] = [];
+
+      attachStdinErrorGuard(stdin as never, "anon-7", (t) => lines.push(t));
+      stdin.emit("error", withCode("no space left on device", "ENOSPC"));
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("anon-7");
+      expect(lines[0]).toContain("no space left on device");
+      expect(lines[0].endsWith("\n")).toBe(true);
+    });
+
+    it("still reports an error carrying no code and no message", async () => {
+      const { attachStdinErrorGuard } = await getOrchestrator();
+      const stdin = fakeStdin();
+      const lines: string[] = [];
+
+      attachStdinErrorGuard(stdin as never, "anon-9", (t) => lines.push(t));
+      stdin.emit("error", {});
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("anon-9");
+    });
+
+    it("tolerates a missing stdin (spawn failure leaves it undefined)", async () => {
+      const { attachStdinErrorGuard } = await getOrchestrator();
+
+      expect(() => attachStdinErrorGuard(undefined, "anon-1", () => {})).not.toThrow();
+      expect(() => attachStdinErrorGuard(null, "anon-1", () => {})).not.toThrow();
+    });
+
+    it("WIRING: the guard is attached BEFORE the write in startModels", () => {
+      // A listener added after the write never sees the failure it was meant
+      // to catch, so ordering is the property that matters — not mere presence.
+      const source = readFileSync(join(here, "team-orchestrator.ts"), "utf8");
+      const guardAt = source.indexOf("attachStdinErrorGuard(proc.stdin");
+      const writeAt = source.indexOf("proc.stdin?.write(inputContent)");
+
+      expect(guardAt).toBeGreaterThan(-1);
+      expect(writeAt).toBeGreaterThan(-1);
+      expect(guardAt).toBeLessThan(writeAt);
     });
   });
 
