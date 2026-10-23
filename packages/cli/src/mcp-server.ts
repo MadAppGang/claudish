@@ -1161,6 +1161,18 @@ function optionalString(raw: unknown, name: string): string | undefined {
   return raw;
 }
 
+/**
+ * A required string argument such as `session_id`. The client does not enforce
+ * the schema's `required`: `get_diagnostics {}` once reached a path join and
+ * answered `The "paths[1]" property must be of type string, got undefined`.
+ */
+function requiredString(raw: unknown, name: string): string {
+  const value = optionalString(raw, name);
+  if (value === undefined)
+    throw new ContractErrorException("invalid_args", `'${name}' is required`);
+  return value;
+}
+
 /** A boolean argument: absent → false; anything but a JSON boolean is the caller's error. */
 function optionalBoolean(raw: unknown, name: string): boolean {
   if (raw === undefined || raw === null) return false;
@@ -2581,7 +2593,10 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     },
     group: "session",
     handler: async (args) => {
-      const result = sessionManager.sendInput(args.session_id as string, args.text as string);
+      const result = sessionManager.sendInput(
+        requiredString(args.session_id, "session_id"),
+        requiredString(args.text, "text")
+      );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
@@ -2609,7 +2624,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     handler: async (args) => {
       try {
         const output = sessionManager.getOutput(
-          args.session_id as string,
+          requiredString(args.session_id, "session_id"),
           args.tail_lines as number | undefined
         );
         return {
@@ -2727,7 +2742,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     handler: async (args) => {
       try {
         const diagnostics = sessionManager.getDiagnostics(
-          args.session_id as string,
+          requiredString(args.session_id, "session_id"),
           args.event_limit as number | undefined
         );
         return {
