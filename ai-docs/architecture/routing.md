@@ -106,8 +106,12 @@ dates. The calling agent knows the task and what the user asked, so IT picks; cl
 substitutes a model. `user_required_model` (`team`: the entries; the others: `true`) runs a model
 the user named exactly. Never checked: an explicit `provider@` (after the removal above), a chain,
 a native Claude name, a name a user routing rule matches (the user's own routing), a namespace
-claim (`swe-1.7` on Devin: the account decides), and everything when no recommended list is on
-disk (the MCP log says so). The check runs before `needs_effort`.
+claim on a name the catalog lacks (`swe-1.7` on Devin: the account decides; a catalog model such as
+`grok-4.20` is checked even with a SuperGrok seat), a name the catalog resolves to a recommended id
+(`MiniMax-M3`, the alias `k3`, the route variant `gemini-4-argon-high`), a catalog miss when the user's
+`defaultProvider` is not `openrouter` (LiteLLM, a custom endpoint may serve it) or when `create_session`'s
+`work_dir` holds project rules this server cannot read, and everything when no recommended list or no
+catalog is on disk (the MCP log says so). The check runs before `needs_effort`.
 
 The refusal carries the effort rows of the matching ids (run13: an agent retried with a level it made up). `search_models` lists the matching recommended models first and its `Use with:` line names only a recommended id (`recommendedSearchMatches`): run13's `gpt-5.5` came from its OpenRouter listing.
 

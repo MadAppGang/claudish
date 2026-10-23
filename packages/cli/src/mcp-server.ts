@@ -79,8 +79,13 @@ import {
 import { probeLink } from "./providers/probe-live.js";
 import type { ProbeTarget } from "./providers/probe-runner.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
-import { gatherRouteCandidates } from "./providers/route-candidates.js";
-import { loadRoutingRules, matchRoutingRuleKey } from "./providers/routing-rules.js";
+import { catalogModelId, gatherRouteCandidates } from "./providers/route-candidates.js";
+import {
+  DEFAULT_FALLBACK_PROVIDER,
+  effectiveDefaultProvider,
+  loadRoutingRules,
+  matchRoutingRuleKey,
+} from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
 import { renderEffortTableMarkdown, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
@@ -740,9 +745,22 @@ export interface ModelChoiceFacts {
   inCatalog: (model: string) => boolean;
   /** A dynamic subscription claims the name (`swe-1.7` on Devin): the account decides it. */
   namespaceClaim: (model: string) => boolean;
+  /**
+   * The canonical id the catalog resolves the name to: `MiniMax-M3`, the alias
+   * `k3` or the route variant `gemini-4-argon-high` name a recommended model.
+   * Absent: the name itself.
+   */
+  canonicalId?: (model: string) => string | undefined;
+  /**
+   * A name the catalog lacks may still route: the user's `defaultProvider` is a
+   * provider of their choosing (LiteLLM, a custom endpoint), project rules live
+   * in a `work_dir` this server cannot read, or no catalog is readable (routing
+   * then refuses on its own). Absent: false.
+   */
+  catalogMissAllowed?: (model: string) => boolean;
 }
 
-function liveModelChoiceFacts(): ModelChoiceFacts {
+function liveModelChoiceFacts(opts: { projectRulesReadable?: boolean } = {}): ModelChoiceFacts {
   const recommended = readLastRecommendedModels()?.models ?? null;
   if (!recommended || recommended.length === 0) {
     log("[mcp] model check skipped: no recommended models list on disk");
@@ -756,6 +774,13 @@ function liveModelChoiceFacts(): ModelChoiceFacts {
     },
     inCatalog: (model) => !gatherRouteCandidates(model).catalogMiss,
     namespaceClaim: (model) => gatherRouteCandidates(model).candidates.length > 0,
+    canonicalId: (model) => catalogModelId(model),
+    catalogMissAllowed: (model) => {
+      if (opts.projectRulesReadable === false) return true;
+      if (!gatherRouteCandidates(model).catalogReadable) return true;
+      const fallback = effectiveDefaultProvider();
+      return fallback !== "" && fallback !== DEFAULT_FALLBACK_PROVIDER;
+    },
   };
 }
 
@@ -787,8 +812,10 @@ function bareNameVerdict(
   if (parsed.isExplicitProvider || parsed.isLegacySyntax) return undefined;
   const model = parsed.model;
   if (recommendedIds.has(model) || facts.userRule(model)) return undefined;
+  const canonical = facts.canonicalId?.(model);
+  if (canonical !== undefined && recommendedIds.has(canonical)) return undefined;
   if (facts.inCatalog(model)) return { kind: "not_recommended", model };
-  if (facts.namespaceClaim(model)) return undefined;
+  if (facts.namespaceClaim(model) || facts.catalogMissAllowed?.(model)) return undefined;
   return { kind: "unknown_model", model };
 }
 
@@ -930,9 +957,10 @@ function modelChoiceResult(
 function modelChoiceStop(
   pairs: ReadonlyArray<{ given: string; spec: string }>,
   required: ReadonlySet<string>,
-  how: string
+  how: string,
+  opts: { projectRulesReadable?: boolean } = {}
 ): ReturnType<typeof modelChoiceResult> | undefined {
-  const facts = liveModelChoiceFacts();
+  const facts = liveModelChoiceFacts(opts);
   const problems = modelChoiceProblems(pairs, required, facts);
   if (problems.length === 0 || !facts.recommended) return undefined;
   return modelChoiceResult(problems, facts.recommended, how);
@@ -1584,7 +1612,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           s += `| ${m.modelId} | ${m.matchedAlias ?? "-"} | ${plans} |\n`;
         }
         s +=
-          "\nPass the **bare name**. Routing puts a subscription ahead of the metered API and " +
+          "\nOnly the recommended models above start without `user_required_model`. " +
+          "Pass the **bare name**. Routing puts a subscription ahead of the metered API and " +
           "rewrites the model to that plan's wire id for you. An aggregator-qualified id " +
           "(`moonshotai/...`, `accounts/fireworks/...`) pins that aggregator and bills per token.\n";
         return s;
@@ -2542,7 +2571,12 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         const choice = modelChoiceStop(
           [{ given: args.model as string, spec: requestedModel }],
           new Set(args.user_required_model === true ? [args.model as string] : []),
-          "with user_required_model: true"
+          "with user_required_model: true",
+          // Project rules are read from this process's cwd, like route() (see pinning above).
+          {
+            projectRulesReadable:
+              typeof args.work_dir !== "string" || resolve(args.work_dir) === process.cwd(),
+          }
         );
         if (choice) return choice;
         const recommended =
