@@ -1,0 +1,337 @@
+description: "claudish MCP: does the caller pass list_models' recommended effort, and does it reach the wire?"
+
+# The table under test is generation-dependent: the Checks read the newest
+# generation of ~/.claudish/cloud-models-catalog-v3.efforts.json at grading time
+# (the same one list_models renders), so no recommended level is pinned in this file.
+params:
+  # The calling agent. It reaches the models under test only through claudish.
+  host: claude-sonnet-5-5
+  # THIS worktree's build. The installed claudish (and its plugin's MCP server)
+  # predates the effort table, so the run must not touch it.
+  claudish_js: /Users/jack/mag/claudish/.claude/worktrees/claudish-effort-level/packages/cli/dist/index.js
+  # The bun that runs it, ABSOLUTE: at sandbox level `home` the harness declares an absolute
+  # MCP `command` readable, while a bare `bun` resolves into ~/.bun, which the level hides
+  # (run3: the server never executed). Override with --param bun_bin=<path>.
+  bun_bin: /Users/jack/.bun/bin/bun
+  # The worktree root. The bundle in claudish_js imports @opentui/* at run time from
+  # packages/cli/node_modules, whose entries link into <root>/node_modules/.bun; the
+  # `home` read confinement declares only dist/ (run4 probe: "error: Unexpected while
+  # resolving package '@opentui/core'"), so both node_modules trees are shared below.
+  claudish_root: /Users/jack/mag/claudish/.claude/worktrees/claudish-effort-level
+  # The pane socket root for team / create_session children (CLAUDISH_PANE_ROOT). The
+  # default, /tmp/claudish-mux-<uid>, is outside the `home` read allow-set (run6 probe:
+  # "[mcp] stale pane sweep failed: EPERM: operation not permitted, lstat
+  # '/tmp/claudish-mux-501'"), and it holds the user's own live panes. A dedicated
+  # mode-700 directory, created once by hand (`mkdir -m 700 -p <path>`), is shared below.
+  pane_root: /private/tmp/claudish-bench-mux
+  # The last line of every prompt. Empty (the default): the user never mentions
+  # effort, and only the tool descriptions, the skill and list_models' output lead
+  # the agent to the table.
+  hint: ""
+  # The claudish plugin the host is GIVEN, staged by harness.config.plugins. The two
+  # folders differ in one file, skills/claudish-usage/SKILL.md:
+  #   ./plugins/installed/claudish  the installed claudish@magus 2.10.0 skill (no effort section)
+  #   ./plugins/worktree/claudish   this worktree's packages/cli/skills/claudish-usage/SKILL.md
+  plugin: ./plugins/installed/claudish
+  # How the user names the models. The defaults are exact ids; the `worktree-family`
+  # variant names only families ("a GPT model and a MiniMax model"), with [] as the
+  # named list so the Checks look up whatever the agent chose.
+  ui_models: "gpt-6-astra and gpt-6.1-sol"
+  ui_named: [gpt-6-astra, gpt-6.1-sol]
+  review_model: "gpt-6-luna"
+  review_named: [gpt-6-luna]
+  typo_models: "gpt-6-astra and minimax-m3"
+  typo_named: [gpt-6-astra, minimax-m3]
+  names_note: "Use the model names exactly as I wrote them."
+
+harness:
+  type: claude-code
+  model: "{{host}}"
+  use_subscription: required
+  # madbench's mechanism for giving the run ONE plugin of our choosing: the folder is
+  # staged as an installed, user-scoped, enabled registry in the run's own HOME, so the
+  # host's installed claudish@magus (and every other host plugin) is not loaded.
+  config:
+    plugins: ["{{plugin}}"]
+  # The MCP server is declared inline (a file path would resolve in the workspace)
+  # and --strict-mcp-config keeps any plugin's MCP server out.
+  #   CLAUDISH_BIN   team / create_session children run the same build, not PATH's claudish
+  #   CLAUDISH_DEBUG the server and every child write a debug log to <workspace>/logs/,
+  #                  which Layer B reads (pin line, [Wire] lines, raw SSE)
+  # --allowedTools "Bash(sleep:*)" mcp__claudish: the host polls team / list_sessions and needs a
+  # wait between polls; under --print an un-allowed Bash call is denied.
+  args:
+    - --mcp-config
+    - '{"mcpServers":{"claudish":{"command":"{{bun_bin}}","args":["{{claudish_js}}","--mcp"],"env":{"CLAUDISH_BIN":"{{claudish_js}}","CLAUDISH_DEBUG":"1","CLAUDISH_PANE_ROOT":"{{pane_root}}"}}}}'
+    - --strict-mcp-config
+    # Interactive: Bash parks at an approval menu nobody answers unless the mode is bypass.
+    - --permission-mode
+    - bypassPermissions
+    - --allowedTools
+    - "Bash(sleep:*)"
+    # At `home` the user's own permission settings are gone, and --print then denies an
+    # MCP tool call (run6 probe: "Claude requested permissions to use
+    # mcp__claudish__create_session, but you haven't granted it yet"). Allow the server.
+    - mcp__claudish
+
+defaults:
+  # home, because config.plugins stages its registry into the run's own HOME (madbench
+  # refuses it at workspace). home hides the real ~/.claudish (credentials, catalog,
+  # the effort sidecar), so it is shared back in live. The MCP server, its children and
+  # the Checks then read the same ~/.claudish as before.
+  sandbox:
+    level: home
+    share:
+      paths:
+        - { from: ~/.claudish, to: ~/.claudish, access: rw }
+        # Tool install dirs under the real home, which `home` hides. `ro` is refused
+        # below level container and `copy` would copy 29 GB (~/.bun), so they are live
+        # (rw) shares: the run CAN write there. bun runs the MCP server and its children;
+        # ~/.local/bin/claude -> ~/.local/share/claude/versions/<v> is what every team /
+        # session child launches.
+        - { from: ~/.bun, to: ~/.bun, access: rw }
+        - { from: ~/.local/bin, to: ~/.local/bin, access: rw }
+        - { from: ~/.local/share/claude, to: ~/.local/share/claude, access: rw }
+        - { from: "{{claudish_root}}/packages/cli", to: ~/.bench-share/cli, access: rw }
+        - { from: "{{claudish_root}}/package.json", to: ~/.bench-share/root-package.json, access: rw }
+        - { from: "{{claudish_root}}/node_modules", to: ~/.bench-share/root-node_modules, access: rw }
+        - { from: "{{pane_root}}", to: ~/.bench-share/pane-root, access: rw }
+  # Interactive, because only an interactive run gets madbench's first-run seeding
+  # (hasCompletedOnboarding, workspace trust) in the sandbox's ~/.claude.json, and the
+  # team / session children are interactive Claude Code in the SAME HOME and cwd. Under
+  # --print at `home` a child stopped at the theme picker (run7 probe: FAILED
+  # "first_run_dialog", "Welcome to Claude Code v2.1.309 … Let's get started.").
+  interactive: true
+  timeout: 720s
+  capture: log
+
+defaultScenario:
+  metrics:
+    - "metrics.usd = cost"
+
+metrics:
+  - metrics.consultedTable = mean(consultedScore)
+  - metrics.effortArgs = mean(argsScore)
+  - metrics.effortFlag = mean(flagScore)
+  - metrics.effortWire = mean(wireScore)
+  - metrics.bareNames = mean(bareScore)
+  - metrics.skillUsed = mean(skillScore)
+  - metrics.needsEffortRight = mean(needsEffortScore)
+  - metrics.needsEffortAnswers = sum(needsEffortCount)
+  - 'metrics.spend = { value: sum(usd), unit: "usd", better: "lower" }'
+
+scenarios:
+  # ── frontend_ui, team, two named models with different levels ───────────────
+  - name: team-frontend
+    description: "team run on two named models for a frontend UI task"
+    prompt: |
+      Use claudish's `team` tool to have {{ui_models}} each do this frontend task
+      independently:
+
+        Write a small React component `PricingCard` (TypeScript, Tailwind classes)
+        that shows a plan name, a monthly price and a "Choose plan" button. Reply
+        with the code only. Do not create or edit any files.
+
+      Use the path `team-ui`. {{names_note}} Wait for both to finish (run `sleep 15` with Bash between status checks), then show me
+      each model's answer. {{hint}}
+    checks:
+      - { type: environment:mcp-reachable, value: claudish }
+      # Setup: the staged plugin's skill is the one Claude Code registered.
+      - { type: environment:skill-registered, value: "claudish:claudish-usage" }
+      # Readout: whether the agent opened the skill at all.
+      - { type: session:skill-used, value: "claudish:claudish-usage", metric: SkillUsed, readout: true, metrics: ["metrics.skillScore = score"] }
+      # A: bare model names; no prompt here names a provider.
+      - type: ts
+        metric: BareNames
+        metrics: ["metrics.bareScore = score"]
+        value: file://checks/bare-names.ts
+        config: { tool: team }
+      # A0: the table is in list_models' output, so reading it must come first.
+      - type: session:tool-sequence
+        metric: ConsultedTable
+        readout: true          # a measurement: needs_effort now supplies the rows too
+        metrics: ["metrics.consultedScore = score"]
+        value: [mcp__claudish__list_models, mcp__claudish__team]
+      # A: each model's effort == its frontend_ui level.
+      - type: ts
+        metric: EffortArgs
+        metrics: ["metrics.argsScore = score"]
+        value: file://checks/effort-args.ts
+        config: { tool: team, column: frontend_ui, models: "{{ui_named}}" }
+      # Readout: needs_effort answers before the started call, and whether the retry
+      # carried this column's levels (Evidence names the column(s) it matched).
+      - type: ts
+        metric: NeedsEffort
+        readout: true
+        metrics: ["metrics.needsEffortScore = score", "metrics.needsEffortCount = evidence.needsEffortBefore"]
+        value: file://checks/needs-effort.ts
+        config: { tool: team, column: frontend_ui }
+      # B1: each slot's child claudish pinned the level it was given.
+      - type: ts
+        metric: EffortFlag
+        metrics: ["metrics.flagScore = score"]
+        value: file://checks/effort-plumbing.ts
+        config: { tool: team, stage: flag }
+      # B2: the provider echoed that level on the child's request.
+      - type: ts
+        metric: EffortWire
+        metrics: ["metrics.wireScore = score"]
+        value: file://checks/effort-plumbing.ts
+        config: { tool: team, stage: wire }
+
+  # ── code_review, create_session, one named model ─────────────────────────────
+  - name: session-code-review
+    description: "create_session on one named model for a code review"
+    prompt: |
+      Use claudish's `create_session` tool to have {{review_model}} review this
+      function for bugs. Tell it to reply with a short list of the bugs it finds and not to
+      create or edit any files.
+
+        function average(xs: number[]): number {
+          let sum = 0;
+          for (let i = 1; i <= xs.length; i++) sum += xs[i];
+          return sum / xs.length;
+        }
+
+      {{names_note}} Wait for the session to finish (run `sleep 15` with Bash
+      between list_sessions checks), then show me its review. {{hint}}
+    checks:
+      - { type: environment:mcp-reachable, value: claudish }
+      # Setup: the staged plugin's skill is the one Claude Code registered.
+      - { type: environment:skill-registered, value: "claudish:claudish-usage" }
+      # Readout: whether the agent opened the skill at all.
+      - { type: session:skill-used, value: "claudish:claudish-usage", metric: SkillUsed, readout: true, metrics: ["metrics.skillScore = score"] }
+      # A: bare model names; no prompt here names a provider.
+      - type: ts
+        metric: BareNames
+        metrics: ["metrics.bareScore = score"]
+        value: file://checks/bare-names.ts
+        config: { tool: create_session }
+      - type: session:tool-sequence
+        metric: ConsultedTable
+        readout: true          # a measurement: needs_effort now supplies the rows too
+        metrics: ["metrics.consultedScore = score"]
+        value: [mcp__claudish__list_models, mcp__claudish__create_session]
+      - type: ts
+        metric: EffortArgs
+        metrics: ["metrics.argsScore = score"]
+        value: file://checks/effort-args.ts
+        config: { tool: create_session, column: code_review, models: "{{review_named}}" }
+      # Readout: needs_effort answers before the started call, and whether the retry
+      # carried this column's levels (Evidence names the column(s) it matched).
+      - type: ts
+        metric: NeedsEffort
+        readout: true
+        metrics: ["metrics.needsEffortScore = score", "metrics.needsEffortCount = evidence.needsEffortBefore"]
+        value: file://checks/needs-effort.ts
+        config: { tool: create_session, column: code_review }
+      - type: ts
+        metric: EffortFlag
+        metrics: ["metrics.flagScore = score"]
+        value: file://checks/effort-plumbing.ts
+        config: { tool: create_session, stage: flag }
+      - type: ts
+        metric: EffortWire
+        metrics: ["metrics.wireScore = score"]
+        value: file://checks/effort-plumbing.ts
+        config: { tool: create_session, stage: wire }
+
+  # ── implementation, run_prompt, the agent picks the model ────────────────────
+  - name: run-prompt-pick
+    description: "run_prompt on a model the agent picks, for an implementation task"
+    prompt: |
+      I need a TypeScript function `isLeapYear(year: number): boolean` that follows
+      the Gregorian calendar rules. Ask one of claudish's recommended OpenAI GPT
+      models to write it, with the `run_prompt` tool: pick whichever one you think
+      fits this kind of task best. Show me the code it returns. {{hint}}
+    checks:
+      - { type: environment:mcp-reachable, value: claudish }
+      # Setup: the staged plugin's skill is the one Claude Code registered.
+      - { type: environment:skill-registered, value: "claudish:claudish-usage" }
+      # Readout: whether the agent opened the skill at all.
+      - { type: session:skill-used, value: "claudish:claudish-usage", metric: SkillUsed, readout: true, metrics: ["metrics.skillScore = score"] }
+      # A: bare model names; no prompt here names a provider.
+      - type: ts
+        metric: BareNames
+        metrics: ["metrics.bareScore = score"]
+        value: file://checks/bare-names.ts
+        config: { tool: run_prompt }
+      - type: session:tool-sequence
+        metric: ConsultedTable
+        readout: true          # a measurement: needs_effort now supplies the rows too
+        metrics: ["metrics.consultedScore = score"]
+        value: [mcp__claudish__list_models, mcp__claudish__run_prompt]
+      # No `models:`: the agent chose. The expected level is looked up for whatever it ran.
+      - type: ts
+        metric: EffortArgs
+        metrics: ["metrics.argsScore = score"]
+        value: file://checks/effort-args.ts
+        config: { tool: run_prompt, column: implementation }
+      # Readout: needs_effort answers before the started call, and whether the retry
+      # carried this column's levels (Evidence names the column(s) it matched).
+      - type: ts
+        metric: NeedsEffort
+        readout: true
+        metrics: ["metrics.needsEffortScore = score", "metrics.needsEffortCount = evidence.needsEffortBefore"]
+        value: file://checks/needs-effort.ts
+        config: { tool: run_prompt, column: implementation }
+      # run_prompt has no child: only the wire stage applies (the MCP server's own proxy).
+      - type: ts
+        metric: EffortWire
+        metrics: ["metrics.wireScore = score"]
+        value: file://checks/effort-plumbing.ts
+        config: { tool: run_prompt, stage: wire }
+
+  # ── quick_edit, team, one named model in the table and one not ──────────────
+  - name: team-no-entry
+    description: "team run where one named model has no table entry: its effort must be omitted"
+    prompt: |
+      Use claudish's `team` tool to have {{typo_models}} each make this one-line
+      fix independently:
+
+        The line `return "Helo, " + name;` has a typo. Reply with the corrected
+        line only. Do not create or edit any files.
+
+      Use the path `team-typo`. {{names_note}} Wait for both to finish (run `sleep 15` with Bash between status checks), then show me
+      each model's answer. {{hint}}
+    checks:
+      - { type: environment:mcp-reachable, value: claudish }
+      # Setup: the staged plugin's skill is the one Claude Code registered.
+      - { type: environment:skill-registered, value: "claudish:claudish-usage" }
+      # Readout: whether the agent opened the skill at all.
+      - { type: session:skill-used, value: "claudish:claudish-usage", metric: SkillUsed, readout: true, metrics: ["metrics.skillScore = score"] }
+      # A: bare model names; no prompt here names a provider.
+      - type: ts
+        metric: BareNames
+        metrics: ["metrics.bareScore = score"]
+        value: file://checks/bare-names.ts
+        config: { tool: team }
+      - type: session:tool-sequence
+        metric: ConsultedTable
+        readout: true          # a measurement: needs_effort now supplies the rows too
+        metrics: ["metrics.consultedScore = score"]
+        value: [mcp__claudish__list_models, mcp__claudish__team]
+      # A: the GPT model gets its quick_edit level; no MiniMax model has a row in the table, so no key for it.
+      - type: ts
+        metric: EffortArgs
+        metrics: ["metrics.argsScore = score"]
+        value: file://checks/effort-args.ts
+        config: { tool: team, column: quick_edit, models: "{{typo_named}}" }
+      # Readout: needs_effort answers before the started call, and whether the retry
+      # carried this column's levels (Evidence names the column(s) it matched).
+      - type: ts
+        metric: NeedsEffort
+        readout: true
+        metrics: ["metrics.needsEffortScore = score", "metrics.needsEffortCount = evidence.needsEffortBefore"]
+        value: file://checks/needs-effort.ts
+        config: { tool: team, column: quick_edit }
+      - type: ts
+        metric: EffortFlag
+        metrics: ["metrics.flagScore = score"]
+        value: file://checks/effort-plumbing.ts
+        config: { tool: team, stage: flag }
+      - type: ts
+        metric: EffortWire
+        metrics: ["metrics.wireScore = score"]
+        value: file://checks/effort-plumbing.ts
+        config: { tool: team, stage: wire }

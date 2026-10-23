@@ -1,0 +1,12 @@
+{
+  "name": "claudish",
+  "version": "2.10.0",
+  "description": "MCP runtime for external AI models. Proxies OpenRouter, Ollama and LM Studio, runs blind team voting, manages async sessions, and shows the session's runs live above the prompt, with stop and live-screen tabs. Required by code-search, dev, multimodel and designer.",
+  "author": {
+    "name": "Jack Rudenko",
+    "email": "i@madappgang.com",
+    "company": "MadAppGang"
+  },
+  "license": "MIT",
+  "skills": "./skills/"
+}
