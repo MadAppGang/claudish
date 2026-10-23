@@ -60,8 +60,8 @@ CronCreate(cron: "37 */12 * * *",
 ```
 
 Le prompt pointe le **fichier** : un skill créé en session n'est pas hot-loadé. Le job est session-only,
-expire à 7 jours et peut disparaître sans signal. La Phase 0 ne rattrape pas la perte du déclencheur
-lui-même : seul le user ou un pair la remarque.
+expire à 7 jours et peut disparaître sans signal. La Phase 0 ne rattrape pas la perte du déclencheur :
+seul le user ou un pair la voit.
 
 ### Phase 1 — Contexte
 
@@ -90,17 +90,16 @@ docker image inspect claudish-claudish-proxy --format 'created={{.Created}}'
   `docker ps -q | xargs -r docker inspect --format '{{.State.StartedAt}}  {{.Name}}' | sort` — départs
   groupés = daemon ou hôte (`LastBootUpTime`, System 41/6008/1074, `nvlddmkm`) ; un départ isolé seul rend
   la question « qui ? » sensée.
-- **Une capture locale ne prouve pas une bascule** (un repli isolé `[1/2]` en écrit aussi) — discriminant :
-  `docker logs claudish-sidecar --tail 800 --timestamps 2>&1 | grep -E "\[Relay\] (upstream|forward failed)"`,
-  fenêtre bornée, épisodes **comptés** (`→ AUTONOMOUS` / `healthy again`). Jamais « le hub est tombé » : une
-  bascule mesure la joignabilité, pas la vie ; sans preuve hub-side, écrire « attribution hub non établie ».
+- **Une capture locale ne prouve pas une bascule** (un repli `[1/2]` en écrit aussi) : compter les épisodes
+  `\[Relay\] (upstream|forward failed)` de `docker logs claudish-sidecar --tail 800 --timestamps`, fenêtre
+  bornée. Une bascule mesure la joignabilité, pas la vie : sans preuve hub-side, « attribution hub non établie ».
 - Causes à écarter d'abord : compaction nocturne du hub (`compaction.log`, ~00:47Z → 02-03Z) ; restart
   proactif du watchdog (03:00-06:00 locale) ; deploys et recreates annoncés.
 
   Seul un épisode sans cause mérite une enquête.
 - **`settings.json` de chaque machine (user 20/10, mandat répété)** : `scripts/settings-matrix.py`
-  (instantanés RooSync) + la ligne de forme postée par chaque lane. Drapeaux : non couvert, > 48 h, clé
-  de crédit renseignée, hors canon, divergences. Je dois savoir ce que contient chaque fichier (reference.md).
+  (instantanés RooSync ; il imprime ses drapeaux) + la ligne de forme postée par chaque lane. Je dois
+  savoir ce que contient chaque fichier (reference.md).
 
 ### Phase 3 — Trafic et leak-policy
 
@@ -112,24 +111,19 @@ Règles de verdict :
 - **Jamais de leak-policy depuis les logs du sidecar** : en NOMINAL, il est muet sur mon propre trafic. La
   source est le **corpus hub** (SMB, lecture seule). Écrire « à travers claudish », jamais « ailleurs ».
 - **Facturé Anthropic = le backend qui a servi** (`resp-*-native-*.sse`), pas le modèle demandé.
-  - L'attribution tient dans les 300 premiers octets de `req-*.json` (`machine`, `model`).
-  - Les captures n'ont pas de retour ligne : les lire par blocs.
-  - `rNNNN` repart à zéro à chaque restart : l'horodatage apparie `req` et `resp`.
-  - Le nom d'archive ne porte pas la machine.
+  Attribution : 300 premiers octets de `req-*.json` ; pièges de lecture (pas de retour ligne,
+  `rNNNN` remis à zéro, archive sans machine) : reference.md § Phase 3.
 - **Le seau `machine=""`** (le relais préserve l'en-tête, il ne le pose jamais) ne doit contenir **aucun
   Opus** avant un verdict. Contrôle de complétude : en-têtes extraits == `req-*` annoncés.
-- **Transcripts** :
-  - dédupliquer par `message.id`, car les `agent-*.jsonl` rejouent (~2,5×) ;
-  - motif `"model":"claude-opus-5"` **sans** `[1m]`, établi par `uniq -c` avant de compter ;
-  - sens attendu : **hub ≥ transcripts**.
+- **Transcripts** : dédupliquer par `message.id` (les `agent-*.jsonl` rejouent ~2,5×) ; motif sans
+  `[1m]` et sens attendu (hub ≥ transcripts) : reference.md § Phase 3.
 
 **Politique Opus (user, 31/08)** — Opus réservé aux 5 lanes d'ai-01 (`d--CoursIA`, `d--roo-extensions`,
 `d--2025-Epita-Intelligence-Symbolique`, `d--Argumentum`, `d--claudish`), plus 2 promues sans signal
 (`g--Mon-Drive-Maintenance` ai-01 ; `D:\Dev\CoursIA-3` po-2024, `device_id8=0b9b0d8c`). Le reste tourne en
 Sonnet/GLM ou Haiku/MiniMax ; une 6ᵉ lane n'est pas une faute d'office, mais elle se **signale et se date**.
-- **Leak visé** : Opus non désiré sur une lane d'ai-01 (oubli de rétrogradation, contamination par l'UI) —
-  signature, une **bascule** 100 % budget → 100 % Opus à une heure donnée ; 0 `agent-*.jsonl` = session
-  interactive. Boucle de détection : reference.md § Phase 3.
+- **Leak visé** : Opus non désiré sur une lane d'ai-01 ; signature, une **bascule** 100 % budget → 100 %
+  Opus. Boucle de détection : reference.md § Phase 3.
 - **Inter-machines (user 20/10)** : aucune restriction en dur, chaque machine s'authentifie elle-même ; Opus
   hors ai-01 reste exceptionnel (durable : CoursIA-3 seul ; po-2025 20/10 = temporaire autorisé, suivi jusqu'au retour). Signaler un Opus qui **dure** hors ai-01, pas
   un usage ponctuel. Sous-agent : `cc_is_subagent=true`, dans le corps de la requête.
@@ -150,7 +144,8 @@ gh pr list --repo jsboige/claudish --state open --json number,title,headRefName,
 - **Avant review ou merge** :
   - lire le body, tous les commentaires, toutes les reviews avec leur `state`, et le diff ;
   - vérifier `Closes #NN` dans le body **et** dans les commits de branche (`git log origin/main..<branche>`) ;
-  - faire foi des tests locaux (aucun gate CI réel) ;
+  - rejouer en local ; le job CI `test` exécute la suite complète (mesuré 23/10 : 2529 tests sur
+    155 fichiers), lire ses compteurs plutôt que sa couleur ;
   - faire tourner une mutation sur chaque garde ajoutée.
   - Pas de merge sur un CR non adressé. Mes CR sont des **commentaires** : écrire « attend TON push » dans
     la file du worker.
@@ -223,9 +218,6 @@ s'endormir sans cron, ni écrire « garanti jusqu'au prochain cycle ».
 
 ## Pièges vérifiés
 
-- **Ne jamais recréer le conteneur qui porte mon trafic** hors gate 5b. Toujours passer par
-  `scripts/claudish-drain.ps1` (détaché, `-Recreate -EnvFile` explicite), jamais par un `docker restart` nu.
-  Comparer l'env **par valeur** avant tout recreate. `drain.log` est en heure locale.
 - **Après un crash Docker** : `test -f` sur chaque bind fichier, car Docker recrée un fichier manquant en
   répertoire (EISDIR). Un `up -d` nu recharge le `.env` du checkout. `Created` ≠ running : faire foi de
   `docker ps -a` + `/health`.
