@@ -17,9 +17,19 @@ export function formatInBandApiError(code: string, message: string): string {
 /**
  * The error when the WHOLE answer is one in-band marker, else null. A marker
  * inside a longer answer is the model's own text and is never read as an error.
+ * `trailing` also accepts a marker that ENDS the answer after a blank line, as
+ * the writer appends it after a preamble ("I'll read the file."); the caller
+ * passes it only for a turn that never read its task file, where nothing after
+ * the preamble can be an answer.
  */
-export function parseInBandApiError(answer: string): { code: string; text: string } | null {
-  const m = /^\[API Error: (\S+)([\s\S]*)\]$/.exec(answer.trim());
+export function parseInBandApiError(
+  answer: string,
+  opts: { trailing?: boolean } = {}
+): { code: string; text: string } | null {
+  const trimmed = answer.trim();
+  const m =
+    /^\[API Error: (\S+)([\s\S]*)\]$/.exec(trimmed) ??
+    (opts.trailing ? /\n\n\[API Error: (\S+)([^\n\]]*)\]$/.exec(trimmed) : null);
   if (!m) return null;
   return { code: m[1], text: `${m[1]}${m[2]}` };
 }

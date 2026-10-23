@@ -928,7 +928,9 @@ type Verdict = { state: "FAILED" | "EMPTY"; reason: FailureReason; detail: strin
 function classifyTurnSignals(input: Parameters<typeof classifyRunOutput>[0]): Verdict | null {
   const { stopReason, promptRead } = input;
   // An error claudish wrote into the stream as text carries no Claude Code flag.
-  const inBand = input.apiError ? null : parseInBandApiError(input.answer);
+  const inBand = input.apiError
+    ? null
+    : parseInBandApiError(input.answer, { trailing: promptRead?.complete === false });
   const apiError = input.apiError ?? (inBand ? { status: null, text: inBand.text } : null);
   if (apiError) {
     const status = apiError.status === null ? "" : ` (status ${apiError.status})`;
