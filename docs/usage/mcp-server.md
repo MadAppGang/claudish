@@ -67,6 +67,8 @@ routing straight to the provider's API.
 - `model` (required) - Model name or model spec. A bare name auto-routes to the best provider (e.g., `kimi-k3`, `glm-5.3`); `provider@model` pins the provider (e.g., `google@gemini-4-argon`, `or@x-ai/grok-4.7`).
 - `prompt` (required) - The prompt to send
 - `system_prompt` (optional) - System prompt for context
+- `user_required_provider` (optional) - `true` when you, the user, named the provider: the `provider@model` spec is sent as given. Without it, a `provider@` on a cloud catalog model is removed so claudish routing picks the provider from your setup; the answer names what was removed. Local providers, custom URLs and chains are never changed
+- `effort` (optional) - Reasoning effort for this request (`none` … `max`). Take it from the `list_models` effort table; `default` keeps Claude Code's own. Omitted while the model has a row in the table, nothing runs and the answer is `needs_effort:` with that row. Sent as `output_config.effort` and mapped onto the levels the model's connection publishes; ignored for a bare Claude name
 
 There is no output-limit parameter. The request carries no `max_tokens`, so the provider applies
 its own default.
@@ -117,6 +119,11 @@ List recommended models with pricing and capabilities.
 - Pricing (per 1M tokens)
 - Context window
 - Capabilities (Tools, Reasoning, Vision)
+
+After the models, a **Recommended effort by task type** table from the cloud models catalog: a
+row per model, a column per task type (`planning`, `implementation`, `code_review`, …). The
+calling agent picks the column for its task and passes each model's cell as `team` `efforts` or
+`create_session` / `run_prompt` `effort`. claudish never guesses the task type itself.
 
 ---
 
@@ -172,6 +179,8 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 - `mode` (required) - One of: `run`, `status`, `list`, `capture`, `cancel`, `resize`, `judge`, `run-and-judge`
 - `path` - Session directory path (must be within current working directory). Required by every mode except `list`
 - `models` - Model IDs to run (required for `run` and `run-and-judge`). Native Claude names (`opus`, `sonnet`, `haiku`, `internal`) are runnable slots too
+- `user_required_provider` - The `models` / `judges` entries whose provider you, the user, named, exactly as written there. A `provider@` on a cloud catalog model is removed so claudish routing picks the provider from your setup; the answer names what was removed. Local providers, custom URLs and chains are never changed
+- `efforts` - Reasoning effort per model, e.g. `{"gpt-6-luna": "high", "kimi-k3": "max"}`. Keys must match a `models` entry exactly. Take each level from the `list_models` effort table. The slot pins it on every request (`--effort-override`); a model without an entry keeps Claude Code's own effort. Omitted while a model has a row, nothing starts and the answer is `needs_effort:` with the rows; `{}` keeps Claude Code's own effort for every model
 - `judges` - Model IDs to use as judges (default: same as runners)
 - `input_file` - Path to a file holding the task prompt (preferred for anything longer than a sentence)
 - `input` - Task prompt as inline text. If neither is given, an `input.md` already in the session directory is used
@@ -339,6 +348,8 @@ is interactive and waits for `send_input`.
 - `timeout_seconds` (optional) - Session timeout in whole seconds, 1-3600 (default: 600). A fractional value is rounded and an out-of-range one clamped, so `spawn.json` always carries an integer in that range
 - `agent` (optional) - Claude Code subagent the session runs as, e.g. `dev:reviewer`
 - `claude_flags` (optional) - Other Claude Code / claudish flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`; a value after a Claude Code switch, as in `--brief now`, would be the session's first prompt and is refused). Flags the pane owns (`-p`, `--resume`, `--model`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
+- `user_required_provider` (optional) - `true` when you, the user, named the provider. A `provider@` on a cloud catalog model is removed so claudish routing picks the provider from your setup; the answer names what was removed. Local providers, custom URLs and chains are never changed
+- `effort` (optional) - Reasoning effort for the whole session, from the `list_models` effort table. Pinned on every request (`--effort-override`), over one in `claude_flags`. `default` keeps Claude Code's own; omitted while the model has a row, nothing starts and the answer is `needs_effort:`
 - `work_dir` (optional) - Working directory for the session (default: current directory)
 - `setup_from` (optional) - Directory whose `.claude/settings.json` and `settings.local.json` the session inherits, so a session in another `work_dir` keeps your project's plugins and agents. Default: your project directory, when `work_dir` differs from it. `null` keeps the session on `work_dir`'s own settings only
 

@@ -45,6 +45,43 @@ Does user say "directly" or "in main context"? → YES → Run in main context (
 Find appropriate agent or create one → Delegate to sub-agent (default)
 ```
 
+### 🏷️ Model Names
+
+claudish routing picks the provider from the user's setup: their configured providers,
+subscriptions first, their preferences and manual overrides. Do not choose it yourself.
+
+1. **Pass bare names** (`gpt-6.1-sol`, `minimax-m3`), never `provider@model`, unless the
+   user named the provider. A `provider@` on a catalog model is removed by the MCP tools,
+   and their answer says so.
+2. **User named the provider** ("run Kimi on OpenRouter"): pass the spec and list it in
+   `user_required_provider` (`team`: an array of those `models`/`judges` entries;
+   `create_session` / `run_prompt`: `true`).
+3. **User named exact models:** pass them as given. No `preflight` or `search_models`
+   call is needed to check them: claudish routes and checks them. You still read
+   `list_models` once for their efforts (next section).
+4. **User named only a family or vendor** ("a GPT model", "minimax", "latest Grok"): call
+   `list_models` and take the newest model of that family from it, as a bare name.
+
+### 🎚️ Reasoning Effort per Model
+
+Before `team`, `create_session` or `run_prompt` on an external model:
+
+1. Call `list_models`. Its last section, **Recommended effort by task type**, has a row per
+   model and a column per task type.
+2. Map YOUR task to one column (planning, implementation, code_review, debugging, …). You
+   know the task; claudish does not guess it.
+3. For each model you run, take its cell. This works the same when the models were chosen
+   with the user and when the task already fixed them.
+4. Pass it: `team(..., models: [...], efforts: {"<model>": "<level>"})` with keys exactly
+   as in `models`, or `create_session(..., effort: "<level>")`, or
+   `run_prompt(..., effort: "<level>")`.
+
+A model with no row, or `-` in your column, gets no entry: it keeps Claude Code's own effort.
+
+If you call without any effort while a model has a row, nothing starts: the tool answers
+`needs_effort:` with each model's levels by task type. Pick your column and call again. To keep
+Claude Code's own level on purpose, pass `efforts: {}` (`team`) or `effort: "default"`.
+
 ## 🤖 Agent Selection Guide
 
 ### Step 1: Find the Right Agent
@@ -167,14 +204,12 @@ Claudish (Claude-ish) is a proxy tool that:
 
 ## Model Routing
 
-| Prefix | Backend | Example |
-|--------|---------|---------|
-| _(none)_ | OpenRouter | `openai/gpt-5.3` |
-| `g/` `gemini/` | Google Gemini | `g/gemini-2.0-flash` |
-| `oai/` `openai/` | OpenAI | `oai/gpt-4o` |
-| `ollama/` | Ollama | `ollama/llama3.2` |
-| `lmstudio/` | LM Studio | `lmstudio/model` |
-| `http://...` | Custom | `http://localhost:8000/model` |
+| You write | claudish does | Example |
+|-----------|---------------|---------|
+| bare name | routes through the user's setup (subscription first) | `gpt-6.1-sol` |
+| `provider@model` | that provider only (MCP tools: only with `user_required_provider`) | `or@moonshotai/kimi-k3` |
+| `ollama@` `lmstudio@` | a local model, never stripped | `ollama@llama3.2` |
+| `http://...` | a custom endpoint, never stripped | `http://localhost:8000/model` |
 
 **Use Cases:**
 - Run tasks with different AI models (Grok for speed, GPT-5.3 for reasoning, Gemini for large context)
