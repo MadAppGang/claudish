@@ -2,6 +2,30 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.4.0] - 2026-10-23
+
+### Bug Fixes
+
+- read a trailing in-band API error on an unread turn *(team)* ([`13c0cf0`](https://github.com/MadAppGang/claudish/commit/13c0cf0a1d095f5caf7d089602042ab67af5e7ab))
+- compare canonical catalog ids in the model check *(mcp)* ([`0e5a79f`](https://github.com/MadAppGang/claudish/commit/0e5a79fde53eecd5b03baeb44934f0ca19b49da1))
+- suggest only a recommended model in search_models *(mcp)* ([`edd4cef`](https://github.com/MadAppGang/claudish/commit/edd4cef53f39fa45362567a7cd359ec2f186fdc2))
+- report an in-band API error as api_error, not prompt_not_read *(team)* ([`6c48093`](https://github.com/MadAppGang/claudish/commit/6c480936b741a85e80a356e398a5494a3b292dcb))
+- answer 'session_id' is required instead of a path-join error *(mcp)* ([`89e8230`](https://github.com/MadAppGang/claudish/commit/89e82304facc053b3aa5c049c23bc45cdc2af1c3))
+- add effort rows of the matching ids to the model-check answer *(mcp)* ([`64fc5fa`](https://github.com/MadAppGang/claudish/commit/64fc5faf81b0be2c275d8e05e9d2405edf1cb90b))
+
+### Documentation
+
+- update CHANGELOG.md for v14.3.0([`8f0ebdf`](https://github.com/MadAppGang/claudish/commit/8f0ebdf4700c905341d45ec4c3b0ddb874b86d3d))
+
+### New Features
+
+- refuse a bare name outside the recommended models list *(mcp)* ([`621a523`](https://github.com/MadAppGang/claudish/commit/621a5232a87ff08a4fe2095ea0ca80c471ac7a49))
+
+### Other Changes
+
+- v14.4.0 (#347) *(release)* ([`1728cca`](https://github.com/MadAppGang/claudish/commit/1728ccab4e595d105f24e2ecca800d5bb314d90b))
+- v14.4.0 *(release)* ([`cdab576`](https://github.com/MadAppGang/claudish/commit/cdab5765780124d96426019e900c5f09df089928))
+
 ## [14.3.0] - 2026-10-23
 
 ### Documentation
