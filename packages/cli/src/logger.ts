@@ -76,10 +76,10 @@ function scheduleFlush(): void {
 /**
  * Keep only the most recent N log files, delete older ones.
  */
-function rotateOldLogs(dir: string, keep: number): void {
+function rotateOldLogs(dir: string, keep: number, name = "claudish"): void {
   try {
     const files = readdirSync(dir)
-      .filter((f) => f.startsWith("claudish_") && f.endsWith(".log"))
+      .filter((f) => f.startsWith(`${name}_`) && f.endsWith(".log"))
       .sort()
       .reverse();
     for (const file of files.slice(keep)) {
@@ -158,6 +158,13 @@ function isStructuralLogWorthy(msg: string): boolean {
     // empty and whose failure the user most needs named.
     msg.startsWith("[Claude Code]") ||
     msg.startsWith("[Fallback]") ||
+    // The MCP server's own failures: a tool that answered from a fallback (an
+    // older catalog generation, no recommended list) says why only here.
+    msg.startsWith("[mcp]") ||
+    msg.startsWith("[recommended]") ||
+    msg.startsWith("[catalog]") ||
+    msg.startsWith("[effort]") ||
+    msg.startsWith("[team]") ||
     // Connection-recovery episodes: which target, which attempt, how long the
     // next gap is, and how the episode ended. Without this entry the ladder's
     // only trace is behind `-d`, and the one thing a user reports about an
@@ -229,7 +236,14 @@ function logFileStamp(): string {
 export function initLogger(
   debugMode: boolean,
   level: "debug" | "info" | "minimal" = "info",
-  noLogs = false
+  noLogs = false,
+  // The file name prefix of the always-on log, rotated per prefix: the MCP server
+  // passes "claudish-mcp" so its files never push a session's log out of those kept.
+  name = "claudish",
+  // Files kept per prefix. Every Claude Code session and every team or session child
+  // starts its own MCP server, so a busy run writes dozens of MCP logs in minutes:
+  // with 20 kept, the files of a failure were gone before anyone read them.
+  keep = 20
 ): void {
   // Tier 1: Always-on structural logging (unless --log-off)
   if (!noLogs) {
@@ -237,12 +251,12 @@ export function initLogger(
     if (!existsSync(logsDir)) {
       mkdirSync(logsDir, { recursive: true });
     }
-    alwaysOnLogPath = join(logsDir, `claudish_${logFileStamp()}.log`);
+    alwaysOnLogPath = join(logsDir, `${name}_${logFileStamp()}.log`);
     writeFileSync(
       alwaysOnLogPath,
       `Claudish Session Log - ${new Date().toISOString()}\nMode: structural (content redacted)\n${"=".repeat(60)}\n\n`
     );
-    rotateOldLogs(logsDir, 20);
+    rotateOldLogs(logsDir, keep, name);
     // Start flush timer if not already running
     scheduleFlush();
   }
