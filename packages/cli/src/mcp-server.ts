@@ -77,6 +77,7 @@ import {
 } from "./providers/preflight-chain.js";
 import { probeLink } from "./providers/probe-live.js";
 import type { ProbeTarget } from "./providers/probe-runner.js";
+import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
 import { createProxyServer } from "./proxy-server.js";
 import { renderEffortTableMarkdown, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
@@ -656,7 +657,11 @@ export function stripUnrequestedProvider(
   if (required || parseModelChain(spec).length !== 1) return spec;
   const parsed = parseModelSpec(spec);
   if (!parsed.isExplicitProvider || parsed.isLegacySyntax) return spec;
-  if (parsed.provider === "custom-url" || isLocalProviderName(parsed.provider)) return spec;
+  // Only a built-in claudish provider: a user's custom endpoint (`corp-proxy@gpt-4o`)
+  // or an explicit metered `anthropic@claude-*` names a vendor and a bill the
+  // bare name would not reach.
+  const builtin = BUILTIN_PROVIDERS.find((p) => p.name === parsed.provider);
+  if (!builtin || builtin.isLocal || isLocalProviderName(parsed.provider)) return spec;
   if (!isCatalogModel(parsed.model)) return spec;
   return spec.slice(spec.indexOf("@") + 1);
 }
@@ -690,10 +695,19 @@ export function strippedProviders(
   required: ReadonlySet<string>,
   isCatalogModel?: (id: string) => boolean
 ): { specs: string[]; stripped: Array<{ from: string; to: string }> } {
+  const proposed = specs.map((from) =>
+    stripUnrequestedProvider(from, required.has(from), isCatalogModel)
+  );
+  // Two different specs that would strip to one name (`or@kimi-k3`, `kc@kimi-k3`)
+  // are a provider comparison: both keep their provider, so neither slot loses
+  // its route or its effort to the other.
   const stripped: Array<{ from: string; to: string }> = [];
-  const out = specs.map((from) => {
-    const to = stripUnrequestedProvider(from, required.has(from), isCatalogModel);
-    if (to !== from) stripped.push({ from, to });
+  const out = specs.map((from, i) => {
+    const to = proposed[i];
+    if (to === from) return from;
+    const collides = proposed.some((other, j) => j !== i && other === to && specs[j] !== from);
+    if (collides) return from;
+    stripped.push({ from, to });
     return to;
   });
   if (stripped.length > 0) {

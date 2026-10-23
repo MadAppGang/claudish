@@ -12,7 +12,16 @@ const capture = JSON.parse(
     "utf8"
   )
 ) as { entries: Array<{ modelId: string; aliases?: string[] }> };
-const canonicalIds = new Set(capture.entries.map((entry) => entry.modelId));
+const wireCapture = JSON.parse(
+  readFileSync(
+    new URL("./test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json", import.meta.url),
+    "utf8"
+  )
+) as { entries: Array<{ modelId: string }> };
+const nativeModel = wireCapture.entries.find((entry) =>
+  entry.modelId.startsWith("claude-")
+)!.modelId;
+const canonicalIds = new Set([...capture.entries.map((entry) => entry.modelId), nativeModel]);
 const model = capture.entries[0].modelId;
 const secondModel = capture.entries.at(-1)!.modelId;
 const wireId = capture.entries[0].aliases!.find((id) => id === "k3")!;
@@ -39,6 +48,24 @@ describe("stripUnrequestedProvider with captured canonical model ids", () => {
       spec: `kc@${wireId}`,
       required: false,
       expected: `kc@${wireId}`,
+    },
+    {
+      name: "custom endpoint with a canonical id",
+      spec: `corp-proxy@${model}`,
+      required: false,
+      expected: `corp-proxy@${model}`,
+    },
+    {
+      name: "unknown endpoint with a canonical id",
+      spec: `unregistered-endpoint@${model}`,
+      required: false,
+      expected: `unregistered-endpoint@${model}`,
+    },
+    {
+      name: "anthropic vendor is not a builtin claudish provider",
+      spec: `anthropic@${nativeModel}`,
+      required: false,
+      expected: `anthropic@${nativeModel}`,
     },
     { name: "Ollama", spec: `ollama@${model}`, required: false, expected: `ollama@${model}` },
     {
@@ -143,6 +170,27 @@ describe("strippedProviders", () => {
       ],
     });
     expect(specs).toEqual(original);
+  });
+
+  test("different providers for one canonical id stay distinct without strip notes", () => {
+    const specs = [`or@${model}`, `kc@${model}`, `openrouter@${secondModel}`];
+    const original = [...specs];
+    expect(strippedProviders(specs, new Set(), isCatalogModel)).toEqual({
+      specs: [specs[0], specs[1], secondModel],
+      stripped: [{ from: specs[2], to: secondModel }],
+    });
+    expect(specs).toEqual(original);
+  });
+
+  test("identical duplicate specs still strip with one note per occurrence", () => {
+    const spec = `kc@${model}`;
+    expect(strippedProviders([spec, spec], new Set(), isCatalogModel)).toEqual({
+      specs: [model, model],
+      stripped: [
+        { from: spec, to: model },
+        { from: spec, to: model },
+      ],
+    });
   });
 
   test("all required specs stay unchanged with no note", () => {

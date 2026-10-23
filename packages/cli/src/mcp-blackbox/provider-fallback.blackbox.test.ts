@@ -637,6 +637,27 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
       expect(byModel.get(judge)?.slice(-2)).toEqual(["--effort-override", "high"]);
     }, 45_000);
 
+    test("team preserves colliding provider specs and their independent effort levels", async () => {
+      const mcp = await start();
+      const comparison = `or@${model}`;
+      const answer = await mcp.tool("team", {
+        mode: "run",
+        path: join(layout.cwd, "provider-comparison"),
+        models: [comparison, explicit],
+        input: "Answer this input.",
+        efforts: { [comparison]: "low", [explicit]: "high" },
+      });
+      expect(answer.isError).not.toBe(true);
+      expect(textOf(answer)).not.toContain("Provider removed");
+      const args = await waitFor(() => capturedArgv().length === 2 && capturedArgv(), {
+        what: "two provider-comparison children",
+      });
+      const byModel = new Map(args.map((argv) => [modelOf(argv), argv]));
+      expect([...byModel.keys()].sort()).toEqual([comparison, explicit].sort());
+      expect(byModel.get(comparison)?.slice(-2)).toEqual(["--effort-override", "low"]);
+      expect(byModel.get(explicit)?.slice(-2)).toEqual(["--effort-override", "high"]);
+    }, 45_000);
+
     test("team judges use the same provider-intent set as models", async () => {
       const mcp = await start();
       const firstJudge = `openrouter@${model}`;
