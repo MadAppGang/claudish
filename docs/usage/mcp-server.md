@@ -68,6 +68,7 @@ routing straight to the provider's API.
 - `prompt` (required) - The prompt to send
 - `system_prompt` (optional) - System prompt for context
 - `user_required_provider` (optional) - `true` when you, the user, named the provider: the `provider@model` spec is sent as given. Without it, a `provider@` on a cloud catalog model is removed so claudish routing picks the provider from your setup; the answer names what was removed. Local providers, custom URLs and chains are never changed
+- `user_required_model` (optional) - `true` when you, the user, named this exact model. Without it, a bare name outside the recommended list starts nothing: a name that is not a model answers `unknown_model:`, a catalog model that is not recommended answers `not_recommended:`, both with the matching recommended ids and the whole recommended list
 - `effort` (optional) - Reasoning effort for this request (`none` … `max`). Take it from the `list_models` effort table; `default` keeps Claude Code's own. Omitted while the model has a row in the table, nothing runs and the answer is `needs_effort:` with that row. Sent as `output_config.effort` and mapped onto the levels the model's connection publishes; ignored for a bare Claude name
 
 There is no output-limit parameter. The request carries no `max_tokens`, so the provider applies
@@ -129,7 +130,7 @@ calling agent picks the column for its task and passes each model's cell as `tea
 
 ### `search_models`
 
-Search all OpenRouter models.
+Search all OpenRouter models. The answer starts with the recommended models that match the query (by id, family or vendor, newest first); its `Use with:` line names only a recommended model, or tells you to call `list_models` when none matches. The OpenRouter listing and catalog names below it are for exploring: a bare name outside the recommended list is refused by `team`, `create_session` and `run_prompt` (`not_recommended:`).
 
 **Parameters:**
 - `query` (required) - Search term (name, provider, capability)
@@ -180,6 +181,7 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 - `path` - Session directory path (must be within current working directory). Required by every mode except `list`
 - `models` - Model IDs to run (required for `run` and `run-and-judge`). Native Claude names (`opus`, `sonnet`, `haiku`, `internal`) are runnable slots too
 - `user_required_provider` - The `models` / `judges` entries whose provider you, the user, named, exactly as written there. A `provider@` on a cloud catalog model is removed so claudish routing picks the provider from your setup; the answer names what was removed. Local providers, custom URLs and chains are never changed
+- `user_required_model` - The `models` / `judges` entries you, the user, named as exact models. Every other bare name outside the recommended list starts nothing and answers `unknown_model:` or `not_recommended:` with the matching recommended ids and the whole recommended list
 - `efforts` - Reasoning effort per model, e.g. `{"gpt-6-luna": "high", "kimi-k3": "max"}`. Keys must match a `models` entry exactly. Take each level from the `list_models` effort table. The slot pins it on every request (`--effort-override`); a model without an entry keeps Claude Code's own effort. Omitted while a model has a row, nothing starts and the answer is `needs_effort:` with the rows; `{}` keeps Claude Code's own effort for every model
 - `judges` - Model IDs to use as judges (default: same as runners)
 - `input_file` - Path to a file holding the task prompt (preferred for anything longer than a sentence)
@@ -349,6 +351,7 @@ is interactive and waits for `send_input`.
 - `agent` (optional) - Claude Code subagent the session runs as, e.g. `dev:reviewer`
 - `claude_flags` (optional) - Other Claude Code / claudish flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`; a value after a Claude Code switch, as in `--brief now`, would be the session's first prompt and is refused). Flags the pane owns (`-p`, `--resume`, `--model`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
 - `user_required_provider` (optional) - `true` when you, the user, named the provider. A `provider@` on a cloud catalog model is removed so claudish routing picks the provider from your setup; the answer names what was removed. Local providers, custom URLs and chains are never changed
+- `user_required_model` (optional) - `true` when you, the user, named this exact model. Without it, a bare name outside the recommended list starts nothing: a name that is not a model answers `unknown_model:`, a catalog model that is not recommended answers `not_recommended:`, both with the matching recommended ids and the whole recommended list
 - `effort` (optional) - Reasoning effort for the whole session, from the `list_models` effort table. Pinned on every request (`--effort-override`), over one in `claude_flags`. `default` keeps Claude Code's own; omitted while the model has a row, nothing starts and the answer is `needs_effort:`
 - `work_dir` (optional) - Working directory for the session (default: current directory)
 - `setup_from` (optional) - Directory whose `.claude/settings.json` and `settings.local.json` the session inherits, so a session in another `work_dir` keeps your project's plugins and agents. Default: your project directory, when `work_dir` differs from it. `null` keeps the session on `work_dir`'s own settings only

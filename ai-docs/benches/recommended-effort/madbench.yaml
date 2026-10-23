@@ -118,6 +118,8 @@ metrics:
   - metrics.skillUsed = mean(skillScore)
   - metrics.needsEffortRight = mean(needsEffortScore)
   - metrics.needsEffortAnswers = sum(needsEffortCount)
+  - metrics.modelChoice = mean(modelChoiceScore)
+  - metrics.modelCheckAnswers = sum(modelCheckCount)
   - 'metrics.spend = { value: sum(usd), unit: "usd", better: "lower" }'
 
 scenarios:
@@ -217,6 +219,13 @@ scenarios:
         metrics: ["metrics.argsScore = score"]
         value: file://checks/effort-args.ts
         config: { tool: create_session, column: code_review, models: "{{review_named}}" }
+      # A: the ids the started call ran are in claudish's recommended list (read at grading
+      # time); Evidence counts the unknown_model / not_recommended answers before it.
+      - type: ts
+        metric: ModelChoice
+        metrics: ["metrics.modelChoiceScore = score", "metrics.modelCheckCount = evidence.modelCheckBefore"]
+        value: file://checks/model-choice.ts
+        config: { tool: create_session, expect: recommended }
       # Readout: needs_effort answers before the started call, and whether the retry
       # carried this column's levels (Evidence names the column(s) it matched).
       - type: ts
@@ -267,6 +276,13 @@ scenarios:
         metrics: ["metrics.argsScore = score"]
         value: file://checks/effort-args.ts
         config: { tool: run_prompt, column: implementation }
+      # A: the ids the started call ran are in claudish's recommended list (read at grading
+      # time); Evidence counts the unknown_model / not_recommended answers before it.
+      - type: ts
+        metric: ModelChoice
+        metrics: ["metrics.modelChoiceScore = score", "metrics.modelCheckCount = evidence.modelCheckBefore"]
+        value: file://checks/model-choice.ts
+        config: { tool: run_prompt, expect: recommended }
       # Readout: needs_effort answers before the started call, and whether the retry
       # carried this column's levels (Evidence names the column(s) it matched).
       - type: ts
@@ -317,6 +333,13 @@ scenarios:
         metrics: ["metrics.argsScore = score"]
         value: file://checks/effort-args.ts
         config: { tool: team, column: quick_edit, models: "{{typo_named}}" }
+      # A: the ids the started call ran are in claudish's recommended list (read at grading
+      # time); Evidence counts the unknown_model / not_recommended answers before it.
+      - type: ts
+        metric: ModelChoice
+        metrics: ["metrics.modelChoiceScore = score", "metrics.modelCheckCount = evidence.modelCheckBefore"]
+        value: file://checks/model-choice.ts
+        config: { tool: team, expect: recommended }
       # Readout: needs_effort answers before the started call, and whether the retry
       # carried this column's levels (Evidence names the column(s) it matched).
       - type: ts
@@ -335,3 +358,38 @@ scenarios:
         metrics: ["metrics.wireScore = score"]
         value: file://checks/effort-plumbing.ts
         config: { tool: team, stage: wire }
+
+  # ── code_review, create_session, the user names an old model exactly ─────────
+  # gpt-5 is a catalog model outside the recommended list: claudish answers
+  # not_recommended unless the call carries user_required_model: true. Only the call
+  # the agent made is graded; the provider may refuse gpt-5 (metered OpenAI can answer
+  # credit_balance_exhausted), which no Check here reads.
+  - name: session-named-old-model
+    description: "create_session on an old model the user names exactly"
+    prompt: |
+      Use claudish's `create_session` tool to have gpt-5 review this
+      function for bugs. Tell it to reply with a short list of the bugs it finds and not to
+      create or edit any files.
+
+        function average(xs: number[]): number {
+          let sum = 0;
+          for (let i = 1; i <= xs.length; i++) sum += xs[i];
+          return sum / xs.length;
+        }
+
+      Use the model gpt-5 exactly; I want that one. Wait for the session to finish (run
+      `sleep 15` with Bash between list_sessions checks), then show me its review. {{hint}}
+    checks:
+      - { type: environment:mcp-reachable, value: claudish }
+      # A: the started call ran gpt-5 itself, marked user_required_model: true.
+      - type: ts
+        metric: ModelChoice
+        metrics: ["metrics.modelChoiceScore = score", "metrics.modelCheckCount = evidence.modelCheckBefore"]
+        value: file://checks/model-choice.ts
+        config: { tool: create_session, expect: user-named, model: gpt-5 }
+      - type: ts
+        metric: NeedsEffort
+        readout: true
+        metrics: ["metrics.needsEffortScore = score", "metrics.needsEffortCount = evidence.needsEffortBefore"]
+        value: file://checks/needs-effort.ts
+        config: { tool: create_session, column: code_review }

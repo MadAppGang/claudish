@@ -27,6 +27,7 @@ import {
   reportOwnerWithoutHooks,
   sessionHooksNeedBinding,
 } from "./hooks/session/binding.js";
+import { parseInBandApiError } from "./in-band-api-error.js";
 import { log } from "./logger.js";
 import {
   type Accounting,
@@ -925,7 +926,12 @@ type Verdict = { state: "FAILED" | "EMPTY"; reason: FailureReason; detail: strin
 
 /** The turn's own failure signals: an API error, an unread task file, a refusal. */
 function classifyTurnSignals(input: Parameters<typeof classifyRunOutput>[0]): Verdict | null {
-  const { apiError, stopReason, promptRead } = input;
+  const { stopReason, promptRead } = input;
+  // An error claudish wrote into the stream as text carries no Claude Code flag.
+  const inBand = input.apiError
+    ? null
+    : parseInBandApiError(input.answer, { trailing: promptRead?.complete === false });
+  const apiError = input.apiError ?? (inBand ? { status: null, text: inBand.text } : null);
   if (apiError) {
     const status = apiError.status === null ? "" : ` (status ${apiError.status})`;
     return {

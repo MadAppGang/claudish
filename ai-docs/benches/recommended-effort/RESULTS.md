@@ -1,5 +1,224 @@
 # recommended-effort: results, 2026-10-23
 
+## run13: the field case, installed skill + family names (`installed-family`), 2026-10-23, 10:35–10:40Z
+
+Same build (`60fc3d3c`) and Bench as run12. New Experiment variant `installed-family`: the staged
+plugin is `./plugins/installed/claudish` (the claudish@magus 2.10.0 `claudish-usage` skill, which
+has no `unknown_model` / `not_recommended` / `user_required_model` / `needs_effort` text: `grep -c` 0)
+with `worktree-family`'s family params. Free gates: preflight `PREFLIGHT OK  4 benches · 236
+components verified`; `madbench check` on the Experiment `144/144 gradable checks failed as required ·
+0 errored (could not grade) · 0 wrongly passed · 20 not applicable under mock`. One invocation per
+Scenario, `--trials 2`. Reports: `…/reports/run13-installed-family-<scenario>.json` (gitignored).
+Host cost $0.81 (subscription), 6 Sessions, 0 errors.
+
+The refusal fired in 2 of 6 Sessions, so the extra Scenario `team-family-direct` was not added.
+
+| Scenario | Trial | Verdict | ModelChoice | modelCheckBefore | ids finally passed | EffortArgs | NeedsEffort (answers) | BareNames | ConsultedTable (readout) | SkillUsed (readout) | EffortFlag | EffortWire |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `team-no-entry` | 0 | pass | 1 | 0 | `gpt-6.1-sol`, `minimax-m3` | 1 | 1 (0) | 1 | 1 | 1 | 1 | 1 |
+| `team-no-entry` | 1 | pass | 1 | 0 | `gpt-6.1-sol`, `minimax-m3` | 1 | 1 (0) | 1 | 1 | 1 | 1 | 1 |
+| `run-prompt-pick` | 0 | pass | 1 | 0 | `gpt-6.1-sol` | 1 | 1 (0) | 1 | 1 | 1 | n/a | 1 |
+| `run-prompt-pick` | 1 | pass | 1 | 0 | `gpt-6.1-sol` | 1 | 1 (0) | 1 | 1 | 0 | n/a | 1 |
+| `session-code-review` | 0 | pass | 1 | **1** | `gpt-6.1-sol` | 1 | 1 (1) | 1 | 0 | 0 | 1 | 1 |
+| `session-code-review` | 1 | **fail** | 1 | **1** | `gpt-6.1-sol` | **0** | **0** (0) | 1 | 0 | 0 | 1 | 1 |
+
+`ModelChoice` 6/6; `modelCheckAnswers` 2 (both `not_recommended`, none `unknown_model`).
+
+### Every `not_recommended` answer and the call that followed it, verbatim
+
+Both came from `session-code-review`. The agent called `search_models`, not `list_models`. Its
+answer lists OpenRouter ids from before the recommended list and ends with a vendor-qualified
+example:
+
+```
+mcp__claudish__search_models {"limit":8,"query":"openai gpt"}
+  → # Search Results for "openai gpt"
+    … | openai/gpt-5 | … | openai/gpt-5.5 | openai | $17.50/1M | 1050K | …
+    Use with: run_prompt(model="openai/gpt-5", prompt="your prompt")
+```
+
+Trial 0:
+
+```
+mcp__claudish__create_session {"model":"gpt-5.5"}
+  → not_recommended: nothing was started.
+    Not in the recommended list: "gpt-5.5". Re-evaluate the choice against the recommended models below and call again with one of them. If the user named this exact model, call again with user_required_model: true.
+    (then: Matching recommended ids: {"gpt-5.5": ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]}, Recommended models: [22 entries, no duplicate id])
+mcp__claudish__create_session {"model":"gpt-6.1-sol"}
+  → needs_effort: nothing was started. Map your task to one task type and call again with effort: "<level>" (effort: "default" keeps Claude Code's own).
+mcp__claudish__create_session {"effort":"xhigh","model":"gpt-6.1-sol"}
+  → {"session_id":"6677196c","state":"STARTING"}
+```
+
+Trial 1 (the failure):
+
+```
+mcp__claudish__create_session {"effort":"default","model":"gpt-5.5"}
+  → not_recommended: nothing was started.
+    Not in the recommended list: "gpt-5.5". Re-evaluate the choice against the recommended models below and call again with one of them. If the user named this exact model, call again with user_required_model: true.
+mcp__claudish__create_session {"effort":"low","model":"gpt-6.1-sol"}
+  → {"session_id":"b6530ebb","state":"STARTING"}
+```
+
+Cause of the failure: the retry passed `effort: "low"`, so claudish had no reason to answer
+`needs_effort` and the code_review level (`xhigh`) never reached the agent. `EffortArgs`: "0/1
+models right for column code_review; gpt-6.1-sol: passed low, recommended xhigh". The
+`not_recommended` text carries no effort rows. The agent's first call had passed `effort:
+"default"` without having seen any levels.
+
+The other four Sessions called `list_models` first and chose `gpt-6.1-sol` (+ `minimax-m3`) without
+any refusal. run10's `team ["gpt","minimax"]` did not happen again: no Session sent a family name.
+
+### Observations
+
+- In this variant the route to a non-recommended id was `search_models`. It printed
+  `openai/gpt-5.5` and the hint `run_prompt(model="openai/gpt-5", …)`; the agent sent the bare
+  `gpt-5.5` and the model check caught it. Had it sent `openai/gpt-5.5` as the hint shows, the check
+  would not have applied (a `vendor/` id is routed as its bare part, routing.md; whether the model
+  check sees it that way is not measured here).
+- A `not_recommended` retry with an effort the agent invented starts at that effort; the table's
+  level is never offered (trial 1).
+
+### Not verified
+
+- `unknown_model` in a Session (no family name was sent), and `team-family-direct` (not run, by
+  the condition above).
+- Run-level `modelChoice` / `modelCheckAnswers` (not in the `--trials` report; the per-Scenario
+  values are above).
+
+## run12: the MCP model check (`unknown_model` / `not_recommended`), 2026-10-23, 10:24–10:36Z
+
+Build: commit `60fc3d3c` (`feat(mcp): refuse a bare name outside the recommended models list`),
+`packages/cli/dist/index.js` as built (not rebuilt). New in the Bench: Check `checks/model-choice.ts`
+(`ModelChoice`, metrics `modelChoiceScore` / `modelCheckCount`, run metrics `modelChoice` /
+`modelCheckAnswers`) on `team-no-entry`, `run-prompt-pick`, `session-code-review` (`expect:
+recommended`) and the new Scenario `session-named-old-model` (`expect: user-named, model: gpt-5`).
+`startedCall` (`effort-lib.ts`) now also skips calls answered `unknown_model:` / `not_recommended:`.
+Worktree skill copy refreshed from `packages/cli/skills/claudish-usage/SKILL.md` (`cmp`-identical).
+
+Free gates: `madbench preflight` on the Experiment → `PREFLIGHT OK  3 benches · 177 components ·
+1 advisory` (the advisory: `your Claude Max subscription login expires in 9m0s`); `madbench check`
+on the Bench → `36/36 gradable checks failed as required · 0 errored (could not grade) · 0 wrongly
+passed · 5 not applicable under mock`, on the Experiment → `108/108 … 15 not applicable under mock`.
+Positive control on the retry report: `4/4 checks reproduced · 0 diverged · 0 could not be
+re-graded · 6 skipped`.
+
+`--scenario` is not repeatable (a second value silently replaces the first:
+`madbench-scenario-flag-gap.md`), so each (variant, Scenario) was its own invocation, `--trials 2`.
+Reports: `ai-docs/sessions/recommended-effort-bench-20261023/reports/run12-{family,skill}-<scenario>.json`
+(gitignored). Recommended list at grading: `~/.claudish/recommended-models-cache-v2.json`; effort
+generations `g-20261023054016830-cce2d5b3` (team-no-entry family) and `g-20261023083613563-57fd1690`
+(the rest). Host cost $0.87 (subscription), 11 graded Sessions.
+
+### Verdicts and `ModelChoice` per trial
+
+| Variant / Scenario | Trial | Verdict | ModelChoice | modelCheckBefore | ids finally passed | EffortArgs | NeedsEffort (answers) | BareNames | ConsultedTable (readout) | EffortFlag | EffortWire |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| family / `team-no-entry` | 0 | pass | 1 | 0 | `gpt-6.1-sol`, `minimax-m3` | 1 | 1 (0) | 1 | 1 | 1 | 1 |
+| family / `team-no-entry` | 1 | pass | 1 | 0 | `gpt-6.1-sol`, `minimax-m3` | 1 | 1 (0) | 1 | 1 | 1 | 1 |
+| family / `run-prompt-pick` | 0 | pass | 1 | 0 | `gpt-6.1-sol` | 1 | 1 (0) | 1 | 1 | n/a | 1 |
+| family / `run-prompt-pick` | 1 | pass | 1 | 0 | `gpt-6.1-sol` | 1 | 1 (0) | 1 | 1 | n/a | 1 |
+| family / `session-code-review` | 0 | pass | 1 | 0 | `gpt-6.1-sol` | 1 | 1 (0) | 1 | 1 | 1 | 1 |
+| family / `session-code-review` | 1 | **error** | — | — | — | — | — | — | — | — | — |
+| family / `session-code-review` | retry | pass | 1 | 0 | `gpt-6.1-sol` | 1 | 1 (0) | 1 | 1 | 1 | 1 |
+| skill / `session-named-old-model` | 0 | pass | 1 | 0 | `gpt-5` + `user_required_model: true` | — | 1 (0) | — | — | — | — |
+| skill / `session-named-old-model` | 1 | pass | 1 | 0 | `gpt-5` + `user_required_model: true` | — | 1 (0) | — | — | — | — |
+| skill / `team-no-entry` | 0 | pass | 1 | 0 | `gpt-6-astra`, `minimax-m3` | 1 | 1 (1) | 1 | 0 | 1 | 1 |
+| skill / `team-no-entry` | 1 | pass | 1 | 0 | `gpt-6-astra`, `minimax-m3` | 1 | 1 (1) | 1 | 0 | 1 | 1 |
+
+`ModelChoice` 10/10 graded Sessions; `modelCheckAnswers` 0. `SkillUsed` 0/8 where carried.
+The error (family / `session-code-review` trial 1) is the host's login, not the agent:
+`runner failed: claudecode: the model API refused this run: OAuth token revoked · Please run /login
+(api_error_status 401)`. madbench counted it as an error, not a fail; one extra trial (`--trials
+1`, `run12-family-session-code-review-retry.json`) replaced it.
+
+### Tool calls, verbatim (`prompt` / `input` omitted)
+
+**No agent received `unknown_model` or `not_recommended` in run12.** Every family Session called
+`list_models` first and picked a recommended id; the old-model Sessions passed
+`user_required_model: true` on their first call, unprompted by any refusal.
+
+family / `team-no-entry`, both trials (trial 1's status call has no `run_id`):
+
+```
+mcp__claudish__list_models {}
+mcp__claudish__team {"efforts":{"gpt-6.1-sol":"low"},"mode":"run","models":["gpt-6.1-sol","minimax-m3"],"path":"team-typo"}
+mcp__claudish__team {"mode":"status","path":"team-typo","run_id":"team-typo-mvktpqq3-ac86d7"}
+```
+
+family / `run-prompt-pick`, both trials:
+
+```
+mcp__claudish__list_models {}
+mcp__claudish__run_prompt {"effort":"medium","model":"gpt-6.1-sol"}
+  → ```typescript
+```
+
+family / `session-code-review`, trial 0 and the retry:
+
+```
+mcp__claudish__list_models {}
+mcp__claudish__create_session {"effort":"xhigh","model":"gpt-6.1-sol"}
+  → {"session_id":"01c8c526","state":"STARTING"}
+mcp__claudish__list_sessions {"include_completed":true}
+mcp__claudish__get_output {"session_id":"01c8c526"}
+```
+
+skill / `session-named-old-model`, trial 0 (trial 1 the same without the two `get_diagnostics`):
+
+```
+mcp__claudish__create_session {"model":"gpt-5","user_required_model":true}
+  → {"session_id":"b84ec3d1","state":"STARTING"}
+mcp__claudish__list_sessions {"include_completed":true}
+  → … "model": "gpt-5", "provider": "OpenAI", "state": "FAILED", "reason": "prompt_not_read",
+    "reason_detail": "the task file was never read, so the answer cannot be about the task", …
+    "summary": "[API Error: credit_balance_exhausted You have no credits remaining. Add credits to continue using t…"
+mcp__claudish__get_diagnostics {}
+  → Error: The "paths[1]" property must be of type string, got undefined
+mcp__claudish__get_diagnostics {"event_limit":10,"session_id":"b84ec3d1"}
+  → {"sessionId":"b84ec3d1","state":"FAILED","event":"failed","reason":"prompt_not_read", … "spawnModel":"oai@gpt-5+or@openai/gpt-5","provider":"OpenAI", …
+```
+
+Both agents then told the user gpt-5 failed for lack of OpenAI credit, did not switch models, and
+offered their own review marked as such. The provider failure is not graded.
+
+skill / `team-no-entry`, both trials (no `list_models`; the agent marked both named models
+user-required although both are recommended):
+
+```
+mcp__claudish__team {"mode":"run","models":["gpt-6-astra","minimax-m3"],"path":"team-typo","user_required_model":["gpt-6-astra","minimax-m3"]}
+  → needs_effort: nothing was started. Map your task to one task type and call again with efforts: {"<model>": "<level>"} (efforts: {} keeps Claude Code's own for every model).
+mcp__claudish__team {"efforts":{"gpt-6-astra":"low"},"mode":"run","models":["gpt-6-astra","minimax-m3"],"path":"team-typo","user_required_model":["gpt-6-astra","minimax-m3"]}
+mcp__claudish__team {"mode":"status","path":"team-typo","run_id":"team-typo-mvktvwf1-398237"}
+```
+
+### Observations
+
+- `get_diagnostics` with no `session_id` answers a Node `paths[]` TypeError instead of a
+  parameter message (verbatim above).
+- A session whose only turn hit `credit_balance_exhausted` reports `reason: "prompt_not_read"`;
+  the upstream error appears only in `recent[].summary` and the `screenTail`. The routing chain
+  was `oai@gpt-5+or@openai/gpt-5` and the session reports `provider: "OpenAI"`; whether the
+  `or@` hop was tried is not visible in the report (the workspace debug logs are deleted).
+- `user_required_model` was passed for models already in the recommended list (skill /
+  `team-no-entry`, after the prompt's "Use the model names exactly as I wrote them."). claudish
+  accepted it; no Check grades it.
+- The child screen of the gpt-5 session shows `⚠ Cross-session messaging is off: its socket
+  directory could not be set up` (sandbox `home`; not investigated).
+
+### Not verified
+
+- The refusal path itself: no agent produced `gpt`/`minimax`/`gpt-5` without `user_required_model`,
+  so `unknown_model` / `not_recommended` text, `Matching recommended ids` and `Recommended models`
+  were never seen in a Session, and `modelCheckBefore > 0` never occurred. A Scenario that orders
+  a family name without `list_models` (or a prompt like run10's) would exercise it.
+- Run-level `modelChoice` / `modelCheckAnswers` under `--trials 2`: the trials report carries
+  only per-Scenario rows (`.trials[].results[].metrics`), not the run-level `metrics:` values; the
+  single-trial retry report has them (`modelChoice` 1, `modelCheckAnswers` 0).
+- `installed-skill`, `team-frontend`, and `worktree-skill` on `run-prompt-pick` /
+  `session-code-review`: not run. Any host but `claude-sonnet-5-5`.
+- `minimax-m3` still routes off its subscription at `home` (Keychain keys); not re-checked.
+
 ## run11: rebased on v14.1.0, corrected started-call rule (2026-10-23, 05:54:37–06:00:31Z)
 
 Same Experiment and procedure (`--trials 2`, 24 Sessions, interactive `claude-sonnet-5-5` host,
