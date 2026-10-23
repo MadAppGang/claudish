@@ -13,7 +13,12 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { stripUnsignedThinkingBlocks } from "./thinking-signature.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 describe("stripUnsignedThinkingBlocks", () => {
   test("strips a thinking block with an empty-string signature (the GLM poison)", () => {
@@ -132,14 +137,14 @@ describe("stripUnsignedThinkingBlocks", () => {
     expect(messages[0].content).toEqual([]);
   });
 
-  test("preserves the documented foreign 64-hex signature gap (MiniMax)", () => {
-    // A non-empty signature is preserved even when it is a foreign one: on the
-    // MiniMax path these 64-hex blocks ARE the model's own thinking (the dialect
-    // re-sends them via preserveThinkingBlock()), so guessing which non-empty
-    // signatures are genuine is how real thinking gets deleted. They do reach
-    // the client under the `forced` policy (composed-handler-minimax-thinking
+  test("DEFAULT (non-native) call keeps a 64-hex signature — the foreign strip is opt-in per wire", () => {
+    // A non-empty signature is preserved unless the CALLER says it is on the
+    // native wire: on the MiniMax path these 64-hex blocks ARE the model's own
+    // thinking (the dialect re-sends them via preserveThinkingBlock()), so a
+    // shape-only strip here would delete real reasoning. They do reach the
+    // client under the `forced` policy (composed-handler-minimax-thinking
     // .test.ts:131) — the reason to keep them is what they mean on that wire.
-    // Stripping them on the NATIVE path is #597's separate, pinned change.
+    // The native opt-in is pinned separately below (#597).
     const minimaxSignature = "7caa0d3cc2a449ac1cc68507504693f566245c7b5db3558f6041585e15a848f8";
     const messages = [
       {
@@ -150,6 +155,54 @@ describe("stripUnsignedThinkingBlocks", () => {
     const removed = stripUnsignedThinkingBlocks(messages);
     expect(removed).toBe(0);
     expect(messages[0].content[0].signature).toBe(minimaxSignature);
+  });
+
+  test("NATIVE path (#597): a 64-hex foreign signature is stripped", () => {
+    // MiniMax's real digest, from the m25 production fixture. Anthropic never
+    // signed it and rejects the request with
+    // "messages.N.content.M: Invalid signature in thinking block" — which the
+    // empty-signature test alone can never catch, because the signature is
+    // non-empty. The native handler opts in explicitly.
+    const minimaxSignature = "7caa0d3cc2a449ac1cc68507504693f566245c7b5db3558f6041585e15a848f8";
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "MiniMax reasoning", signature: minimaxSignature },
+          { type: "text", text: "kept" },
+        ],
+      },
+    ];
+    const removed = stripUnsignedThinkingBlocks(messages, { stripForeignHexSignature: true });
+    expect(removed).toBe(1);
+    expect(messages[0].content).toEqual([{ type: "text", text: "kept" }]);
+  });
+
+  test("NATIVE path (#597): a genuine base64 Anthropic signature is KEPT", () => {
+    // The opt-in must not degenerate into "strip every non-empty signature" —
+    // that would break interleaved-thinking / tool-use continuity on real
+    // Anthropic sessions, which is the whole reason the blocks are forwarded.
+    const anthropicSignature =
+      "ErUBCkYIBRgCKkBc3Q9nJ+7fWLx0mZr2VbT4pYs1uHk6NqR8aXe5dCg0fJm2oDl3vYw7Zt1PkQ9rS6uM4bN8xL2aE5hT0cI";
+    const messages = [
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "real reasoning", signature: anthropicSignature }],
+      },
+    ];
+    const removed = stripUnsignedThinkingBlocks(messages, { stripForeignHexSignature: true });
+    expect(removed).toBe(0);
+    expect(messages[0].content[0].signature).toBe(anthropicSignature);
+  });
+
+  test("WIRING (#597): the native handler is the caller that opts in", () => {
+    // The predicate can be perfect and never called. Static pin on the one call
+    // site: it must carry the opt-in, and it must live in the native handler
+    // (the wire), not in a shared path a MiniMax lane could reach.
+    const source = readFileSync(join(here, "..", "native-handler.ts"), "utf8");
+    const call = source.match(/stripUnsignedThinkingBlocks\([^)]*\)/s);
+    expect(call).not.toBeNull();
+    expect(call![0]).toContain("stripForeignHexSignature: true");
   });
 
   test("leaves an untouched message's content array identity intact", () => {

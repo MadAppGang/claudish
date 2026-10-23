@@ -12,6 +12,7 @@
 import { BaseAPIFormat, AdapterResult, matchesModelFamily } from "./base-api-format.js";
 import type { PrepareRequestContext } from "./model-dialect.js";
 import { clientRequestedThinking } from "../handlers/shared/client-thinking.js";
+import { isHex64Signature } from "../handlers/shared/thinking-signature.js";
 import { log } from "../logger.js";
 import { lookupModel } from "./model-catalog.js";
 
@@ -21,8 +22,10 @@ const TEMPERATURE_RANGE = { min: 0.01, max: 1.0 } as const;
 const DEFAULT_FORCED_BUDGET = 16000;
 
 /** MiniMax emits SHA-256-digest-shaped thinking signatures (64 lowercase hex);
- *  an Anthropic signature is a long opaque base64 blob and never matches. */
-const MINIMAX_OWN_SIGNATURE = /^[0-9a-f]{64}$/;
+ *  an Anthropic signature is a long opaque base64 blob and never matches.
+ *  The shape lives in ONE place (#597) — `isHex64Signature()` in
+ *  handlers/shared/thinking-signature.ts, which reads it with the opposite
+ *  verdict on the native wire (foreign ⇒ stripped). */
 
 /**
  * M3.1-Flash thinking-depth levels (Anthropic-compat doc, output_config.effort):
@@ -299,7 +302,7 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
     if (kind !== "forced" && kind !== "effort") return false;
     const sig = (block as { signature?: unknown } | null)?.signature;
     if (typeof sig !== "string" || sig === "") return true; // M2.5 unsigned shape
-    return MINIMAX_OWN_SIGNATURE.test(sig);
+    return isHex64Signature(sig);
   }
 
   shouldHandle(modelId: string): boolean {

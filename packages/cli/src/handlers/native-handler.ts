@@ -180,10 +180,18 @@ export class NativeHandler implements ModelHandler {
     // sessions: the Anthropic API rejects them with
     // "messages.N.content.M: Invalid signature in thinking block" once a turn
     // routes here. Genuine signed Anthropic thinking is preserved.
-    const strippedThinking = stripUnsignedThinkingBlocks(payload.messages);
+    //
+    // `stripForeignHexSignature` closes the second half of the same hole (#597):
+    // MiniMax hands out REAL 64-hex signatures, which the empty-signature test
+    // above cannot see, and Anthropic rejects those identically. The opt-in is
+    // here and only here — this handler IS the native wire, which is what makes
+    // the strip wire-discriminated rather than a guess on signature shape.
+    const strippedThinking = stripUnsignedThinkingBlocks(payload.messages, {
+      stripForeignHexSignature: true,
+    });
     if (strippedThinking > 0) {
       log(
-        `[Native] Stripped ${strippedThinking} unsigned thinking block(s) (non-Anthropic origin) from message history for ${target}`
+        `[Native] Stripped ${strippedThinking} unsigned/foreign-signature thinking block(s) (non-Anthropic origin) from message history for ${target}`
       );
     }
 

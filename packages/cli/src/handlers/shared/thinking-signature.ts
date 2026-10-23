@@ -21,11 +21,12 @@
  * which is the entire point of a native passthrough. One mixed-provider session
  * is enough to wedge every subsequent native turn until the user compacts.
  *
- * This helper removes ONLY thinking blocks whose signature is missing, null or
- * empty. Genuine Anthropic thinking blocks carry a real signature and are
- * preserved — they are required for interleaved-thinking / tool-use continuity.
- * Other block types (text, tool_use, tool_result, redacted_thinking, …) are
- * untouched.
+ * This helper removes thinking blocks whose signature is missing, null or
+ * empty — plus, when the caller opts in on the native wire, blocks carrying a
+ * foreign 64-hex digest (#597). Genuine Anthropic thinking blocks carry a real
+ * base64 signature and are preserved — they are required for
+ * interleaved-thinking / tool-use continuity. Other block types (text, tool_use,
+ * tool_result, redacted_thinking, …) are untouched.
  *
  * ─── Why absent-signature is the whole problem, not part of it ──────────────
  *
@@ -45,13 +46,16 @@
  * header claimed the opposite, imported from upstream `0e8f3b05`; that claim is
  * false in this fork and was corrected in review (#596).
  *
- * So why is a 64-hex digest left alone HERE? Because the same shape means two
- * different things depending on the wire. On the MiniMax path those blocks are
- * the model's own thinking, preserved and re-sent by the dialect
+ * So why is a 64-hex digest left alone by DEFAULT? Because the same shape means
+ * two different things depending on the wire. On the MiniMax path those blocks
+ * are the model's own thinking, preserved and re-sent by the dialect
  * (`preserveThinkingBlock()`); stripping them would delete real reasoning. On
  * the NATIVE path such a block is worthless — Anthropic never signed it and it
- * 400s the request — but removing it belongs to #597, with its own pins, not to
- * a guess made inside a filter that cannot tell the two apart.
+ * 400s the request — so the native caller opts in explicitly through
+ * `stripForeignHexSignature` (#597). The discrimination is by WIRE (which
+ * caller asks), never by shape alone inside the predicate: a shape-only strip
+ * here would delete MiniMax's own reasoning the moment anyone reused the
+ * helper on a composed path.
  *
  * The coupling that does hold: if `shouldFilterThinking()` is narrowed further,
  * more thinking reaches the client and this absent-signature filter alone stops
@@ -66,22 +70,51 @@
  * re-implementation of our June helper, `651debe0`), which does the same.
  */
 
+/** MiniMax emits SHA-256-digest-shaped thinking signatures: exactly 64 lowercase
+ *  hex characters. An Anthropic signature is a long opaque base64 blob and never
+ *  matches. One definition for two readers that interpret it in OPPOSITE
+ *  directions — the MiniMax dialect calls such a signature the model's OWN
+ *  (`preserveThinkingBlock()`, #324 B1), the native path calls it foreign and
+ *  strips it (#597). Sharing the shape, never the verdict, is what keeps the two
+ *  wires from drifting apart. */
+const HEX_64_SIGNATURE = /^[0-9a-f]{64}$/;
+
+/** True when `signature` has the shape MiniMax issues (64 lowercase hex). */
+export function isHex64Signature(signature: unknown): boolean {
+  return typeof signature === "string" && HEX_64_SIGNATURE.test(signature);
+}
+
 /**
  * True when this block is a thinking block Anthropic cannot have signed.
  *
- * Only an ABSENT, NULL or EMPTY signature counts. A non-empty signature is left
- * alone even though it may be a foreign one — see the known gap above; guessing
- * which non-empty signatures are genuine is how you delete real thinking.
+ * An ABSENT, NULL or EMPTY signature always counts. A NON-EMPTY signature is
+ * left alone unless `stripForeignHex` is set — see the gap described above;
+ * guessing which non-empty signatures are genuine is how you delete real
+ * thinking, so the wire has to say so explicitly.
  */
-function isUnsignedThinking(block: unknown): boolean {
+function isStrippableThinking(block: unknown, stripForeignHex: boolean): boolean {
   if (!block || typeof block !== "object") return false;
   const b = block as { type?: unknown; signature?: unknown };
   if (b.type !== "thinking") return false;
-  return typeof b.signature !== "string" || b.signature.length === 0;
+  if (typeof b.signature !== "string" || b.signature.length === 0) return true;
+  return stripForeignHex && isHex64Signature(b.signature);
+}
+
+export interface StripThinkingOptions {
+  /**
+   * NATIVE PATH ONLY (#597): also remove thinking blocks whose signature is a
+   * foreign 64-hex digest. Opt-in per wire — on a MiniMax lane the same shape is
+   * the model's own thinking and the `forced` chain cannot restart without it.
+   */
+  stripForeignHexSignature?: boolean;
 }
 
 /**
  * Remove unsigned thinking blocks from a message array, IN PLACE.
+ *
+ * `options.stripForeignHexSignature` also removes blocks whose signature is a
+ * foreign 64-hex digest; only the native handler sets it (#597). Default off, so
+ * a caller that never considered the question keeps the conservative behaviour.
  *
  * In place because the caller is about to serialize this exact payload, and a
  * copy would have to be threaded back through every branch that touches
@@ -98,14 +131,18 @@ function isUnsignedThinking(block: unknown): boolean {
  * case only arises for a turn that was pure unsigned thinking, which cannot
  * have carried anything Anthropic needs.
  */
-export function stripUnsignedThinkingBlocks(messages: unknown): number {
+export function stripUnsignedThinkingBlocks(
+  messages: unknown,
+  options: StripThinkingOptions = {}
+): number {
   if (!Array.isArray(messages)) return 0;
+  const stripForeignHex = options.stripForeignHexSignature === true;
   let removed = 0;
   for (const message of messages) {
     if (!message || typeof message !== "object") continue;
     const content = (message as { content?: unknown }).content;
     if (!Array.isArray(content)) continue;
-    const kept = content.filter((block) => !isUnsignedThinking(block));
+    const kept = content.filter((block) => !isStrippableThinking(block, stripForeignHex));
     if (kept.length !== content.length) {
       removed += content.length - kept.length;
       (message as { content: unknown }).content = kept;
