@@ -1,15 +1,22 @@
 /**
  * Tests for the MCP streamable-http client (mcp-searxng-client.ts).
  *
- * Uses a local Bun.serve mock that simulates the TBXark mcp-proxy +
- * mcp-searxng backend: JSON and SSE response formats, session handshake,
- * auth header check, error shapes, and timeouts.
+ * The transport is a fetch STUB, not a Bun.serve mock (#593): the response
+ * shapes of the TBXark mcp-proxy + mcp-searxng backend (JSON and SSE formats,
+ * session handshake, auth header, error shapes) and the timeout behavior are
+ * all exercised through `installStubFetch`, which reproduces exactly what the
+ * client sees on the wire — status, headers, body, abort semantics — with no
+ * socket involved. See test-support/stub-fetch.ts for the measured reason a
+ * same-process Bun.serve cannot be used here (bun's in-process dispatch is
+ * corrupted for any server created after a node:http server has lived in the
+ * process, i.e. after any proxy-server route test in the same `bun test` run).
  *
  * The hard contract under test: callMcpTool NEVER throws — every failure
  * mode resolves to { ok: false, error }.
  */
 
 import { describe, test, expect, beforeEach, afterAll } from "bun:test";
+import { installStubFetch, hangUntilAborted } from "../../test-support/stub-fetch.js";
 import {
   callMcpTool,
   mcpWebSearch,
@@ -30,6 +37,7 @@ type MockBehavior =
 let behavior: MockBehavior = "json-ok";
 let sawAuthHeader: string | null = null;
 let initializeCount = 0;
+let fetchCalls = 0;
 
 function rpcResult(id: any, text: string, isError = false) {
   return JSON.stringify({
@@ -39,75 +47,70 @@ function rpcResult(id: any, text: string, isError = false) {
   });
 }
 
-const server = Bun.serve({
-  port: 0,
-  // Loopback only. Bun.serve defaults to 0.0.0.0, which on Windows makes the
-  // firewall prompt for bun.exe on every `bun test` run — and a user who clicks
-  // through it grants inbound on * for Private AND Public profiles, machine-wide,
-  // for a binary that also runs the proxy holding the cluster key. The mock is
-  // only ever reached from this process.
-  hostname: "127.0.0.1",
-  async fetch(req) {
-    sawAuthHeader = req.headers.get("authorization");
-    const body = (await req.json().catch(() => ({}))) as any;
-    const { id, method } = body;
+const nativeFetch = globalThis.fetch;
 
-    if (method === "notifications/initialized") {
-      return new Response(null, { status: 202 });
+// The stub stands in for the mcp-proxy backend. It answers the very shapes the
+// real streamable-http server sends: JSON object, SSE frames, a 202 for the
+// initialized notification, session negotiation, and error envelopes.
+const uninstallStub = installStubFetch(async (req) => {
+  fetchCalls++;
+  sawAuthHeader = req.headers.get("authorization");
+  const body = (await req.json().catch(() => ({}))) as any;
+  const { id, method } = body;
+
+  if (method === "notifications/initialized") {
+    return new Response(null, { status: 202 });
+  }
+
+  if (method === "initialize") {
+    initializeCount++;
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "mock" } },
+      }),
+      { headers: { "Content-Type": "application/json", "mcp-session-id": "mock-session-123" } }
+    );
+  }
+
+  // tools/call
+  switch (behavior) {
+    case "json-ok":
+      return new Response(rpcResult(id, "mock search results"), {
+        headers: { "Content-Type": "application/json" },
+      });
+    case "sse-ok": {
+      const frame = `event: message\ndata: ${rpcResult(id, "mock sse results")}\n\n`;
+      return new Response(frame, { headers: { "Content-Type": "text/event-stream" } });
     }
-
-    if (method === "initialize") {
-      initializeCount++;
+    case "session-required": {
+      const sid = req.headers.get("mcp-session-id");
+      if (sid !== "mock-session-123") {
+        return new Response("Bad Request: no session", { status: 400 });
+      }
+      return new Response(rpcResult(id, "session-bound results"), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    case "http-500":
+      return new Response("Internal Server Error", { status: 500 });
+    case "tool-error":
+      return new Response(rpcResult(id, "fetch failed: 403 Forbidden", true), {
+        headers: { "Content-Type": "application/json" },
+      });
+    case "rpc-error":
       return new Response(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id,
-          result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "mock" } },
-        }),
-        { headers: { "Content-Type": "application/json", "mcp-session-id": "mock-session-123" } }
+        JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } }),
+        { headers: { "Content-Type": "application/json" } }
       );
-    }
-
-    // tools/call
-    switch (behavior) {
-      case "json-ok":
-        return new Response(rpcResult(id, "mock search results"), {
-          headers: { "Content-Type": "application/json" },
-        });
-      case "sse-ok": {
-        const frame = `event: message\ndata: ${rpcResult(id, "mock sse results")}\n\n`;
-        return new Response(frame, { headers: { "Content-Type": "text/event-stream" } });
-      }
-      case "session-required": {
-        const sid = req.headers.get("mcp-session-id");
-        if (sid !== "mock-session-123") {
-          return new Response("Bad Request: no session", { status: 400 });
-        }
-        return new Response(rpcResult(id, "session-bound results"), {
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      case "http-500":
-        return new Response("Internal Server Error", { status: 500 });
-      case "tool-error":
-        return new Response(rpcResult(id, "fetch failed: 403 Forbidden", true), {
-          headers: { "Content-Type": "application/json" },
-        });
-      case "rpc-error":
-        return new Response(
-          JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } }),
-          { headers: { "Content-Type": "application/json" } }
-        );
-      case "hang":
-        await new Promise((r) => setTimeout(r, 10_000));
-        return new Response(rpcResult(id, "too late"), {
-          headers: { "Content-Type": "application/json" },
-        });
-    }
-  },
+    case "hang":
+      // Never answers: the client's own AbortSignal.timeout must fire.
+      return hangUntilAborted(req);
+  }
 });
 
-const MOCK_URL = `http://localhost:${server.port}/searxng/mcp`;
+const MOCK_URL = "http://mcp-searxng.test/searxng/mcp";
 
 beforeEach(() => {
   _resetMcpClientState();
@@ -116,12 +119,7 @@ beforeEach(() => {
   behavior = "json-ok";
   sawAuthHeader = null;
   initializeCount = 0;
-});
-
-afterAll(() => {
-  server.stop(true);
-  delete process.env.SEARXNG_MCP_URL;
-  delete process.env.MCP_AUTH;
+  fetchCalls = 0;
 });
 
 describe("mcp-searxng-client", () => {
@@ -131,6 +129,27 @@ describe("mcp-searxng-client", () => {
     const res = await callMcpTool("searxng_web_search", { query: "x" }, 1000);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toContain("not configured");
+    expect(fetchCalls).toBe(0);
+  });
+
+  test("the mock transport is a fetch stub, not a Bun.serve (#593 pin)", async () => {
+    // Mechanism pin for the #593 class. A same-process Bun.serve mock is NOT
+    // reachable once any node:http server has lived in the `bun test` process
+    // (the real proxy in proxy-server-*.test.ts is @hono/node-server): fetch
+    // then answers Bun's "Welcome to Bun!" default page, and node:http / raw
+    // sockets hang. Measured 2026-10-23 on win32 1.3.14 and ubuntu 1.4.0.
+    // So this file must answer through a stub: same wire semantics, no socket.
+    expect(globalThis.fetch).not.toBe(nativeFetch);
+    const res = await fetch(MOCK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 999, method: "tools/call", params: {} }),
+    });
+    expect(res instanceof Response).toBe(true);
+    expect(res.status).toBe(200);
+    const msg: any = await res.json();
+    expect(msg.id).toBe(999);
+    expect(msg.result?.content?.[0]?.text).toBe("mock search results");
   });
 
   test("JSON response → ok:true with text, sends Bearer auth", async () => {
@@ -180,3 +199,7 @@ describe("mcp-searxng-client", () => {
     expect(Date.now() - started).toBeLessThan(3000);
   });
 });
+
+// Keep the stub installed for the whole file, then restore — nothing lingers
+// in the process for whatever test file runs next.
+afterAll(() => uninstallStub());

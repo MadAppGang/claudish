@@ -6,9 +6,19 @@
  * client, and claudish had no way to send credentials at all. The standard
  * curl-style form `https://user:pass@host` now produces an Authorization
  * header — LAN deployments with a credless URL stay byte-identical.
+ *
+ * Transport (#593): these mocks answer through a fetch stub, not a Bun.serve.
+ * Measured 2026-10-23: once any node:http server has lived in the `bun test`
+ * process (the real proxy is @hono/node-server, so every proxy-server route
+ * test does), every Bun.serve created afterwards is unreachable — fetch gets
+ * Bun's "Welcome to Bun!" default page and node:http / raw sockets hang, on
+ * win32 1.3.14 and ubuntu 1.4.0 alike. A stub keeps the exact wire semantics
+ * (status, headers, JSON bodies, abort on the attempt timeout) without a
+ * socket. See test-support/stub-fetch.ts.
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
+import { installStubFetch } from "../../test-support/stub-fetch.js";
 import {
   searxngConfig,
   executeWebSearch,
@@ -79,41 +89,38 @@ describe("executeWebSearch — Basic auth end-to-end (local mock)", () => {
     delete process.env.SEARXNG_MCP_URL;
     const expectAuth = `Basic ${Buffer.from("u:p").toString("base64")}`;
     let sawAuth = "";
-    const server = Bun.serve({
-      port: 0,
-      fetch(req) {
-        sawAuth = req.headers.get("authorization") || "";
-        if (sawAuth !== expectAuth) return new Response("denied", { status: 401 });
-        return Response.json({
-          results: [{ title: "Lean proof", url: "https://example.com", content: "snippet" }],
-        });
-      },
+    let seenUrl = "";
+    const restore = installStubFetch((req) => {
+      sawAuth = req.headers.get("authorization") || "";
+      seenUrl = req.url;
+      if (sawAuth !== expectAuth) return new Response("denied", { status: 401 });
+      return Response.json({
+        results: [{ title: "Lean proof", url: "https://example.com", content: "snippet" }],
+      });
     });
     try {
-      process.env.SEARXNG_URL = `http://u:p@127.0.0.1:${server.port}`;
+      process.env.SEARXNG_URL = "http://u:p@searxng.test";
       const out = await executeWebSearch("lean", 3000);
       expect(sawAuth).toBe(expectAuth);
+      // The credentials ride the userinfo-derived header, never the URL the
+      // executor builds (base has them stripped).
+      expect(seenUrl.startsWith("http://searxng.test/search?q=lean")).toBe(true);
       expect(out).toContain("[Web search results");
       expect(out).toContain("**Lean proof**");
     } finally {
-      server.stop(true);
+      restore();
     }
   });
 
   test("401 despite creds → graceful no-results text, never a throw", async () => {
     delete process.env.SEARXNG_MCP_URL;
-    const server = Bun.serve({
-      port: 0,
-      fetch() {
-        return new Response("Unauthorized", { status: 401 });
-      },
-    });
+    const restore = installStubFetch(() => new Response("Unauthorized", { status: 401 }));
     try {
-      process.env.SEARXNG_URL = `http://u:p@127.0.0.1:${server.port}`;
+      process.env.SEARXNG_URL = "http://u:p@searxng.test";
       const out = await executeWebSearch("lean", 2000);
       expect(out).toMatch(/no results|unavailable/i);
     } finally {
-      server.stop(true);
+      restore();
     }
   });
 
@@ -154,35 +161,37 @@ describe("executeWebSearch — retry, budget and latency telemetry (#3388)", () 
   // of the dimensioned 5s (bun's default per-test timeout is 5s).
   const ATTEMPT_MS = "150";
 
-  function slowThenFastServer(slowMs: number) {
+  /**
+   * First request stalls past the attempt timeout (aborted), later ones answer
+   * at once. The stall lives in the stub handler; the abort itself is honoured
+   * by installStubFetch on the AbortSignal.timeout the executor passes.
+   */
+  function slowThenFastStub(slowMs: number) {
     let hits = 0;
-    const server = Bun.serve({
-      port: 0,
-      async fetch() {
-        hits++;
-        if (hits === 1) {
-          await new Promise((r) => setTimeout(r, slowMs));
-        }
-        return Response.json({
-          results: [{ title: "Retry proof", url: "https://example.com", content: "snippet" }],
-        });
-      },
+    const restore = installStubFetch(async () => {
+      hits++;
+      if (hits === 1) {
+        await new Promise((r) => setTimeout(r, slowMs));
+      }
+      return Response.json({
+        results: [{ title: "Retry proof", url: "https://example.com", content: "snippet" }],
+      });
     });
-    return { server, hits: () => hits };
+    return { restore, hits: () => hits };
   }
 
   test("first attempt times out → exactly one retry recovers results", async () => {
     delete process.env.SEARXNG_MCP_URL;
     process.env.SEARXNG_ATTEMPT_TIMEOUT_MS = ATTEMPT_MS;
-    const { server, hits } = slowThenFastServer(400);
+    const { restore, hits } = slowThenFastStub(400);
     try {
-      process.env.SEARXNG_URL = `http://127.0.0.1:${server.port}`;
+      process.env.SEARXNG_URL = "http://searxng.test";
       const out = await executeWebSearch("retry", 3000);
       expect(hits()).toBe(2);
       expect(out).toContain("[Web search results");
       expect(out).toContain("**Retry proof**");
     } finally {
-      server.stop(true);
+      restore();
     }
   });
 
@@ -190,21 +199,18 @@ describe("executeWebSearch — retry, budget and latency telemetry (#3388)", () 
     delete process.env.SEARXNG_MCP_URL;
     process.env.SEARXNG_ATTEMPT_TIMEOUT_MS = ATTEMPT_MS;
     let hits = 0;
-    const server = Bun.serve({
-      port: 0,
-      async fetch() {
-        hits++;
-        await new Promise((r) => setTimeout(r, 400));
-        return Response.json({ results: [] });
-      },
+    const restore = installStubFetch(async () => {
+      hits++;
+      await new Promise((r) => setTimeout(r, 400));
+      return Response.json({ results: [] });
     });
     try {
-      process.env.SEARXNG_URL = `http://127.0.0.1:${server.port}`;
+      process.env.SEARXNG_URL = "http://searxng.test";
       const out = await executeWebSearch("never-answers", 3000);
       expect(hits).toBe(2);
       expect(out).toMatch(/failed after 2 attempts within 3000ms budget/i);
     } finally {
-      server.stop(true);
+      restore();
     }
   });
 
@@ -212,33 +218,30 @@ describe("executeWebSearch — retry, budget and latency telemetry (#3388)", () 
     delete process.env.SEARXNG_MCP_URL;
     process.env.SEARXNG_ATTEMPT_TIMEOUT_MS = ATTEMPT_MS;
     let hits = 0;
-    const server = Bun.serve({
-      port: 0,
-      async fetch() {
-        hits++;
-        await new Promise((r) => setTimeout(r, 400));
-        return Response.json({ results: [] });
-      },
+    const restore = installStubFetch(async () => {
+      hits++;
+      await new Promise((r) => setTimeout(r, 400));
+      return Response.json({ results: [] });
     });
     try {
-      process.env.SEARXNG_URL = `http://127.0.0.1:${server.port}`;
+      process.env.SEARXNG_URL = "http://searxng.test";
       // 350ms budget: attempt 1 aborts at ~150ms, remaining ~200ms < 250ms
       // retry floor → no second request.
       const out = await executeWebSearch("no-budget", 350);
       expect(hits).toBe(1);
       expect(out).toMatch(/failed/i);
     } finally {
-      server.stop(true);
+      restore();
     }
   });
 
   test("latency telemetry records every attempt (incl. timeouts) with p50/p95", async () => {
     delete process.env.SEARXNG_MCP_URL;
     expect(searxngLatencyStats()).toBeNull();
-    const { server } = slowThenFastServer(400);
+    const { restore } = slowThenFastStub(400);
     try {
       process.env.SEARXNG_ATTEMPT_TIMEOUT_MS = ATTEMPT_MS;
-      process.env.SEARXNG_URL = `http://127.0.0.1:${server.port}`;
+      process.env.SEARXNG_URL = "http://searxng.test";
       await executeWebSearch("telemetry", 3000);
       const stats = searxngLatencyStats();
       expect(stats).not.toBeNull();
@@ -248,32 +251,32 @@ describe("executeWebSearch — retry, budget and latency telemetry (#3388)", () 
       _resetSearxngTelemetry();
       expect(searxngLatencyStats()).toBeNull();
     } finally {
-      server.stop(true);
+      restore();
     }
   });
 
   test("MCP stays first in the chain when configured (retry loop is the HTTP fallback only)", async () => {
     process.env.SEARXNG_ATTEMPT_TIMEOUT_MS = ATTEMPT_MS;
     let httpHits = 0;
-    const server = Bun.serve({
-      port: 0,
-      fetch() {
-        httpHits++;
-        return Response.json({
-          results: [{ title: "Via HTTP fallback", url: "https://example.com", content: "snippet" }],
-        });
-      },
+    const restore = installStubFetch((req) => {
+      // The MCP endpoint is dead (connection refused) — the client must
+      // degrade to ok:false and let direct HTTP carry the search.
+      if (req.url.includes("127.0.0.1:1/mcp")) {
+        throw new Error("connect ECONNREFUSED 127.0.0.1:1");
+      }
+      httpHits++;
+      return Response.json({
+        results: [{ title: "Via HTTP fallback", url: "https://example.com", content: "snippet" }],
+      });
     });
     try {
-      // A failing MCP endpoint (nothing listens on this port → connection
-      // refused) must fall through to direct HTTP, which then succeeds.
       process.env.SEARXNG_MCP_URL = "http://127.0.0.1:1/mcp";
-      process.env.SEARXNG_URL = `http://127.0.0.1:${server.port}`;
+      process.env.SEARXNG_URL = "http://searxng.test";
       const out = await executeWebSearch("mcp-fallback", 3000);
       expect(httpHits).toBeGreaterThanOrEqual(1);
       expect(out).toContain("[Web search results");
     } finally {
-      server.stop(true);
+      restore();
     }
   });
 });
