@@ -50,9 +50,9 @@ beforeEach(() => {
 });
 afterEach(async () => {
   try {
-    chmodSync(join(teamDir, "status.json"), 0o644);
+    chmodSync(teamDir, 0o755);
   } catch {
-    // no status.json in this test
+    // no team directory in this test
   }
   const report = await finishPaneTest(panes);
   layout.cleanup();
@@ -153,9 +153,9 @@ describe.skipIf(!MAGMUX)(
           (err: unknown) => err
         );
         // The fault (§20.2, replacing the spawn seam's throw): once slot 1's pane exists — its
-        // pane record is written before anything is spawned — status.json turns read-only,
-        // inside the 300 ms boot stagger, so slot 2's STARTING write throws EACCES. (The file,
-        // not the directory: an overwrite in place needs write permission on the file.)
+        // pane record is written before anything is spawned — the team directory turns read-only,
+        // inside the 300 ms boot stagger, so slot 2's atomic STARTING status write throws EACCES
+        // when it cannot create status.json.tmp.<pid>.
         await waitFor(
           () => {
             const recs = join(panes.sockRoot, "panes");
@@ -163,7 +163,7 @@ describe.skipIf(!MAGMUX)(
           },
           { what: "slot 1's pane record", timeoutMs: 5_000, intervalMs: 5 }
         );
-        chmodSync(join(teamDir, "status.json"), 0o444);
+        chmodSync(teamDir, 0o555);
         const thrown = await run;
 
         // was: slot 1 got SIGTERM. Now: every started pane is reaped (no process, socket or

@@ -61,6 +61,28 @@ Claudish supports local models via:
 Local APIs report `prompt_tokens` as the FULL conversation context on every request, not an
 increment — see `ai-docs/architecture/context-window.md`.
 
+## MCP callers pass bare names: an unrequested `provider@` is removed (2026-10-23)
+
+The agent that calls the MCP tools often writes a `provider@` the user never asked for: it
+copies one from the `list_models` Access line, or guesses. That spec bypasses the user's
+routing (configured providers, subscription first, preferences, manual overrides). Measured in
+the `recommended-effort` bench run1: the agent sent `oai@gpt-6-luna` from the Access line,
+was billed on the metered API and got `credit_balance_exhausted`, while `cx@` (the
+subscription) would have served the bare name.
+
+So `team` (`models`, `judges`), `create_session` and `run_prompt` remove the provider
+(`stripUnrequestedProvider`, `mcp-server.ts`) unless the caller lists the spec in
+`user_required_provider` (the user named the provider). Only a single `provider@model` whose
+provider is a BUILT-IN claudish provider and whose model part is exactly a canonical model id of
+the cloud models catalog is changed; markers (`+pro`, `#fast`) stay. Unchanged: chains, local
+providers, `custom-url`, a user's custom endpoint (`corp-proxy@gpt-4o` names a vendor and a bill
+the bare name would not reach), an explicit metered `anthropic@claude-*`, legacy syntax, a wire id
+that is not a catalog model id (`kc@k3`), and two specs that would strip to one name
+(`or@kimi-k3`, `kc@kimi-k3`: a provider comparison keeps both providers and both efforts). The
+answer names every removal (`provider_note` / `note`) and the MCP log records it.
+`compare_models` is not changed: it is a debug tool, where comparing providers can be the
+point.
+
 ## Which names reach `route()`
 
 **One gate: `proxyRouteDecision`** (`providers/native-route.ts`). The proxy's step 2c asks it

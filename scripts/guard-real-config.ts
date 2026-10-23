@@ -85,6 +85,15 @@ const GUARDED = [
       "child process with its own HOME, instead of writing the real sidecar",
   },
   {
+    // The efforts sidecar (`effortRecommendationsPathFor`): a test that writes it
+    // hands the real request path recommended reasoning efforts nobody published.
+    path: join(homedir(), ".claudish", "cloud-models-catalog-v3.efforts.json"),
+    label: "REAL EFFORTS SIDECAR",
+    remedy:
+      "pass a temp `effortsPath` to writeEffortRecommendations / getRecommendedModels, or run " +
+      "the refresh in a child process with its own HOME",
+  },
+  {
     // The pre-v3 cache file. This build no longer writes it, but older builds on the
     // same machine still read it, so a test that touches it breaks them.
     path: join(homedir(), ".claudish", "all-models.json"),

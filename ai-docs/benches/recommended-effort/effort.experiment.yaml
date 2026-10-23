@@ -1,0 +1,27 @@
+description: "recommended effort: installed vs worktree claudish-usage skill, exact ids vs model families"
+bench: ./madbench.yaml
+# The variants differ in the staged plugin folder (one file: the claudish-usage
+# SKILL.md) and in prompt params, which are not staged inputs.
+guard_changes:
+  allow: [harness/config/plugins]
+variants:
+  # Baseline: the installed claudish@magus 2.10.0 skill (no effort section), exact
+  # model ids, effort never mentioned.
+  - name: installed-skill
+  # The skill under test, same prompts.
+  - name: worktree-skill
+    params:
+      plugin: ./plugins/worktree/claudish
+  # The skill under test, the user names only model families: the agent chooses the
+  # ids (bare, per the bare-name Check), and no MiniMax model has a
+  # table row, so its effort must still be omitted.
+  - name: worktree-family
+    params:
+      plugin: ./plugins/worktree/claudish
+      ui_models: "two different OpenAI GPT models"
+      ui_named: []
+      review_model: "an OpenAI GPT model"
+      review_named: []
+      typo_models: "a GPT model and a MiniMax model"
+      typo_named: []
+      names_note: ""

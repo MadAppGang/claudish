@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { writeFileAtomic } from "./fs-atomic.js";
+import { log } from "./logger.js";
 import {
   type CachedSubscriptionPlan,
   type SlimModelEntry,
@@ -20,6 +22,10 @@ import {
 } from "./providers/catalog-v3.js";
 import type { ConnectionWire } from "./providers/connection-wire.js";
 import { normaliseCatalogPayload } from "./providers/content-use.js";
+import {
+  EFFORT_RECOMMENDATIONS_PATH,
+  writeEffortRecommendations,
+} from "./providers/effort-recommendations.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { nativeProviderForVendor } from "./providers/route-candidates.js";
 import type { OpenRouterModel } from "./types.js";
@@ -437,6 +443,12 @@ export interface RecommendationsWire {
   generationId: string;
   /** Malformed elements are skipped; a non-array throws. */
   entries: unknown[];
+  /**
+   * Recommended reasoning effort per model and task type. OPTIONAL and read only
+   * by `writeEffortRecommendations`, which tolerates any value: absent or
+   * malformed means no recommendations.
+   */
+  efforts?: unknown;
 }
 
 /**
@@ -769,7 +781,10 @@ function readRecommendedModelsCacheFile(): RecommendedModelsDoc | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(RECOMMENDED_MODELS_CACHE_PATH, "utf-8"));
-  } catch {
+  } catch (err) {
+    log(
+      `[recommended] unreadable ${RECOMMENDED_MODELS_CACHE_PATH}: ${err instanceof Error ? err.message : String(err)}`
+    );
     return null;
   }
   // A projection an older build wrote within this same generation may hold a
@@ -777,9 +792,25 @@ function readRecommendedModelsCacheFile(): RecommendedModelsDoc | null {
   // id): rebuild it. Checked on the DISK copy only — the doc reader itself
   // judges shape, and a freshly projected doc always carries this version.
   if (!isRecord(parsed) || parsed.projectionVersion !== RECOMMENDED_PROJECTION_VERSION) {
+    // Another claudish build shares this file: its projection is not read, and the
+    // list_models fallback then has no list. Say which version was found.
+    log(
+      `[recommended] ${RECOMMENDED_MODELS_CACHE_PATH} has projection version ${isRecord(parsed) ? String(parsed.projectionVersion) : "none"}; this build reads ${RECOMMENDED_PROJECTION_VERSION}`
+    );
     return null;
   }
   return readProjectedRecommendationsDoc(parsed);
+}
+
+/**
+ * The recommended list last written to disk, whatever its generation or age: the
+ * answer for a caller whose fetch failed (MCP `list_models`). It must say that the
+ * list is older; `generationId` names the generation it came from. Null when no
+ * usable file exists.
+ */
+export function readLastRecommendedModels(): RecommendedModelsDoc | null {
+  const doc = readRecommendedModelsCacheFile();
+  return doc && doc.models.length > 0 ? doc : null;
 }
 
 // ─── Recommended models grouping + formatting helpers ───────────────────────
@@ -1129,16 +1160,17 @@ export function computeQuickPicks(primaries: RecommendedModelEntry[]): QuickPick
  *   2. Disk cache at RECOMMENDED_MODELS_CACHE_PATH, read through
  *      `readProjectedRecommendationsDoc` (24h TTL via FIREBASE_CACHE_TTL_HOURS:
  *      claudish's own refetch interval, not the backend's evidence lifetime)
- *   3. Firebase ?catalog=recommended (writes disk cache on success)
+ *   3. Firebase ?catalog=recommended (writes disk cache on success, and the
+ *      efforts sidecar at `effortsPath` for the generation it read)
  *
  * Throws when all three tiers fail. The bundled fallback was removed in commit
  * 5 of the model-catalog and routing redesign — Firebase is the single catalog
  * source now (see plan §A and CLAUDE.md).
  */
 export async function getRecommendedModels(
-  opts: { forceRefresh?: boolean } = {}
+  opts: { forceRefresh?: boolean; effortsPath?: string } = {}
 ): Promise<RecommendedModelsDoc> {
-  const { forceRefresh = false } = opts;
+  const { forceRefresh = false, effortsPath = EFFORT_RECOMMENDATIONS_PATH } = opts;
   const cached = _cachedRecommendedModels;
 
   // Tier 1: in-memory cache
@@ -1180,6 +1212,18 @@ export async function getRecommendedModels(
     if (response.recommendations.generationId !== generationId) {
       throw new Error("Recommendation and model catalog generations differ");
     }
+    // Before the top100 fetch, so a top100 failure cannot cost the efforts of a
+    // generation already read. Written even when the field is absent: the
+    // generation then says "none" (`efforts: {}`).
+    try {
+      writeEffortRecommendations(generationId, response.recommendations.efforts, effortsPath);
+    } catch (err) {
+      // A sidecar write failure does not invalidate the fetched recommendations,
+      // but it is logged: otherwise it reads only as `no-sidecar` later.
+      log(
+        `[effort] sidecar write failed for generation ${generationId}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     const top100 = await fetchCatalogData<{ mode: "top100"; models: ModelDoc[] }>(
       `${FIREBASE_BASE_URL}?catalog=top100`,
       RECOMMENDED_FETCH_TIMEOUT_MS,
@@ -1189,11 +1233,13 @@ export async function getRecommendedModels(
     if (data.models.length > 0) {
       _cachedRecommendedModels = data;
       try {
-        const cacheDir = join(homedir(), ".claudish");
-        mkdirSync(cacheDir, { recursive: true });
-        writeFileSync(RECOMMENDED_MODELS_CACHE_PATH, JSON.stringify(data), "utf-8");
-      } catch {
-        // A disk write failure does not invalidate the fetched result.
+        writeFileAtomic(RECOMMENDED_MODELS_CACHE_PATH, JSON.stringify(data));
+      } catch (err) {
+        // A disk write failure does not invalidate the fetched result, but the
+        // next process then refetches, and only this line says why.
+        log(
+          `[recommended] cache write failed: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
       return data;
     }
@@ -1242,7 +1288,8 @@ export function getRecommendedModelsSync(): RecommendedModelsDoc {
 export async function warmRecommendedModels(): Promise<RecommendedModelsDoc | null> {
   try {
     return await getRecommendedModels({ forceRefresh: true });
-  } catch {
+  } catch (err) {
+    log(`[recommended] warm failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

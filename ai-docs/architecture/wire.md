@@ -68,6 +68,50 @@ wire overwrote it. With no wire the adapter now fills from the same catalog fiel
 (`lookupModelMaxOutputTokens`), or leaves the field out. On generation
 `g-20261016053727894-8a743761` 6 of 58 Messages connections had no model `maxOutputTokens`, `minimax-m3` among them.
 
+## Recommended effort
+
+models-index publishes `data.recommendations.efforts[modelId][taskType] = {effort, basis,
+sendableOn, ...}` on `?catalog=recommended` (2.3.0). The value is a canonical level (`low` …
+`max`). `getRecommendedModels` writes it, normalised, to
+`~/.claudish/cloud-models-catalog-v3.efforts.json` (`providers/effort-recommendations.ts`) for the
+generation it read, before the `top100` fetch, so a `top100` failure cannot lose it.
+
+**claudish does not choose a task type.** The agent that calls the claudish MCP tools already
+knows its task, so it chooses (Jack, 2026-10-22):
+
+1. `list_models` appends the newest generation's table: a row per canonical model id, a column
+   per task type.
+2. The caller maps its task to a column and takes the cell for each model it runs. The models
+   can come from the user or be fixed by the task; the lookup is the same.
+3. It passes one effort per model: `team` `efforts: {"<model>": "<level>"}` (keys exactly as in
+   `models`), `create_session` `effort`, `run_prompt` `effort`.
+4. `team` and `create_session` append claudish's own `--effort-override <level>` to the child's
+   flags (after `claude_flags`, so it wins). The child's proxy pins that level on every request,
+   as the flag always did. `run_prompt` sends `output_config.effort`, the field Claude Code
+   sends, and step 5w maps it onto the connection's published levels.
+
+A model with no entry keeps Claude Code's own effort, which is the behaviour from before.
+
+A call with NO effort at all, while one of its models has a row, starts nothing and answers
+`needs_effort:` with those rows (`effortClarification`, `mcp-server.ts`); `efforts: {}` or
+`effort: "default"` keeps Claude Code's own level on purpose. Measured why (bench
+`recommended-effort` run9, 2026-10-23): with exact model ids the calling agent went straight
+to `team` / `create_session` in 16/16 sessions, never opened the `claudish-usage` skill (0/8
+with the new skill) and passed no effort; the `efforts` parameter description alone did not
+change that (run2, 0/6). When the user named only a family, it read `list_models` and matched
+the table 8/8. `list_models` names no provider: its old Access line (`oai@gpt-6.1-sol`) was
+copied into calls and bypassed routing (2 of 3 run9 failures). On a
+bare Claude name the effort is ignored: the native passthrough and `run_prompt`'s print path
+never reach step 5w.
+
+Rejected (built and removed on 2026-10-22): a task classifier inside the proxy that labelled
+each user turn with one call to a lightweight model, plus `--task`, MCP `task_type` and plan-mode
+and slash-command rules. It added about 1.7 s (median, 10 calls on `cx@gpt-6-luna`) before the
+first request of every unlabelled turn, and it needed demotion rules, a timeout and user-set
+effort detection. It guessed a fact that the calling agent already had. The work is kept in the
+gitignored session `dev-feature-recommended-effort-20261021-101332-a05a`, under
+`backup-before-rework-*`.
+
 ## Traps
 
 - **Older claudish erases the registry.** Releases before 10.5.0 rewrite

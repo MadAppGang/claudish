@@ -1,6 +1,7 @@
 /**
  * The two renderings of the recommended-models list: the `claudish --models-top`
- * text and the MCP `list_models` markdown.
+ * text and the MCP `list_models` markdown, plus the recommended-effort table
+ * `list_models` appends.
  *
  * Pure: each function returns text and prints nothing. Section order, headings and
  * descriptions come from `RECOMMENDATION_SECTIONS` through `groupRecommendedModels`;
@@ -19,6 +20,7 @@ import {
   normalizePricingDisplay,
   quickPickCandidates,
 } from "./model-loader.js";
+import type { ModelEffortRecommendations } from "./providers/effort-recommendations.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
 import { nativeProviderForVendor } from "./providers/route-candidates.js";
 
@@ -128,7 +130,10 @@ export function renderRecommendedText(
   return lines.join("\n");
 }
 
-function markdownRow(group: RecommendedModelGroup, getNativePrefix: NativePrefixLookup): string {
+// No provider on any line: the MCP caller passes the bare heading id and claudish
+// routing picks the provider from the user's setup. An Access line listing the
+// catalog's `provider@` specs was copied into tool calls and bypassed that routing.
+function markdownRow(group: RecommendedModelGroup): string {
   const m = group.primary;
   const pricing = formatListingPrice(m);
   const ctx = m.context || "N/A";
@@ -138,33 +143,27 @@ function markdownRow(group: RecommendedModelGroup, getNativePrefix: NativePrefix
   if (m.supportsVision) caps.push("vision");
   const capsLine = caps.length > 0 ? caps.join(", ") : "none";
 
-  const prefixes = collectRoutingPrefixes(group, getNativePrefix);
-  const accessLine =
-    prefixes.length > 0 ? prefixes.map((p) => `\`${p}@${m.id}\``).join(" · ") : `\`${m.id}\``;
-
   return [
     `### ${m.id}`,
     `- **Pricing**: ${pricing} avg · ${ctx} context`,
     `- **Capabilities**: ${capsLine}`,
-    `- **Access**: ${accessLine}`,
     "",
   ].join("\n");
 }
 
 /** The full MCP `list_models` markdown. Prints nothing. */
-export function renderRecommendedMarkdown(
-  doc: RecommendedModelsDoc,
-  getNativePrefix: NativePrefixLookup
-): string {
+export function renderRecommendedMarkdown(doc: RecommendedModelsDoc): string {
   const sections = groupRecommendedModels(doc.models);
 
   let output = "# Recommended Models\n\n";
   output += `_Last updated: ${doc.lastUpdated || "unknown"}_\n\n`;
+  output +=
+    "Pass each model by its bare id (the heading); claudish routing picks the provider.\n\n";
 
   for (const section of sections) {
     output += `## ${section.title}\n\n`;
     if (section.description) output += `_${section.description}_\n\n`;
-    for (const group of section.groups) output += markdownRow(group, getNativePrefix);
+    for (const group of section.groups) output += markdownRow(group);
   }
 
   const picks = computeQuickPicks(quickPickCandidates(sections));
@@ -189,4 +188,34 @@ export function renderRecommendedMarkdown(
   }
 
   return output;
+}
+
+/**
+ * The catalog's recommended effort as one markdown table: a row per canonical
+ * model id, a column per task type, `-` where the catalog has no cell. The
+ * calling agent maps its own task to a column and passes the cell to `team`
+ * (`efforts`), `create_session` or `run_prompt` (`effort`). Empty string when
+ * there is nothing to show.
+ */
+export function renderEffortTableMarkdown(
+  efforts: Readonly<Record<string, ModelEffortRecommendations>>
+): string {
+  const models = Object.keys(efforts).sort();
+  if (models.length === 0) return "";
+  const taskTypes = [...new Set(models.flatMap((m) => Object.keys(efforts[m])))].sort();
+  const lines = [
+    "## Recommended effort by task type",
+    "",
+    "Map your task to a column, take the cell for each model you run, and pass it: " +
+      '`team` `efforts: {"<model>": "<level>"}` (keys exactly as in `models`), ' +
+      "`create_session` / `run_prompt` `effort`. A model with no cell keeps Claude Code's " +
+      "own effort.",
+    "",
+    `| model | ${taskTypes.join(" | ")} |`,
+    `|---|${taskTypes.map(() => "---").join("|")}|`,
+    ...models.map(
+      (m) => `| ${m} | ${taskTypes.map((t) => efforts[m][t]?.effort ?? "-").join(" | ")} |`
+    ),
+  ];
+  return lines.join("\n");
 }

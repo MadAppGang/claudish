@@ -62,7 +62,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const dir of readdirSync(tempRoot)) {
     try {
-      chmodSync(join(tempRoot, dir, "status.json"), 0o644);
+      chmodSync(join(tempRoot, dir), 0o755);
     } catch {
       // not a team dir
     }
@@ -87,8 +87,8 @@ describe("team run record settles once", () => {
           settledCalls++;
         },
       }).catch((err: unknown) => err);
-      // The fault: slot 1's pane record exists, so status.json turns read-only and slot
-      // 2's STARTING write throws (was: slot 2's spawn threw EMFILE).
+      // The fault: slot 1's pane record exists, so the team directory turns read-only and slot
+      // 2's atomic STARTING status write cannot create its temp file (was: slot 2's spawn threw EMFILE).
       await waitUntil(
         () => {
           const recs = join(panes.sockRoot, "panes");
@@ -98,7 +98,7 @@ describe("team run record settles once", () => {
         5_000,
         5
       );
-      chmodSync(join(sessionPath, "status.json"), 0o444);
+      chmodSync(sessionPath, 0o555);
       const error = await run;
 
       expect((error as NodeJS.ErrnoException).code).toBe("EACCES");
