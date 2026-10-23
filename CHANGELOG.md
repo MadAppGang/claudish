@@ -2,6 +2,24 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.3.0] - 2026-10-23
+
+### Documentation
+
+- record agent_requested and agent in the mod contract v1 *(mcp)* ([`e92101b`](https://github.com/MadAppGang/claudish/commit/e92101b1937ba3f7b9ba5f7fa7a500ccd10faac0))
+- mark the release playbook verified by v14.2.0 (#343) *(release)* ([`f1dabfb`](https://github.com/MadAppGang/claudish/commit/f1dabfb5391d630e688996f21b2773646bc6ec48))
+- mark the release playbook verified by v14.2.0 *(release)* ([`8827764`](https://github.com/MadAppGang/claudish/commit/8827764b976023214aefa9a4714c7c5e6ff4e5d3))
+- update CHANGELOG.md for v14.2.0([`8ea8084`](https://github.com/MadAppGang/claudish/commit/8ea80841f6688d72023dba685fc638c25dea89b8))
+
+### New Features
+
+- add agent_requested and agent to session and team slot rows *(mcp)* ([`c8c1ccd`](https://github.com/MadAppGang/claudish/commit/c8c1ccd6cf88228fd74962dc00134c50a8a16b14))
+
+### Other Changes
+
+- v14.3.0 (#346) *(release)* ([`ffdd4e9`](https://github.com/MadAppGang/claudish/commit/ffdd4e911284df7a6136c571ae4ac876ff5b34c5))
+- v14.3.0 *(release)* ([`33a5a8c`](https://github.com/MadAppGang/claudish/commit/33a5a8c581c25e9538146fcca7ccbda44be2a304))
+
 ## [14.2.0] - 2026-10-23
 
 ### Bug Fixes
