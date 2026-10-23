@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildTeamStatusPayload, teamStatusNote } from "./mcp-server.js";
@@ -77,6 +77,48 @@ describe("teamStatusNote", () => {
 });
 
 describe("teamRunRowFromDisk", () => {
+  test("agent fields survive status.json, including rejected and pre-change slots", () => {
+    const dir = mkdtempSync(join(tmpdir(), "team-disk-agents-"));
+    try {
+      const status: TeamStatus = {
+        startedAt: "2026-10-06T00:00:00.000Z",
+        models: {
+          "01": { ...slot("COMPLETED", 12), agentRequested: "dev:reviewer", agent: "dev:reviewer" },
+          "02": {
+            ...slot("FAILED", 0),
+            agentRequested: "dev:nope",
+            error: {
+              model: "m",
+              command: "--agent dev:nope",
+              reason: "agent_rejected",
+              detail: "Unknown agent",
+              errorLogPath: join(dir, "02.error.log"),
+              workDir: dir,
+            },
+          },
+          "03": slot("COMPLETED", 12),
+        },
+      };
+      const path = join(dir, "status.json");
+      writeFileSync(path, JSON.stringify(status));
+      const persisted: TeamStatus = JSON.parse(readFileSync(path, "utf8"));
+      expect(
+        teamRunRowFromDisk(dir, persisted).slots.map((row) => ({
+          slot: row.slot,
+          agent_requested: row.agent_requested,
+          agent: row.agent,
+          reason: row.reason,
+        }))
+      ).toEqual([
+        { slot: "01", agent_requested: "dev:reviewer", agent: "dev:reviewer", reason: null },
+        { slot: "02", agent_requested: "dev:nope", agent: null, reason: "agent_rejected" },
+        { slot: "03", agent_requested: null, agent: null, reason: null },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("disk rows have recent null in active and settled states", () => {
     const dir = mkdtempSync(join(tmpdir(), "team-disk-recent-"));
     try {

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { planDelivery } from "./prompt-delivery.js";
 import { FIXTURES } from "./test-helpers/fixtures.js";
@@ -11,6 +13,7 @@ import {
   witnessIndex,
 } from "./test-helpers/transcript-fixtures.js";
 import {
+  TranscriptFollower,
   type TranscriptView,
   type Witness,
   applyRecord,
@@ -47,6 +50,37 @@ function longLine(n: number): string {
   while (s.length < n) s += ` w${i++}`;
   return `${s} END`;
 }
+
+describe("agent-setting records", () => {
+  test("agent-setting before a turn is exposed; latest valid record wins", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-setting-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, "transcript.jsonl");
+    writeFileSync(path, "");
+    const follower = new TranscriptFollower(path, join(dir, "subagents"));
+    follower.poll();
+    expect(follower.view().agentSetting).toBeNull();
+    // Real record supplied in the test brief; mutations below exercise replacement and invalid data.
+    const record = {
+      type: "agent-setting",
+      agentSetting: "dev:reviewer",
+      sessionId: "1998dd91-53e0-4e85-9f05-73030ac49763",
+    };
+    const append = (agentSetting: unknown) => {
+      appendFileSync(path, `${JSON.stringify({ ...record, agentSetting })}\n`);
+      follower.poll();
+    };
+    append(record.agentSetting);
+    expect(follower.view().current).toBeNull();
+    expect(follower.view().agentSetting).toBe("dev:reviewer");
+    append("dev:second");
+    expect(follower.view().agentSetting).toBe("dev:second");
+    for (const invalid of ["", null, 42, {}, false]) {
+      append(invalid);
+      expect(follower.view().agentSetting).toBe("dev:second");
+    }
+  });
+});
 
 describe("witness and turn scoping", () => {
   const PEAR = "Reply with exactly PEAR and nothing else.";
