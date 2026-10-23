@@ -846,6 +846,93 @@ export function resolveDelegationOwner(
   return resolveRoleStep(role, step);
 }
 
+/** #609: the next concrete a role-step's delegation can serve WITHIN THIS
+ * REQUEST, excluding every concrete the request has already paid.
+ *
+ * `resolveRoleStep` yields one concrete per request — the target's nominal
+ * when its bucket is not walled, else the target's resolved cascade step. The
+ * invariant "no lane ends in famine" therefore held across requests but not
+ * inside the one that landed on a dead inherited concrete: a delegated wall of
+ * the target's NOMINAL goes through the target's grace/arm semantics, so a
+ * first wall does not wall the bucket and re-resolution hands the same
+ * concrete back; and a delegating LAST step has no caller step beneath it.
+ * Measured on the hub 2026-10-22: `haiku` surfaced `every step walled` while
+ * `role:sonnet`'s own PAYG terminator was alive (200 in 545 ms, 5 min later).
+ *
+ * Walks the target's path in its own order — nominal, then each cascade step,
+ * nested delegations recursed (acyclic by the load-time proof) — and returns
+ * the first candidate that is not in `exclude`, not bound by its per-step TTL
+ * (`stepTtlBinds`, the armed resolver's rule), and, for a nominal, not on a
+ * walled bucket (`resolveRoleStep`'s bar). When every target step is
+ * TTL-failed, its LAST model step is still offered unless excluded or
+ * operator-closed (#261) — resolveSkippingFailed's "PAYG always serves" bet,
+ * held inside the request too.
+ *
+ * Writes no failure state (no arm, no mark, no wall, no pin). One in-place
+ * touch, the module's shared idiom: `step.target` is refreshed to the returned
+ * concrete, so the served-step notice names the model that actually served.
+ * Null = the target's path is exhausted for this request. */
+export function resolveDelegationExcluding(
+  step: FailoverStep,
+  exclude: ReadonlySet<string>
+): { concrete: string; owner: DelegationOwner } | null {
+  if (!step.roleRef) return null;
+  const found = walkDelegationPath(step.roleRef, exclude);
+  if (found) step.target = found.concrete;
+  return found;
+}
+
+function walkDelegationPath(
+  targetRole: FailoverRole,
+  exclude: ReadonlySet<string>
+): { concrete: string; owner: DelegationOwner } | null {
+  const nominal = roleNominalResolver?.(targetRole);
+  if (nominal && !exclude.has(nominal)) {
+    let bucket = roleNominalBucketResolver?.(nominal);
+    if (bucket === undefined) {
+      const nb = classifyNominalBucket(nominal, () => false);
+      if ("bucket" in nb) bucket = nb.bucket;
+    }
+    const walled =
+      bucket !== undefined && (isBucketWalled(bucket) || isBucketWalled(LEGACY_ROLE_WIDE_BUCKET));
+    if (!walled) return { concrete: nominal, owner: { role: targetRole, nominal: true } };
+  }
+  const rule = rules.get(targetRole);
+  if (!rule || rule.steps.length === 0) return null;
+  const fails = stepFailures.get(targetRole);
+  for (let i = 0; i < rule.steps.length; i++) {
+    const s = rule.steps[i];
+    if (stepTtlBinds(targetRole, fails?.[i], s)) continue;
+    if (s.roleRef) {
+      const nested = walkDelegationPath(s.roleRef, exclude);
+      if (nested) return nested;
+      continue;
+    }
+    if (exclude.has(s.target)) continue;
+    return { concrete: s.target, owner: { role: targetRole, nominal: false, stepIndex: i } };
+  }
+  const last = rule.steps.length - 1;
+  const lastStep = rule.steps[last];
+  if (
+    !lastStep.roleRef &&
+    !exclude.has(lastStep.target) &&
+    !(lastStep.resetAt && Date.now() < lastStep.resetAt.getTime())
+  ) {
+    return { concrete: lastStep.target, owner: { role: targetRole, nominal: false, stepIndex: last } };
+  }
+  return null;
+}
+
+/** #609: upper bound on the distinct concretes a delegation's path can offer —
+ * the target's nominal plus each step, nested delegations counted through. The
+ * in-request walk can never take more extra attempts than this (each one adds
+ * its concrete to the exclusion set); the cap is the belt over that argument. */
+export function delegationCandidateBound(step: FailoverStep): number {
+  const count = (r: FailoverRole): number =>
+    1 + (rules.get(r)?.steps ?? []).reduce((n, s) => n + (s.roleRef ? count(s.roleRef) : 1), 0);
+  return step.roleRef ? count(step.roleRef) : 0;
+}
+
 // ─── per-step backoff ──────────────────────────────────────────────────────────
 
 function stepTtlMs(count: number, own?: boolean): number {

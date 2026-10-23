@@ -253,12 +253,14 @@ describe("#274 review — delegated bookkeeping through the real cascade loop", 
 
     // Request 1: opus (config-armed) → its only step is role:sonnet → sonnet
     // is healthy, so the delegation serves sonnet's NOMINAL — which walls.
-    // opus[0] is the loop's LAST step, so this request surfaces the 402 (the
-    // delegating cascade is 1 step deep; deeper walks happen on the next
-    // request's resolution). The pin is what the wall LEFT BEHIND:
+    // opus[0] is the loop's LAST step. Pre-#609 this request surfaced the 402
+    // and the deeper walk waited for the next request's resolution; since
+    // #609 the delegation walks sonnet's remaining path IN-request (nm
+    // excluded as paid) and s0 serves. The pin is what the wall LEFT BEHIND:
     const r1 = await postMessage("claude-opus-5");
-    expect(r1.status).toBe(402);
+    expect(r1.status).toBe(200);
     expect(calls.nm).toBe(1); // paid exactly once
+    expect(calls.s0).toBe(1); // #609: the in-request walk into the target's cascade
 
     // THE PIN: the delegated wall went through the TARGET's grace/arm
     // semantics — sonnet's nominal bucket is now walled (never armed by the
@@ -273,7 +275,7 @@ describe("#274 review — delegated bookkeeping through the real cascade loop", 
     const r2 = await postMessage("claude-opus-5");
     expect(r2.status).toBe(200);
     expect(calls.nm).toBe(1); // never re-paid
-    expect(calls.s0).toBe(1); // joined the target's walk
+    expect(calls.s0).toBe(2); // joined the target's walk (request 1 already served there, #609)
   }, 30_000);
 
   test("S2: a delegated wall of the TARGET's STEP marks the owning step — a direct sonnet request skips it", async () => {
@@ -287,9 +289,12 @@ describe("#274 review — delegated bookkeeping through the real cascade loop", 
 
     // Request 1 (opus → delegation → sonnet s0): walls, and the OWNER
     // (sonnet[0]) is marked — visible in the wall log as a sonnet[0] line.
+    // opus[0] is the last step: pre-#609 the wall surfaced (402); since #609
+    // the delegation walks on to sonnet's s1 inside this request.
     const r1 = await postMessage("claude-opus-5");
-    expect(r1.status).toBe(402); // opus[0] is the last step — the wall surfaces
+    expect(r1.status).toBe(200);
     expect(calls.s0).toBe(1);
+    expect(calls.s1).toBe(1);
     expect(wallLog.some((l) => l.includes("step sonnet[0]") && l.includes("s0-ep@fake-s0"))).toBe(true);
 
     // Request 2 (DIRECT sonnet): the cascade must skip the s0 that request 1
@@ -299,15 +304,17 @@ describe("#274 review — delegated bookkeeping through the real cascade loop", 
     const r2 = await postMessage("claude-sonnet-5");
     expect(r2.status).toBe(200);
     expect(calls.s0).toBe(1); // paid exactly once, by the delegated request
-    expect(calls.s1).toBe(1);
+    expect(calls.s1).toBe(2); // request 1's in-request walk + this one
   }, 30_000);
 
   test("S4: a single delegated failure increments the delegating step exactly once (no 10→30min double rung)", async () => {
     await spin();
     resetDelegation({ CLAUDISH_FAILOVER_ACTIVE: "opus" });
 
+    // #609: the wall no longer surfaces (the walk serves s0 in-request); the
+    // pin is unchanged — the marks are written exactly as before the walk.
     const r1 = await postMessage("claude-opus-5");
-    expect(r1.status).toBe(402);
+    expect(r1.status).toBe(200);
     expect(calls.nm).toBe(1);
 
     // THE PIN: exactly ONE wall line for opus[0], at count=1. The first cut
@@ -320,24 +327,27 @@ describe("#274 review — delegated bookkeeping through the real cascade loop", 
     expect(opusWalls[0]).not.toContain("count=2");
   }, 30_000);
 
-  test("last-resort shape: target nominal AND full target cascade walled → each walk step is paid once across requests, then the 402 repeats", async () => {
+  test("last-resort shape: target nominal AND full target cascade walled → each target candidate is paid once, then the wall surfaces", async () => {
     await spin();
     resetDelegation({ CLAUDISH_FAILOVER_ACTIVE: "opus" });
-    // nom, s0 and s1 all wall: each request advances the delegation one step
-    // deeper into the target's walk and surfaces the wall; no step is ever
-    // re-paid. (This is the review's S1 last-step symptom — legitimate ONLY
-    // when nothing healthier remains.)
+    // nom, s0 and s1 all wall. Pre-#609 each request advanced the delegation
+    // one step deeper and surfaced the wall (three requests to cover the
+    // path); since #609 request 1 walks the whole target path in-request.
+    // Either way no candidate is ever re-paid — the surface is legitimate ONLY
+    // when nothing healthier remains.
     wallEndpoints.add("s0");
     wallEndpoints.add("s1");
 
     const r1 = await postMessage("claude-opus-5");
-    expect(r1.status).toBe(402);
+    expect(r1.status).toBe(402); // native bucket: the #409 relabel is not applied
     expect(calls.nm).toBe(1);
-    const r2 = await postMessage("claude-opus-5");
-    expect(r2.status).toBe(402);
     expect(calls.s0).toBe(1);
-    const r3 = await postMessage("claude-opus-5");
-    expect(r3.status).toBe(402);
+    expect(calls.s1).toBe(1);
+    // The next request finds every candidate benched and re-pays none of them.
+    const r2 = await postMessage("claude-opus-5");
+    expect(r2.status).not.toBe(200);
+    expect(calls.nm).toBe(1);
+    expect(calls.s0).toBe(1);
     expect(calls.s1).toBe(1);
     // All three attempts were real walls, and the bucket stays armed.
     expect(isBucketWalled(bucketOfNominal())).toBe(true);
@@ -634,9 +644,12 @@ describe("#274 re-review — delegated success and nested delegation", () => {
     armFailover("sonnet", "test: sonnet nominal pre-walled", bucketOfNominal());
     wallEndpoints = new Set(["s0"]);
 
+    // haiku[0] is the last step: pre-#609 the wall surfaced (402); since #609
+    // the walk recurses through role:opus into sonnet's s1, in-request.
     const r1 = await postMessage("claude-haiku-4-5");
-    expect(r1.status).toBe(402); // haiku[0] is the last step — the wall surfaces
+    expect(r1.status).toBe(200);
     expect(calls.s0).toBe(1);
+    expect(calls.s1).toBe(1);
     expect(calls.or).toBe(0); // never routed through the intermediates' nominals
     expect(calls.nm).toBe(0);
 
@@ -652,7 +665,7 @@ describe("#274 re-review — delegated success and nested delegation", () => {
     const r2 = await postMessage("claude-sonnet-5");
     expect(r2.status).toBe(200);
     expect(calls.s0).toBe(1);
-    expect(calls.s1).toBe(1);
+    expect(calls.s1).toBe(2); // request 1's in-request walk + this one
   }, 30_000);
 });
 
@@ -678,16 +691,14 @@ describe("#367 — owner-side buckets of concrete delegation targets", () => {
     // nm walls by default (beforeEach) — the delegated refusal surface.
 
     // Request 1: opus (config-armed) → role:sonnet → sonnet's nominal (nm)
-    // walls 402. opus[0] is the last step, so the wall surfaces — as a 429
-    // rate_limit_error since #409 (a walled LAST step is relabeled into the
-    // vocabulary the client already retries; the body names the original 402,
-    // role and concrete). Pre-#409 this surfaced the provider's 402 verbatim,
-    // which this pin originally asserted.
+    // walls 402. opus[0] is the last step: pre-#609 the wall surfaced (as a
+    // #409 429); since #609 the delegation walks on to sonnet's s0 in-request.
+    // The #409 relabel of a delegating last step whose whole target path is
+    // walled is pinned in proxy-server-delegation-walk-route.test.ts (D5).
     const r1 = await postMessage("claude-opus-5");
-    expect(r1.status).toBe(429);
-    const r1Body = await r1.json();
-    expect(JSON.stringify(r1Body)).toContain("402"); // the original status is named, wall not silent
+    expect(r1.status).toBe(200);
     expect(calls.nm).toBe(1);
+    expect(calls.s0).toBe(1);
     expect(calls.mm).toBe(0); // the default model is never CALLED — only mis-bucketed
 
     // THE PIN: the delegated wall armed the TARGET's own bucket. Under
@@ -703,7 +714,7 @@ describe("#367 — owner-side buckets of concrete delegation targets", () => {
     const r2 = await postMessage("claude-opus-5");
     expect(r2.status).toBe(200);
     expect(calls.nm).toBe(1); // never re-paid
-    expect(calls.s0).toBe(1); // the delegation walked into the target's cascade
+    expect(calls.s0).toBe(2); // the delegation walked into the target's cascade
   }, 30_000);
 
   test("B2: a delegated SUCCESS must not consume a pending recovery on a bucket the target never drew on", async () => {
