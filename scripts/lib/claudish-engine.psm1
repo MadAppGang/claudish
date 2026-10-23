@@ -59,6 +59,17 @@ $script:RelaunchPreflightOptInFileName = 'relaunch-preflight.enabled'
 # and must never be a default, even though the process it kills has, by the
 # time it fires, been proven useless across three consecutive cycles.
 $script:GuiZombieKillOptInFileName = 'gui-zombie-kill.enabled'
+# #530 gap 2: consecutive-FATAL escalation. A FATAL line in watchdog.log is
+# log-only — four of them over the 73-min outage of 2026-10-18 stayed silent
+# seat-side while the fleet noticed via relay heartbeats first. Past a streak
+# threshold the watchdog writes a MARKER file (a journal the worker cycle
+# already relays with watermark discipline) instead of inventing a network
+# channel from a SYSTEM scheduled task. Honest latency bound: escalation
+# arrives at the worker cadence (<=5 h), not inside the outage — the org rule
+# ("an outage detected is an outage escalated in the same cycle") binds the
+# detecting organ, and no hub-side organ has an outbound channel today.
+$script:EngineFatalStreakThreshold  = 2
+$script:EngineFatalStreakMarkerName = 'engine-fatal-streak'
 
 function Get-ClaudishOptInFileName { return $script:OptInFileName }
 function Get-ClaudishOptInToken    { return $script:OptInToken }
@@ -853,6 +864,45 @@ function Get-EngineZombieDecision {
     return [PSCustomObject]@{
         Action = 'escalate'; Streak = $streak; Kill = $KillArmed
         Reason = "GUI present but engine down across $streak consecutive cycles — the GUI holds the relaunch path dead"
+    }
+}
+
+function Get-EngineFatalStreakThreshold { return $script:EngineFatalStreakThreshold }
+function Get-EngineFatalStreakMarkerName { return $script:EngineFatalStreakMarkerName }
+
+function Get-EngineFatalStreakDecision {
+    <#
+        #530 gap 2 — the pure half of the consecutive-FATAL escalation.
+
+        Input is the streak ALREADY stored (cycles before this one); the
+        decision counts THIS cycle in. Three outcomes:
+          arm       below threshold — count, log, no marker.
+          escalate  this cycle reaches the threshold.
+          (escalate continues) above threshold — still escalated, but the
+                    marker is NOT written again: once per CROSSING, not per
+                    cycle, or a stuck engine would rewrite the journal at every
+                    tick and the relay would report the same crossing for ever.
+
+        `WriteMarker` is therefore true on exactly one value of the streak.
+        Deliberately no reset case here: recovery is not a failure decision and
+        the caller owns it (a reset must also remove the marker, which this
+        pure function must not know how to do).
+    #>
+    param(
+        [int]$ConsecutiveFatal = 0,
+        [int]$Threshold = $script:EngineFatalStreakThreshold
+    )
+
+    $streak = $ConsecutiveFatal + 1
+    if ($streak -lt $Threshold) {
+        return [PSCustomObject]@{
+            Action = 'arm'; Streak = $streak; WriteMarker = $false
+            Reason = "engine FATAL ($streak/$Threshold) — counting, no escalation yet"
+        }
+    }
+    return [PSCustomObject]@{
+        Action = 'escalate'; Streak = $streak; WriteMarker = ($streak -eq $Threshold)
+        Reason = "engine FATAL across $streak consecutive cycles — an engine down >30 min on the hub is a fleet event"
     }
 }
 
@@ -2510,6 +2560,9 @@ Export-ModuleMember -Function @(
     'Test-GuiZombieKillOptIn'
     'Get-GuiZombieKillOptInFileName'
     'Get-EngineZombieDecision'
+    'Get-EngineFatalStreakDecision'
+    'Get-EngineFatalStreakThreshold'
+    'Get-EngineFatalStreakMarkerName'
     'Enable-DrainAdmissionFreeze'
     'Disable-DrainAdmissionFreeze'
     'New-EngineRelaunchRegistration'

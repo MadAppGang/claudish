@@ -79,6 +79,18 @@ voir le skill **`worker-issues`** — cycle complémentaire à celui-ci, même m
      `~/.claudish/session-watch.kill.enabled` — à n'armer qu'après ≥24 h de journal
      sain (classification conforme à la politique réconciliée), geste consigné
      dashboard.
+   - **Relais engine-fatal-streak** (#530 gap 2, watchdog ≥ 2 FATAL consécutifs) :
+     lire `~/.claudish/engine-fatal-streak` (journal texte, une ligne par
+     CROISEMENT : `ts streak=2 reason=…` — pas par cycle), relayer les lignes plus
+     récentes que le watermark `~/.claudish/engine-fatal-streak-relay.ts` en
+     **WARN + crossPost global** (un moteur hub down >30 min est un événement
+     flotte — le marqueur n'existe que sur la machine qui le subit ; un engine
+     down sur un siège non-hub reste local tag WARN). Latence honnête : c'est la
+     cadence worker (≤5 h) qui escalade, pas le watchdog (aucun canal sortant
+     depuis une tâche SYSTEM — architecture à arbitrer séparément). Fichier
+     supprimé par le watchdog à la récupération : sa disparition = l'incident est
+     fini, la relayer en INFO une fois (anti « outage fantôme »). Watermark mis à
+     jour après relais ; **ne jamais tronquer ni recréer le fichier**.
    - **Veille quota MiniMax** (mandat user 19/10 « lander les crédits », actif
      jusqu'au reset ~25/10 23:05Z — ensuite évaluer reconduction avant retrait) :
      organe **mono-observateur** — seul le siège hub (po-2025, celui dont le

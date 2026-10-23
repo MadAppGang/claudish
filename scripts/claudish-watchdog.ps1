@@ -291,6 +291,10 @@ function Set-State {
         [Nullable[int]]$ConsecutiveHangs = $null,
         [Nullable[int]]$ConsecutiveWedge = $null,
         [Nullable[int]]$ConsecutiveGuiZombie = $null,
+        # #530 gap 2: consecutive engine-FATAL cycles. Persisted in the same
+        # file as the other counters because a threshold that cannot survive a
+        # cycle can never confirm anything (see the merge rationale below).
+        [Nullable[int]]$ConsecutiveEngineFatal = $null,
         # #185: UTC yyyy-MM-dd of the last MEASURED relaunch-preflight verdict.
         # '' (the default) leaves the stored value untouched — strings cannot
         # use the Nullable trick, and '' is never a valid stored date.
@@ -301,10 +305,12 @@ function Set-State {
         consecutiveHangs     = [int](Get-StateField $cur 'consecutiveHangs' 0)
         consecutiveWedge     = [int](Get-StateField $cur 'consecutiveWedge' 0)
         consecutiveGuiZombie = [int](Get-StateField $cur 'consecutiveGuiZombie' 0)
+        consecutiveEngineFatal = [int](Get-StateField $cur 'consecutiveEngineFatal' 0)
     }
     if ($null -ne $ConsecutiveHangs)     { $obj.consecutiveHangs = [int]$ConsecutiveHangs }
     if ($null -ne $ConsecutiveWedge)     { $obj.consecutiveWedge = [int]$ConsecutiveWedge }
     if ($null -ne $ConsecutiveGuiZombie) { $obj.consecutiveGuiZombie = [int]$ConsecutiveGuiZombie }
+    if ($null -ne $ConsecutiveEngineFatal) { $obj.consecutiveEngineFatal = [int]$ConsecutiveEngineFatal }
     $prevProbe = [string](Get-StateField $cur 'relaunchProbeDate' '')
     if ($prevProbe) { $obj.relaunchProbeDate = $prevProbe }
     if (-not [string]::IsNullOrEmpty($RelaunchProbeDate)) { $obj.relaunchProbeDate = $RelaunchProbeDate }
@@ -847,8 +853,71 @@ function Invoke-EngineZombieWatch {
     }
 }
 
-# --- Main ---
+# Gap 2 of #530: a FATAL line used to be log-only. Four of them across the
+# 73-min outage of 2026-10-18 stayed silent seat-side — the fleet learned about
+# the dead hub from relay heartbeats before the hub seat produced any signal.
+# The watchdog cannot open a network channel from a SYSTEM scheduled task (that
+# is an architecture ask, not a patch), so past a streak threshold it writes a
+# MARKER journal under ~/.claudish/ — the same shape as the model-version and
+# session-watch journals the worker cycle already relays with watermark
+# discipline. Escalation therefore arrives at the worker cadence (<=5 h), never
+# inside the outage: the same-cycle rule binds the organ that DETECTS, and
+# today that organ is the relay heartbeat.
+#
+# One line per CROSSING, not per cycle (Get-EngineFatalStreakDecision owns that
+# rule): an engine stuck for hours must not rewrite the journal every 15 min.
+function Register-EngineFatal {
+    param([string]$Reason = 'engine fatal')
 
+    try {
+        $st = Get-State
+        $prev = [int](Get-StateField $st 'consecutiveEngineFatal' 0)
+        $decision = Get-EngineFatalStreakDecision -ConsecutiveFatal $prev
+        Set-State -ConsecutiveEngineFatal $decision.Streak
+
+        Write-Log "ENGINE-FATAL-STREAK: $($decision.Streak) consecutive FATAL cycle(s) — $Reason"
+        if ($decision.Action -ne 'escalate') { return }
+
+        if ($decision.WriteMarker) { $markerNote = Get-EngineFatalStreakMarkerName } else { $markerNote = 'already written' }
+        Write-Log "ENGINE-FATAL-ESCALATE: $($decision.Reason). Marker '$markerNote' for the worker-cycle relay"
+        Write-DiagLine 'engine-fatal-streak'
+        if (-not $decision.WriteMarker) { return }
+
+        $marker = Join-Path $ClaudishHome (Get-EngineFatalStreakMarkerName)
+        $line = '{0} streak={1} reason={2}' -f ([DateTimeOffset]::UtcNow.ToString('o')), $decision.Streak, $Reason
+        # No BOM, no PS7-only parameter: the scheduled tasks run Windows
+        # PowerShell 5.1, where `Add-Content -Encoding UTF8` writes a BOM and a
+        # BOM'd journal breaks naive parsers downstream.
+        [System.IO.File]::AppendAllText($marker, $line + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+    } catch {
+        # Same discipline as the zombie watch: an escalation helper that can
+        # kill the cycle is strictly worse than one that logs its own failure.
+        # The FATAL exit still happens at the call site.
+        Write-Log "ENGINE-FATAL-STREAK: internal error, ignored ($($_.Exception.Message))"
+    }
+}
+
+# The reset half. Recovery is not a failure decision, so it lives here and not
+# in the pure function: it must also clear the journal, and leaving a marker
+# behind after recovery would make the relay report an outage that ended.
+function Reset-EngineFatalStreak {
+    try {
+        $st = Get-State
+        $prev = [int](Get-StateField $st 'consecutiveEngineFatal' 0)
+        if ($prev -eq 0) { return }
+        Set-State -ConsecutiveEngineFatal 0
+        $marker = Join-Path $ClaudishHome (Get-EngineFatalStreakMarkerName)
+        if (Test-Path $marker) {
+            # Named marker file only — never a wildcard, never a directory.
+            Remove-Item -Path $marker -Force -ErrorAction SilentlyContinue
+        }
+        Write-Log "ENGINE-FATAL-STREAK: reset after an engine-healthy cycle (was $prev)"
+    } catch {
+        Write-Log "ENGINE-FATAL-STREAK: reset failed, ignored ($($_.Exception.Message))"
+    }
+}
+
+# --- Main ---
 # Dot-sourcing this file loads its functions without running a cycle, the same
 # idiom claudish-drain.ps1 already uses (its standalone block is guarded by the
 # same test). That is what lets scripts/tests exercise the wedge glue —
@@ -898,10 +967,14 @@ if ($inspect.TimedOut) {
     # No answer at all is an engine fault, which the recovery path can act on.
     Write-Log "DOCKER-TIMEOUT: inspect did not answer within ${DockerTimeoutSec}s — engine not responding"
     Write-DiagLine "docker-timeout"
-    if (-not (Start-DockerEngine)) { exit 1 }
+    if (-not (Start-DockerEngine)) {
+        Register-EngineFatal "inspect timed out and the engine did not recover within 120s"
+        exit 1
+    }
     $inspect = Invoke-DockerBounded @("inspect", $ContainerName, "--format", "{{.State.Status}}")
     if ($inspect.TimedOut) {
         Write-Log "FATAL: docker still not answering after engine recovery"
+        Register-EngineFatal "docker still not answering after engine recovery"
         exit 1
     }
 }
@@ -915,7 +988,10 @@ if (-not $inspect.Ok -or $containerStatus -ne "running") {
     }
     if (-not $inspect.Ok) {
         # CLI answered but failed — engine down, not just the container.
-        if (-not (Start-DockerEngine)) { exit 1 }
+        if (-not (Start-DockerEngine)) {
+            Register-EngineFatal "docker CLI answered but the engine was down and did not recover within 120s"
+            exit 1
+        }
     }
     Write-Log "CRITICAL: Container not running (status=$containerStatus). Starting..."
     # A start can legitimately take a while; bound it well above that, not at 20s.
@@ -924,12 +1000,29 @@ if (-not $inspect.Ok -or $containerStatus -ne "running") {
     $recheck = (Invoke-DockerBounded @("inspect", $ContainerName, "--format", "{{.State.Status}}")).Out
     if ($recheck -eq "running") {
         Write-Log "RECOVERED: Container started"
+        # The engine answered and the container is up — the FATAL streak is over.
+        Reset-EngineFatalStreak
     } else {
         Write-Log "FATAL: Container won't start (status=$recheck)"
+        # Same escalation organ as an engine FATAL: a container that will not
+        # start is a serving outage of the same class, and the reason string
+        # keeps the two distinguishable in the journal.
+        Register-EngineFatal "container would not start (status=$recheck)"
         exit 1
     }
     exit 0
 }
+
+# The engine answered and the container is running: whatever FATAL streak the
+# state file carries is over, and the escalation marker (if any) must not
+# survive into a healthy fleet view. This ONE reset covers every later path of
+# the cycle (proactive, healthy, degraded, hang): none of them can recover the
+# ENGINE mid-cycle — inspect just confirmed it answers — so no branch below
+# resets again (#618 review: the per-branch resets were no-ops, always seeing
+# prev=0 after this line). The RECOVERED reset above stays load-bearing: that
+# path exits before this line. Both sites are pinned by the Main-wiring AST
+# guard in claudish-watchdog-fatal-streak.Tests.ps1.
+if ($inspect.Ok -and $containerStatus -eq "running") { Reset-EngineFatalStreak }
 
 # Step 2: Uptime check
 $startedAtRes = Invoke-DockerBounded @("inspect", $ContainerName, "--format", "{{.State.StartedAt}}")
@@ -978,6 +1071,8 @@ if ($uptimeHours -ge $ProactiveRestartHours) {
         $result = Test-ProxyWithTools -Url $ProxyUrl -TimeoutSec 60
         Write-Log "After proactive restart: $($result.Detail)"
         Set-State -ConsecutiveHangs 0
+        # No engine-FATAL reset here: the early reset on the running path
+        # already cleared it — the engine answered all cycle (#618 review).
         exit $(if ($result.Ok) { 0 } else { 1 })
     }
 }
@@ -1004,6 +1099,8 @@ if (-not $result.Hang) {
     # Real failure, wrong remedy. Log it loudly and leave the container alone.
     Write-Log "DEGRADED (uptime=${uptimeHours}h): $($result.Detail) — NO restart (a restart cannot fix this)"
     Set-State -ConsecutiveHangs 0
+    # No engine-FATAL accounting: the engine answered (inspect + a real
+    # streaming probe reached the proxy) — the early reset already ran.
     exit 0
 }
 
