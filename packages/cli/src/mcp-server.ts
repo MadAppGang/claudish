@@ -40,6 +40,7 @@ import {
   stopAllClaudeCodePrintChildren,
 } from "./mcp/run-prompt-claude-code.js";
 import {
+  type RecommendedModelEntry,
   type RecommendedModelsDoc,
   getRecommendedModels,
   readLastRecommendedModels,
@@ -78,6 +79,8 @@ import {
 import { probeLink } from "./providers/probe-live.js";
 import type { ProbeTarget } from "./providers/probe-runner.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
+import { gatherRouteCandidates } from "./providers/route-candidates.js";
+import { loadRoutingRules, matchRoutingRuleKey } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
 import { renderEffortTableMarkdown, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
@@ -667,21 +670,23 @@ export function stripUnrequestedProvider(
 }
 
 /**
- * The MCP `team` `user_required_provider` argument: the specs, exactly as in
- * `models` or `judges`, whose provider the user named. Throws on anything else.
+ * The MCP `team` `user_required_provider` (or `user_required_model`, by `name`)
+ * argument: the specs, exactly as in `models` or `judges`, whose provider (or
+ * model) the user named. Throws on anything else.
  */
 export function userRequiredProvidersArg(
   value: unknown,
-  specs: readonly string[]
+  specs: readonly string[],
+  name = "user_required_provider"
 ): ReadonlySet<string> {
   if (value === undefined || value === null) return new Set();
   if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
-    throw new Error(`Invalid 'user_required_provider': expected an array of model specs.`);
+    throw new Error(`Invalid '${name}': expected an array of model specs.`);
   }
   for (const spec of value as string[]) {
     if (!specs.includes(spec)) {
       throw new Error(
-        `Invalid 'user_required_provider': ${JSON.stringify(spec)} is not one of the ` +
+        `Invalid '${name}': ${JSON.stringify(spec)} is not one of the ` +
           `models (${specs.join(", ")}). Entries must match a 'models' or 'judges' entry exactly.`
       );
     }
@@ -724,6 +729,186 @@ function strippedNote(stripped: ReadonlyArray<{ from: string; to: string }>): st
     "Pass 'user_required_provider' only when the user named the provider."
   );
 }
+
+/** What {@link modelChoiceProblems} reads about a bare name; a seam for tests. */
+export interface ModelChoiceFacts {
+  /** The recommended list. Null when none is on disk: then nothing is refused. */
+  recommended: readonly RecommendedModelEntry[] | null;
+  /** A user routing rule matches the name: the user's own routing decides it. */
+  userRule: (model: string) => boolean;
+  /** The cloud models catalog has the name as a model id or alias. */
+  inCatalog: (model: string) => boolean;
+  /** A dynamic subscription claims the name (`swe-1.7` on Devin): the account decides it. */
+  namespaceClaim: (model: string) => boolean;
+}
+
+function liveModelChoiceFacts(): ModelChoiceFacts {
+  const recommended = readLastRecommendedModels()?.models ?? null;
+  if (!recommended || recommended.length === 0) {
+    log("[mcp] model check skipped: no recommended models list on disk");
+  }
+  let rules: ReturnType<typeof loadRoutingRules> | undefined;
+  return {
+    recommended: recommended && recommended.length > 0 ? recommended : null,
+    userRule: (model) => {
+      rules ??= loadRoutingRules();
+      return matchRoutingRuleKey(model, rules) !== null;
+    },
+    inCatalog: (model) => !gatherRouteCandidates(model).catalogMiss,
+    namespaceClaim: (model) => gatherRouteCandidates(model).candidates.length > 0,
+  };
+}
+
+/** A model the caller sent that nothing was started for, and the recommended ids that match it. */
+export interface ModelChoiceProblem {
+  /** As the caller wrote it. */
+  spec: string;
+  kind: "unknown_model" | "not_recommended";
+  /** Recommended ids of the same family or vendor, newest first. */
+  matching: string[];
+}
+
+/**
+ * The first run of letters of an id, lowercased: `gpt` for `gpt-6.1-sol`,
+ * `qwen` for `qwen3.8-max`. Two ids with the same one are one family.
+ */
+function familyOf(id: string): string {
+  return /^[a-z]+/i.exec(id)?.[0].toLowerCase() ?? id.toLowerCase();
+}
+
+/** Why one spec may not start unasked, with its model part; undefined when it may. */
+function bareNameVerdict(
+  spec: string,
+  recommendedIds: ReadonlySet<string>,
+  facts: ModelChoiceFacts
+): { kind: ModelChoiceProblem["kind"]; model: string } | undefined {
+  if (parseModelChain(spec).length !== 1 || nativeRouteFor(spec) !== null) return undefined;
+  const parsed = parseModelSpec(spec);
+  if (parsed.isExplicitProvider || parsed.isLegacySyntax) return undefined;
+  const model = parsed.model;
+  if (recommendedIds.has(model) || facts.userRule(model)) return undefined;
+  if (facts.inCatalog(model)) return { kind: "not_recommended", model };
+  if (facts.namespaceClaim(model)) return undefined;
+  return { kind: "unknown_model", model };
+}
+
+/**
+ * The bare names a calling agent sent that are not a model it may start
+ * unasked: a name that is no model at all (`gpt`, `minimax`), or a catalog
+ * model the recommended list does not hold (`gpt-5`, guessed from memory).
+ * `pairs` holds each spec as the caller wrote it and as it will run (provider
+ * removed). Never refused: a model the user named (`required`), an explicit
+ * `provider@`, a chain, a native Claude name, a name a user routing rule or a
+ * namespace claim routes, and anything at all when no recommended list exists.
+ */
+export function modelChoiceProblems(
+  pairs: ReadonlyArray<{ given: string; spec: string }>,
+  required: ReadonlySet<string>,
+  facts: ModelChoiceFacts = liveModelChoiceFacts()
+): ModelChoiceProblem[] {
+  const recommended = facts.recommended;
+  if (!recommended) return [];
+  const ids = new Set(recommended.map((m) => m.id));
+  const problems: ModelChoiceProblem[] = [];
+  for (const { given, spec } of pairs) {
+    if (required.has(given)) continue;
+    const verdict = bareNameVerdict(spec, ids, facts);
+    if (!verdict) continue;
+    const { kind, model } = verdict;
+    const family = familyOf(model);
+    const matching = [
+      ...new Set(
+        recommended
+          .filter(
+            (m) => familyOf(m.id) === family || m.provider.toLowerCase() === model.toLowerCase()
+          )
+          .sort(compareByReleaseDateDesc)
+          .map((m) => m.id)
+      ),
+    ];
+    problems.push({ spec: given, kind, matching });
+  }
+  if (problems.length > 0) {
+    log(`[mcp] model check: ${problems.map((p) => `${p.spec} ${p.kind}`).join(", ")}`);
+  }
+  return problems;
+}
+
+/** The recommended list as a tool answer shows it: one row per id, its tiers joined. */
+function recommendedChoices(
+  recommended: readonly RecommendedModelEntry[]
+): Array<{ id: string; vendor: string; tiers: string[]; released?: string }> {
+  const byId = new Map<
+    string,
+    { id: string; vendor: string; tiers: string[]; released?: string }
+  >();
+  for (const m of recommended) {
+    const row = byId.get(m.id);
+    if (row) {
+      row.tiers.push(m.recommendationTier);
+      continue;
+    }
+    byId.set(m.id, {
+      id: m.id,
+      vendor: m.provider,
+      tiers: [m.recommendationTier],
+      ...(m.releaseDate ? { released: m.releaseDate } : {}),
+    });
+  }
+  return [...byId.values()];
+}
+
+/**
+ * The answer that stops a call naming a model the agent should not start
+ * unasked. The agent knows the task and what the user asked for, so it picks
+ * from the recommended list and calls again. Starts nothing.
+ */
+function modelChoiceResult(
+  problems: readonly ModelChoiceProblem[],
+  recommended: readonly RecommendedModelEntry[],
+  how: string
+): { content: Array<{ type: "text"; text: string }>; isError: true } {
+  const unknown = problems.filter((p) => p.kind === "unknown_model");
+  const old = problems.filter((p) => p.kind === "not_recommended");
+  const lines = [
+    `${unknown.length > 0 ? "unknown_model" : "not_recommended"}: nothing was started.`,
+  ];
+  if (unknown.length > 0) {
+    lines.push(
+      `Not a model id: ${unknown.map((p) => JSON.stringify(p.spec)).join(", ")}. ` +
+        "Pick the recommended model that best fits the task (for a family name, the newest " +
+        "of the matching ids) and call again with its id."
+    );
+  }
+  if (old.length > 0) {
+    lines.push(
+      `Not in the recommended list: ${old.map((p) => JSON.stringify(p.spec)).join(", ")}. ` +
+        "Re-evaluate the choice against the recommended models below and call again with one " +
+        `of them. If the user named this exact model, call again ${how}.`
+    );
+  }
+  const matching = Object.fromEntries(problems.map((p) => [p.spec, p.matching]));
+  lines.push(`Matching recommended ids: ${JSON.stringify(matching, null, 2)}`);
+  lines.push(`Recommended models: ${JSON.stringify(recommendedChoices(recommended), null, 2)}`);
+  return { content: [{ type: "text" as const, text: lines.join("\n") }], isError: true };
+}
+
+/** The model-check answer for a call, or undefined when every model may start. */
+function modelChoiceStop(
+  pairs: ReadonlyArray<{ given: string; spec: string }>,
+  required: ReadonlySet<string>,
+  how: string
+): ReturnType<typeof modelChoiceResult> | undefined {
+  const facts = liveModelChoiceFacts();
+  const problems = modelChoiceProblems(pairs, required, facts);
+  if (problems.length === 0 || !facts.recommended) return undefined;
+  return modelChoiceResult(problems, facts.recommended, how);
+}
+
+/** The schema text of the boolean `user_required_model` (run_prompt, create_session). */
+const USER_REQUIRED_MODEL_DESCRIPTION =
+  "True only when the USER named this exact model: it then runs even when it is not in the " +
+  "recommended list. Never set it for a model you chose yourself.";
 
 /**
  * Build the flag list handed to every child Claude Code process.
@@ -1150,6 +1335,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             "True only when the USER named the provider ('use OpenRouter for it'): the " +
             "'provider@model' spec is then sent as given.",
         },
+        user_required_model: { type: "boolean", description: USER_REQUIRED_MODEL_DESCRIPTION },
         prompt: { type: "string", description: "The prompt to send to the model" },
         system_prompt: { type: "string", description: "Optional system prompt" },
         effort: {
@@ -1176,6 +1362,12 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           [args.model as string],
           new Set(args.user_required_provider === true ? [args.model as string] : [])
         );
+        const choice = modelChoiceStop(
+          [{ given: args.model as string, spec: specs[0] }],
+          new Set(args.user_required_model === true ? [args.model as string] : []),
+          "with user_required_model: true"
+        );
+        if (choice) return choice;
         // Keyed as the caller wrote the model, like team's 'efforts' keys.
         const recommended =
           args.effort === undefined ? effortClarification([args.model as string]) : undefined;
@@ -1674,6 +1866,14 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             "model is removed so claudish routing picks the provider from the user's setup; " +
             "pass bare names unless the user asked for a provider.",
         },
+        user_required_model: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "The 'models' or 'judges' entries the USER named as exact models, exactly as " +
+            "written there: they run even when not in the recommended list. Never list a " +
+            "model you chose yourself.",
+        },
         input_file: {
           type: "string",
           description:
@@ -1832,11 +2032,27 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           return existsSync(existing) ? readFileSync(existing, "utf-8") : undefined;
         };
 
-        if (
-          (mode === "run" || mode === "run-and-judge") &&
-          givenModels &&
-          args.efforts === undefined
-        ) {
+        const runsModels = mode === "run" || mode === "run-and-judge";
+        const runsJudges = mode === "judge" || mode === "run-and-judge";
+        const choice = modelChoiceStop(
+          [
+            ...(runsModels && givenModels && models
+              ? givenModels.map((given, i) => ({ given, spec: models[i] }))
+              : []),
+            ...(runsJudges && givenJudges && judges
+              ? givenJudges.map((given, i) => ({ given, spec: judges[i] }))
+              : []),
+          ],
+          userRequiredProvidersArg(
+            args.user_required_model,
+            [...(givenModels ?? []), ...(givenJudges ?? [])],
+            "user_required_model"
+          ),
+          'with user_required_model: ["<that entry>"]'
+        );
+        if (choice) return choice;
+
+        if (runsModels && givenModels && args.efforts === undefined) {
           // Keyed as the caller wrote the models: that is how 'efforts' keys must read.
           const recommended = effortClarification(givenModels);
           if (recommended) {
@@ -2172,6 +2388,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             "True only when the USER named the provider: the 'provider@model' spec is then " +
             "used as given.",
         },
+        user_required_model: { type: "boolean", description: USER_REQUIRED_MODEL_DESCRIPTION },
         prompt: {
           type: "string",
           description: "Initial prompt to send. If omitted, send later via send_input.",
@@ -2254,6 +2471,12 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           new Set(args.user_required_provider === true ? [args.model as string] : [])
         );
         const requestedModel = specs[0];
+        const choice = modelChoiceStop(
+          [{ given: args.model as string, spec: requestedModel }],
+          new Set(args.user_required_model === true ? [args.model as string] : []),
+          "with user_required_model: true"
+        );
+        if (choice) return choice;
         const recommended =
           args.effort === undefined ? effortClarification([args.model as string]) : undefined;
         if (recommended) {

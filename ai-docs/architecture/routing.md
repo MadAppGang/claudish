@@ -83,6 +83,32 @@ answer names every removal (`provider_note` / `note`) and the MCP log records it
 `compare_models` is not changed: it is a debug tool, where comparing providers can be the
 point.
 
+## MCP callers name a recommended model: other bare names answer `unknown_model` / `not_recommended` (2026-10-23)
+
+Measured in the `recommended-effort` bench (run10, run11): an agent told "a GPT model and a
+MiniMax model" sent `team` the names `gpt` and `minimax`. Neither is a model; `gpt` became the
+fallback hop `or@gpt` and failed. Another agent guessed `gpt-5` from memory without calling
+`list_models`: a catalog model that no subscription serves, so it ran on metered OpenAI and got
+`credit_balance_exhausted`. A skill or a schema description did not change that (the agent never
+reads them when it holds a name); a tool answer does, as `needs_effort` showed.
+
+So `team` (`models`, `judges`), `create_session` and `run_prompt` start nothing for a bare name
+that is not in the recommended list (`modelChoiceProblems`, `mcp-server.ts`):
+
+| Name | Answer |
+|---|---|
+| in the cloud models catalog (id or alias) | `not_recommended`: re-evaluate against the recommended list |
+| not in the catalog, no namespace claim | `unknown_model`: pick the best recommended model |
+
+The answer carries the recommended ids of the same family (the first run of letters, `gpt` for
+`gpt-6.1-sol`) or vendor, newest first, plus the whole recommended list with tiers and release
+dates. The calling agent knows the task and what the user asked, so IT picks; claudish never
+substitutes a model. `user_required_model` (`team`: the entries; the others: `true`) runs a model
+the user named exactly. Never checked: an explicit `provider@` (after the removal above), a chain,
+a native Claude name, a name a user routing rule matches (the user's own routing), a namespace
+claim (`swe-1.7` on Devin: the account decides), and everything when no recommended list is on
+disk (the MCP log says so). The check runs before `needs_effort`.
+
 ## Which names reach `route()`
 
 **One gate: `proxyRouteDecision`** (`providers/native-route.ts`). The proxy's step 2c asks it
