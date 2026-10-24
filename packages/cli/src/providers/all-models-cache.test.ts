@@ -9,7 +9,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { writeFileSync, existsSync, rmSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import * as maybeMocked from "./all-models-cache.js";
 
 // #272: bun's mock.module is process-global with no unregister API. When
@@ -20,10 +20,10 @@ import * as maybeMocked from "./all-models-cache.js";
 // specifier — a distinct registry key the mock does not cover.
 const realModuleSpecifier = "./all-models-cache.js?real";
 const cache =
-  maybeMocked.ALL_MODELS_CACHE_PATH === "/tmp/test-all-models.json"
+  maybeMocked.allModelsCachePath?.() === "/tmp/test-all-models.json"
     ? await import(realModuleSpecifier)
     : maybeMocked;
-if (cache.ALL_MODELS_CACHE_PATH === "/tmp/test-all-models.json") {
+if (cache.allModelsCachePath?.() === "/tmp/test-all-models.json") {
   throw new Error(
     "#272 bypass failed: query-suffixed import still serves the mock — update the bypass"
   );
@@ -193,5 +193,43 @@ describe("all-models-cache helpers", () => {
     expect(result).not.toBeNull();
     expect(result!.models).toEqual([{ id: "openai/gpt-4" }]);
     expect(result!.entries).toEqual([]);
+  });
+});
+
+// #637 review point 2: the path must be resolved PER CALL. An import-time
+// constant mutates silently — a value set after module load is ignored by the
+// writers while catalog-query's mtime memo keeps watching the old file, and the
+// two halves of the cache split with every test still green.
+describe("allModelsCachePath — CLAUDISH_MODEL_CACHE_PATH (#637)", () => {
+  const original = process.env.CLAUDISH_MODEL_CACHE_PATH;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.CLAUDISH_MODEL_CACHE_PATH;
+    else process.env.CLAUDISH_MODEL_CACHE_PATH = original;
+  });
+
+  test("an override set AFTER import is honored by write and read", () => {
+    const { path, dir, cleanup } = makeTmpCachePath();
+    cleanups.push(cleanup);
+
+    // Set after import on purpose: this is the whole point of the pin.
+    process.env.CLAUDISH_MODEL_CACHE_PATH = path;
+
+    expect(cache.allModelsCachePath()).toBe(path);
+    writeAllModelsCache({ models: [{ id: "override/landed" }] });
+
+    expect(existsSync(path)).toBe(true);
+    expect(readAllModelsCache()!.models).toEqual([{ id: "override/landed" }]);
+    expect(dir.length).toBeGreaterThan(0);
+  });
+
+  test("a whitespace-only override falls back to the historical path", () => {
+    process.env.CLAUDISH_MODEL_CACHE_PATH = "   ";
+    expect(cache.allModelsCachePath()).toBe(join(homedir(), ".claudish", "all-models.json"));
+  });
+
+  test("unset keeps the historical path byte-for-byte", () => {
+    delete process.env.CLAUDISH_MODEL_CACHE_PATH;
+    expect(cache.allModelsCachePath()).toBe(join(homedir(), ".claudish", "all-models.json"));
   });
 });

@@ -17,7 +17,6 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { config } from "dotenv";
 import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { homedir } from "node:os";
 
 import { sseDataPayload } from "./handlers/shared/stream-parsers/sse-line.js";
 import { fileURLToPath } from "node:url";
@@ -43,6 +42,10 @@ import {
   type RecommendedModelGroup,
 } from "./model-loader.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
+// One cache path for the whole binary: a local constant here would drift from
+// the proxy the day CLAUDISH_MODEL_CACHE_PATH is set, and the MCP tool would
+// list a different catalog than the router resolves against.
+import { allModelsCachePath } from "./providers/all-models-cache.js";
 
 // Load environment variables. quiet is load-bearing here, not cosmetic: this
 // process speaks MCP JSON-RPC over STDOUT, and dotenv 17.x prints its
@@ -59,8 +62,6 @@ const __dirname = dirname(__filename);
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
-const ALL_MODELS_CACHE_PATH = join(CLAUDISH_CACHE_DIR, "all-models.json");
 const CACHE_MAX_AGE_DAYS = 2;
 
 /** Instructions added to Claude's system prompt when channel mode is active. */
@@ -112,9 +113,10 @@ interface ToolDefinition {
 // ─── Helper Functions ────────────────────────────────────────────────────────
 
 async function loadAllModels(forceRefresh = false): Promise<any[]> {
-  if (!forceRefresh && existsSync(ALL_MODELS_CACHE_PATH)) {
+  const cachePath = allModelsCachePath();
+  if (!forceRefresh && existsSync(cachePath)) {
     try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_CACHE_PATH, "utf-8"));
+      const cacheData = JSON.parse(readFileSync(cachePath, "utf-8"));
       const lastUpdated = new Date(cacheData.lastUpdated);
       const ageInDays = (Date.now() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
       if (ageInDays <= CACHE_MAX_AGE_DAYS) {
@@ -130,16 +132,16 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const data = await response.json();
     const models = data.data || [];
-    mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
+    mkdirSync(dirname(cachePath), { recursive: true });
     writeFileSync(
-      ALL_MODELS_CACHE_PATH,
+      cachePath,
       JSON.stringify({ lastUpdated: new Date().toISOString(), models }),
       "utf-8"
     );
     return models;
   } catch {
-    if (existsSync(ALL_MODELS_CACHE_PATH)) {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_CACHE_PATH, "utf-8"));
+    if (existsSync(cachePath)) {
+      const cacheData = JSON.parse(readFileSync(cachePath, "utf-8"));
       return cacheData.models || [];
     }
     return [];

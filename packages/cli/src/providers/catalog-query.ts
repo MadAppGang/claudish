@@ -33,7 +33,7 @@
 import { statSync } from "node:fs";
 import type { AggregatorEntry } from "../model-loader.js";
 import {
-  ALL_MODELS_CACHE_PATH,
+  allModelsCachePath,
   type SlimModelEntry,
   readAllModelsCache,
 } from "./all-models-cache.js";
@@ -100,6 +100,7 @@ function project(entry: SlimModelEntry): CatalogEntryQueryResult {
 
 let _memoEntries: SlimModelEntry[] | null = null;
 let _memoMtimeMs = -1;
+let _memoPath = "";
 
 /**
  * Test-only hook: clear the mtime memo so the next call re-reads the disk
@@ -112,35 +113,40 @@ let _memoMtimeMs = -1;
 export function _resetMemo(): void {
   _memoEntries = null;
   _memoMtimeMs = -1;
+  _memoPath = "";
 }
 
 /**
  * Return the current slim entries, reading through the mtime memo.
  *
  * Returns `null` when:
- *   - `statSync(ALL_MODELS_CACHE_PATH)` throws (file missing) — does NOT cache.
+ *   - `statSync(<cache path>)` throws (file missing) — does NOT cache.
  *   - `readAllModelsCache()` returns null (corrupt JSON) — does NOT cache.
  *
  * Caches successful reads keyed by `mtimeMs`. A subsequent call sees the
- * cache hit when the file hasn't changed.
+ * cache hit when the file hasn't changed. The path is resolved per call and
+ * part of the key: watching the historical file while the writers land on a
+ * `CLAUDISH_MODEL_CACHE_PATH` override would report "unchanged" forever.
  */
 function getCachedEntries(): SlimModelEntry[] | null {
+  const cachePath = allModelsCachePath();
   let mtimeMs: number;
   try {
-    mtimeMs = statSync(ALL_MODELS_CACHE_PATH).mtimeMs;
+    mtimeMs = statSync(cachePath).mtimeMs;
   } catch {
     return null;
   }
 
-  if (mtimeMs === _memoMtimeMs && _memoEntries !== null) {
+  if (cachePath === _memoPath && mtimeMs === _memoMtimeMs && _memoEntries !== null) {
     return _memoEntries;
   }
 
-  const cache = readAllModelsCache();
+  const cache = readAllModelsCache(cachePath);
   if (!cache) return null;
 
   _memoEntries = cache.entries;
   _memoMtimeMs = mtimeMs;
+  _memoPath = cachePath;
   return _memoEntries;
 }
 

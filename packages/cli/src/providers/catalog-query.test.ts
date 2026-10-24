@@ -40,12 +40,12 @@ let mockReadResult: DiskCacheV2 | null = null;
 
 mock.module("./all-models-cache.js", () => ({
   readAllModelsCache: () => mockReadResult,
-  // catalog-query.ts imports readAllModelsCache + ALL_MODELS_CACHE_PATH +
-  // the SlimModelEntry type. The other exports are present in the real
-  // module but unused here; we still expose them as no-ops so a type-only
-  // import doesn't crash if tree-shaking doesn't strip it.
+  // catalog-query.ts imports readAllModelsCache + allModelsCachePath + the
+  // SlimModelEntry type. The other exports are present in the real module but
+  // unused here; we still expose them as no-ops so a type-only import doesn't
+  // crash if tree-shaking doesn't strip it.
   writeAllModelsCache: () => undefined,
-  ALL_MODELS_CACHE_PATH: TEST_CACHE_PATH,
+  allModelsCachePath: () => TEST_CACHE_PATH,
 }));
 
 // Now import the module under test. The mock above is wired in.

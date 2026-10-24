@@ -32,11 +32,12 @@ const refreshSpy = mock(async (_timeoutMs: number): Promise<RefreshOutcome> => {
 mock.module("../providers/all-models-cache.js", () => ({
   readAllModelsCache: () => mockReadResult,
   // The dispatcher module only imports readAllModelsCache + the type. Other
-  // exports (writeAllModelsCache, ALL_MODELS_CACHE_PATH, SlimModelEntry) are
+  // exports (writeAllModelsCache, allModelsCachePath, SlimModelEntry) are
   // intentionally omitted — bun's mock.module replaces the whole module so we
-  // re-export only what catalog-warm.ts touches.
+  // re-export only what catalog-warm.ts touches. `allModelsCachePath` is the
+  // canary the shared cache test uses to detect this mock (#272).
   writeAllModelsCache: () => undefined,
-  ALL_MODELS_CACHE_PATH: "/tmp/test-all-models.json",
+  allModelsCachePath: () => "/tmp/test-all-models.json",
 }));
 
 mock.module("../providers/model-catalog-resolver.js", () => ({

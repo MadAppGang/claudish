@@ -73,6 +73,14 @@ services:
       - type: bind
         source: ${CLAUDISH_CAPTURE_HOST_DIR:-D:\claudish-captures}
         target: /captures
+      # Model-catalog disk cache. The config bind above is deliberately read-only
+      # (it carries the provider API keys), so the catalog refresh had nowhere to
+      # persist: every refresh logged `cache write skipped (EROFS)`. A named
+      # volume gives it a writable home, survives recreates, and exposes nothing
+      # on the host. Paired with CLAUDISH_MODEL_CACHE_PATH.
+      - type: volume
+        source: claudish-model-cache
+        target: /var/cache/claudish
     environment:
       - NODE_ENV=production
       - CLAUDISH_PROXY_KEY=${CLAUDISH_PROXY_KEY:-}
@@ -106,6 +114,11 @@ services:
       # the probe) never runs. Listed here because the env file only
       # interpolates: a name absent from this list never reaches the container.
       - CLAUDISH_MACHINE=${CLAUDISH_MACHINE:-}
+      # Writable home for the model-catalog disk cache (volume declared below).
+      # The default points INSIDE the container on purpose: ~/.claudish is the
+      # read-only config bind, so leaving it empty would restore the
+      # `cache write skipped (EROFS)` the volume exists to fix.
+      - CLAUDISH_MODEL_CACHE_PATH=${CLAUDISH_MODEL_CACHE_PATH:-/var/cache/claudish/all-models.json}
       # Native credential guard kill switch (#296): only an explicit "0" disarms;
       # empty = guard on. Listed here because the env file only interpolates —
       # a name absent from this list never reaches the container.
@@ -256,3 +269,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  claudish-model-cache:
