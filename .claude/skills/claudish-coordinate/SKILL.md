@@ -67,10 +67,13 @@ seul le user ou un pair la voit.
 
 ```
 roosync_dashboard(action:"read", type:"workspace", section:"all")   # jamais section:"status" seul
-roosync_messages(action:"inbox", status:"all", limit:20)
+roosync_messages(action:"inbox", status:"unread", from:":claudish", limit:20)   # DMs des lanes claudish
+roosync_messages(action:"inbox", status:"unread", priority:"URGENT", limit:20)  # filet : URGENT de toute lane
 ```
 
 - Lire l'inbox **avant** d'écrire une attente : un go attendu peut y dormir.
+- Filtrée, pas brute (#445 — mesure : reference.md § Phase 1). DM traité → `mark_read` un par un ; jamais
+  `bulk_mark_read` (rayon inconnu sur la machine, pas de retour arrière).
 - **L'index inbox démarre froid** (mesure : reference.md § Phase 1). Rappeler après la Phase 2 et comparer
   `Total` avant de conclure « rien ».
 
