@@ -120,7 +120,7 @@ directory is gitignored; this table is the durable summary. Paths are under `pac
 File keys: **H** `handlers/composed-handler-accounts-2a.test.ts` (138 tests), **M**
 `auth/accounts/management-2a.test.ts` (27), **O2** `auth/accounts/outcomes-pass2.test.ts` (17),
 **Q2** `auth/quota/sources/codex-accounts-pass2.test.ts` (5), **PB**
-`auth/credentials/codex-pinned-baseline-2a.test.ts` (8), **L**
+`auth/credentials/codex-pinned-baseline-2a.test.ts` (8, removed before the v14.5.0 merge; see V16), **L**
 `auth/credentials/codex-pool-legacy-2a.test.ts` (3), **B** `auth/credentials/billing-probe.test.ts`,
 **P** `profile-config-subscription-accounts.test.ts`.
 
@@ -136,8 +136,8 @@ or in a scratch copy, reached its site and turned the row red; production files 
 | V8b | E4 | H `E4 spent rotation with expired eligible C answers transient 429 without leasing C` | query reads C's store → C appears in reads (137/1) | heal/acquire/`setActive` variants; next-request C selection; B lease failure → C; mixed blockers |
 | V11 | E1 | H `E1 production factory rotates A quota to B …` (asserts no red stderr line) | five: no-rotation, reuse-A, change-bytes, bare-fetch, skip-mark | — |
 | V14 | E11 | B `E11/M4 registry presence overrides the singleton in both directions`, `E11 a registered throwing Codex projection is conservatively subscription`; H `E11-<disabled\|pool-disabled> …` | projection-false (136/2) | cross-process `serve` reload (P2 binary) |
-| V16 | E20 | PB `E20 pinned structural components preserve <legacy\|api-key\|refresh-rejection> request/remap` + five pinned-dependency tests; L `E20 synthesized legacy delegates verbatim …` | endpoint, header, payload, remap: each red | **two built binaries never compared**; component evidence only |
-| V17 | E5, E20 | H `E5 API-key insufficient_quota neither reads pool tokens nor rotates`; PB api-key case | — | — |
+| V16 | E20 | PB `E20 pinned structural components preserve <legacy\|api-key\|refresh-rejection> request/remap` + five pinned-dependency tests (8 pass at `69854a9f`, then removed); L `E20 synthesized legacy delegates verbatim …` (kept) | endpoint, header, payload, remap: each red | **two built binaries never compared**; component evidence only. PB read git history (`6b572b7f`, `merge-base HEAD origin/main`): a shallow CI checkout has neither, and on main after the merge the merge-base is HEAD, so the dependency tests compare a file with its own Phase 0 hunks. It was a pre-merge check only |
+| V17 | E5, E20 | H `E5 API-key insufficient_quota neither reads pool tokens nor rotates`; PB api-key case (pre-merge, see V16) | — | — |
 | U9 | E11 | H `E11-<disabled\|pool-disabled>` | projection-false | — |
 | U10 | E7 | H `E7 bare-name exhaustion reaches the metered socket with its cost warning; explicit cx stops` | verdict on exhaustion → bare chain stops (80/4) | template-wording mutant |
 | U11 | E18 | H `E18 one transport keeps interleaved A/B artifacts, pins, contexts and forced-sign budgets separate` | shared artifact → turn 1 got `Bearer access-B` (137/1) | quota-rotation interleavings |
