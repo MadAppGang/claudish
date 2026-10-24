@@ -60,6 +60,21 @@ a process replacement **bounded to that interval** (an id change dates nothing b
 returned NOMINAL 32 s later. **The replacement is corroborated hub-side, and its cause is a Docker
 Desktop engine recovery — see below.**
 
+**Measured again on 2026-10-23, and it inverts the reading.** 19 AUTONOMOUS transitions on the
+po-203 relay (04:11→08:39Z) looked like a hub outage. The hub-side cross-check eliminated the hub:
+po-2025's watchdog persisted 21 OK probes with a monotone `uptimeSec`, its capture store showed no
+gap across 10 031 captures, and **1 525 po-203 captures were served during the very episodes the
+relay called down**. What the flap measured was **upstream latency through the `:18182` tube**, not
+availability: headers ran 3 893-10 899 ms over 04:46→07:31Z (12 episodes), then 247-343 ms after
+07:46Z while heartbeats kept failing (6 episodes — tube or seat, **not established**: no portproxy
+telemetry). The 2026-10-08 case above is the counter-example that keeps this honest: **same
+instrument, opposite verdict**, which is exactly why the three hub-side proofs (persisted watchdog
+probes with monotone uptime, per-10-minute capture gaps, presence of the flapping seat in the
+captures) are required before either reading. Discriminator on the seat itself: **slow headers +
+failing heartbeats = slow upstream; fast headers + failing heartbeats = local tube/seat.** A
+`/health` heartbeat timeout is never, on its own, evidence the hub is down — it shares the tube and
+the host with everything else.
+
 **What the hub-side journal holds (po-2025, `~/.claudish/docker-events.log` — the durable collector
 of issue #169).** At 08:50:56Z a `container start claudish-proxy` **carrying the same container id**
 (`32c3f1378a91`) — and between 06:34:11Z and that event **no `create`, `stop`, `die`, `kill` or
