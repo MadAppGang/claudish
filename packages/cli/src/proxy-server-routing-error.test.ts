@@ -29,6 +29,7 @@ import { Hono } from "hono";
 import { createProxyServer } from "./proxy-server.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
+import { installStubFetch } from "./test-support/stub-fetch.js";
 import type { ProxyServer } from "./types.js";
 
 // ---- harness -----------------------------------------------------------------
@@ -128,10 +129,62 @@ async function ask(
   return { status: res.status, raw };
 }
 
-beforeEach(() => { sandbox(); });
+// #593/#622 — no test in this file may depend on an outbound socket. Every
+// assertion below is about HTTP *semantics* the proxy decides locally; a real
+// provider catalog or model endpoint is only a source of flake (ECONNRESET, or
+// a stall when the endpoint is unreachable). Measured 2026-10-24 on po-2024:
+// EVERY test in this file reached
+// https://us-central1-claudish-6da10.cloudfunctions.net/queryModels (the shared
+// catalog warm started by createProxyServer), and the explicit-OpenRouter test
+// additionally waited on `?catalog=slim&limit=1000` — the 5s timeout, and the
+// reason it passed or failed by network weather rather than by code.
+// Localhost stays live: the proxy under test IS a socket. Anything else is
+// recorded and refused, so a future egress attempt fails the test that made it
+// instead of degrading it into a coin flip.
+const CATALOG_URL = /^https:\/\/us-central1-claudish-6da10\.cloudfunctions\.net\//;
+const egress: string[] = [];
+const nativeFetch = globalThis.fetch;
+let restoreFetch: (() => void) | null = null;
+
+beforeEach(() => {
+  sandbox();
+  egress.length = 0;
+  restoreFetch = installStubFetch((req) => {
+    if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/)/.test(req.url)) {
+      return nativeFetch(req);
+    }
+    egress.push(req.url);
+    return new Response("{}", { status: 503, headers: { "content-type": "application/json" } });
+  });
+});
 afterEach(async () => {
   if (activeProxy) { await activeProxy.shutdown(); activeProxy = null; }
+  if (restoreFetch) { restoreFetch(); restoreFetch = null; }
+  const outside = egress.filter((u) => !CATALOG_URL.test(u));
+  egress.length = 0;
   restore();
+  // Named, not silent: a regression that routes a test to a real provider
+  // endpoint has to say which URL it tried.
+  if (outside.length > 0) {
+    throw new Error(`#622 — a test in this file left the process: ${outside.join(", ")}`);
+  }
+});
+
+// ---- #622: the egress guard is an instrument, and instruments get a control --
+
+describe("#622 egress guard", () => {
+  test("CONTROL: an external fetch is answered locally and lands in the record the afterEach reads", async () => {
+    const res = await fetch("https://openrouter.ai/api/v1/models");
+
+    // Answered by the guard, not by the network.
+    expect(res.status).toBe(503);
+    expect(egress).toEqual(["https://openrouter.ai/api/v1/models"]);
+    // The exact predicate the afterEach throws on — proven to fire, not assumed.
+    expect(egress.filter((u) => !CATALOG_URL.test(u))).toEqual(["https://openrouter.ai/api/v1/models"]);
+    // This control IS the one legitimate attempt; clear it so the afterEach does
+    // not fail the file on its own instrument check.
+    egress.length = 0;
+  });
 });
 
 // ---- bbb448f6: explicit spec without credential fails loud, terminal 400 ------
@@ -163,12 +216,22 @@ describe("S4-d lot A: RoutingError → terminal 400 (bbb448f6)", () => {
 
   test("explicit OpenRouter spec (or@ / openrouter@) still falls through to the OR handler — no RoutingError", async () => {
     const port = await spin();
-    // count_tokens avoids any upstream fetch: a non-native handler answers with
-    // the token estimate, proving resolution succeeded past the 6b guard.
+    // The ANSWER is local: a non-native handler computes the estimate itself
+    // (proxy-server.ts:2360) and never fetches upstream. That is what proves
+    // resolution succeeded past the 6b guard. What used to ride along was the
+    // catalog: resolution warms `?catalog=slim&limit=1000`, and a slow or
+    // refused answer from that endpoint stalled this test past its 5s budget —
+    // the flake, not a routing defect. The file-level egress guard now settles
+    // that call with a local 503, so the only thing this test can fail on is
+    // the proxy's own behaviour.
     const { status, raw } = await ask(port, "or@qwen/qwen3-coder-next", "/v1/messages/count_tokens");
 
     expect(status).toBe(200);
     expect(typeof raw?.input_tokens).toBe("number");
+    // PIN: the only egress this test attempted was the shared catalog warm —
+    // never openrouter.ai, never a provider socket.
+    expect(egress.filter((u) => !CATALOG_URL.test(u))).toEqual([]);
+    expect(egress.some((u) => u.includes("openrouter.ai"))).toBe(false);
   });
 
   test("bare name with no credentialed route → [Route] failure is a terminal 400, not a retryable 500", async () => {
