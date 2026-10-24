@@ -1,6 +1,6 @@
 ---
 name: claudish-coordinate
-description: Cycle de coordination claudish sur myia-ai-01 (coordinateur, cron 12h sous Opus) — files profondes aux workers, reviews/merges exigeants, santé hub/relais/sidecar, trafic et leak-policy Anthropic, arbitrages au user, bilan [DONE]. À invoquer au réveil du cron ou sur demande du user.
+description: Cycle de coordination claudish sur myia-ai-01 (coordinateur, cron 6h sous Opus) — files profondes aux workers, reviews/merges exigeants, santé hub/relais/sidecar, trafic et leak-policy Anthropic, arbitrages au user, bilan [DONE]. À invoquer au réveil du cron ou sur demande du user.
 ---
 
 # Cycle de coordination claudish — myia-ai-01
@@ -11,7 +11,7 @@ description: Cycle de coordination claudish sur myia-ai-01 (coordinateur, cron 1
 
 ## Cadence et mandats
 
-- **Cron `37 */12 * * *`** (heure locale : 00:37 et 12:37), **sous Opus**. Le cron hérite du modèle de la
+- **Cron `37 */6 * * *`** (heure locale : 00:37, 06:37, 12:37, 18:37 — user 24/10), **sous Opus**. Le cron hérite du modèle de la
   session qui l'arme : vérifier le modèle avant tout réarmement.
 - **La cadence appartient au user** (arbitrage de dépense — historique complet : reference.md § en-tête).
   Ne jamais la changer seul. Quand il la change : `CronCreate` **et** patch de ce fichier dans le même
@@ -54,7 +54,7 @@ silence : la corriger dans le geste qui la rend fausse.
 `CronList`. Si le job est absent, le réarmer **immédiatement** :
 
 ```
-CronCreate(cron: "37 */12 * * *",
+CronCreate(cron: "37 */6 * * *",
            prompt: "Cycle de coordination du workspace claudish (myia-ai-01, rôle coordinateur). Lis d:\claudish\.claude\skills\claudish-coordinate\SKILL.md et exécute intégralement le cycle qu'il décrit, phases 0 à 7. Mandat user du 18/09 : endosser le rôle de coordinateur — faire avancer les issues en dispatchant une file PROFONDE (~10 grains ordonnés, avec grains de repli) à chacun des 4 workers (po-2023, po-2024, po-2025, po-2027 — mandats user 04/10 et 05/10, Phase 4c), et faire des reviews/merges exigeants. Aucun cycle idle.",
            recurring: true)
 ```

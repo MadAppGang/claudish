@@ -75,6 +75,8 @@ passages, une file de 5-6 grains s'épuise avant mon retour et le worker se reme
 exactement ce que le mandat du 04/10 voulait supprimer. 24 est divisible par 12, donc pas de piège
 de delta. L'armement a eu lieu 1 h après le créneau 12:37 : un tir de rattrapage reste possible.
 
+📌 **Tranché le 24/10 (~09:40 locale)** — dixième changement, 12h → **6h**. Demande user directe : « Reprends stp et raccourci un peu tes crons car tu as pas mal de PRs en attente stp », puis « 6h me parait un bon compromis ». Le motif n'est plus le budget mais **la latence de review** : la file de PRs attendait 12 h entre deux passages, et un worker bloqué sur « attend TON push » ou sur un merge ne produit plus. Le cron `47c14611` est armé à `37 */6 * * *` depuis une session `claude-opus-5-5[1m]`, et l'ancien `365c1601` (`*/12`) est annulé. La ligne de cadence et le gabarit de Phase 0 de SKILL.md ont été patchés dans le même geste. Les valeurs de cet instantané (ligne « Cadence » en tête) restent celles du 12/10 : c'est SKILL.md qui fait foi. 24 est divisible par 6, donc pas de piège de delta. Les files profondes restent dues : 6 h ne les rend pas superflues, puisqu'un worker tire au moins aussi souvent (po-2023 : 5 h, d'après son [DONE] du 23/10).
+
 🔴 **MANDAT COORDINATEUR (user, 18/09 ~13:30 locale)** — verbatim : « J'attends de toi que tu endosses
 ton rôle de coordinateur et que tu fasses avancer les issues en dispatchant du travail à tes désormais
 3 workers, tout en faisant des reviews et des merges exigeants. OK pour le mandat, après quelques jours
