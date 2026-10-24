@@ -581,10 +581,335 @@ function Format-RoutingCoverageLine {
             $Coverage.Entries, $tail)
 }
 
+# --- Provider probe layer (#635 AC 2) ---------------------------------------
+#
+# The Codex OAuth path above can only enumerate chatgpt.com. Every other family
+# lives behind a provider whose `/models` surface has to be probed with that
+# provider's OWN credential — and an id listed by backend A must never enter
+# routing under backend B.
+#
+# Three rules are structural here, not conventions:
+#   1. A probe outcome is 'probed' or 'not probed'. There is no third value and
+#      no 'current': a 401, a timeout and a missing credential all mean "we did
+#      not see this catalogue", which must never read as "this catalogue is
+#      up to date" (issue #635, AC 2).
+#   2. Targets come from what the CONFIG declares (custom endpoints carry their
+#      own url + key reference). A prefix with no declared surface is reported
+#      as such — this module never invents a base URL for a builtin provider.
+#   3. Decisions are computed per provider, over that provider's OWN ids
+#      (`Compare-ProbedProviderToFamilies`). `Compare-RoutingToFamilies` already
+#      gates on the target prefix, so a decision can only exist when the routing
+#      target and the listing backend are the same one.
+
+function Get-ModelsUrl {
+    # `<base>/v1` + `/chat/completions` (simple) or a bare base + the full
+    # `/v1/chat/completions` path (complex) — same rule the proxy uses in
+    # providers/context-limit-derivation.ts, so the watch and the proxy cannot
+    # disagree about where a catalogue lives.
+    param([string]$BaseUrl, [string]$ApiPath)
+    if ([string]::IsNullOrWhiteSpace($BaseUrl)) { return '' }
+    $base = $BaseUrl.TrimEnd('/')
+    $path = '/chat/completions'
+    if (-not [string]::IsNullOrWhiteSpace($ApiPath)) { $path = $ApiPath.TrimEnd('/') }
+    foreach ($suffix in @('/chat/completions', '/messages')) {
+        if ($path.EndsWith($suffix)) { return $base + $path.Substring(0, $path.Length - $suffix.Length) + '/models' }
+    }
+    return $base + '/v1/models'
+}
+
+function Get-ProviderProbeTargets {
+    # Every provider prefix the routing actually uses, classified by whether
+    # this seat can probe it and why not when it cannot. Pure: config in,
+    # targets out — no network, no env read (credential NAME only here).
+    param(
+        $Routing,
+        $CustomEndpoints,
+        [string[]]$OAuthProviders = @('cx@', 'codex@')
+    )
+    $byPrefix = @{}
+    if ($null -ne $Routing) {
+        foreach ($prop in $Routing.PSObject.Properties) {
+            foreach ($target in @($prop.Value)) {
+                $s = [string]$target
+                $at = $s.IndexOf('@')
+                if ($at -le 0) { continue }
+                $prefix = $s.Substring(0, $at + 1)
+                if (-not $byPrefix.ContainsKey($prefix)) { $byPrefix[$prefix] = $null }
+            }
+        }
+    }
+
+    $targets = @()
+    foreach ($prefix in @($byPrefix.Keys | Sort-Object)) {
+        $name = $prefix.TrimEnd('@')
+        if ($OAuthProviders -contains $prefix) {
+            $targets += @{
+                Prefix    = $prefix
+                Probeable = $false
+                Kind      = 'oauth'
+                Url       = ''
+                KeyName   = ''
+                KeyInline = ''
+                Reason    = 'listed by the Codex OAuth path, not by this probe'
+            }
+            continue
+        }
+
+        $entry = $null
+        if ($null -ne $CustomEndpoints -and $CustomEndpoints.PSObject.Properties[$name]) {
+            $entry = $CustomEndpoints.PSObject.Properties[$name].Value
+        }
+        if ($null -eq $entry) {
+            $targets += @{
+                Prefix    = $prefix
+                Probeable = $false
+                Kind      = 'unknown'
+                Url       = ''
+                KeyName   = ''
+                KeyInline = ''
+                Reason    = 'no probe surface declared in config (builtin provider URL lives in the CLI, not here)'
+            }
+            continue
+        }
+
+        $baseUrl = ''
+        $apiPath = ''
+        if ($entry.PSObject.Properties['url']) { $baseUrl = [string]$entry.url }
+        elseif ($entry.PSObject.Properties['baseUrl']) { $baseUrl = [string]$entry.baseUrl }
+        if ($entry.PSObject.Properties['apiPath']) { $apiPath = [string]$entry.apiPath }
+
+        # `${VAR}` is a reference; anything else is the literal key. The literal
+        # is carried for the probe and NEVER logged (see Format-ProviderProbeLine).
+        $keyName = ''
+        $keyInline = ''
+        $apiKey = ''
+        if ($entry.PSObject.Properties['apiKey']) { $apiKey = [string]$entry.apiKey }
+        if ($apiKey -match '^\$\{([A-Za-z0-9_]+)\}$') { $keyName = $Matches[1] }
+        elseif ($apiKey.Length -gt 0) { $keyInline = $apiKey }
+
+        $targets += @{
+            Prefix    = $prefix
+            Probeable = $true
+            Kind      = 'custom'
+            Url       = (Get-ModelsUrl -BaseUrl $baseUrl -ApiPath $apiPath)
+            KeyName   = $keyName
+            KeyInline = $keyInline
+            Reason    = ''
+        }
+    }
+    return $targets
+}
+
+function Invoke-ProbeHttpGet {
+    # Default transport. Separated so the suite can inject a fake and stay off
+    # the wire (production: 5.1, hence -UseBasicParsing).
+    param([string]$Url, [string]$Key, [int]$TimeoutSec = 15)
+    $headers = @{ Accept = 'application/json' }
+    if ($Key.Length -gt 0) { $headers['Authorization'] = "Bearer $Key" }
+    $resp = Invoke-WebRequest -Uri $Url -Headers $headers -Method Get -TimeoutSec $TimeoutSec -UseBasicParsing
+    return @{ Status = [int]$resp.StatusCode; Body = [string]$resp.Content }
+}
+
+function Get-ProbeIds {
+    # Accepts the shapes actually served: `{data:[…]}`, `{models:[…]}` and a
+    # bare array; each item may be a string or an object with id/slug.
+    param($Body)
+    $parsed = $null
+    try { $parsed = $Body | ConvertFrom-Json } catch { return @() }
+    $list = $parsed
+    if ($parsed -is [pscustomobject] -and $parsed.PSObject.Properties['data']) { $list = $parsed.data }
+    elseif ($parsed -is [pscustomobject] -and $parsed.PSObject.Properties['models']) { $list = $parsed.models }
+    $ids = @()
+    foreach ($item in @($list)) {
+        if ($item -is [string]) { $ids += $item }
+        elseif ($null -ne $item -and $item.PSObject.Properties['id']) { $ids += [string]$item.id }
+        elseif ($null -ne $item -and $item.PSObject.Properties['slug']) { $ids += [string]$item.slug }
+    }
+    return @($ids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
+function Get-ApiKeyValue {
+    # A credential by NAME, from whatever shape the config arrived in: a
+    # hashtable (tests, callers that build one) or a PSCustomObject (what
+    # ConvertFrom-Json actually hands the runner). Measured 24/10 on the live
+    # config under PS 5.1: `$ApiKeys[$name]` on a PSObject fails with
+    # "Cannot index an object of type PSObject" — the probe would have thrown on
+    # the FIRST provider that carries a credential name, on the seat it ships to.
+    param($ApiKeys, [string]$Name)
+    if ($null -eq $ApiKeys -or [string]::IsNullOrEmpty($Name)) { return '' }
+    if ($ApiKeys -is [System.Collections.IDictionary]) {
+        if ($ApiKeys.Contains($Name)) { return [string]$ApiKeys[$Name] }
+        return ''
+    }
+    $prop = $ApiKeys.PSObject.Properties[$Name]
+    if ($null -ne $prop -and $null -ne $prop.Value) { return [string]$prop.Value }
+    return ''
+}
+
+function Invoke-ProviderCatalogProbe {
+    # One outcome per probeable target. Never throws: a probe failure is a
+    # reported "not probed", never an incident and never an edit.
+    #
+    # $ApiKeys is config.apiKeys (name -> value); $EnvApiKeys is a lookup
+    # scriptblock for names absent from that table (production: process env).
+    param(
+        $Targets,
+        $ApiKeys,
+        [scriptblock]$EnvLookup = $null,
+        [scriptblock]$Fetcher = $null,
+        [int]$TimeoutSec = 15
+    )
+    if ($null -eq $Fetcher) { $Fetcher = { param($u, $k, $t) Invoke-ProbeHttpGet -Url $u -Key $k -TimeoutSec $t } }
+    $outcomes = @()
+    foreach ($t in @($Targets)) {
+        if (-not $t.Probeable) {
+            $outcomes += @{ Prefix = $t.Prefix; Status = 'not probed'; Ids = @(); Reason = $t.Reason; Kind = $t.Kind }
+            continue
+        }
+
+        $key = ''
+        if (-not [string]::IsNullOrEmpty($t.KeyInline)) { $key = $t.KeyInline }
+        elseif (-not [string]::IsNullOrEmpty($t.KeyName)) {
+            if ($null -ne $ApiKeys) { $key = Get-ApiKeyValue -ApiKeys $ApiKeys -Name $t.KeyName }
+            if ([string]::IsNullOrEmpty($key) -and $null -ne $EnvLookup) { $key = [string](& $EnvLookup $t.KeyName) }
+            if ([string]::IsNullOrEmpty($key)) {
+                $outcomes += @{
+                    Prefix = $t.Prefix; Status = 'not probed'; Ids = @(); Kind = $t.Kind
+                    Reason = "no credential ($($t.KeyName) is neither in config.apiKeys nor in the environment)"
+                }
+                continue
+            }
+        }
+
+        try {
+            $r = & $Fetcher $t.Url $key $TimeoutSec
+            $status = 0
+            if ($null -ne $r -and $null -ne $r.Status) { $status = [int]$r.Status }
+            if ($status -eq 401 -or $status -eq 403) {
+                $outcomes += @{
+                    Prefix = $t.Prefix; Status = 'not probed'; Ids = @(); Kind = $t.Kind
+                    Reason = "HTTP $status — credential refused (not probed, NOT current)"
+                }
+                continue
+            }
+            if ($status -lt 200 -or $status -ge 300) {
+                $outcomes += @{ Prefix = $t.Prefix; Status = 'not probed'; Ids = @(); Kind = $t.Kind; Reason = "HTTP $status" }
+                continue
+            }
+            $ids = @(Get-ProbeIds -Body $r.Body)
+            if ($ids.Count -eq 0) {
+                $outcomes += @{
+                    Prefix = $t.Prefix; Status = 'not probed'; Ids = @(); Kind = $t.Kind
+                    Reason = 'HTTP 200 but no model entries (shape drifted? — no-signal, not "current")'
+                }
+                continue
+            }
+            $outcomes += @{ Prefix = $t.Prefix; Status = 'probed'; Ids = $ids; Kind = $t.Kind; Reason = '' }
+        } catch {
+            # The transport may throw a plain RuntimeException (timeout, DNS) or
+            # a WebException/HttpRequestException carrying a response. Probing
+            # for the property instead of reading it is what keeps this block
+            # from turning a network failure into a second, unrelated crash —
+            # and it is the same code path under 5.1 and 7 (measured: the naive
+            # `$_.Exception.Response.StatusCode` throws PropertyNotFound under
+            # StrictMode for the plain shape).
+            $msg = $_.Exception.Message
+            $code = 0
+            if ($null -ne $_.Exception) {
+                $responseProp = $_.Exception.PSObject.Properties['Response']
+                if ($null -ne $responseProp -and $null -ne $responseProp.Value) {
+                    $resp = $responseProp.Value
+                    if ($null -ne $resp.PSObject.Properties['StatusCode']) { $code = [int]$resp.StatusCode }
+                }
+            }
+            if ($code -eq 401 -or $code -eq 403) { $msg = "HTTP $code — credential refused (not probed, NOT current)" }
+            elseif ($code -gt 0) { $msg = "HTTP $code" }
+            else {
+                # No HTTP status: a transport failure. Normalise the two shapes
+                # that carry meaning into a stable English token, because the
+                # platform message is LOCALISED — measured 24/10 on this seat,
+                # PS 5.1: `vllm-myia@ (Le délai de l'opération a expiré.)` in a
+                # run log otherwise written in English. The corpus is grepped by
+                # the fleet; a French line is invisible to an English filter.
+                $timedOut = $false
+                if ($_.Exception -is [System.TimeoutException]) { $timedOut = $true }
+                else {
+                    $statusProp = $_.Exception.PSObject.Properties['Status']
+                    if ($null -ne $statusProp -and "$($statusProp.Value)" -eq 'Timeout') { $timedOut = $true }
+                }
+                if ($timedOut) { $msg = "timed out after ${TimeoutSec}s" }
+                else { $msg = "request failed: $($_.Exception.Message)" }
+            }
+            $outcomes += @{ Prefix = $t.Prefix; Status = 'not probed'; Ids = @(); Kind = $t.Kind; Reason = $msg }
+        }
+    }
+    return $outcomes
+}
+
+function Format-ProviderProbeLine {
+    # The run-log line (#635 AC 2). Contract is on the TEXT: every prefix is
+    # accounted for, a failure names its reason in the refusal vocabulary, and
+    # no credential can appear (only names and counts are formatted).
+    param($Outcomes)
+    $all = @($Outcomes)
+    if ($all.Count -eq 0) { return '[probe] no provider prefix in routing — nothing to probe' }
+    $probed = @($all | Where-Object { $_.Status -eq 'probed' })
+    $idCount = 0
+    foreach ($p in $probed) { $idCount += @($p.Ids).Count }
+    $missing = @($all | Where-Object { $_.Status -ne 'probed' } | ForEach-Object { "$($_.Prefix) ($($_.Reason))" })
+    $tail = 'none'
+    if ($missing.Count -gt 0) { $tail = ($missing -join ', ') }
+    return ("[probe] providers probed {0}/{1} (ids {2}) — not probed: {3}" -f `
+            $probed.Count, $all.Count, $idCount, $tail)
+}
+
+function Compare-ProbedProviderToFamilies {
+    # Decisions from a set of probe outcomes, each provider judged against ITS
+    # OWN catalogue only. This is where "an id probed on one backend is never
+    # written under another" stops being a rule and becomes impossible: the
+    # only ids handed to the diff are the ones that provider just listed, and
+    # the diff itself drops members whose prefix differs (`Eligible`).
+    param($Routing, $Outcomes)
+    $decisions = @()
+    foreach ($o in @($Outcomes)) {
+        if ($o.Status -ne 'probed') { continue }
+        $ids = @($o.Ids)
+        if ($ids.Count -eq 0) { continue }
+        $d = Compare-RoutingToFamilies -Routing $Routing -AvailableIds $ids -WatchedProviders @($o.Prefix)
+        $decisions += @($d | Where-Object { $_.Eligible })
+    }
+    return $decisions
+}
+
+function Split-ProbeDecisions {
+    # The SAME policy the Codex path applies, stated once for the probe: a minor
+    # becomes a report-only 'would-repin' (this grain never edits routing), a
+    # major becomes an ASK ('major-ask' event) because a major bump is never
+    # auto-applied, and 'current' yields nothing at all. Keeping the split here
+    # — rather than as a Where-Object inline in the runner — is what lets it be
+    # pinned: a runner-shaped filter can only be grepped, never exercised.
+    #
+    # The two paths cannot double-ask for one family: probe targets exclude the
+    # OAuth prefixes by construction (they are reported with Kind 'oauth' and an
+    # outcome of 'not probed', so no decision is ever produced for them).
+    param($Decisions)
+    $minors = @()
+    $majors = @()
+    foreach ($d in @($Decisions)) {
+        if ($null -eq $d) { continue }
+        if ($d.Action -eq 'minor') { $minors += $d }
+        elseif ($d.Action -eq 'major') { $majors += $d }
+    }
+    return @{ Minors = $minors; Majors = $majors }
+}
+
 Export-ModuleMember -Function `
     ConvertTo-ModelVersion, Get-LatestFamilyVersion, Compare-RoutingToFamilies, `
     Compare-RoleModelsToRouting, Test-RoleAliasAskEmitted, `
     Edit-RoutingForMinor, Write-VersionEvent, Test-ClaudishOptIn, `
     Test-ProbeAccepted, Test-ModelRetired, Get-ReloadMode, `
     Get-RoutingCoverage, Format-RoutingCoverageLine, `
+    Get-ModelsUrl, Get-ProviderProbeTargets, Invoke-ProviderCatalogProbe, `
+    Format-ProviderProbeLine, Compare-ProbedProviderToFamilies, Get-ProbeIds, `
+    Split-ProbeDecisions, Get-ApiKeyValue, `
     Invoke-DrainDetachedRestart

@@ -104,6 +104,53 @@ $watchedProviders = @('cx@', 'codex@')
 $coverage = Get-RoutingCoverage -Routing $config.routing -WatchedProviders $watchedProviders
 & $logTs (Format-RoutingCoverageLine -Coverage $coverage)
 
+# --- 2b. Provider probe coverage (#635 AC 2) --------------------------------
+#
+# The coverage line above counts what the Codex path can SEE. This block says
+# what the seat can actually PROBE, which is a different number and a different
+# claim: a prefix listed here as probed had its own `/models` read with its own
+# credential; a prefix that 401s, times out, or has no declared surface says so
+# and never reads as "current" (issue #635, AC 2).
+#
+# REPORT-ONLY, this grain: it probes and it logs, it never edits routing. The
+# apply path (decisions -> Edit-RoutingForMinor) waits for its own grain, so a
+# 15 s probe cannot become an auto-repin on the first run. Placement is
+# deliberate: BEFORE the Codex phase, which exits 0 on an OAuth/5xx failure —
+# the blind spot has to stay visible on a run where that path dies.
+$probeTargets = Get-ProviderProbeTargets -Routing $config.routing -CustomEndpoints $config.customEndpoints -OAuthProviders $watchedProviders
+$apiKeys = $null
+if ($null -ne $config -and $null -ne $config.PSObject.Properties['apiKeys']) { $apiKeys = $config.apiKeys }
+$envLookup = { param($name) [Environment]::GetEnvironmentVariable($name) }
+$probeOutcomes = @(Invoke-ProviderCatalogProbe -Targets $probeTargets -ApiKeys $apiKeys -EnvLookup $envLookup)
+& $logTs (Format-ProviderProbeLine -Outcomes $probeOutcomes)
+foreach ($o in @($probeOutcomes | Where-Object { $_.Status -eq 'probed' })) {
+    & $logTs ("[probe] {0} lists {1} ids: {2}" -f $o.Prefix, @($o.Ids).Count, ((@($o.Ids) | Sort-Object) -join ', '))
+}
+$probeSplit = Split-ProbeDecisions -Decisions @(Compare-ProbedProviderToFamilies -Routing $config.routing -Outcomes $probeOutcomes)
+foreach ($d in @($probeSplit.Minors)) {
+    & $logTs ("[probe] would-repin {0} [{1}] {2} -> {3} ({4}) — report-only" -f $d.Spelling, $d.Provider, $d.CurrentId, $d.LatestId, $d.Action)
+}
+# A major on a probed provider is an ASK, exactly as on the Codex path: no edit,
+# one 'major-ask' event per family. The two paths cannot double-ask — probe
+# targets exclude the OAuth prefixes by construction.
+foreach ($fam in @($probeSplit.Majors | Group-Object Family)) {
+    $d0 = @($fam.Group)[0]
+    $fromIds = @($fam.Group | ForEach-Object { "$($_.Spelling)=$($_.CurrentId)" }) -join ','
+    & $logTs ("[probe] MAJOR available: {0} {1} -> {2} on {3} — NOT applied, user arbitrates" -f $fam.Name, $fromIds, $d0.LatestId, $d0.Provider)
+    if (-not $DryRun) {
+        Write-VersionEvent -EventsPath $eventsPath -Kind major-ask -Family $fam.Name `
+            -From (@($fam.Group | ForEach-Object { $_.CurrentId } | Select-Object -Unique) -join ',') `
+            -To $d0.LatestId -Detail "probed on $($d0.Provider) — spellings: $fromIds"
+    }
+}
+if (-not $DryRun -and @($probeSplit.Minors).Count -gt 0) {
+    foreach ($d in @($probeSplit.Minors)) {
+        Write-VersionEvent -EventsPath $eventsPath -Kind info -Family $d.Family `
+            -From $d.CurrentId -To $d.LatestId `
+            -Detail "probe would-repin spelling $($d.Spelling) on $($d.Provider) ($($d.Action)) — report-only, not applied"
+    }
+}
+
 # --- 2. Role-alias drift (needs NO network — runs before every network exit) -
 #
 # PLACEMENT IS LOAD-BEARING TWICE: the drift is the STEADY STATE (routing

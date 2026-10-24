@@ -796,3 +796,315 @@ Describe 'Get-RoutingCoverage (#635 AC 1 — the watch states what it cannot see
         ([regex]::Matches($text, "(?m)^\`$watchedProviders = @\(")).Count | Should -Be 1
     }
 }
+
+Describe 'Get-ModelsUrl / Get-ProviderProbeTargets (#635 AC 2 - what this seat can probe)' {
+    BeforeAll {
+        # A routing surface shaped like the hub's, plus the two custom-endpoint
+        # shapes the config actually carries (simple url + ${VAR}, complex
+        # baseUrl + apiPath).
+        $script:routing = [pscustomobject]@{
+            'glm-5.3'           = @('gc@glm-5.3')
+            'deepseek-v4-flash' = @('ds@deepseek-v4-flash', 'qwen-token-plan@deepseek-v4.1-flash')
+            'swift-1.5-27b'     = @('vllm-myia@swift-1.5-27b')
+            'MiniMax-M3'        = @('mmc@MiniMax-M3')
+            'gpt-6.1-sol'       = @('cx@gpt-6.1-sol')
+            'bare-model'        = @('bare-model')
+        }
+        $script:endpoints = [pscustomobject]@{
+            'vllm-myia'       = [pscustomobject]@{ kind = 'simple'; url = 'http://h:5002/v1'; apiKey = '${VLLM_API_KEY}' }
+            'qwen-token-plan' = [pscustomobject]@{
+                kind = 'complex'; baseUrl = 'https://qwen.example'; apiPath = '/v1/messages'
+                apiKey = '${QWEN_TOKEN_PLAN_API_KEY}'; authScheme = 'x-api-key'
+            }
+        }
+    }
+
+    It 'derives the catalogue URL the same way the proxy does' {
+        Get-ModelsUrl -BaseUrl 'http://127.0.0.1:5002/v1' -ApiPath '/chat/completions' | Should -Be 'http://127.0.0.1:5002/v1/models'
+        Get-ModelsUrl -BaseUrl 'http://h:8000/' -ApiPath '/v1/chat/completions' | Should -Be 'http://h:8000/v1/models'
+        Get-ModelsUrl -BaseUrl 'https://qwen.example' -ApiPath '/v1/messages' | Should -Be 'https://qwen.example/v1/models'
+        # No recognisable terminal segment: the OpenAI convention, never a guess
+        Get-ModelsUrl -BaseUrl 'http://host/api' -ApiPath '/custom/chat' | Should -Be 'http://host/api/v1/models'
+    }
+
+    It 'classifies every prefix in routing exactly once, and never invents a builtin URL' {
+        $t = Get-ProviderProbeTargets -Routing $script:routing -CustomEndpoints $script:endpoints
+        @($t).Count | Should -Be 6   # gc@ ds@ qwen-token-plan@ vllm-myia@ mmc@ cx@  (bare model ignored)
+        @($t | Where-Object { $_.Prefix -eq 'vllm-myia@' })[0].Probeable | Should -BeTrue
+        @($t | Where-Object { $_.Prefix -eq 'qwen-token-plan@' })[0].Url | Should -Be 'https://qwen.example/v1/models'
+        @($t | Where-Object { $_.Prefix -eq 'qwen-token-plan@' })[0].KeyName | Should -Be 'QWEN_TOKEN_PLAN_API_KEY'
+        # cx@ is the OAuth path - reported as such, not as a gap
+        @($t | Where-Object { $_.Prefix -eq 'cx@' })[0].Kind | Should -Be 'oauth'
+        # gc@/ds@/mmc@ have no surface in this config: reported, never given a URL
+        foreach ($p in @('gc@', 'ds@', 'mmc@')) {
+            $one = @($t | Where-Object { $_.Prefix -eq $p })[0]
+            $one.Probeable | Should -BeFalse
+            $one.Url | Should -BeNullOrEmpty
+            $one.Reason | Should -Match 'no probe surface'
+        }
+    }
+}
+
+Describe 'Invoke-ProviderCatalogProbe (#635 AC 2 - "not probed" is never "current")' {
+    BeforeAll {
+        $script:targets = @(
+            @{ Prefix = 'vllm-myia@'; Probeable = $true; Kind = 'custom'; Url = 'http://v1/models'; KeyName = 'VLLM_API_KEY'; KeyInline = ''; Reason = '' },
+            @{ Prefix = 'qwen-token-plan@'; Probeable = $true; Kind = 'custom'; Url = 'http://q/models'; KeyName = 'QWEN_TOKEN_PLAN_API_KEY'; KeyInline = ''; Reason = '' },
+            @{ Prefix = 'gc@'; Probeable = $false; Kind = 'unknown'; Url = ''; KeyName = ''; KeyInline = ''; Reason = 'no probe surface declared in config (builtin provider URL lives in the CLI, not here)' }
+        )
+        $script:keys = @{ VLLM_API_KEY = 'k-vllm'; QWEN_TOKEN_PLAN_API_KEY = 'k-qwen' }
+        $script:noEnv = { param($n) '' }
+    }
+
+    It 'a 200 with ids is the ONLY shape that counts as probed' {
+        $f = { param($u, $k, $t) @{ Status = 200; Body = '{"data":[{"id":"swift-1.5-27b"},{"id":"qwen3.6-35b-a3b"}]}' } }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[0]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $f)
+        $o[0].Status | Should -Be 'probed'
+        @($o[0].Ids).Count | Should -Be 2
+    }
+
+    It 'a 401 says "credential refused" and NEVER reads as current' {
+        # BOTH transport shapes: a returned 401 and a thrown one. Pinning only
+        # the thrown shape leaves the status branch free to call a refusal
+        # "probed" (measured: the first mutant survived this pin exactly so).
+        $fReturned = { param($u, $k, $t) @{ Status = 401; Body = '{"error":"unauthorized"}' } }
+        $oRet = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[1]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $fReturned)
+        $oRet[0].Status | Should -Be 'not probed'
+        $oRet[0].Reason | Should -Match 'credential refused'
+
+        $f = { param($u, $k, $t) throw 'Response status code does not indicate success: 401 (Unauthorized).' }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[1]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $f)
+        $o[0].Status | Should -Be 'not probed'
+        $o[0].Reason | Should -Match '401'
+        # the killed mutant: any status other than a 2xx-with-ids must not claim coverage
+        $o[0].Status | Should -Not -Be 'probed'
+        $o[0].Status | Should -Not -Be 'current'
+    }
+
+    It 'a 403 is the same refusal class; a plain 500 is a bare status' {
+        $f403 = { param($u, $k, $t) @{ Status = 403; Body = '{}' } }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[1]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $f403)
+        $o[0].Status | Should -Be 'not probed'
+        $o[0].Reason | Should -Match 'credential refused'
+
+        $f500 = { param($u, $k, $t) @{ Status = 500; Body = '{}' } }
+        $o2 = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[1]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $f500)
+        $o2[0].Status | Should -Be 'not probed'
+        $o2[0].Reason | Should -Be 'HTTP 500'
+    }
+
+    It 'a 200 with no ids is no-signal, not coverage' {
+        $f = { param($u, $k, $t) @{ Status = 200; Body = '{"object":"list","data":[]}' } }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[0]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $f)
+        $o[0].Status | Should -Be 'not probed'
+        $o[0].Reason | Should -Match 'no model entries'
+    }
+
+    It 'a missing credential is reported by NAME - the probe is never sent unauthenticated' {
+        $script:sent = 0
+        $f = { param($u, $k, $t) $script:sent++; @{ Status = 200; Body = '{"data":[{"id":"x"}]}' } }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[0]) -ApiKeys @{} -EnvLookup $script:noEnv -Fetcher $f)
+        $o[0].Status | Should -Be 'not probed'
+        $o[0].Reason | Should -Match 'VLLM_API_KEY'
+        $script:sent | Should -Be 0
+    }
+
+    It 'a credential may come from the environment when config.apiKeys lacks it' {
+        $envHit = { param($n) if ($n -eq 'VLLM_API_KEY') { 'k-from-env' } else { '' } }
+        $script:seenKey = ''
+        $f = { param($u, $k, $t) $script:seenKey = $k; @{ Status = 200; Body = '{"models":[{"slug":"m"}]}' } }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[0]) -ApiKeys @{} -EnvLookup $envHit -Fetcher $f)
+        $o[0].Status | Should -Be 'probed'
+        $script:seenKey | Should -Be 'k-from-env'
+    }
+
+    It 'reads a credential from a PSCustomObject - the shape ConvertFrom-Json actually produces' {
+        # MEASURED 24/10 on the live config (PS 5.1): `$ApiKeys[$name]` on the
+        # object ConvertFrom-Json returns throws "Cannot index an object of type
+        # PSObject". Every pin here used a hashtable, so the suite was green on
+        # a shape the shipping runner never has.
+        $cfgKeys = '{"QWEN_TOKEN_PLAN_API_KEY":"k-json","VLLM_API_KEY":"k2"}' | ConvertFrom-Json
+        Get-ApiKeyValue -ApiKeys $cfgKeys -Name 'QWEN_TOKEN_PLAN_API_KEY' | Should -Be 'k-json'
+        $script:seenKey = ''
+        $f = { param($u, $k, $t) $script:seenKey = $k; @{ Status = 200; Body = '{"data":[{"id":"m"}]}' } }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[1]) -ApiKeys $cfgKeys -EnvLookup $script:noEnv -Fetcher $f)
+        $o[0].Status | Should -Be 'probed'
+        $script:seenKey | Should -Be 'k-json'
+        # the same function still serves the hashtable shape used everywhere else
+        Get-ApiKeyValue -ApiKeys $script:keys -Name 'QWEN_TOKEN_PLAN_API_KEY' | Should -Be 'k-qwen'
+    }
+
+    It 'a timeout/connection error is a reason, not a throw' {
+        $f = { param($u, $k, $t) throw 'The operation has timed out.' }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[0]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $f)
+        $o[0].Status | Should -Be 'not probed'
+        $o[0].Reason | Should -Match 'timed out'
+    }
+
+    It 'a TimeoutException is normalised to English, not passed through in the platform language' {
+        # MEASURED 24/10 on this seat (PS 5.1, French locale): the live probe
+        # logged `vllm-myia@ (Le délai de l'opération a expiré.)` into a run log
+        # the fleet greps in English.
+        $f = { param($u, $k, $t) throw (New-Object System.TimeoutException 'Le délai de l''opération a expiré.') }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[0]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $f -TimeoutSec 7)
+        $o[0].Status | Should -Be 'not probed'
+        $o[0].Reason | Should -Be 'timed out after 7s'
+    }
+
+    It 'a non-probeable target is reported without any wire call' {
+        $f = { param($u, $k, $t) throw 'must not be called' }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[2]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $f)
+        $o[0].Status | Should -Be 'not probed'
+        $o[0].Reason | Should -Match 'no probe surface'
+    }
+
+    It 'one failing provider does not stop the next one' {
+        $f = { param($u, $k, $t)
+            if ($u -like '*v*') { throw 'HTTP 401 - nope' }
+            @{ Status = 200; Body = '{"data":[{"id":"qq"}]}' }
+        }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[0], $script:targets[1]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $f)
+        $o[0].Status | Should -Be 'not probed'
+        $o[1].Status | Should -Be 'probed'
+    }
+}
+
+Describe 'Format-ProviderProbeLine (#635 AC 2 - the line names every prefix, and no secret)' {
+    It 'accounts for every provider and names each reason' {
+        $o = @(
+            @{ Prefix = 'vllm-myia@'; Status = 'probed'; Ids = @('a', 'b'); Reason = '' },
+            @{ Prefix = 'ds@'; Status = 'not probed'; Ids = @(); Reason = 'HTTP 401 - credential refused (not probed, NOT current)' },
+            @{ Prefix = 'gc@'; Status = 'not probed'; Ids = @(); Reason = 'no probe surface declared in config' }
+        )
+        $line = Format-ProviderProbeLine -Outcomes $o
+        $line | Should -Match 'providers probed 1/3'
+        $line | Should -Match 'ids 2'
+        $line | Should -Match 'ds@ \(HTTP 401'
+        $line | Should -Match 'gc@ \(no probe surface'
+        # the vocabulary rule: a failed provider never joins the probed count and
+        # the line never claims full coverage ('current' may appear only inside a
+        # refusal reason that says NOT current)
+        $line | Should -Not -Match 'not probed: none'
+        $line | Should -Not -Match '\(ids \d+\) — not probed: none'
+    }
+
+    It 'says "none" when everything was probed, and refuses to invent a prefix' {
+        $o = @(@{ Prefix = 'vllm-myia@'; Status = 'probed'; Ids = @('a'); Reason = '' })
+        (Format-ProviderProbeLine -Outcomes $o) | Should -Match 'not probed: none'
+        (Format-ProviderProbeLine -Outcomes @()) | Should -Match 'nothing to probe'
+    }
+
+    It 'never formats a credential - only names and counts cross this function' {
+        $o = @(@{ Prefix = 'ds@'; Status = 'not probed'; Ids = @(); Reason = 'no credential (DEEPSEEK_API_KEY is neither in config.apiKeys nor in the environment)' })
+        $line = Format-ProviderProbeLine -Outcomes $o
+        $line | Should -Match 'DEEPSEEK_API_KEY'   # the NAME is the useful part
+        $line | Should -Not -Match 'sk-'
+    }
+}
+
+Describe 'Compare-ProbedProviderToFamilies (#635 AC 2 - binding is structural)' {
+    BeforeAll {
+        $script:routing2 = [pscustomobject]@{
+            'deepseek-v4-flash' = @('qwen-token-plan@deepseek-v4-flash')
+            'other'             = @('ds@deepseek-v4-flash')
+        }
+    }
+
+    It 'a newer minor on a probed provider yields a minor decision bound to THAT provider' {
+        $o = @(@{ Prefix = 'qwen-token-plan@'; Status = 'probed'; Ids = @('deepseek-v4.1-flash'); Reason = '' })
+        $d = @(Compare-ProbedProviderToFamilies -Routing $script:routing2 -Outcomes $o)
+        @($d).Count | Should -Be 1
+        $d[0].Provider | Should -Be 'qwen-token-plan@'
+        $d[0].Action | Should -Be 'minor'
+        $d[0].NewTarget | Should -Be 'qwen-token-plan@deepseek-v4.1-flash'
+    }
+
+    It 'an id listed by one backend is NEVER proposed under another' {
+        # TWO backends probed at once, with disjoint catalogues - the only shape
+        # that can tell a per-provider diff from one merged diff. ds@ lists the
+        # newer id; qwen-token-plan@ lists only the pinned one. Its routing key
+        # must stay put: a merged diff would repin it to ds@'s id, entering
+        # routing a target the qwen backend never listed.
+        $o = @(
+            @{ Prefix = 'qwen-token-plan@'; Status = 'probed'; Ids = @('deepseek-v4-flash'); Reason = '' },
+            @{ Prefix = 'ds@'; Status = 'probed'; Ids = @('deepseek-v4.1-flash'); Reason = '' }
+        )
+        $d = @(Compare-ProbedProviderToFamilies -Routing $script:routing2 -Outcomes $o)
+        @($d).Count | Should -Be 2
+        $qwen = @($d | Where-Object { $_.Provider -eq 'qwen-token-plan@' })[0]
+        $qwen.Action | Should -Be 'current'
+        $qwen.NewTarget | Should -Be 'qwen-token-plan@deepseek-v4-flash'
+        $ds = @($d | Where-Object { $_.Provider -eq 'ds@' })[0]
+        $ds.Action | Should -Be 'minor'
+        $ds.NewTarget | Should -Be 'ds@deepseek-v4.1-flash'
+    }
+
+    It 'a "not probed" outcome contributes no decision at all' {
+        $o = @(@{ Prefix = 'qwen-token-plan@'; Status = 'not probed'; Ids = @('deepseek-v4.1-flash'); Reason = 'HTTP 401' })
+        @(Compare-ProbedProviderToFamilies -Routing $script:routing2 -Outcomes $o).Count | Should -Be 0
+    }
+}
+
+Describe 'Split-ProbeDecisions (#635 AC 2 - minor is a report, major is an ASK)' {
+    BeforeAll {
+        $script:routing3 = [pscustomobject]@{
+            'gpt-6-sol'   = @('vllm-myia@gpt-6-sol')
+            'gpt-5.6-sol' = @('vllm-myia@gpt-5.6-sol')
+        }
+        $script:outcome3 = @(@{ Prefix = 'vllm-myia@'; Status = 'probed'; Ids = @('gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'); Reason = '' })
+        $script:split3 = Split-ProbeDecisions -Decisions @(Compare-ProbedProviderToFamilies -Routing $script:routing3 -Outcomes $script:outcome3)
+    }
+
+    It 'a newer minor lands in Minors, an older major in Majors' {
+        @($script:split3.Minors).Count | Should -Be 1
+        (@($script:split3.Minors)[0].Spelling) | Should -Be 'gpt-6-sol'
+        @($script:split3.Majors).Count | Should -Be 1
+        (@($script:split3.Majors)[0].Spelling) | Should -Be 'gpt-5.6-sol'
+        (@($script:split3.Majors)[0].Action) | Should -Be 'major'
+    }
+
+    It 'a current spelling goes to neither bucket' {
+        # gpt-6.1-sol is the family latest; a routing key sitting on it must
+        # produce no bucket entry at all (no would-repin, no ask)
+        $r = [pscustomobject]@{ 'pinned' = @('vllm-myia@gpt-6.1-sol') }
+        $s = Split-ProbeDecisions -Decisions @(Compare-ProbedProviderToFamilies -Routing $r -Outcomes $script:outcome3)
+        @($s.Minors).Count | Should -Be 0
+        @($s.Majors).Count | Should -Be 0
+    }
+
+    It 'nothing to decide yields two empty buckets, never $null' {
+        $s = Split-ProbeDecisions -Decisions @()
+        $null -eq $s.Minors | Should -BeFalse
+        $null -eq $s.Majors | Should -BeFalse
+        @($s.Minors).Count | Should -Be 0
+        @($s.Majors).Count | Should -Be 0
+    }
+}
+
+Describe 'model-version-watch.ps1 - the probe runs before the Codex network phase, report-only' {
+    It 'probes before section 3 and never applies a probe decision' {
+        $text = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\model-version-watch.ps1'))
+        $probeAt = $text.IndexOf('Format-ProviderProbeLine')
+        $netAt = $text.IndexOf('--- 3. Available versions')
+        $probeAt | Should -BeGreaterThan 0
+        $netAt | Should -BeGreaterThan 0
+        $probeAt | Should -BeLessThan $netAt
+        # report-only this grain: the probe's decisions may be logged, never edited
+        $text | Should -Match 'would-repin'
+        $probeDecisionsAt = $text.IndexOf('Compare-ProbedProviderToFamilies')
+        $probeDecisionsAt | Should -BeGreaterThan $probeAt
+        $applyAt = $text.IndexOf('Edit-RoutingForMinor -ConfigPath', $probeDecisionsAt)
+        if ($applyAt -gt 0) { $applyAt | Should -BeGreaterThan $netAt }
+        # AC 2's second half: a major on a probed provider is an ASK, emitted in
+        # this same report-only section (before the Codex network phase), never
+        # an edit.
+        $splitAt = $text.IndexOf('Split-ProbeDecisions')
+        $splitAt | Should -BeGreaterThan $probeAt
+        $askAt = $text.IndexOf('-Kind major-ask', $splitAt)
+        $askAt | Should -BeGreaterThan $splitAt
+        $askAt | Should -BeLessThan $netAt
+        # bounded to the probe section: the Codex path legitimately edits later
+        $probeSection = $text.Substring($splitAt, $netAt - $splitAt)
+        $probeSection | Should -Not -Match 'Edit-RoutingForMinor'
+    }
+}
