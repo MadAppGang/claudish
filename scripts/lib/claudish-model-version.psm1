@@ -502,9 +502,89 @@ function Get-ReloadMode {
     return 'deferred'
 }
 
+# --- Routing coverage (#635 AC 1) -------------------------------------------
+
+function Get-RoutingCoverage {
+    # How much of the live routing surface this watch can actually see.
+    # Pure: it parses the routing object and nothing else.
+    #
+    # Units are counted SEPARATELY and deliberately (#635): the hub's routing
+    # is 25 KEYS but 29 TARGETS (4 keys carry several targets), so a fraction
+    # quoted without its unit reads as a different claim — '21/25 routes' and
+    # '25/29 targets' are both true and are not the same number. Coverage is
+    # reported on TARGETS (the thing a watch can repin) with the entry count
+    # carried alongside, never instead.
+    #
+    # A target with no '@' lands in '(unprefixed)' — a bare model id (no
+    # backend to bind to) and a provider-only value ('gc') are NOT told apart
+    # on purpose: the watcher can bind neither, and guessing which is which is
+    # how an instrument starts inventing. A malformed '@model' is counted in
+    # Targets but assigned no prefix.
+    param(
+        $Routing,
+        [string[]]$WatchedProviders = @('cx@', 'codex@')
+    )
+    $entries = 0
+    $targets = 0
+    $byPrefix = @{}
+    if ($null -ne $Routing) {
+        foreach ($prop in $Routing.PSObject.Properties) {
+            $entries++
+            foreach ($target in @($prop.Value)) {
+                $targets++
+                $s = [string]$target
+                $at = $s.IndexOf('@')
+                if ($s.Length -eq 0 -or $at -eq 0) { continue }
+                $prefix = '(unprefixed)'
+                if ($at -gt 0) { $prefix = $s.Substring(0, $at + 1) }
+                if (-not $byPrefix.ContainsKey($prefix)) {
+                    $byPrefix[$prefix] = @{
+                        Prefix  = $prefix
+                        Routes  = 0
+                        Watched = ($WatchedProviders -contains $prefix)
+                    }
+                }
+                $byPrefix[$prefix].Routes++
+            }
+        }
+    }
+    $watchedRoutes = 0
+    $watchedPrefixes = 0
+    foreach ($k in @($byPrefix.Keys)) {
+        if ($byPrefix[$k].Watched) {
+            $watchedRoutes += $byPrefix[$k].Routes
+            $watchedPrefixes++
+        }
+    }
+    return @{
+        Entries         = $entries
+        Targets         = $targets
+        ByPrefix        = @($byPrefix.Values | Sort-Object -Property @{ Expression = { $_.Routes }; Descending = $true }, @{ Expression = { $_.Prefix } })
+        WatchedPrefixes = $watchedPrefixes
+        WatchedRoutes   = $watchedRoutes
+        InvisibleRoutes = ($targets - $watchedRoutes)
+    }
+}
+
+function Format-RoutingCoverageLine {
+    # The run-log line (#635 AC 1 — 'a run prints its coverage'). Pinned by a
+    # test because the contract is on the TEXT: the numbers must name their
+    # unit, and the invisible prefixes must carry their own counts, otherwise
+    # the next reader re-derives a fraction from the wrong denominator.
+    param([Parameter(Mandatory = $true)]$Coverage)
+    $all = @($Coverage.ByPrefix)
+    $invisible = @($all | Where-Object { -not $_.Watched } | ForEach-Object { "$($_.Prefix) $($_.Routes)" })
+    $tail = 'none'
+    if ($invisible.Count -gt 0) { $tail = ($invisible -join ', ') }
+    return ("[coverage] version watch sees {0}/{1} providers, {2}/{3} routing targets ({4} entries) — invisible: {5}" -f `
+            $Coverage.WatchedPrefixes, $all.Count, $Coverage.WatchedRoutes, $Coverage.Targets, `
+            $Coverage.Entries, $tail)
+}
+
 Export-ModuleMember -Function `
     ConvertTo-ModelVersion, Get-LatestFamilyVersion, Compare-RoutingToFamilies, `
     Compare-RoleModelsToRouting, Test-RoleAliasAskEmitted, `
     Edit-RoutingForMinor, Write-VersionEvent, Test-ClaudishOptIn, `
     Test-ProbeAccepted, Test-ModelRetired, Get-ReloadMode, `
+    Get-RoutingCoverage, Format-RoutingCoverageLine, `
     Invoke-DrainDetachedRestart

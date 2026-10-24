@@ -707,3 +707,92 @@ exit 4
         $text | Should -Match '-LogPath \(Join-Path \$ClaudishHome ''drain\.log''\)'
     }
 }
+
+Describe 'Get-RoutingCoverage (#635 AC 1 — the watch states what it cannot see)' {
+    BeforeAll {
+        # Fixture chosen to DISCRIMINATE units: cx@ carries 3 targets across 2
+        # keys, so counting keys instead of targets yields 2 instead of 3 and
+        # the pins go red. A one-target-per-key fixture would pass both ways.
+        $script:covRouting = [pscustomobject]@{}
+        Add-Member -InputObject $script:covRouting -NotePropertyName 'a' -NotePropertyValue @('cx@gpt-6.1-sol', 'cx@gpt-6-sol')
+        Add-Member -InputObject $script:covRouting -NotePropertyName 'b' -NotePropertyValue @('cx@gpt-6.1-sol', 'gc@glm-5.3')
+        Add-Member -InputObject $script:covRouting -NotePropertyName 'c' -NotePropertyValue @('gc@glm-5.3')
+        Add-Member -InputObject $script:covRouting -NotePropertyName 'd' -NotePropertyValue @('gpt-6.1-sol')
+        Add-Member -InputObject $script:covRouting -NotePropertyName 'e' -NotePropertyValue @('frognano')
+        Add-Member -InputObject $script:covRouting -NotePropertyName 'f' -NotePropertyValue @('@broken')
+        $script:cov = Get-RoutingCoverage -Routing $script:covRouting -WatchedProviders @('cx@', 'codex@')
+    }
+
+    It 'counts entries (keys) and targets separately — 6 keys, 8 targets here' {
+        $script:cov.Entries | Should -Be 6
+        $script:cov.Targets | Should -Be 8
+    }
+
+    It 'counts a watched provider per TARGET, not per key (cx@ = 3 targets over 2 keys)' {
+        $script:cov.WatchedRoutes | Should -Be 3
+        $script:cov.WatchedPrefixes | Should -Be 1
+    }
+
+    It 'reports the invisible remainder against the target count' {
+        $script:cov.InvisibleRoutes | Should -Be 5
+    }
+
+    It 'buckets every prefix with its own target count' {
+        $gc = @($script:cov.ByPrefix | Where-Object { $_.Prefix -eq 'gc@' })[0]
+        $gc.Routes | Should -Be 2
+        $gc.Watched | Should -Be $false
+    }
+
+    It 'buckets a no-@ target as (unprefixed) — bare id and provider-only are NOT told apart on purpose' {
+        $un = @($script:cov.ByPrefix | Where-Object { $_.Prefix -eq '(unprefixed)' })[0]
+        $un.Routes | Should -Be 2
+        $un.Watched | Should -Be $false
+    }
+
+    It 'counts a malformed @target in Targets but assigns it no prefix' {
+        $assigned = 0
+        foreach ($p in @($script:cov.ByPrefix)) { $assigned += $p.Routes }
+        $assigned | Should -Be 7          # 8 targets minus the malformed one
+        $script:cov.Targets | Should -Be 8
+    }
+
+    It 'degrades to zeros on a null routing — never throws' {
+        $empty = Get-RoutingCoverage -Routing $null
+        $empty.Entries | Should -Be 0
+        $empty.Targets | Should -Be 0
+        $empty.WatchedRoutes | Should -Be 0
+        $empty.InvisibleRoutes | Should -Be 0
+        (@($empty.ByPrefix).Count) | Should -Be 0
+    }
+
+    It 'formats a line that NAMES its unit and lists the invisible prefixes with their counts' {
+        $line = Format-RoutingCoverageLine -Coverage $script:cov
+        $line | Should -Match '^\[coverage\] version watch sees 1/3 providers'
+        $line | Should -Match '3/8 routing targets'
+        $line | Should -Match '6 entries'
+        $line | Should -Match 'gc@ 2'
+        $line | Should -Match '\(unprefixed\) 2'
+    }
+
+    It 'says "none" when every prefix in use is watched (no empty tail)' {
+        $all = Get-RoutingCoverage -Routing $script:covRouting -WatchedProviders @('cx@', 'gc@', '(unprefixed)')
+        $line = Format-RoutingCoverageLine -Coverage $all
+        $line | Should -Match '3/3 providers'
+        $line | Should -Match 'invisible: none'
+    }
+
+    It 'runner wiring: the coverage line is emitted before every network exit' {
+        $text = Get-Content -LiteralPath $script:RunnerPath -Raw
+        $text | Should -Match 'Get-RoutingCoverage -Routing \$config\.routing'
+        $text | Should -Match 'Format-RoutingCoverageLine'
+        # positioned ahead of the section that owns the network calls and its
+        # three `exit 0` paths
+        $covAt = $text.IndexOf('Format-RoutingCoverageLine')
+        $netAt = $text.IndexOf('--- 3. Available versions')
+        $covAt | Should -BeGreaterThan 0
+        $netAt | Should -BeGreaterThan 0
+        $covAt | Should -BeLessThan $netAt
+        # one definition only — the diff and the line must not drift apart
+        ([regex]::Matches($text, "(?m)^\`$watchedProviders = @\(")).Count | Should -Be 1
+    }
+}

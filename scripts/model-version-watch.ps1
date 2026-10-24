@@ -88,6 +88,22 @@ try { $config = [System.IO.File]::ReadAllText($ConfigPath) | ConvertFrom-Json } 
     exit 1
 }
 
+# --- 2a. Coverage (#635 AC 1) -----------------------------------------------
+#
+# Printed as early as the config allows, BEFORE every network path and every
+# other exit: a run whose provider listing fails (no OAuth file, 5xx, shape
+# drift — all of them exit 0 later) still states how much of the routing this
+# organ could see. That is the whole point of the line: the blind spot has to
+# be visible on the first run, not on the third manual re-pin.
+#
+# Phase 1 watches the Codex backend; the other prefixes join as their /models
+# surfaces are probed (see #635). The line names its UNIT — targets vs entries
+# — because this hub's routing is 25 keys but 29 targets, and a fraction
+# quoted without its unit reads as a different claim.
+$watchedProviders = @('cx@', 'codex@')
+$coverage = Get-RoutingCoverage -Routing $config.routing -WatchedProviders $watchedProviders
+& $logTs (Format-RoutingCoverageLine -Coverage $coverage)
+
 # --- 2. Role-alias drift (needs NO network — runs before every network exit) -
 #
 # PLACEMENT IS LOAD-BEARING TWICE: the drift is the STEADY STATE (routing
@@ -190,7 +206,8 @@ if ($available.Count -eq 0) {
 
 # --- 4. Diff against routing ------------------------------------------------
 
-$watchedProviders = @('cx@', 'codex@')
+# $watchedProviders is defined once, in section 2a — the coverage line and this
+# diff must never disagree about what "watched" means.
 $decisions = Compare-RoutingToFamilies -Routing $config.routing -AvailableIds $available -WatchedProviders $watchedProviders
 $pending = @($decisions | Where-Object { $_.Action -ne 'current' })
 & $logTs ("decisions: " + (($decisions | ForEach-Object { "$($_.Family)/$($_.Action)[$($_.Spelling): $($_.CurrentId)->$($_.LatestId)]" }) -join ' ; '))
