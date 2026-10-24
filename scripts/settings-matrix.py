@@ -66,7 +66,12 @@ NATIVE_NOMINAL_ROLES = ("opus",)
 # gpt-6-sol x2) and the one qwen3.8-max was po-2027's own stale entry (fixed in
 # place the same day). A custom, WHERE declared, must be a Sol id; qwen3.8-max is
 # forbidden (user 22/10: too expensive on the Alibaba/Qwen token plan, never used).
-CANON_CUSTOM_OPTIONS = ("gpt-5.6-sol", "gpt-6-sol")
+# Harmonized upward on 24/10 (user: "gpt-5.6-sol, c'est obsolète, on harmonise par
+# le haut"): the canon is the newest Sol id the hub routes; the older spellings still
+# route to it, but a seat carrying one is behind and gets its own flag, distinct
+# from the forbidden class.
+CANON_CUSTOM_OPTIONS = ("gpt-6.1-sol",)
+OBSOLETE_SOL_OPTIONS = ("gpt-5.6-sol", "gpt-6-sol")
 # A canon description starts with "Rôle " and may still mention "Anthropic natif"
 # (fable's canon wording says exactly that, to deny it); a description NOT in the
 # canon shape that names Anthropic is the marketing drift ("Anthropic Fable 5.1
@@ -194,7 +199,12 @@ def label_flags(harmonization, machine, names_visible=True):
                     % (role, json.dumps(description, ensure_ascii=False))
                 )
     option = harmonization.get("env.ANTHROPIC_CUSTOM_MODEL_OPTION")
-    if option and option not in CANON_CUSTOM_OPTIONS:
+    if option in OBSOLETE_SOL_OPTIONS:
+        flags.append(
+            "custom option %s is an obsolete Sol id (canon %s)"
+            % (json.dumps(option, ensure_ascii=False), str(CANON_CUSTOM_OPTIONS))
+        )
+    elif option and option not in CANON_CUSTOM_OPTIONS:
         flags.append(
             "custom option %s is not a canon Sol id %s (qwen3.8-max class: forbidden)"
             % (json.dumps(option, ensure_ascii=False), str(CANON_CUSTOM_OPTIONS))
