@@ -328,7 +328,7 @@ describe("file lock holder lifecycle", () => {
           process.execPath,
           source,
         ],
-        { stdin: "ignore", stdout: "pipe", stderr: "pipe" }
+        { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...process.env } }
       );
       const [exitCode, stdout, stderr] = await Promise.all([
         child.exited,

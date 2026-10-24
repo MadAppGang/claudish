@@ -10,6 +10,7 @@ const baseline = "6b572b7f3c52819134df06d4b4a5c84d7cabdf78";
 // Dependency drift is measured from main; component parity keeps the pre-2a pin.
 const dependencyBaseline = execFileSync("git", ["merge-base", "HEAD", "origin/main"], {
   cwd: repo,
+  env: { ...process.env },
   encoding: "utf8",
 }).trim();
 const retained = [
@@ -23,6 +24,7 @@ const retained = [
 function pinned(path: string, commit = baseline): string {
   return execFileSync("git", ["show", `${commit}:packages/cli/src/${path}`], {
     cwd: repo,
+    env: { ...process.env },
     encoding: "utf8",
   });
 }
