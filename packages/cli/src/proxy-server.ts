@@ -3,6 +3,10 @@ import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { log, logStderr } from "./logger.js";
 import type { ProxyServer } from "./types.js";
+// #587/#615 — lag-probe read windows, module-level so the retirement pin can
+// shorten them (a 60 s window cannot expire inside a test); /health reads
+// these at CALL TIME, never a cached value.
+export const lagProbeWindows = { maxMs: 60_000, blockedMs: 300_000 };
 import { NativeHandler, stripProxyOwnHeaders } from "./handlers/native-handler.js";
 import {
   nativeAuthHeaderNames,
@@ -2236,6 +2240,80 @@ export async function createProxyServer(
   // fork/server/stream-registry.ts for the full rationale.
   const streamTracker = createStreamTracker();
   const startedAt = Date.now();
+  // #587 gate — event-loop lag probe. bun's perf_hooks.monitorEventLoopDelay
+  // is a measured STUB on the hub's production runtime (a 200 ms synchronous
+  // block records 0 on oven/bun 1.3.14, script context, top-level and inside
+  // a timer callback alike), so the gate cannot ride it. A repeating 20 ms
+  // timer measures how late it fires instead — the same quantity, portable.
+  //
+  // #615 review redesign: the percentiles are GONE. A setInterval does not
+  // catch up after a block — one long block leaves ONE sample, so p99 never
+  // moved (measured: 2 s block, p99 unchanged at 26), and reading them cost
+  // two Array.from().sort() per /health call (7.89 ms on a full ring) on the
+  // very loop being measured. What the relay-flip question needs is a signal
+  // localizable IN TIME, joinable with the sidecars' AUTONOMOUS lines on the
+  // same clock:
+  //   - a [EventLoop] log line the moment a tick runs ≥ LAG_LOG_THRESHOLD_MS
+  //     late (docker logs -t timestamps it; one line per block, not per tick);
+  //   - /health eventLoopMax60sMs — a windowed max that RETIRES;
+  //   - /health eventLoopBlockedMs5m — the sum of lag over the window, floored
+  //     at LAG_BLOCK_FLOOR_MS so an idle Windows seat's timer granularity (a
+  //     20 ms interval fires at ~31 ms → every tick "lags" ~11 ms) does not
+  //     read as five minutes of blockage — see docs/reference/relay-internals.md;
+  //   - eventLoopMaxMs stays as the cumulative high-water mark — one 03:00 GC
+  //     pause can pin it forever, so date episodes with the windowed max.
+  // Samples are sparse (positive lags only) with per-sample timestamps: a
+  // window read walks backwards from the newest sample and stops at the first
+  // one older than the edge — O(samples in window), no sort, no allocation.
+  // Observation only: nothing gates on these.
+  const LAG_TICK_MS = 20;
+  const LAG_RING = 15_000;
+  const LAG_LOG_THRESHOLD_MS = 250;
+  const LAG_BLOCK_FLOOR_MS = 50;
+  const lagRing = new Float64Array(LAG_RING);
+  const lagTsRing = new Float64Array(LAG_RING);
+  let lagCount = 0;
+  let lagMaxCumulative = 0;
+  // #615 review point 2: the probe runs on the MONOTONIC clock. `Date.now()`
+  // is wall time, so an NTP resync (or the WSL2 VM clock catching up after
+  // host load) steps it forward and manufactures a phantom `[EventLoop] lag=`
+  // line — precisely the false positive that would correlate with an
+  // AUTONOMOUS flip caused by the same host event — while a backward step
+  // silently drops samples. `performance.now()` cannot step. The log line
+  // still gets its wall time from `docker logs -t`, which is the clock the
+  // sidecars' transitions are read on.
+  const lagState = { lastTick: performance.now() };
+  const lagTimer = setInterval(() => {
+    const now = performance.now();
+    const lag = now - lagState.lastTick - LAG_TICK_MS;
+    if (lag > 0) {
+      const slot = lagCount % LAG_RING;
+      lagRing[slot] = lag;
+      lagTsRing[slot] = now;
+      lagCount++;
+      if (lag > lagMaxCumulative) lagMaxCumulative = lag;
+      if (lag >= LAG_LOG_THRESHOLD_MS) logStderr(`[EventLoop] lag=${Math.round(lag)}ms`);
+    }
+    lagState.lastTick = now;
+  }, LAG_TICK_MS);
+  lagTimer.unref?.();
+  const lagWindowed = (windowMs: number, mode: "max" | "blockedSum"): number => {
+    // Walk sample indices newest→oldest (monotone in lagCount); modulo maps an
+    // index to its ring slot once the ring has wrapped. Timestamps are monotone
+    // in the index, so the first sample older than the edge ends the walk.
+    const edge = performance.now() - windowMs;
+    const oldest = Math.max(0, lagCount - LAG_RING);
+    let out = 0;
+    for (let idx = lagCount - 1; idx >= oldest; idx--) {
+      const slot = idx % LAG_RING;
+      if (lagTsRing[slot] < edge) break;
+      const lag = lagRing[slot];
+      if (mode === "max") {
+        if (lag > out) out = lag;
+      } else if (lag >= LAG_BLOCK_FLOOR_MS) out += lag;
+    }
+    return Math.round(out * 10) / 10;
+  };
   app.use("*", streamTracker.middleware);
 
   // Liveness, not mere existence. This was a constant-time JSON handler that
@@ -2284,6 +2362,22 @@ export async function createProxyServer(
         // Omitted entirely when no window is open (that absence IS the
         // signal). Appended last: nothing renamed, older parsers unaffected.
         ...(previousKeyHitsSnapshot() ?? {}),
+        // #587 — event-loop lag, time-localized (#615 review redesign: the
+        // percentiles are gone — one long block leaves ONE sample so p99
+        // never moved, and two sorts per call cost 7.89 ms on this very
+        // loop). eventLoopMax60sMs is the windowed max (it retires);
+        // eventLoopBlockedMs5m the floored sum of lag over the window
+        // (weighs a block by its length; the 50 ms floor keeps an idle
+        // Windows seat's ~11 ms timer granularity from reading as
+        // blockage — see docs/reference/relay-internals.md); eventLoopMaxMs
+        // the cumulative high-water mark since start — a single 03:00 GC
+        // pause can pin it forever, so date episodes with the windowed max
+        // and the [EventLoop] log line (timestamped by docker logs -t, it
+        // joins with the sidecars' AUTONOMOUS flips on the same clock).
+        // 0 on a fresh process; nothing renamed, nothing gates on these.
+        eventLoopMax60sMs: lagWindowed(lagProbeWindows.maxMs, "max"),
+        eventLoopBlockedMs5m: lagWindowed(lagProbeWindows.blockedMs, "blockedSum"),
+        eventLoopMaxMs: Math.round(lagMaxCumulative * 10) / 10,
       },
       stalled ? 503 : 200
     );
@@ -2854,6 +2948,7 @@ export async function createProxyServer(
     // this closure, and /health stops answering once close() drops the socket.
     getActiveStreams: () => streamTracker.getActiveStreams(),
     shutdown: async () => {
+      clearInterval(lagTimer);
       return new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

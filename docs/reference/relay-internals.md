@@ -121,6 +121,25 @@ tunnel never appear. Joined to `/health`'s `instanceId` + `uptimeSec` for proces
 `instanceId` change *bounds* a replacement between two observations; it does not date it, absent a
 corroborating timestamped event.
 
+**`/health` also publishes `eventLoopMax60sMs` (windowed max, retires), `eventLoopBlockedMs5m`
+(floored sum of lag over ~5 min — weighs a block by its length) and `eventLoopMaxMs` (cumulative
+high-water since start) — the #587 gate instrument** for the "relays flip AUTONOMOUS while the hub
+loop was merely busy" class: if these stay at a few ms during an episode, neither a cached `/health`
+nor a separate listener would have answered it, and the A/B choice is moot. A tick ≥ 250 ms late
+additionally logs one `[EventLoop] lag=<n>ms` line (timestamped by `docker logs -t`), joinable with
+the sidecars' `→ AUTONOMOUS` transitions on the same clock. It is a manual 20 ms tick
+probe, **not** `perf_hooks.monitorEventLoopDelay` — that API is a measured stub on the production
+runtime (a 200 ms synchronous block records 0 on oven/bun 1.3.14, script and test context alike).
+⚠ **Windows seats read with a floor**: the 20 ms interval fires at ~31 ms there (timer granularity),
+so every tick "lags" ~11 ms — p50-style readings carry that floor, and it is why the blocked sum
+floors at 50 ms. The hub (Linux) is unaffected. **The probe runs on the MONOTONIC clock**
+(`performance.now()`, #615 review): `Date.now()` is wall time, so an NTP resync or the WSL2 VM clock
+catching up after host load would step it forward and manufacture a phantom `[EventLoop]` line — the
+false positive that would then correlate with an AUTONOMOUS flip caused by the same host event — while
+a backward step silently drops samples. The line's wall time comes from `docker logs -t`, which is the
+clock the sidecar transitions are read on. Appended keys only (#156/#439 discipline); nothing
+in the data path or the health route gates on them.
+
 **Client impact beyond the 502s — #410 owns the defect; the *timing tie* now holds.** The Zod
 rejection is real and measured: `config.json` carried `maxConcurrency: 16`, the image then in
 service (07/10) caps at 8, and an endpoint failing validation is dropped whole (by design, with a

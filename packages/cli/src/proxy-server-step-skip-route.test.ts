@@ -48,7 +48,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createProxyServer } from "./proxy-server.js";
+import { createProxyServer, lagProbeWindows } from "./proxy-server.js";
 import {
   resetFailoverForTests,
   setRoleNominalResolver,
@@ -89,7 +89,8 @@ const realFetch = globalThis.fetch;
 let calls: Record<string, number> = {};
 /** Captured upstream request bodies by endpoint tag (nm/s0/s1/b0/b1/cap/capa). */
 let upstreamBodies: Record<string, any[]> = {};
-/** All countable markers — [Failover], [StepBusy], [ContextGuard] and [MediaCap] (both
+/** All countable markers — [Failover], [StepBusy], [ContextGuard], [EventLoop]
+ * and [MediaCap] (both
  * console.log and stderr are hooked: `log(..., true)` reaches console.log
  * while logStderr reaches stderr). */
 let markerLog: string[] = [];
@@ -318,6 +319,7 @@ beforeEach(() => {
         line.includes("[StepBusy]") ||
         line.includes("[ContextGuard]") ||
         line.includes("[ContextAdmission]") ||
+        line.includes("[EventLoop]") || // #615 review point 1
         line.includes("[MediaCap]") // #575
       ) {
         markerLog.push(line);
@@ -333,6 +335,7 @@ beforeEach(() => {
         line.includes("[StepBusy]") ||
         line.includes("[ContextGuard]") ||
         line.includes("[ContextAdmission]") ||
+        line.includes("[EventLoop]") || // #615 review point 1
         line.includes("[MediaCap]") // #575
       ) {
         markerLog.push(line);
@@ -1070,5 +1073,112 @@ describe("#565 — a request no declared window can take is refused at admission
     const r = await postMessage({ model: "claude-sonnet-5", session: "sess-adm-native", content: "x".repeat(1_200_000) });
     expect(await responseText(r)).not.toContain("exceeds every declared context window");
     expect(markerLog.some((l) => l.includes("[ContextAdmission] REFUSE"))).toBe(false);
+  }, 30_000);
+});
+
+describe("#587 — /health publishes time-localized event-loop lag (gate instrument)", () => {
+  test("H1: a fresh server exposes eventLoopMax60sMs/BlockedMs5m/Max as non-negative numbers beside instanceId, with no upstream configured", async () => {
+    await spin();
+    resetCascade();
+    const r = await realFetch(`http://127.0.0.1:${PROXY_PORT}/health`);
+    expect(r.status).toBe(200); // not stalled — the health surface is otherwise unchanged
+    const body: any = await r.json();
+    expect(typeof body.instanceId).toBe("string"); // the #156 identity field is still there
+    for (const k of ["eventLoopMax60sMs", "eventLoopBlockedMs5m", "eventLoopMaxMs"]) {
+      expect(typeof body[k]).toBe("number");
+      expect(body[k]).toBeGreaterThanOrEqual(0);
+    }
+  }, 30_000);
+
+  test("H2: the WINDOWED metrics move on a block — kills the =0 mutants the percentiles survived", async () => {
+    await spin();
+    resetCascade();
+    // ~200 ms of synchronous loop blocking on this process — the exact class
+    // the gate must discriminate. The probe records ONE ~180 ms sample; the
+    // windowed max must carry it, the floored sum must count it.
+    const t0 = Date.now();
+    while (Date.now() - t0 < 200) {
+      /* spin the loop */
+    }
+    // Settle: bun can run the incoming socket I/O before the overdue probe
+    // tick in the first turn after the block, so the /health that measures
+    // must not be the very first post-spin event. Production readers poll
+    // at 4 s+ and always see the recorded block; this mirrors that.
+    await new Promise((r) => setTimeout(r, 120));
+    const after: any = await (await realFetch(`http://127.0.0.1:${PROXY_PORT}/health`)).json();
+    expect(after.eventLoopMax60sMs).toBeGreaterThanOrEqual(20); // ≥ one resolution bucket
+    expect(after.eventLoopBlockedMs5m).toBeGreaterThanOrEqual(20); // the block, above the 50 ms floor
+    // The cumulative high-water mark dominates any windowed read of the
+    // same history — pins the max/max60s relationship.
+    expect(after.eventLoopMaxMs).toBeGreaterThanOrEqual(after.eventLoopMax60sMs);
+  }, 30_000);
+
+  test("H3: a windowed max RETIRES — the sample is seen inside the window and gone after it", async () => {
+    await spin();
+    resetCascade();
+    const saved = { ...lagProbeWindows };
+    try {
+      // Shorten the windows so the retirement fits inside a test (a 60 s
+      // window cannot expire here); /health reads them at call time, so
+      // there is no re-boot to do.
+      lagProbeWindows.maxMs = 1_500;
+      lagProbeWindows.blockedMs = 1_500;
+      const t0 = Date.now();
+      while (Date.now() - t0 < 120) {
+        /* spin the loop — one ~100 ms sample, above the 50 ms block floor */
+      }
+      await new Promise((r) => setTimeout(r, 120));
+      const inside: any = await (await realFetch(`http://127.0.0.1:${PROXY_PORT}/health`)).json();
+      expect(inside.eventLoopMax60sMs).toBeGreaterThanOrEqual(50); // the block, not jitter
+      expect(inside.eventLoopBlockedMs5m).toBeGreaterThanOrEqual(50);
+      // Wait past the shortened window: the sample is older than the edge
+      // now, the backwards walk stops before reaching it.
+      await new Promise((r) => setTimeout(r, 2_000));
+      const retired: any = await (await realFetch(`http://127.0.0.1:${PROXY_PORT}/health`)).json();
+      // Sub-floor jitter may keep fresh 1-3 ms samples inside the window —
+      // what must be gone is anything BLOCK-SIZED. The blocked sum floors
+      // at 50 ms, so an empty window reads exactly 0.
+      expect(retired.eventLoopMax60sMs).toBeLessThan(50);
+      expect(retired.eventLoopBlockedMs5m).toBe(0);
+    } finally {
+      Object.assign(lagProbeWindows, saved);
+    }
+  }, 30_000);
+
+  test("H4 (#615 review point 1): the dated [EventLoop] line — one at ≥250 ms, NONE below the threshold", async () => {
+    await spin();
+    resetCascade();
+    // Below the threshold first: ~100 ms of blocking must stay SILENT. This
+    // half is the one that pins the gate itself — a mutant that zeroes the
+    // threshold (or the whole branch) still produces the strong half's line,
+    // so only "quiet under 250 ms" proves the number is doing work.
+    const tQuiet = Date.now();
+    while (Date.now() - tQuiet < 100) {
+      /* spin the loop */
+    }
+    // Let the overdue tick actually fire before reading the markers.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(markerLog.filter((l) => l.includes("[EventLoop]")).length).toBe(0);
+
+    // Above the threshold: ≥300 ms of synchronous blocking. One late tick ⇒
+    // one line, on the stderr channel `docker logs -t` timestamps — the only
+    // signal joinable with the sidecars' `→ AUTONOMOUS` transitions.
+    const tBlock = Date.now();
+    while (Date.now() - tBlock < 400) {
+      /* spin the loop */
+    }
+    await new Promise((r) => setTimeout(r, 150));
+    const lines = markerLog.filter((l) => l.includes("[EventLoop] lag="));
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    // Every emitted line carries a number at or above the 250 ms gate — no
+    // sub-threshold line sneaks out, and the number is the BLOCK, not the
+    // ~11 ms Windows timer-granularity floor.
+    const lags = lines.map((l) => {
+      const m = l.match(/\[EventLoop\] lag=(\d+)ms/);
+      expect(m).not.toBeNull();
+      return Number(m![1]);
+    });
+    expect(Math.max(...lags)).toBeGreaterThanOrEqual(250);
+    expect(Math.min(...lags)).toBeGreaterThanOrEqual(250);
   }, 30_000);
 });
