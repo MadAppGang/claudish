@@ -134,11 +134,22 @@ export class CodexOAuthHalf implements CredentialProvider {
 export class CodexPoolHalf implements CredentialProvider {
   readonly catalogName = "openai-codex";
 
+  // The registry and pool are read per call unless injected, as the transport's
+  // `poolConfigured()` reads them: a copy captured when the authority was built
+  // goes on answering for a registry the process has since replaced.
   constructor(
-    private readonly registry: AccountRegistry = getAccountRegistry(),
-    private readonly pool: AccountPool = getAccountPool("openai-codex"),
+    private readonly injectedRegistry?: AccountRegistry,
+    private readonly injectedPool?: AccountPool,
     private readonly legacy: CredentialProvider = new CodexOAuthHalf()
   ) {}
+
+  private get registry(): AccountRegistry {
+    return this.injectedRegistry ?? getAccountRegistry();
+  }
+
+  private get pool(): AccountPool {
+    return this.injectedPool ?? getAccountPool("openai-codex");
+  }
 
   async isAvailable(): Promise<boolean> {
     return this.registry.hasConfiguredAccounts("openai-codex");
