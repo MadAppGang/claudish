@@ -35,6 +35,8 @@ import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-res
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
+import { requestNumberFor } from "../fork/middleware/request-logger.js";
+import { wallMarkerLine } from "./shared/traffic-markers.js";
 import { withFirstUsefulEventWatchdog, boundRetryUpstream } from "./shared/first-event-watchdog.js";
 import {
   preStreamPolicyRefusal,
@@ -1177,7 +1179,10 @@ export class ComposedHandler implements ModelHandler {
         });
         log(`[${this.provider.displayName}] Error: ${errorText}`);
         const hint = getRecoveryHint(response.status, errorText, this.provider.displayName);
-        logStderr(`Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}`);
+        // c.req, never the bare Context: Hono's Context has no `.raw`, so passing
+        // it whole falls back to the global counter and mislabels the wall line
+        // under concurrency (review #632) — the keyed carrier is the HonoRequest.
+        logStderr(wallMarkerLine(this.provider.displayName, response.status, requestNumberFor(c.req), hint));
 
         // Extract structured error type from provider response body if present
         let providerErrorType: string | undefined;

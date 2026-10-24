@@ -73,3 +73,33 @@ export function respMarkerLine(
 ): string {
   return `  [resp] ${label} model=${model} reqN=${reqNumber} events~=${events} bytes=${bytes} closed=${closed} stop=${stopReason} ${elapsedMs}ms -> ${file}\n`;
 }
+
+/**
+ * Upstream wall line — the candidate half of the two-pass client-error
+ * instrument (`docs/reference/traffic-analysis.md` §"Client-visible final
+ * errors"). One line per walled upstream step, so on its own it answers "how
+ * many walls did we hit", NEVER "how many clients got an error" — the walk is
+ * the recovery, and only the absence of a closing `[resp]` makes it a client
+ * error.
+ *
+ *   `Error [<provider>]: HTTP <status> reqN=<n>. <hint>`
+ *
+ * - NO leading spaces and NO `[claudish] ` prefix: `logStderr` adds both
+ *   (`process.stderr.write(\`[claudish] ${message}\n\`)`).
+ * - `reqN` is the SAME per-request number `[ttft]`/`[resp]` carry, resolved
+ *   from the raw Request at the call site (`requestNumberFor`). That is what
+ *   makes pass 2 an exact join (`Error … reqN=K` ↔ `[resp] … reqN=K`) instead
+ *   of a temporal adjacency reading — adjacency is only opposable where
+ *   interleaving is visible (#601).
+ * - This one is emitted on **stderr**, unlike the two markers on stdout: both
+ *   streams are interleaved by `docker logs`, which is the wire the instrument
+ *   reads.
+ */
+export function wallMarkerLine(
+  providerDisplayName: string,
+  status: number,
+  reqNumber: number,
+  hint: string
+): string {
+  return `Error [${providerDisplayName}]: HTTP ${status} reqN=${reqNumber}. ${hint}`;
+}
