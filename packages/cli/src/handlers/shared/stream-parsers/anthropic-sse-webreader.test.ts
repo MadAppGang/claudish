@@ -110,9 +110,17 @@ afterEach(() => {
 
 describe("#642 suppressed webReader surfaces the fetched content", () => {
   it("injects the page text, never the failed-undefined marker", async () => {
-    let calls = 0;
-    restore = installStubFetch((_req) => {
-      calls++;
+    // A bare counter also counts fetches fired by OTHER test files in the same
+    // `bun test` process: installStubFetch replaces globalThis.fetch for the
+    // whole process, so a fetch left pending by an earlier file settles inside
+    // this test's gapped await and inflates the count (CI saw 3 where 1 was
+    // expected). Count only the fetches aimed at the page — direct, or wrapped
+    // by r.jina.ai, whose URL embeds the original — and name every foreign URL
+    // in the failure message.
+    const pageFetches: string[] = [];
+    const foreignFetches: string[] = [];
+    restore = installStubFetch((req) => {
+      (req.url.includes("example.test") ? pageFetches : foreignFetches).push(req.url);
       return new Response(PAGE_TEXT, {
         status: 200,
         headers: { "content-type": "text/plain" },
@@ -121,7 +129,13 @@ describe("#642 suppressed webReader surfaces the fetched content", () => {
 
     const out = await run(gappedResponse(webReaderFrames("https://example.test/page")));
 
-    expect(calls).toBe(1);
+    // Foreign fetches (other test files) are tolerated — only the fetches
+    // aimed at the page are counted; both lists are named on failure.
+    expect(
+      pageFetches.length === 1
+        ? "1 page fetch"
+        : `page fetches ${JSON.stringify(pageFetches)}, foreign fetches ${JSON.stringify(foreignFetches)}`
+    ).toBe("1 page fetch");
     expect(out).toContain(PAGE_TEXT);
     expect(out).not.toContain("failed: undefined");
   });
