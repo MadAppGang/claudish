@@ -1,4 +1,4 @@
-> The 15-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
+> The 16-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
@@ -398,10 +398,10 @@ To re-measure the table, ask Claude Code for an agent that does not exist:
 matrix of cwds and flag sets costs nothing. `env -u CLAUDECODE` lets it run from inside a
 session.
 
-## MCP Tools (15 total)
+## MCP Tools (16 total)
 
 - **Low-level** (3): `run_prompt`, `list_models`, `search_models`
-- **Agentic** (3): `preflight`, `team`, `report_error`
+- **Agentic** (4): `preflight`, `team`, `report_error`, `allowance_status`
 - **Session** (8): `create_session`, `send_input`, `get_output`, `cancel_session`,
   `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`
 - **Debug** (1): `compare_models`
@@ -463,6 +463,15 @@ binary that passes the version floor but lacks the op. `team` gains the same ver
 `cancel`, `resize`). Why the size is the viewer's and what resizing costs the screen heuristics:
 `pane-session.md`, "Terminal size".
 
+`allowance_status` is the read-only source of the mod's allowance band: `{contract_version,
+capabilities, allowance, reason?}`, where `allowance` is the `claudish.allowance.v1` report that
+`claudish account forecast --json` prints (the allowance service's `report()`), or `null` with a
+`reason` when no Codex account is configured or the report fails. It is in `agentic`, not
+`session`, because it reads no session; it is not in `NESTED_MCP_TOOL_NAMES`, so a nested server
+never lists it. The answer is model-visible: no project path, session ids cut to 8 characters.
+Contract and discovery lifecycle: `pane-session.md` § The `allowance` capability; the model:
+`allowance.md`.
+
 The tool list is pinned by an EXACT frozen array in `mcp-session/e2e-sessions.test.ts`, so
 adding or removing a tool without updating that test fails CI. That is deliberate:
 it is a wire contract, and an accidental change to the tool surface should be loud.
@@ -472,12 +481,12 @@ Tool gating via the `CLAUDISH_MCP_TOOLS` env var (lower-cased, `resolveToolGroup
 
 | Value | Tools |
 |---|---|
-| unset, `all` | all 15 |
+| unset, `all` | all 16 |
 | `low-level` | `run_prompt`, `list_models`, `search_models` |
-| `agentic` | `preflight`, `team`, `report_error` |
+| `agentic` | `preflight`, `team`, `report_error`, `allowance_status` |
 | `session` | the 8 session tools |
 | `debug` | `compare_models` |
-| `channel`, or any other value | all 15, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
+| `channel`, or any other value | all 16, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
 
 Unknown values keep selecting everything, because a server that lists fewer tools than its host
 expects fails later and quietly. The stderr line is there so a typo is not read as `all` with
@@ -485,7 +494,7 @@ no trace.
 
 `session` was `channel` until 10.7.0. The rename removed the old name with no alias, per the
 thesaurus rule, so `channel` now falls into the unknown-value rule and selects everything. The
-stderr startup line shows `tools: channel, 15 tools` after the unknown-value warning, but an MCP
+stderr startup line shows `tools: channel, 16 tools` after the unknown-value warning, but an MCP
 host does not show stderr.
 `compare_models` moved to `debug` at the same time: it sends one prompt to several models in
 sequence and shows raw answers, which is a route check, not work. Real multi-model work is `team`.

@@ -119,6 +119,7 @@ import { ProvidersContent } from "./components/ProvidersContent.js";
 import { RoutingContent } from "./components/RoutingContent.js";
 import { RoutingDetail } from "./components/RoutingDetail.js";
 import { TabBar } from "./components/TabBar.js";
+import { configSaveFailure } from "./config-save.js";
 import { DETAIL_H, FOOTER_H, HEADER_H, TABS_H, getChainProviders } from "./constants.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
@@ -860,7 +861,14 @@ export function App({ requestLogin }: AppProps = {}) {
           opPickerResolver.current = (url) => {
             // Persist the chosen account globally so the next run reuses it
             // without re-prompting (resolveSdkAuth itself doesn't write).
-            if (url?.trim()) saveOnepasswordAccount(url.trim(), "global");
+            if (url?.trim()) {
+              try {
+                saveOnepasswordAccount(url.trim(), "global");
+              } catch (err) {
+                // The account still serves this run; only the reuse is lost.
+                setStatusMsg(configSaveFailure(err));
+              }
+            }
             opPickerResolver.current = null;
             resolve(url);
           };
@@ -1578,7 +1586,13 @@ export function App({ requestLogin }: AppProps = {}) {
               }
             }
             if (!saved) {
-              setApiKey(envVar, val);
+              try {
+                setApiKey(envVar, val);
+              } catch (err) {
+                // The input stays open with the typed key; Enter retries.
+                setStatusMsg(configSaveFailure(err));
+                return;
+              }
               process.env[envVar] = val;
               // When the keychain write failed, the status line already explains
               // the fallback and must not be clobbered.
@@ -1596,7 +1610,12 @@ export function App({ requestLogin }: AppProps = {}) {
           if (!target.endpointEnvVar) {
             setStatusMsg(`${target.displayName} has no endpointEnvVar — cannot save URL.`);
           } else {
-            setEndpoint(target.endpointEnvVar, val);
+            try {
+              setEndpoint(target.endpointEnvVar, val);
+            } catch (err) {
+              setStatusMsg(configSaveFailure(err));
+              return;
+            }
             process.env[target.endpointEnvVar] = val;
             setStatusMsg(`URL saved for ${target.displayName} (${target.endpointEnvVar}=${val}).`);
           }
@@ -1740,35 +1759,54 @@ export function App({ requestLogin }: AppProps = {}) {
             editingExistingScope !== routingScope &&
             editingExistingPattern === pat;
 
-          if (routingScope === "project") {
-            const local = loadLocalConfig() ?? {
-              version: "1.0.0",
-              defaultProfile: "",
-              profiles: {},
-            };
-            if (!local.routing) local.routing = {};
-            local.routing[pat] = chainOrder;
-            saveLocalConfig(local);
-          } else {
-            const cfg = loadConfig();
-            if (!cfg.routing) cfg.routing = {};
-            cfg.routing[pat] = chainOrder;
-            saveConfig(cfg);
-          }
-          if (isMove && editingExistingScope === "global") {
-            const cfg = loadConfig();
-            if (cfg.routing && cfg.routing[pat] !== undefined) {
-              delete cfg.routing[pat];
+          try {
+            if (routingScope === "project") {
+              const local = loadLocalConfig() ?? {
+                version: "1.0.0",
+                defaultProfile: "",
+                profiles: {},
+              };
+              if (!local.routing) local.routing = {};
+              local.routing[pat] = chainOrder;
+              saveLocalConfig(local);
+            } else {
+              const cfg = loadConfig();
+              if (!cfg.routing) cfg.routing = {};
+              cfg.routing[pat] = chainOrder;
               saveConfig(cfg);
             }
-            setStatusMsg(`Rule moved global → project: ${pat}`);
-          } else if (isMove && editingExistingScope === "project") {
-            const local = loadLocalConfig();
-            if (local?.routing && local.routing[pat] !== undefined) {
-              delete local.routing[pat];
-              saveLocalConfig(local);
+          } catch (err) {
+            // Nothing was written: stay in the chain builder with the user's
+            // pattern and chain, so Enter retries the same save.
+            setStatusMsg(configSaveFailure(err));
+            return;
+          }
+          if (isMove && editingExistingScope === "global") {
+            try {
+              const cfg = loadConfig();
+              if (cfg.routing && cfg.routing[pat] !== undefined) {
+                delete cfg.routing[pat];
+                saveConfig(cfg);
+              }
+              setStatusMsg(`Rule moved global → project: ${pat}`);
+            } catch (err) {
+              setStatusMsg(
+                `Project rule saved; the global copy remains. ${configSaveFailure(err)}`
+              );
             }
-            setStatusMsg(`Rule moved project → global: ${pat}`);
+          } else if (isMove && editingExistingScope === "project") {
+            try {
+              const local = loadLocalConfig();
+              if (local?.routing && local.routing[pat] !== undefined) {
+                delete local.routing[pat];
+                saveLocalConfig(local);
+              }
+              setStatusMsg(`Rule moved project → global: ${pat}`);
+            } catch (err) {
+              setStatusMsg(
+                `Global rule saved; the project copy remains. ${configSaveFailure(err)}`
+              );
+            }
           } else if (routingScope === "project") {
             setStatusMsg(`Project rule saved: ${pat} → ${chainOrder.join(", ")}`);
           } else {
@@ -2144,7 +2182,15 @@ export function App({ requestLogin }: AppProps = {}) {
           resolver(chosen);
         } else {
           // (B) wizard step 2 → save + advance to the kind picker.
-          if (chosen?.trim()) saveOnepasswordAccount(chosen.trim(), "global");
+          if (chosen?.trim()) {
+            try {
+              saveOnepasswordAccount(chosen.trim(), "global");
+            } catch (err) {
+              // Stay on the account picker; Enter retries.
+              setStatusMsg(configSaveFailure(err));
+              return;
+            }
+          }
           setOpKindCursor(0);
           setMode("pick_op_kind");
         }
@@ -2231,12 +2277,16 @@ export function App({ requestLogin }: AppProps = {}) {
         }
       } else if (key.name === "e") {
         if (selectedProviderIsLocal) {
-          if (selectedLocalEnabled) {
-            disableLocalProvider(selectedProvider.catalogName);
-            setStatusMsg(`${selectedProvider.displayName} disabled in global config.`);
-          } else {
-            enableLocalProvider(selectedProvider.catalogName);
-            setStatusMsg(`${selectedProvider.displayName} enabled in global config.`);
+          try {
+            if (selectedLocalEnabled) {
+              disableLocalProvider(selectedProvider.catalogName);
+              setStatusMsg(`${selectedProvider.displayName} disabled in global config.`);
+            } else {
+              enableLocalProvider(selectedProvider.catalogName);
+              setStatusMsg(`${selectedProvider.displayName} enabled in global config.`);
+            }
+          } catch (err) {
+            setStatusMsg(configSaveFailure(err));
           }
           refreshConfig();
         } else if (selectedProvider.endpointEnvVar) {
@@ -2268,9 +2318,13 @@ export function App({ requestLogin }: AppProps = {}) {
         // and its live credential both remained.
         let failureMsg: string | null = null;
         if (hasCfgKey) {
-          removeApiKey(selectedProvider.apiKeyEnvVar);
-          removedFrom.push("config.json");
-          changed = true;
+          try {
+            removeApiKey(selectedProvider.apiKeyEnvVar);
+            removedFrom.push("config.json");
+            changed = true;
+          } catch (err) {
+            failureMsg = configSaveFailure(err);
+          }
         }
         // Delete from the KEYCHAIN too. `x` reads as "remove this provider's
         // stored credential", and clearing only config.json would leave the
@@ -2307,9 +2361,13 @@ export function App({ requestLogin }: AppProps = {}) {
           delete process.env[selectedProvider.apiKeyEnvVar];
         }
         if (activeEndpointEnvVar && config.endpoints?.[activeEndpointEnvVar]) {
-          removeEndpoint(activeEndpointEnvVar);
-          delete process.env[activeEndpointEnvVar];
-          changed = true;
+          try {
+            removeEndpoint(activeEndpointEnvVar);
+            delete process.env[activeEndpointEnvVar];
+            changed = true;
+          } catch (err) {
+            failureMsg = configSaveFailure(err);
+          }
         }
         if (changed) {
           credentials.invalidate(selectedProvider.catalogName);
@@ -2458,11 +2516,15 @@ export function App({ requestLogin }: AppProps = {}) {
         // Activate selected profile
         const selectedName = allNames[profileIndex];
         if (selectedName) {
-          const cfg = loadConfig();
-          cfg.defaultProfile = selectedName;
-          saveConfig(cfg);
-          refreshConfig();
-          setStatusMsg(`Profile "${selectedName}" activated.`);
+          try {
+            const cfg = loadConfig();
+            cfg.defaultProfile = selectedName;
+            saveConfig(cfg);
+            refreshConfig();
+            setStatusMsg(`Profile "${selectedName}" activated.`);
+          } catch (err) {
+            setStatusMsg(configSaveFailure(err));
+          }
         }
       } else if (key.name === "n") {
         // New profile — first pick scope (delegates to wizard)
@@ -2495,7 +2557,12 @@ export function App({ requestLogin }: AppProps = {}) {
             setStatusMsg("Cannot delete the last global profile.");
           } else if (cfg.profiles[selectedName]) {
             delete cfg.profiles[selectedName];
-            saveConfig(cfg);
+            try {
+              saveConfig(cfg);
+            } catch (err) {
+              setStatusMsg(configSaveFailure(err));
+              return;
+            }
             refreshConfig();
             setProfileIndex((i) => Math.max(0, i - 1));
             setStatusMsg(`Profile "${selectedName}" deleted.`);
@@ -2560,7 +2627,12 @@ export function App({ requestLogin }: AppProps = {}) {
             const cfg = loadConfig();
             if (cfg.routing && cfg.routing[rule.pattern] !== undefined) {
               delete cfg.routing[rule.pattern];
-              saveConfig(cfg);
+              try {
+                saveConfig(cfg);
+              } catch (err) {
+                setStatusMsg(configSaveFailure(err));
+                return;
+              }
               refreshConfig();
               setStatusMsg(`Global rule deleted: '${rule.pattern}'.`);
             }
@@ -2583,7 +2655,12 @@ export function App({ requestLogin }: AppProps = {}) {
           enabled: next,
           askedAt: cfg.telemetry?.askedAt ?? new Date().toISOString(),
         };
-        saveConfig(cfg);
+        try {
+          saveConfig(cfg);
+        } catch (err) {
+          setStatusMsg(configSaveFailure(err));
+          return;
+        }
         refreshConfig();
         setStatusMsg(`Telemetry ${next ? "enabled" : "disabled"}.`);
       } else if (key.name === "u") {
@@ -2596,7 +2673,12 @@ export function App({ requestLogin }: AppProps = {}) {
             ? (cfg.stats?.enabledAt ?? new Date().toISOString())
             : cfg.stats?.enabledAt,
         };
-        saveConfig(cfg);
+        try {
+          saveConfig(cfg);
+        } catch (err) {
+          setStatusMsg(configSaveFailure(err));
+          return;
+        }
         refreshConfig();
         setStatusMsg(`Usage stats ${next ? "enabled" : "disabled"}.`);
       } else if (key.name === "c") {
@@ -2670,12 +2752,17 @@ export function App({ requestLogin }: AppProps = {}) {
           // the config helpers (which take OpConfigScope) type-check. The alias
           // loses the prior narrowing, so map explicitly.
           const scope: OpScope = e.scope === "project" ? "project" : "global";
-          if (e.kind === "account") {
-            clearOnepasswordAccount(scope);
-          } else if (e.kind === "environment") {
-            removeOnepasswordEnvironment(e.value, scope);
-          } else {
-            removeOnepasswordImport(e.value, scope);
+          try {
+            if (e.kind === "account") {
+              clearOnepasswordAccount(scope);
+            } else if (e.kind === "environment") {
+              removeOnepasswordEnvironment(e.value, scope);
+            } else {
+              removeOnepasswordImport(e.value, scope);
+            }
+          } catch (err) {
+            setStatusMsg(configSaveFailure(err));
+            return;
           }
           refreshConfig();
           setOpIndex((i) => Math.max(0, i - 1));

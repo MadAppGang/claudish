@@ -19,7 +19,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "../../../logger.js";
+import { getAccountRegistry } from "../../accounts/registry.js";
 import type { QuotaAdapter, QuotaPollContext } from "../adapter.js";
+import { CODEX_WINDOW_SLOTS } from "../codex-window-slots.js";
 import {
   type PlanUsage,
   type QuotaCapability,
@@ -44,21 +46,15 @@ const H_PLAN = "x-codex-plan-type";
  * mislabelled bar and a phantom one.
  *
  * Slot names are positions, not durations. Read the duration.
+ *
+ * EXPORTED because the account pool needs the STABLE slot id and this table is
+ * the only place the pairing between a slot and its three header names exists.
+ * `windowFrom` below replaces the id with the formatted duration, so a consumer
+ * that needs to know *which slot* produced a window cannot recover it from the
+ * result — and `switchAtByWindow` is keyed on the slot, never on the formatted
+ * duration, which changes with the user's plan.
  */
-const WINDOW_SLOTS = [
-  {
-    pct: "x-codex-primary-used-percent",
-    reset: "x-codex-primary-reset-at",
-    minutes: "x-codex-primary-window-minutes",
-    fallbackId: "primary",
-  },
-  {
-    pct: "x-codex-secondary-used-percent",
-    reset: "x-codex-secondary-reset-at",
-    minutes: "x-codex-secondary-window-minutes",
-    fallbackId: "secondary",
-  },
-] as const;
+export { CODEX_WINDOW_SLOTS } from "../codex-window-slots.js";
 
 /**
  * Render a window duration the way a status line should show it: "5h", "7d".
@@ -96,7 +92,7 @@ function planLabel(planType: string | null): string {
  */
 function windowFrom(
   headers: Headers,
-  slot: (typeof WINDOW_SLOTS)[number]
+  slot: (typeof CODEX_WINDOW_SLOTS)[number]
 ): QuotaWindow | undefined {
   const raw = headers.get(slot.pct);
   if (raw === null) return undefined;
@@ -128,7 +124,7 @@ function windowFrom(
 /** Pull plan usage out of any Codex response. Pure, synchronous, never throws. */
 export function scrapeCodexHeaders(headers: Headers): PlanUsage | undefined {
   const windows: QuotaWindow[] = [];
-  for (const slot of WINDOW_SLOTS) {
+  for (const slot of CODEX_WINDOW_SLOTS) {
     const w = windowFrom(headers, slot);
     if (w) windows.push(w);
   }
@@ -209,6 +205,12 @@ export const codexQuotaAdapter: QuotaAdapter = {
    * storage) so the cost of asking is as small as it can be.
    */
   async fetchExplicit(_ctx?: QuotaPollContext): Promise<PlanUsage | undefined> {
+    try {
+      if (!getAccountRegistry().isSynthesizedLegacyOnly()) return undefined;
+    } catch {
+      // Unknown configuration cannot authorize reading/probing the singleton.
+      return undefined;
+    }
     const creds = readCodexCredentials();
     if (!creds?.access_token) return undefined;
 

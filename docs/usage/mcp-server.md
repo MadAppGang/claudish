@@ -6,7 +6,7 @@ Claudish isn't just a CLI. It's also an MCP server that exposes external AI mode
 
 Claude can call Grok, GPT-5, or Gemini mid-conversation to get a second opinion, or delegate a task to another model as a full async session that it polls and answers with `send_input`.
 
-The server exposes **15 tools** across four groups: low-level (3), agentic (3), session (8), and debug (1).
+The server exposes **16 tools** across four groups: low-level (3), agentic (4), session (8), and debug (1).
 
 ### Requirements for `team` and sessions
 
@@ -238,6 +238,20 @@ Report a claudish error to developers. Always ask the user for consent before ca
 
 ---
 
+### `allowance_status`
+
+Read-only. Reports the Codex account pool of this machine: each account's remaining capacity, the
+burn rate, any projected gap with its remedy, the trajectory, and each Claude Code session's share.
+It is the same report `claudish account forecast --json` prints (`claudish.allowance.v1`), wrapped
+as `{contract_version, capabilities, allowance, reason?}`. With no Codex account pool, `allowance`
+is `null` and `reason` says why. It sends nothing to any vendor.
+
+**Parameters:**
+- `provider` (optional) - `codex`, the only pool reported today
+- `horizon_hours` (optional) - Forecast horizon, 1–168 hours (default 168)
+
+---
+
 ## Sessions
 
 `create_session` starts an external model session asynchronously. Each session is an interactive
@@ -266,16 +280,16 @@ The session tools are in the `session` group, which `all` (the default) includes
 
 | `CLAUDISH_MCP_TOOLS` | Tools |
 |---|---|
-| unset, `all` | all 15 |
+| unset, `all` | all 16 |
 | `low-level` | `run_prompt`, `list_models`, `search_models` |
-| `agentic` | `preflight`, `team`, `report_error` |
+| `agentic` | `preflight`, `team`, `report_error`, `allowance_status` |
 | `session` | `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session` |
 | `debug` | `compare_models` |
-| any other value | all 15, with a warning on stderr |
+| any other value | all 16, with a warning on stderr |
 
 Inside a session that claudish itself started (a `create_session` or `team` pane), the server runs in nested mode. Whatever `CLAUDISH_MCP_TOOLS` says, it offers at most the four one-shot tools (`run_prompt`, `compare_models`, `list_models`, `search_models`) and no session tools. A model-running `claudish` launched from that session's shell (`-p`, interactive, `team run`) exits 64 with `nested session refused`. One level of nesting is the limit.
 
-Any other value still selects all 15 tools, and the server writes one line to stderr naming the
+Any other value still selects all 16 tools, and the server writes one line to stderr naming the
 value and the valid ones:
 
 ```
@@ -677,7 +691,7 @@ its files.
 **Check if MCP server starts:**
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
-# Should output: [claudish] MCP server started (tools: all, 15 tools)
+# Should output: [claudish] MCP server started (tools: all, 16 tools)
 ```
 
 **Test the tools:**

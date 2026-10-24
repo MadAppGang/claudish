@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ConfigInvalidError } from "../auth/accounts/config-lock.js";
 import {
   type OpConfigPaths,
   addOnepasswordEnvironment,
@@ -336,10 +337,17 @@ describe("field preservation (raw read-modify-write)", () => {
     expect(cfg.someTool).toEqual({ nested: true });
   });
 
-  test("garbled file is treated as empty rather than throwing", () => {
+  test("garbled global file throws ConfigInvalidError and leaves bytes unchanged", () => {
     writeFileSync(globalPath, "{ not valid json ", "utf-8");
-    expect(() => addOnepasswordImport("op://V/I/KEY", "global", paths)).not.toThrow();
-    expect(listOnepasswordImports("global", paths)).toEqual(["op://V/I/KEY"]);
+    const originalBytes = readFileSync(globalPath);
+    expect(() => addOnepasswordImport("op://V/I/KEY", "global", paths)).toThrow(ConfigInvalidError);
+    expect(readFileSync(globalPath)).toEqual(originalBytes);
+  });
+
+  test("garbled project file is treated as empty rather than throwing", () => {
+    writeFileSync(projectPath, "{ not valid json ", "utf-8");
+    expect(() => addOnepasswordImport("op://V/I/KEY", "project", paths)).not.toThrow();
+    expect(listOnepasswordImports("project", paths)).toEqual(["op://V/I/KEY"]);
   });
 
   test("non-string array members are filtered out on read", () => {

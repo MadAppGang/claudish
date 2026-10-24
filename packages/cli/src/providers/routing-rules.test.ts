@@ -1272,6 +1272,7 @@ function modelsCatalogProvider(name: string): ProviderDefinition {
 describe("route() model-availability filtering", () => {
   const realFetch = globalThis.fetch;
   const realIsAvailable = credentials.isAvailable;
+  const realDescribeReadiness = credentials.describeReadiness;
   const realGetRequestAuth = credentials.getRequestAuth;
 
   let cachePath = "";
@@ -1304,6 +1305,9 @@ describe("route() model-availability filtering", () => {
     cleanupCache = tempCatalog.cleanup;
 
     credentials.isAvailable = async (provider: string) => credentialedProviders.has(provider);
+    credentials.describeReadiness = async (provider: string) => ({
+      readiness: credentialedProviders.has(provider) ? "present" : "absent",
+    });
     credentials.getRequestAuth = async () => ({
       headers: { Authorization: "Bearer offline-routing-test-token" },
     });
@@ -1328,6 +1332,7 @@ describe("route() model-availability filtering", () => {
     invalidateModelDiscovery();
     clearRuntimeRegistry();
     credentials.isAvailable = realIsAvailable;
+    credentials.describeReadiness = realDescribeReadiness;
     credentials.getRequestAuth = realGetRequestAuth;
     globalThis.fetch = realFetch;
   });

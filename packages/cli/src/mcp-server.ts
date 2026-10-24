@@ -18,6 +18,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "./adapters/base-api-format.js";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
+import type { AllowanceStatusAnswer } from "./auth/accounts/allowance-report-schema.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { writeFileAtomic } from "./fs-atomic.js";
@@ -1179,6 +1180,29 @@ export function formatTeamResult(status: TeamStatus, sessionPath: string): strin
 // ─── team: the mod-contract verbs (§8 A–D) ───────────────────────────────────
 
 type ToolAnswer = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+
+/**
+ * `allowance_status`'s answer: `allowance: null` with a reason when no Codex
+ * account is configured or the report cannot be built. An unreadable account
+ * list is not "no pool": the report reads the ledger, so it is tried anyway.
+ */
+async function allowanceStatus(horizonMs: number): Promise<AllowanceStatusAnswer> {
+  const meta = contractMeta();
+  const { getAccountRegistry } = await import("./auth/accounts/registry.js");
+  try {
+    if (!getAccountRegistry().hasConfiguredAccounts("openai-codex"))
+      return { ...meta, allowance: null, reason: "no account pool is configured for openai-codex" };
+  } catch {
+    /* presence unknown: let the report decide */
+  }
+  try {
+    const { getAllowanceService } = await import("./auth/accounts/allowance-service.js");
+    return { ...meta, allowance: await getAllowanceService().report("openai-codex", horizonMs) };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { ...meta, allowance: null, reason: `the allowance report failed: ${message}` };
+  }
+}
 
 function contractAnswer(value: unknown): ToolAnswer {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
@@ -2457,6 +2481,51 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             },
           ],
         };
+      }
+    },
+  });
+
+  // The allowance band's source (allowance architecture §3.4): the same
+  // `report()` as `claudish account forecast --json`, wrapped in the mod
+  // contract's meta. Read-only, and model-visible: no project, and session
+  // ids cut to 8 characters by the report itself.
+  tools.push({
+    name: "allowance_status",
+    description:
+      "Report the local Codex account pool's allowance: {contract_version, capabilities, " +
+      "allowance, reason?}. `allowance` is the claudish.allowance.v1 report of THIS machine's " +
+      "claudish sessions (accounts, remaining capacity, burn rate, projected gaps with remedies, " +
+      "trajectory, per-session shares), or null with a `reason` when there is no account pool. " +
+      "Read-only; it sends nothing to any vendor.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        provider: {
+          type: "string",
+          enum: ["codex"],
+          description: "The account pool to report (default and only value: codex)",
+        },
+        horizon_hours: {
+          type: "number",
+          description: "Forecast horizon in hours, 1–168 (default: 168)",
+        },
+      },
+    },
+    group: "agentic",
+    handler: async (args) => {
+      try {
+        const provider = optionalString(args.provider, "provider");
+        if (provider !== undefined && provider !== "codex")
+          throw new ContractErrorException("invalid_args", "'provider' must be 'codex'");
+        const hours = args.horizon_hours ?? 168;
+        if (typeof hours !== "number" || !Number.isFinite(hours) || hours < 1 || hours > 168)
+          throw new ContractErrorException(
+            "invalid_args",
+            "'horizon_hours' must be a number from 1 to 168"
+          );
+        return contractAnswer(await allowanceStatus(hours * 3_600_000));
+      } catch (e) {
+        return contractErrorAnswer(e);
       }
     },
   });

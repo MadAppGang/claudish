@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { isEffortLevel } from "./adapters/base-api-format.js";
+import { credentials } from "./auth/credentials/authority.js";
 import {
   isAutoModeClassifierRequest,
   rewriteClassifierForNative,
@@ -27,7 +28,9 @@ import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import {
   SIGNING_SECRETS_KEY,
+  addSigningSecrets,
   createSigningSecrets,
+  credentialValuesFromRequest,
   releaseWhenBodyEnds,
 } from "./handlers/shared/call-context.js";
 import { UNHANDLED_ERROR_HEADER } from "./handlers/shared/hop-decision.js";
@@ -79,6 +82,7 @@ import {
 import { closeAllEpisodes } from "./recovery/coordinator.js";
 import { redactExactValues, redactForClient } from "./redact.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
+import { resolveUpstreamUrl } from "./test-upstream.js";
 import type { ProxyServer } from "./types.js";
 
 /**
@@ -1048,15 +1052,82 @@ export async function createProxyServer(
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
-        const headers: any = { "Content-Type": "application/json" };
-        if (anthropicApiKey) headers["x-api-key"] = anthropicApiKey;
+        // Signed the SAME WAY `/v1/messages` is, and for the same reason.
+        //
+        // This used to send `x-api-key` and nothing else, so a user on a
+        // claude.ai subscription — who has no API key at all — sent an UNSIGNED
+        // count_tokens to api.anthropic.com and got a 401 that was then
+        // published to the client as a 200 with `{"type":"error",…}` in the
+        // body, because the upstream status was discarded by `c.json(await
+        // res.json())`. Claude Code read that as a token count of undefined.
+        //
+        // Precedence mirrors NativeHandler.handle: the caller's own credentials
+        // first (Claude Code injects them), then this process's key, and only
+        // then the credential authority.
+        const inbound = c.req.header();
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "anthropic-version": inbound["anthropic-version"] || "2023-06-01",
+        };
+        if (inbound.authorization) headers.authorization = inbound.authorization;
+        if (inbound["x-api-key"]) headers["x-api-key"] = inbound["x-api-key"];
+        if (inbound["anthropic-beta"]) headers["anthropic-beta"] = inbound["anthropic-beta"];
+        if (!inbound.authorization && !inbound["x-api-key"]) {
+          let fallbackKey = anthropicApiKey;
+          if (!fallbackKey) {
+            try {
+              const auth = await credentials.getRequestAuth("native-anthropic", {
+                model: body.model,
+              });
+              fallbackKey = auth.headers["x-api-key"];
+            } catch (err) {
+              log(`[CountTokens] no resolvable Anthropic credential: ${err}`);
+            }
+          }
+          if (fallbackKey) headers["x-api-key"] = fallbackKey;
+        }
+        // Every credential this count sends — the inbound bearer or key, or the
+        // resolved fallback key — goes on the request's signing lease, as
+        // `NativeHandler` does, so a log line or an echoed upstream body that
+        // quotes it is redacted by value.
+        addSigningSecrets(c, credentialValuesFromRequest(headers));
 
-        const res = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
-          method: "POST",
-          headers,
-          body: JSON.stringify(body),
-        });
-        return c.json(await res.json());
+        const res = await fetch(
+          resolveUpstreamUrl("https://api.anthropic.com/v1/messages/count_tokens"),
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+          }
+        );
+
+        // An auth failure is NOT a token count. Fall back to the local estimate
+        // rather than handing the client an error object shaped like a success:
+        // count_tokens exists to size a request, and a working estimate keeps
+        // the session usable where a propagated 401 would not.
+        if (res.status === 401 || res.status === 403) {
+          log(`[CountTokens] upstream ${res.status} — falling back to the local estimate`);
+          return c.json({ input_tokens: Math.ceil(JSON.stringify(body).length / 4) });
+        }
+
+        // Every other status is the UPSTREAM's, carried through. Discarding it
+        // published a 429 or a 400 as a 200 whose body happened to say "error".
+        // A non-success body is upstream text that may quote the credential it
+        // received, so it is redacted before it is parsed and returned.
+        const raw = await res.text().catch(() => "");
+        let payload: unknown = null;
+        try {
+          payload = JSON.parse(res.ok ? raw : redactForClient(raw));
+        } catch {
+          payload = null;
+        }
+        if (payload === null) {
+          return c.json(
+            wrapAnthropicError(res.status, `count_tokens returned a non-JSON ${res.status}`),
+            res.status as any
+          );
+        }
+        return c.json(payload, res.status as any);
       }
       // OpenRouter handler logic (estimation)
       const txt = JSON.stringify(body);

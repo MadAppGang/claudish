@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { loadConfig, loadLocalConfig, saveConfig, saveLocalConfig } from "../../profile-config.js";
+import { configSaveFailure } from "../config-save.js";
 import { COMMON_MODELS, getProviderPrefixes } from "../constants.js";
 import type { Mode } from "../types.js";
 
@@ -121,9 +122,8 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
     useState<Mode>("edit_profile_opus");
 
   // ── Helpers (config persistence) ────────────────────────────────────────
-  const saveModelField = useCallback(
-    (currentMode: Mode, fieldVal: string) => {
-      const val = fieldVal.trim() === "auto" ? undefined : fieldVal.trim();
+  const persistModelField = useCallback(
+    (currentMode: Mode, val: string | undefined) => {
       if (profileScope === "project") {
         const localCfg = loadLocalConfig() ?? {
           version: "1.0.0",
@@ -151,9 +151,24 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
           saveConfig(cfg);
         }
       }
-      refreshConfig();
     },
-    [editProfileName, profileScope, refreshConfig]
+    [editProfileName, profileScope]
+  );
+
+  /** False when the save was refused; the status line already says why. */
+  const saveModelField = useCallback(
+    (currentMode: Mode, fieldVal: string): boolean => {
+      const val = fieldVal.trim() === "auto" ? undefined : fieldVal.trim();
+      try {
+        persistModelField(currentMode, val);
+      } catch (err) {
+        setStatusMsg(configSaveFailure(err));
+        return false;
+      }
+      refreshConfig();
+      return true;
+    },
+    [persistModelField, refreshConfig, setStatusMsg]
   );
 
   const getNextFieldValue = useCallback(
@@ -244,18 +259,24 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
       return;
     }
     const now = new Date().toISOString();
-    if (profileScope === "project") {
-      const localCfg = loadLocalConfig() ?? {
-        version: "1.0.0",
-        defaultProfile: "",
-        profiles: {},
-      };
-      localCfg.profiles[name] = { name, models: {}, createdAt: now, updatedAt: now };
-      saveLocalConfig(localCfg);
-    } else {
-      const cfg = loadConfig();
-      cfg.profiles[name] = { name, models: {}, createdAt: now, updatedAt: now };
-      saveConfig(cfg);
+    try {
+      if (profileScope === "project") {
+        const localCfg = loadLocalConfig() ?? {
+          version: "1.0.0",
+          defaultProfile: "",
+          profiles: {},
+        };
+        localCfg.profiles[name] = { name, models: {}, createdAt: now, updatedAt: now };
+        saveLocalConfig(localCfg);
+      } else {
+        const cfg = loadConfig();
+        cfg.profiles[name] = { name, models: {}, createdAt: now, updatedAt: now };
+        saveConfig(cfg);
+      }
+    } catch (err) {
+      // The typed name stays in the input; Enter retries.
+      setStatusMsg(configSaveFailure(err));
+      return;
     }
     refreshConfig();
     setEditProfileName(name);
@@ -263,7 +284,7 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
     setSuggestions(computeSuggestions(""));
     setSuggestionIndex(-1);
     setMode("edit_profile_opus");
-  }, [editProfileValue, profileScope, refreshConfig, setMode]);
+  }, [editProfileValue, profileScope, refreshConfig, setMode, setStatusMsg]);
 
   const newProfileEscape = useCallback(() => {
     setEditProfileValue("");
@@ -308,7 +329,8 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
     if (suggestionIndex >= 0 && suggestions[suggestionIndex]) {
       val = suggestions[suggestionIndex];
     }
-    saveModelField(mode, val);
+    // A refused save keeps this field, its value and the wizard open.
+    if (!saveModelField(mode, val)) return;
     setSuggestions([]);
     setSuggestionIndex(-1);
     // Advance to next field or finish
