@@ -23,20 +23,31 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-    # How long Docker waits after SIGTERM before SIGKILL.
+    # How long Docker waits after SIGTERM before SIGKILL — the OUTER bound.
     #
-    # This is the bound on the proxy's graceful shutdown, and the ONLY one: the
-    # SIGTERM handler in `standalone-proxy.ts` waits for in-flight responses to
-    # finish without an internal deadline, deliberately — a timer there would be
-    # a second, invisible answer to a question this field already answers, and
-    # an operator who needs out now sends the signal twice.
+    # The inner bound lives in the app: `CLAUDISH_SHUTDOWN_GRACE_MS` (default
+    # 30s) plus a 250ms settlement window, added because the pre-#630 path
+    # awaited ALL open connections with no deadline of its own (measured: 482ms
+    # with no client, 21 401ms with a single half-written request). That 21s is
+    # paid with the listener already closed, so an internal bound is worth the
+    # second answer it costs — and this field is no longer the only one.
+    # (Whether a draining container can hold a WSL VM past its power-off
+    # deadline is NOT established: in the one incident checked, ai-01 on
+    # 2026-10-24, the sidecar exited 0.16s after SIGTERM.)
+    #
+    # This field still matters as the backstop when the process is wedged below
+    # the app (an unresponsive event loop cannot honour its own grace), and an
+    # operator who needs out now sends the signal twice.
     #
     # Docker's default is 10s. A response stream lasts E[S] ~ 18s (measured on
     # the hub over 45.9h, M/G/inf on 95706 samples), so the default would kill
     # the majority of them mid-body and surface client-side as the very error
     # the graceful path exists to remove: `Connection lost mid-response`.
     # 120s covers the distribution with margin; it is paid only at shutdown, and
-    # only for as long as streams are actually still running.
+    # only for as long as streams are actually still running. Now that the app
+    # bounds itself at 30s it is never reached on a healthy process — lowering
+    # it is therefore safe, but it is a separate, announced change: a value that
+    # cuts streams mid-body is the one mistake this field can make.
     stop_grace_period: 120s
     ports:
       # Host port is per-machine: 3000 is already taken on some sidecar hosts.
@@ -228,6 +239,12 @@ services:
       - CLAUDISH_CONNECT_RETRY_MAX=${CLAUDISH_CONNECT_RETRY_MAX:-}
       - CLAUDISH_CONNECT_RETRY_DELAYS_MS=${CLAUDISH_CONNECT_RETRY_DELAYS_MS:-}
       - CLAUDISH_STALL_THRESHOLD_MS=${CLAUDISH_STALL_THRESHOLD_MS:-}
+      # #630 — bound on the proxy's graceful shutdown (ms), the complement of
+      # stop_grace_period above: how long shutdown() waits for consumable work
+      # (a request fully received whose response is still being written) before
+      # cutting. Read once per shutdown; must stay under stop_grace_period or
+      # the runtime kill answers first. Empty = 30000.
+      - CLAUDISH_SHUTDOWN_GRACE_MS=${CLAUDISH_SHUTDOWN_GRACE_MS:-}
       # Auth & native lane: key-rotation overlap + #219 auto-pin.
       - CLAUDISH_PROXY_KEY_PREVIOUS=${CLAUDISH_PROXY_KEY_PREVIOUS:-}
       - CLAUDISH_NATIVE_PIN_AUTO=${CLAUDISH_NATIVE_PIN_AUTO:-}

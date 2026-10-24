@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { log, logStderr } from "./logger.js";
 import type { ProxyServer } from "./types.js";
 // #587/#615 — lag-probe read windows, module-level so the retirement pin can
@@ -2926,6 +2927,39 @@ export async function createProxyServer(
   const actualPort = typeof addr === "object" && addr?.port ? addr.port : port;
   if (actualPort !== port) port = actualPort;
 
+  // In-flight request registry for the shutdown bound (#630). Tracked HERE, at
+  // the server, because this is the only layer that sees both shapes that
+  // matter: a response a client is still waiting for (must not be cut) and a
+  // socket whose client vanished mid-request (must not hold the stop). The
+  // stream tracker cannot answer this — `stream:false` work (`/compact`) never
+  // registers as a stream, and a half-written request never registers at all.
+  // `request` fires on HEADERS, so membership alone must not gate the stop:
+  // consumableInFlight() counts an entry only when the body has fully arrived
+  // (`req.complete`) and the response is not yet written (`!res.writableEnded`)
+  // — work a client can still consume. A half-written request (headers sent,
+  // body missing) is therefore worth waiting NOTHING for, which is the rule the
+  // motivating case needs: an agent killed mid-turn leaves exactly that shape.
+  const inFlight = new Set<{ req: IncomingMessage; res: ServerResponse }>();
+  const consumableInFlight = (): number => {
+    let n = 0;
+    for (const { req, res } of inFlight) {
+      if (req.complete && !res.writableEnded) n++;
+    }
+    return n;
+  };
+  server.on("request", (req, res) => {
+    const entry = { req, res };
+    inFlight.add(entry);
+    let counted = true;
+    const done = () => {
+      if (!counted) return;
+      counted = false;
+      inFlight.delete(entry);
+    };
+    res.on("close", done);
+    res.on("finish", done);
+  });
+
   log(`[Proxy] Server started on port ${port}`);
 
   // Warm pricing cache in background (non-blocking)
@@ -2949,7 +2983,54 @@ export async function createProxyServer(
     getActiveStreams: () => streamTracker.getActiveStreams(),
     shutdown: async () => {
       clearInterval(lagTimer);
-      return new Promise<void>((resolve) => server.close(() => resolve()));
+      // #630: `server.close()` drops the listening socket immediately, then
+      // waits for EVERY connection to end — including one whose client died
+      // mid-request. Measured 2026-10-24 on the real path (hub po-2025):
+      // `shutdown()` did not resolve until the client socket was destroyed
+      // (3046 ms, resolving exactly at the destroy, with a partial POST held
+      // open), and a throwaway container carrying one half-written request took
+      // 21 401 ms to stop against 482 ms with no client at all. With
+      // `stop_grace_period: 120s` a recreate can therefore spend up to two
+      // minutes with the hub down, and the drain's true-zero cannot prevent it:
+      // that instrument counts tracked STREAMS, while a half-written request
+      // never registers and a `stream:false` turn (`/compact`) is not a stream.
+      //
+      // So wait for work a client can still CONSUME — a request whose body has
+      // fully arrived (`req.complete`) and whose response is not yet written
+      // (`!res.writableEnded`) — on a bound, then cut. A half-written request
+      // earns NOTHING: its client is still composing the ask and cannot consume
+      // an answer, and it is the exact shape an agent killed mid-turn leaves
+      // behind (holding the stop for the full grace with the listener already
+      // down). An idle keep-alive socket is worth nothing either (measured
+      // 483 ms to stop with one open) — it never fires `request` at all.
+      // Because only consumable work is counted, the grace no longer costs
+      // anything on the dead-client path: an operator can raise it toward
+      // `stop_grace_period` (long `stream:false` turns, `/compact`) without
+      // stretching the dead-client window.
+      // Compose injects this name as "" when unset (#310) — and Number("") is
+      // 0, so a `?? default` read would turn an unset knob into an instant
+      // cut. Same empty-safe shape as the first-event watchdog: "", garbage
+      // and negatives all mean the default; "0" stays a deliberate instant cut.
+      const rawGrace = process.env.CLAUDISH_SHUTDOWN_GRACE_MS;
+      const parsedGrace = Number(rawGrace);
+      const graceMs = !rawGrace || !Number.isFinite(parsedGrace) || parsedGrace < 0 ? 30_000 : parsedGrace;
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeIdleConnections?.();
+      const deadline = Date.now() + graceMs;
+      let consumable = consumableInFlight();
+      while ((consumable > 0 || streamTracker.getActiveStreams() > 0) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+        consumable = consumableInFlight();
+      }
+      server.closeAllConnections?.();
+      // The cut above does not reach a connection still being PARSED — Bun's
+      // compat leaves a half-written request out of the connection registry, so
+      // the close callback would wait for that client forever (measured: still
+      // 3017 ms after a 300 ms grace, resolving only when the client itself
+      // destroyed the socket). Settle on a bound instead: whoever called
+      // shutdown is exiting or re-binding, and an unbounded wait here is the
+      // 120 s outage this whole path exists to avoid.
+      await Promise.race([closed, new Promise<void>((resolve) => setTimeout(resolve, 250))]);
     },
   };
 }

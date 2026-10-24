@@ -355,8 +355,20 @@ afterEach(async () => {
   console.log = realConsoleLog;
   globalThis.fetch = realFetch;
   if (activeProxy) {
-    await activeProxy.shutdown();
-    activeProxy = null;
+    // #630: W16's abandoned response (client aborted, handler still writing)
+    // is CONSUMABLE work by the shutdown gate — a client that left mid-response
+    // is undetectable on this stack, which is W16's own documented conclusion
+    // — so a default-grace shutdown waits 30 s and blows the 5 s hook timeout.
+    // Cleanup pays a token grace, never the real one.
+    const prevGrace = process.env.CLAUDISH_SHUTDOWN_GRACE_MS;
+    process.env.CLAUDISH_SHUTDOWN_GRACE_MS = "100";
+    try {
+      await activeProxy.shutdown();
+    } finally {
+      if (prevGrace === undefined) delete process.env.CLAUDISH_SHUTDOWN_GRACE_MS;
+      else process.env.CLAUDISH_SHUTDOWN_GRACE_MS = prevGrace;
+      activeProxy = null;
+    }
   }
   if (configBackup !== null) {
     writeFileSync(REAL_CONFIG_PATH, configBackup, "utf-8");
