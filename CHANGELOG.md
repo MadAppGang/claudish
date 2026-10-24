@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.4.2] - 2026-10-24
+
+### Bug Fixes
+
+- write ~/.claudish/settings-*.json with mode 0600 *(settings)* ([`6823aca`](https://github.com/MadAppGang/claudish/commit/6823acaa29d608b526d6c47249d0cb5476023247))
+
+### Documentation
+
+- record the 0600 mode of the child's settings overlay *(mcp)* ([`7197e73`](https://github.com/MadAppGang/claudish/commit/7197e73aa43cb0116b4de917aa3685ca046399ad))
+- update CHANGELOG.md for v14.4.1([`579114b`](https://github.com/MadAppGang/claudish/commit/579114b125ed03324ef8bb9cf1f3fe659ab4443a))
+
+### Other Changes
+
+- v14.4.2 (#352) *(release)* ([`b1e671e`](https://github.com/MadAppGang/claudish/commit/b1e671eaf1bc84121daa3315d8f5225052b5d92a))
+- v14.4.2 *(release)* ([`d87a6a7`](https://github.com/MadAppGang/claudish/commit/d87a6a7cc74dcebcc777b53815bd576a92665d99))
+
 ## [14.4.1] - 2026-10-23
 
 ### Bug Fixes

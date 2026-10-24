@@ -4,7 +4,9 @@
   "private": true,
   "description": "Monorepo for Claudish - Run Claude Code with any model",
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "cd packages/cli && exec bun --no-env-file run src/index.ts",
     "dev:mcp": "bun run --cwd packages/cli dev:mcp",
