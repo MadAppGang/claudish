@@ -1228,7 +1228,11 @@ export function createTempSettingsFile(
   // on top of this temp file.)
   const settings = buildClaudishSettingsOverlay(statusLine, proxyAuthMode);
 
-  writeFileSync(tempPath, JSON.stringify(settings, null, 2), "utf-8");
+  // 0600: mergeUserSettingsIfPresent later writes the caller's --settings into this
+  // file, and that layer can carry settings.local.json `env` secrets (mcp-sessions.md,
+  // inherited-settings layer). The name is unique per pid+ms, so this is a create
+  // and `mode` takes effect.
+  writeFileSync(tempPath, JSON.stringify(settings, null, 2), { encoding: "utf-8", mode: 0o600 });
   // tokenFilePath is RETURNED rather than recomputed by the caller: the child env
   // publishes it as CLAUDISH_TOKEN_FILE, and two independent `join(claudishDir,
   // \`tokens-${port}.json\`)` expressions could silently diverge.
@@ -1377,8 +1381,16 @@ export function mergeUserSettingsIfPresent(
       userSettings.editorMode = "normal";
     }
 
-    // Overwrite the temp settings file with the merged result
-    writeFileSync(tempSettingsPath, JSON.stringify(userSettings, null, 2), "utf-8");
+    // Overwrite the temp settings file with the merged result. It can carry the
+    // caller's settings.local.json `env` secrets (mcp-sessions.md, inherited-settings
+    // layer), so keep it 0600. `mode` applies only when a file is created, so chmod
+    // an existing overlay FIRST: the secrets never land in a wider file, and a chmod
+    // failure falls into the warn path below instead of writing them.
+    chmodSync(tempSettingsPath, 0o600);
+    writeFileSync(tempSettingsPath, JSON.stringify(userSettings, null, 2), {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
   } catch {
     // User settings unreadable or invalid JSON — claudish temp file keeps its own statusLine.
     if (!config.quiet) {
