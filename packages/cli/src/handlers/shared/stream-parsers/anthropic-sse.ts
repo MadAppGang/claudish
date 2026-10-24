@@ -231,10 +231,13 @@ export function createAnthropicPassthroughStream(
             const url = input.url;
             if (url && (toolName === "webReader" || toolName === "web_search_preview")) {
               log(`[AnthropicSSE] Executing suppressed server_tool_use webReader for ${url}`);
-              const result = await executeWebFetch(url);
-              resultText = result.ok
-                ? result.text
-                : `[Web fetch for ${url} failed: ${result.error}]`;
+              // executeWebFetch returns the TEXT (#642): every path — MCP read,
+              // r.jina.ai, direct HTTP — already comes back as ready-to-render,
+              // bounded content, and its failure path returns the labelled
+              // reason itself. Branching on a `.ok` field read `undefined` on a
+              // string, so the failure arm fired on EVERY call and the fetched
+              // page was discarded.
+              resultText = await executeWebFetch(url);
             } else {
               resultText = `[Server tool "${toolName}" was executed by the provider (result not available locally).]`;
             }
