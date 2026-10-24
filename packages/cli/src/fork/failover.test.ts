@@ -2311,6 +2311,200 @@ describe("dwell — nominal-recovery yield", () => {
   });
 });
 
+// #619 — a dwell pin never yields to a recovered EARLIER cascade step. Measured
+// 2026-10-23 on the hub: the local engine behind haiku[0] (swift-1.5-27b)
+// rebooted 07:46Z and decoded again 07:54Z, but zero hub traffic reached it
+// until ~08:18Z — the sessions re-pinned past its bench never came back, while
+// session-less canaries served on it in 0.3-0.85 s and the conversations kept
+// paying the deeper lane. The fix: a per-step recovery stamp (first success
+// after the mark, voided by the next mark) lets those pins yield after the
+// same #294 grace.
+describe("#619 — dwell pin yields to a recovered EARLIER cascade step", () => {
+  const ENV = {
+    CLAUDISH_FAILOVER_SONNET: "vllm@swift-1.5-27b>ds@deepseek-v4-flash>ds@deepseek-payg",
+    CLAUDISH_FAILOVER_SONNET_LABEL: "swift>Flash>PAYG",
+    CLAUDISH_FAILOVER_AUTO: "1",
+  } as NodeJS.ProcessEnv;
+
+  const realNow = Date.now;
+  let clock = 1_000_000;
+
+  beforeEach(() => {
+    clock = 1_000_000;
+    Date.now = () => clock;
+    initFailover(ENV);
+  });
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  /** The measured shape: step 0 (the local engine) dies non-quota twice (10 min
+   * then 30 min bench — the reboot ladder), the session forfeits its dwell
+   * (#276) and re-pins to step 1 while step 0's bench still holds, keeps
+   * talking (the sliding pin outlives the bench — the defect's premise), then
+   * step 0 recovers: a session-less request walks to it and SUCCEEDS. Leaves
+   * the pin on step 1 (live) and returns the recovery-stamp instant. The wall
+   * is re-armed at each expiry — in the measured incident the nominal's wall
+   * (a weekly plan) held for hours, and a disarmed wall would send the
+   * unpinned walks to the nominal instead of the cascade. */
+  function rebindPastBenchedStep0(session: string): number {
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    expect(resolveFailoverTargetForSession("sonnet", session).stepIndex).toBe(0); // pinned to step 0
+    markStepFailed("sonnet", 0, "engine down", undefined, { nonQuota: true }); // count=1, bench 10 min
+    expect(resolveFailoverTargetForSession("sonnet", session).stepIndex).toBe(1); // #276 forfeit, unpinned walk
+    clock += 10 * 60 * 1000 + 1; // tombstone lapsed; step 0's first bench elapsed; wall TTL elapsed
+    markStepFailed("sonnet", 0, "engine still down", undefined, { nonQuota: true }); // count=2, bench 30 min
+    expect(armFailover("sonnet", "refused again")).toBe(true); // re-arm (TTL now 20 min) — the plan wall still holds
+    expect(resolveFailoverTargetForSession("sonnet", session).stepIndex).toBe(1); // re-pinned at step 1
+    expect(getSessionDwellPinForTests("sonnet", session)?.stepIndex).toBe(1);
+    // The active session keeps talking — each resolve renews the pin for one
+    // dwell, so it rides step 1 straight through step 0's bench. Renewals end
+    // at t≈+37 min (pin until ≈+47 min); step 0's bench (set at +10 min) lapses
+    // at ≈+40 min.
+    for (let i = 0; i < 3; i++) {
+      clock += 9 * 60 * 1000;
+      expect(resolveFailoverTargetForSession("sonnet", session).stepIndex).toBe(1);
+    }
+    clock += 4 * 60 * 1000; // ≈+41 min: step 0 probeable again; wall re-armed below
+    expect(armFailover("sonnet", "still walled")).toBe(true); // expired since +30 min (next TTL 40 min)
+    expect(resolveFailoverTargetForSession("sonnet", "fresh-probe").stepIndex).toBe(0); // a session-less request walks to it
+    resetStepSuccess("sonnet", 0); // … and SUCCEEDS → the verified recovery, stamped now
+    return clock;
+  }
+
+  it("a pin on a LATER step yields to the recovered step once the grace elapses, and re-pins there", () => {
+    rebindPastBenchedStep0("sess-A");
+    clock += 60 * 1000; // 1 min after the recovery — the grace (2 min) has NOT elapsed
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(1); // held
+    clock += 2 * 60 * 1000; // 3 min after the recovery
+    const back = resolveFailoverTargetForSession("sonnet", "sess-A");
+    expect(back.stepIndex).toBe(0); // back on the recovered capacity
+    expect(back.step?.target).toBe("vllm@swift-1.5-27b");
+    expect(getSessionDwellPinForTests("sonnet", "sess-A")?.stepIndex).toBe(0); // re-pinned there
+    // … and it STAYS there — ordinary dwell at the new step.
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0);
+  });
+
+  it("a BUSY recovered step must not push the stamp — the grace measures from the FIRST success", () => {
+    // The #294 P1 rule, one plane down. The recovered step keeps serving other
+    // traffic every 10 s; a stamp refreshed by every success would hold every
+    // deeper pin forever. These calls are no-ops in real code (the record was
+    // cleared by the recovery) — the mutation that stamps on every success
+    // turns this exact loop into an eternal hold.
+    rebindPastBenchedStep0("sess-A");
+    const perMinute: number[] = [];
+    for (let s = 0; s <= 300; s += 10) {
+      resetStepSuccess("sonnet", 0); // other sessions' successes on the recovered step
+      clock += 10 * 1000;
+      if (s % 60 === 0) perMinute.push(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex);
+    }
+    // Held through the 2-min grace (minutes 0-1), back on step 0 from minute 2
+    // on — measured from the FIRST success, not the last.
+    expect(perMinute).toEqual([1, 1, 0, 0, 0, 0]);
+  });
+
+  // #625 review: the stamp is evidence about a pin only if it POST-DATES it.
+  // A session pinned to step 1 AFTER step 0 already recovered pinned with that
+  // recovery on the table (here: its own request skipped step 0, #431) — the
+  // old stamp is not news and must not yank it. Red under the mutant that drops
+  // the `stamp <= pinnedAt` guard.
+  it("a pin created AFTER the recovered step's stamp outlives it (evidence must post-date the pin)", () => {
+    rebindPastBenchedStep0("sess-A"); // step 0's stamp lands at +41 min; sess-A pinned at 1 since +10 min
+    clock += 3 * 60 * 1000; // +44: past the grace, so the stamp is fully "old news"
+    expect(
+      resolveFailoverTargetForSession("sonnet", "sess-B", undefined, new Set([0])).stepIndex
+    ).toBe(1); // a fresh session that skips step 0 (#431) pins at step 1 — NOW
+    const pinB = getSessionDwellPinForTests("sonnet", "sess-B");
+    expect(pinB?.stepIndex).toBe(1);
+    expect(pinB?.pinnedAt).toBe(clock);
+    clock += 5 * 60 * 1000; // +49: the pin is live (until +54), the stamp is 8 min old
+    expect(resolveFailoverTargetForSession("sonnet", "sess-B").stepIndex).toBe(1); // holds
+    // Control, same instant: sess-A pinned BEFORE the stamp still yields to it —
+    // the guard discriminates on the pin's instant, not on the stamp's age.
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0);
+  });
+
+  it("a step that recovered and was MARKED again does not un-pin anyone — the mark voids the stamp", () => {
+    rebindPastBenchedStep0("sess-A");
+    clock += 3 * 60 * 1000; // 3 min — past the grace
+    markStepFailed("sonnet", 0, "flaked again"); // count=1 again, bench 10 min — stamp voided
+    clock += 50 * 1000;
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(1); // benched: trivially holds (renews the pin)
+    // Past the new bench with NO success since the mark: the step is probeable,
+    // but nothing verified its recovery — the pin must hold. Against the
+    // "stamp not voided by a new mark" mutation this resolve yields to step 0.
+    clock += 9 * 60 * 1000 + 20 * 1000; // new bench (+54 min) elapsed; pin (renewed at +44:50) still live
+    const held = resolveFailoverTargetForSession("sonnet", "sess-A");
+    expect(held.stepIndex).toBe(1);
+    expect(held.step?.target).toBe("ds@deepseek-v4-flash");
+  });
+
+  it("an operator CLOSURE on the recovered step does not un-pin anyone (the #261 plane)", () => {
+    // A closure is the one binding plane that writes NO failure record — the
+    // mark-side voiding cannot cover it, so the yield's own stepTtlBinds read
+    // is what holds. Against the "yield ignoring stepTtlBinds" mutation this
+    // test emits the forbidden yield line.
+    markStepFailed("sonnet", 0, "bench"); // record — the success below is a *recovery*
+    resetStepSuccess("sonnet", 0); // → stamp live from t0
+    getFailoverRule("sonnet")!.steps[0].resetAt = new Date(clock + 60 * 60 * 1000); // operator closes step 0 for 1 h
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(1); // walk skips the CLOSED step → pin at 1
+    const writes: string[] = [];
+    const realWrite = process.stderr.write.bind(process.stderr) as (c: string) => boolean;
+    (process.stderr as unknown as { write: (c: unknown) => boolean }).write = (chunk: unknown) => {
+      const s = String(chunk);
+      writes.push(s);
+      return realWrite(s);
+    };
+    try {
+      clock += 3 * 60 * 1000; // stamp 3 min old — past the grace, but the step is CLOSED
+      expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(1);
+      clock += 3 * 60 * 1000;
+      expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(1);
+    } finally {
+      (process.stderr as unknown as { write: typeof realWrite }).write = realWrite;
+    }
+    expect(writes.filter((w) => w.includes("DWELL sonnet") && w.includes("yielded — step 0")).length).toBe(0);
+  });
+
+  it("nominal recovery still outranks a recovered earlier step (#294 unchanged)", () => {
+    // BOTH stamps must be aged past their grace at the SAME resolve, and that
+    // resolve must be the first one after them (an earlier resolve would yield
+    // to whichever plane fired first and mask the ordering). A reordering that
+    // lets the step plane yield first lands the session on step 0, not the
+    // nominal.
+    expect(armFailover("sonnet", "wall")).toBe(true);
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(0); // pinned to step 0
+    markStepFailed("sonnet", 0, "engine down", undefined, { nonQuota: true });
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(1); // forfeited, walks to 1
+    clock += 10 * 60 * 1000 + 1; // wall + tombstone + first bench elapsed
+    markStepFailed("sonnet", 0, "engine still down", undefined, { nonQuota: true }); // count=2, bench 30 min
+    expect(armFailover("sonnet", "refused again")).toBe(true); // wall until +30 min
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(1); // re-pinned at step 1
+    clock += 9 * 60 * 1000 + 30_000; // ≈+19.5 min: renewal (pin until ≈+29.5)
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(1);
+    clock += 10 * 60 * 1000 + 1_000; // ≈+29.5 min: renewal (pin until ≈+39.5); step 0 still benched
+    expect(resolveFailoverTargetForSession("sonnet", "sess-A").stepIndex).toBe(1);
+    clock += 31 * 1000; // ≈+30 min: wall TTL elapsed → the nominal is probeable
+    onNominalSuccess("sonnet"); // the verified NOMINAL recovery — stamped now
+    clock += 3 * 60 * 1000 + 1_000; // nominal grace elapsed
+    resetStepSuccess("sonnet", 0); // NOW step 0 serves too — record cleared, stamp fresh but instantly aged below
+    clock += 3 * 60 * 1000 + 2_000; // step stamp (3 min) and nominal stamp (6 min) both past the grace
+    const r = resolveFailoverTargetForSession("sonnet", "sess-A");
+    expect(r.stepIndex).toBe(-1); // the nominal, never a cascade step
+  });
+
+  it("a recovered step THIS request skipped (#431) is not a yield target", () => {
+    rebindPastBenchedStep0("sess-A");
+    clock += 3 * 60 * 1000; // past the grace
+    // Step 0 recovered, but THIS conversation's request already skipped it
+    // (context overflow): yielding would re-resolve straight back to step 1
+    // — pure churn. The pin holds.
+    const r = resolveFailoverTargetForSession("sonnet", "sess-A", undefined, new Set([0]));
+    expect(r.stepIndex).toBe(1);
+  });
+});
+
 // #91 — damp the nominal/substitute flap: grace before arming, and a short
 // retry-after means burst, not wall. One transient 429 must cost a few seconds
 // of patience, never a 10-minute model exile plus two cold prompt caches.

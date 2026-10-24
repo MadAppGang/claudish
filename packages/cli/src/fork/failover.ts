@@ -595,6 +595,7 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
   dwellPins.clear();
   dwellYieldTombstones.clear();
   nominalRecoveredAt.clear();
+  stepRecoveredAt.clear();
   const parseIntEnv = (raw: string | undefined, fallback: number): number => {
     const n = Number.parseInt((raw || "").trim(), 10);
     return Number.isFinite(n) ? n : fallback;
@@ -1068,6 +1069,9 @@ export function markStepFailed(
     ...(own ? { own: true } : {}),
     ...(concrete !== undefined ? { concrete } : {}),
   };
+  // #619: a new mark voids the step's recovery stamp — the grace must restart
+  // from the step's next verified success, never age through a bench.
+  stepRecoveredAt.delete(`${role}|${idx}`);
   const ttlMs = stepTtlMs(arr[idx].count, arr[idx].own === true);
   const ttlText = resetAt
     ? `until ${resetAt.toISOString()}`
@@ -1082,6 +1086,14 @@ export function resetStepSuccess(role: FailoverRole, idx: number): void {
   const arr = stepFailures.get(role);
   if (!arr || !arr[idx] || arr[idx].count === 0) return;
   arr[idx] = { count: 0, lastFailure: new Date(0) };
+  // #619: a real request just served by this step — the first verified success
+  // since the mark is the earliest evidence a LATER-pinned session could come
+  // back. `!has` keeps a busy step from pushing the stamp forward (a step
+  // serving anyone every <grace would otherwise hold every deeper pin forever —
+  // the #294 P1 rule, one plane down). Only a step that HAD a failure record
+  // can reach this line, so a never-failed step never stamps.
+  const recKey = `${role}|${idx}`;
+  if (!stepRecoveredAt.has(recKey)) stepRecoveredAt.set(recKey, Date.now());
 }
 
 /** Clear ALL step failures for a role — used when the nominal itself recovers. */
@@ -1197,8 +1209,17 @@ export function resolveFailoverTarget(
  * isFailoverActive(role, bucket) (#552 review, B1). */
 const dwellPins = new Map<
   FailoverRole,
-  Map<string, { stepIndex: number; until: number; bucket: string | undefined }>
+  Map<
+    string,
+    { stepIndex: number; until: number; bucket: string | undefined; pinnedAt: number }
+  >
 >();
+/** #625 review: `pinnedAt` is the ORIGINAL instant of the current pin — set when
+ * the pin is created, never on the sliding renewal (a busy session renews every
+ * request; renewing the stamp would restore exactly the defect #619 exists to
+ * fix). It is the horizon the earlier-step recovery must POST-DATE: a session
+ * that pinned to step k *after* step j recovered chose k with the recovery
+ * already on the table, so that stamp is not evidence about this pin. */
 /** Timestamp of the FIRST verified nominal success since the last arm (onNominalSuccess), keyed by
  * role|bucket like the other #275 state. A live dwell pin yields once this is
  * older than `recoveryGraceMs`, so an ACTIVE conversation returns to the
@@ -1212,6 +1233,23 @@ const dwellPins = new Map<
  * bucket would yield, re-resolve to the fallback step and re-pin, with two log
  * lines each, for as long as the mixed state held. Cleared by armFailover. */
 const nominalRecoveredAt = new Map<string, number>();
+/** #619: timestamp of the FIRST verified success of cascade step `j` since its
+ * last failure mark, keyed `role|j` — the step-level sibling of the #294 nominal
+ * stamp above. A live dwell pin on a LATER step yields once this is older than
+ * `recoveryGraceMs` for a step that is servable now: without this exit, an
+ * active conversation rides the deeper step until it ENDS while the recovered
+ * capacity sits idle (measured 2026-10-23: the local engine behind `haiku[0]`
+ * rebooted 07:46Z and decoded again 07:54Z, zero hub traffic reached it until
+ * ~08:18Z — the sessions re-pinned past it during the bench never came back,
+ * while session-less canaries served on it in 0.3-0.85 s). Role-keyed, not
+ * `role|bucket` like the nominal stamp: the nominal's METER is bucket-scoped
+ * (#275), but a cascade step's failure record — and its quota — is role-scoped,
+ * so the stamp mirrors the record it certifies, and a step that recovered has
+ * recovered for every bucket of the role. The flat key also lets `markStepFailed`
+ * (which carries no bucket) void it. A new mark on `j` voids the stamp, and a
+ * busy step must not push it forward (`!has` at the write, the #294 P1 rule one
+ * plane down). */
+const stepRecoveredAt = new Map<string, number>();
 /** #276: sessions that forfeited their dwell because their pinned step died of a
  * NON-QUOTA error, → when the forfeit lapses. While live, a resolution landing on
  * a cascade step returns it WITHOUT re-pinning. The forfeit must outlive the
@@ -1259,7 +1297,7 @@ export function getSessionDwellMs(): number {
 export function getSessionDwellPinForTests(
   role: FailoverRole,
   sessionKey: string
-): { stepIndex: number; until: number; bucket: string | undefined } | null {
+): { stepIndex: number; until: number; bucket: string | undefined; pinnedAt: number } | null {
   const pin = dwellPins.get(role)?.get(sessionKey);
   if (!pin || pin.until <= Date.now()) return null;
   return { ...pin };
@@ -1269,6 +1307,43 @@ export function getSessionDwellPinForTests(
  * map — proves the DWELL_TOMBSTONES_MAX lapsed-entry sweep. */
 export function getDwellYieldTombstoneCountForTests(role: FailoverRole): number {
   return dwellYieldTombstones.get(role)?.size ?? 0;
+}
+
+/** #619: the earliest step `j < pinIndex` whose verified recovery stamp has
+ * aged past the grace and which is servable NOW, else undefined. Servability
+ * is the walk's own predicate (`resolveSkippingFailed`): a step THIS request
+ * already skipped (#431), a TTL-bound step, or a dead `role:` delegation
+ * cannot take this session even though it once recovered. The TTL read is
+ * belt-and-braces — a live stamp implies its record was cleared, and a new
+ * mark voids the stamp — but it is what keeps an operator closure (#261,
+ * config plane, writes no record) landing on a recovered step from un-pinning
+ * anyone. `resolveRoleStep` on a `role:` candidate is the module's shared
+ * idiom: its `step.target` refresh is what the walk would do one line later. */
+function recoveredStepForPin(
+  role: FailoverRole,
+  rule: FailoverRule,
+  pinIndex: number,
+  pinnedAt: number,
+  fails: (StepFailure | undefined)[] | undefined,
+  skipSteps: ReadonlySet<number> | undefined,
+  now: number
+): number | undefined {
+  for (let j = 0; j < pinIndex; j++) {
+    const stamp = stepRecoveredAt.get(`${role}|${j}`);
+    if (stamp === undefined || now - stamp < recoveryGraceMs) continue;
+    // #625 review: only evidence that POST-DATES the pin can move it. A stamp
+    // at or before `pinnedAt` was already on the table when this session was
+    // pinned to a deeper step — the pin was a choice made with that recovery
+    // known, and re-litigating it would yank a session on stale news. The
+    // strict `>` keeps the boundary unambiguous (same-millisecond ⇒ no move).
+    if (stamp <= pinnedAt) continue;
+    if (skipSteps?.has(j)) continue;
+    const step = rule.steps[j];
+    if (stepTtlBinds(role, fails?.[j], step)) continue;
+    if (step.roleRef && resolveRoleStep(role, step) === null) continue;
+    return j;
+  }
+  return undefined;
 }
 
 /**
@@ -1292,6 +1367,15 @@ export function getDwellYieldTombstoneCountForTests(role: FailoverRole): number 
  *    after the wall lifted while new sessions had long returned. The grace
  *    bounds the cost of an intermittent wall's isolated success to one switch
  *    per arm cycle, and any re-arm re-holds.
+ *  - The pin also yields on a verified EARLIER-STEP recovery (#619): a cascade
+ *    step below the pinned one whose first success since its last failure mark
+ *    (`resetStepSuccess` → `stepRecoveredAt`) is older than the same grace, and
+ *    which is servable now. Measured 2026-10-23: sessions re-pinned past a
+ *    benched local engine never returned to it while it sat idle and healthy —
+ *    session-less canaries served on it in under a second beside them, and the
+ *    conversation kept paying the deeper step's lane. A new mark on the step
+ *    voids its stamp, bounding an intermittent step to one switch per mark
+ *    cycle.
  *  - Nominal (stepIndex -1) is never pinned: pinning it would feed a session
  *    into an armed wall when its own refusal just caused the arm.
  */
@@ -1372,11 +1456,39 @@ export function resolveFailoverTargetForSession(
         )}s ago`
       );
     } else if (pinnedStillServable) {
-      // Sliding dwell: an in-flight conversation (one that keeps resolving)
-      // renews, so the hold lasts as long as the session is active. An idle
-      // session's pin expires dwell after its last request.
-      pin.until = Math.max(pin.until, now + dwell);
-      return { step: rule.steps[pin.stepIndex], stepIndex: pin.stepIndex };
+      const backStep = recoveredStepForPin(
+        role,
+        rule,
+        pin.stepIndex,
+        pin.pinnedAt,
+        fails,
+        skipSteps,
+        now
+      );
+      if (backStep !== undefined) {
+        // #619: a servable EARLIER step holds a verified recovery older than
+        // the grace — yield and re-resolve; the walk lands on it (or an even
+        // earlier servable step) and re-pins there, back on the cheap capacity.
+        // This is NOT the `wasNominal` yield removed in the 01/10 review: that
+        // flag survived delegated successes (the reset cleared the OWNER's
+        // coordinate) so one nominal wall un-pinned every session on that step
+        // for hours — this stamp is a verified SUCCESS of the step itself,
+        // voided by its next mark, and the grace bounds an intermittent step
+        // to one switch per mark cycle.
+        const stamp = stepRecoveredAt.get(`${role}|${backStep}`) ?? now;
+        pins?.delete(sessionKey);
+        logStderr(
+          `[Failover] DWELL ${role} session …${sessionKey.slice(-8)} yielded — step ${backStep} (${rule.steps[backStep]?.label}) recovered ${Math.round(
+            (now - stamp) / 1000
+          )}s ago; re-resolving`
+        );
+      } else {
+        // Sliding dwell: an in-flight conversation (one that keeps resolving)
+        // renews, so the hold lasts as long as the session is active. An idle
+        // session's pin expires dwell after its last request.
+        pin.until = Math.max(pin.until, now + dwell);
+        return { step: rule.steps[pin.stepIndex], stepIndex: pin.stepIndex };
+      }
     }
     // Pinned step TTL-failed (genuine advancement) — fall through, re-pin below.
     // #276 carve-out: a NON-QUOTA death means the step is broken, not walled —
@@ -1434,7 +1546,12 @@ export function resolveFailoverTargetForSession(
     // the map or the log.
     const prev = m.get(sessionKey);
     if (!prev || prev.stepIndex !== resolved.stepIndex || prev.bucket !== bucket) {
-      m.set(sessionKey, { stepIndex: resolved.stepIndex, until: now + dwell, bucket });
+      m.set(sessionKey, {
+        stepIndex: resolved.stepIndex,
+        until: now + dwell,
+        bucket,
+        pinnedAt: now,
+      });
       dwellPins.set(role, m);
       pruneDwellPins(role);
       logStderr(
