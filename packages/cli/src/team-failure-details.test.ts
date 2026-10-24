@@ -33,6 +33,18 @@ import {
 } from "./team-orchestrator.js";
 import { formatTeamResult } from "./mcp-server.js";
 
+/**
+ * The three `runModels` cases below spawn the CLI by bare name, which Windows
+ * cannot do against this suite's `.cmd` fake — measured 2026-10-24, #646:
+ * `spawn("claudish")` → ENOENT under bun 1.3.13 (no PATHEXT) and under node 25
+ * (and an explicit `claudish.cmd` is EINVAL there without `shell: true`).
+ * The POSIX branch runs in CI (ubuntu-latest), so the coverage is kept where
+ * it works; skipping here stops three permanent reds from masking a real
+ * regression in the same three cases.
+ */
+const itSpawnsClaudish = process.platform === "win32" ? it.skip : it;
+
+
 // ─── Unit: failureDetails (the producer) ─────────────────────────────────────
 
 describe("#538 failureDetails", () => {
@@ -158,9 +170,15 @@ interface FakeOptions {
 
 /**
  * Install a fake `claudish` at the head of PATH. win32 gets a `claudish.cmd`
- * batch (spawn(shell:false) resolves .cmd, never an extension-less script);
- * POSIX gets a `#!/bin/sh` script. Both consume stdin to EOF first, so the
- * parent's stdin write cannot EPIPE.
+ * batch; POSIX gets a `#!/bin/sh` script. Both consume stdin to EOF first, so
+ * the parent's stdin write cannot EPIPE.
+ *
+ * ⚠ The win32 branch is **not reachable** by this suite today (#646): a `.cmd`
+ * is spawned neither by bare name (bun: no PATHEXT → ENOENT; node ≥20: EINVAL
+ * without `shell: true`) nor through an absolute path (node: EINVAL). It is
+ * kept as the target for the executable-resolution fix, and the three cases
+ * that need it are skipped on win32 via `itSpawnsClaudish` above rather than
+ * left permanently red.
  */
 async function withFakeClaudish(opts: FakeOptions, body: () => Promise<void>): Promise<void> {
   const fakeDir = mkdtempSync(join(tmpdir(), "fake-claudish-538-"));
@@ -207,7 +225,7 @@ async function runWithFake(opts: FakeOptions) {
 }
 
 describe("#538 runModels settles with true values before publishing", () => {
-  it("a non-zero exit records the REAL exit code and a log that exists at resolve", async () => {
+  itSpawnsClaudish("a non-zero exit records the REAL exit code and a log that exists at resolve", async () => {
     const { m, cleanup } = await runWithFake({ exitCode: 3, stderr: "538-stderr-marker: provider blew up" });
     try {
       expect(m.state).toBe("FAILED");
@@ -227,7 +245,7 @@ describe("#538 runModels settles with true values before publishing", () => {
     }
   }, 30_000);
 
-  it("a failure with EMPTY stderr still writes the advertised log (mutant 4)", async () => {
+  itSpawnsClaudish("a failure with EMPTY stderr still writes the advertised log (mutant 4)", async () => {
     const { m, cleanup } = await runWithFake({ exitCode: 3 });
     try {
       expect(m.state).toBe("FAILED");
@@ -242,7 +260,7 @@ describe("#538 runModels settles with true values before publishing", () => {
     }
   }, 30_000);
 
-  it("an exit-0 child settles COMPLETED with no error and no log", async () => {
+  itSpawnsClaudish("an exit-0 child settles COMPLETED with no error and no log", async () => {
     const { m, sessionDir, cleanup } = await runWithFake({ exitCode: 0 });
     try {
       // Before the settle fix this child was recorded FAILED with exitCode 1
