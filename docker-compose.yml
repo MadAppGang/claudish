@@ -130,6 +130,18 @@ services:
       # read-only config bind, so leaving it empty would restore the
       # `cache write skipped (EROFS)` the volume exists to fix.
       - CLAUDISH_MODEL_CACHE_PATH=${CLAUDISH_MODEL_CACHE_PATH:-/var/cache/claudish/all-models.json}
+      # Deep-probe model for relay recovery (#613). Empty = the built-in
+      # role-shaped default (claude-haiku-4-5-20251001), which the hub resolves on
+      # its own haiku lane so a z.ai-only outage cannot pin a sidecar AUTONOMOUS.
+      # Set to a concrete (e.g. glm-5.3) to restore the pre-#613 behavior. Listed
+      # here because the env file only interpolates.
+      - CLAUDISH_RELAY_PROBE_MODEL=${CLAUDISH_RELAY_PROBE_MODEL:-}
+      # Second-attempt model for the deep probe (#636 review): on a hub with no
+      # modelMap the haiku-shaped id stays NATIVE, so the probe gets a 503
+      # refusal or a 401 and the sidecar would never return to NOMINAL. The
+      # same tick retries on this model, which the hub resolves on the sonnet
+      # role. Empty = the built-in glm-5.3.
+      - CLAUDISH_RELAY_PROBE_FALLBACK_MODEL=${CLAUDISH_RELAY_PROBE_FALLBACK_MODEL:-}
       # Native credential guard kill switch (#296): only an explicit "0" disarms;
       # empty = guard on. Listed here because the env file only interpolates —
       # a name absent from this list never reaches the container.

@@ -430,6 +430,42 @@ export type RoleModelMap = {
   subagent?: string;
 };
 
+/**
+ * The native-lane predicate: a bare model name with neither an explicit provider
+ * (`@`) nor a vendor path (`/`) prefix. Exported so the route pin in
+ * `proxy-server-role-map.test.ts` composes the SAME test the router applies —
+ * a re-expressed predicate in the test would pin the wrong route.
+ */
+export function isNativeTarget(target: string): boolean {
+  return !target.includes("/") && !target.includes("@");
+}
+
+/**
+ * What `CLAUDISH_NO_ANTHROPIC` does to a target that landed on the native lane.
+ *
+ * Extracted from `getHandlerForRequest` so the rule is pinnable without booting a
+ * proxy (#613 review, point 1c). It matters beyond leak policy: it is the second
+ * half of the hub's answer to a role-shaped request, and the relay deep probe
+ * depends on it (see `deepProbe` in fork/server/relay.ts). A `haiku` mapping that
+ * is UNSET or names a `claude-*` id leaves the target native, so this returns
+ * `reroute` to `modelMap.sonnet` — the probe then measures the sonnet lane, not
+ * the haiku one, which is a precondition and not a defect here.
+ *
+ * Only ever called from the `isNative` branch — the caller keeps both the env
+ * truthiness test (an empty `CLAUDISH_NO_ANTHROPIC`, ai-01's exemption,
+ * materialized empty by compose, must never reach this function) and
+ * {@link isNativeTarget}.
+ */
+export function noAnthropicDecision(
+  modelMap: RoleModelMap | undefined,
+  opts: { depth: number }
+): { kind: "allow" } | { kind: "reroute"; to: string } | { kind: "refuse" } {
+  if (opts.depth === 0 && modelMap?.sonnet) return { kind: "reroute", to: modelMap.sonnet };
+  // depth > 0 (the budget mapping itself resolved native → misconfig) or no
+  // sonnet mapping: fail closed. Never leak.
+  return { kind: "refuse" };
+}
+
 /** Resolve a Claude Code role name without coupling the mapping to a model version. */
 export function resolveRoleMappedModel(
   requestedModel: string,
@@ -1213,7 +1249,7 @@ export async function createProxyServer(
     // They were explicitly routed to a provider - if the handler wasn't created above,
     // it's because the API key is missing, not because it's a native model.
     const hasExplicitProvider = target.includes("@");
-    const isNative = !target.includes("/") && !hasExplicitProvider;
+    const isNative = isNativeTarget(target);
 
     if (isNative) {
       // Leak-policy backstop (defense in depth). On a non-ai-01 autonomous
@@ -1234,12 +1270,13 @@ export async function createProxyServer(
       // nothing (compose re-creates it empty), and flipping this to a
       // `!== undefined` test would silently kill ai-01 native Opus lane.
       if (process.env.CLAUDISH_NO_ANTHROPIC) {
-        if (depth === 0 && modelMap?.sonnet) {
+        const guard = noAnthropicDecision(modelMap, { depth });
+        if (guard.kind === "reroute") {
           log(
-            `[Proxy] NO_ANTHROPIC: rerouting native '${target}' → budget '${modelMap.sonnet}'`,
+            `[Proxy] NO_ANTHROPIC: rerouting native '${target}' → budget '${guard.to}'`,
             true
           );
-          return getHandlerForRequest(modelMap.sonnet, depth + 1, sessionKey);
+          return getHandlerForRequest(guard.to, depth + 1, sessionKey);
         }
         // depth > 0 (the budget mapping itself resolved native → misconfig) or no
         // sonnet mapping: fail closed. Never leak.

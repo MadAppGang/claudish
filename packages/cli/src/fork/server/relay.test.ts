@@ -28,16 +28,27 @@ import {
 // ── fetch mock ─────────────────────────────────────────────────────
 const realFetch = globalThis.fetch;
 let lastFetch: { url: string; init: any } | null = null;
+// Every call of the current test, in order. `lastFetch` answers "what did the
+// last request look like"; a retry (#636) needs "how many were sent" and "what
+// did the FIRST one carry" — the two questions the fallback pins turn on.
+let fetchCalls: { url: string; init: any }[] = [];
 let fetchImpl: (url: any, init: any) => Promise<Response> = async () =>
   new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
 
 beforeEach(() => {
   lastFetch = null;
+  fetchCalls = [];
   globalThis.fetch = (async (url: any, init: any) => {
     lastFetch = { url: String(url), init };
+    fetchCalls.push(lastFetch);
     return fetchImpl(url, init);
   }) as typeof fetch;
 });
+
+/** Body model of the Nth request sent in the current test. */
+function callBodyModel(n: number): string {
+  return JSON.parse(fetchCalls[n]!.init.body as string).model;
+}
 
 afterEach(() => {
   globalThis.fetch = realFetch;
@@ -1003,6 +1014,190 @@ describe("deep probe: quota wall vs hub death", () => {
       if (prev === undefined) delete process.env.CLAUDISH_MACHINE;
       else process.env.CLAUDISH_MACHINE = prev;
     }
+  });
+
+  // #613: the probe must measure the HUB's servability, not one provider's. A
+  // concrete z.ai model gates recovery on z.ai — a z.ai-only outage with a
+  // healthy hub keeps every sidecar AUTONOMOUS while the hub serves fine.
+  describe("probe model (#613)", () => {
+    // The FIRST request: since #636 a failed first attempt is retried on the
+    // fallback model in the same tick, so `lastFetch` would answer for the
+    // retry, not for the nominal attempt these pins are about.
+    const bodyModel = (): string => callBodyModel(0);
+
+    it("asks for a role-shaped id, not the z.ai sonnet nominal", async () => {
+      fetchImpl = async () => new Response("nope", { status: 500 });
+      await deepProbe(state());
+      // RED on the pre-#613 code: the body carried the literal "glm-5.3", which
+      // the hub resolves on the SONNET role — one provider deciding recovery.
+      expect(bodyModel()).toBe("claude-haiku-4-5-20251001");
+      expect(bodyModel()).not.toBe("glm-5.3");
+    });
+
+    it("honors CLAUDISH_RELAY_PROBE_MODEL, read per call", async () => {
+      const prev = process.env.CLAUDISH_RELAY_PROBE_MODEL;
+      try {
+        process.env.CLAUDISH_RELAY_PROBE_MODEL = "glm-5.3"; // exact pre-#613 behavior
+        fetchImpl = async () => new Response("nope", { status: 500 });
+        await deepProbe(state());
+        expect(bodyModel()).toBe("glm-5.3");
+
+        process.env.CLAUDISH_RELAY_PROBE_MODEL = "swift-1.5-27b";
+        fetchCalls = []; // the next deepProbe's first request, not this test's first
+        await deepProbe(state());
+        expect(bodyModel()).toBe("swift-1.5-27b");
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDISH_RELAY_PROBE_MODEL;
+        else process.env.CLAUDISH_RELAY_PROBE_MODEL = prev;
+      }
+    });
+
+    it("treats empty and whitespace as unset", async () => {
+      const prev = process.env.CLAUDISH_RELAY_PROBE_MODEL;
+      try {
+        // compose injects every listed name as at least "" (#310) — empty is not
+        // a model name, it must not reach the hub as one.
+        process.env.CLAUDISH_RELAY_PROBE_MODEL = "   ";
+        fetchImpl = async () => new Response("nope", { status: 500 });
+        await deepProbe(state());
+        expect(bodyModel()).toBe("claude-haiku-4-5-20251001");
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDISH_RELAY_PROBE_MODEL;
+        else process.env.CLAUDISH_RELAY_PROBE_MODEL = prev;
+      }
+    });
+
+    it("stays a DEEP probe: a tool call and a stream are still requested", async () => {
+      fetchImpl = async () => new Response("nope", { status: 500 });
+      await deepProbe(state());
+      const b = JSON.parse(lastFetch!.init.body as string);
+      // The anti-flap design is not in question here — only the model is (#613).
+      expect(b.stream).toBe(true);
+      expect(Array.isArray(b.tools)).toBe(true);
+      expect(b.tools.length).toBeGreaterThan(0);
+    });
+  });
+
+  // #636 review (option B): the probe sends NO `authorization` by design, so on
+  // a hub WITHOUT a modelMap the haiku-shaped id stays NATIVE and attempt 1
+  // collects a 503 refusal or a 401 — neither of which says the hub is down.
+  // Read as death it pins the sidecar AUTONOMOUS for good after its next cut.
+  // One retry, same tick, on a model the hub resolves on the SONNET role.
+  describe("fallback attempt in the same tick (#636)", () => {
+    const okStream = () =>
+      sseResponse(
+        'event: message_start\ndata: {"type":"message_start"}\n\n' +
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      );
+    /** Answer attempt 1 with `first`, attempt 2 (if any) with `second`. */
+    const sequence = (first: () => Response, second: () => Response) => {
+      let n = 0;
+      fetchImpl = async () => (n++ === 0 ? first() : second());
+    };
+
+    it("retries a 503 on glm-5.3 in the same tick and reports true", async () => {
+      sequence(
+        () => new Response("native lane refused", { status: 503 }),
+        () => okStream()
+      );
+      expect(await deepProbe(state())).toBe(true);
+      expect(fetchCalls.length).toBe(2);
+      expect(callBodyModel(0)).toBe("claude-haiku-4-5-20251001");
+      expect(callBodyModel(1)).toBe("glm-5.3");
+    });
+
+    it("retries a 401 the same way — the native shape that motivated the review", async () => {
+      sequence(
+        () => new Response("invalid api key", { status: 401 }),
+        () => okStream()
+      );
+      expect(await deepProbe(state())).toBe(true);
+      expect(fetchCalls.length).toBe(2);
+      expect(callBodyModel(1)).toBe("glm-5.3");
+    });
+
+    it("sends exactly TWO requests when both attempts fail — never a third", async () => {
+      sequence(
+        () => new Response("down", { status: 503 }),
+        () => new Response("down", { status: 503 })
+      );
+      expect(await deepProbe(state())).toBe(false);
+      expect(fetchCalls.length).toBe(2);
+    });
+
+    it("spends NO fallback when the nominal attempt passes", async () => {
+      fetchImpl = async () => okStream();
+      expect(await deepProbe(state())).toBe(true);
+      expect(fetchCalls.length).toBe(1);
+    });
+
+    it("spends NO fallback on a quota wall — that is liveness on the first answer", async () => {
+      fetchImpl = async () => new Response("weekly plan quota exhausted", { status: 429 });
+      expect(await deepProbe(state())).toBe(true);
+      expect(fetchCalls.length).toBe(1);
+    });
+
+    it("honors CLAUDISH_RELAY_PROBE_FALLBACK_MODEL, read per call", async () => {
+      const prev = process.env.CLAUDISH_RELAY_PROBE_FALLBACK_MODEL;
+      try {
+        process.env.CLAUDISH_RELAY_PROBE_FALLBACK_MODEL = "mmc@MiniMax-M3";
+        sequence(
+          () => new Response("down", { status: 503 }),
+          () => okStream()
+        );
+        expect(await deepProbe(state())).toBe(true);
+        expect(callBodyModel(1)).toBe("mmc@MiniMax-M3");
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDISH_RELAY_PROBE_FALLBACK_MODEL;
+        else process.env.CLAUDISH_RELAY_PROBE_FALLBACK_MODEL = prev;
+      }
+    });
+
+    it("treats empty and whitespace as unset — the built-in glm-5.3", async () => {
+      const prev = process.env.CLAUDISH_RELAY_PROBE_FALLBACK_MODEL;
+      try {
+        // compose injects every listed name as at least "" (#310); an empty
+        // value is not a model name and must never reach the hub as one.
+        process.env.CLAUDISH_RELAY_PROBE_FALLBACK_MODEL = "   ";
+        sequence(
+          () => new Response("down", { status: 503 }),
+          () => okStream()
+        );
+        expect(await deepProbe(state())).toBe(true);
+        expect(callBodyModel(1)).toBe("glm-5.3");
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDISH_RELAY_PROBE_FALLBACK_MODEL;
+        else process.env.CLAUDISH_RELAY_PROBE_FALLBACK_MODEL = prev;
+      }
+    });
+
+    it("names the model that decided, on the line the operator reads", async () => {
+      const lines: string[] = [];
+      const origLog = console.log;
+      console.log = (...a: unknown[]) => {
+        lines.push(a.join(" "));
+      };
+      try {
+        sequence(
+          () => new Response("native lane refused", { status: 503 }),
+          () => okStream()
+        );
+        expect(await deepProbe(state())).toBe(true);
+      } finally {
+        console.log = origLog;
+      }
+      const ok = lines.filter((l) => l.includes("[Relay] deep probe OK"));
+      expect(ok.length).toBe(1); // one probe, one OK line — the attempt's own
+      expect(ok[0]).toContain("glm-5.3"); // it was the fallback that passed
+      // …and the failed first attempt is named on its own line, with both models.
+      expect(
+        lines.some(
+          (l) =>
+            l.includes("first attempt on claude-haiku-4-5-20251001 failed") &&
+            l.includes("second attempt on glm-5.3 in the same tick")
+        )
+      ).toBe(true);
+    });
   });
 });
 

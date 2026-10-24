@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { resolveNativeModelPin, resolveRoleMappedModel } from "./proxy-server.js";
+import {
+  isNativeTarget,
+  noAnthropicDecision,
+  resolveNativeModelPin,
+  resolveRoleMappedModel,
+} from "./proxy-server.js";
+import type { RoleModelMap } from "./proxy-server.js";
 
 const modelMap = {
   opus: "claude-opus-5",
@@ -80,5 +86,47 @@ describe("resolveNativeModelPin", () => {
     expect(resolveNativeModelPin("claude-opus-5", pinMap, {})).toBe("claude-opus-5-5");
     expect(resolveNativeModelPin("claude-opus-5", pinMap, { CLAUDISH_NATIVE_MODEL_PIN: "1" })).toBe("claude-opus-5-5");
     expect(resolveNativeModelPin("claude-opus-5", pinMap, { CLAUDISH_NATIVE_MODEL_PIN: "" })).toBe("claude-opus-5-5");
+  });
+});
+
+// The relay deep probe asks the hub for a haiku-shaped model; what the hub does with
+// it decides whether "hub healthy" means anything. #613's precondition: the probe
+// measures the hub ON ITS HAIKU LANE only while `modelMap.haiku` is non-native.
+// Remove that mapping on the hub and the probe silently reports the sonnet lane's
+// health instead — that is not a bug to fix here, it is the trap this pin keeps lit.
+describe("hub target for a role-shaped probe (#613 precondition)", () => {
+  const PROBE_MODEL = "claude-haiku-4-5-20251001"; // fork/server/relay.ts DEFAULT_PROBE_MODEL
+
+  // Composition of the two decisions the hub applies, in the order
+  // `getHandlerForRequest` applies them: role mapping, then — only if the result
+  // is still native — the CLAUDISH_NO_ANTHROPIC guard.
+  function hubServeTarget(map: RoleModelMap | undefined): string {
+    const mapped = resolveRoleMappedModel(PROBE_MODEL, map) ?? PROBE_MODEL;
+    // A provider target (`@`) or vendor path (`/`) never reaches the guard.
+    if (!isNativeTarget(mapped)) return mapped;
+    const decision = noAnthropicDecision(map, { depth: 0 });
+    if (decision.kind === "refuse") return "<refused>";
+    return decision.kind === "reroute" ? decision.to : mapped;
+  }
+
+  test("a non-native haiku mapping is what the probe actually measures", () => {
+    expect(hubServeTarget({ sonnet: "glm-5.3", haiku: "mmc@MiniMax-M3" })).toBe("mmc@MiniMax-M3");
+  });
+
+  test("an UNSET haiku mapping measures the sonnet lane, not haiku", () => {
+    expect(hubServeTarget({ sonnet: "glm-5.3" })).toBe("glm-5.3");
+  });
+
+  test("a native haiku mapping is the same trap by another route", () => {
+    expect(hubServeTarget({ sonnet: "glm-5.3", haiku: PROBE_MODEL })).toBe("glm-5.3");
+  });
+
+  test("nothing to reroute to and no budget mapping: refuse, never leak", () => {
+    expect(hubServeTarget({ haiku: PROBE_MODEL })).toBe("<refused>");
+    expect(hubServeTarget(undefined)).toBe("<refused>");
+  });
+
+  test("the guard fails closed below depth 0", () => {
+    expect(noAnthropicDecision({ sonnet: "glm-5.3" }, { depth: 1 })).toEqual({ kind: "refuse" });
   });
 });
