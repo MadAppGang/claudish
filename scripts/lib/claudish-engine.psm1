@@ -906,6 +906,233 @@ function Get-EngineFatalStreakDecision {
     }
 }
 
+function ConvertTo-WatchdogStateJson {
+    <#
+        .SYNOPSIS
+            Pure codec half: sidecar-host-watchdog state hashtable -> file JSON.
+
+        The stamp is normalized to Kind=Utc before formatting, so the file
+        always carries the "...Z" form whatever Kind a caller stored — every
+        reader (any seat, any hand reset) round-trips to the same instant.
+        MinValue is the documented "never acted" sentinel and serializes as
+        null.
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$State
+    )
+    $last = $null
+    if ($null -ne $State.LastEngineActionUtc -and $State.LastEngineActionUtc -ne [datetime]::MinValue) {
+        $last = $State.LastEngineActionUtc.ToUniversalTime().ToString('o')
+    }
+    $obj = @{
+        engineFailures        = [int]$State.EngineFailures
+        lastEngineActionUtc   = $last
+        engineActionsSinceDown = [int]$State.EngineActionsSinceDown
+    }
+    return ($obj | ConvertTo-Json)
+}
+
+function ConvertFrom-WatchdogStateJson {
+    <#
+        .SYNOPSIS
+            Pure codec half: state-file JSON -> state hashtable.
+
+        THROWS on anything undecodable — the caller must surface that as
+        state_read_error and an inert run, never a silent reset of the
+        counters (a fresh-looking state re-arms R2 inside an episode it
+        already acted on). The parse itself is instant-exact: a bare
+        [datetime] cast is Kind-broken on 5.1 in BOTH directions ("...Z"
+        converts to local wall time, "+02:00" has the offset stripped
+        unapplied), which read the last engine action 2 h off in production
+        (myia-po-2028, 2026-10-24: since_last_action -44..-81 against a
+        30-min cooldown). [DateTimeOffset]::Parse yields the correct instant
+        for both forms; .UtcDateTime is Kind=Utc, making the downstream
+        subtraction sound.
+
+        A null or empty stamp decodes to [datetime]::MinValue — never a cast
+        of $null (which throws on 5.1, and behind a silent catch reset
+        EngineFailures to 0 on every run: R2/R3 unreachable on a fresh host).
+        Missing counters default to 0.
+    #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Json
+    )
+    $raw = $Json | ConvertFrom-Json
+    $lastAction = [datetime]::MinValue
+    # Property access is defensive on purpose: the module runs under
+    # Set-StrictMode, and a hand-written or partially-written state file must
+    # decode to the documented defaults, not throw on a missing key.
+    $stampRaw = $null
+    if ($raw.PSObject.Properties['lastEngineActionUtc']) { $stampRaw = $raw.lastEngineActionUtc }
+    if ($null -ne $stampRaw -and "$stampRaw" -ne '') {
+        if ($stampRaw -is [datetime]) {
+            # PowerShell 7's ConvertFrom-Json has ALREADY parsed the ISO string
+            # (Kind=Utc for "...Z", Local for an offset form). Its [string] form
+            # is "10/24/2026 10:00:00": no offset, no sub-second part, so a
+            # re-parse lands on local wall time, 2 h off on a UTC+2 seat
+            # (measured on 7.6.6 / fr-FR, review #639 r2). Keep the instant.
+            $lastAction = $stampRaw.ToUniversalTime()
+        } elseif ($stampRaw -is [DateTimeOffset]) {
+            $lastAction = $stampRaw.UtcDateTime
+        } else {
+            # Windows PowerShell 5.1 leaves the stamp a String.
+            $lastAction = [DateTimeOffset]::Parse([string]$stampRaw, [System.Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+        }
+    }
+    $failures = 0
+    if ($raw.PSObject.Properties['engineFailures'] -and $null -ne $raw.engineFailures) { $failures = [int]$raw.engineFailures }
+    $sinceDown = 0
+    if ($raw.PSObject.Properties['engineActionsSinceDown'] -and $null -ne $raw.engineActionsSinceDown) { $sinceDown = [int]$raw.engineActionsSinceDown }
+    return @{
+        EngineFailures         = $failures
+        LastEngineActionUtc    = $lastAction
+        EngineActionsSinceDown = $sinceDown
+    }
+}
+
+function Get-EngineWatchdogDecision {
+    <#
+        .SYNOPSIS
+            PURE ladder of the sidecar host watchdog: one failing sighting in,
+            one action + next state out. No I/O, no clock (NowUtc injected),
+            no network, no actuation.
+
+        Order is load-bearing, each rung named for what preempts it:
+          up                    reset counters (stamp kept: a success must not
+                                erase the cooldown clock)
+          unknown               the probe could not even LAUNCH (PATH drift,
+                                docker.exe unresolvable). Not a liveness
+                                verdict: no increment, no actuation. Acting on
+                                it let R2 terminate the distro of a healthy
+                                engine (review #639 point 3).
+          pending               failures < threshold: count, log, touch nothing
+          guard_drain           a claudish-drain owns the lifecycle right now
+          guard_cooldown        the last engine action is younger than the
+                                cooldown
+          r3_wsl_service_wedged the WSL service class (measured 2026-10-24
+                                afternoon): no Docker rung can reach it,
+                                escalate only
+          r3_after_r2           R2 already fired once this episode (once per
+                                episode, never a repeated teardown — the
+                                rebuild half held 1 of 2, #172 AC4)
+          r2_standalone         a host ClaudishWatchdog task exists: single
+                                observer per failure path — R2 stands down,
+                                escalations stay
+          r2_terminate          the measured read path: terminate the
+                                docker-desktop distro, Desktop respawns it
+          r3_no_backend         no Desktop backend to respawn: escalate only
+
+        Terminal rungs stamp the cooldown clock and reset the failure counter
+        (they said their line; the cooldown bounds the repeats). DryRun
+        computes the same action but returns the input state UNCHANGED: a dry
+        run measures, it must not move the state machine.
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$State,
+        [Parameter(Mandatory)][ValidateSet('up', 'down', 'hang', 'unknown')][string]$EngineVerdict,
+        [Parameter(Mandatory)][bool]$DrainInFlight,
+        [Parameter(Mandatory)][bool]$BackendPresent,
+        [Parameter(Mandatory)][ValidateSet('ok', 'timeout')][string]$WslVerdict,
+        [Parameter(Mandatory)][bool]$HostWatchdogPresent,
+        [Parameter(Mandatory)][datetime]$NowUtc,
+        [int]$ConsecutiveEngineFailures = 2,
+        [int]$EngineCooldownMin = 30,
+        [switch]$DryRun
+    )
+
+    $next = @{
+        EngineFailures         = [int]$State.EngineFailures
+        LastEngineActionUtc    = $State.LastEngineActionUtc
+        EngineActionsSinceDown = [int]$State.EngineActionsSinceDown
+    }
+
+    if ($EngineVerdict -eq 'up') {
+        $next.EngineFailures = 0
+        $next.EngineActionsSinceDown = 0
+        return [PSCustomObject]@{ Action = 'reset'; NextState = $next; SinceActionMin = $null; Reason = 'engine up' }
+    }
+
+    if ($EngineVerdict -eq 'unknown') {
+        return [PSCustomObject]@{
+            Action = 'engine_unknown'; NextState = $next; SinceActionMin = $null
+            Reason = 'engine probe could not launch — not a liveness verdict, not this watchdog class'
+        }
+    }
+
+    $next.EngineFailures++
+    $sinceAction = ($NowUtc - $State.LastEngineActionUtc).TotalMinutes
+
+    if ($next.EngineFailures -lt $ConsecutiveEngineFailures) {
+        $action = 'pending'; $reason = "engine failing ($($next.EngineFailures)/$ConsecutiveEngineFailures) — counting"
+    } elseif ($DrainInFlight) {
+        $action = 'guard_drain'; $reason = 'a claudish-drain owns the container lifecycle — recovery of a deliberate gesture is not this watchdog'
+    } elseif ($sinceAction -lt $EngineCooldownMin) {
+        $action = 'guard_cooldown'; $reason = "last engine action ${sinceAction} min ago < ${EngineCooldownMin} min"
+    } elseif ($WslVerdict -eq 'timeout') {
+        $action = 'r3_wsl_service_wedged'; $reason = 'WSL service wedge: no Docker rung can reach the host<->VM channel — escalate only'
+    } elseif ($State.EngineActionsSinceDown -ge 1) {
+        $action = 'r3_after_r2'; $reason = 'R2 already fired once this outage episode — escalate, never a repeated teardown'
+    } elseif ($HostWatchdogPresent) {
+        $action = 'r2_standalone'; $reason = 'a host ClaudishWatchdog task exists — single observer per failure path, R2 stands down'
+    } elseif ($BackendPresent) {
+        $action = 'r2_terminate'; $reason = 'backend present: the measured read path — terminate the distro, Desktop respawns it'
+        $next.EngineActionsSinceDown++
+    } else {
+        $action = 'r3_no_backend'; $reason = 'no Desktop backend to respawn the distro — escalate only'
+    }
+
+    if ($action -notin @('pending', 'guard_drain', 'guard_cooldown')) {
+        # Terminal: said its line; the cooldown bounds the repeats.
+        $next.LastEngineActionUtc = ([DateTimeOffset]$NowUtc).UtcDateTime
+        $next.EngineFailures = 0
+    }
+    if ($DryRun) {
+        # A dry run measures; it must not move the state machine (its failure
+        # counters and cooldown would fire on the next real run as if work
+        # had been done). The action above is still the honest one.
+        $next = @{
+            EngineFailures         = [int]$State.EngineFailures
+            LastEngineActionUtc    = $State.LastEngineActionUtc
+            EngineActionsSinceDown = [int]$State.EngineActionsSinceDown
+        }
+    }
+    return [PSCustomObject]@{ Action = $action; NextState = $next; SinceActionMin = $sinceAction; Reason = $reason }
+}
+
+function Select-WslrelaySquatters {
+    <#
+        .SYNOPSIS
+            PURE selection of the wslrelay loopback squatters for R1.
+
+        Inputs are injected tables (a connections list shaped like
+        Get-NetTCPConnection rows, a pid -> process object map), so the three
+        safety rules are pinnable without touching the machine:
+          - nothing is selected unless IPv4 loopback is ALIVE: the measured R1
+            wedge shape is "v6 dead while 127.0.0.1 serves". Both dead is a
+            different class (engine down, drained recreate) where killing the
+            relay fixes nothing and tears down a listener that may be
+            legitimate;
+          - only loopback addresses (127.0.0.1 / ::1) are ever considered;
+          - only a process NAMED wslrelay is ever selected — never the Docker
+            backend, never anything else that took the port.
+    #>
+    param(
+        [Parameter(Mandatory)][object[]]$Connections,
+        [Parameter(Mandatory)][hashtable]$Processes,
+        [Parameter(Mandatory)][bool]$Ipv4Alive
+    )
+    $selected = @()
+    if (-not $Ipv4Alive) { return $selected }
+    foreach ($c in $Connections) {
+        if ($null -eq $c) { continue }
+        if ($c.LocalAddress -ne '127.0.0.1' -and $c.LocalAddress -ne '::1') { continue }
+        $p = $Processes[[int]$c.OwningProcess]
+        if ($null -eq $p -or $p.ProcessName -ne 'wslrelay') { continue }
+        $selected += [PSCustomObject]@{ ProcId = [int]$c.OwningProcess; LocalAddress = $c.LocalAddress; StartTime = $p.StartTime }
+    }
+    return $selected
+}
+
 function Invoke-GitBounded {
     <#
     .SYNOPSIS
@@ -2563,6 +2790,10 @@ Export-ModuleMember -Function @(
     'Get-EngineFatalStreakDecision'
     'Get-EngineFatalStreakThreshold'
     'Get-EngineFatalStreakMarkerName'
+    'ConvertTo-WatchdogStateJson'
+    'ConvertFrom-WatchdogStateJson'
+    'Get-EngineWatchdogDecision'
+    'Select-WslrelaySquatters'
     'Enable-DrainAdmissionFreeze'
     'Disable-DrainAdmissionFreeze'
     'New-EngineRelaunchRegistration'
