@@ -13,6 +13,7 @@
  */
 
 import { BUILTIN_PROVIDERS } from "../../providers/provider-definitions.js";
+import { AccountListInvalidError, AccountListUnavailableError } from "../accounts/errors.js";
 import { AntigravityCredentialProvider } from "./antigravity-credential.js";
 import { ApiKeyCredentialProvider } from "./api-key-credential.js";
 import { clearSignedArm, installBillingProbes } from "./billing-probe.js";
@@ -130,8 +131,7 @@ export class CredentialAuthority {
    * flat-rate subscription the user DOES hold was silently replaced by a
    * metered provider and billed per token, with nothing printed.
    *
-   * Three things make the third value REACHABLE rather than decorative, since
-   * no production source throws:
+   * Three things make the third value REACHABLE rather than decorative:
    *   - a provider may implement `describeReadiness()` itself and report
    *     `failed` from a propagated flag — `ApiKeyCredentialProvider` does this
    *     for the keychain's `{value?, failed}` and for an op resolve whose
@@ -157,7 +157,13 @@ export class CredentialAuthority {
       }
       return { readiness: (await provider.isAvailable(opts)) ? "present" : "absent" };
     } catch (err) {
-      return { readiness: "failed", detail: readinessDetail(err) };
+      return {
+        readiness: "failed",
+        detail: readinessDetail(err),
+        ...(err instanceof AccountListUnavailableError || err instanceof AccountListInvalidError
+          ? { failureReason: "accounts-list" as const }
+          : {}),
+      };
     }
   }
 
@@ -170,10 +176,9 @@ export class CredentialAuthority {
    *
    * UNCHANGED SIGNATURE, UNCHANGED CONTRACT, and deliberately a pure PROJECTION
    * of `describeReadiness` rather than a second implementation. `failed` maps to
-   * `false` exactly as it always did — a credential that will not resolve cannot
-   * sign a request either — so every routing decision is byte-identical to the
-   * boolean oracle it replaces. `equivalence.test.ts` is the pin on that claim.
-   * Only the REASON is new, and only for callers that ask for it.
+   * `false` as before. Routing asks for the full verdict for Codex and retains
+   * typed account-list failures, so the handler answers them instead of silently
+   * substituting a metered hop. Other callers still get the boolean projection.
    */
   async isAvailable(name: string, opts?: { allowOpPrompt?: boolean }): Promise<boolean> {
     return (await this.describeReadiness(name, opts)).readiness === "present";

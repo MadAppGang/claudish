@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
+import { withRawConfigTransaction } from "./auth/accounts/config-lock.js";
 import { type CodeModeSetting, parseCodeModeSetting } from "./code-mode/policy.js";
 import { activeGlobalConfigFile, getConfigFileOverride } from "./config-override.js";
 
@@ -176,6 +177,25 @@ export interface ClaudishProfileConfig {
   keychain?: {
     enabled?: boolean;
   };
+  /**
+   * Multi-account subscription pools, per vendor.
+   *
+   * Holds NO secrets — ids, labels, identity for display, and which store each
+   * account's tokens live in. The token material itself is in the Keychain
+   * (service `claudish-accounts`) or in `~/.claudish/accounts/tokens/`.
+   *
+   * It also holds NO `owner`: the named refresher lives in
+   * `~/.claudish/accounts/state.json` alone. Carrying it in both documents with
+   * no rule for which wins is how a config reload silently overwrites the active
+   * refresher and two processes choose different refresh protocols.
+   *
+   * GLOBAL ONLY, like `customEndpoints`. Validated at the consumption site
+   * (`auth/accounts/registry.ts`, and `config-schema.ts` for a mutation) rather
+   * than here, because `loadConfig` stays Zod-free for the lightweight startup
+   * paths — and because the registry must distinguish a read FAILURE from an
+   * absence, which this function by design cannot.
+   */
+  subscriptionAccounts?: Record<string, unknown>;
   /**
    * Opt IN to using a real ANTHROPIC_API_KEY for native Claude models, accepting
    * metered API billing. Default (absent/false) hides the key so Claude Code
@@ -407,6 +427,13 @@ export function loadConfig(): ClaudishProfileConfig {
     if (config.keychain !== undefined) {
       merged.keychain = config.keychain;
     }
+    // Same trap again, and this one costs money: omitted from this allowlist,
+    // the account list survives on disk until the first global save and is
+    // then silently dropped — after which the pool reports "no subscription
+    // configured" and every request signs against a per-token API key.
+    if (config.subscriptionAccounts !== undefined) {
+      merged.subscriptionAccounts = config.subscriptionAccounts;
+    }
     if (config.anthropicApiBilling !== undefined) {
       merged.anthropicApiBilling = config.anthropicApiBilling;
     }
@@ -471,8 +498,14 @@ export function loadConfig(): ClaudishProfileConfig {
 export function saveConfig(config: ClaudishProfileConfig): void {
   // Writes target the ACTIVE file: with a --config override, persist to that
   // file (never mutate ~/.claudish/config.json with override-derived data).
-  if (!getConfigFileOverride()) ensureConfigDir();
-  writeFileSync(activeConfigFile(), JSON.stringify(config, null, 2), "utf-8");
+  withRawConfigTransaction(activeConfigFile(), (raw) => {
+    const next: Record<string, unknown> = { ...config };
+    // Accounts are disk-owned. A stale picker/TUI save may neither erase an add
+    // nor resurrect a removed row (including its durable suppression marker).
+    if (raw.subscriptionAccounts === undefined) delete next.subscriptionAccounts;
+    else next.subscriptionAccounts = raw.subscriptionAccounts;
+    return { config: next, result: undefined };
+  });
 }
 
 /**

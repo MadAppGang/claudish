@@ -90,6 +90,7 @@ describe("Group 1: MCP Protocol — session tools", () => {
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      "allowance_status",
       "cancel_session",
       "capture_session",
       "compare_models",
@@ -310,6 +311,7 @@ for (const [toolMode, expected] of [
   [
     "channel",
     [
+      "allowance_status",
       "cancel_session",
       "capture_session",
       "compare_models",

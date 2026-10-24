@@ -41,13 +41,28 @@
  * test cannot redirect the read. `catalog-client.ts` solved the same problem
  * with an in-memory seam (`_setCatalogEntriesForTest`); `model-catalog.ts` has
  * no equivalent. Until it does, this guard is the backstop.
+ *
+ * A test-only Codex singleton reset later orphaned the credential authority's
+ * instance, and a logout through that old instance deleted the real Codex login.
+ * The guard did not list credential files, so it neither detected nor restored
+ * the deletion. Those files are now guarded too, without plaintext sidecars.
+ *
+ * A concurrent claudish process may legitimately rotate a refresh token during
+ * a run. Restoring the old bytes would reintroduce a consumed token, so valid
+ * changed secrets are reported but kept; only deleted or unusable files are restored.
  */
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
+  fchmodSync,
+  lstatSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
@@ -106,6 +121,47 @@ const GUARDED = [
     remedy: "run the MCP search_models path against a temp HOME instead of the real cache dir",
   },
   {
+    path: join(homedir(), ".claudish", "codex-oauth.json"),
+    label: "REAL CODEX LOGIN",
+    secret: true,
+    remedy:
+      "set process.env.HOME to a temp home before CodexOAuth._resetInstanceForTests(); " +
+      "legacyCodexCredentialsPath() reads process.env.HOME at call time",
+  },
+  {
+    path: join(homedir(), ".claudish", "grok-oauth.json"),
+    label: "REAL GROK LOGIN",
+    secret: true,
+    remedy:
+      "run the Grok credential store in a child process spawned with its own HOME; " +
+      "the store uses os.homedir(), which Bun fixes at process start",
+  },
+  {
+    path: join(homedir(), ".claudish", "gemini-oauth.json"),
+    label: "REAL GEMINI LOGIN",
+    secret: true,
+    remedy:
+      "run the Gemini credential store in a child process spawned with its own HOME; " +
+      "the store uses os.homedir(), which Bun fixes at process start",
+  },
+  {
+    path: join(homedir(), ".claudish", "kimi-oauth.json"),
+    label: "REAL KIMI LOGIN",
+    secret: true,
+    remedy:
+      "run the Kimi credential store in a child process spawned with its own HOME; " +
+      "the store uses os.homedir(), which Bun fixes at process start",
+  },
+  {
+    path: join(homedir(), ".claudish", "accounts", "state.json"),
+    label: "REAL ACCOUNT POOL STATE",
+    secret: true,
+    requireRefreshToken: false,
+    remedy:
+      "point CLAUDISH_ACCOUNTS_DIR at a temp accounts directory or process.env.HOME at a temp home " +
+      "instead of writing the real account pool state",
+  },
+  {
     // The Muse Code login store. Bun 1.4.0's `os.homedir()` ignores a HOME
     // assigned in-process, so a test that "sets a temp HOME" and then calls
     // `defaultMuseStoreDir()` writes HERE. Measured: a full-suite run left this
@@ -128,6 +184,14 @@ const GUARDED = [
       "child process spawned with its own HOME; assigning process.env.HOME does not move homedir()",
   },
   {
+    // The allowance model's shared alert memory and announced transition ids.
+    path: join(homedir(), ".claudish", "accounts", "allowance-alerts.json"),
+    label: "REAL ALLOWANCE ALERT MEMORY",
+    remedy:
+      "point CLAUDISH_ACCOUNTS_DIR at a temp accounts directory instead of evaluating alerts " +
+      "against the real one",
+  },
+  {
     path: join(homedir(), ".claudish", "catalog-incompatible.json"),
     label: "REAL CATALOG CONTRACT SENTINEL",
     remedy:
@@ -136,9 +200,80 @@ const GUARDED = [
   },
 ] as const;
 
+/**
+ * Real DIRECTORIES a run must leave as it found them, compared by their file set
+ * and sizes. The usage ledger is append-only JSONL written by every pooled
+ * request, so a test that drives one without pinning `CLAUDISH_ACCOUNTS_DIR`
+ * mixes test rows into the developer's real usage history, where no later
+ * reader can tell them apart. Nothing is restored: truncating a segment back
+ * to its old size would also delete rows a concurrent real claudish appended
+ * during the run. The guard reports and fails.
+ */
+const GUARDED_DIRS = [
+  {
+    path: join(homedir(), ".claudish", "accounts", "usage"),
+    label: "REAL USAGE LEDGER",
+    remedy:
+      "pin CLAUDISH_ACCOUNTS_DIR to a temp accounts directory before any pooled request or " +
+      "exhausted pool runs (Bun ignores an in-process HOME)",
+  },
+] as const;
+
+/** Relative path → size of every file under `dir`; null when the directory is absent. */
+function dirSnapshot(dir: string): Map<string, number> | null {
+  const files = new Map<string, number>();
+  const walk = (current: string, prefix: string): void => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const abs = join(current, entry.name);
+      if (entry.isDirectory()) walk(abs, rel);
+      else {
+        try {
+          files.set(rel, lstatSync(abs).size);
+        } catch {
+          files.set(rel, -1);
+        }
+      }
+    }
+  };
+  try {
+    statSync(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") return null;
+    files.set("<unreadable>", -1);
+    return files;
+  }
+  try {
+    walk(dir, "");
+  } catch {
+    files.set("<unreadable>", -1);
+  }
+  return files;
+}
+
+/** What changed between two directory snapshots, one line per file. */
+function describeDirDelta(
+  before: Map<string, number> | null,
+  after: Map<string, number> | null
+): string[] {
+  if (before === null && after === null) return [];
+  if (before === null) return ["  - CREATED  the directory", ...describeDirDelta(new Map(), after)];
+  if (after === null) return ["  - REMOVED  the directory"];
+  const notes: string[] = [];
+  for (const name of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+    const a = before.get(name);
+    const b = after.get(name);
+    if (a === undefined) notes.push(`  - added    ${name} (${b} bytes)`);
+    else if (b === undefined) notes.push(`  - REMOVED  ${name}`);
+    else if (a !== b) notes.push(`  - changed  ${name} (${a} -> ${b} bytes)`);
+  }
+  return notes;
+}
+
 interface Snapshot {
   existed: boolean;
   content: string | null;
+  mode: number | null;
   /** `existed` is true but the bytes could not be read, so no restore is possible. */
   unreadable: boolean;
 }
@@ -158,28 +293,32 @@ interface Snapshot {
  * the conflation; anything else routes to `unreadable`, which refuses to act.
  */
 function snapshot(path: string): Snapshot {
+  let mode: number;
   try {
-    statSync(path);
+    mode = statSync(path).mode & 0o7777;
   } catch (err) {
     if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") {
-      return { existed: false, content: null, unreadable: false };
+      return { existed: false, content: null, mode: null, unreadable: false };
     }
     // Present-or-unknown. Never absent, so the delete branch cannot fire.
-    return { existed: true, content: null, unreadable: true };
+    return { existed: true, content: null, mode: null, unreadable: true };
   }
   try {
-    return { existed: true, content: readFileSync(path, "utf-8"), unreadable: false };
+    return { existed: true, content: readFileSync(path, "utf-8"), mode, unreadable: false };
   } catch {
-    return { existed: true, content: null, unreadable: true };
+    return { existed: true, content: null, mode, unreadable: true };
   }
 }
 
 /** Which top-level keys changed — enough to see what a rogue test clobbered. */
-function describeDelta(before: string | null, after: string | null): string[] {
+function describeDelta(before: string | null, after: string | null, namesOnly = false): string[] {
   const parse = (s: string | null): Record<string, unknown> => {
     if (!s) return {};
     try {
-      return JSON.parse(s) as Record<string, unknown>;
+      const value: unknown = JSON.parse(s);
+      return value !== null && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
     } catch {
       return {};
     }
@@ -194,7 +333,7 @@ function describeDelta(before: string | null, after: string | null): string[] {
     if (inA && !inB) notes.push(`  - REMOVED  ${k}`);
     else if (!inA && inB) notes.push(`  - added    ${k}`);
     else if (JSON.stringify(a[k]) !== JSON.stringify(b[k]))
-      notes.push(`  - changed  ${k}${describeSize(a[k], b[k])}`);
+      notes.push(`  - changed  ${k}${namesOnly ? "" : describeSize(a[k], b[k])}`);
   }
   return notes;
 }
@@ -219,6 +358,7 @@ if (cmd.length === 0) {
 }
 
 const before = new Map(GUARDED.map((g) => [g.path, snapshot(g.path)]));
+const dirsBefore = new Map(GUARDED_DIRS.map((g) => [g.path, dirSnapshot(g.path)]));
 /**
  * A credential store gets no `.guard-backup` sidecar and is restored 0600: a
  * sidecar would be a second plaintext copy of a real login that `claudish
@@ -226,6 +366,24 @@ const before = new Map(GUARDED.map((g) => [g.path, snapshot(g.path)]));
  */
 function isSecret(g: (typeof GUARDED)[number]): boolean {
   return "secret" in g && g.secret === true;
+}
+
+/** Valid changed secrets may be concurrent rotations, never restore old tokens over them. */
+function isValidSecret(guarded: (typeof GUARDED)[number], after: Snapshot): boolean {
+  if (!after.existed || after.unreadable || after.content === null) return false;
+  try {
+    const value: unknown = JSON.parse(after.content);
+    if ("requireRefreshToken" in guarded && !guarded.requireRefreshToken) return true;
+    return (
+      value !== null &&
+      typeof value === "object" &&
+      "refresh_token" in value &&
+      typeof value.refresh_token === "string" &&
+      value.refresh_token.trim().length > 0
+    );
+  } catch {
+    return false;
+  }
 }
 
 for (const g of GUARDED) {
@@ -300,8 +458,19 @@ function restoreBytes(guarded: (typeof GUARDED)[number], content: string): void 
     writeFileSync(guarded.path, content, "utf-8");
     return;
   }
-  writeFileSync(guarded.path, content, { mode: 0o600 });
-  chmodSync(guarded.path, 0o600);
+  const temp = `${guarded.path}.guard-restore-${process.pid}-${randomBytes(6).toString("hex")}`;
+  const fd = openSync(temp, "wx", 0o600);
+  try {
+    try {
+      fchmodSync(fd, 0o600);
+      writeFileSync(fd, content, "utf-8");
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temp, guarded.path);
+  } finally {
+    rmSync(temp, { force: true });
+  }
 }
 
 /** Where a failed restore's copy is, or that a credential store has none. */
@@ -311,18 +480,51 @@ function backupNote(guarded: (typeof GUARDED)[number]): string {
     : `  A copy is at ${guarded.path}.guard-backup\n`;
 }
 
-/** Report one file's mutation, put the original bytes back, and explain the fix. */
+/** Keep current secret bytes, enforcing 0600 without undoing a possible rotation. */
+function keepSecret(
+  guarded: (typeof GUARDED)[number],
+  prior: Snapshot,
+  after: Snapshot,
+  delta: string[]
+): void {
+  if (after.mode !== 0o600) {
+    chmodSync(guarded.path, 0o600);
+    process.stderr.write("\n  Repaired secret file permissions to 0600.\n");
+  }
+  if (prior.content === after.content) return;
+  process.stderr.write(
+    `\n  WARNING — kept ${guarded.path}: valid credentials or account state may have been\n` +
+      "  saved by another claudish process. Restoring old tokens could reuse a consumed refresh token.\n"
+  );
+  if (delta.length === 0) process.stderr.write("  No top-level key names changed.\n");
+}
+
+/** Report a mutation, repair damage without undoing a valid rotation, and explain the fix. */
 function reportAndRestore(guarded: (typeof GUARDED)[number], after: Snapshot): void {
-  const prior = before.get(guarded.path) ?? { existed: false, content: null, unreadable: false };
-  const verb = prior.existed ? "wrote" : "CREATED";
+  const prior = before.get(guarded.path) ?? {
+    existed: false,
+    content: null,
+    mode: null,
+    unreadable: false,
+  };
+  const secret = isSecret(guarded);
+  const verb = prior.existed ? "changed" : "CREATED";
   process.stderr.write(
     `\n\x1b[31m✗ ${guarded.label} MUTATED\x1b[0m — something in that command ${verb} ${guarded.path}\n`
   );
-  for (const line of describeDelta(prior.content, after.content)) {
+  const delta = describeDelta(prior.content, after.content, secret);
+  for (const line of delta) {
     process.stderr.write(`${line}\n`);
   }
   try {
-    if (prior.existed && prior.content !== null) {
+    if (
+      prior.existed &&
+      secret &&
+      after.content !== null &&
+      (prior.content === after.content || isValidSecret(guarded, after))
+    ) {
+      keepSecret(guarded, prior, after, delta);
+    } else if (prior.existed && prior.content !== null) {
       restoreBytes(guarded, prior.content);
       process.stderr.write("\n  Restored it from the pre-run snapshot.\n");
     } else if (prior.existed && prior.unreadable) {
@@ -331,6 +533,12 @@ function reportAndRestore(guarded: (typeof GUARDED)[number], after: Snapshot): v
       process.stderr.write(
         "\n  \x1b[31mCANNOT RESTORE\x1b[0m — the file existed before the run but could not be read,\n" +
           "  so there is no snapshot to put back. Its current contents are whatever the run left.\n"
+      );
+    } else if (secret) {
+      // A test-created credential is test data, not another plaintext login to keep.
+      rmSync(guarded.path, { force: true });
+      process.stderr.write(
+        `\n  Deleted test-created secret ${guarded.path}; no sidecar was kept.\n`
       );
     } else {
       // Absent before, present after: the run CREATED a real file. Taking it out
@@ -364,31 +572,72 @@ function reportAndRestore(guarded: (typeof GUARDED)[number], after: Snapshot): v
   );
 }
 
-child.on("exit", (code, signal) => {
-  rmSync(sentinelDir, { recursive: true, force: true });
+let finished = false;
+let forwardedSignal: NodeJS.Signals | null = null;
+function forwardSignal(signal: NodeJS.Signals): void {
+  forwardedSignal ??= signal;
+  child.kill(signal);
+}
+process.on("SIGINT", () => forwardSignal("SIGINT"));
+process.on("SIGTERM", () => forwardSignal("SIGTERM"));
+
+function finish(code: number | null, signal: NodeJS.Signals | null = null): void {
+  if (finished) return;
+  finished = true;
   // Every guarded file is checked and restored before the first exit, so one
   // clobbered file cannot mask a second. Reporting only the first would send
   // the author to fix one test while another keeps rewriting the machine.
   let mutated = false;
   for (const g of GUARDED) {
-    const prior = before.get(g.path) ?? { existed: false, content: null, unreadable: false };
+    const prior = before.get(g.path) ?? {
+      existed: false,
+      content: null,
+      mode: null,
+      unreadable: false,
+    };
     const after = snapshot(g.path);
+    // Only a mode THE RUN changed. A login that was already wider than 0600 before
+    // the run (an older build wrote some at 0644) is the developer's own state, not
+    // test damage; flagging it would fail every run and chmod a file nothing touched.
+    const modeChanged = isSecret(g) && prior.existed && after.existed && prior.mode !== after.mode;
     const changed =
-      prior.existed !== after.existed || (prior.content ?? null) !== (after.content ?? null);
+      prior.existed !== after.existed ||
+      prior.unreadable !== after.unreadable ||
+      prior.content !== after.content ||
+      modeChanged;
     if (!changed) continue;
     mutated = true;
     reportAndRestore(g, after);
   }
+  for (const g of GUARDED_DIRS) {
+    const delta = describeDirDelta(dirsBefore.get(g.path) ?? null, dirSnapshot(g.path));
+    if (delta.length === 0) continue;
+    mutated = true;
+    process.stderr.write(
+      `\n\x1b[31m✗ ${g.label} MUTATED\x1b[0m — something in that command changed ${g.path}\n`
+    );
+    for (const line of delta) process.stderr.write(`${line}\n`);
+    process.stderr.write(
+      "\n  Not restored: a concurrent claudish may have appended real rows during the run.\n" +
+        `  Tests must ${g.remedy}.\n` +
+        "  See scripts/guard-real-config.ts for the history.\n\n"
+    );
+  }
+  rmSync(sentinelDir, { recursive: true, force: true });
 
   if (mutated) process.exit(1);
-  if (signal) {
-    process.stderr.write(`\n[guard] command terminated by ${signal}; guarded files intact.\n`);
+  const terminationSignal = signal ?? forwardedSignal;
+  if (terminationSignal) {
+    process.stderr.write(
+      `\n[guard] command terminated by ${terminationSignal}; guarded files intact.\n`
+    );
     process.exit(1);
   }
   process.exit(code ?? 0);
-});
+}
 
+child.on("exit", finish);
 child.on("error", (err) => {
   process.stderr.write(`[guard] failed to run command: ${err.message}\n`);
-  process.exit(1);
+  finish(1);
 });

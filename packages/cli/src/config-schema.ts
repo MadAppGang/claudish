@@ -10,14 +10,13 @@
  * rejected `""`, which is a valid value (no fallback provider), and listed
  * `anthropic`, which is not a claudish provider.
  *
- * NOTE: This module is intentionally NOT imported by `profile-config.ts`.
- * Validation happens at the consumption site (Phase 3 will add a
- * `loadCustomEndpoints()` helper that calls Zod and warns on invalid entries).
- * Keeping `profile-config.ts` Zod-free matters because `loadConfig` is called
- * from many lightweight code paths.
+ * Endpoint validation happens at the consumption site. The accounts config
+ * transaction also imports this module: every global save must validate and
+ * preserve the disk-owned accounts block under the shared config lock.
  */
 
 import { z } from "zod";
+import { CODEX_WINDOW_SLOTS } from "./auth/quota/codex-window-slots.js";
 
 /**
  * How a custom endpoint authenticates.
@@ -222,6 +221,103 @@ export const PredefinedEndpointsConfigSchema = z.object({
 });
 
 export type CustomEndpointWire = z.infer<typeof CustomEndpointWireSchema>;
+
+/**
+ * The subscription account lists, one per provider, as they appear in `config.json`.
+ *
+ * ```jsonc
+ * "subscriptionAccounts": {
+ *   "openai-codex": {
+ *     "generation": 3,
+ *     "switchAt": 0.9,
+ *     "switchAtByWindow": { "primary": 0.8 },
+ *     "accounts": [
+ *       { "id": "a1b2c3d4e5f6", "label": "work", "store": "keychain",
+ *         "addedAt": "2026-09-01T10:00:00Z",
+ *         "identity": { "chatgptAccountId": "…", "plan": "pro" } }
+ *     ]
+ *   }
+ * }
+ * ```
+ *
+ * NO SECRETS, and no `owner` — the named refresher lives in `state.json` alone.
+ *
+ * **`switchAtByWindow` is keyed on the STABLE SLOT ID**, not on the formatted
+ * duration. `scrapeCodexHeaders` replaces a slot's id with
+ * `formatWindowMinutes(minutes)` whenever `window-minutes` is present, so
+ * production Codex windows render as `"5h"`/`"7d"` — values that change with the
+ * user's plan. A threshold keyed on those silently never matches.
+ *
+ * Codex keys are therefore the closed set `"primary"`/`"secondary"`, and a
+ * mistyped one is REJECTED rather than ignored. Anthropic's keys are its window
+ * names, which are DISCOVERED from the response headers and deliberately not
+ * pinned here: the vendor may change its window set, and a closed list would
+ * turn that into "this account reports no usage".
+ *
+ * `id` is generated and opaque because it is interpolated into two PATHS
+ * (`locks/<provider>/<id>.lock`, `tokens/<provider>/<id>.json`); the pattern is
+ * what keeps an account-list edit from becoming a path traversal.
+ */
+export const AccountIdentitySchema = z.object({
+  accountUuid: z.string().optional(),
+  chatgptAccountId: z.string().optional(),
+  email: z.string().optional(),
+  plan: z.string().optional(),
+});
+
+export const AccountStoreKindSchema = z.enum(["keychain", "file", "legacy-codex-file"]);
+
+export const SubscriptionAccountSchema = z.object({
+  id: z.string().regex(/^[a-z0-9]{12}$/, "account ids are generated, 12 lowercase alphanumerics"),
+  label: z.string().regex(/^[\w][\w .-]{0,31}$/, "labels are 1-32 word characters, . - or space"),
+  identity: AccountIdentitySchema.optional(),
+  store: AccountStoreKindSchema,
+  enabled: z.boolean().optional(),
+  addedAt: z.string(),
+});
+
+/** Codex slot names. Positions, not durations — see the block comment above. */
+export const CodexWindowSlotSchema = z.enum(CODEX_WINDOW_SLOTS.map((slot) => slot.fallbackId));
+
+export const SubscriptionAccountsEntrySchema = z.object({
+  enabled: z.boolean().optional(),
+  switchAt: z.number().min(0).max(1).optional(),
+  switchAtByWindow: z.record(z.string(), z.number().min(0).max(1)).optional(),
+  noticeAcceptedAt: z.string().optional(),
+  legacyCodexSuppressed: z.boolean().optional(),
+  /**
+   * The allowance model's selection strategy, exactly `DEPLOYABLE`
+   * (`allowance/strategies/strategy.ts`). Declared here because the entry is a
+   * non-strict object: an undeclared key is stripped on parse and lost on the
+   * first `account add`/`remove` write. Absent means `sticky`.
+   */
+  strategy: z.enum(["sticky", "ebr", "lookahead"]).optional(),
+  generation: z.number().int().min(0),
+  accounts: z.array(SubscriptionAccountSchema),
+});
+
+export const SubscriptionAccountsSchema = z
+  .object({
+    "native-anthropic": SubscriptionAccountsEntrySchema.optional(),
+    "openai-codex": SubscriptionAccountsEntrySchema.optional(),
+  })
+  .superRefine((block, ctx) => {
+    for (const key of Object.keys(block["openai-codex"]?.switchAtByWindow ?? {})) {
+      if (CodexWindowSlotSchema.safeParse(key).success) continue;
+      ctx.addIssue({
+        code: "custom",
+        path: ["openai-codex", "switchAtByWindow", key],
+        message:
+          `"${key}" is not a Codex window slot. Use "primary" or "secondary" — the ` +
+          'formatted durations ("5h", "7d") are display ids that change with the plan, ' +
+          "so a threshold keyed on one silently never matches.",
+      });
+    }
+  });
+
+export type SubscriptionAccountEntryConfig = z.infer<typeof SubscriptionAccountsEntrySchema>;
+export type SubscriptionAccountsBlock = z.infer<typeof SubscriptionAccountsSchema>;
+
 export type CustomEndpointSimple = z.infer<typeof CustomEndpointSimpleSchema>;
 export type CustomEndpointComplex = z.infer<typeof CustomEndpointComplexSchema>;
 export type CustomEndpoint = z.infer<typeof CustomEndpointSchema>;

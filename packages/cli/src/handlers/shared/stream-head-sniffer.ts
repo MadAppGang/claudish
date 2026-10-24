@@ -21,6 +21,9 @@
  *
  * Sniffing stops at the first DECISIVE event:
  *   - a retryable error   → caller retries the upstream request
+ *   - a usage-limit error → `quota`: the subscription window is spent, which a
+ *                           backoff cannot fix. The caller marks the account and
+ *                           rotates or surfaces the reason.
  *   - anything else       → `clean`, and the consumed bytes are replayed so the
  *                           real parser sees a byte-identical stream
  *
@@ -34,6 +37,8 @@
  * graceful degradation to the previous behaviour, never a hang.
  */
 
+import { parseCodexUsageLimit } from "./codex-usage-limit.js";
+
 /** Wall-clock ceiling on withholding response headers while sniffing. */
 export const DEFAULT_SNIFF_BUDGET_MS = 12_000;
 
@@ -41,7 +46,34 @@ export const DEFAULT_SNIFF_BUDGET_MS = 12_000;
  * Events that carry no content and are always emitted before an error verdict.
  * Sniffing continues past these.
  */
-const PREAMBLE_EVENTS = new Set(["response.created", "response.in_progress"]);
+const PREAMBLE_EVENTS = new Set(["response.created", "response.in_progress", "response.queued"]);
+
+/**
+ * Event types that mean REAL OUTPUT HAS BEGUN.
+ *
+ * Used only in extended mode, where the rule "any non-preamble event means
+ * output began" is replaced by "any CONTENT OR TOOL DELTA means output began".
+ * The distinction matters because the Codex backend interleaves metadata events
+ * that carry no content, and treating those as output made an in-stream quota
+ * frame unreachable the moment one arrived.
+ *
+ * Everything that can carry model output, a tool call, or the end of the
+ * response is listed by prefix/suffix rather than enumerated exhaustively: a
+ * NEW delta family the vendor adds must read as output (fail-safe), while an
+ * unrecognised metadata event merely continues the sniff and is logged by name.
+ */
+function isOutputEvent(type: string): boolean {
+  if (!type.startsWith("response.")) return false;
+  if (PREAMBLE_EVENTS.has(type)) return false;
+  return (
+    type.endsWith(".delta") ||
+    type.endsWith(".done") ||
+    type.startsWith("response.output_item.") ||
+    type.startsWith("response.content_part.") ||
+    type === "response.completed" ||
+    type === "response.incomplete"
+  );
+}
 
 /**
  * Error codes worth retrying: upstream capacity/transient faults. Deliberately
@@ -70,7 +102,23 @@ export type StreamHeadVerdict =
   /** Nothing retryable at the head. `response` replays the consumed bytes. */
   | { kind: "clean"; response: Response }
   /** Upstream reported a transient fault before emitting any content. */
-  | { kind: "retryable"; code: string; message: string };
+  | { kind: "retryable"; code: string; message: string }
+  /**
+   * Upstream reported that the SUBSCRIPTION WINDOW is spent, before any content.
+   *
+   * Distinct from `retryable` because the remedy is different in kind: a spent
+   * window does not recover on a backoff schedule, so re-issuing the same body
+   * on the same account burns 3 s + 15 s + 30 s and then fails anyway. The
+   * caller marks the account and either rotates to another one or surfaces the
+   * reason. Carries no `response`: the upstream body has been cancelled.
+   */
+  | {
+      kind: "quota";
+      code: string;
+      message: string;
+      resetsInSeconds?: number;
+      resetsAt?: number;
+    };
 
 /**
  * Decide whether an in-stream error code/type/message is worth a retry.
@@ -98,10 +146,35 @@ export function isRetryableStreamError(code: string, type: string, message: stri
  */
 export async function sniffResponsesStreamHead(
   response: Response,
-  opts: { budgetMs?: number; log?: (message: string) => void } = {}
+  opts: {
+    budgetMs?: number;
+    log?: (message: string) => void;
+    /**
+     * Widen the watch so an in-stream quota verdict is ACTIONABLE.
+     *
+     * True only when the caller can actually do something with the verdict —
+     * i.e. a pooled OAuth request with at least one other eligible account. It
+     * governs ROTATION-shaped behaviour only:
+     *
+     *  - false (the default, and every non-pooled stream): today's rules, byte
+     *    for byte — the 12 s wall-clock budget, the narrow preamble set, "any
+     *    other event means output has begun", fail-open on budget / read error /
+     *    done. The quota test still runs (see below), so the account is still
+     *    CLASSIFIED and can be MARKED; what false mode does not do is rotate.
+     *  - true: the budget becomes an IDLE timeout, metadata events keep the
+     *    sniff alive, and only a content or tool delta ends it.
+     *
+     * The classify half is unconditional BY DESIGN: a one-account user's
+     * exhaustion must still be recorded, or the all-accounts message can never
+     * list its reset. It costs one string test on the error branch of a stream
+     * that has already failed.
+     */
+    extendedQuotaWatch?: boolean;
+  } = {}
 ): Promise<StreamHeadVerdict> {
   const budgetMs = opts.budgetMs ?? DEFAULT_SNIFF_BUDGET_MS;
   const logMsg = opts.log ?? (() => {});
+  const extended = opts.extendedQuotaWatch === true;
 
   // No body to inspect (HEAD-like, or an already-consumed response): pass through.
   if (!response.body) return { kind: "clean", response };
@@ -110,7 +183,24 @@ export async function sniffResponsesStreamHead(
   const decoder = new TextDecoder();
   const consumed: Uint8Array[] = [];
   let pending = "";
-  const deadline = Date.now() + budgetMs;
+  /**
+   * In DEFAULT mode this is a wall-clock ceiling, exactly as before.
+   *
+   * In EXTENDED mode it is reset on every event received, making it an IDLE
+   * timeout — which is what the module's own rationale actually names ("so a
+   * stalled upstream cannot hold the client's headers hostage"). A stream still
+   * emitting metadata is not stalled, and a hard ceiling handed such a stream to
+   * the parser mid-thought, putting the quota frame that arrived at 31 s into
+   * the transcript as assistant text.
+   */
+  let deadline = Date.now() + budgetMs;
+  /**
+   * Has a content or tool delta been seen? The quota verdict is UNREACHABLE
+   * after one: re-issuing a request whose prefix already reached the client
+   * would duplicate that prefix. This guard — not the fallthrough rule — is what
+   * makes that true.
+   */
+  let sawOutput = false;
 
   /** Rebuild a Response that replays `consumed`, then drains `reader`. */
   const replayResponse = (): Response => {
@@ -174,6 +264,9 @@ export async function sniffResponsesStreamHead(
 
       consumed.push(result.value);
       pending += decoder.decode(result.value, { stream: true });
+      // Extended mode measures IDLE time: a chunk arrived, so the upstream is
+      // not stalled and the clock starts again.
+      if (extended) deadline = Date.now() + budgetMs;
 
       // Consume whole lines only; a partial trailing line stays in `pending`.
       const lines = pending.split("\n");
@@ -202,6 +295,35 @@ export async function sniffResponsesStreamHead(
           const errType = String(err.type ?? event.error_type ?? "");
           const message = String(err.message ?? event.message ?? "Unknown API error");
 
+          // QUOTA IS TESTED FIRST, IN BOTH MODES, AND THE ORDER IS LOAD-BEARING.
+          //
+          // A spent window does not recover on a backoff schedule. Classifying
+          // one as `retryable` burns 3 s + 15 s + 30 s re-issuing the same body
+          // against the same exhausted account and then answers 503 — and the
+          // vendor's own prose sits close enough to the retryable fallback's
+          // vocabulary that the ordering cannot be left to luck.
+          //
+          // The classification runs even when rotation is off: an unmarked
+          // exhaustion cannot appear in the all-accounts message later.
+          const limit = sawOutput ? null : parseCodexUsageLimit(event);
+          if (limit) {
+            void reader.cancel().catch(() => {});
+            logMsg(
+              `[StreamSniff] in-stream ${limit.code}${
+                limit.resetsInSeconds ? ` (resets in ${limit.resetsInSeconds}s)` : ""
+              }${extended ? "" : " — classify only, rotation is off for this stream"}`
+            );
+            return {
+              kind: "quota",
+              code: limit.code,
+              message: limit.message,
+              ...(limit.resetsInSeconds === undefined
+                ? {}
+                : { resetsInSeconds: limit.resetsInSeconds }),
+              ...(limit.resetsAt === undefined ? {} : { resetsAt: limit.resetsAt }),
+            };
+          }
+
           if (isRetryableStreamError(code, errType, message)) {
             // Drop the dead connection; the caller re-issues the request.
             void reader.cancel().catch(() => {});
@@ -211,9 +333,21 @@ export async function sniffResponsesStreamHead(
           return { kind: "clean", response: replayResponse() };
         }
 
-        // Any other event means real output has begun: retrying is no longer
-        // safe or useful.
-        return { kind: "clean", response: replayResponse() };
+        if (!extended) {
+          // DEFAULT MODE, UNCHANGED: any other event means real output has begun,
+          // so retrying is no longer safe or useful.
+          return { kind: "clean", response: replayResponse() };
+        }
+
+        // EXTENDED MODE: only a content or tool delta ends the sniff. An
+        // unrecognised metadata event keeps it alive and is logged BY NAME, so a
+        // vocabulary change shows up in a log rather than as a silent behaviour
+        // change.
+        if (isOutputEvent(type)) {
+          sawOutput = true;
+          return { kind: "clean", response: replayResponse() };
+        }
+        logMsg(`[StreamSniff] non-decisive event "${type}" — still watching`);
       }
     }
   } catch (error) {

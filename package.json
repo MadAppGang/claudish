@@ -1,12 +1,10 @@
 {
   "name": "claudish-monorepo",
-  "version": "14.4.1",
+  "version": "14.5.0",
   "private": true,
   "description": "Monorepo for Claudish - Run Claude Code with any model",
   "type": "module",
-  "workspaces": [
-    "packages/*"
-  ],
+  "workspaces": ["packages/*"],
   "scripts": {
     "dev": "cd packages/cli && exec bun --no-env-file run src/index.ts",
     "dev:mcp": "bun run --cwd packages/cli dev:mcp",
@@ -25,6 +23,7 @@
     "test:mcp": "bun run packages/cli/src/mcp-e2e/runner.ts",
     "test:mcp:op": "bun run packages/cli/src/mcp-e2e/runner.ts --group op",
     "madbench": "bun run packages/cli/src/madbench/runner.ts",
+    "sim:allowance": "bun run packages/cli/src/auth/accounts/allowance/sim/cli.ts",
     "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules",
     "postinstall": "node scripts/postinstall.cjs"
   },

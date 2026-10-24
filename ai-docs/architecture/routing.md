@@ -477,8 +477,10 @@ consent to be billed by it. The rule it replaced (2026-10-16, amended 2026-10-20
 chain, then tried only later subscription hops, so one stale key on a plan the user had stopped
 paying for hid every metered key they held. Billing follows the signing arm of the hop that
 served. Connection faults, the recovery hold and stream failures still hold the chain, so a network
-fault never walks onto metered billing. The mechanism is in `adapters.md` ("A subscription's
-credential failure").
+fault never walks onto metered billing. A model the plan does not carry and a spent allowance
+advance too; for a Codex account pool "spent" means no account is eligible, and a request that
+merely used its one account rotation answers a transient 429 on the same hop instead
+(`accounts.md`). The mechanism is in `adapters.md` ("A subscription's credential failure").
 
 The backend recommendation projection supplies canonical model IDs and exact
 route/profile identities. Claudish resolves them against the generation-pinned
@@ -608,7 +610,7 @@ says so.** `authority.ts:157` registers the Codex composite BEFORE the generic p
 and `:192-205` blocks the generic `ApiKeyCredentialProvider` from claiming the name, so the
 provider that would have been built with `aliases: def.apiKeyAliases` is never built for
 `openai-codex`; the composite's own fallback declares no aliases at all
-(`codex-credential.ts:79-82`). `auth/credentials/equivalence.test.ts:302-305` —
+(`makeCodexCredential()` in `codex-credential.ts`). `auth/credentials/equivalence.test.ts:302-305` —
 *"OPENAI_API_KEY alias alone → false (excluded)"* — asserts it. The alias survives only in
 display and hint code (`tui/providers.ts`, `keychain-command.ts`, `getApiKeyInfo`), which is
 its own cosmetic bug: the config TUI shows `cx@` as key-configured from a key that cannot
@@ -616,9 +618,9 @@ sign it.
 
 The real dual mode is **two hosts**, which is a code fact rather than an inference: OAuth
 (`codex-oauth.json`) signs `chatgpt.com/backend-api/codex/responses`
-(`codex-credential.ts:17`, `:54`), while `OPENAI_CODEX_API_KEY` signs
-`api.openai.com/v1/responses` (`provider-definitions.ts:408`, `:410`), and
-`transport/openai-codex.ts:11-15` documents that OAuth tokens do not work against
+(`CODEX_RESPONSES_ENDPOINT` in `codex-credential.ts`), while `OPENAI_CODEX_API_KEY` signs
+`api.openai.com/v1/responses` (`provider-definitions.ts:408`, `:410`), and the
+`transport/openai-codex.ts` header documents that OAuth tokens do not work against
 `api.openai.com` at all. Whether that second host bills per token was inferred until
 **2026-09-02, when it was measured**: a platform key against exactly that host and path
 returns `200` with `"billing": {"payer": "developer"}` in the response body — the endpoint
@@ -633,16 +635,34 @@ silently under-reports real money. So the answer comes from a probe registered b
 layer (`auth/credentials/billing-probe.ts`, installed only as a side effect of importing
 `auth/credentials/authority.ts`), and every uncertainty resolves toward **metered**:
 
-- The transport records which arm actually signed (`transport/openai-codex.ts` calls
-  `recordSignedArm` at the end of `refreshAuth`). That record is read FIRST, because
-  `refreshAuth` catches every failure and falls through to the plain api-key path — so
-  "OAuth present, api-key signing" is reachable per request whenever a token refresh fails.
+- The transport records which arm actually signed: `OpenAICodexTransport.signRequest()` calls
+  `recordSignedArm` from the ACCEPTED artifact's `arm` (`"oauth"` ⇒ subscription, anything else
+  ⇒ metered), after a pre-record check that rejects a non-OAuth artifact wherever OAuth is
+  reserved, and has no catch. Once an account is configured (a Codex row in
+  `subscriptionAccounts`, enabled or not, or the unsuppressed legacy `codex-oauth.json`) the
+  composite commits to `CodexPoolHalf` and never falls through to `OPENAI_CODEX_API_KEY`: a
+  failed refresh or an unreadable account list is a typed accounts error answered by the shared
+  classifier (`accounts.md`, "The error surface, as built"). Nothing is signed and nothing is
+  recorded, so "OAuth configured, api-key signing" is not reachable; the key signs only when no
+  account is configured. The record is still read FIRST because it is exact for the request
+  that signed (`TokenTracker.getPricing` asks again on every stream delta), while the probe below
+  predicts. The Codex `refreshAuth()` bridge is deleted.
 - Before any request has been signed, the probe answers "which credential WOULD sign" with
-  `CodexOAuth.getInstance().hasCredentials()` — the same predicate the composite uses to pick
-  its primary (`composite-credential.ts:50` → `codex-credential.ts:45-47`). **Never**
-  `hasOAuthCredentials` or `describeSourceSync`: both return true for an `access_token` with
-  an unexpired `expires_at` and no `refresh_token` (`oauth-registry.ts:88-97`), a state where
-  `hasCredentials()` is false and the API key signs.
+  `getAccountRegistry().mayHaveConfiguredAccounts("openai-codex")`: the same presence fact
+  `CodexPoolHalf.isAvailable()` reads, except that an unreadable or invalid account list answers
+  subscription instead of throwing. Safe as money, since that state meters nothing: the request
+  fails with a typed error. A throw from the registered callback is contained as subscription.
+  **Never** `CodexOAuth.hasCredentials()`, `hasOAuthCredentials` or `describeSourceSync`: the
+  first ignores configured rows and suppression, and the other two return true for an
+  `access_token` with an unexpired `expires_at` and no `refresh_token`
+  (`oauth-registry.ts:88-97`), a state where the API key signs.
+- **A failed Codex account list keeps its route candidate.** `applyCandidateFilters` drops a
+  `failed` readiness verdict, which for Codex would send a bare `gpt-*` to the next, metered hop
+  whenever `config.json` was momentarily unreadable. The authority marks a failure caused by the
+  account list with `failureReason: "accounts-list"`, and `isCodexAccountsFailure` keeps that
+  candidate at its position with its diagnostic and unknown availability (no discovery call), so
+  the handler answers the typed 503 (I/O) or 400 (malformed config). Every other failed
+  credential is still filtered.
 - Unregistered probe ⇒ metered. Safe as money; the cost is one suppressed cost warning at
   `routing-rules.ts:413`.
 
