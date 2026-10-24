@@ -90,6 +90,9 @@ export interface TurnView {
   delivery: { file: string; lines: number } | null;
   readCoverage: ReadCoverage;
   preambleBytes: number;
+  /** files the turn created or overwrote with a successful `Write`, de-duplicated, in first-write
+   * order; for a file-delivered turn only Writes after the same Read cut as assistantText */
+  writtenFiles: string[];
   /** offset of the last main-chain chat record (user or assistant) of this turn */
   lastChatOffset: number | null;
   /** a local command's `<local-command-stdout>` after its witness (ANSI removed); null otherwise */
@@ -142,6 +145,8 @@ interface TurnState {
   acceptedAt: string | null;
   acceptedOffset: number | null;
   texts: Array<{ offset: number; text: string }>;
+  /** Write tool_uses; ok once a non-error tool_result arrives */
+  writes: Array<{ id: string; path: string; offset: number; ok: boolean }>;
   lastAssistant: {
     messageId: string;
     stopReason: string | null;
@@ -468,6 +473,9 @@ function applyAssistantBlock(state: FollowerState, t: TurnState, b: Rec, offset:
   if (b?.type !== "tool_use" || typeof b.id !== "string") return;
   t.pending.set(b.id, String(b.name ?? ""));
   t.pendingInput.set(b.id, b.input);
+  // Write only: an Edit changes a file that predates the task, so its text proves nothing.
+  if (b.name === "Write" && typeof b.input?.file_path === "string")
+    t.writes.push({ id: b.id, path: b.input.file_path, offset, ok: false });
   if (b.name === "Bash" && b.input?.run_in_background)
     t.shellToolIds.set(b.id, String(b.input?.command ?? ""));
   applyReadUse(state, t, b);
@@ -479,12 +487,21 @@ function applyToolResults(t: TurnState, r: Rec, blocks: Rec[], offset: number): 
     if (b?.type !== "tool_result") continue;
     t.pending.delete(b.tool_use_id);
     t.pendingInput.delete(b.tool_use_id);
+    markWriteResult(t, b);
     // A background agent is recognised by its result, not by run_in_background in its input.
     if (tur?.isAsync === true && typeof tur.agentId === "string") t.agents.add(tur.agentId);
     if (typeof tur?.backgroundTaskId === "string")
       t.shells.set(tur.backgroundTaskId, t.shellToolIds.get(b.tool_use_id) ?? "");
     applyReadResult(t, r, b, offset);
   }
+}
+
+/** A Write counts once its tool_result arrives without is_error: a failed overwrite leaves
+ * the old content, which is not an answer. */
+function markWriteResult(t: TurnState, b: Rec): void {
+  if (b.is_error === true) return;
+  const w = t.writes.find((x) => x.id === b.tool_use_id);
+  if (w) w.ok = true;
 }
 
 const STDOUT_RE = /^\s*<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/;
@@ -656,6 +673,7 @@ export function openTurnState(
     acceptedAt: null,
     acceptedOffset: null,
     texts: [],
+    writes: [],
     lastAssistant: null,
     td: null,
     stopHookAfterLast: false,
@@ -681,6 +699,7 @@ export function openTurnState(
 export function turnView(t: TurnState): TurnView {
   const rs = t.read;
   let texts = t.texts;
+  let writes = t.writes;
   let preambleBytes = 0;
   if (rs) {
     const cut = rs.completedAtOffset ?? rs.lastReadOffset;
@@ -688,6 +707,8 @@ export function turnView(t: TurnState): TurnView {
       const before = texts.filter((x) => x.offset < cut);
       preambleBytes = before.reduce((n, x) => n + Buffer.byteLength(x.text), 0);
       texts = texts.filter((x) => x.offset > cut);
+      // A file written before the task was read cannot answer it, exactly as narration cannot.
+      writes = writes.filter((x) => x.offset > cut);
     }
   }
   const pendingEntry = [...t.pending.entries()].pop();
@@ -725,6 +746,7 @@ export function turnView(t: TurnState): TurnView {
         }
       : { linesReturned: 0, complete: true, reads: 0, completedAtOffset: null },
     preambleBytes,
+    writtenFiles: [...new Set(writes.filter((x) => x.ok).map((x) => x.path))],
     lastChatOffset: t.lastChatOffset,
     localCommandOutput: t.localOutput?.text ?? null,
     recent: [...t.steps],

@@ -163,6 +163,11 @@ export interface ModelStatus {
   claudeCodeVersion?: string | null;
   /** Facts worth a reader's attention that are not failures (R3-M5, truncation). */
   anomalies?: string[];
+  /**
+   * Where the answer in `response-<id>.md` came from: `"reply"` (the turn's assistant text) or
+   * `"file:<path>"` (a file the slot wrote with Write, MTL-229). Absent when no verdict was reached.
+   */
+  answerSource?: string;
 }
 
 export interface TeamStatus {
@@ -205,6 +210,13 @@ export interface TeamRunOptions {
    * answer that begins with its verdict even when the model narrated before reading.
    */
   requirePattern?: string;
+  /**
+   * The directory a slot's written files must lie in to be read as its answer (MTL-229):
+   * a relative Write path resolves against it, and each file's realpath must be inside its
+   * realpath. Default `process.cwd()`, the slot's working directory. It does NOT change the
+   * child's working directory.
+   */
+  answerRoot?: string;
   /**
    * Called on a timer with a rendered, colourless progress block, and once more
    * when the run settles. Used to push live status somewhere a human can see it
@@ -357,6 +369,8 @@ interface SlotEntry {
   /** what `response-<id>.md` holds once it was written (decide, onBlocked or terminal) */
   answer: string | null;
   stopReason: string | null;
+  /** ModelStatus.answerSource; set by the verdict */
+  answerSource?: string;
   /** the slot's session-hook binding (§7.4); null = today's index formulas */
   binding?: SessionHookBinding | null;
   /** the owner-created hook inbox; removed at reap */
@@ -888,6 +902,11 @@ export function snippetHeadAndTail(text: string): string {
  */
 export const DEFAULT_MIN_OUTPUT_BYTES = 0;
 
+/** Added to a COMPLETED slot's detail and anomalies when its answer came from a written file. */
+function fileAnswerNote(path: string): string {
+  return `answer was written to ${path}, not to the reply`;
+}
+
 /** Added to `detail` (or the COMPLETED slot's anomalies) when the turn ended on max_tokens. */
 export const TRUNCATION_NOTE =
   "the turn ended on stop_reason max_tokens, so the answer may be truncated";
@@ -986,12 +1005,74 @@ function classifyShape(
   return {
     state: "EMPTY",
     reason: "shape_mismatch",
-    detail:
-      `The answer (${Buffer.byteLength(answer, "utf8")} B of assistant text after the task was ` +
-      `read) does not match the required pattern /${requirePattern}/. Every assistant message ` +
-      "of the turn was read from the transcript, so nothing was lost: the model did not " +
-      "produce the shape. Re-prompt it, or relax the contract.",
+    detail: shapeDetail(answer, requirePattern, null),
   };
+}
+
+/**
+ * The `shape_mismatch` detail. `files` is what the turn wrote with Write and what became of
+ * each (MTL-229); null where written files are not consulted (a direct classifyRunOutput).
+ */
+function shapeDetail(answer: string, requirePattern: string, files: string[] | null): string {
+  const reply = `reply (${Buffer.byteLength(answer, "utf8")} B of assistant text after the task was read) does not match`;
+  const advice = "Re-prompt it, or relax the contract.";
+  if (!files) return `The ${reply} the required pattern /${requirePattern}/. ${advice}`;
+  const wrote = files.length ? `the turn wrote ${files.join(", ")}` : "the turn wrote no file";
+  return `No reply text or written file matched /${requirePattern}/: the ${reply}, and ${wrote}. ${advice}`;
+}
+
+/**
+ * A reply's failure detail with what became of the files the turn wrote (MTL-229). A
+ * shape_mismatch is restated with them, keeping classifyRunOutput's truncation note.
+ */
+function answerFailureDetail(
+  v: Verdict,
+  answer: string,
+  requirePattern: string | undefined,
+  outcomes: string[]
+): string {
+  if (v.reason === "shape_mismatch" && requirePattern) {
+    const note = v.detail.endsWith(`(${TRUNCATION_NOTE})`) ? ` (${TRUNCATION_NOTE})` : "";
+    return `${shapeDetail(answer, requirePattern, outcomes)}${note}`;
+  }
+  if (outcomes.length) return `${v.detail} The turn wrote ${outcomes.join(", ")}.`;
+  return v.detail;
+}
+
+/** A written file larger than this is not read as an answer (MTL-229). */
+const MAX_FILE_ANSWER_BYTES = 1024 * 1024;
+
+/**
+ * A file the slot wrote, read from DISK at verdict time (the truth after any later Edit), or
+ * the reason it is skipped. Contained in `root` by realpath, as validateSessionPath does: its
+ * content goes into response-<id>.md and to the judges, so a Write through a symlink or to a
+ * path outside the run's tree must not pull arbitrary disk content into the run's output.
+ */
+function readWrittenFile(path: string, root: string): { text: string } | { skip: string } {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    realRoot = resolve(root);
+  }
+  let real: string;
+  try {
+    real = realpathSync(resolve(root, path));
+  } catch {
+    return { skip: "missing" };
+  }
+  if (real !== realRoot && !real.startsWith(realRoot + sep))
+    return { skip: "outside the working directory" };
+  try {
+    const st = statSync(real);
+    if (!st.isFile()) return { skip: "not a regular file" };
+    if (st.size > MAX_FILE_ANSWER_BYTES) return { skip: "larger than 1 MiB" };
+    const buf = readFileSync(real);
+    if (buf.includes(0)) return { skip: "binary" };
+    return { text: buf.toString("utf8") };
+  } catch {
+    return { skip: "missing" };
+  }
 }
 
 function classifyAnswer(input: Parameters<typeof classifyRunOutput>[0]): Verdict | null {
@@ -1395,6 +1476,7 @@ async function startModelsIn(
 
   const minOutputBytes = opts.minOutputBytes ?? DEFAULT_MIN_OUTPUT_BYTES;
   const requirePattern = opts.requirePattern;
+  const answerRoot = opts.answerRoot ?? process.cwd();
 
   // Each child writes its token/cost stats here (one file per model).
   mkdirSync(statsDir(path), { recursive: true });
@@ -1447,13 +1529,49 @@ async function startModelsIn(
     return e.session?.turnAnswer(index) ?? "";
   }
 
+  /**
+   * MTL-229: a reply that failed an ANSWER check may have put the deliverable in a file it
+   * wrote. The first file whose on-disk content passes the caller's contract, in write order,
+   * and what became of every file tried before it. Only when the caller set `requirePattern`:
+   * size alone does not prove a file is the deliverable (a min_output_bytes-only slot that
+   * wrote a source module must not become a vote), so without a pattern the files are listed
+   * unread; with one, `minOutputBytes` still applies to the file as an extra floor. Never over
+   * api_error / prompt_not_read / refused, which the classifier returns before these reasons.
+   */
+  function fileAnswerOf(
+    turn: SettledTurn,
+    reason: FailureReason
+  ): { file: { path: string; text: string } | null; outcomes: string[] } {
+    if (reason !== "shape_mismatch" && reason !== "empty_output")
+      return { file: null, outcomes: [] };
+    if (!requirePattern) return { file: null, outcomes: turn.writtenFiles ?? [] };
+    const outcomes: string[] = [];
+    for (const path of turn.writtenFiles ?? []) {
+      const r = readWrittenFile(path, answerRoot);
+      if ("skip" in r) {
+        outcomes.push(`${path} (skipped: ${r.skip})`);
+        continue;
+      }
+      const fv = classifyRunOutput({
+        answer: r.text,
+        apiError: null,
+        stopReason: turn.stopReason,
+        promptRead: turn.chainDelivery,
+        minOutputBytes,
+        requirePattern,
+      });
+      if (!fv) return { file: { path, text: r.text }, outcomes };
+      outcomes.push(`${path} (no match)`);
+    }
+    return { file: null, outcomes };
+  }
+
   /** Team policy for a settled turn (D8): the verdict, after the response file exists. */
   function teamDecide(e: SlotEntry, turn: SettledTurn): FinalVerdict {
     e.stopReason = turn.stopReason;
     // A hook-extended chain is the slot's answer: every turn joined, classified with the
     // chain head's prompt-read result. Without hooks both are the turn's own (§7.4).
     const answer = chainAnswerOf(turn);
-    writeResponse(e, answer);
     const v = classifyRunOutput({
       answer,
       chainAnswers: [...turn.chainAnswers, turn.answer],
@@ -1467,13 +1585,26 @@ async function startModelsIn(
     const shells = (e.session?.snapshot().anomalies ?? []).filter((a) =>
       a.startsWith("background_shell_open")
     );
+    const truncated = turn.stopReason === "max_tokens" ? [TRUNCATION_NOTE] : [];
     if (!v) {
-      const notes = [...shells, ...(turn.stopReason === "max_tokens" ? [TRUNCATION_NOTE] : [])];
+      e.answerSource = "reply";
+      writeResponse(e, answer);
+      const notes = [...shells, ...truncated];
       return notes.length
         ? { state: "COMPLETED", detail: notes.join(" · ") }
         : { state: "COMPLETED" };
     }
-    return { state: v.state, reason: v.reason, detail: [v.detail, ...shells].join(" · ") };
+    const { file, outcomes } = fileAnswerOf(turn, v.reason);
+    if (file) {
+      e.answerSource = `file:${file.path}`;
+      writeResponse(e, file.text);
+      const notes = [fileAnswerNote(file.path), ...shells, ...truncated];
+      return { state: "COMPLETED", detail: notes.join(" · ") };
+    }
+    e.answerSource = "reply";
+    writeResponse(e, answer);
+    const detail = answerFailureDetail(v, answer, requirePattern, outcomes);
+    return { state: v.state, reason: v.reason, detail: [detail, ...shells].join(" · ") };
   }
 
   /** D19: team has no answering verb, so a slot blocked on a question can never finish. */
@@ -1514,6 +1645,9 @@ async function startModelsIn(
     const answer = e.answer ?? writeResponse(e, unsettledAnswer(e, index));
     const anomalies = [
       ...notableAnomalies(snap),
+      ...(snap.state === "COMPLETED" && e.answerSource?.startsWith("file:")
+        ? [fileAnswerNote(e.answerSource.slice("file:".length))]
+        : []),
       ...(snap.state === "COMPLETED" && e.stopReason === "max_tokens" ? [TRUNCATION_NOTE] : []),
     ];
     const base: Partial<ModelStatus> = {
@@ -1522,6 +1656,7 @@ async function startModelsIn(
       outputSize: Buffer.byteLength(answer, "utf8"),
       stopReason: e.stopReason,
       anomalies,
+      ...(e.answerSource ? { answerSource: e.answerSource } : {}),
     };
     if (snap.state === "COMPLETED") return { ...base, error: undefined };
     return { ...base, error: slotError(e, snap, answer) };

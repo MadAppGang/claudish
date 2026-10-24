@@ -36,6 +36,9 @@ export interface SettledTurn {
   hookTurns: number;
   /** this turn was admitted from a hook item; false without session hooks */
   hookCaused: boolean;
+  /** files the turn wrote with `Write` after the task was read (TurnView.writtenFiles); with
+   * session hooks, the de-duplicated union over the chain, head first; absent = none */
+  writtenFiles?: string[];
 }
 
 /** `[...t.chainAnswers, t.answer]` with empty strings dropped, joined with "\n\n". */

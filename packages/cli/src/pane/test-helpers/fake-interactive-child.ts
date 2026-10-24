@@ -53,9 +53,10 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { projectDirNameFor } from "../../mcp-session/home-dir.js";
 import { wrapPrompt } from "./repl-wrap.js";
 
@@ -856,6 +857,33 @@ async function runScripted(sc: TurnScript, d: Delivered): Promise<void> {
 async function runScenario(name: string, d: Delivered): Promise<void> {
   const c = d.content;
   switch (name) {
+    case "write_answer":
+    case "write_nonmatching":
+    case "write_outside": {
+      const file = env.FAKE_WRITE_PATH;
+      if (!file || !isAbsolute(file)) throw new Error("FAKE_WRITE_PATH must be absolute");
+      let content =
+        name === "write_nonmatching"
+          ? "## Notes\nNo requested marker here.\n"
+          : "## Black-box test contracts\n答え 🍐 — byte-exact deliverable.\n";
+      if (env.FAKE_WRITE_CONTENT_KIND === "binary") content += "\0";
+      const size = Number(env.FAKE_WRITE_SIZE) || 0;
+      if (size > Buffer.byteLength(content))
+        content += "x".repeat(size - Buffer.byteLength(content));
+      const id = rec.toolUse("Write", { file_path: file, content }, { template: T.writeUse });
+      writeFileSync(file, content);
+      rec.toolResult(
+        id,
+        `File created successfully at: ${file} (file state is current in your context — no need to Read it back)`,
+        undefined
+      );
+      if (env.FAKE_WRITE_DELETE === "1") unlinkSync(file);
+      const reply = env.FAKE_WRITE_REPLY ?? "I wrote the deliverable to the requested file.";
+      rec.text(reply);
+      rec.td();
+      showHistory(`⏺ ${reply}`, finishedRow());
+      return;
+    }
     case "hang":
       S.working = "✶ Simmering… (thinking)";
       render();
