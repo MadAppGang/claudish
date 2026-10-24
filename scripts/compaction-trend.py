@@ -66,13 +66,38 @@ REQ_RE = re.compile(
 RESP_RE = re.compile(
     r"^resp-(\d+)-r\d+-(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-\d{2}-\d+Z-(.+)\.sse$")
 HDR_RE = re.compile(r"^# parser=\S+ model=(\S+) reqN=(\d+) pid=(\d+)", re.M)
-U_IN = re.compile(r'"input_tokens":\s*(\d+)')
-U_OUT = re.compile(r'"output_tokens":\s*(\d+)')
-U_CR = re.compile(r'"cache_read_input_tokens":\s*(\d+)')
-U_CC = re.compile(r'"cache_creation_input_tokens":\s*(\d+)')
+# Les regex d'usage PAR CHAMP ont disparu avec #607 : les compteurs se lisent
+# par bloc coherent (scripts/lib/usage_reader.py), jamais champ par champ.
 CC_VER = re.compile(r"cc_version=([^;\s]+)")
 COMPACT_SIG = "CRITICAL: Respond with TEXT"
 CONT_SIG = "This session is being continued"
+
+
+def _load_usage_reader():
+    """Lecteur d'usage partage (#600/#607) : la regle du triplet coherent vit
+    dans lane-out-trend.py ; ce script ne fait que la deleguer."""
+    import importlib.util
+    from pathlib import Path
+
+    p = Path(__file__).resolve().parent / "lib" / "usage_reader.py"
+    spec = importlib.util.spec_from_file_location("usage_reader", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_UR = _load_usage_reader()
+
+
+def usage_from_text(rt):
+    """(in, out, cr, cc) d'UN bloc d'usage coherent — delegue au lecteur
+    partage (#600/#607), None si la reponse n'en porte aucun.
+
+    Le max PAR CHAMP (l'ancien code) melangeait le seed de message_start
+    (input_tokens = tour precedent de la session) et le triplet terminal, deux
+    instantanes jamais emis ensemble : le prompt re-paye etait surestime
+    (mesure 22/10 : x1.14 agrege, pire tour glm-5.3 x3.1)."""
+    return _UR.usage_triplet(rt)
 
 USER_PATH_RE = re.compile(r"[\\/]+users[\\/]+[a-z_0-9-]+")
 KNOWN_ROOTS = [
@@ -265,16 +290,12 @@ def stats_day(dirpath, day, prefixes, partial):
             if rec is None:
                 continue
             rt = open(e.path, encoding="utf-8", errors="replace").read()
-            fields = {
-                "in": [int(x) for x in U_IN.findall(rt)],
-                "out": [int(x) for x in U_OUT.findall(rt)],
-                "cr": [int(x) for x in U_CR.findall(rt)],
-                "cc": [int(x) for x in U_CC.findall(rt)],
-            }
-            if not any(fields.values()):
+            u = usage_from_text(rt)
+            if u is None:
+                continue  # aucun bloc d'usage : pas l'appariement cherche
+            if not (u[0] + u[1] + u[2] + u[3]):
                 continue  # zero/absent usage: not the pairing we want
-            rec["usage"] = {
-                k: max(v) if v else 0 for k, v in fields.items()}
+            rec["usage"] = {"in": u[0], "out": u[1], "cr": u[2], "cc": u[3]}
 
     rows = collections.defaultdict(lambda: {
         "reqs": 0, "comp": 0, "paired": 0, "repaid": 0, "sumout": 0})

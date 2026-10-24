@@ -757,9 +757,10 @@ describe("#90 — the Sol/Codex lane closes its capture on every exit path", () 
       expect(lines.some((l) => l.startsWith("  [resp] responses"))).toBe(true);
 
       // ...and the corpus row carries the fixture's own counts. These two fields
-      // are exactly what traffic-consumption.py's usage_max() reads out of the
-      // SSE body to attribute the Sol lane, so a Sol request stops being dropped
-      // from the per-lane rollup.
+      // are exactly what traffic-consumption.py's usage_of() reads out of the
+      // SSE body (the coherent-triple reader since #600/#603) to attribute the
+      // Sol lane, so a Sol request stops being dropped from the per-lane
+      // rollup.
       const { name, body } = await readCaptureFile(dir);
       expect(name).toMatch(/^resp-\d+-r\d+-.+-responses-gpt-5\.6-sol\.sse$/);
       expect(body).toContain('"input_tokens":1234');

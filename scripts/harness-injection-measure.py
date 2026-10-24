@@ -148,41 +148,43 @@ def injected_len(text):
     return len(t[m.end():]) if m else len(t)
 
 
-def balanced_object(s, start):
-    """Extrait l'objet JSON a `start` en equilibrant les accolades.
+def _load_usage_reader():
+    """Lecteur d'usage partage (#600/#607) : la regle du triplet coherent vit
+    dans lane-out-trend.py ; ce module ne fait que la deleguer (une seule copie
+    de la regle, jamais deux qui derivent)."""
+    import importlib.util
+    from pathlib import Path
 
-    Une regex sur "usage" casse sur l'objet imbrique cache_creation.
-    """
-    depth = 0
-    for i in range(start, len(s)):
-        if s[i] == "{":
-            depth += 1
-        elif s[i] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(s[start:i + 1])
-                except json.JSONDecodeError:
-                    return None
-    return None
+    p = Path(__file__).resolve().parent / "lib" / "usage_reader.py"
+    spec = importlib.util.spec_from_file_location("usage_reader", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_UR = _load_usage_reader()
 
 
 def usage_from_sse(text):
-    """Retient l'evenement usage le plus complet. Somme les 3 compteurs d'entree."""
-    best = None
-    for m in re.finditer(r'"usage"\s*:\s*', text):
-        brace = text.find("{", m.end())
-        if brace < 0:
-            continue
-        u = balanced_object(text, brace)
-        if not isinstance(u, dict):
-            continue
-        tot = ((u.get("input_tokens") or 0)
-               + (u.get("cache_creation_input_tokens") or 0)
-               + (u.get("cache_read_input_tokens") or 0))
-        if tot and (best is None or tot > best[0]):
-            best = (tot, u.get("input_tokens") or 0, u.get("cache_read_input_tokens") or 0)
-    return best
+    """(total, input_tokens, cache_read) du bloc coherent choisi — DELEGUE au
+    lecteur partage (#600/#607).
+
+    Le piege mesure le 22/10 : `message_start` porte un seed (input_tokens =
+    tour precedent de la session) plus GROS que le triplet terminal ; garder
+    le bloc au plus gros total d'entree choisissait le seed (250 494 vs
+    117 316 sur un tour glm-5.3) et doublait le prompt. Le bloc retenu est
+    desormais le dernier bloc enoncant des entrees, ENTIER.
+
+    None = aucun bloc ne porte d'enonce d'entree non nul — le contrat
+    historique de cet instrument (un usage zero-seed n'est pas une mesure
+    pour lui)."""
+    u = _UR.usage_triplet(text)
+    if u is None:
+        return None
+    tot = _UR.prompt_of(u)
+    if not tot:
+        return None
+    return (tot, u[0], u[2])
 
 
 def request_text(body):
