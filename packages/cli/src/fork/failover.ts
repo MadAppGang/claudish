@@ -1560,12 +1560,20 @@ export async function resolveTransientStep(
      * different bucket is a different meter and a legitimate landing.
      */
     nominalBucket?: string;
+    /**
+     * #598: start the scan STRICTLY AFTER this step index. The connection-class
+     * walk advance is the one caller — the step it just paid a round-trip to is
+     * the one it must not re-pick, and a transport failure writes no state, so
+     * every other predicate below still calls it servable. Absent: scan from 0
+     * (the one-shot walk's own resolution, unchanged).
+     */
+    afterStepIndex?: number;
   }
 ): Promise<{ step: FailoverStep; stepIndex: number; concrete: string } | null> {
   const rule = rules.get(role);
   if (!rule) return null;
   const fails = stepFailures.get(role);
-  for (let i = 0; i < rule.steps.length; i++) {
+  for (let i = (opts?.afterStepIndex ?? -1) + 1; i < rule.steps.length; i++) {
     const step = rule.steps[i];
     // The step MUST ride along (#261 rebase, review of #326 point 2): without
     // it a HEALTHY step closed by a future config _RESET reads as servable

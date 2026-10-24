@@ -60,11 +60,13 @@ import { isOverloadWalkClass } from "./handlers/composed-handler.js";
 import {
   armFailover,
   classifyNominalBucket,
+  earliestWalledReprobeAt,
   isBucketWalled,
   isFailoverActive,
   markStepFailed,
   providerBucketOf,
   resetFailoverForTests,
+  setRoleNominalBucketResolver,
   setRoleNominalResolver,
 } from "./fork/failover.js";
 import type { ProxyServer } from "./types.js";
@@ -117,6 +119,9 @@ let endpointDelay: Record<string, number> = {};
 /** Endpoints whose 429 body is a BURST (no overload wording) rather than an
  *  overload-shaped 429 — W7's negative control needs both spellings. */
 let burst429: Record<string, boolean> = {};
+/** W33: when set to a bucket, the next `tr` hit walls it BEFORE answering —
+ *  a concurrent request changing the delegation owner mid-attempt. */
+let wallOnTrHit: string | null = null;
 
 function healthySSE(): Response {
   const chunk = (delta: any, finish_reason: string | null = null) =>
@@ -280,6 +285,7 @@ beforeEach(() => {
   endpointStatus = {};
   endpointDelay = {};
   burst429 = {};
+  wallOnTrHit = null;
   configExisted = existsSync(REAL_CONFIG_PATH);
   configBackup = configExisted ? readFileSync(REAL_CONFIG_PATH, "utf-8") : null;
   mkdirSync(CONFIG_DIR, { recursive: true });
@@ -300,6 +306,13 @@ beforeEach(() => {
     for (const key of ["tr", "t2"] as const) {
       if (url.startsWith(`${UPSTREAM_BASE}/${key}/`)) {
         calls[key] = (calls[key] ?? 0) + 1;
+        // W33 (#628 review): a CONCURRENT request walls the target's nominal
+        // bucket while this attempt is in flight, then the attempt serves 200
+        // — the state change the delegation-owner resolution must not observe.
+        if (key === "tr" && wallOnTrHit) {
+          armFailover("opus", "W33: a concurrent request walled opus's nominal DURING the attempt", wallOnTrHit);
+          wallOnTrHit = null;
+        }
         const st = endpointStatus[key] ?? 200;
         if (st === 0 || st === 200) return healthySSE();
         if (st === 402) return quotaWall();
@@ -859,6 +872,140 @@ describe("#299 B — nominal transient overload walks the cascade once, zero fai
     expect(calls.s0).toBe(1); // step 0 SERVED — its own bucket (s0-ep) ≠ the nominal's (nom-ep)
     expect(calls.s1).toBe(0);
     expect(failoverLog.some((l) => l.includes("[Failover] WALK sonnet one-shot") && l.includes("step 0"))).toBe(true);
+  }, 30_000);
+});
+
+// ─── #598 — a walk into a CONNECTION-DEAD step advances once ──────────────────
+//
+// RED ON PURPOSE until the #598 fix lands (the code deliberately follows
+// #609): these pins state the DESIRED behavior, not today's. Measured driver
+// (2026-10-22, hub, 194/194 sonnet walks): the site-wide egress/DNS outage
+// killed the nominal with a connect-class failure (#298 A synthesizes HTTP
+// 400 connection_error), the walk fired, and its step 0 (same z.ai family,
+// same dead egress) died connect-class too — transport failures deliberately
+// write no state (#299 B), so the walk's firstServable kept re-picking step 0
+// and step 1 (qwen, alive on its own egress) was NEVER tried: the original
+// 400 surfaced 194 times while a servable step sat one position deeper.
+//
+//  - W30: a walk step that dies CONNECTION-class advances ONCE to the next
+//    servable step, same request — RED today (the original surfaces, W2
+//    semantics: one walk attempt, bounded);
+//  - W31: a walk step that dies QUOTA-class (402 plan wall) does NOT
+//    advance — that is state, not transport; GREEN today and it must STAY
+//    green (the guard against widening the advance to every refusal);
+//  - W32: every walkable step dead connection-class → at most ONE advance,
+//    then the ORIGINAL error surfaces unchanged, still zero state — RED
+//    today only on `calls.s1`; the surfaced status and the zero-state pins
+//    are already today's behavior.
+// NOT proposed (issue #598): writing plan state on a transport failure, or
+// an unbounded walk — the one-advance bound and the W15 budget pin hold.
+describe("#598 — a walk into a connection-dead step advances once (RED until the fix)", () => {
+  test("W30: walk step 0 dies connection_error → step 1 serves in the SAME request", async () => {
+    await spin();
+    resetWalk();
+    // The nominal's egress died (#298 A shape) AND the walk's step 0 sits on
+    // the same dead egress; step 1 draws on a different one and is alive.
+    endpointStatus.nm = 400;
+    endpointStatus.s0 = 400;
+    const r1 = await postMessage("claude-sonnet-5");
+    expect(r1.status).toBe(200); // RED today: 400 (the original) surfaces
+    expect(await r1.text()).toContain("Hello from the cascade.");
+    expect(calls.nm).toBe(1); // the dead nominal, paid once
+    expect(calls.s0).toBe(1); // the walk's first attempt — paid, and dead
+    expect(calls.s1).toBe(1); // RED today: 0 — the advance never fires
+    // The advance is NOT a plan event: still zero state on every plane.
+    expect(isFailoverActive("sonnet")).toBe(false);
+    expect(isBucketWalled(bucketOfNominal())).toBe(false);
+  }, 30_000);
+
+  test("W31 control: walk step 0 dies QUOTA (402 plan wall) → NO advance, original surfaces", async () => {
+    await spin();
+    resetWalk();
+    // Nominal overloads (529, the stub default); step 0 answers a plan wall.
+    // A quota refusal is STATE, not transport — the advance must stay
+    // connection-class-only, or it re-buys the exact behavior #299 B
+    // rejected (walking past state the resolver owns).
+    endpointStatus.s0 = 402;
+    const r1 = await postMessage("claude-sonnet-5");
+    expect(r1.status).toBe(529); // the original overload, never the step's wall
+    expect(calls.nm).toBe(1);
+    expect(calls.s0).toBe(1);
+    expect(calls.s1).toBe(0); // GREEN today, must STAY green after the fix
+    expect(isFailoverActive("sonnet")).toBe(false);
+    expect(isBucketWalled(bucketOfNominal())).toBe(false);
+  }, 30_000);
+
+  test("W32: EVERY walkable step dead connection-class → ONE advance, then the original, zero state", async () => {
+    await spin();
+    resetWalk();
+    endpointStatus.nm = 400;
+    endpointStatus.s0 = 400;
+    endpointStatus.s1 = 400; // the advance target dies too
+    const r1 = await postMessage("claude-sonnet-5");
+    // The ORIGINAL connection error surfaces — unchanged, never the step's.
+    expect(r1.status).toBe(400);
+    expect(calls.nm).toBe(1);
+    expect(calls.s0).toBe(1);
+    expect(calls.s1).toBe(1); // RED today: 0 — the one advance, paid once
+    expect(calls.native).toBe(0); // never deeper, never native
+    // Bounded: one advance per request, and still no state on any plane.
+    expect(isFailoverActive("sonnet")).toBe(false);
+    expect(isBucketWalled(bucketOfNominal())).toBe(false);
+  }, 30_000);
+
+  // #628 review (ai-01, 23:45Z) — the delegation owner is STATE-DEPENDENT
+  // (resolveRoleStep reads the target nominal's bucket wall), so RESOLVING IT
+  // AFTER the upstream attempt credits an owner that did not serve — the #331
+  // class: a step comes back benched-free on someone else's success. The first
+  // version of #598 moved the resolution into the success branch, one full
+  // round-trip later than `main` did it.
+  //
+  // Shape: sonnet[0] = role:opus, opus's nominal = tr, opus[0] = t2 (marked,
+  // count 1, TTL 10 min). The walk serves tr and answers 200. DURING the
+  // attempt a concurrent request walls tr's bucket. Resolved after the attempt,
+  // the owner of sonnet[0] becomes opus's step 0 (TTL-failed ⇒ skipped by
+  // resolveSkippingFailed, then served by the all-failed last-step fallback),
+  // and `resetStepSuccess("opus", 0)` clears a record this request never paid.
+  //
+  // Instrument: `earliestWalledReprobeAt("opus")` reads `lastFailure + ttl` off
+  // every live step record — the record the late resolution clears is the ONLY
+  // thing this request can change there. RED under the mutation (resolution
+  // moved back after the `await`); green with the resolution at the top of the
+  // attempt + the `concrete === target.concrete` guard.
+  test("W33 (#628): a concurrent wall mid-attempt must not re-point the owner credit", async () => {
+    await spin({ sonnet: SONNET_NOMINAL, opus: "tr-ep@fake-tr" });
+    resetWalk({
+      CLAUDISH_FAILOVER_SONNET: "role:opus>s1-ep@fake-s1",
+      CLAUDISH_FAILOVER_OPUS: "t2-ep@fake-t2",
+    });
+    setRoleNominalResolver((r) =>
+      r === "sonnet" ? SONNET_NOMINAL : r === "opus" ? "tr-ep@fake-tr" : undefined
+    );
+    // One bucketter on both sides: the arm below and resolveRoleStep's own
+    // `nominalBucket` lookup must name the SAME key, or the concurrent wall is
+    // invisible to the delegation and this pin measures nothing (measured:
+    // green under the mutant until this line was added).
+    setRoleNominalBucketResolver((nominal) => providerBucketOf(nominal));
+    markStepFailed("opus", 0, "W33: opus's step 0 benched before the walk");
+    expect(earliestWalledReprobeAt("opus")).toBeDefined(); // the record this pin defends
+    // The mid-attempt state change: tr's bucket is walled while the walk's
+    // attempt is in flight, and the attempt still answers 200.
+    const bucketOfTr = providerBucketOf("tr-ep@fake-tr");
+    wallOnTrHit = bucketOfTr;
+
+    const r1 = await postMessage("claude-sonnet-5");
+    expect(r1.status).toBe(200);
+    expect(await r1.text()).toContain("Hello from the cascade.");
+    // The walk served opus's NOMINAL — the attempt's own concrete.
+    expect(calls.nm).toBe(1);
+    expect(calls.tr).toBe(1);
+    expect(calls.s1).toBe(0);
+    expect(calls.t2).toBeUndefined(); // the target's step was never paid
+    // THE PIN: no step record was cleared by a success that did not serve it.
+    expect(earliestWalledReprobeAt("opus")).toBeDefined();
+    // And the wall the CONCURRENT request made is untouched by this result:
+    // a success credits the owner, it never disarms a bucket (TTL owns that).
+    expect(isBucketWalled(bucketOfTr)).toBe(true);
   }, 30_000);
 });
 

@@ -17,7 +17,7 @@ import { LocalTransport } from "./providers/transport/local.js";
 import { LocalModelAdapter } from "./adapters/local-adapter.js";
 import { PoeProvider } from "./providers/transport/poe.js";
 import type { ModelHandler } from "./handlers/types.js";
-import { ComposedHandler, isOverloadWalkClass, setVisionAuthPolicy, type ComposedHandlerOptions } from "./handlers/composed-handler.js";
+import { ComposedHandler, isOverloadWalkClass, isConnectionWalkClass, setVisionAuthPolicy, type ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import {
   resolveProvider,
   parseUrlModel,
@@ -1816,56 +1816,130 @@ export async function createProxyServer(
             nominalBucket: bucket ?? undefined,
           }).catch(() => null);
           if (walk) {
-            const walkDelegation = walk.step.roleRef
-              ? resolveDelegationOwner(role, walk.step)
-              : null;
             log(
               `[Failover] WALK ${role} one-shot (HTTP ${response.status} on nominal ${requestedModel}) → ${walk.concrete} (step ${walk.stepIndex})`,
               true
             );
-            const modelBeforeWalk = body.model;
-            try {
-              const walkHandler = await getHandlerForRequest(
-                walk.concrete,
-                0,
-                sessionKey,
-                bucket,
-                walk.concrete
-              );
-              // #317: the walk is a paid upstream attempt too — fresh token.
-              openSessionBudgetAttempt(c.req.raw, machineHeader, sessionKey, process.env);
-              const walkResp = await walkHandler.handle(c, body);
-              if (walkResp.ok) {
-                // The step proved itself — mirror the loop's success
-                // bookkeeping (a success resets a step's failure count; it
-                // never arms).
-                if (!walk.step.roleRef) resetStepSuccess(role, walk.stepIndex);
-                if (walkDelegation) {
-                  if (walkDelegation.owner.nominal) {
-                    // #367 (same class as the W19 bucketer): the walk's
-                    // delegated concrete is already concrete — classify, no
-                    // request-side re-mapping.
-                    const ownerBucket = await concreteStepBucketOf(walkDelegation.concrete);
-                    onNominalSuccess(walkDelegation.owner.role, ownerBucket);
-                  } else {
-                    resetStepSuccess(walkDelegation.owner.role, walkDelegation.owner.stepIndex);
-                  }
-                }
-                body.model = modelBeforeWalk;
-                return walkResp;
-              }
-              // Not ok: the step's own incident must not become the client's
-              // answer, and its unread body is a connection held open for
-              // nothing — drain it before surfacing the ORIGINAL overload.
+            // #598: ONE paid walk attempt, factored so the connection-class
+            // advance below reuses the exact bookkeeping. A served attempt
+            // mirrors the loop's success (a success resets the step's failure
+            // count; it never arms); a failed one writes NO state, ever
+            // (#299 B). The failure is returned CLASSIFIED — the step's own
+            // wire shape decides whether the walk may advance, and only its
+            // body carries it.
+            const attemptWalkStep = async (
+              target: NonNullable<typeof walk>
+            ): Promise<
+              { served: Response } | { served: null; status: number; errBody: string }
+            > => {
+              const modelBeforeAttempt = body.model;
+              // #628 review (bloquant, classe #331): the delegation owner is
+              // STATE-DEPENDENT — resolveRoleStep reads the target nominal's
+              // bucket wall, and can arm it. Resolved AFTER the attempt, a wall
+              // moved by another request during the round-trip would credit a
+              // step that never served (a false recovery that brings a benched
+              // step back). Resolve BEFORE the call, as `main` did, and credit
+              // only when the resolved concrete is still the one attempted —
+              // the guard also closes `main`'s residual window between
+              // resolution and the call.
+              const targetDelegation = target.step.roleRef
+                ? resolveDelegationOwner(role, target.step)
+                : null;
               try {
-                await walkResp.body?.cancel();
+                const targetHandler = await getHandlerForRequest(
+                  target.concrete,
+                  0,
+                  sessionKey,
+                  bucket,
+                  target.concrete
+                );
+                // #317: the walk is a paid upstream attempt too — fresh token.
+                openSessionBudgetAttempt(c.req.raw, machineHeader, sessionKey, process.env);
+                const targetResp = await targetHandler.handle(c, body);
+                if (targetResp.ok) {
+                  // The step proved itself — mirror the loop's success
+                  // bookkeeping (a success resets a step's failure count; it
+                  // never arms).
+                  if (!target.step.roleRef) resetStepSuccess(role, target.stepIndex);
+                  // Only credit the owner that actually served: a delegation
+                  // resolved to a different concrete (or to null ⇒ cannot
+                  // serve) during the round-trip must not lift a wall or reset
+                  // a step on a success it did not produce.
+                  if (targetDelegation && targetDelegation.concrete === target.concrete) {
+                    if (targetDelegation.owner.nominal) {
+                      // #367 (same class as the W19 bucketer): the walk's
+                      // delegated concrete is already concrete — classify, no
+                      // request-side re-mapping.
+                      const ownerBucket = await concreteStepBucketOf(targetDelegation.concrete);
+                      onNominalSuccess(targetDelegation.owner.role, ownerBucket);
+                    } else {
+                      resetStepSuccess(
+                        targetDelegation.owner.role,
+                        targetDelegation.owner.stepIndex
+                      );
+                    }
+                  }
+                  return { served: targetResp };
+                }
+                // Not ok: the step's own incident must not become the client's
+                // answer, and its unread body is a connection held open for
+                // nothing. READ it rather than cancelling it — the body is both
+                // the classifier's input (#598) and the drain.
+                const targetErrBody = await targetResp.text().catch(() => "");
+                return { served: null, status: targetResp.status, errBody: targetErrBody };
               } catch {
-                // already gone — nothing to drain
+                // The attempt itself threw — no class, so no advance: the
+                // original overload stands.
+                return { served: null, status: 0, errBody: "" };
+              } finally {
+                body.model = modelBeforeAttempt;
               }
-            } catch {
-              // The walk attempt itself threw — the original overload stands.
+            };
+            const firstAttempt = await attemptWalkStep(walk);
+            if (firstAttempt.served) return firstAttempt.served;
+            // #598 — a step that died CONNECTION-class has told us the HOST was
+            // unreachable, not that its plan is walled. Measured 2026-10-22:
+            // the nominal's egress and walk step 0's were the same dead host,
+            // so 194/194 sonnet walks re-picked step 0 and step 1 was never
+            // tried — a transport failure writes no state by design (#299 B),
+            // so `firstServable` keeps finding that same dead step servable.
+            // Advance ONCE, to the next servable step, still writing no plan
+            // state. Deliberately NOT on a 402/429/503/529: that is capacity
+            // the resolver owns, and stepping over it would re-buy exactly what
+            // #299 B rejected (pin W31). The bound is structural — this block
+            // runs once per request, and the advanced attempt never advances in
+            // turn.
+            // The budget bounds the WALK, not its entry: the advance is a paid
+            // attempt too, so re-check the elapsed time before buying it.
+            // Reaching here already means one more connection failure was
+            // absorbed; a budget that admitted the first attempt and not the
+            // second is the intended shape (worst case: nominal + 1 walk +
+            // the advance's own connect timeout, all inside the budget).
+            const advanceElapsedMs = Date.now() - cascadeStartedAtMs;
+            if (
+              isConnectionWalkClass(firstAttempt.status, firstAttempt.errBody) &&
+              walkBudgetMs > 0 &&
+              advanceElapsedMs > walkBudgetMs
+            ) {
+              log(
+                `[Failover] WALK-ADVANCE ${role} skipped — budget ${advanceElapsedMs}ms > ${walkBudgetMs}ms`,
+                true
+              );
+            } else if (isConnectionWalkClass(firstAttempt.status, firstAttempt.errBody)) {
+              const nextWalk = await resolveTransientStep(role, {
+                bucketOf: concreteStepBucketOf,
+                nominalBucket: bucket ?? undefined,
+                afterStepIndex: walk.stepIndex,
+              }).catch(() => null);
+              if (nextWalk) {
+                log(
+                  `[Failover] WALK-ADVANCE ${role} — step ${walk.stepIndex} (${walk.concrete}) died connection-class; one extra attempt at ${nextWalk.concrete} (step ${nextWalk.stepIndex})`,
+                  true
+                );
+                const advanced = await attemptWalkStep(nextWalk);
+                if (advanced.served) return advanced.served;
+              }
             }
-            body.model = modelBeforeWalk;
           }
           return response;
         }
