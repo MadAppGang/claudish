@@ -2,6 +2,28 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.5.0] - 2026-10-24
+
+### Bug Fixes
+
+- read the Codex account registry per call in CodexPoolHalf *(accounts)* ([`974fb1b`](https://github.com/MadAppGang/claudish/commit/974fb1b25fca08f611ef3449c008afc9c3892d65))
+
+### Documentation
+
+- stamp the playbook verified at v14.4.2 (#353) *(release)* ([`d3d0e34`](https://github.com/MadAppGang/claudish/commit/d3d0e34abf5c92e26c41afeb4668fc861dd3c2ea))
+- update CHANGELOG.md for v14.4.2([`dcb7e9b`](https://github.com/MadAppGang/claudish/commit/dcb7e9b1e99f86f926282798fab2ea65bfe55e98))
+
+### New Features
+
+- allowance model — usage ledger, forecast, gap alerts, account forecast *(accounts)* ([`accf9b0`](https://github.com/MadAppGang/claudish/commit/accf9b044ff8ae9e4fe53bf1cb33b2e44c39e2dd))
+- Codex account pool on the request path (Phase 2a) *(accounts)* ([`52fb426`](https://github.com/MadAppGang/claudish/commit/52fb426be5b772e66662e2ad9d5b86acf956fee2))
+
+### Other Changes
+
+- v14.5.0 (#351) *(release)* ([`8567bab`](https://github.com/MadAppGang/claudish/commit/8567bab81d2dc965c31b74d0f6826288d238e391))
+- merge main v14.4.2 into release/v14.5.0 *(release)* ([`8e2169e`](https://github.com/MadAppGang/claudish/commit/8e2169e554616739b5298c594997a53485d47de6))
+- v14.5.0 *(release)* ([`b404b24`](https://github.com/MadAppGang/claudish/commit/b404b24979d8f99f839de76c779ffcf0568b79e5))
+
 ## [14.4.2] - 2026-10-24
 
 ### Bug Fixes
