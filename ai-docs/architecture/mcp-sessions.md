@@ -374,6 +374,14 @@ What `createSession` does now (`mcp-session/inherited-settings.ts`, `session-man
   `settings.local.json` can carry `env` secrets. Nothing is written to `work_dir` or `setup_from`.
   `spawn.json` records `setupFrom`. A file that is not a JSON object fails the call as
   `invalid_args`, before any pane starts.
+- The child claudish copies that layer into its own overlay, `~/.claudish/settings-<pid>-<ts>.json`
+  (`createTempSettingsFile`, then `mergeUserSettingsIfPresent` in `claude-runner.ts`), so the
+  overlay carries the same secrets and is 0600 too. Up to v14.4.1 it was 0644 (MTL-207). The
+  `mode` option of `writeFileSync` applies only when it CREATES a file: an overwrite keeps the
+  old bits (measured on Bun 1.4.0, a 0644 file overwritten with `mode: 0o600` stays 0644). So
+  the merge calls `chmodSync(…, 0o600)` before it writes, and a chmod failure skips the write.
+  `claude-runner-settings-mode.test.ts` pins umask 022, because a runner with umask 077 passes
+  the old code. Overlays left behind by older versions are MTL-258.
 
 Known gaps, not carried: exact plugin versions outside the repo (needs per-row `--plugin-dir`,
 E13, which depends on Claude Code's undocumented install-row keying); project `.claude/skills`,
