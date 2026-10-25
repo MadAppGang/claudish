@@ -555,6 +555,8 @@ function finishedRow(): string {
 
 /** One turn of `FAKE_SCRIPT` (scenario `scripted`). Every field is optional. */
 interface TurnScript {
+  /** Successful Writes on this turn, in order; every path must be absolute. */
+  writes?: Array<{ path: string; content: string }>;
   /** the exact answer text (default: `ANSWER <model> <sha8>`) */
   say?: string;
   /** stream this text with no ending stop_reason and no end record, then hang */
@@ -842,6 +844,16 @@ async function runScripted(sc: TurnScript, d: Delivered): Promise<void> {
     rec.td();
     showHistory(`⏺ ${sc.apiError}`, finishedRow());
     return;
+  }
+  for (const { path, content } of sc.writes ?? []) {
+    if (!isAbsolute(path)) throw new Error("scripted Write path must be absolute");
+    const id = rec.toolUse("Write", { file_path: path, content }, { template: T.writeUse });
+    writeFileSync(path, content);
+    rec.toolResult(
+      id,
+      `File created successfully at: ${path} (file state is current in your context — no need to Read it back)`,
+      undefined
+    );
   }
   const text = sc.say ?? answerFor(c);
   rec.text(text);
