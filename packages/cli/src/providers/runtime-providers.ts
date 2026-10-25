@@ -38,6 +38,28 @@ export function getDeclaredContextLimit(providerName: string): number | undefine
   return _declaredContextLimits.get(providerName);
 }
 
+const _derivedContextLimits = new Map<string, number>();
+
+/**
+ * #651 — a window MEASURED from the endpoint's own `/v1/models`.
+ *
+ * Kept apart from the declared one on purpose. A declared `contextLimit` is a
+ * CLAIM (a human typed it, and the issue measured it agreeing with the engine by
+ * coincidence); a derived one is a MEASUREMENT of what the engine will actually
+ * accept. Only the measurement is allowed to pre-seed the learned cap and refuse
+ * a request locally on its own authority — a stale claim would refuse requests
+ * the engine would have served, which is the opposite failure the census was
+ * built to avoid.
+ */
+export function registerDerivedContextLimit(providerName: string, limit: number | undefined): void {
+  if (limit === undefined || !Number.isFinite(limit) || limit <= 0) return;
+  _derivedContextLimits.set(providerName, Math.floor(limit));
+}
+
+export function getDerivedContextLimit(providerName: string): number | undefined {
+  return _derivedContextLimits.get(providerName);
+}
+
 /**
  * Register a runtime ProviderDefinition. Overwrites any existing entry with
  * the same name (idempotent — safe to call twice from the loader).
@@ -77,4 +99,5 @@ export function clearRuntimeRegistry(): void {
   _runtimeProviders.clear();
   _runtimeProfiles.clear();
   _declaredContextLimits.clear();
+  _derivedContextLimits.clear();
 }

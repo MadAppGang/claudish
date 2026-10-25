@@ -202,7 +202,10 @@ export class AnthropicProviderTransport implements ProviderTransport {
     return runWith429Retry();
   }
 
-  private static formatDisplayName(name: string): string {
+  // Public static: the overflow-caps purge (#660 r2) must derive the SAME key
+  // the handler records (`transport.displayName`), and duplicating this map
+  // anywhere else would drift the day it changes.
+  static formatDisplayName(name: string): string {
     const map: Record<string, string> = {
       minimax: "MiniMax",
       "minimax-coding": "MiniMax Coding",

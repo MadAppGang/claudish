@@ -305,6 +305,19 @@ export interface ComposedHandlerOptions {
    * = verbatim passthrough.
    */
   contextLimit?: number;
+  /**
+   * #651 — the window MEASURED from the engine's own `/v1/models`
+   * (`max_model_len` on vLLM, read at startup when the endpoint opts in with
+   * `deriveContextLimit: true`).
+   *
+   * Kept apart from `contextLimit` above, and narrower in effect on purpose:
+   * only a MEASURED window pre-seeds the learned cap — i.e. may refuse a
+   * request locally on its own authority. A hand-typed literal keeps today's
+   * path (clamp, then the upstream's own word), because a stale claim that is
+   * too SMALL would refuse requests the engine serves: the same class of
+   * failure the admission census avoids, in the opposite direction.
+   */
+  derivedContextLimit?: number;
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -834,6 +847,40 @@ export class ComposedHandler implements ModelHandler {
         );
         return this.buildOverflowRecoveryResponse(c, payload, est, undefined, overflowCap);
       }
+    } else if (this.options.derivedContextLimit !== undefined && this.options.derivedContextLimit > 0) {
+      // #651 — a window MEASURED from the engine's own `/v1/models` pre-seeds
+      // the cap, so a recreate no longer reopens the band between that limit and
+      // the reported floor (measured 24/10: 229 645 learned in memory, lost by
+      // the recreate, and a `400 "Input too large"` 52 min later that taught
+      // nothing back). A cap equal to the real window needs no learning.
+      //
+      // Only the DERIVED value arms this: a hand-typed `contextLimit` stays on
+      // today's path (clamp, then the upstream's word), because a stale literal
+      // that is too small would refuse requests the engine serves.
+      //
+      // Two estimators, never mixed: the learned cap above is recorded in
+      // `estimatePayloadTokens` units, so it is compared in those. This window
+      // is a prompt+output total, so it is compared against the SAME media-aware
+      // estimate the #441 clamp and the #565 census use — with the /4 payload
+      // estimator a 1 MB screenshot would score ~350k and short-circuit a
+      // request the engine serves in ~1.6k tokens (false refusal on every
+      // vision lane with a small window).
+      //
+      // Threshold is the window itself, not window-minus-margin: this is a
+      // "cannot fit" statement about our own measurement, and the residual
+      // 12-14% the /4 estimator undercounts (3.49 B/token measured on reqN=931)
+      // is #654's estimator correction — not a fudge factor invented here.
+      const est = estimateClampTokens(claudeRequest);
+      if (est >= this.options.derivedContextLimit) {
+        // `log(msg, true)` — forceConsole lives on log(), not logStderr() (the
+        // legacy `logStderr(x, true)` calls above predate that and are standing
+        // type errors this PR does not add to).
+        log(
+          `[ContextGuard] short-circuit provider=${this.provider.displayName} model=${this.targetModel} est=${est} cap=${this.options.derivedContextLimit} (derived window) — no upstream call`,
+          true
+        );
+        return this.buildOverflowRecoveryResponse(c, payload, est, undefined, this.options.derivedContextLimit);
+      }
     }
 
     const endpoint = this.provider.getEndpoint(this.targetModel);
@@ -1277,7 +1324,14 @@ export class ComposedHandler implements ModelHandler {
         const overflow = classifyContextOverflow(response.status, errorText);
         if (overflow.matched) {
           const est = estimatePayloadTokens(payload);
-          rememberOverflowCap(this.provider.displayName, this.targetModel, est);
+          // #651 — the evidence string rides into the durable record, so a cap
+          // restored after a recreate can be identified rather than guessed at.
+          rememberOverflowCap(
+            this.provider.displayName,
+            this.targetModel,
+            est,
+            `HTTP ${response.status}${overflow.used !== undefined ? ` input_tokens=${overflow.used}` : ""}`
+          );
           // `reported`/`synthetic` make the synthetic count greppable: downstream
           // aggregators of `usage` (#41/#89 cost attribution, writeTokenFile) must be
           // able to exclude a number nothing measured — the floor, not the body, put it

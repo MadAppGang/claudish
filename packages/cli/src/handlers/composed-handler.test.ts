@@ -12,6 +12,8 @@ import {
   rememberOverflowCap,
   getOverflowCap,
   resetOverflowCapsForTests,
+  estimatePayloadTokens,
+  estimateClampTokens,
 } from "./shared/context-overflow.js";
 import { isQuotaExhaustion } from "../fork/failover.js";
 
@@ -61,14 +63,34 @@ function countingFetch(status: number, body: string) {
   return { impl, getCalls: () => calls };
 }
 
-async function runHandle(
+/**
+ * An anthropic-format transport, so the request the handler estimates is the one
+ * the client sent. The OpenAI adapter rewrites an image block on the way in
+ * (dropping its base64), which hides the estimator from any pin that feeds the
+ * test's payload — measured 24/10: swapping the media-aware estimator for the /4
+ * one left the media pin GREEN until this transport existed.
+ */
+function mediaTransport(): ProviderTransport {
+  return {
+    name: "test-anthropic",
+    displayName: "Test Anthropic",
+    streamFormat: "anthropic-sse",
+    getEndpoint: () => "http://upstream.test/v1/messages",
+    getHeaders: () => ({}),
+  } as unknown as ProviderTransport;
+}
+
+async function runHandleWith(
+  transport: ProviderTransport,
+  model: string,
   payload: any,
-  fetchImpl: typeof fetch
+  fetchImpl: typeof fetch,
+  options: Record<string, unknown> = {}
 ): Promise<Response> {
   const original = (globalThis as any).fetch;
   (globalThis as any).fetch = fetchImpl;
   try {
-    const handler = new ComposedHandler(overflowTransport(), "glm-5.3", "glm-5.3", 8462, {});
+    const handler = new ComposedHandler(transport, model, model, 8462, options);
     const app = new Hono();
     app.post("/v1/messages", async (c: any) => handler.handle(c, payload));
     return await app.request("/v1/messages", {
@@ -79,6 +101,14 @@ async function runHandle(
   } finally {
     (globalThis as any).fetch = original;
   }
+}
+
+async function runHandle(
+  payload: any,
+  fetchImpl: typeof fetch,
+  options: Record<string, unknown> = {}
+): Promise<Response> {
+  return runHandleWith(overflowTransport(), "glm-5.3", payload, fetchImpl, options);
 }
 
 function overflowPayload(stream: boolean, sizeChars = 40_000): any {
@@ -173,6 +203,118 @@ describe("ComposedHandler — context-overflow interception (#79)", () => {
     expect(r404.status).toBe(404);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #651 — a MEASURED window pre-seeds the cap.
+//
+// The learned cap above lives in one process's memory: a recreate forgets it,
+// and the band between the engine's real window and the reported floor stayed
+// open until a refusal re-taught it (measured 24/10: 229 645 learned, lost at
+// the recreate, and a `400 "Input too large"` 52 min later taught nothing back,
+// because the engine's plain 400 is not the shape that re-learns).
+//
+// A cap equal to the real window needs no learning. These pins hold the
+// three properties that make the pre-seed safe: it is a THRESHOLD (not a
+// block), it is ABSENT when no window is declared (inert by default), and it
+// uses the MEDIA-AWARE estimator — the /4 payload estimator would score a 1 MB
+// screenshot at ~350k and refuse a vision request the engine serves in ~1.6k
+// tokens, on every small-window lane.
+// ---------------------------------------------------------------------------
+
+describe("ComposedHandler — a MEASURED window pre-seeds the cap (#651)", () => {
+  beforeEach(() => resetOverflowCapsForTests());
+  afterEach(() => resetOverflowCapsForTests());
+
+  test("a request at/past the measured window short-circuits with NO upstream call", async () => {
+    expect(getOverflowCap("GLM Coding", "glm-5.3")).toBeUndefined(); // nothing learned yet
+    const fx = countingFetch(200, "should never be reached");
+    const res = await runHandle(overflowPayload(true, 40_000), fx.impl as typeof fetch, {
+      derivedContextLimit: 5_000,
+    });
+
+    expect(fx.getCalls()).toBe(0); // the doomed round-trip is skipped
+    expect(res.status).toBe(200); // recoverable turn, never a bare 400
+    const body = await res.text();
+    expect(body).toContain("message_stop");
+    expect(body).toContain("maximum prompt size");
+    // The #431 marker (`context; est=… cap=5000`) is asserted on the live route
+    // instead — K30 in proxy-server-step-skip-route.test.ts. `app.request` hands
+    // back a rebuilt Response whose marker is gone once a node:http server has
+    // lived in the process (measured 24/10; same class as #604), so a header pin
+    // here would be red in a full run and green alone — an instrument that lies.
+  });
+
+  test("under the measured window the request still reaches upstream (a threshold, not a block)", async () => {
+    const fx = countingFetch(200, "not relevant — we only assert the call happened");
+    await runHandle(overflowPayload(false, 1_000), fx.impl as typeof fetch, {
+      derivedContextLimit: 10_000_000,
+    });
+    expect(fx.getCalls()).toBe(1);
+  });
+
+  test("ABSENT contextLimit changes nothing — no pre-seed at all (inert-by-default pin)", async () => {
+    const fx = countingFetch(200, "not relevant");
+    await runHandle(overflowPayload(false, 40_000), fx.impl as typeof fetch, {});
+    expect(fx.getCalls()).toBe(1);
+  });
+
+  test("a HAND-TYPED contextLimit alone does NOT pre-seed — only a measured one does", async () => {
+    // The discriminator between the two knobs. A declared literal may be stale
+    // in either direction; refusing on it locally would turn "the operator typed
+    // 4k years ago" into a refusal of requests the engine serves. Today's path
+    // (clamp + the upstream's own word) stays exactly as it was.
+    const fx = countingFetch(200, "not relevant");
+    await runHandle(overflowPayload(false, 40_000), fx.impl as typeof fetch, {
+      contextLimit: 5_000, // typed, never measured
+    });
+    expect(fx.getCalls()).toBe(1);
+  });
+
+  test("MEDIA-AWARE: a 1.4 MB base64 image on a 32k lane is NOT refused", async () => {
+    const image = "A".repeat(1_400_000);
+    const payload: any = {
+      model: "glm-5.3",
+      max_tokens: 512,
+      stream: false,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "describe this screenshot" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: image } },
+          ],
+        },
+      ],
+    };
+    // The discriminating fact: the /4 payload estimator scores this far above
+    // the window, the clamp estimator charges one fixed media block.
+    expect(estimatePayloadTokens(payload)).toBeGreaterThan(300_000);
+    expect(estimateClampTokens(payload)).toBeLessThan(32_768);
+
+    const fx = countingFetch(200, "not relevant");
+    // An anthropic-format transport: the base64 the client sent must reach the
+    // handler's estimate byte for byte, or this pin proves nothing (see
+    // mediaTransport).
+    await runHandleWith(mediaTransport(), "claude-3-5-sonnet", payload, fx.impl as typeof fetch, {
+      derivedContextLimit: 32_768,
+    });
+    // Not the count that matters (a transient-empty answer can be retried):
+    // the contract is that the pre-seed did NOT trip. With the /4 estimator it
+    // would have been 0 — the false refusal this pin exists for.
+    expect(fx.getCalls()).toBeGreaterThanOrEqual(1);
+  });
+
+  test("the learned cap still wins when both exist (the two units are never mixed)", async () => {
+    rememberOverflowCap("GLM Coding", "glm-5.3", 1_000);
+    const fx = countingFetch(200, "not relevant");
+    const res = await runHandle(overflowPayload(true, 40_000), fx.impl as typeof fetch, {
+      derivedContextLimit: 10_000_000, // a huge measured window must not mask the learned cap
+    });
+    expect(fx.getCalls()).toBe(0);
+    expect(res.headers.get("x-claudish-step-skip") ?? "").toContain("cap=1000");
+  });
+});
+
 
 describe("ComposedHandler — modelName invariant (#102 structural fix)", () => {
   test("throws when modelName contains '@' (routed string leaked into bare slot)", () => {

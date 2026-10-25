@@ -130,6 +130,21 @@ services:
       # read-only config bind, so leaving it empty would restore the
       # `cache write skipped (EROFS)` the volume exists to fix.
       - CLAUDISH_MODEL_CACHE_PATH=${CLAUDISH_MODEL_CACHE_PATH:-/var/cache/claudish/all-models.json}
+      # #651 — durable home for the LEARNED context caps. In memory they died
+      # with every recreate, reopening the band between the engine's real window
+      # and the reported floor until a refusal re-taught them (measured 24/10 on
+      # this hub). Same reason as the line above: the config bind is read-only,
+      # so the store lives on the writable model-cache volume. Unset = that
+      # volume path; an EXPLICIT empty (=`CLAUDISH_OVERFLOW_CAPS_PATH=` in .env,
+      # hence the `-` rather than `:-`) = memory-only, the pre-#651 behaviour.
+      - CLAUDISH_OVERFLOW_CAPS_PATH=${CLAUDISH_OVERFLOW_CAPS_PATH-/var/cache/claudish/overflow-caps.json}
+      # #660 r1 — maximum age of a RESTORED learned cap (#651). Default 24 h in
+      # the code (the effective pre-#651 lifetime: the watchdog restarts the hub
+      # nightly, so an in-memory cap never outlived it); `0` = no expiry; a
+      # stale or negative value falls back to the default. Empty = default, hence
+      # `:-` — unlike the PATH line above, empty is NOT "off" here. Listed
+      # because the env file only interpolates.
+      - CLAUDISH_OVERFLOW_CAPS_MAX_AGE_MS=${CLAUDISH_OVERFLOW_CAPS_MAX_AGE_MS:-}
       # Deep-probe model for relay recovery (#613). Empty = the built-in
       # role-shaped default (claude-haiku-4-5-20251001), which the hub resolves on
       # its own haiku lane so a z.ai-only outage cannot pin a sidecar AUTONOMOUS.

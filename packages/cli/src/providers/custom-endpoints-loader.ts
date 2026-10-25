@@ -33,6 +33,8 @@ import {
   registerRuntimeProvider,
   registerRuntimeProfile,
   registerDeclaredContextLimit,
+  getDeclaredContextLimit,
+  getDerivedContextLimit,
 } from "./runtime-providers.js";
 import { ComposedHandler } from "../handlers/composed-handler.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
@@ -176,7 +178,8 @@ function buildSimpleHandler(
       tokenStrategy: "delta-aware",
       omitReasoningContent: ep.omitReasoningContent,
       maxOutputTokens: ep.maxOutputTokens,
-      contextLimit: ep.contextLimit,
+      contextLimit: getDeclaredContextLimit(ctx.provider.name),
+      derivedContextLimit: getDerivedContextLimit(ctx.provider.name),
       ...ctx.sharedOpts,
     });
   }
@@ -196,7 +199,8 @@ function buildSimpleHandler(
   return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
     adapter,
     maxOutputTokens: ep.maxOutputTokens,
-    contextLimit: ep.contextLimit,
+    contextLimit: getDeclaredContextLimit(ctx.provider.name),
+    derivedContextLimit: getDerivedContextLimit(ctx.provider.name),
     ...ctx.sharedOpts,
   });
 }
@@ -217,7 +221,8 @@ function buildComplexHandler(
       return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
         adapter,
         maxOutputTokens: ep.maxOutputTokens,
-        contextLimit: ep.contextLimit,
+        contextLimit: getDeclaredContextLimit(ctx.provider.name),
+        derivedContextLimit: getDerivedContextLimit(ctx.provider.name),
         ...ctx.sharedOpts,
       });
     }
@@ -239,7 +244,8 @@ function buildComplexHandler(
         tokenStrategy: "delta-aware",
         omitReasoningContent: ep.omitReasoningContent,
         maxOutputTokens: ep.maxOutputTokens,
-        contextLimit: ep.contextLimit,
+        contextLimit: getDeclaredContextLimit(ctx.provider.name),
+        derivedContextLimit: getDerivedContextLimit(ctx.provider.name),
         ...ctx.sharedOpts,
       });
     }
@@ -259,7 +265,8 @@ function buildComplexHandler(
       return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
         adapter,
         maxOutputTokens: ep.maxOutputTokens,
-        contextLimit: ep.contextLimit,
+        contextLimit: getDeclaredContextLimit(ctx.provider.name),
+        derivedContextLimit: getDerivedContextLimit(ctx.provider.name),
         ...ctx.sharedOpts,
       });
     }
@@ -292,6 +299,38 @@ export function resolveCustomEndpointApiKey(ep: CustomEndpoint): string {
 
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
+}
+
+/**
+ * #660 r2 — the key a handler records overflow caps under for this endpoint.
+ *
+ * `ComposedHandler` records and looks up learned caps under
+ * `transport.displayName` (composed-handler.ts, `rememberOverflowCap` /
+ * `getOverflowCap` sites) — NOT under the `customEndpoints` config key. For a
+ * custom endpoint the transport's displayName is computed from the CONFIG KEY
+ * by the transport's own `formatDisplayName` (or is the LiteLLM class
+ * constant), so "vllm-myia" records as "Vllm-myia". The startup purge that
+ * derivation runs must derive the same key, or it purges nothing (#660 r2:
+ * measured, 0 purged on a lowercase name).
+ *
+ * Lives HERE, next to the transport switch in buildSimpleHandler /
+ * buildComplexHandler it mirrors: the two must select the same transport for
+ * the same endpoint shape, or the key and the recording handler part ways.
+ * The call-site pin in context-limit-derivation.test.ts records a cap under a
+ * REAL transport's displayName and asserts the purge drops it.
+ */
+export function customEndpointCapKey(name: string, ep: CustomEndpoint): string {
+  if (ep.kind === "complex" && ep.transport === "litellm") {
+    // LiteLLMProviderTransport hardcodes displayName = "LiteLLM" for every
+    // endpoint it serves — the config name never reaches the key.
+    return "LiteLLM";
+  }
+  const isAnthropicWire =
+    (ep.kind === "simple" && ep.format === "anthropic") ||
+    (ep.kind === "complex" && ep.transport === "anthropic");
+  return isAnthropicWire
+    ? AnthropicProviderTransport.formatDisplayName(name)
+    : OpenAIProviderTransport.formatDisplayName(name);
 }
 
 function sanitizeEnvName(name: string): string {

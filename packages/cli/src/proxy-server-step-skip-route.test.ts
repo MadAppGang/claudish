@@ -277,6 +277,10 @@ beforeEach(() => {
         "ctx-both-ep": ep("ctxb", { contextLimit: 262144, maxOutputTokens: 8000 }),
         // K22 (#565): a SMALL declared window that must not drive the census.
         "small-ep": ep("sm", { contextLimit: 32768 }),
+        // K23 (#651): an endpoint whose window comes from its OWN /v1/models,
+        // and a control that declares nothing at all.
+        "drv-ep": ep("drv", { deriveContextLimit: true }),
+        "nodrv-ep": ep("ndr"),
       },
     }),
     "utf-8"
@@ -295,6 +299,16 @@ beforeEach(() => {
       );
     }
     if (!url.startsWith(UPSTREAM_BASE)) return realFetch(input, init);
+    // #651 — the derivation probe. Answered for every endpoint (the stub cannot
+    // know which ones opted in), counted apart from the chat tags so a pin can
+    // assert "no chat round-trip" without the probe inflating it.
+    if (url.endsWith("/v1/models")) {
+      calls.models = (calls.models ?? 0) + 1;
+      return new Response(JSON.stringify({ data: [{ id: "fake-drv", max_model_len: 2000 }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     const tag = url
       .slice(UPSTREAM_BASE.length + 1)
       .split("/")[0]
@@ -1180,5 +1194,65 @@ describe("#587 — /health publishes time-localized event-loop lag (gate instrum
     });
     expect(Math.max(...lags)).toBeGreaterThanOrEqual(250);
     expect(Math.min(...lags)).toBeGreaterThanOrEqual(250);
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// #651 — the declared window comes from the engine, and it acts.
+//
+// Measured 2026-10-24 (hub): `contextLimit = 262144` agreed with `GET /v1/models
+// → max_model_len = 262144` BY COINCIDENCE — `max_model_len` appeared in no
+// production source, so the number backing the #441 clamp and the #565 census
+// was a literal. And the LEARNED cap lived in memory: the recreate forgot it and
+// a `400 "Input too large"` fired 52 min later, teaching nothing back.
+//
+// This pin runs the whole chain the issue asks for: the proxy probes the
+// endpoint's own catalog at startup, registers what it reports, and the handler
+// refuses a request our own measurement says cannot fit — with NO chat
+// round-trip, while an endpoint that declares nothing is untouched.
+// ---------------------------------------------------------------------------
+
+describe("#651 — a window derived from /v1/models acts at admission", () => {
+  test("K30 (#651): derived window → local refusal with cap=<derived>; no window → unchanged", async () => {
+    await spin();
+    resetFailoverForTests({});
+    setRoleNominalResolver(() => undefined);
+    // The #565 census is a separate organ and would refuse first on ANY declared
+    // window; disarmed here so the pin lands on the handler-level pre-seed this
+    // issue adds. (The census itself is pinned by K20.)
+    process.env.CLAUDISH_CONTEXT_ADMISSION = "0";
+
+    // The derivation ran at startup: exactly one endpoint opted in, so exactly
+    // one probe — the inert-by-default half of the contract.
+    expect(calls.models).toBe(1);
+
+    // est ≈ 10k tokens against a 2 000-token derived window.
+    const big = "x".repeat(40_000);
+    const res = await postMessage({ model: "drv-ep@fake-drv", content: big });
+    expect(res.status).toBe(200); // the #79 recoverable turn, never a bare 400
+    // #431 marker on the derived path, read off the live route (the composed
+    // unit pin cannot assert it: `app.request` in a process that has hosted a
+    // node:http server returns a rebuilt Response with the marker gone —
+    // measured 24/10, same class as #604).
+    const skip = res.headers.get("x-claudish-step-skip") ?? "";
+    expect(skip).toContain("context");
+    expect(skip).toContain("cap=2000");
+    expect(await responseText(res)).toContain("maximum prompt size");
+    expect(calls.drv ?? 0).toBe(0); // the doomed round-trip never happens
+
+    // The countable marker names the DERIVED window and its provenance class.
+    // (The marker now goes through log(msg, true) → console.log, which the
+    // harness hooks; logStderr is the legacy shape and would also be caught.)
+    expect(
+      markerLog.some(
+        (l) => l.includes("[ContextGuard] short-circuit") && l.includes("cap=2000") && l.includes("derived window")
+      )
+    ).toBe(true);
+
+    // Control: the same body on an endpoint that declares (and derives) nothing
+    // reaches upstream — the pre-seed is a threshold on a window, not a policy.
+    const res2 = await postMessage({ model: "nodrv-ep@fake-ndr", content: big });
+    expect(res2.status).toBe(200);
+    expect(calls.ndr ?? 0).toBeGreaterThanOrEqual(1);
   }, 30_000);
 });

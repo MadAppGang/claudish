@@ -64,6 +64,7 @@ import {
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { applyNativePinOverride } from "./providers/native-pin-auto.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
+import { deriveContextLimits, purgeCapsReplacedByDerivation } from "./providers/context-limit-derivation.js";
 import { getRuntimeProviders, getDeclaredContextLimit } from "./providers/runtime-providers.js";
 import { loadConfig } from "./profile-config.js";
 import { createStreamTracker, stallThresholdMs } from "./fork/server/stream-registry";
@@ -120,6 +121,7 @@ import {
   contextAdmissionDisabled,
   buildOverflowRecoveryStream,
   buildOverflowRecoveryMessage,
+  initOverflowCapsPersistence,
   type ContextAdmissionDecision,
   type DeclaredWindow,
 } from "./handlers/shared/context-overflow.js";
@@ -607,6 +609,50 @@ export async function createProxyServer(
     // Config read failure should not crash the proxy — the rest of startup
     // continues and users get the default (builtin-only) set of providers.
     log(`[Proxy] customEndpoints load skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // #651 — two pieces of context-window state that must not depend on a human
+  // retyping them, nor on this process staying alive.
+  //
+  // (1) The LEARNED cap, restored before any request is served. It lived in
+  //     memory only, so a recreate forgot it and reopened the band between the
+  //     engine's real limit and the reported floor — measured 24/10: a
+  //     `400 "Input too large"` 52 min after the restart, teaching nothing back.
+  //     The path is opt-in: the config bind is READ-ONLY in the container, so
+  //     the compose default points at the writable model-cache volume; unset
+  //     keeps today's memory-only behaviour.
+  const capsRestored = initOverflowCapsPersistence();
+  log(
+    capsRestored.path
+      ? `[ContextLimit] learned caps restored n=${capsRestored.loaded} expired=${capsRestored.expired} path=${capsRestored.path}`
+      : "[ContextLimit] learned caps are memory-only (CLAUDISH_OVERFLOW_CAPS_PATH unset)"
+  );
+
+  // (2) The DECLARED window, derived from the endpoint's own `/v1/models` when
+  //     it opts in (`deriveContextLimit: true`). Bounded per endpoint, never
+  //     throws, and inert when nothing opts in — an endpoint that says nothing
+  //     boots byte-identically, with zero probes on the wire.
+  try {
+    const derived = await deriveContextLimits(loadedConfig);
+    if (derived.length > 0) {
+      log(
+        `[ContextLimit] derivation: ${derived.filter((d) => d.derived).length}/${derived.length} endpoint(s) derived from /v1/models`
+      );
+    }
+    // #660 r1 — a SUCCEEDED derivation outranks any restored learned cap for
+    // that provider: the learned branch is checked first in `handle()`, so a
+    // stale cap would keep refusing what the fresh measurement just allowed.
+    // The purge is what makes "a measurement beats a claim" true at the seam
+    // where the two meet. r2: the loop lives in purgeCapsReplacedByDerivation
+    // (same module as the outcomes) — it purges under the handler's own key.
+    const capsPurged = purgeCapsReplacedByDerivation(derived);
+    if (capsPurged > 0) {
+      log(`[ContextLimit] derivation replaced ${capsPurged} restored learned cap(s) with the measured window`);
+    }
+  } catch (err) {
+    // Belt and braces: deriveContextLimits swallows per-endpoint failures, and
+    // a probe must never be able to keep the proxy from booting.
+    logStderr(`[ContextLimit] derivation skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // Define handlers for different roles
