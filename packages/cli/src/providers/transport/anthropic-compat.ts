@@ -16,6 +16,7 @@ import { ConcurrencyLimiter } from "../../handlers/shared/concurrency-limiter.js
 import { log } from "../../logger.js";
 import { KimiOAuth } from "../../auth/kimi-oauth.js";
 import { isQuotaWall } from "./quota-wall.js";
+import { isConcurrencyRefusalResponse } from "../../handlers/shared/step-skip.js";
 
 export class AnthropicProviderTransport implements ProviderTransport {
   readonly name: string;
@@ -149,6 +150,12 @@ export class AnthropicProviderTransport implements ProviderTransport {
           // A wall will still be a wall after the ladder — give up now so the
           // caller's deadline is not spent asleep. Bursts still retry (narrow predicate).
           if (await isQuotaWall(response, this.displayName)) return response;
+          // #679 — a plan-concurrency refusal (z.ai 1302) also gives up now,
+          // for the mirror reason: the slot frees in seconds, sleeping 2s..30s
+          // against a busy SHARED plan burns the caller's deadline and ends at
+          // the fetch abort, which destroys the body the cascade needs to skip
+          // on. The 429 surfaces intact; ComposedHandler annotates it busy.
+          if (await isConcurrencyRefusalResponse(response)) return response;
           const retryAfter = response.headers.get("Retry-After");
           let delayMs: number;
           if (retryAfter && !Number.isNaN(Number(retryAfter))) {

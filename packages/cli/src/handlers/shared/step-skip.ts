@@ -30,6 +30,8 @@
  * harmless to a client that ignores it, and greppable for one that looks).
  */
 
+import { readBodyWithDeadline } from "../../providers/transport/quota-wall.js";
+
 export const STEP_SKIP_HEADER = "x-claudish-step-skip";
 
 export type StepSkipReason = "context" | "busy" | "media";
@@ -69,6 +71,69 @@ export function readStepSkip(response: Response): StepSkipInfo | null {
   if (!STEP_SKIP_REASONS.includes(reason as StepSkipReason)) return null;
   const detail = semi === -1 ? undefined : raw.slice(semi + 1).trim() || undefined;
   return { reason: reason as StepSkipReason, detail };
+}
+
+// ── #679 — z.ai plan request-concurrency refusal (429, code 1302) ─────────────
+
+/**
+ * The GLM Coding plan's REQUEST-concurrency limit, on the wire: HTTP 429 with
+ * `error.code 1302`. Two measured wordings exist ("Rate limit reached for
+ * requests", "rate limit (concurrency/RPM). Please try again later.") — the
+ * CODE is the contract, so it is the only thing matched. The 5-hour usage
+ * wall (1308) is a different code and a different contract: it stays
+ * `isQuotaExhaustion`'s, and this predicate must never match it.
+ *
+ * Deliberately a `busy` skip, not a step failure (#679): the plan is shared
+ * with the sonnet nominal, contention is normal operation, and the very next
+ * request often fits — but the non-quota failure path benches the step for
+ * `[10m…24h]` after a few episodes, exiling the fleet's free big-context tier
+ * (measured: glm served ~6 % of haiku while accepting 283k-token prompts).
+ * The in-stream variant (HTTP 200 + SSE error 1302) is NOT this predicate's
+ * business: it keeps its patient backoff, and only its persistence surfaces.
+ */
+export function classifyConcurrencyRefusal(status: number, bodyText: string): boolean {
+  if (status !== 429) return false;
+  try {
+    const code = (JSON.parse(bodyText) as any)?.error?.code;
+    return code === "1302" || code === 1302;
+  } catch {
+    return false; // non-JSON body — the code cannot be read, never guess
+  }
+}
+
+/** Skip detail for a concurrency refusal — the countable marker's payload. */
+export const CONCURRENCY_REFUSAL_SKIP_DETAIL = "code=1302";
+
+/** How long the 1302 check may spend reading a 429 body (see the call site). */
+const CONCURRENCY_BODY_READ_MS = 300;
+
+/**
+ * Response-shaped wrapper for the transports' 429 ladders: a 1302 must give
+ * up on the ladder IMMEDIATELY, exactly like `isQuotaWall` — but for the
+ * opposite reason. A wall stays a wall however long you sleep; a concurrency
+ * slot frees in seconds, and the ladder's `2s..30s` sleeps burn the client's
+ * deadline against a SHARED plan that is simply busy right now (measured:
+ * attempt 3 dies to the 30 s fetch abort and surfaces as a synthesized
+ * connection 400, at which point the refusal's own body — the thing the
+ * cascade needs to skip on — no longer exists). Clone-and-read, like
+ * isQuotaWall: the caller still returns this Response, its body must stay
+ * unconsumed.
+ */
+export async function isConcurrencyRefusalResponse(response: Response): Promise<boolean> {
+  try {
+    // Bounded read, same discipline as isQuotaWall: nothing else bounds this on
+    // the OpenAI transport path (no AbortSignal there), and a body that simply
+    // never arrives must degrade to the ladder — measured: an unbounded
+    // clone().text() hung the transport suite's "body that never ARRIVES" pin.
+    // Shorter than the wall check's 2s because that check has already spent its
+    // budget on the same response; a 1302 body is a tiny JSON that rides the
+    // headers, so 300ms is ample and the worst case stays under any client deadline.
+    const body = await readBodyWithDeadline(response.clone(), CONCURRENCY_BODY_READ_MS);
+    if (body === null) return false; // body did not arrive — retry as before, never guess
+    return classifyConcurrencyRefusal(response.status, body);
+  } catch {
+    return false; // unreadable body — never guess, let the ladder retry as before
+  }
 }
 
 // ── Kill switch + busy-wait knob (both re-read per request) ────────────────────
@@ -122,4 +187,31 @@ export function markCascadeStepAttempt(c: object, busyWaitMs: number): void {
 
 export function cascadeStepBusyWaitMs(c: object): number | undefined {
   return busyBudgets.get(c);
+}
+
+// ── Step-eligibility marker, request-scoped (#679) ────────────────────────────
+
+/**
+ * "This attempt is a NON-LAST cascade step under live skip machinery" — set by
+ * the loop at the same site as the busy budget, but as its own predicate: the
+ * budget is cleared by `CLAUDISH_FAILOVER_STEP_BUSY_WAIT_MS=0` (an operator
+ * tuning the LIMITER wait), and that must not silently restore the ~5-minute
+ * patient backoff for a concurrency-refused step (#679 — the step's whole job
+ * is to yield in seconds so the successor serves).
+ *
+ * Distinct from the budget on purpose: `cascadeStepBusyWaitMs` answers "how
+ * long may the limiter hold this attempt", this answers "may the skip wires
+ * treat this attempt as a step". Nominal, last-step, keyless and non-cascade
+ * attempts are never eligible — their overload patience is the designed
+ * behavior and stays exactly as it is.
+ */
+const stepSkipEligibleContexts = new WeakSet<object>();
+
+export function markStepSkipEligible(c: object, on: boolean): void {
+  if (on) stepSkipEligibleContexts.add(c);
+  else stepSkipEligibleContexts.delete(c);
+}
+
+export function isStepSkipEligible(c: object): boolean {
+  return stepSkipEligibleContexts.has(c);
 }

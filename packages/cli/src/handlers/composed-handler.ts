@@ -67,6 +67,9 @@ import {
   STEP_SKIP_HEADER,
   encodeStepSkipHeader,
   cascadeStepBusyWaitMs,
+  classifyConcurrencyRefusal,
+  CONCURRENCY_REFUSAL_SKIP_DETAIL,
+  isStepSkipEligible,
 } from "./shared/step-skip.js";
 import { StepBusyError } from "./shared/concurrency-limiter.js";
 import { extractSessionKey, isQuotaExhaustion } from "../fork/failover.js";
@@ -1161,10 +1164,26 @@ export class ComposedHandler implements ModelHandler {
       } catch {
         // body read is best-effort
       }
-      if (isTransientOverload(response.status, probeText)) {
+      // #679 — a NON-LAST cascade step refused by the plan's concurrency limit
+      // (z.ai 1302) must NOT pay the ~5-minute patience below: that loop is a
+      // NOMINAL strategy (no successor exists there, waiting beats switching),
+      // while the step's whole job is to yield in seconds so the successor
+      // serves (#431 philosophy). Letting the refusal fall through converts it
+      // to the 529 the busy skip already rides — measured before this gate, a
+      // concurrency-worded 1302 on a step burned the full patient spread and
+      // THEN benched the step anyway.
+      const stepConcurrencyRefusal =
+        isStepSkipEligible(c as unknown as object) &&
+        classifyConcurrencyRefusal(response.status, probeText);
+      if (isTransientOverload(response.status, probeText) && !stepConcurrencyRefusal) {
         const recovered = await this.patientOverloadBackoff(doFetch);
         if (recovered) response = recovered;
         // null = exhausted → response stays the overload → !response.ok below → 529
+      } else if (stepConcurrencyRefusal) {
+        log(
+          `[Overload] [${this.provider.displayName}] concurrency refusal (code 1302) on a cascade step — skipping the patient backoff, the successor serves (#679)`,
+          true // forceConsole — operational event
+        );
       } else {
         // Pre-stream policy refusal (#155 — pre-stream extension of #65): the
         // same invalid_prompt class arrives as a plain HTTP 4xx body before any
@@ -1429,6 +1448,26 @@ export class ComposedHandler implements ModelHandler {
           errorBody = { error: { type: "api_error", message: errorText } };
         }
 
+        // #679 — the plan's request-concurrency refusal (429, code 1302) is a
+        // BUSY signal, not a step failure: annotated on whatever response the
+        // branches below produce (the 529 overload conversion or the plain
+        // envelope), and only `handleWithCascade` acts on it — advance a
+        // non-last step, no mark, no bench. Nominal/last-step callers see the
+        // exact response they always did, plus a namespaced header they can
+        // ignore. The annotation MUST precede isTransientOverload: the
+        // concurrency-worded 1302 variant matches its 429 branch, and the
+        // skip decision rides the 529 it returns.
+        const concurrencyRefusal = classifyConcurrencyRefusal(response.status, errorText);
+        if (concurrencyRefusal) {
+          // log(..., true), not logStderr(_, true) — logStderr takes ONE
+          // argument (forceConsole is log()'s), and the route harness hooks
+          // console.log for countable markers.
+          log(
+            `[ConcurrencyRefusal] provider=${this.provider.displayName} model=${this.targetModel} HTTP ${response.status} code=1302 — plan concurrency busy, not a step failure`,
+            true // forceConsole — operational event (#679 corroboration marker)
+          );
+        }
+
         // Transient overload (gc@/Z.AI concurrency limit delivered as a direct
         // HTTP 429/503, body says "overloaded"). By the time we reach here, the
         // patient backoff loop (patientOverloadBackoff, ~5 min via doFetch) has
@@ -1442,7 +1481,7 @@ export class ComposedHandler implements ModelHandler {
             true // forceConsole — operational event
           );
           c.header("Retry-After", "5");
-          return c.json(
+          const overloaded = c.json(
             wrapAnthropicError(
               529,
               `${this.provider.displayName} temporarily overloaded (concurrency limit) — please retry shortly`,
@@ -1450,6 +1489,15 @@ export class ComposedHandler implements ModelHandler {
             ),
             529 as any
           );
+          // #679 — same wire the bounded busy 529 rides: a cascade step
+          // advances with no mark; everyone else sees the 529 unchanged.
+          if (concurrencyRefusal) {
+            overloaded.headers.set(
+              STEP_SKIP_HEADER,
+              encodeStepSkipHeader("busy", CONCURRENCY_REFUSAL_SKIP_DETAIL)
+            );
+          }
+          return overloaded;
         }
 
         // Context-overflow interception (2026-09-10/11 incident): this pre-stream
@@ -1531,7 +1579,17 @@ export class ComposedHandler implements ModelHandler {
         if (providerSentence && providerSentence !== envelope.error.message) {
           envelope.error.provider_message = providerSentence;
         }
-        return c.json(envelope, response.status as any);
+        const enveloped = c.json(envelope, response.status as any);
+        // #679 — the plain 1302 429 ("Rate limit reached for requests"):
+        // annotate, never alter — a non-last cascade step skips forward, the
+        // response itself stays byte-for-byte what it always was.
+        if (concurrencyRefusal) {
+          enveloped.headers.set(
+            STEP_SKIP_HEADER,
+            encodeStepSkipHeader("busy", CONCURRENCY_REFUSAL_SKIP_DETAIL)
+          );
+        }
+        return enveloped;
       }
     }
 

@@ -133,6 +133,30 @@ function vllmImageCap400(): Response {
   );
 }
 
+/** #679 — the z.ai plan REQUEST-concurrency refusal, verbatim family: direct
+ * HTTP 429 with `error.code 1302`. Two measured wordings; the code is the
+ * contract (see classifyConcurrencyRefusal). */
+function zai1302(message = "Rate limit reached for requests"): Response {
+  return new Response(JSON.stringify({ error: { code: "1302", message } }), {
+    status: 429,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** #679 — the control sibling: the 5-hour USAGE wall (1308) is a quota wall
+ * and must keep arming/failing the step — never a busy skip. */
+function zai1308(): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        code: "1308",
+        message: "Usage limit reached for 5 hour. Your limit will reset at 2026-10-25 20:04:03",
+      },
+    }),
+    { status: 429, headers: { "content-type": "application/json" } }
+  );
+}
+
 /** Minimal healthy openai-wire SSE answer carrying `text`. */
 function okSse(text: string, model: string): Response {
   const chunk = (delta: any, finish: string | null) =>
@@ -339,7 +363,8 @@ beforeEach(() => {
         line.includes("[ContextAdmission]") ||
         line.includes("[EventLoop]") || // #615 review point 1
         line.includes("[MediaCap]") || // #575
-        line.includes("[EndpointBudget]") // #654
+        line.includes("[EndpointBudget]") || // #654
+        line.includes("[ConcurrencyRefusal]") // #679
       ) {
         markerLog.push(line);
       }
@@ -356,7 +381,8 @@ beforeEach(() => {
         line.includes("[ContextAdmission]") ||
         line.includes("[EventLoop]") || // #615 review point 1
         line.includes("[MediaCap]") || // #575
-        line.includes("[EndpointBudget]") // #654
+        line.includes("[EndpointBudget]") || // #654
+        line.includes("[ConcurrencyRefusal]") // #679
       ) {
         markerLog.push(line);
       }
@@ -1587,5 +1613,136 @@ describe("#654 — in-flight token budget per endpoint (busy-class skip)", () =>
     } finally {
       clearBudget();
     }
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// #679 — the z.ai plan's request-concurrency refusal (429, code 1302) is a
+// busy SKIP, not a step failure.
+//
+// Measured (coordinator, 25/10): the plan accepts 283k-token prompts (real
+// window ~1M) but answers its CONCURRENCY limit as a 429 `code 1302` —
+// non-quota, so markStepFailed benched the step for [10m..24h] after a few
+// episodes and the fleet's free big-context tier served only ~6 % of haiku.
+// The skip rides the existing #431 busy wire (same as the limiter's bounded
+// 529 and #654's budget refusal): advance a non-last step, no mark, no bench —
+// the very next request re-selects the step (the faucet property). The 1308
+// sibling is the control: a usage wall keeps walling.
+// ---------------------------------------------------------------------------
+
+describe("#679 — plan concurrency refusal skips, the usage wall stays a wall", () => {
+  test("K1302a: 1302 on step 0 → successor serves, NO mark — the next request re-selects step 0", async () => {
+    await spin();
+    resetCascade();
+    upstreamAnswer.nm = () => quotaWall402();
+    upstreamAnswer.s0 = () => zai1302();
+
+    // r1: the refusal skips forward to s1 — the successor serves.
+    const r1 = await postMessage({ session: "sess-one" });
+    expect(r1.status).toBe(200);
+    expect(await responseText(r1)).toContain("ok-from-s1");
+    // The countable pair: the handler's classification + the loop's skip line.
+    expect(markerLog.some((l) => l.includes("[ConcurrencyRefusal]") && l.includes("code=1302"))).toBe(true);
+    const skipLine = markerLog.find(
+      (l) => l.includes("[Failover] SKIP sonnet[0]") && l.includes("reason=busy")
+    );
+    expect(skipLine).toBeDefined();
+    expect(skipLine).toContain("code=1302");
+    // THE FAUCET: a fresh session's next request resolves step 0 again — a
+    // markStepFailed would TTL-freeze it on the 10-minute rung.
+    const s0AfterR1 = calls.s0 ?? 0;
+    upstreamAnswer.s0 = () => okSse("ok-from-s0-again", "fake-s0");
+    const r2 = await postMessage({ session: "sess-two" });
+    expect(await responseText(r2)).toContain("ok-from-s0-again");
+    expect(calls.s0 ?? 0).toBeGreaterThan(s0AfterR1);
+  }, 30_000);
+
+  test("K1302b (control): the 1308 usage wall keeps failing the step — no re-selection, no busy skip", async () => {
+    await spin();
+    resetCascade();
+    upstreamAnswer.nm = () => quotaWall402();
+    upstreamAnswer.s0 = () => zai1308();
+
+    const r1 = await postMessage({ session: "sess-one" });
+    expect(r1.status).toBe(200);
+    expect(await responseText(r1)).toContain("ok-from-s1");
+    expect(markerLog.some((l) => l.includes("[ConcurrencyRefusal]"))).toBe(false);
+    expect(markerLog.some((l) => l.includes("reason=busy") && l.includes("code=1302"))).toBe(false);
+
+    // The marked step is NOT re-selected by the next fresh session.
+    const s0AfterR1 = calls.s0 ?? 0;
+    upstreamAnswer.s0 = () => okSse("ok-from-s0-again", "fake-s0");
+    const r2 = await postMessage({ session: "sess-two" });
+    expect(await responseText(r2)).toContain("ok-from-s1"); // still the successor
+    expect(calls.s0 ?? 0).toBe(s0AfterR1);
+  }, 30_000);
+
+  test("K1302c: kill switch CLAUDISH_FAILOVER_STEP_SKIP=0 restores today's behavior — the 1302 marks", async () => {
+    await spin();
+    resetCascade();
+    process.env.CLAUDISH_FAILOVER_STEP_SKIP = "0";
+    upstreamAnswer.nm = () => quotaWall402();
+    upstreamAnswer.s0 = () => zai1302();
+
+    const r1 = await postMessage({ session: "sess-one" });
+    expect(r1.status).toBe(200);
+    expect(await responseText(r1)).toContain("ok-from-s1"); // fail-forward still serves
+    expect(markerLog.some((l) => l.includes("[Failover] SKIP sonnet[0]"))).toBe(false);
+
+    // Without the skip, the non-quota failure MARKED step 0: the next fresh
+    // session goes straight to the successor.
+    const s0AfterR1 = calls.s0 ?? 0;
+    upstreamAnswer.s0 = () => okSse("ok-from-s0-again", "fake-s0");
+    const r2 = await postMessage({ session: "sess-two" });
+    expect(await responseText(r2)).toContain("ok-from-s1");
+    expect(calls.s0 ?? 0).toBe(s0AfterR1);
+    delete process.env.CLAUDISH_FAILOVER_STEP_SKIP;
+  }, 30_000);
+
+  test("K1302d: on the LAST step the 429 surfaces to the client unchanged, header annotated but never acted on", async () => {
+    await spin();
+    resetCascade(cascadeEnv("s0-ep@fake-s0"));
+    upstreamAnswer.nm = () => quotaWall402();
+    upstreamAnswer.s0 = () => zai1302();
+
+    const r1 = await postMessage({ session: "sess-one" });
+    expect(r1.status).toBe(429); // the client sees the provider's own refusal
+    // An error envelope, not a message — read the raw body (responseText only
+    // extracts content[].text).
+    expect(await r1.text()).toContain("Rate limit reached for requests");
+    expect(r1.headers.get("x-claudish-step-skip") ?? "").toContain("busy");
+    expect(r1.headers.get("x-claudish-step-skip") ?? "").toContain("code=1302");
+    expect(markerLog.some((l) => l.includes("[ConcurrencyRefusal]"))).toBe(true);
+    expect(markerLog.some((l) => l.includes("[Failover] SKIP"))).toBe(false);
+  }, 30_000);
+
+  test("K1302e: the concurrency-WORDED variant converts to 529 as today — and still skips with no mark", async () => {
+    await spin();
+    resetCascade();
+    upstreamAnswer.nm = () => quotaWall402();
+    upstreamAnswer.s0 = () =>
+      zai1302("Your account has reached its rate limit (concurrency/RPM). Please try again later.");
+
+    // isTransientOverload matches ("concurrency") — and the #679 gate skips
+    // the ~5-min patient backoff for a step (that patience is a NOMINAL
+    // strategy): the refusal converts to 529 immediately and the busy
+    // annotation rides it into the same skip. Pre-#679 this test could not
+    // even exist under a 30s timeout — the patient spread burned 5 minutes
+    // first (measured: retries 1-3 logged before the harness gave up).
+    const r1 = await postMessage({ session: "sess-one" });
+    expect(r1.status).toBe(200);
+    expect(await responseText(r1)).toContain("ok-from-s1");
+    const skipLine = markerLog.find(
+      (l) => l.includes("[Failover] SKIP sonnet[0]") && l.includes("reason=busy")
+    );
+    expect(skipLine).toBeDefined();
+    expect(skipLine).toContain("code=1302");
+
+    // No mark here either — the faucet re-selects step 0.
+    const s0AfterR1 = calls.s0 ?? 0;
+    upstreamAnswer.s0 = () => okSse("ok-from-s0-again", "fake-s0");
+    const r2 = await postMessage({ session: "sess-two" });
+    expect(await responseText(r2)).toContain("ok-from-s0-again");
+    expect(calls.s0 ?? 0).toBeGreaterThan(s0AfterR1);
   }, 30_000);
 });

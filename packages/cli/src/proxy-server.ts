@@ -115,6 +115,7 @@ import {
   stepSkipDisabled,
   readStepBusyWaitMs,
   markCascadeStepAttempt,
+  markStepSkipEligible,
 } from "./handlers/shared/step-skip.js";
 import {
   endpointPrefixOf,
@@ -1699,8 +1700,10 @@ export async function createProxyServer(
       if (role && !stepSkipDisabled()) {
         if (rule != null && stepIndex >= 0 && stepIndex < rule.steps.length - 1) {
           markCascadeStepAttempt(c, readStepBusyWaitMs());
+          markStepSkipEligible(c, true); // #679 — patient-backoff exemption
         } else {
           markCascadeStepAttempt(c, 0);
+          markStepSkipEligible(c, false);
         }
       }
       // #654 — in-flight token budget per endpoint, evaluated BEFORE the

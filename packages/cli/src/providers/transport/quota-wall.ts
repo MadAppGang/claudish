@@ -53,9 +53,16 @@ const BODY_READ_DEADLINE_MS = 2000;
  * `cancel()` it: that resolves the pending read as done, the loop exits, and
  * the underlying stream is released instead of being abandoned mid-flight.
  */
-async function readBodyWithDeadline(response: Response, ms: number): Promise<string | null> {
-  if (!response.body) return "";
-  const reader = response.body.getReader();
+export async function readBodyWithDeadline(
+  // Structural, not `Response`: the transports carry undici's Response while
+  // the DOM lib declares its own — the two are not assignable (measured as
+  // TS2345 at the two call sites). Only `.body.getReader()` is used here.
+  response: { body: { getReader(): any } | null },
+  ms: number
+): Promise<string | null> {
+  const body = response.body;
+  if (!body) return "";
+  const reader = body.getReader();
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
