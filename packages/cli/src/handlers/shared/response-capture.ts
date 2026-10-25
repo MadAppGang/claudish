@@ -17,6 +17,7 @@
 import { mkdirSync, appendFileSync } from "fs";
 import { writeFile } from "fs/promises";
 
+import { getInstanceId } from "../../instance-id.js";
 import { respMarkerLine } from "./traffic-markers.js";
 
 // The resp-*.sse write is FIRE-AND-FORGET, for the same reason the request-side
@@ -133,6 +134,12 @@ export function createResponseCapture(
         const header =
           `# claudish response capture\n` +
           `# parser=${label} model=${model} reqN=${reqNumber} pid=${process.pid}\n` +
+          // #662 — same rationale as the request side: `pid` is 1 in every
+          // container life, the instanceId discriminates lives. Its OWN header
+          // line, never the filename: the .sse readers anchor on the
+          // `^# parser=...` line (compaction-trend, native-consumption,
+          // ws-out-census) — an extra line is invisible to them.
+          `# instance=${getInstanceId()}\n` +
           `# elapsed_ms=${Date.now() - startedAt} events~=${events}\n` +
           `# notes=${notes.join(" | ")}\n` +
           (extra ? `# extra=${JSON.stringify(extra)}\n` : "") +

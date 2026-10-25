@@ -10,6 +10,7 @@
 import { mkdirSync } from "fs";
 import { writeFile } from "fs/promises";
 import { inboundKeyFor } from "../../handlers/shared/inbound-keys.js";
+import { getInstanceId } from "../../instance-id.js";
 import { HOPS_HEADER } from "../server/relay.js";
 
 // Capture writes are FIRE-AND-FORGET on purpose. The old writeFileSync stalled the
@@ -203,6 +204,12 @@ export function logRequest(
       ...(inboundKey ? { inbound_key: inboundKey } : {}),
       model,
       pid: process.pid,
+      // #662 — the per-process instanceId (#156) as a payload FIELD: `pid` is 1
+      // in EVERY container life (the proxy is the image's command), so it cannot
+      // tell two lives apart; the instanceId can, without an external restart
+      // boundary. Never the filename — every reader (traffic-*.ps1,
+      // turn-autopsy.py) parses the name.
+      instanceId: getInstanceId(),
       ...extractAttributionFields(body),
       hops,
       body,

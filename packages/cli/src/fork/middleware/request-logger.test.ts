@@ -14,6 +14,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { logRequest } from "./request-logger";
 import { markInboundKey } from "../../handlers/shared/inbound-keys.js";
+import { getInstanceId } from "../../instance-id.js";
 
 function mkRequest(headers: Record<string, string> = {}): Request {
   return new Request("http://localhost:3000/v1/messages", {
@@ -82,6 +83,27 @@ describe("request-logger capture (fork)", () => {
     await new Promise((r) => setTimeout(r, 150));
     const files = readdirSync(capDir).filter((f) => f.startsWith("req-"));
     expect(files.length).toBe(0);
+  });
+
+  // #662: the per-process instanceId (#156) lands as a payload FIELD so a
+  // capture read in isolation assigns to its container life (pid is 1 in every
+  // life). The filename stays UNCHANGED — readers parse the name.
+  it("persists instanceId as a payload field, filename unchanged (#662)", async () => {
+    mkdirSync(capDir, { recursive: true });
+    process.env.CLAUDISH_CAPTURE_DIR = capDir;
+
+    logRequest({ model: "m", messages: [] }, "h", mkRequest(), new WeakMap());
+
+    const file = await waitForCapture(capDir);
+    expect(file).not.toBeNull();
+    const json = JSON.parse(readFileSync(file!, "utf8"));
+    expect(json.instanceId).toBe(getInstanceId());
+    // UUID-shaped, not the pid: it must discriminate two lives of one pid.
+    expect(json.instanceId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+    );
+    // filename contract unchanged by #662 — no instance segment in the name.
+    expect(file!.split(/[/\\]/).pop()).toMatch(/^req-\d+-\d{4}-[\dT-]+-[A-Za-z0-9._-]+\.json$/);
   });
 
   it("does not throw when the capture dir cannot be created", () => {

@@ -4,6 +4,7 @@ import {
   createResponseCapture,
   __resetCaptureDirMemo,
 } from "./response-capture.js";
+import { getInstanceId } from "../../instance-id.js";
 import { rmSync, readFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -186,6 +187,31 @@ describe("createResponseCapture", () => {
     expect(body).toContain("parser=openai model=glm-5.2");
     expect(body).toContain("message_stop");
     expect(body).toContain("data: {}");
+  });
+
+  // #662: the per-process instanceId (#156) rides as its OWN header line so a
+  // .sse read in isolation assigns to its container life (pid is 1 in every
+  // life). The `^# parser=` line the readers anchor on stays byte-identical,
+  // and the filename stays unchanged.
+  test("header carries instanceId as its own line, parser line and filename untouched (#662)", async () => {
+    process.env.CLAUDISH_CAPTURE_DIR = dir;
+    const cap = createResponseCapture("openai", "glm-5.2");
+    cap.tap("data: {}\n\n");
+    cap.done();
+
+    const deadline = Date.now() + 2000;
+    while (respFiles().length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const files = respFiles();
+    expect(files).toHaveLength(1);
+    const body = readFileSync(join(dir, files[0]), "utf8");
+    expect(body).toContain(`# instance=${getInstanceId()}`);
+    // reader contract: the anchored header line is unmodified (compaction-trend,
+    // native-consumption, ws-out-census match `^# parser=\S+ model=\S+ reqN=\d+ pid=\d+`).
+    expect(body).toMatch(/^# parser=openai model=glm-5\.2 reqN=\d+ pid=\d+$/m);
+    // filename contract unchanged by #662 — no instance segment in the name.
+    expect(files[0]).toMatch(/^resp-\d+-r\d{4}-[\dTZ-]+-openai-glm-5\.2\.sse$/);
   });
 
   test("done() is idempotent - a second call writes no second file", async () => {
