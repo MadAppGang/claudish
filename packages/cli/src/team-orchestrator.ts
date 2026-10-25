@@ -11,6 +11,8 @@ import {
 } from "node:fs";
 import path, { basename, dirname, join, resolve } from "node:path";
 
+import { resolveClaudishSpawn } from "./claudish-spawn.js";
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface TeamManifest {
@@ -376,9 +378,36 @@ export async function runModels(
       startedAt: new Date().toISOString(),
     });
 
-    const proc = spawn("claudish", args, {
+    // #646: a bare `spawn("claudish")` cannot reach a .cmd-shimmed Windows
+    // install (bun: no PATHEXT; node: EINVAL since the CVE-2024-27980
+    // hardening) — resolve the real executable instead. Resolved once per
+    // model entry from the same `args`; non-win32 is the old bare spawn.
+    const spawnSpec = resolveClaudishSpawn(args);
+    if (spawnSpec.command === null) {
+      // Nothing resolvable: fail the model with a message naming the
+      // executable forms that were looked for (#646 acceptance), shaped like
+      // any other failure so the MCP report renders it.
+      let refusedLogPath = "";
+      try {
+        mkdirSync(join(sessionPath, "errors"), { recursive: true });
+        writeFileSync(errorLogPath, spawnSpec.refusal ?? "claudish not found", "utf-8");
+        refusedLogPath = errorLogPath;
+      } catch {
+        refusedLogPath = "";
+      }
+      updateModelStatus(anonId, {
+        state: "FAILED",
+        exitCode: 1,
+        completedAt: new Date().toISOString(),
+        error: failureDetails(entry, args, spawnSpec.refusal ?? "", refusedLogPath, process.cwd()),
+      });
+      opts.onStatusChange?.(anonId, statusCache.models[anonId]);
+      continue;
+    }
+    const proc = spawn(spawnSpec.command, spawnSpec.args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
+      windowsVerbatimArguments: spawnSpec.verbatim,
     });
     const workDir = process.cwd();
 

@@ -34,15 +34,15 @@ import {
 import { formatTeamResult } from "./mcp-server.js";
 
 /**
- * The three `runModels` cases below spawn the CLI by bare name, which Windows
- * cannot do against this suite's `.cmd` fake — measured 2026-10-24, #646:
- * `spawn("claudish")` → ENOENT under bun 1.3.13 (no PATHEXT) and under node 25
- * (and an explicit `claudish.cmd` is EINVAL there without `shell: true`).
- * The POSIX branch runs in CI (ubuntu-latest), so the coverage is kept where
- * it works; skipping here stops three permanent reds from masking a real
- * regression in the same three cases.
+ * #646 — since the spawn goes through `resolveClaudishSpawn` (claudish-spawn.ts),
+ * the three `runModels` cases below run on POSIX *and* win32: on win32 the
+ * resolver finds this suite's `claudish.cmd` fake and drives it through
+ * `cmd.exe /d /s /c`, which is exactly the npm-global install shape that the
+ * old bare `spawn("claudish")` could not reach (ENOENT under bun, EINVAL under
+ * node — measured 2026-10-24). The win32-only refusal case (no executable on
+ * PATH at all) is pinned further down via `itWin32`.
  */
-const itSpawnsClaudish = process.platform === "win32" ? it.skip : it;
+const itWin32 = process.platform === "win32" ? it : it.skip;
 
 
 // ─── Unit: failureDetails (the producer) ─────────────────────────────────────
@@ -173,12 +173,10 @@ interface FakeOptions {
  * batch; POSIX gets a `#!/bin/sh` script. Both consume stdin to EOF first, so
  * the parent's stdin write cannot EPIPE.
  *
- * ⚠ The win32 branch is **not reachable** by this suite today (#646): a `.cmd`
- * is spawned neither by bare name (bun: no PATHEXT → ENOENT; node ≥20: EINVAL
- * without `shell: true`) nor through an absolute path (node: EINVAL). It is
- * kept as the target for the executable-resolution fix, and the three cases
- * that need it are skipped on win32 via `itSpawnsClaudish` above rather than
- * left permanently red.
+ * The win32 branch is reachable since #646: `resolveClaudishSpawn` finds the
+ * `claudish.cmd` on PATH and spawns it through `cmd.exe /d /s /c` with every
+ * argument quoted — the npm-global install shape. `findstr "^"` consumes
+ * stdin to EOF under that wrapper exactly as `cat` does on POSIX.
  */
 async function withFakeClaudish(opts: FakeOptions, body: () => Promise<void>): Promise<void> {
   const fakeDir = mkdtempSync(join(tmpdir(), "fake-claudish-538-"));
@@ -225,7 +223,7 @@ async function runWithFake(opts: FakeOptions) {
 }
 
 describe("#538 runModels settles with true values before publishing", () => {
-  itSpawnsClaudish("a non-zero exit records the REAL exit code and a log that exists at resolve", async () => {
+  it("a non-zero exit records the REAL exit code and a log that exists at resolve", async () => {
     const { m, cleanup } = await runWithFake({ exitCode: 3, stderr: "538-stderr-marker: provider blew up" });
     try {
       expect(m.state).toBe("FAILED");
@@ -245,7 +243,7 @@ describe("#538 runModels settles with true values before publishing", () => {
     }
   }, 30_000);
 
-  itSpawnsClaudish("a failure with EMPTY stderr still writes the advertised log (mutant 4)", async () => {
+  it("a failure with EMPTY stderr still writes the advertised log (mutant 4)", async () => {
     const { m, cleanup } = await runWithFake({ exitCode: 3 });
     try {
       expect(m.state).toBe("FAILED");
@@ -260,7 +258,7 @@ describe("#538 runModels settles with true values before publishing", () => {
     }
   }, 30_000);
 
-  itSpawnsClaudish("an exit-0 child settles COMPLETED with no error and no log", async () => {
+  it("an exit-0 child settles COMPLETED with no error and no log", async () => {
     const { m, sessionDir, cleanup } = await runWithFake({ exitCode: 0 });
     try {
       // Before the settle fix this child was recorded FAILED with exitCode 1
@@ -271,6 +269,45 @@ describe("#538 runModels settles with true values before publishing", () => {
       expect(existsSync(join(sessionDir, "errors", "01.log"))).toBe(false);
     } finally {
       cleanup();
+    }
+  }, 30_000);
+});
+
+// ─── #646 — a Windows seat with no claudish on PATH refuses naming it ────────
+// The old code's spawn failure surfaced as FAILED/exit-1 with EMPTY stderr —
+// indistinguishable from the model itself crashing on startup. The acceptance
+// for #646: such a seat either works or is refused with a message naming the
+// executable forms the resolver looked for. (POSIX keeps the bare spawn, so
+// this pin is win32-only.)
+describe("#646 win32 executable resolution", () => {
+  itWin32("no claudish anywhere on PATH fails the model naming the executable forms", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "team-646-"));
+    const originalPath = process.env.PATH;
+    try {
+      setupSession(tempDir, ["no-shim-model"], "Say hello");
+      process.env.PATH = ""; // nothing resolvable in any PATH entry
+      try {
+        const status = await runModels(tempDir, { timeout: 10 });
+        const m = status.models["01"];
+        expect(m).toBeDefined();
+        expect(m!.state).toBe("FAILED");
+        expect(m!.exitCode).toBe(1);
+        expect(m!.error).toBeDefined();
+        // The refusal names every executable form the resolver looked for.
+        expect(m!.error!.stderrSnippet).toContain("claudish.exe");
+        expect(m!.error!.stderrSnippet).toContain("claudish.cmd");
+        expect(m!.error!.stderrSnippet).toContain("claudish.bat");
+        expect(m!.error!.command).toContain("--model no-shim-model");
+        // Same contract as any FAILED run: the advertised log exists and
+        // holds the full refusal text.
+        expect(m!.error!.errorLogPath).not.toBe("");
+        expect(existsSync(m!.error!.errorLogPath)).toBe(true);
+        expect(readFileSync(m!.error!.errorLogPath, "utf-8")).toContain("claudish.exe");
+      } finally {
+        process.env.PATH = originalPath;
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
     }
   }, 30_000);
 });
