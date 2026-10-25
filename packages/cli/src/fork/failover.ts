@@ -270,6 +270,16 @@ const configArmedRoles = new Set<FailoverRole>();
  * (machineArmBucket), so every downstream decision keys on it unchanged. */
 const configArmedMachines = new Map<FailoverRole, Set<string>>();
 const MACHINE_BUCKET_PREFIX = "machine:";
+
+/** #693 — CLAUDISH_FAILOVER_STEP_EXCLUDE: per-machine step exclusions, keyed
+ * `${role}|${machine}` → indexes that machine's requests must never serve.
+ * The mandate shape: ONE global cascade per role stays the source of truth
+ * (every index-keyed record — dwell pins, step failures, recovery stamps —
+ * keeps its meaning), and a machine subtracts the steps it must not draw on
+ * (hub 2026-10-25: ai-01's ~330k-token condensation prompts must not spill
+ * onto the local engine's KV budget when the haiku nominal walls). An
+ * exclusion NEVER renumbers: indexes stay in the global list's space. */
+const stepExclusions = new Map<string, Set<number>>();
 /** Per-step failure counters, per role. Independent of the bucket-wall TTL: the
  * cascade steps are shared targets, their walls are facts about the STEP, not
  * about whichever nominal diverted onto it. */
@@ -648,12 +658,90 @@ export function initFailover(env: NodeJS.ProcessEnv = process.env): void {
     }
   }
 
+  // #693 — per-machine step exclusions. Parsed AFTER the cascade rules exist:
+  // an entry is validated by matching a real step target (class suffix
+  // already stripped at parse, comparison lowercased). A target that appears
+  // in several roles' cascades is excluded in each — the honest reading of
+  // "this step, for this machine".
+  stepExclusions.clear();
+  const excludeRaw = (env.CLAUDISH_FAILOVER_STEP_EXCLUDE || "").trim();
+  if (excludeRaw) {
+    const byTarget = new Map<string, { role: FailoverRole; index: number }[]>();
+    for (const rule of rules.values()) {
+      rule.steps.forEach((step, i) => {
+        // A role-step's `target` is the bare role keyword ("sonnet") — index
+        // its env form `role:sonnet` too, so an operator can exclude either
+        // way with the text they actually have in the cascade variable.
+        const keys = step.roleRef ? [step.target, `role:${step.roleRef}`] : [step.target];
+        for (const raw of keys) {
+          const k = raw.toLowerCase();
+          const list = byTarget.get(k) ?? [];
+          list.push({ role: rule.role, index: i });
+          byTarget.set(k, list);
+        }
+      });
+    }
+    for (const piece of excludeRaw.split(",").map((s) => s.trim()).filter(Boolean)) {
+      // LAST colon, not first: a delegation step target is itself
+      // `role:sonnet` — the machine name (never colon-bearing) is the tail.
+      const at = piece.lastIndexOf(":");
+      const target = at >= 0 ? piece.slice(0, at).trim().toLowerCase() : "";
+      const machinesRaw = at >= 0 ? piece.slice(at + 1).trim() : "";
+      const machineList = machinesRaw.split(/[\s,]+/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+      const flaw =
+        at < 0 || !target
+          ? "want '<stepTarget>:<machine>[,<machine>…]'"
+          : machineList.length === 0 || machinesRaw.includes(":") || machinesRaw.includes("@")
+            ? "no valid machine name (names carry no ':' or '@')"
+            : null;
+      if (flaw) {
+        logStderr(`[Failover] Ignoring malformed CLAUDISH_FAILOVER_STEP_EXCLUDE entry '${piece}' — ${flaw}.`);
+        continue;
+      }
+      const hits = byTarget.get(target);
+      if (!hits) {
+        logStderr(
+          `[Failover] Ignoring CLAUDISH_FAILOVER_STEP_EXCLUDE entry '${piece}' — no cascade step matches '${target}'. Declared steps: ${[...byTarget.keys()].join(", ")}`
+        );
+        continue;
+      }
+      for (const m of machineList) {
+        for (const { role, index } of hits) {
+          const key = `${role}|${m}`;
+          const set = stepExclusions.get(key) ?? new Set<number>();
+          set.add(index);
+          stepExclusions.set(key, set);
+        }
+      }
+      logStderr(
+        `[Failover] STEP-EXCLUDE ${hits.map((h) => `${h.role}[${h.index}]`).join("/")} '${target}' for ${machineList.join(", ")} — those machines' walks skip this step (#693).`
+      );
+    }
+    // A machine whose exclusions cover EVERY step of a role can only misroute:
+    // the walk would strand the request (the last-step fallback refuses an
+    // excluded step). Refuse the config at load, loudly — the operator meant
+    // one step too many.
+    for (const rule of rules.values()) {
+      for (const [key, indexes] of stepExclusions) {
+        if (!key.startsWith(`${rule.role}|`)) continue;
+        if (indexes.size >= rule.steps.length) {
+          stepExclusions.delete(key);
+          logStderr(
+            `[Failover] STEP-EXCLUDE dropped for ${key.replace("|", "@")} — it named every step of the ${rule.role} cascade; a machine-stranding config is refused.`
+          );
+        }
+      }
+    }
+  }
+
   if (configArmedRoles.size > 0 || walled.size > 0 || rules.size > 0) {
     const parts: string[] = [];
     for (const role of configArmedRoles) parts.push(`${role}→${describeResolved(role)}`);
     for (const [role, machines] of configArmedMachines) {
       for (const m of machines) {
-        const { step } = resolveFailoverTarget(role, `${MACHINE_BUCKET_PREFIX}${m}`);
+        // #693: resolve WITH the machine so the banner shows the excluded walk
+        // an armed machine's requests actually take.
+        const { step } = resolveFailoverTarget(role, `${MACHINE_BUCKET_PREFIX}${m}`, undefined, m);
         parts.push(`${role}@${m}→${step ? step.label : "nominal"}`);
       }
     }
@@ -1163,6 +1251,33 @@ export function earliestWalledReprobeAt(role: FailoverRole, bucket?: string): Da
  * it (banner, tests), any wall or config-arm of the role diverts — the pre-#275
  * role-wide behavior.
  */
+/** #693: step indexes excluded for THIS machine's requests
+ * (CLAUDISH_FAILOVER_STEP_EXCLUDE). Undefined when the machine names no
+ * exclusion — the pre-#693 walk, untouched. */
+function excludedStepsForMachine(
+  role: FailoverRole,
+  machine: string | null | undefined
+): ReadonlySet<number> | undefined {
+  const m = (machine || "").trim().toLowerCase();
+  if (!m) return undefined;
+  return stepExclusions.get(`${role}|${m}`);
+}
+
+/** The walk's effective skip set: the caller's #431 request-scoped skips plus
+ * this machine's config exclusions (#693). Never mutates the caller's set —
+ * an exclusion is config, re-derived on every resolution, while #431 memory
+ * belongs to the request. */
+function mergeSkips(
+  skipSteps: ReadonlySet<number> | undefined,
+  excluded: ReadonlySet<number> | undefined
+): ReadonlySet<number> | undefined {
+  if (!excluded) return skipSteps;
+  if (!skipSteps) return excluded;
+  const merged = new Set<number>(skipSteps);
+  for (const i of excluded) merged.add(i);
+  return merged;
+}
+
 export function resolveFailoverTarget(
   role: FailoverRole,
   bucket?: string,
@@ -1173,11 +1288,20 @@ export function resolveFailoverTarget(
    * caller (handleWithCascade's per-request Set); every other caller passes
    * nothing and gets the pre-#431 walk.
    */
-  skipSteps?: ReadonlySet<number>
+  skipSteps?: ReadonlySet<number>,
+  /**
+   * #693: the X-Claudish-Machine of the request, when the caller knows it.
+   * Its config-declared step exclusions (CLAUDISH_FAILOVER_STEP_EXCLUDE) are
+   * skipped like #431's — no mark, no wall, the step simply does not exist
+   * for this machine. Machine-blind callers (canary, notices, banner) keep
+   * the global walk.
+   */
+  machine?: string | null
 ): { step: FailoverStep | null; stepIndex: number } {
   const rule = rules.get(role);
   if (!rule || !isFailoverActive(role, bucket)) return { step: null, stepIndex: -1 };
-  const resolved = resolveSkippingFailed(role, rule, skipSteps);
+  const excluded = excludedStepsForMachine(role, machine);
+  const resolved = resolveSkippingFailed(role, rule, mergeSkips(skipSteps, excluded), excluded);
   if (resolved.stepIndex >= 0 && bucket !== undefined) {
     // Remember what (role, bucket) is serving while walled — the recovery notice
     // needs it, and the wall's TTL expiry cannot see the role (#275).
@@ -1384,12 +1508,18 @@ export function resolveFailoverTargetForSession(
   sessionKey: string | null,
   bucket?: string,
   /** #431: request-scoped skips — see resolveFailoverTarget. */
-  skipSteps?: ReadonlySet<number>
+  skipSteps?: ReadonlySet<number>,
+  /** #693: the request's X-Claudish-Machine — its config-declared step
+   * exclusions apply to the walk, to pin holds, and to #619 recovery yields
+   * alike (a recovered step this machine may not serve is not news for it). */
+  machine?: string | null
 ): { step: FailoverStep | null; stepIndex: number } {
   const rule = rules.get(role);
   if (!rule) return { step: null, stepIndex: -1 };
+  const excluded = excludedStepsForMachine(role, machine);
+  const effSkips = mergeSkips(skipSteps, excluded);
   const dwell = sessionDwellMs;
-  if (!sessionKey || dwell <= 0) return resolveFailoverTarget(role, bucket, skipSteps);
+  if (!sessionKey || dwell <= 0) return resolveFailoverTarget(role, bucket, effSkips, machine);
 
   const now = Date.now();
   const pins = dwellPins.get(role);
@@ -1412,7 +1542,16 @@ export function resolveFailoverTargetForSession(
     // forfeit exists for a step that DIED (no re-pin at the successor); here
     // re-pinning at the successor is exactly right — it is the step now
     // serving this session, and ordinary dwell should hold it there.
-    if (skipSteps?.has(pin.stepIndex)) {
+    // #693: same yield for a config exclusion — the step does not exist for
+    // this machine (config changed under a live pin, or the pin was written
+    // by a machine-blind resolution). Re-resolving lands on the machine's
+    // own walk and re-pins there, same as the #431 yield.
+    if (excluded?.has(pin.stepIndex)) {
+      pins?.delete(sessionKey);
+      logStderr(
+        `[Failover] DWELL ${role} session …${sessionKey.slice(-8)} yielded — step ${pin.stepIndex} excluded for this machine (CLAUDISH_FAILOVER_STEP_EXCLUDE); re-resolving`
+      );
+    } else if (skipSteps?.has(pin.stepIndex)) {
       pins?.delete(sessionKey);
       logStderr(
         `[Failover] DWELL ${role} session …${sessionKey.slice(-8)} yielded — step ${pin.stepIndex} skipped for this request (#431); re-resolving`
@@ -1462,7 +1601,7 @@ export function resolveFailoverTargetForSession(
         pin.stepIndex,
         pin.pinnedAt,
         fails,
-        skipSteps,
+        effSkips,
         now
       );
       if (backStep !== undefined) {
@@ -1507,7 +1646,7 @@ export function resolveFailoverTargetForSession(
     } // end of the non-skipped pin branch (#431 else)
   }
 
-  const resolved = resolveFailoverTarget(role, bucket, skipSteps);
+  const resolved = resolveFailoverTarget(role, bucket, effSkips, machine);
   if (pinnedDiedNonQuota) {
     // #276: yield WITHOUT re-pinning. The tombstone keeps the sibling resolution
     // of this same cascade attempt (the loop resolves twice per attempt) from
@@ -1581,8 +1720,14 @@ function resolveSkippingFailed(
   rule: FailoverRule,
   /** #431: request-scoped skips — see resolveFailoverTarget. Never contains
    * the LAST index (the loop only skips a step that has a successor), so the
-   * all-skipped fallback below still lands on a servable last step. */
-  skipSteps?: ReadonlySet<number>
+   * all-skipped fallback below still lands on a servable last step.
+   * #693: also carries the machine's config exclusions (merged by the
+   * caller) — same walk treatment, skip without a mark. */
+  skipSteps?: ReadonlySet<number>,
+  /** #693: the machine's exclusions on their own — the last-step fallback
+   * below must refuse an EXCLUDED step even when #431's set (which never
+   * carries the last index) says nothing. */
+  excluded?: ReadonlySet<number>
 ): { step: FailoverStep | null; stepIndex: number } {
   const fails = stepFailures.get(role);
   for (let i = 0; i < rule.steps.length; i++) {
@@ -1610,6 +1755,11 @@ function resolveSkippingFailed(
   // closure measured on the hub.
   const last = rule.steps.length - 1;
   const lastStep = rule.steps[last];
+  // #693: "PAYG always serves" is a bet about capacity, not about CONFIG — an
+  // operator-declared exclusion speaks at least as precisely as a #261 closure.
+  if (excluded?.has(last)) {
+    return { step: null, stepIndex: -1 };
+  }
   if (lastStep.resetAt && Date.now() < lastStep.resetAt.getTime()) {
     return { step: null, stepIndex: -1 };
   }
@@ -1685,13 +1835,22 @@ export async function resolveTransientStep(
      * (the one-shot walk's own resolution, unchanged).
      */
     afterStepIndex?: number;
+    /**
+     * #693: the request's X-Claudish-Machine. Its config-declared step
+     * exclusions are unservable-by-config for THIS request — the overload
+     * walk must not land there any more than the armed walk may.
+     */
+    machine?: string | null;
   }
 ): Promise<{ step: FailoverStep; stepIndex: number; concrete: string } | null> {
   const rule = rules.get(role);
   if (!rule) return null;
   const fails = stepFailures.get(role);
+  const excluded = excludedStepsForMachine(role, opts?.machine);
   for (let i = (opts?.afterStepIndex ?? -1) + 1; i < rule.steps.length; i++) {
     const step = rule.steps[i];
+    // #693: config exclusion — the step does not exist for this machine.
+    if (excluded?.has(i)) continue;
     // The step MUST ride along (#261 rebase, review of #326 point 2): without
     // it a HEALTHY step closed by a future config _RESET reads as servable
     // here (the closure plane lives in the step's resetAt, not in the
@@ -2557,6 +2716,7 @@ export function resetFailoverForTests(env?: NodeJS.ProcessEnv): void {
     configArmedRoles.clear();
     configArmedMachines.clear();
     stepFailures.clear();
+    stepExclusions.clear();
     recovering.clear();
     servedUnderWall.clear();
     notifiedSessions.clear();

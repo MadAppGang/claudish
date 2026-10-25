@@ -1121,7 +1121,15 @@ export async function createProxyServer(
      * and a divergence would build the handler for one step while the loop
      * advances past another. Undefined for every non-loop caller.
      */
-    skipSteps?: ReadonlySet<number>
+    skipSteps?: ReadonlySet<number>,
+    /**
+     * #693: the request's X-Claudish-Machine, threaded into the 2a resolution
+     * so this machine's config-declared step exclusions
+     * (CLAUDISH_FAILOVER_STEP_EXCLUDE) shape its own walk — one global cascade
+     * per role, per-machine subtractions. Null/undefined keeps the global
+     * walk (every machine-blind caller unchanged).
+     */
+    machine?: string | null
   ): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
     if (monitorMode) return nativeHandler;
@@ -1160,7 +1168,7 @@ export async function createProxyServer(
       // #275: the diversion test is bucket-scoped — compute this request's
       // nominal bucket (unless the caller — the cascade loop — already did).
       const bucket = nominalBucket ?? (await nominalBucketOfModel(requestedModel));
-      const resolved = resolveFailoverTargetForSession(role, sessionKey, bucket, skipSteps);
+      const resolved = resolveFailoverTargetForSession(role, sessionKey, bucket, skipSteps, machine);
       if (resolved.step && resolved.step.target !== target) {
         log(
           `[Proxy] Failover: role '${role}' [${bucket}] ${target} → ${resolved.step.target} step[${resolved.stepIndex}] (${resolved.step.label})`
@@ -1330,7 +1338,7 @@ export async function createProxyServer(
             `[Proxy] NO_ANTHROPIC: rerouting native '${target}' → budget '${guard.to}'`,
             true
           );
-          return getHandlerForRequest(guard.to, depth + 1, sessionKey);
+          return getHandlerForRequest(guard.to, depth + 1, sessionKey, undefined, undefined, undefined, undefined, machine);
         }
         // depth > 0 (the budget mapping itself resolved native → misconfig) or no
         // sonnet mapping: fail closed. Never leak.
@@ -1557,12 +1565,13 @@ export async function createProxyServer(
             bucket,
             undefined,
             keylessNative,
-            skippedSteps
+            skippedSteps,
+            machineHeader
           );
       const resolved = override && rule
         ? { step: rule.steps[override.stepIndex], stepIndex: override.stepIndex }
         : role && !keylessNative
-          ? resolveFailoverTargetForSession(role, sessionKey, bucket, skippedSteps)
+          ? resolveFailoverTargetForSession(role, sessionKey, bucket, skippedSteps, machineHeader)
           : { step: null, stepIndex: -1 };
       const { stepIndex } = resolved;
       // #274 (review 29/09): when this attempt serves a role-step's DELEGATION,
@@ -2032,6 +2041,7 @@ export async function createProxyServer(
           const walk = await resolveTransientStep(role, {
             bucketOf: concreteStepBucketOf,
             nominalBucket: bucket ?? undefined,
+            machine: machineHeader,
           }).catch(() => null);
           if (walk) {
             log(
@@ -2167,6 +2177,7 @@ export async function createProxyServer(
                 bucketOf: concreteStepBucketOf,
                 nominalBucket: bucket ?? undefined,
                 afterStepIndex: walk.stepIndex,
+                machine: machineHeader,
               }).catch(() => null);
               if (budgetSkip) {
                 const skipped = await attemptWalkStep(budgetSkip);
@@ -2207,6 +2218,7 @@ export async function createProxyServer(
                 bucketOf: concreteStepBucketOf,
                 nominalBucket: bucket ?? undefined,
                 afterStepIndex: walk.stepIndex,
+                machine: machineHeader,
               }).catch(() => null);
               if (nextWalk) {
                 log(
@@ -2703,7 +2715,9 @@ export async function createProxyServer(
         extractSessionKey(body),
         await requestBucketOf(c, body.model),
         undefined,
-        keylessNativeRequest(c, body.model)
+        keylessNativeRequest(c, body.model),
+        undefined,
+        c.req.header("x-claudish-machine") ?? null
       );
 
       // #412 — same invariant on the counting path as on the serving one, and
@@ -2966,7 +2980,9 @@ export async function createProxyServer(
         sessionKey,
         requestBucket,
         undefined,
-        keylessNativeRequest(c, body.model)
+        keylessNativeRequest(c, body.model),
+        undefined,
+        c.req.header("x-claudish-machine") ?? null
       );
       logRequest(body, handler.constructor.name, c.req.raw, hostnameConfig.remoteAddrMap);
       stripBillingHeaderFromBody(body, handler instanceof NativeHandler);
@@ -3104,7 +3120,9 @@ export async function createProxyServer(
         extractSessionKey(anthropicBody),
         requestBucket,
         undefined,
-        keylessNativeRequest(c, anthropicBody.model)
+        keylessNativeRequest(c, anthropicBody.model),
+        undefined,
+        c.req.header("x-claudish-machine") ?? null
       );
       logRequest(anthropicBody, handler.constructor.name, c.req.raw, hostnameConfig.remoteAddrMap);
       stripBillingHeaderFromBody(anthropicBody, handler instanceof NativeHandler);

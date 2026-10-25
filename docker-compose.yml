@@ -205,6 +205,18 @@ services:
       - CLAUDISH_FAILOVER_ROLE_MODELS=${CLAUDISH_FAILOVER_ROLE_MODELS:-}
       - CLAUDISH_FAILOVER_ACTIVE=${CLAUDISH_FAILOVER_ACTIVE:-}
       - CLAUDISH_FAILOVER_AUTO=${CLAUDISH_FAILOVER_AUTO:-}
+      # #693 — per-machine step exclusion: "stepTarget:machine1 machine2,…"
+      # (comma separates entries; the split is at the LAST colon so a role:
+      # delegation target stays whole). One global cascade per role; a machine
+      # here subtracts the steps it must not draw on (ai-01's ~330k prompts
+      # must never spill onto the local engine when the haiku nominal walls).
+      # Startup read — a flip needs a recreate.
+      - CLAUDISH_FAILOVER_STEP_EXCLUDE=${CLAUDISH_FAILOVER_STEP_EXCLUDE:-}
+      # #685/#687 — read-per-request knobs whose compose lines were missing at
+      # merge (compose-env-coverage red on main); same allowlist rule as above.
+      - CLAUDISH_EXACT_COUNT=${CLAUDISH_EXACT_COUNT:-}
+      - CLAUDISH_EXACT_COUNT_BAND=${CLAUDISH_EXACT_COUNT_BAND:-}
+      - CLAUDISH_CLIENT_ATTRIBUTION=${CLAUDISH_CLIENT_ATTRIBUTION:-}
       # #304 — knobs read by initFailover() that postdated the 23-name list
       # above. The env file only interpolates: a value written for a name
       # absent from this list never reaches the process, and the proxy runs on

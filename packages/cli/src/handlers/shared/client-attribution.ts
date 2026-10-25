@@ -35,7 +35,9 @@ const MACHINE_HEADER = "x-claudish-machine";
 export function clientAttributionEnabled(
   env: Record<string, string | undefined> = process.env
 ): boolean {
-  return (env.CLAUDISH_CLIENT_ATTRIBUTION ?? "1") !== "0";
+  // `||`, not `??` (#310 review): compose injects this name as "" and "" is
+  // not nullish — the `??` shape made the fallback unreachable in containers.
+  return (env.CLAUDISH_CLIENT_ATTRIBUTION || "1") !== "0";
 }
 
 /**
