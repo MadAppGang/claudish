@@ -49,6 +49,16 @@ export interface PersistedOverflowCap {
   at: string;
   /** What produced it (upstream status + any stated counts). */
   evidence?: string;
+  /**
+   * #674 — the WINDOW the refusal itself states, when the body carries one
+   * (vLLM: "This model's maximum context length is 262144 tokens"). Not an
+   * estimate: the engine's own number, same trust class as a `deriveContextLimit`
+   * probe, but observed on live traffic instead of at startup. Feeds the #676
+   * corroboration only — never a refusal path of its own — and rides the same
+   * record, TTL and purge as the cap. Latest statement wins (a rebuilt engine
+   * with a different `max_model_len` says so on its next refusal).
+   */
+  statedLimit?: number;
 }
 
 /** One entry of the on-disk file. `at` is stamped when the cap is (re)learned; a restored record keeps its original stamp, which is exactly what the TTL is measured against (#660 r1). */
@@ -98,6 +108,13 @@ export function readOverflowCapsFile(path: string): Map<string, OverflowCapRecor
       cap: Math.floor(value.cap),
       at: typeof (value as PersistedOverflowCap).at === "string" ? (value as PersistedOverflowCap).at : "",
       evidence: typeof (value as PersistedOverflowCap).evidence === "string" ? (value as PersistedOverflowCap).evidence : undefined,
+      // #674 — keep only a finite positive statement; anything else means "not
+      // stated" and must not smuggle NaN into a window comparison.
+      statedLimit:
+        Number.isFinite((value as PersistedOverflowCap).statedLimit) &&
+        (value as PersistedOverflowCap).statedLimit! > 0
+          ? Math.floor((value as PersistedOverflowCap).statedLimit!)
+          : undefined,
     });
   }
   return out;

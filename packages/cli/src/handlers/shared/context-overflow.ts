@@ -198,6 +198,13 @@ export function contextLimitMarginTokens(est: number): number {
 const overflowCaps = new Map<string, number>();
 /** Durable side: same keys, plus when/why each cap was learned (#651). */
 const overflowCapRecords = new Map<string, OverflowCapRecord>();
+/**
+ * #674 — the window a refusal STATED ("maximum context length is N"), keyed
+ * like the caps. Same trust class as a `deriveContextLimit` probe but observed
+ * on live traffic: feeds the #676 corroboration (and nothing else — never a
+ * refusal path of its own), rides the cap's TTL/purge/reset lifecycle.
+ */
+const overflowStatedLimits = new Map<string, number>();
 /** Armed by `initOverflowCapsPersistence()`; undefined = memory only. */
 let overflowCapsStorePath: string | undefined;
 
@@ -238,6 +245,9 @@ export function initOverflowCapsPersistence(
     }
     overflowCaps.set(key, record.cap);
     overflowCapRecords.set(key, record);
+    if (record.statedLimit !== undefined && record.statedLimit > 0) {
+      overflowStatedLimits.set(key, record.statedLimit);
+    }
     loaded++;
   }
   return { path, loaded, expired };
@@ -275,6 +285,7 @@ export function forgetOverflowCapsForProvider(providerName: string): number {
     if (!key.startsWith(prefix)) continue;
     overflowCaps.delete(key);
     overflowCapRecords.delete(key);
+    overflowStatedLimits.delete(key);
     purged++;
   }
   if (purged > 0 && overflowCapsStorePath) {
@@ -292,16 +303,30 @@ export function rememberOverflowCap(
   providerName: string,
   model: string,
   tokens: number,
-  evidence?: string
+  evidence?: string,
+  statedLimit?: number
 ): void {
   if (!Number.isFinite(tokens) || tokens <= 0) return;
   const key = `${providerName}::${model}`;
   const cap = Math.floor(tokens);
   overflowCaps.set(key, cap);
+  // #674 — a stated window is accepted only as a finite positive number, and
+  // an ABSENT statement never erases a previous one (a wording change in one
+  // refusal is not evidence the window moved).
+  if (Number.isFinite(statedLimit) && statedLimit! > 0) {
+    overflowStatedLimits.set(key, Math.floor(statedLimit!));
+  }
   // #651 - write-through only when a durable store is armed: a unit test or a
   // dev launcher (no env) keeps this module strictly in-memory.
   if (overflowCapsStorePath) {
-    overflowCapRecords.set(key, { cap, at: new Date().toISOString(), evidence });
+    overflowCapRecords.set(key, {
+      cap,
+      at: new Date().toISOString(),
+      evidence,
+      ...(overflowStatedLimits.has(key)
+        ? { statedLimit: overflowStatedLimits.get(key) }
+        : {}),
+    });
     writeOverflowCapsFile(overflowCapsStorePath, overflowCapRecords);
   }
 }
@@ -310,9 +335,21 @@ export function getOverflowCap(providerName: string, model: string): number | un
   return overflowCaps.get(`${providerName}::${model}`);
 }
 
+/**
+ * #674 — the window the latest overflow refusal for this (provider, model)
+ * stated in its own body, when it stated one. An ENGINE number, not an
+ * estimate: the corroboration compares it in clamp units. `undefined` when no
+ * refusal ever stated a window (most providers) — callers must treat that as
+ * "no evidence", exactly like an absent `derivedContextLimit`.
+ */
+export function getStatedContextLimit(providerName: string, model: string): number | undefined {
+  return overflowStatedLimits.get(`${providerName}::${model}`);
+}
+
 export function resetOverflowCapsForTests(): void {
   overflowCaps.clear();
   overflowCapRecords.clear();
+  overflowStatedLimits.clear();
   overflowCapsStorePath = undefined;
 }
 

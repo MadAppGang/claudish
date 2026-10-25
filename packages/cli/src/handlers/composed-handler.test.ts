@@ -14,6 +14,7 @@ import {
   resetOverflowCapsForTests,
   estimatePayloadTokens,
   estimateClampTokens,
+  getStatedContextLimit,
 } from "./shared/context-overflow.js";
 import { isQuotaExhaustion } from "../fork/failover.js";
 
@@ -304,14 +305,86 @@ describe("ComposedHandler — a MEASURED window pre-seeds the cap (#651)", () =>
     expect(fx.getCalls()).toBeGreaterThanOrEqual(1);
   });
 
-  test("the learned cap still wins when both exist (the two units are never mixed)", async () => {
+  test("a window ABOVE the estimate no longer lets the cap refuse alone (#674 corroboration)", async () => {
+    // The 25/10 measurement inverted this test's premise: `est >= cap` fires
+    // on prompts the engine serves (21 served bodies at est >= 230k, real
+    // 209k-262k, same day). With a KNOWN window above the estimate, the
+    // short-circuit must stand down and let the upstream answer — its 400
+    // returns the same recoverable turn one round-trip later; its 200 is a
+    // turn the old gate threw away.
     rememberOverflowCap("GLM Coding", "glm-5.3", 1_000);
     const fx = countingFetch(200, "not relevant");
     const res = await runHandle(overflowPayload(true, 40_000), fx.impl as typeof fetch, {
-      derivedContextLimit: 10_000_000, // a huge measured window must not mask the learned cap
+      derivedContextLimit: 10_000_000, // a huge measured window: nothing here is over it
+    });
+    expect(fx.getCalls()).toBe(1); // upstream called — no refusal on the estimate alone
+    expect(res.headers.get("x-claudish-step-skip") ?? "").not.toContain("cap=1000");
+  });
+
+  test("the cap still fires when the window corroborates (both estimators agree it is over)", async () => {
+    // The other half of the #674 contract: corroboration is not disarmament.
+    // Here the measured window sits BELOW the request's estimate, so the two
+    // pieces of evidence agree — zero round-trips, exactly the old behavior.
+    // Units stay separate: the trigger is payload units (est >= cap), the
+    // window is judged in clamp units (this payload is text-only, so both
+    // estimators score it at ~10k).
+    rememberOverflowCap("GLM Coding", "glm-5.3", 1_000);
+    const fx = countingFetch(200, "not relevant");
+    const res = await runHandle(overflowPayload(true, 40_000), fx.impl as typeof fetch, {
+      derivedContextLimit: 500, // measured, and far below this request
     });
     expect(fx.getCalls()).toBe(0);
     expect(res.headers.get("x-claudish-step-skip") ?? "").toContain("cap=1000");
+  });
+
+  // #674 — the window does not have to be configured or probed: a refusal that
+  // STATES its own limit ("maximum context length is N") teaches it on the same
+  // record as the cap, with no declared/derived window anywhere in options.
+  test("a window STATED by a refusal arms the corroboration end-to-end", async () => {
+    // r1: the 400 states used=3000, limit=262144 — cap and stated window learned.
+    const fx400 = countingFetch(
+      400,
+      JSON.stringify({
+        error: {
+          message:
+            "This model's maximum context length is 262144 tokens. However, your prompt contains at least 3000 input tokens, which exceeds this limit even without any output tokens. (parameter=input_tokens, value=3000)",
+          type: "BadRequestError",
+          param: "input_tokens",
+          code: 400,
+        },
+      })
+    );
+    await runHandle(overflowPayload(false, 40_000), fx400.impl as typeof fetch);
+    expect(getStatedContextLimit("GLM Coding", "glm-5.3")).toBe(262144);
+
+    // r2: est (~20k) >= cap (~10k) but clamp-est ~20k < the STATED window
+    // 262144 → not corroborated → upstream called, no refusal on the estimate.
+    const fx2 = countingFetch(200, "served");
+    await runHandle(overflowPayload(false, 80_000), fx2.impl as typeof fetch, {});
+    expect(fx2.getCalls()).toBe(1);
+  });
+
+  test("the stated window corroborates when the request really is over it", async () => {
+    // Mirror: same learning, but the stated window (5000) sits BELOW r2's
+    // clamp estimate (~20k) — both pieces of evidence agree → zero round-trips.
+    const fx400 = countingFetch(
+      400,
+      JSON.stringify({
+        error: {
+          message:
+            "This model's maximum context length is 5000 tokens. However, your prompt contains at least 6000 input tokens, which exceeds this limit even without any output tokens. (parameter=input_tokens, value=6000)",
+          type: "BadRequestError",
+          param: "input_tokens",
+          code: 400,
+        },
+      })
+    );
+    await runHandle(overflowPayload(false, 40_000), fx400.impl as typeof fetch);
+    expect(getStatedContextLimit("GLM Coding", "glm-5.3")).toBe(5000);
+
+    const fx2 = countingFetch(200, "served");
+    await runHandle(overflowPayload(false, 80_000), fx2.impl as typeof fetch, {});
+    expect(fx2.getCalls()).toBe(0);
   });
 });
 

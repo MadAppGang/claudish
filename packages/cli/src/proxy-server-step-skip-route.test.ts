@@ -511,17 +511,77 @@ describe("#431 — a cascade step that cannot take the request skips forward", (
 
     expect(calls.s0).toBe(1);
 
-    // Second oversized request: same (provider, model) — the learned cap
-    // short-circuits BEFORE any fetch, and the skip still advances.
-    // A FRESH session: r1's dwell pin points at s1 and would bypass s0
-    // entirely — the short-circuit is only consulted when step 0 is resolved.
-    const r2 = await postMessage({ session: "sess-sc-2", content: "w".repeat(400_000) });
+    // Second oversized request: same (provider, model). #674: the canned 400
+    // STATES its window (262 144), so the resubmission must corroborate — a
+    // body merely over the LEARNED CAP (~100k est) but under the stated window
+    // is the marginal band K3b pins as served, and goes upstream. This body is
+    // over the window on both pieces of evidence: the cap short-circuits
+    // BEFORE any fetch, and the skip still advances. A FRESH session: r1's
+    // dwell pin points at s1 and would bypass s0 entirely — the short-circuit
+    // is only consulted when step 0 is resolved.
+    const r2 = await postMessage({ session: "sess-sc-2", content: "w".repeat(1_200_000) });
     expect(await responseText(r2)).toContain("ok-from-s1");
     expect(calls.s0).toBe(1); // unchanged — zero new round-trips
     expect(
       markerLog.some((l) => l.includes("[ContextGuard] short-circuit"))
     ).toBe(true);
     expect(markerLog.filter((l) => l.includes("[Failover] SKIP sonnet[0] reason=context")).length).toBe(2);
+  }, 30_000);
+
+  // #674: with a KNOWN window below-cap, `est >= cap` alone must not refuse —
+  // the [cap, window) band mixes doomed and served prompts (measured 25/10:
+  // 21 SERVED bodies at est >= 230k, real 209k-262k). ctx-ep declares
+  // contextLimit 262144, so the window is known; K3 above pins the
+  // no-window fallback (est >= cap) unchanged.
+  test("K3b (#674): est in [cap, window) goes upstream — never refused on the estimate alone", async () => {
+    await spin();
+    resetCascade(cascadeEnv("ctx-ep@ctx>s1-ep@fake-s1"));
+    upstreamAnswer.nm = () => quotaWall402();
+    upstreamAnswer.ctx = () => vllmContextOverflow400();
+    upstreamAnswer.s1 = () => okSse("ok-from-s1", "fake-s1");
+
+    // r1 (~150k est): the canned 400 teaches the cap at r1's estimate.
+    // (Role route — no `model:` override, or the explicit route has no steps
+    // to skip to and the census answers before the handler.)
+    const r1 = await postMessage({ session: "k3b-1", content: "a".repeat(600_000) });
+    expect(await responseText(r1)).toContain("ok-from-s1");
+    expect(calls.ctx).toBe(1);
+
+    // r2 (~200k est): >= cap but < window 262144 — must NOT short-circuit;
+    // the upstream answers (canned 400 again) and the skip still serves s1.
+    const r2 = await postMessage({ session: "k3b-2", content: "b".repeat(800_000) });
+    expect(await responseText(r2)).toContain("ok-from-s1");
+    expect(calls.ctx).toBe(2); // went upstream — no local refusal on the estimate
+    expect(markerLog.some((l) => l.includes("[ContextGuard] short-circuit"))).toBe(false);
+  }, 30_000);
+
+  // #674, other side of the same rule: the corroboration does not disarm the
+  // guard. est >= window keeps the zero-round-trip skip (K3's benefit) for the
+  // bodies that are over the wall on BOTH pieces of evidence.
+  test("K3c (#674): est >= window still short-circuits (corroboration, not disarmament)", async () => {
+    await spin();
+    resetCascade(cascadeEnv("ctx-ep@ctx>s1-ep@fake-s1"));
+    upstreamAnswer.nm = () => quotaWall402();
+    upstreamAnswer.ctx = () => vllmContextOverflow400();
+    upstreamAnswer.s1 = () => okSse("ok-from-s1", "fake-s1");
+
+    // r1 (~150k est) teaches the cap; r2 (~300k est) is over the KNOWN window
+    // 262144 → gate = window → fires with zero new round-trips. (The nominal
+    // nm-ep declares no window, so the #565 census falls open and the handler
+    // — not the census — makes this call.)
+    await postMessage({ session: "k3c-1", content: "a".repeat(600_000) });
+    expect(calls.ctx).toBe(1);
+    const r2 = await postMessage({ session: "k3c-2", content: "c".repeat(1_200_000) });
+    expect(await responseText(r2)).toContain("ok-from-s1");
+    expect(calls.ctx).toBe(1); // unchanged — the corroborated gate fired
+    expect(
+      markerLog.some(
+        (l) =>
+          l.includes("[ContextGuard] short-circuit") &&
+          l.includes("window=262144") &&
+          l.includes("(corroborated)")
+      )
+    ).toBe(true);
   }, 30_000);
 
   test("K4: overflow on the LAST step keeps the recovery turn (today's behavior), single round-trip", async () => {

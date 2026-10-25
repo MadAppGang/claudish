@@ -15,6 +15,8 @@ import {
   estimatePayloadTokens,
   rememberOverflowCap,
   getOverflowCap,
+  getStatedContextLimit,
+  forgetOverflowCapsForProvider,
   resetOverflowCapsForTests,
   overflowReportFloor,
   overflowReportedTokens,
@@ -220,5 +222,44 @@ describe("recoverable-turn constructors", () => {
       .find((e: any) => e.type === "message_start") as any;
     expect(start.message.usage.input_tokens).toBe(405_000);
     expect(start.message.model).toBe("claude-sonnet-5");
+  });
+});
+
+describe("stated context limit (#674)", () => {
+  beforeEach(() => resetOverflowCapsForTests());
+  afterEach(() => resetOverflowCapsForTests());
+
+  it("records the window a refusal stated, keyed like the cap", () => {
+    rememberOverflowCap("Vllm-myia", "swift-1.5-27b", 229645, "HTTP 400 input_tokens=262145", 262144);
+    expect(getStatedContextLimit("Vllm-myia", "swift-1.5-27b")).toBe(262144);
+    expect(getStatedContextLimit("Vllm-myia", "other-model")).toBeUndefined();
+  });
+
+  it("a statement is optional — an absent one never erases a previous statement", () => {
+    rememberOverflowCap("Vllm-myia", "swift-1.5-27b", 229645, "HTTP 400", 262144);
+    rememberOverflowCap("Vllm-myia", "swift-1.5-27b", 220000, "HTTP 400 (no window in this wording)");
+    expect(getStatedContextLimit("Vllm-myia", "swift-1.5-27b")).toBe(262144);
+  });
+
+  it("the latest statement wins (a rebuilt engine re-states its window)", () => {
+    rememberOverflowCap("Vllm-myia", "swift-1.5-27b", 229645, "HTTP 400", 262144);
+    rememberOverflowCap("Vllm-myia", "swift-1.5-27b", 200000, "HTTP 400", 524288);
+    expect(getStatedContextLimit("Vllm-myia", "swift-1.5-27b")).toBe(524288);
+  });
+
+  it("an implausible statement is refused, not coerced", () => {
+    rememberOverflowCap("Vllm-myia", "swift-1.5-27b", 229645, "HTTP 400", Number.NaN);
+    expect(getStatedContextLimit("Vllm-myia", "swift-1.5-27b")).toBeUndefined();
+    rememberOverflowCap("Vllm-myia", "swift-1.5-27b", 229645, "HTTP 400", -1);
+    expect(getStatedContextLimit("Vllm-myia", "swift-1.5-27b")).toBeUndefined();
+  });
+
+  it("purged with the provider's caps (derivation replaced it) and reset for tests", () => {
+    rememberOverflowCap("Vllm-myia", "swift-1.5-27b", 229645, "HTTP 400", 262144);
+    forgetOverflowCapsForProvider("Vllm-myia");
+    expect(getStatedContextLimit("Vllm-myia", "swift-1.5-27b")).toBeUndefined();
+    rememberOverflowCap("Vllm-myia", "swift-1.5-27b", 229645, "HTTP 400", 262144);
+    resetOverflowCapsForTests();
+    expect(getStatedContextLimit("Vllm-myia", "swift-1.5-27b")).toBeUndefined();
   });
 });

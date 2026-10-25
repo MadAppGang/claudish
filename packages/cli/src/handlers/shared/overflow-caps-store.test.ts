@@ -84,6 +84,35 @@ describe("file store", () => {
     expect(readOverflowCapsFile(join(dir, "nope.json")).size).toBe(0);
   });
 
+  // #674 — the window a refusal STATED rides the same record. A plausible
+  // statement round-trips; a non-number or non-positive one reads as "not
+  // stated" (undefined), never NaN in a window comparison.
+  test("round-trips a stated limit, and drops implausible ones", () => {
+    const records = new Map<string, OverflowCapRecord>([
+      ["Vllm-myia::swift-1.5-27b", { cap: 229645, at: "2026-10-25T08:15:00.000Z", evidence: "HTTP 400 input_tokens=262145", statedLimit: 262144 }],
+    ]);
+    expect(writeOverflowCapsFile(capsFile(), records)).toBe(true);
+    expect(readOverflowCapsFile(capsFile()).get("Vllm-myia::swift-1.5-27b")!.statedLimit).toBe(262144);
+
+    writeFileSync(
+      capsFile(),
+      JSON.stringify({
+        version: 1,
+        caps: {
+          "p::str": { cap: 10, at: "x", statedLimit: "262144" },
+          "p::neg": { cap: 10, at: "x", statedLimit: -1 },
+          "p::nan": { cap: 10, at: "x", statedLimit: "oops" },
+          "p::none": { cap: 10, at: "x" },
+        },
+      })
+    );
+    const read = readOverflowCapsFile(capsFile());
+    expect(read.get("p::str")!.statedLimit).toBeUndefined();
+    expect(read.get("p::neg")!.statedLimit).toBeUndefined();
+    expect(read.get("p::nan")!.statedLimit).toBeUndefined();
+    expect(read.get("p::none")!.statedLimit).toBeUndefined();
+  });
+
   test("corrupt JSON and a foreign version restore NOTHING", () => {
     writeFileSync(capsFile(), "{ this is not json");
     expect(readOverflowCapsFile(capsFile()).size).toBe(0);
