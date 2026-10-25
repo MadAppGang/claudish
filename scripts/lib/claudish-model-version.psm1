@@ -624,6 +624,200 @@ function Format-RoutingCoverageLine {
             $Coverage.Entries, $tail)
 }
 
+# --- Cascade visibility (#635 AC 3) ------------------------------------------
+#
+# The watch read `routing` only, so every armed cascade was invisible — and
+# both manual re-pins of that week happened inside that blind spot (`kc@k3` ->
+# `kc@k3.1-pro` in the sonnet cascade, 24/10; the Aliyun lane, 20/10). Cascades
+# stay OPERATOR acts (they live in the env; changing one needs a recreate) —
+# this layer only makes them visible, by NAMES.
+#
+# Names only is a hard rule, not a style: a step that does not parse as
+# `provider@model` / `role:<r>` is counted at its POSITION and its text is
+# never echoed. An unparseable cascade value is whatever an operator pasted —
+# and this log travels to a public repo.
+
+function Read-EnvFileValues {
+    # The ONE reader for an env file. Callers ask for KEYS by name and never
+    # enumerate the file into a log: on the hub it also carries
+    # CLAUDISH_PROXY_KEY. Returns a hashtable of the requested names that are
+    # PRESENT (an absent key is absent from the result, not ''). A file that
+    # exists but cannot be read (lock, ACL) returns $null: "unreadable" and
+    # "absent" are different claims, and an empty hashtable would let a caller
+    # print "none declared" on a blind eye.
+    #
+    # Handles both `KEY=value` and `export KEY=value`, and strips ONE layer of
+    # matching single or double quotes — the same rules the inline ROLE_MODELS
+    # reader used before this function existed (a value like `>>>` keeps its
+    # own '=' signs: only the FIRST '=' splits).
+    param(
+        [Parameter(Mandatory = $true)][string]$EnvFile,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+    $out = @{}
+    if (-not (Test-Path -LiteralPath $EnvFile)) { return $out }
+    $wanted = @{}
+    foreach ($n in $Names) { $wanted[$n] = $true }
+    try { $lines = [System.IO.File]::ReadAllLines($EnvFile) } catch { return $null }
+    foreach ($line in $lines) {
+        $t = $line.Trim()
+        if ($t -like 'export *') { $t = $t.Substring(7).Trim() }
+        $eq = $t.IndexOf('=')
+        if ($eq -le 0) { continue }
+        $key = $t.Substring(0, $eq).Trim()
+        if (-not $wanted.ContainsKey($key)) { continue }
+        if ($out.ContainsKey($key)) { continue }   # first declaration wins
+        $val = $t.Substring($eq + 1).Trim()
+        if ($val.Length -ge 2 -and $val[0] -eq $val[$val.Length - 1] -and ($val[0] -eq '"' -or $val[0] -eq "'")) {
+            $val = $val.Substring(1, $val.Length - 2)
+        }
+        $out[$key] = $val
+    }
+    return $out
+}
+
+function ConvertFrom-FailoverCascadeEnv {
+    # Each declared role's cascade, as NAMES. The grammar is the proxy's own
+    # (packages/cli/src/fork/failover.ts), mirrored here rather than guessed:
+    #   value split on '>', trimmed, empties dropped; a trailing `!<class>` is
+    #   stripped BEFORE the grammar parses (`!own` is kept for display, an
+    #   unknown class is stripped and counted — the proxy's rule); then
+    #   `role:<r>` (a delegation, #274) or `provider@model[:concurrency]`.
+    #
+    # A BARE step (no '@', not a role:) is legal on the proxy wire but is
+    # indistinguishable from a pasted secret, so it is reported as
+    # `bare-step #k` — its position, never its text. A `role:` form naming
+    # something outside the four roles is `unknown-role #k` (the operator meant
+    # a delegation — the most confusable mistake), anything else
+    # `unnamed-step #k`.
+    param($Values)   # role -> raw cascade value (the caller read the env)
+    $roles = @('fable', 'opus', 'sonnet', 'haiku')
+    $out = @()
+    foreach ($role in $roles) {
+        $raw = ''
+        if ($Values -is [System.Collections.IDictionary]) {
+            if ($Values.Contains($role)) { $raw = [string]$Values[$role] }
+        } elseif ($null -ne $Values) {
+            $p = $Values.PSObject.Properties[$role]
+            if ($null -ne $p) { $raw = [string]$p.Value }
+        }
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+
+        $steps = @()
+        $prefixes = @()
+        $delegations = @()
+        $unparsed = 0
+        $k = 0
+        foreach ($piece in ($raw -split '>')) {
+            $t = $piece.Trim()
+            if (-not $t) { continue }
+            $k++
+            $class = ''
+            $mClass = [regex]::Match($t, '^(.*?)!([A-Za-z0-9_-]+)$')
+            if ($mClass.Success) {
+                $t = $mClass.Groups[1].Value.Trim()
+                if ($mClass.Groups[2].Value -eq 'own') { $class = '!own' }
+            }
+            if ($t -match '^role\s*:\s*(?<r>[A-Za-z]+)$') {
+                $r = $Matches['r'].ToLower()
+                if ($roles -contains $r) {
+                    $steps += "role:$r"
+                    $delegations += $r
+                    continue
+                }
+                # A `role:` form naming something that is not one of the four
+                # roles. Reported as its own shape: `bare-step` would hide that
+                # the operator MEANT a delegation, the most confusable mistake.
+                $steps += ("unknown-role #{0}" -f $k)
+                $unparsed++
+                continue
+            }
+            if ($t -match '^(?<p>[A-Za-z0-9._-]+)@(?<m>[A-Za-z0-9._:/-]+)$') {
+                $p = $Matches['p'] + '@'
+                $steps += ("{0}{1}{2}" -f $p, $Matches['m'], $class)
+                $prefixes += $p
+                continue
+            }
+            if ($t -match '^[A-Za-z0-9._:/-]+$') {
+                $steps += ("bare-step #{0}" -f $k)
+                $unparsed++
+                continue
+            }
+            $steps += ("unnamed-step #{0}" -f $k)
+            $unparsed++
+        }
+        $out += @{
+            Role        = $role
+            Steps       = @($steps)
+            Prefixes    = @($prefixes | Select-Object -Unique)
+            Delegations = @($delegations | Select-Object -Unique)
+            Unparsed    = $unparsed
+        }
+    }
+    return $out
+}
+
+function Format-CascadeCoverageLine {
+    # One line, NAMES only: which role diverts through which prefixes/models,
+    # and which arms are live. The raw env values are never printed — the
+    # arms are re-rendered from their `role@machine` pieces, and anything that
+    # does not match that shape is counted (`unnamed-arm #k`).
+    param(
+        $Cascades,
+        [string]$ArmedEnv = '',
+        [string]$AutoEnv = ''
+    )
+    $list = @($Cascades)
+    if ($list.Count -eq 0) {
+        return '[coverage] cascades (env file): none declared in the env file — no role has a failover step to divert to'
+    }
+    $stepCount = 0
+    foreach ($c in $list) { $stepCount += @($c.Steps).Count }
+    $prefixes = @($list | ForEach-Object { $_.Prefixes } | Where-Object { $_ } | Select-Object -Unique | Sort-Object)
+    $parts = foreach ($c in $list) { "{0}: {1}" -f $c.Role, ((@($c.Steps)) -join ' > ') }
+    # "(env file)" is load-bearing: the line reads the FILE, not the running
+    # container — after an edit without a recreate it shows the next state.
+    $rendered = "[coverage] cascades (env file): {0} roles, {1} steps, prefixes {2} — {3}" -f `
+        $list.Count, $stepCount, ($(if ($prefixes.Count -gt 0) { $prefixes -join ',' } else { 'none' })), ($parts -join ' | ')
+
+    $arms = @()
+    $k = 0
+    # Mirrors the proxy's CLAUDE_FAILOVER_ACTIVE parse exactly
+    # (fork/failover.ts): lower-cased whole, `none` arms nothing, split on
+    # [,\s]+, and a piece the proxy would DISCARD (unknown role, empty or
+    # malformed machine) is reported by position and never echoed.
+    $activeRaw = ([string]$ArmedEnv).Trim().ToLowerInvariant()
+    if ($activeRaw -and $activeRaw -ne 'none') {
+        foreach ($piece in ($activeRaw -split '[,\s]+')) {
+            if (-not $piece) { continue }
+            $k++
+            $at = $piece.IndexOf('@')
+            $role = if ($at -ge 0) { $piece.Substring(0, $at) } else { $piece }
+            $machine = if ($at -ge 0) { $piece.Substring($at + 1) } else { $null }
+            $flaw = if ($role -notin @('opus', 'sonnet', 'haiku', 'fable')) { 'unknown role' }
+            elseif ($machine -eq '') { 'empty machine' }
+            elseif ($null -ne $machine -and $machine.Contains('@')) { 'malformed machine' }
+            else { $null }
+            if ($flaw) {
+                # The proxy logs and ignores this piece; so does the line, by
+                # position — a role word is not secret-shaped, but a discarded
+                # piece may be anything, so it is never echoed.
+                $arms += ("ignored-arm #{0}" -f $k)
+                continue
+            }
+            if ($null -ne $machine) { $arms += ("{0}@{1}" -f $role, $machine) }
+            else { $arms += ("{0} (all machines)" -f $role) }
+        }
+    }
+    if ($arms.Count -gt 0) { $rendered += ' — armed: ' + ($arms -join ',') } else { $rendered += ' — armed: none' }
+    if (-not [string]::IsNullOrWhiteSpace($AutoEnv)) {
+        # Same regex the proxy uses for CLAUDE_FAILOVER_AUTO (failover.ts): only
+        # 1/true/yes/on (any case) is on — `AUTO=true` must not read "off".
+        if ($AutoEnv.Trim() -match '^(1|true|yes|on)$') { $rendered += ' (auto=on)' } else { $rendered += ' (auto=off)' }
+    }
+    return $rendered
+}
+
 # --- Provider probe layer (#635 AC 2) ---------------------------------------
 #
 # The Codex OAuth path above can only enumerate chatgpt.com. Every other family
@@ -667,9 +861,16 @@ function Get-ProviderProbeTargets {
     param(
         $Routing,
         $CustomEndpoints,
-        [string[]]$OAuthProviders = @('cx@', 'codex@')
+        [string[]]$OAuthProviders = @('cx@', 'codex@'),
+        # #635 AC 3: prefixes reached ONLY through an armed cascade
+        # (`CLAUDISH_FAILOVER_*`). A cascade is how the fleet actually diverts
+        # when a plan walls, so a provider that appears there and nowhere in
+        # `routing` is exactly the one nobody watches (`kc@` was re-pinned by
+        # hand for that reason, 24/10).
+        [string[]]$CascadePrefixes = @()
     )
     $byPrefix = @{}
+    $routingSet = @{}
     if ($null -ne $Routing) {
         foreach ($prop in $Routing.PSObject.Properties) {
             foreach ($target in @($prop.Value)) {
@@ -678,13 +879,27 @@ function Get-ProviderProbeTargets {
                 if ($at -le 0) { continue }
                 $prefix = $s.Substring(0, $at + 1)
                 if (-not $byPrefix.ContainsKey($prefix)) { $byPrefix[$prefix] = $null }
+                $routingSet[$prefix] = $true
             }
         }
+    }
+    $cascadeSet = @{}
+    foreach ($p in @($CascadePrefixes)) {
+        $q = [string]$p
+        if ([string]::IsNullOrWhiteSpace($q)) { continue }
+        if (-not $q.EndsWith('@')) { $q += '@' }
+        $cascadeSet[$q] = $true
+        if (-not $byPrefix.ContainsKey($q)) { $byPrefix[$q] = $null }
     }
 
     $targets = @()
     foreach ($prefix in @($byPrefix.Keys | Sort-Object)) {
         $name = $prefix.TrimEnd('@')
+        $inRouting = $routingSet.ContainsKey($prefix)
+        $inCascade = $cascadeSet.ContainsKey($prefix)
+        $source = 'routing'
+        if ($inCascade -and -not $inRouting) { $source = 'cascade' }
+        elseif ($inCascade -and $inRouting) { $source = 'both' }
         if ($OAuthProviders -contains $prefix) {
             $targets += @{
                 Prefix    = $prefix
@@ -693,6 +908,7 @@ function Get-ProviderProbeTargets {
                 Url       = ''
                 KeyName   = ''
                 KeyInline = ''
+                Source    = $source
                 Reason    = 'listed by the Codex OAuth path, not by this probe'
             }
             continue
@@ -703,6 +919,8 @@ function Get-ProviderProbeTargets {
             $entry = $CustomEndpoints.PSObject.Properties[$name].Value
         }
         if ($null -eq $entry) {
+            $reason = 'no probe surface declared in config (builtin provider URL lives in the CLI, not here)'
+            if ($source -eq 'cascade') { $reason += '; reached only from a CLAUDISH_FAILOVER_* cascade' }
             $targets += @{
                 Prefix    = $prefix
                 Probeable = $false
@@ -710,7 +928,8 @@ function Get-ProviderProbeTargets {
                 Url       = ''
                 KeyName   = ''
                 KeyInline = ''
-                Reason    = 'no probe surface declared in config (builtin provider URL lives in the CLI, not here)'
+                Source    = $source
+                Reason    = $reason
             }
             continue
         }
@@ -763,6 +982,7 @@ function Get-ProviderProbeTargets {
             KeyInline    = $keyInline
             AuthScheme   = $authScheme
             ExtraHeaders = $extraHeaders
+            Source       = $source
             Reason       = ''
         }
     }
@@ -1028,4 +1248,5 @@ Export-ModuleMember -Function `
     Format-ProviderProbeLine, Compare-ProbedProviderToFamilies, Get-ProbeIds, `
     Split-ProbeDecisions, Get-ApiKeyValue, `
     Get-ProbeHeaders, Test-VersionEventEmitted, `
+    Read-EnvFileValues, ConvertFrom-FailoverCascadeEnv, Format-CascadeCoverageLine, `
     Invoke-DrainDetachedRestart

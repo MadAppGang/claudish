@@ -931,6 +931,31 @@ Describe 'Get-ModelsUrl / Get-ProviderProbeTargets (#635 AC 2 - what this seat c
         $byP['complex-explicit@'].AuthScheme | Should -Be 'bearer'         # explicit beats the wire default
         $byP['simple-oai@'].ExtraHeaders | Should -BeNullOrEmpty           # simple entries carry no headers
     }
+
+    It 'a prefix reached ONLY through a cascade becomes a target, with its source named (#635 AC 3)' {
+        # `kc@` lives in the live sonnet cascade and nowhere in `routing` — the
+        # exact provider the watch never saw (kc@k3 -> kc@k3.1-pro, 24/10).
+        # `mistral@` is a declared custom endpoint, so it becomes PROBEABLE.
+        $eps = [pscustomobject]@{
+            'mistral' = [pscustomobject]@{ kind = 'complex'; baseUrl = 'https://api.mistral.ai'; apiPath = '/v1/chat/completions'; apiKey = '${MISTRAL_API_KEY}' }
+        }
+        $rt = [pscustomobject]@{ 'deepseek-v4-flash' = @('ds@deepseek-v4-flash') }
+        $t = @(Get-ProviderProbeTargets -Routing $rt -CustomEndpoints $eps -CascadePrefixes @('kc@', 'mistral@', 'ds@'))
+        $byP = @{}
+        foreach ($x in $t) { $byP[$x.Prefix] = $x }
+        @($t).Count | Should -Be 3
+        $byP['kc@'].Source | Should -Be 'cascade'
+        $byP['kc@'].Probeable | Should -BeFalse
+        $byP['kc@'].Reason | Should -Match 'reached only from a CLAUDISH_FAILOVER'
+        $byP['mistral@'].Source | Should -Be 'cascade'
+        $byP['mistral@'].Probeable | Should -BeTrue
+        $byP['mistral@'].Url | Should -Be 'https://api.mistral.ai/v1/models'
+        $byP['ds@'].Source | Should -Be 'both'
+        # without the new parameter the surface is exactly what it was
+        $t0 = @(Get-ProviderProbeTargets -Routing $rt -CustomEndpoints $eps)
+        @($t0).Count | Should -Be 1
+        $t0[0].Source | Should -Be 'routing'
+    }
 }
 
 Describe 'Get-ProbeHeaders (#661 a - the probe authenticates like the transport it stands in for)' {
@@ -959,6 +984,204 @@ Describe 'Get-ProbeHeaders (#661 a - the probe authenticates like the transport 
         $h['Authorization'] | Should -Be 'Basic z'
         $h['X-Org'] | Should -Be 'o1'
         $h['Accept'] | Should -Be 'application/json'
+    }
+}
+
+Describe 'Read-EnvFileValues (#635 AC 3 - ONE reader, asked by key name)' {
+    BeforeAll {
+        $script:envDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mvwenv-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:envDir -Force | Out-Null
+        $script:envPath = Join-Path $script:envDir '.env'
+        $body = @(
+            'CLAUDISH_PROXY_KEY=pk-should-never-be-returned',
+            'export CLAUDISH_FAILOVER_SONNET="mistral@zai-glm-5-3>kc@k3.1-pro"',
+            "CLAUDISH_FAILOVER_OPUS='cx@gpt-6.1-sol>role:sonnet'",
+            'CLAUDISH_FAILOVER_SONNET_RESET=>>>',
+            'CLAUDISH_FAILOVER_SONNET=second-declaration-loses'
+        ) -join "`n"
+        [System.IO.File]::WriteAllText($script:envPath, $body)
+    }
+    AfterAll { Remove-Item $script:envDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'returns only the requested keys, with export and one layer of quotes stripped' {
+        $v = Read-EnvFileValues -EnvFile $script:envPath -Names @('CLAUDISH_FAILOVER_SONNET', 'CLAUDISH_FAILOVER_OPUS')
+        @($v.Keys).Count | Should -Be 2
+        $v['CLAUDISH_FAILOVER_SONNET'] | Should -Be 'mistral@zai-glm-5-3>kc@k3.1-pro'
+        $v['CLAUDISH_FAILOVER_OPUS'] | Should -Be 'cx@gpt-6.1-sol>role:sonnet'
+    }
+    It 'never returns a key nobody asked for - the file also carries the proxy key' {
+        $v = Read-EnvFileValues -EnvFile $script:envPath -Names @('CLAUDISH_FAILOVER_SONNET')
+        ($v.ContainsKey('CLAUDISH_PROXY_KEY')) | Should -Be $false
+        (($v.Values -join ' ') -match 'pk-should') | Should -Be $false
+    }
+    It 'a value with its own = signs survives (only the FIRST = splits)' {
+        $v = Read-EnvFileValues -EnvFile $script:envPath -Names @('CLAUDISH_FAILOVER_SONNET_RESET')
+        $v['CLAUDISH_FAILOVER_SONNET_RESET'] | Should -Be '>>>'
+    }
+    It 'first declaration wins; an absent file yields nothing (not an error)' {
+        $v = Read-EnvFileValues -EnvFile $script:envPath -Names @('CLAUDISH_FAILOVER_SONNET')
+        $v['CLAUDISH_FAILOVER_SONNET'] | Should -Be 'mistral@zai-glm-5-3>kc@k3.1-pro'
+        $none = Read-EnvFileValues -EnvFile (Join-Path $script:envDir 'absent.env') -Names @('X')
+        @($none.Keys).Count | Should -Be 0
+    }
+}
+
+Describe 'ConvertFrom-FailoverCascadeEnv (#635 AC 3 - cascades by NAMES, never a raw value)' {
+    BeforeAll {
+        # The live hub's cascades, verbatim (2026-10-24) — the shape the watch
+        # must report: two of these prefixes (kc@, mistral@) appear nowhere in
+        # `routing`.
+        $script:live = @{
+            sonnet = 'mistral@zai-glm-5-3>kc@k3.1-pro>qwen-token-plan@deepseek-v4.1-flash-1017>ds@deepseek-flash'
+            opus   = 'cx@gpt-6.1-sol>role:sonnet>ds@deepseek-flash'
+            haiku  = 'vllm-myia@swift-1.5-27b!own>role:sonnet>ds@deepseek-flash'
+        }
+    }
+
+    It 'parses the live sonnet cascade into four named steps and its prefixes' {
+        $c = @(ConvertFrom-FailoverCascadeEnv -Values $script:live)
+        $sonnet = @($c | Where-Object { $_.Role -eq 'sonnet' })[0]
+        @($sonnet.Steps).Count | Should -Be 4
+        $sonnet.Steps[0] | Should -Be 'mistral@zai-glm-5-3'
+        $sonnet.Steps[1] | Should -Be 'kc@k3.1-pro'
+        ($sonnet.Prefixes -join ',') | Should -Be 'mistral@,kc@,qwen-token-plan@,ds@'
+        $sonnet.Unparsed | Should -Be 0
+    }
+    It 'a role: step is a delegation, not a model, and a bare step keeps its position only' {
+        $c = @(ConvertFrom-FailoverCascadeEnv -Values $script:live)
+        $opus = @($c | Where-Object { $_.Role -eq 'opus' })[0]
+        $opus.Steps[1] | Should -Be 'role:sonnet'
+        ($opus.Delegations -join ',') | Should -Be 'sonnet'
+        ($opus.Prefixes -join ',') | Should -Be 'cx@,ds@'
+        # `role:SONNET` is the same delegation (the proxy lowercases it)
+        $c2 = @(ConvertFrom-FailoverCascadeEnv -Values @{ opus = 'role:SONNET' })
+        $c2[0].Steps[0] | Should -Be 'role:sonnet'
+        # a bare model is legal on the wire but indistinguishable from a pasted
+        # token: reported by POSITION, never echoed
+        $c3 = @(ConvertFrom-FailoverCascadeEnv -Values @{ sonnet = 'gpt-4o' })
+        $c3[0].Steps[0] | Should -Be 'bare-step #1'
+        $c3[0].Unparsed | Should -Be 1
+        @($c3[0].Prefixes).Count | Should -Be 0
+    }
+    It 'keeps a known step class for display; an unknown one is stripped' {
+        $c = @(ConvertFrom-FailoverCascadeEnv -Values $script:live)
+        $haiku = @($c | Where-Object { $_.Role -eq 'haiku' })[0]
+        $haiku.Steps[0] | Should -Be 'vllm-myia@swift-1.5-27b!own'
+        $haiku.Prefixes[0] | Should -Be 'vllm-myia@'
+        $c2 = @(ConvertFrom-FailoverCascadeEnv -Values @{ sonnet = 'gc@glm-5.3!fast' })
+        $c2[0].Steps[0] | Should -Be 'gc@glm-5.3'
+    }
+    It 'an unparseable step is counted and NEVER echoed - the log is public' {
+        # A bare step is legal on the wire but indistinguishable from a pasted
+        # token; `role:nonsense` names something that is not one of the four
+        # roles. Both are reported by POSITION, never by text.
+        $c = @(ConvertFrom-FailoverCascadeEnv -Values @{ sonnet = 'gc@glm-5.3>sk-live-SECRETVALUE>role:nonsense' })
+        $c[0].Steps[1] | Should -Be 'bare-step #2'
+        $c[0].Steps[2] | Should -Be 'unknown-role #3'
+        $c[0].Unparsed | Should -Be 2
+        (($c[0].Steps -join ' ') -match 'SECRETVALUE') | Should -Be $false
+        # and inside a multi-step value that would otherwise be echoed
+        $c2 = @(ConvertFrom-FailoverCascadeEnv -Values @{ haiku = 'ds@deepseek-flash>sk-live-SECRETVALUE' })
+        (($c2[0] | ConvertTo-Json -Compress) -match 'SECRETVALUE') | Should -Be $false
+    }
+    It 'an absent or blank role is not reported at all' {
+        $c = @(ConvertFrom-FailoverCascadeEnv -Values @{ sonnet = '   '; opus = 'cx@gpt-6.1-sol' })
+        @($c).Count | Should -Be 1
+        $c[0].Role | Should -Be 'opus'
+        @(ConvertFrom-FailoverCascadeEnv -Values @{}).Count | Should -Be 0
+    }
+}
+
+Describe 'Format-CascadeCoverageLine (#635 AC 3 - one line, names only)' {
+    It 'states the unguarded case explicitly when nothing is declared' {
+        (Format-CascadeCoverageLine -Cascades @()) | Should -Match 'none declared'
+        (Format-CascadeCoverageLine -Cascades @()) | Should -Match 'no role has a failover step'
+    }
+    It 'names roles, steps, prefixes and arms - and no raw value' {
+        $cascades = @(ConvertFrom-FailoverCascadeEnv -Values @{
+                sonnet = 'mistral@zai-glm-5-3>kc@k3.1-pro>ds@deepseek-flash'
+                haiku  = 'vllm-myia@swift-1.5-27b!own>role:sonnet>ds@deepseek-flash'
+            })
+        $line = Format-CascadeCoverageLine -Cascades $cascades `
+            -ArmedEnv 'haiku@myia-po-2027,haiku@myia-po-2023' -AutoEnv '1'
+        $line | Should -Match '2 roles, 6 steps'
+        $line | Should -Match 'prefixes ds@,kc@,mistral@,vllm-myia@'
+        $line | Should -Match 'sonnet: mistral@zai-glm-5-3 > kc@k3.1-pro > ds@deepseek-flash'
+        $line | Should -Match 'haiku: vllm-myia@swift-1.5-27b!own > role:sonnet > ds@deepseek-flash'
+        $line | Should -Match 'armed: haiku@myia-po-2027,haiku@myia-po-2023'
+        $line | Should -Match 'auto=on'
+    }
+    It 'a malformed arm is counted, never echoed' {
+        $cascades = @(ConvertFrom-FailoverCascadeEnv -Values @{ sonnet = 'ds@deepseek-flash' })
+        $line = Format-CascadeCoverageLine -Cascades $cascades -ArmedEnv 'haiku@myia-po-2027,sk-live-SECRETARM' -AutoEnv '0'
+        $line | Should -Match 'ignored-arm #2'
+        $line | Should -Match 'auto=off'
+        ($line -match 'SECRETARM') | Should -Be $false
+    }
+    It 'the arm grammar mirrors the proxy (#666 r1): one pin per divergence' {
+        # Each row is a shape where the first version of this line disagreed
+        # with fork/failover.ts (review r1) — every pin holds the proxy's read.
+        $c = @(ConvertFrom-FailoverCascadeEnv -Values @{ sonnet = 'ds@deepseek-flash' })
+
+        # bare role (whole-role arm) — the strongest arm the fleet has; it
+        # diverts every machine, so it is NAMED, not anonymized.
+        $bare = Format-CascadeCoverageLine -Cascades $c -ArmedEnv 'haiku' -AutoEnv '1'
+        $bare | Should -Match 'armed: haiku \(all machines\)'
+        $bare | Should -Match 'auto=on'
+
+        # space-separated pieces — the proxy splits on [,\s]+, not ','
+        $sp = Format-CascadeCoverageLine -Cascades $c -ArmedEnv 'haiku@myia-po-2027 haiku@myia-po-2023' -AutoEnv '1'
+        $sp | Should -Match 'haiku@myia-po-2027,haiku@myia-po-2023'
+        ($sp -match 'ignored-arm|unnamed-arm') | Should -Be $false
+
+        # `none` arms nothing — it is the proxy's explicit off word, not a malformation
+        $none = Format-CascadeCoverageLine -Cascades $c -ArmedEnv 'none' -AutoEnv '0'
+        $none | Should -Match 'armed: none'
+        ($none -match 'ignored-arm|unnamed-arm') | Should -Be $false
+
+        # an unknown role is IGNORED by the proxy — shown by position, never live
+        $typo = Format-CascadeCoverageLine -Cascades $c -ArmedEnv 'hiaku@myia-po-2027' -AutoEnv '1'
+        $typo | Should -Match 'ignored-arm #1'
+        ($typo -match 'hiaku') | Should -Be $false
+
+        # AUTO accepts 1/true/yes/on, any case — `AUTO=true` must not read "off"
+        $auto = Format-CascadeCoverageLine -Cascades $c -ArmedEnv 'haiku@myia-po-2027' -AutoEnv 'true'
+        $auto | Should -Match 'auto=on'
+        $autoYes = Format-CascadeCoverageLine -Cascades $c -ArmedEnv 'haiku@myia-po-2027' -AutoEnv 'YES'
+        $autoYes | Should -Match 'auto=on'
+    }
+    It 'the arm grammar mirrors the proxy: the other two flaw shapes (#666 r1)' {
+        # `haiku@` (empty machine) and `haiku@m1@m2` (malformed machine) are
+        # discarded by failover.ts with a warning — the line counts them the
+        # same way and never renders them as live arms.
+        $c = @(ConvertFrom-FailoverCascadeEnv -Values @{ sonnet = 'ds@deepseek-flash' })
+        $empty = Format-CascadeCoverageLine -Cascades $c -ArmedEnv 'haiku@' -AutoEnv '1'
+        $empty | Should -Match 'ignored-arm #1'
+        ($empty -match 'haiku@[,)]|haiku \(all') | Should -Be $false
+        $double = Format-CascadeCoverageLine -Cascades $c -ArmedEnv 'haiku@m1@m2,sonnet@myia-po-2027' -AutoEnv '1'
+        $double | Should -Match 'ignored-arm #1'
+        $double | Should -Match 'sonnet@myia-po-2027'
+    }
+    It 'an unreadable env file returns null, an absent one an empty table (#666 r1)' {
+        # "Unreadable" and "absent" are different claims: the runner must be
+        # able to say which one it is instead of printing "none declared"
+        # on a blind eye.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("mvwenv-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        try {
+            $absent = Read-EnvFileValues -EnvFile (Join-Path $dir 'nope.env') -Names @('A')
+            ($null -eq $absent) | Should -Be $false
+            @($absent.Keys).Count | Should -Be 0
+
+            # an ACL is the realistic unreadable shape; a directory read as a
+            # FILE achieves the same exception without needing privileges.
+            $blocked = Join-Path $dir 'blocked.env'
+            New-Item -ItemType Directory -Path $blocked -Force | Out-Null
+            $r = Read-EnvFileValues -EnvFile $blocked -Names @('A')
+            ($null -eq $r) | Should -Be $true
+        } finally {
+            Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

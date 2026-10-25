@@ -27,9 +27,11 @@
 # Additional providers join as their /models surfaces are probed; the diff and
 # edit logic is provider-agnostic (scripts/lib/claudish-model-version.psm1).
 #
-# Cascades (CLAUDISH_FAILOVER_*, container env) and profiles are NOT touched:
-# they need a recreate and stay operator acts — the events name them so the
-# worker's report can say "cascade still on the old minor, deliberate".
+# Cascades (CLAUDISH_FAILOVER_*, container env) are READ but still NOT
+# edited: changing one needs a drained recreate and stays an operator act.
+# Since #635 AC 3 they are NAMED on every run (roles, steps, prefixes, arms —
+# never a raw env value) and their prefixes join the probe targets, so a
+# provider reached only through a cascade is no longer invisible.
 #
 # Gated OFF by default: <ClaudishHome>\model-version-watch.enabled must contain
 # 'enabled' (Test-ClaudishOptIn). Every unknown fails safe: no file, no probe,
@@ -54,9 +56,10 @@ param(
     [string]$ClaudishHome = 'C:\Users\jsboi\.claudish',
     [string]$OAuthPath = 'D:\claudish-shadow\config\codex-oauth.json',
     [string]$DrainScript = 'D:\dev\claudish\scripts\claudish-drain.ps1',
-    # Hub env file — read ONLY for the CLAUDISH_FAILOVER_ROLE_MODELS line (never
-    # logged beyond that value, which carries no secret; the file itself holds
-    # CLAUDISH_PROXY_KEY and must never be dumped).
+    # Hub env file — read for the CLAUDISH_FAILOVER_* lines ONLY (ROLE_MODELS,
+    # the four cascades, ACTIVE, AUTO), by NAME, never enumerated: the file
+    # also holds CLAUDISH_PROXY_KEY and must never be dumped. Cascade values
+    # are printed as parsed step NAMES, never as the raw value.
     [string]$EnvFile = 'D:\claudish-shadow\.env',
     [switch]$DryRun
 )
@@ -104,6 +107,51 @@ $watchedProviders = @('cx@', 'codex@')
 $coverage = Get-RoutingCoverage -Routing $config.routing -WatchedProviders $watchedProviders
 & $logTs (Format-RoutingCoverageLine -Coverage $coverage)
 
+# --- 2a-bis. Cascade visibility (#635 AC 3) ---------------------------------
+#
+# The watch read `routing` only, so every armed cascade was invisible — and
+# both manual re-pins of that week (Aliyun 20/10, `kc@k3` -> `kc@k3.1-pro`
+# 24/10) happened inside that blind spot. Cascades are still NOT edited here
+# (they live in the env; changing one needs a drained recreate = operator act),
+# but they are now NAMED, and their provider prefixes join the probe targets
+# below: a provider reached only through a cascade (`mistral@` on the live hub)
+# is now probed like a routing one, and one with no declared surface (`kc@`,
+# builtin URL in the CLI) is at least counted instead of invisible.
+#
+# NAMES ONLY, hard rule: the raw env value is never printed. The parsed steps
+# are; anything unparseable is reported by POSITION (`bare-step #k` /
+# `unknown-role #k` / `unnamed-step #k`) because an unparseable value is
+# whatever an operator pasted, and this log travels to a public repo. Same file
+# as ROLE_MODELS — one reader (Read-EnvFileValues), never an enumeration of it
+# (it also carries CLAUDISH_PROXY_KEY).
+$cascadeValues = @{}
+$envNames = @('CLAUDISH_FAILOVER_ACTIVE', 'CLAUDISH_FAILOVER_AUTO')
+foreach ($r in @('fable', 'opus', 'sonnet', 'haiku')) { $envNames += "CLAUDISH_FAILOVER_$($r.ToUpper())" }
+$envVals = Read-EnvFileValues -EnvFile $EnvFile -Names $envNames
+if ($null -eq $envVals) {
+    # The file exists but could not be read (lock, ACL): $null, not @{}. The
+    # coverage line is NOT emitted — "none declared" would be a claim made on
+    # a blind eye, and "we could not read the file" is a different statement.
+    & $logTs "cascades: env file unreadable at $EnvFile — cascade coverage is unknown, not 'none'"
+    $cascades = @()
+} else {
+    foreach ($r in @('fable', 'opus', 'sonnet', 'haiku')) {
+        $k = "CLAUDISH_FAILOVER_$($r.ToUpper())"
+        if ($envVals.ContainsKey($k)) { $cascadeValues[$r] = $envVals[$k] }
+    }
+    $cascades = @(ConvertFrom-FailoverCascadeEnv -Values $cascadeValues)
+    $armedEnv = ''
+    if ($envVals.ContainsKey('CLAUDISH_FAILOVER_ACTIVE')) { $armedEnv = [string]$envVals['CLAUDISH_FAILOVER_ACTIVE'] }
+    $autoEnv = ''
+    if ($envVals.ContainsKey('CLAUDISH_FAILOVER_AUTO')) { $autoEnv = [string]$envVals['CLAUDISH_FAILOVER_AUTO'] }
+    & $logTs (Format-CascadeCoverageLine -Cascades $cascades -ArmedEnv $armedEnv -AutoEnv $autoEnv)
+    if (-not (Test-Path -LiteralPath $EnvFile)) {
+        # Absent is its own statement, distinct from unreadable above.
+        & $logTs "cascades: no env file at $EnvFile — cascade coverage is unknown, not 'none'"
+    }
+}
+$cascadePrefixes = @($cascades | ForEach-Object { $_.Prefixes } | Where-Object { $_ } | Select-Object -Unique)
+
 # --- 2b. Provider probe coverage (#635 AC 2) --------------------------------
 #
 # The coverage line above counts what the Codex path can SEE. This block says
@@ -117,7 +165,7 @@ $coverage = Get-RoutingCoverage -Routing $config.routing -WatchedProviders $watc
 # 15 s probe cannot become an auto-repin on the first run. Placement is
 # deliberate: BEFORE the Codex phase, which exits 0 on an OAuth/5xx failure —
 # the blind spot has to stay visible on a run where that path dies.
-$probeTargets = Get-ProviderProbeTargets -Routing $config.routing -CustomEndpoints $config.customEndpoints -OAuthProviders $watchedProviders
+$probeTargets = Get-ProviderProbeTargets -Routing $config.routing -CustomEndpoints $config.customEndpoints -OAuthProviders $watchedProviders -CascadePrefixes $cascadePrefixes
 $apiKeys = $null
 if ($null -ne $config -and $null -ne $config.PSObject.Properties['apiKeys']) { $apiKeys = $config.apiKeys }
 $envLookup = { param($name) [Environment]::GetEnvironmentVariable($name) }
@@ -172,24 +220,18 @@ if (-not $DryRun -and @($probeSplit.Minors).Count -gt 0) {
 # The detector reads the ENV FILE, not the live container: after an edit
 # without recreate it reports no drift while the running proxy still has the
 # hole — the #141 drain guard owns that comparison at the next recreate.
+# ONE reader for the file (Read-EnvFileValues — the same it uses for the
+# cascades in 2a-bis): quoting, `export ` and first-declaration-wins are the
+# module's rules, not a second parser's. The file also holds the proxy key, so
+# it is asked for a KEY by name and never enumerated.
 $roleModels = ''
-if (Test-Path -LiteralPath $EnvFile) {
-    try {
-        $envText = [System.IO.File]::ReadAllText($EnvFile)
-        foreach ($line in @($envText -split "`n")) {
-            $t = $line.Trim()
-            if ($t -like 'export CLAUDISH_FAILOVER_ROLE_MODELS=*') { $t = $t.Substring(7) }
-            if ($t -like 'CLAUDISH_FAILOVER_ROLE_MODELS=*') {
-                $roleModels = $t.Substring($t.IndexOf('=') + 1).Trim()
-                if ($roleModels.Length -ge 2 -and $roleModels[0] -eq $roleModels[$roleModels.Length - 1] -and
-                    ($roleModels[0] -eq '"' -or $roleModels[0] -eq "'")) {
-                    $roleModels = $roleModels.Substring(1, $roleModels.Length - 2)
-                }
-                break
-            }
-        }
-    } catch { & $logTs "role-models read failed (non-fatal, check skipped): $($_.Exception.Message)" }
+$roleVals = Read-EnvFileValues -EnvFile $EnvFile -Names @('CLAUDISH_FAILOVER_ROLE_MODELS')
+if ($null -eq $roleVals) {
+    # Same claim discipline as the cascades: unreadable is not "none declared".
+    & $logTs "role aliases: env file unreadable at $EnvFile — ROLE_MODELS coverage is unknown, not 'none'"
+    $roleVals = @{}
 }
+if ($roleVals.ContainsKey('CLAUDISH_FAILOVER_ROLE_MODELS')) { $roleModels = [string]$roleVals['CLAUDISH_FAILOVER_ROLE_MODELS'] }
 if ($roleModels) {
     $drift = @(Compare-RoleModelsToRouting -Routing $config.routing -RoleModels $roleModels)
     if ($drift.Count -eq 0) {
