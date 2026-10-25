@@ -275,3 +275,46 @@ Describe 'R1 squatter selection' {
         $sel.Count | Should -Be 0
     }
 }
+
+Describe 'loopback verdict sees BOTH families (po-2028, 2026-10-25 - third wedge in three days)' {
+    # The verdict read `if ($Ipv6Alive) { 'HEALTHY' }` for 16 h while
+    # 127.0.0.1:3000 accepted TCP and answered nothing. Every client whose base
+    # URL is http://127.0.0.1:3000 hung with no error to trip on.
+    It 'IPv6 alive + IPv4 dead is a DEGRADED verdict, never HEALTHY' {
+        Get-LoopbackVerdict -Ipv4Alive $false -Ipv6Alive $true | Should -Be 'LOOPBACK4_DOWN'
+    }
+
+    It 'both alive is the only HEALTHY shape' {
+        Get-LoopbackVerdict -Ipv4Alive $true -Ipv6Alive $true | Should -Be 'HEALTHY'
+    }
+
+    It 'the R1 wedge shape (IPv4 alive, IPv6 dead) is unchanged' {
+        Get-LoopbackVerdict -Ipv4Alive $true -Ipv6Alive $false | Should -Be 'LOOPBACK6_DOWN'
+    }
+
+    It 'both dead stays LOOPBACK_DEAD (engine down / drained recreate)' {
+        Get-LoopbackVerdict -Ipv4Alive $false -Ipv6Alive $false | Should -Be 'LOOPBACK_DEAD'
+    }
+}
+
+Describe 'curl http_code reading (the probe that never worked)' {
+    # Measured 2026-10-24 -> 2026-10-25: every tick logged curl_http=000 AND
+    # v6=True. Two defects: curl without --globoff reads the brackets of a
+    # literal [::1] URL as a glob range and never connects ('000'), and the old
+    # test (^\d{3}$) accepted '000' as a live status.
+    It "'000' is no answer, never alive (curl never connected)" {
+        Get-CurlHttpProbeVerdict -Raw '000' | Should -Be 'no_answer'
+    }
+
+    It 'a real status is alive whatever it is - 200, the documented 5.1-only 400, a 503' {
+        Get-CurlHttpProbeVerdict -Raw '200' | Should -Be 'alive'
+        Get-CurlHttpProbeVerdict -Raw '400' | Should -Be 'alive'
+        Get-CurlHttpProbeVerdict -Raw '503' | Should -Be 'alive'
+    }
+
+    It 'empty or garbage output is unparsable, never alive' {
+        Get-CurlHttpProbeVerdict -Raw ''        | Should -Be 'unparsable'
+        Get-CurlHttpProbeVerdict -Raw 'curl: (3) bad range' | Should -Be 'unparsable'
+        Get-CurlHttpProbeVerdict -Raw '00'      | Should -Be 'unparsable'
+    }
+}

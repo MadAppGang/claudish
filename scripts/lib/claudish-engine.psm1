@@ -1133,6 +1133,54 @@ function Select-WslrelaySquatters {
     return $selected
 }
 
+function Get-LoopbackVerdict {
+    <#
+        .SYNOPSIS
+            PURE verdict over the TWO loopback families.
+
+        The verdict used to read `if ($Ipv6Alive) { 'HEALTHY' } ...`, so a dead
+        IPv4 leg was invisible. Measured 2026-10-25 on myia-po-2028 (third
+        wedge in three days): 127.0.0.1:3000 accepted TCP and never answered
+        while [::1]:3000 served 200 in 8 ms, and the organ logged HEALTHY with
+        v4=False for 16 h. The class matters because a client that resolves
+        `localhost` to 127.0.0.1 does not get an error - the connection
+        ESTABLISHES - so there is no timeout to trip and the agent hangs.
+
+        LOOPBACK4_DOWN is therefore a DEGRADED verdict, never a healthy one.
+    #>
+    param(
+        [Parameter(Mandatory)][bool]$Ipv4Alive,
+        [Parameter(Mandatory)][bool]$Ipv6Alive
+    )
+    if ($Ipv6Alive -and $Ipv4Alive) { return 'HEALTHY' }
+    if ($Ipv6Alive) { return 'LOOPBACK4_DOWN' }
+    if ($Ipv4Alive) { return 'LOOPBACK6_DOWN' }
+    return 'LOOPBACK_DEAD'
+}
+
+function Get-CurlHttpProbeVerdict {
+    <#
+        .SYNOPSIS
+            PURE reading of curl's -w '%{http_code}' output.
+
+        '000' is curl's NO-RESPONSE code. The old belt accepted any three-digit
+        string (`-match '^\d{3}$'`), so a failed probe was read as "IPv6 alive"
+        - measured 2026-10-25: every tick logged `curl_http=000` AND `v6=True`,
+        i.e. this bug alone kept the verdict healthy.
+
+        Root cause of the 000 itself, measured the same day: without
+        --globoff, curl reads the brackets of a literal `[::1]` URL as a glob
+        range and never connects (`-g` on the same URL, same second: 200). Both
+        halves are fixed - the invocation and this reading - because either one
+        alone would let the other regress silently.
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Raw)
+    $code = ([string]$Raw).Trim()
+    if ($code -match '^0{3}$') { return 'no_answer' }
+    if ($code -match '^[1-5]\d{2}$') { return 'alive' }
+    return 'unparsable'
+}
+
 function Invoke-GitBounded {
     <#
     .SYNOPSIS
@@ -2794,6 +2842,8 @@ Export-ModuleMember -Function @(
     'ConvertFrom-WatchdogStateJson'
     'Get-EngineWatchdogDecision'
     'Select-WslrelaySquatters'
+    'Get-LoopbackVerdict'
+    'Get-CurlHttpProbeVerdict'
     'Enable-DrainAdmissionFreeze'
     'Disable-DrainAdmissionFreeze'
     'New-EngineRelaunchRegistration'

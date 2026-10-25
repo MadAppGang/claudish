@@ -21,8 +21,9 @@
 
     Probes and rungs (each bounded, journalized to sidecar-host-watchdog.log;
     the decision half is PURE in scripts/lib/claudish-engine.psm1 -
-    Get-EngineWatchdogDecision / Select-WslrelaySquatters / the state codec -
-    pinned by scripts/tests/ on both interpreters):
+    Get-EngineWatchdogDecision / Select-WslrelaySquatters / Get-LoopbackVerdict /
+    Get-CurlHttpProbeVerdict / the state codec - pinned by scripts/tests/ on
+    both interpreters):
       R1 - wslrelay wedge: probe http://[::1]:<port>/health EXPLICITLY (a
            'localhost' probe reads healthy straight through this outage -
            measured: wslrelay owns [::1] alone while the backend wildcard
@@ -35,6 +36,14 @@
            exactly those PIDs. The Docker backend's 0.0.0.0/[::] wildcard
            then serves loopback again (measured 21/10 + 24/10). Only
            wslrelay is ever killed - never the backend, never the VM.
+      R1B - the MIRROR shape (added 25/10): one loopback family serves while
+           the other accepts TCP and never answers. No actuator: the measured
+           remedy is a container restart, and it belongs to the Docker-owning
+           lane on this host (Maintenance). The rung emits
+           R1B_ESCALATE_V4_DEAD naming the port holder. Because the relay's
+           process never changed across the repair, killing it is NOT a fix -
+           that is why this rung has no kill branch at all. Ownership per
+           family is episode-dependent: never assume it.
       R2 - docker engine wedge: the Docker Desktop backend runs but the
            docker-desktop WSL distro answers HTTP 500 (or hangs the CLI) -
            "docker refuses to restart after a kill". Remediation
@@ -400,10 +409,17 @@ $ipv4Alive = Test-HttpAlive -Url "http://127.0.0.1:$Port/health" -TimeoutSec 8
 $curlHttp = ''
 if (-not $ipv6Alive) {
     try {
-        $raw = & curl.exe -s -o NUL -w '%{http_code}' --max-time 8 "http://[::1]:$Port/health" 2>$null
+        # --globoff is load-bearing: without it curl reads the brackets of a
+        # literal [::1] URL as a glob range and never connects, returning
+        # '000' on every single tick (measured 2026-10-24 -> 2026-10-25). This
+        # belt never fired for its whole life.
+        $raw = & curl.exe -s --globoff -o NUL -w '%{http_code}' --max-time 8 "http://[::1]:$Port/health" 2>$null
         $curlHttp = (($raw | Out-String).Trim())
     } catch { }
-    if ($curlHttp -match '^\d{3}$') {
+    # '000' is curl's NO-RESPONSE code and must never read as alive: the old
+    # test (^\d{3}$) matched it, so a probe that answered nothing kept
+    # ipv6Alive=$true. Pinned in Get-CurlHttpProbeVerdict.
+    if ((Get-CurlHttpProbeVerdict -Raw $curlHttp) -eq 'alive') {
         $ipv6Alive = $true
         $actions += "PROBE_DOTNET_BLIND curl_http=$curlHttp"
     }
@@ -425,6 +441,42 @@ if (-not $ipv6Alive -and $ipv4Alive) {
         $actions += "R1_REPROBE ipv6_alive=$ipv6After"
         if ($ipv6After) { $ipv6Alive = $true }
     }
+}
+
+# --- R1B: the DEAD loopback leg (added 2026-10-25, po-2028 third wedge in three
+# days). Mirror shape of R1 - one family serves, the other accepts TCP and never
+# answers. This is the dangerous half: the connection ESTABLISHES, so a client
+# whose base URL names the dead family gets no error and no timeout to trip, and
+# the agent hangs for hours. Measured 2026-10-25: 127.0.0.1:3000 timed out at 4 s
+# while [::1]:3000 answered 200 in 8 ms - and the verdict read HEALTHY for
+# 80 minutes because it only looked at IPv6.
+#
+# PORT OWNERSHIP IS NOT STABLE ACROSS EPISODES - never assume it. On
+# 2026-09-20/24 wslrelay held [::1] alone while the backend wildcard served
+# 127.0.0.1; on 2026-10-25 wslrelay held BOTH 127.0.0.1 and [::1] while the
+# backend held only the wildcard - and it was IPv4 that died. Hence the probe
+# covers both families every tick and this rung NAMES the holder instead of
+# assuming one.
+#
+# ESCALATE ONLY - no actuator here, deliberately:
+#   - the measured remedy is a CONTAINER restart (po-2028 2026-10-25: after the
+#     restart the loopback answered again while the relay process never changed
+#     - so killing the relay is not the fix, and a distro teardown is strictly
+#     heavier than needed);
+#   - the actuator belongs to the lane that owns Docker on this host
+#     (Maintenance: watch_sidecar_loopback.ps1 + Maintenance-SidecarLoopbackGuard,
+#     gated on this exact shape). Two actuators on one condition is the
+#     double-shooter class: it wins nothing and races the drain window.
+if ($ipv6Alive -and -not $ipv4Alive) {
+    $holders = @()
+    try {
+        $conns4 = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop)
+        $holders = @($conns4 | ForEach-Object {
+            $hn = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+            "$($_.LocalAddress):$($_.LocalPort)/$hn#$($_.OwningProcess)"
+        })
+    } catch { }
+    $actions += "R1B_ESCALATE_V4_DEAD holders=$($holders -join ',') remedy=container_restart owner=Maintenance guard=Maintenance-SidecarLoopbackGuard"
 }
 
 # --- R2/R3: docker engine. The LADDER is pure (Get-EngineWatchdogDecision in
@@ -521,7 +573,11 @@ switch ($decision.Action) {
 # The decision layer already returns the input state unchanged under -DryRun;
 # this guard is the belt on the write half.
 if (-not $DryRun) { Write-WdState -State $State }
-$verdict = if ($ipv6Alive) { 'HEALTHY' } elseif ($ipv4Alive) { 'LOOPBACK6_DOWN' } else { 'LOOPBACK_DEAD' }
+# The verdict must see BOTH families (2026-10-25): a dead IPv4 leg while
+# [::1] serves is the shape that hangs every agent whose base URL is
+# http://127.0.0.1:3000 - TCP establishes, nothing answers, no timeout trips.
+# Read as HEALTHY for 16 h before this fix.
+$verdict = Get-LoopbackVerdict -Ipv4Alive $ipv4Alive -Ipv6Alive $ipv6Alive
 $detail = ($actions -join '; ')
 # copy_mtime names WHICH file executed: on 2026-10-24 a branch switch removed
 # the script from the working tree and every scheduled run died at launch
