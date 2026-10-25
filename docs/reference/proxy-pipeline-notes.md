@@ -144,6 +144,47 @@ a thinking nominal.
 
 ---
 
+## Effort mapping onto an endpoint's own depth knob (#667)
+
+Claude Code sends its thinking level as `output_config.effort`
+(`low | medium | high | xhigh | max`) next to `thinking: {type: "adaptive"}`. Before #667 the field
+was read in exactly one place (`minimax-model-dialect.ts`, to overwrite it under an operator
+`effort:<level>` policy) — every OpenAI-wire route dropped it, so the local vLLM engine serving the
+haiku role (Swift) applied its own default instead of the level the user picked.
+
+The fix is per-endpoint and declarative: `effortTarget` on the custom-endpoint schema
+(`config-schema.ts`), threaded by `custom-endpoints-loader.ts` into `ComposedHandlerOptions`, applied
+in `ComposedHandler` after the adapters' `prepareRequest` (last writer before the wire), OpenAI wire
+only. Only target today: vLLM's **top-level** `chat_template_kwargs.reasoning_effort` (levels
+`low | medium | xhigh`; the engine applies `medium` when the field is absent) — never under
+`extra_body`, existing `chat_template_kwargs` keys preserved.
+
+**The fixed, monotonic ladder** (`EFFORT_TARGET_LADDER`, 5 client levels → the target's 3):
+
+| Client `output_config.effort` | Wire `chat_template_kwargs.reasoning_effort` |
+|---|---|
+| `low` | `low` |
+| `medium` | `medium` |
+| `high` | `xhigh` |
+| `xhigh` | `xhigh` |
+| `max` | `xhigh` |
+
+`high` lands on `xhigh`, not `medium`, on purpose: `medium` is what the engine applies when NOT
+asked, so mapping the client's explicit `high` onto it would make the most common client level
+(haiku-5-5 sends `high` by default) a no-op — and the target ladder has no `high`, so the next step
+up is the only faithful direction. `max` clamps to the top. Monotone: a higher client level never
+maps lower.
+
+Behavior rules: absent client effort → nothing written (the engine's own default keeps applying);
+unknown or malformed value → dropped with a `[Effort] … dropped` debug log, never thrown, request
+served; every mapped request logs one greppable line
+`[Effort] <client level> -> chat_template_kwargs.reasoning_effort=<value> (<endpoint>)`. Opt-in:
+an endpoint without `effortTarget` sends exactly what it sends today. Pins:
+`composed-handler-effort-mapping.test.ts` (AC1 inert-by-default, AC2 top-level + siblings, AC3 one
+assertion per level, AC4 absent-stays-absent, AC5 never-throw).
+
+---
+
 ## Responses overload after `response.created`
 
 The OpenAI Responses backend can acknowledge a request with `response.created` and then emit

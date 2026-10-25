@@ -106,6 +106,20 @@ export const CustomEndpointSimpleSchema = z.object({
    * false — no existing endpoint changes behavior.
    */
   omitReasoningContent: z.boolean().optional(),
+  /**
+   * #667 — map the client's thinking level (`output_config.effort`) onto this
+   * endpoint's own depth knob. Only target today: vLLM's top-level
+   * `chat_template_kwargs.reasoning_effort` (levels low|medium|xhigh; the
+   * engine applies `medium` when absent). Fixed monotonic ladder in code —
+   * see ComposedHandlerOptions.effortTarget and
+   * docs/reference/proxy-pipeline-notes.md:
+   *
+   *   low→low · medium→medium · high→xhigh · xhigh→xhigh · max→xhigh
+   *
+   * Opt-in: absent = today's behavior, byte for byte (the field is dropped on
+   * the OpenAI wire, exactly as before). OpenAI-wire endpoints only.
+   */
+  effortTarget: z.enum(["chat_template_kwargs.reasoning_effort"]).optional(),
 });
 
 // "Complex" custom endpoint: a runtime PROVIDER_PROFILES entry.
@@ -143,6 +157,8 @@ export const CustomEndpointComplexSchema = z.object({
   deriveContextLimit: z.boolean().optional(),
   /** See CustomEndpointSimpleSchema.omitReasoningContent. */
   omitReasoningContent: z.boolean().optional(),
+  /** See CustomEndpointSimpleSchema.effortTarget (#667 depth-knob mapping). */
+  effortTarget: z.enum(["chat_template_kwargs.reasoning_effort"]).optional(),
 });
 
 export const CustomEndpointSchema = z.discriminatedUnion("kind", [

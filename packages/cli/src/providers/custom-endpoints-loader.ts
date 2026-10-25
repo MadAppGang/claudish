@@ -177,6 +177,7 @@ function buildSimpleHandler(
       adapter,
       tokenStrategy: "delta-aware",
       omitReasoningContent: ep.omitReasoningContent,
+      effortTarget: ep.effortTarget,
       maxOutputTokens: ep.maxOutputTokens,
       contextLimit: getDeclaredContextLimit(ctx.provider.name),
       derivedContextLimit: getDerivedContextLimit(ctx.provider.name),
@@ -220,6 +221,7 @@ function buildComplexHandler(
       const adapter = new LiteLLMAPIFormat(finalModel, baseUrl);
       return new ComposedHandler(transport, ctx.targetModel, finalModel, ctx.port, {
         adapter,
+        effortTarget: ep.effortTarget,
         maxOutputTokens: ep.maxOutputTokens,
         contextLimit: getDeclaredContextLimit(ctx.provider.name),
         derivedContextLimit: getDerivedContextLimit(ctx.provider.name),
@@ -243,6 +245,7 @@ function buildComplexHandler(
         adapter,
         tokenStrategy: "delta-aware",
         omitReasoningContent: ep.omitReasoningContent,
+        effortTarget: ep.effortTarget,
         maxOutputTokens: ep.maxOutputTokens,
         contextLimit: getDeclaredContextLimit(ctx.provider.name),
         derivedContextLimit: getDerivedContextLimit(ctx.provider.name),

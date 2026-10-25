@@ -319,7 +319,47 @@ export interface ComposedHandlerOptions {
    * failure the admission census avoids, in the opposite direction.
    */
   derivedContextLimit?: number;
+  /**
+   * #667 — map the client's thinking level (`output_config.effort`, sent by
+   * Claude Code next to `thinking:{type:"adaptive"}`) onto this endpoint's
+   * OWN depth knob, so the level a user picks actually reaches the model.
+   * Today the field is only read by the MiniMax dialect (to overwrite it
+   * under an operator policy) — every OpenAI-wire route drops it, and the
+   * local vLLM engine serving the haiku role applies its own `medium`
+   * default instead (top-level `chat_template_kwargs.reasoning_effort`,
+   * levels low|medium|xhigh).
+   *
+   * Fixed monotonic ladder, 5 client levels → the target's 3:
+   *
+   *   low → low · medium → medium · high → xhigh · xhigh → xhigh · max → xhigh
+   *
+   * `high` lands on xhigh, not medium, on purpose: medium is what the engine
+   * applies when NOT asked, so mapping the client's explicit high onto it
+   * would make the most common client level a no-op — and the target ladder
+   * has no "high", so the next step up is the only faithful direction. `max`
+   * clamps to the top. Monotone: a higher client level never maps lower.
+   *
+   * Opt-in per endpoint (config-schema `effortTarget`); applied on the OpenAI
+   * wire only, top-level (never under `extra_body`), existing
+   * `chat_template_kwargs` keys preserved. Absent client effort → no
+   * `reasoning_effort` on the wire (the engine's own default keeps applying);
+   * an unrecognized value is dropped with a log line, never thrown (#667 AC5).
+   */
+  effortTarget?: "chat_template_kwargs.reasoning_effort";
 }
+
+/**
+ * #667 — the fixed, monotonic effort ladder shared by every endpoint that
+ * arms `effortTarget` (see ComposedHandlerOptions.effortTarget for the
+ * rationale and docs/reference/proxy-pipeline-notes.md for the table).
+ */
+const EFFORT_TARGET_LADDER: Record<string, "low" | "medium" | "xhigh"> = {
+  low: "low",
+  medium: "medium",
+  high: "xhigh",
+  xhigh: "xhigh",
+  max: "xhigh",
+};
 
 export class ComposedHandler implements ModelHandler {
   private provider: ProviderTransport;
@@ -757,6 +797,40 @@ export class ComposedHandler implements ModelHandler {
     // Model adapter may also need to post-process (e.g., strip unsupported thinking params)
     if (this.modelAdapter && this.modelAdapter !== adapter) {
       this.modelAdapter.prepareRequest(requestPayload, claudeRequest, prepareCtx);
+    }
+
+    // 5a. #667 — carry the client's thinking level to the endpoint's own depth
+    // knob. Last writer before the wire on purpose: no adapter downstream can
+    // clobber what the operator armed here. Reads the ORIGINAL request (the
+    // client's `output_config.effort`), writes the outbound body's TOP-LEVEL
+    // `chat_template_kwargs.reasoning_effort` — vLLM's per-request depth knob
+    // (engine default: medium when the field is absent).
+    if (this.options.effortTarget === "chat_template_kwargs.reasoning_effort") {
+      if (this.resolveStreamFormat() !== "openai-sse") {
+        logStderr(
+          `[Effort] effortTarget configured but wire format is ${this.resolveStreamFormat()} — mapping not applied (OpenAI wire only, #667)`
+        );
+      } else {
+        const clientEffort = (claudeRequest as any)?.output_config?.effort;
+        if (typeof clientEffort === "string") {
+          const mapped = EFFORT_TARGET_LADDER[clientEffort.toLowerCase()];
+          if (mapped) {
+            const prior = (requestPayload as any).chat_template_kwargs ?? {};
+            (requestPayload as any).chat_template_kwargs = { ...prior, reasoning_effort: mapped };
+            log(
+              `[Effort] ${clientEffort} -> chat_template_kwargs.reasoning_effort=${mapped} (${this.provider.displayName})`
+            );
+          } else {
+            // AC5 — never-hang: an unknown value is dropped with a debug log,
+            // the request is still served (engine default applies).
+            log(
+              `[Effort] unrecognized client effort '${clientEffort}' dropped for ${this.provider.displayName} — serving unmapped`
+            );
+          }
+        }
+        // AC4 — absent effort: nothing written; the engine's own default
+        // (medium) keeps applying.
+      }
     }
     const toolNameMap = adapter.getToolNameMap();
 
