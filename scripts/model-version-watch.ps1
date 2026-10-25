@@ -132,21 +132,28 @@ foreach ($d in @($probeSplit.Minors)) {
 }
 # A major on a probed provider is an ASK, exactly as on the Codex path: no edit,
 # one 'major-ask' event per family. The two paths cannot double-ask — probe
-# targets exclude the OAuth prefixes by construction.
+# targets exclude the OAuth prefixes by construction. Both event sites are
+# DEDUPED by (kind, family, from, to, provider): a 6h cadence re-observes the
+# same report-only fact every run and the relay would carry it forever
+# otherwise. The provider (#665 r1) keeps two same-transition facts on two
+# providers distinct; the family-grouped asks key on the family's
+# representative provider ($d0.Provider — the one the detail line names).
 foreach ($fam in @($probeSplit.Majors | Group-Object Family)) {
     $d0 = @($fam.Group)[0]
     $fromIds = @($fam.Group | ForEach-Object { "$($_.Spelling)=$($_.CurrentId)" }) -join ','
+    $askFrom = (@($fam.Group | ForEach-Object { $_.CurrentId } | Select-Object -Unique) -join ',')
     & $logTs ("[probe] MAJOR available: {0} {1} -> {2} on {3} — NOT applied, user arbitrates" -f $fam.Name, $fromIds, $d0.LatestId, $d0.Provider)
-    if (-not $DryRun) {
+    if (-not $DryRun -and -not (Test-VersionEventEmitted -EventsPath $eventsPath -Kind major-ask -Family $fam.Name -From $askFrom -To $d0.LatestId -Provider $d0.Provider)) {
         Write-VersionEvent -EventsPath $eventsPath -Kind major-ask -Family $fam.Name `
-            -From (@($fam.Group | ForEach-Object { $_.CurrentId } | Select-Object -Unique) -join ',') `
-            -To $d0.LatestId -Detail "probed on $($d0.Provider) — spellings: $fromIds"
+            -From $askFrom `
+            -To $d0.LatestId -Provider $d0.Provider -Detail "probed on $($d0.Provider) — spellings: $fromIds"
     }
 }
 if (-not $DryRun -and @($probeSplit.Minors).Count -gt 0) {
     foreach ($d in @($probeSplit.Minors)) {
+        if (Test-VersionEventEmitted -EventsPath $eventsPath -Kind info -Family $d.Family -From $d.CurrentId -To $d.LatestId -Provider $d.Provider) { continue }
         Write-VersionEvent -EventsPath $eventsPath -Kind info -Family $d.Family `
-            -From $d.CurrentId -To $d.LatestId `
+            -From $d.CurrentId -To $d.LatestId -Provider $d.Provider `
             -Detail "probe would-repin spelling $($d.Spelling) on $($d.Provider) ($($d.Action)) — report-only, not applied"
     }
 }
@@ -269,9 +276,13 @@ foreach ($d in @($pending | Where-Object { -not $_.Eligible })) {
     $shown = 'bare (default chain)'
     if ($d.Provider) { $shown = $d.Provider }
     & $logTs "REPORT-ONLY $($d.Family) [provider $shown]: $($d.CurrentId) -> $($d.LatestId) — not probed, not touched"
-    if (-not $DryRun) {
+    # Same (kind, family, from, to, provider) dedup as the probe path: an
+    # ineligible family is the same fact every 6h run until the operator
+    # arbitrates — but the SAME family on several providers is several facts
+    # (#665 r1: the provider-less key swallowed all but the first on run one).
+    if (-not $DryRun -and -not (Test-VersionEventEmitted -EventsPath $eventsPath -Kind info -Family $d.Family -From $d.CurrentId -To $d.LatestId -Provider $shown)) {
         Write-VersionEvent -EventsPath $eventsPath -Kind info -Family $d.Family `
-            -From $d.CurrentId -To $d.LatestId `
+            -From $d.CurrentId -To $d.LatestId -Provider $shown `
             -Detail "same family on provider '$shown' (spelling $($d.Spelling)); not probed, not touched — eligibility scoped to the watched provider"
     }
 }
@@ -335,10 +346,11 @@ $majors = @($actionable | Where-Object Action -eq 'major')
 foreach ($fam in @($majors | Group-Object Family)) {
     $d0 = @($fam.Group)[0]
     $fromIds = @($fam.Group | ForEach-Object { "$($_.Spelling)=$($_.CurrentId)" }) -join ','
+    $askFrom = (@($fam.Group | ForEach-Object { $_.CurrentId } | Select-Object -Unique) -join ',')
     & $logTs "MAJOR available: $($fam.Name) $($fromIds) -> $($d0.LatestId) — NOT applied, user arbitrates"
-    if (-not $DryRun) {
+    if (-not $DryRun -and -not (Test-VersionEventEmitted -EventsPath $eventsPath -Kind major-ask -Family $fam.Name -From $askFrom -To $d0.LatestId)) {
         Write-VersionEvent -EventsPath $eventsPath -Kind major-ask -Family $fam.Name `
-            -From (@($fam.Group | ForEach-Object { $_.CurrentId } | Select-Object -Unique) -join ',') `
+            -From $askFrom `
             -To $d0.LatestId -Detail "spellings: $fromIds"
     }
 }

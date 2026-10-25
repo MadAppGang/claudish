@@ -367,6 +367,63 @@ Describe 'Write-VersionEvent / Test-ClaudishOptIn' {
     }
 }
 
+Describe 'Test-VersionEventEmitted (#661 b - one event per fact, not one per 6h run)' {
+    # Generalizes Test-RoleAliasAskEmitted to the report-only event kinds: a
+    # 6h cadence re-observes the SAME pending fact every run (major-ask,
+    # probe would-repin info, ineligible info) and would re-emit it forever.
+    # The identifying tuple is the TRANSITION (kind, family, from, to): once
+    # the operator arbitrates, the tuple changes and the new fact emits.
+    BeforeAll {
+        $script:dedupDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mvwdedup-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:dedupDir -Force | Out-Null
+        $script:dedupEv = Join-Path $script:dedupDir 'events.log'
+        Write-VersionEvent -EventsPath $script:dedupEv -Kind major-ask -Family gpt-sol -From 'gpt-6-sol' -To 'gpt-7-sol' -Detail 'spellings: gpt-6-sol=gpt-6-sol'
+        Write-VersionEvent -EventsPath $script:dedupEv -Kind info -Family swift -From 'swift-1.5' -To 'swift-1.6' -Detail 'probe would-repin'
+    }
+    AfterAll { Remove-Item $script:dedupDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'the same (kind, family, from, to) is a re-observation - suppressed' {
+        (Test-VersionEventEmitted -EventsPath $script:dedupEv -Kind major-ask -Family gpt-sol -From 'gpt-6-sol' -To 'gpt-7-sol') | Should -Be $true
+        (Test-VersionEventEmitted -EventsPath $script:dedupEv -Kind info -Family swift -From 'swift-1.5' -To 'swift-1.6') | Should -Be $true
+    }
+    It 'a changed tuple is a new fact - emitted' {
+        (Test-VersionEventEmitted -EventsPath $script:dedupEv -Kind major-ask -Family gpt-sol -From 'gpt-6.1-sol' -To 'gpt-7-sol') | Should -Be $false
+        (Test-VersionEventEmitted -EventsPath $script:dedupEv -Kind major-ask -Family gpt-sol -From 'gpt-6-sol' -To 'gpt-7.1-sol') | Should -Be $false
+        (Test-VersionEventEmitted -EventsPath $script:dedupEv -Kind info -Family gpt-sol -From 'gpt-6-sol' -To 'gpt-7-sol') | Should -Be $false
+    }
+    It 'a missing log or a garbage line never claims a duplicate' {
+        (Test-VersionEventEmitted -EventsPath (Join-Path $script:dedupDir 'nope.log') -Kind major-ask -Family gpt-sol -From 'gpt-6-sol' -To 'gpt-7-sol') | Should -Be $false
+        $garb = Join-Path $script:dedupDir 'garbage.log'
+        [System.IO.File]::WriteAllText($garb, "not json`n" + '{"kind":"major-ask","family":"gpt-sol","from":"gpt-6-sol","to":"gpt-7-sol"}' + "`n")
+        (Test-VersionEventEmitted -EventsPath $garb -Kind major-ask -Family gpt-sol -From 'gpt-6-sol' -To 'gpt-7-sol') | Should -Be $true
+    }
+    It '#665 r1: two same-tuple facts on two providers are two facts — both emit on run one, neither on the rerun' {
+        # The r1 finding, restated as a pin: the provider-less key swallowed the
+        # SECOND provider's fact before it had ever been emitted once. Here both
+        # facts share (kind, family, from, to) and differ only by provider.
+        $two = Join-Path $script:dedupDir 'two-providers.log'
+        $d1 = @{ EventsPath = $two; Kind = 'info'; Family = 'glm'; From = 'glm-5.3'; To = 'glm-5.3.1'; Provider = 'zai' }
+        $d2 = @{ EventsPath = $two; Kind = 'info'; Family = 'glm'; From = 'glm-5.3'; To = 'glm-5.3.1'; Provider = 'glm-coding' }
+        # Empty log: BOTH facts are new — 2 events on the first run.
+        (Test-VersionEventEmitted @d1) | Should -Be $false
+        (Test-VersionEventEmitted @d2) | Should -Be $false
+        Write-VersionEvent -EventsPath $two -Kind info -Family glm -From 'glm-5.3' -To 'glm-5.3.1' -Provider 'zai' -Detail 'probe would-repin spelling zai@glm-5.3 on zai'
+        Write-VersionEvent -EventsPath $two -Kind info -Family glm -From 'glm-5.3' -To 'glm-5.3.1' -Provider 'glm-coding' -Detail 'probe would-repin spelling glm-coding@glm-5.3 on glm-coding'
+        # Rerun: both are now known facts — 0 new events. And each fact does
+        # NOT dedup the other's provider.
+        (Test-VersionEventEmitted @d1) | Should -Be $true
+        (Test-VersionEventEmitted @d2) | Should -Be $true
+    }
+    It 'legacy lines written before the provider field existed stay facts, and never satisfy a provider-scoped query' {
+        $legacy = Join-Path $script:dedupDir 'legacy.log'
+        [System.IO.File]::WriteAllText($legacy, '{"ts":"2026-10-24T00:00:00.0000000Z","kind":"info","family":"glm","from":"glm-5.3","to":"glm-5.3.1","detail":"pre-#665 line"}' + "`n")
+        # Same tuple, no provider in the query → the legacy fact dedups (same key: '').
+        (Test-VersionEventEmitted -EventsPath $legacy -Kind info -Family glm -From 'glm-5.3' -To 'glm-5.3.1') | Should -Be $true
+        # A provider-scoped query is a DIFFERENT fact — never satisfied by a legacy line.
+        (Test-VersionEventEmitted -EventsPath $legacy -Kind info -Family glm -From 'glm-5.3' -To 'glm-5.3.1' -Provider 'zai') | Should -Be $false
+    }
+}
+
 Describe 'Compare-RoleModelsToRouting (role-alias drift, 2026-10-05, reworked CR c.5993885265)' {
     # The drift this hunts: routing repinned to a newer MINOR while
     # CLAUDE_FAILOVER_ROLE_MODELS kept the older spelling. parseRoleAliases
@@ -843,6 +900,66 @@ Describe 'Get-ModelsUrl / Get-ProviderProbeTargets (#635 AC 2 - what this seat c
             $one.Reason | Should -Match 'no probe surface'
         }
     }
+
+    It 'carries the auth scheme and extra headers the proxy transport would use (#661 a)' {
+        # Defaults mirror custom-endpoints-loader.ts: the WIRE decides — openai
+        # 'bearer' (hardcoded there), anthropic 'x-api-key' — and an explicit
+        # authScheme always wins. Only complex entries may carry headers.
+        $rt = [pscustomobject]@{
+            'm1' = @('simple-oai@m1')
+            'm2' = @('simple-ant@m2')
+            'm3' = @('complex-oai@m3')
+            'm4' = @('complex-ant-default@m4')
+            'm5' = @('complex-explicit@m5')
+        }
+        $eps = [pscustomobject]@{
+            'simple-oai'          = [pscustomobject]@{ kind = 'simple'; url = 'http://a/v1'; apiKey = '${A}' }
+            'simple-ant'          = [pscustomobject]@{ kind = 'simple'; url = 'http://b/v1'; apiKey = '${B}'; format = 'anthropic' }
+            'complex-oai'         = [pscustomobject]@{ kind = 'complex'; baseUrl = 'http://c'; apiPath = '/v1/chat/completions'; apiKey = '${C}'; transport = 'openai'; headers = [pscustomobject]@{ 'X-Org' = 'org1' } }
+            'complex-ant-default' = [pscustomobject]@{ kind = 'complex'; baseUrl = 'http://d'; apiPath = '/v1/messages'; apiKey = '${D}'; transport = 'anthropic' }
+            'complex-explicit'    = [pscustomobject]@{ kind = 'complex'; baseUrl = 'http://e'; apiPath = '/v1/messages'; apiKey = '${E}'; transport = 'anthropic'; authScheme = 'bearer' }
+        }
+        $t = Get-ProviderProbeTargets -Routing $rt -CustomEndpoints $eps
+        $byP = @{}
+        foreach ($x in @($t)) { $byP[$x.Prefix] = $x }
+        $byP['simple-oai@'].AuthScheme | Should -Be 'bearer'            # no format declared: openai default
+        $byP['simple-ant@'].AuthScheme | Should -Be 'x-api-key'        # format anthropic
+        $byP['complex-oai@'].AuthScheme | Should -Be 'bearer'          # transport openai
+        $byP['complex-oai@'].ExtraHeaders.'X-Org' | Should -Be 'org1'
+        $byP['complex-ant-default@'].AuthScheme | Should -Be 'x-api-key'   # transport anthropic, nothing explicit
+        $byP['complex-ant-default@'].ExtraHeaders | Should -BeNullOrEmpty  # no headers declared
+        $byP['complex-explicit@'].AuthScheme | Should -Be 'bearer'         # explicit beats the wire default
+        $byP['simple-oai@'].ExtraHeaders | Should -BeNullOrEmpty           # simple entries carry no headers
+    }
+}
+
+Describe 'Get-ProbeHeaders (#661 a - the probe authenticates like the transport it stands in for)' {
+    # Header contract mirrors anthropic-compat.ts getHeaders: auth header from
+    # the scheme, extras applied AFTER it (Object.assign order — an extra may
+    # override auth). Pure, so every shape pins without touching the wire.
+    It 'bearer by default (and on an empty scheme), x-api-key when declared' {
+        $h = Get-ProbeHeaders -Key 'k1'
+        $h['Authorization'] | Should -Be 'Bearer k1'
+        ($h.ContainsKey('x-api-key')) | Should -Be $false
+        # a target built without AuthScheme arrives as '' — same wire as bearer
+        $hEmpty = Get-ProbeHeaders -Key 'k1' -AuthScheme ''
+        $hEmpty['Authorization'] | Should -Be 'Bearer k1'
+        $h2 = Get-ProbeHeaders -Key 'k2' -AuthScheme 'x-api-key'
+        $h2['x-api-key'] | Should -Be 'k2'
+        ($h2.ContainsKey('Authorization')) | Should -Be $false
+    }
+    It 'an empty key sends no auth header at all (Accept stays)' {
+        $h = Get-ProbeHeaders -Key ''
+        ($h.ContainsKey('Authorization')) | Should -Be $false
+        ($h.ContainsKey('x-api-key')) | Should -Be $false
+        $h['Accept'] | Should -Be 'application/json'
+    }
+    It 'extra headers apply AFTER the auth header and may override it' {
+        $h = Get-ProbeHeaders -Key 'k' -AuthScheme 'bearer' -ExtraHeaders ([pscustomobject]@{ Authorization = 'Basic z'; 'X-Org' = 'o1' })
+        $h['Authorization'] | Should -Be 'Basic z'
+        $h['X-Org'] | Should -Be 'o1'
+        $h['Accept'] | Should -Be 'application/json'
+    }
 }
 
 Describe 'Invoke-ProviderCatalogProbe (#635 AC 2 - "not probed" is never "current")' {
@@ -966,6 +1083,28 @@ Describe 'Invoke-ProviderCatalogProbe (#635 AC 2 - "not probed" is never "curren
         $o = @(Invoke-ProviderCatalogProbe -Targets @($script:targets[0], $script:targets[1]) -ApiKeys $script:keys -EnvLookup $script:noEnv -Fetcher $f)
         $o[0].Status | Should -Be 'not probed'
         $o[1].Status | Should -Be 'probed'
+    }
+
+    It 'threads the target auth scheme and extra headers to the fetcher (#661 a)' {
+        # The threading is the part that can silently break: Get-ProbeHeaders
+        # could be perfect and the call site still drop the two new values.
+        $script:seenFetch = $null
+        $f = { param($u, $k, $t, $s, $h)
+            $script:seenFetch = @{ Url = $u; Key = $k; Scheme = "$s"; Extras = $h }
+            @{ Status = 200; Body = '{"data":[{"id":"x"}]}' }
+        }
+        $tgt = @{ Prefix = 'p@'; Probeable = $true; Kind = 'custom'; Url = 'http://p/models'; KeyName = 'P_KEY'; KeyInline = ''; AuthScheme = 'x-api-key'; ExtraHeaders = [pscustomobject]@{ 'X-Org' = 'o9' }; Reason = '' }
+        $o = @(Invoke-ProviderCatalogProbe -Targets @($tgt) -ApiKeys @{ P_KEY = 'pk' } -EnvLookup $script:noEnv -Fetcher $f)
+        $o[0].Status | Should -Be 'probed'
+        $script:seenFetch.Scheme | Should -Be 'x-api-key'
+        $script:seenFetch.Extras.'X-Org' | Should -Be 'o9'
+        # a target built WITHOUT the fields (pre-#661 shape) reads as empty
+        # scheme (bearer on the wire), never as a break
+        $tgtOld = @{ Prefix = 'q@'; Probeable = $true; Kind = 'custom'; Url = 'http://q/models'; KeyName = 'P_KEY'; KeyInline = ''; Reason = '' }
+        $o2 = @(Invoke-ProviderCatalogProbe -Targets @($tgtOld) -ApiKeys @{ P_KEY = 'pk' } -EnvLookup $script:noEnv -Fetcher $f)
+        $o2[0].Status | Should -Be 'probed'
+        $script:seenFetch.Scheme | Should -Be ''
+        $null | Should -Be $script:seenFetch.Extras
     }
 }
 
@@ -1106,5 +1245,22 @@ Describe 'model-version-watch.ps1 - the probe runs before the Codex network phas
         # bounded to the probe section: the Codex path legitimately edits later
         $probeSection = $text.Substring($splitAt, $netAt - $splitAt)
         $probeSection | Should -Not -Match 'Edit-RoutingForMinor'
+    }
+
+    It 'every report-only event site is dedup-gated; the observation log lines stay (#661 b)' {
+        $text = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\model-version-watch.ps1'))
+        # four re-observed report-only sites, each gated on (kind, family,
+        # from, to, provider):
+        # probe major-ask, probe would-repin info, Codex ineligible info, Codex major-ask
+        ([regex]::Matches($text, 'Test-VersionEventEmitted -EventsPath \$eventsPath')).Count | Should -Be 4
+        # the gate suppressed the EVENT, never the per-run LOG observation — an
+        # operator reading the run log still sees every cycle's state
+        $text | Should -Match '\[probe\] would-repin'
+        $text | Should -Match 'REPORT-ONLY'
+        $text | Should -Match 'MAJOR available'
+        # gating did not remove or duplicate any event site (anchored on the
+        # WRITE call — the gate calls carry the same -Kind argument)
+        ([regex]::Matches($text, 'Write-VersionEvent -EventsPath \$eventsPath -Kind major-ask')).Count | Should -Be 2
+        ([regex]::Matches($text, 'Write-VersionEvent -EventsPath \$eventsPath -Kind info')).Count | Should -Be 2
     }
 }
