@@ -9,12 +9,12 @@
 
 **Status:** matrix revision 3 (2026-09-13), with rows restated against built code on 2026-09-24
 (V10, V16b, V18) and on 2026-10-22 for Phase 2a (V1, V1b, V1e, V8b, V16b, U14, U16). Phases 0, 1
-and **2a** are built and the Codex pool is on the request path. Phase 2a is **loopback-verified,
-Phase 2 incomplete**: its acceptance cases run the production credential factory, transport and
+and **2a** are built and the Codex pool is on the request path. Phase 2a **shipped in v14.5.0**
+and is loopback-verified: its acceptance cases run the production credential factory, transport and
 `ComposedHandler` in an isolated child process against loopback OAuth, token and metered listeners
 (an in-process proxy, **not** the built binary the harness section below describes). The plan's
-acceptance ids (E1–E20, C1–C7, S1–S3) map onto these rows in *Phase 2a coverage* below. **D8 still
-blocks the Phase 2 merge**, and every row marked `D8` stays unrun. **Last updated:** 2026-10-22.
+acceptance ids (E1–E20, C1–C7, S1–S3) map onto these rows in *Phase 2a coverage* below. **D8 gates
+Phase 2b**, and every row marked `D8` stays unrun. **Last updated:** 2026-10-26.
 
 **Superseded mutation wording.** Rows written before v13 cite `mapAccountsError`, a catch "around
 the `:695` swap" and "400 + `upstream_status 401` advances the chain". `mapAccountsError` was never
@@ -167,12 +167,16 @@ from red to green by weakening an assertion.
 **Open, and gating:**
 
 - **D8** and every row that needs it: V5, V5b, V6, V7, V7b, T-C7 (closure), T-M3, T-L1, plan cases
-  S2 and S3. Blocks the Phase 2 merge.
+  S2 and S3. Gates Phase 2b; Phase 2a shipped in v14.5.0 without it.
 - **The built-binary harness** below has not been run for any row: no `--version` pinning, no
   Claude Code transcript, no `accounts.jsonl` three-source agreement. E20's executable parity is
   unverified.
-- **Real logins:** a second owned Codex login, a real add/re-login and an owner-run two-account
-  exercise.
+- **Real logins:** done on 2026-10-22: a second owned Codex login, `second` (plaintext 0600
+  store), added beside the legacy `default`; legacy enrollment by `account disable codex default`
+  and the `claudish logout codex` refusal while the pool is configured; an owner-run two-account
+  exercise (`default` read `7d 41%` after one turn; with `switchAt` at 30% the next turn selected
+  `second`, `5h 0% · 7d 0%  active`). Still open: a real re-login (`account login codex <label>`)
+  and rotation on a real quota 429, which is never forced.
 - Rows outside 2a's scope are unchanged: P3/P4 rows (V4, V12–V13c, V15, V18 request half),
   V2–V2f and V9–V10b as two-process runs, V3/V3b as concurrent processes, T-C4, T-C5, T-U2, T-U8.
 
@@ -349,6 +353,6 @@ credential, with `--version` and the startup identity recorded before any result
 
 **Fixture rule.** Quota bodies and headers start PROVISIONAL, and real captures from Phase V and the
 live run replace them before release. **D8 — a real Codex `usage_limit_reached` frame with its
-metadata prefix — blocks the Phase 2 merge**, not only the release: a hand-written fixture without
+metadata prefix — gates Phase 2b**: a hand-written fixture without
 the vendor's "try again" wording passes V5/V5b while real traffic fails, and the capture defines the
 widened event set V6, V7 and V7b depend on.

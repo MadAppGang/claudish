@@ -7,15 +7,19 @@
 > [`../reports/multi-subscription-plan-review-2026-09.md`](../reports/multi-subscription-plan-review-2026-09.md).
 > Siblings: [`keychain.md`](./keychain.md), [`onepassword.md`](./onepassword.md).
 
-# Multi-subscription accounts (unreleased)
+# Multi-subscription accounts
 
-**Status:** Phases 0, 1 and **2a** are built. The Codex pool is **on the request path**:
+**Status:** Phases 0, 1 and **2a** are built, and Phase 2a **shipped in v14.5.0** (2026-10-25,
+merge commit `8567bab8`, PR #351). The Codex pool is **on the request path**:
 `makeCodexCredential()` installs `CodexPoolHalf`, HTTP quota rotation runs in `ComposedHandler`, and
-the mutating `claudish account … codex` verbs exist. Phase 2a is **loopback-verified, Phase 2
-incomplete**: targeted tests drive the production factory, transport and handler in an isolated
-child against loopback OAuth, token and metered listeners, not a built binary, and D8 (a real
-in-stream `usage_limit_reached` capture) still blocks the Phase 2 merge. Phase 2b, Phase V, the
-Claude pool, the `account use` handoff and polish are planned. **Last updated:** 2026-10-22. Claude
+the mutating `claudish account … codex` verbs exist. Phase 2a is verified two ways. Targeted tests
+drive the production factory, transport and handler in an isolated child against loopback OAuth,
+token and metered listeners. A real two-account run on 2026-10-22 used the owner's legacy login
+`default` and a second owned login `second`: after one `cx@` turn `default` read `7d 41%`; with
+`switchAt` lowered to 30% the next turn selected `second` (`5h 0% · 7d 0%  active`). Rotation on a
+real quota 429 was not exercised: claudish never exhausts an account on purpose. D8 (a real
+in-stream `usage_limit_reached` capture) now gates Phase 2b, not a merge. Phase 2b, Phase V, the
+Claude pool, the `account use` handoff and polish are planned. **Last updated:** 2026-10-26. Claude
 Code facts: measured against Claude Code **2.1.268**.
 
 **Errors go through main's classifier.** Every failed sign, refresh, forced re-sign and
@@ -82,7 +86,7 @@ Decisions, rows and code comments cite these.
 V (spike) ──────────────┬──────────────────────────► 3 ──► 4*
                         │                            ▲
 0(a..i) ────────────────┴──► 1 ──► 2 ──────────────► 5
-D8 blocks the Phase 2 merge · D1/D2 gate import, `account use` and the login rule
+D8 gates Phase 2b · D1/D2 gate import, `account use` and the login rule
 4* ships only on the D1/D2 branches that permit it
 ```
 
@@ -91,8 +95,8 @@ D8 blocks the Phase 2 merge · D1/D2 gate import, `account use` and the login ru
 | **V** | Resolve D1–D8 against a scratch `CLAUDE_CONFIG_DIR`, into `ai-docs/reports/claude-oauth-facts-<date>.md` | **Not run** |
 | **0** | Nine existing defects, below | **Built**, on the request path |
 | **1** | `auth/accounts/*`; `subscriptionAccounts` in the config type, `loadConfig`'s allowlist and the Zod schema; read-only `claudish account list\|status [--json] [--refresh]` | **Built**, off the request path |
-| **2a** | `CodexPoolHalf`; the three availability projections; routing retention of a failed Codex candidate; HTTP 429/403 quota rotation at the Codex status swap; the capacity-remaining 429; the narrow quota seam in `error-surface.ts`; outcomes and `CLAUDISH_ACCOUNTS_LOG`; false-mode stream marking; the mutating `account … codex` verbs; legacy enrollment and durable suppression; the shared config lock | **Built**, on the request path; loopback-verified by targeted tests |
-| **2b** | D8 capture; extended stream watch and in-stream rotation; T-C7, T-M3, T-L1 against the capture; a real second login and an owner-run two-account exercise | Planned; D8 blocks the Phase 2 merge |
+| **2a** | `CodexPoolHalf`; the three availability projections; routing retention of a failed Codex candidate; HTTP 429/403 quota rotation at the Codex status swap; the capacity-remaining 429; the narrow quota seam in `error-surface.ts`; outcomes and `CLAUDISH_ACCOUNTS_LOG`; false-mode stream marking; the mutating `account … codex` verbs; legacy enrollment and durable suppression; the shared config lock | **Shipped** in v14.5.0, on the request path; loopback-verified by targeted tests and a real two-account run (2026-10-22) |
+| **2b** | D8 capture; extended stream watch and in-stream rotation; T-C7, T-M3, T-L1 against the capture | Planned; gated on D8 |
 | **3** | `auth/claude-oauth.ts`, PKCE login, `NativeHandler` rotation, launch modes, `account add claude`, `import` where D1/D2 permit | Planned; blocked on ratifying decision 9 and C6 |
 | **4** | `claude-code-credentials.ts`, the journalled `account use`, the dual-store refresh | Planned, conditional on D1/D2; T-C5 first |
 | **5** | Idle polling, statusline labels, the TUI Accounts block, a `docs/` page, the live run | Planned |
@@ -799,7 +803,7 @@ Phase 2b, not built: extended watch, only for pooled OAuth with an account, anot
 account and an unused rotation budget. It replaces the wall clock with a **12 s idle timeout**,
 since a stream still sending metadata is not stalled. The handler drives the swap, the replacement
 stream runs in false mode, and after a content or tool boundary the stream replays once and never
-rotates. D8 defines that boundary, so D8 blocks the Phase 2 merge. The design's claim that Codex's
+rotates. D8 defines that boundary, so D8 gates Phase 2b. The design's claim that Codex's
 "Try again after …" matches the retryable regex is wrong (L1); the ordering stands, and the
 sentence is provisional until D8.
 
@@ -1047,7 +1051,7 @@ contradicts claudish's own probe of 2026-08-05, which found no usage endpoint.
 | D5 | Does a running `claude` reload a changed item? | if not, the handoff refuses or defers **before** any write |
 | D6 | The PKCE redirect shape and exchange body | blocks claudish's own Claude login |
 | D7 | Does a free, non-inference Codex usage endpoint exist? | negative branch decided: idle Codex usage reads `unknown` |
-| D8 | A real in-stream `usage_limit_reached` frame, metadata prefix included | blocks the Phase 2 merge; every quota fixture is PROVISIONAL until then |
+| D8 | A real in-stream `usage_limit_reached` frame, metadata prefix included | gates Phase 2b (2a shipped in v14.5.0 without it); every quota fixture is PROVISIONAL until then |
 
 Also unmeasured: whether the binary hashes the raw or the resolved `CLAUDE_CONFIG_DIR`, and whether a
 trailing slash survives. `claudeCodeKeychainServiceCandidates()` probes resolved, raw,
@@ -1114,12 +1118,12 @@ No test uses `mock.module()`: Bun's registry is process-global and has broken si
 - **In-stream rotation (2b).** A stream quota verdict marks and answers; it never swaps accounts.
   The content boundary after which a swap would duplicate output is defined by D8, a real
   `usage_limit_reached` capture with its metadata prefix, which only real vendor traffic provides.
-  Every quota frame in the tests is scripted and PROVISIONAL. D8 blocks the Phase 2 merge, not only
-  a release; a separately mergeable 2a needs the owner to amend that gate. claudish will not exhaust
-  an account on purpose to obtain it.
-- **A real second login and a two-account run.** Every 2a check uses simulated tokens, an injected
-  PKCE browser and loopback listeners. The owner's real logins and Keychain are never read to
-  simulate one.
+  Every quota frame in the tests is scripted and PROVISIONAL. D8 gates Phase 2b; 2a shipped in
+  v14.5.0 without it. claudish will not exhaust an account on purpose to obtain it.
+- **Rotation on a real quota 429.** Every automated 2a check uses simulated tokens, an injected
+  PKCE browser and loopback listeners; the owner's real logins and Keychain are never read to
+  simulate one. The real two-account run of 2026-10-22 proved threshold selection (`default` at
+  `7d 41%`, `switchAt` 30%, next turn on `second`), not a live quota rejection.
 - **Idle polling.** There is no free Codex usage endpoint (D7 negative), and claudish never spends
   quota to measure quota, so an idle Codex account reads `unknown` and is eligible. The legacy
   explicit probe is fenced to the legacy-only population, with no replacement.
