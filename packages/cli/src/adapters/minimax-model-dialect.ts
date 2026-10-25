@@ -43,7 +43,8 @@ type MiniMaxThinkingPolicy =
   | { kind: "passthrough" }
   | { kind: "disabled" }
   | { kind: "forced"; budget: number }
-  | { kind: "effort"; level: MiniMaxEffortLevel };
+  | { kind: "effort"; level: MiniMaxEffortLevel }
+  | { kind: "default-effort"; level: MiniMaxEffortLevel };
 
 /**
  * Read CLAUDISH_MINIMAX_THINKING on every call rather than caching it (same
@@ -58,6 +59,8 @@ function readThinkingPolicy(): MiniMaxThinkingPolicy {
   if (raw === "disabled" || raw === "off" || raw === "false") return { kind: "disabled" };
   let m = raw.match(/^effort:(low|medium|high|xhigh|max)$/);
   if (m) return { kind: "effort", level: m[1] as MiniMaxEffortLevel };
+  m = raw.match(/^default:(low|medium|high|xhigh|max)$/);
+  if (m) return { kind: "default-effort", level: m[1] as MiniMaxEffortLevel };
   m = raw.match(/^forced:(\d+)$/);
   if (m) {
     const budget = Number.parseInt(m[1], 10);
@@ -129,6 +132,16 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
    *                           (shouldFilterThinking/preserveThinkingBlock):
    *                           Flash always thinks, so the #295/#324
    *                           continuation chain needs its blocks preserved.
+   *   default:<level>       — same knob, but only when the client sent NO
+   *                           effort of its own: `output_config.effort` absent
+   *                           → inject <level>; present → kept byte-identical
+   *                           (#669). Use this to bound Flash's MAX default
+   *                           without fighting clients that already picked a
+   *                           depth. An invalid level hits the shared
+   *                           unrecognized-value path (marker + passthrough);
+   *                           a bare `default` (no level) stays passthrough.
+   *                           Same Flash gate, wire gate and filter semantics
+   *                           as effort:<level>.
    *
    * Rewrites apply on the anthropic wire only (`ctx.wireFormat ===
    * "anthropic-sse"`): on OpenAI-shaped routings the `thinking` object is not
@@ -153,23 +166,36 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
     }
 
     const policy = readThinkingPolicy();
-    if (ctx?.wireFormat === "anthropic-sse" && policy.kind === "effort") {
+    if (
+      ctx?.wireFormat === "anthropic-sse" &&
+      (policy.kind === "effort" || policy.kind === "default-effort")
+    ) {
       // output_config.effort is the documented M3.1-Flash thinking-depth knob
       // (low..max, default max when omitted). Flash-only per the doc: M3 does
       // not document the field, so sending it there is noise at best.
       if (/m3\.1/i.test(String(this.modelId ?? ""))) {
         const prior = (request.output_config ?? {}) as Record<string, unknown>;
-        request.output_config = { ...prior, effort: policy.level };
-        log(
-          `[MiniMaxModelDialect] thinking depth effort=${policy.level} (output_config.effort, model ${this.modelId})`
-        );
+        // default:<level> only fills an absent effort: a client-sent value is
+        // kept byte-identical (the object is not even reassigned). effort:
+        // overwrites unconditionally — that difference is the whole point of
+        // having two forms (#669).
+        if (policy.kind === "default-effort" && prior.effort !== undefined) {
+          log(
+            `[MiniMaxModelDialect] client effort kept (${String(prior.effort)}) — default-effort only fills an absent effort (model ${this.modelId})`
+          );
+        } else {
+          request.output_config = { ...prior, effort: policy.level };
+          log(
+            `[MiniMaxModelDialect] thinking depth effort=${policy.level} (output_config.effort, model ${this.modelId})`
+          );
+        }
       } else {
         log(
           `[MiniMaxModelDialect] effort policy ignored for ${this.modelId} — output_config.effort is M3.1-Flash only`
         );
       }
     }
-    if (ctx?.wireFormat === "anthropic-sse" && policy.kind !== "passthrough" && policy.kind !== "effort") {
+    if (ctx?.wireFormat === "anthropic-sse" && (policy.kind === "disabled" || policy.kind === "forced")) {
       // `adaptive` is a request too — an `=== "enabled"` test overwrote it.
       const clientEnabled = clientRequestedThinking(originalRequest?.thinking);
       const maxTokensRaw = Number(request.max_tokens ?? 0);
@@ -262,8 +288,9 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
     // `effort` shares forced's shape: M3.1-Flash ALWAYS thinks (omitted thinking
     // = on, doc 2026-10-19), so the same tool-continuation chain that #295/#324
     // measured for `forced` applies — blocks pass through, history preserved.
+    // `default-effort` targets the same model and joins for the same reason.
     const kind = readThinkingPolicy().kind;
-    return kind !== "forced" && kind !== "effort";
+    return kind !== "forced" && kind !== "effort" && kind !== "default-effort";
   }
 
   /**
@@ -299,7 +326,7 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
    */
   override preserveThinkingBlock(block: unknown): boolean {
     const kind = readThinkingPolicy().kind;
-    if (kind !== "forced" && kind !== "effort") return false;
+    if (kind !== "forced" && kind !== "effort" && kind !== "default-effort") return false;
     const sig = (block as { signature?: unknown } | null)?.signature;
     if (typeof sig !== "string" || sig === "") return true; // M2.5 unsigned shape
     return isHex64Signature(sig);

@@ -215,6 +215,86 @@ describe("MiniMaxModelDialect — effort policy (M3.1-Flash thinking depth)", ()
   });
 });
 
+// default:<level> (#669) — the fill-only form of effort:<level>. Flash
+// defaults to MAX effort when the field is absent; an operator who wants that
+// bounded cannot use effort: (it would also overwrite clients that picked
+// their own depth — the measured over-write is what #669 exists to avoid).
+// default: applies the level ONLY to requests carrying no output_config.effort
+// of their own; a client-sent value is kept byte-identical.
+describe("MiniMaxModelDialect — default-effort policy (#669: fill only an absent effort)", () => {
+  const flash = () => new MiniMaxModelDialect("MiniMax-M3.1-Flash");
+
+  it("default:medium injects effort when the client sent none (AC1)", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "default:medium";
+    const payload: any = { max_tokens: 32000 };
+    flash().prepareRequest(payload, {}, ANTHROPIC);
+    expect(payload.output_config).toEqual({ effort: "medium" });
+  });
+
+  it("keeps a client-sent effort untouched — the policy only fills a gap (AC2)", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "default:low";
+    const payload: any = { max_tokens: 32000, output_config: { effort: "high" } };
+    flash().prepareRequest(payload, { output_config: { effort: "high" } }, ANTHROPIC);
+    expect(payload.output_config).toEqual({ effort: "high" });
+  });
+
+  it("sibling output_config fields survive when the level is injected", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "default:xhigh";
+    const payload: any = { max_tokens: 32000, output_config: { service_tier: "flex" } };
+    flash().prepareRequest(payload, {}, ANTHROPIC);
+    expect(payload.output_config).toEqual({ service_tier: "flex", effort: "xhigh" });
+  });
+
+  it("same Flash gate as effort: — inert for non-Flash models", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "default:medium";
+    const payload: any = { max_tokens: 32000 };
+    dialect().prepareRequest(payload, {}, ANTHROPIC); // MiniMax-M3
+    expect(payload.output_config).toBeUndefined();
+  });
+
+  it("same OpenAI-wire gate — inert outside anthropic-sse", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "default:medium";
+    const payload: any = { max_tokens: 32000 };
+    flash().prepareRequest(payload, {}, OPENAI);
+    expect(payload.output_config).toBeUndefined();
+  });
+
+  it("an invalid level (default:ultra) falls back to passthrough — no output_config (AC4)", () => {
+    // The unrecognized-value path is shared: default:ultra matches neither
+    // regex, so it lands on the existing marker + passthrough fall-through.
+    process.env.CLAUDISH_MINIMAX_THINKING = "default:ultra";
+    const payload: any = { max_tokens: 32000 };
+    flash().prepareRequest(payload, {}, ANTHROPIC);
+    expect(payload.output_config).toBeUndefined();
+    expect(payload.thinking).toBeUndefined();
+  });
+
+  it("a bare 'default' (no level) stays passthrough", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "default";
+    const payload: any = { max_tokens: 32000 };
+    flash().prepareRequest(payload, {}, ANTHROPIC);
+    expect(payload.output_config).toBeUndefined();
+  });
+
+  it("does not enter the forced/disabled thinking block — client thinking is not rewritten", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "default:medium";
+    const payload: any = { max_tokens: 32000 };
+    flash().prepareRequest(payload, {}, ANTHROPIC);
+    // thinking stays absent (no forced injection); only the Flash 2013 guard
+    // would touch a client-disabled request, which is a model constraint.
+    expect(payload.thinking).toBeUndefined();
+  });
+
+  it("shares effort's filter semantics — Flash always thinks, blocks preserved", () => {
+    process.env.CLAUDISH_MINIMAX_THINKING = "default:low";
+    expect(flash().shouldFilterThinking()).toBe(false);
+    expect(flash().preserveThinkingBlock({ type: "thinking", thinking: "…", signature: M3_SIG })).toBe(true);
+    expect(
+      flash().preserveThinkingBlock({ type: "thinking", thinking: "…", signature: ANTHROPIC_BLOB })
+    ).toBe(false);
+  });
+});
+
 describe("MiniMaxModelDialect — M3.1-Flash disabled guard (400/2013)", () => {
   /**
    * Flash cannot think less than adaptive: `thinking.type:"disabled"` on the
