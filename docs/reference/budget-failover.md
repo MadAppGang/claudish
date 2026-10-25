@@ -367,3 +367,109 @@ Env, read at proxy startup (canonical annotated template: `.env.sidecar.example`
 `passthrough` (default) · `disabled`. GLM's switch is **binary** on the OpenAI wire (`thinking: {"type":"enabled"|"disabled"}`) — no budget control, unlike Qwen. Re-read on every request, same crunch-flip rationale.
 
 **GLM thought by default and had no off switch at all**: `GLMModelDialect` deleted `thinking` unconditionally (a GLM-4.x-era artifact) and the OpenAI `buildPayload` never emitted the field either, so the client's ask was inert in both directions. Probed 2026-08-20 against the `gc@` Coding Plan (`glm-5.3`, prompt `"Reponds exactement: ok"`): field absent → 37 output tokens / 131 reasoning chars; `{"type":"disabled"}` → **3 tokens, 0 reasoning**; `budget_tokens` tolerated and **ignored**. `passthrough` preserves today's effective behavior; the `zai@` anthropic wire is unprobed, so only an explicit `disabled` sets the field there.
+
+# #654 — in-flight token budget per endpoint (2026-10-24)
+
+A **capacity** concern, not a budget concern despite the name: a local engine
+saturates on CONTEXT, not request count. Measured 2026-10-24 on the Swift
+engine (co-signed engine-side by ai-01:vllm): six ~200K-token bodies ≈ 1.2M KV
+tokens against **750,747** available → ~1 token/s for 20 min, 58 preemptions,
+watchdog restart. Six requests is nothing to a request-count limiter; six
+200K contexts is the whole engine.
+
+## The two knobs
+
+```
+CLAUDISH_ENDPOINT_TOKEN_BUDGET_<NAME>   # Σ in-flight ESTIMATED tokens
+CLAUDISH_ENDPOINT_BIG_LIMIT_<NAME>      # max concurrent requests over 100K tokens
+```
+
+`<NAME>` = custom-endpoint name, uppercased, `[^A-Za-z0-9]` → `_`
+(`vllm-myia` → `VLLM_MYIA`). Read **per request**; in a container a new value
+enters at the next recreate (#310 — and these names are per-endpoint, so the
+compose `environment:` allowlist carries the literal for the endpoint this
+deployment arms — `VLLM_MYIA` is in compose since #663 r1 — and every other
+endpoint adds its own line; see `.env.sidecar.example`). **Unset = inert**
+(AC1); garbage and `0`-Σ are inert too — a typo must not invent a budget.
+
+Starting point from the measurement: Σ ≈ 550K (KV 750,747 minus generation
+headroom), BIG_LIMIT 3. ⚠ **The registry is per PROCESS**: a sidecar in
+AUTONOMOUS mode keeps its own leases — hub and sidecar calling the same engine
+each admit up to the full Σ independently. The Σ of every process's budget
+must fit the engine's KV; with two callers, budget each at most ~half.
+
+## How a refusal travels
+
+On the **#431 busy wire** — never a failure. The gate runs at attempt time,
+before any upstream call:
+
+- **Non-last cascade step** → skip forward: `skippedSteps.add`, no
+  `markStepFailed`, no wall, no arm; the dwell pin yields. The engine never
+  sees the request (pinned: `calls[tag] === 0`).
+- **Nominal** → the same 529 the bounded busy wait synthesizes, picked up by
+  the **#299-B one-shot walk** (`isOverloadWalkClass` matches the 529 status
+  regardless of body): first servable step, zero state, nothing benched.
+  Since #663 r1 the walk itself **evaluates each candidate step's budget**
+  before calling it (the walk bypassed the gate until then): a walk target at
+  full Σ is refused with **zero calls** and the walk advances to the next
+  servable step — same no-state semantics, one extra hop (pinned in
+  `proxy-server-step-skip-route.test.ts` B7). A walk target that fits is
+  committed and its response wrapped with the same release the direct path
+  uses.
+- **No diversion possible** (last step, unconfigured role, walk disabled) →
+  **serve anyway** + `[EndpointBudget]` stderr marker: the budget bounds
+  admission, it never refuses a servable request.
+
+Marker shape (grep-family of the #431 SKIP line):
+`[Failover] SKIP sonnet[0] reason=busy est=… sum=x/y big=x/y resubmit=k reason=… (…)`
+and `[EndpointBudget] <ep> resubmit=k in flight (…) — estimate replaces its
+predecessor (#654 AC5)` for echoes.
+
+## The estimator: bytes / 3.5
+
+`JSON.stringify(body).length / 3.5` — deliberately NOT the `/4`
+count_tokens convention (undercounts 12-14% on these bodies — exactly #565's
+blind spot) and NOT the media-aware clamp estimator (base64 media DOES
+consume engine KV; deflating it would understate the load the budget bounds).
+Measured twice: 914,723 B / 262,145 real tokens = **3.49** (reqN=931, hub
+capture vs engine `input_tokens`); ai-01:vllm's independent measure ≈ 3.5.
+
+## AC5 — a resubmission is not new demand (arbitrated 24/10)
+
+The registry keys each lease by (machine, session, FNV-1a body signature). An
+identical resubmission while its predecessor is in flight **REPLACES** the
+predecessor's estimate instead of adding a second one — the measured echo rate
+is ~56%, and a budget counting its own echo would trip on itself and divert a
+lane that has room. The replacement is applied inside the evaluation (an echo
+can never trip a budget its predecessor fits under) but durably registered
+only on `commit()`; a superseded lease's late release is a no-op. `resubmit=k`
+(k ≥ 2) rides the marker line (AC5b) so the echo rate is readable hub-side.
+**Coalescing and routing a resubmission to the next step are deliberately out
+of scope** — both change what the client receives; follow-up issue if AC5b
+shows the echo rate holding after AC1-4 land.
+
+## Lease lifetime
+
+The lease is released when the response's **bytes** stop flowing (end, cancel,
+or stream error — `withBudgetRelease`, an explicit reader pump because
+`pipeThrough(TransformStream)` flush does not fire on consumer cancel). A
+bodyless response releases immediately. A lease older than **15 min** is
+dropped at the next admission (lazy sweep, `[EndpointBudget]` stale-drop
+marker) — the guard for a body never read nor cancelled, which would
+otherwise starve the lane forever.
+
+## Pins and mutation proofs
+
+Unit: `endpoint-token-budget.test.ts` (17 pins — knobs, estimator incl. the
+914,723 B anchor, Σ/big refusal shapes, AC4 short-pass, AC5 replace + AC5b
+copy counter, stale sweep, release semantics incl. the #663 r1 never-hang pin:
+an upstream stream error releases the lease AND closes the wrapper — the
+client's reader completes, never throws). Route: `proxy-server-step-skip-route.test.ts`
+B1-B7 (zero upstream calls on the budgeted endpoint, no bench after a budget
+skip, real in-flight Σ via a holder, big-cap short-pass, echo replacement,
+nominal walk, and the #663 r1 walk-skip: a walk whose first servable step is
+a budgeted endpoint at full Σ → zero calls to it, successor serves).
+Mutations: `/3.5` → `/4` kills 8 unit pins; replacement
+disabled kills both AC5 pins; refusals-never-divert kills B1/B3/B4/B6/B7 and
+leaves B2 (inert) + B5 (replace) green; `controller.error` restored in
+`withBudgetRelease`'s catch kills the never-hang pin.

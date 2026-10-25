@@ -239,6 +239,15 @@ services:
       # concurrency slot before skipping forward (ms). Default 2000; 0 = off
       # (unbounded FIFO). The nominal path never reads it. Read-per-request.
       - CLAUDISH_FAILOVER_STEP_BUSY_WAIT_MS=${CLAUDISH_FAILOVER_STEP_BUSY_WAIT_MS:-}
+      # #654 — in-flight token budget for the vllm-myia endpoint, the one this
+      # deployment actually arms (measured saturation: six ~200K bodies vs
+      # 750,747 KV tokens). The family is per-endpoint (<NAME> = endpoint name
+      # uppercased), read by template, so the repo lists the literal for the
+      # endpoint it uses and other deployments add their own line — values live
+      # in .env.sidecar.example §#654. Both empty → inert (AC1). Read-per-
+      # request; a NEW value enters a container only at its next recreate.
+      - CLAUDISH_ENDPOINT_TOKEN_BUDGET_VLLM_MYIA=${CLAUDISH_ENDPOINT_TOKEN_BUDGET_VLLM_MYIA:-}
+      - CLAUDISH_ENDPOINT_BIG_LIMIT_VLLM_MYIA=${CLAUDISH_ENDPOINT_BIG_LIMIT_VLLM_MYIA:-}
       # #553 defect 2 — kill switch for the `!own` step class: "0" reverts every
       # own-capacity step to the default (quota-sized) backoff ladder while the
       # suffix stays parseable. Empty = own ladders ON. Read at config load.

@@ -55,6 +55,10 @@ import {
   getSessionDwellPinForTests,
 } from "./fork/failover.js";
 import { resetOverflowCapsForTests } from "./handlers/shared/context-overflow.js";
+import {
+  clearEndpointTokenBudgets,
+  estimateBudgetTokens,
+} from "./handlers/shared/endpoint-token-budget.js";
 import type { ProxyServer } from "./types.js";
 
 // Distinct range from the other in-process route tests (19700+, 19851/19951,
@@ -334,7 +338,8 @@ beforeEach(() => {
         line.includes("[ContextGuard]") ||
         line.includes("[ContextAdmission]") ||
         line.includes("[EventLoop]") || // #615 review point 1
-        line.includes("[MediaCap]") // #575
+        line.includes("[MediaCap]") || // #575
+        line.includes("[EndpointBudget]") // #654
       ) {
         markerLog.push(line);
       }
@@ -350,7 +355,8 @@ beforeEach(() => {
         line.includes("[ContextGuard]") ||
         line.includes("[ContextAdmission]") ||
         line.includes("[EventLoop]") || // #615 review point 1
-        line.includes("[MediaCap]") // #575
+        line.includes("[MediaCap]") || // #575
+        line.includes("[EndpointBudget]") // #654
       ) {
         markerLog.push(line);
       }
@@ -1254,5 +1260,272 @@ describe("#651 — a window derived from /v1/models acts at admission", () => {
     const res2 = await postMessage({ model: "nodrv-ep@fake-ndr", content: big });
     expect(res2.status).toBe(200);
     expect(calls.ndr ?? 0).toBeGreaterThanOrEqual(1);
+  }, 30_000);
+});
+
+// ---- #654 — the in-flight token budget per endpoint --------------------------------
+//
+// The budget rides the #431 skip wire (reason=busy): an over-budget step is
+// never CALLED, never marked, never armed — the successor serves. The nominal
+// refusal is an overload-class diversion feeding the #299-B one-shot walk.
+// Unit pins (numbers, estimator, AC5 registry) live in
+// endpoint-token-budget.test.ts; these route pins carry the loop integration:
+// zero upstream calls on the budgeted endpoint, no bench after a budget skip,
+// real in-flight Σ, the big-cap short-pass, the echo replacement and the
+// nominal walk.
+
+describe("#654 — in-flight token budget per endpoint (busy-class skip)", () => {
+  /** The budget knobs are not in SANDBOX_ENV_KEYS (their names are per-endpoint):
+   * each pin clears the whole CLAUDISH_ENDPOINT_* family and the module-global
+   * lease registry before AND after itself — a leaked holder lease would
+   * phantom-Σ every later pin. */
+  const clearBudget = () => {
+    for (const k of Object.keys(process.env)) {
+      if (k.startsWith("CLAUDISH_ENDPOINT_")) delete process.env[k];
+    }
+    clearEndpointTokenBudgets();
+  };
+
+  test("B1 (AC2): a step over Σ is NEVER called — the successor serves, no failure mark", async () => {
+    clearBudget();
+    try {
+      await spin();
+      resetCascade();
+      // 10 tokens: any real body (~50 est) is over Σ on the FIRST attempt —
+      // the refusal happens before any s0 socket exists.
+      process.env.CLAUDISH_ENDPOINT_TOKEN_BUDGET_S0_EP = "10";
+      upstreamAnswer.nm = () => quotaWall402(); // arm → step 0 dispatch (K8 shape)
+
+      const r = await postMessage({ session: "b1" });
+      expect(r.status).toBe(200);
+      expect(await responseText(r)).toContain("ok-from-s1");
+      expect(calls.s0 ?? 0).toBe(0); // THE PIN: the engine never saw the request
+      expect(calls.s1).toBe(1);
+      expect(
+        markerLog.some(
+          (l) =>
+            l.includes("[Failover] SKIP sonnet[0] reason=busy") &&
+            l.includes("sum=0/10") &&
+            l.includes("endpoint token budget")
+        )
+      ).toBe(true);
+
+      // No failure mark: with the budget removed (read per request), a fresh
+      // session resolves step 0 again — a bench would TTL-freeze s0 for 10 min.
+      delete process.env.CLAUDISH_ENDPOINT_TOKEN_BUDGET_S0_EP;
+      const r2 = await postMessage({ session: "b1b" });
+      expect(await responseText(r2)).toContain("ok-from-s0");
+      expect(calls.s0).toBe(1);
+    } finally {
+      clearBudget();
+    }
+  }, 30_000);
+
+  test("B2 (AC1): no budget env ⇒ zero drift — step 0 serves, no budget marker", async () => {
+    clearBudget();
+    try {
+      await spin();
+      resetCascade();
+      upstreamAnswer.nm = () => quotaWall402();
+
+      const r = await postMessage({ session: "b2" });
+      expect(r.status).toBe(200);
+      expect(await responseText(r)).toContain("ok-from-s0");
+      expect(calls.s0).toBe(1);
+      expect(calls.s1 ?? 0).toBe(0);
+      expect(markerLog.filter((l) => l.includes("[EndpointBudget]")).length).toBe(0);
+      expect(markerLog.filter((l) => l.includes("endpoint token budget")).length).toBe(0);
+    } finally {
+      clearBudget();
+    }
+  }, 30_000);
+
+  test("B3 (AC2): Σ counts REAL in-flight leases — the holder trips the second request", async () => {
+    clearBudget();
+    try {
+      await spin();
+      resetCascade();
+      // Budget = one estimate + slack: one request fits, two do not.
+      const est = estimateBudgetTokens({
+        model: "claude-sonnet-5",
+        max_tokens: 64,
+        stream: false,
+        metadata: { user_id: "b3a" },
+        messages: [{ role: "user", content: "hold the budget lease" }],
+      });
+      process.env.CLAUDISH_ENDPOINT_TOKEN_BUDGET_S0_EP = String(est + 10);
+      upstreamAnswer.nm = () => quotaWall402();
+      let holderResolve: ((r: Response) => void) | undefined;
+      upstreamAnswer.s0 = () =>
+        new Promise<Response>((resolve) => {
+          holderResolve = resolve;
+        });
+
+      const r1p = postMessage({ session: "b3a", content: "hold the budget lease" });
+      await new Promise((r) => setTimeout(r, 400)); // r1 reaches s0, lease committed
+      expect(calls.s0).toBe(1);
+
+      // Different session ⇒ different signature ⇒ its own estimate: est+est >
+      // est+10 ⇒ refused at step 0, s1 serves — while r1 still holds its lease.
+      const r2 = await postMessage({ session: "b3b", content: "hold the budget lease" });
+      expect(await responseText(r2)).toContain("ok-from-s1");
+      expect(calls.s1).toBe(1);
+      expect(calls.s0).toBe(1); // still only the holder
+
+      holderResolve?.(okSse("ok-from-s0", "fake-s0"));
+      const r1 = await r1p;
+      expect(r1.status).toBe(200);
+      expect(await responseText(r1)).toContain("ok-from-s0");
+    } finally {
+      clearBudget();
+    }
+  }, 30_000);
+
+  test("B4 (AC4): the big-concurrency cap refuses the SECOND big body, a short one still passes", async () => {
+    clearBudget();
+    try {
+      await spin();
+      resetCascade();
+      process.env.CLAUDISH_ENDPOINT_BIG_LIMIT_S0_EP = "1";
+      upstreamAnswer.nm = () => quotaWall402();
+      let holderResolve: ((r: Response) => void) | undefined;
+      let s0Call = 0;
+      upstreamAnswer.s0 = () =>
+        s0Call++ === 0
+          ? new Promise<Response>((resolve) => {
+              holderResolve = resolve;
+            })
+          : Promise.resolve(okSse("ok-from-s0", "fake-s0"));
+
+      // Big #1 (est > 100K): admitted (bigInFlight 0 < 1), holds the lease.
+      const big1 = "y".repeat(400_000);
+      const r1p = postMessage({ session: "b4a", content: `read: ${big1}` });
+      await new Promise((r) => setTimeout(r, 500));
+      expect(calls.s0).toBe(1);
+
+      // Big #2, different body: bigInFlight 1 ≥ 1 ⇒ refused reason=big ⇒ s1.
+      const big2 = "z".repeat(400_100);
+      const r2 = await postMessage({ session: "b4b", content: `read: ${big2}` });
+      expect(await responseText(r2)).toContain("ok-from-s1");
+      expect(
+        markerLog.some((l) => l.includes("[Failover] SKIP sonnet[0] reason=busy") && l.includes("reason=big"))
+      ).toBe(true);
+
+      // THE AC4 PIN: a short request passes under the saturated big cap.
+      const r3 = await postMessage({ session: "b4c", content: "short one please" });
+      expect(await responseText(r3)).toContain("ok-from-s0");
+      expect(calls.s0).toBe(2); // big#1 (holder) + short — big#2 never reached s0
+
+      holderResolve?.(okSse("ok-from-s0", "fake-s0"));
+      await r1p;
+    } finally {
+      clearBudget();
+    }
+  }, 30_000);
+
+  test("B5 (AC5): an identical resubmission REPLACES its predecessor — s0 takes it again", async () => {
+    clearBudget();
+    try {
+      await spin();
+      resetCascade();
+      const est = estimateBudgetTokens({
+        model: "claude-sonnet-5",
+        max_tokens: 64,
+        stream: false,
+        metadata: { user_id: "b5" },
+        messages: [{ role: "user", content: "echo me once" }],
+      });
+      process.env.CLAUDISH_ENDPOINT_TOKEN_BUDGET_S0_EP = String(est + 10);
+      upstreamAnswer.nm = () => quotaWall402();
+      let holderResolve: ((r: Response) => void) | undefined;
+      let s0Call = 0;
+      upstreamAnswer.s0 = () =>
+        s0Call++ === 0
+          ? new Promise<Response>((resolve) => {
+              holderResolve = resolve;
+            })
+          : Promise.resolve(okSse("ok-from-s0", "fake-s0"));
+
+      // Same session, same body: the second copy replaces the first's estimate
+      // (Σ stays one est ≤ est+10) instead of refusing it to s1.
+      const r1p = postMessage({ session: "b5", content: "echo me once" });
+      await new Promise((r) => setTimeout(r, 400));
+      expect(calls.s0).toBe(1);
+      const r2 = await postMessage({ session: "b5", content: "echo me once" });
+      expect(await responseText(r2)).toContain("ok-from-s0");
+      expect(calls.s0).toBe(2); // THE PIN: s0 again — add-semantics would say s1
+      expect(calls.s1 ?? 0).toBe(0);
+      expect(
+        markerLog.some((l) => l.includes("[EndpointBudget]") && l.includes("resubmit=2"))
+      ).toBe(true);
+
+      holderResolve?.(okSse("ok-from-s0", "fake-s0"));
+      const r1 = await r1p;
+      expect(r1.status).toBe(200);
+    } finally {
+      clearBudget();
+    }
+  }, 30_000);
+
+  test("B6: the nominal's budget refusal is a walk — s0 serves, the client never sees the 529", async () => {
+    clearBudget();
+    try {
+      await spin();
+      // NO auto-arm: attempt 0 is the healthy nominal — until its budget says no.
+      resetFailoverForTests({ CLAUDISH_FAILOVER_SONNET: TWO_STEP });
+      setRoleNominalResolver((r) => (r === "sonnet" ? SONNET_NOMINAL : undefined));
+      process.env.CLAUDISH_ENDPOINT_TOKEN_BUDGET_NOM_EP = "10";
+
+      const r = await postMessage({ session: "b6" });
+      expect(r.status).toBe(200); // the synthesized 529 never reaches the client
+      expect(await responseText(r)).toContain("ok-from-s0");
+      expect(calls.nm ?? 0).toBe(0); // the budgeted nominal is never called
+      expect(calls.s0).toBe(1);
+      expect(markerLog.some((l) => l.includes("budget-skip nominal"))).toBe(true);
+    } finally {
+      clearBudget();
+    }
+  }, 30_000);
+
+  test("B7 (#663 r1): a walk target at full Σ gets ZERO calls — the walk advances one hop, the successor serves", async () => {
+    clearBudget();
+    try {
+      await spin();
+      // B6 shape (the NOMINAL's own budget refusal triggers the #299-B walk)
+      // with the walk's FIRST step budgeted too: s0-ep at Σ=10 refuses any
+      // real body (~50 est) BEFORE its call. Before r1 the walk bypassed the
+      // gate entirely — s0 was called with the very load the budget exists
+      // to bound. The pin is the zero: admission refused, one hop forward.
+      resetFailoverForTests({ CLAUDISH_FAILOVER_SONNET: TWO_STEP });
+      setRoleNominalResolver((r) => (r === "sonnet" ? SONNET_NOMINAL : undefined));
+      process.env.CLAUDISH_ENDPOINT_TOKEN_BUDGET_NOM_EP = "10";
+      process.env.CLAUDISH_ENDPOINT_TOKEN_BUDGET_S0_EP = "10";
+
+      const r = await postMessage({ session: "b7" });
+      expect(r.status).toBe(200);
+      expect(await responseText(r)).toContain("ok-from-s1");
+      expect(calls.nm ?? 0).toBe(0); // the budgeted nominal never pays a round-trip
+      expect(calls.s0 ?? 0).toBe(0); // THE PIN: the walk target was refused before its call
+      expect(calls.s1).toBe(1);
+      expect(
+        markerLog.some(
+          (l) =>
+            l.includes("[Failover] WALK-SKIP sonnet → s0-ep@fake-s0") &&
+            l.includes("sum=0/10") &&
+            l.includes("endpoint token budget")
+        )
+      ).toBe(true);
+
+      // No state written by the refusal: the nominal's budget stays armed (it
+      // is what triggers the walk), s0's lifts (read per request) — a fresh
+      // session walks again and s0 serves. A bench or wall from the walk-skip
+      // would TTL-freeze s0 for 10 min and the walk would land on s1.
+      delete process.env.CLAUDISH_ENDPOINT_TOKEN_BUDGET_S0_EP;
+      const r2 = await postMessage({ session: "b7b" });
+      expect(await responseText(r2)).toContain("ok-from-s0");
+      expect(calls.s0).toBe(1);
+    } finally {
+      clearBudget();
+    }
   }, 30_000);
 });
