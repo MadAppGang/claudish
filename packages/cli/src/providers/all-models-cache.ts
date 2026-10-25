@@ -59,6 +59,32 @@ export interface DiskCacheV2 {
   entries: SlimModelEntry[];
   /** Backward-compatible: [{id: "vendor/model"}] for legacy consumers */
   models: Array<{ id: string }>;
+  /**
+   * What the last refresh actually covered (#635 AC4). Optional because every
+   * writer before it omitted the field; a cache without it says nothing about
+   * its own completeness, which is the honest reading — not "complete".
+   */
+  coverage?: CatalogCoverage;
+}
+
+/**
+ * How much of the server-side catalog a refresh actually collected.
+ *
+ * MEASURED 2026-10-24: the live v3 endpoint answers `data.total = 1002` for
+ * `limit = 1000` and hands back a `nextCursor`. The resolver read page 1 only
+ * and wrote it out as the whole catalog, so two models were permanently
+ * invisible and nothing in the file could distinguish "the catalog is 1000
+ * entries" from "we stopped at 1000". `coverage` is that distinction, persisted.
+ */
+export interface CatalogCoverage {
+  /** Pages successfully fetched this refresh (1 when the server offered no cursor). */
+  pages: number;
+  /** Distinct models collected across those pages. */
+  fetched: number;
+  /** `data.total` reported by the server, null when it reported none. */
+  serverTotal: number | null;
+  /** True only when the walk reached the server's own end (no cursor left). */
+  complete: boolean;
 }
 
 /**
@@ -108,12 +134,27 @@ export function readAllModelsCache(path: string = allModelsCachePath()): DiskCac
   const models = Array.isArray(data.models) ? (data.models as Array<{ id: string }>) : [];
   const entries = Array.isArray(data.entries) ? (data.entries as SlimModelEntry[]) : [];
 
+  const coverage = isCatalogCoverage(data.coverage) ? data.coverage : undefined;
+
   return {
     version: 2,
     lastUpdated,
     entries,
     models,
+    ...(coverage ? { coverage } : {}),
   };
+}
+
+/** Structural guard: a hand-edited or foreign `coverage` must not be trusted. */
+function isCatalogCoverage(value: unknown): value is CatalogCoverage {
+  if (!value || typeof value !== "object") return false;
+  const c = value as Record<string, unknown>;
+  return (
+    typeof c.pages === "number" &&
+    typeof c.fetched === "number" &&
+    (c.serverTotal === null || typeof c.serverTotal === "number") &&
+    typeof c.complete === "boolean"
+  );
 }
 
 /**
@@ -135,11 +176,18 @@ export function writeAllModelsCache(
 ): void {
   const existing = readAllModelsCache(path);
 
+  const entriesReplaced = data.entries != null;
+  const coverage = data.coverage ?? (entriesReplaced ? undefined : existing?.coverage);
+
   const merged: DiskCacheV2 = {
     version: 2,
     lastUpdated: data.lastUpdated ?? new Date().toISOString(),
     entries: data.entries ?? existing?.entries ?? [],
     models: data.models ?? existing?.models ?? [],
+    // Coverage describes the `entries` it was measured on. Carrying a stale
+    // measurement over a REPLACED entries array would assert a completeness
+    // nobody measured — the exact trap #635 AC4 exists to close.
+    ...(coverage ? { coverage } : {}),
   };
 
   mkdirSync(dirname(path), { recursive: true });

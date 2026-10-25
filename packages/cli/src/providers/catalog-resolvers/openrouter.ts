@@ -47,6 +47,59 @@ export type DiskCache = DiskCacheV2;
  */
 const CATALOG_ACCEPT_V3 = "application/vnd.models-index.catalog+json; version=3";
 
+/**
+ * Upper bound on catalog pages followed per refresh (#635 AC4).
+ *
+ * The live v3 endpoint pages at `limit=1000` and, on 2026-10-24, answered
+ * `data.total = 1002` with a `nextCursor` — the resolver read page 1 and wrote
+ * it out as the whole catalog, so the last two models were permanently
+ * invisible AND the file could not say so. Ten pages is 10 000 models: far
+ * above the real catalog, low enough that a server which mints a fresh cursor
+ * for ever costs a bounded number of requests.
+ */
+const CATALOG_MAX_PAGES = 10;
+
+/** Outcome of one page fetch. Never thrown — every failure is a value. */
+type CatalogPageResult =
+  | { ok: true; models: SlimModelEntry[]; serverTotal: number | null; nextCursor: string | null }
+  | { ok: false; reason: "timeout" | "network" | "http_error" | "empty" };
+
+/**
+ * Append the continuation cursor to the catalog URL. Returns null when the
+ * configured URL cannot be parsed — a caller treats that as a network-class
+ * failure of the page, never as a silent fall-through to page 1.
+ */
+function appendCursor(url: string, cursor: string): string | null {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("cursor", cursor);
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Normalize one raw catalog entry (v3 or legacy) into the shape the resolver
+ * dereferences. Shared by every page of a walk — a second page must be
+ * indistinguishable from the first.
+ */
+function normalizeRawEntry(raw: unknown): SlimModelEntry {
+  if ((raw as V3CatalogEntry)?.contractVersion === 3) {
+    return mapV3Entry(raw as V3CatalogEntry);
+  }
+  // Legacy slim entry. Normalize only the fields resolveSync dereferences
+  // (`sources` in steps 3/_getOpenRouterExternalId, `aliases` in step 2): an
+  // entry from an unknown future contract would otherwise throw there.
+  const legacy = raw as SlimModelEntry;
+  if (legacy.sources && Array.isArray(legacy.aliases)) return legacy;
+  return {
+    ...legacy,
+    sources: legacy.sources ?? {},
+    aliases: Array.isArray(legacy.aliases) ? legacy.aliases : [],
+  };
+}
+
 /** Wire shape of a contract-v3 catalog entry (measured live 2026-09-24). */
 interface V3CatalogEntry {
   contractVersion: number;
@@ -245,59 +298,72 @@ export class OpenRouterCatalogResolver implements ModelCatalogResolver {
    * keep their fire-and-forget semantics for the proxy-server bg warm.
    */
   async refreshCatalog(timeoutMs: number): Promise<RefreshOutcome> {
-    let response: Response;
-    try {
-      response = await fetch(firebaseCatalogUrl(), {
-        signal: AbortSignal.timeout(timeoutMs),
-        headers: { Accept: CATALOG_ACCEPT_V3 },
-      });
-    } catch (err) {
-      // AbortSignal.timeout fires a DOMException (or AbortError) named "TimeoutError"
-      // when the deadline is exceeded. Anything else (DNS, ECONNREFUSED, TLS, etc.)
-      // is treated as a generic network error.
-      const name = (err as { name?: string } | null | undefined)?.name;
-      const reason: "timeout" | "network" =
-        name === "TimeoutError" || name === "AbortError" ? "timeout" : "network";
-      return { kind: "fetch_failed", reason };
+    // ONE deadline for the whole walk, not a fresh timeout per page: callers
+    // pass a budget they mean for the refresh (the launcher's hard-fail policy
+    // is built on it), and a per-page timeout would multiply it by the page
+    // count. Page 1 spends what it needs; later pages get the remainder.
+    const deadline = Date.now() + Math.max(1, timeoutMs);
+    const base = firebaseCatalogUrl();
+    const remainingBudget = () => Math.max(1, Math.ceil(deadline - Date.now()));
+
+    const first = await this._fetchCatalogPage(base, null, remainingBudget());
+    if (!first.ok) {
+      // Page 1 is the catalog: its failure is the refresh's failure, unchanged.
+      return { kind: "fetch_failed", reason: first.reason };
     }
 
-    if (!response.ok) {
-      return { kind: "fetch_failed", reason: "http_error" };
-    }
-
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
-      // Body unparseable — treat as network-class failure (we got a response but
-      // couldn't read it). Distinct from "empty" which is a parseable but empty body.
-      return { kind: "fetch_failed", reason: "network" };
-    }
-
-    // v3 answers `{data: {models: [...]}}`; legacy answered `{models: [...]}`.
-    const envelope = payload as { data?: { models?: unknown }; models?: unknown };
-    const rawModels = (
-      Array.isArray(envelope.data?.models) ? envelope.data.models : envelope.models
-    ) as unknown[];
-    if (!Array.isArray(rawModels) || rawModels.length === 0) {
-      return { kind: "fetch_failed", reason: "empty" };
-    }
-
-    const models: SlimModelEntry[] = rawModels.map((raw) => {
-      if ((raw as V3CatalogEntry)?.contractVersion === 3) {
-        return mapV3Entry(raw as V3CatalogEntry);
+    // Dedup across pages: the server paginates a moving collection, and an
+    // entry can legitimately appear on two consecutive pages when the catalog
+    // shifts under the walk. First occurrence wins.
+    const models: SlimModelEntry[] = [];
+    const seenIds = new Set<string>();
+    const collect = (page: SlimModelEntry[]): void => {
+      for (const entry of page) {
+        const id = entry.modelId;
+        if (typeof id === "string") {
+          if (seenIds.has(id)) continue;
+          seenIds.add(id);
+        }
+        models.push(entry);
       }
-      // Legacy slim entry. Normalize only the fields resolveSync dereferences
-      // (`sources` in steps 3/_getOpenRouterExternalId, `aliases` in step 2): an
-      // entry from an unknown future contract would otherwise throw there.
-      const legacy = raw as SlimModelEntry;
-      if (legacy.sources && Array.isArray(legacy.aliases)) return legacy;
-      return {
-        ...legacy,
-        sources: legacy.sources ?? {},
-        aliases: Array.isArray(legacy.aliases) ? legacy.aliases : [],
-      };
-    });
+    };
+    collect(first.models);
+
+    let pages = 1;
+    let serverTotal: number | null = first.serverTotal;
+    let cursor: string | null = first.nextCursor;
+    const seenCursors = new Set<string>();
+    // "Complete" means the walk reached the server's own end, in either of its
+    // two forms: the cursor ran out, or the server's own total was reached
+    // while a cursor was still offered (both pinned). Every other exit (page
+    // failure, replayed cursor, page cap, deadline) is a partial fetch, and
+    // the persisted coverage says so.
+    let complete = cursor === null;
+
+    while (cursor !== null) {
+      // The server's own count outranks the page cap (checked BEFORE it): a
+      // walk that collected serverTotal distinct models on its last allowed
+      // page reached the end and must not read as truncated.
+      if (serverTotal !== null && models.length >= serverTotal) {
+        complete = true;
+        break;
+      }
+      if (pages >= CATALOG_MAX_PAGES) break;
+      if (seenCursors.has(cursor)) break; // a server replaying a cursor must not loop us
+      seenCursors.add(cursor);
+      if (deadline - Date.now() <= 0) break;
+
+      const page = await this._fetchCatalogPage(base, cursor, remainingBudget());
+      if (!page.ok) break; // pages 2..N are enrichment: never discard what page 1 gave (#270)
+
+      pages += 1;
+      collect(page.models);
+      if (serverTotal === null) serverTotal = page.serverTotal;
+      cursor = page.nextCursor;
+      if (cursor === null) complete = true;
+    }
+
+    const coverage = { pages, fetched: models.length, serverTotal, complete };
 
     // Build the disk-cache backward-compat models array locally before mutating
     // any shared state. If anything below were to throw, _memCache and the disk
@@ -320,9 +386,24 @@ export class OpenRouterCatalogResolver implements ModelCatalogResolver {
       writeAllModelsCache({
         entries: models,
         models: backwardCompatModels,
+        coverage,
       });
     } catch (err) {
       logStderr(`[Catalog] cache write skipped (unwritable path): ${(err as Error).message}`);
+    }
+
+    if (!complete) {
+      // Not an error: a partial catalog still serves. It is a FACT worth a
+      // line, because a truncated catalog that reports itself as whole is a
+      // real hazard — it hides what the coverage now exposes. (The measured
+      // #635 incident was next to this one, not it: `kimi-k3.1-pro` sat at
+      // index 652 of page 1 and was hidden by a STALE disk cache, while this
+      // walk's own gap starts past `limit=1000`.)
+      logStderr(
+        `[Catalog] partial fetch: pages=${pages} fetched=${models.length} serverTotal=${
+          serverTotal ?? "unknown"
+        }`
+      );
     }
 
     // Short-circuit the proxy-server bg warm at proxy-server.ts:535. Resolves F2.
@@ -330,7 +411,73 @@ export class OpenRouterCatalogResolver implements ModelCatalogResolver {
     // those methods see "already warmed" and return immediately without re-fetching.
     _warmPromise = Promise.resolve();
 
-    return { kind: "refreshed", modelCount: models.length };
+    return { kind: "refreshed", modelCount: models.length, coverage };
+  }
+
+  /**
+   * Fetch ONE page of the slim catalog. Never throws: every failure mode is a
+   * value, because a walk must be able to keep what it already holds.
+   */
+  private async _fetchCatalogPage(
+    base: string,
+    cursor: string | null,
+    timeoutMs: number
+  ): Promise<CatalogPageResult> {
+    const target = cursor === null ? base : appendCursor(base, cursor);
+    if (target === null) return { ok: false, reason: "network" };
+
+    let response: Response;
+    try {
+      response = await fetch(target, {
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: { Accept: CATALOG_ACCEPT_V3 },
+      });
+    } catch (err) {
+      // AbortSignal.timeout fires a DOMException (or AbortError) named "TimeoutError"
+      // when the deadline is exceeded. Anything else (DNS, ECONNREFUSED, TLS, etc.)
+      // is treated as a generic network error.
+      const name = (err as { name?: string } | null | undefined)?.name;
+      const reason: "timeout" | "network" =
+        name === "TimeoutError" || name === "AbortError" ? "timeout" : "network";
+      return { ok: false, reason };
+    }
+
+    if (!response.ok) {
+      return { ok: false, reason: "http_error" };
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      // Body unparseable — treat as network-class failure (we got a response but
+      // couldn't read it). Distinct from "empty" which is a parseable but empty body.
+      return { ok: false, reason: "network" };
+    }
+
+    // v3 answers `{data: {models, total, nextCursor}}`; legacy answered `{models}`.
+    const envelope = payload as {
+      data?: { models?: unknown; total?: unknown; nextCursor?: unknown };
+      models?: unknown;
+    };
+    const rawModels = (
+      Array.isArray(envelope.data?.models) ? envelope.data.models : envelope.models
+    ) as unknown[];
+    if (!Array.isArray(rawModels) || rawModels.length === 0) {
+      return { ok: false, reason: "empty" };
+    }
+
+    const declaredTotal = envelope.data?.total;
+    const declaredCursor = envelope.data?.nextCursor;
+
+    return {
+      ok: true,
+      models: rawModels.map(normalizeRawEntry),
+      serverTotal:
+        typeof declaredTotal === "number" && Number.isFinite(declaredTotal) ? declaredTotal : null,
+      nextCursor:
+        typeof declaredCursor === "string" && declaredCursor.length > 0 ? declaredCursor : null,
+    };
   }
 
   /**

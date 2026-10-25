@@ -26,7 +26,21 @@
  *      - `empty` — body parsed but contained 0 entries.
  */
 export type RefreshOutcome =
-  | { kind: "refreshed"; modelCount: number }
+  | {
+      kind: "refreshed";
+      modelCount: number;
+      /**
+       * How much of the server catalog this refresh actually walked (#635 AC4).
+       * Optional on the type — a resolver that fetches a single fixed resource
+       * (LiteLLM) has nothing to page and no coverage to report.
+       */
+      coverage?: {
+        pages: number;
+        fetched: number;
+        serverTotal: number | null;
+        complete: boolean;
+      };
+    }
   | { kind: "fetch_failed"; reason: "timeout" | "network" | "http_error" | "empty" };
 
 /**

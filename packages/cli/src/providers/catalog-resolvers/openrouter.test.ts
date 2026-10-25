@@ -223,7 +223,13 @@ describe("OpenRouterCatalogResolver.refreshCatalog", () => {
 
     const outcome = await resolver.refreshCatalog(8000);
 
-    expect(outcome).toEqual({ kind: "refreshed", modelCount: 2 });
+    // The legacy envelope carries no pagination metadata: one page, and it is
+    // the whole catalog (#635 AC4).
+    expect(outcome).toEqual({
+      kind: "refreshed",
+      modelCount: 2,
+      coverage: { pages: 1, fetched: 2, serverTotal: null, complete: true },
+    });
     // Disk cache mutated with the new entries plus backward-compat models array.
     expect(mockWrite).toHaveBeenCalledTimes(1);
     const writeArg = mockWrite.mock.calls[0]?.[0] as unknown as {
@@ -249,7 +255,11 @@ describe("OpenRouterCatalogResolver.refreshCatalog", () => {
 
     const outcome = await resolver.refreshCatalog(8000);
 
-    expect(outcome).toEqual({ kind: "refreshed", modelCount: 1 });
+    expect(outcome).toEqual({
+      kind: "refreshed",
+      modelCount: 1,
+      coverage: { pages: 1, fetched: 1, serverTotal: null, complete: true },
+    });
     expect(resolver.isCacheWarm()).toBe(true);
     expect(resolver.resolveSync("erofs-model")).toBe("vendor-e/erofs-model");
   });
@@ -471,7 +481,11 @@ describe("OpenRouterCatalogResolver.refreshCatalog — catalog contract v3 (#222
 
     const outcome = await resolver.refreshCatalog(8000);
 
-    expect(outcome).toEqual({ kind: "refreshed", modelCount: 2 });
+    expect(outcome).toEqual({
+      kind: "refreshed",
+      modelCount: 2,
+      coverage: { pages: 1, fetched: 2, serverTotal: 2, complete: true },
+    });
     const [vision, text] = writeArg().entries;
     expect(vision.modelId).toBe("glm-4.6v");
     // The strip gate reads exactly these two fields (#222: fail-closed on absent data).
@@ -549,7 +563,11 @@ describe("OpenRouterCatalogResolver.refreshCatalog — catalog contract v3 (#222
 
     const outcome = await resolver.refreshCatalog(8000);
 
-    expect(outcome).toEqual({ kind: "refreshed", modelCount: 2 });
+    expect(outcome).toEqual({
+      kind: "refreshed",
+      modelCount: 2,
+      coverage: { pages: 1, fetched: 2, serverTotal: null, complete: true },
+    });
     const entries = writeArg().entries;
     expect(entries[0]).toEqual(legacy);
     // Unknown future contract: sources normalized to {} so resolveSync's
@@ -589,5 +607,257 @@ describe("firebaseCatalogUrl — empty overrides fall through (#310 review)", ()
     expect(firebaseCatalogUrl()).toBe("http://alias.example/cat");
     process.env[A] = "http://preferred.example/cat";
     expect(firebaseCatalogUrl()).toBe("http://preferred.example/cat");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Catalog pagination + coverage (#635 AC4)
+//
+// MEASURED 2026-10-24: the live v3 endpoint answers `data.total = 1002` for a
+// `limit=1000` request and hands back a `nextCursor`. The resolver read page 1
+// only and wrote it out as the whole catalog, so the models past the first page
+// were invisible and NOTHING in the file could say so.
+//
+// These tests live in THIS file on purpose: `mock.module("../all-models-cache.js")`
+// above is process-global (#272), so a separate file importing the same module
+// races the mock instead of the real writer — and the run hangs.
+// ---------------------------------------------------------------------------
+describe("OpenRouterCatalogResolver.refreshCatalog — page walk (#635 AC4)", () => {
+  let resolver: OpenRouterCatalogResolver;
+  let originalFetch: typeof globalThis.fetch;
+  let requested: string[];
+
+  beforeEach(() => {
+    mockWrite.mockClear();
+    mockRead.mockClear();
+    requested = [];
+    resolver = new OpenRouterCatalogResolver();
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  function v3Page(ids: string[], total: number | null, nextCursor: string | null): Response {
+    return jsonResponse({
+      contractVersion: 3,
+      data: {
+        mode: "slim",
+        models: ids.map((id) => ({
+          contractVersion: 3,
+          modelId: id,
+          aggregators: [{ sourceCollectorId: "openrouter-api", externalModelId: `v/${id}` }],
+        })),
+        total,
+        limit: 1000,
+        nextCursor,
+      },
+    });
+  }
+
+  /** Script the n-th answer; every requested URL is recorded. */
+  function script(pages: Array<(n: number) => Response>): void {
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      requested.push(String(input));
+      const n = requested.length - 1;
+      return pages[Math.min(n, pages.length - 1)]!(n);
+    }) as unknown as typeof globalThis.fetch;
+  }
+
+  function written() {
+    return mockWrite.mock.calls[0]?.[0] as {
+      entries: SlimModelEntry[];
+      models: Array<{ id: string }>;
+      coverage?: { pages: number; fetched: number; serverTotal: number | null; complete: boolean };
+    };
+  }
+
+  test("no cursor: exactly one fetch, coverage says complete", async () => {
+    script([() => v3Page(["a", "b"], 2, null)]);
+
+    const outcome = await resolver.refreshCatalog(5000);
+
+    expect(requested.length).toBe(1);
+    expect(outcome).toEqual({
+      kind: "refreshed",
+      modelCount: 2,
+      coverage: { pages: 1, fetched: 2, serverTotal: 2, complete: true },
+    });
+    // What the disk will hold says the same thing as what the caller was told.
+    expect(written().coverage).toEqual({
+      pages: 1,
+      fetched: 2,
+      serverTotal: 2,
+      complete: true,
+    });
+  });
+
+  test("cursor present: second page fetched with cursor= and entries merged", async () => {
+    script([() => v3Page(["a", "b"], 4, "cur-2"), () => v3Page(["c", "d"], 4, null)]);
+
+    const outcome = await resolver.refreshCatalog(5000);
+
+    expect(requested.length).toBe(2);
+    const second = new URL(requested[1]!);
+    expect(second.searchParams.get("cursor")).toBe("cur-2");
+    // Everything else about the request is unchanged — page 2 is the same catalog.
+    expect(second.searchParams.get("limit")).toBe("1000");
+
+    expect(outcome.kind).toBe("refreshed");
+    expect((outcome as { modelCount: number }).modelCount).toBe(4);
+    expect(written().entries.map((e) => e.modelId)).toEqual(["a", "b", "c", "d"]);
+    expect(written().models).toEqual([
+      { id: "v/a" },
+      { id: "v/b" },
+      { id: "v/c" },
+      { id: "v/d" },
+    ]);
+  });
+
+  test("an entry repeated across pages is collected once", async () => {
+    script([() => v3Page(["a", "b"], 3, "cur-2"), () => v3Page(["b", "c"], 3, null)]);
+
+    const outcome = await resolver.refreshCatalog(5000);
+
+    expect((outcome as { modelCount: number }).modelCount).toBe(3);
+    expect((outcome as { coverage: { complete: boolean } }).coverage.complete).toBe(true);
+  });
+
+  test("total reached on page 1: the offered cursor is not followed", async () => {
+    script([() => v3Page(["a", "b"], 2, "cur-2")]);
+
+    const outcome = await resolver.refreshCatalog(5000);
+
+    expect(requested.length).toBe(1);
+    expect((outcome as { coverage: { complete: boolean } }).coverage.complete).toBe(true);
+  });
+
+  test("page-2 HTTP failure keeps page 1 and reports itself incomplete", async () => {
+    script([
+      () => v3Page(["a", "b"], 1002, "cur-2"),
+      () => new Response("upstream boom", { status: 500 }),
+    ]);
+
+    const outcome = await resolver.refreshCatalog(5000);
+
+    expect(requested.length).toBe(2);
+    // A page past the first is ENRICHMENT (#270): the refresh still succeeded.
+    expect(outcome).toEqual({
+      kind: "refreshed",
+      modelCount: 2,
+      coverage: { pages: 1, fetched: 2, serverTotal: 1002, complete: false },
+    });
+    expect(written().entries.map((e) => e.modelId)).toEqual(["a", "b"]);
+  });
+
+  test("page-2 network throw keeps page 1", async () => {
+    script([
+      () => v3Page(["a"], 3, "cur-2"),
+      () => {
+        throw new Error("ECONNRESET");
+      },
+    ]);
+
+    const outcome = await resolver.refreshCatalog(5000);
+
+    expect(outcome.kind).toBe("refreshed");
+    expect((outcome as { modelCount: number }).modelCount).toBe(1);
+    expect((outcome as { coverage: { complete: boolean } }).coverage.complete).toBe(false);
+  });
+
+  test("a replayed cursor cannot loop the walk", async () => {
+    script([() => v3Page(["a"], 3, "cur-2"), () => v3Page(["b"], 3, "cur-2")]);
+
+    const outcome = await resolver.refreshCatalog(5000);
+
+    expect(requested.length).toBe(2);
+    expect((outcome as { coverage: { complete: boolean } }).coverage.complete).toBe(false);
+  });
+
+  test("an endless cursor stream stops at the page cap", async () => {
+    script([(_n) => v3Page([`m${requested.length}`], null, `cur-${requested.length + 1}`)]);
+
+    const outcome = await resolver.refreshCatalog(5000);
+
+    expect(requested.length).toBe(10); // CATALOG_MAX_PAGES
+    expect((outcome as { coverage: { complete: boolean } }).coverage.complete).toBe(false);
+  });
+
+  test("page 1 failure is still the refresh's failure", async () => {
+    script([() => new Response("nope", { status: 503 })]);
+
+    const outcome = await resolver.refreshCatalog(5000);
+
+    expect(outcome).toEqual({ kind: "fetch_failed", reason: "http_error" });
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  test("ONE deadline for the whole walk: a slow pager stops inside the budget, not per page (#668 r1)", async () => {
+    // The headline property of the walk, unpinned until r1: every page costs
+    // D ms, the server always offers a fresh cursor, and the caller's T is the
+    // budget for the WHOLE refresh. At T = 2.5·D the third page's fetch is cut
+    // mid-delay by its remaining-budget signal: 3 requests, 2 pages landed,
+    // walk over at the deadline. A per-page timeout instead of the shared
+    // deadline (r1 mutant A) hands page 3 the FULL budget, its delay
+    // completes, and a third page lands past the deadline — `pages` is the
+    // deterministic discriminator; the elapsed bound is the sanity check.
+    const D = 150;
+    const T = Math.round(2.5 * D); // 375 ms
+    let seq = 0;
+    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+      requested.push(String(_input));
+      const mine = ++seq;
+      const signal = init?.signal;
+      const answer = () => v3Page([`m${mine}`], null, `cur-${mine}`);
+      if (!signal) return answer();
+      if (signal.aborted) {
+        throw signal.reason ?? new DOMException("Aborted", "AbortError");
+      }
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        }, D);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+      return answer();
+    }) as unknown as typeof globalThis.fetch;
+
+    const t0 = Date.now();
+    const outcome = await resolver.refreshCatalog(T);
+    const elapsed = Date.now() - t0;
+
+    const cov = (outcome as { coverage: { pages: number; complete: boolean } }).coverage;
+    expect(cov.complete).toBe(false);
+    expect(cov.pages).toBe(2); // page 3 was cut mid-delay by the SHARED deadline
+    expect(requested.length).toBe(3);
+    expect(requested.length).toBeLessThan(10);
+    expect(elapsed).toBeLessThanOrEqual(T + D); // inside T + margin — never 10·D
+  });
+
+  test("serverTotal is adopted from a later page (#668 r1)", async () => {
+    // Page 1 answers without a total; page 2 declares one and ends the walk.
+    // The coverage must carry the SERVER's count, not page 1's absence of it.
+    script([() => v3Page(["a"], null, "cur-2"), () => v3Page(["b", "c"], 3, null)]);
+
+    const outcome = await resolver.refreshCatalog(5000);
+
+    expect(outcome).toEqual({
+      kind: "refreshed",
+      modelCount: 3,
+      coverage: { pages: 2, fetched: 3, serverTotal: 3, complete: true },
+    });
   });
 });

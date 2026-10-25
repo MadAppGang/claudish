@@ -233,3 +233,71 @@ describe("allModelsCachePath — CLAUDISH_MODEL_CACHE_PATH (#637)", () => {
     expect(cache.allModelsCachePath()).toBe(join(homedir(), ".claudish", "all-models.json"));
   });
 });
+
+/**
+ * Coverage metadata (#635 AC4). The disk cache must be able to say HOW MUCH of
+ * the server catalog it holds — a truncated page 1 written as the whole catalog
+ * is a standing hazard, because nothing downstream can tell a complete cache
+ * from a clipped one. (Distinct from the measured 2026-10-24 incident:
+ * `kimi-k3.1-pro` sat at index 652 of page 1 and was hidden by a STALE cache,
+ * not by truncation — the pagination gap starts past `limit=1000`.)
+ */
+describe("catalog coverage (#635 AC4)", () => {
+  const coverage = { pages: 2, fetched: 1002, serverTotal: 1002, complete: true };
+
+  test("coverage round-trips through the writer and the reader", () => {
+    const { path, cleanup } = makeTmpCachePath();
+    cleanups.push(cleanup);
+
+    writeAllModelsCache(
+      { entries: [sampleEntry("kimi-k3.1-pro", "moonshotai/kimi-k3.1-pro")], coverage },
+      path
+    );
+
+    expect(readAllModelsCache(path)!.coverage).toEqual(coverage);
+  });
+
+  test("replacing entries without a measurement does NOT carry the old one over", () => {
+    const { path, cleanup } = makeTmpCachePath();
+    cleanups.push(cleanup);
+
+    writeAllModelsCache({ entries: [sampleEntry("a", "v/a")], coverage }, path);
+    // A caller that replaces the catalog but measures nothing must not inherit
+    // a completeness claim about entries it never saw.
+    writeAllModelsCache({ entries: [sampleEntry("b", "v/b")] }, path);
+
+    const result = readAllModelsCache(path);
+    expect(result!.entries.map((e: SlimModelEntry) => e.modelId)).toEqual(["b"]);
+    expect(result!.coverage).toBeUndefined();
+  });
+
+  test("a models-only legacy write preserves the coverage of the entries it kept", () => {
+    const { path, cleanup } = makeTmpCachePath();
+    cleanups.push(cleanup);
+
+    writeAllModelsCache({ entries: [sampleEntry("a", "v/a")], coverage }, path);
+    writeAllModelsCache({ models: [{ id: "v/a" }] }, path);
+
+    // `entries` were preserved, so the measurement still describes them.
+    expect(readAllModelsCache(path)!.coverage).toEqual(coverage);
+  });
+
+  test("a malformed coverage is dropped, never trusted", () => {
+    const { path, cleanup } = makeTmpCachePath();
+    cleanups.push(cleanup);
+
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 2,
+        lastUpdated: "2026-10-24T00:00:00.000Z",
+        entries: [sampleEntry("a", "v/a")],
+        models: [{ id: "v/a" }],
+        coverage: { pages: "two", fetched: 1, complete: "yes" },
+      }),
+      "utf-8"
+    );
+
+    expect(readAllModelsCache(path)!.coverage).toBeUndefined();
+  });
+});

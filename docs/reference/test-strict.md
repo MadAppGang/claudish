@@ -16,6 +16,8 @@
 
 Second bun trap, encoded in the same helper: **awaiting an `AbortSignal.timeout(n)` abort inside `bun test` hangs forever when that timer is the only pending wakeup**, and a handler promise that never settles suspends the runner at exit. `installStubFetch` keeps a `setInterval(…, 5ms)` alive for the duration of the guarded promise, and `hangUntilAborted` rejects off the request's own abort event instead of returning a forever-pending promise.
 
+Third bun trap (#272 race, measured 2026-10-24, ~1 h lost): **a SEPARATE test file importing a module that another test file replaces via `mock.module` does not fail — it HANGS.** `mock.module` is process-global with no unregister; `openrouter.test.ts` replaces `../all-models-cache.js`, and a sibling file statically importing the same module binds to the mock and never completes (`rc=124`, per-test `--timeout` never fires, 0 bytes of output — the capture is the tell). The fix is placement, not wiring: the pins live in the EXISTING file that owns the `mock.module`. Order-dependent corollary: with both files in one process and `openrouter.test.ts` first, the race turns red already on `main`; in alphabetical order it does not fire — so it can pass on one seat and hang on another.
+
 Original closing pointer of the Debugging & Tests section (kept verbatim here for the #445 preservation proof; the live section now merges it with the strict-runner pointer):
 
 Detail: `docs/reference/proxy-pipeline-notes.md`.
