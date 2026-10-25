@@ -1099,3 +1099,99 @@ describe("#686 — client attribution rides the outbound headers", () => {
     expect(rec.captured[0]["x-claudish-client"]).toBe("myia-po-2025:claudish");
   });
 });
+
+describe("ComposedHandler — #674 exact counting in the uncertain band", () => {
+  // The band exists because the estimate cannot decide: `real/est` spans
+  // 0.57–3.18 over the served corpus, so below `window / 1.15` even the worst
+  // over-count does not reach the window, and at/above it the old gate refused
+  // on the estimate alone. Inside, only the engine's own count may decide.
+  beforeEach(() => resetOverflowCapsForTests());
+  afterEach(() => resetOverflowCapsForTests());
+
+  function exactTransport(answers: Array<number | null>) {
+    let calls = 0;
+    const probes: any[][] = [];
+    const transport = {
+      name: "test-exact",
+      displayName: "Test Exact",
+      streamFormat: "openai-sse",
+      getEndpoint: () => "http://upstream.test/v1/chat/completions",
+      getHeaders: () => ({}),
+      countPromptTokens: async (messages: any[]) => {
+        probes.push(messages);
+        const answer = answers[Math.min(calls++, answers.length - 1)];
+        return answer === null ? null : { exact: answer, maxModelLen: 5000 };
+      },
+    } as unknown as ProviderTransport;
+    return { transport, probes };
+  }
+
+  test("exact >= window → refused locally, exact count in the message, NO upstream call", async () => {
+    const { transport, probes } = exactTransport([6_000]);
+    const fx = countingFetch(200, "should never be reached");
+    const res = await runHandleWith(transport, "fake-model", overflowPayload(false, 40_000), fx.impl as typeof fetch, {
+      derivedContextLimit: 5_000,
+    });
+
+    expect(fx.getCalls()).toBe(0); // the doomed round-trip is skipped
+    expect(probes.length).toBe(1); // the estimate nominated it
+    expect(res.status).toBe(200); // the #79 recoverable turn, never a bare 400
+    const body = await res.text();
+    expect(body).toContain("maximum prompt size");
+    expect(body).toContain("exact count from the provider's tokenizer");
+    expect(body).toContain("6000");
+  });
+
+  test("exact < window while est >= window → served upstream: the estimate may not refuse alone", async () => {
+    // The ×3.18 tail case, in the direction that costs a served turn: the old
+    // gate refused this request on its estimate.
+    const { transport } = exactTransport([4_000]);
+    const fx = countingFetch(200, "served by the upstream");
+    const res = await runHandleWith(transport, "fake-model", overflowPayload(false, 40_000), fx.impl as typeof fetch, {
+      derivedContextLimit: 5_000,
+    });
+
+    expect(fx.getCalls()).toBe(1);
+    expect(res.status).toBe(200);
+  });
+
+  test("no exact answer (null) → indistinguishable from a transport with no tokenizer", async () => {
+    const { transport, probes } = exactTransport([null]);
+    const fx = countingFetch(200, "should never be reached");
+    const res = await runHandleWith(transport, "fake-model", overflowPayload(false, 40_000), fx.impl as typeof fetch, {
+      derivedContextLimit: 5_000,
+    });
+
+    expect(probes.length).toBe(1); // asked once
+    expect(fx.getCalls()).toBe(0); // pre-#674 behavior: est >= window refuses
+    expect(await res.text()).toContain("maximum prompt size");
+  });
+
+  test("below the band nothing is probed — one extra round-trip is not free", async () => {
+    const { transport, probes } = exactTransport([6_000]);
+    const fx = countingFetch(200, "ok");
+    await runHandleWith(transport, "fake-model", overflowPayload(false, 1_000), fx.impl as typeof fetch, {
+      derivedContextLimit: 10_000_000,
+    });
+
+    expect(probes.length).toBe(0);
+    expect(fx.getCalls()).toBe(1);
+  });
+
+  test("CLAUDISH_EXACT_COUNT=0 disarms it: no probe, pre-#674 behavior", async () => {
+    const previous = process.env.CLAUDISH_EXACT_COUNT;
+    process.env.CLAUDISH_EXACT_COUNT = "0";
+    try {
+      const { transport, probes } = exactTransport([1_000]);
+      const fx = countingFetch(200, "should never be reached");
+      await runHandleWith(transport, "fake-model", overflowPayload(false, 40_000), fx.impl as typeof fetch, {
+        derivedContextLimit: 5_000,
+      });
+      expect(probes.length).toBe(0);
+      expect(fx.getCalls()).toBe(0); // est >= window still refuses on the estimate
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDISH_EXACT_COUNT;
+      else process.env.CLAUDISH_EXACT_COUNT = previous;
+    }
+  });
+});

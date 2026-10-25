@@ -1,5 +1,5 @@
-import { describe, test, expect } from "bun:test";
-import { OpenAIProviderTransport } from "./openai.js";
+import { describe, test, expect, beforeEach } from "bun:test";
+import { OpenAIProviderTransport, resetTokenizerMemoForTests } from "./openai.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 
 const mockProvider: RemoteProvider = {
@@ -344,4 +344,121 @@ describe("OpenAIProviderTransport 429 ladder exhaustion", () => {
     }
     expect(lines.filter((l) => l.includes("ladder exhausted"))).toEqual([]);
   }, 15000);
+});
+
+describe("OpenAIProviderTransport.countPromptTokens (#674)", () => {
+  // Measured 25/10 on the shipping vLLM, from inside the hub container:
+  // POST {root}/tokenize → 200 {count, max_model_len}; `{model, messages}` is
+  // the only usable shape (12 tokens for `hello world` against 2 for a raw
+  // prompt — the chat template is applied server-side), and /v1/tokenize is a
+  // 404. Those three facts are what these pins hold.
+  // Derived from the file's own mockProvider (same RemoteProvider shape, same
+  // typing convention) so this pin adds no typecheck error of its own.
+  const vllm = {
+    ...mockProvider,
+    name: "vllm-myia",
+    baseUrl: "https://engine.test/v1",
+    apiPath: "/chat/completions",
+  };
+
+  beforeEach(() => resetTokenizerMemoForTests());
+
+  function stub(impl: (url: string, init: any) => Promise<Response>) {
+    const original = globalThis.fetch;
+    const seen: Array<{ url: string; init: any }> = [];
+    (globalThis as any).fetch = (async (input: any, init?: any) => {
+      const url = typeof input === "string" ? input : input?.url ?? String(input);
+      seen.push({ url, init });
+      return impl(url, init);
+    }) as typeof fetch;
+    return {
+      seen,
+      restore: () => {
+        (globalThis as any).fetch = original;
+      },
+    };
+  }
+
+  test("posts {model, messages} to the ROOT /tokenize — never /v1/tokenize", async () => {
+    const s = stub(async () =>
+      new Response(JSON.stringify({ count: 12, max_model_len: 262_144 }), { status: 200 })
+    );
+    try {
+      const transport = new OpenAIProviderTransport(vllm, "swift-1.5-27b", "k");
+      const result = await transport.countPromptTokens([{ role: "user", content: "hello world" }]);
+
+      expect(s.seen.length).toBe(1);
+      expect(s.seen[0].url).toBe("https://engine.test/tokenize"); // /v1 stripped, root path
+      expect(JSON.parse(s.seen[0].init.body)).toEqual({
+        model: "swift-1.5-27b",
+        messages: [{ role: "user", content: "hello world" }],
+      });
+      expect(s.seen[0].init.signal).toBeTruthy(); // bounded: a black-holed endpoint must not hold the turn
+      expect(result).toEqual({ exact: 12, maxModelLen: 262_144 });
+    } finally {
+      s.restore();
+    }
+  });
+
+  test("a 404 turns the endpoint off for the PROCESS: the second call fetches nothing", async () => {
+    const s = stub(async () => new Response("not found", { status: 404 }));
+    try {
+      const first = new OpenAIProviderTransport(vllm, "swift-1.5-27b", "k");
+      expect(await first.countPromptTokens([{ role: "user", content: "hi" }])).toBeNull();
+      // A DIFFERENT transport instance — the proxy rebuilds them, so the memo
+      // has to be process-wide or the 404 is paid again on every recreate.
+      const second = new OpenAIProviderTransport(vllm, "swift-1.5-27b", "k");
+      expect(await second.countPromptTokens([{ role: "user", content: "hi" }])).toBeNull();
+
+      expect(s.seen.length).toBe(1);
+    } finally {
+      s.restore();
+    }
+  });
+
+  test("never throws: a rejected fetch resolves to null", async () => {
+    const s = stub(async () => {
+      throw new DOMException("aborted", "AbortError");
+    });
+    try {
+      const transport = new OpenAIProviderTransport(vllm, "swift-1.5-27b", "k");
+      expect(await transport.countPromptTokens([{ role: "user", content: "hi" }])).toBeNull();
+    } finally {
+      s.restore();
+    }
+  });
+
+  test("an unreadable count is null, never a guess — and an absent max_model_len is fine", async () => {
+    const s = stub(async () => new Response(JSON.stringify({ count: "many" }), { status: 200 }));
+    try {
+      const transport = new OpenAIProviderTransport(vllm, "swift-1.5-27b", "k");
+      expect(await transport.countPromptTokens([{ role: "user", content: "hi" }])).toBeNull();
+    } finally {
+      s.restore();
+    }
+
+    const ok = stub(async () => new Response(JSON.stringify({ count: 7 }), { status: 200 }));
+    try {
+      resetTokenizerMemoForTests();
+      const transport = new OpenAIProviderTransport(vllm, "swift-1.5-27b", "k");
+      expect(await transport.countPromptTokens([{ role: "user", content: "hi" }])).toEqual({
+        exact: 7,
+        maxModelLen: undefined,
+      });
+    } finally {
+      ok.restore();
+    }
+  });
+
+  test("empty or non-array messages fetch nothing at all", async () => {
+    const s = stub(async () => new Response(JSON.stringify({ count: 1 }), { status: 200 }));
+    try {
+      const transport = new OpenAIProviderTransport(vllm, "swift-1.5-27b", "k");
+      expect(await transport.countPromptTokens([])).toBeNull();
+      expect(await transport.countPromptTokens(null as any)).toBeNull();
+      expect(s.seen.length).toBe(0);
+    } finally {
+      s.restore();
+    }
+  });
 });

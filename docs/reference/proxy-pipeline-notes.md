@@ -257,3 +257,58 @@ translated OpenAI ingress end-to-end (a run, not a reading).
 Boundary note: #441's "the clamp stands down when the prompt leaves no output budget" stays reachable
 only in the band `window − margin − 4096 < est ≤ window + margin`; above it the admission census has
 already answered. `K15` case 5 was moved into that band.
+
+## Exact counting at the wall (#674)
+
+Measured 2026-10-25, from inside the hub container against the shipping vLLM (`swift-1.5-27b`,
+window 262 144): `POST {root}/tokenize` → `200 {"count":…, "max_model_len": 262144}`. The
+`{model, messages}` shape is accepted and the chat template is applied **server-side** — `hello
+world` counts 12 tokens as messages against 2 as a raw prompt, so the `prompt` shape would
+under-count every real request. `/v1/tokenize` is a 404 on the same engine; the transport derives
+the root URL by stripping the completions suffixes and a trailing `/v1`
+(`OpenAIProviderTransport.tokenizeUrl`).
+
+Why a probe at all: the engine admits on the **prompt alone** (reqN=11724, prompt 262 126 of 262
+144, served with `output_tokens: 18`; reqN=931, prompt 262 145, `400 Input too large`), and the
+`/4` estimate spans **0.57–3.18×** of the real count over 1 111 served responses (p50 ×1.068, p95
+×1.118, p99 ×1.196). Consequences measured the same day: a cap learned from one refusal
+short-circuited served prompts (the [cap, window) band, closed by #676's corroboration), while
+`est ≥ window` almost never fired on genuinely over-window prompts (their estimate tops out near
+242k) — each paying one doomed round-trip before #431 skipped it.
+
+The rule that replaces both: **in the band, the estimate may only NOMINATE; the engine's own
+count decides.**
+
+- Band: `est >= window / CLAUDISH_EXACT_COUNT_BAND` (default 1.15, clamped to [1, 2]; 262 144 →
+  nominates from 227 952). One-sided because below it even the worst measured over-count cannot
+  reach the window; at/above the window the probe replaces the estimate's old refusal.
+- Probe: `ProviderTransport.countPromptTokens(messages)` — optional capability, implemented on the
+  OpenAI transport only. Bounded (`AbortSignal.timeout(3s)`), never through the concurrency
+  limiter (the probe never enters the generation queue), never throws. A 404/405 memorises the
+  URL **for the process** (`tokenizeUnsupportedUrls`, module-level — the proxy rebuilds
+  transports), so a non-vLLM endpoint pays exactly one probe, then behaves as if the capability
+  were absent.
+- Decision (derived-window branch of `ComposedHandler.handle`, both ingresses share it):
+  `exact >= window` → the #79 recoverable turn locally, `exact` in the text ("exact count from
+  the provider's tokenizer", no `~`) and in the `x-claudish-step-skip` detail (`est=… exact=…
+  cap=…`) — zero upstream calls; `exact < window` → upstream decides, even when `est >= window`
+  (the ×3.18 over-count direction pre-#674 refused on the estimate alone). Probe null → exactly
+  the pre-#674 behavior.
+- `max_model_len` from the probe is **advisory**: logged when it disagrees with the derived
+  window, never written into the learned-cap store (a refusal-stated `statedLimit` stays the
+  only persisted window statement, #676).
+- Kill switch `CLAUDISH_EXACT_COUNT=0` (read per request): no probe, no band.
+
+Pins: `handlers/shared/exact-count.test.ts` (band math, strict parse, kill switch),
+`composed-handler.test.ts` "#674 exact counting" (5 dispatch pins — refuse-locally, fits-under,
+null-probe, below-band no-probe, kill switch), `openai.test.ts` "countPromptTokens" (root URL,
+`{model, messages}` body, signal present, process-wide 404 memo across TWO transport instances,
+never throws, unreadable count → null, empty messages → no fetch), `proxy-server-step-skip-route.test.ts`
+`K31a–K31d` (live route, both ingresses: marker `exact=`/`cap=`, zero upstream calls, fits is
+served, one 404 for the process, `[DONE]`-terminated on the OpenAI wire).
+
+Boundary: the learned-cap branch keeps #676's corroboration (`stated ?? derived ?? declared`) —
+exact counting arms on the **derived** window branch; a hand-typed `contextLimit` still never
+refuses locally (a stale literal must not veto what the engine serves). The probe is one extra
+round-trip per banded request on an endpoint that has a tokenizer — deliberately not cached
+beyond the 404 memo, because the prompt differs every time.

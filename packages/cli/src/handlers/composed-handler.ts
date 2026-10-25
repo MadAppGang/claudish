@@ -65,6 +65,12 @@ import {
 } from "./shared/context-overflow.js";
 import { classifyMediaCap, mediaCapRefusalText, mediaCapSkipDetail } from "./shared/media-cap.js";
 import {
+  exactCountDisabled,
+  inExactCountBand,
+  readExactCountBand,
+} from "./shared/exact-count.js";
+import type { ExactPromptCount } from "../providers/transport/types.js";
+import {
   STEP_SKIP_HEADER,
   encodeStepSkipHeader,
   cascadeStepBusyWaitMs,
@@ -1024,15 +1030,59 @@ export class ComposedHandler implements ModelHandler {
       // threshold and the wall is #674's exact-counting case, not a fudge
       // factor invented here.
       const est = estimateClampTokens(claudeRequest);
-      if (est >= this.options.derivedContextLimit) {
+      const window = this.options.derivedContextLimit;
+      // #674 — inside the uncertain band the estimate only NOMINATES; the
+      // engine's OWN tokenizer DECIDES. The measured spread of real/est over
+      // 1 111 served responses is 0.57–3.18, so any threshold on the estimate
+      // is wrong in one direction: below the window it refuses prompts that
+      // fit, at the window it misses prompts that die (their estimate tops out
+      // near 242k against a 262 144 window). The probe is bounded, never
+      // throws, and turns itself off for the process on the first 404 — so an
+      // endpoint without a tokenizer behaves exactly as before.
+      let exact: ExactPromptCount | null = null;
+      if (
+        !exactCountDisabled() &&
+        this.provider.countPromptTokens &&
+        inExactCountBand(est, window, readExactCountBand())
+      ) {
+        const wireMessages = (requestPayload as any)?.messages;
+        if (Array.isArray(wireMessages) && wireMessages.length > 0) {
+          exact = await this.provider.countPromptTokens(wireMessages);
+        }
+        if (exact) {
+          if (exact.maxModelLen !== undefined && exact.maxModelLen !== window) {
+            log(
+              `[ExactCount] provider=${this.provider.displayName} model=${this.targetModel} ` +
+                `engine declares max_model_len=${exact.maxModelLen}, derived=${window} — ` +
+                `the derived window decides (the declaration is advisory)`
+            );
+          }
+          if (exact.exact >= window) {
+            log(
+              `[ExactCount] refuse-locally provider=${this.provider.displayName} model=${this.targetModel} ` +
+                `est=${est} exact=${exact.exact} window=${window} — no upstream call`,
+              true
+            );
+            return this.buildOverflowRecoveryResponse(c, payload, est, undefined, window, exact.exact);
+          }
+          log(
+            `[ExactCount] fits provider=${this.provider.displayName} model=${this.targetModel} ` +
+              `est=${est} exact=${exact.exact} window=${window} — upstream decides`
+          );
+        }
+      }
+      // Reached only when the exact count did not answer: no tokenizer, the
+      // probe failed, or the request is below the band. The estimate keeps its
+      // pre-#674 behavior — a "cannot fit" statement about our own measurement.
+      if (!exact && est >= window) {
         // `log(msg, true)` — forceConsole lives on log(), not logStderr() (the
         // legacy `logStderr(x, true)` calls above predate that and are standing
         // type errors this PR does not add to).
         log(
-          `[ContextGuard] short-circuit provider=${this.provider.displayName} model=${this.targetModel} est=${est} cap=${this.options.derivedContextLimit} (derived window) — no upstream call`,
+          `[ContextGuard] short-circuit provider=${this.provider.displayName} model=${this.targetModel} est=${est} cap=${window} (derived window) — no upstream call`,
           true
         );
-        return this.buildOverflowRecoveryResponse(c, payload, est, undefined, this.options.derivedContextLimit);
+        return this.buildOverflowRecoveryResponse(c, payload, est, undefined, window);
       }
     }
 
@@ -1828,10 +1878,16 @@ export class ComposedHandler implements ModelHandler {
     est: number,
     used: number | undefined,
     /** Provider-stated token limit, when the refusal named one (#431 marker). */
-    limit?: number
+    limit?: number,
+    /** Engine-measured prompt size, when the tokenizer answered (#674). */
+    exact?: number
   ): Response {
-    const inputTokens = overflowReportedTokens(used, est, overflowReportFloor());
-    const text = overflowRecoveryText(this.provider.displayName, this.targetModel, est);
+    // #674 — when the tokenizer answered, its count is the true size: the
+    // client's compaction works off this number, and the estimate is only what
+    // nominated the probe in the first place.
+    const shown = exact ?? est;
+    const inputTokens = overflowReportedTokens(used ?? exact, shown, overflowReportFloor());
+    const text = overflowRecoveryText(this.provider.displayName, this.targetModel, shown, exact !== undefined);
     let response: Response;
     if (payload?.stream === true) {
       response = buildOverflowRecoveryStream(text, inputTokens, this.bareModelName);
@@ -1845,11 +1901,15 @@ export class ComposedHandler implements ModelHandler {
     // everywhere else the recovery turn surfaces unchanged, header and all
     // (same doctrine as x-claudish-failover-notice, #229). The cap in the
     // detail prefers the provider-stated limit (vLLM names 262144) and falls
-    // back to the learned one; est is the payload estimate either way.
+    // back to the learned one; est is the payload estimate either way, and
+    // `exact=` is added when the engine's tokenizer produced the count (#674).
     const cap = limit ?? getOverflowCap(this.provider.displayName, this.targetModel);
     response.headers.set(
       STEP_SKIP_HEADER,
-      encodeStepSkipHeader("context", `est=${est}${cap !== undefined ? ` cap=${cap}` : ""}`)
+      encodeStepSkipHeader(
+        "context",
+        `est=${est}${exact !== undefined ? ` exact=${exact}` : ""}${cap !== undefined ? ` cap=${cap}` : ""}`
+      )
     );
     return response;
   }

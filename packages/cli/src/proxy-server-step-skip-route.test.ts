@@ -55,6 +55,7 @@ import {
   getSessionDwellPinForTests,
 } from "./fork/failover.js";
 import { resetOverflowCapsForTests } from "./handlers/shared/context-overflow.js";
+import { resetTokenizerMemoForTests } from "./providers/transport/openai.js";
 import {
   clearEndpointTokenBudgets,
   estimateBudgetTokens,
@@ -205,6 +206,10 @@ const SONNET_NOMINAL = "nom-ep@fake-nom";
  * healthy. */
 let upstreamAnswer: Record<string, () => Response | Promise<Response>> = {};
 
+/** #674 — the exact-count probe answer. Default: 404 (no tokenizer route), the
+ * shipping shape of every endpoint but a vLLM one. */
+let tokenizeAnswer: (() => Response) | null = null;
+
 function resetCascade(env?: Record<string, string>): void {
   resetFailoverForTests(env ?? cascadeEnv(TWO_STEP));
   const nominals: Record<string, string | undefined> = { sonnet: SONNET_NOMINAL };
@@ -269,6 +274,7 @@ beforeEach(() => {
   upstreamBodies = {};
   markerLog = [];
   upstreamAnswer = {};
+  tokenizeAnswer = null;
   resetOverflowCapsForTests();
   configExisted = existsSync(REAL_CONFIG_PATH);
   configBackup = configExisted ? readFileSync(REAL_CONFIG_PATH, "utf-8") : null;
@@ -327,6 +333,14 @@ beforeEach(() => {
       );
     }
     if (!url.startsWith(UPSTREAM_BASE)) return realFetch(input, init);
+    // #674 — the exact-count probe: `{root}/tokenize`, never under `/v1`
+    // (measured 404 there, 200 at the root). Counted apart from the chat tags
+    // so a pin can assert "no chat round-trip" without the probe inflating it.
+    if (url.endsWith("/tokenize")) {
+      calls.tokenize = (calls.tokenize ?? 0) + 1;
+      if (tokenizeAnswer) return tokenizeAnswer();
+      return new Response("not found", { status: 404 });
+    }
     // #651 — the derivation probe. Answered for every endpoint (the stub cannot
     // know which ones opted in), counted apart from the chat tags so a pin can
     // assert "no chat round-trip" without the probe inflating it.
@@ -364,7 +378,8 @@ beforeEach(() => {
         line.includes("[EventLoop]") || // #615 review point 1
         line.includes("[MediaCap]") || // #575
         line.includes("[EndpointBudget]") || // #654
-        line.includes("[ConcurrencyRefusal]") // #679
+        line.includes("[ConcurrencyRefusal]") || // #679
+        line.includes("[ExactCount]") // #674
       ) {
         markerLog.push(line);
       }
@@ -382,7 +397,8 @@ beforeEach(() => {
         line.includes("[EventLoop]") || // #615 review point 1
         line.includes("[MediaCap]") || // #575
         line.includes("[EndpointBudget]") || // #654
-        line.includes("[ConcurrencyRefusal]") // #679
+        line.includes("[ConcurrencyRefusal]") || // #679
+        line.includes("[ExactCount]") // #674
       ) {
         markerLog.push(line);
       }
@@ -1744,5 +1760,106 @@ describe("#679 — plan concurrency refusal skips, the usage wall stays a wall",
     const r2 = await postMessage({ session: "sess-two" });
     expect(await responseText(r2)).toContain("ok-from-s0-again");
     expect(calls.s0 ?? 0).toBeGreaterThan(s0AfterR1);
+  }, 30_000);
+});
+
+// ---- #674 — exact counting at the wall (both ingresses) ---------------------------
+//
+// Inside the uncertain band (`est >= window / 1.15`) the estimate may only
+// NOMINATE: the engine's own tokenizer decides, because `real/est` spans
+// 0.57–3.18 over the served corpus. Measured 25/10 on the shipping vLLM from
+// inside the hub container: `POST {root}/tokenize` → 200 `{count,
+// max_model_len}`, `{model, messages}` accepted (chat template applied
+// server-side), `/v1/tokenize` a 404.
+
+describe("#674 — exact counting at the wall (both ingresses)", () => {
+  /** est ≈ 9 439 tokens against the 2 000-token derived window of `drv-ep`. */
+  const big = "x".repeat(40_000);
+
+  const armEndpoint = async () => {
+    await spin();
+    resetFailoverForTests({});
+    setRoleNominalResolver(() => undefined);
+    // The #565 census is a separate organ (pinned by K20); disarmed so these
+    // pins land on the handler-level decision they are about.
+    process.env.CLAUDISH_CONTEXT_ADMISSION = "0";
+    // The "no tokenizer route" memo is process-wide BY DESIGN — an earlier pin
+    // in this file has already taught it this URL. Clearing it makes each test
+    // about the probe, not about test order.
+    resetTokenizerMemoForTests();
+  };
+
+  test("K31a (/v1/messages): the engine's count refuses locally — exact in marker, zero upstream calls", async () => {
+    await armEndpoint();
+    tokenizeAnswer = () =>
+      new Response(JSON.stringify({ count: 2_500, max_model_len: 2_000 }), { status: 200 });
+
+    const res = await postMessage({ model: "drv-ep@fake-drv", content: big });
+    expect(res.status).toBe(200); // the #79 recoverable turn, never a bare 400
+    const skip = res.headers.get("x-claudish-step-skip") ?? "";
+    expect(skip).toContain("context");
+    // The window rides the ESTABLISHED `cap=` field (K30 pins that spelling);
+    // `exact=` is the new token, added when the engine's tokenizer answered.
+    expect(skip).toContain("exact=2500");
+    expect(skip).toContain("cap=2000");
+    expect(await responseText(res)).toContain("exact count from the provider's tokenizer");
+    expect(calls.drv ?? 0).toBe(0); // THE PIN: the doomed round-trip is never paid
+    expect(calls.tokenize).toBe(1);
+    expect(
+      markerLog.some((l) => l.includes("[ExactCount] refuse-locally") && l.includes("exact=2500"))
+    ).toBe(true);
+  }, 30_000);
+
+  test("K31b (/v1/messages): a prompt that FITS is served even though est >= window", async () => {
+    // The ×3.18 over-count direction: pre-#674 this request was refused on the
+    // estimate. DoD #2 of the issue — a prompt that fits is never refused.
+    await armEndpoint();
+    tokenizeAnswer = () =>
+      new Response(JSON.stringify({ count: 1_500, max_model_len: 2_000 }), { status: 200 });
+
+    const res = await postMessage({ model: "drv-ep@fake-drv", content: big });
+    expect(res.status).toBe(200);
+    expect(calls.drv ?? 0).toBeGreaterThanOrEqual(1); // the upstream answered
+    expect(res.headers.get("x-claudish-step-skip")).toBeNull(); // no skip marker on a served turn
+    // No log assertion here: `spin({quiet:true})` suppresses non-forced lines,
+    // and a pin on a suppressed line is a pin on the harness, not the code.
+    expect(calls.tokenize).toBe(1); // the band was entered and the count decided
+  }, 30_000);
+
+  test("K31c (/v1/messages): no tokenizer route → pre-#674 behavior, and one 404 for the whole process", async () => {
+    await armEndpoint();
+    tokenizeAnswer = null; // the default: 404
+
+    const r1 = await postMessage({ model: "drv-ep@fake-drv", content: big });
+    expect(r1.status).toBe(200);
+    expect(r1.headers.get("x-claudish-step-skip") ?? "").toContain("cap=2000");
+    expect(calls.drv ?? 0).toBe(0); // the estimate still refuses alone, unchanged
+    expect(calls.tokenize).toBe(1);
+
+    const r2 = await postMessage({ model: "drv-ep@fake-drv", content: big });
+    expect(r2.headers.get("x-claudish-step-skip") ?? "").toContain("cap=2000");
+    expect(calls.tokenize).toBe(1); // process-wide memo: the 404 is never paid twice
+  }, 30_000);
+
+  test("K31d (/v1/chat/completions): the translated ingress decides on the SAME count — zero upstream, [DONE]-terminated", async () => {
+    await armEndpoint();
+    tokenizeAnswer = () =>
+      new Response(JSON.stringify({ count: 2_500, max_model_len: 2_000 }), { status: 200 });
+
+    const r = await realFetch(`http://127.0.0.1:${PROXY_PORT}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "drv-ep@fake-drv",
+        stream: true,
+        messages: [{ role: "user", content: big }],
+      }),
+    });
+    expect(r.status).toBe(200);
+    const raw = await r.text();
+    expect(raw.trimEnd().endsWith("data: [DONE]")).toBe(true); // never a hung stream
+    expect(raw).toContain("exact count from the provider's tokenizer");
+    expect(calls.drv ?? 0).toBe(0); // the doomed call is skipped on this ingress too
+    expect(calls.tokenize).toBe(1);
   }, 30_000);
 });

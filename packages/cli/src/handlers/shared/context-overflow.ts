@@ -488,10 +488,19 @@ export function contextAdmissionDisabled(env: NodeJS.ProcessEnv = process.env): 
 export function overflowRecoveryText(
   providerName: string,
   model: string,
-  estTokens: number
+  estTokens: number,
+  /**
+   * #674 — the count came from the provider's own tokenizer, so it is not an
+   * estimate and must not be presented as `~N`. The client reads this text to
+   * decide how hard to condense.
+   */
+  exact = false
 ): string {
+  const size = exact
+    ? `Input of ${estTokens} tokens (exact count from the provider's tokenizer)`
+    : `Input of ~${estTokens} tokens`;
   return (
-    `[claudish] Input of ~${estTokens} tokens exceeded the serving model's maximum prompt size ` +
+    `[claudish] ${size} exceeded the serving model's maximum prompt size ` +
     `(provider ${providerName}, model ${model}). The context gauge has been advanced accordingly. ` +
     `Condense the conversation and retry.`
   );

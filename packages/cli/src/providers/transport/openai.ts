@@ -6,13 +6,33 @@
  * Includes 30-second timeout with detailed error reporting.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
+import type { ExactPromptCount, ProviderTransport, StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { ConcurrencyLimiter } from "../../handlers/shared/concurrency-limiter.js";
 import { log } from "../../logger.js";
 import { isQuotaWall } from "./quota-wall.js";
 import { isConcurrencyRefusalResponse } from "../../handlers/shared/step-skip.js";
+
+/**
+ * #674 — how long the exact-count probe may take. The tokenizer answers in
+ * milliseconds (measured against the shipping vLLM); this bound exists so a
+ * black-holed endpoint degrades to the estimate instead of holding the turn.
+ */
+const EXACT_COUNT_TIMEOUT_MS = 3000;
+
+/**
+ * #674 — tokenizer URLs already known to have no route. Module-level, not
+ * per-instance: the proxy rebuilds transports (handler cache, cascade steps),
+ * and a process-wide memo is what makes "one 404, then never again" true. Keyed
+ * by URL so two endpoints on the same host are judged separately.
+ */
+const tokenizeUnsupportedUrls = new Set<string>();
+
+/** Test seam: forget the memo (no production caller). */
+export function resetTokenizerMemoForTests(): void {
+  tokenizeUnsupportedUrls.clear();
+}
 
 export class OpenAIProviderTransport implements ProviderTransport {
   readonly name: string;
@@ -81,6 +101,81 @@ export class OpenAIProviderTransport implements ProviderTransport {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
     }
     return headers;
+  }
+
+  /**
+   * #674 — exact prompt count from the engine's own tokenizer.
+   *
+   * Measured 2026-10-25 from inside the hub container against the shipping
+   * vLLM (`swift-1.5-27b`): `POST {root}/tokenize` → 200
+   * `{"count":…, "max_model_len": 262144}`. Two shapes were tried and the
+   * `messages` one is the only usable: `{model, messages}` counts **12** tokens
+   * for `hello world` where `{model, prompt}` counts **2** — the chat template
+   * is applied server-side, so the prompt shape would under-count every real
+   * request. `/v1/tokenize` is a 404 on the same engine, hence the root URL
+   * built by `tokenizeUrl()`.
+   *
+   * Deliberately NOT routed through `enqueueRequest`: this probe never enters
+   * the generation queue and must not hold a concurrency slot that real traffic
+   * needs — it is a read of the tokenizer, not a completion.
+   *
+   * Contract (types.ts): never throws, never hangs. A route that does not
+   * exist is remembered for the process lifetime (`tokenizeUnsupportedUrls`),
+   * so a non-vLLM endpoint pays exactly one 404 and then behaves as if this
+   * method were absent.
+   */
+  async countPromptTokens(messages: any[]): Promise<ExactPromptCount | null> {
+    const url = this.tokenizeUrl();
+    if (tokenizeUnsupportedUrls.has(url)) return null;
+    if (!Array.isArray(messages) || messages.length === 0) return null;
+    try {
+      const headers = await this.getHeaders();
+      headers["Content-Type"] = "application/json";
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: this.modelName, messages }),
+        signal: AbortSignal.timeout(EXACT_COUNT_TIMEOUT_MS),
+      });
+      if (response.status === 404 || response.status === 405) {
+        tokenizeUnsupportedUrls.add(url);
+        log(
+          `[${this.displayName}] no tokenizer route at ${url} (${response.status}) — ` +
+            `exact counting off for this endpoint; the estimate keeps its old behavior`
+        );
+        return null;
+      }
+      if (!response.ok) return null;
+      const body: any = await response.json();
+      const exact = Number(body?.count);
+      if (!Number.isFinite(exact) || exact < 0) return null; // unreadable count — never guess
+      const declared = Number(body?.max_model_len);
+      return {
+        exact: Math.round(exact),
+        maxModelLen:
+          Number.isFinite(declared) && declared > 0 ? Math.round(declared) : undefined,
+      };
+    } catch {
+      // Timeout, DNS, TLS, malformed JSON: the band falls back to the estimate's
+      // old behavior. A probe failure must be indistinguishable from its absence.
+      return null;
+    }
+  }
+
+  /**
+   * vLLM serves `/tokenize` at the server ROOT, not under `/v1` (measured: a
+   * 404 there, a 200 at the root). Derive it from the completions endpoint by
+   * stripping the known suffixes, then a trailing `/v1`.
+   */
+  private tokenizeUrl(): string {
+    const root = this.getEndpoint()
+      .replace(/\/+$/, "")
+      .replace(/\/v1\/responses$/, "")
+      .replace(/\/responses$/, "")
+      .replace(/\/v1\/chat\/completions$/, "")
+      .replace(/\/chat\/completions$/, "")
+      .replace(/\/v1$/, "");
+    return `${root}/tokenize`;
   }
 
   /**
