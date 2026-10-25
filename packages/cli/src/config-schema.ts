@@ -74,6 +74,13 @@ export const CustomEndpointSimpleSchema = z.object({
    * (#431 SKIP). A compaction turn at the RX95 window (250k) still fits a
    * 262 144 Swift window instead of 400ing. Composes with `maxOutputTokens`
    * (the smaller cap wins). Unset = verbatim passthrough (today's behavior).
+   *
+   * Premise correction (#674, measured 2026-10-25): the parenthetical above —
+   * "prompt + max_tokens counted together, refusal never trim — vllm#110" —
+   * described vLLM v0.31. The shipping engine admits on the PROMPT alone and
+   * TRIMS the generation to the remaining window (prompt 262 126 of 262 144
+   * served with `output_tokens: 18`), refusing only above the window. So this
+   * field bounds the output budget; it does not change what the engine admits.
    */
   contextLimit: z.number().int().min(1).optional(),
   /**

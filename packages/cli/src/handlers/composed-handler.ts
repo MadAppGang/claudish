@@ -283,10 +283,27 @@ export interface ComposedHandlerOptions {
    * #431 AC2 — per-endpoint output cap. Clamps `max_tokens` DOWN (never up)
    * on the Claude-level request before any format conversion, so every wire
    * (openai `max_tokens`/`max_completion_tokens`, anthropic `max_tokens`)
-   * inherits it from one seam. vLLM counts `prompt + max_tokens` against
-   * `--max-model-len` and REFUSES rather than trims (measured on Swift,
-   * v0.31): a 240k prompt with `max_tokens: 32000` against a 262k window is
-   * a refusal, and the same prompt with the cap at 8192 is served.
+   * inherits it from one seam. This cap bounds what the CLIENT may ask for; it
+   * does not gate admission (see `contextLimit` below, #674).
+   *
+   * Premise correction (measured 2026-10-25, current Swift build): vLLM v0.31
+   * REFUSED a prompt+max_tokens sum over `--max-model-len`, which is what this
+   * cap was built for. The shipping engine does not: it admits on the PROMPT
+   * alone and TRIMS the generation to the remaining window — `reqN=11724`,
+   * prompt 262 126 against a 262 144 window, served with `output_tokens: 18`
+   * and `stop=max_tokens`; `reqN=931`, prompt 262 145, `400 Input too large`.
+   * Keep the cap for the client-visible budget it guarantees; do not read it as
+   * a rescue for an over-window prompt, and re-measure before restoring the old
+   * wording if the engine is ever pinned back to a build that refuses.
+   *
+   * The learned-cap short-circuit this endpoint has carried since #651 is itself
+   * gated (#676): when a window is KNOWN — `stated ?? derived ?? declared`, i.e.
+   * a limit the engine stated in its own refusal, else the `/v1/models`
+   * derivation, else a hand-typed literal — the estimate must corroborate
+   * against it before the short-circuit fires. With no window known, the learned
+   * cap stays the only evidence and behaviour is unchanged. So a cap learned
+   * from one refusal can no longer throw away, on its own, a prompt inside the
+   * [cap, window) band that #674 is about.
    */
   maxOutputTokens?: number;
   /**
@@ -304,6 +321,11 @@ export interface ComposedHandlerOptions {
    * context-overflow recovery path (#431 K1–K5, SKIP stays reachable) own
    * that case. Composes with `maxOutputTokens` — the smaller cap wins. Unset
    * = verbatim passthrough.
+   *
+   * #674 — scope, measured 2026-10-25: this clamp bounds the OUTPUT, and on the
+   * shipping engine it cannot rescue an over-window prompt (admission is
+   * decided by the prompt alone; `maxOutputTokens` above). What it still buys is
+   * a client-visible `max_tokens` the engine does not have to trim behind us.
    */
   contextLimit?: number;
   /**
@@ -979,8 +1001,13 @@ export class ComposedHandler implements ModelHandler {
       //
       // Threshold is the window itself, not window-minus-margin: this is a
       // "cannot fit" statement about our own measurement, and the residual
-      // 12-14% the /4 estimator undercounts (3.49 B/token measured on reqN=931)
-      // is #654's estimator correction — not a fudge factor invented here.
+      // the /4 estimator undercounts is content-dependent — measured over
+      // 1 111 served swift responses (2026-10-25, req→resp paired):
+      // real/est = x1.068 p50, x1.118 p95, x1.196 p99, min 0.57, max 3.18.
+      // No fixed factor is safe in both directions (one large enough for the
+      // tail refuses prompts that fit), which is why the band between this
+      // threshold and the wall is #674's exact-counting case, not a fudge
+      // factor invented here.
       const est = estimateClampTokens(claudeRequest);
       if (est >= this.options.derivedContextLimit) {
         // `log(msg, true)` — forceConsole lives on log(), not logStderr() (the

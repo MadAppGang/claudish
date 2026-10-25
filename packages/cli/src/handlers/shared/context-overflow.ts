@@ -47,10 +47,26 @@ const OVERFLOW_CODES = new Set(["context_length_exceeded", "1261"]);
  */
 const OVERFLOW_PHRASES = [
   "prompt exceeds max length", // GLM Coding 1261
-  "maximum context length", // OpenAI
+  "maximum context length", // OpenAI — ALSO the vLLM shape below (#674)
   "input exceeds the context window of", // Anthropic native
   "prompt is too long", // Anthropic native
 ];
+
+// The vLLM refusal that rides `maximum context length` above is worth quoting,
+// because its wording is the only place the engine states its own rule and it
+// carries an exact count we would otherwise have to probe for (#674, measured
+// 2026-10-25, three occurrences: 04:14:30Z / 08:15:00Z / 08:15:09Z):
+//
+//   {"error":{"message":"This model's maximum context length is 262144 tokens.
+//    However, your prompt contains at least 262145 input tokens, which exceeds
+//    this limit EVEN WITHOUT ANY OUTPUT TOKENS. … (parameter=input_tokens,
+//    value=262145)","type":"BadRequestError","param":"input_tokens","code":400}}
+//
+// Two facts to keep: admission is decided on the PROMPT alone (`max_tokens` is
+// trimmed to the remaining window, never validated — see `composed-handler.ts`
+// `maxOutputTokens`), and the classification comes from the PHRASE, not from a
+// code — this body's `code` is the literal 400, so `OVERFLOW_CODES` plays no
+// part here.
 
 /**
  * Strict matcher for prompt-size refusals. Accepts the RAW upstream error body
@@ -182,6 +198,16 @@ function stripMediaData(payload: unknown): { stripped: unknown; count: number } 
  * is safe (it only shrinks max_tokens further); UNDER-estimating re-arms the
  * vLLM 400 this clamp exists to prevent. 2048 ≈ 0.8% of the Swift window
  * (262 144).
+ *
+ * MEASURED CORRECTION (2026-10-25, #674): the `est/64` term (1.56%) does NOT
+ * track that tokenizer drift — over 1 111 served swift responses paired
+ * req→resp, `real/est` is x1.068 at p50, x1.118 at p95, x1.196 at p99 (min
+ * 0.57, max 3.18). Deliberately left as-is rather than enlarged: the ratio is
+ * content-dependent, so any factor big enough to cover the tail over-reserves
+ * on the median and truncates answers the engine would have served — and on the
+ * shipping engine this clamp cannot rescue an over-window prompt anyway
+ * (admission is decided by the prompt alone; the engine trims the generation).
+ * The band it cannot see is #674's exact-counting case.
  */
 export const CONTEXT_LIMIT_SAFETY_MARGIN_TOKENS = 2048;
 
