@@ -14,6 +14,24 @@ export type StreamFormat =
   | "ollama-jsonl";
 
 /**
+ * Exact prompt size from the provider's OWN tokenizer (#674).
+ *
+ * `exact` is what the engine itself will count for this prompt, chat template
+ * included — the only number allowed to decide admission inside the uncertain
+ * band (the `/4` estimate spans ×0.57–×3.18 of the real count across the served
+ * corpus, so it may only nominate).
+ */
+export interface ExactPromptCount {
+  exact: number;
+  /**
+   * The engine's own declared window, when the tokenizer endpoint reports it
+   * (vLLM's `/tokenize` answers `max_model_len`). Advisory for now: it is
+   * logged, never written into the learned-cap store.
+   */
+  maxModelLen?: number;
+}
+
+/**
  * A transport layer for a model API provider.
  *
  * Implementations are lightweight — they contain only the information
@@ -69,6 +87,21 @@ export interface ProviderTransport {
    * keeps the unbounded FIFO of today.
    */
   enqueueRequest?(fetchFn: () => Promise<Response>, opts?: { busyWaitMs?: number }): Promise<Response>;
+
+  /**
+   * Optional exact prompt count from the provider's own tokenizer (#674).
+   *
+   * vLLM: `POST {root}/tokenize` with `{model, messages}` — the chat template
+   * is applied server-side, so this counts what the engine will actually admit
+   * against, not a re-rendering we guessed at. Only implemented where a
+   * tokenizer endpoint is known to exist; absent everywhere else, which is what
+   * keeps #674 inert on every other wire.
+   *
+   * Contract: NEVER throws and NEVER hangs the turn — a missing route, a
+   * timeout, an unreadable body or a non-numeric `count` all resolve to `null`,
+   * and `null` must be indistinguishable from this method being absent.
+   */
+  countPromptTokens?(messages: any[]): Promise<ExactPromptCount | null>;
 
   /**
    * Optional auth refresh (e.g., OAuth token rotation).
