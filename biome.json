@@ -47,6 +47,16 @@
   },
   "overrides": [
     {
+      "include": ["**/*.test.ts", "**/*.test.tsx", "**/test-helpers/**"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": "off"
+          }
+        }
+      }
+    },
+    {
       "include": ["**/*.test.tsx"],
       "linter": {
         "rules": {
