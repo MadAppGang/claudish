@@ -98,6 +98,17 @@ export const CustomEndpointSimpleSchema = z.object({
    * never substitutes a default: an absent measurement coerced into a number is
    * invented evidence (same class as the missing-sample rule).
    */
+  /**
+   * #686 — opt this endpoint INTO client attribution: requests to it carry
+   * `x-claudish-client: <machine>:<workspace>` (composed from the inbound
+   * `x-claudish-machine` / `x-claudish-workspace`, a missing part reading
+   * `unknown` — never absent) plus the client's machine header verbatim.
+   * For OUR OWN engine fronts (one credential ≈ all engine traffic, the
+   * header is the only client discriminant). OPT-IN, never default: a custom
+   * endpoint can point at a third party (Aliyun, Mistral) and internal names
+   * must not leak there. Kill switch `CLAUDISH_CLIENT_ATTRIBUTION=0`.
+   */
+  clientAttribution: z.boolean().optional(),
   deriveContextLimit: z.boolean().optional(),
   /**
    * Drop `reasoning_content` from outbound assistant messages.
@@ -161,6 +172,17 @@ export const CustomEndpointComplexSchema = z.object({
   /** See CustomEndpointSimpleSchema.contextLimit (#441 dynamic clamp). */
   contextLimit: z.number().int().min(1).optional(),
   /** See CustomEndpointSimpleSchema.deriveContextLimit (#651 derivation). */
+  /**
+   * #686 — opt this endpoint INTO client attribution: requests to it carry
+   * `x-claudish-client: <machine>:<workspace>` (composed from the inbound
+   * `x-claudish-machine` / `x-claudish-workspace`, a missing part reading
+   * `unknown` — never absent) plus the client's machine header verbatim.
+   * For OUR OWN engine fronts (one credential ≈ all engine traffic, the
+   * header is the only client discriminant). OPT-IN, never default: a custom
+   * endpoint can point at a third party (Aliyun, Mistral) and internal names
+   * must not leak there. Kill switch `CLAUDISH_CLIENT_ATTRIBUTION=0`.
+   */
+  clientAttribution: z.boolean().optional(),
   deriveContextLimit: z.boolean().optional(),
   /** See CustomEndpointSimpleSchema.omitReasoningContent. */
   omitReasoningContent: z.boolean().optional(),

@@ -30,6 +30,14 @@ export interface ProviderTransport {
   /** Which stream parser to use for this provider's responses */
   readonly streamFormat: StreamFormat;
 
+  /**
+   * #686 — this endpoint opted into client attribution. When true, the
+   * handler merges `x-claudish-client: <machine>:<workspace>` (plus the
+   * client's `x-claudish-machine` verbatim) into the outbound headers.
+   * Undefined on every transport that did not opt in — nothing is sent.
+   */
+  readonly clientAttribution?: boolean;
+
   /** Get the full API endpoint URL for a request */
   getEndpoint(model?: string): string;
 

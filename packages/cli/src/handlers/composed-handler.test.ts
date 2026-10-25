@@ -86,7 +86,8 @@ async function runHandleWith(
   model: string,
   payload: any,
   fetchImpl: typeof fetch,
-  options: Record<string, unknown> = {}
+  options: Record<string, unknown> = {},
+  inboundHeaders: Record<string, string> = {}
 ): Promise<Response> {
   const original = (globalThis as any).fetch;
   (globalThis as any).fetch = fetchImpl;
@@ -97,7 +98,7 @@ async function runHandleWith(
     return await app.request("/v1/messages", {
       method: "POST",
       body: JSON.stringify(payload),
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...inboundHeaders },
     });
   } finally {
     (globalThis as any).fetch = original;
@@ -967,5 +968,134 @@ describe("#518 stats volet — recordStats records this stream's tokens, not the
       for (const e of bufferBefore) appendEvent(e);
       resetStatsForTests(); // leave the module inert — later tests must not record into the real buffer
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #686 — client attribution on the outbound wire (dispatch-level pins).
+//
+// The unit pins in client-attribution.test.ts hold the composition rules;
+// these hold that the handler actually merges the result into the headers it
+// FETCHES with, gated on the endpoint opt-in and the global kill switch. The
+// fetch stub captures init.headers (the same plain object composed-handler
+// passes to fetch), so assertions read the true outbound set.
+// ---------------------------------------------------------------------------
+
+describe("#686 — client attribution rides the outbound headers", () => {
+  const openaiJsonBody = JSON.stringify({
+    id: "c1",
+    object: "chat.completion",
+    choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+  });
+
+  function attributingTransport(clientAttribution: boolean): ProviderTransport {
+    return { ...overflowTransport(), clientAttribution } as unknown as ProviderTransport;
+  }
+
+  /** Records every init.headers the handler fetches with (plain object). */
+  function headerRecordingFetch(status: number, body: string) {
+    const captured: Array<Record<string, string>> = [];
+    const impl = (async (_input: any, init?: any) => {
+      captured.push(init?.headers ?? {});
+      return new Response(body, { status, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    return { impl, captured };
+  }
+
+  const smallPayload = (stream: boolean) => ({
+    model: "glm-5.3",
+    max_tokens: 64,
+    stream,
+    messages: [{ role: "user", content: "hi" }],
+  });
+
+  test("opted-in endpoint: composed value + machine verbatim on the outbound set", async () => {
+    const rec = headerRecordingFetch(200, openaiJsonBody);
+    await runHandleWith(
+      attributingTransport(true),
+      "glm-5.3",
+      smallPayload(false),
+      rec.impl,
+      {},
+      { "x-claudish-machine": "myia-po-2025", "x-claudish-workspace": "claudish" }
+    );
+    expect(rec.captured.length).toBe(1);
+    expect(rec.captured[0]["x-claudish-client"]).toBe("myia-po-2025:claudish");
+    expect(rec.captured[0]["x-claudish-machine"]).toBe("myia-po-2025");
+    // the merge must not clobber the standard outbound set
+    expect(rec.captured[0]["Content-Type"]).toBe("application/json");
+  });
+
+  test("machine only: workspace reads `unknown` — never an absent header", async () => {
+    const rec = headerRecordingFetch(200, openaiJsonBody);
+    await runHandleWith(
+      attributingTransport(true),
+      "glm-5.3",
+      smallPayload(false),
+      rec.impl,
+      {},
+      { "x-claudish-machine": "myia-po-2024" }
+    );
+    expect(rec.captured[0]["x-claudish-client"]).toBe("myia-po-2024:unknown");
+  });
+
+  test("neither part sent: `unknown:unknown`, still present — 'not attributable' is sayable", async () => {
+    const rec = headerRecordingFetch(200, openaiJsonBody);
+    await runHandleWith(attributingTransport(true), "glm-5.3", smallPayload(false), rec.impl);
+    expect(rec.captured[0]["x-claudish-client"]).toBe("unknown:unknown");
+    expect(rec.captured[0]["x-claudish-machine"]).toBeUndefined(); // never fabricated
+  });
+
+  test("endpoint that did NOT opt in: no attribution headers leave the box", async () => {
+    const rec = headerRecordingFetch(200, openaiJsonBody);
+    await runHandleWith(
+      attributingTransport(false),
+      "glm-5.3",
+      smallPayload(false),
+      rec.impl,
+      {},
+      { "x-claudish-machine": "myia-po-2025", "x-claudish-workspace": "claudish" }
+    );
+    expect(rec.captured[0]["x-claudish-client"]).toBeUndefined();
+    expect(rec.captured[0]["x-claudish-machine"]).toBeUndefined();
+  });
+
+  test("kill switch CLAUDISH_CLIENT_ATTRIBUTION=0 disarms even an opted-in endpoint", async () => {
+    const prev = process.env.CLAUDISH_CLIENT_ATTRIBUTION;
+    process.env.CLAUDISH_CLIENT_ATTRIBUTION = "0";
+    try {
+      const rec = headerRecordingFetch(200, openaiJsonBody);
+      await runHandleWith(
+        attributingTransport(true),
+        "glm-5.3",
+        smallPayload(false),
+        rec.impl,
+        {},
+        { "x-claudish-machine": "myia-po-2025", "x-claudish-workspace": "claudish" }
+      );
+      expect(rec.captured[0]["x-claudish-client"]).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDISH_CLIENT_ATTRIBUTION;
+      else process.env.CLAUDISH_CLIENT_ATTRIBUTION = prev;
+    }
+  });
+
+  test("streaming path carries attribution too (same header-build site)", async () => {
+    const sse = [
+      { id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }] },
+      { id: "c1", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } },
+    ].map((f) => `data: ${JSON.stringify(f)}`).join("\n\n") + "\n\ndata: [DONE]\n\n";
+    const rec = headerRecordingFetch(200, sse);
+    const res = await runHandleWith(
+      attributingTransport(true),
+      "glm-5.3",
+      smallPayload(true),
+      rec.impl,
+      {},
+      { "x-claudish-machine": "myia-po-2025", "x-claudish-workspace": "claudish" }
+    );
+    await res.text();
+    expect(rec.captured[0]["x-claudish-client"]).toBe("myia-po-2025:claudish");
   });
 });

@@ -26,6 +26,7 @@ import { DialectManager } from "../adapters/dialect-manager.js";
 import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
 import { TokenTracker, type UsageCacheDetail } from "./shared/token-tracker.js";
 import { clientRequestedThinking } from "./shared/client-thinking.js";
+import { clientAttributionEnabled, clientAttributionHeaders } from "./shared/client-attribution.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { stripReasoningContent } from "./shared/format/openai-messages.js";
@@ -521,6 +522,17 @@ export class ComposedHandler implements ModelHandler {
     // Model-specific dialect takes precedence (GLMModelDialect, GrokModelDialect, etc.)
     if (this.modelAdapter) return this.modelAdapter.getName();
     return this.getAdapter().getName();
+  }
+
+  /**
+   * #686 — merge client-attribution headers into an outbound set. No-op unless
+   * the endpoint opted in (`clientAttribution: true`) and the global kill
+   * switch is off. Mutates `headers` in place; called at EVERY site that
+   * builds headers from `getHeaders()` so a retry carries attribution too.
+   */
+  private applyClientAttribution(c: Context, headers: Record<string, string>): void {
+    if (!this.provider.clientAttribution || !clientAttributionEnabled()) return;
+    Object.assign(headers, clientAttributionHeaders(c));
   }
 
   async handle(c: Context, payload: any): Promise<Response> {
@@ -1026,6 +1038,7 @@ export class ComposedHandler implements ModelHandler {
 
     const endpoint = this.provider.getEndpoint(this.targetModel);
     const headers = await this.provider.getHeaders();
+    this.applyClientAttribution(c, headers);
     headers["Content-Type"] = "application/json";
 
     log(`[${this.provider.displayName}] Calling API: ${endpoint}`);
@@ -1245,6 +1258,7 @@ export class ComposedHandler implements ModelHandler {
         try {
           await this.provider.forceRefreshAuth();
           const retryHeaders = await this.provider.getHeaders();
+          this.applyClientAttribution(c, retryHeaders);
           retryHeaders["Content-Type"] = "application/json";
           const retryInit = this.provider.getRequestInit?.() || {};
           const retryResp = await fetch(endpoint, {

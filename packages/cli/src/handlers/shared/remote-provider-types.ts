@@ -78,6 +78,15 @@ export interface RemoteProvider {
     | "openai-responses-sse"
     | "gemini-sse"
     | "ollama-jsonl";
+  /**
+   * #686 — opt this endpoint INTO client attribution. When true, the OpenAI
+   * transport sends `x-claudish-client: <machine>:<workspace>` (composed from
+   * the inbound x-claudish-machine / x-claudish-workspace headers, missing
+   * parts reading `unknown`) plus the client's `x-claudish-machine` verbatim.
+   * Opt-in, never default: a custom endpoint can point at a third party and
+   * internal names must not leak there.
+   */
+  clientAttribution?: boolean;
 }
 
 /**

@@ -170,6 +170,8 @@ function buildSimpleHandler(
       prefixes: ctx.provider.prefixes ?? [],
       headers: ctx.provider.headers,
       authScheme: "bearer",
+      // #686 — opt-in, OpenAI wire only (see client-attribution.ts)
+      clientAttribution: ep.clientAttribution === true,
     };
     const transport = new OpenAIProviderTransport(remoteProvider, finalModel, apiKey, ep.maxConcurrency);
     const adapter = new OpenAIAPIFormat(finalModel);
@@ -238,6 +240,8 @@ function buildComplexHandler(
         headers: ep.headers,
         authScheme: ep.authScheme ?? "bearer",
         streamFormatOverride: ep.streamFormat,
+        // #686 — opt-in, OpenAI wire only (see client-attribution.ts)
+        clientAttribution: ep.clientAttribution === true,
       };
       const transport = new OpenAIProviderTransport(remoteProvider, finalModel, apiKey, ep.maxConcurrency);
       const adapter = new OpenAIAPIFormat(finalModel);

@@ -613,6 +613,7 @@ Full control over transport, auth, headers, and stream format:
 | `maxOutputTokens` | integer ≥ 1 | no | #431 — same as the simple kind: clamps `max_tokens` down before the request leaves |
 | `contextLimit` | integer ≥ 1 | no | #441 — same as the simple kind: dynamic `contextLimit − promptEstimate − max(2048, est/64)` clamp |
 | `omitReasoningContent` | boolean | no | Drops `reasoning_content` from outbound assistant messages (strict-schema backends) |
+| `clientAttribution` | boolean | no | #686 — opt-in: outbound requests carry `x-claudish-client: <machine>:<workspace>` (composed from the inbound `x-claudish-machine`/`x-claudish-workspace`, a missing part reading `unknown` — never absent) plus the client's machine header verbatim. For YOUR OWN engine fronts where one credential covers ~all traffic and the header is the only client discriminant. Never default-on: a custom endpoint can point at a third party (Aliyun, Mistral) and internal names must not leak there. Kill switch `CLAUDISH_CLIENT_ATTRIBUTION=0` (read per request). OpenAI-wire endpoints only |
 
 ### Environment variable expansion
 

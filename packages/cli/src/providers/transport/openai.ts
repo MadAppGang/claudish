@@ -18,6 +18,8 @@ export class OpenAIProviderTransport implements ProviderTransport {
   readonly name: string;
   readonly displayName: string;
   readonly streamFormat: StreamFormat;
+  /** #686 — endpoint opted into client attribution (see remote-provider-types). */
+  readonly clientAttribution: boolean;
 
   protected provider: RemoteProvider;
   private apiKey: string;
@@ -37,6 +39,7 @@ export class OpenAIProviderTransport implements ProviderTransport {
     this.name = provider.name;
     this.maxConcurrency = maxConcurrency;
     this.displayName = OpenAIProviderTransport.formatDisplayName(provider.name);
+    this.clientAttribution = provider.clientAttribution === true;
 
     // Codex models use the Responses API which has a different streaming format
     this.streamFormat = modelName.toLowerCase().includes("codex")

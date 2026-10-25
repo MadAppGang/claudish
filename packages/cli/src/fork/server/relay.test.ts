@@ -176,6 +176,31 @@ describe("forwardToUpstream — header building", () => {
     expect(h["transfer-encoding"]).toBeUndefined();
   });
 
+  it("#686 — x-claudish-workspace survives the sidecar→hub hop verbatim (the hub composes from it)", async () => {
+    fetchImpl = async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    const state = createRelayState({ upstream: "http://hub:3000", proxyKey: "cluster-key" });
+    const c = mockForwardContext({
+      "x-claudish-machine": "myia-po-2025",
+      "x-claudish-workspace": "claudish",
+    });
+
+    await forwardToUpstream(c, { model: "glm-5.2" }, state);
+
+    const h = lastFetch!.init.headers as Record<string, string>;
+    // Same survival class as X-Claudish-Machine (the copy loop preserves every
+    // non-hop-by-hop header): the hub can only compose `x-claudish-client` from
+    // parts that REACH it, so a sidecar client's workspace must arrive intact.
+    expect(h["x-claudish-workspace"]).toBe("claudish");
+    expect(h["x-claudish-machine"]).toBe("myia-po-2025");
+    // The hop append owns exactly one header — it must not touch these.
+    expect(String(h["x-claudish-hops"])).toContain(getInstanceId());
+    expect(h["x-claudish-hops"]).not.toContain("claudish"); // workspace never rides the hop list
+  });
+
   it("path-aware forward: an OpenAI request (/v1/chat/completions) reaches the hub's OpenAI ingress", async () => {
     fetchImpl = async () =>
       new Response(JSON.stringify({ ok: true }), {

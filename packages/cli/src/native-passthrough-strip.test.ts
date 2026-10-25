@@ -134,6 +134,11 @@ const INBOUND_HEADERS: Record<string, string> = {
   "x-proxy-key": "fake-cluster-key-route-test",
   "x-claudish-machine": "myia-fake",
   "x-claudish-hops": "fake-hop-id-route-test",
+  // #686 — the attribution pair rides the same `x-claudish-` prefix, so the
+  // existing sweep covers it by construction; these two lines pin that the
+  // NATIVE lane never leaks what opted-in OpenAI endpoints receive.
+  "x-claudish-client": "myia-fake:claudish",
+  "x-claudish-workspace": "claudish",
   "anthropic-beta": "interleaved-thinking-2025-05-14",
   "anthropic-version": "2023-06-01",
 };
@@ -172,6 +177,9 @@ describe("#282 — the proxy's own headers never reach api.anthropic.com", () =>
     expect(names).not.toContain("x-proxy-key");
     expect(names).not.toContain("x-claudish-machine");
     expect(names).not.toContain("x-claudish-hops");
+    // #686 — the attribution pair falls under the same prefix sweep.
+    expect(names).not.toContain("x-claudish-client");
+    expect(names).not.toContain("x-claudish-workspace");
     // The client's OAuth survives — that is what makes the subscription work.
     expect(names).toContain("authorization");
     // Negative control: the passthrough exists for a reason — genuine client
@@ -198,6 +206,8 @@ describe("#282 — the proxy's own headers never reach api.anthropic.com", () =>
     expect(names).not.toContain("x-proxy-key");
     expect(names).not.toContain("x-claudish-machine");
     expect(names).not.toContain("x-claudish-hops");
+    expect(names).not.toContain("x-claudish-client");
+    expect(names).not.toContain("x-claudish-workspace");
     expect(names).toContain("authorization");
     expect(names).toContain("anthropic-version");
     const body: any = await res.json();
