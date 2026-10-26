@@ -346,7 +346,7 @@ const SECURITY_DETAIL_MAX = 300;
  * The text of a failed `security` call that is safe to put in an error message.
  *
  * `security -i` echoes stdin text as `security: unknown command "<token>"` and
- * `<token>: returned <int>` when a line is split (measured: root-cause.md §5), so
+ * `<token>: returned <int>` when a line is split (measured: ai-docs/reports/keychain-security-cli-measurements.md §8), so
  * raw stderr can carry a fragment of a secret that exact-value redaction cannot
  * match. Only lines that match a fixed `security` message survive; everything
  * else is dropped. A kill (code -1) always names the signal or timeout, because
@@ -867,7 +867,7 @@ function quoteForStdin(value: string): string {
  * The longest `security -i` stdin line, newline included, that this module sends.
  *
  * Counted in UTF-8 bytes, because stdin is written as UTF-8.
- * Measured (root-cause.md §1): `security -i` reads 4095 bytes per chunk. The
+ * Measured (ai-docs/reports/keychain-security-cli-measurements.md §8): `security -i` reads 4095 bytes per chunk. The
  * first chunk RUNS as a command (with its trailing keychain argument cut off, so
  * it targets the default keychain), the remainder runs as a second command, and
  * the exit code and stderr belong to the LAST command, so a success of the first

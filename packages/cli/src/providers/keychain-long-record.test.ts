@@ -17,7 +17,7 @@ import {
   writeKeychainItem,
 } from "./keychain.js";
 
-// Measured in root-cause.md §1 and §5: each 4095-character chunk executes,
+// Measured in ai-docs/reports/keychain-security-cli-measurements.md §8: each 4095-character chunk executes,
 // including an unterminated first command; only the LAST result survives.
 function echoedCommand(chunk: string): KeychainRunResult {
   const command = chunk.trim();
