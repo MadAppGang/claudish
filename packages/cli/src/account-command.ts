@@ -221,7 +221,7 @@ function printHuman(reports: ProviderReport[], detailed: boolean): void {
     console.log(
       dim(
         "A Codex login (`claudish login codex`) is shown here as `default (legacy file)` " +
-          "once it exists; multi-account commands arrive with the pool."
+          "once it exists; add an account with `claudish account add codex --label <label>`."
       )
     );
   }

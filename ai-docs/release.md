@@ -116,6 +116,24 @@ green while shipping nothing, so a green conclusion is not evidence of a publish
 - `update-homebrew` is gated on `vars.ENABLE_HOMEBREW == 'true'` and is SKIPPED,
   not failed, when unset. A skipped job reads as green.
 
+**Reading a red `Tests` run** — shapes observed on PR #351, where the junit
+summary and the log grep disagreed with the job's conclusion:
+
+- junit can report 0 failures while `bun test` exits 1 from an "Unhandled error
+  between tests": an exception at module load or after a test ended. Read the
+  `[ci-tests] rest: … exit N` line and search the log for "Unhandled error"
+  (run 40139308118).
+- A junit failure with no message text does not match a log grep for failed
+  tests. Parse the junit XML: on the first PR #351 run the log grep found 2 of
+  the 4 failures.
+- The CI checkout is shallow: there is no `origin/main` and no old commit. A
+  test that runs git history commands at module load fails the whole `rest`
+  group.
+- The `macos-bridge and script tests` step is skipped when the rest step fails,
+  so its own failures appear only on the next run.
+- A release PR can get no `pull_request` run while main moves
+  (`mergeable: UNKNOWN`). Merging main into the release branch starts one.
+
 ## Deploy monitoring
 
 `none` — claudish publishes packages and binaries. No service is deployed, so
