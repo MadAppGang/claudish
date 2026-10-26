@@ -397,6 +397,17 @@ The worked example — assert the redirection is live BEFORE the first write, an
 [`../reports/keychain-security-cli-measurements.md`](../reports/keychain-security-cli-measurements.md) §7,
 along with the incident that motivated it.
 
+**A keychain path that does not exist is NOT an isolated target — it is the login keychain.**
+Measured 2026-10-26: `security -i` running `add-generic-password … "<missing file>"` exits 0 and
+stores the item in the DEFAULT keychain. Nothing fails and nothing is printed. So a typo in
+`CLAUDISH_KEYCHAIN_FILE`, or a throwaway file that was deleted or never created, sends the write to
+the real keychain, and a guard that only checks that the command line ENDS with the throwaway path
+passes anyway. The same loss happens when a stdin line is cut at 4095 bytes (see "`security -i` echoes
+stdin text" above): the trailing path is the first thing to go. Create and unlock the file BEFORE the
+first call, confirm it exists, and never use a missing path to provoke a failure. Inject the failure
+through the runner seam (`setKeychainTestDeps`) instead; a locked keychain file is no substitute,
+because it raises a password dialog.
+
 Live verification is still worth doing — it is the only thing that caught the raw-mode hang — but
 it goes here, never at the default keychain.
 
