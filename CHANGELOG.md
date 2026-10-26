@@ -2,6 +2,33 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.5.1] - 2026-10-26
+
+### Bug Fixes
+
+- keep security -i write lines under 4000 bytes *(keychain)* ([`57c42f2`](https://github.com/MadAppGang/claudish/commit/57c42f2957d67a3bdf769237eee77742dd74b1a0))
+- report a relative Write path as absolute in answerSource *(team)* ([`2a34061`](https://github.com/MadAppGang/claudish/commit/2a34061d8e6d0f218f1d07928c1e2e48c913b43a))
+- accept a slot answer written to a file with Write *(team)* ([`fe727c0`](https://github.com/MadAppGang/claudish/commit/fe727c070b8342e26b1130c4c949e7e84af3d7f7))
+- name account add codex in the empty account status hint *(accounts)* ([`6ff8722`](https://github.com/MadAppGang/claudish/commit/6ff872283f1e20278c70d600a921a48cd83212c4))
+
+### Documentation
+
+- record security -i stdin line measurements *(keychain)* ([`ebfdef5`](https://github.com/MadAppGang/claudish/commit/ebfdef5ec832a5ba590131fed45050f626de694f))
+- missing keychain file path writes to the login keychain *(keychain)* ([`7be3e81`](https://github.com/MadAppGang/claudish/commit/7be3e81f12e7627197e63e510bb59a5d776463b3))
+- add the red Tests run shapes seen on PR #351 *(release)* ([`849c0e7`](https://github.com/MadAppGang/claudish/commit/849c0e7f08ec2fc377e6e84202a7b781df7e1a3c))
+- record Phase 2a as shipped and D8 as the Phase 2b gate *(accounts)* ([`3b5d04e`](https://github.com/MadAppGang/claudish/commit/3b5d04e9682677c26581f3be092fcbb3dcdcd27b))
+- stamp the playbook verified at v14.5.0 (#354) *(release)* ([`af0592b`](https://github.com/MadAppGang/claudish/commit/af0592b455f2eec0abc8d38998bfd53a60d9f299))
+- update CHANGELOG.md for v14.5.0([`c651d39`](https://github.com/MadAppGang/claudish/commit/c651d3943a28245a982f0d0fad7ea001313f699e))
+
+### Other Changes
+
+- v14.5.1 *(release)* ([`cd55981`](https://github.com/MadAppGang/claudish/commit/cd55981047902c4ec02effb289f8b5dfc0d84871))
+- turn off noExcessiveCognitiveComplexity for test files *(lint)* ([`df8b7ce`](https://github.com/MadAppGang/claudish/commit/df8b7ce42270a576b5f9568dc575e831db0ac32e))
+
+### Refactoring
+
+- replace TeamRunOptions.answerRoot with a cwd option *(team)* ([`439a515`](https://github.com/MadAppGang/claudish/commit/439a51579aef8c0f37f2f5559f77a1962f3271d3))
+
 ## [14.5.0] - 2026-10-24
 
 ### Bug Fixes
