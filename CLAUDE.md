@@ -187,6 +187,7 @@ Substitutes the *model itself* for a whole **role** (`opus`/`sonnet`/`haiku`/`fa
 | `native-trend.py` | cost-per-turn drift, whole days, compaction split |
 | `lane-matrix.py` | per-lane day/hour response series (Epic #116 P1, sqlite) |
 | `compaction-trend.py` | compaction cost across all lanes (#89) |
+| `prompt-size-dist.py` | per-role/machine prompt-size distribution (#116 map, #565 input) — capture-only, no ordinal join |
 | `compress-captures.ps1` · `claudish-watchdog.ps1` | nightly 7z + GDrive backup · health/proactive-restart/hang recovery |
 | `claudish-drain.ps1` | restart without dropping agent turns — deploying needs `-Recreate -EnvFile`; agent callers `-Detach` |
 | `docker-events-collect.ps1` | container lifecycle events (~35 min, #169) — 🔴 never widen the filter (`exec_*` carries credentials, #192) |
