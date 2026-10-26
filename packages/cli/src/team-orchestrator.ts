@@ -1546,7 +1546,9 @@ async function startModelsIn(
       return { file: null, outcomes: [] };
     if (!requirePattern) return { file: null, outcomes: turn.writtenFiles ?? [] };
     const outcomes: string[] = [];
-    for (const path of turn.writtenFiles ?? []) {
+    for (const written of turn.writtenFiles ?? []) {
+      // A relative Write is reported resolved, so answerSource names the file without the cwd.
+      const path = resolve(cwd, written);
       const r = readWrittenFile(path, cwd);
       if ("skip" in r) {
         outcomes.push(`${path} (skipped: ${r.skip})`);

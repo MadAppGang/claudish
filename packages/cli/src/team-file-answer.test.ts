@@ -72,6 +72,21 @@ describe.skipIf(!MAGMUX)("MTL-229 team file answer", () => {
   }, 30_000);
 
   // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
+  it("resolves a relative Write path in the child's working directory", async () => {
+    const rootAnswer = join(import.meta.dir, "../../..", "answer.md");
+    expect(existsSync(rootAnswer)).toBe(false);
+    const { row, sessionPath, slotId } = await run("write_answer", "[Bb]lack-box", {
+      FAKE_WRITE_PATH: "answer.md",
+    });
+    const path = join(realpathSync(t.cwd), "answer.md");
+    expect(existsSync(path)).toBe(true);
+    expect(row.state).toBe("COMPLETED");
+    expect(row.answerSource).toBe(`file:${path}`);
+    expect(readFileSync(join(sessionPath, `response-${slotId}.md`))).toEqual(readFileSync(path));
+    expect(existsSync(rootAnswer)).toBe(false);
+  }, 30_000);
+
+  // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
   it("reports a nonmatching written file without claiming nothing was lost", async () => {
     const { row } = await run("write_nonmatching");
     const path = join(realpathSync(t.cwd), "file-answer.md");

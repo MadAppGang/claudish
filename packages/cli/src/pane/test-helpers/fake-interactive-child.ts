@@ -873,7 +873,7 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
     case "write_nonmatching":
     case "write_outside": {
       const file = env.FAKE_WRITE_PATH;
-      if (!file || !isAbsolute(file)) throw new Error("FAKE_WRITE_PATH must be absolute");
+      if (!file) throw new Error("FAKE_WRITE_PATH is required");
       let content =
         name === "write_nonmatching"
           ? "## Notes\nNo requested marker here.\n"
