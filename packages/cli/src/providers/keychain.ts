@@ -158,6 +158,8 @@ export interface KeychainRunResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** Set when the spawn itself failed: `stderr` is then claudish/Bun text, never `security` output. */
+  spawnError?: true;
 }
 
 export interface KeychainDeps {
@@ -243,7 +245,12 @@ function syncRun(args: string[], stdin?: string): KeychainRunResult {
   } catch (err) {
     // A throw here means the spawn itself failed (binary missing, EPERM) — the
     // message is the only diagnostic there is, so it must not be discarded.
-    return { code: 1, stdout: "", stderr: err instanceof Error ? err.message : String(err) };
+    return {
+      code: 1,
+      stdout: "",
+      stderr: err instanceof Error ? err.message : String(err),
+      spawnError: true,
+    };
   }
 }
 
@@ -262,7 +269,12 @@ async function asyncRun(args: string[], stdin?: string): Promise<KeychainRunResu
     ]);
     return normalizeResult(exitCode, proc.signalCode, stdout, stderr);
   } catch (err) {
-    return { code: 1, stdout: "", stderr: err instanceof Error ? err.message : String(err) };
+    return {
+      code: 1,
+      stdout: "",
+      stderr: err instanceof Error ? err.message : String(err),
+      spawnError: true,
+    };
   }
 }
 
@@ -284,10 +296,11 @@ function spawnAsyncRun(args: string[], stdin?: string): KeychainSpawn {
       proc.exited,
     ]).then(
       ([stdout, stderr, exitCode]) => normalizeResult(exitCode, proc.signalCode, stdout, stderr),
-      (err: unknown) => ({
+      (err: unknown): KeychainRunResult => ({
         code: 1,
         stdout: "",
         stderr: err instanceof Error ? err.message : String(err),
+        spawnError: true,
       })
     );
     return { done, pid: proc.pid };
@@ -297,10 +310,70 @@ function spawnAsyncRun(args: string[], stdin?: string): KeychainSpawn {
         code: 1,
         stdout: "",
         stderr: err instanceof Error ? err.message : String(err),
+        spawnError: true,
       }),
       pid: undefined,
     };
   }
+}
+
+/** `security` subcommands whose `<name>: returned <int>` line is a fixed message, not an echo. */
+const KNOWN_SECURITY_SUBCOMMANDS = new Set([
+  "add-generic-password",
+  "find-generic-password",
+  "delete-generic-password",
+  "add-internet-password",
+  "find-internet-password",
+  "delete-internet-password",
+  "dump-keychain",
+  "create-keychain",
+  "delete-keychain",
+  "unlock-keychain",
+  "lock-keychain",
+  "set-keychain-settings",
+]);
+
+const SECURITY_RETURNED_LINE = /^([\w-]+): returned -?\d+$/;
+const SECURITY_FIXED_LINES = [
+  /^security: Sec\w+( \([^)]*\))?: .+$/,
+  /^security (killed by \w+|terminated without an exit code)$/,
+  /^Unable to convert password data .+$/,
+  /^User interaction is not allowed\.?$/,
+];
+const SECURITY_DETAIL_MAX = 300;
+
+/**
+ * The text of a failed `security` call that is safe to put in an error message.
+ *
+ * `security -i` echoes stdin text as `security: unknown command "<token>"` and
+ * `<token>: returned <int>` when a line is split (measured: ai-docs/reports/keychain-security-cli-measurements.md §8), so
+ * raw stderr can carry a fragment of a secret that exact-value redaction cannot
+ * match. Only lines that match a fixed `security` message survive; everything
+ * else is dropped. A kill (code -1) always names the signal or timeout, because
+ * `token-store.ts` classifies an ambiguous write on those words.
+ */
+function securityErrorDetail(res: KeychainRunResult): string {
+  // A spawn-wrapper error is claudish/Bun text (binary missing, EPERM, ETIMEDOUT,
+  // EIO), never `security` output, so it cannot echo stdin and passes unchanged.
+  if (res.spawnError) {
+    return res.stderr.trim().slice(0, SECURITY_DETAIL_MAX) || `security exited ${res.code}`;
+  }
+  const kept: string[] = [];
+  for (const raw of res.stderr.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || /unknown command/.test(line)) continue;
+    const returned = SECURITY_RETURNED_LINE.exec(line);
+    if (returned) {
+      if (KNOWN_SECURITY_SUBCOMMANDS.has(returned[1] as string)) kept.push(line);
+      continue;
+    }
+    if (SECURITY_FIXED_LINES.some((re) => re.test(line))) kept.push(line);
+  }
+  if (res.code === -1 && !kept.some((line) => /killed by|timed out/.test(line))) {
+    kept.unshift("security killed by a signal / timed out");
+  }
+  const detail = kept.join("\n").slice(0, SECURITY_DETAIL_MAX);
+  return detail || `security exited ${res.code}`;
 }
 
 function decode(buf: Uint8Array | null | undefined): string {
@@ -478,7 +551,7 @@ function interpretRead(envVar: string, res: KeychainRunResult): string | null {
   }
   if (res.code === EXIT_ITEM_NOT_FOUND) return null;
   throw new KeychainError(
-    `Keychain lookup for ${envVar} failed: ${res.stderr.trim() || `security exited ${res.code}`}`,
+    `Keychain lookup for ${envVar} failed: ${securityErrorDetail(res)}`,
     res.code
   );
 }
@@ -604,7 +677,7 @@ function interpretGenericPassword(
   return {
     kind: "failed",
     code: res.code,
-    error: res.stderr.trim() || `security exited ${res.code}`,
+    error: securityErrorDetail(res),
   };
 }
 
@@ -710,7 +783,7 @@ export function enumerateKeychainVars(): KeychainEnumeration {
       : {
           names: [],
           failed: true,
-          error: res.stderr.trim() || `security exited ${res.code}`,
+          error: securityErrorDetail(res),
         };
   listMemo = { at, value };
   return value;
@@ -783,18 +856,46 @@ function toHex(value: string): string {
  * because "this particular string can't contain a space" is the kind of
  * assumption that stops being true one refactor later.
  *
- * The secret itself travels as hex and needs none of this; it is quoted anyway
- * so no argument is a special case.
+ * The secret is quoted like every other argument (plaintext `-w` for printable
+ * ASCII, hex `-X` otherwise), so no argument is a special case.
  */
 function quoteForStdin(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 /**
+ * The longest `security -i` stdin line, newline included, that this module sends.
+ *
+ * Counted in UTF-8 bytes, because stdin is written as UTF-8.
+ * Measured (ai-docs/reports/keychain-security-cli-measurements.md §8): `security -i` reads 4095 bytes per chunk. The
+ * first chunk RUNS as a command (with its trailing keychain argument cut off, so
+ * it targets the default keychain), the remainder runs as a second command, and
+ * the exit code and stderr belong to the LAST command, so a success of the first
+ * chunk is invisible. 4096 and 4097 only appear to work because the lost
+ * character is a closing quote. 4000 leaves margin below 4095.
+ */
+const MAX_STDIN_LINE = 4000;
+
+/** Printable ASCII only (0x20 to 0x7E): the values `-w` carries without a hex round trip. */
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+
+/**
+ * The value arguments of `add-generic-password`. Printable ASCII travels as
+ * plaintext `-w` (half the line of hex, so a 2 to 3 KB record fits); any other
+ * value keeps `-X` hex, which needs no quoting. Both stay on the stdin line,
+ * never argv.
+ */
+function valueArgs(value: string): string[] {
+  return PRINTABLE_ASCII.test(value)
+    ? ["-w", quoteForStdin(value)]
+    : ["-X", quoteForStdin(toHex(value))];
+}
+
+/**
  * Store (or replace) `envVar`'s secret.
  *
- * The command goes over stdin so the secret never reaches argv; `-X` carries it
- * as hex so no quoting is needed; `-U` upserts (without it, a second write to
+ * The command goes over stdin so the secret never reaches argv; `-w` carries a
+ * printable-ASCII value and `-X` hex carries any other; `-U` upserts (without it, a second write to
  * the same account fails with -25299); `-T /usr/bin/security` pins the ACL to
  * the same Apple-signed binary every read uses, which is what keeps subsequent
  * reads dialog-free.
@@ -852,8 +953,7 @@ export function writeKeychainItem(service: string, account: string, value: strin
     quoteForStdin("application password"),
     "-j",
     quoteForStdin("Stored by claudish"),
-    "-X",
-    quoteForStdin(toHex(value)),
+    ...valueArgs(value),
     "-U",
     "-T",
     quoteForStdin(SECURITY_BIN),
@@ -862,10 +962,19 @@ export function writeKeychainItem(service: string, account: string, value: strin
     ...keychainFileArgs().map(quoteForStdin),
   ].join(" ");
 
-  const res = deps.run(["-i"], `${cmd}\n`);
+  const line = `${cmd}\n`;
+  const lineBytes = Buffer.byteLength(line, "utf8");
+  if (lineBytes > MAX_STDIN_LINE) {
+    throw new KeychainError(
+      `Cannot store ${account}: value is too large for the keychain write path ` +
+        `(${lineBytes} bytes on the command line, limit ${MAX_STDIN_LINE})`
+    );
+  }
+
+  const res = deps.run(["-i"], line);
   if (res.code !== 0) {
     throw new KeychainError(
-      `Failed to store ${account} in the keychain: ${res.stderr.trim() || `security exited ${res.code}`}`,
+      `Failed to store ${account} in the keychain: ${securityErrorDetail(res)}`,
       res.code
     );
   }
@@ -907,7 +1016,7 @@ export function deleteKeychainItem(service: string, account: string): boolean {
   if (res.code === 0) return true;
   if (res.code === EXIT_ITEM_NOT_FOUND) return false;
   throw new KeychainError(
-    `Failed to delete ${account} from the keychain: ${res.stderr.trim() || `security exited ${res.code}`}`,
+    `Failed to delete ${account} from the keychain: ${securityErrorDetail(res)}`,
     res.code
   );
 }

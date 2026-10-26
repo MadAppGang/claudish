@@ -180,15 +180,34 @@ and an unquoted label (`claudish: GEMINI_API_KEY`) split on its space and made e
 with a usage dump. `quoteForStdin()` quotes every argument uniformly rather than only where a
 space is expected today.
 
-**Verified negative — `security -i` does NOT echo the failing command to stderr.** This matters
-because `writeKeychainSecret` splices `res.stderr` into its error message, which surfaces in the
-TUI status line and the CLI; if the command were echoed, the `-X <hex>` secret would leak through
-every one of those. Probed with a canary value (`probe-stderr-leak.ts`): a duplicate-write failure
-returns 227 bytes naming only the error and the keychain path, and a malformed command returns the
-usage text — neither contains the secret in hex OR plaintext form. (An earlier reading of a
-TRUNCATED stderr ended in a dangling `add`, which looked like a command echo and was in fact
-`add-generic-password: returned -25299` cut mid-word. Truncating diagnostic output during a
-security review invents findings as easily as it hides them.)
+**Measured — `security -i` echoes stdin text when a line is split, and nowhere else.** `security -i`
+reads 4095 bytes per chunk. The first chunk RUNS as a command (a write line that long loses its
+trailing keychain argument and so targets the default keychain), the remainder runs as a second
+command, and `security` answers it on stderr with `security: unknown command "<remainder>"` and
+`<remainder>: returned 1`. The exit code and stderr belong to the LAST command, so the first chunk's
+success is invisible. Every other failure probed (duplicate write 45, malformed hex, unknown option,
+extra positional) prints fixed text or usage and never an argument. A fragment of the `-X <hex>` or
+`-w` value in that echo is a mid-string slice, so exact-value redaction cannot match it. Three rules
+follow:
+
+- **The carrier is plaintext `-w` for printable ASCII (0x20 to 0x7E), still on the stdin line, never
+  argv**, so a 2 to 3 KB record fits where hex doubled it past the limit. Any other value keeps
+  `-X <hex>`. Non-ASCII text is stored correctly but `find-generic-password -w` reads it back as HEX,
+  exactly like a control character, so the write verification rejects it today.
+- **`MAX_STDIN_LINE` (4000) caps the whole line, newline included, counted in UTF-8 bytes because
+  stdin is written as UTF-8, and `writeKeychainItem` throws before spawning** when the line is
+  longer. The message names the byte count and the limit and carries no part of the value. A record above about 3.8 KB of printable ASCII is refused.
+- **`securityErrorDetail` is the one place `security` stderr becomes message text**, at every
+  splice (write, read, enumerate, dump, delete). It keeps only fixed `security` messages, drops
+  `unknown command` and every `<token>: returned <int>` whose token is not a known subcommand, caps
+  at 300 characters, and says `security exited <code>` when nothing survives. A kill (code -1) always
+  names the signal or timeout, because `token-store.ts` classifies an ambiguous write on those words.
+  A spawn-wrapper error (`spawnError`: binary missing, EPERM, ETIMEDOUT, EIO) is passed through
+  unchanged, trimmed and capped, because only real `security` stderr can echo stdin.
+
+(An earlier reading of a TRUNCATED stderr ended in a dangling `add`, which looked like a command echo
+and was in fact `add-generic-password: returned -25299` cut mid-word. Truncating diagnostic output
+during a security review invents findings as easily as it hides them.)
 
 **Known gap, pre-existing and out of scope here:** `auth/antigravity-token.ts:162` writes the
 shared agy token with `-w` in argv and has this exposure. Fixing it means touching the shared
@@ -377,6 +396,17 @@ The worked example — assert the redirection is live BEFORE the first write, an
 `claudish` items in the login keychain after — is recorded in
 [`../reports/keychain-security-cli-measurements.md`](../reports/keychain-security-cli-measurements.md) §7,
 along with the incident that motivated it.
+
+**A keychain path that does not exist is NOT an isolated target — it is the login keychain.**
+Measured 2026-10-26: `security -i` running `add-generic-password … "<missing file>"` exits 0 and
+stores the item in the DEFAULT keychain. Nothing fails and nothing is printed. So a typo in
+`CLAUDISH_KEYCHAIN_FILE`, or a throwaway file that was deleted or never created, sends the write to
+the real keychain, and a guard that only checks that the command line ENDS with the throwaway path
+passes anyway. The same loss happens when a stdin line is cut at 4095 bytes (see "`security -i` echoes
+stdin text" above): the trailing path is the first thing to go. Create and unlock the file BEFORE the
+first call, confirm it exists, and never use a missing path to provoke a failure. Inject the failure
+through the runner seam (`setKeychainTestDeps`) instead; a locked keychain file is no substitute,
+because it raises a password dialog.
 
 Live verification is still worth doing — it is the only thing that caught the raw-mode hang — but
 it goes here, never at the default keychain.
