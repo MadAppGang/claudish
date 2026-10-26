@@ -211,12 +211,12 @@ export interface TeamRunOptions {
    */
   requirePattern?: string;
   /**
-   * The directory a slot's written files must lie in to be read as its answer (MTL-229):
-   * a relative Write path resolves against it, and each file's realpath must be inside its
-   * realpath. Default `process.cwd()`, the slot's working directory. It does NOT change the
-   * child's working directory.
+   * The slots' working directory. Default `process.cwd()`. One value serves every use: the
+   * child starts there, its transcript path is derived from it, the hook session reports it,
+   * and a slot's written files must lie inside its realpath to be read as its answer
+   * (MTL-229; a relative Write path resolves against it).
    */
-  answerRoot?: string;
+  cwd?: string;
   /**
    * Called on a timer with a rendered, colourless progress block, and once more
    * when the run settles. Used to push live status somewhere a human can see it
@@ -1476,7 +1476,7 @@ async function startModelsIn(
 
   const minOutputBytes = opts.minOutputBytes ?? DEFAULT_MIN_OUTPUT_BYTES;
   const requirePattern = opts.requirePattern;
-  const answerRoot = opts.answerRoot ?? process.cwd();
+  const cwd = opts.cwd ?? process.cwd();
 
   // Each child writes its token/cost stats here (one file per model).
   mkdirSync(statsDir(path), { recursive: true });
@@ -1547,7 +1547,7 @@ async function startModelsIn(
     if (!requirePattern) return { file: null, outcomes: turn.writtenFiles ?? [] };
     const outcomes: string[] = [];
     for (const path of turn.writtenFiles ?? []) {
-      const r = readWrittenFile(path, answerRoot);
+      const r = readWrittenFile(path, cwd);
       if ("skip" in r) {
         outcomes.push(`${path} (skipped: ${r.skip})`);
         continue;
@@ -1728,7 +1728,6 @@ async function startModelsIn(
     notifyStatus(e.id);
   }
 
-  const cwd = process.cwd();
   const projects = projectsDir(parentEnv);
 
   /** The slot's hook binding: a test's, or the real one when the engine has session hooks. */
@@ -1850,7 +1849,7 @@ async function startModelsIn(
       };
       entries.set(id, e);
       const uuid = randomUUID();
-      // Team children run in the server's cwd, as before; the launcher `cd`s there.
+      // Team children run in `cwd` (the server's, unless the caller set one); the launcher `cd`s there.
       const transcriptPath = transcriptPathFor(cwd, uuid, projects);
       updateModelStatus(id, {
         state: "STARTING",

@@ -297,7 +297,7 @@ async function team(o: {
   const path = join(t.tmp, "team");
   setupSession(path, ["fake-scripted"], o.input ?? "Reply with the first answer.");
   const handle = await startModels(path, {
-    answerRoot: t.tmp,
+    cwd: t.cwd,
     parentEnv: t.env,
     spawnPlanner: async () => ({ pinned: new Map<string, string>() }),
     paneTimings: { replStableMs: 200, corroborationMs: 200, ...o.timings },
@@ -545,7 +545,7 @@ wait $child
         let path = "";
         const x = await team({
           script: (t) => {
-            path = join(t.tmp, "file-answer.md");
+            path = join(t.cwd, "file-answer.md");
             return [
               { writes: [{ path, content }], say: "I wrote the deliverable." },
               { say: "The requested work is complete." },
@@ -1528,7 +1528,7 @@ wait $child
           let path = "";
           const d = await direct({
             script: (t) => {
-              path = join(t.tmp, "file-answer.md");
+              path = join(t.cwd, "file-answer.md");
               return [
                 { writes: [{ path, content }], say: "I wrote the deliverable." },
                 { say: "The requested work is complete." },
@@ -1569,9 +1569,9 @@ wait $child
           let tail = "";
           const d = await direct({
             script: (t) => {
-              head = join(t.tmp, "z-head.md");
-              shared = join(t.tmp, "a-shared.md");
-              tail = join(t.tmp, "b-tail.md");
+              head = join(t.cwd, "z-head.md");
+              shared = join(t.cwd, "a-shared.md");
+              tail = join(t.cwd, "b-tail.md");
               return [
                 {
                   writes: [
