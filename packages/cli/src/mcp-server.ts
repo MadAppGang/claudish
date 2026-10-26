@@ -512,10 +512,9 @@ export const NEXT_STEP: Record<FailureReason, string> = {
   refused: "the model refused — rephrase or drop the model",
   empty_output: "retry once; if it repeats, drop the model",
   shape_mismatch:
-    "the answer (assistant text after the task was read) did not match. Every assistant " +
-    "message of the turn was read from the transcript, so nothing was lost in transit — " +
-    "the model did not produce it. Re-prompt with the required format restated; do NOT " +
-    "count this slot as a vote",
+    "neither the reply (assistant text after the task was read) nor any file the slot wrote " +
+    "with Write matched — the model did not produce it. Re-prompt with the required format " +
+    "restated; do NOT count this slot as a vote",
 };
 
 // The preflight "no route" cell moved to `providers/preflight-chain.ts` with the

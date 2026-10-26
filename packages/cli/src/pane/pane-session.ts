@@ -641,7 +641,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /* session hooks (§7.3); untouched without a binding */
   private readonly hooks: SessionHookBinding | null;
   /** the turn chain: every recorded answer since the last caller admission */
-  private chain: Array<{ index: number; answer: string }> = [];
+  private chain: Array<{ index: number; answer: string; writtenFiles: string[] }> = [];
   private chainHead: SettledTurn["delivery"] | null = null;
   private hookTurns = 0;
   /** the current turn was admitted from a hook item */
@@ -2509,6 +2509,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         complete: t.delivery && !unverified ? t.readCoverage.complete : null,
         preambleBytes: t.preambleBytes,
       },
+      writtenFiles: decision.by === "local_command" ? [] : t.writtenFiles,
     };
   }
 
@@ -2586,8 +2587,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.follower.markSettled();
     }
     const last = this.chain[this.chain.length - 1];
-    if (last && last.index === core.index) last.answer = core.answer;
-    else this.chain.push({ index: core.index, answer: core.answer });
+    const writtenFiles = core.writtenFiles ?? [];
+    if (last && last.index === core.index) {
+      last.answer = core.answer;
+      last.writtenFiles = writtenFiles;
+    } else this.chain.push({ index: core.index, answer: core.answer, writtenFiles });
     if (!this.turnHookCaused) this.chainHead = core.delivery;
     const turn: SettledTurn = {
       ...core,
@@ -2595,6 +2599,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       chainDelivery: this.chainHead ?? core.delivery,
       hookTurns: this.hookTurns,
       hookCaused: this.turnHookCaused,
+      writtenFiles: [...new Set(this.chain.flatMap((c) => c.writtenFiles))],
     };
     this.heldTurn = turn;
     try {

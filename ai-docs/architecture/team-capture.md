@@ -52,7 +52,25 @@ Detection turned a silent wrong verdict into a loud failure, but the generated a
 
 One piece of chatter is now cut deliberately, because it is not about the task: when the prompt is delivered as a task file (anything but one plain line), the answer starts AFTER the Read result that returned the last unread line of that file. Narration before the task was read never reaches `response-<slot>.md` or `require_pattern`; its size is reported as `preambleBytes`. A slot whose task file was not fully read is FAILED `prompt_not_read` instead of being judged on an answer to a task it never saw.
 
-`response-<slot>.md` stays prose, written once, byte-exact, so the judge phase and every downstream reader are unaffected. `shape_mismatch` therefore means one thing: every assistant message of the turn was read, and the model did not produce the shape. The old "your answer was discarded" explanation, the `captureMode: "print"` escape hatch and `CLAUDISH_TEAM_CAPTURE` were removed with print mode.
+`response-<slot>.md` stays prose, written once, byte-exact, so the judge phase and every downstream reader are unaffected. `shape_mismatch` therefore means one thing: every assistant message of the turn was read, every file the turn wrote with `Write` after the task was read was read too (below), and neither had the shape. The old "your answer was discarded" explanation, the `captureMode: "print"` escape hatch and `CLAUDISH_TEAM_CAPTURE` were removed with print mode.
+
+## A file the slot wrote can be the answer (MTL-229)
+
+A slot told to "write the deliverable to answer.md" does exactly that: the 52,828-char answer went into one `Write` tool_use, and the reply was 2.9 KB of narration about it. The verdict read only assistant text, so the slot was EMPTY `shape_mismatch`, with a detail claiming "nothing was lost". The text was on disk; the verdict never looked there.
+
+The transcript follower now records every `Write` of the turn, and the verdict falls back to those files. The decisions:
+
+- **`Write` only, never `Edit`/`MultiEdit`/`NotebookEdit`.** An edit changes a file that predates the task, usually source code; a pattern match on it proves nothing (`require_pattern "vote"` against a source file that contains "vote"). An edit to a file the turn DID write still counts, because the file is read from disk.
+- **The same post-Read cut as the reply.** A file written before the task was read cannot answer it, exactly as narration before the Read is cut. A `Write` whose `tool_result` is an error, or has not arrived, is not listed: a failed overwrite leaves the old content.
+- **Read from disk at verdict time**, not from the tool_use input: a later edit is the truth, and a removed file drops out (`missing`).
+- **Contained in `realpath(cwd)`** (`TeamRunOptions.cwd`, default `process.cwd()`: the same value the child starts in and its transcript path is derived from, so a test that sets it moves the child, its files and its transcript together). The content goes into `response-<slot>.md` and to the judges, so a `Write` through a symlink or outside the run's tree must not pull other disk content into the run's output. A relative path resolves against the root.
+- **At most 1 MiB, and no NUL byte** (binary). The incident's file was 53,905 B.
+- **Only when the caller set `require_pattern`**, and only when the reply failed an answer check (`shape_mismatch`, `empty_output`); with a pattern set, `min_output_bytes` still applies to the file as an extra floor. `min_output_bytes` alone is not enough: size is a guess, the same reason `DEFAULT_MIN_OUTPUT_BYTES` is 0 and edits are excluded, so a `min_output_bytes`-only slot that writes a large source module must not become a vote. Without a pattern the reply's verdict stands (a whitespace-only reply stays EMPTY), and its detail names the files unread.
+- **Never over `api_error`, `prompt_not_read` or `refused`.** They return before the answer checks, so a written file cannot reach them.
+- **The first file that passes, in write order, is the answer.** `response-<slot>.md` holds that file's content only, byte-exact; the narration failed the contract and would only confuse the judges, and it stays in the transcript. The row's `answerSource` is `file:<path>` (`reply` otherwise), and the COMPLETED row's `anomalies` carry "answer was written to <path>, not to the reply".
+- **With hooks, the chain's files count**, head first, as the chain's text does: a head turn that wrote the file and a hook-caused turn that replied is one answer.
+
+When nothing matches, the detail says what was checked: "No reply text or written file matched /p/: the reply (N B …) does not match, and the turn wrote no file" — or each file with `(no match)` or `(skipped: <reason>)`.
 
 `max_tokens` is no longer an ending a slot sees as such: Claude Code 2.1.290 auto-continues a `max_tokens` stop on its own and finally writes a synthetic `max_output_tokens` API error, which is FAILED `api_error`. A COMPLETED turn whose recorded `stop_reason` is `max_tokens` carries the note "the answer may be truncated" in its anomalies.
 
