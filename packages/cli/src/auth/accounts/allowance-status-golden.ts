@@ -150,6 +150,26 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
         { at: "2026-10-26T08:00:00.000Z", remaining: 0.59, provenance: "observed" },
         { at: "2026-10-26T09:00:00.000Z", remaining: 0.58, provenance: "observed" },
       ],
+      historyByAccount: [
+        {
+          accountId: "aaaaaaaaaaaa",
+          history: [
+            { at: "2026-10-26T06:00:00.000Z", remaining: 0.29, provenance: "observed" },
+            { at: "2026-10-26T07:00:00.000Z", remaining: 0.28, provenance: "observed" },
+            { at: "2026-10-26T08:00:00.000Z", remaining: 0.27, provenance: "observed" },
+            { at: "2026-10-26T09:00:00.000Z", remaining: 0.26, provenance: "observed" },
+          ],
+        },
+        {
+          accountId: "bbbbbbbbbbbb",
+          history: [
+            { at: "2026-10-26T06:00:00.000Z", remaining: 0.32, provenance: "observed" },
+            { at: "2026-10-26T07:00:00.000Z", remaining: 0.32, provenance: "observed" },
+            { at: "2026-10-26T08:00:00.000Z", remaining: 0.32, provenance: "observed" },
+            { at: "2026-10-26T09:00:00.000Z", remaining: 0.32, provenance: "observed" },
+          ],
+        },
+      ],
       forecast: [
         { at: "2026-10-27T09:00:00.000Z", p10: 0.38, p50: 0.45, p90: 0.5, pBlocked: 0 },
         { at: "2026-10-28T09:00:00.000Z", p10: 0.16, p50: 0.27, p90: 0.36, pBlocked: 0.02 },
@@ -254,7 +274,15 @@ export const GOLDEN_ALLOWANCE_NO_EVIDENCE_ANSWER = {
     alerts: [],
     blockedNow: false,
     status: "insufficient-evidence",
-    trajectory: { history: [], forecast: [], resets: [], blocked: [], switches: [], spark48: "" },
+    trajectory: {
+      history: [],
+      historyByAccount: [],
+      forecast: [],
+      resets: [],
+      blocked: [],
+      switches: [],
+      spark48: "",
+    },
     sessions: [],
   },
 } satisfies AllowanceStatusAnswer;

@@ -5,7 +5,8 @@
  *   governing-epoch start, now − 7 d)`. Each point is `Σ_a deliverable_a` from
  *   each account's latest reading at that time, in the unit (`/β_g` in `cu`, as
  *   is in `account-fraction`); a window whose reset had passed by then counts
- *   as refilled and the point carries `reset-inferred`.
+ *   as refilled and the point carries `reset-inferred`. The same loop keeps
+ *   each account's own term (`historyByAccount`), so the split sums to it.
  * - **The band** runs the alerts' path count — a demand path of the forecast's
  *   own model plus capacity draws (§1.7), seeded from the same `seed` as the
  *   alerts' gap quantiles — through `simulate` with the alerts' strategy
@@ -129,33 +130,61 @@ function deliverableIn(view: AccountView, unit: ForecastUnit): number {
   return isStrong(beta) && beta.value > 0 ? d / beta.value : d;
 }
 
-function historyOf(
-  s: AllowanceState,
-  views: readonly AccountView[],
-  now: Ms,
-  unit: ForecastUnit
-): Trajectory["history"] {
+/** History's first hour: `min(the oldest current governing-epoch start, now − 7 d)`. */
+function historyFrom(views: readonly AccountView[], now: Ms): Ms {
   let from = now - WEEK_MS;
   for (const v of views) {
     const g = v.windows.find((w) => w.key === v.governing);
     if (g?.resetAt == null || g.lengthMinutes === null) continue;
     from = Math.min(from, g.resetAt - g.lengthMinutes * MINUTE_MS);
   }
-  const out: Trajectory["history"] = [];
-  for (let t = now; t >= from; t -= HOUR_MS) {
-    let remaining = 0;
-    let any = false;
-    let inferred = false;
-    for (const v of views) {
-      const at = viewAt(s, v, t);
-      if (!at) continue;
-      any = true;
-      inferred ||= at.inferred;
-      remaining += deliverableIn(at.view, unit);
-    }
-    if (any) out.push({ at: t, remaining, provenance: inferred ? "reset-inferred" : "observed" });
+  return from;
+}
+
+type HistoryPoint = Trajectory["history"][number];
+
+const provenanceOf = (inferred: boolean): HistoryPoint["provenance"] =>
+  inferred ? "reset-inferred" : "observed";
+
+/** The combined point at `t`, each account's own term appended to `byAccount`; null when none was read then. */
+function historyAt(
+  s: AllowanceState,
+  views: readonly AccountView[],
+  t: Ms,
+  unit: ForecastUnit,
+  byAccount: Trajectory["historyByAccount"]
+): HistoryPoint | null {
+  let remaining = 0;
+  let any = false;
+  let inferred = false;
+  for (const v of views) {
+    const at = viewAt(s, v, t);
+    if (!at) continue;
+    any = true;
+    inferred ||= at.inferred;
+    const own = deliverableIn(at.view, unit);
+    remaining += own;
+    byAccount[v.account]?.push({ at: t, remaining: own, provenance: provenanceOf(at.inferred) });
   }
-  return out.reverse();
+  return any ? { at: t, remaining, provenance: provenanceOf(inferred) } : null;
+}
+
+function historyOf(
+  s: AllowanceState,
+  views: readonly AccountView[],
+  now: Ms,
+  unit: ForecastUnit
+): { history: Trajectory["history"]; byAccount: Trajectory["historyByAccount"] } {
+  const from = historyFrom(views, now);
+  const out: Trajectory["history"] = [];
+  const byAccount: Trajectory["historyByAccount"] = {};
+  for (const v of views) byAccount[v.account] = [];
+  for (let t = now; t >= from; t -= HOUR_MS) {
+    const point = historyAt(s, views, t, unit, byAccount);
+    if (point) out.push(point);
+  }
+  for (const list of Object.values(byAccount)) list.reverse();
+  return { history: out.reverse(), byAccount };
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +339,7 @@ export function trajectory(
 ): Trajectory {
   const all = accountViews(s, now, cfg).filter(isRead);
   const unit: ForecastUnit = strongBetas(all) ? "cu" : "account-fraction";
-  const history = historyOf(s, all, now, unit);
+  const { history, byAccount: historyByAccount } = historyOf(s, all, now, unit);
   const end = now + Math.max(0, horizonMs);
   const resets = resetsOf(all, now, end);
   const empty: Trajectory = {
@@ -321,6 +350,7 @@ export function trajectory(
     blocked: [],
     switches: [],
     lostAtReset: {},
+    historyByAccount,
   };
   if (evidenceOf(s, now) === "none" || all.length === 0) return empty;
 
@@ -368,6 +398,7 @@ export function trajectory(
     blocked: blockedRuns(results, forecast),
     switches: switchesOf(results, views, s.poolActive ?? null, now, end),
     lostAtReset: lostAtResetOf(results, views),
+    historyByAccount,
   };
 }
 

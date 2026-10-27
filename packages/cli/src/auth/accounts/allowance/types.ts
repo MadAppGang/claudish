@@ -655,6 +655,12 @@ export interface Trajectory {
    * `at` is the same on every path: capacity draws vary β, never reset times.
    */
   lostAtReset: Record<AccountId, { at: Ms; q: Quantiles }>;
+  /**
+   * `history` split per read account: each point is that account's own term of
+   * the combined sum, with its own provenance, at the same `at`s (an account
+   * with no reading yet at `at` has no point there).
+   */
+  historyByAccount: Record<AccountId, Trajectory["history"]>;
 }
 
 export interface Contribution {
