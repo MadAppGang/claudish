@@ -85,6 +85,20 @@ const accountSchema = z.object({
    * report of an older claudish.
    */
   order: z.number().int().min(0).optional(),
+  /**
+   * The share of the account's GOVERNING window expected to expire unused at
+   * its next governing reset `at`, as p10 / p50 / p90 over the trajectory's
+   * paths (a fraction of the window, the same in both units). Independent of
+   * `horizonHours`: the simulation always reaches that reset. Resets apply at
+   * hour starts, so demand between `at` and the next hour counts as spent (a
+   * slight under-statement). Null for an unread account, a sliding governing
+   * window or one without a reset time, a reset past the simulation grid, or
+   * no evidence. Added within v1; absent from a report of an older claudish.
+   */
+  lostAtReset: z
+    .object({ at: iso, p10: fraction, p50: fraction, p90: fraction })
+    .nullable()
+    .optional(),
 });
 
 const remedySchema = z.object({

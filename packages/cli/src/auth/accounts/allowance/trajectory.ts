@@ -21,6 +21,10 @@
  *   from the pool's active account (when the paths simulate it; else the
  *   first server is not a switch). Each account's first takeover per path,
  *   inside the horizon, gives its time quantiles and the share of paths.
+ * - **Loss at a reset** reads the same paths' `leftoverAtReset`: the share of
+ *   each account's governing window still unused at its next governing reset.
+ *   The grid always reaches that reset + 24 h, so it does not depend on the
+ *   horizon's length (only on the rng draws a longer grid consumes).
  * - **`sparkline`** is the ONE compact renderer (R21): history then p50, `▒`
  *   where p90 − p10 exceeds 15 % of the scale, `▓` on a projected block, `┊`
  *   at a reset, from a closed glyph set.
@@ -269,6 +273,34 @@ function switchesOf(
   );
 }
 
+/**
+ * Each read account's governing-window share left unused at its next fixed
+ * governing reset, over the paths (see the header). An account whose
+ * governing window is sliding or has no reset time, or whose reset lies past
+ * the grid on too many paths, has no entry. No simulation: the paths are reused.
+ */
+function lostAtResetOf(
+  results: readonly SimResult[],
+  views: readonly AccountView[]
+): Trajectory["lostAtReset"] {
+  const out: Trajectory["lostAtReset"] = {};
+  const paths = Math.max(1, results.length);
+  for (const v of views) {
+    const g = v.windows.find((w) => w.key === v.governing);
+    if (!g || g.remaining === null || g.resetAt === null || g.semantics === "sliding") continue;
+    const values: number[] = [];
+    for (const r of results) {
+      const left = r.leftoverAtReset[v.account];
+      if (left !== null && left !== undefined && Number.isFinite(left)) {
+        values.push(Math.min(1, Math.max(0, left)));
+      }
+    }
+    if (values.length === 0 || values.length < MIN_PATH_SHARE * paths) continue;
+    out[v.account] = { at: g.resetAt, q: quantilesOf(values) };
+  }
+  return out;
+}
+
 export function trajectory(
   s: AllowanceState,
   now: Ms,
@@ -281,7 +313,15 @@ export function trajectory(
   const history = historyOf(s, all, now, unit);
   const end = now + Math.max(0, horizonMs);
   const resets = resetsOf(all, now, end);
-  const empty: Trajectory = { unit, history, forecast: [], resets, blocked: [], switches: [] };
+  const empty: Trajectory = {
+    unit,
+    history,
+    forecast: [],
+    resets,
+    blocked: [],
+    switches: [],
+    lostAtReset: {},
+  };
   if (evidenceOf(s, now) === "none" || all.length === 0) return empty;
 
   const views = unit === "cu" ? all : all.map(inFractions);
@@ -327,6 +367,7 @@ export function trajectory(
     resets,
     blocked: blockedRuns(results, forecast),
     switches: switchesOf(results, views, s.poolActive ?? null, now, end),
+    lostAtReset: lostAtResetOf(results, views),
   };
 }
 
