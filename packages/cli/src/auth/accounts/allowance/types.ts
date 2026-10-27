@@ -586,6 +586,31 @@ export interface Transition {
   at: Ms;
 }
 
+/**
+ * The safe pace of one evaluation while no alert is active (`paceScan`): the
+ * highest tested rate ρ at which `ρ·f` has no 7d gap ≥ 1 h over the alert
+ * horizon, with every tested rate below it clean too. Under an active alert
+ * the shell takes the remedy's cut instead, so this is never computed then.
+ */
+export interface PaceResult {
+  /** `inputsKey` of the evaluation that scanned; reused while it holds. */
+  key: string;
+  /** In the simulation's unit per hour (cu/h, or W/h in account-fraction). */
+  rate: number;
+  /** ρ_L of that evaluation, in the same unit. */
+  simLong: number;
+  /** `rate / simLong` when `simLong > 0`, else null: what the shell scales the reported burn by. */
+  phi: number | null;
+  unit: ForecastUnit;
+  /**
+   * How it was found: `cut-scan` (ρ_L gaps: the remedy's cut grid on ρ_L),
+   * `bisect` (the refill anchor gaps: bisected down to ρ_L), `bracket` (doubled
+   * then bisected), `capped` (clean up to PACE_MAX_MULT × the anchor).
+   * Diagnostics and tests only.
+   */
+  basis: "cut-scan" | "bisect" | "bracket" | "capped";
+}
+
 export interface AlertsResult {
   memory: AlertMemory;
   /** Raised levels, critical first. */
@@ -593,6 +618,8 @@ export interface AlertsResult {
   transitions: Transition[];
   blockedNow: boolean;
   status: "ok" | "insufficient-evidence";
+  /** The safe pace, only when `AlertsOptions.pace` asked for it and no alert is active; else null. */
+  pace: PaceResult | null;
 }
 
 // ---------------------------------------------------------------------------

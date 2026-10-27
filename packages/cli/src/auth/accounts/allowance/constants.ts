@@ -132,6 +132,21 @@ export const DEFAULT_ALLOWANCE_CONFIG: Readonly<AllowanceConfig> = {
  */
 export const LOOKAHEAD_TRAJ_PATHS = 40;
 
+/**
+ * The safe pace's upward bracket (`paceScan`) doubles the anchor up to this
+ * multiple. The anchor is at least the pool's refill throughput, so 64 × it is
+ * a demand no pool sustains: a result capped here is a lower bound, never a
+ * figure the band can reach. Not a config field: the defaults are pinned.
+ */
+export const PACE_MAX_MULT = 64;
+
+/**
+ * Bisection steps between the last clean and the first gapping rate of the
+ * bracket: 4 steps resolve the answer to 1/16 of the bracket's low end (about
+ * 6 %), finer than the remedy's 10 % cut grid, for at most 4 more `simulate`.
+ */
+export const PACE_BISECT_STEPS = 4;
+
 /** The Monte Carlo path count for `cfg`'s strategy (alerts and trajectory alike). */
 export function trajPaths(cfg: Pick<AllowanceConfig, "strategy" | "TRAJ_PATHS">): number {
   const paths = Math.max(1, cfg.TRAJ_PATHS);

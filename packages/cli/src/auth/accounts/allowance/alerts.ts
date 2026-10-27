@@ -37,10 +37,19 @@
  *   gpt #8); else the largest cut φ on {0.9 … 0.1} with no 7d gap ≥ 1 h at φ
  *   and at every grid point below it; the smallest pause on {1 … 12 h, every 6 h
  *   to 48 h, then every 12 h to H} (both coarser than §1.9: the 0.5 s budget).
+ * - **Safe pace** (`paceScan`, only when `opts.pace` asks and no alert is
+ *   active): the highest tested ρ whose `ρ·f` has no 7d gap ≥ 1 h over H, the
+ *   remedy's criterion and its no-monotonicity rule. A gap at ρ_L scans the
+ *   remedy's own cut grid on ρ_L (`cutScan`), so the value does not jump when
+ *   the alert is raised. Otherwise the anchor is max(ρ_L, ρ_C), ρ_C the pool's
+ *   refill throughput, so a light user's decayed rate cannot pull the answer
+ *   down: a clean anchor is doubled up to PACE_MAX_MULT × until a rate gaps,
+ *   then bisected PACE_BISECT_STEPS times; a gapping one is bisected down
+ *   towards ρ_L. At most 11 `gapsOn`, reused while `inputsKey` holds.
  */
 
 import { accountViews, isRead, strongBetas, usable, windowRates } from "./capacity.js";
-import { alertStrategy, trajPaths } from "./constants.js";
+import { PACE_BISECT_STEPS, PACE_MAX_MULT, alertStrategy, trajPaths } from "./constants.js";
 import { seedOf, viewsDigest } from "./digest.js";
 import { type DemandModel, demandModel, quantilesOf, sampleDemandPath } from "./forecast.js";
 import { fnvHex, mulberry32, sampleLognormal } from "./prng.js";
@@ -66,6 +75,7 @@ import type {
   GapEval,
   LevelMemory,
   Ms,
+  PaceResult,
   Quantiles,
   Remedy,
   Transition,
@@ -546,6 +556,133 @@ interface RemedyScan {
 }
 
 /**
+ * The largest cut φ on CUT_GRID with no 7d gap ≥ 1 h at `φ·rate` and at every
+ * grid point below it (ascending, stopping at the first gap); null when 0.1
+ * already gaps. Shared by the remedy and the safe pace, so the two cannot
+ * disagree on one input. Yields after every simulation.
+ */
+function* cutScan(
+  ctx: GapContext,
+  rate: number,
+  cfg: AllowanceConfig
+): Generator<void, number | null> {
+  let cut: number | null = null;
+  for (const phi of CUT_GRID) {
+    const gs = gapsOn(
+      ctx,
+      ctx.factors.map((f) => phi * rate * f),
+      cfg
+    );
+    yield;
+    if (hasGap(gs)) break;
+    cut = phi;
+  }
+  return cut;
+}
+
+/**
+ * ρ_C, the pool's refill throughput in the simulation's unit per hour: Σ over
+ * read accounts of the governing window's capacity (1/β_g in cu, 1 in
+ * account-fraction) over its length in hours. An account whose governing
+ * length is unknown adds nothing.
+ */
+function refillThroughput(ctx: GapContext): number {
+  let total = 0;
+  for (const v of ctx.views.filter(isRead)) {
+    const g = v.windows.find((w) => w.key === v.governing);
+    if (!g || g.lengthMinutes === null || g.lengthMinutes <= 0) continue;
+    const beta = ctx.unit === "cu" ? v.beta[g.key]?.value : undefined;
+    const capacity = beta !== undefined && beta > 0 ? 1 / beta : 1;
+    total += capacity / (g.lengthMinutes / 60);
+  }
+  return total;
+}
+
+/**
+ * The safe pace (see the header), in the simulation's unit per hour. `ev` is
+ * the evaluation's own gap evaluation, so ρ_L's cleanliness costs nothing.
+ * Every tested clean rate stays below every tested gapping one, so the
+ * no-monotonicity rule holds over the tested set; a clean band above a
+ * gapping point can be missed, which under-reports (the safe direction).
+ * null when no positive anchor exists. Yields after every simulation.
+ */
+function* paceScan(
+  ctx: GapContext,
+  ev: GapEval,
+  rates: BurnRates,
+  cfg: AllowanceConfig
+): Generator<void, { rate: number; basis: PaceResult["basis"] } | null> {
+  const rhoL = Number.isFinite(rates.long) && rates.long > 0 ? rates.long : 0;
+  if (rhoL > 0 && hasGap(ev.long)) {
+    const cut = yield* cutScan(ctx, rhoL, cfg);
+    return { rate: cut === null ? 0 : cut * rhoL, basis: "cut-scan" };
+  }
+  const anchor = Math.max(rhoL, refillThroughput(ctx));
+  if (!(anchor > 0) || !Number.isFinite(anchor)) return null;
+  const clean = (rho: number) =>
+    !hasGap(
+      gapsOn(
+        ctx,
+        ctx.factors.map((f) => rho * f),
+        cfg
+      )
+    );
+  // ρ_L is clean by `ev`; a refill anchor above it is tested first.
+  if (anchor > rhoL) {
+    const ok = clean(anchor);
+    yield;
+    if (!ok) return { rate: yield* bisect(rhoL, anchor, clean), basis: "bisect" };
+  }
+  const up = yield* bracketUp(anchor, clean);
+  if (up.hi === null) return { rate: up.lo, basis: "capped" };
+  return { rate: yield* bisect(up.lo, up.hi, clean), basis: "bracket" };
+}
+
+/** Double a clean `anchor` up to PACE_MAX_MULT ×: the last clean rate, and the first gapping one or null. */
+function* bracketUp(
+  anchor: number,
+  clean: (rho: number) => boolean
+): Generator<void, { lo: number; hi: number | null }> {
+  let lo = anchor;
+  for (let mult = 2; mult <= PACE_MAX_MULT; mult *= 2) {
+    const ok = clean(mult * anchor);
+    yield;
+    if (!ok) return { lo, hi: mult * anchor };
+    lo = mult * anchor;
+  }
+  return { lo, hi: null };
+}
+
+/** PACE_BISECT_STEPS halvings of [lo clean, hi gapping]; the highest clean rate tested. */
+function* bisect(lo: number, hi: number, clean: (rho: number) => boolean): Generator<void, number> {
+  let low = lo;
+  let high = hi;
+  for (let i = 0; i < PACE_BISECT_STEPS; i++) {
+    const mid = (low + high) / 2;
+    const ok = clean(mid);
+    yield;
+    if (ok) low = mid;
+    else high = mid;
+  }
+  return low;
+}
+
+/**
+ * The safe pace in cu/h, the report's `burn.unit`: `φ × burnLong` (φ =
+ * rate / ρ_L of the scan) when both are known, which also converts W/h in
+ * account-fraction; else the rate itself in `cu`, where the simulation's unit
+ * is the ledger's. null in account-fraction without a ledger rate: W/h has no
+ * cu/h equivalent then.
+ */
+export function paceInCuPerHour(pace: PaceResult, burnLong: number): number | null {
+  if (pace.phi !== null && Number.isFinite(burnLong) && burnLong > 0) {
+    return Math.max(0, pace.phi * burnLong);
+  }
+  if (pace.unit === "cu") return Math.max(0, pace.rate);
+  return null;
+}
+
+/**
  * The level-free part of §1.9's remedy, computed once per evaluation: the
  * zero-demand run (external use), the cut grid, then the pause grid. Yields
  * after every simulation.
@@ -560,17 +697,7 @@ function* remedyScan(
     .filter((g) => g.kind === "7d" && g.lengthMs >= REMEDY_MIN_GAP_MS)
     .map((g) => g.start);
   yield;
-  let cut: number | null = null;
-  for (const phi of CUT_GRID) {
-    const gs = gapsOn(
-      ctx,
-      ctx.factors.map((f) => phi * rateLong * f),
-      cfg
-    );
-    yield;
-    if (hasGap(gs)) break;
-    cut = phi;
-  }
+  const cut = yield* cutScan(ctx, rateLong, cfg);
   let pauseMs: Ms | null = null;
   const h0 = hourStart(ctx.now);
   for (const p of pauseGrid(ctx.horizonMs)) {
@@ -694,6 +821,38 @@ export interface AlertsOptions {
   payload?: boolean;
   /** The previous evaluation's payload; used when its key still holds. */
   reuse?: AlertPayload | null;
+  /**
+   * `true`: compute the safe pace when no alert is active (`paceScan`). Only the
+   * report asks: no announce step reads it. Ignored under `payload: false`.
+   */
+  pace?: boolean;
+  /** The previous evaluation's safe pace; used when its key still holds. */
+  paceReuse?: PaceResult | null;
+}
+
+/** The safe pace for `opts`, reused while the evaluation's `inputsKey` holds. */
+function* paceFor(
+  ctx: GapContext,
+  ev: GapEval,
+  rates: BurnRates,
+  inputsKey: string,
+  cfg: AllowanceConfig,
+  opts: AlertsOptions
+): Generator<void, PaceResult | null> {
+  if (!opts.pace || opts.payload === false) return null;
+  const key = fnvHex([inputsKey, "pace"].join("|"));
+  if (opts.paceReuse?.key === key) return opts.paceReuse;
+  const found = yield* paceScan(ctx, ev, rates, cfg);
+  if (found === null) return null;
+  const simLong = rates.long;
+  return {
+    key,
+    rate: found.rate,
+    simLong,
+    phi: Number.isFinite(simLong) && simLong > 0 ? found.rate / simLong : null,
+    unit: ctx.unit,
+    basis: found.basis,
+  };
 }
 
 /** `alerts` plus the payload it computed or reused (absent when nothing is raised). */
@@ -724,6 +883,7 @@ export function* alertsSliced(
       transitions: [],
       blockedNow: false,
       status: "insufficient-evidence",
+      pace: null,
     };
   }
   const ctx = gapContext(s, now, cal, cfg);
@@ -776,7 +936,8 @@ export function* alertsSliced(
   const raised = (["critical", "warn"] as const).filter((l) => memory[l].raised);
   // The simulator steps transitions every 5 minutes and reads no payload (§4 run.ts).
   if (raised.length === 0 || opts.payload === false) {
-    return { memory, active, transitions, blockedNow, status: "ok" };
+    const pace = yield* paceFor(ctx, ev, rates, inputsKey, cfg, opts);
+    return { memory, active, transitions, blockedNow, status: "ok", pace };
   }
   const seed = seedOf(s, now, cfg);
   const key = fnvHex([inputsKey, seed, raised.join(","), alertPaths(cfg)].join("|"));
@@ -819,7 +980,9 @@ export function* alertsSliced(
       remedy: r,
     });
   }
-  return { memory, active, transitions, blockedNow, status: "ok", payload };
+  // A raised level whose gap no longer shows at ρ_L leaves `active` empty: no remedy to agree with.
+  const pace = active.length === 0 ? yield* paceFor(ctx, ev, rates, inputsKey, cfg, opts) : null;
+  return { memory, active, transitions, blockedNow, status: "ok", payload, pace };
 }
 
 export function alerts(

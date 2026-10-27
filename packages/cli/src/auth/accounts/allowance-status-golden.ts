@@ -102,6 +102,7 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
       },
     ],
     combined: { remainingNow: 58_000_000, capacity: 100_000_000 },
+    // Under the cut-60 alert the safe pace is the remedy's: 0.60 × 410_000 (cutToPercent / 100 × long).
     burn: { long: 410_000, short: 520_000, sustainable: 246_000, unit: "cu/h" },
     alerts: [
       {
