@@ -183,6 +183,12 @@ command line names. The provider is in the **path**, not the filename, because t
 providers can mint the same id (V15). The synthesized legacy account's id is `legacy-codex` —
 outside the pattern, so no configured account can collide with it — and its label is `default`.
 
+A label matches `^\w[\w@+. -]{0,63}$`: ASCII letters, digits, `_`, `@`, `+`, `.`, `-` and space, the
+first character a letter, digit or underscore, 64 characters at most. The pattern, its rule sentence
+and the label derivation live in `auth/accounts/account-label.ts` alone; `types.ts` re-exports the
+constant and `config-schema.ts` imports it, so the schema, the entry invariants and the ledger row
+guard cannot disagree. Widening only one copy would make a saved email label fail schema parse.
+
 **`owner` lives in `state.json` alone.** Two documents holding the named refresher, with no rule for
 which wins, is how two processes come to choose different refresh protocols.
 
@@ -690,8 +696,13 @@ so A-quota then B-success is one success with no red line on the shared terminal
 `CLAUDISH_ACCOUNTS_LOG=<path>` appends one JSONL line per observation, mode 0600, opened without
 following a symlink: request id, provider, account id and label, the selection reason
 (`initial-selection`, `forced-sign`, `quota-switch`), outcome, reset and whether it is estimated,
-and the signed arm. Never request content, email, tokens, PKCE data or an upstream body. A write
-failure is ignored.
+and the signed arm. Never request content, tokens, PKCE data or an upstream body. The label is the
+one exception that can hold an email: a default label is the login's email (decision 12), so the
+email reaches this log, the `[accounts]` log lines, the usage ledger, `account list` and
+`account forecast` output (and their `--json`), stderr hints, and the client-facing error body built
+from `ref.label` (`errors.ts:160-167`, `pool.ts:636`). That body does not truncate the label;
+`padEnd` widens. The `identity` object is still never logged. Stats and OTLP carry no label, and a
+label must not be added to `StatsEvent`. A write failure is ignored.
 
 **Windows are positions, not durations.** On a Codex Pro account the PRIMARY slot measured as the
 seven-day window, with the secondary reporting zero (`auth/quota/sources/codex.ts`).
@@ -879,19 +890,23 @@ the mitigations.
 
 ```
 claudish account add codex [--label <label>]
-claudish account login|enable|disable codex <label> [--id <generated-id>]
-claudish account remove codex <label> [--id <generated-id>] [--yes] [--delete-file]
+claudish account login|enable|disable codex <label-or-email> [--id <generated-id>]
+claudish account rename codex <label-or-email> <new-label> [--id <generated-id>]
+claudish account remove codex <label-or-email> [--id <generated-id>] [--yes] [--delete-file]
 claudish account list|status [--json] [--refresh]
 ```
 
 The parser (`parseAccountMutation`) is strict and runs before any prompt, browser, lock or store:
 duplicate, valueless, unknown or misplaced flags and extra positionals are usage errors. `--id`
 must match the generated-id pattern, so the synthesized legacy account is reachable only by its
-label `default`. `use`, `import` and every `claude` mutation answer "not available".
+label `default`. `--id` may replace the selector or confirm it; for `rename`, `--id` with one
+positional makes that positional the new label. `--label` belongs to `add` alone. `use`, `import`
+and every `claude` mutation answer "not available".
 
 | Verb | What it does |
 |---|---|
-| `add` | Shows the owned-accounts notice until accepted (`noticeAcceptedAt` is written only inside the publishing config write), prints the store and a plaintext warning for `file`, runs PKCE with no lock, requires a stable `chatgptAccountId`, then under the new id's gate rechecks id, label and identity, persists the token and proves it by an uncached read-back of its `writeId`, and publishes the row in **one** config write. A failed publication deletes the new token item only when a locked re-read confirms the row absent. Prints `Added Codex account <label> (<identity>); store: <store>.` |
+| `add` | Shows the owned-accounts notice until accepted (`noticeAcceptedAt` is written only inside the publishing config write), prints the store and a plaintext warning for `file`, runs PKCE with no lock, requires a stable `chatgptAccountId`, then under the new id's gate rechecks id and identity and derives the label (`deriveAccountLabel`; exhaustion fails before any token is written), persists the token and proves it by an uncached read-back of its `writeId`, and publishes the row in **one** config write. Nothing names the account before the browser unless `--label` is given. The final config write derives the label again from the live account list, so a concurrent add that took the bare email makes this one `<email>-<plan>`. A failed publication deletes the new token item only when a locked re-read confirms the row absent. Prints `Added Codex account <label> (<identity>); store: <store>.` When the label is longer than 32 characters or holds `@` or `+`, it adds one line: older claudish builds cannot read this label |
+| `rename` | One gated config write that changes `label` and nothing else: id, order, enabled, store, usage and exhaustion stay. The same label writes nothing and leaves the generation alone; a label differing only in case writes. A label taken by another account (case-insensitive) is refused. Renaming the synthesized legacy login records it as a `legacy-codex-file` row with the new label (decision 13) and, like `add`, refuses when it records no `chatgptAccountId`. Prints `Renamed Codex account <old> to <new>.` |
 | `login` | Synthesized default with no pool: the unchanged legacy login. Otherwise PKCE, the same stable identity or a refusal pointing at `account add`, then a gated generation+1 token write. Label, id, order, enabled, store, usage and exhaustion are untouched; no state mark is cleared, because the new material self-heals `needsReauth` on the next lease |
 | `enable` / `disable` | One gated config write, no token read, delete or refresh. An idempotent call writes nothing and leaves the generation alone. Disable says configured rows still reserve OAuth |
 | `remove` | Confirmation before any lock unless `--yes`. One config write removes the row (and, for a legacy-backed one, sets the suppression marker), then registry invalidation, then `active` cleared only if it named this account, then deletion of this account's token item only. A cleanup failure is reported, never re-published. Prints the removed identity and the next credential for new requests, warning when that is `OPENAI_CODEX_API_KEY` |
@@ -899,7 +914,9 @@ label `default`. `use`, `import` and every `claude` mutation answer "not availab
 Identity is the stable `chatgptAccountId` from the login's claims; email and plan are display only.
 `add` refuses a duplicate identity or label, a missing identity, and a synthesized legacy login
 with no recorded `account_id` (run `claudish login codex` once first; enrolling it without an
-identity would make the duplicate check vacuous).
+identity would make the duplicate check vacuous). Every verb except `add` selects its account as
+decision 13 says and prints the resolved label and id on its first output line; `--yes` does not
+suppress that line.
 
 ### Legacy enrollment and durable removal suppression
 
@@ -968,10 +985,10 @@ handshake lock.
   path and `NativeHandler` has no `TokenTracker`, so nothing accrues. Adding it to
   `CREDENTIAL_DECIDED_PROVIDERS` would make the sync probe answer a Keychain question.
 
-## Decisions 1–11
+## Decisions 1–13
 
 Numbered as the code cites them. Decisions 9–11 were taken when the approval dialog timed out; each
-is the conservative reading.
+is the conservative reading. Decisions 12 and 13 were taken by Jack on 2026-10-27 (MTL-278).
 
 1. **Pool exhaustion keeps today's error shape; the wording is pinned to preserve it.** An explicit
    `cx@` stops with the message; a bare `gpt-*` chain advances with the cost warning. *Built:* the
@@ -1014,6 +1031,24 @@ is the conservative reading.
 11. **claudish never spends quota to measure quota.** On the D7-negative branch an idle Codex
     account reads `unknown`, which is eligible; `unknown` never means a stale reading decayed.
     *Built* in the policy; `account status --refresh` contacts no vendor.
+12. **The default Codex account label is the login's email, chosen after the browser.** The email
+    is not known before the login, so nothing asks for a label first and nothing prompts for one.
+    The clash ladder takes the first free of `<email>`, `<email>-<plan>`, then numbers
+    (`<email>-<plan>-2`, or `<email>-2` when the plan is missing). The email is lowercased; the
+    plan is cleaned to lowercase letters and digits, 16 at most. `--label` is an override and is
+    checked before the browser. A login that returns no email falls back to the first 8 characters
+    of `chatgptAccountId`, filtered to the allowed set, with the same ladder. The email in logs
+    and the ledger is an accepted exception to the audit rule (Jack, 2026-10-26 and 2026-10-27;
+    see the `CLAUDISH_ACCOUNTS_LOG` paragraph under *Selection policy*). *Built.*
+13. **Accounts are selected by label or email; `rename` changes only the label.** An exact label
+    match wins. Only when no label matches does the selector fall back to the logins' emails
+    (case-insensitive), and only on exactly one match: the fallback never picks among several, so
+    removing or renaming one account cannot silently retarget `remove` at another that shares the
+    email. Two or more matches fail and list each `<label> (id <id>)`; `--id` names one. Every
+    mutation prints the resolved label and id. The legacy login `default` may be renamed. Nothing
+    on disk keys on a label (`state.json` is by `provider:id`, `active` holds an id, lock and token
+    paths use the id), so a rename moves no state. A running proxy picks the new label up from its
+    stamp-based reads, not verified. *Built.*
 
 ## Claude Code's OAuth facts
 

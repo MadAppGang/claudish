@@ -38,6 +38,7 @@
 
 import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 import { log } from "../../logger.js";
+import { shellWord } from "./account-label.js";
 import { getAllowanceService, safeRanker } from "./allowance-service.js";
 import type { StrategyName } from "./allowance/types.js";
 import { exchangeFor } from "./exchange.js";
@@ -229,7 +230,7 @@ function vendorName(provider: AccountProvider): string {
 /** The command that re-logs in one account, named in the pinned message. */
 function loginCommandFor(ref: AccountRef): string {
   const vendor = ref.provider === "openai-codex" ? "codex" : "claude";
-  return `claudish account login ${vendor} ${ref.label}`;
+  return `claudish account login ${vendor} ${shellWord(ref.label)}`;
 }
 
 /** Selection-observation bugs are never a newly metered unknown auth failure. */
