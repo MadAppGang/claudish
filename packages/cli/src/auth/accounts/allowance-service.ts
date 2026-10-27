@@ -49,8 +49,10 @@
  */
 
 import { readFileSync } from "node:fs";
+import { ENV } from "../../config.js";
 import type { AllowanceLabel } from "../../handlers/shared/token-tracker.js";
 import { log, logStderr } from "../../logger.js";
+import { isPaneChild } from "../../pane/child-env.js";
 import {
   ALLOWANCE_REPORT_SCHEMA,
   type AllowanceReport,
@@ -99,6 +101,7 @@ import { FileLockUnavailableError, acquireFileLock } from "./file-lock.js";
 import { type LedgerTail, createLedgerTail, readLedger } from "./ledger/ledger-reader.js";
 import {
   type LedgerRow,
+  SESSION_PATTERN,
   buildNoEligibleRow,
   buildResponseRow,
   toEvent,
@@ -309,6 +312,19 @@ function readAlertsFile(env: NodeJS.ProcessEnv): AlertsFile {
   }
 }
 
+/**
+ * The Claude Code conversation that delegated this process, for the ledger's
+ * `parent`: `CLAUDISH_PARENT_SESSION`, honoured only in the pane child itself
+ * (`isPaneChild`: the MCP server set it in the pane's `slotEnv`) and only when it
+ * matches the ledger's SESSION_PATTERN. A value that fails becomes null, never
+ * altered: a Claude Code id with `_` or over 64 characters is not attributed.
+ */
+function delegatingSession(env: NodeJS.ProcessEnv): string | null {
+  const value = env[ENV.CLAUDISH_PARENT_SESSION];
+  if (!value || !isPaneChild(env)) return null;
+  return SESSION_PATTERN.test(value) ? value : null;
+}
+
 /** One account attempt of one inbound request, as the handler hands it over (§2.2). */
 export interface UsageAttemptRecord {
   requestId: string;
@@ -340,11 +356,15 @@ export class AllowanceService {
   private readonly models = new Map<AccountProvider, ProviderModel>();
   /** `state.json` at `statePath(this.env)`, read by `report()` only; built on first use. */
   private reportStateStore: StateStore | null = null;
+  /** The delegating conversation every row of this process carries (`delegatingSession`). */
+  private readonly parentSession: string | null;
 
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
     private readonly clock: () => number = Date.now
-  ) {}
+  ) {
+    this.parentSession = delegatingSession(env);
+  }
 
   /** Append one attempt's row. Synchronous, never throws, never awaits. */
   record(attempt: UsageAttemptRecord): void {
@@ -364,6 +384,7 @@ export class AllowanceService {
         tokens: attempt.tokens,
         finalInput: attempt.finalInput,
         usage: attempt.usage,
+        parent: this.parentSession,
       });
       if (!row) {
         this.warnOnce("a usage row failed its guards and was not written");
@@ -1417,6 +1438,7 @@ export function buildReport(input: ReportInput): AllowanceReport {
       ? []
       : contributions(s, { now, window: "binding" }, cfg).map((c) => ({
           session: c.session === "unattributed" ? "unattributed" : c.session.slice(0, 8),
+          parent: c.parent === null ? null : c.parent.slice(0, 8),
           account: c.account === "all" ? "all" : label(c.account),
           window: c.window,
           share: Math.min(1, Math.max(0, c.share)),

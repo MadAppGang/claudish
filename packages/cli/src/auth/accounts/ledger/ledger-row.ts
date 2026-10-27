@@ -16,6 +16,11 @@
  *
  * `project` is deliberately absent: `basename(cwd)` is the wrong directory under
  * `serve` and MCP.
+ *
+ * `parent` (optional, `SESSION_PATTERN`) is the Claude Code conversation that
+ * delegated the session through the claudish MCP server. The key is omitted when
+ * there is none, so such a row is byte-identical to one from before the field; an
+ * older reader strips it, a newer one reads its absence as null.
  */
 
 import { z } from "zod";
@@ -127,6 +132,7 @@ export const responseRowSchema = z.object({
   outTok: tokenCount,
   finalInTok: tokenCount,
   windows: z.array(windowReadingSchema).max(16).nullable(),
+  parent: z.string().regex(SESSION_PATTERN).nullable().optional(),
 });
 
 /**
@@ -171,6 +177,8 @@ export const rollupRowSchema = z.object({
   first: z.array(windowReadingSchema).max(16).nullable(),
   last: z.array(windowReadingSchema).max(16).nullable(),
   censoredMinutes: z.number().finite().min(0).max(60),
+  /** The group's delegating conversation: the first non-null `parent` of its rows. */
+  parent: z.string().regex(SESSION_PATTERN).nullable().optional(),
 });
 
 export const ledgerRowSchema = z.discriminatedUnion("kind", [
@@ -226,6 +234,8 @@ export interface ResponseRowInput {
   tokens: TokenCounts | null;
   finalInput: number | null;
   usage?: UsageSnapshot;
+  /** The delegating conversation's session id; dropped unless it passes SESSION_PATTERN. */
+  parent?: string | null;
 }
 
 function count(value: number | null | undefined): number {
@@ -263,6 +273,10 @@ export function buildResponseRow(input: ResponseRowInput): ResponseRow | null {
     finalInTok: count(input.finalInput),
     windows: readingsOf(input.provider, input.usage),
   };
+  // A parent that fails its pattern, or names the row's own session, is dropped (the key
+  // omitted), never the row: attribution is optional, the row is not.
+  const parent = input.parent;
+  if (parent && SESSION_PATTERN.test(parent) && parent !== row.session) row.parent = parent;
   return responseRowSchema.safeParse(row).success ? row : null;
 }
 
@@ -328,6 +342,7 @@ export function toEvent(row: LedgerRow): AllowanceEvent {
         finalInput: row.finalInTok,
         windows: row.windows,
         outcome: row.outcome,
+        parent: row.parent ?? null,
       };
     case "no-eligible":
       return row.until === undefined
@@ -351,6 +366,7 @@ export function toEvent(row: LedgerRow): AllowanceEvent {
         first: row.first,
         last: row.last,
         censoredMinutes: row.censoredMinutes,
+        parent: row.parent ?? null,
       };
   }
 }

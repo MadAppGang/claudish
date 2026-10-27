@@ -2132,11 +2132,22 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             )
           : undefined;
 
+        const runsModels = mode === "run" || mode === "run-and-judge";
+        const runsJudges = mode === "judge" || mode === "run-and-judge";
+        // The conversation live in the calling window, read once per call for every mode
+        // that starts panes (slots and judges alike): each child records it as the usage
+        // ledger's `parent`, and `run` also writes it to the run's record.
+        const parentClaudeSessionId =
+          runsModels || runsJudges
+            ? await parentSessionForCall({ hostPid: sessionManager.hostPid })
+            : undefined;
+
         const runOpts = {
           requirePattern,
           minOutputBytes,
           claudeFlags: childFlags,
           efforts,
+          parentClaudeSessionId,
           onProgress: (u: { phase: "running" | "settled" }) => {
             // A state change is real news, so refresh the client's idle timer at
             // that moment as well as on the periodic tick. Short phase string only:
@@ -2152,8 +2163,6 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           return existsSync(existing) ? readFileSync(existing, "utf-8") : undefined;
         };
 
-        const runsModels = mode === "run" || mode === "run-and-judge";
-        const runsJudges = mode === "judge" || mode === "run-and-judge";
         // No projectRulesReadable here: team children run in this process's cwd
         // (team-orchestrator.ts) and `path` must lie inside it, so they route by the
         // same ./.claudish.json this check reads. create_session's work_dir can differ.
@@ -2206,9 +2215,6 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             // is how an observer outside this process learns the run ended.
             // Written BEFORE any pane exists; a throw here fails the call with
             // nothing started.
-            const parentClaudeSessionId = await parentSessionForCall({
-              hostPid: sessionManager.hostPid,
-            });
             const monitorRecord = sessionManager.recordTeamRun({
               teamPath: resolved,
               slots: models.length,
@@ -2281,7 +2287,11 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             };
           }
           case "judge": {
-            const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
+            const verdict = await judgeResponses(resolved, {
+              judges,
+              claudeFlags: childFlags,
+              parentClaudeSessionId,
+            });
             const out = providerNote ? { ...verdict, provider_note: providerNote } : verdict;
             return { content: [{ type: "text" as const, text: JSON.stringify(out, null, 2) }] };
           }
@@ -2298,7 +2308,11 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             const handle = await startModels(resolved, runOpts);
             await handle.done;
             const run = teamRunRow(resolved, handle.runId);
-            const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
+            const verdict = await judgeResponses(resolved, {
+              judges,
+              claudeFlags: childFlags,
+              parentClaudeSessionId,
+            });
             return {
               content: [
                 {

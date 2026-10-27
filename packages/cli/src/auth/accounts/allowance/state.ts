@@ -29,6 +29,7 @@ import type {
   AllowanceState,
   HourBucket,
   Ms,
+  SessionKey,
   TokenCounts,
   WindowReading,
 } from "./types.js";
@@ -123,7 +124,8 @@ function fold(s: AllowanceState, e: AllowanceEvent, cfg: AllowanceConfig, seen: 
       if (cu > 0) {
         insertServed(account, e.at, cu);
         addDemand(s, hourOf(e.at), cu, 1);
-        if (e.session !== null) addSession(s, e.session, e.at, e.account, cu, e.tokens, e.model, 1);
+        if (e.session !== null)
+          addSession(s, e.session, e.at, e.account, cu, e.tokens, e.model, 1, e.parent ?? null);
       }
       if (e.outcome === "ok") closeCensor(s, e.at);
       if (e.windows !== null) applySnapshot(account, e.at, e.windows, cfg);
@@ -168,7 +170,7 @@ function fold(s: AllowanceState, e: AllowanceEvent, cfg: AllowanceConfig, seen: 
       if (cu > 0) {
         insertServed(account, mid, cu);
         if (e.session !== null)
-          addSession(s, e.session, mid, e.account, cu, e.tokens, e.model, e.n);
+          addSession(s, e.session, mid, e.account, cu, e.tokens, e.model, e.n, e.parent ?? null);
       }
       const bucket = addDemand(s, e.hour, cu, e.n);
       bucket.censoredMinutes = Math.min(60, Math.max(bucket.censoredMinutes, e.censoredMinutes));
@@ -270,7 +272,8 @@ function addSession(
   cu: number,
   tokens: TokenCounts,
   model: string,
-  n: number
+  n: number,
+  parent: SessionKey | null
 ): void {
   let track = s.sessions[session];
   if (!track) {
@@ -294,6 +297,8 @@ function addSession(
   track.tokens.cacheWrite += tokens.cacheWrite;
   track.tokens.output += tokens.output;
   track.models[model] = (track.models[model] ?? 0) + n;
+  // A session has one delegator: the first one seen stays.
+  if (parent !== null && (track.parent ?? null) === null) track.parent = parent;
 }
 
 /**

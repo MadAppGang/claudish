@@ -215,6 +215,9 @@ export function buildPaneEnv(input: PaneEnvInput): { magmuxEnv: Record<string, s
   if (input.parentEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC === undefined)
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   if (input.parentEnv.CLAUDE_CODE_NATIVE_CURSOR === undefined) env.CLAUDE_CODE_NATIVE_CURSOR = "1";
+  // The delegating conversation comes from this spawn's `slotEnv` only: a value the
+  // owner inherited (its user's shell) names no conversation of this call.
+  delete env[ENV.CLAUDISH_PARENT_SESSION];
   Object.assign(env, input.slotEnv);
   if (input.configFile !== null) env.CLAUDISH_CONFIG = input.configFile;
   env[ENV.CLAUDISH_PANE_CHILD] = "1";

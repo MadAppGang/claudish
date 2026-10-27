@@ -168,6 +168,17 @@ const trajectorySchema = z.object({
 const sessionSchema = z.object({
   /** The first 8 characters of a Claude Code session id, or `unattributed`. Local data. */
   session: z.union([z.string().max(8), z.literal("unattributed")]),
+  /**
+   * The first 8 characters of the Claude Code conversation that delegated this
+   * session through the claudish MCP server (`create_session`, `team`), so a
+   * reader can sum a conversation's children. It is the conversation live in the
+   * calling window when the call ran; a later `/clear` there does not move it.
+   * Null for a session claudish did not spawn from MCP (interactive claudish, CLI
+   * `team`, `serve`, `run_prompt`), one recorded by an older claudish, and
+   * `unattributed`. Local data. Added within v1; absent from a report of an older
+   * claudish.
+   */
+  parent: z.union([z.string().max(8), z.null()]).optional(),
   account: z.string(),
   window: z.string(),
   share: fraction,
