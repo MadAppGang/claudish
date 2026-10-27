@@ -71,12 +71,15 @@ export const HOOK_SESSION_VAR = "CLAUDISH_HOOK_SESSION";
  * They stay in this process's own `process.env`: the child's proxy writes the inbox
  * named there.
  */
-export const PANE_LAUNCH_VARS = [
+export const PANE_LAUNCH_VARS: readonly string[] = [
   ENV.CLAUDISH_PANE_ENV,
   ENV.CLAUDISH_PANE_CWD,
   HOOK_INBOX_VAR,
   HOOK_SESSION_VAR,
-] as const;
+  // The delegating conversation's id: the child's proxy records it in the usage ledger;
+  // the model's Bash tool, and any claudish started from it, never inherit it.
+  ENV.CLAUDISH_PARENT_SESSION,
+];
 
 /**
  * Keys owned by the pane's shell and terminal, not by the server's environment.
@@ -175,6 +178,7 @@ export function applyPaneEnvSnapshot(env: Env): PaneBootResult {
     ENV.CLAUDISH_PANE_CWD,
     HOOK_INBOX_VAR,
     HOOK_SESSION_VAR,
+    ENV.CLAUDISH_PARENT_SESSION,
   ]);
   for (const key of Object.keys(env)) {
     if (Object.hasOwn(snapshot, key) || keep.has(key) || isPaneShellManagedKey(key)) continue;

@@ -1079,6 +1079,10 @@ export class SessionManager {
         // process did not, so it must never lack a sink, and ctx.session must be set.
         ...(entry.inboxPath ? { [HOOK_INBOX_ENV]: entry.inboxPath } : {}),
         [HOOK_SESSION_ENV]: JSON.stringify({ kind: "channel", id: info.sessionId, role: null }),
+        // The delegating conversation, for the usage ledger's `parent` (sessions[].parent).
+        ...(info.parentClaudeSessionId
+          ? { [ENV.CLAUDISH_PARENT_SESSION]: info.parentClaudeSessionId }
+          : {}),
       },
       shape: info.shape,
       ...(opts.prompt ? { initialPrompt: opts.prompt } : {}),

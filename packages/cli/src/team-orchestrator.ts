@@ -181,6 +181,12 @@ export interface TeamStatus {
 export interface TeamRunOptions {
   claudeFlags?: string[]; // extra flags passed to child claudish (checked by checkChildFlags)
   /**
+   * The Claude Code conversation that delegated this run (`parentSessionForCall`),
+   * passed to every slot as `CLAUDISH_PARENT_SESSION`: the slot's proxy records it as
+   * the usage ledger's `parent`. Absent for a run the MCP server did not start.
+   */
+  parentClaudeSessionId?: string;
+  /**
    * Reasoning effort per model, keyed by the model string as the run's models give
    * it. A slot with an entry gets `--effort-override <level>` after `claudeFlags`, so
    * it wins over one there and its proxy pins that level on every request.
@@ -324,6 +330,8 @@ export interface TeamHandle {
 export interface TeamJudgeOptions {
   judges?: string[]; // models to use as judges (default: same models as runners)
   claudeFlags?: string[];
+  /** The delegating conversation, passed to every judge slot (`TeamRunOptions.parentClaudeSessionId`). */
+  parentClaudeSessionId?: string;
   /** The environment the judge panes are built from; default `process.env`. */
   parentEnv?: Record<string, string | undefined>;
   /** @internal test-only pane timing seams */
@@ -1778,6 +1786,10 @@ async function startModelsIn(
             id: `${runId}:${e.id}`,
             role: kind === "judge" ? "judge" : "slot",
           }),
+          // The delegating conversation, for the usage ledger's `parent` (sessions[].parent).
+          ...(opts.parentClaudeSessionId
+            ? { [ENV.CLAUDISH_PARENT_SESSION]: opts.parentClaudeSessionId }
+            : {}),
         },
         shape: "one-shot",
         initialPrompt: inputContent,
@@ -2122,6 +2134,7 @@ export async function judgeResponses(
   await runModels(judgePath, {
     claudeFlags: opts.claudeFlags,
     kind: "judge",
+    ...(opts.parentClaudeSessionId ? { parentClaudeSessionId: opts.parentClaudeSessionId } : {}),
     ...(opts.parentEnv ? { parentEnv: opts.parentEnv } : {}),
     ...(opts.paneTimings ? { paneTimings: opts.paneTimings } : {}),
   });

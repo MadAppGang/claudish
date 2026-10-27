@@ -190,6 +190,7 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
     sessions: [
       {
         session: "1a2b3c4d",
+        parent: "5e6f7a8b",
         account: "work",
         window: "7d",
         share: 0.38,
@@ -203,6 +204,7 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
       },
       {
         session: "9f8e7d6c",
+        parent: null,
         account: "work",
         window: "7d",
         share: 0.21,
@@ -216,6 +218,7 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
       },
       {
         session: "unattributed",
+        parent: null,
         account: "all",
         window: "7d",
         share: 0.12,

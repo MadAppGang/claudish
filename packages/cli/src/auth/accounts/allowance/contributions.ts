@@ -237,6 +237,7 @@ export function contributions(
         : 0;
     return {
       session: r.session,
+      parent: track?.parent ?? null,
       account: r.accounts.size === 1 && single ? single.account : account,
       window: r.window,
       usedFraction: calibrated && single ? r.fraction : null,
@@ -261,6 +262,7 @@ export function contributions(
   const lasts = spent.map((x) => x.lastAt).filter((t): t is Ms => t !== null);
   out.push({
     session: "unattributed",
+    parent: null,
     account,
     window,
     usedFraction: calibrated && single ? unattributed : null,

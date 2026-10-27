@@ -661,6 +661,8 @@ function* rollupDaySteps(
       }
     }
     const hh = String(new Date(hour).getUTCHours()).padStart(2, "0");
+    // A session has one delegator, so neither the group key nor the rollup id carries it.
+    const parent = group.find((r) => r.parent)?.parent ?? null;
     const rollup: RollupRow = {
       v: LEDGER_ROW_VERSION,
       kind: "rollup",
@@ -680,6 +682,7 @@ function* rollupDaySteps(
       first: first.size > 0 ? [...first.values()] : null,
       last: last.size > 0 ? [...last.values()] : null,
       censoredMinutes: censored.get(head.provider)?.get(hour) ?? 0,
+      ...(parent ? { parent } : {}),
     };
     lines.push(JSON.stringify(rollup));
   }

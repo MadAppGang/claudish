@@ -108,6 +108,12 @@ export const ENV = {
   CLAUDISH_PANE_CHILD: "CLAUDISH_PANE_CHILD", // "1" anywhere inside a claudish-started session
   CLAUDISH_PANE_ENV: "CLAUDISH_PANE_ENV", // JSON snapshot of the MCP server's environment; re-applied, then deleted
   CLAUDISH_PANE_CWD: "CLAUDISH_PANE_CWD", // realpath of the cwd the pane child must run in
+  // The Claude Code conversation that delegated this pane child (the MCP server's
+  // `parentSessionForCall`), set by the owner in `slotEnv` for `create_session` and
+  // every `team` slot and judge. Read once by the child's AllowanceService, pattern-
+  // checked, and written as the usage ledger's `parent`. A launch var: deleted from
+  // Claude Code's environment (`PANE_LAUNCH_VARS`), and no env file can set it.
+  CLAUDISH_PARENT_SESSION: "CLAUDISH_PARENT_SESSION",
   // Where pane sockets, records and launcher dirs live (default /tmp/claudish-mux-<uid>).
   // A location, like CLAUDISH_SESSIONS_DIR: test suites that start a real MCP server point
   // it at their own root so the startup sweep and the pane limit stay inside the test.

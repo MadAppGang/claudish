@@ -52,6 +52,15 @@ closed sets and pattern-checked identifiers (`ledger-row.ts`): the plan type map
 a model id `^[A-Za-z0-9._:/@-]{1,80}$`, else `"other"`. No body text, no header text, no project.
 That is why the ledger needs no redaction pass (`adapters.md`, sink table).
 
+`parent` (optional, the session pattern) is the Claude Code conversation that delegated the session
+through the MCP server. The server resolves it once per `create_session` / `team` call
+(`parentSessionForCall`) and hands it to each pane child as `CLAUDISH_PARENT_SESSION`, a launch var
+(deleted from Claude Code's environment, never settable from an env file); the child's
+`AllowanceService` reads it once, only when `isPaneChild`, and drops a value that fails the pattern or
+equals the row's own session. The key is omitted when null, so such rows are byte-identical to older
+ones; a rollup takes its group's first non-null `parent` without changing its key or id. The report
+cuts it to 8 characters (`sessions[].parent`). A day compacted by an older claudish loses it.
+
 Raw days are kept 30 days and unlinked only once their hourly file exists; hourly files 180 days.
 A day with an hourly file has its raw segment ignored, which makes every crash point safe without
 an index. The writer never throws; its queue holds 1024 rows and drops the oldest. The ledger is

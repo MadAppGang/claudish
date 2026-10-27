@@ -62,6 +62,8 @@ export type AllowanceEvent =
       /** null = no usable snapshot, never "windows absent". */
       windows: WindowReading[] | null;
       outcome: ResponseOutcome;
+      /** The delegating conversation (ledger `parent`); absent = null. */
+      parent?: SessionKey | null;
     }
   /** A state.json reading. */
   | { kind: "snapshot"; at: Ms; account: AccountId; windows: WindowReading[] }
@@ -92,6 +94,8 @@ export type AllowanceEvent =
       last: WindowReading[] | null;
       /** The hour's POOL-WIDE censored minutes, the same on every rollup of that hour. */
       censoredMinutes: number;
+      /** The delegating conversation (ledger `parent`); absent = null. */
+      parent?: SessionKey | null;
     };
 
 // ---------------------------------------------------------------------------
@@ -230,6 +234,8 @@ export interface SessionTrack {
   tokens: TokenCounts;
   /** Requests per model. */
   models: Record<string, number>;
+  /** The conversation that delegated it: the first non-null `parent` folded; absent = null. */
+  parent?: SessionKey | null;
 }
 
 export interface AllowanceState {
@@ -653,6 +659,8 @@ export interface Trajectory {
 
 export interface Contribution {
   session: SessionKey | "unattributed";
+  /** The session's delegating conversation (`SessionTrack.parent`); null for none and for `unattributed`. */
+  parent: SessionKey | null;
   /** `all` when the rows sum several accounts. */
   account: AccountId | "all";
   window: WindowKey;

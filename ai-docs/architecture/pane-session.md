@@ -646,10 +646,16 @@ run the user's profile.
   argv, and any positional token or `--`, by claudish's own value-consumption rule). After
   `parseArgs` the child asserts it is interactive, not a team run, with no positional prompt;
   otherwise it prints `claudish: pane child refused: <reason>` and exits 64 (FAILED `child_exited`).
-- `CLAUDISH_PANE_CHILD`, `CLAUDISH_PANE_CWD`, `CLAUDISH_HOOK_INBOX` and `CLAUDISH_HOOK_SESSION`
-  survive the snapshot. `CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD` and the two hook markers
-  (`PANE_LAUNCH_VARS`) are deleted from Claude Code's own environment, so the model never sees the
-  inbox path. `CLAUDISH_PANE_CHILD` is KEPT there; the next section says why.
+- `CLAUDISH_PANE_CHILD`, `CLAUDISH_PANE_CWD`, `CLAUDISH_HOOK_INBOX`, `CLAUDISH_HOOK_SESSION` and
+  `CLAUDISH_PARENT_SESSION` survive the snapshot. `CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD`, the two
+  hook markers and `CLAUDISH_PARENT_SESSION` (`PANE_LAUNCH_VARS`) are deleted from Claude Code's own
+  environment, so the model never sees the inbox path. `CLAUDISH_PANE_CHILD` is KEPT there; the next
+  section says why.
+- `CLAUDISH_PARENT_SESSION` is the delegating conversation (`parentSessionForCall`, once per
+  `create_session` / `team` call, every mode), set in `slotEnv` for every session, slot and judge.
+  `buildPaneEnv` deletes an inherited value before `slotEnv` applies, so only this call's value
+  reaches the child, whose proxy writes it as the usage ledger's `parent` (`allowance.md`). It is a
+  control variable (`CONTROL_VARS`): no env file can set it.
 
 **One level of nesting.** A `create_session` child (gpt-6.1-sol) once called the claudish MCP
 `create_session` itself; that session (#969aa2) failed `prompt_not_accepted`. It was a claudish MCP
