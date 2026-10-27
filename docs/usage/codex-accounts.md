@@ -14,11 +14,22 @@ Your existing `claudish login codex` keeps working unchanged. Nothing here happe
 ## Add an account
 
 ```bash
+claudish account add codex
+```
+
+This opens a browser. Sign in with the ChatGPT account you want to add. claudish names the account after the
+email of that login and never asks you for a name. If another account already has that email, the name becomes
+`<email>-<plan>` (for example `jack@example.com-plus`), then `<email>-<plan>-2`, `-3` and so on. The first time
+you add one, your existing login is kept as the account `default`.
+
+To choose the name yourself, pass `--label`:
+
+```bash
 claudish account add codex --label work
 ```
 
-This opens a browser. Sign in with the ChatGPT account you want to add. The first time you add one, your existing
-login is kept as the account `default`.
+A label holds letters, digits, `_`, `@`, `+`, `.`, `-` and spaces, starts with a letter, digit or `_`, and has at
+most 64 characters.
 
 Add only accounts you own. Vendor terms may restrict switching between subscriptions.
 
@@ -31,7 +42,7 @@ claudish account status
 ```
 codex
   ○ default         7d 41%
-  ● work      team  5h 3% · 7d 1%  active
+  ● jack@example.com  team  5h 3% · 7d 1%  active
   switch at 90%
   strategy: sticky
 ```
@@ -63,7 +74,7 @@ Codex allowance · 2 accounts · sticky
 No projected gap.
 [weekly graph: history, forecast band, resets, any projected block]
 Sessions this window
-  1  5292dca2   28 %  17.2k / 7   cx@gpt-6-astra  work
+  1  5292dca2   28 %  17.2k / 7   cx@gpt-6-astra  jack@example.com
   -  unattributed 17 %            (Codex CLI / ChatGPT app)
 ```
 
@@ -82,11 +93,20 @@ Forecasts start rough and improve as history builds up: with no history they use
 ## Change or remove accounts
 
 ```bash
-claudish account login codex work      # sign in again
-claudish account disable codex work    # stop using it, keep it configured
-claudish account enable codex work
-claudish account remove codex work
+claudish account login codex jack@example.com    # sign in again
+claudish account disable codex jack@example.com   # stop using it, keep it configured
+claudish account enable codex jack@example.com
+claudish account remove codex jack@example.com
+claudish account rename codex jack@example.com work   # change only the name
 ```
+
+Every command takes the label or the login's email. An exact label wins. Otherwise the email must match exactly one
+account; if two accounts share it, the command fails and lists each label with its id, and you pass `--id <id>` to
+pick one. Each command prints the label and id it resolved, so you can see which account it changed.
+
+`rename` changes the label and nothing else: the account keeps its place, its enabled state, its stored login and its
+usage history. A new label must be unused (upper and lower case count as the same). You can also rename the original
+login `default`.
 
 Disabling your last account does not fall back to an `OPENAI_CODEX_API_KEY`; Codex requests fail visibly instead,
 so a subscription user is never moved to per-token billing by accident. Removing the original login needs
@@ -95,5 +115,7 @@ so a subscription user is never moved to per-token billing by accident. Removing
 ## Privacy
 
 The usage record lives in `~/.claudish/accounts/usage/` (mode 0600), on your machine only. It holds numbers,
-model names, account labels and Claude Code session ids — never prompt text or tokens. Raw rows are kept 30 days,
+model names, account labels and Claude Code session ids — never prompt text or tokens. Because the default label is
+your login's email, the email appears in this record, in claudish's logs, in `account list` and `account forecast`
+output, and in error messages. It does not appear in telemetry. Pass `--label` to use a name without your email. Raw rows are kept 30 days,
 hourly totals after that. Set `CLAUDISH_ALLOWANCE_LEDGER=off` to stop recording.

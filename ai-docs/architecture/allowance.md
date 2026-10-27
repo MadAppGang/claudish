@@ -48,7 +48,7 @@ attempt (`ComposedHandler`), with the account, the Claude Code session id (store
 cut to 8 characters on every surface), the model, the
 selection reason, the token counts and each window's reading. Rows are built **only** from numbers,
 closed sets and pattern-checked identifiers (`ledger-row.ts`): the plan type maps to a closed
-`PlanClass`, labels pass `ACCOUNT_LABEL_PATTERN`, a session id must match `^[A-Za-z0-9-]{1,64}$`,
+`PlanClass`, labels pass `ACCOUNT_LABEL_PATTERN` (a label may be an email: personal data, not a secret), a session id must match `^[A-Za-z0-9-]{1,64}$`,
 a model id `^[A-Za-z0-9._:/@-]{1,80}$`, else `"other"`. No body text, no header text, no project.
 That is why the ledger needs no redaction pass (`adapters.md`, sink table).
 
