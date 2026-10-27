@@ -69,6 +69,7 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
         lambda: null,
         calibration: { beta: "calibrated", kappa: null },
         active: true,
+        order: 0,
       },
       {
         label: "home",
@@ -97,6 +98,7 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
         lambda: null,
         calibration: { beta: "coarse", kappa: "calibrated" },
         active: false,
+        order: 1,
       },
     ],
     combined: { remainingNow: 58_000_000, capacity: 100_000_000 },

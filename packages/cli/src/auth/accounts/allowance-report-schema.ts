@@ -78,6 +78,13 @@ const accountSchema = z.object({
    * claudish.
    */
   active: z.boolean().optional(),
+  /**
+   * The 0-based position in `account list`, disabled accounts counted.
+   * `accounts[]` holds only ENABLED accounts, so an index into it is not the
+   * profile number; the number is `order + 1`. Added within v1; absent from a
+   * report of an older claudish.
+   */
+  order: z.number().int().min(0).optional(),
 });
 
 const remedySchema = z.object({
