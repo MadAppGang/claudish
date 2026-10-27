@@ -1388,6 +1388,13 @@ export function buildReport(input: ReportInput): AllowanceReport {
         kind: b.kind,
         probability: b.probability,
       })),
+      switches: traj.switches.map((sw) => ({
+        accountId: sw.account,
+        soonest: iso(sw.q.p10),
+        usual: iso(sw.q.p50),
+        latest: iso(sw.q.p90),
+        probability: Math.min(1, Math.max(0, sw.probability)),
+      })),
       spark48: sparkline(
         {
           ...traj,

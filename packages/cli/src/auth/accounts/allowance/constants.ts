@@ -133,6 +133,14 @@ export const DEFAULT_ALLOWANCE_CONFIG: Readonly<AllowanceConfig> = {
 export const LOOKAHEAD_TRAJ_PATHS = 40;
 
 /**
+ * A per-path statistic is reported only when at least this share of the
+ * Monte Carlo paths has it: quantiles over one or two samples are noise. The
+ * alerts' gap quantiles, the trajectory's switches and its loss at a reset
+ * share it. Not a config field: the defaults are pinned.
+ */
+export const MIN_PATH_SHARE = 0.1;
+
+/**
  * The safe pace's upward bracket (`paceScan`) doubles the anchor up to this
  * multiple. The anchor is at least the pool's refill throughput, so 64 × it is
  * a demand no pool sustains: a result capped here is a lower bound, never a

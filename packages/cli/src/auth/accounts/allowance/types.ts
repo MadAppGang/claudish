@@ -636,6 +636,12 @@ export interface Trajectory {
   resets: { at: Ms; account: AccountId; window: WindowKey; projected: boolean }[];
   /** Maximal runs with `pBlocked ≥ 0.5`: the paths' gap start and end overlapping each run. */
   blocked: { from: Quantiles; to: Quantiles; kind: "7d" | "5h"; probability: number }[];
+  /**
+   * Each account's FIRST takeover inside the horizon, over the paths: the time
+   * quantiles of the paths where it takes over and the share of paths that
+   * do (only ≥ MIN_PATH_SHARE). Ordered by p50, then account order.
+   */
+  switches: { account: AccountId; q: Quantiles; probability: number }[];
 }
 
 export interface Contribution {
