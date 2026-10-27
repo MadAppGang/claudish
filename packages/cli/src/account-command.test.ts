@@ -96,6 +96,167 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+describe("account command usage window freshness", () => {
+  beforeEach(() => {
+    writeJson(configPath, {
+      version: "1.0.0",
+      defaultProfile: "default",
+      profiles: {},
+      subscriptionAccounts: {
+        "openai-codex": {
+          generation: 1,
+          accounts: [
+            {
+              id: "abc123def456",
+              label: "codex-work",
+              store: "file",
+              addedAt: "2026-09-12T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  for (const command of ["list", "status"]) {
+    test(`${command} omits a reset window while retaining a current window`, async () => {
+      const commandNow = Date.now();
+      writeJson(statePath, {
+        version: 1,
+        providers: {
+          "openai-codex": {
+            accounts: {
+              abc123def456: {
+                usage: {
+                  observedAt: commandNow - 27 * 3_600_000,
+                  windows: [
+                    {
+                      slot: "primary",
+                      displayId: "5h",
+                      lengthMinutes: 300,
+                      usedFraction: 0.91,
+                      resetAt: commandNow - 26 * 3_600_000,
+                    },
+                    {
+                      slot: "secondary",
+                      displayId: "7d",
+                      lengthMinutes: 10_080,
+                      usedFraction: 0.14,
+                      resetAt: commandNow + 5 * 24 * 3_600_000,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      });
+      installPools(commandNow);
+
+      const output = await capture([command]);
+
+      expect(output).toContain("codex-work");
+      expect(output).toContain("7d 14%");
+      expect(output).not.toContain("91%");
+      expect(output).not.toContain("5h");
+      expect(output).not.toContain("refilled since last seen");
+
+      // Mutation caught: print an expired window or discard every window in an old reading.
+    });
+
+    test(`${command} retains future windows and windows without a reset time`, async () => {
+      const commandNow = Date.now();
+      writeJson(statePath, {
+        version: 1,
+        providers: {
+          "openai-codex": {
+            accounts: {
+              abc123def456: {
+                usage: {
+                  observedAt: commandNow - 27 * 3_600_000,
+                  windows: [
+                    {
+                      slot: "primary",
+                      displayId: "5h",
+                      lengthMinutes: 300,
+                      usedFraction: 0.41,
+                      resetAt: commandNow + 3_600_000,
+                    },
+                    {
+                      slot: "secondary",
+                      displayId: "7d",
+                      lengthMinutes: 10_080,
+                      usedFraction: 0.14,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      });
+      installPools(commandNow);
+
+      const output = await capture([command]);
+
+      expect(output).toContain("codex-work");
+      expect(output).toContain("5h 41%");
+      expect(output).toContain("7d 14%");
+      expect(output).not.toContain("refilled since last seen");
+      expect(output).not.toContain("usage unknown");
+
+      // Mutation caught: hide future windows or treat a missing reset time as expired.
+    });
+
+    test(`${command} reports refilled when every stored window has reset`, async () => {
+      const commandNow = Date.now();
+      writeJson(statePath, {
+        version: 1,
+        providers: {
+          "openai-codex": {
+            accounts: {
+              abc123def456: {
+                usage: {
+                  observedAt: commandNow - 27 * 3_600_000,
+                  windows: [
+                    {
+                      slot: "primary",
+                      displayId: "5h",
+                      lengthMinutes: 300,
+                      usedFraction: 0.91,
+                      resetAt: commandNow - 26 * 3_600_000,
+                    },
+                    {
+                      slot: "secondary",
+                      displayId: "7d",
+                      lengthMinutes: 10_080,
+                      usedFraction: 0.73,
+                      resetAt: commandNow,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      });
+      installPools(commandNow);
+
+      const output = await capture([command]);
+
+      expect(output).toContain("codex-work");
+      expect(output).toContain("refilled since last seen");
+      expect(output).not.toContain("usage unknown");
+      expect(output).not.toContain("91%");
+      expect(output).not.toContain("73%");
+      expect(output).not.toContain("5h");
+      expect(output).not.toContain("7d");
+
+      // Mutation caught: label fully reset usage as unknown or keep a reset window's percentage.
+    });
+  }
+});
+
 describe("read-only account command", () => {
   test("list renders a legacy-only Codex account list without writing config", async () => {
     writeJson(legacyPath, {
