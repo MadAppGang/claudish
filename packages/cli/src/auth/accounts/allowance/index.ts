@@ -13,6 +13,7 @@ export {
   episodeId,
   gaps,
   initialAlertMemory,
+  paceInCuPerHour,
   remedy,
   remedyText,
 } from "./alerts.js";

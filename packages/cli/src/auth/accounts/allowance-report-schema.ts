@@ -175,6 +175,20 @@ export const allowanceReportSchema = z.object({
      */
     long: nonNegative.nullable(),
     short: nonNegative.nullable(),
+    /**
+     * The safe pace in `unit` (cu/h): the highest burn rate at which no 7d gap
+     * of 1 h or more is projected over the alert simulation horizon (to the
+     * latest governing reset + 24 h, at least 96 h; NOT `horizonHours`), with
+     * the forecast's hour-of-week profile and the alert model. Under an active
+     * alert it is the top alert's remedy: `cutToPercent / 100 × burn.long` for a
+     * cut, 0 for a pause or a not-addressable gap. Otherwise it is scanned
+     * (resolution about 6 %; a lower bound when capped at 64 × the refill
+     * throughput). Reported whenever `status` is `ok`, also while `long` is null
+     * (the ledger is shorter than its half-life); null under
+     * `insufficient-evidence`, or in `account-fraction` without a ledger rate.
+     * Before this widening it was set only under an active alert, and in
+     * `account-fraction` it was in window fractions per hour.
+     */
     sustainable: nonNegative.nullable(),
     unit: z.string(),
   }),

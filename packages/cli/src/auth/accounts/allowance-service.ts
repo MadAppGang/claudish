@@ -56,7 +56,13 @@ import {
   type AllowanceReport,
   allowanceReportSchema,
 } from "./allowance-report-schema.js";
-import { type AlertPayload, type AlertsRun, alertsSliced, remedyText } from "./allowance/alerts.js";
+import {
+  type AlertPayload,
+  type AlertsRun,
+  alertsSliced,
+  paceInCuPerHour,
+  remedyText,
+} from "./allowance/alerts.js";
 import { accountViews, combinedNow, isRead } from "./allowance/capacity.js";
 import { choose, planFor } from "./allowance/choose.js";
 import { DEFAULT_ALLOWANCE_CONFIG, alertStrategy } from "./allowance/constants.js";
@@ -79,6 +85,7 @@ import type {
   Calendar,
   ChooseRequest,
   Forecast,
+  PaceResult,
   Plan,
   PlanClass,
   ResponseOutcome,
@@ -200,8 +207,10 @@ interface ProviderModel {
   label: AllowanceLabel | undefined;
   /** The last evaluation's Monte Carlo quantiles and remedy scans, reused while their key holds. */
   payload: AlertPayload | null;
-  /** The last evaluation's active alerts and blocked state, for `report()`. */
-  lastAlerts: { active: Alert[]; blockedNow: boolean; status: "ok" | "insufficient-evidence" };
+  /** The last report evaluation's safe pace, reused while its key holds. */
+  pace: PaceResult | null;
+  /** The last evaluation's active alerts, blocked state and (report only) safe pace, for `report()`. */
+  lastAlerts: ReportAlerts;
 }
 
 /** `allowance-alerts.json`: the shared memory and the ids already announced. */
@@ -668,7 +677,8 @@ export class AllowanceService {
         sinks: new Set(),
         label: undefined,
         payload: null,
-        lastAlerts: { active: [], blockedNow: false, status: "insufficient-evidence" },
+        pace: null,
+        lastAlerts: { active: [], blockedNow: false, status: "insufficient-evidence", pace: null },
       };
       this.models.set(provider, m);
     }
@@ -936,15 +946,22 @@ export class AllowanceService {
     let won: Transition[] = [];
     let landed: AlertsRun | null = null;
     for (let attempt = 0; attempt < ALERTS_CAS_ATTEMPTS && landed === null; attempt++) {
+      // Only the report reads the safe pace: an announce step never pays for its scan.
       const result = await runSliced(
-        alertsSliced(state, now, peek, m.cal, m.cfg, fc, { reuse: m.payload })
+        alertsSliced(state, now, peek, m.cal, m.cfg, fc, {
+          reuse: m.payload,
+          pace: !announce,
+          paceReuse: m.pace,
+        })
       );
       if (result.payload) m.payload = result.payload;
+      if (result.pace) m.pace = result.pace;
       if (!announce) {
         m.lastAlerts = {
           active: result.active,
           blockedNow: result.blockedNow,
           status: result.status,
+          pace: result.pace,
         };
         return [];
       }
@@ -998,7 +1015,12 @@ export class AllowanceService {
       log(`[allowance] ${provider}: the alert memory kept moving; step skipped`);
       return [];
     }
-    m.lastAlerts = { active: landed.active, blockedNow: landed.blockedNow, status: landed.status };
+    m.lastAlerts = {
+      active: landed.active,
+      blockedNow: landed.blockedNow,
+      status: landed.status,
+      pace: null,
+    };
     const active = landed.active;
     const status = landed.status;
 
@@ -1184,6 +1206,31 @@ export function poolRemaining(
   return { remainingNow: now.value, capacity, unit: now.unit };
 }
 
+/** What `buildReport` reads of the last alert evaluation. */
+export interface ReportAlerts {
+  active: Alert[];
+  blockedNow: boolean;
+  status: "ok" | "insufficient-evidence";
+  /** The safe pace while no alert is active (report evaluations only); absent or null otherwise. */
+  pace?: PaceResult | null;
+}
+
+/**
+ * `burn.sustainable` in cu/h (§T1): under an active alert the top remedy's
+ * cut × the raw `burn.long`, or 0 for a pause or a not-addressable gap, always
+ * computed here so `cutToPercent / 100 × burn.long` holds exactly; otherwise
+ * the scanned safe pace converted to cu/h; null when neither exists.
+ */
+function sustainableOf(
+  top: Alert | undefined,
+  pace: PaceResult | null,
+  burnLong: number
+): number | null {
+  const long = Number.isFinite(burnLong) ? Math.max(0, burnLong) : 0;
+  if (top) return top.remedy.kind === "cut" ? top.remedy.cutToFraction * long : 0;
+  return pace ? paceInCuPerHour(pace, long) : null;
+}
+
 /** The inputs of one report: the model's state and the last evaluation. */
 export interface ReportInput {
   s: AllowanceState;
@@ -1192,7 +1239,7 @@ export interface ReportInput {
   cfg: AllowanceConfig;
   cal: Calendar;
   fc: Forecast | null;
-  alerts: { active: Alert[]; blockedNow: boolean; status: "ok" | "insufficient-evidence" };
+  alerts: ReportAlerts;
   /** Account id → the registry's label. */
   labels: Map<string, string>;
   /**
@@ -1225,6 +1272,7 @@ export function buildReport(input: ReportInput): AllowanceReport {
   const label = (id: string) => input.labels.get(id) ?? id;
   const pool = poolRemaining(views);
   const top = input.alerts.active[0];
+  const status = none ? "insufficient-evidence" : input.alerts.status;
   const fmt = (at: number) => formatLocalTime(at);
   const report: AllowanceReport = {
     schema: ALLOWANCE_REPORT_SCHEMA,
@@ -1271,7 +1319,8 @@ export function buildReport(input: ReportInput): AllowanceReport {
     burn: {
       long: ledgerHours < cfg.BURN_LONG_HL_H ? null : burn.long,
       short: ledgerHours < cfg.BURN_SHORT_HL_H ? null : burn.short,
-      sustainable: top ? top.burn.sustainable : null,
+      sustainable:
+        status === "ok" ? sustainableOf(top, input.alerts.pace ?? null, burn.long) : null,
       unit: "cu/h",
     },
     alerts: none
@@ -1313,7 +1362,7 @@ export function buildReport(input: ReportInput): AllowanceReport {
           };
         }),
     blockedNow: none ? false : input.alerts.blockedNow,
-    status: none ? "insufficient-evidence" : input.alerts.status,
+    status,
     trajectory: {
       history: traj.history.map((h) => ({
         at: iso(h.at),

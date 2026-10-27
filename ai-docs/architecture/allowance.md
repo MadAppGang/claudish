@@ -173,6 +173,19 @@ A `GapEval` and the Monte Carlo payload are reused while their inputs key holds:
 burn rate at 1/8 octave (`rateBin`), because the open hour moved the short rate every minute and
 the reuse never happened.
 
+**The safe pace** (`burn.sustainable` in the report, `paceScan` in `alerts.ts`) is reported
+whenever the status is `ok`, not only under an alert: the highest rate ρ whose `ρ·f` has no 7d gap
+≥ 1 h over the alert horizon H, the remedy's own criterion. Under an active alert the shell takes
+the top remedy (`cutToFraction × burn.long`, 0 for pause / not-addressable), so the band can check
+`cutToPercent / 100 × burn.long` exactly. Without one: a gap at ρ_L runs the remedy's cut grid on
+ρ_L (`cutScan`, shared with `remedyScan`), so the value does not jump when the alert is raised;
+otherwise the anchor is max(ρ_L, ρ_C), ρ_C the pool's refill throughput (Σ capacity / governing
+length). Anchoring at ρ_L alone made a light user's decaying rate pull the answer down with it
+(64 × a tiny rate). A clean anchor doubles to 64 × and bisects 4 times (≈ 6 %); a gapping one
+bisects down towards ρ_L. At most 11 `gapsOn`, only on the report's evaluation (`opts.pace`), and
+reused while `inputsKey` holds; the result is kept as φ = rate / ρ_L and reported as φ × the
+report's `burn.long`, which also converts W/h to cu/h in `account-fraction`.
+
 **The alert model is the deployed strategy.** The design's first revision forecast with `ebr`
 while selection ran its look-ahead: on opus H1 that raises a false 50 h WARN (ebr spends A's only
 weekly unit; the look-ahead saves it), and hysteresis holding a0 where ebr would switch can miss a
