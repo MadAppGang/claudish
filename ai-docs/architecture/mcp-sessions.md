@@ -472,6 +472,12 @@ never lists it. The answer is model-visible: no project path, session ids cut to
 Contract and discovery lifecycle: `pane-session.md` § The `allowance` capability; the model:
 `allowance.md`.
 
+**Its answer is compact JSON.** Every other verb answers indented (`contractAnswer`); a full
+allowance report measured 61,681 bytes indented and 37,758 compact (trajectory 26,641, sessions
+9,672, accounts 798, burn 87, header 287). Indented it is over Claude Code's MCP result cap, and
+Claude Code then replaces the answer with a "saved to file" stub: the band parses that stub,
+finds no report, and stays hidden with no error anywhere. `compactAnswer` serves this tool only.
+
 The tool list is pinned by an EXACT frozen array in `mcp-session/e2e-sessions.test.ts`, so
 adding or removing a tool without updating that test fails CI. That is deliberate:
 it is a wire contract, and an accidental change to the tool surface should be loud.

@@ -1207,6 +1207,15 @@ function contractAnswer(value: unknown): ToolAnswer {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
 }
 
+/**
+ * `allowance_status`'s answer, COMPACT: indented, a full report measured 61,681
+ * bytes (37,758 compact), over Claude Code's MCP result cap, which replaces the
+ * answer with a "saved to file" stub the mod band never reads.
+ */
+function compactAnswer(value: unknown): ToolAnswer {
+  return { content: [{ type: "text", text: JSON.stringify(value) }] };
+}
+
 /** Every §8 verb answers its errors as the `ContractError` JSON with `isError: true`. */
 function contractErrorAnswer(e: unknown): ToolAnswer {
   const err =
@@ -2536,7 +2545,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             "invalid_args",
             "'horizon_hours' must be a number from 1 to 168"
           );
-        return contractAnswer(await allowanceStatus(hours * 3_600_000));
+        return compactAnswer(await allowanceStatus(hours * 3_600_000));
       } catch (e) {
         return contractErrorAnswer(e);
       }
