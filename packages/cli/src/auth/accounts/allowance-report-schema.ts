@@ -260,17 +260,60 @@ export const allowanceReportSchema = z.object({
 export type AllowanceReport = z.infer<typeof allowanceReportSchema>;
 
 /**
+ * The report's top-level parts an `allowance_status` caller may ask for alone
+ * (`sections`). Every other key is the header and is always sent.
+ */
+export const ALLOWANCE_REPORT_SECTIONS = [
+  "accounts",
+  "alerts",
+  "burn",
+  "combined",
+  "sessions",
+  "trajectory",
+] as const;
+
+export type AllowanceReportSection = (typeof ALLOWANCE_REPORT_SECTIONS)[number];
+
+const partialReport = allowanceReportSchema.partial({
+  accounts: true,
+  alerts: true,
+  burn: true,
+  combined: true,
+  sessions: true,
+  trajectory: true,
+});
+
+/**
  * The `allowance_status` MCP answer (§3.4): the mod contract's version and
  * capabilities, then the report, or null with a one-line reason (no account
  * pool for the provider, the service could not load). Mod contract v1 is NOT
  * bumped: `allowance` is an additive capability, and mod 2.10.x declines any
  * other version.
+ *
+ * `sections` (added within v1) marks a PARTIAL report: the caller asked for
+ * those sections, sorted, and `allowance` carries the header plus only them.
+ * Without it, every section must be present.
  */
-export const allowanceStatusAnswerSchema = z.object({
-  contract_version: z.literal(1),
-  capabilities: z.array(z.string()),
-  allowance: allowanceReportSchema.nullable(),
-  reason: z.string().optional(),
-});
+export const allowanceStatusAnswerSchema = z
+  .object({
+    contract_version: z.literal(1),
+    capabilities: z.array(z.string()),
+    sections: z.array(z.enum(ALLOWANCE_REPORT_SECTIONS)).min(1).optional(),
+    allowance: partialReport.nullable(),
+    reason: z.string().optional(),
+  })
+  .superRefine((answer, ctx) => {
+    if (answer.allowance === null) return;
+    const wanted: readonly AllowanceReportSection[] = answer.sections ?? ALLOWANCE_REPORT_SECTIONS;
+    for (const section of wanted) {
+      if (answer.allowance[section] === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["allowance", section],
+          message: `section ${section} is missing`,
+        });
+      }
+    }
+  });
 
 export type AllowanceStatusAnswer = z.infer<typeof allowanceStatusAnswerSchema>;

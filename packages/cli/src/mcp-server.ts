@@ -18,7 +18,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "./adapters/base-api-format.js";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
-import type { AllowanceStatusAnswer } from "./auth/accounts/allowance-report-schema.js";
+import {
+  ALLOWANCE_REPORT_SECTIONS,
+  type AllowanceReportSection,
+  type AllowanceStatusAnswer,
+} from "./auth/accounts/allowance-report-schema.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { writeFileAtomic } from "./fs-atomic.js";
@@ -1201,6 +1205,50 @@ async function allowanceStatus(horizonMs: number): Promise<AllowanceStatusAnswer
     const message = e instanceof Error ? e.message : String(e);
     return { ...meta, allowance: null, reason: `the allowance report failed: ${message}` };
   }
+}
+
+/**
+ * `allowance_status`'s `sections`: absent → undefined (the full report); else a
+ * non-empty array of names from ALLOWANCE_REPORT_SECTIONS, returned sorted and
+ * deduplicated. Anything else is `invalid_args`.
+ */
+function allowanceSectionsArg(value: unknown): AllowanceReportSection[] | undefined {
+  if (value === undefined) return undefined;
+  const known = ALLOWANCE_REPORT_SECTIONS as readonly string[];
+  if (!Array.isArray(value) || value.length === 0)
+    throw new ContractErrorException(
+      "invalid_args",
+      `'sections' must be a non-empty array of ${known.join(", ")}`
+    );
+  for (const name of value) {
+    if (typeof name !== "string" || !known.includes(name))
+      throw new ContractErrorException(
+        "invalid_args",
+        `'sections' has an unknown section ${JSON.stringify(name)}; known: ${known.join(", ")}`
+      );
+  }
+  return [...new Set(value as AllowanceReportSection[])].sort();
+}
+
+/**
+ * The answer cut to `sections` (AFTER the full report was built): the header
+ * keys, and only the requested sections. `sections` is added beside the meta
+ * so a reader tells a partial report from a full one. A null `allowance` is
+ * returned as is.
+ */
+function allowanceSections(
+  answer: AllowanceStatusAnswer,
+  sections: AllowanceReportSection[] | undefined
+): AllowanceStatusAnswer {
+  if (sections === undefined || answer.allowance === null) return answer;
+  const dropped = new Set<string>(
+    ALLOWANCE_REPORT_SECTIONS.filter((section) => !sections.includes(section))
+  );
+  const allowance = Object.fromEntries(
+    Object.entries(answer.allowance).filter(([key]) => !dropped.has(key))
+  ) as AllowanceStatusAnswer["allowance"];
+  const { contract_version, capabilities, ...rest } = answer;
+  return { contract_version, capabilities, sections, ...rest, allowance };
 }
 
 function contractAnswer(value: unknown): ToolAnswer {
@@ -2518,6 +2566,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       "allowance, reason?}. `allowance` is the claudish.allowance.v1 report of THIS machine's " +
       "claudish sessions (accounts, remaining capacity, burn rate, projected gaps with remedies, " +
       "trajectory, per-session shares), or null with a `reason` when there is no account pool. " +
+      "`sections` limits the report to those parts (accounts, combined, burn, alerts, " +
+      "trajectory, sessions) beside its header, and the answer then lists them in `sections`; " +
+      'a frequent poll should pass ["accounts","burn","alerts"]. ' +
       "Read-only; it sends nothing to any vendor.",
     inputSchema: {
       type: "object",
@@ -2530,6 +2581,16 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         horizon_hours: {
           type: "number",
           description: "Forecast horizon in hours, 1–168 (default: 168)",
+        },
+        sections: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: [...ALLOWANCE_REPORT_SECTIONS],
+          },
+          minItems: 1,
+          description:
+            'Report only these parts beside the header (default: all). Poll with ["accounts","burn","alerts"]; the trajectory and sessions are most of the bytes.',
         },
       },
     },
@@ -2545,7 +2606,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             "invalid_args",
             "'horizon_hours' must be a number from 1 to 168"
           );
-        return compactAnswer(await allowanceStatus(hours * 3_600_000));
+        const sections = allowanceSectionsArg(args.sections);
+        // The report is built in full either way; only the answer is cut.
+        return compactAnswer(allowanceSections(await allowanceStatus(hours * 3_600_000), sections));
       } catch (e) {
         return contractErrorAnswer(e);
       }
