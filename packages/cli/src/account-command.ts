@@ -30,6 +30,7 @@
  */
 
 import type { CodexManagementCommand } from "./auth/accounts/management.js";
+import { liveWindows } from "./auth/accounts/policy.js";
 import { getAccountPool } from "./auth/accounts/pool.js";
 import type { AccountDescription, PoolDescription } from "./auth/accounts/pool.js";
 import { getAccountRegistry } from "./auth/accounts/registry.js";
@@ -81,10 +82,19 @@ function pct(fraction: number): string {
   return `${Math.round(fraction * 100)}%`;
 }
 
-/** One window, e.g. `5h 41%` — reddened once it is past its threshold. */
-function renderWindows(row: AccountDescription, pool: PoolDescription): string {
-  const windows = row.state.usage?.windows ?? [];
-  if (windows.length === 0) return dim("usage unknown");
+/**
+ * One window, e.g. `5h 41%` — reddened once it is past its threshold.
+ *
+ * Only the windows selection reads (`liveWindows`): a reading whose recorded reset
+ * has passed says nothing about the account now, and printing it showed `5h 91%`
+ * a day after that window refilled.
+ */
+function renderWindows(row: AccountDescription, pool: PoolDescription, now: number): string {
+  const usage = row.state.usage ?? null;
+  const windows = liveWindows(usage, now);
+  if (windows.length === 0) {
+    return dim(usage && usage.windows.length > 0 ? "refilled since last seen" : "usage unknown");
+  }
   return windows
     .map((w) => {
       const threshold = pool.switchAtByWindow[w.slot] ?? pool.switchAt;
@@ -101,7 +111,7 @@ function renderRow(row: AccountDescription, pool: PoolDescription, now: number):
   const disabled = row.record.enabled ? "" : dim(" disabled");
   const plan = row.record.identity.plan ? dim(` ${row.record.identity.plan}`) : "";
   lines.push(
-    `  ${marker} ${strong(row.record.label)}${legacy}${plan}${disabled}  ${renderWindows(row, pool)}` +
+    `  ${marker} ${strong(row.record.label)}${legacy}${plan}${disabled}  ${renderWindows(row, pool, now)}` +
       (row.isActive ? dim("  active") : "")
   );
 
