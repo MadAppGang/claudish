@@ -1418,6 +1418,18 @@ export function buildReport(input: ReportInput): AllowanceReport {
         kind: b.kind,
         probability: b.probability,
       })),
+      // The last 24 h only: the window spark48 draws. A week per account would add
+      // about 12.7 KB per account to every model-visible allowance_status answer.
+      historyByAccount: none
+        ? []
+        : views
+            .filter((v) => traj.historyByAccount[v.account] !== undefined)
+            .map((v) => ({
+              accountId: v.account,
+              history: (traj.historyByAccount[v.account] ?? [])
+                .filter((h) => h.at >= now - 24 * HOUR_MS)
+                .map((h) => ({ at: iso(h.at), remaining: h.remaining, provenance: h.provenance })),
+            })),
       switches: traj.switches.map((sw) => ({
         accountId: sw.account,
         soonest: iso(sw.q.p10),

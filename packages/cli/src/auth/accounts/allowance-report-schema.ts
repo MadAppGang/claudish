@@ -124,14 +124,25 @@ const alertSchema = z.object({
   remedy: remedySchema,
 });
 
+/** One hour of `trajectory.history`, and of each account's `historyByAccount` series. */
+const historyPoint = z.object({
+  at: iso,
+  remaining: finite,
+  provenance: z.enum(["observed", "reset-inferred"]),
+});
+
 const trajectorySchema = z.object({
-  history: z.array(
-    z.object({
-      at: iso,
-      remaining: finite,
-      provenance: z.enum(["observed", "reset-inferred"]),
-    })
-  ),
+  history: z.array(historyPoint),
+  /**
+   * `history` split per read account, in `accounts[]` order, for the LAST 24 h
+   * only (at ≥ generatedAt − 24 h, at most 25 points each): each point is that
+   * account's own term at the same `at`, so the accounts' `remaining` at one
+   * `at` sum to `history`'s. `accountId` is `accounts[].id`. Empty with no
+   * evidence. Added within v1; absent from a report of an older claudish.
+   */
+  historyByAccount: z
+    .array(z.object({ accountId: z.string(), history: z.array(historyPoint) }))
+    .optional(),
   forecast: z.array(
     z.object({ at: iso, p10: finite, p50: finite, p90: finite, pBlocked: fraction })
   ),
