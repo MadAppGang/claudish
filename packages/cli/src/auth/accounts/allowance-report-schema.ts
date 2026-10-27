@@ -125,6 +125,28 @@ const trajectorySchema = z.object({
     z.object({ at: iso, account: z.string(), window: z.string(), projected: z.boolean() })
   ),
   blocked: z.array(z.object({ from: iso, to: iso, kind: gapKind, probability: fraction })),
+  /**
+   * When each account takes over, over the trajectory's simulated paths:
+   * `soonest` / `usual` / `latest` are the p10 / p50 / p90 of its FIRST
+   * takeover on the paths where it has one inside the horizon, `probability`
+   * the share of paths that have one (entries under 0.1 are dropped). The
+   * active account appears too once it takes back over (after its reset).
+   * `accountId` is `accounts[].id`; map it to `accounts[].order + 1` for the
+   * profile number. Ordered by `usual`. Empty with one account, no evidence, or
+   * no takeover inside the horizon. Added within v1; absent from a report of
+   * an older claudish.
+   */
+  switches: z
+    .array(
+      z.object({
+        accountId: z.string(),
+        soonest: iso,
+        usual: iso,
+        latest: iso,
+        probability: fraction,
+      })
+    )
+    .optional(),
   /** The server-rendered sparkline: only the closed glyph set, so a reader can draw it verbatim. */
   spark48: z.string().regex(/^[▁▂▃▄▅▆▇█▒▓┊ ]*$/u),
 });

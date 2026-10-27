@@ -16,6 +16,11 @@
  * - **Resets** are each `R_w` within the horizon, `projected` after each
  *   window's first; a reset is a step, never interpolated. **Blocked** entries
  *   are the maximal runs where `pBlocked ≥ 0.5`.
+ * - **Switches** read the same paths' `decisions`: a takeover is the first
+ *   serving decision on an account other than the previous server, starting
+ *   from the pool's active account (when the paths simulate it; else the
+ *   first server is not a switch). Each account's first takeover per path,
+ *   inside the horizon, gives its time quantiles and the share of paths.
  * - **`sparkline`** is the ONE compact renderer (R21): history then p50, `▒`
  *   where p90 − p10 exceeds 15 % of the scale, `▓` on a projected block, `┊`
  *   at a reset, from a closed glyph set.
@@ -24,7 +29,7 @@
 import { drawCapacity, inFractions } from "./alerts.js";
 import { isStrong } from "./calibrate.js";
 import { accountViews, finishView, isRead, strongBetas } from "./capacity.js";
-import { alertModelConfig, trajPaths } from "./constants.js";
+import { MIN_PATH_SHARE, alertModelConfig, trajPaths } from "./constants.js";
 import { seedOf } from "./digest.js";
 import { demandModel, quantilesOf, sampleDemandPath } from "./forecast.js";
 import { mulberry32 } from "./prng.js";
@@ -33,6 +38,7 @@ import { evidenceOf } from "./state.js";
 import { hourStart } from "./step.js";
 import { STRATEGIES } from "./strategies/strategy.js";
 import type {
+  AccountId,
   AccountView,
   AllowanceConfig,
   AllowanceState,
@@ -203,6 +209,66 @@ function blockedRuns(
   return out;
 }
 
+/**
+ * One path's first takeover per account inside [now, end]: a serving decision
+ * (`cu > 0`) on an account other than the previous server. With `from` null
+ * the first server sets the previous one without counting.
+ */
+function firstTakeovers(
+  r: SimResult,
+  from: AccountId | null,
+  now: Ms,
+  end: Ms
+): Map<AccountId, Ms> {
+  const taken = new Map<AccountId, Ms>();
+  let prev = from;
+  for (const d of r.decisions) {
+    if (d.account === null || d.cu <= 0 || d.account === prev) continue;
+    const switched = prev !== null;
+    prev = d.account;
+    if (!switched) continue;
+    const t = Math.max(now, r.start + d.k * HOUR_MS);
+    if (t > end) break;
+    if (!taken.has(d.account)) taken.set(d.account, t);
+  }
+  return taken;
+}
+
+/**
+ * Each account's first takeover per path inside [now, end] (see the header),
+ * kept when at least MIN_PATH_SHARE of the paths have one; ordered by p50,
+ * then by the views' (account) order. No simulation: the paths are reused.
+ */
+function switchesOf(
+  results: readonly SimResult[],
+  views: readonly AccountView[],
+  poolActive: AccountId | null,
+  now: Ms,
+  end: Ms
+): Trajectory["switches"] {
+  const order = new Map(views.map((v, i) => [v.account, i]));
+  // An active account the paths do not simulate (unread) has no decision to switch from.
+  const from = poolActive !== null && order.has(poolActive) ? poolActive : null;
+  const times = new Map<AccountId, number[]>();
+  for (const r of results) {
+    for (const [account, t] of firstTakeovers(r, from, now, end)) {
+      const list = times.get(account) ?? [];
+      list.push(t);
+      times.set(account, list);
+    }
+  }
+  const paths = Math.max(1, results.length);
+  const out: Trajectory["switches"] = [];
+  for (const [account, list] of times) {
+    const probability = list.length / paths;
+    if (probability < MIN_PATH_SHARE) continue;
+    out.push({ account, q: quantilesOf(list), probability: Math.min(1, probability) });
+  }
+  return out.sort(
+    (a, b) => a.q.p50 - b.q.p50 || (order.get(a.account) ?? 0) - (order.get(b.account) ?? 0)
+  );
+}
+
 export function trajectory(
   s: AllowanceState,
   now: Ms,
@@ -215,7 +281,7 @@ export function trajectory(
   const history = historyOf(s, all, now, unit);
   const end = now + Math.max(0, horizonMs);
   const resets = resetsOf(all, now, end);
-  const empty: Trajectory = { unit, history, forecast: [], resets, blocked: [] };
+  const empty: Trajectory = { unit, history, forecast: [], resets, blocked: [], switches: [] };
   if (evidenceOf(s, now) === "none" || all.length === 0) return empty;
 
   const views = unit === "cu" ? all : all.map(inFractions);
@@ -254,7 +320,14 @@ export function trajectory(
     }
     forecast.push({ at, q: quantilesOf(values), pBlocked: blocked / paths });
   }
-  return { unit, history, forecast, resets, blocked: blockedRuns(results, forecast) };
+  return {
+    unit,
+    history,
+    forecast,
+    resets,
+    blocked: blockedRuns(results, forecast),
+    switches: switchesOf(results, views, s.poolActive ?? null, now, end),
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -49,7 +49,13 @@
  */
 
 import { accountViews, isRead, strongBetas, usable, windowRates } from "./capacity.js";
-import { PACE_BISECT_STEPS, PACE_MAX_MULT, alertStrategy, trajPaths } from "./constants.js";
+import {
+  MIN_PATH_SHARE,
+  PACE_BISECT_STEPS,
+  PACE_MAX_MULT,
+  alertStrategy,
+  trajPaths,
+} from "./constants.js";
 import { seedOf, viewsDigest } from "./digest.js";
 import { type DemandModel, demandModel, quantilesOf, sampleDemandPath } from "./forecast.js";
 import { fnvHex, mulberry32, sampleLognormal } from "./prng.js";
@@ -90,8 +96,6 @@ const REMEDY_MIN_GAP_MS = HOUR_MS;
  * 60 %", and a 5-point step never changes which advice is printed.
  */
 const CUT_GRID = Array.from({ length: 9 }, (_, i) => Number(((i + 1) * 0.1).toFixed(1)));
-/** Gap quantiles need a qualifying gap on at least this share of paths. */
-const MIN_PATH_SHARE = 0.1;
 const EPISODE_BUCKET_MS = 6 * HOUR_MS;
 
 // ---------------------------------------------------------------------------

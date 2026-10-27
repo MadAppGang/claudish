@@ -167,6 +167,22 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
           probability: 0.86,
         },
       ],
+      switches: [
+        {
+          accountId: "bbbbbbbbbbbb",
+          soonest: "2026-10-28T09:00:00.000Z",
+          usual: "2026-10-28T20:00:00.000Z",
+          latest: "2026-10-29T06:00:00.000Z",
+          probability: 0.97,
+        },
+        {
+          accountId: "aaaaaaaaaaaa",
+          soonest: "2026-10-31T09:00:00.000Z",
+          usual: "2026-10-31T09:00:00.000Z",
+          latest: "2026-10-31T09:00:00.000Z",
+          probability: 0.86,
+        },
+      ],
       spark48: "▇▇▇▆▆▆▅▅▅▄▄▄▃▃▃▂▂▂▁▁▁   ▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒┊▁▁▁",
     },
     sessions: [
@@ -233,7 +249,7 @@ export const GOLDEN_ALLOWANCE_NO_EVIDENCE_ANSWER = {
     alerts: [],
     blockedNow: false,
     status: "insufficient-evidence",
-    trajectory: { history: [], forecast: [], resets: [], blocked: [], spark48: "" },
+    trajectory: { history: [], forecast: [], resets: [], blocked: [], switches: [], spark48: "" },
     sessions: [],
   },
 } satisfies AllowanceStatusAnswer;
