@@ -1288,6 +1288,7 @@ export function buildReport(input: ReportInput): AllowanceReport {
     accounts: views.map((v) => {
       const g = v.governing === null ? undefined : v.beta[v.governing];
       const k = v.binding === null || v.binding === v.governing ? undefined : v.kappa[v.binding];
+      const lost = traj.lostAtReset[v.account];
       return {
         label: label(v.account),
         id: v.account,
@@ -1310,6 +1311,14 @@ export function buildReport(input: ReportInput): AllowanceReport {
         active: poolActive !== null && v.account === poolActive,
         // The registry position (`accountsEvent`), disabled accounts counted: `account list`'s number − 1.
         order: v.order,
+        lostAtReset: lost
+          ? {
+              at: iso(lost.at),
+              p10: Math.min(1, Math.max(0, lost.q.p10)),
+              p50: Math.min(1, Math.max(0, lost.q.p50)),
+              p90: Math.min(1, Math.max(0, lost.q.p90)),
+            }
+          : null,
       };
     }),
     combined: {

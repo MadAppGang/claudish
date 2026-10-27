@@ -642,6 +642,13 @@ export interface Trajectory {
    * do (only ≥ MIN_PATH_SHARE). Ordered by p50, then account order.
    */
   switches: { account: AccountId; q: Quantiles; probability: number }[];
+  /**
+   * Per read account with a fixed governing reset: the governing window's
+   * remaining fraction just before that reset (`SimResult.leftoverAtReset`),
+   * over the paths that reach it (only when ≥ MIN_PATH_SHARE of them do).
+   * `at` is the same on every path: capacity draws vary β, never reset times.
+   */
+  lostAtReset: Record<AccountId, { at: Ms; q: Quantiles }>;
 }
 
 export interface Contribution {

@@ -70,6 +70,7 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
         calibration: { beta: "calibrated", kappa: null },
         active: true,
         order: 0,
+        lostAtReset: { at: "2026-10-31T09:00:00.000Z", p10: 0, p50: 0, p90: 0.02 },
       },
       {
         label: "home",
@@ -99,6 +100,7 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
         calibration: { beta: "coarse", kappa: "calibrated" },
         active: false,
         order: 1,
+        lostAtReset: { at: "2026-11-01T06:00:00.000Z", p10: 0, p50: 0.01, p90: 0.06 },
       },
     ],
     combined: { remainingNow: 58_000_000, capacity: 100_000_000 },
