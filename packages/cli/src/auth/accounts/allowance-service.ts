@@ -1260,6 +1260,8 @@ export function buildReport(input: ReportInput): AllowanceReport {
         calibration: { beta: g?.quality ?? "prior", kappa: k?.quality ?? null },
         // `account list`'s predicate (pool.ts `isActive`); an active id outside `accounts[]` flags none.
         active: poolActive !== null && v.account === poolActive,
+        // The registry position (`accountsEvent`), disabled accounts counted: `account list`'s number − 1.
+        order: v.order,
       };
     }),
     combined: {
