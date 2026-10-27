@@ -1106,6 +1106,24 @@ export function createAnthropicPassthroughStream(
           // reports "API returned an empty or malformed response (HTTP 200)".
           if (!isClosed && !sawMessageStop) {
             log(`[AnthropicSSE] Stream ended without message_stop (stopReason=${stopReason}) — emitting synthetic finalization`);
+            // A socket that dies without its trailing content_block_stop leaves
+            // the last block OPEN: the client holds an unterminated tool_use
+            // (often with truncated JSON) and never receives the close, so the
+            // turn is lost. Measured 26/10 08:01:27–08:01:32Z: 7 concurrent
+            // streams on the Kimi lane ended with message_delta(end_turn) and no
+            // content_block_stop; 3 of them carried truncated tool JSON.
+            // finalizeWithError already closes the open block — this is the same
+            // guard on the clean-EOF path, which never had it.
+            if (highestSeenIndex >= 0 && lastBlockOpen) {
+              controller.enqueue(
+                encoder.encode(
+                  "event: content_block_stop\ndata: " +
+                    JSON.stringify({ type: "content_block_stop", index: highestSeenIndex }) +
+                    "\n\n"
+                )
+              );
+              lastBlockOpen = false;
+            }
             // #286 — the synthetic EMPTY-response body is for a stream that
             // delivered nothing. On the OpenAI wire (relayed /v1/chat/completions)
             // sawMessageStart never arms while the real chunks went through, and

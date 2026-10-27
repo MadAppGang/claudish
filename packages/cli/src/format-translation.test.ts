@@ -3137,6 +3137,95 @@ describe("Regression: Responses-lane cache visibility (#115)", () => {
   });
 });
 
+// ─── Regression: open tool_use block at clean EOF ────────────────────────────
+// 26/10 08:01:27–08:01:32Z: 7 concurrent streams on the Kimi lane ended with
+// message_start → content_block_start(tool_use) → input_json_delta →
+// message_delta(end_turn), then the socket died — no content_block_stop, no
+// message_stop. The never-hang tail synthesized message_stop, but the block
+// stayed OPEN, so the client held an unterminated tool_use (3 of the 7 carried
+// truncated JSON). finalizeWithError already closed the open block; the
+// clean-EOF path never did.
+describe("Regression: upstream EOF with an open content block", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/stream-parsers/anthropic-sse.js");
+    return mod.createAnthropicPassthroughStream;
+  }
+
+  function sseToResponse(content: string): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(content));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  test("closes the open block before the terminal pair, without duplicating message_stop", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "open-tool-block-at-eof.sse"));
+    const response = createAnthropicPassthroughStream(createMockContext(), fixture, {
+      modelName: "k3.1-pro",
+    });
+
+    const events = await parseClaudeSseStream(response);
+    const types = events.map((e) => e.data?.type);
+
+    const blockStops = events.filter((e) => e.data?.type === "content_block_stop");
+    expect(blockStops.length).toBe(1);
+    expect(blockStops[0].data.index).toBe(0);
+
+    // The block must be closed BEFORE the terminal message_stop. It lands
+    // after message_delta because the upstream's own delta is forwarded
+    // verbatim as it arrives — reordering it would mean rewriting the
+    // line-forwarding state machine, which this fix deliberately does not do.
+    const stopIdx = types.indexOf("content_block_stop");
+    const stopMsgIdx = types.indexOf("message_stop");
+    expect(stopIdx).toBeGreaterThan(-1);
+    expect(stopIdx).toBeLessThan(stopMsgIdx);
+
+    // never-hang: exactly one terminal pair, and the upstream's own stop_reason survives
+    expect(types.filter((t) => t === "message_delta").length).toBe(1);
+    expect(types.filter((t) => t === "message_stop").length).toBe(1);
+    const delta = events.find((e) => e.data?.type === "message_delta");
+    expect(delta?.data?.delta?.stop_reason).toBe("end_turn");
+  });
+
+  test("a tool_use block the upstream already closed is not closed twice", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    // Same shape as the truncated fixture, but the provider DOES send
+    // content_block_stop before dying — the guard must stay inert.
+    const upstream = [
+      `event: message_start`,
+      `data: {"type":"message_start","message":{"id":"msg_fixture_closed","type":"message","role":"assistant","model":"k3.1-pro","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}`,
+      ``,
+      `event: content_block_start`,
+      `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_fixture_closed","name":"Bash","input":{}}}`,
+      ``,
+      `event: content_block_delta`,
+      `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"command\\":\\"ls\\"}"}}`,
+      ``,
+      `event: content_block_stop`,
+      `data: {"type":"content_block_stop","index":0}`,
+      ``,
+      ``,
+    ].join("\n");
+
+    const response = createAnthropicPassthroughStream(createMockContext(), sseToResponse(upstream), {
+      modelName: "k3.1-pro",
+    });
+    const events = await parseClaudeSseStream(response);
+    const types = events.map((e) => e.data?.type);
+
+    expect(types.filter((t) => t === "content_block_stop").length).toBe(1);
+    expect(types.filter((t) => t === "message_stop").length).toBe(1);
+  });
+});
+
 // Post-file env probe (follow-up to #513 review): bun stores
 // `process.env.K = undefined` as the STRING "undefined" — the naive restore in
 // the hermetic #485 pin above leaked exactly that into every test file that
