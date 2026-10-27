@@ -62,9 +62,22 @@ const accountSchema = z.object({
       semantics,
     })
   ),
+  /**
+   * λ is an output of a `lookahead` plan's stay simulation (types.ts
+   * `Plan.lambda`). The report never computes it, so null means NOT COMPUTED;
+   * it never means "no switch".
+   */
   lambda: z.union([z.literal(0), z.literal(1)]).nullable(),
   /** The quality of each estimate: `prior`, `coarse` or `calibrated`. */
   calibration: z.object({ beta: z.string(), kappa: z.string().nullable() }),
+  /**
+   * The account the pool is on: `state.json` `active` read at report time, the
+   * same predicate as `account list`. At most one is true; all are false when
+   * no account is active or the active one is disabled or removed (it is then
+   * not in `accounts[]`). Added within v1; absent from a report of an older
+   * claudish.
+   */
+  active: z.boolean().optional(),
 });
 
 const remedySchema = z.object({
