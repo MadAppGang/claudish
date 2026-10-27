@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.6.0] - 2026-10-27
+
+### Documentation
+
+- record the email label decisions *(accounts)* ([`6960925`](https://github.com/MadAppGang/claudish/commit/696092554a9352e3f11d017cc48858932f9152e9))
+- update CHANGELOG.md for v14.5.2([`71dc37d`](https://github.com/MadAppGang/claudish/commit/71dc37dc70ea39ff7b32be932d03214b5b448fa7))
+
+### New Features
+
+- name a new Codex account after its login email *(accounts)* ([`bdf2958`](https://github.com/MadAppGang/claudish/commit/bdf2958f5e5ca4dbc8d2c21b441df30f950bb248))
+
+### Other Changes
+
+- v14.6.0 *(release)* ([`631fffe`](https://github.com/MadAppGang/claudish/commit/631fffe3efa4bd86f68ea19de862ed47817b0f2f))
+
 ## [14.5.2] - 2026-10-27
 
 ### Bug Fixes
