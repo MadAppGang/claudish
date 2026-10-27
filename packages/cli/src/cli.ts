@@ -2374,10 +2374,12 @@ ${h("SUBCOMMANDS")}
   ${bold("Subscription accounts:")}
     ${green("claudish account list")}                 Configured subscription accounts, per claudish provider
     ${green("claudish account status")} ${yellow("[--json]")}       Usage per window, thresholds and blockers
-    ${green("claudish account add codex")} ${yellow("[--label <label>]")}     Log in a Codex account you own and add it
+    ${green("claudish account add codex")} ${yellow("[--label <label>]")}     Log in a Codex account you own and add it ${dim("(label defaults to the login's email)")}
     ${green("claudish account login codex")} ${yellow("<label>")}         Log the same Codex identity in again
     ${green("claudish account enable|disable codex")} ${yellow("<label>")} Include or skip it in selection
+    ${green("claudish account rename codex")} ${yellow("<label> <new-label>")}  Give an account a new label
     ${green("claudish account remove codex")} ${yellow("<label> [--yes] [--delete-file]")}
+    ${dim("A <label> may also be the account's email.")}
     ${dim("--id <generated-id> may replace or confirm a label. Removing the legacy login (default)")}
     ${dim("requires --delete-file. New accounts use the macOS Keychain, or protected plaintext files")}
     ${dim("where there is none. No token input or export; Claude account mutations are not available.")}

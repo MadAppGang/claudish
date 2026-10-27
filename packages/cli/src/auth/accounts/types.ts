@@ -253,5 +253,5 @@ export const ACCOUNT_ID_PATTERN = /^[a-z0-9]{12}$/;
  */
 export const LEGACY_CODEX_ACCOUNT_ID = "legacy-codex";
 
-/** `^[\w][\w .-]{0,31}$` — user-facing, unique per vendor. */
-export const ACCOUNT_LABEL_PATTERN = /^[\w][\w .-]{0,31}$/;
+/** User-facing, unique per vendor; defined once in `account-label.ts`. */
+export { ACCOUNT_LABEL_PATTERN } from "./account-label.js";

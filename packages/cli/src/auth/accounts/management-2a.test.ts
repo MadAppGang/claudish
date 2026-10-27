@@ -144,13 +144,13 @@ try {
     result = { error, unchanged: readFileSync(config, "utf8") === before, exchanges, tokenExists: existsSync(accountTokenPath("openai-codex", ids[0])) };
   } else if (scenario.startsWith("suppression") || scenario.startsWith("crash")) {
     const enrolled = scenario.endsWith("enrolled");
-    if (enrolled) await management.run({ verb: "disable", label: "default" });
+    if (enrolled) await management.run({ verb: "disable", selector: "default" });
     const stale = loadConfig();
     legacyStore.delete = async () => {
       if (scenario.startsWith("crash")) process.exit(41);
       throw new Error("simulated legacy file deletion denied");
     };
-    const lines = await management.run({ verb: "remove", label: "default", yes: true, deleteFile: true });
+    const lines = await management.run({ verb: "remove", selector: "default", yes: true, deleteFile: true });
     saveConfig(stale);
     result = { lines, config: raw(), legacyUnchanged: readFileSync(legacy, "utf8") === legacyBytes, accounts: registry().listAccounts("openai-codex") };
   } else {
@@ -172,12 +172,12 @@ try {
       if (scenario === "duplicate-label") identity = "different-account";
       if (scenario === "duplicate-missing") identity = undefined;
       if (scenario === "duplicate-login") identity = "different-account";
-      const error = await catchFailure(() => management.run(scenario === "duplicate-login" ? { verb: "login", label: "work" } : { verb: "add", label: scenario === "duplicate-label" ? "work" : "spare" }));
+      const error = await catchFailure(() => management.run(scenario === "duplicate-login" ? { verb: "login", selector: "work" } : { verb: "add", label: scenario === "duplicate-label" ? "work" : "spare" }));
       result = { error, unchanged: readFileSync(config, "utf8") === before, tokensUnchanged: readFileSync(accountTokenPath(ref.provider, ref.id), "utf8") === bytes };
     } else if (scenario === "disable-remove") {
-      await management.run({ verb: "disable", label: "work" });
+      await management.run({ verb: "disable", selector: "work" });
       const disabled = entry();
-      await management.run({ verb: "disable", label: "work" });
+      await management.run({ verb: "disable", selector: "work" });
       const idempotent = entry();
       await management.run({ verb: "enable", id: row.id });
       const enabled = entry();
@@ -247,7 +247,7 @@ try {
       result = { error, config: raw(), tokenExists: existsSync(accountTokenPath(ref.provider, ref.id)) };
     } else if (scenario === "login") {
       await state.markExhausted(ref, Date.now() + 3600000);
-      await management.run({ verb: "login", label: "work" });
+      await management.run({ verb: "login", selector: "work" });
       result = { before: firstRecord, after: await store.read(ref), entry: entry(), original: added, exhausted: state.stateFor(ref).state.exhaustedUntil, output };
     } else {
       const tokenPath = accountTokenPath(ref.provider, ref.id);
@@ -513,7 +513,7 @@ test("C5 mutation grammar rejects malformed arguments before touching files", as
   expect(result.config.subscriptionAccounts).toBeUndefined();
   expect(result.parsed).toEqual({
     verb: "remove",
-    label: "work",
+    selector: "work",
     id: "aaaaaaaaaaaa",
     yes: true,
     deleteFile: false,

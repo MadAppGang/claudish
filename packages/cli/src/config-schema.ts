@@ -16,6 +16,7 @@
  */
 
 import { z } from "zod";
+import { ACCOUNT_LABEL_PATTERN, ACCOUNT_LABEL_RULE } from "./auth/accounts/account-label.js";
 import { CODEX_WINDOW_SLOTS } from "./auth/quota/codex-window-slots.js";
 
 /**
@@ -269,7 +270,7 @@ export const AccountStoreKindSchema = z.enum(["keychain", "file", "legacy-codex-
 
 export const SubscriptionAccountSchema = z.object({
   id: z.string().regex(/^[a-z0-9]{12}$/, "account ids are generated, 12 lowercase alphanumerics"),
-  label: z.string().regex(/^[\w][\w .-]{0,31}$/, "labels are 1-32 word characters, . - or space"),
+  label: z.string().regex(ACCOUNT_LABEL_PATTERN, ACCOUNT_LABEL_RULE),
   identity: AccountIdentitySchema.optional(),
   store: AccountStoreKindSchema,
   enabled: z.boolean().optional(),

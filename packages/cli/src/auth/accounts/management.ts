@@ -1,9 +1,9 @@
 /**
- * Explicit Codex account mutations: `claudish account add|login|enable|disable|remove codex`.
+ * Explicit Codex account mutations: `claudish account add|login|enable|disable|remove|rename codex`.
  *
  * Every mutation is a short raw `config.json` transaction under the shared
  * config lock (`config-lock.ts`), never `loadConfig` + `saveConfig`. No lock is
- * held across a human (a confirmation, a label prompt) or across PKCE: the
+ * held across a human (a confirmation) or across PKCE: the
  * browser can take minutes, and a refresh waiting on a gate that long fails.
  *
  * Lock order is account gate → config lock → `state.lock`, the order
@@ -19,9 +19,16 @@
  */
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { confirm, input } from "@inquirer/prompts";
+import { confirm } from "@inquirer/prompts";
 import { activeConfigFile } from "../../profile-config.js";
 import { type CodexPkceResult, loginCodexPkce } from "../codex-pkce.js";
+import {
+  ACCOUNT_LABEL_RULE,
+  deriveAccountLabel,
+  emailMatches,
+  labelTaken,
+  shellWord,
+} from "./account-label.js";
 import { mutateAccountsConfig, withRawConfigTransaction } from "./config-lock.js";
 import { FileLockUnavailableError } from "./file-lock.js";
 import { accountRefreshLockPath, legacyCodexCredentialsPath } from "./paths.js";
@@ -50,10 +57,12 @@ import {
 const PROVIDER = "openai-codex";
 type ConfigRow = SubscriptionAccountsEntry["accounts"][number];
 
+/** `selector` is a label or the account's email; `add --label` is the only `label`. */
 export type CodexManagementCommand =
   | { verb: "add"; label?: string }
-  | { verb: "login" | "enable" | "disable"; label?: string; id?: string }
-  | { verb: "remove"; label?: string; id?: string; yes?: boolean; deleteFile?: boolean };
+  | { verb: "login" | "enable" | "disable"; selector?: string; id?: string }
+  | { verb: "remove"; selector?: string; id?: string; yes?: boolean; deleteFile?: boolean }
+  | { verb: "rename"; selector?: string; id?: string; newLabel: string };
 
 export const OWNED_ACCOUNTS_NOTICE =
   "Add only Codex accounts you own and pay for. Switching between subscriptions may be " +
@@ -74,7 +83,6 @@ export interface AccountManagementDeps {
   newId?: () => string;
   pkce?: () => Promise<CodexPkceResult>;
   confirm?: (message: string) => Promise<boolean>;
-  label?: () => Promise<string>;
   print?: (message: string) => void;
   store?: (kind: AccountStoreKind) => TokenStore;
   newStore?: () => TokenStore;
@@ -127,7 +135,7 @@ export function assertLegacyCodexLogoutPermitted(configPath = activeConfigFile()
       throw new Error(
         legacy
           ? `The legacy Codex login is account ${legacy.label}. Remove it with ` +
-              `\`claudish account remove codex ${legacy.label} --delete-file\`.`
+              `\`claudish account remove codex ${shellWord(legacy.label)} --delete-file\`.`
           : "Codex accounts are managed by `claudish account`; remove one with " +
               "`claudish account remove codex <label>`."
       );
@@ -169,11 +177,30 @@ export async function saveLegacyCodexLogin(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function display(identity: AccountIdentity): string {
+function display(identity: AccountIdentity, label: string): string {
   const raw = identity.email || identity.chatgptAccountId || "identity unavailable";
-  // Vendor claims reach a terminal: drop C0 control bytes and DEL.
-  const shown = [...raw].filter((ch) => ch.charCodeAt(0) > 0x1f && ch !== "\x7f").join("");
-  return identity.plan ? `${shown}, ${identity.plan}` : shown;
+  // Vendor claims reach a terminal: drop C0 control bytes, DEL and C1 (0x7f-0x9f).
+  const shown = [...raw]
+    .filter((ch) => {
+      const code = ch.charCodeAt(0);
+      return code > 0x1f && !(code >= 0x7f && code <= 0x9f);
+    })
+    .join("");
+  // A label that is the email already says it; only the plan is news.
+  const text = identity.email && label.toLowerCase() === identity.email.toLowerCase() ? "" : shown;
+  if (!identity.plan) return text;
+  return text ? `${text}, ${identity.plan}` : identity.plan;
+}
+
+/** ` (identity)` after a label, or nothing when there is nothing to add. */
+function note(identity: AccountIdentity, label: string): string {
+  const text = display(identity, label);
+  return text ? ` (${text})` : "";
+}
+
+/** The label with the id a `--id` can take, so a selector by email shows what it resolved to. */
+function named(row: AccountRecord): string {
+  return row.legacy ? `${row.label} (legacy login)` : `${row.label} (id ${row.id})`;
 }
 
 function stableIdentity(identity: AccountIdentity): string {
@@ -185,10 +212,21 @@ function stableIdentity(identity: AccountIdentity): string {
 }
 
 function validLabel(label: string): void {
-  if (!ACCOUNT_LABEL_PATTERN.test(label)) {
+  if (!ACCOUNT_LABEL_PATTERN.test(label)) throw new Error(ACCOUNT_LABEL_RULE);
+}
+
+/**
+ * A selector is a label or an email, which may lie outside the label pattern
+ * (`o'brien@x.com`). Only length and control characters are refused.
+ */
+function validSelector(selector: string): void {
+  const control = [...selector].some((ch) => {
+    const code = ch.charCodeAt(0);
+    return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+  });
+  if (selector.length < 1 || selector.length > 254 || control) {
     throw new Error(
-      "An account label starts with a letter, digit or underscore and has at most 32 letters, " +
-        "digits, spaces, dots, underscores or hyphens."
+      "An account selector is a label or an email: 1 to 254 characters, no control characters."
     );
   }
 }
@@ -254,14 +292,20 @@ export class CodexAccountManagement {
     }));
   }
 
+  /** Every configured row, then the synthesized legacy login when there is one. */
+  private rowsOf(entry: SubscriptionAccountsEntry): AccountRecord[] {
+    const rows = entry.accounts.map(asRecord);
+    const legacy = this.synthesizedLegacy(entry);
+    if (legacy) rows.push(legacy);
+    return rows;
+  }
+
   /** Label, `--id`, or both naming the SAME row; never a row position. */
   private resolve(
     entry: SubscriptionAccountsEntry,
     target: { label?: string; id?: string }
   ): AccountRecord {
-    const rows = entry.accounts.map(asRecord);
-    const legacy = this.synthesizedLegacy(entry);
-    if (legacy) rows.push(legacy);
+    const rows = this.rowsOf(entry);
     const matches = rows.filter(
       (row) =>
         (target.id === undefined || row.id === target.id) &&
@@ -275,6 +319,42 @@ export class CodexAccountManagement {
     );
   }
 
+  /**
+   * What the command line named. `--id` filters first; then an exact label wins;
+   * only without one, the accounts whose login email matches (case-insensitive).
+   * One email match is the row; several are an error that lists them, because a
+   * guess could point a `remove` at the wrong account.
+   */
+  private select(
+    entry: SubscriptionAccountsEntry,
+    target: { selector?: string; id?: string }
+  ): AccountRecord {
+    const rows = this.rowsOf(entry).filter(
+      (row) => target.id === undefined || row.id === target.id
+    );
+    const { selector } = target;
+    if (selector === undefined) {
+      if (rows.length === 1) return rows[0];
+      throw new Error("No such Codex account; run `claudish account list`.");
+    }
+    const exact = rows.filter((row) => row.label === selector);
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) {
+      throw new Error("Ambiguous Codex account; name it with --id <generated-id>.");
+    }
+    const byEmail = rows.filter((row) => emailMatches(row.identity.email, selector));
+    if (byEmail.length === 1) return byEmail[0];
+    if (byEmail.length === 0)
+      throw new Error("No such Codex account; run `claudish account list`.");
+    throw new Error(
+      `More than one Codex account has the email ${selector}: ${byEmail.map(named).join(", ")}. ` +
+        "Name one by label, or pass --id <generated-id>." +
+        (byEmail.some((row) => row.legacy)
+          ? " The legacy login has no --id; name it by its label."
+          : "")
+    );
+  }
+
   private newId(entry: SubscriptionAccountsEntry, reserved?: string): string {
     for (let attempt = 0; attempt < 16; attempt++) {
       const id = this.deps.newId?.() ?? randomBytes(6).toString("hex");
@@ -285,24 +365,53 @@ export class CodexAccountManagement {
     throw new Error("Could not generate an unused account id.");
   }
 
-  /** Duplicate key: `chatgptAccountId` across every row (disabled too) and the unsuppressed legacy login. */
+  /** `login`'s check: the label is free (exact) and the identity is not another row's. */
   private refuseDuplicate(
     entry: SubscriptionAccountsEntry,
     identity: AccountIdentity,
     label: string,
     except?: string
   ): void {
+    const rows = this.rowsOf(entry);
+    for (const row of rows) {
+      if (row.id !== except && row.label === label) {
+        throw new Error(`A Codex account labelled ${label} already exists.`);
+      }
+    }
+    this.refuseIdentity(rows, identity, except);
+  }
+
+  /** Duplicate key: `chatgptAccountId` across every row (disabled too) and the unsuppressed legacy login. */
+  private refuseIdentity(rows: AccountRecord[], identity: AccountIdentity, except?: string): void {
     const stable = stableIdentity(identity);
-    const rows = entry.accounts.map(asRecord);
-    const legacy = this.synthesizedLegacy(entry);
-    if (legacy) rows.push(legacy);
     for (const row of rows) {
       if (row.id === except) continue;
-      if (row.label === label) throw new Error(`A Codex account labelled ${label} already exists.`);
       if (row.identity.chatgptAccountId === stable) {
         throw new Error(`This Codex identity is already registered as ${row.label}.`);
       }
     }
+  }
+
+  /**
+   * The label a new row gets, from the live entry: an explicit label must be
+   * free, otherwise the login's email with the clash ladder. Called again under
+   * the config lock, so a concurrent add that took the bare email makes this
+   * one `<email>-<plan>`.
+   */
+  private chooseLabel(rows: AccountRecord[], identity: AccountIdentity, explicit?: string): string {
+    const taken = rows.map((row) => row.label);
+    if (explicit !== undefined) {
+      if (labelTaken(taken, explicit)) {
+        throw new Error(`A Codex account labelled ${explicit} already exists.`);
+      }
+      return explicit;
+    }
+    return deriveAccountLabel({
+      email: identity.email,
+      plan: identity.plan,
+      chatgptAccountId: identity.chatgptAccountId,
+      taken,
+    });
   }
 
   private store(kind: AccountStoreKind): TokenStore {
@@ -382,18 +491,23 @@ export class CodexAccountManagement {
   }
 
   async run(command: CodexManagementCommand): Promise<string[]> {
-    if (command.label !== undefined) validLabel(command.label);
-    if (command.verb === "add") return this.add(command.label);
+    if (command.verb === "add") {
+      if (command.label !== undefined) validLabel(command.label);
+      return this.add(command.label);
+    }
+    if (command.verb === "rename") validLabel(command.newLabel);
     if (command.id !== undefined && !ACCOUNT_ID_PATTERN.test(command.id)) {
       throw new Error(
         "--id takes a generated account id, as `claudish account list --json` shows."
       );
     }
-    if (command.label === undefined && command.id === undefined) {
-      throw new Error("Name the Codex account by label, or with --id <generated-id>.");
+    if (command.selector === undefined && command.id === undefined) {
+      throw new Error("Name the Codex account by label or email, or with --id <generated-id>.");
     }
-    const target = this.inspect((entry) => this.resolve(entry, command));
+    if (command.selector !== undefined) validSelector(command.selector);
+    const target = this.inspect((entry) => this.select(entry, command));
     if (command.verb === "login") return this.login(target);
+    if (command.verb === "rename") return this.rename(target, command.newLabel);
     if (command.verb === "remove") return this.remove(target, command);
     return this.setEnabled(target, command.verb === "enable");
   }
@@ -401,14 +515,16 @@ export class CodexAccountManagement {
   // -- add -----------------------------------------------------------------
 
   private async add(requestedLabel?: string): Promise<string[]> {
-    const label =
-      requestedLabel ??
-      (await (this.deps.label ?? (() => input({ message: "Codex account label:" })))());
-    validLabel(label);
     const initial = this.inspect((entry) => {
       const legacy = this.synthesizedLegacy(entry);
-      if (entry.accounts.some((row) => row.label === label) || legacy?.label === label) {
-        throw new Error(`A Codex account labelled ${label} already exists.`);
+      if (
+        requestedLabel !== undefined &&
+        labelTaken(
+          this.rowsOf(entry).map((r) => r.label),
+          requestedLabel
+        )
+      ) {
+        throw new Error(`A Codex account labelled ${requestedLabel} already exists.`);
       }
       if (legacy && !legacy.identity.chatgptAccountId) {
         throw new Error(
@@ -424,14 +540,15 @@ export class CodexAccountManagement {
     const acceptedAt = new Date(this.now()).toISOString();
     if (initial.legacy) {
       this.print(
-        `This add also enrolls your working legacy login as ${initial.legacy.label} ` +
-          `(${display(initial.legacy.identity)}), store legacy-codex-file. Its credential file ` +
-          "stays where it is and is not copied."
+        `This add also enrolls your working legacy login as ${initial.legacy.label}` +
+          `${note(initial.legacy.identity, initial.legacy.label)}, store legacy-codex-file. ` +
+          "Its credential file stays where it is and is not copied."
       );
     }
     const store = this.deps.newStore?.() ?? defaultAccountStore(this.env);
     this.print(
-      `New Codex account ${label}; store: ${store.kind}.` +
+      `New Codex account${requestedLabel === undefined ? "" : ` ${requestedLabel}`}; ` +
+        `store: ${store.kind}.` +
         (store.kind === "file"
           ? " Warning: its tokens are kept in plaintext files readable only by you (0600)."
           : "")
@@ -439,22 +556,28 @@ export class CodexAccountManagement {
 
     const result = await (this.deps.pkce ?? loginCodexPkce)();
     stableIdentity(result.identity);
+    // The gate, the token store and the Keychain item key on the id; the label is
+    // chosen under the lock, from the live account list, so it is blank here.
     const row: ConfigRow = {
       id: initial.id,
-      label,
+      label: "",
       identity: result.identity,
       store: store.kind,
       enabled: true,
       addedAt: new Date(this.now()).toISOString(),
     };
     const record = asRecord(row);
+    let finalLabel = "";
 
     await this.gate(record, async (holds) => {
       // Rechecked after the browser: a concurrent add may have taken the label or identity.
+      // Choosing here makes an exhausted ladder fail before any token is written.
       this.inspect((entry) => {
         if (entry.accounts.some((a) => a.id === row.id))
           throw new Error("The generated account id is taken; retry the add.");
-        this.refuseDuplicate(entry, result.identity, label);
+        const rows = this.rowsOf(entry);
+        this.refuseIdentity(rows, result.identity);
+        this.chooseLabel(rows, result.identity, requestedLabel);
       });
       if (await store.read(record, { uncached: true })) {
         throw new Error("A token item already exists for the generated account id; retry the add.");
@@ -467,8 +590,11 @@ export class CodexAccountManagement {
           this.fence(holds);
           if (entry.accounts.some((a) => a.id === row.id))
             throw new Error("The generated account id is taken; retry the add.");
-          this.refuseDuplicate(entry, result.identity, label);
-          const legacy = this.synthesizedLegacy(entry);
+          const rows = this.rowsOf(entry);
+          this.refuseIdentity(rows, result.identity);
+          // Derived again from the live entry: the row published is the row checked.
+          const label = this.chooseLabel(rows, result.identity, requestedLabel);
+          const legacy = rows.find((r) => r.legacy);
           if (legacy) {
             if (legacy.identity.chatgptAccountId !== initial.legacy?.identity.chatgptAccountId) {
               throw new Error(
@@ -484,15 +610,18 @@ export class CodexAccountManagement {
               addedAt: legacy.addedAt,
             });
           }
-          entry.accounts.push(row);
+          entry.accounts.push({ ...row, label });
           entry.noticeAcceptedAt ??= acceptedAt;
+          finalLabel = label;
         });
       } catch (error) {
         await this.cleanupUnpublished(store, record, error);
       }
     });
     await this.invalidate();
-    return [`Added Codex account ${label} (${display(result.identity)}); store: ${store.kind}.`];
+    return [
+      `Added Codex account ${finalLabel}${note(result.identity, finalLabel)}; store: ${store.kind}.`,
+    ];
   }
 
   /**
@@ -536,9 +665,9 @@ export class CodexAccountManagement {
       if (this.deps.legacyLogin) await this.deps.legacyLogin();
       else await (await import("../codex-oauth.js")).CodexOAuth.getInstance().login();
       await this.invalidate();
-      return [`Codex account ${target.label}: login saved.`];
+      return [`Codex account ${named(target)}: login saved.`];
     }
-    this.print(`Logging in Codex account ${target.label}; store: ${target.store}.`);
+    this.print(`Logging in Codex account ${named(target)}; store: ${target.store}.`);
     const result = await (this.deps.pkce ?? loginCodexPkce)();
     const stable = stableIdentity(result.identity);
     // A row with no recorded identity (an enrolled legacy login that never had
@@ -571,7 +700,7 @@ export class CodexAccountManagement {
     });
     await this.invalidate();
     return [
-      `Codex account ${target.label} (${display(result.identity)}): login saved; store: ` +
+      `Codex account ${named(target)}${note(result.identity, target.label)}: login saved; store: ` +
         `${target.store}. A recorded needs-login mark clears on the account's next use.`,
     ];
   }
@@ -581,7 +710,7 @@ export class CodexAccountManagement {
   private async setEnabled(target: AccountRecord, enabled: boolean): Promise<string[]> {
     if (target.legacy) {
       this.print(
-        `This enrolls your legacy login ${target.label} (${display(target.identity)}) as a ` +
+        `This enrolls your legacy login ${named(target)}${note(target.identity, target.label)} as a ` +
           "configured account, store legacy-codex-file; its credential file stays where it is."
       );
     }
@@ -614,7 +743,7 @@ export class CodexAccountManagement {
     });
     if (changed) await this.invalidate();
     const lines = [
-      `Codex account ${target.label} ${changed ? "" : "is already "}${enabled ? "enabled" : "disabled"}.`,
+      `Codex account ${named(target)} ${changed ? "" : "is already "}${enabled ? "enabled" : "disabled"}.`,
     ];
     if (!enabled) {
       lines.push(
@@ -628,6 +757,70 @@ export class CodexAccountManagement {
       );
     }
     return lines;
+  }
+
+  // -- rename --------------------------------------------------------------
+
+  /** Only the label moves: id, order, enabled, store, identity, usage and exhaustion stay. */
+  private async rename(target: AccountRecord, newLabel: string): Promise<string[]> {
+    if (target.legacy) {
+      // Nothing to enroll when the name does not change.
+      if (target.label === newLabel) {
+        return [`Codex account ${named(target)} is already labelled ${newLabel}.`];
+      }
+      if (!target.identity.chatgptAccountId) {
+        throw new Error(
+          "The legacy Codex login records no account id, so enrolling it cannot be checked for " +
+            "duplicates. Run `claudish login codex` once to refresh it, then retry."
+        );
+      }
+    }
+    let changed = false;
+    await this.gate(target, async (holds) => {
+      changed = mutateAccountsConfig(this.configPath(), PROVIDER, (entry) => {
+        this.fence(holds);
+        const current = this.resolve(
+          entry,
+          target.legacy ? { label: target.label } : { id: target.id }
+        );
+        sameTarget(current, target);
+        // Idempotent: the same label is not written and the generation does not move.
+        if (current.label === newLabel) return;
+        const others = this.rowsOf(entry)
+          .filter((row) => row.id !== current.id)
+          .map((row) => row.label);
+        // Case-insensitive against every OTHER row, so a case-only rename of this one is allowed.
+        if (labelTaken(others, newLabel)) {
+          throw new Error(`A Codex account labelled ${newLabel} already exists.`);
+        }
+        if (current.legacy) {
+          entry.accounts.push({
+            id: this.newId(entry),
+            label: newLabel,
+            identity: current.identity,
+            store: "legacy-codex-file",
+            enabled: true,
+            addedAt: current.addedAt,
+          });
+          return;
+        }
+        const row = entry.accounts.find((a) => a.id === target.id);
+        if (row) row.label = newLabel;
+      });
+    });
+    if (changed) await this.invalidate();
+    if (changed && target.legacy) {
+      // Printed only once the write happened: the gated checks above can still refuse.
+      this.print(
+        `This enrolled your legacy login ${named(target)}${note(target.identity, target.label)} as a ` +
+          "configured account, store legacy-codex-file; its credential file stays where it is."
+      );
+    }
+    return [
+      changed
+        ? `Renamed Codex account ${named(target)} to ${newLabel}.`
+        : `Codex account ${named(target)} is already labelled ${newLabel}.`,
+    ];
   }
 
   // -- remove --------------------------------------------------------------
@@ -649,7 +842,7 @@ export class CodexAccountManagement {
     if (
       !command.yes &&
       !(await this.ask(
-        `Remove Codex account ${target.label} (${display(target.identity)})` +
+        `Remove Codex account ${named(target)}${note(target.identity, target.label)}` +
           `${legacyFile ? " and delete its legacy credential file" : ""}? ` +
           "Requests already in flight cannot be recalled."
       ))
@@ -715,7 +908,7 @@ export class CodexAccountManagement {
       key: "OPENAI_CODEX_API_KEY if one is configured, otherwise none",
     }[next];
     return [
-      `Removed Codex account ${target.label} (${display(target.identity)}). ` +
+      `Removed Codex account ${named(target)}${note(target.identity, target.label)}. ` +
         `Next Codex credential for new requests: ${nextText}.`,
       ...(next === "key"
         ? ["Warning: new Codex requests may now use OPENAI_CODEX_API_KEY, billed per token."]

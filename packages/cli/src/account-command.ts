@@ -29,6 +29,7 @@
  * action required from the user and nothing written to their config.
  */
 
+import { shellWord } from "./auth/accounts/account-label.js";
 import type { CodexManagementCommand } from "./auth/accounts/management.js";
 import { liveWindows } from "./auth/accounts/policy.js";
 import { getAccountPool } from "./auth/accounts/pool.js";
@@ -127,7 +128,7 @@ function renderRow(row: AccountDescription, pool: PoolDescription, now: number):
   }
   if (row.blocker?.kind === "needs-reauth") {
     lines.push(
-      `      ${bad("needs login")}: run \`claudish account login ${vendorOf(row.ref.provider)} ${row.record.label}\``
+      `      ${bad("needs login")}: run \`claudish account login ${vendorOf(row.ref.provider)} ${shellWord(row.record.label)}\``
     );
     if (row.state.needsReauth?.lastReason) {
       lines.push(`      ${dim(row.state.needsReauth.lastReason)}`);
@@ -231,7 +232,7 @@ function printHuman(reports: ProviderReport[], detailed: boolean): void {
     console.log(
       dim(
         "A Codex login (`claudish login codex`) is shown here as `default (legacy file)` " +
-          "once it exists; add an account with `claudish account add codex --label <label>`."
+          "once it exists; add an account with `claudish account add codex`."
       )
     );
   }
@@ -281,8 +282,11 @@ export const ACCOUNT_HELP = `Usage:
   claudish account forecast [--json] [--horizon <h|d>] [--provider codex]
   claudish account add codex [--label <label>]
   claudish account login|enable|disable codex <label> [--id <generated-id>]
+  claudish account rename codex <label> <new-label> [--id <generated-id>]
   claudish account remove codex <label> [--id <generated-id>] [--yes] [--delete-file]
 
+--label on add is optional and overrides the default, the login's email.
+A command that takes <label> also takes the account's email.
 --id <generated-id> may replace or confirm the label; labels are unique per claudish provider.
 Removing the legacy login (default, legacy-codex-file) requires --delete-file.
 New accounts use the macOS Keychain, or protected plaintext files where there is none.
@@ -290,7 +294,7 @@ Add only accounts you own; vendor terms may restrict switching between subscript
 With Codex accounts configured, use account add/login instead of \`claudish login codex\`.
 Claude account mutations, import and use are not available. No token input or export.`;
 
-const MUTATION_VERBS = ["add", "login", "enable", "disable", "remove"] as const;
+const MUTATION_VERBS = ["add", "login", "enable", "disable", "remove", "rename"] as const;
 type MutationVerb = (typeof MUTATION_VERBS)[number];
 
 function usage(problem: string): Error {
@@ -345,11 +349,25 @@ export function parseAccountMutation(args: string[]): CodexManagementCommand {
       throw usage("account add codex takes no positional argument; use --label.");
     return { verb: v, label: values.get("--label") };
   }
+  if (v === "rename") {
+    const hasId = values.has("--id");
+    if (positional.length === 2 || (positional.length === 1 && hasId)) {
+      return {
+        verb: v,
+        selector: positional.length === 2 ? positional[0] : undefined,
+        id: values.get("--id"),
+        newLabel: positional[positional.length - 1],
+      };
+    }
+    throw usage(
+      "account rename codex needs <label> <new-label>, or --id <generated-id> <new-label>."
+    );
+  }
   if (positional.length > 1) throw usage(`account ${v} codex names one account.`);
   if (positional.length === 0 && !values.has("--id")) {
     throw usage(`account ${v} codex needs a label or --id <generated-id>.`);
   }
-  const target = { label: positional[0], id: values.get("--id") };
+  const target = { selector: positional[0], id: values.get("--id") };
   if (v === "remove") {
     return { verb: v, ...target, yes: flags.has("--yes"), deleteFile: flags.has("--delete-file") };
   }
