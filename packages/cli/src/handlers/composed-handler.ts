@@ -215,6 +215,7 @@ import {
   withConnectionRetry,
 } from "./shared/transient-retry.js";
 import { captureUpstreamError } from "./shared/upstream-error-capture.js";
+import { withFirstUsefulEventWatchdog } from "./shared/first-event-watchdog.js";
 
 /**
  * Backoff schedule for a retryable error that arrived inside an HTTP 200 stream.
@@ -4167,6 +4168,19 @@ export class ComposedHandler implements ModelHandler {
     };
 
     const streamFormat = this.resolveStreamFormat();
+    // First-useful-event watchdog: ONE wrap per handleStream call. This method
+    // is the single choke point where an upstream response becomes a client
+    // stream — the original fetch and any replacement from the retry/re-sign
+    // paths above all land here — so wrapping here gives every stream its own
+    // first-event bound by construction. The guarantee is per-response, not
+    // per-request: a replacement stream's predecessor wrap has already
+    // disarmed, so a fetch-site wrap would leave the replacement unbounded.
+    // ollama-jsonl and connect-proto carry no `data:` lines; the useful-event
+    // detector would terminate healthy streams there. Inert unless
+    // CLAUDISH_FIRST_EVENT_TIMEOUT_MS is set (see first-event-watchdog.ts).
+    if (streamFormat !== "ollama-jsonl" && streamFormat !== "connect-proto") {
+      response = withFirstUsefulEventWatchdog(response, this.bareModelName);
+    }
     // Stream parsers receive bareModelName: it is the value echoed in
     // `message_start.message.model` for display. Passing the routed form here was the
     // latent second part of #102 — the parameter was named `modelName` but received
