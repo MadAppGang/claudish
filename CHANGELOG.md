@@ -2,6 +2,18 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.5.2] - 2026-10-27
+
+### Bug Fixes
+
+- hide usage windows past their reset in account list *(accounts)* ([`354355e`](https://github.com/MadAppGang/claudish/commit/354355eec80b308da3c8e5b698730e08a87b5150))
+
+### Documentation
+
+- add the allowance band, gauge and panel mockups (#362) *(accounts)* ([`5a72509`](https://github.com/MadAppGang/claudish/commit/5a725099c727cf3dbf27d966a731275093cf4c68))
+- stamp the playbook verified at v14.5.1 (#359) *(release)* ([`b78b488`](https://github.com/MadAppGang/claudish/commit/b78b488ed8facdb1ac698b3bec69cdeeb94fc832))
+- update CHANGELOG.md for v14.5.1([`643aba7`](https://github.com/MadAppGang/claudish/commit/643aba78e5c7b232146c697311178073d262d93f))
+
 ## [14.5.1] - 2026-10-26
 
 ### Bug Fixes
