@@ -97,10 +97,10 @@ import {
   toEvent,
 } from "./ledger/ledger-row.js";
 import { appendUsageRow, setLedgerIdleProbe } from "./ledger/ledger-writer.js";
-import { allowanceAlertsLockPath, allowanceAlertsPath } from "./paths.js";
+import { allowanceAlertsLockPath, allowanceAlertsPath, statePath } from "./paths.js";
 import type { AllowanceRank, SelectOptions, SelectReason } from "./policy.js";
 import { getAccountRegistry } from "./registry.js";
-import { getStateStore } from "./state-store.js";
+import { StateStore, getStateStore } from "./state-store.js";
 import type {
   AccountProvider,
   AccountRef,
@@ -329,6 +329,8 @@ export class AllowanceService {
   /** Keyed `provider + "\0" + threadKey`; insertion order is recency. */
   private readonly threads = new Map<string, ThreadEntry>();
   private readonly models = new Map<AccountProvider, ProviderModel>();
+  /** `state.json` at `statePath(this.env)`, read by `report()` only; built on first use. */
+  private reportStateStore: StateStore | null = null;
 
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
@@ -611,7 +613,26 @@ export class AllowanceService {
       fc: m.fc,
       alerts: m.lastAlerts,
       labels,
+      poolActive: this.activeNow(provider, s),
     });
+  }
+
+  /**
+   * The pool's active account as `state.json` says it NOW: the model's
+   * `poolActive` is refreshed at most every REFRESH_MIN_MS, and the report's
+   * `accounts[].active` must match `account list`. Read from `statePath(this.env)`,
+   * not the process singleton, so a service built for another accounts dir reads
+   * its own file. An unreadable or corrupt file falls back to the model's value.
+   */
+  private activeNow(provider: AccountProvider, s: AllowanceState): string | null {
+    try {
+      this.reportStateStore ??= new StateStore({ path: statePath(this.env) });
+      const read = this.reportStateStore.read();
+      if (read.kind === "failed") return s.poolActive ?? null;
+      return read.state.providers[provider]?.active ?? null;
+    } catch {
+      return s.poolActive ?? null;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1174,6 +1195,12 @@ export interface ReportInput {
   alerts: { active: Alert[]; blockedNow: boolean; status: "ok" | "insufficient-evidence" };
   /** Account id → the registry's label. */
   labels: Map<string, string>;
+  /**
+   * `state.json` `active` read at report time; absent → the model's
+   * `s.poolActive`. It sets `accounts[].active` and is where the trajectory's
+   * paths start.
+   */
+  poolActive?: string | null;
 }
 
 /**
@@ -1188,7 +1215,9 @@ export function buildReport(input: ReportInput): AllowanceReport {
   const evidence = evidenceOf(s, now);
   const none = evidence === "none";
   const views = accountViews(s, now, cfg);
-  const traj = trajectory(s, now, horizonMs, cal, cfg);
+  const poolActive = input.poolActive !== undefined ? input.poolActive : (s.poolActive ?? null);
+  // A shallow copy: the trajectory's paths start from the account the flag shows.
+  const traj = trajectory({ ...s, poolActive }, now, horizonMs, cal, cfg);
   const unit = fc?.unit ?? traj.unit;
   const burn = none ? { long: 0, short: 0 } : burnRates(s, now, cal, cfg);
   // A rate whose evidence is shorter than its half-life is a few turns' mean, not a rate.
@@ -1229,6 +1258,8 @@ export function buildReport(input: ReportInput): AllowanceReport {
           })),
         lambda: null,
         calibration: { beta: g?.quality ?? "prior", kappa: k?.quality ?? null },
+        // `account list`'s predicate (pool.ts `isActive`); an active id outside `accounts[]` flags none.
+        active: poolActive !== null && v.account === poolActive,
       };
     }),
     combined: {
