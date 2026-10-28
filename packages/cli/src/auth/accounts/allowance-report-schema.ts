@@ -176,7 +176,11 @@ const trajectorySchema = z.object({
          * total mass is `probability`. A Gaussian kernel over the paths' takeover
          * times, except a takeover too tight to smooth (at a fixed reset): then
          * the per-hour count, often a single `[1]`. Leading and trailing zeros
-         * are trimmed. Added within v1; absent from a report of an older claudish.
+         * are trimmed. `p` is shape only: the hour to show is `usual`, never the
+         * argmax. A smoothed hill has a flat top (within 5 % of 1 for 15-20 h on a
+         * real pool), and the highest hour inside it is sampling noise; two
+         * switches' argmaxes can even swap order while their medians do not.
+         * Added within v1; absent from a report of an older claudish.
          */
         likelihood: z
           .object({
