@@ -283,7 +283,7 @@ const MIN_BANDWIDTH_H = 0.5;
  * i < hours, from the paths' takeover times (see the header). Peak 1; all zero
  * only for an empty list.
  */
-function likelihoodOf(times: readonly Ms[], q: Quantiles, h0: Ms, hours: number): number[] {
+export function likelihoodOf(times: readonly Ms[], q: Quantiles, h0: Ms, hours: number): number[] {
   const x = times.map((t) => (t - h0) / HOUR_MS);
   const n = x.length;
   const mean = x.reduce((a, b) => a + b, 0) / Math.max(1, n);
