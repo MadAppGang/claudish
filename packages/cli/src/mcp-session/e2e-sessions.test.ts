@@ -18,7 +18,6 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test as lifecycleTest } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -208,14 +207,12 @@ describe("Group 1: MCP Protocol — session tools", () => {
 
   // Live session test via SDK client
 
-  lifecycleTest(
+  test.skipIf(!hasOpenRouterKey)(
     "create_session → poll → get_output lifecycle",
-    { skip: !hasOpenRouterKey, timeout: 150_000 },
-    async (t) => {
+    async () => {
       const selected = await pickRecommendedSessionModel(client);
       if (!selected) {
         console.warn(`[e2e-sessions] SKIPPED — ${NO_RECOMMENDED_MODEL}`);
-        t.skip(NO_RECOMMENDED_MODEL);
         return;
       }
       const args = {
@@ -279,7 +276,8 @@ describe("Group 1: MCP Protocol — session tools", () => {
       const out = await client.callTool({ name: "get_output", arguments: { session_id: sid } });
       const output = JSON.parse((out.content as any)[0].text);
       expect(output.output.length).toBeGreaterThan(0);
-    }
+    },
+    150_000
   );
 });
 
