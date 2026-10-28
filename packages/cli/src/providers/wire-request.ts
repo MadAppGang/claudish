@@ -478,8 +478,10 @@ export function shapeRequestFromWire(
 }
 
 /**
- * The resend for a 4xx when the request carried fields borrowed from the
- * owner's connection: without the borrowed fields the error names (by the
+ * The resend for a 4xx when the request carried fields this connection's
+ * catalog wire does not publish — borrowed from the owner's connection, or a
+ * Codex `service_tier` taken from the account's dynamic models catalog for a
+ * non-explicit `/fast` (step 5s): without the fields the error names (by the
  * pointer's last segment, e.g. `reasoning_effort`, `max_completion_tokens`),
  * or without all of them when a 400 rejects a parameter without naming which.
  * `null` when nothing was borrowed or the error is not about a parameter.
@@ -510,7 +512,7 @@ export function recoverBorrowedWireFields(
   for (const path of drop) deletePointer(next, path);
   return {
     payload: next,
-    note: `dropped ${drop.join(", ")} (borrowed from the owner's connection; this connection's value is unknown)`,
+    note: `dropped ${drop.join(", ")} (not published by this connection's catalog wire)`,
   };
 }
 

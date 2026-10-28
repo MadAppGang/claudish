@@ -95,6 +95,8 @@ import {
   truncateContent,
 } from "../logger.js";
 import { deepMergeParams } from "../model-params.js";
+import { getCodexModelInfo } from "../providers/codex-models-discovery.js";
+import { CODEX_SERVICE_TIER_POINTER, decideCodexSpeed } from "../providers/codex-service-tier.js";
 import type { ResolvedConnection } from "../providers/connection-resolver.js";
 import type { WireHeader } from "../providers/connection-wire.js";
 import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
@@ -1691,6 +1693,7 @@ export class ComposedHandler implements ModelHandler {
     // --model-params, which stays the user's last word.
     let wireHeaders: WireHeader[] = [];
     let wireBorrowed: string[] = [];
+    let codexSpeed: WireChoices["speed"];
     const wire = this.options.connection?.wire;
     if (wire?.status === "known") {
       const choices: WireChoices = {
@@ -1717,6 +1720,18 @@ export class ComposedHandler implements ModelHandler {
         choices.mode = { value: "pro", explicit: false };
       }
       if (wireSpeed) choices.speed = { value: wireSpeed, explicit: true };
+      // A Codex connection the catalog has no speed answer for: the account's
+      // own dynamic models catalog decides it at 5s, once this request is
+      // signed. Deferred, not refused — a refusal here would make `#fast` fail
+      // on an account that offers the tier.
+      if (
+        choices.speed &&
+        this.provider.name === "openai-codex" &&
+        wire.speed.status === "unknown"
+      ) {
+        codexSpeed = choices.speed;
+        choices.speed = undefined;
+      }
 
       const shaped = shapeRequestFromWire(
         requestPayload,
@@ -1977,6 +1992,40 @@ export class ComposedHandler implements ModelHandler {
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)
     if (this.provider.transformPayload) {
       requestPayload = this.provider.transformPayload(requestPayload, claudeRequest, binding);
+    }
+
+    // 5s. Codex speed (deferred at 5w): the tier the account's dynamic models
+    // catalog lists for this model, written at `service_tier`. Before 5d, so
+    // both code-mode shapes are built from a payload that already carries it.
+    // A non-explicit tier (Claude Code's `/fast`) is recoverable: a 400 naming
+    // `service_tier` resends without it, like a borrowed field.
+    if (codexSpeed) {
+      const accountKey = accountKeyFromBinding(binding);
+      const modelInfo =
+        binding && accountKey
+          ? await getCodexModelInfo(String(requestPayload?.model ?? ""), binding, accountKey)
+          : undefined;
+      const outcome = decideCodexSpeed(codexSpeed, modelInfo);
+      const where = `${this.options.connection?.route.routeId}/${this.options.connection?.route.routeProfileId} · ${this.options.connection?.externalModelId}`;
+      log(`[Wire] ${where}: ${outcome.note}`);
+      if (outcome.refusal) {
+        return c.json(
+          wrapAnthropicError(
+            400,
+            `claudish: ${outcome.refusal} (${where})`,
+            "invalid_request_error"
+          ),
+          400 as any
+        );
+      }
+      if (outcome.tier && requestPayload.service_tier !== undefined) {
+        // --model-params (5a) stays the user's last word, and its value is never
+        // the recoverable one.
+        log(`[Wire] ${where}: service_tier already set by --model-params; speed tier not written`);
+      } else if (outcome.tier) {
+        requestPayload.service_tier = outcome.tier;
+        if (!codexSpeed.explicit) wireBorrowed = [...wireBorrowed, CODEX_SERVICE_TIER_POINTER];
+      }
     }
 
     // 5d. Code mode (`openai-codex` only; by default `auto`, on where
@@ -2633,9 +2682,10 @@ export class ComposedHandler implements ModelHandler {
               }
               recovery = { payload: classic.payload, note: "lite request rejected; classic shape" };
             }
-            // Fields borrowed from the owner's connection (this connection's own
-            // value is unknown) are the first suspects: tried in turn, dropped on the
-            // 400 that names them. Only those fields — never one the wire published.
+            // Fields this connection's wire does not publish (borrowed from the
+            // owner's connection, or a non-explicit Codex `service_tier` from 5s)
+            // are the first suspects: tried in turn, dropped on the 400 that names
+            // them. Only those fields — never one the wire published.
             if (!recovery) {
               recovery = recoverBorrowedWireFields(requestPayload, wireBorrowed, errorText);
               if (recovery) wireBorrowed = [];
