@@ -58,7 +58,11 @@ export interface WireChoices {
   catalogMaxOutputTokens?: number;
   /** `+pro` on the model spec, or pro turned on by `proOnUltracode`. */
   mode?: { value: WireMode; explicit: boolean };
-  /** `#<speed>` on the model spec. */
+  /**
+   * `#<speed>` on the model spec (explicit), or Claude Code's `/fast` toggle,
+   * which arrives as `speed: "fast"` in the request body (not explicit: a
+   * connection without the tier answers at standard speed, with a note).
+   */
   speed?: { value: WireSpeed; explicit: boolean };
   /** The user accepted a `served_model_changes` warning for this connection. */
   acceptServedModelChange?: boolean;
@@ -337,11 +341,13 @@ function applyReasoning(
  * sends. A legacy `thinking.budget_tokens` is translated into a catalog effort
  * name — the only use a budget ladder may still have; it never picks a wire
  * field. `thinking.type: "disabled"` or effort `none` means reasoning off.
+ * `speed: "fast"` is Claude Code's `/fast` toggle; it is a request, never an
+ * explicit choice, so a `#<speed>` marker still overrides it.
  */
 export function wireChoicesFromClaudeRequest(
   claudeRequest: any,
   pinnedEffort?: string
-): Pick<WireChoices, "effort" | "reasoningOff" | "hasTools" | "maxTokens"> {
+): Pick<WireChoices, "effort" | "reasoningOff" | "hasTools" | "maxTokens" | "speed"> {
   let effort: string | undefined = pinnedEffort;
   if (!effort) {
     const level = claudeRequest?.output_config?.effort;
@@ -369,6 +375,7 @@ export function wireChoicesFromClaudeRequest(
     reasoningOff,
     hasTools: Array.isArray(claudeRequest?.tools) && claudeRequest.tools.length > 0,
     maxTokens: typeof claudeRequest?.max_tokens === "number" ? claudeRequest.max_tokens : undefined,
+    ...(claudeRequest?.speed === "fast" && { speed: { value: "fast", explicit: false } }),
   };
 }
 
