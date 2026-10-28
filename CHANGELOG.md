@@ -2,6 +2,30 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.7.0] - 2026-10-28
+
+### Bug Fixes
+
+- skip the e2e lifecycle test with bun:test when no model is picked *(tests)* ([`5b38e2b`](https://github.com/MadAppGang/claudish/commit/5b38e2b2f2005a1f05fde811c089030ea899bda4))
+- credit a rolled-up hour's usage without a later reading *(accounts)* ([`f333093`](https://github.com/MadAppGang/claudish/commit/f3330931360acf5cac6a22f1aac8f08a383d1835))
+- answer allowance_status in compact JSON *(mcp)* ([`453d65c`](https://github.com/MadAppGang/claudish/commit/453d65c76aa6b6e59c5737fc6848d67263b6ccca))
+
+### Documentation
+
+- stamp the playbook verified at v14.6.0 *(release)* ([`e9c16ca`](https://github.com/MadAppGang/claudish/commit/e9c16ca660e9c6d56d3ef808c4f4ae43ce4cf4d2))
+- update CHANGELOG.md for v14.6.0([`742c3f4`](https://github.com/MadAppGang/claudish/commit/742c3f411b5492f8c0399e43b0b3eb2878611f64))
+
+### New Features
+
+- add a sections argument to allowance_status *(mcp)* ([`c425a42`](https://github.com/MadAppGang/claudish/commit/c425a42f96a69a590bce13dad08af5eccd3b1295))
+- add trajectory.historyByAccount for the last 24 h *(accounts)* ([`2ee9ff8`](https://github.com/MadAppGang/claudish/commit/2ee9ff86a7fcb374aea7ececa6cbcff2b66daff4))
+- record the delegating session as sessions[].parent *(accounts)* ([`dae2c8e`](https://github.com/MadAppGang/claudish/commit/dae2c8e149136b03fe57c72799bef7d6459da607))
+- add accounts[].lostAtReset to the allowance report *(accounts)* ([`de914b3`](https://github.com/MadAppGang/claudish/commit/de914b343bd7416e1138c571bcc58d38ccb2eca0))
+- add trajectory.switches to the allowance report *(accounts)* ([`af793ce`](https://github.com/MadAppGang/claudish/commit/af793ce978a4f935dd1ef2fcb32a97f09d865f8e))
+- report burn.sustainable when no alert is active *(accounts)* ([`cf4788c`](https://github.com/MadAppGang/claudish/commit/cf4788cdb4af5f8b16915f41e706a6e6b2d53c69))
+- add accounts[].order to the allowance report *(accounts)* ([`f5f1f79`](https://github.com/MadAppGang/claudish/commit/f5f1f79c56c76e75af8e43656fb456b0a39f8cc1))
+- add accounts[].active to the allowance report *(accounts)* ([`fd636f9`](https://github.com/MadAppGang/claudish/commit/fd636f95cf7646731f481ce42029b0592a6d67df))
+
 ## [14.6.0] - 2026-10-27
 
 ### Documentation
