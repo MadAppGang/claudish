@@ -17,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { test as lifecycleTest } from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -38,6 +39,43 @@ afterAll(() => {
 // configured any supported way must run these tests, exactly as it would serve
 // a real run. Module scope — describe() callbacks are sync, so no await there.
 const hasOpenRouterKey = SKIP_LIVE_E2E ? false : await hasCredential("openrouter");
+
+const NO_RECOMMENDED_MODEL = "No currently recommended chat model was returned by list_models";
+
+async function pickRecommendedSessionModel(client: Client) {
+  const result = await client.callTool({ name: "list_models", arguments: {} });
+  if (result.isError) return null;
+  const text = (result.content as Array<{ text?: string }>)
+    .map((part) => part.text ?? "")
+    .join("\n");
+  const models: Array<{ model: string; rank: number; price: number }> = [];
+  let rank = 2;
+  for (const line of text.split("\n")) {
+    const section = /^## (.+)$/.exec(line);
+    if (section) rank = section[1] === "Lightweight" ? 0 : section[1] === "Cost-efficient" ? 1 : 2;
+    const model = /^### (\S+)\s*$/.exec(line);
+    if (model) models.push({ model: model[1], rank, price: Number.POSITIVE_INFINITY });
+    const price = /^- \*\*Pricing\*\*: \$([\d.]+)\/1M/.exec(line);
+    if (price && models.length) models[models.length - 1].price = Number(price[1]);
+  }
+  // Every model heading in list_models is a recommended chat model; quick picks
+  // and the effort table are not model headings. Prefer the cheaper row within a tier.
+  const selected = models.sort((a, b) => a.rank - b.rank || a.price - b.price)[0];
+  if (!selected) return null;
+  const rows = text
+    .split("\n")
+    .filter((line) => line.startsWith("|"))
+    .map((line) =>
+      line
+        .split("|")
+        .slice(1, -1)
+        .map((cell) => cell.trim())
+    );
+  const headers = rows.find((row) => row[0] === "model");
+  const efforts = rows.find((row) => row[0] === selected.model);
+  const effort = efforts?.[headers?.indexOf("quick_edit") ?? -1];
+  return { model: selected.model, ...(effort && effort !== "-" ? { effort } : {}) };
+}
 
 // ─── Group 1: MCP Protocol Tests (SDK Client) ───────────────────────────────
 // Validates the MCP server itself works correctly at the protocol level.
@@ -170,17 +208,39 @@ describe("Group 1: MCP Protocol — session tools", () => {
 
   // Live session test via SDK client
 
-  test.skipIf(!hasOpenRouterKey)(
+  lifecycleTest(
     "create_session → poll → get_output lifecycle",
-    async () => {
-      const res = await client.callTool({
-        name: "create_session",
-        arguments: {
-          model: "minimax-m2.5",
-          prompt: "Say exactly: hello world",
-          timeout_seconds: 30,
-        },
-      });
+    { skip: !hasOpenRouterKey, timeout: 150_000 },
+    async (t) => {
+      const selected = await pickRecommendedSessionModel(client);
+      if (!selected) {
+        console.warn(`[e2e-sessions] SKIPPED — ${NO_RECOMMENDED_MODEL}`);
+        t.skip(NO_RECOMMENDED_MODEL);
+        return;
+      }
+      const args = {
+        ...selected,
+        prompt: "Say exactly: hello world",
+        timeout_seconds: 30,
+      };
+      console.info("[e2e-sessions] lifecycle pick from list_models:", selected);
+      let res = await client.callTool({ name: "create_session", arguments: args });
+      const textOf = (answer: typeof res) =>
+        (answer.content as Array<{ text?: string }>).map((part) => part.text ?? "").join("\n");
+      if (res.isError && textOf(res).startsWith("needs_effort:")) {
+        const recommendations = JSON.parse(textOf(res).split("Recommended levels: ")[1]) as Record<
+          string,
+          Record<string, string>
+        >;
+        const levels = recommendations[selected.model];
+        const effort = levels?.quick_edit ?? Object.values(levels ?? {})[0];
+        if (effort)
+          res = await client.callTool({
+            name: "create_session",
+            arguments: { ...args, effort },
+          });
+      }
+      if (res.isError) throw new Error(textOf(res));
       const { session_id: sid } = JSON.parse((res.content as any)[0].text);
       expect(sid).toBeDefined();
 
@@ -219,8 +279,7 @@ describe("Group 1: MCP Protocol — session tools", () => {
       const out = await client.callTool({ name: "get_output", arguments: { session_id: sid } });
       const output = JSON.parse((out.content as any)[0].text);
       expect(output.output.length).toBeGreaterThan(0);
-    },
-    150_000
+    }
   );
 });
 
