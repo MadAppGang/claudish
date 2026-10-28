@@ -235,6 +235,7 @@ then `LOOKAHEAD_TRAJ_PATHS` (40), whose p10/p90 band is about ±5 percentile poi
 |---|---|---|
 | fold 1 639 events (`observeAll`) | 7.5 ms | — |
 | `forecast` (216 h) | 46 ms | off path |
+| `trajectory` (168 h, 200 paths × 2 with `slower`), live 2-account pool | 58-61 ms (28-30 ms before `slower`) | report path, every poll |
 | ranking call `choose` (overlay + decide + report), 500 calls | p50 0.65 ms, p95 1.37 ms | < 2 ms ✓ |
 | `planFor`, `lookahead`, depth 4, 7d + 5h, 40 calls | p50 6.8 ms, p95 43 ms, max 54 ms | < 20 ms ✗; accepted, off path; `PLAN_LATENCY` = 43 ms |
 | alert evaluation | see the table above | ≤ 0.5 s ✓ sticky/ebr; lookahead → ebr's model |
@@ -274,6 +275,28 @@ already hold: no second simulation.
 - **Size.** About 1 KB per switch (169 values); `trajectory` grew from 33.8 KB to 36.2 KB. Claude
   Code 2.1.312 returned a 36,132-character `allowance_status` answer inline and refused a
   59,907-character one, so the persist threshold lies between them.
+
+### The slower scenario (`trajectory.slower`)
+
+The forecast panel's `slower` row and its "slow down and it lasts" sentence need the switch plan at
+a lower demand. `trajectory.slower` reruns every Monte Carlo path with its demand × `SLOWER_FACTOR`
+(2/3, the design's "a third less busy"), and reads `switches` and `blocked` from those runs through
+the same `switchesOf` and `blockedRuns`.
+
+- **Common random numbers.** The slower run takes each path's OWN demand draw and capacity draw,
+  so a path is compared with itself: the difference between the two lists is the slowdown, not
+  sampling noise. No rng call is added (`simulate` copies its views in `createWorld`), so every
+  existing field is unchanged.
+- **Monotone only under `sticky`.** `sticky` switches only on exhaustion, and with every hour's
+  demand lower, each account's cumulative use is lower at every hour, so no exhaustion moves
+  earlier: a slower switch or block is never earlier. `ebr` (simulated with `lookahead`) balances
+  accounts and can switch earlier on purpose; the field is computed there without the guarantee.
+- **Not a deterministic run.** One simulation at 2/3 of the mean rate (how the safe pace scans)
+  costs under 1 ms, but it is a point estimate beside the 200-path `usual`, so "slow down and it
+  lasts Y" could read shorter than "it switches in X". The user chose the second Monte Carlo pass
+  on 2026-10-29 and accepted its cost.
+- **Cost.** It doubles the trajectory on every report, the band's 60 s poll included: measured on a
+  two-account pool, trajectory 28 → 59 ms, warm report 35 → 66 ms.
 
 ## Where to look
 
