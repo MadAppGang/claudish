@@ -252,6 +252,29 @@ then `LOOKAHEAD_TRAJ_PATHS` (40), whose p10/p90 band is about ±5 percentile poi
   the `allowance` capability and the mod's discovery lifecycle are in `pane-session.md`. The answer
   is model-visible: no project, session ids cut to 8 characters.
 
+### The switch likelihood curve (`trajectory.switches[].likelihood`)
+
+Each predicted switch carries `p[]`, the relative likelihood of the account's FIRST takeover per
+hour, built in `trajectory.ts` (`likelihoodOf`) from the takeover times the trajectory's paths
+already hold: no second simulation.
+
+- **Smoothed, because the raw count is spikes.** About 60 of 200 paths take over, spread over about
+  80 hours: an hourly count of mostly 0 or 1. A Gaussian kernel with Silverman's bandwidth
+  (`0.9 × min(sd, IQR/1.34) × n^-0.2`, about 12 h on the live pool) turns it into a hill.
+- **Counted, not smoothed, when the IQR is zero** (or the bandwidth is under 0.5 h). That is a
+  takeover at a fixed reset: most paths in one hour plus stragglers. Silverman's usual fallback to
+  the sd would let the stragglers spread the point mass into the hours BEFORE the reset, which
+  cannot happen. `likelihood-of.contract.test.ts` L8b is the test; it fails with the sd fallback.
+- **Peak 1, not sum 1.** A sum-1 density over 80 hours is about 0.004 per hour, and the 3 decimals
+  the report sends keep almost nothing. The mass is `probability`.
+- **The argmax is noise; show `usual`.** On the live pool both hills stayed within 5 % of their
+  peak for 15-20 h. Inside that plateau the highest hour is sampling noise: switch 2's argmax sat
+  5 h before its own p50 and before switch 1's argmax, while the medians (86, 94) and means (84.1,
+  93.8) kept the order. The schema says so, so a reader draws shape only.
+- **Size.** About 1 KB per switch (169 values); `trajectory` grew from 33.8 KB to 36.2 KB. Claude
+  Code 2.1.312 returned a 36,132-character `allowance_status` answer inline and refused a
+  59,907-character one, so the persist threshold lies between them.
+
 ## Where to look
 
 | Path | What |
