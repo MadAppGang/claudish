@@ -94,6 +94,7 @@ import type {
   StrategyName,
   ThreadKey,
   TokenCounts,
+  Trajectory,
   Transition,
 } from "./allowance/types.js";
 import { atomicWriteFileSync } from "./atomic-write.js";
@@ -1253,6 +1254,23 @@ function likelihoodView(l: {
   return { start: iso(l.start + first * HOUR_MS), stepHours: 1, p: p.slice(first, last + 1) };
 }
 
+/** A trajectory switch as the report sends it: p10 / p50 / p90 as ISO, the curve trimmed. */
+function switchView(sw: Trajectory["switches"][number]) {
+  return {
+    accountId: sw.account,
+    soonest: iso(sw.q.p10),
+    usual: iso(sw.q.p50),
+    latest: iso(sw.q.p90),
+    probability: Math.min(1, Math.max(0, sw.probability)),
+    likelihood: likelihoodView(sw.likelihood),
+  };
+}
+
+/** A trajectory blocked run as the report sends it: the paths' median start and end. */
+function blockedView(b: Trajectory["blocked"][number]) {
+  return { from: iso(b.from.p50), to: iso(b.to.p50), kind: b.kind, probability: b.probability };
+}
+
 /**
  * `burn.sustainable` in cu/h (§T1): under an active alert the top remedy's
  * cut × the raw `burn.long`, or 0 for a pause or a not-addressable gap, always
@@ -1429,12 +1447,7 @@ export function buildReport(input: ReportInput): AllowanceReport {
         window: r.window,
         projected: r.projected,
       })),
-      blocked: traj.blocked.map((b) => ({
-        from: iso(b.from.p50),
-        to: iso(b.to.p50),
-        kind: b.kind,
-        probability: b.probability,
-      })),
+      blocked: traj.blocked.map(blockedView),
       // The last 24 h only: the window spark48 draws. A week per account would add
       // about 12.7 KB per account to every model-visible allowance_status answer.
       historyByAccount: none
@@ -1447,14 +1460,12 @@ export function buildReport(input: ReportInput): AllowanceReport {
                 .filter((h) => h.at >= now - 24 * HOUR_MS)
                 .map((h) => ({ at: iso(h.at), remaining: h.remaining, provenance: h.provenance })),
             })),
-      switches: traj.switches.map((sw) => ({
-        accountId: sw.account,
-        soonest: iso(sw.q.p10),
-        usual: iso(sw.q.p50),
-        latest: iso(sw.q.p90),
-        probability: Math.min(1, Math.max(0, sw.probability)),
-        likelihood: likelihoodView(sw.likelihood),
-      })),
+      switches: traj.switches.map(switchView),
+      slower: {
+        factor: Math.round(traj.slower.factor * 1000) / 1000,
+        switches: traj.slower.switches.map(switchView),
+        blocked: traj.slower.blocked.map(blockedView),
+      },
       spark48: sparkline(
         {
           ...traj,

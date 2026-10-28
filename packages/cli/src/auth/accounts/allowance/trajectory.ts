@@ -26,6 +26,9 @@
  *   times (Silverman bandwidth), peak 1. Times too tight to smooth (a takeover
  *   at a fixed reset) give the plain per-hour count, so no likelihood leaks
  *   before the reset.
+ * - **Slower** runs every path a second time with its demand × SLOWER_FACTOR
+ *   on the same capacity draw (common random numbers, no new rng call), and
+ *   reads `switches` and `blocked` from those runs by the same rules.
  * - **Loss at a reset** reads the same paths' `leftoverAtReset`: the share of
  *   each account's governing window still unused at its next governing reset.
  *   The grid always reaches that reset + 24 h, so it does not depend on the
@@ -38,7 +41,7 @@
 import { drawCapacity, inFractions } from "./alerts.js";
 import { isStrong } from "./calibrate.js";
 import { accountViews, finishView, isRead, strongBetas } from "./capacity.js";
-import { MIN_PATH_SHARE, alertModelConfig, trajPaths } from "./constants.js";
+import { MIN_PATH_SHARE, SLOWER_FACTOR, alertModelConfig, trajPaths } from "./constants.js";
 import { seedOf } from "./digest.js";
 import { demandModel, quantilesOf, sampleDemandPath } from "./forecast.js";
 import { mulberry32 } from "./prng.js";
@@ -402,6 +405,7 @@ export function trajectory(
     switches: [],
     lostAtReset: {},
     historyByAccount,
+    slower: { factor: SLOWER_FACTOR, switches: [], blocked: [] },
   };
   if (evidenceOf(s, now) === "none" || all.length === 0) return empty;
 
@@ -414,22 +418,31 @@ export function trajectory(
   const alertCfg = alertModelConfig(cfg);
   const paths = trajPaths(alertCfg);
   const results: SimResult[] = [];
+  const slowerResults: SimResult[] = [];
+  const run = (drawn: AccountView[], demand: number[]) =>
+    simulate(drawn, demand, cfg, {
+      now,
+      strategy: STRATEGIES[alertCfg.strategy],
+      thread: { account: null, lastSwitchAt: null, contextTokens: null },
+      poolActive: s.poolActive ?? null,
+      horizonMs,
+    });
   for (let p = 0; p < paths; p++) {
     const demand = sampleDemandPath(model, rng);
     const drawn = views.map((v) => drawCapacity(v, rng));
-    results.push(
-      simulate(drawn, demand, cfg, {
-        now,
-        strategy: STRATEGIES[alertCfg.strategy],
-        thread: { account: null, lastSwitchAt: null, contextTokens: null },
-        poolActive: s.poolActive ?? null,
-        horizonMs,
-      })
+    results.push(run(drawn, demand));
+    // The same draws, no new rng call: every output above stays as it was.
+    slowerResults.push(
+      run(
+        drawn,
+        demand.map((d) => d * SLOWER_FACTOR)
+      )
     );
   }
 
   const h0 = hourStart(now);
   const forecast: Trajectory["forecast"] = [];
+  const slowerForecast: Trajectory["forecast"] = [];
   for (let k = 0; k < buckets; k++) {
     const at = h0 + k * HOUR_MS;
     if (at > end) break;
@@ -440,6 +453,9 @@ export function trajectory(
       if (r.blocked[k]?.blocked) blocked++;
     }
     forecast.push({ at, q: quantilesOf(values), pBlocked: blocked / paths });
+    // Only `pBlocked` feeds `blockedRuns`; the slower forecast is never reported.
+    const slowerBlocked = slowerResults.filter((r) => r.blocked[k]?.blocked).length;
+    slowerForecast.push({ at, q: forecast[k]!.q, pBlocked: slowerBlocked / paths });
   }
   return {
     unit,
@@ -450,6 +466,11 @@ export function trajectory(
     switches: switchesOf(results, views, s.poolActive ?? null, now, end),
     lostAtReset: lostAtResetOf(results, views),
     historyByAccount,
+    slower: {
+      factor: SLOWER_FACTOR,
+      switches: switchesOf(slowerResults, views, s.poolActive ?? null, now, end),
+      blocked: blockedRuns(slowerResults, slowerForecast),
+    },
   };
 }
 
