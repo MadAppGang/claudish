@@ -174,10 +174,14 @@ function fold(s: AllowanceState, e: AllowanceEvent, cfg: AllowanceConfig, seen: 
       }
       const bucket = addDemand(s, e.hour, cu, e.n);
       bucket.censoredMinutes = Math.min(60, Math.max(bucket.censoredMinutes, e.censoredMinutes));
-      // The first reading of the hour at its start, the last at its end: the
-      // hour's served cu (placed at its middle) falls between them.
-      if (e.first !== null) applySnapshot(account, e.hour, e.first, cfg);
-      if (e.last !== null && e.n > 1) applySnapshot(account, e.hour + HOUR_MS - 1, e.last, cfg);
+      // The last reading of the hour at its end, so the hour's served cu (placed
+      // at its middle) is credited to it, as a raw row's cu is credited to the
+      // reading taken with it; the first, when the hour has more rows, at its
+      // start. A one-row hour's only reading goes at the end: at the start it
+      // preceded its own cu, which then fell to the next reading or, with none,
+      // was never credited.
+      if (e.first !== null && e.n > 1) applySnapshot(account, e.hour, e.first, cfg);
+      if (e.last !== null) applySnapshot(account, e.hour + HOUR_MS - 1, e.last, cfg);
       touch(s, e.hour + HOUR_MS - 1);
       return;
     }
