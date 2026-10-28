@@ -1237,6 +1237,23 @@ export interface ReportAlerts {
 }
 
 /**
+ * A switch's likelihood curve as the report sends it (MTL-299): 3 decimals,
+ * leading and trailing zeros trimmed with `start` moved to the first kept
+ * hour. Absent when nothing survives the rounding.
+ */
+function likelihoodView(l: {
+  start: number;
+  p: readonly number[];
+}): { start: string; stepHours: 1; p: number[] } | undefined {
+  const p = l.p.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 1000) / 1000);
+  const first = p.findIndex((v) => v > 0);
+  if (first < 0) return undefined;
+  let last = p.length - 1;
+  while (last > first && p[last] === 0) last--;
+  return { start: iso(l.start + first * HOUR_MS), stepHours: 1, p: p.slice(first, last + 1) };
+}
+
+/**
  * `burn.sustainable` in cu/h (§T1): under an active alert the top remedy's
  * cut × the raw `burn.long`, or 0 for a pause or a not-addressable gap, always
  * computed here so `cutToPercent / 100 × burn.long` holds exactly; otherwise
@@ -1436,6 +1453,7 @@ export function buildReport(input: ReportInput): AllowanceReport {
         usual: iso(sw.q.p50),
         latest: iso(sw.q.p90),
         probability: Math.min(1, Math.max(0, sw.probability)),
+        likelihood: likelihoodView(sw.likelihood),
       })),
       spark48: sparkline(
         {
