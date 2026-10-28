@@ -511,6 +511,14 @@ the list it does offer, never silently dropped or guessed. A faster tier can bil
 rate. The markers need a catalog connection (or a custom endpoint); they are refused elsewhere.
 `-pro`/`-fast` are NOT markers: `gpt-6-sol-pro` and `kimi-k3-fast` are separate models.
 
+**Claude Code's `/fast`.** In a claudish session, `/fast on` asks the main model's connection for
+its fast tier, exactly like `#fast` but without refusing: a connection that does not offer one
+answers at standard speed (logged with `--debug`). On the Codex subscription (`cx@`) the tier
+comes from your account's own model list, so `cx@gpt-5.6-sol` with `/fast` sends
+`service_tier=priority` when your plan offers it (`--probe` still prints the catalog's
+speed, `unknown`, for these connections). Fast tiers can use more of your plan's
+allowance or bill at a higher rate. `CLAUDE_CODE_DISABLE_FAST_MODE=1` turns `/fast` off.
+
 ### 5.2 Provider Shortcuts
 
 #### Remote Providers
