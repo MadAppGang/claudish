@@ -646,8 +646,16 @@ export interface Trajectory {
    * Each account's FIRST takeover inside the horizon, over the paths: the time
    * quantiles of the paths where it takes over and the share of paths that
    * do (only ≥ MIN_PATH_SHARE). Ordered by p50, then account order.
+   * `likelihood.p[i]` is the relative likelihood of that takeover in the hour
+   * starting at `likelihood.start + i h` (`start` is `floor(now/1h)`, one entry
+   * per grid hour to the horizon), peak 1.
    */
-  switches: { account: AccountId; q: Quantiles; probability: number }[];
+  switches: {
+    account: AccountId;
+    q: Quantiles;
+    probability: number;
+    likelihood: { start: Ms; p: number[] };
+  }[];
   /**
    * Per read account with a fixed governing reset: the governing window's
    * remaining fraction just before that reset (`SimResult.leftoverAtReset`),

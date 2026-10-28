@@ -21,7 +21,11 @@
  *   serving decision on an account other than the previous server, starting
  *   from the pool's active account (when the paths simulate it; else the
  *   first server is not a switch). Each account's first takeover per path,
- *   inside the horizon, gives its time quantiles and the share of paths.
+ *   inside the horizon, gives its time quantiles and the share of paths,
+ *   plus a likelihood curve on the hourly grid: a Gaussian kernel over those
+ *   times (Silverman bandwidth), peak 1. Times too tight to smooth (a takeover
+ *   at a fixed reset) give the plain per-hour count, so no likelihood leaks
+ *   before the reset.
  * - **Loss at a reset** reads the same paths' `leftoverAtReset`: the share of
  *   each account's governing window still unused at its next governing reset.
  *   The grid always reaches that reset + 24 h, so it does not depend on the
@@ -50,6 +54,7 @@ import type {
   Calendar,
   ForecastUnit,
   Ms,
+  Quantiles,
   Trajectory,
   ViewWindow,
 } from "./types.js";
@@ -268,6 +273,44 @@ function firstTakeovers(
 }
 
 /**
+ * Below this kernel bandwidth, in hours, smoothing would spread one hour's
+ * takeovers into its neighbours: the curve is then the per-hour count.
+ */
+const MIN_BANDWIDTH_H = 0.5;
+
+/**
+ * The relative likelihood of a takeover in each hour [h0 + i h, h0 + (i+1) h),
+ * i < hours, from the paths' takeover times (see the header). Peak 1; all zero
+ * only for an empty list.
+ */
+function likelihoodOf(times: readonly Ms[], q: Quantiles, h0: Ms, hours: number): number[] {
+  const x = times.map((t) => (t - h0) / HOUR_MS);
+  const n = x.length;
+  const mean = x.reduce((a, b) => a + b, 0) / Math.max(1, n);
+  const sd = Math.sqrt(x.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, n - 1));
+  const iqr = (q.p75 - q.p25) / HOUR_MS / 1.34;
+  // A zero IQR is a point mass (most paths in one hour) plus stragglers: their
+  // sd would smooth the point into the hours before it, so count instead.
+  const spread = iqr > 0 ? Math.min(sd, iqr) : 0;
+  const bandwidth = 0.9 * spread * n ** -0.2;
+  const p = new Array<number>(Math.max(0, hours)).fill(0);
+  if (bandwidth < MIN_BANDWIDTH_H) {
+    for (const xi of x) {
+      const i = Math.floor(xi);
+      if (i >= 0 && i < p.length) p[i] = (p[i] ?? 0) + 1;
+    }
+  } else {
+    for (let i = 0; i < p.length; i++) {
+      let f = 0;
+      for (const xi of x) f += Math.exp(-0.5 * ((i + 0.5 - xi) / bandwidth) ** 2);
+      p[i] = f;
+    }
+  }
+  const peak = Math.max(0, ...p);
+  return peak > 0 ? p.map((v) => v / peak) : p;
+}
+
+/**
  * Each account's first takeover per path inside [now, end] (see the header),
  * kept when at least MIN_PATH_SHARE of the paths have one; ordered by p50,
  * then by the views' (account) order. No simulation: the paths are reused.
@@ -291,11 +334,19 @@ function switchesOf(
     }
   }
   const paths = Math.max(1, results.length);
+  const h0 = hourStart(now);
+  const hours = Math.floor((end - h0) / HOUR_MS) + 1;
   const out: Trajectory["switches"] = [];
   for (const [account, list] of times) {
     const probability = list.length / paths;
     if (probability < MIN_PATH_SHARE) continue;
-    out.push({ account, q: quantilesOf(list), probability: Math.min(1, probability) });
+    const q = quantilesOf(list);
+    out.push({
+      account,
+      q,
+      probability: Math.min(1, probability),
+      likelihood: { start: h0, p: likelihoodOf(list, q, h0, hours) },
+    });
   }
   return out.sort(
     (a, b) => a.q.p50 - b.q.p50 || (order.get(a.account) ?? 0) - (order.get(b.account) ?? 0)

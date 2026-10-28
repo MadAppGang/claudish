@@ -169,6 +169,22 @@ const trajectorySchema = z.object({
         usual: iso,
         latest: iso,
         probability: fraction,
+        /**
+         * The relative likelihood of this takeover per hour: `p[i]` covers the
+         * hour starting at `start + i × stepHours`, `start` on the forecast's
+         * hourly grid. Peak-normalised (the largest entry is 1, 3 decimals); the
+         * total mass is `probability`. A Gaussian kernel over the paths' takeover
+         * times, except a takeover too tight to smooth (at a fixed reset): then
+         * the per-hour count, often a single `[1]`. Leading and trailing zeros
+         * are trimmed. Added within v1; absent from a report of an older claudish.
+         */
+        likelihood: z
+          .object({
+            start: iso,
+            stepHours: z.literal(1),
+            p: z.array(z.number().min(0).max(1)).min(1),
+          })
+          .optional(),
       })
     )
     .optional(),
