@@ -141,6 +141,13 @@ export const LOOKAHEAD_TRAJ_PATHS = 40;
 export const MIN_PATH_SHARE = 0.1;
 
 /**
+ * The trajectory's `slower` scenario runs every path again with its demand
+ * times this factor: the approved forecast panel's "a third less busy" row
+ * and its "slow down and it lasts" sentence (MTL-298). Not a config field.
+ */
+export const SLOWER_FACTOR = 2 / 3;
+
+/**
  * The safe pace's upward bracket (`paceScan`) doubles the anchor up to this
  * multiple. The anchor is at least the pool's refill throughput, so 64 × it is
  * a demand no pool sustains: a result capped here is a lower bound, never a

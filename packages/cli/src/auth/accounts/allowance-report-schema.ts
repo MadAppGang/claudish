@@ -131,6 +131,38 @@ const historyPoint = z.object({
   provenance: z.enum(["observed", "reset-inferred"]),
 });
 
+/** One predicted switch (`trajectory.switches[]`, `trajectory.slower.switches[]`). */
+const switchSchema = z.object({
+  accountId: z.string(),
+  soonest: iso,
+  usual: iso,
+  latest: iso,
+  probability: fraction,
+  /**
+   * The relative likelihood of this takeover per hour: `p[i]` covers the
+   * hour starting at `start + i × stepHours`, `start` on the forecast's
+   * hourly grid. Peak-normalised (the largest entry is 1, 3 decimals); the
+   * total mass is `probability`. A Gaussian kernel over the paths' takeover
+   * times, except a takeover too tight to smooth (at a fixed reset): then
+   * the per-hour count, often a single `[1]`. Leading and trailing zeros
+   * are trimmed. `p` is shape only: the hour to show is `usual`, never the
+   * argmax. A smoothed hill has a flat top (within 5 % of 1 for 15-20 h on a
+   * real pool), and the highest hour inside it is sampling noise; two
+   * switches' argmaxes can even swap order while their medians do not.
+   * Added within v1; absent from a report of an older claudish.
+   */
+  likelihood: z
+    .object({
+      start: iso,
+      stepHours: z.literal(1),
+      p: z.array(z.number().min(0).max(1)).min(1),
+    })
+    .optional(),
+});
+
+/** One projected blocked run (`trajectory.blocked[]`, `trajectory.slower.blocked[]`). */
+const blockedSchema = z.object({ from: iso, to: iso, kind: gapKind, probability: fraction });
+
 const trajectorySchema = z.object({
   history: z.array(historyPoint),
   /**
@@ -149,7 +181,7 @@ const trajectorySchema = z.object({
   resets: z.array(
     z.object({ at: iso, account: z.string(), window: z.string(), projected: z.boolean() })
   ),
-  blocked: z.array(z.object({ from: iso, to: iso, kind: gapKind, probability: fraction })),
+  blocked: z.array(blockedSchema),
   /**
    * When each account takes over, over the trajectory's simulated paths:
    * `soonest` / `usual` / `latest` are the p10 / p50 / p90 of its FIRST
@@ -161,36 +193,24 @@ const trajectorySchema = z.object({
    * no takeover inside the horizon. Added within v1; absent from a report of
    * an older claudish.
    */
-  switches: z
-    .array(
-      z.object({
-        accountId: z.string(),
-        soonest: iso,
-        usual: iso,
-        latest: iso,
-        probability: fraction,
-        /**
-         * The relative likelihood of this takeover per hour: `p[i]` covers the
-         * hour starting at `start + i × stepHours`, `start` on the forecast's
-         * hourly grid. Peak-normalised (the largest entry is 1, 3 decimals); the
-         * total mass is `probability`. A Gaussian kernel over the paths' takeover
-         * times, except a takeover too tight to smooth (at a fixed reset): then
-         * the per-hour count, often a single `[1]`. Leading and trailing zeros
-         * are trimmed. `p` is shape only: the hour to show is `usual`, never the
-         * argmax. A smoothed hill has a flat top (within 5 % of 1 for 15-20 h on a
-         * real pool), and the highest hour inside it is sampling noise; two
-         * switches' argmaxes can even swap order while their medians do not.
-         * Added within v1; absent from a report of an older claudish.
-         */
-        likelihood: z
-          .object({
-            start: iso,
-            stepHours: z.literal(1),
-            p: z.array(z.number().min(0).max(1)).min(1),
-          })
-          .optional(),
-      })
-    )
+  switches: z.array(switchSchema).optional(),
+  /**
+   * The same simulated paths again with every hour's demand × `factor` (0.667,
+   * "a third less busy"), each on its own capacity draw: `switches` and
+   * `blocked` by exactly the rules above. The forecast panel draws its `slower`
+   * row from them ("no gap" when `blocked` is empty) and its "slow down and it
+   * lasts" time from the first switch's `usual`; an empty `switches` means no
+   * takeover inside the horizon at that pace. Under the default `sticky`
+   * strategy a slower path never switches or blocks earlier; under `ebr`
+   * (simulated with `lookahead`) that guarantee does not hold. Added within v1;
+   * absent from a report of an older claudish.
+   */
+  slower: z
+    .object({
+      factor: z.number().gt(0).lt(1),
+      switches: z.array(switchSchema),
+      blocked: z.array(blockedSchema),
+    })
     .optional(),
   /** The server-rendered sparkline: only the closed glyph set, so a reader can draw it verbatim. */
   spark48: z.string().regex(/^[▁▂▃▄▅▆▇█▒▓┊ ]*$/u),

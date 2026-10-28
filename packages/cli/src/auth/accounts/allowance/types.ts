@@ -669,6 +669,16 @@ export interface Trajectory {
    * with no reading yet at `at` has no point there).
    */
   historyByAccount: Record<AccountId, Trajectory["history"]>;
+  /**
+   * The same paths again with every hour's demand × `factor` (SLOWER_FACTOR),
+   * on each path's own capacity draw: `switches` and `blocked` by the rules
+   * above. Under `sticky` a slower path never switches or blocks earlier.
+   */
+  slower: {
+    factor: number;
+    switches: Trajectory["switches"];
+    blocked: Trajectory["blocked"];
+  };
 }
 
 export interface Contribution {

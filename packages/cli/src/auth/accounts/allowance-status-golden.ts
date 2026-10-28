@@ -214,6 +214,27 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
           likelihood: { start: "2026-10-31T09:00:00.000Z", stepHours: 1, p: [1] },
         },
       ],
+      slower: {
+        factor: 0.667,
+        switches: [
+          {
+            accountId: "bbbbbbbbbbbb",
+            soonest: "2026-10-28T19:00:00.000Z",
+            usual: "2026-10-29T08:00:00.000Z",
+            latest: "2026-10-29T21:00:00.000Z",
+            probability: 0.91,
+            likelihood: {
+              start: "2026-10-28T17:00:00.000Z",
+              stepHours: 1,
+              p: [
+                0.06, 0.14, 0.27, 0.43, 0.61, 0.78, 0.91, 0.99, 1, 0.94, 0.82, 0.66, 0.49, 0.33,
+                0.2, 0.1, 0.04,
+              ],
+            },
+          },
+        ],
+        blocked: [],
+      },
       spark48: "▇▇▇▆▆▆▅▅▅▄▄▄▃▃▃▂▂▂▁▁▁   ▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒┊▁▁▁",
     },
     sessions: [
@@ -290,6 +311,7 @@ export const GOLDEN_ALLOWANCE_NO_EVIDENCE_ANSWER = {
       resets: [],
       blocked: [],
       switches: [],
+      slower: { factor: 0.667, switches: [], blocked: [] },
       spark48: "",
     },
     sessions: [],
