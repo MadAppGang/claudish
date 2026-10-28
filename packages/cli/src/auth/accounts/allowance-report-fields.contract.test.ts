@@ -10,9 +10,9 @@ import {
 } from "./allowance-report-schema.js";
 import { AllowanceService, _setAllowanceServiceForTests } from "./allowance-service.js";
 import {
-  GOLDEN_ALLOWANCE_WARN_ANSWER,
   GOLDEN_ALLOWANCE_NO_EVIDENCE_ANSWER,
   GOLDEN_ALLOWANCE_UNAVAILABLE_ANSWER,
+  GOLDEN_ALLOWANCE_WARN_ANSWER,
 } from "./allowance-status-golden.js";
 import { _resetLedgerWriterForTests, flushUsageLedger } from "./ledger/ledger-writer.js";
 import { AccountRegistry, setAccountRegistryForTests } from "./registry.js";
