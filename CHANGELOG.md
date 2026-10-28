@@ -2,6 +2,18 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.8.0] - 2026-10-28
+
+### Documentation
+
+- record why the switch likelihood is a kernel with a count fallback *(accounts)* ([`76a855e`](https://github.com/MadAppGang/claudish/commit/76a855edf37fb3cc9b2cd6acfa77387fb6bc294f))
+- say the switch likelihood is shape only, not its argmax *(accounts)* ([`1777797`](https://github.com/MadAppGang/claudish/commit/1777797646b1cf329bfa92449a978e0822315d97))
+- update CHANGELOG.md for v14.7.0([`31eac45`](https://github.com/MadAppGang/claudish/commit/31eac450c90b158a1e95f2fde519918f4a9d4bd2))
+
+### New Features
+
+- send a likelihood curve per switch in allowance_status *(accounts)* ([`16d6172`](https://github.com/MadAppGang/claudish/commit/16d6172751d64efd463249cc8343e9a58590d015))
+
 ## [14.7.0] - 2026-10-28
 
 ### Bug Fixes
