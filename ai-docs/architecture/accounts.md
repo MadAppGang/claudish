@@ -1141,10 +1141,11 @@ overturns claudish's probe of 2026-08-05, which found no usage endpoint.
 
 The hash input has two kinds of evidence. Live: the wrapper's computed service name matched Claude
 Code's first read for this scratch path. That path held no symlink, so a raw and a resolved path
-were not separated live. Static (the report's appendix, `dN()` and `HW()` in 2.1.312): the input is
-the configured dir string, NFC-normalized. An external review quotes `Le()` as returning
-`CLAUDE_CONFIG_DIR` verbatim, with no `realpath` and no slash stripping; that reading is static and
-unverified live. Still unmeasured live: whether a trailing slash survives. `claudeCodeKeychainServiceCandidates()` probes resolved, raw, slash-stripped and
+were not separated live. Static (the report's appendix, `HW()`, `dN()` and `Le` in 2.1.312): the
+input is `B8t()` (or `~/.claude`) NFC-normalized, with no `realpath` call in `Le`. The body of
+`B8t()` is not extracted, so whether it returns `CLAUDE_CONFIG_DIR` raw, resolved or
+slash-stripped is unverified, statically and live. Still unmeasured live: whether a trailing slash
+survives. `claudeCodeKeychainServiceCandidates()` probes resolved, raw, slash-stripped and
 unsuffixed names, which is cheap because the probe reads attributes only and never prompts. The
 `security -i` stdin limit is 4095 bytes per chunk (measured 2026-10-26, MTL-268); 2.1.312 sends
 `-i` lines up to 4032 bytes and switches to argv above that (`re=4032`, static; quoted in the

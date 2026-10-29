@@ -176,10 +176,10 @@ that a run also confirmed.
 - **Live:** the wrapper's computed service name, `sha256(cfg.normalize("NFC"))`, matched Claude
   Code's first read for this scratch path, in every run. The path held no symlink and was an
   ordinary path, so the run separates neither raw from resolved nor NFC from no normalization.
-- **Static** (appendix, "F1: config dir `dN()`" and `HW()`): the input is the configured dir
-  string, NFC-normalized. The external review quotes `Le()` as returning `CLAUDE_CONFIG_DIR`
-  verbatim, with no `realpath` and no slash stripping. That body is not in the extract, and it is
-  unverified live.
+- **Static** (appendix, `HW()`, `dN()` and `Le`): the input is `Le`, which is `B8t()` (or
+  `~/.claude`) NFC-normalized, with no `realpath` call in `Le` itself. The body of `B8t()` is not
+  in the extract. Whether it returns `CLAUDE_CONFIG_DIR` raw, resolved or slash-stripped is
+  unverified, statically and live.
 
 Still unmeasured live: whether a trailing slash survives.
 
@@ -411,8 +411,9 @@ real login again.
   `lock_retry`, `lock_busy`, `race_resolved` and `401_recovered_from_keychain` are telemetry only.
   Every lock result above comes from wrapper-log timestamps, lock-dir times and side effects.
 - **Raw vs resolved hash input.** The scratch path had no symlink, so the two were not separated
-  live (§2, hash input). The static reading says raw; it is unverified live. Still unmeasured
-  live: whether a trailing slash survives.
+  live (§2, hash input). Statically, only NFC normalization is established; the body of `B8t()`
+  is not extracted, so raw vs resolved is unverified, statically and live. Still unmeasured live:
+  whether a trailing slash survives.
 - **Dead-holder takeover.** The owner-file branch was read from `ON()`, not exercised: a holder that
   refreshes its mtime never reaches it.
 
@@ -420,7 +421,7 @@ real login again.
 
 ## Appendix. Static extracts (2.1.312)
 
-Every static fact above rests on one of these 19 windows. Each is quoted verbatim from
+Every static fact above rests on one of these 21 windows. Each is quoted verbatim from
 `validation/static-extract.txt`, with the byte offset of its anchor in
 `/Users/jack/.local/share/claude/versions/2.1.312`. Non-printable bytes are dropped. To reproduce
 them, run `bun validation/scripts/static-extract.ts` from the session dir
