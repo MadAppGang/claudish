@@ -2,6 +2,18 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.10.1] - 2026-10-29
+
+### Bug Fixes
+
+- fold rows appended to yesterday's ledger after a load *(accounts)* ([`7e2b82b`](https://github.com/MadAppGang/claudish/commit/7e2b82b21f75f0a4465307e5f38a5d44377dd7f9))
+
+### Documentation
+
+- record why the ledger tail starts at the 48 h handoff *(accounts)* ([`13b8e32`](https://github.com/MadAppGang/claudish/commit/13b8e321b53191fca14b3d0cbf3cc2f092bcb4b5))
+- stamp the playbook verified at the v14.10.0 merge commit *(release)* ([`41062a5`](https://github.com/MadAppGang/claudish/commit/41062a5793dd9e43b025cfc6a162e665084426ac))
+- update CHANGELOG.md for v14.10.0([`afa268a`](https://github.com/MadAppGang/claudish/commit/afa268a7de9960c174c22edeaecd3b5760aacfe1))
+
 ## [14.10.0] - 2026-10-29
 
 ### Bug Fixes
