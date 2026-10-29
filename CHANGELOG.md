@@ -2,6 +2,26 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.10.0] - 2026-10-29
+
+### Bug Fixes
+
+- start usage.coveredFrom at the first recorded ledger hour *(accounts)* ([`0444462`](https://github.com/MadAppGang/claudish/commit/04444625aab1134d6c32d8d887cb584f24d49c39))
+- count an open no-eligible interval in usage.censored *(accounts)* ([`ea48683`](https://github.com/MadAppGang/claudish/commit/ea486832b5c8747c60bad750ae8267c3e78055ad))
+
+### Documentation
+
+- document the 4 significant digit forecast quantiles *(accounts)* ([`9be0f5f`](https://github.com/MadAppGang/claudish/commit/9be0f5f6dbd39091d0003e9e53cf43ae5adb16cb))
+- document the usage section of the allowance report *(accounts)* ([`7e879c0`](https://github.com/MadAppGang/claudish/commit/7e879c09cad21f7c85dbe14d25fd5065d710bc34))
+- record Claude Code 2.1.312 OAuth facts for Phase V (#373) *(accounts)* ([`28981d7`](https://github.com/MadAppGang/claudish/commit/28981d7b3cc1c6bcbfb308c814176ffbe7dd5c18))
+- stamp the playbook verified at the v14.9.0 merge commit *(release)* ([`438f00e`](https://github.com/MadAppGang/claudish/commit/438f00ebb835d54b8f4a2954c9a1fa4487db036a))
+- update CHANGELOG.md for v14.9.0([`50cbb36`](https://github.com/MadAppGang/claudish/commit/50cbb36e0285fb17978f2b43ad40bb55e5d7df15))
+
+### New Features
+
+- add a usage section with 14 days of cu per account *(accounts)* ([`5244670`](https://github.com/MadAppGang/claudish/commit/52446705cda58077c8ef25be0fa2db6dced90640))
+- send forecast p10/p50/p90 at 4 significant digits *(accounts)* ([`8543170`](https://github.com/MadAppGang/claudish/commit/8543170c38d5da64d9c7164b2411e1cff97f54c2))
+
 ## [14.9.0] - 2026-10-29
 
 ### Documentation
