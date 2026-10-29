@@ -291,7 +291,9 @@ the same `switchesOf` and `blockedRuns`.
   current one, `sticky` included, and the field reports what the simulation does: it is never
   clamped to look better. `sticky` switches at `SELECTION_THRESHOLD` (0.90 used), not only on
   exhaustion, so the two runs can cross it on different sides of a short-window reset and then
-  drain different accounts; from there no account's use is lower in the slower run. Measured with
+  drain different accounts; from there, use within each account's reset periods is no longer
+  guaranteed to be lower in the slower run (in the case below the slower run uses less on BOTH
+  accounts, A 6 → 2.667 cu and B 4 → 3.667 cu, and still gaps first). Measured with
   the production `simulate` and `sticky`: A has a 5 h window at 0.2 remaining that resets at +2 h,
   B a 168 h window at 1.0 that resets at +6 h, β 0.5, demand 0.5 cu/h for 18 h with 1.5 cu at
   hour 12. The current run has no gap; the slower run has a `7d` gap with 0.333 cu unserved at
