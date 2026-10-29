@@ -39,7 +39,7 @@ list-keychains and list-keychains -d user      → equal to the baselines (true 
 A cleanup trap (SIGINT, SIGTERM, finally → `security delete-keychain $TK`) was installed before
 the first launch.
 
-### The `security` wrapper on PATH
+### The `security` wrapper on `PATH`
 
 Claude Code calls `security` by bare name (F5), so a wrapper placed first on `PATH` intercepts
 every call. It:
@@ -56,7 +56,7 @@ every call. It:
 
 ### One exec, then a proof launch
 
-Claude Code started in ONE exec, never through a login shell, whose `path_helper` reorders PATH:
+Claude Code started in ONE exec, never through a login shell, whose `path_helper` reorders `PATH`:
 
 ```
 /usr/bin/env -i HOME=/Users/jack USER=jack TERM=dumb \
@@ -139,39 +139,49 @@ Each failed exchange costs nothing. The proof launches ran with no item and made
 
 ### Static reading
 
-Static facts come from the binary read as latin1 with `indexOf`, by
-`bun scripts/grep-binary.ts '<needle>' [before] [after] [max]` with stdin from `/dev/null`.
+Static facts come from the binary read as latin1 with `indexOf`, with stdin from `/dev/null`.
 Minified names (`HW()`, `Wu()`, `ON()`) belong to 2.1.312 only and change between builds.
+The script at the end of the appendix re-reads the window behind each static fact, with its byte
+offset, and the appendix quotes its output verbatim. The "Command" column names the needle each
+row was found by.
 
 ---
 
 ## 2. Facts F1 to F15
 
-"static" means read from the binary; "live" means observed in the runs above.
+The Evidence column says where each row comes from. **Static** means read from the binary and
+quoted in the appendix. **Live** means observed in the runs above. **Both** means a static reading
+that a run also confirmed.
 
-| id | Question | Command | Observed (verbatim excerpt) | Verdict |
-|---|---|---|---|---|
-| F1 | Keychain service name | `grep-binary.ts 'OAUTH_FILE_SUFFIX}'`; live: the proof line | ``var KPe="-credentials"`` … ``a=t?"":`-${c("sha256").update(r).digest("hex").substring(0,8)}`;return`Claude Code${on().OAUTH_FILE_SUFFIX}${e}${a}` `` (called with `e`=`"-credentials"`). Suffix values: `OAUTH_FILE_SUFFIX:""` (prod), `"-local-oauth"` (local config), `"-custom-oauth"` (`CLAUDE_CODE_CUSTOM_OAUTH_URL`). Live: `-s "Claude Code-credentials-52115af3"` | static + live: `Claude Code${OAUTH_FILE_SUFFIX}-credentials-<sha256(dir)[0:8]>`; the hash comes AFTER `-credentials` |
-| F2 | Which order do real items use? | the isolation-proof pipeline on the login keychain (attributes only) | 253 services: 252 `Claude Code-credentials-<hash>` (e.g. `"svce"<blob>="Claude Code-credentials-015a53eb"`), 1 unsuffixed `"Claude Code-credentials"`, 0 matching `Claude Code-<hash>-credentials` | live: every suffixed item uses the F1 order; zero of the old order |
-| F3 | Does claudish build the same name? | `packages/cli/src/auth/claude-code-facts.ts` | ``return `${BASE_KEYCHAIN_SERVICE}-${configDirHash(resolved)}${KEYCHAIN_SERVICE_SUFFIX}`;`` builds `Claude Code-<hash>-credentials`; it also returns the unsuffixed name when the dir resolves to `~/.claude` and ignores `CLAUDE_SECURESTORAGE_CONFIG_DIR` and NFC | **defect**: the login probe (`claude-runner.ts:146`) misses every custom-config-dir login and can fall back to the unsuffixed item, a different login. Tracked as MTL-316, fixed outside this branch |
-| F4 | When is the suffix added? | `grep-binary.ts 'n=process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR'` | ``n=process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR,t=n!==void 0?!n:!process.env.CLAUDE_CONFIG_DIR,r=n!==void 0?n.normalize("NFC"):Le()`` | static: whenever `CLAUDE_CONFIG_DIR` is non-empty, even when it names the default dir; `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when set, decides alone (empty means no suffix) |
-| F5 | Which `security` runs? | static reads; live: wrapper on PATH | ``it("security",["find-generic-password","-a",a,"-w","-s",s])``; writes go to `security -i` with no keychain argument. Live: every Claude Code call reached the PATH wrapper | static + live: bare `security` by PATH, default keychain |
-| F6 | When does the plaintext file get used? | `grep-binary.ts '".credentials.json"'` | ``storagePath:oe(e,".credentials.json")`` … ``var J7r="Warning: Storing credentials in plaintext."`` | static: `<dir>/.credentials.json` only after a non-transient keychain failure. Live: never reached, because 0 calls were refused |
-| F7 | Refresh with no new refresh token | `grep-binary.ts 'refreshToken:j,expiresAt:q'` | ``{access_token:G,refresh_token:j=e,expires_in:Q}=B,q=Date.now()+Q*1000,Z=q9r(B.refresh_token_expires_in,!1)`` … ``return{accessToken:G,refreshToken:j,expiresAt:q,refreshTokenExpiresAt:Z,`` | static: keeps the old refresh token when none is returned, and stores `refreshTokenExpiresAt` |
-| F8 | Claude Code's locks | `grep-binary.ts 'stale:60000'`, `'.oauth_refresh.lock.owner'`, `'no_owner_record'`, `'".storage-write"'` | ``lockfilePath:Vp(e,".oauth_refresh.lock"),realpath:!1,stale:60000,update:5000`` · ``var TN="tengu_quiet_marten",…,CN=".oauth_refresh.lock.owner"`` · ``if(!zc(TN))return"disabled";let y=await Wc(e);if(y===null)return(await lo(n)).mtimeMs===s?"no_owner_record":"lock_changed"`` · ``rd(te(s,".storage-write"),{realpath:!1,retries:{retries:10,minTimeout:100,maxTimeout:1000},stale:15000`` | static + live (D2): `<dir>/.oauth_refresh.lock` first, then the legacy `<realpath(dir)>.lock` (stale 60 s, update 5 s). Owner file `.oauth_refresh.lock.owner`. Takeover only with an owner record AND the flag `tengu_quiet_marten`; `no_owner_record` → never taken over. Second lock dir `<dir>/.storage-write.lock` (stale 15 s, 10 retries) around every item read-modify-write |
-| F9 | PKCE shape | `grep-binary.ts 'CLIENT_ID:"'` | ``MANUAL_REDIRECT_URL:"https://platform.claude.com/oauth/code/callback"``; redirect `http://localhost:<port>/callback`; S256; JSON exchange body with `state` | static only; see D6 |
-| F10 | Which client id is prod? | `grep-binary.ts 'CLIENT_ID:"'`, `'22422756'` | ``CLIENT_ID:"9d1c250a-e61b-44d9-88ed-5944d1962f5e",…,OAUTH_FILE_SUFFIX:""`` · ``CLIENT_ID:"22422756-60c9-4084-8eb7-27705fd5cf9a",DESIGN_CLIENT_ID:"00000000-0000-4000-8000-000000000000",OAUTH_FILE_SUFFIX:"-local-oauth"`` (beside `http://localhost:8205`) | static: `9d1c250a-…` is prod; `22422756-…` is the local-dev OAuth config |
-| F11 | Does Codex have a usage endpoint? | `strings` on Codex 0.161.0 | contains `/wham/usage` and `/api/codex/usage` | static; measured live as D7 |
-| F12 | When does Claude Code refresh? | `grep-binary.ts '300000>='` | ``function AA(e,n=Date.now()){if(e===null)return!1;return n+300000>=e}`` | static + live (D5 step 4): only on demand, when `now + 300000 >= expiresAt`; no timer found |
-| F13 | Item cache | `grep-binary.ts 'R4t=30000'` | ``var R4t=30000;class i{cache={data:null,cachedAt:0};generation=0;readInFlight=null;`` | static + live (D5): reads are cached 30 s |
-| F14 | Adoption under the lock | static (`Wu()`) | ``if(G.accessToken!==B)return xn(),a("tengu_oauth_token_refresh_race_resolved")`` | static + live (D5 step 4): under the lock it re-reads; a different stored token is adopted; a save adopts a newer write |
-| F15 | Account attribute; other services read | `grep-binary.ts 'claude-code-user'`; live D4; wrapper log | ``e=process.env.USER\|\|l().username}catch{e="claude-code-user"}if(!s.test(e))return"claude-code-user"`` with `s=/^[a-zA-Z0-9._-]+$/`. Live: `"acct"<blob>="jack"`; 15 reads of `Claude Code-52115af3` | static + live: `acct` = `$USER`, fallback `claude-code-user`. The legacy API-key service `Claude Code-<hash>` (no `-credentials`) is read at every start |
+| id | Evidence | Question | Command | Observed (verbatim excerpt) | Verdict |
+|---|---|---|---|---|---|
+| F1 | Both | Keychain service name | `'OAUTH_FILE_SUFFIX}'`; live: the proof line | ``var KPe="-credentials"`` … ``a=t?"":`-${c("sha256").update(r).digest("hex").substring(0,8)}`;return`Claude Code${on().OAUTH_FILE_SUFFIX}${e}${a}` `` (called with `e`=`"-credentials"`). Suffix values: `OAUTH_FILE_SUFFIX:""` (prod), `"-local-oauth"` (local config), `"-custom-oauth"` (`CLAUDE_CODE_CUSTOM_OAUTH_URL`). Live: `-s "Claude Code-credentials-52115af3"` | static + live: `Claude Code${OAUTH_FILE_SUFFIX}-credentials-<sha256(dir)[0:8]>`; the hash comes AFTER `-credentials` |
+| F2 | Live | Which order do real items use? | the isolation-proof pipeline on the login keychain (attributes only) | 253 services: 252 `Claude Code-credentials-<hash>` (e.g. `"svce"<blob>="Claude Code-credentials-015a53eb"`), 1 unsuffixed `"Claude Code-credentials"`, 0 matching `Claude Code-<hash>-credentials` | live: every suffixed item uses the F1 order; zero of the old order |
+| F3 | Static (claudish source) | Does claudish build the same name? | `packages/cli/src/auth/claude-code-facts.ts` | ``return `${BASE_KEYCHAIN_SERVICE}-${configDirHash(resolved)}${KEYCHAIN_SERVICE_SUFFIX}`;`` builds `Claude Code-<hash>-credentials`; it also returns the unsuffixed name when the dir resolves to `~/.claude` and ignores `CLAUDE_SECURESTORAGE_CONFIG_DIR` and NFC | **defect**: the login probe (`claude-runner.ts:146`) misses every custom-config-dir login and can fall back to the unsuffixed item, a different login. Tracked as MTL-316, fixed outside this branch |
+| F4 | Static | When is the suffix added? | `'n=process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR'` | ``n=process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR,t=n!==void 0?!n:!process.env.CLAUDE_CONFIG_DIR,r=n!==void 0?n.normalize("NFC"):Le()`` | static: whenever `CLAUDE_CONFIG_DIR` is non-empty, even when it names the default dir; `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when set, decides alone (empty means no suffix) |
+| F5 | Both | Which `security` runs? | static reads; live: wrapper on `PATH` | ``it("security",["find-generic-password","-a",a,"-w","-s",s])``; writes go to `security -i` with no keychain argument, and to argv above 4032 bytes (`re=4032`). Live: every Claude Code call reached the `PATH` wrapper | static + live: bare `security` by `PATH`, default keychain |
+| F6 | Static | When does the plaintext file get used? | `'".credentials.json"'` | ``storagePath:oe(e,".credentials.json")`` … ``var J7r="Warning: Storing credentials in plaintext."`` | static: `<dir>/.credentials.json` only after a non-transient keychain failure. Live: never reached, because 0 calls were refused |
+| F7 | Static | Refresh with no new refresh token | `'refreshToken:j,expiresAt:q'` | ``{access_token:G,refresh_token:j=e,expires_in:Q}=B,q=Date.now()+Q*1000,Z=q9r(B.refresh_token_expires_in,!1)`` … ``return{accessToken:G,refreshToken:j,expiresAt:q,refreshTokenExpiresAt:Z,`` | static only: keeps the old refresh token when none is returned, and stores `refreshTokenExpiresAt`. Every live refresh exchange answered 400, so no run exercised this |
+| F8 | Both (owner record, takeover gate: Static) | Claude Code's locks | `'stale:60000'`, `'.oauth_refresh.lock.owner'`, `'no_owner_record'`, `'".storage-write"'` | ``lockfilePath:Vp(e,".oauth_refresh.lock"),realpath:!1,stale:60000,update:5000`` · ``var TN="tengu_quiet_marten",…,CN=".oauth_refresh.lock.owner"`` · ``if(!zc(TN))return"disabled";let y=await Wc(e);if(y===null)return(await lo(n)).mtimeMs===s?"no_owner_record":"lock_changed"`` · ``rd(te(s,".storage-write"),{realpath:!1,retries:{retries:10,minTimeout:100,maxTimeout:1000},stale:15000`` | static + live (D2): `<dir>/.oauth_refresh.lock` first, then the legacy `<realpath(dir)>.lock` (stale 60 s, update 5 s). Owner file `.oauth_refresh.lock.owner`. Takeover only with an owner record AND the flag `tengu_quiet_marten`; `no_owner_record` → never taken over. Second lock dir `<dir>/.storage-write.lock` (stale 15 s, 10 retries) around every item read-modify-write |
+| F9 | Static | PKCE shape | `'CLIENT_ID:"'` | ``MANUAL_REDIRECT_URL:"https://platform.claude.com/oauth/code/callback"``; redirect `http://localhost:<port>/callback`; S256; JSON exchange body with `state` | static only; see D6 |
+| F10 | Static | Which client id is prod? | `'CLIENT_ID:"'`, `'22422756'` | ``CLIENT_ID:"9d1c250a-e61b-44d9-88ed-5944d1962f5e",…,OAUTH_FILE_SUFFIX:""`` · ``CLIENT_ID:"22422756-60c9-4084-8eb7-27705fd5cf9a",DESIGN_CLIENT_ID:"00000000-0000-4000-8000-000000000000",OAUTH_FILE_SUFFIX:"-local-oauth"`` (beside `http://localhost:8205`) | static: `9d1c250a-…` is prod; `22422756-…` is the local-dev OAuth config |
+| F11 | Static (D7: Live) | Does Codex have a usage endpoint? | `strings` on Codex 0.161.0 | contains `/wham/usage` and `/api/codex/usage` | static; measured live as D7 |
+| F12 | Both | When does Claude Code refresh? | `'300000>='` | ``function AA(e,n=Date.now()){if(e===null)return!1;return n+300000>=e}`` | static + live (D5 step 4): only on demand, when `now + 300000 >= expiresAt`; no timer found |
+| F13 | Both | Item cache | `'R4t=30000'` | ``var R4t=30000;class i{cache={data:null,cachedAt:0};generation=0;readInFlight=null;`` | static + live (D5): reads are cached 30 s |
+| F14 | Both | Adoption under the lock | static (`Wu()`) | ``if(G.accessToken!==B)return xn(),a("tengu_oauth_token_refresh_race_resolved")`` | static + live (D5 step 4): under the lock it re-reads; a different stored token is adopted; a save adopts a newer write |
+| F15 | Both | Account attribute; other services read | `'claude-code-user'`; live D4; wrapper log | ``e=process.env.USER\|\|l().username}catch{e="claude-code-user"}if(!s.test(e))return"claude-code-user"`` with `s=/^[a-zA-Z0-9._-]+$/`. Live: `"acct"<blob>="jack"`; 15 reads of `Claude Code-52115af3` | static + live: `acct` = `$USER`, fallback `claude-code-user`. The legacy API-key service `Claude Code-<hash>` (no `-credentials`) is read at every start |
 
-**Hash input.** The input is the configured dir string, NFC-normalized (`dN()`):
-``let e=process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;if(e!==void 0)return(e||u(o(),".claude")).normalize("NFC");return Le()``.
-The wrapper's `sha256(cfg.normalize("NFC"))` matched Claude Code's first read in every run. The
-scratch path contained no symlink, so raw and resolved paths were not separated live, and the body
-of `Le()` was not traced.
+**Hash input.** The two kinds of evidence answer different questions.
+
+- **Live:** the wrapper's computed service name, `sha256(cfg.normalize("NFC"))`, matched Claude
+  Code's first read for this scratch path, in every run. The path held no symlink and was an
+  ordinary path, so the run separates neither raw from resolved nor NFC from no normalization.
+- **Static** (appendix, "F1: config dir `dN()`" and `HW()`): the input is the configured dir
+  string, NFC-normalized. The external review quotes `Le()` as returning `CLAUDE_CONFIG_DIR`
+  verbatim, with no `realpath` and no slash stripping. That body is not in the extract, and it is
+  unverified live.
+
+Still unmeasured live: whether a trailing slash survives.
 
 ---
 
@@ -346,8 +356,10 @@ Neither step 3 nor step 4 printed a refresh line or wrote the item.
 | 3, 401 to A | re-read, B | A 401 → re-read 620 ms later → B 200, no refresh |
 | 4, A near expiry | B, no token POST (`race_resolved`) | B, no refresh line, no write |
 
-**Verdict:** yes. A running session adopts a swapped item within 30 s, or at once on a 401 or
-near expiry.
+**Verdict:** yes, and the adoption is request-driven. A running session adopts the changed item at
+its next request once its 30 s item cache has expired. A 401 or the near-expiry check re-reads at
+once. An idle session adopts nothing until it sends a request. The static side of the 401 path is
+in the appendix ("D5: the 401 path").
 
 ### D7: Codex usage endpoint
 
@@ -382,7 +394,7 @@ This contradicts claudish's probe of 2026-08-05, which found no usage endpoint.
 |---|---|---|
 | D1 (rotation) | not needed under the switch rule, given D2-positive for both locks (measured positive) | claudish holds `.oauth_refresh.lock` with the legacy lock, and `.storage-write.lock`, across read-save-write. Claude Code cannot refresh or write inside that window (D2a, D2b), so the read-back captures the current refresh token whether or not a refresh rotates it. claudish never refreshes the account in Claude Code's item |
 | D3 (immediate revocation) | not needed under the switch rule, for the same reason | no interrupted refresh can occur inside the switch, so whether the old refresh token dies at once never decides an outcome |
-| D6 (PKCE) | static (F9) | the redirect shape and exchange body come from the binary; the first real Phase 3 login verifies that the server accepts them |
+| D6 (PKCE) | static (F9), from the binary; server acceptance remains to be verified by the first real Phase 3 login | the redirect shape and exchange body come from the binary, and no run sent them to the server |
 | D8 (in-stream `usage_limit_reached`) | unchanged | MTL-261 |
 
 If a later Claude Code build stops waiting on either lock, D2 turns negative, and D1 and D3 need a
@@ -399,6 +411,236 @@ real login again.
   `lock_retry`, `lock_busy`, `race_resolved` and `401_recovered_from_keychain` are telemetry only.
   Every lock result above comes from wrapper-log timestamps, lock-dir times and side effects.
 - **Raw vs resolved hash input.** The scratch path had no symlink, so the two were not separated
-  live (§2, hash input).
+  live (§2, hash input). The static reading says raw; it is unverified live. Still unmeasured
+  live: whether a trailing slash survives.
 - **Dead-holder takeover.** The owner-file branch was read from `ON()`, not exercised: a holder that
   refreshes its mtime never reaches it.
+
+---
+
+## Appendix. Static extracts (2.1.312)
+
+Every static fact above rests on one of these 19 windows. Each is quoted verbatim from
+`validation/static-extract.txt`, with the byte offset of its anchor in
+`/Users/jack/.local/share/claude/versions/2.1.312`. Non-printable bytes are dropped. To reproduce
+them, run `bun validation/scripts/static-extract.ts` from the session dir
+`ai-docs/sessions/dev-feature-claude-oauth-facts-20261029-142521-cc7b775b/`. The script reads the
+binary as latin1, skips the earlier bundle copy below offset 200000000, and prints each window.
+
+### F1, F4: service name `HW()`
+
+Offset 220051673. The suffix `-<sha256(r)[0:8]>` is added unless `t`. `t` is true when `CLAUDE_SECURESTORAGE_CONFIG_DIR` is set and empty, or, when it is unset, when `CLAUDE_CONFIG_DIR` is empty or unset. The hash input `r` is `CLAUDE_SECURESTORAGE_CONFIG_DIR` NFC-normalized, else `Le()`.
+
+```
+function HW(e=""){let n=process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR,t=n!==void 0?!n:!process.env.CLAUDE_CONFIG_DIR,r=n!==void 0?n.normalize("NFC"):Le(),a=t?"":`-${c("sha256").update(r).digest("hex").substring(0,8)}`;return`Claude Code${on().OAUTH_FILE_SUFFIX}${e}${a}`}var s=/^[a-zA-Z0-9._-]+$/;function iO(){let e;try{e=process.env.USER||l().user
+```
+
+### F1: config dir `dN()`
+
+Offset 220051502. With `CLAUDE_SECURESTORAGE_CONFIG_DIR` unset, the dir is `Le()`, quoted in the next window.
+
+```
+function dN(){let e=process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;if(e!==void 0)return(e||u(o(),".claude")).normalize("NFC");return Le()}function qPe(){return X()?null:dN()}function HW(e
+```
+
+### F1: hash input `Le`
+
+Offset 217226836. `Le` is `B8t()`, or `~/.claude` when that is nullish, then NFC-normalized. No `realpath` call appears in it. The body of `B8t()` is not in this window. The external review reads it as returning `CLAUDE_CONFIG_DIR` verbatim, with no slash stripping. That part is unverified, statically and live.
+
+```
+var Le=f(()=>(B8t()??u(D(),".claude")).normalize("NFC"),B8t);function bf(){return fne()?null:Le()}f
+```
+
+### F15: account attribute `iO()`
+
+Offset 220051968. `acct` is `$USER`, else the OS username. It is `claude-code-user` when that throws or fails `s=/^[a-zA-Z0-9._-]+$/`.
+
+```
+function iO(){let e;try{e=process.env.USER||l().username}catch{e="claude-code-user"}if(!s.test(e))return"claude-code-user";return e}var R4t=30000;class i{cache={data:null,cachedAt:0};generation=0;readInFl
+```
+
+### F13: item cache
+
+Offset 220052100. `R4t` is the 30 s item cache; the class after it holds `cache`, `generation` and `readInFlight`.
+
+```
+var R4t=30000;class i{
+```
+
+### F5: write through `security -i`, argv above `re`
+
+Offset 220059537. A write goes to bare `security -i` on stdin while the command line is at most `re` bytes, and to argv above that. Neither form passes a keychain argument.
+
+```
+urn u(P,e)},async update(e){let r=DW();cN();try{let n=HW(KPe),s=iO(),a=_(e),o=Buffer.from(a,"utf-8").toString("hex"),i=`add-generic-password -U -a "${s}" -s "${n}" -X "${o}"`,c;if(i.length<=re)c=await Ry("security",["-i"],{input:i,stdio:["pipe","pipe","pipe"],reject:!1,timeout:l});else t(`Keychain payload (${a.length}B JSON) exceeds security -i stdin limit; using argv`,{level:"warn"}),c=await Ry("security",["add-generic-password","-U","-a",s,"-s",n,"-X",o],{stdio:["ignore","pipe","pipe"],reject:!1,timeout:l});if(c.exitCode!==0){if(c.exitCode===M&&r.keychainHoldsItem)return{success:!1,t
+```
+
+### F5: the `re` value
+
+Offset 220058041. `re` is 4032.
+
+```
+,re=4032,N=44,M=36
+```
+
+### F5: the `re` comparison
+
+Offset 220059595. The test that selects stdin or argv.
+
+```
+if(i.length<=re)c=await Ry("security
+```
+
+### F6: plaintext fallback
+
+Offset 220057583. The plaintext store `r` is written only after the keychain write `e.update` fails with a result that is not `transient`.
+
+```
+alidateCache(){e.invalidateCache?.(),r.invalidateCache?.()},mutate(a,o){return u(s,a,o)},async update(a,o){let i=await e.readAsync(),c=await e.update(a);if(c.success){if(i===null)await r.delete(o);return g("secure_storage_credentials_write"),c}if(c.transient)return p("secure_storage_credentials_write",c.keychainLocked?"keychain_locked_skip_fallback":"primary_transient_skip_fallback"),c;let b=await r.update(a,o);if(b.success){if(i!==null&&!await e.delete())return m("secure_storage_credentials_write","plaintext_fallback_primary_not_cleared",c.exitCode===void 0?void 0:{primary_write_exit_code:c.exitCode}),{success:!1,transient:!0,fallbackWritten:!0};return p("secure_storage_credentials_write","plaintext_fallback_used"),{success:!0,warning:b.warning}}return m("secure_storage_c
+```
+
+### F7: refresh grant, old refresh token kept
+
+Offset 220546563. `refresh_token:j=e` keeps the presented refresh token when the response carries none, and `Z` comes from `refresh_token_expires_in`. Static only: every live refresh exchange answered 400, so none exercised this.
+
+```
+grant_type:"refresh_token",refresh_token:e,client_id:s??on().CLIENT_ID,scope:x.join(" ")};if(r!==void 0)P.expires_in=r;try{let D=await Pt.post(on().TOKEN_URL,P,{headers:{"Content-Type":"application/json"},timeout:30000,signal:y,...dn});if(D.status!==200)throw Error(`Token refresh failed: ${D.statusText}`);let B=D.data,{access_token:G,refresh_token:j=e,expires_in:Q}=B,q=Date.now()+Q*1000,Z=q9r(B.refresh_token_expires_in,!1),de=jir(B.scope);a("tengu_oauth_token_refresh_success",{plugins_scope_requested:x.includes(Qxt),plugins_scope_granted:de.includes(Qxt)})
+```
+
+### F7: `refreshTokenExpiresAt` kept on merge
+
+Offset 220790005. A refresh result without `refreshTokenExpiresAt` keeps the stored value.
+
+```
+function TA(e,n,r="refresh"){return{accessToken:n.accessToken,refreshToken:n.refreshToken,expiresAt:n.expiresAt,refreshTokenExpiresAt:n.refreshTokenExpiresAt??e?.refreshTokenExpiresAt,scopes:n.scopes,...r==="sign_in"?IG(n):FG(e,n),rateLimitTier:n.rateLimitTier??(r==="sign_in"?null:e?.rat
+```
+
+### F8: refresh lock options
+
+Offset 220808519. `<dir>/.oauth_refresh.lock`, `realpath:!1`, stale 60 s, update 5 s.
+
+```
+function jar(e,n){return{lockfilePath:Vp(e,".oauth_refresh.lock"),realpath:!1,stale:60000,update:5000,onCompromised:(r)=>{t(`OAuth refresh lock compromised: ${r.message}`,{level:"error"}),n?.(r)}}}async function YA(e){return`${await tG(e).catch(()=
+```
+
+### F8: owner record
+
+Offset 220559198. The owner file `.oauth_refresh.lock.owner` (at most 4096 bytes) records `pid`, `procStart`, `pidDomain`, `pidSpace`, `lockBirthtimeMs` and `legacyLockBirthtimeMs`.
+
+```
+from"path";var TN="tengu_quiet_marten",bS="tengu_zany_book",CN=".oauth_refresh.lock.owner",RN=4096,xN=f(()=>u({pid:E().int(),procStart:o().max(64).optional(),pidDomain:o().max(512),pidSpace:o().max(512),lockBirthtimeMs:E().positive(),legacyLockBirthtimeMs:E().positive().optional()}));class SS{reader=null;register(e){let n=this.reader;return this.reader=e,n}}var vS=new SS;function ES(e){r
+```
+
+### F8: takeover gate
+
+Offset 220560540. With the flag `tengu_quiet_marten` off, the answer is `disabled`. With no owner record, it is `no_owner_record` or `lock_changed`, and the holder is never taken over.
+
+```
+T"?"lock_changed":n}}async function ON({claudeDir:e,lockfilePath:n,legacyLockfilePath:r,watchedMtimeMs:s}){let h=!1;try{if(!zc(TN))return"disabled";let y=await Wc(e);if(y===null)return(await lo(n)).mtimeMs===s?"no_owner_record":"lock_changed";let b=async()=>{let j=await lo(n);if(j.mtimeMs!==s)return"lock_changed";return j.birthtimeMs===y.lockBir
+```
+
+### F8: `.storage-write` lock
+
+Offset 220055580. No `lockfilePath` is given, so the lock dir is `<dir>/.storage-write.lock`: 10 retries of 100 to 1000 ms, stale 15 s.
+
+```
+=new Promise((s)=>{n=s});try{if(await r,X())return await A.run(!0,e);let s=dN();await ae().mkdir(s);let a=await rd(te(s,".storage-write"),{realpath:!1,retries:{retries:10,minTimeout:100,maxTimeout:1000},stale:15000,onCompromised:(o)=>t(`[secureStorage] write lock compromised: ${d(o)}`,{level:"wa
+```
+
+### F9: PKCE exchange body
+
+Offset 220545746. A JSON body with `grant_type`, `code`, `redirect_uri` (`http://localhost:<port>/callback`, or `MANUAL_REDIRECT_URL`), `client_id`, `code_verifier` and `state`.
+
+```
+rt:s,useManualRedirect:h=!1,expiresIn:y,clientId:b}){let w={grant_type:"authorization_code",code:e,redirect_uri:h?on().MANUAL_REDIRECT_URL:`http://localhost:${s}/callback`,client_id:b??on().CLIENT_ID,code_verifier:r,state:n};if(y!==void 0)w.expires_in=y;let R=await Pt.post(on().TOKEN_URL,w,{headers:{"Content-Type":"application/json"},timeout:30000,.
+```
+
+### F10: prod client id
+
+Offset 217350917. `9d1c250a-…` is the `CLIENT_ID` of the config whose `MANUAL_REDIRECT_URL` is `https://platform.claude.com/oauth/code/callback`.
+
+```
+com/api/oauth/claude_cli/roles",CONSOLE_SUCCESS_URL:"https://platform.claude.com/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dclaude-code",CLAUDEAI_SUCCESS_URL:"https://platform.claude.com/oauth/code/success?app=claude-code",MANUAL_REDIRECT_URL:"https://platform.claude.com/oauth/code/callback",CLIENT_ID:"9d1c250a-e61b-44d9-88ed-5944d1962f5e",DESIGN_CLIENT_ID:"59637612-477b
+```
+
+### F10: local-dev client id
+
+Offset 217352033. `22422756-…` sits beside `OAUTH_FILE_SUFFIX:"-local-oauth"`.
+
+```
+ze`,CLAUDE_AI_AUTHORIZE_URL:`${e}/oauth/authorize`,CLAUDE_AI_ORIGIN:e,TOKEN_URL:`${t}/v1/oauth/token`,API_KEY_URL:`${t}/api/oauth/claude_cli/create_api_key`,ROLES_URL:`${t}/api/oauth/claude_cli/roles`,CONSOLE_SUCCESS_URL:`${o}/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dclaude-code`,CLAUDEAI_SUCCESS_URL:`${o}/oauth/code/success?app=claude-code`,MANUAL_REDIRECT_URL:`${o}/oauth/code/callback`,CLIENT_ID:"22422756-60c9-4084-8eb7-27705fd5cf9a",DESIGN_CLIENT_ID:"00000000-0000-4000-8000-000000000000",OAUTH_FILE_SUFFIX:"-local-oauth",PL
+```
+
+### F12: refresh trigger `AA()`
+
+Offset 220551335. A refresh is due when `now + 300000 >= expiresAt`.
+
+```
+function AA(e,n=Date.now()){if(e===null)return!1;return n+300000>=e}var J9r=new Map([["claude_max
+```
+
+### F14: adoption under the lock
+
+Offset 220812363. Under the lock, a stored access token that differs from the presented one is adopted (`race_resolved`) with no token request.
+
+```
+??D.accessToken;ty();let G=await pl(b);if(!G?.refreshToken)return"no_refresh_token";if(G.accessToken!==B)return xn(),a("tengu_oauth_token_refresh_race_resolved",{}),"refreshed";if(!h&&!AA(G.expiresAt
+```
+
+### D5: the 401 path
+
+Offset 220806626. After a 401, a re-read token that differs from the rejected one is adopted (`401_recovered_from_keychain`). This is the static side of D5 step 3.
+
+```
+ so the runner recycles this session with fresh credentials",{level:"error"}),setTimeout(()=>process.exit(1),2000);return!1}if(y.accessToken!==e)return xn(),a("tengu_oauth_401_recovered_from_keychain",{}),g("oauth_401_recovery"),avn({recov
+```
+
+### Reproducing the extracts
+
+Save as `static-extract.ts` and run `bun static-extract.ts < /dev/null` against the same binary.
+Every window above is one block of its output.
+
+```ts
+// Re-extracts, verbatim, every static fact the Phase V report cites from the 2.1.312 binary.
+// Prints the byte offset and a fixed window around each anchor. Read-only.
+import { readFileSync } from "node:fs";
+
+const BIN = "/Users/jack/.local/share/claude/versions/2.1.312";
+const b = readFileSync(BIN).toString("latin1");
+const MIN = 200_000_000; // skip the earlier bundle copy; the live code sits past this offset
+
+const anchors: Array<[id: string, needle: string, before: number, after: number]> = [
+  ["F1/F4 service name HW()", "function HW(e=\"\")", 0, 330],
+  ["F1 config dir dN()", "function dN(){", 0, 170],
+  ["F1 hash input Le", "var Le=f(", 0, 90],
+  ["F15 account iO()", "function iO(){", 0, 190],
+  ["F10 prod client id", "CLIENT_ID:\"9d1c250a-", 300, 60],
+  ["F13 item cache", "var R4t=", 0, 14],
+  ["F5 write via security -i, argv above re", "add-generic-password -U -a \"${s}\" -s \"${n}\" -X \"${o}\"", 120, 420],
+  ["re threshold value", ",re=4032", 0, 10],
+  ["re threshold use", "if(i.length<=re)", 0, 20],
+  ["F6 plaintext fallback", "plaintext_fallback_used", 700, 60],
+  ["F7 refresh grant and old-token default", "grant_type:\"refresh_token\",refresh_token:e", 0, 520],
+  ["F7 refreshTokenExpiresAt kept", "function TA(e,n,r=\"refresh\")", 0, 260],
+  ["F8 refresh lock options", "function jar(e,n){", 0, 230],
+  ["F8 owner record", "CN=\".oauth_refresh.lock.owner\"", 60, 300],
+  ["F8 takeover gate", "if(!zc(TN))return\"disabled\"", 120, 200],
+  ["F8 storage-write lock", "\".storage-write\"", 120, 160],
+  ["F9 PKCE exchange", "grant_type:\"authorization_code\"", 60, 260],
+  ["F10 local-dev client id", "CLIENT_ID:\"22422756-", 400, 120],
+  ["F12 refresh trigger AA()", "function AA(e,n=Date.now())", 0, 70],
+  ["F14 adoption under the lock", "tengu_oauth_token_refresh_race_resolved", 120, 40],
+  ["D5 401 re-read", "tengu_oauth_401_recovered_from_keychain", 160, 40],
+];
+
+for (const [id, needle, before, after] of anchors) {
+  const i = b.indexOf(needle, MIN);
+  console.log(`=== ${id}`);
+  if (i === -1) {
+    console.log(`NOT FOUND: ${needle}\n`);
+    continue;
+  }
+  const text = b.slice(Math.max(0, i - before), i + needle.length + after).replace(/[^\x20-\x7e]/g, "");
+  console.log(`offset ${i}\n${text}\n`);
+}
+```
