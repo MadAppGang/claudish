@@ -246,9 +246,15 @@ It is the same report `claudish account forecast --json` prints (`claudish.allow
 as `{contract_version, capabilities, allowance, reason?}`. With no Codex account pool, `allowance`
 is `null` and `reason` says why. It sends nothing to any vendor.
 
+The `usage` section is 14 days of claudish usage per account, one whole-cu value per
+UTC hour, plus the hours the whole pool was blocked (`censored`).
+
 **Parameters:**
 - `provider` (optional) - `codex`, the only pool reported today
 - `horizon_hours` (optional) - Forecast horizon, 1–168 hours (default 168)
+- `sections` (optional) - Report only these parts beside the header: any of `accounts`, `alerts`,
+  `burn`, `combined`, `sessions`, `trajectory`, `usage` (default: all). The trajectory, sessions
+  and usage are most of the bytes, so a frequent poll should ask for `["accounts","burn","alerts"]`.
 
 ---
 
