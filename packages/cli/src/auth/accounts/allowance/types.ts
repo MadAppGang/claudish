@@ -269,7 +269,10 @@ export interface UsageGrid {
   hours: number;
   /** Every account in the state, each with `hours` cells; ordering is the shell's. */
   accounts: { account: AccountId; order: number; enabled: boolean; cu: number[] }[];
-  /** Minutes of each cell the POOL had no eligible account, `hours` cells, at most 60. */
+  /**
+   * Minutes of each cell the POOL had no eligible account, `hours` cells, at
+   * most 60: the sealed minutes plus an interval still open, up to `now`.
+   */
   censoredMinutes: number[];
   /** The first hour with demand, clamped up to `start`; null with no demand. */
   coveredFrom: Ms | null;

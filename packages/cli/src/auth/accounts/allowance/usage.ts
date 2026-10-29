@@ -8,7 +8,9 @@
  *   not the source: they are dropped after SESSION_TTL_D idle days and at
  *   SESSIONS_MAX, so they do not cover 14 days.
  * - **Censoring is pool-wide** (`state.ts`): a censored cell's cu is what was
- *   SERVED, so a zero there means blocked, not idle.
+ *   SERVED, so a zero there means blocked, not idle. An interval still open
+ *   (`censorOpenAt`) is projected up to `now` here, never written to the
+ *   state: it is disjoint from every sealed one, so the two add, capped at 60.
  * - **Raw sums.** Every account in the state, in no particular order and
  *   unrounded; ordering, dropping and rounding are the shell's.
  */
@@ -17,6 +19,7 @@ import { USAGE_HOURS } from "./constants.js";
 import { hourOf } from "./state.js";
 import type { AllowanceState, Ms, UsageGrid } from "./types.js";
 
+const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 
 /** The `hours` hours ending with the one holding `now`, cell by cell. */
@@ -39,6 +42,16 @@ export function usageByHour(s: AllowanceState, now: Ms, hours: number = USAGE_HO
     if (bucket.hour < start || bucket.hour >= end || bucket.censoredMinutes <= 0) continue;
     const i = cellOf(bucket.hour);
     censoredMinutes[i] = Math.min(60, (censoredMinutes[i] ?? 0) + bucket.censoredMinutes);
+  }
+  const open = s.censorOpenAt;
+  if (open !== null) {
+    const until = Math.min(now, end);
+    for (let hour = Math.max(hourOf(open), start); hour < until; hour += HOUR_MS) {
+      const minutes = (Math.min(until, hour + HOUR_MS) - Math.max(open, hour)) / MINUTE_MS;
+      if (minutes <= 0) continue;
+      const i = cellOf(hour);
+      censoredMinutes[i] = Math.min(60, (censoredMinutes[i] ?? 0) + minutes);
+    }
   }
   const first = s.demand[0];
   return {
