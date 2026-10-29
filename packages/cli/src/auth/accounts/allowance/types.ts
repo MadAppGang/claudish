@@ -672,7 +672,8 @@ export interface Trajectory {
   /**
    * The same paths again with every hour's demand × `factor` (SLOWER_FACTOR),
    * on each path's own capacity draw: `switches` and `blocked` by the rules
-   * above. Under `sticky` a slower path never switches or blocks earlier.
+   * above. Not monotone under any strategy: after a short-window reset the two
+   * runs can drain different accounts (`allowance.md`, "The slower scenario").
    */
   slower: {
     factor: number;

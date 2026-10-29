@@ -200,10 +200,11 @@ const trajectorySchema = z.object({
    * `blocked` by exactly the rules above. The forecast panel draws its `slower`
    * row from them ("no gap" when `blocked` is empty) and its "slow down and it
    * lasts" time from the first switch's `usual`; an empty `switches` means no
-   * takeover inside the horizon at that pace. Under the default `sticky`
-   * strategy a slower path never switches or blocks earlier; under `ebr`
-   * (simulated with `lookahead`) that guarantee does not hold. Added within v1;
-   * absent from a report of an older claudish.
+   * takeover inside the horizon at that pace. The slower scenario is NOT
+   * guaranteed better, under any strategy: after a short-window reset the two
+   * runs can drain different accounts, so a slower switch or gap can come
+   * earlier. Compare the two; never assume. Added within v1; absent from a
+   * report of an older claudish.
    */
   slower: z
     .object({

@@ -287,10 +287,18 @@ the same `switchesOf` and `blockedRuns`.
   so a path is compared with itself: the difference between the two lists is the slowdown, not
   sampling noise. No rng call is added (`simulate` copies its views in `createWorld`), so every
   existing field is unchanged.
-- **Monotone only under `sticky`.** `sticky` switches only on exhaustion, and with every hour's
-  demand lower, each account's cumulative use is lower at every hour, so no exhaustion moves
-  earlier: a slower switch or block is never earlier. `ebr` (simulated with `lookahead`) balances
-  accounts and can switch earlier on purpose; the field is computed there without the guarantee.
+- **Not monotone, under any strategy.** A slower run can switch or block EARLIER than the
+  current one, `sticky` included, and the field reports what the simulation does: it is never
+  clamped to look better. `sticky` switches at `SELECTION_THRESHOLD` (0.90 used), not only on
+  exhaustion, so the two runs can cross it on different sides of a short-window reset and then
+  drain different accounts; from there no account's use is lower in the slower run. Measured with
+  the production `simulate` and `sticky`: A has a 5 h window at 0.2 remaining that resets at +2 h,
+  B a 168 h window at 1.0 that resets at +6 h, β 0.5, demand 0.5 cu/h for 18 h with 1.5 cu at
+  hour 12. The current run has no gap; the slower run has a `7d` gap with 0.333 cu unserved at
+  hour 16 (found by the external review of PR #371). Only the FIRST takeover from the starting
+  account, before any reset, is never earlier. `ebr` (simulated with `lookahead`) also switches
+  earlier on purpose. A reader compares the two scenarios; it never assumes the slower one is
+  better.
 - **Not a deterministic run.** One simulation at 2/3 of the mean rate (how the safe pace scans)
   costs under 1 ms, but it is a point estimate beside the 200-path `usual`, so "slow down and it
   lasts Y" could read shorter than "it switches in X". The user chose the second Monte Carlo pass
