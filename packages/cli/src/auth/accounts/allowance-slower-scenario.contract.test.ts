@@ -260,7 +260,7 @@ describe("MTL-298 slower scenario black-box contract", () => {
     assertBlocked(clear);
   }, 30000);
 
-  test("C6 the whole report except slower matches the pre-change 74c77dac baseline", async () => {
+  test("C6 C27 the report except slower matches the rounded additive v1 baseline", async () => {
     seed();
     const current = await report();
     delete current.trajectory.slower;
