@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.9.0] - 2026-10-29
+
+### Documentation
+
+- state that reset divergence removes the lower-use guarantee *(accounts)* ([`717dce7`](https://github.com/MadAppGang/claudish/commit/717dce78112de7e57873b67d57323f0e152dc4f7))
+- remove the sticky monotonicity claim for trajectory.slower *(accounts)* ([`88592e4`](https://github.com/MadAppGang/claudish/commit/88592e429d92e12cddb1c707c4a57da3a56fc525))
+- record why the slower scenario reuses each path's draws *(accounts)* ([`f3559b2`](https://github.com/MadAppGang/claudish/commit/f3559b2aea736d443e09f42083ac56c328af3745))
+- stamp the playbook verified at the v14.8.0 merge commit *(release)* ([`74c77da`](https://github.com/MadAppGang/claudish/commit/74c77dac6de4971fe18992c7c367137e465d5d8d))
+- update CHANGELOG.md for v14.8.0([`684bc61`](https://github.com/MadAppGang/claudish/commit/684bc6127d894c82eebe34a508db77bf39ab778f))
+
+### New Features
+
+- send a slower scenario in the allowance_status trajectory *(accounts)* ([`c406b0c`](https://github.com/MadAppGang/claudish/commit/c406b0cc7cd0954ce3b9b2183c10a7533e1b5ec2))
+
 ## [14.8.0] - 2026-10-28
 
 ### Documentation
