@@ -1204,6 +1204,20 @@ async function runSliced<T>(gen: Generator<void, T>): Promise<T> {
 const iso = (at: number): string => new Date(at).toISOString();
 
 /**
+ * `x` to `digits` significant digits, 0 kept as 0. The report rounds the
+ * trajectory's forecast quantiles with it (4 digits): the model's 16 digits
+ * were about a fifth of the trajectory's bytes, and 4 keep the worst error
+ * under 1 % of an hour's p10–p90 spread. Monotone, so p10 ≤ p50 ≤ p90 holds.
+ * Values ≥ 1e21 print in exponent notation, which `Number` still parses.
+ */
+export function toSignificant(x: number, digits: number): number {
+  return x === 0 ? 0 : Number(x.toPrecision(digits));
+}
+
+/** The forecast quantiles' significant digits (R3): 4 cost the bytes of 3 in cu. */
+const FORECAST_DIGITS = 4;
+
+/**
  * The ONE "remaining" of the report's `combined` and the status line's
  * `pool N%`: `combinedNow` (Σ_a min_w r/β in cu, or Σ_a min_w r in
  * account-fraction) over the full capacity in the same unit (Σ_a min_w 1/β, or
@@ -1436,9 +1450,10 @@ export function buildReport(input: ReportInput): AllowanceReport {
       })),
       forecast: traj.forecast.map((f) => ({
         at: iso(f.at),
-        p10: f.q.p10,
-        p50: f.q.p50,
-        p90: f.q.p90,
+        // Rounded here, never in the model: spark48 below reads the full-precision trajectory.
+        p10: toSignificant(f.q.p10, FORECAST_DIGITS),
+        p50: toSignificant(f.q.p50, FORECAST_DIGITS),
+        p90: toSignificant(f.q.p90, FORECAST_DIGITS),
         pBlocked: f.pBlocked,
       })),
       resets: traj.resets.map((r) => ({
