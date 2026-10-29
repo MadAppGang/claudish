@@ -11,6 +11,9 @@
  *   SERVED, so a zero there means blocked, not idle. An interval still open
  *   (`censorOpenAt`) is projected up to `now` here, never written to the
  *   state: it is disjoint from every sealed one, so the two add, capped at 60.
+ * - **Coverage** starts at `recordedFrom`, the first hour any ledger row was
+ *   folded for, zero cu included, so "idle" and "not recording yet" differ
+ *   the same way for raw rows and their hourly rollups.
  * - **Raw sums.** Every account in the state, in no particular order and
  *   unrounded; ordering, dropping and rounding are the shell's.
  */
@@ -53,12 +56,12 @@ export function usageByHour(s: AllowanceState, now: Ms, hours: number = USAGE_HO
       censoredMinutes[i] = Math.min(60, (censoredMinutes[i] ?? 0) + minutes);
     }
   }
-  const first = s.demand[0];
+  const recorded = s.recordedFrom ?? s.demand[0]?.hour ?? null;
   return {
     start,
     hours: cells,
     accounts,
     censoredMinutes,
-    coveredFrom: first ? Math.max(first.hour, start) : null,
+    coveredFrom: recorded === null ? null : Math.max(recorded, start),
   };
 }

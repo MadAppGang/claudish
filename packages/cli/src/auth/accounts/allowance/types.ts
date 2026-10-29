@@ -251,6 +251,13 @@ export interface AllowanceState {
   /** The newest event time folded: the state's own "now" for ages, bounds and calibration weights. */
   lastAt: Ms | null;
   /**
+   * The first hour any ledger row was folded for (a response, rollup or
+   * `no-eligible`, zero cu included): where the usage grid's coverage
+   * starts. Not `demand[0]`, which a zero-cu response never creates. Absent
+   * = fall back to `demand[0]`.
+   */
+  recordedFrom?: Ms | null;
+  /**
    * The account the POOL is on (`state.json` `active`) as of the last
    * `accounts` event: where the alert and trajectory simulations start.
    * Absent = unknown.
@@ -274,7 +281,7 @@ export interface UsageGrid {
    * most 60: the sealed minutes plus an interval still open, up to `now`.
    */
   censoredMinutes: number[];
-  /** The first hour with demand, clamped up to `start`; null with no demand. */
+  /** The first recorded ledger hour (`recordedFrom`), clamped up to `start`; null with none. */
   coveredFrom: Ms | null;
 }
 
