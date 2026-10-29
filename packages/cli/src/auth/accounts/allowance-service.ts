@@ -107,6 +107,7 @@ import {
   buildNoEligibleRow,
   buildResponseRow,
   toEvent,
+  utcDay,
 } from "./ledger/ledger-row.js";
 import { appendUsageRow, setLedgerIdleProbe } from "./ledger/ledger-writer.js";
 import { allowanceAlertsLockPath, allowanceAlertsPath, statePath } from "./paths.js";
@@ -795,14 +796,23 @@ export class AllowanceService {
     m.loading = true;
     try {
       const now = this.clock();
-      // The tail is primed BEFORE the reads: a row another process appends in
-      // between is in both, and the fold's id dedup drops the second copy. Primed
-      // after, it would be in neither.
-      const tail = createLedgerTail({ startAtEnd: true, now, env: this.env });
-      await tail.tail();
       // The rollup/raw handoff on a whole hour: an hourly rollup covers its
       // whole hour, so a cutoff inside one would count its later half twice.
       const handoff = Math.floor((now - LOAD_RAW_MS) / HOUR_MS) * HOUR_MS;
+      // The tail is primed BEFORE the reads: a row another process appends in
+      // between is in both, and the fold's id dedup drops the second copy. Primed
+      // after, it would be in neither. It covers every day the raw read covers
+      // (the handoff's day on), so a row appended later to one of them (a
+      // request open across midnight UTC) is folded as a fresh load would read
+      // it. Older days are compacted and read from their hourly files; a late
+      // raw row there is MTL-325.
+      const tail = createLedgerTail({
+        startAtEnd: true,
+        fromDay: utcDay(handoff),
+        now,
+        env: this.env,
+      });
+      await tail.tail();
       const [older, recent] = await Promise.all([
         readLedger({ sinceMs: now - LOAD_HISTORY_MS, untilMs: handoff, env: this.env }),
         readLedger({ sinceMs: handoff, source: "raw", env: this.env }),
