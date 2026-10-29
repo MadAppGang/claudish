@@ -182,6 +182,23 @@ export const PREDEFINED_ENDPOINTS: readonly PredefinedEndpoint[] = [
     evidence: { tier: "probe", verdict: "auth-realm", status: 401, measuredAt: "2026-08-14" },
   },
   {
+    name: "obscurify",
+    displayName: "Obscurify.ai",
+    baseUrl: "https://obscurify.ai",
+    apiPath: "/v1/chat/completions",
+    format: "openai",
+    apiKeyEnvVar: "OBSCURIFY_API_KEY",
+    apiKeyUrl: "https://obscurify.ai/account",
+    description: "Obscurify.ai privacy-focused multi-vendor API, no-email accounts (obscurify@)",
+    evidence: {
+      tier: "live",
+      verdict: "auth-realm",
+      status: 401,
+      measuredAt: "2026-10-28",
+      note: "bad-key 401 carries `error` as a plain string, not an OpenAI error object; bogus sibling path /v1/chat/completionz answers 404. Live turn driven through claudish with a real key on the same date.",
+    },
+  },
+  {
     name: "chutes",
     displayName: "Chutes",
     baseUrl: "https://llm.chutes.ai",
