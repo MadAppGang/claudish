@@ -67,7 +67,7 @@ import {
 } from "./allowance/alerts.js";
 import { accountViews, combinedNow, isRead } from "./allowance/capacity.js";
 import { choose, planFor } from "./allowance/choose.js";
-import { DEFAULT_ALLOWANCE_CONFIG, alertStrategy } from "./allowance/constants.js";
+import { DEFAULT_ALLOWANCE_CONFIG, USAGE_HOURS, alertStrategy } from "./allowance/constants.js";
 import { contributions } from "./allowance/contributions.js";
 import { forecastKey } from "./allowance/digest.js";
 import { forecastSliced } from "./allowance/forecast.js";
@@ -97,6 +97,7 @@ import type {
   Trajectory,
   Transition,
 } from "./allowance/types.js";
+import { usageByHour } from "./allowance/usage.js";
 import { atomicWriteFileSync } from "./atomic-write.js";
 import { FileLockUnavailableError, acquireFileLock } from "./file-lock.js";
 import { type LedgerTail, createLedgerTail, readLedger } from "./ledger/ledger-reader.js";
@@ -1301,6 +1302,47 @@ function sustainableOf(
   return pace ? paceInCuPerHour(pace, long) : null;
 }
 
+/**
+ * The report's `usage` section (MTL-297): `usageByHour` in whole cu, a
+ * positive cell at least 1 so a served hour never reads as idle. Every
+ * `accounts[]` entry first, in its order (all zeros when unused), then any
+ * other account that served in the span, by `order` then id. Censored minutes
+ * are sparse `[cell, minutes]` pairs, minutes that round to 0 omitted.
+ */
+function usageView(
+  s: AllowanceState,
+  now: number,
+  views: readonly AccountView[]
+): NonNullable<AllowanceReport["usage"]> {
+  const grid = usageByHour(s, now, USAGE_HOURS);
+  const cell = (cu: number) => (cu > 0 ? Math.max(1, Math.round(cu)) : 0);
+  const byId = new Map(grid.accounts.map((a) => [a.account, a]));
+  const listed = new Set(views.map((v) => v.account));
+  const others = grid.accounts
+    .filter((a) => !listed.has(a.account) && a.cu.some((cu) => cu > 0))
+    .sort((a, b) => a.order - b.order || (a.account < b.account ? -1 : 1));
+  const censored: [number, number][] = [];
+  grid.censoredMinutes.forEach((minutes, i) => {
+    const m = Math.min(60, Math.round(minutes));
+    if (m > 0) censored.push([i, m]);
+  });
+  return {
+    start: iso(grid.start),
+    stepHours: 1,
+    hours: USAGE_HOURS,
+    unit: "cu",
+    coveredFrom: grid.coveredFrom === null ? null : iso(grid.coveredFrom),
+    accounts: [
+      ...views.map((v) => ({
+        accountId: v.account,
+        cu: (byId.get(v.account)?.cu ?? new Array<number>(grid.hours).fill(0)).map(cell),
+      })),
+      ...others.map((a) => ({ accountId: a.account, cu: a.cu.map(cell) })),
+    ],
+    censored,
+  };
+}
+
 /** The inputs of one report: the model's state and the last evaluation. */
 export interface ReportInput {
   s: AllowanceState;
@@ -1511,6 +1553,7 @@ export function buildReport(input: ReportInput): AllowanceReport {
           firstAt: iso(c.firstAt),
           lastAt: iso(c.lastAt),
         })),
+    usage: usageView(s, now, views),
   };
   return allowanceReportSchema.parse(report);
 }

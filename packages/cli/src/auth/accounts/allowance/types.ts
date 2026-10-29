@@ -258,6 +258,23 @@ export interface AllowanceState {
   poolActive?: AccountId | null;
 }
 
+/**
+ * claudish cu each account served per hour over `hours` hours (`usageByHour`).
+ * Cell `i` covers [start + i h, start + (i + 1) h); the last is the current,
+ * partial hour. Raw sums: rounding is the shell's.
+ */
+export interface UsageGrid {
+  /** The first cell's hour start. */
+  start: Ms;
+  hours: number;
+  /** Every account in the state, each with `hours` cells; ordering is the shell's. */
+  accounts: { account: AccountId; order: number; enabled: boolean; cu: number[] }[];
+  /** Minutes of each cell the POOL had no eligible account, `hours` cells, at most 60. */
+  censoredMinutes: number[];
+  /** The first hour with demand, clamped up to `start`; null with no demand. */
+  coveredFrom: Ms | null;
+}
+
 export type Semantics = "fixed-start" | "sliding" | "unknown";
 
 export interface Estimate {

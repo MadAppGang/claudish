@@ -217,6 +217,35 @@ const trajectorySchema = z.object({
   spark48: z.string().regex(/^[▁▂▃▄▅▆▇█▒▓┊ ]*$/u),
 });
 
+/**
+ * claudish cu each account served per hour over the last 14 days (MTL-297).
+ * `cu[i]` covers the UTC hour starting at `start + i × stepHours`; the last
+ * cell is the current, partial hour. Every `accounts[]` entry comes first, in
+ * that order and all zeros when unused, then any other account (disabled or
+ * removed) that served in the span. A positive cell is at least 1, so an hour
+ * an account served never reads as idle. `unit` is always cu, whatever the
+ * report's `unit`. `censored` lists `[cell, minutes]` (ascending, minutes
+ * 1–60) when the POOL had no eligible account: such a cell's cu is what was
+ * served, so a zero there means blocked, not idle. `coveredFrom` is the first
+ * hour the ledger has a row for, clamped to `start`; an earlier zero means
+ * claudish was not recording yet. Added within v1; absent from a report of an
+ * older claudish.
+ */
+const usageSchema = z.object({
+  start: iso,
+  stepHours: z.literal(1),
+  hours: z.literal(336),
+  unit: z.literal("cu"),
+  coveredFrom: iso.nullable(),
+  accounts: z.array(
+    z.object({
+      accountId: z.string(),
+      cu: z.array(z.number().int().min(0)).length(336),
+    })
+  ),
+  censored: z.array(z.tuple([z.number().int().min(0).max(335), z.number().int().min(1).max(60)])),
+});
+
 const sessionSchema = z.object({
   /** The first 8 characters of a Claude Code session id, or `unattributed`. Local data. */
   session: z.union([z.string().max(8), z.literal("unattributed")]),
@@ -296,6 +325,7 @@ export const allowanceReportSchema = z.object({
   status: z.enum(["ok", "insufficient-evidence"]),
   trajectory: trajectorySchema,
   sessions: z.array(sessionSchema),
+  usage: usageSchema.optional(),
 });
 
 export type AllowanceReport = z.infer<typeof allowanceReportSchema>;
@@ -311,9 +341,25 @@ export const ALLOWANCE_REPORT_SECTIONS = [
   "combined",
   "sessions",
   "trajectory",
+  "usage",
 ] as const;
 
 export type AllowanceReportSection = (typeof ALLOWANCE_REPORT_SECTIONS)[number];
+
+/**
+ * The sections every full answer carries, from the first v1 on. A section
+ * added later (`usage`) is absent from an older claudish's full answer, so a
+ * full answer is checked against these only; a section named in `sections` is
+ * required whatever its age.
+ */
+export const ALLOWANCE_REPORT_SECTIONS_V1_BASE = [
+  "accounts",
+  "alerts",
+  "burn",
+  "combined",
+  "sessions",
+  "trajectory",
+] as const satisfies readonly AllowanceReportSection[];
 
 const partialReport = allowanceReportSchema.partial({
   accounts: true,
@@ -322,6 +368,7 @@ const partialReport = allowanceReportSchema.partial({
   combined: true,
   sessions: true,
   trajectory: true,
+  usage: true,
 });
 
 /**
@@ -332,8 +379,9 @@ const partialReport = allowanceReportSchema.partial({
  * other version.
  *
  * `sections` (added within v1) marks a PARTIAL report: the caller asked for
- * those sections, sorted, and `allowance` carries the header plus only them.
- * Without it, every section must be present.
+ * those sections, sorted, and `allowance` carries the header plus only them,
+ * each of which must be present. Without it, the V1_BASE sections must be
+ * present; `usage` may be absent (an older claudish).
  */
 export const allowanceStatusAnswerSchema = z
   .object({
@@ -345,7 +393,8 @@ export const allowanceStatusAnswerSchema = z
   })
   .superRefine((answer, ctx) => {
     if (answer.allowance === null) return;
-    const wanted: readonly AllowanceReportSection[] = answer.sections ?? ALLOWANCE_REPORT_SECTIONS;
+    const wanted: readonly AllowanceReportSection[] =
+      answer.sections ?? ALLOWANCE_REPORT_SECTIONS_V1_BASE;
     for (const section of wanted) {
       if (answer.allowance[section] === undefined) {
         ctx.addIssue({
