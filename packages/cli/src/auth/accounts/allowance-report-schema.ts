@@ -226,7 +226,8 @@ const trajectorySchema = z.object({
  * an account served never reads as idle. `unit` is always cu, whatever the
  * report's `unit`. `censored` lists `[cell, minutes]` (ascending, minutes
  * 1–60) when the POOL had no eligible account: such a cell's cu is what was
- * served, so a zero there means blocked, not idle. `coveredFrom` is the first
+ * served, so a zero there means blocked, not idle; a blockage still in
+ * progress counts up to the report time. `coveredFrom` is the first
  * hour the ledger has a row for, clamped to `start`; an earlier zero means
  * claudish was not recording yet. Added within v1; absent from a report of an
  * older claudish.
