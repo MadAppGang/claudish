@@ -15,6 +15,9 @@
  *   and the next successful response of ANY account closes it; one account's
  *   `quota` censors nothing. A rollup carries its hour's exact pool-wide figure
  *   (the same on every rollup of that hour), taken once, never summed.
+ * - **Coverage.** `recordedFrom` is the first hour any ledger row (response,
+ *   rollup, `no-eligible`) was folded for, zero cu included; `demand` holds
+ *   only hours with cu or censoring.
  * - **Bounds.** 6 weeks of hourly demand, READINGS_MAX readings per window,
  *   sessions idle over SESSION_TTL_D dropped, at most SESSIONS_MAX sessions.
  *   Ages are measured from the newest event folded (`lastAt`), never a clock.
@@ -50,6 +53,7 @@ export function initialState(): AllowanceState {
     seen: [],
     censorOpenAt: null,
     lastAt: null,
+    recordedFrom: null,
   };
 }
 
@@ -119,6 +123,7 @@ function fold(s: AllowanceState, e: AllowanceEvent, cfg: AllowanceConfig, seen: 
   }
   switch (e.kind) {
     case "response": {
+      record(s, hourOf(e.at));
       const account = ensureAccount(s, e.account);
       const cu = cuOf(e.tokens, cfg);
       if (cu > 0) {
@@ -137,6 +142,7 @@ function fold(s: AllowanceState, e: AllowanceEvent, cfg: AllowanceConfig, seen: 
       touch(s, e.at);
       return;
     case "no-eligible":
+      record(s, hourOf(e.at));
       if (e.until === undefined) {
         if (s.censorOpenAt === null) s.censorOpenAt = e.at;
       } else {
@@ -164,6 +170,7 @@ function fold(s: AllowanceState, e: AllowanceEvent, cfg: AllowanceConfig, seen: 
       return;
     }
     case "rollup": {
+      record(s, e.hour);
       const account = ensureAccount(s, e.account);
       const cu = cuOf(e.tokens, cfg);
       const mid = e.hour + HOUR_MS / 2;
@@ -186,6 +193,12 @@ function fold(s: AllowanceState, e: AllowanceEvent, cfg: AllowanceConfig, seen: 
       return;
     }
   }
+}
+
+/** A ledger row was folded for `hour`: the usage grid's coverage starts at the first one. */
+function record(s: AllowanceState, hour: Ms): void {
+  const from = s.recordedFrom ?? null;
+  if (from === null || hour < from) s.recordedFrom = hour;
 }
 
 function touch(s: AllowanceState, at: Ms): void {
