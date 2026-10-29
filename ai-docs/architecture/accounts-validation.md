@@ -14,7 +14,7 @@ and is loopback-verified: its acceptance cases run the production credential fac
 `ComposedHandler` in an isolated child process against loopback OAuth, token and metered listeners
 (an in-process proxy, **not** the built binary the harness section below describes). The plan's
 acceptance ids (E1–E20, C1–C7, S1–S3) map onto these rows in *Phase 2a coverage* below. **D8 gates
-Phase 2b**, and every row marked `D8` stays unrun. **Last updated:** 2026-10-26.
+Phase 2b**, and every row marked `D8` stays unrun. **Last updated:** 2026-10-29.
 
 **Superseded mutation wording.** Rows written before v13 cite `mapAccountsError`, a catch "around
 the `:695` swap" and "400 + `upstream_status 401` advances the chain". `mapAccountsError` was never
@@ -37,7 +37,9 @@ Revision 1's column was never checked, and round 2 found twelve rows that were o
 the flagship billing row among them — plus eight partial ones.
 
 **The "Needs" column** names what must exist before the row can run: `P2` the Codex pool on the
-request path plus the harness, `P3` the Claude pool, `P4` the handoff (conditional on D1/D2), `D8`
+request path plus the harness, `P3` the Claude pool, `P4` the handoff (ships under the switch rule: Phase V measured D2 positive on
+2026-10-29; its dual-store refresh rows V12, V12b, V12c and T-C5 apply only on the D1/D2 table's
+fallback branch), `D8`
 the real in-stream capture. `P2a: done in-process` marks a row whose property the 2a in-process
 acceptance tests now pin; the built-binary run is still owed. **"Covered today"** names a test that
 pins the property now, or `—`.
@@ -211,9 +213,9 @@ from red to green by weakening an assertion.
 | **V10** | **`needsReauth` self-heals against a baseline**: seed `needsReauth` with `failedFingerprint` F1 and `failedGeneration` g, retry NOT due. **(a)** The store holds F2, as after a re-login: the next `acquire()` selects the account with **zero** exchanges, and `state.json` no longer carries the mark. **(b)** Another process persists F1 at generation g + 1, a non-rotating refresh: the same. **(c)** The store still holds F1 at g: the account stays blocked until its retry is due, then exchanges exactly once. **(d)** Another process records a new failure against F2 between the heal's read and its write: that mark survives | **Make `reauthMaterialMoved` return false** → (a) and (b) stay blocked for the retry interval. **Remove `healReauthMarks()` from `acquire()`** → (a) waits for the retry, because the token manager's own check runs only on a leased account. **Drop the `failedAgainst` guard from `mergeNeedsReauth`** → (d)'s newer failure is erased. **Drop `failedGeneration`/`failedFingerprint` from the record** → nothing ever heals, since a missing baseline is no evidence | The two-process run: P2. The unit half runs today against `AccountPool` with a fake store and a temp `StateStore`. **Built** 2026-09-24 | — |
 | **V10b** | **`needsReauth` is gate-holder-only**: A takes the gate and begins an exchange the fake answers `invalid_grant`; `steal-lock-mid-exchange` replaces A's nonce during it. A writes **no** `needsReauth` (its fence fails) and throws `RefreshUnavailableError` | **Remove the gate-ownership check on the `needsReauth` write** → A, now a non-holder, writes the flag while the new owner rotates. (Revision 2 used `lock-hold-forever`, under which nobody exchanges, so the row was dead) | P2 | built by fix B10; no unit test |
 | **V11** | **`:695` emits no false failure**: a quota 429 retried successfully on another account. stderr has **no** `Error [Codex]: HTTP 429` and no `Auth/health check failed`; `recordStats` records `success: true` | **Move quota detection to the terminal-remap block (`:961`)** → a red line on the shared file descriptor and a false failure. Second mutation: **call `mapAccountsError()` after the catch's `logStderr`/`reportError` instead of first** | P2 | — |
-| **V12** | **Named refresher, no live `claude`**: X has `owner: "claude-code"`, an expired access token, nothing holding `.oauth_refresh.lock`. claudish refreshes X after taking `.oauth_refresh.lock` and writes **both** stores; X stays eligible | **Restore "delete claudish's refresh token; only Claude Code refreshes it"** → X is skipped from its first expiry. On the branch that cancels `account use`, assert instead that `use` and `import` both refuse with the manual instruction | P4 | — |
-| **V12b** | **Out-of-band rotation found in the RIGHT store**: a rotation seeded into Claude Code's item only. The re-read reads **both** stores, adopts the new material, retries once, writes **no** `needsReauth` | **Re-read only claudish's own record** (revision 1) → the case is classified "revoked" and a working shared account is marked `needsReauth` with no self-healing trigger | P4 (the detector's `secondaryStore` seam is built; the Claude Code store is not) | `token-manager.test.ts`: "recovers an invalid_grant rotation race by re-reading and retrying the new material" (the single-store half) |
-| **V12c** | **Dual-store refresh crash**: `crash-after-first-store-write` during a post-handoff refresh. Recovery reads `journal.committed`, copies from the committed destination to the uncommitted one, clears the journal; both stores end on one generation and fingerprint | **Omit `journal.committed` from the dual-store journal** → recovery cannot tell which store committed | P4. **Contested**: its baseline is undefined until T-C5 runs (T-V12c) | — |
+| **V12** | **SUPERSEDED** for the account in Claude Code's item by the switch rule (2026-10-29): claudish never refreshes that account. This row applies only if a later Claude Code build stops honouring the locks (the D1/D2 table's fallback branch); MTL-263 must replace it with switch-rule cases. **Named refresher, no live `claude`**: X has `owner: "claude-code"`, an expired access token, nothing holding `.oauth_refresh.lock`. claudish refreshes X after taking `.oauth_refresh.lock` and writes **both** stores; X stays eligible | **Restore "delete claudish's refresh token; only Claude Code refreshes it"** → X is skipped from its first expiry. On the branch that cancels `account use`, assert instead that `use` and `import` both refuse with the manual instruction | P4 | — |
+| **V12b** | **SUPERSEDED** for the account in Claude Code's item by the switch rule (2026-10-29), as V12; MTL-263 must replace it with switch-rule cases. **Out-of-band rotation found in the RIGHT store**: a rotation seeded into Claude Code's item only. The re-read reads **both** stores, adopts the new material, retries once, writes **no** `needsReauth` | **Re-read only claudish's own record** (revision 1) → the case is classified "revoked" and a working shared account is marked `needsReauth` with no self-healing trigger | P4 (the detector's `secondaryStore` seam is built; the Claude Code store is not) | `token-manager.test.ts`: "recovers an invalid_grant rotation race by re-reading and retrying the new material" (the single-store half) |
+| **V12c** | **SUPERSEDED** for the account in Claude Code's item by the switch rule (2026-10-29), as V12; MTL-263 must replace it with switch-rule cases. **Dual-store refresh crash**: `crash-after-first-store-write` during a post-handoff refresh. Recovery reads `journal.committed`, copies from the committed destination to the uncommitted one, clears the journal; both stores end on one generation and fingerprint | **Omit `journal.committed` from the dual-store journal** → recovery cannot tell which store committed | P4. **Contested**: its baseline is undefined until T-C5 runs (T-V12c) | — |
 | **V13** | **Handoff abort on decline**: the user declines adopting Y. The handoff aborts; Claude Code's item unchanged; Y intact; no in-flight handoff reported | **Restore "adopt or ask, then write X regardless"** → Y is overwritten after a decline | P4 | — |
 | **V13b** | **A crashed handoff resumes**: killed between the adopt and the write. `account status` reports "handoff 2/4 — pending write"; the next `account use` completes idempotently | **Remove the handoff journal** → the crash is invisible and the next run starts from an inconsistent state | P4 | — |
 | **V13c** | **No lock is held across a human**: the prompt instrumented to take 90 s. No gate is held while it is open; a concurrent request that must refresh X succeeds; the handoff then re-reads X uncached and writes the **current** material | **Acquire the gates before prompting** (revision 1) → the concurrent refresh steals the 60 s-stale gate, and the handoff writes a stale X whose read-back still passes | P4 | — |
@@ -287,7 +289,7 @@ letter in each id is the round-3 finding it settles (`T-C4` settles C4).
 | Id | What it settles | The test | Status |
 |---|---|---|---|
 | **T-C4** | Does "fence immediately before the persist" close the window, or must the persist consume the nonce atomically? | `steal-lock-after-fence` replaces the nonce **between** the fence read and the write (V2f steals earlier and cannot see this window). Assert one coherent generation and that the fenced-out holder wrote nothing. If it fails: rename onto a path that embeds the nonce | fault wired; not run. The current code writes in that window by construction and logs "(T-C4 window)" |
-| **T-C5** | Must `journal.committed` be appended **before** each destination write? | Extend V12c with a crash before and after each `committed` append (four points). Both stores must end on one generation and neither may hold a revoked token. Expected outcome: `committed` is redundant, reduce it to an `open` flag and reconcile from each destination's real fingerprint | Phase 4, only if D1/D2 ship the shared branch |
+| **T-C5** | Must `journal.committed` be appended **before** each destination write? | Extend V12c with a crash before and after each `committed` append (four points). Both stores must end on one generation and neither may hold a revoked token. Expected outcome: `committed` is redundant, reduce it to an `open` flag and reconcile from each destination's real fingerprint | **SUPERSEDED** for the account in Claude Code's item by the switch rule (2026-10-29): runs only if a later Claude Code build stops honouring the locks (the D1/D2 table's fallback branch). MTL-263 must replace it with switch-rule cases |
 | **T-C7** | May the entry gate suppress **marking** when no other account is eligible? | A pooled run with **one** account and an in-stream quota frame: `exhaustedUntil` is written and the F5 message can list it | wiring passes on scripted frames (H `S1-one …`); closure waits on D8 |
 | **T-V7** | Does V7's mutation name the content boundary or a downstream guard? | Run the mutation as written and observe whether the sniffer ever reaches the quota frame. If not, the mutation becomes "treat a content delta as non-decisive and keep sniffing" | evidence so far: dead against the Phase 0 sniffer |
 | **T-U8** | Does constructing the store prove anything? | After construction, perform a **read and a write**, then assert zero `run` calls and file-store behaviour | the read is asserted; the write is not |
@@ -333,10 +335,13 @@ its original 11 names, so a test that pins it by name must change with it.
 1. `account add` twice per claudish provider; a duplicate identity is refused; where `import` ships,
    the first `account add claude` must be the imported login; where it does not, the disjoint-pool
    startup line appears.
-2. `account status` shows usage for an idle account, or `unknown` on the D7-negative branch.
+2. `account status` shows usage for an idle account, or `unknown` if idle polling stays off (D7
+   measured positive on 2026-10-29, so the choice is open).
 3. A forced switch with `switchAt: 0.01`, and the startup line naming the signing account.
-4. `account use` while a real `claude` session runs — only where D1/D2 ship it — refused or deferred
-   per D5 **before** any credential write.
+4. `account use` while a real `claude` session runs: the switch holds `.oauth_refresh.lock`, the
+   legacy lock and `.storage-write.lock` and finishes inside 7.5 s. The case is request-driven:
+   send a request after the session's 30 s item cache has expired; it signs with the new account
+   (D2 and D5 measured 2026-10-29).
 5. **Four** concurrent claudish sessions produce exactly **one** refresh. Two sessions pass even
    when the lock is a no-op and are not evidence.
 6. A `claudish serve` session with an account disabled from another process mid-session.
@@ -351,8 +356,8 @@ Quality gates: `bun run format`, `bun run lint`, `bun run typecheck`, `bun run t
 `bun run build`, and `claudish --probe cx@<model>` from the built artifact showing the pooled
 credential, with `--version` and the startup identity recorded before any result is read.
 
-**Fixture rule.** Quota bodies and headers start PROVISIONAL, and real captures from Phase V and the
-live run replace them before release. **D8 — a real Codex `usage_limit_reached` frame with its
+**Fixture rule.** Quota bodies and headers start PROVISIONAL. Phase V ran on 2026-10-29 and D8
+remains open (MTL-261), so real captures from D8 and the live run replace them before release. **D8 — a real Codex `usage_limit_reached` frame with its
 metadata prefix — gates Phase 2b**: a hand-written fixture without
 the vendor's "try again" wording passes V5/V5b while real traffic fails, and the capture defines the
 widened event set V6, V7 and V7b depend on.
