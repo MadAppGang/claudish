@@ -67,6 +67,18 @@ an index. The writer never throws; its queue holds 1024 rows and drops the oldes
 written whatever the strategy (the forecast needs it); `CLAUDISH_ALLOWANCE_LEDGER=off` writes
 nothing.
 
+A row is filed by the UTC day of its own `at`, which is the attempt's OPEN time, and written when the
+response body ends: a request open across midnight UTC lands in yesterday's segment minutes after
+midnight, possibly from another process. The service's load reads rollups up to `handoff` (the
+whole hour of now − 48 h) and raw rows after it, and its live tail (`createLedgerTail`) starts at
+`utcDay(handoff)`: it follows exactly the segments the load reads raw. A tail left at its default
+(the load's own day) never folds that late row, while a fresh process does (MTL-324, fixed in
+14.10.1). Starting the tail at the 42-day history bound was rejected: it follows ~30 retained raw
+segments, including compacted days that a fresh load reads from their hourly files, so live would
+exceed fresh there and an unreadable old segment re-read from offset 0 could outrun the fold's
+4096-id dedup. The remaining live-vs-fresh gaps (the handoff day's hours before `handoff`, days
+compacted after the load) are compaction-timing cases, MTL-325.
+
 ## The `Strategy` interface
 
 ```ts
