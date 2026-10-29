@@ -308,6 +308,33 @@ the same `switchesOf` and `blockedRuns`.
 - **Cost.** It doubles the trajectory on every report, the band's 60 s poll included: measured on a
   two-account pool, trajectory 28 → 59 ms, warm report 35 → 66 ms.
 
+### Hourly usage per account (`usage`)
+
+14 days (`USAGE_HOURS`, 336) of the cu each account served per UTC hour (MTL-297), its own
+`sections` entry so the band's `["trajectory"]` poll does not carry its bytes. It is still computed
+on every report: `buildReport` builds `usage` unconditionally and MCP projects the sections after.
+
+- **Source** `AccountTrack.served` (kept `DEMAND_WEEKS`), summed by `usageByHour`
+  (`allowance/usage.ts`, pure); sessions are not the source, they are dropped after 8 idle days.
+  Censoring is pool-level only, as in the state. A blockage still in progress (`censorOpenAt`, which
+  only a successful response seals into `demand`) is projected onto the grid up to `now` at report
+  time, never written to the state; it is disjoint from every sealed interval, so the two add,
+  capped at 60, and the current cell is clipped at `now`.
+- **Dense, one grid.** One `start`, then per account 336 integers: a zero cell costs 2 bytes and the
+  reader indexes by hour. A positive cell is at least 1, so an hour an account served never reads as
+  idle. Censored hours are sparse `[cell, minutes]` pairs. `coveredFrom` tells "idle" from "not
+  recording yet": the first hour ANY ledger row was folded for (`AllowanceState.recordedFrom`:
+  a response, rollup or `no-eligible`, zero cu included), clamped to `start`. Not `demand[0]`: a
+  zero-cu response never creates a demand bucket while its rollup does, so coverage moved when a
+  day was compacted. Forecast demand (`ledgerDays`) still reads `demand`.
+- **Order.** `accounts[]` first, in order, all zeros when unused; then any disabled or removed
+  account that served in the span. `unit` is always `cu`, even in `account-fraction`.
+- **Measured** (compact): 2,481 bytes for 2 accounts on a realistic 14 days, 6,250 when every cell
+  has 8 digits; +3,060 per further 8-digit account, +707 per unused one, +387 for 48 censored hours.
+- **Schema compatibility.** Without `sections`, `allowanceStatusAnswerSchema` requires only the six
+  original sections (`ALLOWANCE_REPORT_SECTIONS_V1_BASE`), so an older claudish's full answer and
+  the goldens magus copies keep validating; a section named in `sections` is always required.
+
 ## Where to look
 
 | Path | What |

@@ -478,10 +478,13 @@ allowance report measured 61,681 bytes indented and 37,758 compact (trajectory 2
 Claude Code then replaces the answer with a "saved to file" stub: the band parses that stub,
 finds no report, and stays hidden with no error anywhere. `compactAnswer` serves this tool only.
 Compact is still 37 KB, so the tool takes `sections` (a non-empty subset of `accounts`, `combined`,
-`burn`, `alerts`, `trajectory`, `sessions`; anything else is `invalid_args`): `allowance` then
-keeps its header and only those parts, and the answer carries the sorted `sections` beside
-`contract_version`, which is how a reader tells a partial report from a full one
-(`allowanceStatusAnswerSchema` requires every section when `sections` is absent). The band polls
+`burn`, `alerts`, `trajectory`, `sessions`, `usage`; anything else is `invalid_args`): `allowance`
+then keeps its header and only those parts, and the answer carries the sorted `sections` beside
+`contract_version`, which is how a reader tells a partial report from a full one.
+`allowanceStatusAnswerSchema` requires every NAMED section when `sections` is present; when it is
+absent, it requires the six sections of `ALLOWANCE_REPORT_SECTIONS_V1_BASE` only, because `usage`
+was added later and an older claudish's full answer (and the goldens magus copies) must keep
+validating. A full answer from this claudish always carries `usage`. The band polls
 `["accounts","burn","alerts"]`: 1,547 bytes against 34,875 for the full answer, measured on a
 two-account pool with 72 h of ledger. The cut happens after `report()`: the full report
 (its trajectory simulation included) is computed on every call either way; a lighter report path is
