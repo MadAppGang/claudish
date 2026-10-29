@@ -9,6 +9,11 @@ import {
   allowanceStatusAnswerSchema,
 } from "./allowance-report-schema.js";
 import { AllowanceService, _setAllowanceServiceForTests } from "./allowance-service.js";
+import baseline from "./allowance-slower-scenario.baseline.json";
+import { DEFAULT_ALLOWANCE_CONFIG, SLOWER_FACTOR } from "./allowance/constants.js";
+import { simulate } from "./allowance/simulate.js";
+import { sticky } from "./allowance/strategies/sticky.js";
+import type { AccountView, ViewWindow } from "./allowance/types.js";
 import { _resetLedgerWriterForTests, flushUsageLedger } from "./ledger/ledger-writer.js";
 import { AccountRegistry, setAccountRegistryForTests } from "./registry.js";
 
@@ -230,7 +235,8 @@ describe("MTL-298 slower scenario black-box contract", () => {
     }
   }, 30000);
 
-  test("C4 sticky slowing does not advance or increase a shared takeover beyond tolerance", async () => {
+  // allowance.md, "Not monotone, under any strategy": this seeded pool has no reset divergence.
+  test("C4 this seeded pool preserves shared takeover timing and probability within tolerance", async () => {
     seed();
     const r = await report();
     expect(r.trajectory.switches!.some((s) => s.accountId === B)).toBe(true);
@@ -242,7 +248,8 @@ describe("MTL-298 slower scenario black-box contract", () => {
     }
   }, 30000);
 
-  test("C5 sticky slowing does not increase blocked probability or create a gap", async () => {
+  // allowance.md, "Not monotone, under any strategy": these seeded pools have no reset divergence.
+  test("C5 these seeded pools preserve blocked probability and gap regression checks", async () => {
     seed([0.8, 0.8], [100, 120], 1e6);
     const blocked = await report();
     expect(blocked.trajectory.blocked.length).toBeGreaterThan(0);
@@ -253,14 +260,11 @@ describe("MTL-298 slower scenario black-box contract", () => {
     assertBlocked(clear);
   }, 30000);
 
-  test("C6 existing switches blocked and forecast validate and repeat identically", async () => {
+  test("C6 the whole report except slower matches the pre-change 74c77dac baseline", async () => {
     seed();
-    const first = await report();
-    const second = await report();
-    expect(first.trajectory.switches!.length).toBeGreaterThan(0);
-    expect(first.trajectory.forecast.length).toBeGreaterThan(0);
-    for (const field of ["switches", "blocked", "forecast"] as const)
-      expect(second.trajectory[field]).toEqual(first.trajectory[field]);
+    const current = await report();
+    delete current.trajectory.slower;
+    expect<unknown>(current).toEqual(baseline);
   }, 30000);
 
   test("C7 no evidence produces empty slower switches and blocked runs", async () => {
@@ -283,4 +287,60 @@ describe("MTL-298 slower scenario black-box contract", () => {
     });
     expect(answer.allowance!.trajectory!.slower).toEqual(r.trajectory.slower);
   }, 30000);
+
+  test("C9 sticky reset divergence creates a 7d gap only in the slower scenario", () => {
+    function account(
+      id: string,
+      order: number,
+      lengthMinutes: number,
+      remaining: number,
+      resetHours: number
+    ): AccountView {
+      const window: ViewWindow = {
+        key: `len:${lengthMinutes}`,
+        slot: order === 0 ? "primary" : "secondary",
+        lengthMinutes,
+        remaining,
+        resetAt: T + resetHours * H,
+        provenance: "observed",
+        semantics: "fixed-start",
+        quantum: 0.01,
+        rejected: false,
+      };
+      return {
+        account: id,
+        order,
+        windows: [window],
+        binding: window.key,
+        governing: window.key,
+        deliverable: remaining,
+        beta: { [window.key]: { value: 0.5, quality: "calibrated", relSd: 0 } },
+        kappa: {},
+        externalPerHour: { value: 0, quality: "calibrated", relSd: 0 },
+        observedAt: T,
+      };
+    }
+    const views = [account(A, 0, 300, 0.2, 2), account(B, 1, 10080, 1, 6)];
+    const demand = Array.from({ length: 24 }, (_, hour) =>
+      hour >= 18 ? 0 : hour === 12 ? 1.5 : 0.5
+    );
+    const options = {
+      now: T,
+      strategy: sticky,
+      thread: { account: A, lastSwitchAt: null, contextTokens: 0 },
+      poolActive: A,
+    };
+    const current = simulate(views, demand, DEFAULT_ALLOWANCE_CONFIG, options);
+    const reduced = simulate(
+      views,
+      demand.map((cu) => cu * SLOWER_FACTOR),
+      DEFAULT_ALLOWANCE_CONFIG,
+      options
+    );
+    expect(current.gaps).toEqual([]);
+    expect(current.unserved.every((cu) => cu === 0)).toBe(true);
+    expect(reduced.gaps.map((gap) => gap.kind)).toEqual(["7d"]);
+    expect(reduced.unserved.flatMap((cu, hour) => (cu > 0 ? [hour] : []))).toEqual([16]);
+    expect(reduced.unserved[16]).toBeCloseTo(1 / 3, 8);
+  });
 });
