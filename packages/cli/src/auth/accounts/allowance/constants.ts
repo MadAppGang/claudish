@@ -162,6 +162,13 @@ export const PACE_MAX_MULT = 64;
  */
 export const PACE_BISECT_STEPS = 4;
 
+/**
+ * The report's `usage` grid: 14 days of hours (MTL-297), the span the forecast
+ * panel draws. Two accounts at 8 digits a cell measured 6,250 bytes compact.
+ * Not a config field.
+ */
+export const USAGE_HOURS = 336;
+
 /** The Monte Carlo path count for `cfg`'s strategy (alerts and trajectory alike). */
 export function trajPaths(cfg: Pick<AllowanceConfig, "strategy" | "TRAJ_PATHS">): number {
   const paths = Math.max(1, cfg.TRAJ_PATHS);

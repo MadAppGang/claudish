@@ -46,6 +46,7 @@ export {
   LOOKAHEAD_TRAJ_PATHS,
   PROVIDER_COST_PRIORS,
   trajPaths,
+  USAGE_HOURS,
 } from "./constants.js";
 export {
   calendarDigest,
@@ -133,4 +134,5 @@ export {
 export { sticky } from "./strategies/sticky.js";
 export { DEPLOYABLE, STRATEGIES } from "./strategies/strategy.js";
 export { sparkline, trajectory } from "./trajectory.js";
+export { usageByHour } from "./usage.js";
 export type * from "./types.js";

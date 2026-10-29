@@ -35,6 +35,30 @@ export const GOLDEN_ALLOWANCE_CAPABILITIES = [
 /** Monday 2026-10-26 09:00 UTC. The gap runs Thu 14:00 → Sat 09:00 (43 h). */
 export const GOLDEN_ALLOWANCE_AT = "2026-10-26T09:00:00.000Z";
 
+/** `usage.start` at GOLDEN_ALLOWANCE_AT: its hour − 335 h. */
+const GOLDEN_USAGE_START = "2026-10-12T10:00:00.000Z";
+
+/**
+ * One account's 336 `usage.cu` cells from GOLDEN_USAGE_START: `cu` in the UTC
+ * hours [fromHour, toHour) of the days [fromDay, toDay], 0 elsewhere. Built,
+ * not listed, so the golden stays readable; its JSON text is fixed all the same.
+ */
+function goldenUsageCells(
+  fromDay: string,
+  toDay: string,
+  fromHour: number,
+  toHour: number,
+  cu: number
+): number[] {
+  const start = Date.parse(GOLDEN_USAGE_START);
+  return Array.from({ length: 336 }, (_, i) => {
+    const at = new Date(start + i * 3_600_000);
+    const day = at.toISOString().slice(0, 10);
+    const hour = at.getUTCHours();
+    return day >= fromDay && day <= toDay && hour >= fromHour && hour < toHour ? cu : 0;
+  });
+}
+
 export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
   contract_version: 1,
   capabilities: GOLDEN_ALLOWANCE_CAPABILITIES,
@@ -281,6 +305,25 @@ export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
         lastAt: "2026-10-26T09:00:00.000Z",
       },
     ],
+    // `home` served the first week, `work` the second, 410_000 cu/h (burn.long) in working hours.
+    usage: {
+      start: GOLDEN_USAGE_START,
+      stepHours: 1,
+      hours: 336,
+      unit: "cu",
+      coveredFrom: GOLDEN_USAGE_START,
+      accounts: [
+        {
+          accountId: "aaaaaaaaaaaa",
+          cu: goldenUsageCells("2026-10-19", "2026-10-26", 1, 18, 410_000),
+        },
+        {
+          accountId: "bbbbbbbbbbbb",
+          cu: goldenUsageCells("2026-10-12", "2026-10-18", 1, 18, 380_000),
+        },
+      ],
+      censored: [],
+    },
   },
 } satisfies AllowanceStatusAnswer;
 
@@ -315,6 +358,15 @@ export const GOLDEN_ALLOWANCE_NO_EVIDENCE_ANSWER = {
       spark48: "",
     },
     sessions: [],
+    usage: {
+      start: GOLDEN_USAGE_START,
+      stepHours: 1,
+      hours: 336,
+      unit: "cu",
+      coveredFrom: null,
+      accounts: [],
+      censored: [],
+    },
   },
 } satisfies AllowanceStatusAnswer;
 

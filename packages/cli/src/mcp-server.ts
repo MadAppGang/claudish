@@ -2565,9 +2565,10 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       "Report the local Codex account pool's allowance: {contract_version, capabilities, " +
       "allowance, reason?}. `allowance` is the claudish.allowance.v1 report of THIS machine's " +
       "claudish sessions (accounts, remaining capacity, burn rate, projected gaps with remedies, " +
-      "trajectory, per-session shares), or null with a `reason` when there is no account pool. " +
+      "trajectory, per-session shares, 14 days of hourly usage per account), or null with a " +
+      "`reason` when there is no account pool. " +
       "`sections` limits the report to those parts (accounts, combined, burn, alerts, " +
-      "trajectory, sessions) beside its header, and the answer then lists them in `sections`; " +
+      "trajectory, sessions, usage) beside its header, and the answer then lists them in `sections`; " +
       'a frequent poll should pass ["accounts","burn","alerts"]. ' +
       "Read-only; it sends nothing to any vendor.",
     inputSchema: {
@@ -2590,7 +2591,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           },
           minItems: 1,
           description:
-            'Report only these parts beside the header (default: all). Poll with ["accounts","burn","alerts"]; the trajectory and sessions are most of the bytes.',
+            'Report only these parts beside the header (default: all). Poll with ["accounts","burn","alerts"]; the trajectory, sessions and usage are most of the bytes.',
         },
       },
     },
