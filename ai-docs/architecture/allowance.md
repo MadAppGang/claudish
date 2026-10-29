@@ -335,6 +335,17 @@ on every report: `buildReport` builds `usage` unconditionally and MCP projects t
   original sections (`ALLOWANCE_REPORT_SECTIONS_V1_BASE`), so an older claudish's full answer and
   the goldens magus copies keep validating; a section named in `sections` is always required.
 
+### Rounded forecast quantiles
+
+`trajectory.forecast[].p10/p50/p90` go out at 4 significant digits (`toSignificant`, in
+`buildReport`); the pure trajectory and `spark48` keep full precision. Four digits cost the bytes of
+three in cu and keep the worst error under 1 % of an hour's p10–p90 spread. Measured: the committed
+2-account baseline 20,423 → 15,941 bytes; a saved live report (`account-fraction`, 169 entries)
+20,536 → 14,227, which takes its trajectory-only answer from 36,312 to 30,003 characters, back
+under Claude Code's inline threshold. `history`, `historyByAccount`, `burn` and `combined` are NOT
+rounded: per-account history sums to `history` within 1e-9 and `sustainable = cutToPercent / 100 ×
+burn.long` holds exactly, and both are published contracts (the user, 2026-10-29).
+
 ## Where to look
 
 | Path | What |
