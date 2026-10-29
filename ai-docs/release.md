@@ -209,4 +209,4 @@ not the pinned one, so the local red is gone and the gate's coverage is not.
 When the Bun pin is bumped, RE-BASELINE those budgets against the new oracle.
 Never widen them to clear a red run: the budget is the whole assertion.
 
-verified: 2026-10-28 @ 114ce0fb
+verified: 2026-10-29 @ 717dce78
