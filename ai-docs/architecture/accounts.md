@@ -20,7 +20,7 @@ token and metered listeners. A real two-account run on 2026-10-22 used the owner
 real quota 429 was not exercised: claudish never exhausts an account on purpose. D8 (a real
 in-stream `usage_limit_reached` capture) now gates Phase 2b, not a merge. Phase 2b, Phase V, the
 Claude pool, the `account use` handoff and polish are planned. **Last updated:** 2026-10-26. Claude
-Code facts: measured against Claude Code **2.1.268**.
+Code facts: measured against Claude Code **2.1.312** (Phase V, 2026-10-29).
 
 **Errors go through main's classifier.** Every failed sign, refresh, forced re-sign and
 response-side accounts query is answered by `ComposedHandler.answerAuthFailure`
@@ -86,13 +86,13 @@ Decisions, rows and code comments cite these.
 V (spike) ──────────────┬──────────────────────────► 3 ──► 4*
                         │                            ▲
 0(a..i) ────────────────┴──► 1 ──► 2 ──────────────► 5
-D8 gates Phase 2b · D1/D2 gate import, `account use` and the login rule
-4* ships only on the D1/D2 branches that permit it
+D8 gates Phase 2b · D2 measured positive; D1/D3 moot under the switch rule
+4* ships under the switch rule; the D1/D2 table applies only if D2 turns negative
 ```
 
 | Phase | Content | Status |
 |---|---|---|
-| **V** | Resolve D1–D8 against a scratch `CLAUDE_CONFIG_DIR`, into `ai-docs/reports/claude-oauth-facts-<date>.md` | **Not run** |
+| **V** | Resolve D1–D8 against a scratch `CLAUDE_CONFIG_DIR`, into `ai-docs/reports/claude-oauth-facts-<date>.md` | **Run 2026-10-29 on 2.1.312**: [`claude-oauth-facts-2026-10-29.md`](../reports/claude-oauth-facts-2026-10-29.md) |
 | **0** | Nine existing defects, below | **Built**, on the request path |
 | **1** | `auth/accounts/*`; `subscriptionAccounts` in the config type, `loadConfig`'s allowlist and the Zod schema; read-only `claudish account list\|status [--json] [--refresh]` | **Built**, off the request path |
 | **2a** | `CodexPoolHalf`; the three availability projections; routing retention of a failed Codex candidate; HTTP 429/403 quota rotation at the Codex status swap; the capacity-remaining 429; the narrow quota seam in `error-surface.ts`; outcomes and `CLAUDISH_ACCOUNTS_LOG`; false-mode stream marking; the mutating `account … codex` verbs; legacy enrollment and durable suppression; the shared config lock | **Shipped** in v14.5.0, on the request path; loopback-verified by targeted tests and a real two-account run (2026-10-22) |
@@ -846,6 +846,22 @@ account an hour later). Both conflated who **holds** the material with who may *
 | yes | yes | shared material, one named refresher, set before the account is selectable | ships | the same |
 | yes | no | does not ship | does not ship; prints the manual re-login instruction | inverted: the pool is disjoint from Claude Code's login, and a startup line says so |
 
+**The switch rule** (Jack, 2026-10-29). On every `account use` switch claudish reads Claude Code's
+current tokens, refresh token included, back into the account being switched away from. Then it
+writes the next account. It holds `.oauth_refresh.lock` with the legacy `<realpath>.lock`, and
+`.storage-write.lock`, across the whole read-save-write. Claude Code is the only refresher of the
+account in its item; claudish never refreshes it. Under this rule D1 and D3 decide nothing, because
+no refresh can run inside the switch.
+
+The budget is measured on 2.1.312 ([report](../reports/claude-oauth-facts-2026-10-29.md) D2a,
+D2b). Claude Code waits ≈ 7.9 s on the refresh lock and then sends with the token it holds. It
+waits 7.5 s on `.storage-write.lock` and then skips its write. The switch must therefore finish
+well inside 7.5 s. A running session adopts the new item at its next request once its 30 s item
+cache expires, and at once on a 401 or near expiry (D5). The switched-away session may sign with
+the old account for up to 30 s.
+
+The `yes | no` row of the table above applies only if a later build stops waiting on these locks.
+
 The dual-store refresh takes the claudish gate, then `.oauth_refresh.lock`; reads both stores
 uncached (higher generation wins; on a tie, Claude Code's item, which can rotate without telling
 us); journals `dual-refreshing`; and writes claudish, then `{...otherKeys, claudeAiOauth: new}`. The
@@ -1028,9 +1044,12 @@ is the conservative reading. Decisions 12 and 13 were taken by Jack on 2026-10-2
     chain's decision, not a fall-through: exhaustion advances with the cost warning (decision 1),
     a terminal credential failure advances announced (decision 7, `9ace3fe5`); a transient failure
     and a spent rotation with capacity remaining (R4) hold the hop.
-11. **claudish never spends quota to measure quota.** On the D7-negative branch an idle Codex
-    account reads `unknown`, which is eligible; `unknown` never means a stale reading decayed.
-    *Built* in the policy; `account status --refresh` contacts no vendor.
+11. **claudish never spends quota to measure quota.** An idle Codex account reads `unknown`, which
+    is eligible; `unknown` never means a stale reading decayed. *Built* in the policy;
+    `account status --refresh` contacts no vendor. The policy was built on the D7-negative branch.
+    D7 measured positive on 2026-10-29: `GET /backend-api/wham/usage` returns the rate-limit windows
+    with no inference. The idle `unknown` reading is therefore no longer forced, and the choice
+    reopens.
 12. **The default Codex account label is the login's email, chosen after the browser.** The email
     is not known before the login, so nothing asks for a label first and nothing prompts for one.
     The clash ladder takes the first free of `<email>`, `<email>-<plan>`, then numbers
@@ -1052,18 +1071,24 @@ is the conservative reading. Decisions 12 and 13 were taken by Jack on 2026-10-2
 
 ## Claude Code's OAuth facts
 
-Read from the installed 2.1.268 binary with `strings`; the Keychain secret was never read. Anthropic
-documents none of this, and any release can change it (C3).
+Read from the installed 2.1.312 binary and measured against it on 2026-10-29 with fake tokens in a
+throwaway keychain ([report](../reports/claude-oauth-facts-2026-10-29.md)); the real Keychain
+secret was never read. Anthropic documents none of this, and any release can change it (C3).
 
 | Fact | Value | In claudish's code |
 |---|---|---|
-| Keychain service | `Claude Code[-<sha256(configDir)[0:8]>]-credentials`, account `$USER`; the suffix appears when `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR` is set | `claudeCodeKeychainService()` (`auth/claude-code-facts.ts`), used by `claude-runner.ts`'s login probe |
+| Keychain service | `Claude Code${OAUTH_FILE_SUFFIX}-credentials[-<sha256(configDir)[0:8]>]`; `OAUTH_FILE_SUFFIX` is `""` in prod (`-local-oauth`, `-custom-oauth` otherwise). The hash suffix appears whenever `CLAUDE_CONFIG_DIR` is non-empty, even when it names the default dir; `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when set, overrides. The hash input is the configured dir, NFC-normalized. The login keychain holds 252 suffixed items in this order and none in the old one | `claudeCodeKeychainService()` (`auth/claude-code-facts.ts`), used by `claude-runner.ts`'s login probe, is **wrong**: it builds `Claude Code-<hash>-credentials` and drops the suffix for the default dir (MTL-316) |
+| Account attribute | `$USER`; `claude-code-user` when `$USER` is unreadable or fails `/^[a-zA-Z0-9._-]+$/`. Every start also reads the legacy API-key service `Claude Code-<hash>` | Phase 4 |
 | Item format | JSON with the key `claudeAiOauth`, beside keys such as `designOauth` | the key only |
 | Access | `security -i`, hex `-X`, argv fallback for large payloads — so the ACL trusts `/usr/bin/security`, which claudish also uses | Phase 4 |
-| Refresh lock | `<configDir>/.oauth_refresh.lock` (proper-lockfile, stale 60 s, update 5 s) plus a legacy `<realpath(configDir)>.lock`; re-reads the store under the lock | Phase 4 |
+| Refresh lock | `<configDir>/.oauth_refresh.lock` (proper-lockfile, stale 60 s, update 5 s), taken first, then a legacy `<realpath(configDir)>.lock`; re-reads the store under the lock and adopts a stored token that differs. Owner file `.oauth_refresh.lock.owner`: a holder is taken over only with an owner record and the flag `tengu_quiet_marten`; with no record (`no_owner_record`) it is never taken over. Measured wait ≈ 7.9 s, then Claude Code sends with the token it holds | Phase 4 |
+| Write lock | `<configDir>/.storage-write.lock` (stale 15 s, 10 retries of 100 to 1000 ms) around every item read-modify-write. Measured wait 7.5 s, then Claude Code skips its write | Phase 4 |
+| Refresh trigger | on demand only, when `now + 300000 >= expiresAt` (5 min before expiry); no timer | Phase 4 |
+| Item cache | item reads are cached 30 s. A running session adopts a changed item at its next request once the cache expires, and at once on a 401 or near expiry | Phase 4 |
+| Refresh result | stores `refreshTokenExpiresAt`; keeps the old refresh token when the response carries none | Phase 4 |
 | Authorize | subscription `https://claude.com/cai/oauth/authorize`; console `https://platform.claude.com/oauth/authorize` | Phase 3 |
 | Token | `https://platform.claude.com/v1/oauth/token` | Phase 3 |
-| Client id | `9d1c250a-e61b-44d9-88ed-5944d1962f5e`; a second id `22422756-…` sits in another block, environment unknown | Phase 3 |
+| Client id | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` (prod); the second id `22422756-…` is the local-dev OAuth config (`OAUTH_FILE_SUFFIX: "-local-oauth"`, localhost URLs) | Phase 3 |
 | Scopes | `user:inference`, `user:profile`, `user:sessions:claude_code`, `user:mcp_servers`, `user:file_upload`, `user:office` | Phase 3 |
 
 Phase 3 puts the ids and URLs in `claude-code-facts.ts` with their measured version, and
@@ -1071,27 +1096,34 @@ Phase 3 puts the ids and URLs in `claude-code-facts.ts` with their measured vers
 `account add claude`, not the whole pool.
 
 Reported by outside sources, unverified here: Anthropic's `GET /api/oauth/usage` needs
-`user:profile` (a setup-token with only `user:inference` gets 403). Codex's
-`GET chatgpt.com/backend-api/wham/usage` is reported by CodexBar and openai/codex issue 10869, and
-contradicts claudish's own probe of 2026-08-05, which found no usage endpoint.
+`user:profile` (a setup-token with only `user:inference` gets 403).
 
-**The Phase V gates, still unverified**, each with a written branch:
+Measured 2026-10-29 (D7): Codex's `GET https://chatgpt.com/backend-api/wham/usage`, sent with
+`Authorization` and `ChatGPT-Account-Id` from `~/.codex/auth.json`, answers 200 with
+`rate_limit.primary_window` and `rate_limit.secondary_window`, and makes no model call. This
+overturns claudish's probe of 2026-08-05, which found no usage endpoint.
 
-| Gate | Question | Branch |
-|---|---|---|
-| D1 | Does Anthropic rotate the refresh token on exchange? | the D1/D2 table |
-| D2 | Can claudish take `.oauth_refresh.lock` compatibly? | the D1/D2 table |
-| D3 | Is the old refresh token revoked immediately? | immediate: ship the "a token rotation was interrupted" message and a `docs/` line that it costs one browser login; deferred: journal recovery repairs it silently |
-| D4 | The item's account attribute; whether `security -i -U` keeps the ACL | blocks Phase 4 |
-| D5 | Does a running `claude` reload a changed item? | if not, the handoff refuses or defers **before** any write |
-| D6 | The PKCE redirect shape and exchange body | blocks claudish's own Claude login |
-| D7 | Does a free, non-inference Codex usage endpoint exist? | negative branch decided: idle Codex usage reads `unknown` |
-| D8 | A real in-stream `usage_limit_reached` frame, metadata prefix included | gates Phase 2b (2a shipped in v14.5.0 without it); every quota fixture is PROVISIONAL until then |
+**The Phase V gates, resolved 2026-10-29** on 2.1.312
+([report](../reports/claude-oauth-facts-2026-10-29.md)):
 
-Also unmeasured: whether the binary hashes the raw or the resolved `CLAUDE_CONFIG_DIR`, and whether a
-trailing slash survives. `claudeCodeKeychainServiceCandidates()` probes resolved, raw,
-slash-stripped and unsuffixed names, which is cheap because the probe reads attributes only and
-never prompts. The `security -i` stdin size limit is unmeasured too.
+| Gate | Question | Branch | Answer |
+|---|---|---|---|
+| D1 | Does Anthropic rotate the refresh token on exchange? | the D1/D2 table | moot under the switch rule |
+| D2 | Can claudish take `.oauth_refresh.lock` compatibly? | the D1/D2 table | **positive** for both locks: Claude Code waits ≈ 7.9 s on `.oauth_refresh.lock` with its legacy lock and posts nothing, and 7.5 s on `.storage-write.lock` and writes nothing |
+| D3 | Is the old refresh token revoked immediately? | immediate: ship the "a token rotation was interrupted" message and a `docs/` line that it costs one browser login; deferred: journal recovery repairs it silently | moot under the switch rule |
+| D4 | The item's account attribute; whether `security -i -U` keeps the ACL | blocks Phase 4 | ACL byte-identical after `-U` for current items; items created by older builds not examined; `acct` = `$USER` |
+| D5 | Does a running `claude` reload a changed item? | if not, the handoff refuses or defers **before** any write | yes: within 30 s, or at once on a 401 or near expiry. The handoff needs no refusal, only the lock |
+| D6 | The PKCE redirect shape and exchange body | blocks claudish's own Claude login | static, from the binary; verified by the first real Phase 3 login |
+| D7 | Does a free, non-inference Codex usage endpoint exist? | negative branch decided: idle Codex usage reads `unknown` | **positive**: `GET /backend-api/wham/usage` 200 with the `rate_limit` windows, no inference |
+| D8 | A real in-stream `usage_limit_reached` frame, metadata prefix included | gates Phase 2b (2a shipped in v14.5.0 without it); every quota fixture is PROVISIONAL until then | unchanged (MTL-261) |
+
+Measured: the hash input is the configured dir, NFC-normalized (`dN()` in 2.1.312), and the
+wrapper's computed name matched Claude Code's first read. The scratch path held no symlink, so a
+raw and a resolved path were not separated live. Still unmeasured: whether a trailing slash
+survives. `claudeCodeKeychainServiceCandidates()` probes resolved, raw, slash-stripped and
+unsuffixed names, which is cheap because the probe reads attributes only and never prompts. The
+`security -i` stdin limit is 4095 bytes per chunk (measured 2026-10-26, MTL-268); 2.1.312 sends
+`-i` lines up to 4032 bytes and switches to argv above that (`re=4032`).
 
 ## Terms of service
 
@@ -1159,11 +1191,14 @@ No test uses `mock.module()`: Bun's registry is process-global and has broken si
   PKCE browser and loopback listeners; the owner's real logins and Keychain are never read to
   simulate one. The real two-account run of 2026-10-22 proved threshold selection (`default` at
   `7d 41%`, `switchAt` 30%, next turn on `second`), not a live quota rejection.
-- **Idle polling.** There is no free Codex usage endpoint (D7 negative), and claudish never spends
-  quota to measure quota, so an idle Codex account reads `unknown` and is eligible. The legacy
+- **Idle polling.** Built on the D7-negative branch: claudish never spends quota to measure quota,
+  so an idle Codex account reads `unknown` and is eligible. D7 measured positive on 2026-10-29
+  (`GET /backend-api/wham/usage` returns the rate-limit windows with no inference), so `unknown` is
+  no longer forced and the choice reopens. The legacy
   explicit probe is fenced to the legacy-only population, with no replacement.
 - **The Claude pool, `account add|import claude`, `account use`** (Phases 3–4): blocked on decision 9
-  and C6, and on D1/D2 for the handoff. `NativeHandler` is unchanged.
+  and C6. The handoff is no longer blocked on D1/D2: Phase V (2026-10-29) measured D2 positive
+  for both locks, and the switch rule makes D1/D3 moot. `NativeHandler` is unchanged.
 - **The TUI Accounts block, statusline labels, a `docs/` page** (Phase 5).
 - **Re-enrolling a suppressed legacy file.** No verb exists; a suppressed user adds accounts with
   `account add`.

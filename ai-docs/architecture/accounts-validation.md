@@ -333,10 +333,12 @@ its original 11 names, so a test that pins it by name must change with it.
 1. `account add` twice per claudish provider; a duplicate identity is refused; where `import` ships,
    the first `account add claude` must be the imported login; where it does not, the disjoint-pool
    startup line appears.
-2. `account status` shows usage for an idle account, or `unknown` on the D7-negative branch.
+2. `account status` shows usage for an idle account, or `unknown` if idle polling stays off (D7
+   measured positive on 2026-10-29, so the choice is open).
 3. A forced switch with `switchAt: 0.01`, and the startup line naming the signing account.
-4. `account use` while a real `claude` session runs — only where D1/D2 ship it — refused or deferred
-   per D5 **before** any credential write.
+4. `account use` while a real `claude` session runs: the switch holds `.oauth_refresh.lock`, the
+   legacy lock and `.storage-write.lock`, finishes inside 7.5 s, and the session signs with the new
+   account within 30 s (D2 and D5 measured 2026-10-29).
 5. **Four** concurrent claudish sessions produce exactly **one** refresh. Two sessions pass even
    when the lock is a no-op and are not evidence.
 6. A `claudish serve` session with an account disabled from another process mid-session.
