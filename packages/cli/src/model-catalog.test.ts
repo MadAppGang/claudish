@@ -242,6 +242,10 @@ describe("Group 1: Model Catalog — lookupModel()", () => {
     expect(() => lookupModel("zai@glm-4.7", mockCachePath)).toThrow("@");
   });
 
+  test("OpenRouter preset IDs do not resolve through the model catalog", () => {
+    expect(lookupModel("@preset/minimax-m2.5", mockCachePath)).toBeUndefined();
+  });
+
   test("no cache file → undefined (cold start)", () => {
     const nonexistent = join(tmpDir, "does-not-exist.json");
     expect(lookupModel("glm-5", nonexistent)).toBeUndefined();

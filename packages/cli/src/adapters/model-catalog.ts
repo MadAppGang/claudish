@@ -344,7 +344,8 @@ export function resolveSubscriptionRouting(
 /**
  * Find the slim catalog entry for a model id (bare or vendor-prefixed), matching
  * on modelId or aliases. Shared by lookupModel / lookupModelForProvider.
- * Throws if `modelId` contains "@" — callers must strip the provider prefix.
+ * Throws if `modelId` contains a provider prefix — OpenRouter preset IDs begin
+ * with "@" and are valid bare model IDs.
  */
 /**
  * The catalog's matching key for a model id: lowercased, vendor prefix dropped.
@@ -360,7 +361,8 @@ function stripVendorPrefix(lowerId: string): string {
 }
 
 function findCacheEntry(modelId: string, cachePath?: string): SlimModelEntry | undefined {
-  if (modelId.includes("@")) {
+  if (modelId.startsWith("@")) return undefined;
+  if (modelId.includes("@") && !modelId.startsWith("@")) {
     throw new Error(
       `model-catalog lookup received provider-routed ID "${modelId}" — callers must strip the "@" prefix before calling`
     );
