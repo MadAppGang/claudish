@@ -39,6 +39,20 @@ export interface CodexModelInfo {
   defaultReasoningLevel?: string;
   defaultVerbosity?: string;
   truncationPolicy?: { mode: string; limit: number };
+  /**
+   * The service tiers the account may request (`service_tiers`), e.g.
+   * `{id: "priority", name: "Fast"}`. The `id` is the value Codex sends at the
+   * request's top-level `service_tier`.
+   */
+  serviceTiers?: CodexServiceTier[];
+  /** `default_service_tier`: the tier sent when the request names none. */
+  defaultServiceTier?: string;
+}
+
+/** One entry of a model's `service_tiers`. */
+export interface CodexServiceTier {
+  id: string;
+  name: string;
 }
 
 /**
@@ -154,6 +168,15 @@ function toModelInfo(raw: unknown): CodexModelInfo | undefined {
   if (tp && typeof tp.mode === "string" && typeof tp.limit === "number") {
     info.truncationPolicy = { mode: tp.mode, limit: tp.limit };
   }
+  if (Array.isArray(m.service_tiers)) {
+    info.serviceTiers = m.service_tiers.flatMap((tier) => {
+      const t = tier as { id?: unknown; name?: unknown } | null;
+      return t && typeof t.id === "string" && typeof t.name === "string"
+        ? [{ id: t.id, name: t.name }]
+        : [];
+    });
+  }
+  if (typeof m.default_service_tier === "string") info.defaultServiceTier = m.default_service_tier;
   return info;
 }
 

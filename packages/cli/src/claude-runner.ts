@@ -23,6 +23,7 @@ import { claudeCodeKeychainServiceCandidates } from "./auth/claude-code-facts.js
 import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
+import { applyProxyFastModeGates, scrubInheritedFastModeGates } from "./fast-mode-gates.js";
 import { getHookEngine } from "./hooks/index.js";
 import { InProcessSink, setProcessSink } from "./hooks/injection/sinks.js";
 import { sessionHooksNeedBinding } from "./hooks/session/binding.js";
@@ -2185,6 +2186,9 @@ export async function runClaudeWithProxy(
     // Delete any placeholder keys from environment
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
+    // Real credentials: a fast-mode org check a parent proxied session skipped
+    // is this account's own policy again.
+    scrubInheritedFastModeGates(env);
     // Don't override ANTHROPIC_MODEL - let Claude Code use its default
     // (unless user explicitly specified a model)
     if (modelId) {
@@ -2235,6 +2239,14 @@ export async function runClaudeWithProxy(
         delete env.ANTHROPIC_API_KEY;
         hidAnthropicApiKey = true;
       }
+      // Same leak, same fix: the fast-mode gates a parent proxied session opened
+      // would skip THIS account's org check (see applyProxyFastModeGates).
+      const closedGates = scrubInheritedFastModeGates(env);
+      if (closedGates.removed.length > 0) {
+        debugLog(
+          `[claude-runner] Removed inherited claudish fast-mode gates: ${closedGates.removed.join(", ")}`
+        );
+      }
     } else {
       if (classifierPassthroughEnabled(config)) {
         // Classifier passthrough is enabled but no role maps to a native Claude
@@ -2257,6 +2269,7 @@ export async function runClaudeWithProxy(
       // key alone still redirected to the payment page, hence the token). A pane
       // child gets the token only; see applyProxyPlaceholderAuth.
       applyProxyPlaceholderAuth(env);
+      applyProxyFastModeGates(env);
 
       // Drive Claude Code's NATIVE auto-compaction to fire before a backend whose
       // real context window is smaller than the model's advertised spec rejects
