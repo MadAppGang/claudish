@@ -17,6 +17,7 @@
 
 import { type DiskCacheV3, readAllModelsCache } from "../providers/all-models-cache.js";
 import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
+import { nativeRouteFor } from "../providers/native-route.js";
 import type { ClaudishConfig } from "../types.js";
 import { VERSION } from "../version.js";
 
@@ -249,6 +250,21 @@ export async function warmCatalogIfNeeded(
       model: config.model,
       skipModelsUpdate: config.skipModelsUpdate,
     })
+  ) {
+    return "skipped";
+  }
+
+  // Advisor, fallback and role-specific routes may still need the cloud models catalog.
+  if (
+    config.model &&
+    nativeRouteFor(config.model) &&
+    !config.forceUpdate &&
+    !config.advisor &&
+    !config.modelChain?.length &&
+    !config.modelOpus &&
+    !config.modelSonnet &&
+    !config.modelHaiku &&
+    !config.modelSubagent
   ) {
     return "skipped";
   }

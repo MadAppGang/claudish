@@ -252,6 +252,33 @@ describe("warmCatalogIfNeeded", () => {
     expect(refreshSpy).not.toHaveBeenCalled();
   });
 
+  test.each(["sonnet", "opus", "sonnet[1m]", "claude-sonnet-4-5"])(
+    "native %s launches without a cached catalog or network",
+    async (model) => {
+      mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
+      expect(await warmCatalogIfNeeded(makeConfig({ model }), { now: NOW })).toBe("skipped");
+      expect(refreshSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  const additionalRoutes: Partial<ClaudishConfig>[] = [
+    { forceUpdate: true },
+    { advisor: true, advisorModels: ["gpt-4o"] },
+    { modelChain: ["sonnet", "or@vendor/model"] },
+    { modelOpus: "or@vendor/model" },
+    { modelSonnet: "or@vendor/model" },
+    { modelHaiku: "or@vendor/model" },
+    { modelSubagent: "or@vendor/model" },
+  ];
+  test.each(additionalRoutes)(
+    "native model with additional routes still warms the catalog: %j",
+    async (overrides) => {
+      mockRefreshOutcome = { kind: "refreshed", modelCount: 42 };
+      expect(await warmCatalogIfNeeded(makeConfig({ model: "sonnet", ...overrides }))).toBe("ok");
+      expect(refreshSpy).toHaveBeenCalledTimes(1);
+    }
+  );
+
   test("fresh cache + !forceUpdate → 'ok' without calling refreshCatalog", async () => {
     mockReadResult = freshCache();
     const config = makeConfig({ model: "gpt-4o" });
