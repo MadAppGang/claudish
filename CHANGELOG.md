@@ -2,6 +2,14 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.10.2] - 2026-11-01
+
+### Documentation
+
+- record the built-binary run and correct the E20 baseline *(accounts)* ([`7b81243`](https://github.com/MadAppGang/claudish/commit/7b81243aa199f35270738da6c918cd9b707d41d0))
+- stamp the playbook verified at the v14.10.1 merge commit *(release)* ([`5bdf998`](https://github.com/MadAppGang/claudish/commit/5bdf9982e919a9bcbdec79dc353ca3532beb8730))
+- update CHANGELOG.md for v14.10.1([`7889816`](https://github.com/MadAppGang/claudish/commit/7889816664a2c6e77e1103bb425854f97f320bea))
+
 ## [14.10.1] - 2026-10-29
 
 ### Bug Fixes
