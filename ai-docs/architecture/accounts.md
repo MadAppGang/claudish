@@ -1239,9 +1239,11 @@ No test uses `mock.module()`: Bun's registry is process-global and has broken si
 - **M3**: extended mode has no absolute ceiling and no latency test for a healthy pooled stream; a
   logged 60 s ceiling is the fallback if real streams show long runs without a delta (T-M3, 2b).
 - **L1**: the provisional regex sentence, until D8.
-- **E20 executable parity is unverified.** Legacy-only, API-key-only and native-no-pool parity with
-  the pinned pre-2a build `6b572b7f` is shown by component tests on pinned modules, not by two built
-  binaries.
+- **E20 executable parity is recorded, except for the native-no-pool case.** On 2026-11-01 two built binaries
+  were compared: the parent of the Phase 2a commit (`579114b1`, v14.4.1) with the test seam backported,
+  and 14.10.1. Legacy success, legacy upstream error and API-key-only are identical; the refresh
+  rejection diverges as designed (A2/A4). Native-no-pool parity is not compared and rests on component
+  tests. See [`../reports/account-pool-built-binary-validation-20261101.md`](../reports/account-pool-built-binary-validation-20261101.md).
 - **The process-wide signed-arm record** can be overwritten by a concurrent request on the opposite
   arm; older than this feature and not fixed.
 - **A legacy login whose `account_id` came from `user_id`** cannot be duplicate-checked against a new
