@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.11.0] - 2026-11-02
+
+### Documentation
+
+- update CHANGELOG.md for v14.10.2([`068a54e`](https://github.com/MadAppGang/claudish/commit/068a54eb95e7ad74b4946513cffedaefc1619b4d))
+
+### New Features
+
+- add subscription probe to send one generateContent *(antigravity)* ([`752b3fd`](https://github.com/MadAppGang/claudish/commit/752b3fd0db2c037e82b58d611a075fadd561085d))
+
+### Refactoring
+
+- move shared Antigravity steps to a session module *(subscription)* ([`4a55d18`](https://github.com/MadAppGang/claudish/commit/4a55d184f440bd46ab0f09c37ecfb528db8439e9))
+
 ## [14.10.2] - 2026-11-01
 
 ### Documentation
