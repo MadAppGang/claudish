@@ -2354,6 +2354,10 @@ ${h("SUBCOMMANDS")}
   ${green("claudish subscription models antigravity")} ${yellow("--raw --json")}
                                           Print the raw Antigravity fetchAvailableModels
                                           ${dim("body as one JSON line (for models-index)")}
+  ${green("claudish subscription probe antigravity")} ${yellow("--model <id> --request-file <path> --raw --json")}
+                                          Send the file's Gemini request once through the
+                                          Antigravity login (generateContent, no retry, model
+                                          ${dim("id unchanged); print the raw answer as one JSON line")}
   ${green("claudish update")}                        Check for updates and install the latest version
 
   ${bold("Profiles:")}

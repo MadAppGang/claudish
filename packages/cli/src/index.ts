@@ -408,7 +408,7 @@ const isServeCommand = firstPositional === "serve";
 const isProvidersCommand = firstPositional === "providers";
 // Keychain subcommand: claudish keychain status|list|import|set|rm|enable|disable
 const isKeychainCommand = firstPositional === "keychain";
-// Subscription subcommand: claudish subscription models antigravity --raw --json
+// Subscription subcommand: claudish subscription models|probe antigravity … --raw --json
 const isSubscriptionCommand = firstPositional === "subscription";
 // Hooks subcommand: claudish hooks list|check|init|corpus|telemetry
 const isHooksCommand = firstPositional === "hooks";
@@ -511,19 +511,43 @@ if (isMcpMode) {
   // Exit explicitly: an unkilled `security` past its deadline would keep the
   // loop alive. The catch prints the `internal_error` line (awaited) and a
   // FIXED stderr line, never the error: its message can carry vendor text.
+  // `probe` sends one request through the login (subscription-probe-command.ts);
+  // everything else stays with the model-list command and its usage error.
   const subscriptionArgIndex = args.indexOf("subscription");
+  const subscriptionArgv = args.slice(subscriptionArgIndex + 1);
   const subscriptionModule = () => import("./subscription-models-command.js");
-  subscriptionModule()
-    .then((m) => m.subscriptionModelsCommand(args.slice(subscriptionArgIndex + 1)))
-    .catch(() =>
-      subscriptionModule()
-        .then((m) => m.reportSubscriptionInternalError())
-        .catch(() => {
-          // The module itself would not load: no line can be built.
-          process.stderr.write("[claudish subscription] internal error\n");
-          return 1;
-        })
-    )
+  const probeModule = () => import("./subscription-probe-command.js");
+  // `subscription-dispatch.ts` decides with the probe parser's own token walk
+  // (flags may precede `probe`) and has no dependency that can fail, so a
+  // failed probe module never sends a probe argv to the models command. If
+  // the probe module will not load, the dispatch module still prints the
+  // probe-schema `internal_error` line (exit 1): one line on every exit.
+  const writeLine = (line: string, code: number) =>
+    new Promise<number>((resolve) => {
+      process.stdout.write(line, () => resolve(code));
+    });
+  import("./subscription-dispatch.js")
+    .then((dispatch) => {
+      const probe = dispatch.isSubscriptionProbeArgv(subscriptionArgv);
+      const run = probe
+        ? probeModule().then((m) => m.subscriptionProbeCommand(subscriptionArgv))
+        : subscriptionModule().then((m) => m.subscriptionModelsCommand(subscriptionArgv));
+      return run.catch(() =>
+        probe
+          ? probeModule()
+              .then((m) => m.reportProbeInternalError())
+              .catch(() => {
+                process.stderr.write("[claudish subscription] internal error\n");
+                return writeLine(dispatch.probeLoadFailureLine(), 1);
+              })
+          : subscriptionModule().then((m) => m.reportSubscriptionInternalError())
+      );
+    })
+    .catch(() => {
+      // A module would not load and no line can be built.
+      process.stderr.write("[claudish subscription] internal error\n");
+      return 1;
+    })
     .then((code) => process.exit(code));
 } else if (isAccountCommand) {
   // Account views never enroll; only explicit Codex management publishes mutations.
