@@ -1,5 +1,5 @@
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,6 +45,26 @@ afterAll(() => {
 });
 
 const { credentials } = await import("../../auth/credentials/authority.js");
+
+// The account list must not come from this machine. A configured Codex pool
+// in ~/.claudish/config.json makes poolConfigured() true, and signRequest then
+// refuses the api-key arm with MeteredEscapeError (MTL-354 item 3).
+const accountRegistry = await import("../../auth/accounts/registry.js");
+let machineRegistry: InstanceType<typeof accountRegistry.AccountRegistry> | undefined;
+beforeAll(() => {
+  machineRegistry = accountRegistry.getAccountRegistry();
+  const emptyConfig = join(testHome, "config.json");
+  writeFileSync(emptyConfig, "{}\n");
+  accountRegistry.setAccountRegistryForTests(
+    new accountRegistry.AccountRegistry({
+      configPath: () => emptyConfig,
+      legacyCodexPath: () => join(testHome, "no-legacy-codex-oauth.json"),
+    })
+  );
+});
+afterAll(() => {
+  accountRegistry.setAccountRegistryForTests(machineRegistry ?? null);
+});
 
 const museCore = await import("../../providers/meta-muse/muse-credentials.js");
 const museKeychain = await import("../../providers/meta-muse/muse-keychain.js");

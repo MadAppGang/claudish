@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { getConfigFileOverride, setConfigFileOverride } from "../config-override.js";
 import { accountLockPath, legacyCodexCredentialsPath } from "./accounts/paths.js";
 import { LEGACY_CODEX_ACCOUNT_ID } from "./accounts/types.js";
 import { CodexOAuth, CodexOAuthRefreshError } from "./codex-oauth.js";
@@ -27,6 +28,7 @@ const savedEnv = new Map(
   ].map((name) => [name, process.env[name]])
 );
 const tempRoots = new Set<string>();
+const savedConfigOverride = getConfigFileOverride();
 
 interface ProvisionalTokenResponse {
   access_token: string;
@@ -83,6 +85,13 @@ function makeSandbox(): {
   const home = join(root, "home");
   const accountsDir = join(root, "accounts");
   mkdirSync(join(home, ".claudish"), { recursive: true, mode: 0o700 });
+  // Setting HOME here does not move the config this process reads:
+  // profile-config computed it from homedir() when the module first loaded.
+  // Without the override, login() reads the machine's config.json and
+  // refuses when it lists Codex accounts. Children get HOME in their own env.
+  const configPath = join(home, ".claudish", "config.json");
+  writeFileSync(configPath, "{}\n", { mode: 0o600 });
+  setConfigFileOverride(configPath);
   process.env.HOME = home;
   process.env.CLAUDISH_ACCOUNTS_DIR = accountsDir;
   process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
@@ -158,6 +167,7 @@ function forcedRefreshChild(
 
 afterEach(() => {
   globalThis.fetch = realFetch;
+  setConfigFileOverride(savedConfigOverride);
   CodexOAuth._resetInstanceForTests();
   for (const [name, value] of savedEnv) {
     if (value === undefined) delete process.env[name];
