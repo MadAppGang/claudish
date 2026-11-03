@@ -165,19 +165,27 @@ class AccountStoreMovedDuringLeaseError extends RefreshUnavailableError {
 }
 
 /**
- * The account's store was empty and the account list could not be read just
- * now, so the registry served its last-known-good copy. That copy may predate
- * the legacy file move (MTL-372) and still name the emptied store; it cannot
- * prove the row unchanged, so "needs a login" (terminal 401, which walks a bare
- * chain to a metered hop) is not the answer. Transient (503), pin included; it
- * is recorded like any unavailable lease, so an unpinned lease tries the next
- * account.
+ * The account list could not be read just now, so the registry served its
+ * last-known-good copy, and that copy may predate the legacy file move
+ * (MTL-372). Two leases cannot go on from it:
+ *
+ * - an EMPTY store: the copy may still name the emptied store, so "needs a
+ *   login" (terminal 401, which walks a bare chain to a metered hop) is
+ *   unproven;
+ * - an exchange of a `legacy-codex-file` row: the move may have published the
+ *   Keychain row and crashed before deleting the file, so the file's refresh
+ *   token is the one the Keychain copy also holds. Exchanging it rotates the
+ *   token under a row the list no longer names, and the Keychain copy dies.
+ *
+ * Transient (503), pin included; it is recorded like any unavailable lease, so
+ * an unpinned lease tries the next account. No journal is written and no
+ * exchange is made.
  */
 class AccountListUnreadableDuringLeaseError extends RefreshUnavailableError {
-  constructor(label: string, configPath: string) {
+  constructor(label: string, configPath: string, what = "its store is empty") {
     super(
       "account list could not be read",
-      `${label}: its store is empty and ${configPath} could not be read; retry`
+      `${label}: ${what} and ${configPath} could not be read; retry`
     );
   }
 }
@@ -966,11 +974,14 @@ export class AccountPool {
     record: AccountRecord,
     phase: "before-exchange" | "before-persist" | "store-empty"
   ): void {
-    // An empty store is about to become a terminal login demand, so the list
-    // is re-read for real: the registry re-reads only on a stat-stamp change,
-    // and `chmod 000` or an EMFILE on an unchanged file would otherwise keep
-    // reporting "present".
-    if (phase === "store-empty") this.registry.invalidate();
+    // Two answers re-read the list for real, because the registry re-reads only
+    // on a stat-stamp change and `chmod 000` or an EMFILE on an unchanged file
+    // would otherwise keep reporting "present": an empty store, about to become
+    // a terminal login demand, and an exchange of the legacy file's token, which
+    // a published move may have handed to the Keychain row (R4-2).
+    const legacyExchange = phase === "before-exchange" && record.store === "legacy-codex-file";
+    const reread = phase === "store-empty" || legacyExchange;
+    if (reread) this.registry.invalidate();
     let snapshot: ReturnType<AccountRegistry["snapshot"]>;
     try {
       snapshot = this.registry.snapshot(this.provider);
@@ -979,13 +990,17 @@ export class AccountPool {
       if (phase === "before-persist") return;
       throw err;
     }
-    // An empty store with a source read failing: the snapshot is the
-    // last-known-good copy, which still names this store even if the move
-    // rebound the row. "Needs a login" is unproven, so transient (503). Only
-    // this phase: elsewhere a stale list keeps serving as designed.
-    const failedSource = phase === "store-empty" ? this.failedSourceOf(snapshot) : undefined;
+    // A source read failing: the snapshot is the last-known-good copy, which
+    // still names this store even if the move rebound the row. Transient (503)
+    // for these two answers only: elsewhere a stale list keeps serving as
+    // designed, and `before-persist` (the vendor already rotated) must persist.
+    const failedSource = reread ? this.failedSourceOf(snapshot) : undefined;
     if (failedSource) {
-      throw new AccountListUnreadableDuringLeaseError(record.label, failedSource.path);
+      throw new AccountListUnreadableDuringLeaseError(
+        record.label,
+        failedSource.path,
+        legacyExchange ? "its legacy file token is about to be exchanged" : "its store is empty"
+      );
     }
     const current = snapshot.accounts[this.provider].find((row) => row.id === record.id);
     // Only the store changed (the legacy file move published): transient, pin
