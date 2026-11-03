@@ -825,7 +825,14 @@ export class CodexAccountManagement {
     opts: { differentIdentity?: string } = {}
   ): Promise<string[]> {
     if (target.legacy) {
-      // The unsuppressed synthesized default, with no configured pool: the legacy login, unchanged.
+      // A Keychain platform: THIS instance's Keychain login, with these deps
+      // and this config. The facade would redispatch to `loginCodexAccount()`
+      // with default deps (the default config, no identity check, a second
+      // "login saved" line). It adds a `keychain` row and never writes the
+      // shared legacy file, which an alternate config does not own (MTL-371).
+      if (codexLoginUsesKeychain(this.env)) return this.loginCodex();
+      // No Keychain: the unsuppressed synthesized default, with no configured
+      // pool: the legacy login, unchanged.
       if (this.deps.legacyLogin) await this.deps.legacyLogin();
       else await (await import("../codex-oauth.js")).CodexOAuth.getInstance().login();
       await this.invalidate();
