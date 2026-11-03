@@ -163,7 +163,7 @@ describe("a due needsReauth retry across a store-only move (G1)", () => {
     // answers NeedsReauthError.
   });
 
-  test("a pinned lease's same-hop retry is not blocked by the move pass's stamp", async () => {
+  test("control: a pinned lease's same-hop retry leases the moved row", async () => {
     await markNeedsReauth(10 * 60_000);
     const { pool } = movingDuringLease();
 
@@ -173,8 +173,10 @@ describe("a due needsReauth retry across a store-only move (G1)", () => {
     const retry = await pool.acquire({ pin: REF });
     expect(retry.account.id).toBe(ID);
     expect(retry.accessToken).toBe("access-gen-2");
-    // Mutation caught: the pool-level stamp survives the pinned throw, so the
-    // retry's fresh context blocks the pin as needs-reauth (terminal).
+    // A control, not a regression: it passes with the stamp restore removed.
+    // A pin is honoured even when it needs re-auth, and the retry's
+    // healReauthMarks clears the mark from the Keychain item's newer
+    // generation. The next test is the one that proves the pinned restore.
   });
 
   test("after a pinned store-move, the next unpinned request still gets its due exchange", async () => {
