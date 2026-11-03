@@ -45,6 +45,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { log } from "../../logger.js";
 import {
   KEYCHAIN_ACCOUNTS_SERVICE,
@@ -156,6 +157,29 @@ export interface TokenStore {
   delete(ref: AccountRef): Promise<void>;
   /** For `account status` — never contains material. */
   describe(): string;
+}
+
+/**
+ * Do two records hold the same DURABLE material? Every field but `writeId` and
+ * `updatedAt`, which each persist mints anew. An absent journal and a `null`
+ * one are the same "no journal".
+ *
+ * `fingerprint` + `generation` alone cannot answer this: a journal write and a
+ * re-issued access token change neither (see `writeId`). The legacy Codex move
+ * (MTL-372) uses it twice: M5 reuses a crash-resumed Keychain item only when it
+ * holds the file's every durable field, and M8 deletes the file only while it
+ * still holds what was copied.
+ */
+export function sameDurableRecord(a: StoredTokenRecord, b: StoredTokenRecord): boolean {
+  return (
+    a.accessToken === b.accessToken &&
+    a.refreshToken === b.refreshToken &&
+    a.expiresAt === b.expiresAt &&
+    a.accountId === b.accountId &&
+    a.generation === b.generation &&
+    a.fingerprint === b.fingerprint &&
+    isDeepStrictEqual(a.journal ?? null, b.journal ?? null)
+  );
 }
 
 /** `sha256(refreshToken).slice(0,16)`. An identity, never reversible to the token. */

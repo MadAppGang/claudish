@@ -49,6 +49,7 @@ import {
   TokenStoreAmbiguousWriteError,
   defaultAccountStore,
   fingerprintOf,
+  sameDurableRecord,
   storeFor,
 } from "./token-store.js";
 import {
@@ -1297,10 +1298,10 @@ export class CodexAccountManagement {
         writeId: randomBytes(16).toString("hex"),
         updatedAt: this.now(),
       };
-      const resumed =
-        existing !== null &&
-        existing.fingerprint === material.fingerprint &&
-        existing.generation === material.generation;
+      // Reused only when it holds EVERY durable field of the file as read now.
+      // A journal write or a re-issued access token changes neither fingerprint
+      // nor generation, and publishing the older item would drop it.
+      const resumed = existing !== null && sameDurableRecord(existing, material);
       if (!resumed) {
         // Any other item under a row that still names the file is unpublished
         // debris from a crashed attempt: the file is authoritative, so `-U`
@@ -1454,7 +1455,9 @@ export class CodexAccountManagement {
     try {
       const now = await source.read(ref, { uncached: true });
       if (!now) return true;
-      if (now.fingerprint !== copied.fingerprint || now.generation !== copied.generation) {
+      // Every durable field, not fingerprint + generation: a journal written
+      // since the copy changes neither (defence in depth; this runs under the gate).
+      if (!sameDurableRecord(now, copied)) {
         log(
           "[accounts] legacy Codex move: the credential file changed after the copy; kept it " +
             "(the account list no longer names it)"
