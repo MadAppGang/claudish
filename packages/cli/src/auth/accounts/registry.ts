@@ -542,15 +542,7 @@ export class AccountRegistry {
 
   /** Confirmed migration-only case; never permits a legacy read on unknown input. */
   isSynthesizedLegacyOnly(): boolean {
-    const snapshot = this.snapshot("openai-codex");
-    const rows = snapshot.accounts["openai-codex"];
-    const entry = snapshot.settings["openai-codex"];
-    return (
-      !entry?.legacyCodexSuppressed &&
-      !entry?.accounts.length &&
-      rows.length === 1 &&
-      rows[0].legacy
-    );
+    return isSynthesizedLegacyOnlySnapshot(this.snapshot("openai-codex"));
   }
 
   /** Every configured account for one provider, in config order. */
@@ -584,6 +576,33 @@ export class AccountRegistry {
     this.refreshLegacySource();
     return { config: this.configStatus, legacy: this.legacyStatus };
   }
+}
+
+/**
+ * {@link AccountRegistry.isSynthesizedLegacyOnly} on a snapshot the caller
+ * already holds, so a caller that must also check the snapshot's source states
+ * decides both from ONE read.
+ */
+export function isSynthesizedLegacyOnlySnapshot(snapshot: AccountListSnapshot): boolean {
+  const rows = snapshot.accounts["openai-codex"];
+  const entry = snapshot.settings["openai-codex"];
+  return (
+    !entry?.legacyCodexSuppressed && !entry?.accounts.length && rows.length === 1 && rows[0].legacy
+  );
+}
+
+/**
+ * Whether a snapshot is served from a last-known-good copy because a Codex
+ * source read FAILED just now. `snapshot()` does not throw then: it serves the
+ * copy and reports the failure only in the source states. A caller about to do
+ * something irreversible on the strength of "the list still looks the same"
+ * (spend a refresh token, answer a terminal login demand) must check this
+ * first; `invalidate()` clears stamps, not the copy.
+ */
+export function codexSourceFailed(snapshot: AccountListSnapshot): SourceStatus | undefined {
+  if (snapshot.config.state === "failed") return snapshot.config;
+  if (snapshot.legacy.state === "failed") return snapshot.legacy;
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------

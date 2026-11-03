@@ -667,7 +667,13 @@ export class CodexOAuth {
     } catch (err) {
       if (!isGateUnavailable(err)) throw err;
       const latest = this.readCredentialFile();
-      if (latest && this.isAdoptable(latest.credentials, trigger)) {
+      // Adopt only from a file this facade still owns: a leftover the move
+      // published past is not a holder's rotation (MTL-372 review round 2).
+      if (
+        latest &&
+        this.isAdoptable(latest.credentials, trigger) &&
+        (await this.legacyFileOwnership()) === "facade"
+      ) {
         log(
           `[CodexOAuth] Refresh gate unavailable (${err.reason}); the holder already rotated — using its token`
         );
@@ -693,21 +699,29 @@ export class CodexOAuth {
     // Re-read under the gate. The in-memory copy is this process's snapshot; the
     // file is what every other process (and the pool) wrote.
     const onDisk = this.readCredentialFile();
-    if (!onDisk) throw await this.credentialFileGoneError();
-    if (this.isAdoptable(onDisk.credentials, trigger)) {
-      log("[CodexOAuth] Another process already rotated the token — using it, no exchange");
-      this.setCredentials(onDisk.credentials);
-      return onDisk.credentials.access_token;
-    }
+    if (!onDisk) throw await this.credentialFileGoneError({ dropCredentials: true });
 
     // The file being PRESENT does not make it this facade's: the legacy move
     // (MTL-372) may have published a `keychain` row and stopped before its
     // delete (M8 failed, or the process stopped). Exchanging here would rotate
     // the refresh token the Keychain item also holds, revoking it, and the
     // leftover cleanup would later delete the rotated file: the login lost.
-    // Only a synthesized-only account list lets the facade exchange.
+    // Adopting from it is no better: the file is dead to every reader. So
+    // ownership is decided first, and only a synthesized-only account list
+    // lets the facade adopt or exchange.
     const ownership = await this.legacyFileOwnership();
-    if (ownership !== "facade") throw this.facadeYieldError(ownership);
+    if (ownership !== "facade") {
+      // A file nobody reads any more: stop signing with this process's copy
+      // too. "unknown" keeps it (an unreadable list is not a logout), and so
+      // does "file-row" (the login is still the file's, served by the pool).
+      if (ownership === "elsewhere") this.setCredentials(null);
+      throw this.facadeYieldError(ownership);
+    }
+    if (this.isAdoptable(onDisk.credentials, trigger)) {
+      log("[CodexOAuth] Another process already rotated the token — using it, no exchange");
+      this.setCredentials(onDisk.credentials);
+      return onDisk.credentials.access_token;
+    }
 
     const updated = await this.exchangeRefreshToken(onDisk.credentials);
 
@@ -775,24 +789,39 @@ export class CodexOAuth {
    *   no suppression marker). The pool serves it, under this same gate.
    * - `elsewhere`: the marker is set, or no row names the file: the legacy move
    *   published (MTL-372). Nothing reads the file.
-   * - `unknown`: the account list could not be read.
+   * - `unknown`: the account list could not be read. That includes a read
+   *   that FAILED while the registry had a last-known-good copy: `snapshot()`
+   *   then serves the copy without throwing and reports the failure only in
+   *   its source states. A copy taken before the move still says "synthesized
+   *   only", and trusting it would exchange a refresh token the Keychain item
+   *   also holds (MTL-372 review round 2).
    */
   private async legacyFileOwnership(): Promise<"facade" | "file-row" | "elsewhere" | "unknown"> {
-    const { getAccountRegistry } = await import("./accounts/registry.js");
+    const { getAccountRegistry, isSynthesizedLegacyOnlySnapshot, codexSourceFailed } = await import(
+      "./accounts/registry.js"
+    );
     const registry = getAccountRegistry();
     registry.invalidate();
+    let snapshot: ReturnType<typeof registry.snapshot>;
     try {
-      if (registry.isSynthesizedLegacyOnly()) return "facade";
-      const snapshot = registry.snapshot("openai-codex");
-      const suppressed = snapshot.settings["openai-codex"]?.legacyCodexSuppressed === true;
-      const named = snapshot.accounts["openai-codex"].some(
-        (row) => row.store === "legacy-codex-file"
-      );
-      return !suppressed && named ? "file-row" : "elsewhere";
+      snapshot = registry.snapshot("openai-codex");
     } catch (err) {
       log(`[CodexOAuth] Could not read the Codex account list: ${errorMessage(err)}`);
       return "unknown";
     }
+    const failed = codexSourceFailed(snapshot);
+    if (failed) {
+      log(
+        `[CodexOAuth] Could not read the Codex account list (${failed.path}); not trusting the last-known-good copy`
+      );
+      return "unknown";
+    }
+    if (isSynthesizedLegacyOnlySnapshot(snapshot)) return "facade";
+    const suppressed = snapshot.settings["openai-codex"]?.legacyCodexSuppressed === true;
+    const named = snapshot.accounts["openai-codex"].some(
+      (row) => row.store === "legacy-codex-file"
+    );
+    return !suppressed && named ? "file-row" : "elsewhere";
   }
 
   /**
@@ -834,26 +863,39 @@ export class CodexOAuth {
    *
    * The registry is invalidated first: its stamps may predate the move. An
    * account list that cannot be read is not a logout either, so it is
-   * transient too.
+   * transient too — including a read that failed while a last-known-good copy
+   * exists: `snapshot()` serves that copy without throwing, and a copy taken
+   * before the move shows no configured row (MTL-372 review round 2).
+   *
+   * `dropCredentials`: the file is gone under the gate and the list READ, so
+   * this process's in-memory copy belongs to a logout or a moved login and
+   * must stop signing. An unreadable list keeps it: unknown is not a logout.
    */
-  private async credentialFileGoneError(): Promise<CodexOAuthLocalError | CodexOAuthRefreshError> {
+  private async credentialFileGoneError(
+    opts: { dropCredentials?: boolean } = {}
+  ): Promise<CodexOAuthLocalError | CodexOAuthRefreshError> {
     // Dynamic: the registry pulls in the config loader, which this module does
     // not otherwise need, and this branch is rare.
-    const { getAccountRegistry } = await import("./accounts/registry.js");
+    const { getAccountRegistry, codexSourceFailed } = await import("./accounts/registry.js");
     const registry = getAccountRegistry();
     registry.invalidate();
-    let configured: boolean;
-    try {
-      configured = registry.hasConfiguredAccounts("openai-codex");
-    } catch (err) {
-      log(
-        `[CodexOAuth] Credential file absent and the account list is unreadable: ${errorMessage(err)}`
-      );
+    const unreadable = (detail: string) => {
+      log(`[CodexOAuth] Credential file absent and the account list is unreadable: ${detail}`);
       return new CodexOAuthLocalError(
         "The OpenAI Codex credential file is gone and the Codex account list could not be read. " +
           "Retry the request."
       );
+    };
+    let configured: boolean;
+    try {
+      const snapshot = registry.snapshot("openai-codex");
+      const failed = codexSourceFailed(snapshot);
+      if (failed) return unreadable(`${failed.path}: ${failed.error ?? "read failed"}`);
+      configured = snapshot.accounts["openai-codex"].length > 0;
+    } catch (err) {
+      return unreadable(errorMessage(err));
     }
+    if (opts.dropCredentials) this.setCredentials(null);
     if (configured) {
       log(
         "[CodexOAuth] Credential file absent; Codex accounts are configured — answering transient"
