@@ -673,11 +673,7 @@ export class CodexOAuth {
     // Re-read under the gate. The in-memory copy is this process's snapshot; the
     // file is what every other process (and the pool) wrote.
     const onDisk = this.readCredentialFile();
-    if (!onDisk) {
-      throw new CodexOAuthRefreshError(
-        `No OpenAI Codex OAuth credentials found. Please run \`${LOGIN_COMMAND}\` first.`
-      );
-    }
+    if (!onDisk) throw await this.credentialFileGoneError();
     if (this.isAdoptable(onDisk.credentials, trigger)) {
       log("[CodexOAuth] Another process already rotated the token — using it, no exchange");
       this.setCredentials(onDisk.credentials);
@@ -732,6 +728,56 @@ export class CodexOAuth {
     this.setCredentials(updated);
     log(`[CodexOAuth] Token refreshed, valid until ${new Date(updated.expires_at).toISOString()}`);
     return updated.access_token;
+  }
+
+  /**
+   * Why the credential file is absent under the gate, as the error to throw.
+   *
+   * This process delegated to the file while the account list showed only the
+   * synthesized legacy account. The file can since have gone two ways:
+   *
+   * - **a logout** — no Codex account is configured any more. That is the
+   *   terminal {@link CodexOAuthRefreshError} it always was.
+   * - **the legacy file move into the Keychain** (MTL-372) — the move publishes
+   *   a Codex row (and `legacyCodexSuppressed`) before it deletes the file. The
+   *   login still exists, under the pool. A terminal 401 here would walk a bare
+   *   routing chain to a metered hop, so the answer is the transient
+   *   {@link CodexOAuthLocalError} (503, no upstream status): the retry reaches
+   *   `CodexPoolHalf`, which leases the moved row.
+   *
+   * The registry is invalidated first: its stamps may predate the move. An
+   * account list that cannot be read is not a logout either, so it is
+   * transient too.
+   */
+  private async credentialFileGoneError(): Promise<CodexOAuthLocalError | CodexOAuthRefreshError> {
+    // Dynamic: the registry pulls in the config loader, which this module does
+    // not otherwise need, and this branch is rare.
+    const { getAccountRegistry } = await import("./accounts/registry.js");
+    const registry = getAccountRegistry();
+    registry.invalidate();
+    let configured: boolean;
+    try {
+      configured = registry.hasConfiguredAccounts("openai-codex");
+    } catch (err) {
+      log(
+        `[CodexOAuth] Credential file absent and the account list is unreadable: ${errorMessage(err)}`
+      );
+      return new CodexOAuthLocalError(
+        "The OpenAI Codex credential file is gone and the Codex account list could not be read. " +
+          "Retry the request."
+      );
+    }
+    if (configured) {
+      log(
+        "[CodexOAuth] Credential file absent; Codex accounts are configured — answering transient"
+      );
+      return new CodexOAuthLocalError(
+        "The Codex login moved to the macOS Keychain; retry the request."
+      );
+    }
+    return new CodexOAuthRefreshError(
+      `No OpenAI Codex OAuth credentials found. Please run \`${LOGIN_COMMAND}\` first.`
+    );
   }
 
   /**
