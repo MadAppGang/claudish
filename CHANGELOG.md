@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.13.0] - 2026-11-03
+
+### Documentation
+
+- update CHANGELOG.md for v14.12.0([`c160280`](https://github.com/MadAppGang/claudish/commit/c1602809e799a24c5dc2d2e127634fb265c4aa02))
+
+### New Features
+
+- add transcript_session tool and team mode transcript *(mcp)* ([`b6b9a25`](https://github.com/MadAppGang/claudish/commit/b6b9a259ca37318afb82b745c96361e7bf42d125))
+
 ## [14.12.0] - 2026-11-03
 
 ### Documentation
