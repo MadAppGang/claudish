@@ -85,6 +85,7 @@ has finished, and closes the pane when the slot or session ends.
 | `team(mode:"capture", path, slot)` | that slot's current screen |
 | `capture_session(session_id)` | an MCP session's current screen |
 | `resize_session(session_id, cols, rows)`, `team(mode:"resize", …)` | set the pane's terminal size; Claude Code redraws at the new width |
+| `scroll_session(session_id, by \| to)`, `team(mode:"scroll", …)` | scroll the child's transcript view by `by` rows (negative = older) or back to the live bottom (`to:"end"`) |
 | `list_sessions` | every MCP session, same row shape |
 
 A capture carries a `seq` that grows with every visible change; pass it back as `since_seq` and an

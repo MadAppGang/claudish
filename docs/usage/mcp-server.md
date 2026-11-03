@@ -6,7 +6,7 @@ Claudish isn't just a CLI. It's also an MCP server that exposes external AI mode
 
 Claude can call Grok, GPT-5, or Gemini mid-conversation to get a second opinion, or delegate a task to another model as a full async session that it polls and answers with `send_input`.
 
-The server exposes **16 tools** across four groups: low-level (3), agentic (4), session (8), and debug (1).
+The server exposes **17 tools** across four groups: low-level (3), agentic (4), session (9), and debug (1).
 
 ### Requirements for `team` and sessions
 
@@ -190,10 +190,11 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 - `min_output_bytes` - Report a slot EMPTY when its answer is shorter than this (default 0 = off)
 - `agent` - Claude Code subagent every slot runs as (e.g. `dev:reviewer`); an unknown agent fails the slot `agent_rejected`
 - `claude_flags` - Other Claude Code flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`; a value after a Claude Code switch, as in `--brief now`, would be the session's first prompt and is refused). Flags that would break the interactive pane (`-p`, `--output-format`, `--resume`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
-- `slot` - For `capture` and `resize` (required) and `cancel` (omit to stop the whole run): the anonymised slot id
-- `run_id` - For `status`, `capture`, `cancel` and `resize`: the `run_id` a `run` answer returned; addresses that run even after a newer run reused the path. Omit it for the newest run at `path`
+- `slot` - For `capture`, `resize` and `scroll` (required) and `cancel` (omit to stop the whole run): the anonymised slot id
+- `run_id` - For `status`, `capture`, `cancel`, `resize` and `scroll`: the `run_id` a `run` answer returned; addresses that run even after a newer run reused the path. Omit it for the newest run at `path`
 - `since_seq`, `spans` - For `capture`: see `capture_session`
 - `cols`, `rows` - For `resize` (required): see `resize_session`
+- `by`, `to` - For `scroll` (exactly one): see `scroll_session`
 
 **Modes:**
 | Mode | What it does |
@@ -204,6 +205,7 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 | `capture` | One slot's current terminal screen (same shape as `capture_session`) |
 | `cancel` | Stop one slot (`slot`) or every slot of the run; answers each slot's `{state, changed}` |
 | `resize` | Set one slot's terminal size; answers `{run_id, path, slot, cols, rows, changed, seq, pending?}` (same rules as `resize_session`) |
+| `scroll` | Scroll one slot's transcript view by `by` rows or `to:"end"`; answers `{run_id, path, slot, seq}` (same rules as `scroll_session`) |
 | `judge` | Blind-vote on existing outputs in the session directory |
 | `run-and-judge` | Full pipeline: run models, then judge the outputs; holds the call open for the whole run |
 
@@ -289,13 +291,13 @@ The session tools are in the `session` group, which `all` (the default) includes
 | unset, `all` | all 16 |
 | `low-level` | `run_prompt`, `list_models`, `search_models` |
 | `agentic` | `preflight`, `team`, `report_error`, `allowance_status` |
-| `session` | `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session` |
+| `session` | `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `scroll_session` |
 | `debug` | `compare_models` |
 | any other value | all 16, with a warning on stderr |
 
 Inside a session that claudish itself started (a `create_session` or `team` pane), the server runs in nested mode. Whatever `CLAUDISH_MCP_TOOLS` says, it offers at most the four one-shot tools (`run_prompt`, `compare_models`, `list_models`, `search_models`) and no session tools. A model-running `claudish` launched from that session's shell (`-p`, interactive, `team run`) exits 64 with `nested session refused`. One level of nesting is the limit.
 
-Any other value still selects all 16 tools, and the server writes one line to stderr naming the
+Any other value still selects all 17 tools, and the server writes one line to stderr naming the
 value and the valid ones:
 
 ```
@@ -502,6 +504,33 @@ the same for a team slot.
 
 ---
 
+### `scroll_session`
+
+Scroll a session's transcript view, as a mouse wheel over the child's Claude Code would. The next
+`capture_session` shows the child scrolled. The child draws on the alternate screen, so a capture
+has no rows above the visible screen; scrolling the child is the way to read earlier output.
+
+It never types into the prompt, submits, or answers a dialog. Before claudish delivers the next
+prompt, it returns the view to the live bottom.
+
+**Parameters** (give exactly one of `by` and `to`):
+- `session_id` (required) - Session ID from `create_session`
+- `by` - Signed rows: negative scrolls toward older content, positive toward the live bottom. Not
+  0. `|by|` is capped at 200 per call. It is a target, ± 1 row
+- `to` - `"end"`: return to the live bottom
+
+**Returns:** `{ session_id, seq }`. `seq` is the screen's sequence after the scroll: the first
+changed screen within 1 s, else the current one (at the top or the bottom nothing changes). Errors
+are JSON `{error: {code, message}}` with `unknown_session`, `invalid_args` (neither or both of `by`
+and `to`, `by: 0`, a non-integer `by`, or a `to` other than `"end"`), or `scroll_unavailable`: the
+session is still starting, finished, delivering a prompt, reading its turn from the screen or
+reconnecting, or magmux did not confirm the send (the scroll may still land). Nothing is queued.
+`list_sessions` and `team` list `scroll` in `capabilities`.
+`team(mode:"scroll", path, slot, run_id?, by | to)` does the same for a team slot and answers
+`{run_id, path, slot, seq}`.
+
+---
+
 ### Session records on disk
 
 Every `create_session` session keeps its record under `~/.claudish/sessions/<session_id>/`
@@ -697,11 +726,11 @@ its files.
 **Check if MCP server starts:**
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
-# Should output: [claudish] MCP server started (tools: all, 16 tools)
+# Should output: [claudish] MCP server started (tools: all, 17 tools)
 ```
 
 **Test the tools:**
-Use Claude Code and ask it to list available MCP tools. You should see all 15: `run_prompt`, `list_models`, `search_models`, `compare_models`, `preflight`, `team`, `report_error`, `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, and `resize_session`.
+Use Claude Code and ask it to list available MCP tools. You should see all 17: `run_prompt`, `list_models`, `search_models`, `compare_models`, `preflight`, `team`, `report_error`, `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `allowance_status`, and `scroll_session`.
 
 **Check which tool group is active:**
 ```bash
