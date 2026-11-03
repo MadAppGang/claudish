@@ -419,13 +419,40 @@ export class AccountRegistry {
     }
   }
 
-  /** Suppressed/explicit pools never depend on an unrelated legacy file. */
+  /**
+   * Suppressed/explicit pools never depend on an unrelated legacy file.
+   *
+   * **While `config.json` is failed and served from its last-known-good copy,
+   * the legacy source is NOT advanced.** Whether the file matters is decided
+   * from that copy, which may predate the legacy file move (MTL-372): 0 rows,
+   * no marker. Re-reading the file then finds it absent (M8 deleted it), and
+   * the snapshot would combine the OLD config with the NEW file state — 0 Codex
+   * accounts and no throw — so availability answers false and the composite
+   * signs the metered api-key half. Instead the legacy copy that was current
+   * with the config copy is served, and the legacy source reports failed: with
+   * no such copy, a Codex snapshot throws `AccountListUnavailableError`, as a
+   * cold failure does. The stamp is cleared so the file is re-read as soon as
+   * the config reads again.
+   */
   private refreshLegacySource(): boolean {
     const entry = this.lastGoodSettings?.["openai-codex"];
     if (entry?.legacyCodexSuppressed || (entry?.accounts.length ?? 0) > 0) {
       this.legacyStatus = { state: "absent", path: this.legacyPath(), ignored: true };
       this.legacyStamp = undefined;
       return false;
+    }
+    if (this.configStatus.state === "failed" && this.lastGoodSettings !== undefined) {
+      const path = this.legacyPath();
+      const detail = "not re-read while the account list config cannot be read";
+      this.legacyStamp = undefined;
+      this.legacyStatus = {
+        state: "failed",
+        error: detail,
+        failure: { source: "legacy", path, type: "io", detail },
+        path,
+        servingLastKnownGood: this.lastGoodLegacy !== undefined,
+      };
+      return true;
     }
     this.refreshLegacy();
     return true;
