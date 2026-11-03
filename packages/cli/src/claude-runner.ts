@@ -1361,6 +1361,12 @@ export function scrubChildEnv(
  *   swallowed: the prompt sits in the box and the slot fails `prompt_not_accepted`.
  *   Interactive use outside a pane keeps the user's editorMode. magmux 0.16.0 forces
  *   the same value for its panes; once that is the minimum, this key can go.
+ * - `wheelScrollAccelerationEnabled: false` is added ONLY in an MCP pane child, on the
+ *   same gate, and forced like `editorMode`. `scroll_session` / `team(mode:"scroll")`
+ *   forward a row count as that many SGR wheel events in ONE magmux send. With Claude
+ *   Code's default acceleration a burst ramps: 50 wheel events moved 237 rows
+ *   (MTL-369 step 1, Claude Code 2.1.316). With it off, each event moves one row, so
+ *   `by` maps to rows (± 1). Interactive use outside a pane keeps the user's value.
  *
  * Claude Code merges settings sources per key, so every other key of the user's
  * settings files still applies; this overlay only wins on the keys it sets.
@@ -1379,6 +1385,7 @@ export function buildClaudishSettingsOverlay(
   if (paneChild) {
     settings.skipDangerousModePermissionPrompt = true;
     settings.editorMode = "normal";
+    settings.wheelScrollAccelerationEnabled = false;
   }
   return settings;
 }
@@ -1445,6 +1452,13 @@ export function mergeUserSettingsIfPresent(
     // --settings: a pane child in vim mode cannot accept a prompt at all.
     if (paneChild) {
       userSettings.editorMode = "normal";
+    }
+
+    // In an MCP pane child, one wheel event must move one row, or scroll_session's
+    // row count ramps (see buildClaudishSettingsOverlay). Forced over the caller's
+    // --settings, like editorMode.
+    if (paneChild) {
+      userSettings.wheelScrollAccelerationEnabled = false;
     }
 
     // Overwrite the temp settings file with the merged result. It can carry the
