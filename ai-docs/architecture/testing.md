@@ -56,7 +56,9 @@ whole suite. The move copies `~/.claudish/codex-oauth.json` into the Keychain an
 file. It runs on the first Codex sign of any process whose config is the default one, so an
 in-process test that installs a darwin keychain fake without the flag reaches it with the real
 `HOME`, where `activeConfigFile()` was built from `os.homedir()` at module load. A hand-run `bun
-test <file>` does not set the flag. A test that wants the move installs the fake `security`
+test` does not go through this guard, and that is how the move once reached a developer's real login
+(2026-11-03): the test preload now sets the flag and a temporary `HOME` for EVERY `bun test` run (see
+"The home guard" below). A test that wants the move installs the fake `security`
 (`auth/accounts/fake-security.test-helper.ts`, see `keychain.md`) in a child process with a temp
 `HOME`, and deletes the flag only inside that child, after the fake is installed. The parent keeps
 the flag.
@@ -274,6 +276,52 @@ Two pane tests "fail inside a pane by design" (`launcher/magmux-wrapper.test.ts`
 magmux-wrapper measured 16 pass / 9 fail both before and after the preload: the 9 come from
 `MAGMUX_SOCK` (the ambient-multiplexer branch), which is not a session-record variable and stays
 inherited. team-grid.e2e was 7 / 0 both times in that simulation.
+
+## The home guard: every `bun test` runs on a temporary HOME with the Keychain off
+
+**What happened (2026-11-03, MTL-372 review round 4).** A plain `bun test` ran the legacy Codex
+file move against the developer's REAL `~/.claudish` and Keychain. `CodexPoolHalf.getRequestAuth`
+starts the move on every Codex sign, and its only test-side guard was `CLAUDISH_DISABLE_KEYCHAIN=1`,
+which `test:safe` sets and a plain `bun test` did not.
+
+**What the preload does now** (`scripts/test-preload.ts`, before any test file loads):
+
+- The three prevention flags `test:safe` sets: `CLAUDISH_DISABLE_KEYCHAIN=1`,
+  `CLAUDISH_DISABLE_OP=1` and `CLAUDISH_DISABLE_CATALOG_WARM=1`, each unless the environment already
+  states a value. The catalog flag became necessary with the empty `HOME`: without it
+  `handlers/explicit-spec-no-credential.test.ts` and `unregistered-credential-name.test.ts` (3
+  tests) live-fetch the hosted catalog past their 5 s timeout; under the real `HOME` they had been
+  reading the developer's cached catalog, the class described above.
+- `HOME` becomes a fresh `claudish-test-home-*` directory under the system temp dir, removed at
+  exit, unless the inherited `HOME` is already under a temp directory (a parent test that spawned
+  this `bun test` with its own throwaway home keeps it).
+- `os.homedir()` follows `process.env.HOME`. **Assigning `HOME` is not enough under Bun.** Measured
+  on 1.4.0: `os.homedir()` and `os.userInfo().homedir` return the HOME the process STARTED with,
+  whatever `process.env.HOME` says later, and a named `import { homedir } from "node:os"` is not
+  reached by patching the `os` object (`require("os")` is). `profile-config.ts` builds its config
+  path from `homedir()` at module load, so an env-only preload would have left the default config,
+  and the move's "default config" check, on the real home. The preload therefore patches the CJS
+  object and `mock.module`s both `node:os` and `os`.
+
+`scripts/test-preload-home.test.ts` proves it from all three bunfig directories: a check file run
+under `bun test` with a non-temporary stand-in `HOME` sees a temp home from `process.env.HOME`, a
+named import, a module-load constant, the namespace, `require("os")` and `userInfo()`, plus the flag.
+It fails 4/5 with the previous preload and 3/5 with an env-only one.
+
+**Which files reached the move.** A static import scan found 247 of 620 test files that can load
+`legacy-move.ts`. Each ran alone under the PREVIOUS preload with a throwaway stand-in `HOME` holding a
+fake `codex-oauth.json`, a recorder in place of `startLegacyCodexMove` (it asks the real
+`legacyMoveApplies`, never moves), every `Bun.spawn`/`spawnSync` of `security` intercepted, and a
+fake `security` first on `PATH`. A fake on `PATH` alone is NOT a safe harness: `keychain.ts` spawns
+the absolute `/usr/bin/security`. One file started the move: `auth/credentials/codex-pool-legacy-2a.test.ts`
+(5 signs, each due). `billing-probe.test.ts` reached the trigger 5 times, never due. Two e2e files
+(`mcp-session/e2e-sessions.test.ts`, `team-grid.e2e.test.ts`) ran a bare `security
+find-generic-password` (existence only, no `-w`) through `claude-runner.ts`'s Claude Code login check:
+a read of the login keychain, not the move. Under the new preload the same harness records zero due
+moves.
+
+**Not covered:** a child spawned with no `env` option gets the original environment, real `HOME`
+included (the trap above); `spawn-env.test.ts` is what forbids that in test code.
 
 ## Clearing provider keys: derive the list, never hand-write it
 
