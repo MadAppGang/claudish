@@ -1075,10 +1075,16 @@ type and new fields may only be added.
   return the screen at its current size `{seq, cols, rows, cursor, lines, final, spans?}` or
   `{unchanged:true, seq, final}` when `since_seq` is current; `team(mode="resize")` and
   `resize_session` return `{…, cols, rows, changed, seq, pending?}` ("Terminal size");
-  `team(mode="scroll")` and `scroll_session` return `{…, seq}` ("Scrolling the child's view").
+  `team(mode="scroll")` and `scroll_session` return `{…, seq}` ("Scrolling the child's view");
+  `team(mode="transcript")` and `transcript_session` (verb H, capability `transcript`, MTL-373)
+  return `{…, cursor, lines, more, final}`, the conversation from the child's transcript as
+  `{kind, text, cont?}` lines (`user`, `assistant`, `tool`, `task_file`, `system`, `error`; a
+  reader shows an unknown kind as plain text), at most 200 lines and 32,000 bytes per answer, a
+  `cont` chain continuing in order into the next answer. They read files only and keep answering
+  after the session finished, from its record on disk (`mcp-sessions.md`, `transcript_session`).
   Errors are a JSON `ContractError` (`unknown_run`, `unknown_slot`, `unknown_session`,
   `invalid_args`, from `resize` only `resize_unsupported`, `delivery_unavailable`, and from
-  `scroll` only `scroll_unavailable`).
+  `scroll` only `scroll_unavailable`); the transcript verbs add no code.
 - `run_id` (`<team_session_id>-<base36 start ms>-<6 hex>`) addresses one run even after a newer
   run reused its path, while the server retains it (30 minutes after it settles, at most 20 settled
   runs). A path holds at most one ACTIVE run.

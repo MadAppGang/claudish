@@ -454,6 +454,7 @@ describe("hourly usage R2", () => {
         "resize",
         "allowance",
         "scroll",
+        "transcript",
       ],
       sections: ["usage"],
       allowance: { ...header(r), usage: u },

@@ -50,8 +50,9 @@ lives in `ROADMAP.md`.
   the tournament gate no strategy has passed yet, gap alerts and their measured budgets, and why
   alerts under `lookahead` simulate `ebr`. Read before editing `auth/accounts/allowance/`, `ledger/`,
   `allowance-service.ts` or the pool's `rank` hook
-- `mcp-sessions.md` — the 17-tool MCP surface and its four groups, the 4-tool nested mode, sessions
-  on panes (`send_input` queueing, `capture_session`, `resize_session`, `scroll_session`, the on-disk session records
+- `mcp-sessions.md` — the 18-tool MCP surface and its four groups, the 4-tool nested mode, sessions
+  on panes (`send_input` queueing, `capture_session`, `resize_session`, `scroll_session`,
+  `transcript_session` (the transcript as text lines: cursor, byte caps, `final`), the on-disk session records
   and who reads them), `run_prompt`'s Claude Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
   assistant message of its turn, from the transcript, starting after the task file was read
