@@ -193,6 +193,80 @@ const STORE_MOVED = Symbol("store-moved");
 const NOT_ATTEMPTED = Symbol("not-attempted");
 
 /**
+ * The pool's re-auth attempt stamp per account: one committed value, plus the
+ * stamps of leases still in flight.
+ *
+ * A lease stamps the row before it awaits, so a concurrent request sees the
+ * attempt and the `needsReauth` retry schedule counts it. A lease that turns
+ * out to have tried no credential (a store-only move, an unreadable account
+ * list) withdraws its stamp. Withdrawal removes ONLY that lease's mark: a
+ * saved-and-put-back previous value would, under two overlapping acquires,
+ * put the other lease's in-flight stamp back as if it had been committed, and
+ * a due retry would then read "attempted just now" with nothing attempted.
+ */
+class ReauthAttemptStamps {
+  private readonly committed = new Map<string, number>();
+  private readonly inFlight = new Map<string, Set<{ at: number }>>();
+
+  /** The latest stamp, committed or in flight. */
+  get(id: string): number | undefined {
+    let latest = this.committed.get(id);
+    for (const mark of this.inFlight.get(id) ?? []) {
+      if (latest === undefined || mark.at > latest) latest = mark.at;
+    }
+    return latest;
+  }
+
+  /** Every account's latest stamp, for a request's selection context. */
+  snapshot(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const id of new Set([...this.committed.keys(), ...this.inFlight.keys()])) {
+      const at = this.get(id);
+      if (at !== undefined) out.set(id, at);
+    }
+    return out;
+  }
+
+  /** Stamp a lease in flight; it settles exactly once, by `commit` or `restore`. */
+  begin(id: string, at: number): { commit: () => void; restore: () => void } {
+    const mark = { at };
+    let marks = this.inFlight.get(id);
+    if (!marks) {
+      marks = new Set();
+      this.inFlight.set(id, marks);
+    }
+    marks.add(mark);
+    /** False when `clear` already dropped the mark. */
+    const withdraw = (): boolean => {
+      const current = this.inFlight.get(id);
+      if (!current?.delete(mark)) return false;
+      if (current.size === 0) this.inFlight.delete(id);
+      return true;
+    };
+    return {
+      commit: () => {
+        if (!withdraw()) return;
+        const previous = this.committed.get(id);
+        if (previous === undefined || at > previous) this.committed.set(id, at);
+      },
+      restore: () => {
+        withdraw();
+      },
+    };
+  }
+
+  /**
+   * A healed mark: its retry clock is gone, committed and in flight. A lease
+   * still in flight then settles without stamping, as it did when the stamp
+   * was a plain map entry deleted under it.
+   */
+  clear(id: string): void {
+    this.committed.delete(id);
+    this.inFlight.delete(id);
+  }
+}
+
+/**
  * Is `current` the same live account as `leased`, rebound only to another store?
  * Disabled, removed and identity-changed rows are not: those stay terminal for a pin.
  */
@@ -307,7 +381,7 @@ export class AccountPool {
   private readonly env: NodeJS.ProcessEnv;
   private readonly managers = new Map<string, TokenManager>();
   /** Last refresh attempt per account, for the `needsReauth` retry schedule. */
-  private readonly lastReauthAttempt = new Map<string, number>();
+  private readonly lastReauthAttempt = new ReauthAttemptStamps();
   /** The last failed lease per account, which deprioritises it for a while. */
   private readonly leaseFailures = new Map<string, AccountLeaseFailure>();
 
@@ -350,7 +424,7 @@ export class AccountPool {
       provider: this.provider,
       failed: new Map(),
       leaseFailures: new Map(this.leaseFailures),
-      reauthAttempts: new Map(this.lastReauthAttempt),
+      reauthAttempts: this.lastReauthAttempt.snapshot(),
     };
     if (allowance && this.allowanceStrategyOn()) {
       try {
@@ -633,14 +707,19 @@ export class AccountPool {
     opts: AcquireOptions
   ): Promise<AccessTokenResult | typeof STORE_MOVED | null> {
     const stamps = this.stampReauthAttempt(record.id, at, context);
+    let restored = false;
+    const restore = () => {
+      restored = true;
+      stamps.restore();
+    };
     try {
       const token = await this.tryLease(record, opts, reason, context);
       if (token === STORE_MOVED) {
-        stamps.restore();
+        restore();
         return STORE_MOVED;
       }
       if (token === NOT_ATTEMPTED) {
-        stamps.restore();
+        restore();
         return null;
       }
       if (!token) return null;
@@ -652,42 +731,47 @@ export class AccountPool {
       );
       if (stillConfigured) return token;
       if (!this.noteLeaseChanged(record, ref, rows, context, opts)) return null;
-      stamps.restore();
+      restore();
       return STORE_MOVED;
     } catch (err) {
       if (
         err instanceof AccountStoreMovedDuringLeaseError ||
         err instanceof AccountListUnreadableDuringLeaseError
       ) {
-        stamps.restore();
+        restore();
       }
       throw err;
+    } finally {
+      if (!restored) stamps.commit();
     }
   }
 
   /**
    * Stamp a lease as this row's re-auth attempt, in the pool and the request
-   * context, and hand back how to undo it. A pass that turns out to be a
-   * store-only move attempted nothing, so `acquire` restores both maps.
+   * context, and hand back how to settle it. A pass that turns out to be a
+   * store-only move, or an empty store under an unreadable list, attempted
+   * nothing, so `leaseStep` restores both; every other pass commits. See
+   * {@link ReauthAttemptStamps} for why the pool's stamp is withdrawn, not
+   * put back.
    */
   private stampReauthAttempt(
     id: string,
     at: number,
     context: AccountSelectionContext
-  ): { restore: () => void } {
-    const pool = this.lastReauthAttempt.get(id);
+  ): { restore: () => void; commit: () => void } {
+    // The pool's stamp is shared by overlapping acquires, so it is tentative
+    // until the lease settles and a restore removes only its own mark. The
+    // request's map belongs to one acquire, whose passes run one at a time.
+    const pool = this.lastReauthAttempt.begin(id, at);
     const request = context.reauthAttempts.get(id);
-    this.lastReauthAttempt.set(id, at);
     context.reauthAttempts.set(id, at);
-    const put = (map: Map<string, number>, value: number | undefined) => {
-      if (value === undefined) map.delete(id);
-      else map.set(id, value);
-    };
     return {
       restore: () => {
-        put(this.lastReauthAttempt, pool);
-        put(context.reauthAttempts, request);
+        pool.restore();
+        if (request === undefined) context.reauthAttempts.delete(id);
+        else context.reauthAttempts.set(id, request);
       },
+      commit: () => pool.commit(),
     };
   }
 
@@ -796,7 +880,7 @@ export class AccountPool {
       }
       if (healed) {
         // The retry clock belonged to the mark just cleared.
-        this.lastReauthAttempt.delete(record.id);
+        this.lastReauthAttempt.clear(record.id);
         context.reauthAttempts.delete(record.id);
       }
     }
