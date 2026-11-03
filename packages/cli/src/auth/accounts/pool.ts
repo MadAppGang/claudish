@@ -472,10 +472,15 @@ export class AccountPool {
       throw this.acquireNoEligibleError(evaluation, context, opts);
     await this.healReauthMarks(context, opts.pin);
     evaluation = this.evaluate(opts, context);
-    // One bounded pass, including removals between selection and lease.
+    // One bounded pass, including removals between selection and lease. A
+    // store-only move (the legacy file move, MTL-372) does not spend that
+    // budget: it has its own, because each row can move at most once.
     const attempts = evaluation.records.length + 1;
+    let storeMovesLeft = evaluation.records.length + 1;
+    let fresh = true;
     for (let attempt = 0; attempt < attempts; attempt++) {
-      if (attempt > 0) evaluation = this.evaluate(opts, context);
+      if (!fresh) evaluation = this.evaluate(opts, context);
+      fresh = false;
       const selection = evaluation.selection;
       if (selection.kind === "none") throw this.acquireNoEligibleError(evaluation, context, opts);
       const { candidate, reason } = selection;
@@ -492,20 +497,13 @@ export class AccountPool {
         continue;
       }
       const at = this.now();
-      this.lastReauthAttempt.set(record.id, at);
-      context.reauthAttempts.set(record.id, at);
-      const token = await this.tryLease(record, opts, reason, context);
-      if (!token) continue;
-      // A lease may await a refresh. Removal/disable/rebinding during that await
-      // cannot publish an artifact or move active back to the old account.
-      const rows = this.accounts();
-      const stillConfigured = rows.some(
-        (a) => a.id === record.id && a.enabled && a.store === record.store
-      );
-      if (!stillConfigured) {
-        this.noteLeaseChanged(record, candidate.ref, rows, context, opts);
+      const step = await this.leaseStep(record, candidate.ref, reason, at, context, opts);
+      if (step === STORE_MOVED) {
+        if (storeMovesLeft-- > 0) attempt--;
         continue;
       }
+      if (!step) continue;
+      const token = step;
       this.leaseFailures.delete(record.id);
       context.leaseFailures.delete(record.id);
       // Only successful leases may change stickiness; capacity queries never do.
@@ -578,7 +576,7 @@ export class AccountPool {
     rows: AccountRecord[],
     context: AccountSelectionContext,
     opts: AcquireOptions
-  ): void {
+  ): boolean {
     if (
       isStoreOnlyMove(
         record,
@@ -589,7 +587,7 @@ export class AccountPool {
       log(
         `[accounts] ${this.provider}: ${record.label} moved store while leasing; leasing it again`
       );
-      return;
+      return true;
     }
     context.failed.set(record.id, {
       kind: "unavailable",
@@ -601,14 +599,90 @@ export class AccountPool {
       throw new NoUsableAccountError(
         `Pinned ${vendorName(this.provider)} account ${record.label} changed while leasing.`
       );
+    return false;
   }
 
+  /**
+   * One lease of `record` for `acquire`'s loop, with the row re-checked after
+   * the await: a token, `null` (try the next pass) or `STORE_MOVED`.
+   *
+   * The lease is stamped as the row's re-auth attempt first. A store-only move
+   * (the legacy file move, MTL-372) leased nothing and tried no credential, so
+   * the stamp is restored: left in place, a due `needsReauth` retry reads
+   * "attempted just now" on the next pass (and, through the pool's map, on the
+   * next request) and blocks the rebound row, and a single-account pool
+   * answers a terminal NeedsReauthError. A pinned move throws transient after
+   * the same restore.
+   */
+  private async leaseStep(
+    record: AccountRecord,
+    ref: AccountRef,
+    reason: SelectReason,
+    at: number,
+    context: AccountSelectionContext,
+    opts: AcquireOptions
+  ): Promise<AccessTokenResult | typeof STORE_MOVED | null> {
+    const stamps = this.stampReauthAttempt(record.id, at, context);
+    try {
+      const token = await this.tryLease(record, opts, reason, context);
+      if (token === STORE_MOVED) {
+        stamps.restore();
+        return STORE_MOVED;
+      }
+      if (!token) return null;
+      // A lease may await a refresh. Removal/disable/rebinding during that await
+      // cannot publish an artifact or move active back to the old account.
+      const rows = this.accounts();
+      const stillConfigured = rows.some(
+        (a) => a.id === record.id && a.enabled && a.store === record.store
+      );
+      if (stillConfigured) return token;
+      if (!this.noteLeaseChanged(record, ref, rows, context, opts)) return null;
+      stamps.restore();
+      return STORE_MOVED;
+    } catch (err) {
+      if (err instanceof AccountStoreMovedDuringLeaseError) stamps.restore();
+      throw err;
+    }
+  }
+
+  /**
+   * Stamp a lease as this row's re-auth attempt, in the pool and the request
+   * context, and hand back how to undo it. A pass that turns out to be a
+   * store-only move attempted nothing, so `acquire` restores both maps.
+   */
+  private stampReauthAttempt(
+    id: string,
+    at: number,
+    context: AccountSelectionContext
+  ): { restore: () => void } {
+    const pool = this.lastReauthAttempt.get(id);
+    const request = context.reauthAttempts.get(id);
+    this.lastReauthAttempt.set(id, at);
+    context.reauthAttempts.set(id, at);
+    const put = (map: Map<string, number>, value: number | undefined) => {
+      if (value === undefined) map.delete(id);
+      else map.set(id, value);
+    };
+    return {
+      restore: () => {
+        put(this.lastReauthAttempt, pool);
+        put(context.reauthAttempts, request);
+      },
+    };
+  }
+
+  /**
+   * One lease attempt. `STORE_MOVED` when the row was rebound to another store
+   * only (unpinned); a pin rethrows that as transient after the caller restores
+   * its re-auth stamp.
+   */
   private async tryLease(
     record: AccountRecord,
     opts: AcquireOptions,
     reason: SelectReason,
     context: AccountSelectionContext
-  ): Promise<AccessTokenResult | null> {
+  ): Promise<AccessTokenResult | typeof STORE_MOVED | null> {
     const ref = this.refOf(record);
     try {
       return await this.managerFor(record).getAccessToken(ref, tokenOptionsFor(opts, reason));
@@ -622,7 +696,7 @@ export class AccountPool {
         log(
           `[accounts] ${this.provider}: ${record.label} moved store while leasing; leasing it again`
         );
-        return null;
+        return STORE_MOVED;
       }
       const blocker = leaseFailureBlocker(ref, err);
       if (!blocker) throw err;
@@ -658,7 +732,17 @@ export class AccountPool {
       const ref = this.refOf(record);
       if (!record.enabled || (pin && !sameAccount(pin, ref))) continue;
       if (!this.state.stateFor(ref).state.needsReauth) continue;
-      if (await this.managerFor(record).healNeedsReauth(ref)) {
+      let healed = await this.managerFor(record).healNeedsReauth(ref);
+      if (!healed) {
+        // The old store may have read empty because the row was just rebound
+        // to another store (the legacy file move, MTL-372): the material is in
+        // the new store, so ask it too.
+        const current = this.accounts().find((a) => a.id === record.id);
+        if (current && isStoreOnlyMove(record, current)) {
+          healed = await this.managerFor(current).healNeedsReauth(this.refOf(current));
+        }
+      }
+      if (healed) {
         // The retry clock belonged to the mark just cleared.
         this.lastReauthAttempt.delete(record.id);
         context.reauthAttempts.delete(record.id);
