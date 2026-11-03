@@ -825,6 +825,18 @@ export class CodexOAuth {
   }
 
   /**
+   * Why this facade holds no login, for a caller that must not sign without
+   * one (`CodexOAuthHalf` under a latched `requireOAuth`). The same rule as an
+   * absent file under the gate: `CodexOAuthLocalError` (transient) when the
+   * login moved to configured rows or the account list cannot be read, and
+   * `CodexOAuthRefreshError` only for a genuine logout — a readable list with
+   * no Codex account. Reads nothing but the account list; drops nothing.
+   */
+  async missingLoginError(): Promise<CodexOAuthLocalError | CodexOAuthRefreshError> {
+    return this.credentialFileGoneError();
+  }
+
+  /**
    * The transient error (503, no upstream status) the facade answers when the
    * file is no longer its to refresh. The retry reaches `CodexPoolHalf`, which
    * leases the configured row. Never a terminal 401: the login still exists.
