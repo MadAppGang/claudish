@@ -150,6 +150,34 @@ function tokenOptionsFor(opts: AcquireOptions, reason: SelectReason): GetAccessT
  */
 class AccountChangedDuringLeaseError extends NoUsableAccountError {}
 
+/**
+ * The row was rebound to another STORE only — same id, same identity, still
+ * enabled — while its lease ran: the legacy Codex file moved into the Keychain
+ * (MTL-372). The account still serves, from its new store, so this is
+ * transient (503) for a pin as well: the same-hop retry leases the same id on
+ * the new store and keeps the pin. A terminal 401 here would walk a bare chain
+ * from a live subscription onto a metered hop.
+ */
+class AccountStoreMovedDuringLeaseError extends RefreshUnavailableError {
+  constructor(label: string) {
+    super("account store moved while leasing", `${label} now reads from its new store; retry`);
+  }
+}
+
+/**
+ * Is `current` the same live account as `leased`, rebound only to another store?
+ * Disabled, removed and identity-changed rows are not: those stay terminal for a pin.
+ */
+function isStoreOnlyMove(leased: AccountRecord, current: AccountRecord | undefined): boolean {
+  return (
+    current !== undefined &&
+    current.id === leased.id &&
+    current.enabled &&
+    current.store !== leased.store &&
+    current.identity.chatgptAccountId === leased.identity.chatgptAccountId
+  );
+}
+
 function leaseFailureBlocker(ref: AccountRef, err: unknown): AccountBlocker | null {
   if (err instanceof AccountChangedDuringLeaseError) {
     return {
@@ -449,20 +477,12 @@ export class AccountPool {
       if (!token) continue;
       // A lease may await a refresh. Removal/disable/rebinding during that await
       // cannot publish an artifact or move active back to the old account.
-      const stillConfigured = this.accounts().some(
+      const rows = this.accounts();
+      const stillConfigured = rows.some(
         (a) => a.id === record.id && a.enabled && a.store === record.store
       );
       if (!stillConfigured) {
-        context.failed.set(record.id, {
-          kind: "unavailable",
-          ref: candidate.ref,
-          reason: "account changed while leasing",
-          upstreamStatus: 503,
-        });
-        if (opts.pin)
-          throw new NoUsableAccountError(
-            `Pinned ${vendorName(this.provider)} account ${record.label} changed while leasing.`
-          );
+        this.noteLeaseChanged(record, candidate.ref, rows, context, opts);
         continue;
       }
       this.leaseFailures.delete(record.id);
@@ -521,6 +541,47 @@ export class AccountPool {
     return error;
   }
 
+  /**
+   * A lease whose row changed after its token was read. Throws for a pin;
+   * otherwise the caller's loop re-evaluates.
+   *
+   * A store-only rebind (the legacy file move, MTL-372) is not a failure of
+   * this account: nothing is recorded, so the next pass leases the same id from
+   * its new store, and a pin answers transient (503) so its same-hop retry does
+   * the same. Anything else is recorded as unavailable for this request, and a
+   * pin on it cannot serve, which is terminal.
+   */
+  private noteLeaseChanged(
+    record: AccountRecord,
+    ref: AccountRef,
+    rows: AccountRecord[],
+    context: AccountSelectionContext,
+    opts: AcquireOptions
+  ): void {
+    if (
+      isStoreOnlyMove(
+        record,
+        rows.find((a) => a.id === record.id)
+      )
+    ) {
+      if (opts.pin) throw new AccountStoreMovedDuringLeaseError(record.label);
+      log(
+        `[accounts] ${this.provider}: ${record.label} moved store while leasing; leasing it again`
+      );
+      return;
+    }
+    context.failed.set(record.id, {
+      kind: "unavailable",
+      ref,
+      reason: "account changed while leasing",
+      upstreamStatus: 503,
+    });
+    if (opts.pin)
+      throw new NoUsableAccountError(
+        `Pinned ${vendorName(this.provider)} account ${record.label} changed while leasing.`
+      );
+  }
+
   private async tryLease(
     record: AccountRecord,
     opts: AcquireOptions,
@@ -532,6 +593,16 @@ export class AccountPool {
       return await this.managerFor(record).getAccessToken(ref, tokenOptionsFor(opts, reason));
     } catch (err) {
       if (classifyConnectionError(err)) throw err;
+      // A store-only rebind is not this account's failure: recorded, it would
+      // exclude the rebound row for this request and deprioritise it for
+      // LEASE_FAILURE_DEPRIORITIZE_MS. Unpinned, the next pass leases it again.
+      if (err instanceof AccountStoreMovedDuringLeaseError) {
+        if (reason === "pinned") throw err;
+        log(
+          `[accounts] ${this.provider}: ${record.label} moved store while leasing; leasing it again`
+        );
+        return null;
+      }
       const blocker = leaseFailureBlocker(ref, err);
       if (!blocker) throw err;
       const evidence = { at: this.now(), blocker };
@@ -667,6 +738,10 @@ export class AccountPool {
           throw err;
         }
         const current = rows.find((row) => row.id === record.id);
+        // Only the store changed (the legacy file move published): transient,
+        // pin included. Removed, disabled or re-identified rows stay terminal.
+        if (isStoreOnlyMove(record, current))
+          throw new AccountStoreMovedDuringLeaseError(record.label);
         const rebound =
           !current ||
           current.store !== record.store ||
