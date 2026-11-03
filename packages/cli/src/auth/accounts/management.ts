@@ -179,7 +179,7 @@ export function legacyMoveDeferredMessage(
 ): string {
   return (
     `Could not move the existing Codex login into the macOS Keychain (${outcome.reason}: ` +
-    `${outcome.detail}). The login was not moved; ${legacyCodexCredentialsPath(env)} was kept. ` +
+    `${redactSecrets(outcome.detail)}). The login was not moved; ${legacyCodexCredentialsPath(env)} was kept. ` +
     MOVE_HINTS[outcome.reason]
   );
 }

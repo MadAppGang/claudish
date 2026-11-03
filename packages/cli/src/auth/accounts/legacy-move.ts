@@ -25,6 +25,7 @@ import { join, resolve } from "node:path";
 import { log } from "../../logger.js";
 import { activeConfigFile } from "../../profile-config.js";
 import { isKeychainSupported } from "../../providers/keychain.js";
+import { redactSecrets } from "../../redact.js";
 // Type-only: erased at runtime, so the request path never loads management.ts here.
 import type { AccountManagementDeps, LegacyMoveOutcome } from "./management.js";
 import { claudishHome, legacyCodexCredentialsPath } from "./paths.js";
@@ -154,7 +155,8 @@ export function startLegacyCodexMove(opts: StartLegacyMoveOptions = {}): void {
         (err): LegacyMoveOutcome => ({
           kind: "deferred",
           reason: "config-unavailable",
-          detail: err instanceof Error ? err.message : String(err),
+          // A thrown message may quote file bytes; it reaches the debug log.
+          detail: redactSecrets(err instanceof Error ? err.message : String(err)),
         })
       )
       .then((outcome) => {

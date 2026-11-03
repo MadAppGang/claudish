@@ -191,13 +191,11 @@ function parseRecord(kind: AccountStoreKind, text: string): StoredTokenRecord {
   let raw: Partial<StoredTokenRecord>;
   try {
     raw = JSON.parse(text) as Partial<StoredTokenRecord>;
-  } catch (err) {
+  } catch {
     // A corrupt record is a FAILED read, never an absence — and never a raw
-    // SyntaxError escaping the store's typed contract.
-    throw new TokenStoreReadError(
-      kind,
-      `the stored record is not JSON (${(err as Error).message})`
-    );
+    // SyntaxError escaping the store's typed contract. Its message is not
+    // kept: Bun quotes the bytes it failed on, and those are token material.
+    throw new TokenStoreReadError(kind, "the stored record is not JSON (invalid JSON)");
   }
   if (typeof raw?.accessToken !== "string" || typeof raw?.refreshToken !== "string") {
     throw new TokenStoreReadError(kind, "the stored record has no token pair");
@@ -472,8 +470,10 @@ export class LegacyCodexFileStore implements TokenStore {
     let raw: LegacyCodexFile;
     try {
       raw = JSON.parse(text) as LegacyCodexFile;
-    } catch (err) {
-      throw new TokenStoreReadError(this.kind, err instanceof Error ? err.message : String(err));
+    } catch {
+      // Never the SyntaxError's message: Bun quotes the failing bytes, which are
+      // token material, and this text reaches logs and the move's deferral.
+      throw new TokenStoreReadError(this.kind, "invalid JSON");
     }
     if (!raw?.access_token || !raw?.refresh_token) {
       throw new TokenStoreReadError(this.kind, "the credential file has no token pair");
