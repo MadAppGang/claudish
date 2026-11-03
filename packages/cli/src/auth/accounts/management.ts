@@ -195,6 +195,30 @@ export interface LegacyMoveOptions {
   trigger?: "command" | "request";
 }
 
+/** `add`'s options; see {@link CodexAccountManagement} `add`. */
+interface AddOptions {
+  label?: string;
+  /** Ask the owned-accounts notice when none was accepted (default true). */
+  notice?: boolean;
+  /** Enrol the synthesized legacy login alongside (default true). */
+  enrollLegacy?: boolean;
+}
+
+/**
+ * Does `claudish login codex` save into the Keychain account store here? The
+ * same condition as the legacy file move: no `CLAUDISH_DISABLE_KEYCHAIN`, a
+ * macOS Keychain, and a new account's store really is `keychain`. Elsewhere it
+ * keeps writing the legacy file.
+ */
+export function codexLoginUsesKeychain(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !legacyMoveKeychainBlocked(env) && defaultAccountStore(env).kind === "keychain";
+}
+
+/** `claudish login codex` on a Keychain platform: `new CodexAccountManagement(deps).loginCodex()`. */
+export function loginCodexAccount(deps: AccountManagementDeps = {}): Promise<string[]> {
+  return new CodexAccountManagement(deps).loginCodex();
+}
+
 /** What M0 found to move. */
 type MoveTarget =
   | { kind: "row"; row: AccountRecord }
@@ -603,7 +627,7 @@ export class CodexAccountManagement {
   async run(command: CodexManagementCommand): Promise<string[]> {
     if (command.verb === "add") {
       if (command.label !== undefined) validLabel(command.label);
-      return this.add(command.label);
+      return this.add({ label: command.label });
     }
     if (command.verb === "rename") validLabel(command.newLabel);
     if (command.id !== undefined && !ACCOUNT_ID_PATTERN.test(command.id)) {
@@ -624,13 +648,25 @@ export class CodexAccountManagement {
 
   // -- add -----------------------------------------------------------------
 
-  private async add(requestedLabel?: string): Promise<string[]> {
+  /**
+   * `notice: false` skips the owned-accounts notice and records no acceptance
+   * (`claudish login codex`'s first account: one account never switches).
+   * `enrollLegacy: false` neither enrols nor counts the synthesized legacy login:
+   * under an alternate config that login is another config's shared file, which
+   * this add must not claim (MTL-371).
+   */
+  private async add(opts: AddOptions = {}): Promise<string[]> {
+    const requestedLabel = opts.label;
+    const askNotice = opts.notice !== false;
+    const enrollLegacy = opts.enrollLegacy !== false;
+    const rowsFor = (entry: SubscriptionAccountsEntry): AccountRecord[] =>
+      enrollLegacy ? this.rowsOf(entry) : entry.accounts.map(asRecord);
     const initial = this.inspect((entry) => {
-      const legacy = this.synthesizedLegacy(entry);
+      const legacy = enrollLegacy ? this.synthesizedLegacy(entry) : undefined;
       if (
         requestedLabel !== undefined &&
         labelTaken(
-          this.rowsOf(entry).map((r) => r.label),
+          rowsFor(entry).map((r) => r.label),
           requestedLabel
         )
       ) {
@@ -644,7 +680,7 @@ export class CodexAccountManagement {
       }
       return { notice: entry.noticeAcceptedAt, legacy, id: this.newId(entry) };
     });
-    if (!initial.notice && !(await this.ask(OWNED_ACCOUNTS_NOTICE))) {
+    if (askNotice && !initial.notice && !(await this.ask(OWNED_ACCOUNTS_NOTICE))) {
       return ["Cancelled; no account was added."];
     }
     const acceptedAt = new Date(this.now()).toISOString();
@@ -685,7 +721,7 @@ export class CodexAccountManagement {
       this.inspect((entry) => {
         if (entry.accounts.some((a) => a.id === row.id))
           throw new Error("The generated account id is taken; retry the add.");
-        const rows = this.rowsOf(entry);
+        const rows = rowsFor(entry);
         this.refuseIdentity(rows, result.identity);
         this.chooseLabel(rows, result.identity, requestedLabel);
       });
@@ -700,11 +736,11 @@ export class CodexAccountManagement {
           this.fence(holds);
           if (entry.accounts.some((a) => a.id === row.id))
             throw new Error("The generated account id is taken; retry the add.");
-          const rows = this.rowsOf(entry);
+          const rows = rowsFor(entry);
           this.refuseIdentity(rows, result.identity);
           // Derived again from the live entry: the row published is the row checked.
           const label = this.chooseLabel(rows, result.identity, requestedLabel);
-          const legacy = rows.find((r) => r.legacy);
+          const legacy = enrollLegacy ? rows.find((r) => r.legacy) : undefined;
           if (legacy) {
             if (legacy.identity.chatgptAccountId !== initial.legacy?.identity.chatgptAccountId) {
               throw new Error(
@@ -721,7 +757,7 @@ export class CodexAccountManagement {
             });
           }
           entry.accounts.push({ ...row, label });
-          entry.noticeAcceptedAt ??= acceptedAt;
+          if (askNotice) entry.noticeAcceptedAt ??= acceptedAt;
           finalLabel = label;
         });
       } catch (error) {
@@ -769,7 +805,15 @@ export class CodexAccountManagement {
 
   // -- login ---------------------------------------------------------------
 
-  private async login(target: AccountRecord): Promise<string[]> {
+  /**
+   * `differentIdentity` replaces the refusal's guidance when the login is a
+   * different identity than the row (`claudish login codex` names more ways
+   * forward than `claudish account login codex`).
+   */
+  private async login(
+    target: AccountRecord,
+    opts: { differentIdentity?: string } = {}
+  ): Promise<string[]> {
     if (target.legacy) {
       // The unsuppressed synthesized default, with no configured pool: the legacy login, unchanged.
       if (this.deps.legacyLogin) await this.deps.legacyLogin();
@@ -784,8 +828,9 @@ export class CodexAccountManagement {
     // one) has nothing to contradict; the duplicate check below still applies.
     if (target.identity.chatgptAccountId && stable !== target.identity.chatgptAccountId) {
       throw new Error(
-        `This login is a different Codex identity than ${target.label}; ` +
-          "use `claudish account add codex` for a different account."
+        opts.differentIdentity ??
+          `This login is a different Codex identity than ${target.label}; ` +
+            "use `claudish account add codex` for a different account."
       );
     }
     await this.gate(target, async (holds) => {
@@ -1025,6 +1070,45 @@ export class CodexAccountManagement {
         : []),
       ...warnings,
     ];
+  }
+
+  // -- `claudish login codex` on a Keychain platform (MTL-372) -------------
+
+  /**
+   * `claudish login codex` where the Codex login belongs in the Keychain: it
+   * never writes `codex-oauth.json`.
+   *
+   * 1. The legacy file move runs first, awaited; a deferral refuses before the
+   *    browser, naming the cause and that the file was kept.
+   * 2. By the active config's CONFIGURED rows (a synthesized login under an
+   *    alternate config does not count, and is never enrolled):
+   *    - 0: a new account labelled `default`, store `keychain`, with no
+   *      owned-accounts notice (one account never switches);
+   *    - 1: that row is logged in again (same identity, or a refusal);
+   *    - 2 or more: refused before the browser.
+   */
+  async loginCodex(): Promise<string[]> {
+    const moved = await this.moveLegacyLogin();
+    if (moved.kind === "deferred") throw new Error(legacyMoveDeferredMessage(moved, this.env));
+    const rows = this.inspect((entry) => entry.accounts.map(asRecord));
+    if (rows.length === 0) {
+      return this.add({ label: LEGACY_CODEX_LABEL, notice: false, enrollLegacy: false });
+    }
+    if (rows.length === 1) {
+      const [row] = rows;
+      const remove =
+        `claudish account remove codex ${shellWord(row.label)}` +
+        (row.store === "legacy-codex-file" ? " --delete-file" : "");
+      return this.login(row, {
+        differentIdentity:
+          `This login is a different Codex identity than ${row.label}. Run ` +
+          `\`claudish account add codex\` to add it, or \`${remove}\` and then ` +
+          "`claudish login codex` to replace it.",
+      });
+    }
+    throw new Error(
+      `Codex has ${rows.length} accounts; log one in with \`claudish account login codex <label>\`.`
+    );
   }
 
   // -- the legacy file move into the Keychain (MTL-372) --------------------

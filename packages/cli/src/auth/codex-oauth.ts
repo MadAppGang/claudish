@@ -9,7 +9,12 @@
  * - Singleton pattern for shared token management
  * - Account ID extraction from id_token JWT claims
  *
- * Credentials stored at: ~/.claudish/codex-oauth.json
+ * Credentials stored at: ~/.claudish/codex-oauth.json — only where there is no
+ * macOS Keychain (or `CLAUDISH_DISABLE_KEYCHAIN=1`). On a Keychain platform
+ * `claudish login codex` saves a `keychain` account row instead and never writes
+ * this file, and an existing file is migration input: it is moved into the
+ * Keychain and deleted (MTL-372, `CodexAccountManagement.moveLegacyLogin`).
+ * Until that move has run, the file below keeps serving as it always did.
  *
  * ## The file is SHARED with the account pool, and so is its refresh gate
  *
@@ -462,10 +467,28 @@ export class CodexOAuth {
    * Opens browser, starts local callback server, exchanges code for tokens
    */
   async login(deps: CodexPkceDeps = {}): Promise<void> {
-    // Managed or suppressed: refused BEFORE the browser, naming the account verbs.
-    const { assertLegacyCodexLoginPermitted, saveLegacyCodexLogin } = await import(
-      "./accounts/management.js"
-    );
+    const {
+      assertLegacyCodexLoginPermitted,
+      codexLoginUsesKeychain,
+      loginCodexAccount,
+      saveLegacyCodexLogin,
+    } = await import("./accounts/management.js");
+
+    // A Keychain platform (MTL-372): the login is a `keychain` account row and
+    // this file is never written. An existing file is moved into the Keychain
+    // first; then the active config's single account is logged in again, or
+    // the first one is added. See `CodexAccountManagement.loginCodex`.
+    if (codexLoginUsesKeychain()) {
+      const lines = await loginCodexAccount({ pkce: () => loginCodexPkce(deps) });
+      for (const line of lines) console.log(line);
+      // The file this facade read may be gone now; drop the stale snapshot.
+      this.reloadCredentials();
+      log("[CodexOAuth] Login saved to the Keychain account store");
+      return;
+    }
+
+    // No Keychain here: the legacy login. Managed or suppressed: refused BEFORE
+    // the browser, naming the account verbs.
     assertLegacyCodexLoginPermitted();
     const { credentials } = await loginCodexPkce(deps);
     const accountId = credentials.account_id;

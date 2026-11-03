@@ -19,6 +19,12 @@
  * | `file` | `~/.claudish/accounts/tokens/<provider>/<id>.json` | Linux/WSL, and tests |
  * | `legacy-codex-file` | `~/.claudish/codex-oauth.json` | the migration base |
  *
+ * On a Keychain platform `legacy-codex-file` is migration INPUT only: the legacy
+ * file move (MTL-372, `management.ts` `moveLegacyLogin`) copies its record into
+ * the `keychain` store unchanged (generation, fingerprint, journal and accountId
+ * kept; a copy, never a rotation), rebinds the row, and deletes the file. Where
+ * there is no Keychain it stays the legacy login's store.
+ *
  * ## `CLAUDISH_DISABLE_KEYCHAIN` is checked HERE, not only by `hasKeychainSource()`
  *
  * That flag is read in exactly one other place in the codebase, and a new store
