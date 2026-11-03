@@ -666,32 +666,46 @@ export class CodexOAuth {
       );
     } catch (err) {
       if (!isGateUnavailable(err)) throw err;
-      const latest = this.readCredentialFile();
-      // Adopt only from a file this facade still owns: a leftover the move
-      // published past is not a holder's rotation (MTL-372 review round 2).
-      if (
-        latest &&
-        this.isAdoptable(latest.credentials, trigger) &&
-        (await this.legacyFileOwnership()) === "facade"
-      ) {
-        log(
-          `[CodexOAuth] Refresh gate unavailable (${err.reason}); the holder already rotated — using its token`
-        );
-        this.setCredentials(latest.credentials);
-        return latest.credentials.access_token;
-      }
-      log(`[CodexOAuth] Refresh gate unavailable: ${err.message}`);
-      if (err.reason !== "unwritable") {
-        throw credentialHttpError(
-          `Another claudish process is refreshing the OpenAI Codex login (${err.reason}); retrying will usually work.`,
-          503
-        );
-      }
-      throw new CodexOAuthLocalError(
-        "Could not refresh the OpenAI Codex login: the refresh lock could not be created " +
-          `(${err.reason}). Retry the request; if this persists, run \`${LOGIN_COMMAND}\`.`
+      return this.refreshWithoutGate(trigger, err);
+    }
+  }
+
+  /**
+   * The gate could not be taken: adopt the holder's rotation, or throw the
+   * gate's transient error. Never an exchange.
+   */
+  private async refreshWithoutGate(
+    trigger: RefreshTrigger,
+    err: { reason: string; message: string }
+  ): Promise<string> {
+    const latest = this.readCredentialFile();
+    // Adopt only from a file this facade still owns: a leftover the move
+    // published past is not a holder's rotation (MTL-372 review round 2).
+    const ownership = latest ? await this.legacyFileOwnership() : undefined;
+    if (latest && ownership === "facade" && this.isAdoptable(latest.credentials, trigger)) {
+      log(
+        `[CodexOAuth] Refresh gate unavailable (${err.reason}); the holder already rotated — using its token`
+      );
+      this.setCredentials(latest.credentials);
+      return latest.credentials.access_token;
+    }
+    // The same drop rules as `refreshHoldingGate`: a file nobody reads any
+    // more, or a file gone while the list reads, stops this process signing
+    // with its copy. An unreadable list keeps it. The gate error below is
+    // still the answer.
+    if (ownership === "elsewhere") this.setCredentials(null);
+    else if (!latest) await this.credentialFileGoneError({ dropCredentials: true });
+    log(`[CodexOAuth] Refresh gate unavailable: ${err.message}`);
+    if (err.reason !== "unwritable") {
+      throw credentialHttpError(
+        `Another claudish process is refreshing the OpenAI Codex login (${err.reason}); retrying will usually work.`,
+        503
       );
     }
+    throw new CodexOAuthLocalError(
+      "Could not refresh the OpenAI Codex login: the refresh lock could not be created " +
+        `(${err.reason}). Retry the request; if this persists, run \`${LOGIN_COMMAND}\`.`
+    );
   }
 
   /** Everything from here down runs with the gate held. */
