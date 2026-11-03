@@ -10,6 +10,7 @@
 
 import { resolveUpstreamUrl } from "../../test-upstream.js";
 import { MeteredEscapeError } from "../accounts/errors.js";
+import { startLegacyCodexMove } from "../accounts/legacy-move.js";
 import { type AccountPool, getAccountPool } from "../accounts/pool.js";
 import { type AccountRegistry, getAccountRegistry } from "../accounts/registry.js";
 import { CodexOAuth } from "../codex-oauth.js";
@@ -156,6 +157,11 @@ export class CodexPoolHalf implements CredentialProvider {
   }
 
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {
+    // The legacy Codex file move into the Keychain (MTL-372), on the first
+    // Codex sign of a process. Not awaited: this request signs from whichever
+    // state the move has reached, and both sign correctly. It signs and records
+    // nothing itself, so billing is unaffected.
+    startLegacyCodexMove();
     // A pin must be validated by acquisition, even after the last row disappears.
     if (!ctx.pin && this.registry.isSynthesizedLegacyOnly()) {
       return this.legacy.getRequestAuth(ctx);
