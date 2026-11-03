@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { clearReasoningCache, reasoningForCall } from "../../../../adapters/reasoning-cache.js";
 import type { Context } from "hono";
 import { HookEngine } from "../../../../hooks/engine.js";
 import { UnavailableSink } from "../../../../hooks/injection/sinks.js";
@@ -219,5 +220,66 @@ describe("REQ-6 Responses incremental argument compatibility", () => {
       { path: "c.ts" },
     ]);
     expect(calls.map((c) => c.deltas.length)).toEqual([1, 1, 1]);
+  });
+});
+
+// The DashScope capture writes bare `data:` lines (no space after the colon),
+// which the shared capture() reader above does not pick up.
+function captureBare(name: string): any[] {
+  return readFileSync(new URL(name, base), "utf8")
+    .split("\n")
+    .filter((l) => l.startsWith("data:") && l !== "data: [DONE]")
+    .map((l) => JSON.parse(l.slice(5).trim()));
+}
+
+// A plaintext-reasoning turn (real DashScope reasoning events: the item's
+// content is reasoning_text and there is no encrypted_content) followed by a
+// real function call (first call of the Codex zero-delta capture).
+function plaintextReasoningThenCall(withReasoning: boolean): any[] {
+  const dash = captureBare("dashscope-qwen3.8-max-0902-bare-data-lines.sse");
+  const reasoningId = dash.find((e) => e.item?.type === "reasoning")?.item.id;
+  const reasoning = dash.filter((e) => e.item?.id === reasoningId || e.item_id === reasoningId);
+  const zeroEvents = capture("codex-zero-delta-multicall.sse");
+  const firstCall = zeroEvents.find(
+    (e) => e.type === "response.output_item.added" && e.item.type === "function_call"
+  );
+  const callEvents = zeroEvents.filter(
+    (e) =>
+      e.item?.id === firstCall.item.id ||
+      e.item_id === firstCall.item.id ||
+      e.call_id === firstCall.item.call_id
+  );
+  return withReasoning ? [...reasoning, ...callEvents] : callEvents;
+}
+
+describe("plaintext reasoning items are kept for passback", () => {
+  test("reasoning_text content preceding a tool call is cached under the client-facing call id", async () => {
+    clearReasoningCache();
+    const events = await folded(translated(plaintextReasoningThenCall(true)));
+    const toolId = events.find(
+      (e) => e.type === "content_block_start" && e.content_block.type === "tool_use"
+    )?.content_block.id;
+    expect(toolId).toBeDefined();
+
+    const cached = reasoningForCall(toolId);
+    expect(cached).toHaveLength(1);
+    expect(cached?.[0].type).toBe("reasoning");
+    expect(cached?.[0].encrypted_content).toBeUndefined();
+    const parts = (cached?.[0].content ?? []) as any[];
+    expect(parts).toHaveLength(1);
+    expect(parts[0].type).toBe("reasoning_text");
+    expect(parts[0].text).toContain("Say hi in one word");
+    clearReasoningCache();
+  });
+
+  test("a tool call with no preceding reasoning caches nothing", async () => {
+    clearReasoningCache();
+    const events = await folded(translated(plaintextReasoningThenCall(false)));
+    const toolId = events.find(
+      (e) => e.type === "content_block_start" && e.content_block.type === "tool_use"
+    )?.content_block.id;
+    expect(toolId).toBeDefined();
+    expect(reasoningForCall(toolId)).toBeUndefined();
+    clearReasoningCache();
   });
 });
