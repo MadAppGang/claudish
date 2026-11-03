@@ -172,6 +172,19 @@ type Stop = { stop: LegOutcome };
 // biome-ignore lint/suspicious/noExplicitAny: Responses events are untyped JSON
 type ResponsesEvent = any;
 
+/**
+ * Whether a reasoning item carries anything a later request can replay: the
+ * encrypted payload OpenAI returns, or plaintext content parts. DeepSeek and
+ * DashScope reason in the open — `content: [{type: "reasoning_text", …}]` and
+ * no `encrypted_content` — and DeepSeek refuses a tool-call continuation that
+ * does not pass that reasoning back, so plaintext items are kept too.
+ */
+function hasReplayableReasoning(item: ResponsesEvent): boolean {
+  if (item?.type !== "reasoning") return false;
+  if (item.encrypted_content) return true;
+  return Array.isArray(item.content) && item.content.length > 0;
+}
+
 /** Read `usage` from a Responses usage object; undefined when it carries none. */
 function readUsage(raw: ResponsesEvent, prior?: Usage, keepPrior = false): Usage | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -565,7 +578,7 @@ class ResponsesLeg {
       const message: ResponsesItem = { type: "message", role: "assistant", content };
       if (typeof item.phase === "string") message.phase = item.phase;
       this.items.push(message);
-    } else if (item?.type === "reasoning" && item.encrypted_content) {
+    } else if (hasReplayableReasoning(item)) {
       this.items.push({
         type: "reasoning",
         content: item.content ?? [],
@@ -680,7 +693,7 @@ class ResponsesLeg {
 
   private onItemDone(event: ResponsesEvent): Stop | undefined {
     const item = event.item;
-    if (item?.type === "reasoning" && item.encrypted_content) {
+    if (hasReplayableReasoning(item)) {
       // Keep the item verbatim (minus the id, which the Responses API does not
       // require on replay and which buildPayload strips).
       this.pendingReasoning.push({
