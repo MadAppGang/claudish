@@ -554,12 +554,9 @@ export class CodexOAuth {
       if (this.credentialFileFailure) throw this.credentialFileFailure;
     }
 
-    // Check if we have credentials
-    if (!this.credentials) {
-      throw new CodexOAuthRefreshError(
-        `No OpenAI Codex OAuth credentials found. Please run \`${LOGIN_COMMAND}\` first.`
-      );
-    }
+    // No credentials: a genuine logout is terminal, a move into the Keychain
+    // (or an unreadable account list) is transient — never a guessed 401.
+    if (!this.credentials) throw await this.credentialFileGoneError();
 
     // Check if token is still valid
     if (this.isTokenValid()) {
@@ -703,6 +700,15 @@ export class CodexOAuth {
       return onDisk.credentials.access_token;
     }
 
+    // The file being PRESENT does not make it this facade's: the legacy move
+    // (MTL-372) may have published a `keychain` row and stopped before its
+    // delete (M8 failed, or the process stopped). Exchanging here would rotate
+    // the refresh token the Keychain item also holds, revoking it, and the
+    // leftover cleanup would later delete the rotated file: the login lost.
+    // Only a synthesized-only account list lets the facade exchange.
+    const ownership = await this.legacyFileOwnership();
+    if (ownership !== "facade") throw this.facadeYieldError(ownership);
+
     const updated = await this.exchangeRefreshToken(onDisk.credentials);
 
     // The fence: a holder suspended past the stale TTL and stolen from must not
@@ -724,14 +730,21 @@ export class CodexOAuth {
     if (!current) {
       log("[CodexOAuth] The credential file was removed during the exchange — not recreating it");
       this.setCredentials(null);
-      throw new CodexOAuthRefreshError(
-        `No OpenAI Codex OAuth credentials found. Please run \`${LOGIN_COMMAND}\` first.`
-      );
+      throw await this.credentialFileGoneError();
     }
     if (current.credentials.refresh_token !== onDisk.credentials.refresh_token) {
       log("[CodexOAuth] The credential file changed during the exchange — keeping it");
       this.setCredentials(current.credentials);
       return current.credentials.access_token;
+    }
+    // Re-checked before the save: the account list may have stopped naming the
+    // file during the exchange. A file no reader uses is not saved to. A file a
+    // configured row still names is (the rotated token's only home), and so is
+    // an unreadable list's, for the same reason.
+    if ((await this.legacyFileOwnership()) === "elsewhere") {
+      log("[CodexOAuth] The account list no longer names the credential file — not saving to it");
+      this.setCredentials(null);
+      throw this.facadeYieldError("elsewhere");
     }
 
     try {
@@ -751,6 +764,57 @@ export class CodexOAuth {
     this.setCredentials(updated);
     log(`[CodexOAuth] Token refreshed, valid until ${new Date(updated.expires_at).toISOString()}`);
     return updated.access_token;
+  }
+
+  /**
+   * Who the legacy credential file belongs to now, read fresh under the gate.
+   *
+   * - `facade`: the account list is the synthesized legacy login only, so this
+   *   facade owns the file and may exchange its refresh token.
+   * - `file-row`: a configured row still names the file (`legacy-codex-file`,
+   *   no suppression marker). The pool serves it, under this same gate.
+   * - `elsewhere`: the marker is set, or no row names the file: the legacy move
+   *   published (MTL-372). Nothing reads the file.
+   * - `unknown`: the account list could not be read.
+   */
+  private async legacyFileOwnership(): Promise<"facade" | "file-row" | "elsewhere" | "unknown"> {
+    const { getAccountRegistry } = await import("./accounts/registry.js");
+    const registry = getAccountRegistry();
+    registry.invalidate();
+    try {
+      if (registry.isSynthesizedLegacyOnly()) return "facade";
+      const snapshot = registry.snapshot("openai-codex");
+      const suppressed = snapshot.settings["openai-codex"]?.legacyCodexSuppressed === true;
+      const named = snapshot.accounts["openai-codex"].some(
+        (row) => row.store === "legacy-codex-file"
+      );
+      return !suppressed && named ? "file-row" : "elsewhere";
+    } catch (err) {
+      log(`[CodexOAuth] Could not read the Codex account list: ${errorMessage(err)}`);
+      return "unknown";
+    }
+  }
+
+  /**
+   * The transient error (503, no upstream status) the facade answers when the
+   * file is no longer its to refresh. The retry reaches `CodexPoolHalf`, which
+   * leases the configured row. Never a terminal 401: the login still exists.
+   */
+  private facadeYieldError(ownership: "file-row" | "elsewhere" | "unknown"): CodexOAuthLocalError {
+    if (ownership === "unknown") {
+      return new CodexOAuthLocalError(
+        "The Codex account list could not be read, so the OpenAI Codex login was not refreshed. " +
+          "Retry the request."
+      );
+    }
+    if (ownership === "file-row") {
+      return new CodexOAuthLocalError(
+        "The Codex login is now a configured account; retry the request."
+      );
+    }
+    return new CodexOAuthLocalError(
+      "The Codex login moved to the macOS Keychain; retry the request."
+    );
   }
 
   /**
