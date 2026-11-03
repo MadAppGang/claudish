@@ -2,6 +2,18 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.12.0] - 2026-11-03
+
+### Documentation
+
+- document scroll_session and the wheel-scroll measurements *(mcp)* ([`0c296d3`](https://github.com/MadAppGang/claudish/commit/0c296d3dd5fea230532e54d76a77c9f2b8d9e009))
+- update CHANGELOG.md for v14.11.0([`0c67b0b`](https://github.com/MadAppGang/claudish/commit/0c67b0b6ed108356e08dc7d1edcf3b83a695ce4a))
+
+### New Features
+
+- add scroll_session tool and team mode scroll *(mcp)* ([`2cd063b`](https://github.com/MadAppGang/claudish/commit/2cd063bb911e9459e5f7eeb3a2e0ea4fc5ca6ff9))
+- run pane children with wheelScrollAccelerationEnabled false *(pane)* ([`5d519b2`](https://github.com/MadAppGang/claudish/commit/5d519b2aa8e79518beb10d8a10f3c6bab155bfcc))
+
 ## [14.11.0] - 2026-11-02
 
 ### Documentation
