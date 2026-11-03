@@ -1164,11 +1164,13 @@ boundary, and the next attempt resumes it.
 before M6 can read the store after M8 and find the file gone. Two branches turn that into a transient
 answer, retried on the same hop:
 
-- **A pool lease** (`TokenManager.resolve`): a `null` store read now runs `validateAccount(ref,
-  "before-exchange")` before throwing `NeedsReauthError`. The registry re-stats `config.json` and
-  sees the row rebound to `keychain`. A rebind that changed ONLY the store (same id, same
-  `chatgptAccountId`, still enabled) throws `AccountStoreMovedDuringLeaseError`, a
-  `RefreshUnavailableError` (transient, 503). It is not recorded as a lease failure: an unpinned
+- **A pool lease** (`TokenManager`): a `null` store read runs `validateAccount(ref, "store-empty")`
+  before throwing `NeedsReauthError`, at all three empty-store branches: `resolve`, the uncached
+  re-read in `refreshUnderGate`, and the re-read after the exchange in `exchangeAndPersist` (whose
+  `before-persist` check ran before that read, so it cannot see a rebind landing in between). The
+  registry re-stats `config.json` and sees the row rebound to `keychain`. A rebind that changed
+  ONLY the store (same id, same `chatgptAccountId`, still enabled) throws
+  `AccountStoreMovedDuringLeaseError`, a `RefreshUnavailableError` (transient, 503). It is not recorded as a lease failure: an unpinned
   `acquire` re-evaluates and leases the same id from its Keychain store in the same call, with no
   exclusion and no `LEASE_FAILURE_DEPRIORITIZE_MS`. A PINNED lease (the 401 re-sign, a Responses leg
   pinned to its account) answers it transient, and its same-hop retry leases the same id, so the pin
@@ -1176,24 +1178,60 @@ answer, retried on the same hop:
   re-identified row still throws `AccountChangedDuringLeaseError` (a `NoUsableAccountError`), which
   is terminal for a pin. A terminal 401 for a store-only move would walk a bare chain to a metered
   hop. A store that is `null` with the row unchanged still means "needs a login".
+
+  **"No exception" is not "fresh".** `AccountRegistry.snapshot()` throws only when a source read
+  failed AND there is no last-known-good copy. A warm registry serves the copy and reports the
+  failure only in `snapshot.config.state === "failed"` (and `snapshot.legacy.state`);
+  `invalidate()` clears stamps, not the copy. A copy taken before the move still shows the
+  `legacy-codex-file` row, so the binding looks unchanged. In the `store-empty` phase the pool's
+  validator therefore checks the config source first: failed → `AccountListUnreadableDuringLeaseError`,
+  a `RefreshUnavailableError` (transient, 503, recorded as an unavailable lease like a store-read
+  failure, so an unpinned lease tries the next account). Only that phase: `before-exchange` and
+  `before-persist` keep deciding from the copy, and `before-persist` still returns on a cold
+  unreadable list. The phase is separate because an empty store is the one place a stale "row
+  unchanged" turns into a terminal login demand; a store that holds material keeps serving through
+  a short config outage.
+
+  **A store-only move is not a re-auth attempt** (`AccountPool.leaseStep`). `acquire` stamps each
+  lease as the row's re-auth attempt (`lastReauthAttempt` and the request context) before it
+  leases. A pass that ends in a store-only move restores both to their previous values: left
+  stamped, a due `needsReauth` retry reads "attempted just now" on the next pass and blocks the
+  rebound row, so a single-account pool answers a terminal `NeedsReauthError`, and the pool's map
+  keeps suppressing the retry on later requests. That includes a pinned move's transient throw: a
+  pin itself is honoured even when it needs re-auth, but the next unpinned request copies the
+  pool's map. A store-only move does not spend the loop's `records + 1` attempts, which are for
+  removals; it has its own budget of the same size. `healReauthMarks` heals a second time against
+  the rebound record when the old store read empty because the row just moved.
 - **The legacy facade** (`CodexOAuth.refreshHoldingGate`): a process that delegated before the move
   keeps signing with its in-memory token, which the Keychain item also holds. Only its refresh reads
-  the file. With the file absent under the gate it invalidates the registry and asks
-  `hasConfiguredAccounts("openai-codex")`. True: `CodexOAuthLocalError("The Codex login moved to the
-  macOS Keychain; retry the request.")`, a transient 503 with no upstream status; the retry reaches
+  the file. With the file absent under the gate it invalidates the registry and takes ONE snapshot.
+  Any configured Codex row: `CodexOAuthLocalError("The Codex login moved to the macOS Keychain;
+  retry the request.")`, a transient 503 with no upstream status; the retry reaches
   `CodexPoolHalf`, which leases the row. An unreadable account list is transient too: unknown
-  presence is not a logout. False: the terminal `CodexOAuthRefreshError`, as before. The check is
+  presence is not a logout. That includes a snapshot served from the last-known-good copy
+  (`codexSourceFailed(snapshot)`): a pre-move copy shows no configured row, and with the file gone no
+  synthesized one either, so trusting it answered the terminal error for a moved login. None: the
+  terminal `CodexOAuthRefreshError`, as before. When the refresh found the file gone and the list
+  READ, the in-memory token is dropped too (`dropCredentials`), so a still-valid bearer stops
+  signing after a logout or a move; an unreadable list keeps it. The check is
   "any configured Codex account" and not `isSynthesizedLegacyOnly()`: with the file absent the
   registry cannot synthesize, so that check is false after a genuine logout as well and would turn
   every logout into the transient error. `getAccessToken` with no credentials after a failed read,
   and a file removed during the exchange, answer through the same check.
 - **The facade with the file still present.** The move can publish and stop before M8 (the delete
-  failed, or the process stopped at `beforeDelete`), leaving the file. Under the gate and before
-  `exchangeRefreshToken`, the facade invalidates the registry and exchanges only while the account
-  list is the synthesized legacy login alone. Otherwise (configured rows, `legacyCodexSuppressed`,
-  or an unreadable list) it throws the transient `CodexOAuthLocalError` without exchanging: rotating
-  the file's refresh token would revoke the copy in the Keychain, and the leftover cleanup would
-  later delete the rotated file. The check runs again before the save. There it refuses only when
+  failed, or the process stopped at `beforeDelete`), leaving the file. Under the gate, before it
+  adopts a token from the file or exchanges, the facade invalidates the registry, takes ONE
+  snapshot (`legacyFileOwnership`) and goes on only while the account list is the synthesized
+  legacy login alone. Otherwise (configured rows, `legacyCodexSuppressed`, or an unreadable list)
+  it throws the transient `CodexOAuthLocalError` without adopting or exchanging: rotating the
+  file's refresh token would revoke the copy in the Keychain, and the leftover cleanup would later
+  delete the rotated file. "Unreadable" includes a snapshot whose config or legacy source FAILED
+  while the registry served its last-known-good copy: a pre-move copy still says "synthesized
+  only", and trusting it exchanged the moved login's refresh token (MTL-372 review round 2). When
+  the list positively no longer names the file ("elsewhere"), the in-memory token is dropped as
+  well; "unknown" and a configured `legacy-codex-file` row keep it. The gate-unavailable path
+  adopts the holder's token only under the same "facade" answer. The check runs again before the
+  save. There it refuses only when
   the list positively no longer names the file (marker set, or no row reads it). A configured
   `legacy-codex-file` row, or an unreadable list, keeps the save, because the file is the rotated
   token's only home.
