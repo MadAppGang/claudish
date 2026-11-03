@@ -186,6 +186,13 @@ class AccountListUnreadableDuringLeaseError extends RefreshUnavailableError {
 const STORE_MOVED = Symbol("store-moved");
 
 /**
+ * `tryLease`'s answer when the lease could not even be attempted (an empty
+ * store while the account list cannot be read): blocked for this request, but
+ * no credential was tried, so it is not a re-auth attempt.
+ */
+const NOT_ATTEMPTED = Symbol("not-attempted");
+
+/**
  * Is `current` the same live account as `leased`, rebound only to another store?
  * Disabled, removed and identity-changed rows are not: those stay terminal for a pin.
  */
@@ -612,7 +619,10 @@ export class AccountPool {
    * "attempted just now" on the next pass (and, through the pool's map, on the
    * next request) and blocks the rebound row, and a single-account pool
    * answers a terminal NeedsReauthError. A pinned move throws transient after
-   * the same restore.
+   * the same restore. An empty store while the account list cannot be read
+   * (`AccountListUnreadableDuringLeaseError`) tried no credential either, so it
+   * restores the stamp too, pinned or not; its unavailable blocker stays for
+   * this request.
    */
   private async leaseStep(
     record: AccountRecord,
@@ -629,6 +639,10 @@ export class AccountPool {
         stamps.restore();
         return STORE_MOVED;
       }
+      if (token === NOT_ATTEMPTED) {
+        stamps.restore();
+        return null;
+      }
       if (!token) return null;
       // A lease may await a refresh. Removal/disable/rebinding during that await
       // cannot publish an artifact or move active back to the old account.
@@ -641,7 +655,12 @@ export class AccountPool {
       stamps.restore();
       return STORE_MOVED;
     } catch (err) {
-      if (err instanceof AccountStoreMovedDuringLeaseError) stamps.restore();
+      if (
+        err instanceof AccountStoreMovedDuringLeaseError ||
+        err instanceof AccountListUnreadableDuringLeaseError
+      ) {
+        stamps.restore();
+      }
       throw err;
     }
   }
@@ -673,31 +692,64 @@ export class AccountPool {
   }
 
   /**
+   * A lease failure that tried no credential, so it is not this account's
+   * failure: `STORE_MOVED` or `NOT_ATTEMPTED` (unpinned), a rethrow (pinned),
+   * or `undefined` for every other error.
+   *
+   * - A store-only rebind: recorded, it would exclude the rebound row for this
+   *   request and deprioritise it for LEASE_FAILURE_DEPRIORITIZE_MS. Unpinned,
+   *   the next pass leases it again.
+   * - An empty store while the list cannot be read: unavailable for THIS
+   *   request, but not a lease failure that deprioritises the row, and (in
+   *   `leaseStep`) not a re-auth attempt.
+   */
+  private unattemptedLease(
+    record: AccountRecord,
+    ref: AccountRef,
+    reason: SelectReason,
+    context: AccountSelectionContext,
+    err: unknown
+  ): typeof STORE_MOVED | typeof NOT_ATTEMPTED | undefined {
+    if (err instanceof AccountStoreMovedDuringLeaseError) {
+      if (reason === "pinned") throw err;
+      log(
+        `[accounts] ${this.provider}: ${record.label} moved store while leasing; leasing it again`
+      );
+      return STORE_MOVED;
+    }
+    if (!(err instanceof AccountListUnreadableDuringLeaseError)) return undefined;
+    context.failed.set(record.id, {
+      kind: "unavailable",
+      ref,
+      reason: err.reason,
+      upstreamStatus: err.upstreamStatus,
+    });
+    if (reason === "pinned") throw err;
+    log(
+      `[accounts] ${this.provider}: ${record.label}'s account list could not be read; trying the next account`
+    );
+    return NOT_ATTEMPTED;
+  }
+
+  /**
    * One lease attempt. `STORE_MOVED` when the row was rebound to another store
-   * only (unpinned); a pin rethrows that as transient after the caller restores
-   * its re-auth stamp.
+   * only (unpinned); `NOT_ATTEMPTED` when the account list could not be read
+   * (unpinned, blocked for this request). A pin rethrows both as transient
+   * after the caller restores its re-auth stamp.
    */
   private async tryLease(
     record: AccountRecord,
     opts: AcquireOptions,
     reason: SelectReason,
     context: AccountSelectionContext
-  ): Promise<AccessTokenResult | typeof STORE_MOVED | null> {
+  ): Promise<AccessTokenResult | typeof STORE_MOVED | typeof NOT_ATTEMPTED | null> {
     const ref = this.refOf(record);
     try {
       return await this.managerFor(record).getAccessToken(ref, tokenOptionsFor(opts, reason));
     } catch (err) {
       if (classifyConnectionError(err)) throw err;
-      // A store-only rebind is not this account's failure: recorded, it would
-      // exclude the rebound row for this request and deprioritise it for
-      // LEASE_FAILURE_DEPRIORITIZE_MS. Unpinned, the next pass leases it again.
-      if (err instanceof AccountStoreMovedDuringLeaseError) {
-        if (reason === "pinned") throw err;
-        log(
-          `[accounts] ${this.provider}: ${record.label} moved store while leasing; leasing it again`
-        );
-        return STORE_MOVED;
-      }
+      const unattempted = this.unattemptedLease(record, ref, reason, context, err);
+      if (unattempted) return unattempted;
       const blocker = leaseFailureBlocker(ref, err);
       if (!blocker) throw err;
       const evidence = { at: this.now(), blocker };
