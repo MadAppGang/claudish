@@ -406,6 +406,13 @@ export class TokenManager {
   ): Promise<AccessTokenResult> {
     const current = await this.readOrThrow(ref, { uncached: forced });
     if (!current) {
+      // An empty store is "needs a login" only while the row still names it.
+      // A row rebound to another store (the legacy Codex file moved into the
+      // Keychain, MTL-372) left this store empty on purpose: revalidating first
+      // turns that into the transient "account changed while leasing" (503),
+      // retried on the same hop, instead of a terminal login demand that walks a
+      // bare chain to a metered hop.
+      this.validateAccount?.(ref, "before-exchange");
       throw new NeedsReauthError(
         `No stored credential for ${ref.label}. Run a login for this account.`
       );
