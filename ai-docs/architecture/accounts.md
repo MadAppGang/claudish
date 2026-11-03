@@ -149,6 +149,16 @@ deciding anything. With a last-known-good list, the request is served from it an
 exposed as a diagnostic. An I/O failure is never cached and a parse failure is cached only against
 the file's stamp, so the next readable request after a repair recovers with no restart.
 
+**While `config.json` is failed, the legacy source is not advanced** (`refreshLegacySource`). The
+copy that decides whether the file matters is the stale config: before the move it has 0 rows and
+no marker, so a fresh read of the file finds it absent (M8 deleted it), and the snapshot combined
+the OLD config with the NEW file state: 0 Codex accounts and no throw. `CodexPoolHalf.isAvailable()`
+then answered false and the composite signed `OPENAI_CODEX_API_KEY`, metered (MTL-372 review round
+3). Now the legacy copy that was current with the config copy is served with it, and the legacy
+source reports `failed` ("not re-read while the account list config cannot be read"). With no such
+copy, a Codex snapshot throws `AccountListUnavailableError` (503), as a cold failure does; the
+Claude scope still ignores the legacy source. The file is re-read as soon as the config reads.
+
 **Since MTL-372 this population is smaller.** On a Keychain platform with the default config, the
 first Codex sign of a process starts the legacy file move in the background, and `claudish login
 codex` and the mutating account verbs run it first. After the move the user has one `keychain` row
@@ -1184,9 +1194,14 @@ answer, retried on the same hop:
   failure only in `snapshot.config.state === "failed"` (and `snapshot.legacy.state`);
   `invalidate()` clears stamps, not the copy. A copy taken before the move still shows the
   `legacy-codex-file` row, so the binding looks unchanged. In the `store-empty` phase the pool's
-  validator therefore checks the config source first: failed → `AccountListUnreadableDuringLeaseError`,
-  a `RefreshUnavailableError` (transient, 503, recorded as an unavailable lease like a store-read
-  failure, so an unpinned lease tries the next account). Only that phase: `before-exchange` and
+  validator therefore invalidates the registry (the registry re-reads only on a stat-stamp change,
+  so `chmod 000` or an `EMFILE` on an unchanged file would keep reporting `present`) and checks
+  the sources first (`codexSourceFailed` for `openai-codex`, which covers the legacy source too):
+  failed → `AccountListUnreadableDuringLeaseError`, a `RefreshUnavailableError` (transient, 503).
+  It tried no credential, so it is unavailable for THIS request only: no
+  `LEASE_FAILURE_DEPRIORITIZE_MS`, and, like a store-only move, the lease's re-auth stamp is
+  restored, pinned or not. An unpinned lease tries the next account. Only that phase:
+  `before-exchange` and
   `before-persist` keep deciding from the copy, and `before-persist` still returns on a cold
   unreadable list. The phase is separate because an empty store is the one place a stale "row
   unchanged" turns into a terminal login demand; a store that holds material keeps serving through
@@ -1230,11 +1245,20 @@ answer, retried on the same hop:
   only", and trusting it exchanged the moved login's refresh token (MTL-372 review round 2). When
   the list positively no longer names the file ("elsewhere"), the in-memory token is dropped as
   well; "unknown" and a configured `legacy-codex-file` row keep it. The gate-unavailable path
-  adopts the holder's token only under the same "facade" answer. The check runs again before the
-  save. There it refuses only when
-  the list positively no longer names the file (marker set, or no row reads it). A configured
-  `legacy-codex-file` row, or an unreadable list, keeps the save, because the file is the rotated
-  token's only home.
+  (`refreshWithoutGate`) adopts the holder's token only under the same "facade" answer, and drops
+  the in-memory token by the same rules ("elsewhere", or the file gone with the list readable)
+  before it throws the gate's transient error. The check runs again before the save. There it
+  refuses only when the list positively no longer names the file (marker set, or no row reads
+  it). A configured `legacy-codex-file` row, or an unreadable list, keeps the save, because the
+  file is the rotated token's only home.
+- **A request latched to OAuth after the facade dropped its token.** `CodexOAuthHalf` refuses a
+  `requireOAuth` request with no login, so it never continues on the metered arm. After the move
+  the facade drops its token, and a stale snapshot can still route the retry into the legacy
+  half; a terminal `MeteredEscapeError` there ended a live subscription request. The refusal is
+  now classified by `CodexOAuth.missingLoginError()` (the `credentialFileGoneError` rule): a login
+  that moved to configured rows, or an account list that cannot be read, throws the transient
+  `CodexOAuthLocalError`; only a genuine logout (a readable list with no Codex account) stays
+  the terminal `MeteredEscapeError`. Neither signs.
 
 A Responses turn that spans the move does not raise `BindingChanged`: the legacy artifact and the
 pool lease carry the same `chatgpt-account-id`, copied verbatim, so `isSameCredentialSilo` sees one
