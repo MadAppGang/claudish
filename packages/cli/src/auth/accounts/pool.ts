@@ -165,6 +165,27 @@ class AccountStoreMovedDuringLeaseError extends RefreshUnavailableError {
 }
 
 /**
+ * The account's store was empty and the account list could not be read just
+ * now, so the registry served its last-known-good copy. That copy may predate
+ * the legacy file move (MTL-372) and still name the emptied store; it cannot
+ * prove the row unchanged, so "needs a login" (terminal 401, which walks a bare
+ * chain to a metered hop) is not the answer. Transient (503), pin included; it
+ * is recorded like any unavailable lease, so an unpinned lease tries the next
+ * account.
+ */
+class AccountListUnreadableDuringLeaseError extends RefreshUnavailableError {
+  constructor(label: string, configPath: string) {
+    super(
+      "account list could not be read",
+      `${label}: its store is empty and ${configPath} could not be read; retry`
+    );
+  }
+}
+
+/** `tryLease`'s answer for an unpinned store-only move: lease the same id again. */
+const STORE_MOVED = Symbol("store-moved");
+
+/**
  * Is `current` the same live account as `leased`, rebound only to another store?
  * Disabled, removed and identity-changed rows are not: those stay terminal for a pin.
  */
@@ -729,14 +750,22 @@ export class AccountPool {
       exchange: exchangeFor(this.provider),
       lockPathFor: () => accountRefreshLockPath(record, this.env),
       validateAccount: (_ref, phase) => {
-        let rows: AccountRecord[];
+        let snapshot: ReturnType<AccountRegistry["snapshot"]>;
         try {
-          rows = this.registry.snapshot(this.provider).accounts[this.provider];
+          snapshot = this.registry.snapshot(this.provider);
         } catch (err) {
           // After the vendor rotated, an unreadable list is not a removal.
           if (phase === "before-persist") return;
           throw err;
         }
+        // An empty store with the config read failing: the snapshot is the
+        // last-known-good copy, which still names this store even if the move
+        // rebound the row. "Needs a login" is unproven, so transient (503).
+        // Only this phase: elsewhere a stale list keeps serving as designed.
+        if (phase === "store-empty" && snapshot.config.state === "failed") {
+          throw new AccountListUnreadableDuringLeaseError(record.label, snapshot.config.path);
+        }
+        const rows = snapshot.accounts[this.provider];
         const current = rows.find((row) => row.id === record.id);
         // Only the store changed (the legacy file move published): transient,
         // pin included. Removed, disabled or re-identified rows stay terminal.
@@ -746,7 +775,7 @@ export class AccountPool {
           !current ||
           current.store !== record.store ||
           current.identity.chatgptAccountId !== record.identity.chatgptAccountId;
-        if (rebound || (phase === "before-exchange" && !current.enabled)) {
+        if (rebound || (phase !== "before-persist" && !current.enabled)) {
           throw new AccountChangedDuringLeaseError(
             `Account ${record.label} was removed, disabled or rebound during refresh.`
           );
