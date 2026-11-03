@@ -741,11 +741,11 @@ or a 5xx (`RangeError` otherwise), so a credential 401 can never be dressed as t
 |---|---|---|---|
 | `AllAccountsExhaustedError` | terminal, 429, real blockers | 400 `invalid_request_error`, upstream 429, pinned message, **no V header** (`respondAccountsQuotaFailure`) | bare name may advance, metered included, with `billed PER TOKEN`; `cx@` stops |
 | `NeedsReauthError` | terminal, 401, blockers | 400, upstream 401, V=terminal | bare name advances to the next hop, metered included, announced on stderr; `cx@` stops |
-| `NoUsableAccountError` (incl. `AccountChangedDuringLeaseError`) | terminal, 401, blockers | 400, upstream 401, V=terminal | same |
+| `NoUsableAccountError` (incl. `AccountChangedDuringLeaseError`: removed, disabled or re-identified) | terminal, 401, blockers | 400, upstream 401, V=terminal | same |
 | `AccountListInvalidError` | terminal, 400, path and field | 400, upstream 400, V=terminal | same; a repair instruction, not repeated 503s |
 | `MeteredEscapeError`, pre-record | terminal, no upstream | 400, V=terminal; nothing recorded or sent | same; prior billing evidence unchanged |
 | `MeteredEscapeError`, post-record backstop | same | 400 returned verbatim | none: the metered record makes the probe answer metered |
-| `RefreshUnavailableError` | transient, 503 default or the token host's 429/5xx | 503, or 429 for upstream 429; upstream kept; V=transient | returned verbatim, same-hop retry, no cost warning |
+| `RefreshUnavailableError` (incl. `AccountStoreMovedDuringLeaseError`: a store-only rebind, the legacy move) | transient, 503 default or the token host's 429/5xx | 503, or 429 for upstream 429; upstream kept; V=transient | returned verbatim, same-hop retry, no cost warning |
 | `AccountListUnavailableError` | transient, 503, source/path/type | 503, upstream 503, V=transient | same; never read as absence, never drops the candidate |
 | `PersistOutcomeUnknownError` | transient, 503 | 503, upstream 503, V=transient | same; the next request recovers from the journal |
 | capacity remaining after the one rotation (a response, not an error) | — | 429 `rate_limit_error`, upstream 429, V=transient, `Codex account retry deferred; retry this request.` | same-hop retry |
@@ -1083,14 +1083,21 @@ M2  synthesized only: enrol it as a legacy-codex-file row (one config write)
 M3  read codex-oauth.json uncached          absent → already-moved | not-applicable
 M4  config lock: the row is still this id, legacy store, same chatgptAccountId
     read the Keychain item uncached         throws → deferred/keychain-unreadable
-M5  item holds the same fingerprint AND generation → reuse it (crash resume)
+M5  item holds every durable field of the file → reuse it (crash resume)
     otherwise write the copy (-U -T /usr/bin/security), then an uncached read-back
       that must show this writeId, generation and fingerprint
 M6  one config write: row.store = "keychain"; legacyCodexSuppressed = true
 M7  invalidate (request path: the registry only; commands: the authority memo too)
-M8  compare-and-delete: re-read the file; delete only if fingerprint AND generation
-      are unchanged; otherwise keep it and log once
+M8  compare-and-delete: re-read the file; delete only if every durable field is
+      unchanged; otherwise keep it and log once
 ```
+
+**Durable fields** are everything but `writeId` and `updatedAt`: both tokens, `expiresAt`,
+`accountId`, `generation`, `fingerprint` and `journal` (absent and `null` equal), compared by
+`sameDurableRecord` (`token-store.ts`), the one helper M5 and M8 share. Fingerprint plus generation
+is not enough: a journal write and a re-issued access token change neither. With only those two, a
+crash-resumed attempt published the earlier attempt's item and deleted a file that had gained a
+refresh journal in between, so the journal was lost (MTL-372 review).
 
 At every instant either the config names the file and the file holds the material, or the config
 names the Keychain item and the item holds it, verified before publication. A failed or unverified
@@ -1123,8 +1130,13 @@ shows this `writeId`: the move continues. Otherwise: `deferred/keychain-unverifi
 changed since the copy, is logged and returns `moved` with `fileDeleted: false`. The marker already
 makes the file dead to every reader. A failed leftover delete (gate busy, unreadable config, `rm`
 error) is logged and answers `not-applicable/no-legacy-account`, not `deferred`: a dead file must not
-make `account add` or `login codex` refuse. M8 compares fingerprint AND generation, so any doubt keeps
+make `account add` or `login codex` refuse. M8 compares every durable field, so any doubt keeps
 the file.
+
+**No file bytes in `detail`.** Bun's `JSON.parse` error quotes the bytes it failed on, which in a
+torn `codex-oauth.json` are token material. The token stores report a parse failure as `invalid
+JSON` only, and `detail` passes through `redactSecrets` where `legacy-move.ts` and `management.ts`
+build it and where `legacyMoveDeferredMessage` prints it.
 
 **The triggers.**
 
@@ -1153,10 +1165,17 @@ before M6 can read the store after M8 and find the file gone. Two branches turn 
 answer, retried on the same hop:
 
 - **A pool lease** (`TokenManager.resolve`): a `null` store read now runs `validateAccount(ref,
-  "before-exchange")` before throwing `NeedsReauthError`. The registry re-stats `config.json`, sees
-  the row rebound to `keychain`, and throws `AccountChangedDuringLeaseError` (blocker `unavailable`,
-  503). A terminal `NeedsReauthError` there would walk a bare chain to a metered hop. A store that is
-  `null` with the row unchanged still means "needs a login".
+  "before-exchange")` before throwing `NeedsReauthError`. The registry re-stats `config.json` and
+  sees the row rebound to `keychain`. A rebind that changed ONLY the store (same id, same
+  `chatgptAccountId`, still enabled) throws `AccountStoreMovedDuringLeaseError`, a
+  `RefreshUnavailableError` (transient, 503). It is not recorded as a lease failure: an unpinned
+  `acquire` re-evaluates and leases the same id from its Keychain store in the same call, with no
+  exclusion and no `LEASE_FAILURE_DEPRIORITIZE_MS`. A PINNED lease (the 401 re-sign, a Responses leg
+  pinned to its account) answers it transient, and its same-hop retry leases the same id, so the pin
+  holds. The post-lease `stillConfigured` check makes the same distinction. A removed, disabled or
+  re-identified row still throws `AccountChangedDuringLeaseError` (a `NoUsableAccountError`), which
+  is terminal for a pin. A terminal 401 for a store-only move would walk a bare chain to a metered
+  hop. A store that is `null` with the row unchanged still means "needs a login".
 - **The legacy facade** (`CodexOAuth.refreshHoldingGate`): a process that delegated before the move
   keeps signing with its in-memory token, which the Keychain item also holds. Only its refresh reads
   the file. With the file absent under the gate it invalidates the registry and asks
@@ -1166,7 +1185,18 @@ answer, retried on the same hop:
   presence is not a logout. False: the terminal `CodexOAuthRefreshError`, as before. The check is
   "any configured Codex account" and not `isSynthesizedLegacyOnly()`: with the file absent the
   registry cannot synthesize, so that check is false after a genuine logout as well and would turn
-  every logout into the transient error.
+  every logout into the transient error. `getAccessToken` with no credentials after a failed read,
+  and a file removed during the exchange, answer through the same check.
+- **The facade with the file still present.** The move can publish and stop before M8 (the delete
+  failed, or the process stopped at `beforeDelete`), leaving the file. Under the gate and before
+  `exchangeRefreshToken`, the facade invalidates the registry and exchanges only while the account
+  list is the synthesized legacy login alone. Otherwise (configured rows, `legacyCodexSuppressed`,
+  or an unreadable list) it throws the transient `CodexOAuthLocalError` without exchanging: rotating
+  the file's refresh token would revoke the copy in the Keychain, and the leftover cleanup would
+  later delete the rotated file. The check runs again before the save. There it refuses only when
+  the list positively no longer names the file (marker set, or no row reads it). A configured
+  `legacy-codex-file` row, or an unreadable list, keeps the save, because the file is the rotated
+  token's only home.
 
 A Responses turn that spans the move does not raise `BindingChanged`: the legacy artifact and the
 pool lease carry the same `chatgpt-account-id`, copied verbatim, so `isSameCredentialSilo` sees one
