@@ -44,6 +44,7 @@ import {
   type PaneSessionOptions,
   type PaneSnapshot,
   SLOT_STATES,
+  type ScrollRequest,
   type SettledTurn,
   type SlotRow,
   type SlotState,
@@ -52,6 +53,7 @@ import {
   type TeamListResult,
   type TeamResizeResult,
   type TeamRunRow,
+  type TeamScrollResult,
   assertMagmuxAvailable,
   chainAnswerOf,
   checkChildFlags,
@@ -790,6 +792,39 @@ export async function resizeTeamSlot(
   if (!e.session)
     return { ...where, cols: DEFAULT_PANE_COLS, rows: DEFAULT_PANE_ROWS, changed: false, seq: 0 };
   return { ...where, ...(await e.session.resize(cols, rows)) };
+}
+
+/**
+ * Contract G: scroll one slot's transcript view (`PaneSession.scroll`), addressed like
+ * `resizeTeamSlot`. A slot whose pane never spawned answers `scroll_unavailable` (still
+ * starting, or finished). Throws `ContractErrorException`: `unknown_run`, `unknown_slot`,
+ * `scroll_unavailable`.
+ */
+export async function scrollTeamSlot(
+  path: string | undefined,
+  slot: string,
+  req: ScrollRequest,
+  runId?: string
+): Promise<TeamScrollResult> {
+  const run = addressRun(path, runId);
+  if (!run) throw unknownRun(path, runId);
+  const e = run.slots.get(slot);
+  if (!e)
+    throw new ContractErrorException(
+      "unknown_slot",
+      `run ${run.runId} has no slot ${JSON.stringify(slot)}`
+    );
+  if (!e.session) {
+    const state = run.status.models[e.id]?.state;
+    throw new ContractErrorException(
+      "scroll_unavailable",
+      state === undefined || isTerminalState(state)
+        ? "the slot has finished"
+        : "the slot is still starting"
+    );
+  }
+  const r = await e.session.scroll(req);
+  return { run_id: run.runId, path: run.path, slot, seq: r.seq };
 }
 
 /**

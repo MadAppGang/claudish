@@ -140,6 +140,7 @@ describe("Group 1: MCP Protocol — session tools", () => {
       "report_error",
       "resize_session",
       "run_prompt",
+      "scroll_session",
       "search_models",
       "send_input",
       "team",
@@ -313,7 +314,7 @@ describe("Group 1b: MCP Protocol — session-only tools", () => {
     } catch {}
   });
 
-  test("lists only the 8 session tools when CLAUDISH_MCP_TOOLS=session", async () => {
+  test("lists only the 9 session tools when CLAUDISH_MCP_TOOLS=session", async () => {
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
@@ -324,6 +325,7 @@ describe("Group 1b: MCP Protocol — session-only tools", () => {
       "get_output",
       "list_sessions",
       "resize_session",
+      "scroll_session",
       "send_input",
     ]);
   });
@@ -381,6 +383,7 @@ for (const [toolMode, expected] of [
       "report_error",
       "resize_session",
       "run_prompt",
+      "scroll_session",
       "search_models",
       "send_input",
       "team",

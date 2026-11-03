@@ -18,7 +18,7 @@ describe("nested MCP mode", () => {
       )
     ).toBe(true);
     expect(NESTED_INSTRUCTIONS).toContain(
-      "create_session, team, send_input, get_output, cancel_session, list_sessions, get_diagnostics, capture_session, preflight, report_error"
+      "create_session, team, send_input, get_output, cancel_session, list_sessions, get_diagnostics, capture_session, resize_session, scroll_session, preflight, report_error"
     );
     expect(NESTED_INSTRUCTIONS).toContain(
       "- run_prompt or compare_models: a one-shot answer from another model."

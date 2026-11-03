@@ -1428,8 +1428,13 @@ function onKey(ch: string): void {
   updateMenu();
 }
 
-/** Consume a bracketed paste or a CSI/SS3 sequence at the head of `s`; null when none. */
-function consumeSequence(s: string): string | null {
+// PTY reads can end anywhere in an escape sequence, even after its initial ESC.
+let pendingSequence = "";
+let escapeTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Consume a bracketed paste or CSI/SS3 sequence; null = plain key, undefined = incomplete. */
+function consumeSequence(s: string): string | null | undefined {
+  if (s === "\x1b") return undefined;
   if (s.startsWith("\x1b[200~")) {
     const end = s.indexOf("\x1b[201~");
     if (!swallowUntilEsc) S.box += end >= 0 ? s.slice(6, end) : s.slice(6);
@@ -1437,15 +1442,46 @@ function consumeSequence(s: string): string | null {
   }
   if (s.startsWith("\x1b[") || s.startsWith("\x1bO")) {
     const m = s.slice(2).search(/[@-~]/);
-    return m >= 0 ? s.slice(m + 3) : "";
+    return m >= 0 ? s.slice(m + 3) : undefined;
   }
   return null;
 }
 
 function onData(buf: Buffer): void {
-  let s = buf.toString("utf8");
+  // Opt-in observation only: keep the existing REPL semantics unchanged. Log raw chunks
+  // before parsing so a test can reassemble a sequence split across PTY reads.
+  const inputLog = env.FAKE_INPUT_BYTES_LOG;
+  if (inputLog) {
+    try {
+      appendFileSync(
+        inputLog.replaceAll("{session}", sessionId),
+        `${JSON.stringify({ session_id: sessionId, model, text: buf.toString("utf8") })}\n`
+      );
+    } catch {
+      // diagnostics only, like FAKE_KEYLOG
+    }
+  }
+  if (escapeTimer !== undefined) {
+    clearTimeout(escapeTimer);
+    escapeTimer = undefined;
+  }
+  let s = pendingSequence + buf.toString("utf8");
+  pendingSequence = "";
   while (s.length) {
     const rest = consumeSequence(s);
+    if (rest === undefined) {
+      pendingSequence = s;
+      // A bare Escape must still dismiss menus/dialogs. Give a split CSI/SS3 prefix
+      // a short inter-byte window; once identified, retain it until its final byte.
+      if (s === "\x1b")
+        escapeTimer = setTimeout(() => {
+          escapeTimer = undefined;
+          pendingSequence = "";
+          onKey("\x1b");
+          renderInput();
+        }, 50);
+      break;
+    }
     if (rest !== null) {
       s = rest;
       continue;

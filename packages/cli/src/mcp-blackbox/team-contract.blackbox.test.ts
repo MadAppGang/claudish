@@ -43,6 +43,7 @@ const CAPABILITIES = [
   "capture_spans",
   "resize",
   "allowance",
+  "scroll",
 ];
 const SLOT_STATES = [
   "STARTING",

@@ -1,7 +1,8 @@
 /**
  * The frozen mod contract, version 1 — the single source of the wire types that the
- * peer's Claude Code mod reads from `team(mode="list"|"status"|"cancel"|"capture"|"resize")`,
- * `list_sessions`, `cancel_session`, `capture_session` and `resize_session`.
+ * peer's Claude Code mod reads from
+ * `team(mode="list"|"status"|"cancel"|"capture"|"resize"|"scroll")`, `list_sessions`,
+ * `cancel_session`, `capture_session`, `resize_session` and `scroll_session`.
  *
  * Pasted verbatim from the session architecture §8 (including CA-12 `contract_version`
  * / `capabilities` and CA-13 `run_id`). Fields never change meaning or type within
@@ -14,7 +15,9 @@ export const CONTRACT_VERSION = 1;
 /**
  * v1 announces exactly these. `resize` is additive: it needs magmux >= 0.15.1.
  * `allowance` is additive too: the `allowance_status` tool answers
- * `claudish.allowance.v1` (allowance architecture §3.4).
+ * `claudish.allowance.v1` (allowance architecture §3.4). `scroll` is additive: the
+ * `scroll_session` tool and `team(mode="scroll")` forward wheel events to the child's
+ * transcript view (MTL-369). Appended, never inserted: the mod's goldens replay the order.
  */
 export const CAPABILITIES = [
   "list",
@@ -25,6 +28,7 @@ export const CAPABILITIES = [
   "capture_spans",
   "resize",
   "allowance",
+  "scroll",
 ] as const;
 
 export interface ContractMeta {
@@ -301,7 +305,29 @@ export interface TeamResizeResult {
   pending?: true;
 }
 
-/** E. `resize_unsupported` and `delivery_unavailable` are emitted only by the resize verbs. */
+/**
+ * G — `scroll_session`. `seq` = the screen's seq after the wheel events were sent: the first
+ * changed screen within 1000 ms of magmux's reply, otherwise the current seq (at an edge, or
+ * at the live bottom with nothing to move, the screen does not change). `by` is a target,
+ * ± 1 row: Claude Code moves one row per wheel event with acceleration off.
+ */
+export interface ScrollResult {
+  session_id: string;
+  seq: number;
+}
+/** G — `team(mode="scroll")`: the same answer, addressed by run and slot. */
+export interface TeamScrollResult {
+  run_id: string;
+  path: string;
+  slot: string;
+  seq: number;
+}
+
+/**
+ * E. `resize_unsupported` and `delivery_unavailable` are emitted only by the resize verbs;
+ * `scroll_unavailable` only by the scroll verbs (a pane still starting, finished, delivering
+ * a prompt, reading its turn from the screen, reconnecting, or a send magmux did not confirm).
+ */
 export interface ContractError {
   error: {
     code:
@@ -310,7 +336,8 @@ export interface ContractError {
       | "unknown_session"
       | "invalid_args"
       | "resize_unsupported"
-      | "delivery_unavailable";
+      | "delivery_unavailable"
+      | "scroll_unavailable";
     message: string;
   };
 }
