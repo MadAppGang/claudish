@@ -16,6 +16,11 @@
  * `default`) becomes a configured row only through an explicit add, enable or
  * disable, which says so before it happens; its refresh gate stays
  * `legacy-codex` (`accountRefreshLockPath`), shared with the `CodexOAuth` facade.
+ *
+ * On a Keychain platform with the default config, every mutating verb except
+ * `remove` first moves the legacy login into the Keychain
+ * ({@link CodexAccountManagement.moveLegacyLogin}, MTL-372), so there the
+ * enrolment branches above find no legacy login left to enrol.
  */
 import { randomBytes } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
@@ -627,6 +632,7 @@ export class CodexAccountManagement {
   async run(command: CodexManagementCommand): Promise<string[]> {
     if (command.verb === "add") {
       if (command.label !== undefined) validLabel(command.label);
+      await this.moveBeforeMutation();
       return this.add({ label: command.label });
     }
     if (command.verb === "rename") validLabel(command.newLabel);
@@ -639,6 +645,9 @@ export class CodexAccountManagement {
       throw new Error("Name the Codex account by label or email, or with --id <generated-id>.");
     }
     if (command.selector !== undefined) validSelector(command.selector);
+    // `remove` deletes rather than moves: a legacy target keeps its
+    // `--delete-file` contract.
+    if (command.verb !== "remove") await this.moveBeforeMutation();
     const target = this.inspect((entry) => this.select(entry, command));
     if (command.verb === "login") return this.login(target);
     if (command.verb === "rename") return this.rename(target, command.newLabel);
@@ -1072,6 +1081,19 @@ export class CodexAccountManagement {
     ];
   }
 
+  /**
+   * `account add|login|enable|disable|rename codex`: the legacy file move runs
+   * first (MTL-372), so on a Keychain platform these verbs find the login
+   * already a `keychain` row and never enrol the file as `legacy-codex-file`.
+   * A deferral aborts before any browser or lock, naming the cause. Where the
+   * move does not apply (no Keychain, an alternate config) nothing changes.
+   * Reads (`list`, `status`, `forecast`) never reach this.
+   */
+  private async moveBeforeMutation(): Promise<void> {
+    const moved = await this.moveLegacyLogin();
+    if (moved.kind === "deferred") throw new Error(legacyMoveDeferredMessage(moved, this.env));
+  }
+
   // -- `claudish login codex` on a Keychain platform (MTL-372) -------------
 
   /**
@@ -1088,8 +1110,7 @@ export class CodexAccountManagement {
    *    - 2 or more: refused before the browser.
    */
   async loginCodex(): Promise<string[]> {
-    const moved = await this.moveLegacyLogin();
-    if (moved.kind === "deferred") throw new Error(legacyMoveDeferredMessage(moved, this.env));
+    await this.moveBeforeMutation();
     const rows = this.inspect((entry) => entry.accounts.map(asRecord));
     if (rows.length === 0) {
       return this.add({ label: LEGACY_CODEX_LABEL, notice: false, enrollLegacy: false });
