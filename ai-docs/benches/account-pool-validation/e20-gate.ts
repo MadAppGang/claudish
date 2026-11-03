@@ -4,6 +4,8 @@
  * silently (exit 0 on a regressed binary).
  */
 
+import { describeSecret, redactCredentialShapes } from "./cred-shape-scan.ts";
+
 /** The slice of an E20 capture the divergence check reads. `Capture` satisfies it. */
 export interface SideCapture {
   fake: Array<{ path: string }>;
@@ -24,7 +26,19 @@ export const FAKE_SECRETS = new Set([
 ]);
 
 const SECRET_SHAPE =
-  /sk-[A-Za-z0-9_-]{6,}|eyJ[A-Za-z0-9_-]{10,}|\b(?:access|refresh)-(?:legacy|[A-Z]\d*)\b|(?:at|rt)-rotated-\d+/;
+  /sk-[A-Za-z0-9_-]{6,}|eyJ[A-Za-z0-9_-]{10,}|\b(?:access|refresh)-(?:legacy|[A-Z]\d*)\b|(?:at|rt)-rotated-\d+/g;
+
+/**
+ * Every credential-shaped string in `text` that is not one of the fake values, described by
+ * hash. ALL matches are checked (review round 6: a first-match-only test let a real token hide
+ * behind an allowlisted fake one earlier in the same text).
+ */
+export function unknownSecretShapes(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(SECRET_SHAPE))
+    if (!FAKE_SECRETS.has(m[0])) out.push(describeSecret(m[0]));
+  return out;
+}
 
 /**
  * Credentials in what the client sees: the body and every response header of one
@@ -45,8 +59,8 @@ export function clientLeaks(cap: {
   for (const [where, text] of surfaces) {
     for (const secret of FAKE_SECRETS)
       if (text.includes(secret)) out.push(`${where} echoes ${secret}`);
-    const m = SECRET_SHAPE.exec(text);
-    if (m && !FAKE_SECRETS.has(m[0])) out.push(`${where} has a credential-shaped string ${m[0]}`);
+    for (const d of unknownSecretShapes(text))
+      out.push(`${where} has a credential-shaped string (${d})`);
   }
   return out;
 }
@@ -72,8 +86,8 @@ export function outputLeaks(streams: { stdout: string; stderr: string }): string
   for (const [where, text] of Object.entries(streams)) {
     for (const secret of FAKE_SECRETS)
       if (text.includes(secret)) out.push(`${where} echoes ${secret}`);
-    const m = SECRET_SHAPE.exec(text);
-    if (m && !FAKE_SECRETS.has(m[0])) out.push(`${where} has a credential-shaped string ${m[0]}`);
+    for (const d of unknownSecretShapes(text))
+      out.push(`${where} has a credential-shaped string (${d})`);
   }
   return out;
 }
@@ -181,6 +195,26 @@ export interface SummaryEntry {
   detail: string;
 }
 
+/**
+ * Run one E20 step (a seam proof, a case's captures, a mutant run). A throw (the binary did
+ * not start, the connection broke, the process crashed) becomes an ABORTED summary entry for
+ * `id` instead of ending the run, so the secret scan and the summary are still written and
+ * the exit code fails (review round 6). The error text is redacted by shape: a start failure
+ * quotes the binary's stdout and stderr.
+ */
+export async function guarded<T>(
+  id: string,
+  fn: () => Promise<T>
+): Promise<{ ok: true; value: T } | { ok: false; entry: SummaryEntry }> {
+  try {
+    return { ok: true, value: await fn() };
+  } catch (err) {
+    const text = err instanceof Error ? err.message : String(err);
+    const detail = redactCredentialShapes(text.slice(0, 2000), []).text;
+    return { ok: false, entry: { id, outcome: "ABORTED", detail: `threw: ${detail}` } };
+  }
+}
+
 /** Summary ids of mutants that are DOCUMENTED dead (single-site, redundant layer). */
 export const NEGATIVE_CONTROLS = ["mutant V16-drop-transform"];
 
@@ -271,6 +305,72 @@ export function refreshRejectedAllReps(
       (p) => `repetition ${i + 1}: ${p}`
     )
   );
+}
+
+/**
+ * What proves a mutant's mutated code ran and changed what it was built to change: the
+ * upstream request (method and exact path) and the diff paths the mutation must change.
+ * A diff path is a `diffValues` path prefix; `[*]` matches any array index
+ * (`$.fake[*].headers.originator`).
+ */
+export interface MutantEvidence {
+  method: string;
+  path: string;
+  diffPaths: string[];
+}
+
+/** The path of one `diffValues` line (`$.a.b: baseline=… candidate=…`). */
+export const diffPathOf = (line: string): string => line.slice(0, line.indexOf(": "));
+
+/** True when `path` is `prefix` or lies under it; `[*]` in the prefix matches any index. */
+export function underDiffPath(path: string, prefix: string): boolean {
+  const re = new RegExp(
+    `^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\[\\\*\\\]/g, "\\[\\d+\\]")}(?=$|[.[])`
+  );
+  return re.test(path);
+}
+
+/**
+ * One E20 mutant's outcome. A difference from the unmutated candidate is RED only when
+ * the mutation's own upstream request reached the fake AND the difference lies under one of
+ * the mutant's declared diff paths: without the request the mutated code never ran, and a
+ * difference elsewhere (a crash, an unrelated field) proves nothing about the mutation.
+ *
+ * - any harness error (egress, leak, canary, redirect): ABORTED;
+ * - the evidence request is absent: ABORTED (counted as an error, never red);
+ * - evidence present and a difference under a declared path: `mutant red`;
+ * - evidence present, differences, none under a declared path: ABORTED (difference elsewhere);
+ * - evidence present and no difference: `DEAD-MUTANT`.
+ */
+export function mutantVerdict(input: {
+  evidence: MutantEvidence;
+  fake: ReadonlyArray<{ method: string; path: string }>;
+  /** The `diffValues` lines against the unmutated candidate. */
+  diff: string[];
+  harnessErrors: string[];
+}): { outcome: "mutant red" | "DEAD-MUTANT" | "ABORTED"; detail: string } {
+  const want = `${input.evidence.method} ${input.evidence.path}`;
+  if (input.harnessErrors.length > 0)
+    return { outcome: "ABORTED", detail: input.harnessErrors.join("; ") };
+  const seen = input.fake.map((q) => `${q.method} ${q.path}`);
+  if (!seen.includes(want))
+    return {
+      outcome: "ABORTED",
+      detail: `the mutation's upstream request ${want} never reached the fake (fake saw: ${seen.join(", ") || "nothing"})`,
+    };
+  if (input.diff.length === 0)
+    return { outcome: "DEAD-MUTANT", detail: `${want} captured; no difference` };
+  const paths = input.diff.map(diffPathOf);
+  const onTarget = paths.filter((p) => input.evidence.diffPaths.some((d) => underDiffPath(p, d)));
+  if (onTarget.length === 0)
+    return {
+      outcome: "ABORTED",
+      detail: `${want} captured; ${paths.length} difference(s), none under ${input.evidence.diffPaths.join(" or ")} (differences at ${paths.join(", ")})`,
+    };
+  return {
+    outcome: "mutant red",
+    detail: `${want} captured; ${onTarget.length} of ${paths.length} difference(s) under ${input.evidence.diffPaths.join(" or ")}`,
+  };
 }
 
 /**

@@ -30,7 +30,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { killTree } from "./direct.ts";
+import {
+  describeSecret,
+  formatShapeFinding,
+  scanCredentialShapes,
+  writeScanned,
+} from "./cred-shape-scan.ts";
+import { type CapturedRedirect, describeRedirect, killTree, postMessage } from "./direct.ts";
 import {
   type Recorded,
   type ResponsesReply,
@@ -41,12 +47,17 @@ import {
   startRecordingFake,
 } from "./e20-fake.ts";
 import {
+  type Expected,
   FAKE_SECRETS,
+  type MutantEvidence,
+  type SummaryEntry,
   UPSTREAM_EVIDENCE_FILES,
   argProblems,
   clientLeaks,
   e20Verdict,
+  guarded,
   headerStabilityDiff,
+  mutantVerdict,
   outputLeaks,
   refreshRejectedAllReps,
 } from "./e20-gate.ts";
@@ -142,12 +153,33 @@ export const CASES: CaseDef[] = [
   },
 ];
 
-/** The four V16 mutants of the CURRENT bundle (rows-contract.md V16), each mapped to its red case. */
-export const V16_MUTANTS: Array<Mutant & { redIn: string; stands: string }> = [
+/** The Codex responses request every V16 mutant except the endpoint one must still send. */
+const RESPONSES_REQUEST = { method: "POST", path: "/backend-api/codex/responses" } as const;
+const responsesEvidence = (...diffPaths: string[]): MutantEvidence => ({
+  ...RESPONSES_REQUEST,
+  diffPaths,
+});
+
+/**
+ * The four V16 mutants of the CURRENT bundle (rows-contract.md V16), each mapped to its red
+ * case. `evidence` is the upstream request that proves the mutated code ran, and the diff
+ * paths the mutation must change: a mutant run whose fake never saw the request, or whose
+ * differences all lie elsewhere, is ABORTED, never red (`mutantVerdict`). The paths were
+ * checked against the saved run-15 captures (e20-gate.test.ts pins them).
+ */
+export const V16_MUTANTS: Array<
+  Mutant & { redIn: string; stands: string; evidence: MutantEvidence }
+> = [
   {
     id: "V16-endpoint-path",
     rows: ["V16"],
     redIn: "legacy-ok",
+    // The mutated endpoint itself: the request must land on the mutant path at the fake.
+    evidence: {
+      method: "POST",
+      path: "/backend-api/codex/mutant",
+      diffPaths: ["$.fake[*].path"],
+    },
     stands:
       "remove the OAuth endpoint override (kept loopback: the path changes, the host does not)",
     expect: "the legacy request lands on another path at the fake",
@@ -164,6 +196,7 @@ export const V16_MUTANTS: Array<Mutant & { redIn: string; stands: string }> = [
     id: "V16-omit-header",
     rows: ["V16"],
     redIn: "legacy-ok",
+    evidence: responsesEvidence("$.fake[*].headers.originator"),
     stands: "omit an OAuth header in buildOAuthHeaders",
     expect: "the legacy request has no originator header",
     edits: [
@@ -184,6 +217,7 @@ export const V16_MUTANTS: Array<Mutant & { redIn: string; stands: string }> = [
     id: "V16-drop-transform",
     rows: ["V16"],
     redIn: "legacy-ok",
+    evidence: responsesEvidence("$.fake[*].body.store", "$.fake[*].body.include"),
     stands: "drop the payload transform (store:false, include)",
     expect: "the legacy payload lacks store:false and include",
     edits: [
@@ -201,6 +235,7 @@ export const V16_MUTANTS: Array<Mutant & { redIn: string; stands: string }> = [
     id: "V16-drop-transform-both-layers",
     rows: ["V16"],
     redIn: "legacy-ok",
+    evidence: responsesEvidence("$.fake[*].body.store", "$.fake[*].body.include"),
     stands:
       "SUPPLEMENTARY: drop the payload transform at both layers (credential and request builder)",
     expect: "the legacy payload lacks store:false and include",
@@ -219,6 +254,9 @@ export const V16_MUTANTS: Array<Mutant & { redIn: string; stands: string }> = [
     id: "V16-remap",
     rows: ["V16"],
     redIn: "legacy-error",
+    // The remap acts on the scripted 500 of this request: no request, no remap. What it
+    // changes is the status the client sees.
+    evidence: responsesEvidence("$.client.status"),
     stands: "change the terminal-error remap",
     expect: "the 500 answer is remapped to a terminal 400",
     edits: [
@@ -345,6 +383,8 @@ export interface Capture {
   egress: string[];
   masks: Masks;
   stderrTail: string;
+  /** Set when the binary answered 3xx: captured, never followed; the run is ABORTED. */
+  redirect?: CapturedRedirect;
 }
 
 interface Pin {
@@ -470,37 +510,20 @@ export async function runOnce(
         }
         await Bun.sleep(50);
       }
-      const res = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "anthropic-version": "2023-06-01",
-          "x-api-key": "placeholder-not-a-credential",
-        },
-        body: JSON.stringify({
-          model: SLOT,
-          max_tokens: 64,
-          stream: false,
-          messages: [{ role: "user", content: PROMPT }],
-          metadata: { user_id: JSON.stringify({ session_id: SESSION_ID }) },
-        }),
-        signal: AbortSignal.timeout(90_000),
-      });
-      const text = await res.text();
+      // The same request `postMessage` builds (slot, prompt, fixed session id), sent through
+      // `parentFetch`: a redirect is captured, never followed.
+      const res = await postMessage(`http://127.0.0.1:${port}`, PROMPT, SESSION_ID, 90_000);
+      if (res.connectionError) throw new Error(`POST failed (${bin.id}): ${res.connectionError}`);
       await Bun.sleep(400);
       const masks: Masks = {};
-      let bodyJson: unknown = text;
-      try {
-        bodyJson = JSON.parse(text);
-      } catch {
-        /* keep text */
-      }
+      const bodyJson = res.body;
       const clientHeaders: Record<string, string> = {};
-      for (const [k, v] of res.headers) {
+      for (const [k, v] of Object.entries(res.headers)) {
         if (k.startsWith("x-claudish") || k === "content-type") clientHeaders[k] = v;
       }
-      const allClientHeaders = Object.fromEntries(res.headers);
+      const allClientHeaders = { ...res.headers };
       const result = {
+        ...(res.redirect ? { redirect: res.redirect } : {}),
         fake: fake.requests.map((r) => normalizeRequest(r, lits, masks)),
         canary: canary.requests.map((r) => normalizeRequest(r, lits, masks)),
         client: { status: res.status, body: maskValue(bodyJson, lits, masks) },
@@ -523,7 +546,12 @@ export async function runOnce(
         writeFileSync(
           join(rawDir, "client-response.json"),
           JSON.stringify(
-            { status: res.status, headers: Object.fromEntries(res.headers), body: bodyJson },
+            {
+              status: res.status,
+              headers: res.headers,
+              body: bodyJson,
+              ...(res.redirect ? { redirect: res.redirect } : {}),
+            },
             null,
             2
           )
@@ -548,6 +576,7 @@ export async function runOnce(
 export async function proveSeam(bin: BinaryRef, literals: Literals): Promise<string | null> {
   const probe: CaseDef = { ...(CASES[0] as CaseDef), id: "seam-proof" };
   const r = await runOnce(bin, probe, literals);
+  if (r.redirect) return describeRedirect(r.redirect);
   const reached = r.fake.some((q) => q.path.endsWith("/codex/responses"));
   if (!reached) {
     return `no /codex/responses request reached the fake (fake saw: ${r.fake.map((q) => `${q.method} ${q.path}`).join(", ") || "nothing"}; client ${r.client.status})`;
@@ -600,11 +629,16 @@ export function scanSecrets(dir: string): {
       )) {
         // A fake credential is allowed only in the upstream-request evidence files.
         if (FAKE_SECRETS.has(m[0]) && UPSTREAM_EVIDENCE_FILES.has(name)) allowlisted++;
-        else violations.push(`${p}: ${m[0]}`);
+        // A fake value is named; anything else is described, never printed.
+        else violations.push(`${p}: ${FAKE_SECRETS.has(m[0]) ? m[0] : describeSecret(m[0])}`);
       }
     }
   };
   walk(dir);
+  // Second net: a REAL credential that entered from outside, by shape, in EVERY file
+  // (upstream-request evidence included). Bundle copies (`mutants/`) are not scanned.
+  const shapes = scanCredentialShapes(dir, FAKE_SECRETS);
+  for (const f of shapes.findings) violations.push(formatShapeFinding(f));
   return { files, allowlisted, violations };
 }
 
@@ -676,7 +710,8 @@ async function main() {
   // Seam proof per binary; a binary that fails is aborted (no case runs on it).
   const armed: Record<string, string | null> = {};
   for (const bin of [baseline, candidate]) {
-    armed[bin.id] = await proveSeam(bin, literals);
+    const proof = await guarded(`seam ${bin.id}`, () => proveSeam(bin, literals));
+    armed[bin.id] = proof.ok ? proof.value : `seam proof ${proof.entry.detail}`;
     console.log(
       `seam ${bin.id}: ${armed[bin.id] === null ? "ARMED" : `NOT ARMED: ${armed[bin.id]}`}`
     );
@@ -685,195 +720,265 @@ async function main() {
 
   const summary: Array<{ id: string; outcome: Outcome; detail: string }> = [];
   const captured: Record<string, Capture> = {};
-
-  for (const c of CASES) {
-    if (only && c.id !== only) continue;
-    const caseDir = join(out, c.id);
-    mkdirSync(caseDir, { recursive: true });
-    if (armed.baseline !== null || armed.candidate !== null) {
-      const detail = `seam not armed on ${[armed.baseline && "baseline", armed.candidate && "candidate"].filter(Boolean).join(" and ")}`;
-      writeFileSync(
-        join(caseDir, "result.json"),
-        JSON.stringify({ case: c.id, pins, outcome: "ABORTED", detail }, null, 2)
-      );
-      summary.push({ id: c.id, outcome: "ABORTED", detail });
-      continue;
-    }
-    // Two runs per binary: the second proves the masked comparison is stable (flake check).
-    const runs: Record<
-      string,
-      Array<Capture & { rawFake: Recorded[]; rawCanary: Recorded[] }>
-    > = {};
-    for (const bin of [baseline, candidate]) {
-      runs[bin.id] = [];
-      for (let i = 0; i < 2; i++) {
-        runs[bin.id]?.push(
-          await runOnce(bin, c, literals, i === 0 ? join(caseDir, bin.id) : undefined)
-        );
-      }
-    }
-    const b = runs.baseline?.[0] as Capture;
-    const k = runs.candidate?.[0] as Capture;
-    captured[c.id] = k;
-    captured[`baseline:${c.id}`] = b;
-    const b2 = runs.baseline?.[1] as Capture;
-    const k2 = runs.candidate?.[1] as Capture;
-    const stable = {
-      baseline: [...diffValues(comparable(b), comparable(b2), "$"), ...headerStabilityDiff(b, b2)],
-      candidate: [...diffValues(comparable(k), comparable(k2), "$"), ...headerStabilityDiff(k, k2)],
-    };
-    const diff = diffValues(comparable(b), comparable(k));
-    const diff2 = diffValues(comparable(b2), comparable(k2));
-    const problems: string[] = [];
-    // Every repetition, not only the first, meets the egress, upstream and canary checks.
-    for (const [name, cap] of [
-      ["baseline", b],
-      ["candidate", k],
-      ["baseline repetition 2", b2],
-      ["candidate repetition 2", k2],
-    ] as const) {
-      const bad = checkEgress(cap.egress);
-      if (bad.length) problems.push(`${name} egress to unknown target: ${bad.join("; ")}`);
-      // A fake credential may sit in the upstream-request evidence, never in what the client sees.
-      for (const leak of clientLeaks(cap)) problems.push(`${name}: ${leak}`);
-      for (const leak of cap.outputLeaks) problems.push(`${name}: ${leak}`);
-      const reached =
-        c.needs === "responses"
-          ? cap.fake.some((q) => q.path.endsWith("/codex/responses"))
-          : c.needs === "token"
-            ? cap.fake.some((q) => q.path.endsWith("/oauth/token"))
-            : cap.canary.length > 0;
-      if (!reached)
-        problems.push(
-          `${name}: the case never reached its upstream (${c.needs}); seam not exercised`
-        );
-      if (c.canaryMin !== null) {
-        const n = cap.canary.length;
-        if (c.canaryMin === 0 ? n !== 0 : n < c.canaryMin)
-          problems.push(
-            `${name}: canary count ${n}, expected ${c.canaryMin === 0 ? "0" : `>= ${c.canaryMin}`}`
-          );
-      }
-    }
-    for (const [name, d] of Object.entries(stable)) {
-      if (d.length) problems.push(`${name} is not self-stable across two runs: ${d.join(" | ")}`);
-    }
-    let outcome: Outcome;
-    let divergenceProblems: string[] = [];
-    if (problems.length) outcome = "ABORTED";
-    else if (c.mode === "expected-divergence") {
-      // Explicit per-binary expectations (e20-gate.ts); any other difference is DIFFERENT.
-      divergenceProblems = refreshRejectedAllReps([b, b2], [k, k2], [diff, diff2]);
-      outcome = divergenceProblems.length ? "DIFFERENT" : "expected divergence";
-    } else outcome = diff.length ? "DIFFERENT" : "identical";
-    const result = {
-      case: c.id,
-      doc: c.doc,
-      pins,
-      seamDiffSha256,
-      mode: c.mode,
-      outcome,
-      problems,
-      divergenceProblems,
-      diff,
-      stable,
-      baseline: { ...b, rawNote: "raw captures in ./baseline" },
-      candidate: { ...k, rawNote: "raw captures in ./candidate" },
-    };
-    writeFileSync(join(caseDir, "result.json"), JSON.stringify(result, null, 2));
-    summary.push({
-      id: c.id,
-      outcome,
-      detail:
-        problems.length > 0
-          ? problems.join("; ")
-          : divergenceProblems.length > 0
-            ? divergenceProblems.join("; ")
-            : diff.length === 0
-              ? `request(s) at fake=${k.fake.length} canary=${k.canary.length}, client ${k.client.status}`
-              : `${diff.length} differing field(s)`,
-    });
-    console.log(
-      `${c.id}: ${outcome}${diff.length ? ` (${diff.length} diffs)` : ""}${problems.length ? ` PROBLEMS: ${problems.join("; ")}` : ""}${divergenceProblems.length ? ` UNEXPECTED: ${divergenceProblems.join("; ")}` : ""}`
-    );
-  }
-
-  // Mutants: each must turn its case red against the UNMUTATED candidate's capture.
-  if (!args.includes("--skip-mutants")) {
-    const mutantsRoot = join(out, "mutants");
-    for (const m of V16_MUTANTS) {
-      const c = CASES.find((x) => x.id === m.redIn) as CaseDef;
-      const ref = captured[c.id];
-      const refBase = captured[`baseline:${c.id}`];
-      if (!ref || !refBase) {
-        // A mutant is never skipped silently: its red case did not produce a capture.
-        if (only && c.id !== only) continue; // partial run, this mutant is out of scope
-        summary.push({
-          id: `mutant ${m.id}`,
-          outcome: "ABORTED",
-          detail: `its red case ${c.id} has no capture (aborted or not run)`,
-        });
-        continue;
-      }
-      if (m.edits.length === 0) {
-        summary.push({ id: `mutant ${m.id}`, outcome: "ABORTED", detail: "no edit built" });
-        continue;
-      }
-      const launcher = emitMutantTree(m, join(mutantsRoot, m.id));
-      const bin: BinaryRef = { id: m.id, launcher, tree: join(mutantsRoot, m.id) };
-      const armedErr = await proveSeam(bin, literals);
-      let outcome: Outcome;
-      let detail: string;
-      if (m.id !== "V16-endpoint-path" && armedErr) {
-        outcome = "ABORTED";
-        detail = `seam proof failed on the mutant: ${armedErr}`;
-      } else {
-        const r = await runOnce(bin, c, literals, join(out, "mutant-raw", m.id));
-        const dCand = diffValues(comparable(ref), comparable(r));
-        const dBase = diffValues(comparable(refBase), comparable(r));
-        outcome = dCand.length > 0 ? "mutant red" : "DEAD-MUTANT";
-        detail = `${m.stands}; red in ${c.id}: ${dCand.length} diff(s) vs unmutated candidate, ${dBase.length} vs baseline; canary=${r.canary.length}`;
-        writeFileSync(
-          join(out, "mutant-raw", m.id, "diff.json"),
-          JSON.stringify({ vsCandidate: dCand, vsBaseline: dBase }, null, 2)
-        );
-        // Standing check: a mutant run that reached an unknown target is not evidence.
-        const badEgress = checkEgress(r.egress);
-        if (badEgress.length) {
-          outcome = "ABORTED";
-          detail += `; UNKNOWN EGRESS ${badEgress.join("; ")}`;
-        }
-        for (const leak of [...clientLeaks(r), ...r.outputLeaks]) {
-          outcome = "ABORTED";
-          detail += `; CLIENT LEAK ${leak}`;
-        }
-        // No V16 mutant may reach the metered canary (saved runs: canary=0).
-        if (r.canary.length > 0) {
-          outcome = "ABORTED";
-          detail += `; CANARY CONTACTED ${r.canary.length}x`;
-        }
-      }
-      summary.push({ id: `mutant ${m.id}`, outcome, detail });
-      console.log(`mutant ${m.id}: ${outcome} - ${detail}`);
-    }
-  }
-
-  const scan = scanSecrets(out);
-  writeFileSync(join(out, "secret-scan.json"), JSON.stringify(scan, null, 2));
-  writeFileSync(join(out, "summary.json"), JSON.stringify(summary, null, 2));
-  console.log(
-    `secret scan: ${scan.files} files, ${scan.allowlisted} allowlisted fake values, ${scan.violations.length} violations`
-  );
+  /** Credential shapes found in memory in a file before it was written (redacted on disk). */
+  const lateFindings: string[] = [];
   const expected = {
     cases: CASES.filter((c) => !only || c.id === only).map((c) => c.id),
     mutants: args.includes("--skip-mutants")
       ? []
       : V16_MUTANTS.filter((m) => !only || m.redIn === only).map((m) => `mutant ${m.id}`),
   };
-  const verdict = e20Verdict(summary, armed, scan.violations.length, expected);
+
+  try {
+    await runCasesAndMutants();
+  } catch (err) {
+    // Anything not caught per step still ends in a written scan and summary, and fails.
+    const g = await guarded("e20 run", () => Promise.reject(err));
+    if (!g.ok) summary.push({ ...g.entry, outcome: "ABORTED" });
+  }
+  const verdict = finishE20(out, summary, armed, expected, lateFindings);
   for (const reason of verdict.reasons) console.log(`E20 FAIL: ${reason}`);
   console.log(`E20 exit ${verdict.code}`);
   process.exit(verdict.code);
+
+  async function runCasesAndMutants() {
+    for (const c of CASES) {
+      if (only && c.id !== only) continue;
+      const caseDir = join(out, c.id);
+      mkdirSync(caseDir, { recursive: true });
+      if (armed.baseline !== null || armed.candidate !== null) {
+        const detail = `seam not armed on ${[armed.baseline && "baseline", armed.candidate && "candidate"].filter(Boolean).join(" and ")}`;
+        writeFileSync(
+          join(caseDir, "result.json"),
+          JSON.stringify({ case: c.id, pins, outcome: "ABORTED", detail }, null, 2)
+        );
+        summary.push({ id: c.id, outcome: "ABORTED", detail });
+        continue;
+      }
+      // Two runs per binary: the second proves the masked comparison is stable (flake check).
+      const runs: Record<
+        string,
+        Array<Capture & { rawFake: Recorded[]; rawCanary: Recorded[] }>
+      > = {};
+      // A capture that throws (start failure, connection error, crash) aborts THIS case only.
+      const captures = await guarded(c.id, async () => {
+        for (const bin of [baseline, candidate]) {
+          runs[bin.id] = [];
+          for (let i = 0; i < 2; i++) {
+            runs[bin.id]?.push(
+              await runOnce(bin, c, literals, i === 0 ? join(caseDir, bin.id) : undefined)
+            );
+          }
+        }
+      });
+      if (!captures.ok) {
+        lateFindings.push(
+          ...writeScanned(
+            join(caseDir, "result.json"),
+            JSON.stringify({ case: c.id, pins, ...captures.entry }, null, 2),
+            FAKE_SECRETS
+          )
+        );
+        summary.push({ ...captures.entry, outcome: "ABORTED" });
+        console.log(`${c.id}: ABORTED ${captures.entry.detail}`);
+        continue;
+      }
+      const b = runs.baseline?.[0] as Capture;
+      const k = runs.candidate?.[0] as Capture;
+      captured[c.id] = k;
+      captured[`baseline:${c.id}`] = b;
+      const b2 = runs.baseline?.[1] as Capture;
+      const k2 = runs.candidate?.[1] as Capture;
+      const stable = {
+        baseline: [
+          ...diffValues(comparable(b), comparable(b2), "$"),
+          ...headerStabilityDiff(b, b2),
+        ],
+        candidate: [
+          ...diffValues(comparable(k), comparable(k2), "$"),
+          ...headerStabilityDiff(k, k2),
+        ],
+      };
+      const diff = diffValues(comparable(b), comparable(k));
+      const diff2 = diffValues(comparable(b2), comparable(k2));
+      const problems: string[] = [];
+      // Every repetition, not only the first, meets the egress, upstream and canary checks.
+      for (const [name, cap] of [
+        ["baseline", b],
+        ["candidate", k],
+        ["baseline repetition 2", b2],
+        ["candidate repetition 2", k2],
+      ] as const) {
+        const bad = checkEgress(cap.egress);
+        if (bad.length) problems.push(`${name} egress to unknown target: ${bad.join("; ")}`);
+        if (cap.redirect) problems.push(`${name}: ${describeRedirect(cap.redirect)}`);
+        // A fake credential may sit in the upstream-request evidence, never in what the client sees.
+        for (const leak of clientLeaks(cap)) problems.push(`${name}: ${leak}`);
+        for (const leak of cap.outputLeaks) problems.push(`${name}: ${leak}`);
+        const reached =
+          c.needs === "responses"
+            ? cap.fake.some((q) => q.path.endsWith("/codex/responses"))
+            : c.needs === "token"
+              ? cap.fake.some((q) => q.path.endsWith("/oauth/token"))
+              : cap.canary.length > 0;
+        if (!reached)
+          problems.push(
+            `${name}: the case never reached its upstream (${c.needs}); seam not exercised`
+          );
+        if (c.canaryMin !== null) {
+          const n = cap.canary.length;
+          if (c.canaryMin === 0 ? n !== 0 : n < c.canaryMin)
+            problems.push(
+              `${name}: canary count ${n}, expected ${c.canaryMin === 0 ? "0" : `>= ${c.canaryMin}`}`
+            );
+        }
+      }
+      for (const [name, d] of Object.entries(stable)) {
+        if (d.length) problems.push(`${name} is not self-stable across two runs: ${d.join(" | ")}`);
+      }
+      let outcome: Outcome;
+      let divergenceProblems: string[] = [];
+      if (problems.length) outcome = "ABORTED";
+      else if (c.mode === "expected-divergence") {
+        // Explicit per-binary expectations (e20-gate.ts); any other difference is DIFFERENT.
+        divergenceProblems = refreshRejectedAllReps([b, b2], [k, k2], [diff, diff2]);
+        outcome = divergenceProblems.length ? "DIFFERENT" : "expected divergence";
+      } else outcome = diff.length ? "DIFFERENT" : "identical";
+      const result = {
+        case: c.id,
+        doc: c.doc,
+        pins,
+        seamDiffSha256,
+        mode: c.mode,
+        outcome,
+        problems,
+        divergenceProblems,
+        diff,
+        stable,
+        baseline: { ...b, rawNote: "raw captures in ./baseline" },
+        candidate: { ...k, rawNote: "raw captures in ./candidate" },
+      };
+      // Scanned in memory before it is written: a value found here is written redacted, so the
+      // directory scan at the end could not see it; the finding is counted instead.
+      lateFindings.push(
+        ...writeScanned(join(caseDir, "result.json"), JSON.stringify(result, null, 2), FAKE_SECRETS)
+      );
+      summary.push({
+        id: c.id,
+        outcome,
+        detail:
+          problems.length > 0
+            ? problems.join("; ")
+            : divergenceProblems.length > 0
+              ? divergenceProblems.join("; ")
+              : diff.length === 0
+                ? `request(s) at fake=${k.fake.length} canary=${k.canary.length}, client ${k.client.status}`
+                : `${diff.length} differing field(s)`,
+      });
+      console.log(
+        `${c.id}: ${outcome}${diff.length ? ` (${diff.length} diffs)` : ""}${problems.length ? ` PROBLEMS: ${problems.join("; ")}` : ""}${divergenceProblems.length ? ` UNEXPECTED: ${divergenceProblems.join("; ")}` : ""}`
+      );
+    }
+
+    // Mutants: each must turn its case red against the UNMUTATED candidate's capture.
+    if (!args.includes("--skip-mutants")) {
+      const mutantsRoot = join(out, "mutants");
+      for (const m of V16_MUTANTS) {
+        const c = CASES.find((x) => x.id === m.redIn) as CaseDef;
+        const ref = captured[c.id];
+        const refBase = captured[`baseline:${c.id}`];
+        if (!ref || !refBase) {
+          // A mutant is never skipped silently: its red case did not produce a capture.
+          if (only && c.id !== only) continue; // partial run, this mutant is out of scope
+          summary.push({
+            id: `mutant ${m.id}`,
+            outcome: "ABORTED",
+            detail: `its red case ${c.id} has no capture (aborted or not run)`,
+          });
+          continue;
+        }
+        if (m.edits.length === 0) {
+          summary.push({ id: `mutant ${m.id}`, outcome: "ABORTED", detail: "no edit built" });
+          continue;
+        }
+        // A mutant that does not start, loses its connection or crashes is ABORTED, never fatal.
+        const step = await guarded(`mutant ${m.id}`, async () => {
+          const launcher = emitMutantTree(m, join(mutantsRoot, m.id));
+          const bin: BinaryRef = { id: m.id, launcher, tree: join(mutantsRoot, m.id) };
+          const armedErr = await proveSeam(bin, literals);
+          if (m.id !== "V16-endpoint-path" && armedErr)
+            return {
+              outcome: "ABORTED" as Outcome,
+              detail: `seam proof failed on the mutant: ${armedErr}`,
+            };
+          const r = await runOnce(bin, c, literals, join(out, "mutant-raw", m.id));
+          const dCand = diffValues(comparable(ref), comparable(r));
+          const dBase = diffValues(comparable(refBase), comparable(r));
+          writeFileSync(
+            join(out, "mutant-raw", m.id, "diff.json"),
+            JSON.stringify({ vsCandidate: dCand, vsBaseline: dBase }, null, 2)
+          );
+          // Standing checks: a mutant run that reached an unknown target, leaked, contacted the
+          // metered canary (saved runs: canary=0) or was redirected is not evidence.
+          const harnessErrors = [
+            ...checkEgress(r.egress).map((e) => `UNKNOWN EGRESS ${e}`),
+            ...[...clientLeaks(r), ...r.outputLeaks].map((l) => `CLIENT LEAK ${l}`),
+            ...(r.canary.length > 0 ? [`CANARY CONTACTED ${r.canary.length}x`] : []),
+            ...(r.redirect ? [`REDIRECT ${describeRedirect(r.redirect)}`] : []),
+          ];
+          // Red needs the mutation's own upstream request AND a difference under the mutant's
+          // declared diff paths; anything else is ABORTED (or DEAD with no difference at all).
+          const v = mutantVerdict({
+            evidence: m.evidence,
+            fake: r.rawFake,
+            diff: dCand,
+            harnessErrors,
+          });
+          return {
+            outcome: v.outcome as Outcome,
+            detail: `${m.stands}; red in ${c.id}: ${dCand.length} diff(s) vs unmutated candidate, ${dBase.length} vs baseline; canary=${r.canary.length}; ${v.detail}`,
+          };
+        });
+        const { outcome, detail } = step.ok
+          ? step.value
+          : { outcome: "ABORTED" as Outcome, detail: step.entry.detail };
+        summary.push({ id: `mutant ${m.id}`, outcome, detail });
+        console.log(`mutant ${m.id}: ${outcome} - ${detail}`);
+      }
+    }
+  }
+}
+
+/**
+ * The end of every E20 run, however it went: the secret scan and the summary are written
+ * (both through the in-memory scan), then the verdict. A shape found in memory in any file
+ * before it was written (`lateFindings`, `summary.json`, `secret-scan.json`) counts as a scan
+ * violation. Exported for the test that proves an ABORTED step still ends here.
+ */
+export function finishE20(
+  out: string,
+  summary: SummaryEntry[],
+  armed: Record<string, string | null>,
+  expected: Expected,
+  lateFindings: string[] = []
+): { code: 0 | 1; reasons: string[] } {
+  const scan = scanSecrets(out);
+  const scanFile = writeScanned(
+    join(out, "secret-scan.json"),
+    JSON.stringify(scan, null, 2),
+    FAKE_SECRETS
+  );
+  const summaryFile = writeScanned(
+    join(out, "summary.json"),
+    JSON.stringify(summary, null, 2),
+    FAKE_SECRETS
+  );
+  const late = [...lateFindings, ...scanFile, ...summaryFile];
+  console.log(
+    `secret scan: ${scan.files} files, ${scan.allowlisted} allowlisted fake values, ${scan.violations.length} violations${late.length ? `, ${late.length} found in memory before a write` : ""}`
+  );
+  for (const f of late) console.log(`  ${f}`);
+  return e20Verdict(summary, armed, scan.violations.length + late.length, expected);
 }
 
 if (import.meta.main) await main();

@@ -320,6 +320,20 @@ export const MUTANTS: Mutant[] = [
     ],
   },
   {
+    // Doc V2e: "route KeychainTokenStore's token reads through the memoizing helper". The
+    // refresh path passes `uncached`; dropping it lets the second process's post-acquire
+    // re-read hit the 3 s memo filled by its first read, so it sees the pre-rotation record.
+    id: "V2e-keychain-reads-memoized",
+    rows: ["V2e"],
+    expect: "the second process exchanges the revoked refresh token (invalid_grant)",
+    edits: [
+      {
+        find: "...opts.uncached ? { uncached: true } : {}",
+        replace: "...{}",
+      },
+    ],
+  },
+  {
     id: "V2b-no-dead-holder-detection",
     rows: ["V2b"],
     expect: "the steal waits the full 20 s and fails with RefreshUnavailableError",

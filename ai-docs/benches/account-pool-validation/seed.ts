@@ -176,6 +176,52 @@ export function seedState(env: Record<string, string>, ops: StateOp[], scratch: 
   return out;
 }
 
+/**
+ * `--keychain-seed-child <spec.json>`: writes ONE fake account record through the production
+ * `KeychainTokenStore` (`writeKeychainItem`) into the DEFAULT keychain, then reads it back. Used
+ * by V2e so the item is created by the product's own code. Refuses an environment that redirects
+ * the product to another keychain file, a disabled keychain, and any item but the bench's fake one.
+ */
+if (import.meta.main && process.argv[2] === "--keychain-seed-child") {
+  const { BENCH_SERVICE, assertChildEnv, assertFakeItem } = await import("./keychain-guard.ts");
+  try {
+    assertChildEnv(process.env);
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(2);
+  }
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") {
+    console.error("refusing: the keychain is disabled in this environment");
+    process.exit(2);
+  }
+  const spec = JSON.parse(await Bun.file(process.argv[3] as string).text()) as {
+    ref: { provider: "openai-codex"; id: string; label: string };
+    record: Parameters<InstanceType<typeof FileTokenStore>["write"]>[1];
+  };
+  try {
+    assertFakeItem(BENCH_SERVICE, `${spec.ref.provider}:${spec.ref.id}`);
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(2);
+  }
+  const { KeychainTokenStore } = await import(
+    "../../../packages/cli/src/auth/accounts/token-store.ts"
+  );
+  const store = new KeychainTokenStore({ env: process.env });
+  await store.write(spec.ref, spec.record);
+  const back = await store.read(spec.ref, { uncached: true });
+  if (
+    !back ||
+    back.refreshToken !== spec.record.refreshToken ||
+    back.generation !== spec.record.generation
+  ) {
+    console.error("read-back differs from what the product writer stored");
+    process.exit(3);
+  }
+  console.log(`seeded ${spec.ref.provider}:${spec.ref.id} through KeychainTokenStore.write`);
+  process.exit(0);
+}
+
 if (import.meta.main && process.argv[2] === "--state-child") {
   const ops = JSON.parse(await Bun.file(process.argv[3] as string).text()) as StateOp[];
   const { getStateStore } = await import("../../../packages/cli/src/auth/accounts/state-store.ts");

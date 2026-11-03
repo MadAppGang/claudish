@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,14 +19,19 @@ import {
   UPSTREAM_EVIDENCE_FILES,
   argProblems,
   clientLeaks,
+  diffPathOf,
   e20Verdict,
+  guarded,
   headerStabilityDiff,
+  mutantVerdict,
   outputLeaks,
   refreshRejectedAllReps,
   refreshRejectedProblems,
   standingBroken,
+  underDiffPath,
+  unknownSecretShapes,
 } from "./e20-gate.ts";
-import { scanSecrets } from "./e20.ts";
+import { V16_MUTANTS, finishE20, scanSecrets } from "./e20.ts";
 
 // Values recorded in the saved E20 run (validation/e20/refresh-rejected/result.json).
 const baseline = (): SideCapture => ({
@@ -347,5 +360,288 @@ describe("scanSecrets allows fake credentials only in upstream-request evidence"
     );
     expect(bad.violations.length).toBe(2);
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+});
+
+// Review finding (round 5, HIGH): a mutant counted as red on ANY difference from the
+// unmutated candidate, without checking that the request reached the mutation's path.
+describe("mutantVerdict: red needs the mutation's own upstream request", () => {
+  const ENDPOINT = {
+    method: "POST",
+    path: "/backend-api/codex/mutant",
+    diffPaths: ["$.fake[*].path"],
+  };
+  const MODELS = { method: "GET", path: "/backend-api/codex/models" };
+  const onPath = (n: number) =>
+    Array.from({ length: n }, (_, i) => `$.fake[${i}].path: baseline="a" candidate="b"`);
+
+  test("red: the mutant path was captured and the run differs on the declared path", () => {
+    const v = mutantVerdict({
+      evidence: ENDPOINT,
+      fake: [MODELS, ENDPOINT],
+      diff: onPath(3),
+      harnessErrors: [],
+    });
+    expect(v.outcome).toBe("mutant red");
+  });
+
+  test("aborted: a difference with NO upstream contact is never red", () => {
+    // The mutant crashed before any request: the client answer differs, the fake saw nothing.
+    const v = mutantVerdict({ evidence: ENDPOINT, fake: [], diff: onPath(5), harnessErrors: [] });
+    expect(v.outcome).toBe("ABORTED");
+    expect(v.detail).toContain("POST /backend-api/codex/mutant never reached the fake");
+    expect(v.detail).toContain("nothing");
+  });
+
+  test("aborted: a request on another path is not the mutation's evidence", () => {
+    const v = mutantVerdict({
+      evidence: ENDPOINT,
+      fake: [MODELS, { method: "POST", path: "/backend-api/codex/responses" }],
+      diff: onPath(2),
+      harnessErrors: [],
+    });
+    expect(v.outcome).toBe("ABORTED");
+    expect(v.detail).toContain("POST /backend-api/codex/responses");
+  });
+
+  test("aborted: the right path with the wrong method", () => {
+    const v = mutantVerdict({
+      evidence: ENDPOINT,
+      fake: [{ method: "GET", path: ENDPOINT.path }],
+      diff: onPath(1),
+      harnessErrors: [],
+    });
+    expect(v.outcome).toBe("ABORTED");
+  });
+
+  test("dead: the mutant path was captured and nothing differs", () => {
+    const v = mutantVerdict({ evidence: ENDPOINT, fake: [ENDPOINT], diff: [], harnessErrors: [] });
+    expect(v.outcome).toBe("DEAD-MUTANT");
+  });
+
+  test("aborted: a harness error outranks evidence and difference", () => {
+    const v = mutantVerdict({
+      evidence: ENDPOINT,
+      fake: [ENDPOINT],
+      diff: onPath(4),
+      harnessErrors: ["REDIRECT the product answered HTTP 302"],
+    });
+    expect(v.outcome).toBe("ABORTED");
+    expect(v.detail).toContain("REDIRECT");
+  });
+
+  test("an ABORTED mutant fails the E20 exit code (counted as an error, never red)", () => {
+    const v = mutantVerdict({ evidence: ENDPOINT, fake: [], diff: onPath(5), harnessErrors: [] });
+    const r = e20Verdict(
+      [{ id: "mutant V16-endpoint-path", outcome: v.outcome, detail: v.detail }],
+      {},
+      0,
+      { cases: [], mutants: ["mutant V16-endpoint-path"] }
+    );
+    expect(r.code).toBe(1);
+    expect(r.reasons[0]).toContain("ABORTED");
+  });
+});
+
+describe("every V16 mutant declares the request that proves it ran", () => {
+  test("the endpoint mutant needs POST /backend-api/codex/mutant", () => {
+    const m = V16_MUTANTS.find((x) => x.id === "V16-endpoint-path");
+    expect(m?.evidence).toMatchObject({ method: "POST", path: "/backend-api/codex/mutant" });
+  });
+  test.each(V16_MUTANTS.filter((m) => m.id !== "V16-endpoint-path").map((m) => m.id))(
+    "%s needs POST /backend-api/codex/responses",
+    (id) => {
+      const m = V16_MUTANTS.find((x) => x.id === id);
+      expect(m?.evidence).toMatchObject({ method: "POST", path: "/backend-api/codex/responses" });
+    }
+  );
+});
+
+// Review round 6 (D2, Gemini): red accepted ANY difference once the evidence request was seen,
+// so a mutant that sent the request and then differed on an unrelated field read as red.
+describe("D2: red needs a difference under the mutant's declared diff path", () => {
+  // The run-15 captures, as `diffValues` paths (values dropped): ai-docs/sessions/
+  // dev-feature-mtl-260-pool-bin-20261101-153857-c4a1/e20-run15/mutant-raw/<id>/{diff,fake-requests}.json.
+  // That folder is gitignored, so the paths are copied here; every saved verdict must hold.
+  const MODELS = { method: "GET", path: "/backend-api/codex/models" };
+  const RESPONSES = { method: "POST", path: "/backend-api/codex/responses" };
+  const RUN15: Record<
+    string,
+    {
+      fake: Array<{ method: string; path: string }>;
+      paths: string[];
+      outcome: "mutant red" | "DEAD-MUTANT" | "ABORTED";
+    }
+  > = {
+    "V16-endpoint-path": {
+      fake: [{ method: "POST", path: "/backend-api/codex/mutant" }],
+      paths: [
+        "$.fake[0].method",
+        "$.fake[0].path",
+        "$.fake[0].search",
+        "$.fake[0].headers.accept",
+        "$.fake[0].headers.content-type",
+        "$.fake[0].body",
+        "$.fake[1]",
+        "$.client.status",
+        "$.client.body.content",
+        "$.client.body.id",
+        "$.client.body.model",
+        "$.client.body.role",
+        "$.client.body.stop_reason",
+        "$.client.body.stop_sequence",
+        "$.client.body.type",
+        "$.client.body.usage",
+        "$.client.body.error",
+      ],
+      outcome: "mutant red",
+    },
+    "V16-omit-header": {
+      fake: [MODELS, RESPONSES],
+      paths: ["$.fake[0].headers.originator", "$.fake[1].headers.originator"],
+      outcome: "mutant red",
+    },
+    "V16-drop-transform": { fake: [MODELS, RESPONSES], paths: [], outcome: "DEAD-MUTANT" },
+    "V16-drop-transform-both-layers": {
+      fake: [MODELS, RESPONSES],
+      paths: ["$.fake[1].body.include", "$.fake[1].body.store"],
+      outcome: "mutant red",
+    },
+    "V16-remap": {
+      fake: [MODELS, RESPONSES],
+      paths: [
+        "$.client.status",
+        "$.client.body.error.message",
+        "$.client.body.error.type",
+        "$.client.body.error.provider_message",
+        "$.client.body.error.upstream_status",
+      ],
+      outcome: "mutant red",
+    },
+  };
+  const lines = (paths: string[]) => paths.map((p) => `${p}: baseline=1 candidate=2`);
+
+  test.each(V16_MUTANTS.map((m) => m.id))("%s keeps its run-15 outcome", (id) => {
+    const m = V16_MUTANTS.find((x) => x.id === id);
+    const saved = RUN15[id];
+    if (!m || !saved) throw new Error(`no run-15 data for ${id}`);
+    const v = mutantVerdict({
+      evidence: m.evidence,
+      fake: saved.fake,
+      diff: lines(saved.paths),
+      harnessErrors: [],
+    });
+    expect(v.outcome).toBe(saved.outcome);
+  });
+
+  test.each(V16_MUTANTS.filter((m) => m.id !== "V16-drop-transform").map((m) => m.id))(
+    "%s differing only elsewhere is ABORTED, never red",
+    (id) => {
+      const m = V16_MUTANTS.find((x) => x.id === id);
+      if (!m) throw new Error(id);
+      const v = mutantVerdict({
+        evidence: m.evidence,
+        fake: [MODELS, RESPONSES, { method: "POST", path: "/backend-api/codex/mutant" }],
+        diff: lines(["$.client.body.id", "$.fake[1].headers.user-agent"]),
+        harnessErrors: [],
+      });
+      expect(v.outcome).toBe("ABORTED");
+      expect(v.detail).toContain("none under");
+    }
+  );
+
+  test("underDiffPath matches the prefix at a path boundary and [*] as any index", () => {
+    expect(underDiffPath("$.fake[3].headers.originator", "$.fake[*].headers.originator")).toBe(
+      true
+    );
+    expect(underDiffPath("$.client.status", "$.client.status")).toBe(true);
+    expect(underDiffPath("$.client.statusText", "$.client.status")).toBe(false);
+    expect(underDiffPath("$.fake[0].body.store.x", "$.fake[*].body.store")).toBe(true);
+    expect(underDiffPath("$.fake[x].path", "$.fake[*].path")).toBe(false);
+    expect(diffPathOf('$.fake[1]: baseline={"a":1} candidate=undefined')).toBe("$.fake[1]");
+  });
+});
+
+// Review round 6 (C4): a first-match-only scan let a real token hide behind a fake one.
+describe("C4: every credential-shaped match is checked, not only the first", () => {
+  const sk = `sk-proj-${"Z".repeat(30)}`;
+  test("outputLeaks finds a real-looking key after an allowlisted fake token", () => {
+    const leaks = outputLeaks({ stdout: "", stderr: `retry access-legacy then ${sk}` });
+    expect(leaks.some((l) => l.includes("credential-shaped string"))).toBe(true);
+    expect(leaks.join("\n")).not.toContain(sk.slice(3, 15));
+  });
+  test("clientLeaks finds it in the body after a fake token too", () => {
+    const leaks = clientLeaks({
+      client: { body: { m: `at-rotated-1 ${sk}` } },
+      clientHeaders: {},
+    });
+    expect(leaks.some((l) => l.includes("credential-shaped string"))).toBe(true);
+  });
+  test("unknownSecretShapes lists every unknown match", () => {
+    expect(unknownSecretShapes(`access-legacy ${sk} refresh-legacy ${sk}x`).length).toBe(2);
+  });
+});
+
+// Review round 6 (D1): a start failure, connection error or crash threw out of the run before
+// the secret scan and summary were written.
+describe("D1: a step that throws is ABORTED and the run still ends in a scan and a summary", () => {
+  test("guarded turns a throw into an ABORTED entry, redacting credential shapes", async () => {
+    const jwt = `eyJ${"a".repeat(40)}.${"b".repeat(60)}.${"c".repeat(40)}`;
+    const g = await guarded("mutant V16-remap", async () => {
+      throw new Error(`serve did not start (V16-remap): stdout= stderr=bearer ${jwt}`);
+    });
+    expect(g.ok).toBe(false);
+    if (g.ok) return;
+    expect(g.entry.outcome).toBe("ABORTED");
+    expect(g.entry.detail).toContain("serve did not start");
+    expect(g.entry.detail).not.toContain(jwt.slice(0, 20));
+    const ok = await guarded("x", async () => 7);
+    expect(ok).toEqual({ ok: true, value: 7 });
+  });
+
+  test("finishE20 writes secret-scan.json and summary.json and fails on the ABORTED entry", async () => {
+    const out = realpathSync(mkdtempSync(join(tmpdir(), "e20-finish-")));
+    try {
+      const g = await guarded("legacy-ok", async () => {
+        throw new Error("POST failed (candidate): connection reset");
+      });
+      const summary: SummaryEntry[] = g.ok ? [] : [g.entry];
+      const v = finishE20(
+        out,
+        summary,
+        { baseline: null, candidate: null },
+        {
+          cases: ["legacy-ok"],
+          mutants: [],
+        }
+      );
+      expect(existsSync(join(out, "secret-scan.json"))).toBe(true);
+      expect(JSON.parse(readFileSync(join(out, "summary.json"), "utf8"))[0].outcome).toBe(
+        "ABORTED"
+      );
+      expect(v.code).toBe(1);
+      expect(v.reasons.join("|")).toContain("legacy-ok: ABORTED");
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  test("finishE20 counts a credential shape found in memory before a write as a violation", () => {
+    const out = realpathSync(mkdtempSync(join(tmpdir(), "e20-finish-")));
+    try {
+      const v = finishE20(
+        out,
+        [{ id: "legacy-ok", outcome: "identical", detail: "x" }],
+        { baseline: null, candidate: null },
+        { cases: ["legacy-ok"], mutants: [] },
+        [
+          "legacy-ok/result.json @3: sk-key-shaped credential the bench did not create (40 chars, sha256 0)",
+        ]
+      );
+      expect(v.code).toBe(1);
+      expect(v.reasons.join("|")).toContain("secret scan");
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
   });
 });
