@@ -75,6 +75,42 @@ export {
   WHEEL_DOWN,
   WHEEL_UP,
 } from "./scroll-input.js";
+export {
+  renderEntry,
+  sanitiseText,
+  splitText,
+  TOOL_ARG_MAX_CHARS,
+  toolCall,
+} from "./transcript-lines.js";
+export {
+  entryLines,
+  linesOfEntry,
+  maskedSlice,
+  type PendingLine,
+  type RedactedText,
+  redactCarrying,
+  type SigningRangeFinder,
+} from "./transcript-redaction.js";
+export {
+  decodeCursor,
+  DEFAULT_PAGE_LIMITS,
+  encodeCursor,
+  fileAgeMs,
+  transcriptQuiet,
+  isUuid,
+  locateTranscriptByUuid,
+  NO_UUID_ID8,
+  openContainedTranscript,
+  type PageLimits,
+  readTranscriptPage,
+  readTranscriptPageFd,
+  TRANSCRIPT_GRACE_MS,
+  type TranscriptCursor,
+  transcriptAnswer,
+  type TranscriptPage,
+  type TranscriptSource,
+  writerLiveness,
+} from "./transcript-page.js";
 export type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 export { chainAnswerOf } from "./types.js";
 export type { Phase } from "./slot-state.js";

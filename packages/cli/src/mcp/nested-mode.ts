@@ -31,7 +31,7 @@ export const NESTED_INSTRUCTIONS = `Claudish MCP server provides access to exter
 
 ## Nested mode — no sessions
 
-This server runs inside a session that a claudish MCP server started (CLAUDISH_PANE_CHILD=1). One level of nesting is the limit, so these tools are not registered: create_session, team, send_input, get_output, cancel_session, list_sessions, get_diagnostics, capture_session, resize_session, scroll_session, preflight, report_error. No channel notifications are sent.
+This server runs inside a session that a claudish MCP server started (CLAUDISH_PANE_CHILD=1). One level of nesting is the limit, so these tools are not registered: create_session, team, send_input, get_output, cancel_session, list_sessions, get_diagnostics, capture_session, resize_session, scroll_session, transcript_session, preflight, report_error. No channel notifications are sent.
 
 - run_prompt or compare_models: a one-shot answer from another model.
 - list_models, search_models: find a model.

@@ -1,8 +1,9 @@
 /**
  * The frozen mod contract, version 1 — the single source of the wire types that the
  * peer's Claude Code mod reads from
- * `team(mode="list"|"status"|"cancel"|"capture"|"resize"|"scroll")`, `list_sessions`,
- * `cancel_session`, `capture_session`, `resize_session` and `scroll_session`.
+ * `team(mode="list"|"status"|"cancel"|"capture"|"resize"|"scroll"|"transcript")`,
+ * `list_sessions`, `cancel_session`, `capture_session`, `resize_session`, `scroll_session`
+ * and `transcript_session`.
  *
  * Pasted verbatim from the session architecture §8 (including CA-12 `contract_version`
  * / `capabilities` and CA-13 `run_id`). Fields never change meaning or type within
@@ -17,7 +18,9 @@ export const CONTRACT_VERSION = 1;
  * `allowance` is additive too: the `allowance_status` tool answers
  * `claudish.allowance.v1` (allowance architecture §3.4). `scroll` is additive: the
  * `scroll_session` tool and `team(mode="scroll")` forward wheel events to the child's
- * transcript view (MTL-369). Appended, never inserted: the mod's goldens replay the order.
+ * transcript view (MTL-369). `transcript` is additive: the `transcript_session` tool and
+ * `team(mode="transcript")` read the child's conversation as text lines (MTL-373).
+ * Appended, never inserted: the mod's goldens replay the order.
  */
 export const CAPABILITIES = [
   "list",
@@ -29,6 +32,7 @@ export const CAPABILITIES = [
   "resize",
   "allowance",
   "scroll",
+  "transcript",
 ] as const;
 
 export interface ContractMeta {
@@ -322,6 +326,70 @@ export interface TeamScrollResult {
   slot: string;
   seq: number;
 }
+
+/**
+ * H — transcript verbs. The kinds of a `TranscriptLine`, a closed set that is only ever
+ * APPENDED to; a reader shows an unknown kind as plain text.
+ */
+export const TRANSCRIPT_KINDS = [
+  "user",
+  "assistant",
+  "tool",
+  "task_file",
+  "system",
+  "error",
+] as const;
+export type TranscriptKind = (typeof TRANSCRIPT_KINDS)[number];
+
+/** H — one line of a session's conversation. */
+export interface TranscriptLine {
+  kind: TranscriptKind;
+  /**
+   * plain text: no escape sequences, no control characters but \n and \t, no lone
+   * surrogate; non-empty; ≤ TRANSCRIPT_LINE_MAX_CHARS UTF-16 code units and
+   * ≤ TRANSCRIPT_LINE_MAX_JSON_BYTES bytes serialised, after masking (a signing value is
+   * masked `*` one for one, so it never adds a character; pane/transcript-redaction.ts)
+   */
+  text: string;
+  /** present (true) on the 2nd and later chunks of one split text; join with no separator */
+  cont?: true;
+}
+
+/**
+ * H — `transcript_session`. `cursor` is opaque (`v1.<offset>.<k>.<id8>`): pass it back as
+ * `since`. `more`: the answer stopped at a cap; call again at once. `final`: the session
+ * finished, its process provably exited, and the answer reached the end.
+ */
+export interface TranscriptResult {
+  session_id: string;
+  cursor: string;
+  lines: TranscriptLine[];
+  more: boolean;
+  final: boolean;
+}
+
+/** H — `team(mode="transcript")`: the same answer, addressed by run and slot. */
+export interface TeamTranscriptResult {
+  run_id: string;
+  path: string;
+  slot: string;
+  cursor: string;
+  lines: TranscriptLine[];
+  more: boolean;
+  final: boolean;
+}
+
+/** H — at most this many lines per transcript answer. */
+export const MAX_TRANSCRIPT_LINES = 200;
+/** H — a line's text is cut into `cont` chunks of at most this many UTF-16 code units… */
+export const TRANSCRIPT_LINE_MAX_CHARS = 8_000;
+/** …and at most this many UTF-8 bytes as `JSON.stringify(text)`. */
+export const TRANSCRIPT_LINE_MAX_JSON_BYTES = 16_000;
+/**
+ * H — the compact JSON answer is at most this many UTF-8 bytes: 15 % under the 37,758
+ * bytes Claude Code was measured to accept (61,681 was replaced by a "saved to file" stub).
+ */
+export const TRANSCRIPT_ANSWER_MAX_BYTES = 32_000;
 
 /**
  * E. `resize_unsupported` and `delivery_unavailable` are emitted only by the resize verbs;

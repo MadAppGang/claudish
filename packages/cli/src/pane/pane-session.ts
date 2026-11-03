@@ -450,6 +450,14 @@ export interface PaneSession {
   cancel(): { changed: boolean; state: SlotState };
   expire(): { changed: boolean; state: SlotState };
   reaped(): Promise<void>;
+  /**
+   * Resolves once a reap VERIFIED the pane group and magmux gone and removed the pane's
+   * files: on the first attempt, or on a later registry retry. Never resolves while the
+   * reap is unverified (`reapFailed`): `reaped()` resolves then too, and a survivor may
+   * still write. The only signal that proves the child's writer is gone
+   * (`transcript_session`'s `final`).
+   */
+  reapVerified(): Promise<void>;
 }
 
 /**
@@ -707,6 +715,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private reaping = false;
   private fastReap = false;
   private reapPromise: Promise<void> | null = null;
+  private readonly verifiedReap = Promise.withResolvers<void>();
   private reconnecting = false;
 
   private depth = 0;
@@ -3558,6 +3567,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return this.reapPromise ?? this.terminal.then(() => this.reapPromise ?? Promise.resolve());
   }
 
+  reapVerified(): Promise<void> {
+    return this.verifiedReap.promise;
+  }
+
   panePid(): number | null {
     return this.panePidValue;
   }
@@ -3688,6 +3701,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (groupGone && magGone) {
       removePaneFiles(this.root, this.files());
       this.reapFailed = false;
+      this.verifiedReap.resolve();
       await this.endWatcher();
       unregisterPane(this.paneId);
       return;

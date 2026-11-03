@@ -154,6 +154,7 @@ const expectedCapabilities: Array<(typeof CAPABILITIES)[number]> = [
   "resize",
   "allowance",
   "scroll",
+  "transcript",
 ];
 const expectedTools = [
   "allowance_status",
@@ -173,6 +174,7 @@ const expectedTools = [
   "search_models",
   "send_input",
   "team",
+  "transcript_session",
 ];
 
 describe("scroll additive public contract", () => {
@@ -194,10 +196,10 @@ describe("scroll additive public contract", () => {
   });
 
   // REQ: 1, 2, 3
-  test("default surface has exactly 17 tools and the declared scroll schemas", async () => {
+  test("default surface has exactly 18 tools and the declared scroll schemas", async () => {
     const tools = await server!.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(expectedTools);
-    expect(tools).toHaveLength(17);
+    expect(tools).toHaveLength(18);
     const scrollSchema = tools.find((t) => t.name === "scroll_session")?.inputSchema;
     if (!scrollSchema) throw new Error("scroll_session must declare an inputSchema");
     expect(scrollSchema.required).toEqual(["session_id"]);
@@ -220,6 +222,7 @@ describe("scroll additive public contract", () => {
       "capture",
       "resize",
       "scroll",
+      "transcript",
     ]);
     expect(props.by).toMatchObject({ type: "integer" });
     expect(props.to).toMatchObject({ enum: ["end"] });
@@ -259,6 +262,7 @@ describe("scroll additive public contract", () => {
       "resize_session",
       "scroll_session",
       "send_input",
+      "transcript_session",
     ]);
   });
 
