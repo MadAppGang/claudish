@@ -21,7 +21,7 @@ MCP servers on that machine predated the login.
 | `grok-subscription` (Grok CLI fallback) | `~/.grok/auth.json` | read on every resolve (no cache) | write-back is compare-and-set on the refresh token |
 | `kimi`, `kimi-coding` (OAuth half) | `~/.claudish/kimi-oauth.json` | read once in the constructor; `rejectLogin` deleted the file unconditionally | `CredentialFileState`; `deleteIfUnchanged` |
 | `devin` | `~/.local/share/devin/credentials.toml` | memo per path, never invalidated | memo keyed by path and stamp |
-| `openai-codex` | `~/.claudish/codex-oauth.json` | — | **not changed here**: branch `worktree-multi-subscriptin` re-reads it on every request under a cross-process lock |
+| `openai-codex` | `~/.claudish/codex-oauth.json` | — | **not on `CredentialFileState`**: `CodexOAuth` and the account pool re-read it under their shared `legacy-codex` refresh gate. On a Keychain platform with the default config it is moved into the Keychain account store and deleted (MTL-372, [`accounts.md`](./accounts.md)); the file remains only where there is no Keychain (or `CLAUDISH_DISABLE_KEYCHAIN=1`), under an alternate config, and until the first move |
 | `meta-muse-code` | the Muse login files | — | not changed: it already re-reads both files before reporting a rejected login |
 
 Keychain-backed (`antigravity`) and 1Password-backed sources are out of scope: neither keeps a

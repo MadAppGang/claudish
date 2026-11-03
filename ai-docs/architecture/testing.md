@@ -51,7 +51,17 @@ replaced `CodexOAuth`'s instance, the credential authority kept the old one, and
 | `CLAUDISH_DISABLE_OP=1` | 1Password handshakes | Denials suppress authorization machine-wide for 15s, for every process |
 | `CLAUDISH_DISABLE_CATALOG_WARM=1` | the live hosted-catalog fetch | The restore returns the bytes; it cannot return the hermeticity |
 
-The third was added 2026-09-15 and is gated inside `refreshCatalog()` rather than
+**`CLAUDISH_DISABLE_KEYCHAIN=1` also keeps the legacy Codex file move off** (MTL-372) for the
+whole suite. The move copies `~/.claudish/codex-oauth.json` into the Keychain and deletes the
+file. It runs on the first Codex sign of any process whose config is the default one, so an
+in-process test that installs a darwin keychain fake without the flag reaches it with the real
+`HOME`, where `activeConfigFile()` was built from `os.homedir()` at module load. A hand-run `bun
+test <file>` does not set the flag. A test that wants the move installs the fake `security`
+(`auth/accounts/fake-security.test-helper.ts`, see `keychain.md`) in a child process with a temp
+`HOME`, and deletes the flag only inside that child, after the fake is installed. The parent keeps
+the flag.
+
+The catalog flag was added 2026-09-15 and is gated inside `refreshCatalog()` rather than
 `warmCatalog()`, because `ensureCatalogReady()` refreshes through the same
 function — a gate on one of two entry points is how a gate stops being true. It
 returns `reason: "disabled"`, never `"network"`: a caller that logs "the catalog
