@@ -430,6 +430,29 @@ Product gap, filed by triage as MTL-370: a reset at the vendor before the saved 
 is never learned. `AccountStateStore.clearExhausted` (`state-store.ts:926`) exists, but no product
 code calls it, so the account stays blocked until `exhaustedUntil` passes.
 
+### Run 3 on `dc53ea1b2616` (2026-11-03): every race check passes; the 3 s check cannot pass
+
+Jack reset the account's quota at OpenAI. The saved block was cleared through the product's own
+`StateStore.clearExhausted` (state file backed up first), then `v2e-real.ts` ran.
+
+| Moment | Generation | Expires | Fingerprint |
+|---|---|---|---|
+| before | 2 | 2026-11-12T09:50:29Z | `b45c2360…` |
+| forced expired | 2 | 1970-01-01 | `b45c2360…` |
+| after the race | 3 | 2026-11-13T04:42:36Z | `8224a8d8…` |
+
+Measured: both replies HTTP 200 (9.3 s and 10.1 s), one persisted rotation (generation 2 → 3, new
+fingerprint and expiry), all four `accounts.jsonl` records name `dc53ea1b2616`, `needsReauth` `null`,
+`restore: newer-generation` (nothing written back), shape scan of 8 files clean. Exit 1, only because
+`memoWindowMet` is false.
+
+The 3 s check is a flawed proxy. The risk window is between process A persisting the rotation and
+process B re-reading the item; the script cannot see that moment, so it measured the full reply
+time, which includes the model's answer (4 to 10 s against real OpenAI). The check cannot pass
+against real OpenAI whatever claudish does. Inferred, not measured: process B did not use a stale
+memo copy, because that would have sent a revoked refresh token, giving `invalid_grant` and a
+`needsReauth` mark, and neither happened. Open: measure the persist-to-reread interval directly.
+
 ### File-store race on the default account `4463fa7e5c82` (2026-11-03)
 
 Jack's decision: while `dc53ea1b2616` is blocked, run the same race on the default account, which is a
