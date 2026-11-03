@@ -60,6 +60,21 @@ export {
   type PaneSize,
   RESIZE_QUIET_MS,
 } from "./pane-size.js";
+export {
+  CTRL_END,
+  isLiveBottom,
+  LIVE_BOTTOM,
+  MAX_SCROLL_ROWS,
+  planScroll,
+  type ScrollDirection,
+  type ScrollPlan,
+  type ScrollPosition,
+  type ScrollRequest,
+  scrollRowsOf,
+  UNKNOWN_POSITION,
+  WHEEL_DOWN,
+  WHEEL_UP,
+} from "./scroll-input.js";
 export type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 export { chainAnswerOf } from "./types.js";
 export type { Phase } from "./slot-state.js";

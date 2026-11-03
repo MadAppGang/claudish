@@ -149,6 +149,15 @@ import {
   applyFrame,
   emptyScreen,
 } from "./screen-model.js";
+import {
+  CTRL_END,
+  LIVE_BOTTOM,
+  type ScrollPosition,
+  type ScrollRequest,
+  UNKNOWN_POSITION,
+  isLiveBottom,
+  planScroll,
+} from "./scroll-input.js";
 import { KNOWN_STATUSES, type RegistryRecord, SessionRegistry } from "./session-registry.js";
 import {
   CORROBORATION_MS,
@@ -215,6 +224,10 @@ const TURN_END_MISSING_FACTOR = 3;
 /** A resize reply, and the screen showing the new size after it. */
 const RESIZE_REPLY_MS = 10_000;
 const RESIZE_SCREEN_MS = 1_000;
+/** A scroll send's reply (one raw `send`, no gate). */
+const SCROLL_REPLY_MS = 5_000;
+/** After a scroll's reply: wait at most this for the screen to change (`timings.scrollScreenMs`). */
+const SCROLL_SCREEN_MS = 1_000;
 /**
  * magmux's input gate is read by polling `list` (it publishes no readiness event and
  * refreshes `input` at 4 Hz): one request in flight at a time, this often, while connected.
@@ -346,6 +359,8 @@ export interface PaneSessionOptions {
     pollDebounceMs?: number;
     /** with no frame, the transcript is polled this often (default 1 000) */
     pollBackstopMs?: number;
+    /** SCROLL_SCREEN_MS: after a scroll's reply, the wait for a changed screen */
+    scrollScreenMs?: number;
   };
 }
 
@@ -416,6 +431,16 @@ export interface PaneSession {
    * `resize_unsupported` (magmux lacks the op) or `delivery_unavailable`.
    */
   resize(cols: number, rows: number): Promise<PaneResizeOutcome>;
+  /**
+   * Scroll the child's transcript view: `by` rows (negative = toward older content, a
+   * target ± 1 row, clamped to MAX_SCROLL_ROWS) or `to:"end"` (the live bottom), as raw
+   * wheel / ctrl-End bytes in one ungated magmux send that types nothing. Answers the
+   * screen's seq after it (the first changed screen within SCROLL_SCREEN_MS, else the
+   * current one). Throws `ContractErrorException` `scroll_unavailable` while the pane is
+   * starting, finished, delivering a prompt, reading its turn from the screen or
+   * reconnecting, or when magmux did not confirm the send; nothing is queued.
+   */
+  scroll(req: ScrollRequest): Promise<{ seq: number }>;
   turnAnswer(index: number): string;
   /** The recorded chain answers plus the running chain turn's partial, joined like chainAnswerOf. */
   chainText(): string;
@@ -487,6 +512,8 @@ interface Admission {
   last: SendOutcome | null;
   /** anomaly keys counted once per admission */
   noted: Set<string>;
+  /** the connection this admission's ctrl-End check ran on: at most once per connection */
+  liveBottomClient: MagmuxClient | null;
 }
 
 /** A `resize` call waiting for the drain worker's send that carries its size (or a later one). */
@@ -617,6 +644,15 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private resizeQuietUntil = 0;
   /** the last screen change that is activity, i.e. not a resize redraw (M4) */
   private activityChangedAt = 0;
+  /**
+   * Where the child's transcript view is believed to be (`scroll-input.ts`). An accepted
+   * submit snaps the view to the bottom, so `accept()` resets it.
+   */
+  private scrollPos: ScrollPosition = LIVE_BOTTOM;
+  /** ctrl-End sends awaiting magmux's reply */
+  private scrollEndsInFlight = 0;
+  /** when magmux last confirmed a ctrl-End; 0 = never (a screen turn's quiet counts from it) */
+  private scrollEndConfirmedAt = 0;
 
   /** the last `list` → pane 0 `input` reading; read through `gateNow()`, never directly */
   private gate: GateInput | null = null;
@@ -1645,8 +1681,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
           await this.pause(adm, TICK_MS);
           continue;
         }
-        if (!this.client || !this.gateTrusted) {
-          await this.awaitTrustedClient(adm);
+        if (!this.trustedConnection() || this.needsAdmissionLiveBottom(adm)) {
+          await this.connectionStep(adm);
           continue;
         }
         // a stop row, an ended admission or a wait re-checks from the top of the loop
@@ -1658,10 +1694,32 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
   }
 
+  /**
+   * A view the caller scrolled up goes back to the live bottom before the prompt: once per
+   * admission per trusted connection. A failed or unconfirmed ctrl-End never blocks the
+   * prompt (a submit snaps the view to the bottom, measured).
+   */
+  private needsAdmissionLiveBottom(adm: Admission): boolean {
+    if (adm.liveBottomClient === this.client) return false;
+    adm.liveBottomClient = this.client;
+    return !isLiveBottom(this.scrollPos);
+  }
+
+  /** An open connection whose binding check passed: the only one claudish writes to. */
+  private trustedConnection(): boolean {
+    return !!this.client && !this.client.isClosed && this.gateTrusted;
+  }
+
+  /** Wait for a trusted connection, else return the view to the live bottom on it. */
+  private connectionStep(adm: Admission): Promise<void> {
+    if (!this.trustedConnection()) return this.awaitTrustedClient(adm);
+    return this.returnToLiveBottom(Math.max(0, adm.deadline - Date.now()));
+  }
+
   /** Nothing is written while disconnected: the redial's attach re-checks the binding first. */
   private awaitTrustedClient(adm: Admission): Promise<void> {
     return this.waitFor(
-      () => !this.admitting(adm) || (!!this.client && this.gateTrusted),
+      () => !this.admitting(adm) || this.trustedConnection(),
       Math.max(0, adm.deadline - Date.now())
     );
   }
@@ -2210,6 +2268,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private accept(): void {
     this.admission = null;
     this.initialDelivery = false;
+    // an evidenced submit snaps Claude Code's view to the live bottom (measured, MTL-369)
+    this.scrollPos = LIVE_BOTTOM;
     const now = Date.now();
     this.lastChatSeenAt = now;
     this.turnAcceptedAt = now;
@@ -2318,6 +2378,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       const d = this.currentDelivery;
       this.turnSource = "screen";
       this.anomaly("degraded_mode");
+      // the screen turn reads the live bottom; a scrolled view would hide it
+      void this.returnToLiveBottom(SCROLL_REPLY_MS);
       this.screenTurn = {
         echo: d && d.mode !== "refused" ? d.line : "",
         acceptedAt: at,
@@ -2897,11 +2959,25 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private screenSettleReady(view: TranscriptView, answer: string, apiError: unknown): boolean {
     const g = this.gateNow();
     if (!g || !g.ready || g.dialog !== null || workingAboveBox(this.screen) === true) return false;
-    const quiet = this.aboveBoxQuietMs() ?? Date.now() - this.screen.changedAt;
+    let quiet = this.aboveBoxQuietMs() ?? Date.now() - this.screen.changedAt;
+    // a static scrolled view looks quiet: count only from the confirmed return to the bottom
+    if (this.scrollEndConfirmedAt > 0)
+      quiet = Math.min(quiet, Date.now() - this.scrollEndConfirmedAt);
     if (view.availability === "off" && quiet >= this.secondaryQuietMs) return true;
     return (
       (!!answer || !!apiError) && quiet >= 2 * this.t("screenSettleQuietMs", SCREEN_SETTLE_QUIET_MS)
     );
+  }
+
+  /**
+   * A screen-read turn never settles from a scrolled view: false while a ctrl-End is out or
+   * the view may not be at the live bottom, sending ctrl-End when none is out.
+   */
+  private screenViewLive(): boolean {
+    if (this.scrollEndsInFlight > 0) return false;
+    if (isLiveBottom(this.scrollPos)) return true;
+    void this.returnToLiveBottom(SCROLL_REPLY_MS);
+    return false;
   }
 
   private evalScreenTurn(view: TranscriptView): void {
@@ -2918,7 +2994,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const answer = screenAnswer(this.screen, st.echo);
     const apiError = this.screenApiError(st, answer);
     this.activity = "thinking";
-    if (!this.screenSettleReady(view, answer, apiError)) return;
+    if (!this.screenViewLive() || !this.screenSettleReady(view, answer, apiError)) return;
     // one last poll before a screen-mode settle, with the same reversion
     this.follower.poll();
     if (this.witnessed(this.follower.view().current)) return;
@@ -3332,6 +3408,92 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
   }
 
+  async scroll(req: ScrollRequest): Promise<{ seq: number }> {
+    const refusal = this.scrollRefusal();
+    if (refusal) throw new ContractErrorException("scroll_unavailable", refusal);
+    const c = this.client;
+    if (!c || c.isClosed)
+      throw new ContractErrorException("scroll_unavailable", "the pane's socket is reconnecting");
+    const plan = planScroll(this.scrollPos, req);
+    if (plan.bytes === "") return { seq: this.screen.seq };
+    // Before any await: a concurrent scroll plans from where this one leaves the view, and
+    // the redraw falls in the quiet window (a scroll redraw is not the child working).
+    this.scrollPos = plan.next;
+    const seq0 = this.screen.seq;
+    this.extendResizeQuiet();
+    const r = await c.request(
+      { type: "send", pane: 0, text: plan.bytes, enter: false, noGate: true },
+      SCROLL_REPLY_MS
+    );
+    if (!r.ok) {
+      // the bytes may still be delivered (they queue behind claudish's own in-flight send
+      // on the pane's lane), so the position is unknown, never assumed unmoved
+      this.scrollPos = UNKNOWN_POSITION;
+      if (r.code === "client_lost" || r.code === "client_timeout") this.extendResizeQuiet();
+      throw new ContractErrorException(
+        "scroll_unavailable",
+        `magmux did not confirm the scroll: ${r.code}${r.error ? `: ${r.error}` : ""}`
+      );
+    }
+    this.extendResizeQuiet();
+    await this.waitFor(
+      () => isTerminalPhase(this.phase) || this.screen.seq !== seq0,
+      this.t("scrollScreenMs", SCROLL_SCREEN_MS)
+    );
+    return { seq: this.screen.seq };
+  }
+
+  /**
+   * A screen-read turn is in progress. `turnSource` stays "screen" after it settles (until
+   * the next delivery), so the phase decides: SETTLING and IDLE hold a settled turn.
+   */
+  private screenTurnActive(): boolean {
+    if (this.turnSource !== "screen") return false;
+    return this.phase === "RUNNING" || this.phase === "QUESTION" || this.phase === "PERMISSION";
+  }
+
+  /** Why a scroll is refused now (nothing is sent), or null when it is allowed. */
+  private scrollRefusal(): string | null {
+    if (isTerminalPhase(this.phase) || this.final) return "the session has finished";
+    if (this.phase === "BOOTING" || this.screen.seq === 0) return "the session is still starting";
+    if (this.phase === "ADMITTING") return "a prompt is being delivered to the session";
+    if (this.screenTurnActive())
+      return "the session's turn is being read from its screen (no transcript)";
+    // a closed client is not connected: it is replaced only when `disconnected` fires; an
+    // attached one is not trusted until its binding check passes
+    if (!this.client || this.client.isClosed || !this.gateTrusted)
+      return "the pane's socket is reconnecting";
+    return null;
+  }
+
+  /**
+   * ctrl-End before claudish needs the live bottom (an admission's delivery, a screen-read
+   * turn) when a scroll may have left the view elsewhere. One ungated send, no Enter.
+   */
+  private async returnToLiveBottom(ms: number): Promise<void> {
+    if (isLiveBottom(this.scrollPos)) return;
+    const c = this.client;
+    // an unverified connection is a reconnecting one: nothing is sent, the position stays
+    if (!c || c.isClosed || !this.gateTrusted || ms <= 0) return;
+    this.scrollPos = LIVE_BOTTOM;
+    this.extendResizeQuiet();
+    this.scrollEndsInFlight++;
+    try {
+      const r = await c.request(
+        { type: "send", pane: 0, text: CTRL_END, enter: false, noGate: true },
+        Math.min(SCROLL_REPLY_MS, ms)
+      );
+      if (r.ok) {
+        this.scrollEndConfirmedAt = Date.now();
+      } else {
+        this.scrollPos = UNKNOWN_POSITION;
+        this.anomaly(`scroll_end_unconfirmed:${r.code}`);
+      }
+    } finally {
+      this.scrollEndsInFlight--;
+    }
+  }
+
   turnAnswer(index: number): string {
     const done = this.answers.get(index);
     if (done !== undefined) return done;
@@ -3614,6 +3776,7 @@ function newAdmission(a: {
     lostType: null,
     last: null,
     noted: new Set(),
+    liveBottomClient: null,
   };
 }
 

@@ -74,6 +74,8 @@ import {
   type PaneSnapshot,
   type ResizeResult,
   SLOT_STATES,
+  type ScrollRequest,
+  type ScrollResult,
   type SessionCancelResult,
   type SessionRow,
   type SettledTurn,
@@ -1543,6 +1545,28 @@ export class SessionManager {
     }
     const r = await entry.session.resize(cols, rows);
     return { session_id: sessionId, ...r };
+  }
+
+  /**
+   * Scroll a session's transcript view (§8 G): `by` rows (negative = older, a target
+   * ± 1 row, clamped to MAX_SCROLL_ROWS) or `to:"end"`, as wheel / ctrl-End bytes the
+   * child's Claude Code reads as scrolling, never as typing. Mirrors `resizeSession`'s
+   * addressing. Throws `ContractErrorException`: `unknown_session`, and
+   * `scroll_unavailable` while the pane is still starting or finished, or the pane
+   * refuses (`PaneSession.scroll`). Nothing is queued.
+   */
+  async scrollSession(sessionId: string, req: ScrollRequest): Promise<ScrollResult> {
+    const entry = this.liveEntry(sessionId);
+    if (!entry) throw unknownSession(sessionId);
+    if (!entry.session)
+      throw new ContractErrorException(
+        "scroll_unavailable",
+        isTerminalState(entry.info.state)
+          ? "the session has finished"
+          : "the session is still starting"
+      );
+    const r = await entry.session.scroll(req);
+    return { session_id: sessionId, seq: r.seq };
   }
 
   /**

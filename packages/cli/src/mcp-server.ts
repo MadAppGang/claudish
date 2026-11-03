@@ -56,8 +56,10 @@ import { inMcpSession } from "./pane/child-env.js";
 import {
   ContractErrorException,
   type FailureReason,
+  MAX_SCROLL_ROWS,
   MIN_MAGMUX_VERSION,
   SLOT_STATES,
+  type ScrollRequest,
   type SlotState,
   TERMINAL_STATES,
   type TeamRunRow,
@@ -108,6 +110,7 @@ import {
   readTeamInputFile,
   readTeamStatus,
   resizeTeamSlot,
+  scrollTeamSlot,
   setupSession,
   shutdownAllTeamRuns,
   startModels,
@@ -162,7 +165,7 @@ Each session is an interactive Claude Code running the model in its own headless
 3. send_input may be called at any time; it is queued until the session is idle.
 4. COMPLETED: call get_output for the answer.
 5. FAILED or TIMEOUT — or COMPLETED with an empty or surprising answer — call get_diagnostics. It returns the child's final screen, the upstream error bodies, the recent state records, the resolved model chain and the paths to the full records. It needs no re-run and no debug flag.
-6. capture_session reads a session's current screen; resize_session sets its terminal size (any time, mid-turn included); cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
+6. capture_session reads a session's current screen; resize_session sets its terminal size (any time, mid-turn included); scroll_session scrolls the child's transcript view (by rows, or back to the live bottom); cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
 
 The session_id from create_session is the key for every session tool.`;
 
@@ -1333,6 +1336,26 @@ function requiredInteger(raw: unknown, name: string, mode?: string): number {
 }
 
 /**
+ * The scroll verbs' request (`scroll_session`, `team(mode="scroll")`): exactly one of `by`
+ * (a non-zero integer; negative = toward older content) and `to` (exactly "end").
+ * Neither, both, `by: 0`, a fraction, a string or another `to` answer `invalid_args`.
+ */
+function scrollArgs(args: Record<string, unknown>): ScrollRequest {
+  const by = optionalInteger(args.by, "by");
+  const to = args.to;
+  if (to !== undefined && to !== null && to !== "end")
+    throw new ContractErrorException("invalid_args", `'to' must be "end"`);
+  const hasTo = to === "end";
+  if (by !== undefined && hasTo)
+    throw new ContractErrorException("invalid_args", "give exactly one of 'by' and 'to', not both");
+  if (hasTo) return { to: "end" };
+  if (by === undefined)
+    throw new ContractErrorException("invalid_args", "one of 'by' and 'to' is required");
+  if (by === 0) throw new ContractErrorException("invalid_args", "'by' must not be 0");
+  return { by };
+}
+
+/**
  * `team(mode="status")` (§8 B): the legacy payload of the newest run at `path` plus
  * `contract_version`, `capabilities` and `run`. Given a `run_id` that a newer run at the
  * same path superseded, only `run` and the contract keys: `status.json` there now
@@ -1380,11 +1403,11 @@ export function teamStatusAnswer(path: string, runId?: string): Record<string, u
 }
 
 /**
- * `list` / `status` / `cancel` / `capture` / `resize`: memory reads and the two pane verbs,
- * JSON answers, ContractError errors.
+ * `list` / `status` / `cancel` / `capture` / `resize` / `scroll`: memory reads and the
+ * pane verbs, JSON answers, ContractError errors.
  */
 export async function teamContractVerb(
-  mode: "list" | "status" | "cancel" | "capture" | "resize",
+  mode: "list" | "status" | "cancel" | "capture" | "resize" | "scroll",
   args: Record<string, unknown>
 ): Promise<ToolAnswer> {
   try {
@@ -1398,6 +1421,7 @@ export async function teamContractVerb(
     const spans = optionalBoolean(args.spans, "spans");
     const cols = mode === "resize" ? requiredInteger(args.cols, "cols", mode) : undefined;
     const rows = mode === "resize" ? requiredInteger(args.rows, "rows", mode) : undefined;
+    const scroll = mode === "scroll" ? scrollArgs(args) : undefined;
     switch (mode) {
       case "status":
         return contractAnswer(teamStatusAnswer(path, runId));
@@ -1414,6 +1438,11 @@ export async function teamContractVerb(
         return contractAnswer(
           await resizeTeamSlot(path, slot, cols as number, rows as number, runId)
         );
+      }
+      case "scroll": {
+        if (slot === undefined)
+          throw new ContractErrorException("invalid_args", "'slot' is required for mode 'scroll'");
+        return contractAnswer(await scrollTeamSlot(path, slot, scroll as ScrollRequest, runId));
       }
     }
   } catch (e) {
@@ -1935,7 +1964,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       "Modes: 'run' (START the models and return once each has taken its prompt — it does " +
       "NOT wait for answers), 'status' (per-slot state; read `run.slots`), 'list' (every " +
       "run this server holds), 'capture' (one slot's screen), 'resize' (set one slot's " +
-      "terminal size), 'cancel' (stop one slot or the whole run), 'judge'(blind-vote on existing outputs), 'run-and-judge' (the " +
+      "terminal size), 'scroll' (scroll one slot's transcript view), 'cancel' (stop one slot or the whole run), 'judge'(blind-vote on existing outputs), 'run-and-judge' (the " +
       "blocking pipeline). Poll 'status' (read run.slots) or 'list'. " +
       "NO SLOT IS EVER KILLED ON A TIMER once its prompt is accepted. A team slot is a full " +
       "Claude Code session and may work for a long time; a slot inside a build or test " +
@@ -1952,20 +1981,32 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       properties: {
         mode: {
           type: "string",
-          enum: ["run", "judge", "run-and-judge", "status", "cancel", "list", "capture", "resize"],
+          enum: [
+            "run",
+            "judge",
+            "run-and-judge",
+            "status",
+            "cancel",
+            "list",
+            "capture",
+            "resize",
+            "scroll",
+          ],
           description:
             "Operation mode. 'run' STARTS the models and returns once every slot has taken " +
             "its prompt (or failed to) — it does not wait for answers. Poll 'status' (read " +
             "`run.slots`) or 'list' for progress, then 'judge' once the slots have " +
-            "finished. 'capture' returns one slot's screen; 'resize' sets its terminal size. " +
+            "finished. 'capture' returns one slot's screen; 'resize' sets its terminal size; " +
+            "'scroll' scrolls its transcript view (`by` or `to`). " +
             "'run-and-judge' is the blocking pipeline and holds the call open for the whole run. 'cancel' stops one slot or " +
             "the whole run.",
         },
         slot: {
           type: "string",
           description:
-            "For 'cancel', 'capture' and 'resize': the anonymised slot id (e.g. '02') from the " +
-            "slot map 'run' returned. 'capture' and 'resize' require it; for 'cancel', omit it " +
+            "For 'cancel', 'capture', 'resize' and 'scroll': the anonymised slot id (e.g. '02') " +
+            "from the slot map 'run' returned. 'capture', 'resize' and 'scroll' require it; for " +
+            "'cancel', omit it " +
             "to stop every slot in the run.",
         },
         path: {
@@ -1977,7 +2018,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         run_id: {
           type: "string",
           description:
-            "For 'status', 'cancel', 'capture' and 'resize': the run_id a 'run' answer " +
+            "For 'status', 'cancel', 'capture', 'resize' and 'scroll': the run_id a 'run' answer " +
             "returned. It " +
             "addresses THAT run while this server retains it, even after a newer run reused " +
             "the path. Omit it to address the newest run at 'path'.",
@@ -2003,6 +2044,21 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           description:
             "For 'resize' (required): the terminal height in rows, clamped to 24–9999 and to " +
             "at most 4 000 000 cells (cols × rows).",
+        },
+        by: {
+          type: "integer",
+          description:
+            "For 'scroll': rows to scroll the slot's transcript view; negative = toward older " +
+            `content, positive = toward the live bottom. A target, ± 1 row; |by| is capped at ${MAX_SCROLL_ROWS}. ` +
+            "Not 0. Give exactly one of 'by' and 'to'. The answer {run_id, path, slot, seq} " +
+            "carries the screen's seq after the scroll.",
+        },
+        to: {
+          type: "string",
+          enum: ["end"],
+          description:
+            "For 'scroll': \"end\" returns the slot's view to the live bottom. Give exactly one " +
+            "of 'by' and 'to'.",
         },
         models: {
           type: "array",
@@ -2130,7 +2186,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         mode === "status" ||
         mode === "cancel" ||
         mode === "capture" ||
-        mode === "resize"
+        mode === "resize" ||
+        mode === "scroll"
       ) {
         return teamContractVerb(mode, args);
       }
@@ -3071,6 +3128,51 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         const cols = requiredInteger(args.cols, "cols");
         const rows = requiredInteger(args.rows, "rows");
         return contractAnswer(await sessionManager.resizeSession(sessionId, cols, rows));
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "scroll_session",
+    description:
+      "Scroll a session's transcript view, as a mouse wheel over the child's Claude Code " +
+      "would: the next capture_session shows the child scrolled. `by` is a signed row " +
+      "count (negative = toward older content, positive = toward the live bottom); it is a " +
+      `target, ± 1 row, and |by| is capped at ${MAX_SCROLL_ROWS} per call. \`to:"end"\` returns ` +
+      "to the live bottom. Give exactly one of `by` and `to`; `by:0` is refused. It never " +
+      "types into the prompt, submits or answers a dialog, and a prompt claudish delivers " +
+      "next returns the view to the bottom first. The answer {session_id, seq} carries the " +
+      "screen's seq after the scroll (the first changed screen within 1 s, else the current " +
+      "one). Errors are a JSON ContractError: `scroll_unavailable` while the session is " +
+      "still starting, finished, delivering a prompt, reading its turn from the screen or " +
+      "reconnecting, or when magmux did not confirm the send (the scroll may still land). " +
+      "Nothing is queued.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        by: {
+          type: "integer",
+          description: `Rows to scroll; negative = older content. Not 0; |by| capped at ${MAX_SCROLL_ROWS}; a target, ± 1 row`,
+        },
+        to: {
+          type: "string",
+          enum: ["end"],
+          description: '"end" returns the view to the live bottom',
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        const req = scrollArgs(args);
+        return contractAnswer(await sessionManager.scrollSession(sessionId, req));
       } catch (e) {
         return contractErrorAnswer(e);
       }

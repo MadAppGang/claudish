@@ -1,4 +1,4 @@
-> The 16-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
+> The 17-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing, scrolling), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
@@ -398,12 +398,12 @@ To re-measure the table, ask Claude Code for an agent that does not exist:
 matrix of cwds and flag sets costs nothing. `env -u CLAUDECODE` lets it run from inside a
 session.
 
-## MCP Tools (16 total)
+## MCP Tools (17 total)
 
 - **Low-level** (3): `run_prompt`, `list_models`, `search_models`
 - **Agentic** (4): `preflight`, `team`, `report_error`, `allowance_status`
-- **Session** (8): `create_session`, `send_input`, `get_output`, `cancel_session`,
-  `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`
+- **Session** (9): `create_session`, `send_input`, `get_output`, `cancel_session`,
+  `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `scroll_session`
 - **Debug** (1): `compare_models`
 
 `preflight` exists because `--probe` is CLI-ONLY. An MCP consumer had no way to
@@ -460,8 +460,18 @@ bottom after a row grow and clamped cursor-down to it, so Claude Code's relative
 collapsed its input box onto the old last row and `pathPrimary` never settled the next turn. The
 fake child redraws with relative cursor-down for that reason. The per-pane check of magmux's `verbs` stays as the defence against a
 binary that passes the version floor but lacks the op. `team` gains the same verbs as modes (`list`, `status`, `capture`,
-`cancel`, `resize`). Why the size is the viewer's and what resizing costs the screen heuristics:
+`cancel`, `resize`, `scroll`). Why the size is the viewer's and what resizing costs the screen heuristics:
 `pane-session.md`, "Terminal size".
+
+`scroll_session` (`session_id` and exactly one of `by`, a nonzero signed row count with negative
+toward older content, or `to:"end"`) scrolls the child's own transcript view and answers
+`{session_id, seq}`; `team(mode:"scroll", path, slot, run_id?, by | to)` answers
+`{run_id, path, slot, seq}`. A capture has no rows above the visible screen (the child draws on
+the alternate screen), so the scroll goes to the child as SGR wheel events, `|by|` capped at 200
+and a target ± 1 row. Its one error code is `scroll_unavailable` (starting, finished, delivering a
+prompt, a screen-read turn, reconnecting, or magmux did not confirm); nothing is queued.
+`capabilities` lists `scroll`. The argument errors come before the run lookup, as for `resize`. It
+is not a nested tool. Mechanism, rows and states: `pane-session.md`, "Scrolling the child's view".
 
 `allowance_status` is the read-only source of the mod's allowance band: `{contract_version,
 capabilities, allowance, reason?}`, where `allowance` is the `claudish.allowance.v1` report that
@@ -499,12 +509,12 @@ Tool gating via the `CLAUDISH_MCP_TOOLS` env var (lower-cased, `resolveToolGroup
 
 | Value | Tools |
 |---|---|
-| unset, `all` | all 16 |
+| unset, `all` | all 17 |
 | `low-level` | `run_prompt`, `list_models`, `search_models` |
 | `agentic` | `preflight`, `team`, `report_error`, `allowance_status` |
-| `session` | the 8 session tools |
+| `session` | the 9 session tools |
 | `debug` | `compare_models` |
-| `channel`, or any other value | all 16, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
+| `channel`, or any other value | all 17, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
 
 Unknown values keep selecting everything, because a server that lists fewer tools than its host
 expects fails later and quietly. The stderr line is there so a typo is not read as `all` with
@@ -512,7 +522,7 @@ no trace.
 
 `session` was `channel` until 10.7.0. The rename removed the old name with no alias, per the
 thesaurus rule, so `channel` now falls into the unknown-value rule and selects everything. The
-stderr startup line shows `tools: channel, 16 tools` after the unknown-value warning, but an MCP
+stderr startup line shows `tools: channel, 17 tools` after the unknown-value warning, but an MCP
 host does not show stderr.
 `compare_models` moved to `debug` at the same time: it sends one prompt to several models in
 sequence and shows raw answers, which is a route check, not work. Real multi-model work is `team`.
@@ -703,7 +713,7 @@ not checked". `testing.md` has the rules.
   `../mcp-shutdown.e2e.test.ts` — stdin EOF, SIGTERM and SIGKILL of a server holding a live session
   and a live team run.
 
-**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-sessions.test.ts` freezes the full 15-name list, the session-only 8 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics`, `capture_session` and `resize_session` each broke both pins on the way in, which is the guard working.
+**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-sessions.test.ts` freezes the full 15-name list, the session-only 8 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics`, `capture_session`, `resize_session` and `scroll_session` each broke both pins on the way in, which is the guard working.
 
 E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for isolation. SessionManager tests point child spawns at the tree under test via `CLAUDISH_BIN` (`spawn-claudish.ts`), never at the installed binary.
 
