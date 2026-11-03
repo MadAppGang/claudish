@@ -1143,6 +1143,16 @@ error) is logged and answers `not-applicable/no-legacy-account`, not `deferred`:
 make `account add` or `login codex` refuse. M8 compares every durable field, so any doubt keeps
 the file.
 
+**The leftover branch does NOT compare** (checked in review round 4). `deleteLeftover` re-checks
+the marker, the absence of any `legacy-codex-file` row and the file's presence under the config
+lock, then deletes the file whatever it holds; it reads neither the file nor the Keychain copy. A
+file that differs from the Keychain copy is the ORDINARY case: the Keychain row rotates on its
+first refresh after the move and leaves the file's token dead, so "differs" cannot mean "newer". A
+genuinely newer token in the file can come only from a writer that ignores the marker: an older
+claudish build's gate-less login or refresh, or (before R4-2) this build exchanging the file from a
+stale list. No reader of this build adopts the file under the marker, so deleting it changes no
+signing; the Keychain row would need a login either way. Left as is.
+
 **No file bytes in `detail`.** Bun's `JSON.parse` error quotes the bytes it failed on, which in a
 torn `codex-oauth.json` are token material. The token stores report a parse failure as `invalid
 JSON` only, and `detail` passes through `redactSecrets` where `legacy-move.ts` and `management.ts`
@@ -1200,12 +1210,21 @@ answer, retried on the same hop:
   failed → `AccountListUnreadableDuringLeaseError`, a `RefreshUnavailableError` (transient, 503).
   It tried no credential, so it is unavailable for THIS request only: no
   `LEASE_FAILURE_DEPRIORITIZE_MS`, and, like a store-only move, the lease's re-auth stamp is
-  restored, pinned or not. An unpinned lease tries the next account. Only that phase:
-  `before-exchange` and
-  `before-persist` keep deciding from the copy, and `before-persist` still returns on a cold
-  unreadable list. The phase is separate because an empty store is the one place a stale "row
-  unchanged" turns into a terminal login demand; a store that holds material keeps serving through
-  a short config outage.
+  restored, pinned or not. An unpinned lease tries the next account. `before-persist` keeps
+  deciding from the copy and still returns on a cold unreadable list, and so does `before-exchange`
+  for every row except one: a store that holds material keeps serving through a short config
+  outage.
+
+  **The exception: an exchange of a `legacy-codex-file` row** (review round 4, R4-2). Another
+  process can publish the move (M6: the row says `keychain`) and stop before M8 deletes the file.
+  If this process's registry then serves a pre-move copy because `config.json` cannot be read, the
+  copy still names `legacy-codex-file`, and the file's refresh token is the one the Keychain row
+  also holds. Exchanging it rotates the token under a row the list no longer names, and the
+  Keychain copy dies. So `before-exchange` for that store invalidates the registry, re-reads, and
+  on a failed source throws the same `AccountListUnreadableDuringLeaseError`: no journal, no
+  exchange, stores untouched. It runs first under the gate, before the uncached re-read and any
+  journal write. `pool-legacy-exchange-stale-list.test.ts` pins it, with two controls: a readable
+  list still exchanges the legacy row, and a `file` row still exchanges from the copy.
 
   **A store-only move is not a re-auth attempt** (`AccountPool.leaseStep`). `acquire` stamps each
   lease as the row's re-auth attempt (`lastReauthAttempt` and the request context) before it
@@ -1214,7 +1233,20 @@ answer, retried on the same hop:
   rebound row, so a single-account pool answers a terminal `NeedsReauthError`, and the pool's map
   keeps suppressing the retry on later requests. That includes a pinned move's transient throw: a
   pin itself is honoured even when it needs re-auth, but the next unpinned request copies the
-  pool's map. A store-only move does not spend the loop's `records + 1` attempts, which are for
+  pool's map.
+
+  **The pool's stamp is withdrawn, never put back** (review round 4, R4-1). The pool's map is
+  shared by overlapping acquires, so `ReauthAttemptStamps` keeps a committed value per account
+  plus one mark per lease in flight, and reads the latest of them (a concurrent request still sees
+  an attempt in progress). A lease that tried no credential withdraws ONLY its own mark; every other
+  lease commits when it settles, unless `healReauthMarks` cleared the account meanwhile (then it
+  commits nothing, as before). The earlier save-and-put-back raced: acquire B saved acquire A's
+  in-flight stamp as its "previous" value, A withdrew, then B put A's stamp back as if committed,
+  and the next request read a due retry as "attempted just now" and answered `NeedsReauthError`
+  with nothing attempted. `pool-reauth-overlap.test.ts` pins it. The request's own map belongs to
+  one acquire, whose passes run one at a time, so it keeps save-and-restore.
+
+  A store-only move does not spend the loop's `records + 1` attempts, which are for
   removals; it has its own budget of the same size. `healReauthMarks` heals a second time against
   the rebound record when the old store read empty because the row just moved.
 - **The legacy facade** (`CodexOAuth.refreshHoldingGate`): a process that delegated before the move
