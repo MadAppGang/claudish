@@ -23,7 +23,7 @@
  * enrolment branches above find no legacy login left to enrol.
  */
 import { randomBytes } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, lstatSync, readFileSync } from "node:fs";
 import { confirm } from "@inquirer/prompts";
 import { log } from "../../logger.js";
 import { activeConfigFile } from "../../profile-config.js";
@@ -1175,6 +1175,11 @@ export class CodexAccountManagement {
     try {
       target = this.inspect((entry) => this.moveTargetOf(entry));
     } catch (err) {
+      // A permission denial on the legacy file (itself, or `~/.claudish` above
+      // it, which also holds config.json) never clears on retry, so it is
+      // file-unreadable, not "retry in a moment". A busy lock or an invalid
+      // config.json leaves the file accessible and stays config-unavailable.
+      if (this.legacyFileDenied()) return this.moveDeferred(err, "file-unreadable");
       return this.moveDeferred(err, "config-unavailable");
     }
     if (target.kind === "none") return notApplicable("no-legacy-account");
@@ -1223,6 +1228,21 @@ export class CodexAccountManagement {
         log(`[accounts] legacy Codex file check failed: ${redactSecrets(errorText(err))}`);
       }
       return false;
+    }
+  }
+
+  /**
+   * M0's classification of a failed config inspection: is the legacy file
+   * denied by permissions (`EACCES`/`EPERM` on the file or a directory above
+   * it)? Read-only, and no `security` call.
+   */
+  private legacyFileDenied(): boolean {
+    try {
+      accessSync(legacyCodexCredentialsPath(this.env), fsConstants.R_OK);
+      return false;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      return code === "EACCES" || code === "EPERM";
     }
   }
 
