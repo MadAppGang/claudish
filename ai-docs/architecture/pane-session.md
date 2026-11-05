@@ -942,6 +942,16 @@ tools that do not route it answer as for an unknown id.
 written. The reap removes the fork's exact path, and the project directory only if it did not exist
 before the open. Nothing lists a directory or guesses the newest file.
 
+**Who removes it.** The replay's pane record and its watcher's argv (`$8`–`$10`) carry `fork`: the projects
+root, the exact path, and whether the open created the project directory. `removePaneFiles` removes it
+first and the pane record last, so whichever path verifies the replay's processes gone removes it: the
+in-process reap on `close_replay`, on a replay that ends by itself, and on a clean server exit; the pane
+watcher after a server SIGKILL (853 ms measured); the next server's startup sweep when the watcher was
+killed too (2.8 s after that server started). A watcher killed between the two removals leaves the pane
+record, so the sweep still finds the path. The path is checked in TypeScript (`isForkRecordPath`) and in the
+watcher's shell (`fork_ok`): a root named `projects`, one `[A-Za-z0-9-]` segment, `<fork uuid>.jsonl`. The
+sweep of an unreadable process table verifies nothing gone and leaves the fork record where it is.
+
 **The working directory.** The session's own folder when it is still a directory, else the MCP server's.
 An untrusted folder raises the trust dialog (cases L and L2), and a new scratch folder is untrusted by
 definition, so the fallback is the folder the host already runs in.
