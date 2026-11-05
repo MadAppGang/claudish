@@ -37,8 +37,10 @@ lives in `ROADMAP.md`.
   box located by the cursor, no width cap), settle on `turn_duration` (32 s quiet path gated
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
   watcher and identity-checked reap, socket traps, one level of nesting (`CLAUDISH_PANE_CHILD` kept,
-  the nested refusal), the frozen mod contract v1, the session registry read as telemetry (and why no
-  in-child mod or argv prompt). Read before editing `pane/`, team spawn or MCP session spawn
+  the nested refusal), replay panes (read-only `claude --resume`, the allowlisted environment, box
+  before dialog), the frozen mod contract v1, the session registry read as telemetry (and why no
+  in-child mod or argv prompt). Read before editing `pane/` (`pane/replay-pane.ts` and
+  `pane/pane-reap.ts` included), team spawn or MCP session spawn
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
@@ -50,9 +52,10 @@ lives in `ROADMAP.md`.
   the tournament gate no strategy has passed yet, gap alerts and their measured budgets, and why
   alerts under `lookahead` simulate `ebr`. Read before editing `auth/accounts/allowance/`, `ledger/`,
   `allowance-service.ts` or the pool's `rank` hook
-- `mcp-sessions.md` — the 18-tool MCP surface and its four groups, the 4-tool nested mode, sessions
+- `mcp-sessions.md` — the 20-tool MCP surface and its four groups, the 4-tool nested mode, sessions
   on panes (`send_input` queueing, `capture_session`, `resize_session`, `scroll_session`,
-  `transcript_session` (the transcript as text lines: cursor, byte caps, `final`), the on-disk session records
+  `transcript_session` (the transcript as text lines: cursor, byte caps, `final`), `replay_session`
+  and `close_replay` (a finished session's real interface, read only), the on-disk session records
   and who reads them), `run_prompt`'s Claude Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
   assistant message of its turn, from the transcript, starting after the task file was read
