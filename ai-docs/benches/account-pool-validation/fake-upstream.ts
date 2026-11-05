@@ -83,6 +83,11 @@ export interface Fake {
   requests: LoggedRequest[];
   /** Exchange count at the token path (accepted + rejected). */
   exchanges(): { ok: number; invalidGrant: number };
+  /**
+   * Every token value this fake issued (access and refresh), in issue order. The leak scan
+   * searches for these EXACT values, not for their shape.
+   */
+  issued(): string[];
   /** Change the token endpoint's answer mode mid-row (V10: reject, then accept). */
   setTokenMode(mode: "ok" | "invalid_grant"): void;
   setTokenDelayMs(ms: number): void;
@@ -197,6 +202,7 @@ export function startFake(opts: FakeOptions): Fake {
   let tokenMode = opts.tokenMode ?? "ok";
   let tokenDelayMs = opts.tokenDelayMs ?? 0;
   const exchangeTally = { ok: 0, invalidGrant: 0 };
+  const issuedValues: string[] = [];
   if (opts.bodyDir) mkdirSync(opts.bodyDir, { recursive: true });
 
   const record = (entry: LoggedRequest) => {
@@ -253,6 +259,8 @@ export function startFake(opts: FakeOptions): Fake {
           issuedRotation = rotation;
           issued = `rt-rotated-${issuedRotation}`;
           validRefresh.add(issued);
+          // Registered before the answer is sent: a value is known before it can leak.
+          issuedValues.push(`at-rotated-${issuedRotation}`, issued);
         }
         dump("token");
         if (tokenDelayMs > 0) await Bun.sleep(tokenDelayMs);
@@ -340,6 +348,7 @@ export function startFake(opts: FakeOptions): Fake {
     port: server.port as number,
     requests,
     exchanges: () => ({ ...exchangeTally }),
+    issued: () => [...issuedValues],
     setTokenMode: (mode) => {
       tokenMode = mode;
     },

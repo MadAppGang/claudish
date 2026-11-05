@@ -20,8 +20,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
 import {
   FileTokenStore,
@@ -50,6 +50,18 @@ import {
   nowSec,
   quotaFor,
 } from "./harness.ts";
+import {
+  CleanupError,
+  DeadlineError,
+  type GuardOptions,
+  GuardRefusal,
+  KeychainGuard,
+  assertChildEnv,
+  assertFakeOnlyConfig,
+  describeUnparsable,
+  makeSecurityRunner,
+  psLister,
+} from "./keychain-guard.ts";
 import { KNOWN_EGRESS } from "./row-env.ts";
 import {
   DEFAULT_ACCOUNTS,
@@ -81,6 +93,8 @@ export interface RowSpec {
   mutants: MutantRef[];
   /** Required when `mutants` is empty: starts with "not evidence". */
   mutantNote?: string;
+  /** Uses the real default keychain (V2e): never part of `--all`, run only with `--row`. */
+  keychain?: boolean;
   make(): RowPlan;
 }
 
@@ -777,6 +791,196 @@ function v2Plan(): RowPlan {
         issuedWithin < 200,
         `${issuedWithin} ms`
       );
+    },
+  };
+}
+
+/** The memo window of `readKeychainItem` (`MEMO_TTL_MS` in the bundle). */
+export const V2E_MEMO_WINDOW_MS = 3000;
+
+/**
+ * V2e: two processes on the user's default (login) keychain, through claudish's native path (no
+ * keychain redirect, no temporary keychain, no search-list change). The second process reads the
+ * token (memoized, stale after the first rotates it), waits for the refresh lock, and re-reads
+ * after acquiring it. That re-read is `uncached`; the mutant routes it through the memo. The memo
+ * only bites when the re-read is under 3 s after the first read. First read >= t0 and re-read <=
+ * the reply received at t0 + elapsed, so `elapsed < 3000` PROVES the window; otherwise the run is
+ * an ERROR (`harnessError`), never a PASS or a RED.
+ */
+export async function v2eBody(c: RunCtx, guard: KeychainGuard) {
+  await guard.acquire();
+  const tokenFile = tokenPathOf(c.tree.accountsDir, ID.A);
+  // The row's own config. Every V2e child gets it as CLAUDISH_CONFIG: with the real HOME, a
+  // child without it reads the real ~/.claudish/config.json and signs with a real account
+  // (review round 6; run 14 recorded a real bearer that way).
+  const configPath = join(c.tree.home, ".claudish", "config.json");
+  // The exact record the file store wrote is stored by the PRODUCT's own KeychainTokenStore
+  // (a child process), so the item carries the product's own attributes and ACL and the bench
+  // writes nothing itself. The file is then removed so a process that wrongly used the file
+  // store would fail loudly.
+  await guard.seedViaProduct({
+    id: ID.A,
+    label: "A",
+    recordJson: readFileSync(tokenFile, "utf8"),
+    // Real HOME (Jack's decision, 2026-11-02): `security` finds the login keychain only
+    // through $HOME/Library, so a temp HOME sees no keychain at all.
+    home: userInfo().homedir,
+    accountsDir: c.tree.accountsDir,
+    cwd: c.tree.cwd,
+    configPath,
+  });
+  unlinkSync(tokenFile);
+  const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
+    subscriptionAccounts: Record<string, { accounts: Array<{ store: string }> }>;
+  };
+  for (const a of cfg.subscriptionAccounts["openai-codex"]?.accounts ?? []) a.store = "keychain";
+  writeFileSync(configPath, JSON.stringify(cfg));
+  // Refuse before any serve starts unless the config names only the fake account.
+  assertFakeOnlyConfig(readFileSync(configPath, "utf8"));
+
+  // Never throws on a non-JSON value: a failing check names what was read (masked), so a
+  // failure is diagnosable from result.json.
+  const readGen = async (when: string) => {
+    const raw = await guard.readItem();
+    if (raw === null) return null;
+    try {
+      return JSON.parse(raw) as { generation?: number; fingerprint?: string };
+    } catch {
+      c.check(`[row] the keychain item (${when}) is readable JSON`, false, describeUnparsable(raw));
+      return null;
+    }
+  };
+  const before = await readGen("after seeding");
+  c.check(
+    "[row] the default keychain holds the seeded item at generation 1",
+    before?.generation === 1,
+    JSON.stringify(before)
+  );
+  if (before === null) return; // nothing to race on; the failed check above says why
+
+  const extra = {
+    // Real HOME, as for the seed above (`security` finds the login keychain through it), and
+    // the row's own config, so the real ~/.claudish/config.json is never the account list.
+    HOME: userInfo().homedir,
+    CLAUDISH_CONFIG: configPath,
+    CLAUDISH_DISABLE_KEYCHAIN: "0",
+    CLAUDISH_ACCOUNT_STORE: "",
+  };
+  assertChildEnv(extra);
+  // A tripped guard (a keychain call timed out) starts no process, and kills any it started.
+  // Each serve tree is the guard's producer from the moment it exists: cleanup kills it and
+  // waits for it before the delete, and the security watch looks under it.
+  const serve = async () => {
+    guard.assertRunnable();
+    const p = await c.serve(extra, { onSpawn: (producer) => guard.registerProducer(producer) });
+    guard.onTrip(() => p.kill("SIGKILL"));
+    guard.assertRunnable();
+    return p;
+  };
+  const p1 = await serve();
+  const p2 = await serve();
+  const t0 = Date.now();
+  const replyMs: number[] = [];
+  const timed = (p: Promise<DirectReply>, i: number) =>
+    p.then((r) => {
+      replyMs[i] = Date.now() - t0;
+      return r;
+    });
+  const replies = await Promise.all([timed(c.post(p1), 0), timed(c.post(p2), 1)]);
+  const elapsed = Date.now() - t0;
+  c.note("replyMs", replyMs);
+  replies.forEach((r, i) => c.save(`response-${i + 1}.json`, JSON.stringify(r, null, 2)));
+  c.note("elapsedMs", elapsed);
+  const ex = c.fake.exchanges();
+  const tokenRequests = c.fake.requests.filter((x) => x.kind === "token").length;
+  if (tokenRequests === 0) {
+    const msg = (replies[0]?.body as { error?: { message?: string } } | null)?.error?.message;
+    c.note(
+      "harnessError",
+      `the race never started: no token exchange reached the fake (HTTP ${replies.map((r) => r.status).join(",")}, replies after ${replyMs.join(",")} ms; first error: ${String(msg ?? "none").slice(0, 160)}). See serve-*-stderr.txt`
+    );
+  } else if (elapsed >= V2E_MEMO_WINDOW_MS) {
+    c.note(
+      "harnessError",
+      `timing precondition not met: both replies took ${elapsed} ms (>= ${V2E_MEMO_WINDOW_MS} ms), so the second process's re-read may fall outside the memo window; the run proves nothing`
+    );
+  }
+  c.note("exchangeOk", ex.ok);
+  c.note("exchangeInvalidGrant", ex.invalidGrant);
+  const after = await readGen("after the race");
+  const r = recs(c);
+  const groups = requestIds(r);
+  c.check(
+    "[fake] token endpoint: exactly one exchange accepted, none rejected",
+    ex.ok === 1 && ex.invalidGrant === 0,
+    `ok=${ex.ok} invalid_grant=${ex.invalidGrant}`
+  );
+  c.check(
+    "[fake] 2 main attempts, both on the rotated bearer at-rotated-1 (the second read the NEW generation)",
+    c.main().length === 2 && c.main().every((m) => m.bearer === "Bearer at-rotated-1"),
+    c
+      .main()
+      .map((m) => m.bearer)
+      .join(", ")
+  );
+  c.check(
+    "[accounts] 2 request ids, each with an ok record",
+    groups.length === 2 &&
+      groups.every((g) => r.some((x) => x.requestId === g && x.outcome === "ok")),
+    `${groups.length} ids`
+  );
+  c.check("[accounts] no needsReauth in state.json", mark(c) === null, JSON.stringify(mark(c)));
+  c.check(
+    "[third] two HTTP 200",
+    replies.every((x) => x.status === 200),
+    replies.map((x) => x.status).join(",")
+  );
+  c.check(
+    "[third] keychain item: generation 2, fingerprint of rt-rotated-1",
+    after?.generation === 2 && after?.fingerprint === fingerprintOf("rt-rotated-1"),
+    JSON.stringify(after)
+  );
+  c.check(
+    "[row] both replies arrived within the 3 s memo window (timing precondition)",
+    elapsed < V2E_MEMO_WINDOW_MS,
+    `${elapsed} ms`
+  );
+}
+
+/**
+ * The real V2e guard: the real `security` runner, and the security watch over every producer
+ * tree (`ps`), so a `security` call the PRODUCT starts and that hangs trips the row too.
+ */
+export const defaultV2eGuardOptions = (c: Pick<RunCtx, "dir">): GuardOptions => ({
+  run: makeSecurityRunner(),
+  stateDir: c.dir,
+  watch: { list: psLister },
+});
+
+/** The V2e plan; `makeGuard` is the seam the tests use to inject a fake `security`. */
+export function v2ePlan(
+  makeGuard: (c: RunCtx) => KeychainGuard = (c) => new KeychainGuard(defaultV2eGuardOptions(c))
+): RowPlan {
+  return {
+    setup: { accounts: acc(["A"], { A: { expiresAt: 0 } }), fake: { tokenDelayMs: 300 } },
+    async run(c) {
+      const guard = makeGuard(c);
+      c.onCleanup(() => guard.cleanup()); // a second line of defence; cleanup is idempotent
+      try {
+        await guard.runWithDeadline(() => v2eBody(c, guard));
+      } catch (err) {
+        if (
+          err instanceof GuardRefusal ||
+          err instanceof CleanupError ||
+          err instanceof DeadlineError
+        )
+          c.note("harnessError", err.message);
+        throw err;
+      } finally {
+        // The first timed-out keychain call decides the row, whatever was thrown after it.
+        if (guard.isTripped()) c.note("harnessError", guard.tripMessage());
+        c.save("security-calls.json", JSON.stringify(guard.callLog(), null, 2));
+      }
     },
   };
 }
@@ -2082,6 +2286,35 @@ export const ROWS: RowSpec[] = [
       },
     ],
     make: v2dPlan,
+  },
+  {
+    id: "V2e",
+    row: "V2e",
+    title: "keychain memo bypass",
+    drive: "direct",
+    keychain: true,
+    steps:
+      "one expired account stored as ONE fake item (claudish-accounts / openai-codex:aaaaaaaaaaaa) in the user's default (login) keychain, written by the product's own writer (KeychainTokenStore.write), no temporary keychain, no search-list or keychain-setting change, CLAUDISH_DISABLE_KEYCHAIN not 1; real HOME with CLAUDISH_CONFIG = the row's config, which must list only the fake account (else refused); preflight: the item must be absent; 2 serve processes listening, then 2 POSTs issued in one tick; both replies must arrive < 3 s after the POSTs (timing precondition, else ERROR); a bench keychain call that waits 15 s, or a security process under a serve that runs 5 s, stops the row (ERROR); every producer is killed and confirmed gone before the one fake item is deleted at the end",
+    expectedMain: "2, both on the rotated bearer at-rotated-1",
+    accountsRecords: "2 request ids, each with an ok record; no needsReauth",
+    fakeProperty: "token endpoint: ok = 1, invalid_grant = 0",
+    transcript:
+      "relaxation (direct): two HTTP 200; keychain item generation = seed + 1, fingerprint of rt-rotated-1",
+    canary: 0,
+    expectsFakeRequests: true,
+    mutants: [
+      {
+        id: "V2e-keychain-reads-memoized",
+        expected: "red",
+        // Red only on the memo's own evidence: a second exchange of the revoked token. A run
+        // whose processes failed for another reason (no exchange at all) is a harness error, never red.
+        red: (o) =>
+          o.exchanges.ok > 1 || o.exchanges.invalidGrant >= 1
+            ? `ok=${o.exchanges.ok}, invalid_grant=${o.exchanges.invalidGrant}`
+            : null,
+      },
+    ],
+    make: v2ePlan,
   },
   {
     id: "V2f",

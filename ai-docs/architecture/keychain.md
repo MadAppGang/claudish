@@ -411,6 +411,28 @@ because it raises a password dialog.
 Live verification is still worth doing — it is the only thing that caught the raw-mode hang — but
 it goes here, never at the default keychain.
 
+### `security` finds keychains through `$HOME`, and a throwaway keychain is not free either
+
+Measured 2026-11-02 (MTL-260, V2e), read-only, with `/usr/bin/security` on this Mac:
+
+| `HOME` | `default-keychain -d user` | `list-keychains -d user` |
+|---|---|---|
+| real | `…/login.keychain-db`, exit 0 | the login keychain |
+| a temp dir | `A default keychain could not be found.`, exit 1 | empty |
+| a temp dir with symlinks `Library/Keychains` and `Library/Preferences/com.apple.security.plist` to the real ones | `…/login.keychain-db`, exit 0 | the login keychain |
+
+So a claudish started with a temporary `HOME` (every bench does this to hide the real `~/.claudish`)
+sees NO keychain. Five V2e runs failed on that and were misdiagnosed as ACL or partition problems.
+
+The throwaway-keychain recipe above also cost a desktop session on 2026-11-02. The V2e guard observed
+the new file in the user search list and restored the list around each run; the search list is one
+per-user setting shared by every running program, and during those runs other programs (`gh`, Claude
+Code) raised stacked "wants to use the login keychain" dialogs until the Mac had to be rebooted. The
+cause chain is inferred, not proven, but the design is retired: V2e now uses the login keychain
+through the product's own `writeKeychainItem` on a fake item (`openai-codex:aaaaaaaaaaaa`), allows only
+`find-generic-password` and `delete-generic-password`, and stops after the first call that waits 15 s.
+Under the real `HOME`, the product's write, two reads and a delete took 11-79 ms with no dialog.
+
 ## `CLAUDISH_DISABLE_KEYCHAIN=1` — the escape hatch tests need
 
 `hasKeychainSource()` returns false when this is set, mirroring `CLAUDISH_DISABLE_OP` for
