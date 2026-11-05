@@ -13,7 +13,7 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { constants, accessSync, closeSync, existsSync, realpathSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { findClaudeBinary } from "../claude-runner.js";
 import {
   type CaptureResult,
@@ -82,12 +82,14 @@ function replayCwd(own: string | null): string {
 }
 
 /**
- * The `claude` a replay runs. A `CLAUDE_PATH` that is set names the only binary: when it is not
- * an executable file the open fails, because `findClaudeBinary` would go on to the user's own
- * installation, and a replay would then start a Claude Code nobody asked for.
+ * The `claude` a replay runs, as an absolute path. A `CLAUDE_PATH` that is set names the only
+ * binary: when it is not an executable file the open fails, because `findClaudeBinary` would go
+ * on to the user's own installation, and a replay would then start a Claude Code nobody asked
+ * for. A relative one is resolved against the server's working directory before the check: the
+ * launcher runs it after `cd` into the replay's folder, where the same words name another file.
  */
 async function replayClaudeBinary(env: Record<string, string | undefined>): Promise<string> {
-  const named = env.CLAUDE_PATH;
+  const named = env.CLAUDE_PATH ? resolve(env.CLAUDE_PATH) : "";
   if (named) {
     try {
       if (!statSync(named).isFile()) throw new Error("not a file");
@@ -130,7 +132,10 @@ export class ReplayManager {
 
     const forkUuid = randomUUID();
     const cwd = replayCwd(target.cwd);
-    const forkPath = transcriptPathFor(cwd, forkUuid, target.projectsRoot);
+    // absolute against the server's directory: `claude` reads its config dir after the launcher's
+    // `cd`, and the fork record it writes there is the path the cleanup removes
+    const projectsRoot = resolve(target.projectsRoot);
+    const forkPath = transcriptPathFor(cwd, forkUuid, projectsRoot);
     const entry: ReplayEntry = {
       replayId: `replay-${randomBytes(8).toString("hex")}`,
       targetKey: uuid,
@@ -144,11 +149,11 @@ export class ReplayManager {
       claudeSessionId: uuid,
       forkUuid,
       cwd,
-      projectsRoot: target.projectsRoot,
+      projectsRoot,
       forkPath,
       // read before the spawn: Claude Code creates this directory when it writes a record
       removeProjectDir: !existsSync(dirname(forkPath)),
-      configDir: dirname(target.projectsRoot),
+      configDir: dirname(projectsRoot),
       cols: size.cols ?? DEFAULT_PANE_COLS,
       rows: size.rows ?? DEFAULT_PANE_ROWS,
     });
