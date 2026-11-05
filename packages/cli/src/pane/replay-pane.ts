@@ -97,7 +97,7 @@ const SCROLL_SCREEN_MS = 1_000;
 const CONNECT_TIMEOUT_MS = 5_000;
 const RECONNECT_FIRST_MS = 50;
 const RECONNECT_MAX_MS = 1_000;
-/** This many consecutive ENOENT dials: the socket is gone, not busy. */
+/** This many consecutive ENOENT dials (the socket is gone, not busy), or this many redials that closed during `attach`, end the replay. */
 const RECONNECT_ENOENT_LIMIT = 20;
 const STDERR_HEAD_CHARS = 8_192;
 
@@ -520,18 +520,29 @@ export class ReplayPane implements RegisteredPane {
     });
   }
 
-  /** magmux keeps its panes when a client leaves: redial with backoff while it lives. */
+  /**
+   * magmux keeps its panes when a client leaves: redial with backoff while it lives. A redial
+   * counts only when its connection is still open and installed once `attach` returns: one
+   * that closes during `attach` fires `disconnected` while this loop holds `reconnecting`, so
+   * that redial is suppressed and only this loop can try again.
+   */
   private async reconnect(): Promise<void> {
     if (this.reconnecting) return;
     this.reconnecting = true;
     let delay = RECONNECT_FIRST_MS;
     let enoent = 0;
+    let dropped = 0;
     try {
       while (alive(this.magmuxProc) && !this.reaping && !this.isFinal) {
         try {
           const c = await MagmuxClient.dial(this.sockPath);
           await this.attach(c, true);
-          return;
+          if (this.isFinal || (this.conn === c && !c.isClosed)) return;
+          enoent = 0;
+          if (++dropped >= RECONNECT_ENOENT_LIMIT) {
+            this.finish({ kind: "ended", detail: "the pane's socket closes on every attach" });
+            return;
+          }
         } catch (e) {
           enoent = (e as MagmuxConnectError).errno === "ENOENT" ? enoent + 1 : 0;
           if (enoent >= RECONNECT_ENOENT_LIMIT) {
