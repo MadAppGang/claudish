@@ -87,6 +87,58 @@ replay pane, driven through the real `MagmuxClient`, `applyFrame` and `inspectBo
 | fork record written, no prompt | no | no |
 | magmux stderr | empty | empty |
 
+## Plugin state and the LSP recommendation dialog
+
+Measured 2026-11-06 on Claude Code 2.1.318. The replay's own argv and environment, built by
+`buildReplayArgv`, `buildReplayEnv` and `replaySettingsJson`, run in a PTY of 120 × 40 with nothing
+typed, for 15 s, then closed with SIGTERM. The setup was a throwaway `HOME` and `CLAUDE_CONFIG_DIR` whose
+`.claude.json` holds only onboarding, theme and the folder's trust, plus a COPIED finished
+transcript (1 080 517 bytes) whose conversation read `.ts` files. `PATH` is the real one, so
+`typescript-language-server` is found. "Files written" compares recursive listings with sizes of
+both directories, taken before and after each start. A start counts as drawn when the stream
+holds the transcript's last answer line. A start counts as a dialog when the stream holds
+`LSP plugin recommendation`.
+
+| Case | Config before | Switch, beyond the replay's earlier environment | Start | Files written | Dialog |
+|---|---|---|---|---|---|
+| A | fresh | none | 1 | `plugins/` 582 files, 14 454 357 bytes (`known_marketplaces.json`, `marketplaces/claude-plugins-official/`); `file-history/`; `backups/` 1 file; `sessions/`; `.claude.json` 261 → 2820 | no |
+| A | after A1 | none | 2 | `file-history/<fork>/`, empty | **yes**, `typescript-lsp`, `claude-plugins-official`, triggered by `.ts` |
+| B | fresh | `CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` | 1 | `file-history/`; `backups/` 1 file; `sessions/`; `.claude.json` 260 → 2884 (`FailReason: "policy_blocked"`) | no |
+| B | after B1 | as B | 2 | `file-history/<fork>/`, empty | no |
+| C | fresh | `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING=1` | 1 | `plugins/` 582 files, 14 454 357 bytes; `backups/`; `sessions/`; `.claude.json` | no |
+| C | after C1 | as C | 2 | `.claude.json` only | no |
+| F | fresh | `--settings` adds `"fileCheckpointingEnabled": false` | 1, 2 | as C | no, no |
+| E1 | fresh | none | 1 | as A1, so the marketplace is installed | no |
+| E2 | after E1 | as B | 1 | `file-history/<fork>/`, empty | **yes** |
+| E3 | after E2 | B and C | 1, 2 | `.claude.json`; one `backups/.claude.json.backup.<ms>` | no, no |
+| G (the fix) | fresh | B and C, now in `buildReplayEnv` | 1 | `backups/` 1 file, 264 bytes; `sessions/`, empty; `.claude.json` 264 → 2888 | no |
+| G | after G1 | as G | 2 | nothing | no |
+| E4 (the fix) | after E3 | as G | 1, 2 | `.claude.json` ±1 byte; one `.claude.json` backup | no, no |
+
+Every start drew the conversation's end, the dialog included: the dialog is drawn over it.
+
+`--bare` stops neither the install nor the dialog, although its help names "LSP" and "plugin
+sync". The bundle's gates explain the table. The auto-install runs once per config, until
+`officialMarketplaceAutoInstallAttempted` is set. Only
+`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL` skips that first run. The recommendation hook is
+mounted for every interactive start. It offers an LSP plugin from any installed marketplace, for a file
+in `fileHistory.trackedFiles`, when the plugin is not installed and its binary is on `PATH`. Its only
+off switch is `lspRecommendationDisabled` in `.claude.json`, which a replay must not write. So the
+marketplace switch alone fails on a config that already has the marketplace (E2), which describes most
+real users. `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING` leaves the tracked files empty, which removes the
+dialog whatever marketplaces are installed (C, E3). It also removes the empty `file-history/<fork>/`
+that every start used to leave. F shows that the `--settings` key works too. The environment was
+chosen because the other two switches live there as well.
+
+**What a replay still writes**, with both switches on. Claude Code rewrites `.claude.json` on every
+start: `numStartups`, `pluginUsage` for its built-in plugins, and on a never-started config
+`firstStartTime`, `machineID`, `userID`, migration flags and `officialMarketplaceAutoInstall*`. It
+writes a `backups/.claude.json.backup.<ms>` when it rewrites that file, and an empty `sessions/`
+directory. All three remain after close. No flag or environment variable found in 2.1.318 stops them.
+On a never-started config, the install record says `policy_blocked`, so a later plain
+`claude` on that config does not auto-install the official marketplace. On a config where any start
+has already recorded an attempt, the env switch is never reached and nothing changes.
+
 ## Reproduce
 
 The measuring scripts were session scratch. The shape of the first set is above: one PTY per case,
@@ -99,3 +151,9 @@ its `.claude.json`. Spawn magmux headless on a socket of its own with the replay
 with and without `CLAUDE_CODE_NATIVE_CURSOR=1`. Feed `MagmuxClient`'s `watch` frames through
 `applyFrame`, and read `inspectBox` on each. Then send one wheel `send` with `noGate`, one `resize` to
 100 × 30, `list` and `ps` for the argv and group, and list the project directory.
+
+The plugin table needs no magmux. Import `buildReplayArgv`, `buildReplayEnv` and `replaySettingsJson`
+from `pane/pane-launch.ts`. Copy a finished transcript that read `.ts` files under the throwaway
+config's project slug for a trusted scratch folder. Spawn `claude` with that argv and env in a PTY
+from the folder, wait 15 s, send SIGTERM. Repeat against the same config, and list both directories
+with sizes before and after each start.

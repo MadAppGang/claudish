@@ -886,9 +886,22 @@ every other pane, and copies small parts of capture, resize, scroll and reconnec
 
 **The environment is an allowlist.** `buildReplayEnv` keeps `HOME`, `PATH`, `USER`, `LOGNAME`, `LANG`,
 `LC_ALL`, `LC_CTYPE`, `TZ`, `TMPDIR` and `CLAUDE_CONFIG_DIR`, then sets the shell shim's `SHELL`,
-`CLAUDISH_PANE_CHILD=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `COLUMNS` and `LINES`. It does not
-start from `buildPaneEnv`, because that one removes names from the parent's environment and a
-credential under a name nobody listed would pass through.
+`CLAUDISH_PANE_CHILD=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`,
+`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1`, `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING=1`,
+`COLUMNS` and `LINES`. It does not start from `buildPaneEnv`, because that one removes names from the
+parent's environment and a credential under a name nobody listed would pass through.
+
+**Two switches keep plugin state out of the user's config.** `--bare` stops neither of these,
+although its help says it does. On a config with no official marketplace, a replay's first start
+installs it: 582 files, 14 MB under `plugins/`. Once a marketplace is installed, the "LSP plugin
+recommendation" dialog is drawn over the conversation. It offers `typescript-lsp` when the resumed
+conversation touched `.ts` files and the binary is on `PATH`, and the open then answers `boot_dialog`.
+The marketplace switch stops the install. It does not stop the dialog for a user who already has the
+marketplace. The recommendation's only off switch is `lspRecommendationDisabled` in `.claude.json`,
+which a replay must not write. Disabling file checkpointing leaves the recommendation's file list empty,
+so no file is matched, and it also stops an empty `file-history/<fork>/`. Claude Code still rewrites
+`.claude.json` (start count, built-in plugin usage) and writes a backup of it on each start. No switch in
+2.1.318 stops that. Measurements: the plugin section of the replay report.
 
 **The argv is the turn barrier.**
 
