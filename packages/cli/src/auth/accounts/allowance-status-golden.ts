@@ -30,6 +30,8 @@ export const GOLDEN_ALLOWANCE_CAPABILITIES = [
   "capture_spans",
   "resize",
   "allowance",
+  "scroll",
+  "transcript",
 ];
 
 /** Monday 2026-10-26 09:00 UTC. The gap runs Thu 14:00 → Sat 09:00 (43 h). */

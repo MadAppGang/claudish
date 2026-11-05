@@ -6,7 +6,7 @@ Claudish isn't just a CLI. It's also an MCP server that exposes external AI mode
 
 Claude can call Grok, GPT-5, or Gemini mid-conversation to get a second opinion, or delegate a task to another model as a full async session that it polls and answers with `send_input`.
 
-The server exposes **16 tools** across four groups: low-level (3), agentic (4), session (8), and debug (1).
+The server exposes **18 tools** across four groups: low-level (3), agentic (4), session (10), and debug (1).
 
 ### Requirements for `team` and sessions
 
@@ -190,10 +190,12 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 - `min_output_bytes` - Report a slot EMPTY when its answer is shorter than this (default 0 = off)
 - `agent` - Claude Code subagent every slot runs as (e.g. `dev:reviewer`); an unknown agent fails the slot `agent_rejected`
 - `claude_flags` - Other Claude Code flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`; a value after a Claude Code switch, as in `--brief now`, would be the session's first prompt and is refused). Flags that would break the interactive pane (`-p`, `--output-format`, `--resume`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
-- `slot` - For `capture` and `resize` (required) and `cancel` (omit to stop the whole run): the anonymised slot id
-- `run_id` - For `status`, `capture`, `cancel` and `resize`: the `run_id` a `run` answer returned; addresses that run even after a newer run reused the path. Omit it for the newest run at `path`
-- `since_seq`, `spans` - For `capture`: see `capture_session`
+- `slot` - For `capture`, `resize`, `scroll` and `transcript` (required) and `cancel` (omit to stop the whole run): the anonymised slot id
+- `run_id` - For `status`, `capture`, `cancel`, `resize`, `scroll` and `transcript`: the `run_id` a `run` answer returned; addresses that run even after a newer run reused the path. Omit it for the newest run at `path`
+- `since_seq`, `spans` - For `capture` only: see `capture_session`
 - `cols`, `rows` - For `resize` (required): see `resize_session`
+- `by`, `to` - For `scroll` (exactly one): see `scroll_session`
+- `since` - For `transcript` only: the `cursor` of a previous answer; see `transcript_session`
 
 **Modes:**
 | Mode | What it does |
@@ -204,6 +206,8 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 | `capture` | One slot's current terminal screen (same shape as `capture_session`) |
 | `cancel` | Stop one slot (`slot`) or every slot of the run; answers each slot's `{state, changed}` |
 | `resize` | Set one slot's terminal size; answers `{run_id, path, slot, cols, rows, changed, seq, pending?}` (same rules as `resize_session`) |
+| `scroll` | Scroll one slot's transcript view by `by` rows or `to:"end"`; answers `{run_id, path, slot, seq}` (same rules as `scroll_session`) |
+| `transcript` | One slot's conversation as text lines, at most 200 lines and 32,000 bytes per call, paged with `since`; answers `{run_id, path, slot, cursor, lines, more, final}` (same rules as `transcript_session`). Without `run_id` it reads the newest run at `path`, from its `status.json` once the server no longer holds the run |
 | `judge` | Blind-vote on existing outputs in the session directory |
 | `run-and-judge` | Full pipeline: run models, then judge the outputs; holds the call open for the whole run |
 
@@ -286,16 +290,16 @@ The session tools are in the `session` group, which `all` (the default) includes
 
 | `CLAUDISH_MCP_TOOLS` | Tools |
 |---|---|
-| unset, `all` | all 16 |
+| unset, `all` | all 18 |
 | `low-level` | `run_prompt`, `list_models`, `search_models` |
 | `agentic` | `preflight`, `team`, `report_error`, `allowance_status` |
-| `session` | `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session` |
+| `session` | `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `scroll_session`, `transcript_session` |
 | `debug` | `compare_models` |
-| any other value | all 16, with a warning on stderr |
+| any other value | all 18, with a warning on stderr |
 
 Inside a session that claudish itself started (a `create_session` or `team` pane), the server runs in nested mode. Whatever `CLAUDISH_MCP_TOOLS` says, it offers at most the four one-shot tools (`run_prompt`, `compare_models`, `list_models`, `search_models`) and no session tools. A model-running `claudish` launched from that session's shell (`-p`, interactive, `team run`) exits 64 with `nested session refused`. One level of nesting is the limit.
 
-Any other value still selects all 16 tools, and the server writes one line to stderr naming the
+Any other value still selects all 18 tools, and the server writes one line to stderr naming the
 value and the valid ones:
 
 ```
@@ -502,6 +506,102 @@ the same for a team slot.
 
 ---
 
+### `scroll_session`
+
+Scroll a session's transcript view, as a mouse wheel over the child's Claude Code would. The next
+`capture_session` shows the child scrolled. The child draws on the alternate screen, so a capture
+has no rows above the visible screen; scrolling the child is the way to read earlier output.
+
+It never types into the prompt, submits, or answers a dialog. Before claudish delivers the next
+prompt, it returns the view to the live bottom.
+
+**Parameters** (give exactly one of `by` and `to`):
+- `session_id` (required) - Session ID from `create_session`
+- `by` - Signed rows: negative scrolls toward older content, positive toward the live bottom. Not
+  0. `|by|` is capped at 200 per call. It is a target, ± 1 row
+- `to` - `"end"`: return to the live bottom
+
+**Returns:** `{ session_id, seq }`. `seq` is the screen's sequence after the scroll: the first
+changed screen within 1 s, else the current one (at the top or the bottom nothing changes). Errors
+are JSON `{error: {code, message}}` with `unknown_session`, `invalid_args` (neither or both of `by`
+and `to`, `by: 0`, a non-integer `by`, or a `to` other than `"end"`), or `scroll_unavailable`: the
+session is still starting, finished, delivering a prompt, reading its turn from the screen or
+reconnecting, or magmux did not confirm the send (the scroll may still land). Nothing is queued.
+`list_sessions` and `team` list `scroll` in `capabilities`.
+`team(mode:"scroll", path, slot, run_id?, by | to)` does the same for a team slot and answers
+`{run_id, path, slot, seq}`.
+
+---
+
+### `transcript_session`
+
+Read a session's conversation as plain text lines, from the child's Claude Code transcript. It
+works while the session runs and after it finished, and it is read only: it never sends input,
+keys, scrolls or resizes to the session, never changes its state, and never writes a record. Use
+it for a text view of the whole conversation; `capture_session` shows only the current screen,
+and a finished session cannot scroll.
+
+**Parameters:**
+- `session_id` (required) - Session ID from `create_session`
+- `since` - The `cursor` of a previous answer; the answer holds only the lines after it. Omit it
+  to read from the start of the conversation. Opaque, and valid for this session only
+
+**Returns:** `{ session_id, cursor, lines, more, final }`.
+
+- `lines` - `[{kind, text, cont?}]` in transcript order. `kind` is one of:
+  - `user`: a prompt the session received (typed text; a slash command as `/name args`; for a
+    prompt claudish delivered as a file, the one-line instruction that points at the file). A
+    prompt of several blocks joins them with a newline; an image is shown as `[image]` and a
+    document as `[document]`
+  - `assistant`: reply text
+  - `tool`: one line per tool call, `Name(argument)` or `Name()`, e.g. `Bash(git status)`,
+    `Edit(/abs/repo/src/a.ts)` (the path as the session wrote it, usually absolute). The argument
+    is on one line and at most 160 characters, ending `…` when cut (so a cut line ends `…)`). A
+    delegated agent is one
+    `Agent(description)` line; its own turns are not included
+  - `task_file`: the content of a prompt delivered as a file, as the session's Read returned it
+  - `system`: a notice (conversation compacted, interrupted by the user, a local command's output,
+    a background task finishing, a scheduled task firing)
+  - `error`: an API error or a refusal with no fallback
+
+  New kinds may be added later; show an unknown kind as plain text. Thinking, tool results (except
+  `task_file`), harness-injected messages, compaction summaries and turn timing are not included.
+- `text` - Plain text: escape sequences and control characters removed, except newlines and tabs,
+  which are kept. Credentials of known shapes are replaced with `***REDACTED***`. A credential
+  claudish is signing with at the time of the call has each of its characters replaced with `*`
+  (the same length, spaces kept), so masking never lengthens a line or moves where it is split,
+  and a tool argument is masked before it is cut to 160 characters. No line has empty text.
+- `cont` - A text over 8,000 characters (about 5,300 for CJK text) is split, never truncated:
+  the following lines of the same kind carry `cont: true`, and joining a line with its `cont`
+  successors (no separator) gives the whole text. A `cont` chain may continue in the next answer
+  after `cursor`, in order; it is never reordered or lost.
+- `cursor` - Pass it as `since` next time. It marks how far the transcript has been read,
+  including records that produce no line, so it can move even when `lines` is empty. It stays valid
+  across calls, after the session finished, and across an MCP server restart.
+- `more` - `true` when the answer stopped at a cap before the end; call again at once with the new
+  `cursor`. It can be `true` with an empty `lines`.
+- `final` - `true` when the session finished, its process has exited and every line has been
+  returned: nothing more will come. It stays `false` for up to about 30 s after the session
+  finished (late lines can still land), and whenever the answering server cannot establish that
+  the session's process exited. Once `true`, the same `since` keeps answering empty lines with
+  `final: true`.
+
+**Caps per call:** at most **200 lines**, and the answer's JSON is at most **32,000 bytes**
+(UTF-8); fewer lines are returned to stay under it. Paging with `since` returns every line exactly
+once, in order, including lines written between calls, and never a line still being written.
+
+A session started by another claudish server on the same machine is readable too. When the
+conversation file is absent (not written yet, deleted by Claude Code's own cleanup, or under
+another Claude Code configuration directory) the answer has no lines.
+
+**Errors** are JSON `{error: {code, message}}`: `unknown_session`, or `invalid_args` (a missing
+`session_id`; a `since` that is not a string, malformed, from another session, past the end of the
+transcript or not at a line boundary). `list_sessions` and `team` list `transcript` in
+`capabilities`. `team(mode:"transcript", path, slot, run_id?, since?)` does the same for a team
+slot and answers `{run_id, path, slot, cursor, lines, more, final}`.
+
+---
+
 ### Session records on disk
 
 Every `create_session` session keeps its record under `~/.claudish/sessions/<session_id>/`
@@ -697,11 +797,11 @@ its files.
 **Check if MCP server starts:**
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
-# Should output: [claudish] MCP server started (tools: all, 16 tools)
+# Should output: [claudish] MCP server started (tools: all, 18 tools)
 ```
 
 **Test the tools:**
-Use Claude Code and ask it to list available MCP tools. You should see all 15: `run_prompt`, `list_models`, `search_models`, `compare_models`, `preflight`, `team`, `report_error`, `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, and `resize_session`.
+Use Claude Code and ask it to list available MCP tools. You should see all 18: `run_prompt`, `list_models`, `search_models`, `compare_models`, `preflight`, `team`, `report_error`, `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `allowance_status`, `scroll_session`, and `transcript_session`.
 
 **Check which tool group is active:**
 ```bash

@@ -56,14 +56,21 @@ import { inMcpSession } from "./pane/child-env.js";
 import {
   ContractErrorException,
   type FailureReason,
+  MAX_SCROLL_ROWS,
+  MAX_TRANSCRIPT_LINES,
   MIN_MAGMUX_VERSION,
   SLOT_STATES,
+  type ScrollRequest,
   type SlotState,
   TERMINAL_STATES,
+  TRANSCRIPT_ANSWER_MAX_BYTES,
+  TRANSCRIPT_LINE_MAX_CHARS,
   type TeamRunRow,
+  type TranscriptCursor,
   assertMagmuxAvailable,
   checkChildFlags,
   contractMeta,
+  decodeCursor,
   ensureSwept,
   installPaneShutdownHooks,
   sockRootFor,
@@ -108,6 +115,7 @@ import {
   readTeamInputFile,
   readTeamStatus,
   resizeTeamSlot,
+  scrollTeamSlot,
   setupSession,
   shutdownAllTeamRuns,
   startModels,
@@ -115,6 +123,7 @@ import {
   teamLiveMaps,
   teamRunRow,
   teamRunRowFromDisk,
+  transcriptTeamSlot,
   validateSessionPath,
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
@@ -162,7 +171,7 @@ Each session is an interactive Claude Code running the model in its own headless
 3. send_input may be called at any time; it is queued until the session is idle.
 4. COMPLETED: call get_output for the answer.
 5. FAILED or TIMEOUT — or COMPLETED with an empty or surprising answer — call get_diagnostics. It returns the child's final screen, the upstream error bodies, the recent state records, the resolved model chain and the paths to the full records. It needs no re-run and no debug flag.
-6. capture_session reads a session's current screen; resize_session sets its terminal size (any time, mid-turn included); cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
+6. capture_session reads a session's current screen; resize_session sets its terminal size (any time, mid-turn included); scroll_session scrolls the child's transcript view (by rows, or back to the live bottom); transcript_session reads the conversation as text lines (also after the session finished); cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
 
 The session_id from create_session is the key for every session tool.`;
 
@@ -1333,6 +1342,55 @@ function requiredInteger(raw: unknown, name: string, mode?: string): number {
 }
 
 /**
+ * The scroll verbs' request (`scroll_session`, `team(mode="scroll")`): exactly one of `by`
+ * (a non-zero integer; negative = toward older content) and `to` (exactly "end").
+ * Neither, both, `by: 0`, a fraction, a string or another `to` answer `invalid_args`.
+ */
+function scrollArgs(args: Record<string, unknown>): ScrollRequest {
+  const by = optionalInteger(args.by, "by");
+  const to = args.to;
+  if (to !== undefined && to !== null && to !== "end")
+    throw new ContractErrorException("invalid_args", `'to' must be "end"`);
+  const hasTo = to === "end";
+  if (by !== undefined && hasTo)
+    throw new ContractErrorException("invalid_args", "give exactly one of 'by' and 'to', not both");
+  if (hasTo) return { to: "end" };
+  if (by === undefined)
+    throw new ContractErrorException("invalid_args", "one of 'by' and 'to' is required");
+  if (by === 0) throw new ContractErrorException("invalid_args", "'by' must not be 0");
+  return { by };
+}
+
+/**
+ * The transcript verbs' `since` (`transcript_session`, `team(mode="transcript")`): absent →
+ * undefined (from the start); else a non-empty string in cursor syntax. Syntax only — a
+ * cursor from another transcript, past the end or off a line start is found after the
+ * lookup. Errors are `invalid_args`.
+ */
+function transcriptSince(raw: unknown): TranscriptCursor | undefined {
+  const since = givenString(raw, "since");
+  return since === undefined ? undefined : decodeCursor(since);
+}
+
+/**
+ * The transcript verbs' optional string arguments (`since`, `run_id`): absent (`undefined`)
+ * → undefined; anything GIVEN, a JSON `null` included, must be a non-empty string, else
+ * `invalid_args`, raised before the session or run is looked up. `optionalString` instead
+ * reads `null` as absent, for the older tools.
+ */
+function givenString(raw: unknown, name: string): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || !raw)
+    throw new ContractErrorException("invalid_args", `'${name}' must be a non-empty string`);
+  return raw;
+}
+
+/** A byte or character count as the tool text writes it: `32,000`. */
+function grouped(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/**
  * `team(mode="status")` (§8 B): the legacy payload of the newest run at `path` plus
  * `contract_version`, `capabilities` and `run`. Given a `run_id` that a newer run at the
  * same path superseded, only `run` and the contract keys: `status.json` there now
@@ -1380,11 +1438,11 @@ export function teamStatusAnswer(path: string, runId?: string): Record<string, u
 }
 
 /**
- * `list` / `status` / `cancel` / `capture` / `resize`: memory reads and the two pane verbs,
- * JSON answers, ContractError errors.
+ * `list` / `status` / `cancel` / `capture` / `resize` / `scroll` / `transcript`: memory
+ * reads, the pane verbs and the transcript reader, JSON answers, ContractError errors.
  */
 export async function teamContractVerb(
-  mode: "list" | "status" | "cancel" | "capture" | "resize",
+  mode: "list" | "status" | "cancel" | "capture" | "resize" | "scroll" | "transcript",
   args: Record<string, unknown>
 ): Promise<ToolAnswer> {
   try {
@@ -1392,12 +1450,19 @@ export async function teamContractVerb(
     // Every argument's TYPE is checked before the run is looked up: a wrongly typed argument
     // is the caller's error whether or not the run exists (§8 E).
     const path = contractPath(args.path, mode);
-    const runId = optionalString(args.run_id, "run_id");
+    // 'transcript' reads a given null `run_id` as invalid, not absent, as it does `since`
+    const runId =
+      mode === "transcript"
+        ? givenString(args.run_id, "run_id")
+        : optionalString(args.run_id, "run_id");
     const slot = optionalString(args.slot, "slot");
-    const since = optionalInteger(args.since_seq, "since_seq");
+    const sinceSeq = optionalInteger(args.since_seq, "since_seq");
     const spans = optionalBoolean(args.spans, "spans");
     const cols = mode === "resize" ? requiredInteger(args.cols, "cols", mode) : undefined;
     const rows = mode === "resize" ? requiredInteger(args.rows, "rows", mode) : undefined;
+    const scroll = mode === "scroll" ? scrollArgs(args) : undefined;
+    // `since` belongs to 'transcript' only (capture's integer is `since_seq`)
+    const since = mode === "transcript" ? transcriptSince(args.since) : undefined;
     switch (mode) {
       case "status":
         return contractAnswer(teamStatusAnswer(path, runId));
@@ -1406,7 +1471,7 @@ export async function teamContractVerb(
       case "capture": {
         if (slot === undefined)
           throw new ContractErrorException("invalid_args", "'slot' is required for mode 'capture'");
-        return contractAnswer(captureTeamSlot(path, slot, since, spans, runId));
+        return contractAnswer(captureTeamSlot(path, slot, sinceSeq, spans, runId));
       }
       case "resize": {
         if (slot === undefined)
@@ -1414,6 +1479,20 @@ export async function teamContractVerb(
         return contractAnswer(
           await resizeTeamSlot(path, slot, cols as number, rows as number, runId)
         );
+      }
+      case "scroll": {
+        if (slot === undefined)
+          throw new ContractErrorException("invalid_args", "'slot' is required for mode 'scroll'");
+        return contractAnswer(await scrollTeamSlot(path, slot, scroll as ScrollRequest, runId));
+      }
+      case "transcript": {
+        if (slot === undefined)
+          throw new ContractErrorException(
+            "invalid_args",
+            "'slot' is required for mode 'transcript'"
+          );
+        // compact: the answer is budgeted in bytes of its compact JSON (§ 2.3)
+        return compactAnswer(transcriptTeamSlot(path, slot, since, runId));
       }
     }
   } catch (e) {
@@ -1935,7 +2014,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       "Modes: 'run' (START the models and return once each has taken its prompt — it does " +
       "NOT wait for answers), 'status' (per-slot state; read `run.slots`), 'list' (every " +
       "run this server holds), 'capture' (one slot's screen), 'resize' (set one slot's " +
-      "terminal size), 'cancel' (stop one slot or the whole run), 'judge'(blind-vote on existing outputs), 'run-and-judge' (the " +
+      "terminal size), 'scroll' (scroll one slot's transcript view), 'transcript' (one " +
+      "slot's conversation as text lines), 'cancel' (stop one slot or the whole run), 'judge'(blind-vote on existing outputs), 'run-and-judge' (the " +
       "blocking pipeline). Poll 'status' (read run.slots) or 'list'. " +
       "NO SLOT IS EVER KILLED ON A TIMER once its prompt is accepted. A team slot is a full " +
       "Claude Code session and may work for a long time; a slot inside a build or test " +
@@ -1952,20 +2032,37 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       properties: {
         mode: {
           type: "string",
-          enum: ["run", "judge", "run-and-judge", "status", "cancel", "list", "capture", "resize"],
+          enum: [
+            "run",
+            "judge",
+            "run-and-judge",
+            "status",
+            "cancel",
+            "list",
+            "capture",
+            "resize",
+            "scroll",
+            "transcript",
+          ],
           description:
             "Operation mode. 'run' STARTS the models and returns once every slot has taken " +
             "its prompt (or failed to) — it does not wait for answers. Poll 'status' (read " +
             "`run.slots`) or 'list' for progress, then 'judge' once the slots have " +
-            "finished. 'capture' returns one slot's screen; 'resize' sets its terminal size. " +
+            "finished. 'capture' returns one slot's screen; 'resize' sets its terminal size; " +
+            "'scroll' scrolls its transcript view (`by` or `to`). " +
+            "'transcript' reads one slot's conversation as text lines (`since` pages; a " +
+            "`cont` chain may continue in the next answer after `cursor`, in order, never " +
+            "reordered or lost). " +
             "'run-and-judge' is the blocking pipeline and holds the call open for the whole run. 'cancel' stops one slot or " +
             "the whole run.",
         },
         slot: {
           type: "string",
           description:
-            "For 'cancel', 'capture' and 'resize': the anonymised slot id (e.g. '02') from the " +
-            "slot map 'run' returned. 'capture' and 'resize' require it; for 'cancel', omit it " +
+            "For 'cancel', 'capture', 'resize', 'scroll' and 'transcript': the anonymised slot " +
+            "id (e.g. '02') from the slot map 'run' returned. 'capture', 'resize', 'scroll' and " +
+            "'transcript' require it; for " +
+            "'cancel', omit it " +
             "to stop every slot in the run.",
         },
         path: {
@@ -1977,7 +2074,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         run_id: {
           type: "string",
           description:
-            "For 'status', 'cancel', 'capture' and 'resize': the run_id a 'run' answer " +
+            "For 'status', 'cancel', 'capture', 'resize', 'scroll' and 'transcript': the run_id a " +
+            "'run' answer " +
             "returned. It " +
             "addresses THAT run while this server retains it, even after a newer run reused " +
             "the path. Omit it to address the newest run at 'path'.",
@@ -1985,8 +2083,18 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         since_seq: {
           type: "number",
           description:
-            "For 'capture': the `seq` of the screen you already hold. When it is still " +
+            "For 'capture' only: the `seq` of the screen you already hold. When it is still " +
             "current the answer is `{unchanged:true}`; any other value returns the full screen.",
+        },
+        since: {
+          type: "string",
+          description:
+            "For 'transcript' only (capture uses since_seq): the `cursor` of a previous " +
+            "answer; returns only the lines after it. Omit to read from the start. Answer " +
+            `{run_id, path, slot, cursor, lines, more, final}, at most ${MAX_TRANSCRIPT_LINES} lines and ` +
+            `${grouped(TRANSCRIPT_ANSWER_MAX_BYTES)} bytes per call; a ` +
+            "`cont` chain may continue in the next answer after `cursor`, in order, never " +
+            "reordered or lost.",
         },
         spans: {
           type: "boolean",
@@ -2003,6 +2111,21 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           description:
             "For 'resize' (required): the terminal height in rows, clamped to 24–9999 and to " +
             "at most 4 000 000 cells (cols × rows).",
+        },
+        by: {
+          type: "integer",
+          description:
+            "For 'scroll': rows to scroll the slot's transcript view; negative = toward older " +
+            `content, positive = toward the live bottom. A target, ± 1 row; |by| is capped at ${MAX_SCROLL_ROWS}. ` +
+            "Not 0. Give exactly one of 'by' and 'to'. The answer {run_id, path, slot, seq} " +
+            "carries the screen's seq after the scroll.",
+        },
+        to: {
+          type: "string",
+          enum: ["end"],
+          description:
+            "For 'scroll': \"end\" returns the slot's view to the live bottom. Give exactly one " +
+            "of 'by' and 'to'.",
         },
         models: {
           type: "array",
@@ -2130,7 +2253,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         mode === "status" ||
         mode === "cancel" ||
         mode === "capture" ||
-        mode === "resize"
+        mode === "resize" ||
+        mode === "scroll" ||
+        mode === "transcript"
       ) {
         return teamContractVerb(mode, args);
       }
@@ -3071,6 +3196,98 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         const cols = requiredInteger(args.cols, "cols");
         const rows = requiredInteger(args.rows, "rows");
         return contractAnswer(await sessionManager.resizeSession(sessionId, cols, rows));
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "scroll_session",
+    description:
+      "Scroll a session's transcript view, as a mouse wheel over the child's Claude Code " +
+      "would: the next capture_session shows the child scrolled. `by` is a signed row " +
+      "count (negative = toward older content, positive = toward the live bottom); it is a " +
+      `target, ± 1 row, and |by| is capped at ${MAX_SCROLL_ROWS} per call. \`to:"end"\` returns ` +
+      "to the live bottom. Give exactly one of `by` and `to`; `by:0` is refused. It never " +
+      "types into the prompt, submits or answers a dialog, and a prompt claudish delivers " +
+      "next returns the view to the bottom first. The answer {session_id, seq} carries the " +
+      "screen's seq after the scroll (the first changed screen within 1 s, else the current " +
+      "one). Errors are a JSON ContractError: `scroll_unavailable` while the session is " +
+      "still starting, finished, delivering a prompt, reading its turn from the screen or " +
+      "reconnecting, or when magmux did not confirm the send (the scroll may still land). " +
+      "Nothing is queued.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        by: {
+          type: "integer",
+          description: `Rows to scroll; negative = older content. Not 0; |by| capped at ${MAX_SCROLL_ROWS}; a target, ± 1 row`,
+        },
+        to: {
+          type: "string",
+          enum: ["end"],
+          description: '"end" returns the view to the live bottom',
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        const req = scrollArgs(args);
+        return contractAnswer(await sessionManager.scrollSession(sessionId, req));
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "transcript_session",
+    description:
+      "Read a session's conversation as plain text lines, from its Claude Code transcript: " +
+      "prompts (`user`), replies (`assistant`), one line per tool call (`tool`, e.g. " +
+      "`Bash(git status)`), the content of a prompt delivered as a file (`task_file`), " +
+      "notices (`system`) and errors (`error`). Works while the session runs and after it " +
+      "finished. Page with `since`: pass the previous answer's `cursor` to get only newer " +
+      "lines; the cursor can move even when no line is returned. At most " +
+      `${MAX_TRANSCRIPT_LINES} lines (and ${grouped(TRANSCRIPT_ANSWER_MAX_BYTES)} bytes) per call; ` +
+      "`more: true` means call again now. A text over " +
+      `${grouped(TRANSCRIPT_LINE_MAX_CHARS)} characters is split into lines marked ` +
+      "`cont: true`; a `cont` chain may continue in the next answer after `cursor`, in " +
+      "order, never reordered or lost. `final: true` means the session finished, its " +
+      "process exited and every line has been returned; until then keep polling. Read " +
+      "only: it never sends anything to the session. The answer is " +
+      "{session_id, cursor, lines:[{kind, text, cont?}], more, final}. Errors are a JSON " +
+      "ContractError: `unknown_session`, `invalid_args` (a malformed cursor, or one from " +
+      "another session).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        since: {
+          type: "string",
+          description:
+            "The `cursor` of a previous answer; returns only the lines after it. Omit to " +
+            "read from the start. Opaque; valid for this session only.",
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        const since = transcriptSince(args.since);
+        // compact: the answer is budgeted in bytes of its compact JSON (§ 2.3)
+        return compactAnswer(sessionManager.transcriptSession(sessionId, since));
       } catch (e) {
         return contractErrorAnswer(e);
       }

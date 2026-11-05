@@ -453,6 +453,8 @@ describe("hourly usage R2", () => {
         "capture_spans",
         "resize",
         "allowance",
+        "scroll",
+        "transcript",
       ],
       sections: ["usage"],
       allowance: { ...header(r), usage: u },

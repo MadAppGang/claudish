@@ -35,6 +35,8 @@ const CAPABILITIES = [
   "capture_spans",
   "resize",
   "allowance",
+  "scroll",
+  "transcript",
 ];
 
 // REQ-15: literal sorted sets from architecture-contracts.md, not from implementation.
@@ -52,9 +54,11 @@ const ALL_TOOLS = [
   "report_error",
   "resize_session",
   "run_prompt",
+  "scroll_session",
   "search_models",
   "send_input",
   "team",
+  "transcript_session",
 ];
 const SESSION_TOOLS = [
   "cancel_session",
@@ -64,7 +68,9 @@ const SESSION_TOOLS = [
   "get_output",
   "list_sessions",
   "resize_session",
+  "scroll_session",
   "send_input",
+  "transcript_session",
 ];
 const TOOL_GROUPS: Array<{ value: string | undefined; names: string[] }> = [
   { value: undefined, names: ALL_TOOLS },
@@ -317,7 +323,7 @@ describe("CLAUDISH_MCP_TOOLS startup warnings", () => {
         .filter((line) => line.includes("CLAUDISH_MCP_TOOLS"));
       if (value === "channel" || value === "lowlevel") {
         expect(tools.map((tool) => tool.name).sort()).toEqual(ALL_TOOLS);
-        expect(tools).toHaveLength(16);
+        expect(tools).toHaveLength(18);
         expect(warnings).toHaveLength(1);
         expect(warnings[0]).toContain(value);
         expect(warnings[0]).toContain("all, low-level, agentic, session, debug");
@@ -335,11 +341,11 @@ describe("CLAUDISH_MCP_TOOLS startup warnings", () => {
 // REQ-20 (TEST-21–TEST-26): preserve the existing pane-free session/team regressions.
 describe("tool list (FR11, §4)", () => {
   useStandardServer();
-  test("16 tools, allowance_status among them, team modes are exactly the eight", async () => {
+  test("18 tools, allowance_status among them, team modes are exactly the ten", async () => {
     const tools = await server.listTools();
     const names = tools.map((t) => t.name);
-    expect(names.length).toBe(16);
-    expect(new Set(names).size).toBe(16);
+    expect(names.length).toBe(18);
+    expect(new Set(names).size).toBe(18);
     for (const n of [
       "team",
       "create_session",
@@ -350,6 +356,8 @@ describe("tool list (FR11, §4)", () => {
       "get_diagnostics",
       "capture_session",
       "resize_session",
+      "scroll_session",
+      "transcript_session",
     ])
       expect(names).toContain(n);
     // FR8: run_prompt / compare_models are out of scope and stay
@@ -359,7 +367,18 @@ describe("tool list (FR11, §4)", () => {
     const teamTool = tools.find((t) => t.name === "team");
     const props = (teamTool?.inputSchema?.properties ?? {}) as Record<string, Json>;
     expect(((props.mode as Json).enum as string[]).slice().sort()).toEqual(
-      ["run", "judge", "run-and-judge", "status", "cancel", "list", "capture", "resize"].sort()
+      [
+        "run",
+        "judge",
+        "run-and-judge",
+        "status",
+        "cancel",
+        "list",
+        "capture",
+        "resize",
+        "scroll",
+        "transcript",
+      ].sort()
     );
     expect(teamTool?.inputSchema?.required).toEqual(["mode"]);
     for (const p of [
@@ -560,6 +579,8 @@ describe("nested MCP server over stdio", () => {
     "get_diagnostics",
     "capture_session",
     "resize_session",
+    "scroll_session",
+    "transcript_session",
     "preflight",
     "report_error",
   ];
@@ -638,11 +659,11 @@ describe("nested MCP server over stdio", () => {
     expect(await paneOrphans(layout)).toEqual({ processes: [], files: [] });
   }, 30_000);
 
-  test("T-MCP-5: without the flag all still exposes 16 tools without an experimental capability", async () => {
+  test("T-MCP-5: without the flag all still exposes 18 tools without an experimental capability", async () => {
     const c = await connect("all", false);
     const tools = (await c.listTools()).tools;
-    expect(tools).toHaveLength(16);
-    expect(new Set(tools.map((tool) => tool.name)).size).toBe(16);
+    expect(tools).toHaveLength(18);
+    expect(new Set(tools.map((tool) => tool.name)).size).toBe(18);
     expect(c.getServerCapabilities()).toHaveProperty("tools");
     expect(c.getServerCapabilities()).not.toHaveProperty("experimental");
     expect(c.getInstructions()).not.toContain("## Nested mode — no sessions");

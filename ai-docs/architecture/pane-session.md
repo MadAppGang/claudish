@@ -811,6 +811,63 @@ for the launch width. Documented, not fixed.
 ships the op), and two `ContractError` codes that only this verb emits: `resize_unsupported` and
 `delivery_unavailable`.
 
+## Scrolling the child's view
+
+**A viewer scrolls the child's own transcript, not a buffer of ours.** Claude Code draws on the
+alternate screen, and magmux keeps scrollback only for the primary one, so a capture has nothing
+above the visible screen. `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` gives magmux rows, but they are
+a log of repaints (`2..146 2..170`), not the conversation. So `scroll_session` and
+`team(mode:"scroll")` forward the scroll to the child as SGR mouse wheel events, and the next
+capture shows the child scrolled. Measurements:
+`ai-docs/reports/2026-11-03-scroll-session-measurements.md`.
+
+- **Bytes.** `pane/scroll-input.ts` `planScroll`: wheel-up `ESC[<64;1;1M`, wheel-down
+  `ESC[<65;1;1M`, one per row; `to:"end"` is ctrl-End `ESC[1;5F` (`scroll:bottom`). Plain End
+  `ESC[F` edits the prompt and is never sent. One call is ONE magmux `send` with `text`,
+  `enter:false`, `noGate:true`, never `typed` or `paste`: the same raw path as `key()`.
+- **Rows.** Pane children run with `wheelScrollAccelerationEnabled: false`
+  (`buildClaudishSettingsOverlay`, forced in `mergeUserSettingsIfPresent` too); with it on, 50
+  events moved 237 rows. Off, one event is one row, but the first event after a direction change
+  moves 0 and leaving the live bottom costs one, so the planner adds one event in both cases and
+  `by` is a target ± 1 row. `|by|` is capped at `MAX_SCROLL_ROWS = 200` (201 events in one send
+  moved exactly 200 rows). `CLAUDE_CODE_SCROLL_SPEED` in the owner's environment scales it; not
+  stripped.
+- **Position is a belief.** `PaneSessionImpl` keeps `scrollPos {atBottom, lastDirection}`, set
+  before the send. A send magmux does not confirm sets `UNKNOWN_POSITION` and answers
+  `scroll_unavailable` "magmux did not confirm the scroll" (the bytes may still land: they queue
+  behind claudish's own send on the lane). A wheel-down at a believed bottom is still sent: a wrong
+  belief costs one row, never a dead wheel.
+- **Answer.** `{session_id, seq}` / `{run_id, path, slot, seq}`: the first changed screen within
+  `SCROLL_SCREEN_MS = 1000` after magmux's reply, else the current seq (at an edge nothing changes).
+  The redraw opens the resize quiet window (`extendResizeQuiet()`), because a scroll redraw is not
+  the child working.
+- **States.** Allowed: RUNNING, SETTLING, IDLE, QUESTION, PERMISSION (measured harmless: a
+  201-event burst interrupted no turn and answered no dialog; a permission dialog stays in the
+  fixed bottom area; a question dialog scrolls out of view but the gate and the transcript still
+  report it). Refused with `scroll_unavailable`, nothing sent or queued: still starting (no pane,
+  BOOTING, screen seq 0), finished, ADMITTING, a screen-read turn while it is in progress
+  (`turnSource="screen"` in RUNNING, QUESTION or PERMISSION; `turnSource` stays "screen" after the
+  turn settles, so SETTLING and IDLE allow scroll), reconnecting. Reconnecting includes an attached
+  connection whose binding check has not passed (`!gateTrusted`): `attach()` sets `client` first.
+- **Back to the bottom before claudish types.** A submit snaps Claude Code's view to the bottom
+  (measured) and `accept()` resets `scrollPos`. Claudish does not rely on that: when the view is
+  not at `LIVE_BOTTOM`, `runAdmission` sends ctrl-End after its trusted-client wait and before the
+  prompt, at most once per admission per connection (`Admission.liveBottomClient`); a failed or
+  unconfirmed ctrl-End never blocks the prompt. `returnToLiveBottom` sends nothing on an
+  unverified connection and leaves the position unchanged.
+- **A screen-read turn never settles from a scrolled view.** A static scrolled view looks quiet.
+  While a ctrl-End is in flight or the view is not at `LIVE_BOTTOM`, `evalScreenTurn` does not
+  settle and (re)sends ctrl-End when none is out; the screen-settle quiet counts only from
+  magmux's last ctrl-End confirmation (`scrollEndConfirmedAt`). A session never scrolled keeps its
+  settle timing unchanged.
+- **Costs, documented and not changed.** A scroll moves `aboveBoxChangedAt`, so path S (the 32 s
+  quiet fallback) and corroboration can wait longer while someone keeps scrolling; path P
+  (`turn_duration`) is unaffected. `get_diagnostics`' screen tail can show a scrolled view.
+
+**Contract additions (additive in v1).** The `scroll` verb on both owners, the `scroll` capability
+(appended to `CAPABILITIES`), `ScrollResult` / `TeamScrollResult`, and the code
+`scroll_unavailable`.
+
 ## Nothing outlives its owner (D15)
 
 Three layers, because magmux is detached into its own session and a client disconnect has no effect
@@ -1017,9 +1074,17 @@ type and new fields may only be added.
   `cancel_session` return per-slot `{state, changed}`; `team(mode="capture")` and `capture_session`
   return the screen at its current size `{seq, cols, rows, cursor, lines, final, spans?}` or
   `{unchanged:true, seq, final}` when `since_seq` is current; `team(mode="resize")` and
-  `resize_session` return `{…, cols, rows, changed, seq, pending?}` ("Terminal size"). Errors are a
-  JSON `ContractError` (`unknown_run`, `unknown_slot`, `unknown_session`, `invalid_args`, and from
-  `resize` only `resize_unsupported`, `delivery_unavailable`).
+  `resize_session` return `{…, cols, rows, changed, seq, pending?}` ("Terminal size");
+  `team(mode="scroll")` and `scroll_session` return `{…, seq}` ("Scrolling the child's view");
+  `team(mode="transcript")` and `transcript_session` (verb H, capability `transcript`, MTL-373)
+  return `{…, cursor, lines, more, final}`, the conversation from the child's transcript as
+  `{kind, text, cont?}` lines (`user`, `assistant`, `tool`, `task_file`, `system`, `error`; a
+  reader shows an unknown kind as plain text), at most 200 lines and 32,000 bytes per answer, a
+  `cont` chain continuing in order into the next answer. They read files only and keep answering
+  after the session finished, from its record on disk (`mcp-sessions.md`, `transcript_session`).
+  Errors are a JSON `ContractError` (`unknown_run`, `unknown_slot`, `unknown_session`,
+  `invalid_args`, from `resize` only `resize_unsupported`, `delivery_unavailable`, and from
+  `scroll` only `scroll_unavailable`); the transcript verbs add no code.
 - `run_id` (`<team_session_id>-<base36 start ms>-<6 hex>`) addresses one run even after a newer
   run reused its path, while the server retains it (30 minutes after it settles, at most 20 settled
   runs). A path holds at most one ACTIVE run.
