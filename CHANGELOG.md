@@ -2,6 +2,39 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.15.0] - 2026-11-05
+
+### Bug Fixes
+
+- resolve a relative CLAUDE_PATH and config dir for a replay *(mcp)* ([`4bba023`](https://github.com/MadAppGang/claudish/commit/4bba0236758d22f0008d17da8f506619ab243fed))
+- reap a replay pane whose start throws after registration *(team)* ([`9f937b2`](https://github.com/MadAppGang/claudish/commit/9f937b280edf9c64c14d198f25943cb19e75c0d3))
+- redial a replay whose reconnect drops during capabilities *(team)* ([`2008fcb`](https://github.com/MadAppGang/claudish/commit/2008fcba023ec3c454f5625f9ea38c05a4481f5a))
+- remove a replay's fork record after a server SIGKILL *(team)* ([`9403eb8`](https://github.com/MadAppGang/claudish/commit/9403eb87741eb533b3cf50eb57ab5452dd973d75))
+- stop replay panes installing plugins or drawing the LSP dialog *(team)* ([`b6ccf73`](https://github.com/MadAppGang/claudish/commit/b6ccf736747637e4240ec7d6493aa1a6de45301c))
+- answer spawn_failed when CLAUDE_PATH names no executable file *(mcp)* ([`cd91a2b`](https://github.com/MadAppGang/claudish/commit/cd91a2b0103b2cafadd7b3e4b281c9f0995c508d))
+- reject a null or empty run_id, cols or rows on a replay open *(mcp)* ([`241eb08`](https://github.com/MadAppGang/claudish/commit/241eb0861890f6cb6dc4db31c8aac116a2e5a741))
+
+### Documentation
+
+- document who removes a replay's fork record on each path *(team)* ([`466c53e`](https://github.com/MadAppGang/claudish/commit/466c53efade3bfabda6b725b29ae605792e619ba))
+- document the replay plugin switches and their measurements *(team)* ([`4f14dcf`](https://github.com/MadAppGang/claudish/commit/4f14dcfda7ad010033c6fd23c027162be899c032))
+- document replay_session, close_replay and replay panes *(mcp)* ([`5a692f8`](https://github.com/MadAppGang/claudish/commit/5a692f8f4ba22fe6306760e08d713dde07ba4c3b))
+- update CHANGELOG.md for v14.14.0([`31179f5`](https://github.com/MadAppGang/claudish/commit/31179f5981aea12490a2be54819f99f7e6513719))
+
+### New Features
+
+- add replay_session and close_replay for finished sessions *(mcp)* ([`a55867a`](https://github.com/MadAppGang/claudish/commit/a55867a18d862693cb5012a2f3a29df2af24b111))
+- add replay_session, close_replay and team replay mode *(mcp)* ([`32ef385`](https://github.com/MadAppGang/claudish/commit/32ef3858727b6f4b1fbfb1e12f2f2424fe836d65))
+- add ReplayManager for read-only replays *(mcp)* ([`5589560`](https://github.com/MadAppGang/claudish/commit/5589560ae32776646d8170918a227f9e4ff84986))
+- add ReplayPane, a read-only pane for a finished session *(team)* ([`5608ee4`](https://github.com/MadAppGang/claudish/commit/5608ee4559730d37fbc4ce65cf24f2ee48a3f022))
+- add the launch functions of a read-only replay pane *(team)* ([`bb4906d`](https://github.com/MadAppGang/claudish/commit/bb4906d8aa6346373e9cfabb3547b778facaccee))
+- add the replay error codes and reason to pane/contract.ts *(mcp)* ([`ebb1cb7`](https://github.com/MadAppGang/claudish/commit/ebb1cb79da43c4536f6fe5eb1b387a72d3bd94f1))
+
+### Refactoring
+
+- split the replay target out of the transcript lookups *(mcp)* ([`471db07`](https://github.com/MadAppGang/claudish/commit/471db07f90c5a54aacca1fe66f5ab2d67678b235))
+- move the pane reap to pane-reap.ts *(team)* ([`342c5ac`](https://github.com/MadAppGang/claudish/commit/342c5ac317f439cf6da83496503c02cc07c6e741))
+
 ## [14.14.0] - 2026-11-05
 
 ### Bug Fixes
