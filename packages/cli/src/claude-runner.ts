@@ -2781,13 +2781,15 @@ function setupSignalHandlers(
  * 2. Local installation (~/.claude/local/claude)
  * 3. Global PATH
  */
-async function findClaudeBinary(): Promise<string | null> {
+export async function findClaudeBinary(
+  env: Record<string, string | undefined> = process.env
+): Promise<string | null> {
   const isWindows = process.platform === "win32";
 
   // 1. Check CLAUDE_PATH env var
-  if (process.env.CLAUDE_PATH) {
-    if (existsSync(process.env.CLAUDE_PATH)) {
-      return process.env.CLAUDE_PATH;
+  if (env.CLAUDE_PATH) {
+    if (existsSync(env.CLAUDE_PATH)) {
+      return env.CLAUDE_PATH;
     }
   }
 

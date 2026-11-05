@@ -6,7 +6,7 @@ Claudish isn't just a CLI. It's also an MCP server that exposes external AI mode
 
 Claude can call Grok, GPT-5, or Gemini mid-conversation to get a second opinion, or delegate a task to another model as a full async session that it polls and answers with `send_input`.
 
-The server exposes **18 tools** across four groups: low-level (3), agentic (4), session (10), and debug (1).
+The server exposes **20 tools** across four groups: low-level (3), agentic (4), session (12), and debug (1).
 
 ### Requirements for `team` and sessions
 
@@ -190,10 +190,10 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 - `min_output_bytes` - Report a slot EMPTY when its answer is shorter than this (default 0 = off)
 - `agent` - Claude Code subagent every slot runs as (e.g. `dev:reviewer`); an unknown agent fails the slot `agent_rejected`
 - `claude_flags` - Other Claude Code flags and their values, space-separated, never positional text (write `--allowedTools Read,Bash`; a value after a Claude Code switch, as in `--brief now`, would be the session's first prompt and is refused). Flags that would break the interactive pane (`-p`, `--output-format`, `--resume`, …) and print-mode-only flags (`--max-turns`, `--max-budget-usd`, …) are refused
-- `slot` - For `capture`, `resize`, `scroll` and `transcript` (required) and `cancel` (omit to stop the whole run): the anonymised slot id
-- `run_id` - For `status`, `capture`, `cancel`, `resize`, `scroll` and `transcript`: the `run_id` a `run` answer returned; addresses that run even after a newer run reused the path. Omit it for the newest run at `path`
+- `slot` - For `capture`, `resize`, `scroll`, `transcript` and `replay` (required) and `cancel` (omit to stop the whole run): the anonymised slot id
+- `run_id` - For `status`, `capture`, `cancel`, `resize`, `scroll`, `transcript` and `replay`: the `run_id` a `run` answer returned; addresses that run even after a newer run reused the path. Omit it for the newest run at `path`
 - `since_seq`, `spans` - For `capture` only: see `capture_session`
-- `cols`, `rows` - For `resize` (required): see `resize_session`
+- `cols`, `rows` - For `resize` (required): see `resize_session`. For `replay` (optional): see `replay_session`
 - `by`, `to` - For `scroll` (exactly one): see `scroll_session`
 - `since` - For `transcript` only: the `cursor` of a previous answer; see `transcript_session`
 
@@ -208,6 +208,7 @@ interactive Claude Code session in its own headless magmux pane (see "Requiremen
 | `resize` | Set one slot's terminal size; answers `{run_id, path, slot, cols, rows, changed, seq, pending?}` (same rules as `resize_session`) |
 | `scroll` | Scroll one slot's transcript view by `by` rows or `to:"end"`; answers `{run_id, path, slot, seq}` (same rules as `scroll_session`) |
 | `transcript` | One slot's conversation as text lines, at most 200 lines and 32,000 bytes per call, paged with `since`; answers `{run_id, path, slot, cursor, lines, more, final}` (same rules as `transcript_session`). Without `run_id` it reads the newest run at `path`, from its `status.json` once the server no longer holds the run |
+| `replay` | Open one finished slot's real interface read only; answers `{replay_id, seq}` (same rules as `replay_session`). Needs the session tools: under `CLAUDISH_MCP_TOOLS=agentic` it answers `invalid_args` |
 | `judge` | Blind-vote on existing outputs in the session directory |
 | `run-and-judge` | Full pipeline: run models, then judge the outputs; holds the call open for the whole run |
 
@@ -290,16 +291,16 @@ The session tools are in the `session` group, which `all` (the default) includes
 
 | `CLAUDISH_MCP_TOOLS` | Tools |
 |---|---|
-| unset, `all` | all 18 |
+| unset, `all` | all 20 |
 | `low-level` | `run_prompt`, `list_models`, `search_models` |
 | `agentic` | `preflight`, `team`, `report_error`, `allowance_status` |
-| `session` | `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `scroll_session`, `transcript_session` |
+| `session` | `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `scroll_session`, `transcript_session`, `replay_session`, `close_replay` |
 | `debug` | `compare_models` |
-| any other value | all 18, with a warning on stderr |
+| any other value | all 20, with a warning on stderr |
 
 Inside a session that claudish itself started (a `create_session` or `team` pane), the server runs in nested mode. Whatever `CLAUDISH_MCP_TOOLS` says, it offers at most the four one-shot tools (`run_prompt`, `compare_models`, `list_models`, `search_models`) and no session tools. A model-running `claudish` launched from that session's shell (`-p`, interactive, `team run`) exits 64 with `nested session refused`. One level of nesting is the limit.
 
-Any other value still selects all 18 tools, and the server writes one line to stderr naming the
+Any other value still selects all 20 tools, and the server writes one line to stderr naming the
 value and the valid ones:
 
 ```
@@ -602,6 +603,64 @@ slot and answers `{run_id, path, slot, cursor, lines, more, final}`.
 
 ---
 
+### `replay_session`
+
+Open a finished session's real interface, read only, in a pane of its own. It runs Claude Code on a
+fork of the session's conversation with no login and no settings files, so nothing typed there can
+start a turn, and the original conversation file is never written.
+
+**Parameters:**
+- `session_id` (required) - The session to open
+- `cols`, `rows` - The terminal size, default 160 × 50, clamped as in `resize_session`
+
+**Returns** `{"replay_id":"replay-0123456789abcdef","seq":1}`. Read the replay with `capture_session`,
+`resize_session` and `scroll_session`, giving the `replay_id` as `session_id`: the answers are the same
+as for a session. `final: true` on a capture means Claude Code exited and this is its last screen, kept
+until `close_replay`.
+
+`send_input` refuses anything shaped like a `replay_id` with `replay_read_only`. `get_output`,
+`cancel_session`, `get_diagnostics` and `transcript_session` answer as for an unknown id, and no replay
+appears in `list_sessions` or `team(mode:"list")`.
+
+A second open of a session whose replay is open answers the same `replay_id` and starts nothing. After
+`close_replay`, or after the replay finished by itself, an open starts a new one with a new id.
+
+The `claude` it runs is the one `CLAUDE_PATH` names, else the one every other claudish launch finds.
+
+**Errors** are JSON `{error: {code, message, reason?}}`:
+
+| `code` | `reason` | When |
+|---|---|---|
+| `invalid_args` | | `session_id` missing or not a string; `cols` or `rows` not an integer |
+| `unknown_session` | | no session with that id, in memory or on disk |
+| `replay_unavailable` | `session_live` | the session is still running, or finished under 30 seconds ago |
+| `replay_unavailable` | `no_record` | it finished, but its conversation file is gone |
+| `replay_unavailable` | `spawn_failed` | magmux or `claude` is missing, 48 panes are live, or Claude Code exited before its input box appeared |
+| `replay_unavailable` | `boot_dialog` | a dialog appeared in place of the input box. claudish accepts no dialog on your behalf: open the folder in Claude Code once |
+
+After any error, nothing is left: no process, no record, no socket.
+
+`list_sessions` and `team` list `replay` in `capabilities`. `team(mode:"replay", path, slot, run_id?,
+cols?, rows?)` does the same for a team slot, with the same answer, adding `unknown_run` and
+`unknown_slot`. It is not registered in nested mode.
+
+---
+
+### `close_replay`
+
+End a replay. When it returns, the process is gone and any fork of the conversation removed; it can
+take about 12 seconds.
+
+**Parameters:**
+- `replay_id` (required) - The id from `replay_session`
+
+**Returns** `{"closed":true}` for any string, so a second close is safe. In the one case where the
+process could not be verified gone, the answer adds `"reap_unverified":true`. After a close,
+`capture_session`, `resize_session` and `scroll_session` on that id answer `unknown_session`. A missing
+`replay_id` answers `invalid_args`.
+
+---
+
 ### Session records on disk
 
 Every `create_session` session keeps its record under `~/.claudish/sessions/<session_id>/`
@@ -797,11 +856,11 @@ its files.
 **Check if MCP server starts:**
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-... claudish --mcp
-# Should output: [claudish] MCP server started (tools: all, 18 tools)
+# Should output: [claudish] MCP server started (tools: all, 20 tools)
 ```
 
 **Test the tools:**
-Use Claude Code and ask it to list available MCP tools. You should see all 18: `run_prompt`, `list_models`, `search_models`, `compare_models`, `preflight`, `team`, `report_error`, `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `allowance_status`, `scroll_session`, and `transcript_session`.
+Use Claude Code and ask it to list available MCP tools. You should see all 20: `run_prompt`, `list_models`, `search_models`, `compare_models`, `preflight`, `team`, `report_error`, `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `allowance_status`, `scroll_session`, `transcript_session`, `replay_session`, and `close_replay`.
 
 **Check which tool group is active:**
 ```bash

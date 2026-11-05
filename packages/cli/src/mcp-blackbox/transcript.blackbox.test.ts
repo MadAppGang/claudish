@@ -83,6 +83,7 @@ const EXPECTED_CAPABILITIES: Array<(typeof CAPABILITIES)[number]> = [
   "allowance",
   "scroll",
   "transcript",
+  "replay",
 ];
 let layout: TempLayout;
 let server: McpServer | undefined;
@@ -1278,7 +1279,7 @@ describe("additive transcript MCP surface", () => {
     }
   });
 
-  test("TEST-22 REQ-18: advertises 18 tools, transcript inputs, caps and cross-answer cont semantics", async () => {
+  test("TEST-22 REQ-18: advertises 20 tools, transcript inputs, caps and cross-answer cont semantics", async () => {
     const response = await currentServer().request("tools/list", {});
     type Listed = {
       name: string;
@@ -1286,8 +1287,8 @@ describe("additive transcript MCP surface", () => {
       inputSchema: { required?: string[]; properties: Record<string, Json> };
     };
     const tools = (response.result as { tools: Listed[] }).tools;
-    expect(tools).toHaveLength(18);
-    expect(new Set(tools.map((tool) => tool.name)).size).toBe(18);
+    expect(tools).toHaveLength(20);
+    expect(new Set(tools.map((tool) => tool.name)).size).toBe(20);
     const transcript = tools.find((tool) => tool.name === "transcript_session")!;
     expect(transcript).toBeDefined();
     expect(transcript.inputSchema.required).toEqual(["session_id"]);
@@ -1298,7 +1299,7 @@ describe("additive transcript MCP surface", () => {
     });
     const team = tools.find((tool) => tool.name === "team")!;
     const props = team.inputSchema.properties;
-    expect((props.mode!.enum as string[]).slice(-2)).toEqual(["scroll", "transcript"]);
+    expect((props.mode!.enum as string[]).slice(-3)).toEqual(["scroll", "transcript", "replay"]);
     expect(props.since).toMatchObject({ type: "string" });
     expect(String(props.mode!.description)).toContain("cont");
     expect(String(props.mode!.description)).toMatch(/next answer/i);
@@ -1320,16 +1321,18 @@ describe("additive transcript MCP surface", () => {
     expect(sessionDescription).toContain("8,000");
   });
 
-  test("TEST-23 REQ-18: session group exposes exactly the ten session tools", async () => {
+  test("TEST-23 REQ-18: session group exposes exactly the twelve session tools", async () => {
     await restart({ CLAUDISH_MCP_TOOLS: "session" });
 
     expect((await currentServer().listTools()).map((tool) => tool.name).sort()).toEqual([
       "cancel_session",
       "capture_session",
+      "close_replay",
       "create_session",
       "get_diagnostics",
       "get_output",
       "list_sessions",
+      "replay_session",
       "resize_session",
       "scroll_session",
       "send_input",

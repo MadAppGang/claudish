@@ -72,6 +72,7 @@ import {
   type PaneSessionOptions,
   type PaneSize,
   type PaneSnapshot,
+  type ReplayTarget,
   type ResizeResult,
   SLOT_STATES,
   type ScrollRequest,
@@ -92,6 +93,7 @@ import {
   fileAgeMs,
   flagsRemoveRead,
   isTerminalState,
+  isUuid,
   locateTranscriptByUuid,
   mergeAccounting,
   readTokenFileCached,
@@ -103,6 +105,7 @@ import {
   sockRootFor,
   startPaneSession,
   transcriptAnswer,
+  transcriptHeadCwd,
   transcriptQuiet,
   upstreamRecordsFor,
   writerLiveness,
@@ -239,6 +242,9 @@ export type SendInputResult =
       reason: "terminal" | "unknown_session" | "delivery_unavailable" | "unsupported_command";
       state: SlotState | null;
     };
+
+/** A disk record's transcript source, with the working directory `meta.json` recorded. */
+type DiskTranscriptSource = TranscriptSource & { cwd: string | null };
 
 interface SessionEntry {
   info: SessionInfo;
@@ -1631,6 +1637,31 @@ export class SessionManager {
     return transcriptAnswer(src, since, address);
   }
 
+  /**
+   * What a replay of this session needs, from the transcript verb's own lookup, so eviction,
+   * the disk records and the team-directory refusal stay one rule. The working directory: the
+   * live entry's, else the record's, else the transcript's first records. A reader, like
+   * `transcriptSession`. Throws `unknown_session`.
+   */
+  replayTarget(sessionId: string): ReplayTarget {
+    const entry = this.sessions.get(sessionId);
+    const src = entry ? this.liveTranscriptSource(entry) : this.diskTranscriptSource(sessionId);
+    if (!src) throw unknownSession(sessionId);
+    const recorded = entry ? entry.cwd : (src as DiskTranscriptSource).cwd;
+    const { transcriptPath, sessionUuid, writerGone, projectsRoot } = src;
+    const head =
+      !recorded && transcriptPath && isUuid(sessionUuid)
+        ? transcriptHeadCwd(transcriptPath, sessionUuid, projectsRoot)
+        : null;
+    return {
+      claudeSessionId: sessionUuid,
+      transcriptPath,
+      writerGone,
+      cwd: recorded || head,
+      projectsRoot,
+    };
+  }
+
   /** A live entry's transcript source. Gone = terminal AND the reap verified (or never spawned). */
   private liveTranscriptSource(entry: SessionEntry): TranscriptSource {
     const writerGone = entry.session
@@ -1658,7 +1689,7 @@ export class SessionManager {
    * The path: the stored one when it exists, else re-derived from the recorded cwd, else
    * one level of search for `<uuid>.jsonl` under the projects directory.
    */
-  private diskTranscriptSource(sessionId: string): TranscriptSource | null {
+  private diskTranscriptSource(sessionId: string): DiskTranscriptSource | null {
     const sessionDir = this.diskSessionDir(sessionId);
     if (sessionDir === null) return null;
     try {
@@ -1679,13 +1710,13 @@ export class SessionManager {
 
     let writerGone: boolean;
     let transcriptPath: string | null = null;
+    const cwd = meta !== null ? metaString(meta.cwd) : undefined;
     if (meta !== null) {
       const completedAt = metaString(meta.completedAt);
       const endedMs = completedAt ? Date.parse(completedAt) : Number.NaN;
       const age = Number.isFinite(endedMs) ? now - endedMs : fileAgeMs(metaPath, now);
       if (uuid) {
         const stored = metaString(meta.transcriptPath);
-        const cwd = metaString(meta.cwd);
         if (stored && existsSync(stored)) transcriptPath = stored;
         else if (cwd) transcriptPath = transcriptPathFor(cwd, uuid, projectsRoot);
         else transcriptPath = locateTranscriptByUuid(projectsRoot, uuid);
@@ -1707,7 +1738,7 @@ export class SessionManager {
         fileAgeMs(spawnPath, now);
       writerGone = liveness === "dead" && quiet !== null && quiet >= this.transcriptGraceMs;
     }
-    return { transcriptPath, sessionUuid: uuid, writerGone, projectsRoot };
+    return { transcriptPath, sessionUuid: uuid, writerGone, projectsRoot, cwd: cwd ?? null };
   }
 
   /**

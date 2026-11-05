@@ -1,9 +1,9 @@
 /**
  * The frozen mod contract, version 1 — the single source of the wire types that the
  * peer's Claude Code mod reads from
- * `team(mode="list"|"status"|"cancel"|"capture"|"resize"|"scroll"|"transcript")`,
- * `list_sessions`, `cancel_session`, `capture_session`, `resize_session`, `scroll_session`
- * and `transcript_session`.
+ * `team(mode="list"|"status"|"cancel"|"capture"|"resize"|"scroll"|"transcript"|"replay")`,
+ * `list_sessions`, `cancel_session`, `capture_session`, `resize_session`, `scroll_session`,
+ * `transcript_session`, `replay_session` and `close_replay`.
  *
  * Pasted verbatim from the session architecture §8 (including CA-12 `contract_version`
  * / `capabilities` and CA-13 `run_id`). Fields never change meaning or type within
@@ -20,6 +20,8 @@ export const CONTRACT_VERSION = 1;
  * `scroll_session` tool and `team(mode="scroll")` forward wheel events to the child's
  * transcript view (MTL-369). `transcript` is additive: the `transcript_session` tool and
  * `team(mode="transcript")` read the child's conversation as text lines (MTL-373).
+ * `replay` is additive: the `replay_session` tool and `team(mode="replay")` open a finished
+ * session's real interface read only, and `close_replay` ends it.
  * Appended, never inserted: the mod's goldens replay the order.
  */
 export const CAPABILITIES = [
@@ -33,6 +35,7 @@ export const CAPABILITIES = [
   "allowance",
   "scroll",
   "transcript",
+  "replay",
 ] as const;
 
 export interface ContractMeta {
@@ -392,9 +395,40 @@ export const TRANSCRIPT_LINE_MAX_JSON_BYTES = 16_000;
 export const TRANSCRIPT_ANSWER_MAX_BYTES = 32_000;
 
 /**
+ * I — `replay_session` and `team(mode="replay")`: a finished session's real interface, read
+ * only, read with `capture_session`, `resize_session` and `scroll_session` under `replay_id`.
+ * `seq` is the seq a capture would show at that moment.
+ */
+export interface ReplayOpenResult {
+  replay_id: string;
+  seq: number;
+}
+
+/**
+ * I — `close_replay`. When it returns, the process is gone and any fork record removed.
+ * `reap_unverified` is present only when the process could not be verified gone.
+ */
+export interface ReplayCloseResult {
+  closed: true;
+  reap_unverified?: true;
+}
+
+/** I — why a target cannot be opened: `error.reason` on `replay_unavailable`. */
+export type ReplayUnavailableReason = "session_live" | "no_record" | "spawn_failed" | "boot_dialog";
+
+const REPLAY_ID_RE = /^replay-[0-9a-f]{16}$/;
+
+/** A session id cannot match this: it is the first 8 characters of a uuid. */
+export function isReplayId(id: string): boolean {
+  return REPLAY_ID_RE.test(id);
+}
+
+/**
  * E. `resize_unsupported` and `delivery_unavailable` are emitted only by the resize verbs;
  * `scroll_unavailable` only by the scroll verbs (a pane still starting, finished, delivering
  * a prompt, reading its turn from the screen, reconnecting, or a send magmux did not confirm).
+ * `replay_unavailable` only by the replay open verbs, always with `reason`; `replay_read_only`
+ * only by `send_input`, for any id shaped like a `replay_id`.
  */
 export interface ContractError {
   error: {
@@ -405,7 +439,11 @@ export interface ContractError {
       | "invalid_args"
       | "resize_unsupported"
       | "delivery_unavailable"
-      | "scroll_unavailable";
+      | "scroll_unavailable"
+      | "replay_unavailable"
+      | "replay_read_only";
+    /** present only on `replay_unavailable` */
+    reason?: ReplayUnavailableReason;
     message: string;
   };
 }
@@ -421,12 +459,19 @@ export function contractMeta(): ContractMeta {
 export class ContractErrorException extends Error {
   constructor(
     readonly code: ContractError["error"]["code"],
-    message: string
+    message: string,
+    readonly reason?: ReplayUnavailableReason
   ) {
     super(message);
   }
 
   toContractError(): ContractError {
-    return { error: { code: this.code, message: this.message } };
+    return {
+      error: {
+        code: this.code,
+        ...(this.reason ? { reason: this.reason } : {}),
+        message: this.message,
+      },
+    };
   }
 }

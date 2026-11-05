@@ -47,7 +47,6 @@ import type {
   SessionHookBinding,
 } from "../hooks/session/binding.js";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
-import { waitForExit } from "../process-tree.js";
 import { redactSecrets } from "../redact.js";
 import { locateBox, locatedBoxText } from "./box-locate.js";
 import {
@@ -90,6 +89,7 @@ import {
   versionAtLeast,
   writeLauncherFiles,
 } from "./pane-launch.js";
+import { type PaneReapSubject, alive, reapPaneProcesses, retryPaneReap } from "./pane-reap.js";
 import {
   type RegisteredPane,
   ensureSwept,
@@ -101,7 +101,6 @@ import {
   removePaneFiles,
   reservePanes,
   takePaneReservation,
-  unregisterPane,
   updateRecord,
   writeRecord,
 } from "./pane-registry.js";
@@ -116,13 +115,10 @@ import {
 import {
   type GroupSnapshot,
   type PaneIdentity,
-  groupCheck,
   isLaunchDirPath,
-  liveEscaped,
   readProcessTableAsync,
   recordPathOf,
   sockPathOf,
-  verifiedGroupSnapshot,
 } from "./process-identity.js";
 import { type Delivery, deliveryRefusal, planDelivery, writeTurnFile } from "./prompt-delivery.js";
 import {
@@ -556,10 +552,6 @@ const VERDICT_EVENT: Record<FinalVerdict["state"], PhaseEvent> = {
 
 function iso(ms: number): string {
   return new Date(ms).toISOString();
-}
-
-function alive(p: ChildProcess | null): boolean {
-  return !!p && p.exitCode === null && p.signalCode === null;
 }
 
 function screenTailOf(s: ScreenState, n = 12): string {
@@ -3604,25 +3596,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (!this.reapPromise) this.reapPromise = this.reap();
   }
 
-  private files(): { paneId: string; sockPath: string; launcherDir: string; turnDir: string } {
-    return {
-      paneId: this.paneId,
-      sockPath: this.sockPath,
-      launcherDir: this.ctlDir,
-      turnDir: this.turnDir,
-    };
-  }
-
-  private ms(normal: number, fast: number): number {
-    return this.fastReap ? fast : normal;
-  }
-
   private async waitFor(pred: () => boolean, ms: number): Promise<void> {
     const end = Date.now() + ms;
     while (!pred() && Date.now() < end) await Bun.sleep(25);
   }
 
-  /** §2.10 — close_pane, magmux by its handle, the verified group backstop, verify, clean, watcher. */
+  /** The identity-checked reap, in `pane-reap.ts`: this pane's own steps first. */
   private async reap(): Promise<void> {
     await Promise.resolve(); // let the terminal step finish first
     this.reaping = true;
@@ -3630,107 +3609,51 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.ticker = null;
     if (this.gateTimer) clearInterval(this.gateTimer);
     this.gateTimer = null;
-    await this.captureGroupBeforeReap();
-    const c = this.client;
-    if (c && !c.isClosed && !this.paneClosed) {
-      const r = await c.request({ type: "close_pane", pane: 0, force: true }, this.ms(1000, 500));
-      if (r.ok || r.code === "no_such_pane")
-        await this.waitFor(() => this.paneClosed || c.isClosed, this.ms(3000, 1000));
-    }
-    if (this.magmux) await waitForExit(this.magmux, this.ms(3000, 1000));
-    if (alive(this.magmux)) {
-      this.magmux?.kill("SIGTERM");
-      if (this.magmux) await waitForExit(this.magmux, this.ms(2000, 500));
-      if (alive(this.magmux)) this.magmux?.kill("SIGKILL");
-      if (this.magmux) await waitForExit(this.magmux, 1000);
-    }
-    await this.groupBackstop();
-    await this.verifyAndClean();
+    await reapPaneProcesses(this.reapSubject);
   }
 
-  /** Step 0: refresh the verified group while its members still carry their identity. */
-  private async captureGroupBeforeReap(): Promise<void> {
-    const table = await readProcessTableAsync();
-    if (!table) return;
-    if (!this.panePidValue && this.magmux?.pid) {
-      const lead = table.find((r) => r.ppid === this.magmux?.pid && r.pgid === r.pid);
-      if (lead) {
-        const snap = verifiedGroupSnapshot(table, lead.pgid, this.identity);
-        if (snap) this.panePidValue = lead.pid;
-      }
-    }
-    refreshGroupOf(this, table);
+  /** What the shared reap reads and writes: this pane's own fields, never a copy. */
+  private get reapSubject(): PaneReapSubject {
+    const pane = this;
+    return {
+      paneId: this.paneId,
+      root: this.root,
+      identity: this.identity,
+      get group() {
+        return pane.group;
+      },
+      set group(g) {
+        pane.group = g;
+      },
+      get reapFailed() {
+        return pane.reapFailed;
+      },
+      set reapFailed(v) {
+        pane.reapFailed = v;
+      },
+      panePid: () => this.panePidValue,
+      adoptPanePid: (pid) => {
+        this.panePidValue = pid;
+      },
+      client: () => this.client,
+      paneClosed: () => this.paneClosed,
+      magmux: () => this.magmux,
+      watcher: () => this.watcher,
+      files: () => ({
+        paneId: this.paneId,
+        sockPath: this.sockPath,
+        launcherDir: this.ctlDir,
+        turnDir: this.turnDir,
+      }),
+      fast: () => this.fastReap,
+      onVerified: () => this.verifiedReap.resolve(),
+      onUnverified: () => this.anomaly("reap_unverified"),
+    };
   }
 
-  /**
-   * The verified group, or a recorded escaped descendant (own process group), is alive.
-   * True while the table is unavailable: the reap stays unverified and keeps its files.
-   */
-  private async groupAlive(): Promise<boolean> {
-    if (!this.group) return false;
-    const table = await readProcessTableAsync();
-    if (!table) return true;
-    return groupCheck(table, this.group) || liveEscaped(table, this.group).length > 0;
-  }
-
-  /** The verified group (`-pgid`) and each live escaped descendant (its pid), re-read now. */
-  private async backstopTargets(): Promise<number[]> {
-    if (!this.group) return [];
-    const table = await readProcessTableAsync();
-    if (!table) return [];
-    return [
-      ...(groupCheck(table, this.group) ? [-this.group.pgid] : []),
-      ...liveEscaped(table, this.group),
-    ];
-  }
-
-  private async groupBackstop(): Promise<void> {
-    for (const sig of ["SIGTERM", "SIGKILL"] as const) {
-      const targets = await this.backstopTargets();
-      if (targets.length === 0) return;
-      for (const target of targets) signalQuietly(target, sig);
-      const end = Date.now() + (sig === "SIGTERM" ? this.ms(2000, 500) : 1000);
-      while (Date.now() < end && (await this.groupAlive())) await Bun.sleep(150);
-    }
-  }
-
-  private async verifyAndClean(): Promise<void> {
-    const groupGone = !(await this.groupAlive());
-    const magGone = !alive(this.magmux);
-    this.client?.close();
-    if (groupGone && magGone) {
-      removePaneFiles(this.root, this.files());
-      this.reapFailed = false;
-      this.verifiedReap.resolve();
-      await this.endWatcher();
-      unregisterPane(this.paneId);
-      return;
-    }
-    this.reapFailed = true;
-    this.anomaly("reap_unverified");
-    updateRecord(this.root, this.paneId, { reapFailed: true });
-  }
-
-  /** Re-run steps 4–6 (the registry's 2 s tick, after an unverified reap). */
-  async retryReap(): Promise<boolean> {
-    if (alive(this.magmux)) this.magmux?.kill("SIGKILL");
-    await this.groupBackstop();
-    await this.verifyAndClean();
-    return !this.reapFailed;
-  }
-
-  /** Step 6, only after a verified reap: `done`, end stdin, then SIGKILL through the handle. */
-  private async endWatcher(): Promise<void> {
-    const w = this.watcher;
-    if (!w || !alive(w)) return;
-    try {
-      w.stdin?.write("done\n");
-      w.stdin?.end();
-    } catch {
-      // EPIPE: the watcher is already gone (R3-M1)
-    }
-    await waitForExit(w, 1000);
-    if (alive(w)) w.kill("SIGKILL");
+  /** Re-run the last steps (the registry's 2 s tick, after an unverified reap). */
+  retryReap(): Promise<boolean> {
+    return retryPaneReap(this.reapSubject);
   }
 
   async shutdownReap(_reason: string): Promise<void> {
@@ -3741,14 +3664,6 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   killMagmuxSync(): void {
     if (alive(this.magmux)) this.magmux?.kill("SIGKILL");
-  }
-}
-
-function signalQuietly(target: number, sig: NodeJS.Signals): void {
-  try {
-    process.kill(target, sig);
-  } catch {
-    // gone between the read and the signal
   }
 }
 

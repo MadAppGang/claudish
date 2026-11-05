@@ -868,7 +868,109 @@ capture shows the child scrolled. Measurements:
 (appended to `CAPABILITIES`), `ScrollResult` / `TeamScrollResult`, and the code
 `scroll_unavailable`.
 
+## Replay panes
+
+`replay_session` and `team(mode:"replay")` show a finished session's real interface, read only: a
+pane of its own running `claude --resume`, read with `capture_session`, `resize_session` and
+`scroll_session`, closed with `close_replay`. No path in claudish can send it text.
+
+**A class of its own.** `ReplayPane` (`pane/replay-pane.ts`) implements `RegisteredPane` beside
+`PaneSessionImpl`, not as flags on it. A session is a turn machine: its controller, gate poll,
+follower and settle all exist to send prompts and judge turns, and each flag that turned one off
+would be one more way to reach them. `ReplayPane` has no method that takes text; its only `send`
+carries `planScroll`'s wheel bytes. It shares the reap (`pane/pane-reap.ts`) and the registry with
+every other pane, and copies small parts of capture, resize, scroll and reconnect.
+
+**No controller, no gate.** magmux is started without either, so `list` shows `input: null`. A wheel
+`send` passes `noGate`. A replay never holds a turn, so there is nothing for the gate to decide.
+
+**The environment is an allowlist.** `buildReplayEnv` keeps `HOME`, `PATH`, `USER`, `LOGNAME`, `LANG`,
+`LC_ALL`, `LC_CTYPE`, `TZ`, `TMPDIR` and `CLAUDE_CONFIG_DIR`, then sets the shell shim's `SHELL`,
+`CLAUDISH_PANE_CHILD=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`,
+`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1`, `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING=1`,
+`COLUMNS` and `LINES`. It does not start from `buildPaneEnv`, because that one removes names from the
+parent's environment and a credential under a name nobody listed would pass through.
+
+**Two switches keep plugin state out of the user's config.** `--bare` stops neither of these,
+although its help says it does. On a config with no official marketplace, a replay's first start
+installs it: 582 files, 14 MB under `plugins/`. Once a marketplace is installed, the "LSP plugin
+recommendation" dialog is drawn over the conversation. It offers `typescript-lsp` when the resumed
+conversation touched `.ts` files and the binary is on `PATH`, and the open then answers `boot_dialog`.
+The marketplace switch stops the install. It does not stop the dialog for a user who already has the
+marketplace. The recommendation's only off switch is `lspRecommendationDisabled` in `.claude.json`,
+which a replay must not write. Disabling file checkpointing leaves the recommendation's file list empty,
+so no file is matched, and it also stops an empty `file-history/<fork>/`. Claude Code still rewrites
+`.claude.json` (start count, built-in plugin usage) and writes a backup of it on each start. No switch in
+2.1.318 stops that. Measurements: the plugin section of the replay report.
+
+**The argv is the turn barrier.**
+
+```
+claude --resume <id> --fork-session --session-id <fork> --bare \
+  --setting-sources "" --strict-mcp-config --settings <json>
+```
+
+Three independent parts stop a typed prompt from reaching a provider, because a clean process
+environment does not: Claude Code reads the `env` block of its settings after it starts, so a key in
+`~/.claude/settings.json` starts a real turn from a clean process. `--setting-sources ""` closes every
+settings file, including a provider switch a later Claude Code adds. `--bare` stops the login, the
+Keychain and an `apiKeyHelper`. The allowlist covers the process environment. `--settings` carries the
+user's `statusLine` and nothing else that is read from the user, so the interface keeps its status
+line. Measurements: `ai-docs/reports/2026-11-05-replay-measurements.md`.
+
+**The box is read before the dialog.** Ready is `inspectBox` reading `box` on a frame. Only a screen
+with no box, unchanged for `DIALOG_STABLE_MS` (1 s), is named by `nameBootScreen`. A replay draws the
+whole conversation, and a conversation can quote a dialog's text: read the other way round, a session
+that discussed the trust dialog would refuse to open. The cost is that a dialog coexisting with a box
+goes unseen, and none has been captured. A dialog is never accepted: the open answers
+`replay_unavailable` with `boot_dialog` and leaves nothing. `REPLAY_READY_MS` (15 s) bounds the wait; a
+slow pane still answers its `replay_id`, and the caller polls `capture_session`.
+
+**Identity.**
+
+| name | what | who holds it |
+|---|---|---|
+| `replay_id` | `replay-<16 hex>`, the only address a caller has | `ReplayManager`'s maps |
+| target | the session's uuid, lowercase; a second open of it answers the same `replay_id` | `openByTarget` |
+| fork uuid | minted per open, `--session-id`; names the only path a fork can write | the pane |
+| pane id | `mintPaneId` kind `r`, the registry record | the registry |
+
+A `replay_id` is not a session id. `send_input` refuses the shape before any lookup, and the session
+tools that do not route it answer as for an unknown id.
+
+**The fork record.** A fork that receives no prompt writes nothing, and the original transcript is never
+written. The reap removes the fork's exact path, and the project directory only if it did not exist
+before the open. Nothing lists a directory or guesses the newest file.
+
+**Who removes it.** The replay's pane record and its watcher's argv (`$8`–`$10`) carry `fork`: the projects
+root, the exact path, and whether the open created the project directory. `removePaneFiles` removes it
+first and the pane record last, so whichever path verifies the replay's processes gone removes it: the
+in-process reap on `close_replay`, on a replay that ends by itself, and on a clean server exit; the pane
+watcher after a server SIGKILL (853 ms measured); the next server's startup sweep when the watcher was
+killed too (2.8 s after that server started). A watcher killed between the two removals leaves the pane
+record, so the sweep still finds the path. The path is checked in TypeScript (`isForkRecordPath`) and in the
+watcher's shell (`fork_ok`): a root named `projects`, one `[A-Za-z0-9-]` segment, `<fork uuid>.jsonl`. The
+sweep of an unreadable process table verifies nothing gone and leaves the fork record where it is.
+
+**The working directory.** The session's own folder when it is still a directory, else the MCP server's.
+An untrusted folder raises the trust dialog (cases L and L2), and a new scratch folder is untrusted by
+definition, so the fallback is the folder the host already runs in.
+
+**Lifetime.** A replay counts against the 48 panes and has the same watcher, record and sweep. A clean
+server exit calls `beginShutdown` first, so an open between its awaits refuses before it registers;
+`reapAllPanes` covers the rest. `close_replay` awaits the one reap and removes the entry; a pane that
+cannot be verified gone answers `reap_unverified:true`. A replay that finishes by itself stays readable
+with `final:true` until closed, and the oldest are dropped past `FINISHED_REPLAYS_MAX` (20), since a
+screen can be 4 M cells and a caller may never close.
+
+**Liveness.** `writerGone`, the transcript verbs' own rule, is the test (`replayTarget`,
+`replayTargetOfTeamSlot`). A session read from disk answers `session_live` for 30 s after it finished,
+and a live one until its reap verifies: a write after `final` is the case that rule guards against.
+
 ## Nothing outlives its owner (D15)
+
+The reap itself is in `pane/pane-reap.ts` (`reapPaneProcesses`, `retryPaneReap`); `PaneSessionImpl` and
+`ReplayPane` each hold only their timers and a `reapSubject`.
 
 Three layers, because magmux is detached into its own session and a client disconnect has no effect
 on its panes: without them a SIGKILLed MCP server would leave REPLs running and billing.
@@ -1082,9 +1184,13 @@ type and new fields may only be added.
   reader shows an unknown kind as plain text), at most 200 lines and 32,000 bytes per answer, a
   `cont` chain continuing in order into the next answer. They read files only and keep answering
   after the session finished, from its record on disk (`mcp-sessions.md`, `transcript_session`).
+  `team(mode="replay")` and `replay_session` (verb I, capability `replay`) return
+  `{replay_id, seq}`, and `close_replay` returns `{closed:true, reap_unverified?}` ("Replay panes").
   Errors are a JSON `ContractError` (`unknown_run`, `unknown_slot`, `unknown_session`,
-  `invalid_args`, from `resize` only `resize_unsupported`, `delivery_unavailable`, and from
-  `scroll` only `scroll_unavailable`); the transcript verbs add no code.
+  `invalid_args`, from `resize` only `resize_unsupported`, `delivery_unavailable`, from
+  `scroll` only `scroll_unavailable`, from the replay opens only `replay_unavailable` with
+  `reason` (`session_live`, `no_record`, `spawn_failed`, `boot_dialog`), and from `send_input` only
+  `replay_read_only`); the transcript verbs add no code.
 - `run_id` (`<team_session_id>-<base36 start ms>-<6 hex>`) addresses one run even after a newer
   run reused its path, while the server retains it (30 minutes after it settles, at most 20 settled
   runs). A path holds at most one ACTIVE run.
@@ -1151,6 +1257,9 @@ verb is unknown would send every mod into the unsupported state for nothing. Eve
 | `pane/pane-launch.ts` | root, ids, environment, launcher, shim, flag check, magmux check, spawns |
 | `pane/process-identity.ts` | the identity predicates and the generated watcher script |
 | `pane/pane-registry.ts` | records, the cross-process limit, shutdown hooks, the sweep |
+| `pane/pane-reap.ts` | the reap every pane shares: `reapPaneProcesses`, `retryPaneReap`, the identity checks before each signal |
+| `pane/replay-pane.ts` | `ReplayPane`, `startReplayPane`: a read-only pane on a finished session, box before dialog |
+| `mcp-session/replay-manager.ts` | `ReplayManager`: the replay id maps, classification, shared opens, the bound on finished replays |
 | `pane/child-env.ts` | the pane child: snapshot, cwd, pane-child refusal; `inMcpSession`/`isPaneChild` and the nested refusal |
 | `mcp/nested-mode.ts` | the nested MCP tool list and instructions |
 | `pane/contract.ts` | the frozen mod contract v1 |

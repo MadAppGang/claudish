@@ -1,4 +1,4 @@
-> The 18-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing, scrolling, the transcript as text lines), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
+> The 20-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing, scrolling, the transcript as text lines, read-only replays), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
@@ -408,13 +408,13 @@ To re-measure the table, ask Claude Code for an agent that does not exist:
 matrix of cwds and flag sets costs nothing. `env -u CLAUDECODE` lets it run from inside a
 session.
 
-## MCP Tools (18 total)
+## MCP Tools (20 total)
 
 - **Low-level** (3): `run_prompt`, `list_models`, `search_models`
 - **Agentic** (4): `preflight`, `team`, `report_error`, `allowance_status`
-- **Session** (10): `create_session`, `send_input`, `get_output`, `cancel_session`,
+- **Session** (12): `create_session`, `send_input`, `get_output`, `cancel_session`,
   `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `scroll_session`,
-  `transcript_session`
+  `transcript_session`, `replay_session`, `close_replay`
 - **Debug** (1): `compare_models`
 
 `preflight` exists because `--probe` is CLI-ONLY. An MCP consumer had no way to
@@ -566,6 +566,31 @@ holds answers only).
   no record written, nothing sent to the child. Not a nested tool; `capabilities` lists
   `transcript` after `scroll`. Measurements: `ai-docs/reports/2026-11-03-transcript-measurements.md`.
 
+`replay_session` (`session_id`, `cols?`, `rows?`) opens a finished session's real interface, read only,
+in a pane of its own, and answers `{replay_id, seq}`. `capture_session`, `resize_session` and
+`scroll_session` route a `replay_id` to `ReplayManager` (`mcp-session/replay-manager.ts`) before any
+session lookup; `close_replay` ends it. The pane itself, its environment and its argv are in
+`pane-session.md` § Replay panes.
+
+- **Source.** `SessionManager.replayTarget` and `replayTargetOfTeamSlot` are the transcript verbs' own
+  lookups, so a session gone from memory but on disk still replays, the `kind:"team"` refusal stays,
+  and `unknown_session`, `unknown_run` and `unknown_slot` keep their meaning.
+- **States.** `writerGone` is `session_live`'s test, the rule `final` uses above. An open is classified
+  and registered before its first await, so concurrent opens of one target, by either verb, share one
+  process and one answer. A failed open leaves nothing. A replay that finishes by itself answers
+  `final:true` until closed.
+- **Errors.** `invalid_args`, `unknown_session`, or `replay_unavailable` with `reason`: `session_live`,
+  `no_record`, `spawn_failed` (an exit before the box included), `boot_dialog`. `send_input` answers
+  `replay_read_only` for anything shaped like a `replay_id`, open or not, before `text` is read; a
+  missing `session_id` stays the error it was.
+- **Not a session.** No entry in `sessions`, no directory and no record, so `list_sessions`, the
+  accounting, the session limit and `team(mode:"list")` cannot see it, and `get_output`,
+  `cancel_session`, `get_diagnostics` and `transcript_session` answer as for an unknown id.
+- **Tool groups.** Not a nested tool, and `team(mode:"replay")` is unreachable nested because `team` is
+  not registered there. Under `CLAUDISH_MCP_TOOLS=agentic`, where `team` is listed but
+  `capture_session` and `close_replay` are not, that mode answers `invalid_args`: nothing there could
+  read or close the pane. `capabilities` lists `replay` after `transcript`.
+
 `allowance_status` is the read-only source of the mod's allowance band: `{contract_version,
 capabilities, allowance, reason?}`, where `allowance` is the `claudish.allowance.v1` report that
 `claudish account forecast --json` prints (the allowance service's `report()`), or `null` with a
@@ -602,12 +627,12 @@ Tool gating via the `CLAUDISH_MCP_TOOLS` env var (lower-cased, `resolveToolGroup
 
 | Value | Tools |
 |---|---|
-| unset, `all` | all 18 |
+| unset, `all` | all 20 |
 | `low-level` | `run_prompt`, `list_models`, `search_models` |
 | `agentic` | `preflight`, `team`, `report_error`, `allowance_status` |
-| `session` | the 10 session tools |
+| `session` | the 12 session tools |
 | `debug` | `compare_models` |
-| `channel`, or any other value | all 18, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
+| `channel`, or any other value | all 20, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
 
 Unknown values keep selecting everything, because a server that lists fewer tools than its host
 expects fails later and quietly. The stderr line is there so a typo is not read as `all` with
@@ -615,7 +640,7 @@ no trace.
 
 `session` was `channel` until 10.7.0. The rename removed the old name with no alias, per the
 thesaurus rule, so `channel` now falls into the unknown-value rule and selects everything. The
-stderr startup line shows `tools: channel, 18 tools` after the unknown-value warning, but an MCP
+stderr startup line shows `tools: channel, 20 tools` after the unknown-value warning, but an MCP
 host does not show stderr.
 `compare_models` moved to `debug` at the same time: it sends one prompt to several models in
 sequence and shows raw answers, which is a route check, not work. Real multi-model work is `team`.

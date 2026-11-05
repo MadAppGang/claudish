@@ -24,14 +24,16 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { claimSignalExit } from "../signal-owner.js";
 import { MagmuxClient } from "./magmux-client.js";
 import { ensureSockRoot, sockRootFor } from "./pane-launch.js";
 import {
+  type ForkRecordRef,
   type GroupSnapshot,
   type PaneIdentity,
   type ProcessTable,
@@ -39,6 +41,7 @@ import {
   findPaneMagmux,
   formatGroupFile,
   groupCheck,
+  isForkRecordPath,
   isLaunchDirPath,
   isPaneMagmux,
   isPaneMagmuxCommand,
@@ -78,6 +81,8 @@ export interface PaneRecord {
   turnDir: string;
   createdAt: string;
   reapFailed?: boolean;
+  /** a replay's fork record (`sessionUuid` is the fork uuid); absent for every other pane */
+  fork?: ForkRecordRef;
 }
 
 export class PaneLimitError extends Error {
@@ -159,6 +164,7 @@ function validRecord(v: unknown, stem: string): PaneRecord | null {
   if (typeof r.paneId !== "string" || typeof r.ownerPid !== "number") return null;
   if (!isValidPaneId(r.paneId) || r.paneId !== stem) return null;
   if (typeof r.sockPath !== "string" || typeof r.launcherDir !== "string") return null;
+  const fork = validForkRef(r.fork);
   return {
     paneId: r.paneId,
     ownerPid: r.ownerPid,
@@ -172,6 +178,18 @@ function validRecord(v: unknown, stem: string): PaneRecord | null {
     turnDir: typeof r.turnDir === "string" ? r.turnDir : "",
     createdAt: typeof r.createdAt === "string" ? r.createdAt : "",
     reapFailed: r.reapFailed === true,
+    ...(fork ? { fork } : {}),
+  };
+}
+
+function validForkRef(v: unknown): ForkRecordRef | null {
+  if (!v || typeof v !== "object") return null;
+  const f = v as Record<string, unknown>;
+  if (typeof f.projectsRoot !== "string" || typeof f.path !== "string") return null;
+  return {
+    projectsRoot: f.projectsRoot,
+    path: f.path,
+    removeProjectDir: f.removeProjectDir === true,
   };
 }
 
@@ -211,11 +229,40 @@ export function writeGroupFile(ctlDir: string, snap: GroupSnapshot): void {
   }
 }
 
-/** Remove a pane's files, each path validated first (R3-M2). */
-export function removePaneFiles(
-  root: string,
-  f: { paneId: string; sockPath: string; launcherDir: string; turnDir: string }
-): void {
+/**
+ * A replay's fork record by its exact path, validated against the projects root and the
+ * fork uuid first, and its project directory only when the replay's start created it:
+ * `rmdir` refuses a directory that holds anything else. Nothing here lists a directory or
+ * is recursive. Only once the replay's processes are verified gone, never while a dying
+ * `claude` could rewrite the file.
+ */
+export function removeForkRecord(fork: ForkRecordRef, forkUuid: string): void {
+  if (!isForkRecordPath(fork.projectsRoot, fork.path, forkUuid)) return;
+  try {
+    rmSync(fork.path, { force: true });
+    if (fork.removeProjectDir) rmdirSync(dirname(fork.path));
+  } catch {
+    // a sibling's record keeps the directory, or it is already gone
+  }
+}
+
+/** What `removePaneFiles` removes; `sessionUuid` and `fork` only matter for a replay. */
+export interface PaneFiles {
+  paneId: string;
+  sockPath: string;
+  launcherDir: string;
+  turnDir: string;
+  sessionUuid?: string;
+  fork?: ForkRecordRef;
+}
+
+/**
+ * Remove a pane's files, each path validated first (R3-M2), once its processes are verified
+ * gone. A replay's fork record goes first and the pane record last, so an interruption leaves
+ * a record that still names what is left.
+ */
+export function removePaneFiles(root: string, f: PaneFiles): void {
+  if (f.fork && f.sessionUuid) removeForkRecord(f.fork, f.sessionUuid);
   if (isPaneSockPath(root, f.sockPath, f.paneId)) rmSync(f.sockPath, { force: true });
   for (const d of [f.launcherDir, f.turnDir])
     if (d && isLaunchDirPath(root, d)) rmSync(d, { recursive: true, force: true });
@@ -275,7 +322,10 @@ export function refreshGroups(table: PsRow[]): void {
   for (const p of live.values()) refreshGroupOf(p, table);
 }
 
-export function refreshGroupOf(p: RegisteredPane, table: PsRow[]): void {
+export function refreshGroupOf(
+  p: Pick<RegisteredPane, "panePid" | "group" | "identity">,
+  table: PsRow[]
+): void {
   const pid = p.panePid();
   if (!pid) return;
   const fresh = verifiedGroupSnapshot(table, pid, p.identity);
@@ -623,7 +673,8 @@ async function sweepUnidentifiable(rec: PaneRecord, root: string, out: SweepResu
     out.kept.push(rec.paneId);
     return;
   }
-  removePaneFiles(root, rec);
+  // no process was verified gone, so a replay's fork record is left where it is
+  removePaneFiles(root, { ...rec, fork: undefined });
   out.cleaned.push(rec.paneId);
 }
 
