@@ -1,9 +1,9 @@
 /**
  * The frozen mod contract, version 1 — the single source of the wire types that the
  * peer's Claude Code mod reads from
- * `team(mode="list"|"status"|"cancel"|"capture"|"resize"|"scroll"|"transcript")`,
- * `list_sessions`, `cancel_session`, `capture_session`, `resize_session`, `scroll_session`
- * and `transcript_session`.
+ * `team(mode="list"|"status"|"cancel"|"capture"|"resize"|"scroll"|"transcript"|"replay")`,
+ * `list_sessions`, `cancel_session`, `capture_session`, `resize_session`, `scroll_session`,
+ * `transcript_session`, `replay_session` and `close_replay`.
  *
  * Pasted verbatim from the session architecture §8 (including CA-12 `contract_version`
  * / `capabilities` and CA-13 `run_id`). Fields never change meaning or type within
@@ -20,6 +20,8 @@ export const CONTRACT_VERSION = 1;
  * `scroll_session` tool and `team(mode="scroll")` forward wheel events to the child's
  * transcript view (MTL-369). `transcript` is additive: the `transcript_session` tool and
  * `team(mode="transcript")` read the child's conversation as text lines (MTL-373).
+ * `replay` is additive: the `replay_session` tool and `team(mode="replay")` open a finished
+ * session's real interface read only, and `close_replay` ends it.
  * Appended, never inserted: the mod's goldens replay the order.
  */
 export const CAPABILITIES = [
@@ -33,6 +35,7 @@ export const CAPABILITIES = [
   "allowance",
   "scroll",
   "transcript",
+  "replay",
 ] as const;
 
 export interface ContractMeta {
