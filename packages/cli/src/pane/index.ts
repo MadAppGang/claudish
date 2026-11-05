@@ -49,6 +49,12 @@ export {
   startPaneSession,
 } from "./pane-session.js";
 export {
+  type ReplayPane,
+  type ReplayPaneOptions,
+  type ReplayReady,
+  startReplayPane,
+} from "./replay-pane.js";
+export {
   clampPaneSize,
   DEFAULT_PANE_COLS,
   DEFAULT_PANE_ROWS,
