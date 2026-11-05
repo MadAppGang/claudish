@@ -743,7 +743,8 @@ export class ReplayPane implements RegisteredPane {
 /**
  * Start one replay pane. Throws `MagmuxUnavailableError`, `PaneLimitError`, `PaneRootError` or a
  * plain error BEFORE anything is spawned; a failure after that ends the replay, and `ready`
- * answers `ended`. Installs the shutdown hooks (idempotent).
+ * answers `ended`. An error thrown after the pane is registered (a record write) is rethrown
+ * only once the pane's reap has run. Installs the shutdown hooks (idempotent).
  */
 export async function startReplayPane(o: ReplayPaneOptions): Promise<ReplayPane> {
   const magmux = await assertMagmuxAvailable(o.magmuxBinary);
@@ -811,6 +812,12 @@ export async function startReplayPane(o: ReplayPaneOptions): Promise<ReplayPane>
     turnDir: dirs.turnDir,
   });
   registerPane(pane);
-  await pane.start({ magmuxBinary: magmux.binary, env, cwd: o.cwd });
+  try {
+    await pane.start({ magmuxBinary: magmux.binary, env, cwd: o.cwd });
+  } catch (e) {
+    // a registered pane no caller holds: reap what was spawned before the error leaves
+    await pane.close();
+    throw e;
+  }
   return pane;
 }
