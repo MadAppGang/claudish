@@ -974,8 +974,10 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
 
       // Verify environment allowlist:
       // After removing MAGMUX_*, TERM, PWD, OLDPWD, SHLVL, _, keys are exactly:
-      // SHELL, CLAUDISH_PANE_CHILD, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, COLUMNS, LINES,
-      // plus whichever of HOME, PATH, USER, LOGNAME, LANG, LC_ALL, LC_CTYPE, TZ, TMPDIR, CLAUDE_CONFIG_DIR the server has.
+      // SHELL, CLAUDISH_PANE_CHILD, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
+      // CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL, CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING,
+      // COLUMNS, LINES, plus whichever of HOME, PATH, USER, LOGNAME, LANG, LC_ALL, LC_CTYPE, TZ, TMPDIR,
+      // CLAUDE_CONFIG_DIR the server has.
       const filteredEnvKeys = Object.keys(spawn1.env)
         .filter(
           (k) => !k.startsWith("MAGMUX_") && !["TERM", "PWD", "OLDPWD", "SHLVL", "_"].includes(k)
@@ -983,7 +985,9 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
         .sort();
       const mandatoryKeys = [
         "CLAUDISH_PANE_CHILD",
+        "CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL",
         "COLUMNS",
         "LINES",
         "SHELL",
@@ -1008,6 +1012,8 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
         expect(allowedSet.has(k), `Unexpected env key in replay child: ${k}`).toBe(true);
       }
       expect(spawn1.env.CLAUDISH_PANE_CHILD).toBe("1");
+      expect(spawn1.env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL).toBe("1");
+      expect(spawn1.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING).toBe("1");
       expect(spawn1.env.SHELL).toBe("/bin/zsh");
       expect(spawn1.env.HOME).toBe(layout.home);
       expect(spawn1.env.CLAUDE_CONFIG_DIR).toBe(layout.configDir);
