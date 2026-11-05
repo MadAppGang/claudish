@@ -1333,6 +1333,18 @@ function optionalInteger(raw: unknown, name: string): number | undefined {
   return raw;
 }
 
+/**
+ * The replay opens' `cols` and `rows`: absent (`undefined`) → undefined; anything GIVEN, a JSON
+ * `null` included, must be an integer, else `invalid_args`, raised before any lookup. The
+ * integer twin of `givenString`.
+ */
+function givenInteger(raw: unknown, name: string): number | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "number" || !Number.isInteger(raw))
+    throw new ContractErrorException("invalid_args", `'${name}' must be an integer`);
+  return raw;
+}
+
 /** A required integer argument such as `cols`; absent or not an integer → `invalid_args`. */
 function requiredInteger(raw: unknown, name: string, mode?: string): number {
   const n = optionalInteger(raw, name);
@@ -1457,9 +1469,9 @@ export async function teamContractVerb(
     // Every argument's TYPE is checked before the run is looked up: a wrongly typed argument
     // is the caller's error whether or not the run exists (§8 E).
     const path = contractPath(args.path, mode);
-    // 'transcript' reads a given null `run_id` as invalid, not absent, as it does `since`
+    // 'transcript' and 'replay' read a given null `run_id` as invalid, not absent
     const runId =
-      mode === "transcript"
+      mode === "transcript" || mode === "replay"
         ? givenString(args.run_id, "run_id")
         : optionalString(args.run_id, "run_id");
     const slot = optionalString(args.slot, "slot");
@@ -1469,13 +1481,13 @@ export async function teamContractVerb(
       mode === "resize"
         ? requiredInteger(args.cols, "cols", mode)
         : mode === "replay"
-          ? optionalInteger(args.cols, "cols")
+          ? givenInteger(args.cols, "cols")
           : undefined;
     const rows =
       mode === "resize"
         ? requiredInteger(args.rows, "rows", mode)
         : mode === "replay"
-          ? optionalInteger(args.rows, "rows")
+          ? givenInteger(args.rows, "rows")
           : undefined;
     const scroll = mode === "scroll" ? scrollArgs(args) : undefined;
     // `since` belongs to 'transcript' only (capture's integer is `since_seq`)
@@ -3381,8 +3393,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     handler: async (args) => {
       try {
         const sessionId = requiredString(args.session_id, "session_id");
-        const cols = optionalInteger(args.cols, "cols");
-        const rows = optionalInteger(args.rows, "rows");
+        const cols = givenInteger(args.cols, "cols");
+        const rows = givenInteger(args.rows, "rows");
         return contractAnswer(
           await replays.open(sessionManager.replayTarget(sessionId), { cols, rows })
         );
