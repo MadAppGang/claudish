@@ -112,8 +112,8 @@ function contractError(r: ToolResult, code: string): void {
 function expectContractMeta(body: Json): void {
   expect(body.contract_version).toBe(1);
   expect(body.capabilities).toEqual([...CAPABILITIES]);
-  // contract v1 only appends: the transcript verbs (MTL-373) are the newest capability
-  expect(CAPABILITIES.at(-1)).toBe("transcript");
+  // contract v1 only appends: the replay verbs (MTL-373) are the newest capability
+  expect(CAPABILITIES.at(-1)).toBe("replay");
 }
 
 function expectSlotRow(row: Json, extended: string[] = SLOT_ROW_KEYS): void {

@@ -11,7 +11,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { version as packageVersion } from "../../package.json";
 import { allowanceStatusAnswerSchema } from "../auth/accounts/allowance-report-schema.js";
-import { GOLDEN_ALLOWANCE_CAPABILITIES } from "../auth/accounts/allowance-status-golden.js";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
   McpServer,
@@ -37,6 +36,7 @@ const CAPABILITIES = [
   "allowance",
   "scroll",
   "transcript",
+  "replay",
 ];
 
 // REQ-15: literal sorted sets from architecture-contracts.md, not from implementation.
@@ -44,6 +44,7 @@ const ALL_TOOLS = [
   "allowance_status",
   "cancel_session",
   "capture_session",
+  "close_replay",
   "compare_models",
   "create_session",
   "get_diagnostics",
@@ -51,6 +52,7 @@ const ALL_TOOLS = [
   "list_models",
   "list_sessions",
   "preflight",
+  "replay_session",
   "report_error",
   "resize_session",
   "run_prompt",
@@ -63,10 +65,12 @@ const ALL_TOOLS = [
 const SESSION_TOOLS = [
   "cancel_session",
   "capture_session",
+  "close_replay",
   "create_session",
   "get_diagnostics",
   "get_output",
   "list_sessions",
+  "replay_session",
   "resize_session",
   "scroll_session",
   "send_input",
@@ -249,7 +253,7 @@ describe("allowance_status contract", () => {
     const answer = allowanceStatusAnswerSchema.parse(JSON.parse(result.text));
     expect(answer).toMatchObject({
       contract_version: 1,
-      capabilities: GOLDEN_ALLOWANCE_CAPABILITIES,
+      capabilities: CAPABILITIES,
       allowance: null,
       reason: "no account pool is configured for openai-codex",
     });
@@ -323,7 +327,7 @@ describe("CLAUDISH_MCP_TOOLS startup warnings", () => {
         .filter((line) => line.includes("CLAUDISH_MCP_TOOLS"));
       if (value === "channel" || value === "lowlevel") {
         expect(tools.map((tool) => tool.name).sort()).toEqual(ALL_TOOLS);
-        expect(tools).toHaveLength(18);
+        expect(tools).toHaveLength(20);
         expect(warnings).toHaveLength(1);
         expect(warnings[0]).toContain(value);
         expect(warnings[0]).toContain("all, low-level, agentic, session, debug");
@@ -341,11 +345,11 @@ describe("CLAUDISH_MCP_TOOLS startup warnings", () => {
 // REQ-20 (TEST-21–TEST-26): preserve the existing pane-free session/team regressions.
 describe("tool list (FR11, §4)", () => {
   useStandardServer();
-  test("18 tools, allowance_status among them, team modes are exactly the ten", async () => {
+  test("20 tools, allowance_status among them, team modes are exactly the eleven", async () => {
     const tools = await server.listTools();
     const names = tools.map((t) => t.name);
-    expect(names.length).toBe(18);
-    expect(new Set(names).size).toBe(18);
+    expect(names.length).toBe(20);
+    expect(new Set(names).size).toBe(20);
     for (const n of [
       "team",
       "create_session",
@@ -358,6 +362,8 @@ describe("tool list (FR11, §4)", () => {
       "resize_session",
       "scroll_session",
       "transcript_session",
+      "replay_session",
+      "close_replay",
     ])
       expect(names).toContain(n);
     // FR8: run_prompt / compare_models are out of scope and stay
@@ -378,6 +384,7 @@ describe("tool list (FR11, §4)", () => {
         "resize",
         "scroll",
         "transcript",
+        "replay",
       ].sort()
     );
     expect(teamTool?.inputSchema?.required).toEqual(["mode"]);
@@ -581,6 +588,8 @@ describe("nested MCP server over stdio", () => {
     "resize_session",
     "scroll_session",
     "transcript_session",
+    "replay_session",
+    "close_replay",
     "preflight",
     "report_error",
   ];
@@ -659,11 +668,11 @@ describe("nested MCP server over stdio", () => {
     expect(await paneOrphans(layout)).toEqual({ processes: [], files: [] });
   }, 30_000);
 
-  test("T-MCP-5: without the flag all still exposes 18 tools without an experimental capability", async () => {
+  test("T-MCP-5: without the flag all still exposes 20 tools without an experimental capability", async () => {
     const c = await connect("all", false);
     const tools = (await c.listTools()).tools;
-    expect(tools).toHaveLength(18);
-    expect(new Set(tools.map((tool) => tool.name)).size).toBe(18);
+    expect(tools).toHaveLength(20);
+    expect(new Set(tools.map((tool) => tool.name)).size).toBe(20);
     expect(c.getServerCapabilities()).toHaveProperty("tools");
     expect(c.getServerCapabilities()).not.toHaveProperty("experimental");
     expect(c.getInstructions()).not.toContain("## Nested mode — no sessions");
