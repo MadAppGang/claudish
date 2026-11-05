@@ -19,6 +19,12 @@
  * | `file` | `~/.claudish/accounts/tokens/<provider>/<id>.json` | Linux/WSL, and tests |
  * | `legacy-codex-file` | `~/.claudish/codex-oauth.json` | the migration base |
  *
+ * On a Keychain platform `legacy-codex-file` is migration INPUT only: the legacy
+ * file move (MTL-372, `management.ts` `moveLegacyLogin`) copies its record into
+ * the `keychain` store unchanged (generation, fingerprint, journal and accountId
+ * kept; a copy, never a rotation), rebinds the row, and deletes the file. Where
+ * there is no Keychain it stays the legacy login's store.
+ *
  * ## `CLAUDISH_DISABLE_KEYCHAIN` is checked HERE, not only by `hasKeychainSource()`
  *
  * That flag is read in exactly one other place in the codebase, and a new store
@@ -39,6 +45,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { log } from "../../logger.js";
 import {
   KEYCHAIN_ACCOUNTS_SERVICE,
@@ -152,6 +159,29 @@ export interface TokenStore {
   describe(): string;
 }
 
+/**
+ * Do two records hold the same DURABLE material? Every field but `writeId` and
+ * `updatedAt`, which each persist mints anew. An absent journal and a `null`
+ * one are the same "no journal".
+ *
+ * `fingerprint` + `generation` alone cannot answer this: a journal write and a
+ * re-issued access token change neither (see `writeId`). The legacy Codex move
+ * (MTL-372) uses it twice: M5 reuses a crash-resumed Keychain item only when it
+ * holds the file's every durable field, and M8 deletes the file only while it
+ * still holds what was copied.
+ */
+export function sameDurableRecord(a: StoredTokenRecord, b: StoredTokenRecord): boolean {
+  return (
+    a.accessToken === b.accessToken &&
+    a.refreshToken === b.refreshToken &&
+    a.expiresAt === b.expiresAt &&
+    a.accountId === b.accountId &&
+    a.generation === b.generation &&
+    a.fingerprint === b.fingerprint &&
+    isDeepStrictEqual(a.journal ?? null, b.journal ?? null)
+  );
+}
+
 /** `sha256(refreshToken).slice(0,16)`. An identity, never reversible to the token. */
 export function fingerprintOf(refreshToken: string): string {
   return createHash("sha256").update(refreshToken).digest("hex").slice(0, 16);
@@ -161,13 +191,11 @@ function parseRecord(kind: AccountStoreKind, text: string): StoredTokenRecord {
   let raw: Partial<StoredTokenRecord>;
   try {
     raw = JSON.parse(text) as Partial<StoredTokenRecord>;
-  } catch (err) {
+  } catch {
     // A corrupt record is a FAILED read, never an absence — and never a raw
-    // SyntaxError escaping the store's typed contract.
-    throw new TokenStoreReadError(
-      kind,
-      `the stored record is not JSON (${(err as Error).message})`
-    );
+    // SyntaxError escaping the store's typed contract. Its message is not
+    // kept: Bun quotes the bytes it failed on, and those are token material.
+    throw new TokenStoreReadError(kind, "the stored record is not JSON (invalid JSON)");
   }
   if (typeof raw?.accessToken !== "string" || typeof raw?.refreshToken !== "string") {
     throw new TokenStoreReadError(kind, "the stored record has no token pair");
@@ -442,8 +470,10 @@ export class LegacyCodexFileStore implements TokenStore {
     let raw: LegacyCodexFile;
     try {
       raw = JSON.parse(text) as LegacyCodexFile;
-    } catch (err) {
-      throw new TokenStoreReadError(this.kind, err instanceof Error ? err.message : String(err));
+    } catch {
+      // Never the SyntaxError's message: Bun quotes the failing bytes, which are
+      // token material, and this text reaches logs and the move's deferral.
+      throw new TokenStoreReadError(this.kind, "invalid JSON");
     }
     if (!raw?.access_token || !raw?.refresh_token) {
       throw new TokenStoreReadError(this.kind, "the credential file has no token pair");

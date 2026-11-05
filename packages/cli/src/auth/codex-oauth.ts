@@ -9,7 +9,12 @@
  * - Singleton pattern for shared token management
  * - Account ID extraction from id_token JWT claims
  *
- * Credentials stored at: ~/.claudish/codex-oauth.json
+ * Credentials stored at: ~/.claudish/codex-oauth.json — only where there is no
+ * macOS Keychain (or `CLAUDISH_DISABLE_KEYCHAIN=1`). On a Keychain platform
+ * `claudish login codex` saves a `keychain` account row instead and never writes
+ * this file, and an existing file is migration input: it is moved into the
+ * Keychain and deleted (MTL-372, `CodexAccountManagement.moveLegacyLogin`).
+ * Until that move has run, the file below keeps serving as it always did.
  *
  * ## The file is SHARED with the account pool, and so is its refresh gate
  *
@@ -462,10 +467,28 @@ export class CodexOAuth {
    * Opens browser, starts local callback server, exchanges code for tokens
    */
   async login(deps: CodexPkceDeps = {}): Promise<void> {
-    // Managed or suppressed: refused BEFORE the browser, naming the account verbs.
-    const { assertLegacyCodexLoginPermitted, saveLegacyCodexLogin } = await import(
-      "./accounts/management.js"
-    );
+    const {
+      assertLegacyCodexLoginPermitted,
+      codexLoginUsesKeychain,
+      loginCodexAccount,
+      saveLegacyCodexLogin,
+    } = await import("./accounts/management.js");
+
+    // A Keychain platform (MTL-372): the login is a `keychain` account row and
+    // this file is never written. An existing file is moved into the Keychain
+    // first; then the active config's single account is logged in again, or
+    // the first one is added. See `CodexAccountManagement.loginCodex`.
+    if (codexLoginUsesKeychain()) {
+      const lines = await loginCodexAccount({ pkce: () => loginCodexPkce(deps) });
+      for (const line of lines) console.log(line);
+      // The file this facade read may be gone now; drop the stale snapshot.
+      this.reloadCredentials();
+      log("[CodexOAuth] Login saved to the Keychain account store");
+      return;
+    }
+
+    // No Keychain here: the legacy login. Managed or suppressed: refused BEFORE
+    // the browser, naming the account verbs.
     assertLegacyCodexLoginPermitted();
     const { credentials } = await loginCodexPkce(deps);
     const accountId = credentials.account_id;
@@ -531,12 +554,9 @@ export class CodexOAuth {
       if (this.credentialFileFailure) throw this.credentialFileFailure;
     }
 
-    // Check if we have credentials
-    if (!this.credentials) {
-      throw new CodexOAuthRefreshError(
-        `No OpenAI Codex OAuth credentials found. Please run \`${LOGIN_COMMAND}\` first.`
-      );
-    }
+    // No credentials: a genuine logout is terminal, a move into the Keychain
+    // (or an unreadable account list) is transient — never a guessed 401.
+    if (!this.credentials) throw await this.credentialFileGoneError();
 
     // Check if token is still valid
     if (this.isTokenValid()) {
@@ -646,26 +666,46 @@ export class CodexOAuth {
       );
     } catch (err) {
       if (!isGateUnavailable(err)) throw err;
-      const latest = this.readCredentialFile();
-      if (latest && this.isAdoptable(latest.credentials, trigger)) {
-        log(
-          `[CodexOAuth] Refresh gate unavailable (${err.reason}); the holder already rotated — using its token`
-        );
-        this.setCredentials(latest.credentials);
-        return latest.credentials.access_token;
-      }
-      log(`[CodexOAuth] Refresh gate unavailable: ${err.message}`);
-      if (err.reason !== "unwritable") {
-        throw credentialHttpError(
-          `Another claudish process is refreshing the OpenAI Codex login (${err.reason}); retrying will usually work.`,
-          503
-        );
-      }
-      throw new CodexOAuthLocalError(
-        "Could not refresh the OpenAI Codex login: the refresh lock could not be created " +
-          `(${err.reason}). Retry the request; if this persists, run \`${LOGIN_COMMAND}\`.`
+      return this.refreshWithoutGate(trigger, err);
+    }
+  }
+
+  /**
+   * The gate could not be taken: adopt the holder's rotation, or throw the
+   * gate's transient error. Never an exchange.
+   */
+  private async refreshWithoutGate(
+    trigger: RefreshTrigger,
+    err: { reason: string; message: string }
+  ): Promise<string> {
+    const latest = this.readCredentialFile();
+    // Adopt only from a file this facade still owns: a leftover the move
+    // published past is not a holder's rotation (MTL-372 review round 2).
+    const ownership = latest ? await this.legacyFileOwnership() : undefined;
+    if (latest && ownership === "facade" && this.isAdoptable(latest.credentials, trigger)) {
+      log(
+        `[CodexOAuth] Refresh gate unavailable (${err.reason}); the holder already rotated — using its token`
+      );
+      this.setCredentials(latest.credentials);
+      return latest.credentials.access_token;
+    }
+    // The same drop rules as `refreshHoldingGate`: a file nobody reads any
+    // more, or a file gone while the list reads, stops this process signing
+    // with its copy. An unreadable list keeps it. The gate error below is
+    // still the answer.
+    if (ownership === "elsewhere") this.setCredentials(null);
+    else if (!latest) await this.credentialFileGoneError({ dropCredentials: true });
+    log(`[CodexOAuth] Refresh gate unavailable: ${err.message}`);
+    if (err.reason !== "unwritable") {
+      throw credentialHttpError(
+        `Another claudish process is refreshing the OpenAI Codex login (${err.reason}); retrying will usually work.`,
+        503
       );
     }
+    throw new CodexOAuthLocalError(
+      "Could not refresh the OpenAI Codex login: the refresh lock could not be created " +
+        `(${err.reason}). Retry the request; if this persists, run \`${LOGIN_COMMAND}\`.`
+    );
   }
 
   /** Everything from here down runs with the gate held. */
@@ -673,10 +713,23 @@ export class CodexOAuth {
     // Re-read under the gate. The in-memory copy is this process's snapshot; the
     // file is what every other process (and the pool) wrote.
     const onDisk = this.readCredentialFile();
-    if (!onDisk) {
-      throw new CodexOAuthRefreshError(
-        `No OpenAI Codex OAuth credentials found. Please run \`${LOGIN_COMMAND}\` first.`
-      );
+    if (!onDisk) throw await this.credentialFileGoneError({ dropCredentials: true });
+
+    // The file being PRESENT does not make it this facade's: the legacy move
+    // (MTL-372) may have published a `keychain` row and stopped before its
+    // delete (M8 failed, or the process stopped). Exchanging here would rotate
+    // the refresh token the Keychain item also holds, revoking it, and the
+    // leftover cleanup would later delete the rotated file: the login lost.
+    // Adopting from it is no better: the file is dead to every reader. So
+    // ownership is decided first, and only a synthesized-only account list
+    // lets the facade adopt or exchange.
+    const ownership = await this.legacyFileOwnership();
+    if (ownership !== "facade") {
+      // A file nobody reads any more: stop signing with this process's copy
+      // too. "unknown" keeps it (an unreadable list is not a logout), and so
+      // does "file-row" (the login is still the file's, served by the pool).
+      if (ownership === "elsewhere") this.setCredentials(null);
+      throw this.facadeYieldError(ownership);
     }
     if (this.isAdoptable(onDisk.credentials, trigger)) {
       log("[CodexOAuth] Another process already rotated the token — using it, no exchange");
@@ -705,14 +758,21 @@ export class CodexOAuth {
     if (!current) {
       log("[CodexOAuth] The credential file was removed during the exchange — not recreating it");
       this.setCredentials(null);
-      throw new CodexOAuthRefreshError(
-        `No OpenAI Codex OAuth credentials found. Please run \`${LOGIN_COMMAND}\` first.`
-      );
+      throw await this.credentialFileGoneError();
     }
     if (current.credentials.refresh_token !== onDisk.credentials.refresh_token) {
       log("[CodexOAuth] The credential file changed during the exchange — keeping it");
       this.setCredentials(current.credentials);
       return current.credentials.access_token;
+    }
+    // Re-checked before the save: the account list may have stopped naming the
+    // file during the exchange. A file no reader uses is not saved to. A file a
+    // configured row still names is (the rotated token's only home), and so is
+    // an unreadable list's, for the same reason.
+    if ((await this.legacyFileOwnership()) === "elsewhere") {
+      log("[CodexOAuth] The account list no longer names the credential file — not saving to it");
+      this.setCredentials(null);
+      throw this.facadeYieldError("elsewhere");
     }
 
     try {
@@ -732,6 +792,147 @@ export class CodexOAuth {
     this.setCredentials(updated);
     log(`[CodexOAuth] Token refreshed, valid until ${new Date(updated.expires_at).toISOString()}`);
     return updated.access_token;
+  }
+
+  /**
+   * Who the legacy credential file belongs to now, read fresh under the gate.
+   *
+   * - `facade`: the account list is the synthesized legacy login only, so this
+   *   facade owns the file and may exchange its refresh token.
+   * - `file-row`: a configured row still names the file (`legacy-codex-file`,
+   *   no suppression marker). The pool serves it, under this same gate.
+   * - `elsewhere`: the marker is set, or no row names the file: the legacy move
+   *   published (MTL-372). Nothing reads the file.
+   * - `unknown`: the account list could not be read. That includes a read
+   *   that FAILED while the registry had a last-known-good copy: `snapshot()`
+   *   then serves the copy without throwing and reports the failure only in
+   *   its source states. A copy taken before the move still says "synthesized
+   *   only", and trusting it would exchange a refresh token the Keychain item
+   *   also holds (MTL-372 review round 2).
+   */
+  private async legacyFileOwnership(): Promise<"facade" | "file-row" | "elsewhere" | "unknown"> {
+    const { getAccountRegistry, isSynthesizedLegacyOnlySnapshot, codexSourceFailed } = await import(
+      "./accounts/registry.js"
+    );
+    const registry = getAccountRegistry();
+    registry.invalidate();
+    let snapshot: ReturnType<typeof registry.snapshot>;
+    try {
+      snapshot = registry.snapshot("openai-codex");
+    } catch (err) {
+      log(`[CodexOAuth] Could not read the Codex account list: ${errorMessage(err)}`);
+      return "unknown";
+    }
+    const failed = codexSourceFailed(snapshot);
+    if (failed) {
+      log(
+        `[CodexOAuth] Could not read the Codex account list (${failed.path}); not trusting the last-known-good copy`
+      );
+      return "unknown";
+    }
+    if (isSynthesizedLegacyOnlySnapshot(snapshot)) return "facade";
+    const suppressed = snapshot.settings["openai-codex"]?.legacyCodexSuppressed === true;
+    const named = snapshot.accounts["openai-codex"].some(
+      (row) => row.store === "legacy-codex-file"
+    );
+    return !suppressed && named ? "file-row" : "elsewhere";
+  }
+
+  /**
+   * Why this facade holds no login, for a caller that must not sign without
+   * one (`CodexOAuthHalf` under a latched `requireOAuth`). The same rule as an
+   * absent file under the gate: `CodexOAuthLocalError` (transient) when the
+   * login moved to configured rows or the account list cannot be read, and
+   * `CodexOAuthRefreshError` only for a genuine logout — a readable list with
+   * no Codex account. Reads nothing but the account list; drops nothing.
+   */
+  async missingLoginError(): Promise<CodexOAuthLocalError | CodexOAuthRefreshError> {
+    return this.credentialFileGoneError();
+  }
+
+  /**
+   * The transient error (503, no upstream status) the facade answers when the
+   * file is no longer its to refresh. The retry reaches `CodexPoolHalf`, which
+   * leases the configured row. Never a terminal 401: the login still exists.
+   */
+  private facadeYieldError(ownership: "file-row" | "elsewhere" | "unknown"): CodexOAuthLocalError {
+    if (ownership === "unknown") {
+      return new CodexOAuthLocalError(
+        "The Codex account list could not be read, so the OpenAI Codex login was not refreshed. " +
+          "Retry the request."
+      );
+    }
+    if (ownership === "file-row") {
+      return new CodexOAuthLocalError(
+        "The Codex login is now a configured account; retry the request."
+      );
+    }
+    return new CodexOAuthLocalError(
+      "The Codex login moved to the macOS Keychain; retry the request."
+    );
+  }
+
+  /**
+   * Why the credential file is absent under the gate, as the error to throw.
+   *
+   * This process delegated to the file while the account list showed only the
+   * synthesized legacy account. The file can since have gone two ways:
+   *
+   * - **a logout** — no Codex account is configured any more. That is the
+   *   terminal {@link CodexOAuthRefreshError} it always was.
+   * - **the legacy file move into the Keychain** (MTL-372) — the move publishes
+   *   a Codex row (and `legacyCodexSuppressed`) before it deletes the file. The
+   *   login still exists, under the pool. A terminal 401 here would walk a bare
+   *   routing chain to a metered hop, so the answer is the transient
+   *   {@link CodexOAuthLocalError} (503, no upstream status): the retry reaches
+   *   `CodexPoolHalf`, which leases the moved row.
+   *
+   * The registry is invalidated first: its stamps may predate the move. An
+   * account list that cannot be read is not a logout either, so it is
+   * transient too — including a read that failed while a last-known-good copy
+   * exists: `snapshot()` serves that copy without throwing, and a copy taken
+   * before the move shows no configured row (MTL-372 review round 2).
+   *
+   * `dropCredentials`: the file is gone under the gate and the list READ, so
+   * this process's in-memory copy belongs to a logout or a moved login and
+   * must stop signing. An unreadable list keeps it: unknown is not a logout.
+   */
+  private async credentialFileGoneError(
+    opts: { dropCredentials?: boolean } = {}
+  ): Promise<CodexOAuthLocalError | CodexOAuthRefreshError> {
+    // Dynamic: the registry pulls in the config loader, which this module does
+    // not otherwise need, and this branch is rare.
+    const { getAccountRegistry, codexSourceFailed } = await import("./accounts/registry.js");
+    const registry = getAccountRegistry();
+    registry.invalidate();
+    const unreadable = (detail: string) => {
+      log(`[CodexOAuth] Credential file absent and the account list is unreadable: ${detail}`);
+      return new CodexOAuthLocalError(
+        "The OpenAI Codex credential file is gone and the Codex account list could not be read. " +
+          "Retry the request."
+      );
+    };
+    let configured: boolean;
+    try {
+      const snapshot = registry.snapshot("openai-codex");
+      const failed = codexSourceFailed(snapshot);
+      if (failed) return unreadable(`${failed.path}: ${failed.error ?? "read failed"}`);
+      configured = snapshot.accounts["openai-codex"].length > 0;
+    } catch (err) {
+      return unreadable(errorMessage(err));
+    }
+    if (opts.dropCredentials) this.setCredentials(null);
+    if (configured) {
+      log(
+        "[CodexOAuth] Credential file absent; Codex accounts are configured — answering transient"
+      );
+      return new CodexOAuthLocalError(
+        "The Codex login moved to the macOS Keychain; retry the request."
+      );
+    }
+    return new CodexOAuthRefreshError(
+      `No OpenAI Codex OAuth credentials found. Please run \`${LOGIN_COMMAND}\` first.`
+    );
   }
 
   /**
