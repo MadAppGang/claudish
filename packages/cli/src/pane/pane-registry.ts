@@ -275,7 +275,10 @@ export function refreshGroups(table: PsRow[]): void {
   for (const p of live.values()) refreshGroupOf(p, table);
 }
 
-export function refreshGroupOf(p: RegisteredPane, table: PsRow[]): void {
+export function refreshGroupOf(
+  p: Pick<RegisteredPane, "panePid" | "group" | "identity">,
+  table: PsRow[]
+): void {
   const pid = p.panePid();
   if (!pid) return;
   const fresh = verifiedGroupSnapshot(table, pid, p.identity);
