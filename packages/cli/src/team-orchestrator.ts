@@ -43,6 +43,7 @@ import {
   type PaneSession,
   type PaneSessionOptions,
   type PaneSnapshot,
+  type ReplayTarget,
   SLOT_STATES,
   type ScrollRequest,
   type SettledTurn,
@@ -65,6 +66,7 @@ import {
   deliveryRefusal,
   flagsRemoveRead,
   isTerminalState,
+  isUuid,
   livePaneCount,
   mergeAccounting,
   readTokenFileCached,
@@ -77,6 +79,7 @@ import {
   startPaneSession,
   toSlotRow,
   transcriptAnswer,
+  transcriptHeadCwd,
   transcriptQuiet,
   upstreamRecordsFor,
 } from "./pane/index.js";
@@ -413,6 +416,8 @@ interface LiveTeamRun {
   settled: Promise<void>;
   /** the slots' Claude Code projects directory: a transcript path must lie under it */
   projectsRoot: string;
+  /** the slots' working directory */
+  cwd: string;
 }
 
 /** A `startModels` still before its registry entry (credentials, the staggered spawn loop). */
@@ -858,12 +863,54 @@ export function transcriptTeamSlot(
   slot: string,
   since?: TranscriptCursor,
   runId?: string,
-  opts: {
-    graceMs?: number;
-    /** the env the run's children inherited (as `startModels`' `parentEnv`); default `process.env` */
-    parentEnv?: Record<string, string | undefined>;
-  } = {}
+  opts: TeamSlotSourceOptions = {}
 ): TeamTranscriptResult {
+  const { src, address } = teamSlotTranscriptSource(path, slot, runId, opts);
+  return transcriptAnswer(src, since, address);
+}
+
+/**
+ * What a replay of one slot needs, from the transcript verb's own lookup, so `unknown_run` and
+ * `unknown_slot` stay its own. The working directory: the retained run's, else the transcript's
+ * first records. Throws `ContractErrorException`: `unknown_run`, `unknown_slot`.
+ */
+export function replayTargetOfTeamSlot(
+  path: string | undefined,
+  slot: string,
+  runId?: string,
+  opts: TeamSlotSourceOptions = {}
+): ReplayTarget {
+  const { src, cwd } = teamSlotTranscriptSource(path, slot, runId, opts);
+  const head =
+    !cwd && src.transcriptPath && isUuid(src.sessionUuid)
+      ? transcriptHeadCwd(src.transcriptPath, src.sessionUuid, src.projectsRoot)
+      : null;
+  return {
+    claudeSessionId: src.sessionUuid,
+    transcriptPath: src.transcriptPath,
+    writerGone: src.writerGone,
+    cwd: cwd ?? head,
+    projectsRoot: src.projectsRoot,
+  };
+}
+
+interface TeamSlotSourceOptions {
+  graceMs?: number;
+  /** the env the run's children inherited (as `startModels`' `parentEnv`); default `process.env` */
+  parentEnv?: Record<string, string | undefined>;
+}
+
+/** One slot's transcript source and answer address; the lookup `transcriptTeamSlot` documents. */
+function teamSlotTranscriptSource(
+  path: string | undefined,
+  slot: string,
+  runId: string | undefined,
+  opts: TeamSlotSourceOptions
+): {
+  src: TranscriptSource;
+  address: { run_id: string; path: string; slot: string };
+  cwd: string | null;
+} {
   const graceMs = opts.graceMs ?? TRANSCRIPT_GRACE_MS;
   const run = addressRun(path, runId);
   if (run) {
@@ -883,7 +930,7 @@ export function transcriptTeamSlot(
       writerGone,
       projectsRoot: run.projectsRoot,
     };
-    return transcriptAnswer(src, since, { run_id: run.runId, path: run.path, slot });
+    return { src, address: { run_id: run.runId, path: run.path, slot }, cwd: run.cwd };
   }
   if (path === undefined) throw unknownRun(path, runId);
   const resolved = resolve(path);
@@ -923,7 +970,7 @@ export function transcriptTeamSlot(
     // the same root a live run derives at spawn (`projectsDir(parentEnv)`), as SessionManager does
     projectsRoot: projectsDir(opts.parentEnv ?? process.env),
   };
-  return transcriptAnswer(src, since, { run_id: fileRunId, path: resolved, slot });
+  return { src, address: { run_id: fileRunId, path: resolved, slot }, cwd: null };
 }
 
 /**
@@ -2137,6 +2184,7 @@ async function startModelsIn(
     slots: entries,
     settled,
     projectsRoot: projects,
+    cwd,
   };
   teamRuns.set(runId, run);
   newestRunByPath.set(path, runId);

@@ -501,6 +501,50 @@ export interface TranscriptSource {
   projectsRoot: string;
 }
 
+/** What a replay needs to know about a session or team slot, from the transcript verbs' lookup. */
+export interface ReplayTarget {
+  claudeSessionId: string | null;
+  transcriptPath: string | null;
+  /** the writer is provably gone: the transcript verbs' own rule */
+  writerGone: boolean;
+  /** the session's own working directory, when the record gives one */
+  cwd: string | null;
+  projectsRoot: string;
+}
+
+/** Claude Code writes `cwd` on each user and assistant record, so a first screenful holds one. */
+const HEAD_CWD_MAX_BYTES = 256 * 1024;
+
+/**
+ * The working directory the transcript's first records name, or null: a file that cannot be
+ * read under the projects directory, or no record with a `cwd` in its first 256 KiB. A line
+ * the cap cuts in half does not parse and is skipped.
+ */
+export function transcriptHeadCwd(path: string, uuid: string, projectsRoot: string): string | null {
+  const fd = openContainedTranscript(path, uuid.toLowerCase(), projectsRoot);
+  if (fd === null) return null;
+  let text: string;
+  try {
+    const buf = Buffer.alloc(HEAD_CWD_MAX_BYTES);
+    const n = readSync(fd, buf, 0, HEAD_CWD_MAX_BYTES, 0);
+    text = buf.toString("utf8", 0, n);
+  } catch {
+    return null;
+  } finally {
+    closeQuietly(fd);
+  }
+  for (const line of text.split("\n")) {
+    try {
+      const rec: unknown = JSON.parse(line);
+      const cwd = rec && typeof rec === "object" ? (rec as { cwd?: unknown }).cwd : undefined;
+      if (typeof cwd === "string" && cwd) return cwd;
+    } catch {
+      // not a whole record
+    }
+  }
+  return null;
+}
+
 export interface TranscriptAnswerFields {
   cursor: string;
   lines: TranscriptLine[];
