@@ -12,7 +12,7 @@
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, existsSync, realpathSync, statSync } from "node:fs";
+import { constants, accessSync, closeSync, existsSync, realpathSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { findClaudeBinary } from "../claude-runner.js";
 import {
@@ -79,6 +79,27 @@ function replayCwd(own: string | null): string {
     }
   }
   return realpathSync(process.cwd());
+}
+
+/**
+ * The `claude` a replay runs. A `CLAUDE_PATH` that is set names the only binary: when it is not
+ * an executable file the open fails, because `findClaudeBinary` would go on to the user's own
+ * installation, and a replay would then start a Claude Code nobody asked for.
+ */
+async function replayClaudeBinary(env: Record<string, string | undefined>): Promise<string> {
+  const named = env.CLAUDE_PATH;
+  if (named) {
+    try {
+      if (!statSync(named).isFile()) throw new Error("not a file");
+      accessSync(named, constants.X_OK);
+    } catch {
+      throw new Error(`CLAUDE_PATH ${named} is not an executable file`);
+    }
+    return named;
+  }
+  const found = await findClaudeBinary(env);
+  if (!found) throw new Error("claude not found");
+  return found;
 }
 
 export class ReplayManager {
@@ -201,8 +222,7 @@ export class ReplayManager {
     }
   ): Promise<void> {
     try {
-      const claudeBinary = this.options.claudeBinary ?? (await findClaudeBinary(this.parentEnv));
-      if (!claudeBinary) throw new Error("claude not found");
+      const claudeBinary = this.options.claudeBinary ?? (await replayClaudeBinary(this.parentEnv));
       entry.pane = await startReplayPane({
         claudeSessionId: a.claudeSessionId,
         forkUuid: a.forkUuid,
