@@ -20,8 +20,8 @@
  */
 
 import type { ChildProcess } from "node:child_process";
-import { rmSync, rmdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { redactSecrets } from "../redact.js";
 import { locateBox } from "./box-locate.js";
@@ -62,6 +62,7 @@ import {
 import type { PaneResizeOutcome } from "./pane-session.js";
 import { type PaneSize, clampPaneSize, samePaneSize } from "./pane-size.js";
 import {
+  type ForkRecordRef,
   type GroupSnapshot,
   type PaneIdentity,
   isLaunchDirPath,
@@ -106,6 +107,8 @@ export interface ReplayPaneOptions {
   claudeBinary: string;
   /** realpath */
   cwd: string;
+  /** `<config dir>/projects`, the root `forkPath` is validated against before any removal */
+  projectsRoot: string;
   /** the exact file a fork of this replay could write */
   forkPath: string;
   /** this replay's start created the project directory, so a removal of the fork may remove it */
@@ -135,17 +138,12 @@ async function waitUntil(pred: () => boolean, ms: number): Promise<void> {
 }
 
 /**
- * The fork's one possible record, by exact path, and its project directory only when this
- * replay's start created it: `rmdir` refuses a directory that holds anything else, and
- * nothing here is recursive or lists a directory.
+ * The fork's one possible record, as every remover gets it: the in-process reap, the pane
+ * watcher and the startup sweep each remove exactly this path once the replay's processes
+ * are verified gone (`removePaneFiles`).
  */
-function removeForkRecord(forkPath: string, removeProjectDir: boolean): void {
-  try {
-    rmSync(forkPath, { force: true });
-    if (removeProjectDir) rmdirSync(dirname(forkPath));
-  } catch {
-    // a sibling's record keeps the directory, or it is already gone
-  }
+function forkRefOf(o: ReplayPaneOptions): ForkRecordRef {
+  return { projectsRoot: o.projectsRoot, path: o.forkPath, removeProjectDir: o.removeProjectDir };
 }
 
 export class ReplayPane implements RegisteredPane {
@@ -251,6 +249,7 @@ export class ReplayPane implements RegisteredPane {
         recordPath: recordPathOf(this.root, this.paneId),
         turnDir: this.turnDir,
         sockRoot: this.root,
+        fork: forkRefOf(this.o),
       });
     } catch (e) {
       return failed(e);
@@ -720,10 +719,11 @@ export class ReplayPane implements RegisteredPane {
         sockPath: this.sockPath,
         launcherDir: this.ctlDir,
         turnDir: this.turnDir,
+        sessionUuid: this.o.forkUuid,
+        fork: forkRefOf(this.o),
       }),
       fast: () => this.fastReap,
-      // after the process is verified gone, never while a dying `claude` could rewrite the file
-      onVerified: () => removeForkRecord(this.o.forkPath, this.o.removeProjectDir),
+      onVerified: () => {},
       onUnverified: () => {},
     };
   }
@@ -785,6 +785,7 @@ export async function startReplayPane(o: ReplayPaneOptions): Promise<ReplayPane>
       launcherDir: dirs.ctlDir,
       turnDir: dirs.turnDir,
       createdAt: new Date().toISOString(),
+      fork: forkRefOf(o),
     });
   } catch (e) {
     for (const d of dirs ? [dirs.ctlDir, dirs.turnDir] : [])

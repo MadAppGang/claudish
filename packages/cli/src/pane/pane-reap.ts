@@ -12,7 +12,13 @@
 import type { ChildProcess } from "node:child_process";
 import { waitForExit } from "../process-tree.js";
 import type { MagmuxClient } from "./magmux-client.js";
-import { refreshGroupOf, removePaneFiles, unregisterPane, updateRecord } from "./pane-registry.js";
+import {
+  type PaneFiles,
+  refreshGroupOf,
+  removePaneFiles,
+  unregisterPane,
+  updateRecord,
+} from "./pane-registry.js";
 import {
   type GroupSnapshot,
   type PaneIdentity,
@@ -36,7 +42,7 @@ export interface PaneReapSubject {
   paneClosed(): boolean;
   magmux(): ChildProcess | null;
   watcher(): ChildProcess | null;
-  files(): { paneId: string; sockPath: string; launcherDir: string; turnDir: string };
+  files(): PaneFiles;
   /** the shutdown reap's short timings; read at each wait, because a shutdown can start mid-reap */
   fast(): boolean;
   /** the group and magmux are verified gone and the files removed */

@@ -144,6 +144,7 @@ export class ReplayManager {
       claudeSessionId: uuid,
       forkUuid,
       cwd,
+      projectsRoot: target.projectsRoot,
       forkPath,
       // read before the spawn: Claude Code creates this directory when it writes a record
       removeProjectDir: !existsSync(dirname(forkPath)),
@@ -214,6 +215,7 @@ export class ReplayManager {
       claudeSessionId: string;
       forkUuid: string;
       cwd: string;
+      projectsRoot: string;
       forkPath: string;
       removeProjectDir: boolean;
       configDir: string;
@@ -228,6 +230,7 @@ export class ReplayManager {
         forkUuid: a.forkUuid,
         claudeBinary,
         cwd: a.cwd,
+        projectsRoot: a.projectsRoot,
         forkPath: a.forkPath,
         removeProjectDir: a.removeProjectDir,
         configDir: a.configDir,
