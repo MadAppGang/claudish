@@ -269,10 +269,17 @@ export const REPLAY_ENV_ALLOWLIST = [
 ] as const;
 
 /**
- * magmux's environment for a replay: the allowlist and five fixed keys, nothing else. No
+ * magmux's environment for a replay: the allowlist and seven fixed keys, nothing else. No
  * snapshot and no `CLAUDISH_PANE_CWD`, which exist for a claudish child, and a replay has
  * none. `CLAUDE_CONFIG_DIR` is copied or overridden, never defaulted: unset, Claude Code
  * reads `~/.claude.json`, and pointing it at `~/.claude` would lose every trust entry.
+ *
+ * Two switches keep a read-only replay from writing plugin state into that config or drawing a
+ * dialog over the conversation; `--bare` stops neither. Without the first, a start against a
+ * config with no official marketplace installs it (about 580 files, 14 MB under `plugins/`).
+ * The second leaves file history empty, so the LSP plugin recommendation, which offers a
+ * plugin for the file types the resumed conversation touched, finds no file to match even
+ * where a marketplace is already installed; it also stops an empty `file-history/<fork>/`.
  */
 export function buildReplayEnv(input: {
   parentEnv: Record<string, string | undefined>;
@@ -291,6 +298,8 @@ export function buildReplayEnv(input: {
   env.SHELL = join(input.ctlDir, "sh-shim");
   env[ENV.CLAUDISH_PANE_CHILD] = "1";
   env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+  env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL = "1";
+  env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING = "1";
   env.COLUMNS = String(input.cols);
   env.LINES = String(input.rows);
   return env;
