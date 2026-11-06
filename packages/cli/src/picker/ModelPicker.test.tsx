@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 /** @jsxImportSource @opentui/react */
 /**
  * Tier 2 — `testRender` over the real component tree, with the loaders injected.
@@ -31,11 +34,23 @@ import { describe, expect, test } from "bun:test";
 import type { CapturedFrame } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import type { ReactNode } from "react";
+import { credentials } from "../auth/credentials/authority.js";
 import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
+import { _resetCatalogClient, _setCatalogEntriesForTest } from "../providers/catalog-client.js";
+import {
+  LIVE_MS,
+  deriveAccountKey,
+  writeStoredModelsList,
+} from "../providers/dynamic-models-catalog-store.js";
+import * as accountModels from "../providers/dynamic-models-catalog.js";
 import type { DescriptionIndex } from "../providers/model-descriptions.js";
 import { C } from "../tui/theme.js";
 import { ModelPicker } from "./ModelPicker.js";
-import type { PickerDataSource, PickerProviderChoice } from "./PickerDataSource.js";
+import {
+  type PickerDataSource,
+  type PickerProviderChoice,
+  createPickerDataSource,
+} from "./PickerDataSource.js";
 import { type Hint, hintsWidth } from "./chrome.js";
 import { MAX_DIALOG_ROWS, deriveDialogLayout } from "./layout.js";
 import { CHIP_FILL_CELLS } from "./rows.js";
@@ -231,6 +246,14 @@ const flat = (text: string[]): string =>
     .join(" ")
     .replace(/[│┃▌╭╮╰╯─]/g, " ")
     .replace(/\s+/g, " ");
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 // ── the shape of the thing ───────────────────────────────────────────────────────
 
@@ -1590,5 +1613,260 @@ describe("the loading states", () => {
     } finally {
       d.destroy();
     }
+  });
+});
+
+describe("stored dynamic models catalogs", () => {
+  const devin = provider({
+    value: "devin",
+    label: "Devin",
+    shortcut: "dv@",
+    billing: "sub",
+    envVar: "",
+    discoveryShape: "elapsed",
+  });
+  const grok = provider({
+    value: "grok-subscription",
+    label: "SuperGrok",
+    shortcut: "gk@",
+    billing: "sub",
+    envVar: "",
+    discoveryShape: "deadline",
+  });
+  const cachedRow = model({
+    id: "swe-1-7-medium",
+    name: "swe-1-7-medium",
+    provider: "Devin",
+    contextLength: 200000,
+    context: "200K",
+  });
+  const cached: PickerDiscoveryOutcome = {
+    kind: "rows",
+    rows: [cachedRow],
+    servedCount: 1,
+    chatCount: 1,
+  };
+  let home: string;
+  let previous: { dir?: string; key?: string };
+  const restores: Array<() => void> = [];
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "claudish-picker-lists-"));
+    previous = {
+      dir: process.env.CLAUDISH_DYNAMIC_CATALOG_DIR,
+      key: process.env.CLAUDISH_DYNAMIC_CATALOG_KEY,
+    };
+    process.env.CLAUDISH_DYNAMIC_CATALOG_DIR = join(home, "lists");
+    process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = join(home, "secret");
+    _setCatalogEntriesForTest([]);
+    accountModels._resetAccountModelsListsForTest();
+    const identity = spyOn(credentials, "accountIdentity").mockImplementation(async (p) =>
+      p === "devin" ? "picker-account" : undefined
+    );
+    const available = spyOn(credentials, "isAvailable").mockImplementation(
+      async (p) => p === "devin" || p === "grok-subscription"
+    );
+    const readiness = spyOn(credentials, "describeReadiness").mockImplementation(async (p) => ({
+      readiness: p === "devin" || p === "grok-subscription" ? "present" : "absent",
+    }));
+    const network = spyOn(globalThis, "fetch").mockRejectedValue(new Error("Network forbidden"));
+    restores.push(
+      () => identity.mockRestore(),
+      () => available.mockRestore(),
+      () => readiness.mockRestore(),
+      () => network.mockRestore()
+    );
+  });
+
+  afterEach(() => {
+    for (const restore of restores.splice(0).reverse()) restore();
+    accountModels._resetAccountModelsListsForTest();
+    _resetCatalogClient();
+    for (const [name, value] of [
+      ["CLAUDISH_DYNAMIC_CATALOG_DIR", previous.dir],
+      ["CLAUDISH_DYNAMIC_CATALOG_KEY", previous.key],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function storedSource(choices: PickerProviderChoice[]): PickerDataSource {
+    const source = createPickerDataSource();
+    return {
+      ...source,
+      providerList: () => choices,
+      notEnabledLocalProviders: () => [],
+      ensureCatalog: async () => {},
+      descriptions: async () => ({ get: () => undefined, size: 0 }),
+    };
+  }
+
+  function holdRefreshes() {
+    const pending = deferred<accountModels.RefreshResult>();
+    const refresh = spyOn(accountModels, "refreshAccountModelsList").mockImplementation(
+      () => pending.promise
+    );
+    restores.push(() => {
+      pending.resolve({ kind: "skipped", reason: "no-credential" });
+      refresh.mockRestore();
+    });
+    return { pending, refresh };
+  }
+
+  test("53. cached first, then live", async () => {
+    const live = deferred<PickerDiscoveryOutcome>();
+    const source = {
+      ...fakeSource({ providerList: [devin] }),
+      cachedModelsCatalog: (p: string) => (p === "devin" ? cached : null),
+      discoverModelsCatalog: () => live.promise,
+    };
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+    try {
+      await d.press(["RETURN"]);
+      expect(joined(d.recapture().text)).toContain("swe-1-7-medium");
+      expect(joined(d.recapture().text)).not.toContain("swe-live");
+      live.resolve({
+        kind: "rows",
+        rows: [model({ id: "swe-live", name: "swe-live", provider: "Devin" })],
+        servedCount: 1,
+        chatCount: 1,
+      });
+      await d.until((t) => joined(t).includes("swe-live"));
+      expect(joined(d.recapture().text)).toContain("swe-live");
+      expect(joined(d.recapture().text)).not.toContain("swe-1-7-medium");
+    } finally {
+      live.resolve(cached);
+      d.destroy();
+    }
+  });
+
+  test("54. a live failure keeps the cached rows", async () => {
+    const live = deferred<PickerDiscoveryOutcome>();
+    const source = {
+      ...fakeSource({ providerList: [devin] }),
+      cachedModelsCatalog: (p: string) => (p === "devin" ? cached : null),
+      discoverModelsCatalog: () => live.promise,
+    };
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+    try {
+      await d.press(["RETURN"]);
+      live.resolve({
+        kind: "failed",
+        failure: { kind: "unreachable", provider: "devin", detail: "offline" },
+        notice: ["Devin could not list its models: unreachable (offline)"],
+        fallbackRows: [],
+      });
+      await d.until((t) => joined(t).includes("unreachable"));
+      const frame = joined(d.recapture().text);
+      expect(frame).toContain("unreachable");
+      expect(frame).toContain("swe-1-7-medium");
+    } finally {
+      live.resolve(cached);
+      d.destroy();
+    }
+  });
+
+  test("55. all models include stored lists", async () => {
+    const key = deriveAccountKey("devin", "picker-account");
+    expect(key.ok).toBe(true);
+    if (!key.ok) throw new Error(key.reason);
+    expect(
+      writeStoredModelsList("devin", key.accountKey, [
+        {
+          id: "swe-1-7-medium",
+          displayName: "SWE-1.7",
+          contextWindow: 200000,
+          reported: "chat",
+        },
+      ])
+    ).toBe(true);
+    const lists = await accountModels.loadAccountModelsLists();
+    expect(lists.get("devin")?.models[0]?.id).toBe("swe-1-7-medium");
+    holdRefreshes();
+    const source = storedSource([devin]);
+    let selected: string | null | undefined;
+    const d = await draw(
+      <ModelPicker
+        source={source}
+        onDone={(spec) => {
+          selected = spec;
+        }}
+      />
+    );
+    try {
+      await d.press(["a"]);
+      await d.until(listPainted);
+      const frame = joined(d.recapture().text);
+      expect(frame).toContain("swe-1-7-medium");
+      expect(frame).toContain("dv@");
+      await d.press(["RETURN"]);
+      expect(selected).toBe("dv@swe-1-7-medium");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("56. open triggers background refreshes, never blocking", async () => {
+    const { pending, refresh } = holdRefreshes();
+    const source = storedSource([devin, grok, provider()]);
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+    try {
+      expect(joined(d.text)).toContain("choose a provider");
+      expect(joined(d.text)).toContain("Devin");
+      expect(joined(d.text)).toContain("SuperGrok");
+      const opened = () => refresh.mock.calls.filter(([, trigger]) => trigger === "picker-open");
+      expect(
+        opened()
+          .map(([p]) => p)
+          .sort()
+      ).toEqual(["devin", "grok-subscription"]);
+      for (const [, , opts] of opened()) expect(opts).toMatchObject({ minAgeMs: LIVE_MS });
+      await d.press(["k"]);
+      await d.press(["k"]);
+      expect(opened()).toHaveLength(2);
+    } finally {
+      pending.resolve({ kind: "skipped", reason: "no-credential" });
+      d.destroy();
+    }
+  });
+
+  test("all-models typing sweeps once per picker open without waiting", async () => {
+    const pending = deferred<void>();
+    // Returning the held promise also detects a caller that incorrectly awaits this void API.
+    const sweep = spyOn(accountModels, "sweepAccountModelsLists").mockImplementation(
+      () => pending.promise
+    );
+    restores.push(() => {
+      pending.resolve();
+      sweep.mockRestore();
+    });
+    for (let open = 1; open <= 2; open++) {
+      const source = fakeSource({
+        providerList: [devin],
+        served: [cachedRow, model({ id: "other-model", name: "other-model" })],
+      });
+      const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+      try {
+        expect(joined(d.text)).toContain("choose a provider");
+        expect(sweep).toHaveBeenCalledTimes(open - 1);
+        await d.press(["a"]);
+        await d.until(listPainted);
+        expect(joined(d.recapture().text)).toContain("swe-1-7-medium");
+        await d.press(["s"]);
+        expect(joined(d.recapture().text)).toContain("swe-1-7-medium");
+        expect(joined(d.recapture().text)).not.toContain("other-model");
+        expect(sweep).toHaveBeenCalledTimes(open);
+        expect(sweep).toHaveBeenLastCalledWith("search-all", { minAgeMs: LIVE_MS });
+        await d.press(["w", "e"]);
+        await d.press(["ESCAPE"]);
+        await d.press(["s"]);
+        expect(sweep).toHaveBeenCalledTimes(open);
+      } finally {
+        d.destroy();
+      }
+    }
+    pending.resolve();
   });
 });

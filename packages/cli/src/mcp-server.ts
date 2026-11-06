@@ -78,6 +78,8 @@ import {
 } from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
 import { readAllModelsCache } from "./providers/all-models-cache.js";
+import { LIVE_MS } from "./providers/dynamic-models-catalog-store.js";
+import { sweepAccountModelsLists } from "./providers/dynamic-models-catalog.js";
 import { latestEffortRecommendations } from "./providers/effort-recommendations.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
@@ -1748,6 +1750,10 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     handler: async (args) => {
       const query = args.query as string;
       const maxResults = (args.limit as number) || 10;
+      // A search spans every provider, so each account's stored dynamic models
+      // catalog is refreshed in the background when old enough; this answer
+      // never waits for it.
+      sweepAccountModelsLists("search-all", { minAgeMs: LIVE_MS });
       const allModels = await loadAllModels();
       if (allModels.length === 0) {
         return {

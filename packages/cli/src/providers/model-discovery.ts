@@ -684,12 +684,20 @@ export async function discoverProviderModelsCatalog(
 ): Promise<ModelsCatalogOutcome> {
   const outcome = await discoverEveryServedModel(providerName);
   if (outcome.kind !== "served") return outcome;
-  // The single discovery entry, so this is the choke point for dynamic models
-  // catalogs: everything that offers or picks a model reads `models`, and a
-  // content-use opt-in id is never one of them (`content-use.ts`).
-  const models = outcome.models.filter((model) => !isOptInWireId(model.id));
-  if (models.length === outcome.models.length) return outcome;
-  const optInIds = outcome.models.filter((model) => isOptInWireId(model.id)).map((m) => m.id);
+  return servedOutcomeOf(outcome.models);
+}
+
+/**
+ * An unsplit served list as the outcome every offering reader sees. The one
+ * place the content-use split happens, whether the list came from the
+ * endpoint or from a stored dynamic models catalog: everything that offers or
+ * picks a model reads `models`, and a content-use opt-in id is never one of
+ * them (`content-use.ts`). Pure.
+ */
+export function servedOutcomeOf(unsplit: DiscoveredModel[]): ModelsCatalogOutcome {
+  const models = unsplit.filter((model) => !isOptInWireId(model.id));
+  if (models.length === unsplit.length) return { kind: "served", models: unsplit };
+  const optInIds = unsplit.filter((model) => isOptInWireId(model.id)).map((m) => m.id);
   return { kind: "served", models, optInIds };
 }
 
