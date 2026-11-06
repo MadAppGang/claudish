@@ -52,7 +52,8 @@ async function resolvePaneRouteLines(models: string[]): Promise<Map<string, stri
   const entries = await Promise.all(
     unique.map(async (model): Promise<[string, string]> => {
       try {
-        return [model, paneRouteLine(await explainRoute(model))];
+        // `background`: the grid is drawn at launch and never waits on discovery.
+        return [model, paneRouteLine(await explainRoute(model, { network: "background" }))];
       } catch (err) {
         return [model, `unknown — ${err instanceof Error ? err.message : String(err)}`];
       }

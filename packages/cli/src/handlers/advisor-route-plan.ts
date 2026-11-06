@@ -182,7 +182,10 @@ export async function planAdvisorModel(
   if (!parseModelSpec(model).isExplicitProvider) {
     await (deps.ensureCatalog ?? ensureCatalogReady)(CATALOG_WAIT_MS);
   }
-  const explanation = await (deps.explain ?? ((target: string) => explainRoute(target)))(model);
+  // `background`: planning runs at launch and never waits on discovery.
+  const explanation = await (
+    deps.explain ?? ((target: string) => explainRoute(target, { network: "background" }))
+  )(model);
   const { outcome } = explanation;
   if (outcome.kind === "no-route") {
     return {

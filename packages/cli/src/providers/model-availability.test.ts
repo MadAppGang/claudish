@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { catalogRouteForProvider } from "./catalog-route-bindings.js";
 
@@ -231,6 +232,176 @@ describe("providerServesModel live discovery", () => {
     stubModelsCatalog("different-model");
 
     expect(await providerServesModel(DISCOVERY_PROVIDER, "model-one")).toBe("not-served");
+  });
+});
+
+describe("providerServesModel persisted account lists", () => {
+  const models: DiscoveredModel[] = [
+    {
+      id: "swe-1-7-medium",
+      family: "swe-1.7",
+      groupLabel: "SWE-1.7",
+      isFamilyDefault: true,
+      contextWindow: 200000,
+      reported: "chat",
+    },
+  ];
+  const missing = "absent-model";
+  const realIdentity = credentials.accountIdentity;
+  let home: string;
+  let previousDir: string | undefined;
+  let previousKey: string | undefined;
+  let api: typeof import("./dynamic-models-catalog.js") | undefined;
+  const opts = () => ({
+    dir: join(home, "dynamic-models-catalog"),
+    keyPath: join(home, "dynamic-models-catalog.key"),
+  });
+  const load = async () => {
+    api = await import("./dynamic-models-catalog.js");
+    api._resetAccountModelsListsForTest();
+    return api;
+  };
+  const seed = async (rows: DiscoveredModel[], age: number) => {
+    const store = await import("./dynamic-models-catalog-store.js");
+    const derived = store.deriveAccountKey("devin", "A", opts());
+    expect(derived.ok).toBe(true);
+    if (!derived.ok) throw new Error(derived.reason);
+    expect(
+      store.writeStoredModelsList("devin", derived.accountKey, rows, {
+        ...opts(),
+        now: () => Date.now() - age,
+      })
+    ).toBe(true);
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "claudish-stored-availability-"));
+    previousDir = process.env.CLAUDISH_DYNAMIC_CATALOG_DIR;
+    previousKey = process.env.CLAUDISH_DYNAMIC_CATALOG_KEY;
+    process.env.CLAUDISH_DYNAMIC_CATALOG_DIR = opts().dir;
+    process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = opts().keyPath;
+    credentials.accountIdentity = mock(async (provider: string) =>
+      provider === "devin" ? "A" : undefined
+    );
+    credentials.describeReadiness = mock(async (provider: string) => ({
+      readiness: provider === "devin" ? ("present" as const) : ("absent" as const),
+    }));
+  });
+  afterEach(() => {
+    api?._resetAccountModelsListsForTest();
+    api = undefined;
+    if (realIdentity) credentials.accountIdentity = realIdentity;
+    else Reflect.deleteProperty(credentials, "accountIdentity");
+    if (previousDir === undefined) delete process.env.CLAUDISH_DYNAMIC_CATALOG_DIR;
+    else process.env.CLAUDISH_DYNAMIC_CATALOG_DIR = previousDir;
+    if (previousKey === undefined) delete process.env.CLAUDISH_DYNAMIC_CATALOG_KEY;
+    else process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = previousKey;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("29. a live list denies", async () => {
+    const catalog = await load();
+    const fetcher = mock(async () => ({ kind: "models" as const, models }));
+    registerModelDiscoveryFetcher("devin-connect", fetcher);
+    await catalog.refreshAccountModelsList("devin", "picker-open", opts());
+    expect(await providerServesModel("devin", missing)).toBe("not-served");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  test("30. a stored list confirms without the network", async () => {
+    await load();
+    await seed(models, 2 * 3600000);
+    const fetcher = mock(async () => {
+      throw new Error("Stored confirmation must not fetch");
+    });
+    registerModelDiscoveryFetcher("devin-connect", fetcher);
+    for (const network of ["await", "background"] as const) {
+      expect(await providerServesModel("devin", models[0].id, { network })).toBe("serves");
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test("31. a stored list never denies; the live answer decides", async () => {
+    const catalog = await load();
+    const cases = [
+      {
+        result: { kind: "models" as const, models: [{ id: missing, reported: "chat" as const }] },
+        expected: "serves" as const,
+      },
+      { result: { kind: "models" as const, models }, expected: "not-served" as const },
+      {
+        result: { kind: "failed" as const, failure: { kind: "unreachable" as const } },
+        expected: "unknown" as const,
+      },
+    ];
+    for (const { result, expected } of cases) {
+      catalog._resetAccountModelsListsForTest();
+      invalidateModelDiscovery();
+      await seed(models, 2 * 3600000);
+      const fetcher = mock(async () => result);
+      registerModelDiscoveryFetcher("devin-connect", fetcher);
+      expect(await providerServesModel("devin", missing, { network: "await" })).toBe(expected);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  test("32. background never waits", async () => {
+    await load();
+    await seed(models, 2 * 3600000);
+    let release!: (value: { kind: "models"; models: DiscoveredModel[] }) => void;
+    let settled = false;
+    const pending = new Promise<{ kind: "models"; models: DiscoveredModel[] }>((resolve) => {
+      release = resolve;
+    });
+    const fetcher = mock(async () => {
+      const value = await pending;
+      settled = true;
+      return value;
+    });
+    registerModelDiscoveryFetcher("devin-connect", fetcher);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<string>((resolve) => {
+        timer = setTimeout(() => resolve("blocked"), 250);
+      });
+      expect(
+        await Promise.race([
+          providerServesModel("devin", missing, { network: "background" }),
+          timeout,
+        ])
+      ).toBe("unknown");
+      expect(settled).toBe(false);
+      await Bun.sleep(0);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      clearTimeout(timer);
+      release({ kind: "models", models });
+      await Bun.sleep(10);
+    }
+  });
+
+  test("33. another process's recent list may deny", async () => {
+    await load();
+    await seed(models, 3 * 60000);
+    const fetcher = mock(async () => {
+      throw new Error("A live stored list must not fetch");
+    });
+    registerModelDiscoveryFetcher("devin-connect", fetcher);
+    expect(await providerServesModel("devin", missing)).toBe("not-served");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test("34. Devin spelling from disk", async () => {
+    await load();
+    await seed(models, 2 * 3600000);
+    const fetcher = mock(async () => {
+      throw new Error("Stored family resolution must not fetch");
+    });
+    registerModelDiscoveryFetcher("devin-connect", fetcher);
+    expect(await providerServesModel("devin", "swe-1.7")).toBe("serves");
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
 

@@ -11,7 +11,7 @@ import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { resolveExternalId } from "./catalog-client.js";
 import type { ConnectionPrice } from "./connection-price.js";
 import { ensureEndpointsRegistered } from "./endpoint-registration.js";
-import { providerServesModel } from "./model-availability.js";
+import { type AvailabilityNetwork, providerServesModel } from "./model-availability.js";
 import { AUTO_ROUTE_PROVIDER, PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
 import { type NativeRoute, proxyRouteDecision } from "./native-route.js";
@@ -660,7 +660,18 @@ export interface ExplainRouteOptions {
    */
   defaultProvider?: string;
   cachePath?: string;
+  /** Absent: `"await"`. See {@link RouteNetwork}. */
+  network?: RouteNetwork;
 }
+
+/**
+ * Whether routing may wait on a provider's discovery endpoint. `await` (the
+ * default) is the request path and every diagnosis a user waits for (`--probe`).
+ * `background` is a launch: availability answers from the account's stored
+ * dynamic models catalog and from what this process holds, starts the refreshes,
+ * and never waits for one.
+ */
+export type RouteNetwork = AvailabilityNetwork;
 
 /** A route as an explained candidate. `gathered` is the catalog candidate it came from, if any. */
 function explainCandidate(
@@ -706,7 +717,8 @@ async function explainExplicitSpec(
   modelSpec: string,
   model: string,
   provider: string,
-  cachePath?: string
+  cachePath?: string,
+  network: RouteNetwork = "await"
 ): Promise<RouteExplanation> {
   // FIRST, ahead of every credential read: a shortcut that names no provider is
   // answered as unknown, never as "no credentials". No authority lookup, readiness
@@ -770,7 +782,7 @@ async function explainExplicitSpec(
   // Do not discover with an unknown account list or let cached discovery erase it.
   const availability = accountsFailed
     ? "unknown"
-    : await providerServesModel(candidate.provider, candidate.wireId);
+    : await providerServesModel(candidate.provider, candidate.wireId, { network });
   if (availability === "not-served") {
     candidate.outcome = "not-served";
     explanation.outcome = {
@@ -1082,7 +1094,8 @@ async function explainBareName(
   model: string,
   nativeProvider: string,
   routing: BareRouting,
-  cachePath?: string
+  cachePath?: string,
+  network: RouteNetwork = "await"
 ): Promise<RouteExplanation> {
   // `null` and `[]` are DIFFERENT answers and the old `?? []` conflated them.
   // `[]` is a user rule that matched and named no provider — strict no-route,
@@ -1151,7 +1164,7 @@ async function explainBareName(
     return explanation;
   }
 
-  await applyCandidateFilters(explanation, remaining);
+  await applyCandidateFilters(explanation, remaining, network);
   return explanation;
 }
 
@@ -1162,7 +1175,8 @@ async function explainBareName(
  */
 async function applyCandidateFilters(
   explanation: RouteExplanation,
-  candidates: ExplainedCandidate[]
+  candidates: ExplainedCandidate[],
+  network: RouteNetwork = "await"
 ): Promise<void> {
   const model = explanation.routedModel;
   const credentialed: ExplainedCandidate[] = [];
@@ -1248,7 +1262,7 @@ async function applyCandidateFilters(
     credentialed.map((candidate) =>
       isCodexAccountsFailure(candidate.provider, candidate.credentialReadiness)
         ? "unknown"
-        : providerServesModel(candidate.provider, candidate.wireId)
+        : providerServesModel(candidate.provider, candidate.wireId, { network })
     )
   );
   const serving: ExplainedCandidate[] = [];
@@ -1394,7 +1408,8 @@ export async function route(
   modelSpec: string,
   rulesOverride?: RoutingRules,
   defaultProviderOverride?: string,
-  cachePath?: string
+  cachePath?: string,
+  opts: { network?: RouteNetwork } = {}
 ): Promise<RoutePlan> {
   const explanation = await explainRoutePlan(
     modelSpec,
@@ -1414,7 +1429,9 @@ export async function route(
             : effectiveDefaultProvider();
       return { rules, defaultProvider };
     },
-    cachePath
+    cachePath,
+    modelSpec,
+    opts.network
   );
   emitRouteNotices(explanation);
   return toRoutePlan(explanation);
@@ -1432,13 +1449,21 @@ async function explainRoutePlan(
   modelSpec: string,
   bareRouting: () => BareRouting,
   cachePath: string | undefined,
-  requestedModel: string = modelSpec
+  requestedModel: string = modelSpec,
+  network: RouteNetwork = "await"
 ): Promise<RouteExplanation> {
   const parsed = parseModelSpec(modelSpec);
 
   if (parsed.isExplicitProvider) {
     // Not normalized here — see normalizeGlmSlug's note on explicit specs.
-    return explainExplicitSpec(requestedModel, modelSpec, parsed.model, parsed.provider, cachePath);
+    return explainExplicitSpec(
+      requestedModel,
+      modelSpec,
+      parsed.model,
+      parsed.provider,
+      cachePath,
+      network
+    );
   }
 
   return explainBareName(
@@ -1446,7 +1471,8 @@ async function explainRoutePlan(
     normalizeGlmSlug(parsed.model),
     parsed.provider,
     bareRouting(),
-    cachePath
+    cachePath,
+    network
   );
 }
 
@@ -1494,7 +1520,13 @@ export async function explainRoute(
   }
 
   const routeTarget = decision.type === "explicit" ? decision.spec : decision.model;
-  return explainRoutePlan(routeTarget, () => bareRoutingFor(opts), opts.cachePath, target);
+  return explainRoutePlan(
+    routeTarget,
+    () => bareRoutingFor(opts),
+    opts.cachePath,
+    target,
+    opts.network
+  );
 }
 
 /**

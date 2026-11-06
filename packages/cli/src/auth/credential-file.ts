@@ -191,6 +191,16 @@ export class CredentialFileState<T extends { access_token: string; refresh_token
     return "reloaded";
   }
 
+  /**
+   * The lineage of the login on disk now (see `lineageOf`), or undefined when
+   * there is none. Identity material for the dynamic models catalog's account
+   * key: hashed there, never logged. One stat; a read only when the file moved.
+   */
+  lineage(): string | undefined {
+    this.syncFromDisk();
+    return this.current ? lineageOf(this.current) : undefined;
+  }
+
   /** `syncFromDisk()`, and on "unreadable" re-read up to 3 times, 25 ms apart. */
   async settle(): Promise<DiskSync> {
     let result = this.syncFromDisk();

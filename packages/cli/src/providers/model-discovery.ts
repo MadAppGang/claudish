@@ -421,7 +421,10 @@ export function describeDiscoveryFailure(failure: DiscoveryFailure): string {
   }
 }
 
-/** Drop cached discovery (after a credential change / TUI hydrate-on-add). */
+/**
+ * Drop cached discovery (after a credential change / TUI hydrate-on-add). The
+ * memory half of `forgetAccountModelsLists`, which a login or logout runs.
+ */
 export function invalidateModelDiscovery(provider?: string): void {
   if (provider) {
     _cache.delete(provider);
@@ -708,6 +711,28 @@ export async function discoverProviderServedIds(
   };
 }
 
+/**
+ * Ask the provider's endpoint NOW, past the in-memory list, and return the full
+ * unsplit answer (opt-in ids included). The dynamic models catalog's refresh
+ * calls this once it has decided a list is old enough to ask again; the answer
+ * still lands in the in-memory list, so every other reader shares it. Never
+ * rejects.
+ */
+export async function fetchEveryServedModel(providerName: string): Promise<ModelsCatalogOutcome> {
+  _cache.delete(providerName);
+  return discoverEveryServedModel(providerName);
+}
+
+/**
+ * The in-memory list, unsplit, when one is held and unexpired; no network.
+ * For a caller that must not wait on discovery (a launch) but may use an answer
+ * this process already has.
+ */
+export function peekDiscoveredModels(providerName: string): DiscoveredModel[] | undefined {
+  const cached = _cache.get(providerName);
+  return cached && cached.expiresAt > Date.now() ? cached.models : undefined;
+}
+
 /** The discovery itself: the full list the provider returned, cached unsplit. Never rejects. */
 async function discoverEveryServedModel(providerName: string): Promise<ModelsCatalogOutcome> {
   const cached = _cache.get(providerName);
@@ -902,19 +927,36 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
   return outcome.kind === "served" ? outcome.models : [];
 }
 
+/** The window of the row whose id is `modelId`, case-insensitively. */
+function windowOf(models: DiscoveredModel[], modelId: string): number | undefined {
+  const needle = modelId.toLowerCase();
+  return models.find((m) => m.id.toLowerCase() === needle)?.contextWindow;
+}
+
 /**
  * Real context window for one model on one provider, from live discovery.
  * Returns undefined when discovery is unavailable or the model isn't listed —
  * callers fall back to the cloud catalog.
+ *
+ * `network: "cached-first"` is for a launch: when the account has a stored
+ * dynamic models catalog (any age up to its cap), its row answers and nothing is
+ * fetched, a missing row included. Only with no stored list does it wait on
+ * discovery, as `"await"` (the default) always does. Loaded lazily, because the
+ * stored-list module imports this one.
  */
 export async function discoverContextWindow(
   providerName: string,
-  modelId: string
+  modelId: string,
+  opts: { network?: "await" | "cached-first" } = {}
 ): Promise<number | undefined> {
+  if (opts.network === "cached-first") {
+    const { readAccountModelsList } = await import("./dynamic-models-catalog.js");
+    const stored = await readAccountModelsList(providerName);
+    if (stored) return windowOf(stored.models, modelId);
+  }
   // Exact-id lookup: an opt-in id the user typed still gets its served window.
   const { served, optIn } = await discoverProviderServedIds(providerName);
-  const match = [...served, ...optIn].find((m) => m.id.toLowerCase() === modelId.toLowerCase());
-  return match?.contextWindow;
+  return windowOf([...served, ...optIn], modelId);
 }
 
 /**

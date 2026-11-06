@@ -1586,7 +1586,9 @@ async function resolveLocalContextWindow(
   if (!parsed.isExplicitProvider) {
     // Bare name: resolve the backend the proxy will actually pick — the same
     // (memoized, process-shared) routing the proxy runs on the first request.
-    const plan = await route(spec);
+    // `background`: a launch never waits on a provider's discovery endpoint; it
+    // reads the account's stored model lists and starts their refreshes.
+    const plan = await route(spec, undefined, undefined, undefined, { network: "background" });
     if (plan.kind !== "ok") return null;
     provider = plan.primary.provider;
     wireId = parseModelSpec(plan.primary.modelSpec).model;
@@ -1596,8 +1598,10 @@ async function resolveLocalContextWindow(
   // Allegretto+), and the authenticated /models call answers for THIS user.
   // Providers without a modelDiscovery descriptor short-circuit to
   // undefined without a network call, so this stays free for everyone else.
+  // `cached-first`: a stored dynamic models catalog answers without a fetch;
+  // only an account with none waits on discovery for the window.
   const win =
-    (await discoverContextWindow(provider, wireId)) ??
+    (await discoverContextWindow(provider, wireId, { network: "cached-first" })) ??
     lookupModelForProvider(parsed.model, provider, cachePath) ??
     (wireId !== parsed.model ? lookupModelForProvider(wireId, provider, cachePath) : null);
   return {

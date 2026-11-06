@@ -192,6 +192,15 @@ export class KimiOAuth {
     return current !== null && !!current.refresh_token;
   }
 
+  /**
+   * Which login the file holds (refresh token, else access token). Identity
+   * material for the dynamic models catalog's account key, so it is hashed and
+   * never logged. No network.
+   */
+  credentialLineage(): string | undefined {
+    return this.state.lineage();
+  }
+
   /** The device id, loaded or created on first use. */
   private get deviceId(): string {
     if (this.deviceIdCache === null) {

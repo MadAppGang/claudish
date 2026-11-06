@@ -192,6 +192,17 @@ const GUARDED = [
       "against the real one",
   },
   {
+    // The HMAC secret the stored dynamic models catalogs are keyed under. A test
+    // that creates or replaces it orphans every real stored list.
+    path: join(homedir(), ".claudish", "dynamic-models-catalog.key"),
+    label: "REAL DYNAMIC MODELS CATALOG KEY",
+    secret: true,
+    requireRefreshToken: false,
+    remedy:
+      "set CLAUDISH_DYNAMIC_CATALOG_KEY and CLAUDISH_DYNAMIC_CATALOG_DIR to temp paths " +
+      "(Bun ignores an in-process HOME)",
+  },
+  {
     path: join(homedir(), ".claudish", "catalog-incompatible.json"),
     label: "REAL CATALOG CONTRACT SENTINEL",
     remedy:
@@ -216,6 +227,13 @@ const GUARDED_DIRS = [
     remedy:
       "pin CLAUDISH_ACCOUNTS_DIR to a temp accounts directory before any pooled request or " +
       "exhausted pool runs (Bun ignores an in-process HOME)",
+  },
+  {
+    // One file per claudish provider, each the account-keyed model lists its
+    // discovery endpoint answered. A test row here is read back as an account's list.
+    path: join(homedir(), ".claudish", "dynamic-models-catalog"),
+    label: "REAL DYNAMIC MODELS CATALOG",
+    remedy: "set CLAUDISH_DYNAMIC_CATALOG_DIR to a temp dir",
   },
 ] as const;
 

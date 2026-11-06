@@ -94,6 +94,33 @@ function patchedGuard(fixture: ScratchHome, before: string, after: string): stri
 }
 
 describe("guard-real-config", () => {
+  test("57. guards the dynamic models catalog directory and its secret key", () => {
+    withScratchHome((fixture) => {
+      const dir = join(fixture.claudishDir, "dynamic-models-catalog");
+      const listPath = join(dir, "devin.json");
+      const keyPath = join(fixture.claudishDir, "dynamic-models-catalog.key");
+      const secret = "7".repeat(64);
+      const result = runGuard(
+        fixture,
+        `import { mkdirSync, writeFileSync } from "node:fs";
+         mkdirSync(${JSON.stringify(dir)}, { mode: 0o700 });
+         writeFileSync(${JSON.stringify(listPath)}, '{"schema":1,"provider":"devin","accounts":{}}', { mode: 0o600 });
+         writeFileSync(${JSON.stringify(keyPath)}, ${JSON.stringify(secret)}, { mode: 0o600 });`
+      );
+
+      expect(result.exitCode).toBe(1);
+      const stderr = stderrOf(result);
+      expect(stderr).toContain("REAL DYNAMIC MODELS CATALOG KEY");
+      expect(stderr).toContain(keyPath);
+      expect(stderr).toContain("REAL DYNAMIC MODELS CATALOG");
+      expect(stderr).toContain(dir);
+      expect(stderr).toContain("devin.json");
+      expect(stderr).not.toContain(secret);
+      expect(existsSync(keyPath)).toBe(false);
+      expectNoSecretCopies(keyPath);
+    });
+  });
+
   test("moves a file created during the command to .guard-created and exits 1", () => {
     withScratchHome((fixture) => {
       const createdContent = '{"createdBy":"guard-test"}\n';

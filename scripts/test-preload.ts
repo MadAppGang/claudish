@@ -92,6 +92,16 @@ if (!inherited || !isTemporaryHome(inherited)) {
 }
 const fallbackHome = process.env.HOME as string;
 
+// The stored dynamic models catalogs and their HMAC secret, pinned under the
+// temporary home for the whole run, unless the environment already names them.
+// Both are read at call time, so this holds for every test file.
+for (const [name, leaf] of [
+  ["CLAUDISH_DYNAMIC_CATALOG_DIR", "dynamic-models-catalog"],
+  ["CLAUDISH_DYNAMIC_CATALOG_KEY", "dynamic-models-catalog.key"],
+] as const) {
+  if (process.env[name] === undefined) process.env[name] = join(fallbackHome, ".claudish", leaf);
+}
+
 // Capture the originals before any replacement: `nodeOs` is a live namespace.
 const originalUserInfo = nodeOs.userInfo;
 const homedir = (): string => {

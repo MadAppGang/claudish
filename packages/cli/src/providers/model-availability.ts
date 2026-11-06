@@ -47,9 +47,15 @@ import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 import { getCatalogEntries } from "./catalog-client.js";
 import { allConnections } from "./content-use.js";
 import {
+  isPersistedListProvider,
+  readAccountModelsList,
+  refreshAccountModelsList,
+} from "./dynamic-models-catalog.js";
+import {
   type DiscoveredModel,
   discoverProviderServedIds,
   getDiscoveryFailure,
+  peekDiscoveredModels,
 } from "./model-discovery.js";
 import { expandSelection } from "./model-resolvers/registry.js";
 import { getProviderByName } from "./provider-definitions.js";
@@ -61,6 +67,14 @@ import { getProviderByName } from "./provider-definitions.js";
  * - `unknown`     — no source could answer. Treat exactly as today's behaviour.
  */
 export type ModelAvailability = "serves" | "not-served" | "unknown";
+
+/**
+ * - `await`      — may wait on the provider's discovery endpoint (the request path).
+ * - `background` — never waits on it (a launch): answers from what is already
+ *                  known, starts the refresh, and reads `unknown` where only a
+ *                  fetch could decide.
+ */
+export type AvailabilityNetwork = "await" | "background";
 
 /** Case-insensitive match, since dynamic models catalogs disagree on casing (`MiniMax-M3`). */
 function modelsCatalogHas(ids: string[], wireId: string): boolean {
@@ -122,6 +136,53 @@ async function resolveAgainstModelsCatalog(
   return expandSelection(provider, wireId, entries);
 }
 
+/** Whether a complete list of `provider`'s models carries `wireId` in the provider's own spelling. */
+async function listServes(
+  provider: string,
+  wireId: string,
+  models: DiscoveredModel[]
+): Promise<boolean> {
+  return modelsCatalogHas(
+    models.map((m) => m.id),
+    await resolveAgainstModelsCatalog(provider, wireId, models)
+  );
+}
+
+/**
+ * The account's stored dynamic models catalog, for a provider that keeps one.
+ *
+ * A stored list of any age up to its cap may CONFIRM; only a `live` one (at most
+ * five minutes old, from any process, for this account key) may DENY. When an
+ * older list would deny, the request path asks the account once and that answer
+ * decides; a launch (`background`) never waits and reads `unknown`, with the
+ * refresh started for the next reader.
+ *
+ * `null` means this account has no binding to read under (no identity material,
+ * so nothing is stored for it): the caller falls back to plain discovery, which
+ * is what every provider did before lists were stored.
+ */
+async function storedListVerdict(
+  provider: string,
+  wireId: string,
+  network: AvailabilityNetwork
+): Promise<ModelAvailability | null> {
+  const list = await readAccountModelsList(provider);
+  if (list) {
+    if (await listServes(provider, wireId, list.models)) return "serves";
+    if (list.mayDeny) return "not-served";
+  }
+  if (network === "background") {
+    // Started, never awaited: the next reader gets the answer.
+    void refreshAccountModelsList(provider, "availability");
+    return "unknown";
+  }
+  const refreshed = await refreshAccountModelsList(provider, "availability", { minAgeMs: 0 });
+  if (refreshed.kind === "skipped") return list ? "unknown" : null;
+  const { outcome } = refreshed;
+  if (outcome.kind !== "served") return "unknown";
+  return (await listServes(provider, wireId, outcome.models)) ? "serves" : "not-served";
+}
+
 /**
  * Whether `provider` serves `wireId` — the id that would actually be SENT, not
  * the name the user typed. Callers hold the resolved spec already
@@ -129,29 +190,41 @@ async function resolveAgainstModelsCatalog(
  * compare against the wrong side of an `externalId` mapping.
  *
  * Never throws and never blocks meaningfully: discovery is TTL-cached and
- * fail-soft, and any failure degrades to `unknown`.
+ * fail-soft, and any failure degrades to `unknown`. With `network: "background"`
+ * it never waits on discovery at all.
  */
 export async function providerServesModel(
   provider: string,
-  wireId: string
+  wireId: string,
+  opts: { network?: AvailabilityNetwork } = {}
 ): Promise<ModelAvailability> {
+  const network = opts.network ?? "await";
   // 1. ENTITLEMENT — the provider's own answer about this key. Authoritative
   //    wherever it exists, because it reflects the caller's actual plan rather
   //    than what the vendor offers in general.
   const def = getProviderByName(provider);
   if (def?.modelDiscovery) {
+    if (isPersistedListProvider(provider)) {
+      const verdict = await storedListVerdict(provider, wireId, network);
+      if (verdict !== null) return verdict;
+    }
+    if (network === "background") {
+      // Only what this process already holds; otherwise warm it for the request
+      // path and answer `unknown`, which keeps the candidate where it is.
+      const held = peekDiscoveredModels(provider);
+      if (!held) {
+        void discoverProviderServedIds(provider);
+        return "unknown";
+      }
+      return (await listServes(provider, wireId, held)) ? "serves" : "not-served";
+    }
     // BOTH lists: this answers whether the id the request carries is entitled,
     // and an explicitly typed content-use opt-in id is entitled when the account
     // serves it. Nothing here offers a model, so nothing here can choose one.
     const { served, optIn } = await discoverProviderServedIds(provider);
     const models = [...served, ...optIn];
     if (models.length > 0) {
-      return modelsCatalogHas(
-        models.map((m) => m.id),
-        await resolveAgainstModelsCatalog(provider, wireId, models)
-      )
-        ? "serves"
-        : "not-served";
+      return (await listServes(provider, wireId, models)) ? "serves" : "not-served";
     }
     // An empty dynamic models catalog is never a "no". `empty-models-catalog`
     // means the endpoint answered with nothing to offer; every other kind (unauthorized,

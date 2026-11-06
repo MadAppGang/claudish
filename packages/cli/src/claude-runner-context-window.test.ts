@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -96,6 +96,75 @@ afterAll(() => {
 });
 
 describe("computeMainThreadContextWindow", () => {
+  test("58. launch reads the stored window without discovery", async () => {
+    const home = mkdtempSync(join(tmpdir(), "claudish-stored-launch-window-"));
+    const previousDir = process.env.CLAUDISH_DYNAMIC_CATALOG_DIR;
+    const previousKey = process.env.CLAUDISH_DYNAMIC_CATALOG_KEY;
+    const realFetch = globalThis.fetch;
+    const options = {
+      dir: join(home, "dynamic-models-catalog"),
+      keyPath: join(home, "dynamic-models-catalog.key"),
+    };
+    process.env.CLAUDISH_DYNAMIC_CATALOG_DIR = options.dir;
+    process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = options.keyPath;
+    try {
+      const catalog = await import("./providers/dynamic-models-catalog.js");
+      const store = await import("./providers/dynamic-models-catalog-store.js");
+      const { credentials } = await import("./auth/credentials/authority.js");
+      const { invalidateModelDiscovery } = await import("./providers/model-discovery.js");
+      const original = {
+        identity: credentials.accountIdentity,
+        readiness: credentials.describeReadiness,
+        auth: credentials.getRequestAuth,
+      };
+      const fetcher = mock(async () => {
+        throw new Error("Launch must use the stored window");
+      });
+      globalThis.fetch = fetcher as unknown as typeof fetch;
+      credentials.accountIdentity = mock(async (provider: string) =>
+        provider === "kimi-coding" ? "A" : undefined
+      );
+      credentials.describeReadiness = mock(async (provider: string) => ({
+        readiness: provider === "kimi-coding" ? ("present" as const) : ("absent" as const),
+      }));
+      credentials.getRequestAuth = mock(async () => ({
+        headers: { Authorization: "Bearer offline-test" },
+      }));
+      try {
+        catalog._resetAccountModelsListsForTest();
+        invalidateModelDiscovery();
+        const key = store.deriveAccountKey("kimi-coding", "A", options);
+        expect(key.ok).toBe(true);
+        if (!key.ok) throw new Error(key.reason);
+        expect(
+          store.writeStoredModelsList(
+            "kimi-coding",
+            key.accountKey,
+            [{ id: "k3", contextWindow: 262144, reported: "chat" }],
+            { ...options, now: () => Date.now() - 2 * 3600000 }
+          )
+        ).toBe(true);
+        const config = { model: "kc@k3" } as ClaudishConfig;
+        expect(await computeMainThreadContextWindow(config, mockCachePath)).toBe(262144);
+        expect(fetcher).not.toHaveBeenCalled();
+        expect(credentials.getRequestAuth).not.toHaveBeenCalled();
+      } finally {
+        credentials.accountIdentity = original.identity;
+        credentials.describeReadiness = original.readiness;
+        credentials.getRequestAuth = original.auth;
+        catalog._resetAccountModelsListsForTest();
+        invalidateModelDiscovery();
+      }
+    } finally {
+      globalThis.fetch = realFetch;
+      if (previousDir === undefined) delete process.env.CLAUDISH_DYNAMIC_CATALOG_DIR;
+      else process.env.CLAUDISH_DYNAMIC_CATALOG_DIR = previousDir;
+      if (previousKey === undefined) delete process.env.CLAUDISH_DYNAMIC_CATALOG_KEY;
+      else process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = previousKey;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("exposes the Claude Code auto-compaction floor", () => {
     expect(MIN_AUTO_COMPACT_WINDOW).toBe(200_000);
   });

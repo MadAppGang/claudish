@@ -105,6 +105,20 @@ export class CompositeCredentialProvider implements CredentialProvider {
   }
 
   /**
+   * The identity of the half `getRequestAuth` would choose: the primary when it
+   * is available, else the fallback. Prefixed by the half, so an OAuth login and
+   * an API key never derive the same account key.
+   */
+  async accountIdentity(opts?: { allowOpPrompt?: boolean }): Promise<string | undefined> {
+    const primaryAvailable = await this.primary.isAvailable(opts).catch(() => false);
+    const [half, label] = primaryAvailable
+      ? [this.primary, "primary"]
+      : [this.fallback, "fallback"];
+    const material = await half.accountIdentity?.(opts);
+    return material ? `${label}\n${material}` : undefined;
+  }
+
+  /**
    * Both arms return an artifact; NEITHER returns null.
    *
    * This is the fact consumers get wrong. The fallback below is normally an

@@ -128,6 +128,16 @@ export abstract class OAuthManager<T extends BaseCredentials = BaseCredentials> 
     return current !== null && !!current.refresh_token;
   }
 
+  /**
+   * Which login the file holds: its refresh token, else its access token, as
+   * `credential-file.ts` names a lineage. Identity material for the dynamic
+   * models catalog's account key, so it is hashed and never logged. No network.
+   * undefined when no login is on disk.
+   */
+  credentialLineage(): string | undefined {
+    return this.fileState.lineage();
+  }
+
   protected noCredentialsError(): Error {
     return terminalCredentialError(
       `No ${this.providerName} credentials found. Please run \`${this.loginHint}\` first.`

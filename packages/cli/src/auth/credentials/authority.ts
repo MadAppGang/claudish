@@ -12,7 +12,7 @@
  * instance.
  */
 
-import { BUILTIN_PROVIDERS } from "../../providers/provider-definitions.js";
+import { BUILTIN_PROVIDERS, getProviderByName } from "../../providers/provider-definitions.js";
 import { AccountListInvalidError, AccountListUnavailableError } from "../accounts/errors.js";
 import { AntigravityCredentialProvider } from "./antigravity-credential.js";
 import { ApiKeyCredentialProvider } from "./api-key-credential.js";
@@ -77,6 +77,7 @@ function normalizeAuthScheme(
 
 export class CredentialAuthority {
   private registry = new Map<string, CredentialProvider>();
+  private invalidationListeners = new Set<(name?: string) => void>();
 
   register(p: CredentialProvider, aliases: string[] = []): void {
     this.registry.set(p.catalogName, p);
@@ -191,6 +192,80 @@ export class CredentialAuthority {
   }
 
   /**
+   * Identity material for the credential `name` would sign with now, bound to
+   * the endpoint: the provider's own material, then the value of every base-URL
+   * override its definition honours, so the same key against another server
+   * reads as another account. Only the dynamic models catalog store consumes it,
+   * and only to hash it. It is never logged and never written anywhere.
+   *
+   * Never throws. undefined for an unknown provider, one that implements no
+   * `accountIdentity`, or one with nothing to sign with.
+   */
+  async accountIdentity(
+    name: string,
+    opts?: { allowOpPrompt?: boolean }
+  ): Promise<string | undefined> {
+    const provider = this.registry.get(name);
+    if (!provider?.accountIdentity) return undefined;
+    try {
+      const material = await provider.accountIdentity(opts);
+      if (!material) return undefined;
+      const overrides = (getProviderByName(name)?.baseUrlEnvVars ?? [])
+        .map((envVar) => `${envVar}=${process.env[envVar]?.trim() ?? ""}`)
+        .join("\n");
+      return overrides ? `${material}\n${overrides}` : material;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Subscribe to `invalidate()`. A module that memoizes something derived from
+   * a credential (the dynamic models catalog's identity memo) drops it here, so
+   * an invalidation reaches it without this module importing it.
+   */
+  onInvalidate(listener: (name?: string) => void): () => void {
+    this.invalidationListeners.add(listener);
+    return () => this.invalidationListeners.delete(listener);
+  }
+
+  private notifyInvalidated(name?: string): void {
+    for (const listener of this.invalidationListeners) {
+      try {
+        listener(name);
+      } catch {
+        // A listener's fault must not abort the invalidation of the others.
+      }
+    }
+  }
+
+  /** Every name registered to the same provider instance as `name`, `name` included. */
+  private namesSharing(name: string): string[] {
+    const provider = this.registry.get(name);
+    if (!provider) return [name];
+    const names = [...this.registry.entries()]
+      .filter(([, registered]) => registered === provider)
+      .map(([registeredName]) => registeredName);
+    return names.includes(name) ? names : [name, ...names];
+  }
+
+  /**
+   * A login or logout replaces the account behind `name`, so its stored dynamic
+   * models catalog is deleted with it. Loaded lazily: the catalog module imports
+   * this one. A failure here never fails the login itself.
+   */
+  private async forgetModelsLists(name: string): Promise<void> {
+    try {
+      const { forgetAccountModelsLists } = await import(
+        "../../providers/dynamic-models-catalog.js"
+      );
+      for (const registered of this.namesSharing(name)) forgetAccountModelsLists(registered);
+    } catch {
+      // Best effort: a new credential derives a new account key and misses anyway.
+    }
+  }
+
+  /**
    * Drop any memoized resolution. With no name, invalidate every registered
    * provider (after a TUI hydrate-on-add or a config change). Idempotent.
    *
@@ -204,6 +279,7 @@ export class CredentialAuthority {
    */
   invalidate(name?: string): void {
     clearSignedArm(name);
+    this.notifyInvalidated(name);
     if (name) {
       this.registry.get(name)?.invalidate?.();
       return;
@@ -221,6 +297,7 @@ export class CredentialAuthority {
     await this.registry.get(name)?.login?.();
     // A new credential may sign with a different arm than the last request did.
     clearSignedArm(name);
+    await this.forgetModelsLists(name);
   }
 
   async logout(name: string): Promise<void> {
@@ -228,6 +305,7 @@ export class CredentialAuthority {
     // The OAuth file is gone. Keeping a `subscription` record here is the exact
     // staleness that reports SUB and $0 for a user who is now on the API key.
     clearSignedArm(name);
+    await this.forgetModelsLists(name);
   }
 
   get(name: string): CredentialProvider | undefined {

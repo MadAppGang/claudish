@@ -20,10 +20,14 @@
 
 import {
   grokAuthHeaders,
+  hasClaudishGrokOAuth,
   hasGrokCredentials,
+  readGrokCredential,
+  readGrokProxyUrl,
   resolveGrokAccessToken,
   resolveGrokClientVersion,
 } from "../../providers/grok/grok-credentials.js";
+import { GrokOAuth } from "../grok-oauth.js";
 import type { CredentialProvider, ReadinessResult, RequestAuth } from "./types.js";
 import { readinessDetail } from "./types.js";
 
@@ -53,6 +57,22 @@ export class GrokSubscriptionCredentialProvider implements CredentialProvider {
   /** Unchanged contract: the `=== "present"` projection of the above. */
   async isAvailable(): Promise<boolean> {
     return (await this.describeReadiness()).readiness === "present";
+  }
+
+  /**
+   * The lineage of the login `resolveGrokAccessToken` would sign with, in its
+   * order: claudish's own login first, then the Grok CLI's `auth.json`. A
+   * refresh token stands for the login; with none, the access key does. Bound to
+   * the proxy URL the requests go to.
+   */
+  async accountIdentity(): Promise<string | undefined> {
+    let lineage: string | undefined;
+    if (hasClaudishGrokOAuth()) lineage = GrokOAuth.getInstance().credentialLineage();
+    if (!lineage) {
+      const cred = readGrokCredential();
+      if (cred) lineage = cred.refreshToken ? `refresh:${cred.refreshToken}` : `access:${cred.key}`;
+    }
+    return lineage ? `${lineage}\n${readGrokProxyUrl()}` : undefined;
   }
 
   /**
