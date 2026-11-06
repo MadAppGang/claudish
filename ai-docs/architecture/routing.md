@@ -407,8 +407,8 @@ reader, so a reader added later inherits it:
 
 The rows are moved, never deleted. Only EXACT-id readers consult `allConnections()`:
 `resolveExternalId`'s first step (`publishesWireIdFor`), `findConnection`'s exact step, the
-availability reverse lookup, `allExternalIds`, and `wiresMatchRegistry`, which still validates
-every row. A reader that CHOOSES a wire id reads `aggregators[]` and cannot see an opt-in one.
+availability reverse lookup, and `allExternalIds`. `reconcileWires` still checks every row: it
+walks `aggregators[]` and `optInConnections` both. A reader that CHOOSES a wire id reads `aggregators[]` and cannot see an opt-in one.
 
 A provider whose only connection for a model is a contributor one is not gathered. `--probe`
 shows it as `excluded-by-content-use`. A provider that maps both ids keeps its plain candidate

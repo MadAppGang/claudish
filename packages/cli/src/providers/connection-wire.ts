@@ -123,7 +123,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isWireApi(value: unknown): value is WireApi {
+export function isWireApi(value: unknown): value is WireApi {
   return typeof value === "string" && (WIRE_APIS as readonly string[]).includes(value);
 }
 
@@ -153,6 +153,12 @@ export function isConnectionWire(value: unknown): value is ConnectionWire {
   }
 }
 
+/**
+ * Structural check of a route registry. A profile may publish an API claudish
+ * does not implement: that key is accepted as long as its entry has a string
+ * `baseUrl`, and no request ever reads it. {@link sanitizeRouteRegistry} removes
+ * such keys before a registry is written to disk.
+ */
 export function isRouteRegistry(value: unknown): value is RouteRegistry {
   if (!isObject(value) || typeof value.registryVersion !== "string" || !isObject(value.routes)) {
     return false;
@@ -166,11 +172,28 @@ export function isRouteRegistry(value: unknown): value is RouteRegistry {
           isObject(profile) &&
           typeof profile.kind === "string" &&
           isObject(profile.apis) &&
-          Object.entries(profile.apis).every(
-            ([api, entry]) => isWireApi(api) && isObject(entry) && typeof entry.baseUrl === "string"
+          Object.values(profile.apis).every(
+            (entry) => isObject(entry) && typeof entry.baseUrl === "string"
           )
       )
   );
+}
+
+/**
+ * A copy of `registry` without the profile `apis` keys outside {@link WIRE_APIS}.
+ * Builds that predate an API reject a registry naming it, so every registry
+ * claudish writes to disk goes through here. The input is not mutated.
+ */
+export function sanitizeRouteRegistry(registry: RouteRegistry): RouteRegistry {
+  const copy = structuredClone(registry);
+  for (const route of Object.values(copy.routes)) {
+    for (const profile of Object.values(route.profiles)) {
+      for (const api of Object.keys(profile.apis)) {
+        if (!isWireApi(api)) Reflect.deleteProperty(profile.apis, api);
+      }
+    }
+  }
+  return copy;
 }
 
 /** `"3.7.0"` ≥ `"3.6.2"`, compared numerically per part. */

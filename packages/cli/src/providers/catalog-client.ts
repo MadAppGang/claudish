@@ -6,7 +6,7 @@ import {
   isCachedSubscriptionPlan,
   isSlimModelEntry,
   readAllModelsCache,
-  wiresMatchRegistry,
+  reconcileWires,
   writeAllModelsCache,
   writeRouteRegistry,
 } from "./all-models-cache.js";
@@ -464,13 +464,16 @@ async function refreshCatalogOnce(
     return { kind: "fetch_failed", reason: registryResult.reason };
   }
   const routeRegistry: CachedRouteRegistry = { generationId, registry: registryResult.registry };
-  if (!wiresMatchRegistry(entries, routeRegistry, generationId)) {
+  const reconciled = reconcileWires(entries, routeRegistry, generationId);
+  if (!reconciled) {
     return { kind: "fetch_failed", reason: "incomplete" };
   }
 
-  // The disk keeps the RAW rows (validated above, and what older builds read);
-  // memory gets them split, exactly as `readAllModelsCache` hands them out.
-  const normalised = entries.map(splitOptInConnections);
+  // The disk keeps the RAW rows, reconciled, so an older build that rejects a
+  // cache with one unusable wire still reads it; memory gets them split,
+  // exactly as `readAllModelsCache` hands them out.
+  const rawEntries = reconciled.entries;
+  const normalised = rawEntries.map(splitOptInConnections);
   const models = normalised.flatMap((entry) => {
     const id = externalIdFor(entry, "openrouter");
     return id ? [{ id }] : [];
@@ -478,7 +481,7 @@ async function refreshCatalogOnce(
   const cache: DiskCacheV3 = {
     version: 3,
     lastUpdated: generatedAt,
-    entries,
+    entries: rawEntries,
     models,
     plans: planResult.plans,
     catalogGenerationId: generationId,
@@ -629,7 +632,7 @@ export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> 
     const result = await fetchRouteRegistry(timeoutMs, cache.catalogGenerationId);
     if (result.ok) {
       const routeRegistry = { generationId: cache.catalogGenerationId, registry: result.registry };
-      if (wiresMatchRegistry(cache.entries, routeRegistry, cache.catalogGenerationId)) {
+      if (reconcileWires(cache.entries, routeRegistry, cache.catalogGenerationId)) {
         writeRouteRegistry(routeRegistry);
         return;
       }

@@ -200,7 +200,7 @@ export interface AggregatorEntry {
   sourceProviderId: string;
   sourceCollectorId: string;
   confidence: ConfidenceTier;
-  routeStatus: "mapped" | "unmapped";
+  routeStatus: "mapped" | "unknown";
   route?: { routeId: string; routeProfileId: string };
   externalModelId?: string;
   /**
