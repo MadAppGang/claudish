@@ -331,11 +331,18 @@ export function buildReplayArgv(
   ];
 }
 
-/** The `--settings` value: two known keys, so `env` and `apiKeyHelper` cannot enter. */
+/**
+ * The `--settings` value: only the known keys `statusLine`, `wheelScrollAccelerationEnabled`
+ * and `tui`, so `env` and `apiKeyHelper` cannot enter. `tui: "fullscreen"` is set because
+ * `--setting-sources ""` keeps the user's `tui` from reaching the replay, and without it Claude
+ * Code picks its view by install and feature gates; the classic view ignores the SGR wheel
+ * events `scroll_session` sends.
+ */
 export function replaySettingsJson(statusLine: unknown | null): string {
   return JSON.stringify({
     ...(statusLine === null ? {} : { statusLine }),
     wheelScrollAccelerationEnabled: false,
+    tui: "fullscreen",
   });
 }
 

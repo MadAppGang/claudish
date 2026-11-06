@@ -966,6 +966,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
       expect(spawn1.argv[9]).toBe("--settings");
       expect(JSON.parse(spawn1.argv[10]!)).toEqual({
         wheelScrollAccelerationEnabled: false,
+        tui: "fullscreen",
         statusLine: statusLineConfig,
       });
 
@@ -1038,6 +1039,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
       const spawn2 = standin.spawns()[1]!;
       expect(JSON.parse(spawn2.argv[10]!)).toEqual({
         wheelScrollAccelerationEnabled: false,
+        tui: "fullscreen",
       });
       expect(spawn2.cwd).toBe(realpathSync(layout.cwd));
 
