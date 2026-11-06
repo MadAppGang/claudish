@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.15.1] - 2026-11-06
+
+### Bug Fixes
+
+- start replay and pane children in the fullscreen tui view *(mcp)* ([`2c686a6`](https://github.com/MadAppGang/claudish/commit/2c686a67830b99fb5e94f994d9499b70c9120b0f))
+
+### Documentation
+
+- update CHANGELOG.md for v14.15.0([`fe805bd`](https://github.com/MadAppGang/claudish/commit/fe805bd2c8fc8751c782e85757fdc4dd4d89b85f))
+
 ## [14.15.0] - 2026-11-05
 
 ### Bug Fixes
