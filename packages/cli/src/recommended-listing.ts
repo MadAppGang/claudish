@@ -20,6 +20,7 @@ import {
   normalizePricingDisplay,
   quickPickCandidates,
 } from "./model-loader.js";
+import { MODEL_CATALOG_NAME } from "./providers/catalog-name.js";
 import type { ModelEffortRecommendations } from "./providers/effort-recommendations.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
 import { nativeProviderForVendor } from "./providers/route-candidates.js";
@@ -125,7 +126,9 @@ export function renderRecommendedText(
   lines.push("  For more: claudish --models                     (browse full catalog)");
   lines.push("            claudish --providers                   (list all providers + counts)");
   lines.push("            claudish -s <query>                    (search by keyword)");
-  lines.push("            claudish --models-top --models-refresh (refresh from Firebase)");
+  lines.push(
+    `            claudish --models-top --models-refresh (refresh the ${MODEL_CATALOG_NAME})`
+  );
   lines.push("");
   return lines.join("\n");
 }

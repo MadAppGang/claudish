@@ -106,12 +106,20 @@ describe("shouldWarmCatalog", () => {
     expect(shouldWarmCatalog({})).toBe(true);
   });
 
-  test("aggregator prefix or@ → true", () => {
-    expect(shouldWarmCatalog({ model: "or@x" })).toBe(true);
+  test("explicit model spec or@x → false", () => {
+    expect(shouldWarmCatalog({ model: "or@x" })).toBe(false);
   });
 
-  test("native prefix g@ → true", () => {
-    expect(shouldWarmCatalog({ model: "g@x" })).toBe(true);
+  test("explicit model spec g@gemini-2.0-flash → false", () => {
+    expect(shouldWarmCatalog({ model: "g@gemini-2.0-flash" })).toBe(false);
+  });
+
+  test("explicit model spec dv@muse-wonder-1-0-high → false", () => {
+    expect(shouldWarmCatalog({ model: "dv@muse-wonder-1-0-high" })).toBe(false);
+  });
+
+  test("explicit model spec cx@gpt-6-astra → false", () => {
+    expect(shouldWarmCatalog({ model: "cx@gpt-6-astra" })).toBe(false);
   });
 
   test("bare model id gpt-4o → true", () => {
@@ -215,7 +223,7 @@ describe("warmCatalogIfNeeded", () => {
       catalogGenerationId: "test-generation",
       plans: [],
       version: 3,
-      lastUpdated: new Date(NOW.getTime() - 30 * 60 * 60 * 1000).toISOString(), // 30h old
+      lastUpdated: new Date(NOW.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString(), // 3 days old
       entries: [{ modelId: "alpha", aliases: [] }],
       models: [{ id: "vendor/alpha" }],
     };
@@ -245,11 +253,32 @@ describe("warmCatalogIfNeeded", () => {
     expect(refreshSpy).not.toHaveBeenCalled();
   });
 
+  test("--models-skip-update + forceUpdate=true → 'skipped' and refreshCatalog NOT called", async () => {
+    const config = makeConfig({
+      model: "cx@gpt-6-astra",
+      forceUpdate: true,
+      skipModelsUpdate: true,
+      quiet: false,
+    });
+    const result = await warmCatalogIfNeeded(config, { now: NOW });
+    expect(result).toBe("skipped");
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(stderrChunks.join("")).toBe("");
+  });
+
   test("local model ollama@x → 'skipped' and refreshCatalog NOT called", async () => {
     const config = makeConfig({ model: "ollama@llama3.2" });
     const result = await warmCatalogIfNeeded(config, { now: NOW });
     expect(result).toBe("skipped");
     expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
+  test("ollama@llama3.2 + forceUpdate=true → 'skipped' and refreshCatalog NOT called", async () => {
+    const config = makeConfig({ model: "ollama@llama3.2", forceUpdate: true, quiet: false });
+    const result = await warmCatalogIfNeeded(config, { now: NOW });
+    expect(result).toBe("skipped");
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(stderrChunks.join("")).toBe("");
   });
 
   test("fresh cache + !forceUpdate → 'ok' without calling refreshCatalog", async () => {
@@ -270,39 +299,127 @@ describe("warmCatalogIfNeeded", () => {
     expect(refreshSpy).toHaveBeenCalledWith(8000);
   });
 
-  test("stale cache + refreshed → 'ok'", async () => {
+  for (const model of ["cx@gpt-6-astra", "dv@muse-wonder-1-0-high"]) {
+    test.each(["fresh", "stale", "missing"] as const)(
+      `explicit ${model} + %s cache + forceUpdate=true → calls refreshCatalog once → 'ok'`,
+      async (state) => {
+        mockReadResult = state === "fresh" ? freshCache() : state === "stale" ? staleCache() : null;
+        mockRefreshOutcome = { kind: "refreshed", modelCount: 42 };
+        const config = makeConfig({ model, forceUpdate: true });
+        expect(shouldWarmCatalog(config)).toBe(false);
+
+        const result = await warmCatalogIfNeeded(config, { now: NOW });
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+        expect(refreshSpy).toHaveBeenCalledWith(8000);
+        expect(result).toBe("ok");
+        expect(stderrChunks.join("")).toBe("");
+      }
+    );
+  }
+
+  const ttyCases: Array<[string, "fresh" | "stale" | "missing", RefreshOutcome]> = [
+    ["refreshed", "missing", { kind: "refreshed", modelCount: 7 }],
+    ["network failure with missing cache", "missing", { kind: "fetch_failed", reason: "network" }],
+    ["network failure with stale cache", "stale", { kind: "fetch_failed", reason: "network" }],
+    ["network failure with fresh cache", "fresh", { kind: "fetch_failed", reason: "network" }],
+    [
+      "incompatible with missing cache",
+      "missing",
+      { kind: "incompatible", serverContractVersion: 4 },
+    ],
+    ["incompatible with cached data", "stale", { kind: "incompatible", serverContractVersion: 4 }],
+    ["disabled", "missing", { kind: "fetch_failed", reason: "disabled" }],
+  ];
+
+  test.each(ttyCases)(
+    "forceUpdate uses no spinner or backend name on TTY stderr: %s",
+    async (_label, state, outcome) => {
+      mockReadResult = state === "fresh" ? freshCache() : state === "stale" ? staleCache() : null;
+      mockRefreshOutcome = outcome;
+      const descriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+      Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
+      try {
+        const config = makeConfig({ model: "gpt-4o", forceUpdate: true, quiet: false });
+        await warmCatalogIfNeeded(config, { now: NOW });
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+        const stderrText = stderrChunks.join("");
+        expect(stderrText).not.toContain("\r");
+        expect(stderrText).not.toContain("Firebase");
+      } finally {
+        if (descriptor) Object.defineProperty(process.stderr, "isTTY", descriptor);
+        else Reflect.deleteProperty(process.stderr, "isTTY");
+      }
+    }
+  );
+
+  test("stale cache + !forceUpdate → no refresh or stderr and no hard fail", async () => {
     mockReadResult = staleCache();
-    mockRefreshOutcome = { kind: "refreshed", modelCount: 13 };
-    const config = makeConfig({ model: "gpt-4o" });
+    const config = makeConfig({ model: "gpt-4o", quiet: false });
     const result = await warmCatalogIfNeeded(config, { now: NOW });
-    expect(result).toBe("ok");
-    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(stderrChunks.join("")).toBe("");
+    expect(result).not.toBe("hard_fail");
   });
 
-  test("stale cache + fetch_failed → 'warned' with WARNING line on stderr", async () => {
-    mockReadResult = staleCache();
+  test("missing cache + !forceUpdate → no refresh or stderr and no hard fail", async () => {
+    mockReadResult = null;
     mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
     const config = makeConfig({ model: "gpt-4o", quiet: false });
     const result = await warmCatalogIfNeeded(config, { now: NOW });
-    expect(result).toBe("warned");
-    const stderrText = stderrChunks.join("");
-    expect(stderrText).toContain("WARNING: Catalog stale");
-    expect(stderrText).toContain("--models-refresh");
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(stderrChunks.join("")).toBe("");
+    expect(result).not.toBe("hard_fail");
   });
 
-  test("missing cache + refreshed → 'ok'", async () => {
-    mockReadResult = null;
-    mockRefreshOutcome = { kind: "refreshed", modelCount: 7 };
-    const config = makeConfig({ model: "gpt-4o" });
+  test.each(["fresh", "stale", "missing"] as const)(
+    "explicit dv@ model spec + %s cache → no refresh or stderr",
+    async (state) => {
+      mockReadResult = state === "fresh" ? freshCache() : state === "stale" ? staleCache() : null;
+      mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
+      const config = makeConfig({ model: "dv@muse-wonder-1-0-high", quiet: false });
+      const result = await warmCatalogIfNeeded(config, { now: NOW });
+      expect(refreshSpy).not.toHaveBeenCalled();
+      expect(stderrChunks.join("")).toBe("");
+      expect(result).not.toBe("hard_fail");
+    }
+  );
+
+  test("stale cache + forceUpdate + refreshed → 'ok'", async () => {
+    mockReadResult = staleCache();
+    mockRefreshOutcome = { kind: "refreshed", modelCount: 13 };
+    const config = makeConfig({ model: "gpt-4o", forceUpdate: true, quiet: false });
     const result = await warmCatalogIfNeeded(config, { now: NOW });
     expect(result).toBe("ok");
     expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(stderrChunks.join("")).not.toContain("Firebase");
   });
 
-  test("missing cache + disabled refresh → 'skipped' without hard-fail copy", async () => {
+  test("stale cache + forceUpdate + fetch_failed → 'warned' with WARNING line on stderr", async () => {
+    mockReadResult = staleCache();
+    mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
+    const config = makeConfig({ model: "gpt-4o", forceUpdate: true, quiet: false });
+    const result = await warmCatalogIfNeeded(config, { now: NOW });
+    expect(result).toBe("warned");
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    const stderrText = stderrChunks.join("");
+    expect(stderrText).toMatch(/^WARNING: [^\r\n]*\n$/);
+    expect(stderrText).not.toContain("Firebase");
+  });
+
+  test("missing cache + forceUpdate + refreshed → 'ok'", async () => {
+    mockReadResult = null;
+    mockRefreshOutcome = { kind: "refreshed", modelCount: 7 };
+    const config = makeConfig({ model: "gpt-4o", forceUpdate: true, quiet: false });
+    const result = await warmCatalogIfNeeded(config, { now: NOW });
+    expect(result).toBe("ok");
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(stderrChunks.join("")).not.toContain("Firebase");
+  });
+
+  test("missing cache + forceUpdate + disabled refresh → 'skipped' without hard-fail copy", async () => {
     mockReadResult = null;
     mockRefreshOutcome = { kind: "fetch_failed", reason: "disabled" };
-    const config = makeConfig({ model: "gpt-4o", quiet: false });
+    const config = makeConfig({ model: "gpt-4o", forceUpdate: true, quiet: false });
 
     const result = await warmCatalogIfNeeded(config, { now: NOW });
 
@@ -313,28 +430,21 @@ describe("warmCatalogIfNeeded", () => {
     expect(stderrText).not.toContain("Error: cannot reach model catalog and no cached copy found.");
   });
 
-  test("missing cache + genuine network failure → 'hard_fail' with verbatim error", async () => {
+  test("missing cache + forceUpdate + network failure → no hard fail and one warning line", async () => {
     mockReadResult = null;
     mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
-    const config = makeConfig({ model: "gpt-4o" });
+    const config = makeConfig({ model: "gpt-4o", forceUpdate: true, quiet: false });
     const result = await warmCatalogIfNeeded(config, { now: NOW });
-    expect(result).toBe("hard_fail");
+    expect(result).not.toBe("hard_fail");
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
 
     const stderrText = stderrChunks.join("");
-    // Verbatim FR-4 message expected.
-    expect(stderrText).toContain("Error: cannot reach model catalog and no cached copy found.");
-    expect(stderrText).toContain("Check network connection");
-    expect(stderrText).toContain("Use a local model: claudish --model ollama@llama3.2 'task'");
-    expect(stderrText).toContain("Skip catalog (advanced): claudish --models-skip-update 'task'");
-    expect(stderrText).toContain(
-      "Claudish will not launch without catalog data when using cloud models."
-    );
+    expect(stderrText).toMatch(/^WARNING: [^\r\n]*\n$/);
+    expect(stderrText).not.toContain("\r");
+    expect(stderrText).not.toContain("Firebase");
   });
 
-  test("stale cache aged exactly 24h + fetch_failed → WARNING uses singular '1 day'", async () => {
-    // Verifies humanizeAge pluralization (L2): a cache aged exactly 24h
-    // should render as "1 day", not "1 days". The cache is stale at the
-    // 24h boundary because classifyCatalogState uses strict-less-than.
+  test("stale cache aged exactly 24h + !forceUpdate → no refresh or stderr", async () => {
     const oneDayAgo = new Date(NOW.getTime() - 24 * 3_600_000).toISOString();
     mockReadResult = {
       catalogGenerationId: "test-generation",
@@ -347,9 +457,8 @@ describe("warmCatalogIfNeeded", () => {
     mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
     const config = makeConfig({ model: "gpt-4o", quiet: false });
     const result = await warmCatalogIfNeeded(config, { now: NOW });
-    expect(result).toBe("warned");
-    const stderrText = stderrChunks.join("");
-    expect(stderrText).toContain("1 day");
-    expect(stderrText).not.toContain("1 days");
+    expect(refreshSpy).not.toHaveBeenCalled();
+    expect(stderrChunks.join("")).toBe("");
+    expect(result).not.toBe("hard_fail");
   });
 });
