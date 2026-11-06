@@ -706,12 +706,24 @@ describe("route()", () => {
   });
 
   test("explicit Devin dv@glm-5-2 preserves the dash-native uid without normalization", async () => {
-    process.env.WINDSURF_API_KEY = "devin-session-token$test";
-    const plan = await route("dv@glm-5-2", {});
-    expect(plan.kind).toBe("ok");
-    if (plan.kind !== "ok") return;
-    expect(plan.primary.modelSpec).toBe("dv@glm-5-2");
-    expect(plan.primary.modelSpec).not.toBe("dv@glm-5.2");
+    const originalFetcher = getModelDiscoveryFetcher("devin-connect");
+    if (!originalFetcher) throw new Error("Devin discovery fetcher is not registered");
+    registerModelDiscoveryFetcher("devin-connect", async () => ({
+      kind: "models",
+      models: [{ id: "glm-5-2" }],
+    }));
+    invalidateModelDiscovery("devin");
+    try {
+      process.env.WINDSURF_API_KEY = "devin-session-token$test";
+      const plan = await route("dv@glm-5-2", {});
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.modelSpec).toBe("dv@glm-5-2");
+      expect(plan.primary.modelSpec).not.toBe("dv@glm-5.2");
+    } finally {
+      registerModelDiscoveryFetcher("devin-connect", originalFetcher);
+      invalidateModelDiscovery("devin");
+    }
   });
 
   test("claude-opus-4-7 with only OPENROUTER_API_KEY → primary openrouter", async () => {
