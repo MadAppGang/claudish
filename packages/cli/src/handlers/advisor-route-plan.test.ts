@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,6 +126,32 @@ const launchConfig: ClaudishConfig = {
   noLogs: true,
   diagMode: "off",
 };
+
+describe("advisor catalog readiness", () => {
+  for (const role of ["panel", "collector"] as const) {
+    test(`explicit Codex ${role} planning never waits for the catalog`, async () => {
+      const ensureCatalog = mock(async (_timeoutMs: number) => {});
+      const deps = planningDeps(async (spec) =>
+        explanation(spec, [candidate("openai-codex", "OpenAI Codex", "cx@gpt-6-astra")])
+      );
+      deps.ensureCatalog = ensureCatalog;
+      const plan = await planAdvisorModel("cx@gpt-6-astra", role, deps);
+      expect(plan.kind).toBe("routed");
+      expect(ensureCatalog).not.toHaveBeenCalled();
+    });
+
+    test(`bare Codex ${role} planning waits for the catalog once`, async () => {
+      const ensureCatalog = mock(async (_timeoutMs: number) => {});
+      const deps = planningDeps(async (spec) =>
+        explanation(spec, [candidate("openai-codex", "OpenAI Codex", "cx@gpt-6-astra")])
+      );
+      deps.ensureCatalog = ensureCatalog;
+      const plan = await planAdvisorModel("gpt-6-astra", role, deps);
+      expect(plan.kind).toBe("routed");
+      expect(ensureCatalog).toHaveBeenCalledTimes(1);
+    });
+  }
+});
 
 describe("G1 — one startup and runtime advisor plan", () => {
   test(

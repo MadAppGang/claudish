@@ -25,6 +25,7 @@ import type { Context } from "hono";
 import type { ChildAuthControl, ChildAuthSource } from "../child-auth-types.js";
 import { log } from "../logger.js";
 import { ensureCatalogReady } from "../providers/catalog-client.js";
+import { parseModelSpec } from "../providers/model-parser.js";
 import { nativeRouteFor } from "../providers/native-route.js";
 import type { RouteTier } from "../providers/provider-definitions.js";
 import {
@@ -155,8 +156,8 @@ const CATALOG_WAIT_MS = 5000;
  * returned for the notice to print.
  *
  * Decision order: wire markers; a Claude name (native recognition first); the
- * catalog wait; `explainRoute`. Each step exists in main routing; only the
- * composition is new.
+ * catalog wait (bare names only); `explainRoute`. Each step exists in main
+ * routing; only the composition is new.
  */
 export async function planAdvisorModel(
   spec: string,
@@ -176,7 +177,11 @@ export async function planAdvisorModel(
 
   if (nativeRouteFor(model)) return planClaudeMember(spec, role, model, deps);
 
-  await (deps.ensureCatalog ?? ensureCatalogReady)(CATALOG_WAIT_MS);
+  // An explicit `provider@model` is taken as written, so it does not wait for
+  // the catalog; a bare name needs it to gather its route candidates.
+  if (!parseModelSpec(model).isExplicitProvider) {
+    await (deps.ensureCatalog ?? ensureCatalogReady)(CATALOG_WAIT_MS);
+  }
   const explanation = await (deps.explain ?? ((target: string) => explainRoute(target)))(model);
   const { outcome } = explanation;
   if (outcome.kind === "no-route") {

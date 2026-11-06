@@ -1,13 +1,39 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import type { DiskCacheV3 } from "./all-models-cache.js";
+import * as realAllModelsCache from "./all-models-cache.js";
+import * as realCatalogClient from "./catalog-client.js";
+
+const allModelsCacheExports = { ...realAllModelsCache };
+const catalogClientExports = { ...realCatalogClient };
+const ensureRegistry = mock(async (_timeoutMs: number) => {});
+let coldCatalog = false;
+
+mock.module("./catalog-client.js", () => ({
+  ...catalogClientExports,
+  ensureRouteRegistryReady: ensureRegistry,
+}));
+mock.module("./all-models-cache.js", () => ({
+  ...allModelsCacheExports,
+  readAllModelsCache: (path?: string) =>
+    coldCatalog ? null : allModelsCacheExports.readAllModelsCache(path),
+}));
+beforeEach(() => {
+  coldCatalog = false;
+  ensureRegistry.mockClear();
+});
+afterAll(() => {
+  mock.module("./catalog-client.js", () => catalogClientExports);
+  mock.module("./all-models-cache.js", () => allModelsCacheExports);
+});
 import { connectionRequestUrl, resolveConnection } from "./connection-resolver.js";
 import { getProviderByName, toRemoteProvider } from "./provider-definitions.js";
-import type { ProfileContext } from "./provider-profiles.js";
+import { type ProfileContext, createHandlerForProvider } from "./provider-profiles.js";
 import {
+  CatalogPendingHandler,
   RefusingHandler,
   buildWireHandler,
   describeConnectionWire,
@@ -22,6 +48,7 @@ const fixture: DiskCacheV3 = JSON.parse(readFileSync(cachePath, "utf8"));
 const realFetch = globalThis.fetch;
 const dirs: string[] = [];
 afterEach(() => {
+  coldCatalog = false;
   globalThis.fetch = realFetch;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -381,6 +408,46 @@ test("unknown mai wire builds TryInTurnHandler", async () => {
   expect(result.handler).toBeInstanceOf(TryInTurnHandler);
   await result.handler.shutdown();
 });
+test("non-blocking startup builds CatalogPendingHandler without waiting for the catalog", async () => {
+  coldCatalog = true;
+  const ctx = context("openai", "gpt-6.1-sol");
+  delete ctx.catalogCachePath;
+  const outcome = await buildWireHandler(ctx, "openai", { waitForCatalog: false });
+  expect(outcome.kind).toBe("handler");
+  if (outcome.kind !== "handler") throw new Error("expected pending handler");
+  try {
+    expect(outcome.handler).toBeInstanceOf(CatalogPendingHandler);
+    expect(ensureRegistry).not.toHaveBeenCalled();
+  } finally {
+    await outcome.handler.shutdown();
+  }
+});
+
+test("default main model startup waits for the catalog once", async () => {
+  coldCatalog = true;
+  const ctx = context("openai", "gpt-6.1-sol");
+  delete ctx.catalogCachePath;
+  const outcome = await buildWireHandler(ctx, "openai");
+  expect(ensureRegistry).toHaveBeenCalledTimes(1);
+  expect(outcome.kind).toBe("handler");
+  if (outcome.kind !== "handler") throw new Error("expected pending handler");
+  expect(outcome.handler).toBeInstanceOf(CatalogPendingHandler);
+  await outcome.handler.shutdown();
+});
+
+test("advisor provider profile builds a pending handler without waiting for the catalog", async () => {
+  coldCatalog = true;
+  const ctx = context("openai", "gpt-6.1-sol", { requestRole: "advisor" });
+  delete ctx.catalogCachePath;
+  const handler = await createHandlerForProvider(ctx);
+  try {
+    expect(handler).toBeInstanceOf(CatalogPendingHandler);
+    expect(ensureRegistry).not.toHaveBeenCalled();
+  } finally {
+    await handler?.shutdown();
+  }
+});
+
 test("provider with no route binding is not wire routed", async () => {
   expect(await buildWireHandler(context("ollama", "local-model"), "ollama")).toEqual({
     kind: "not-wire-routed",

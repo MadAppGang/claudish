@@ -270,17 +270,30 @@ export type WireHandlerOutcome =
   /** The request must not be sent; `message` says why. */
   | { kind: "refused"; message: string };
 
+export interface BuildWireHandlerOptions {
+  /**
+   * Wait for a catalog refresh when no route registry is readable (default
+   * true). With false, a missing catalog answers a {@link CatalogPendingHandler}
+   * at once; its first request then does the waiting. A handler built at
+   * startup, before any request needs it, passes false.
+   */
+  waitForCatalog?: boolean;
+}
+
 export async function buildWireHandler(
   ctx: ProfileContext,
-  definitionName: string
+  definitionName: string,
+  opts: BuildWireHandlerOptions = {}
 ): Promise<WireHandlerOutcome> {
   if (NOT_WIRE_ROUTED.has(definitionName)) return { kind: "not-wire-routed" };
+  const waitForCatalog = opts.waitForCatalog ?? true;
 
   let resolution = resolveConnection(definitionName, ctx.modelName, ctx.catalogCachePath);
   if (resolution.ok === false && resolution.reason === "not-catalog-routed") {
     return { kind: "not-wire-routed" };
   }
   if (
+    waitForCatalog &&
     resolution.ok === false &&
     (resolution.reason === "no-catalog" || resolution.reason === "no-registry") &&
     // A cache path is the test seam: a fixture is never refreshed from the network.
