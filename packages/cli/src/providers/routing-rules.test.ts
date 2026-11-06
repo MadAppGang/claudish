@@ -461,6 +461,13 @@ describe("buildRoutingChain", () => {
     expect(typeof routes[0].modelSpec).toBe("string");
   });
 
+  test("preserves the leading '@' in OpenRouter preset IDs", () => {
+    const routes = buildRoutingChain(["openrouter@@preset/example"], "original");
+    expect(routes).toHaveLength(1);
+    expect(routes[0].provider).toBe("openrouter");
+    expect(routes[0].modelSpec).toBe("@preset/example");
+  });
+
   test("unknown provider name passes through without crashing", () => {
     const routes = buildRoutingChain(["totally-unknown-provider"], "my-model");
     expect(routes).toHaveLength(1);

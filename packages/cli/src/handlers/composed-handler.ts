@@ -415,7 +415,7 @@ export class ComposedHandler implements ModelHandler {
   /**
    * Bare model name (e.g. "glm-4.7"), provider prefix stripped. Used for model identity:
    * dialect selection, catalog lookup, raw-hook routing, context tracking. Never contains '@'.
-   * @invariant !bareModelName.includes("@")
+   * @invariant no provider routing syntax; OpenRouter preset IDs may begin with "@"
    */
   private readonly bareModelName: string;
   private options: ComposedHandlerOptions;
@@ -437,10 +437,9 @@ export class ComposedHandler implements ModelHandler {
     options: ComposedHandlerOptions = {}
   ) {
     // Enforce the bare-name invariant — modelName must not contain provider routing
-    // syntax. This prevents #102-class bugs where a routed string leaks into dialect
-    // selection (e.g. "zai@glm-4.7" falsely matching GLMModelDialect via the "@glm"
-    // substring). Callers must strip the provider prefix before passing modelName.
-    if (modelName.includes("@")) {
+    // syntax. OpenRouter presets are the exception: their wire IDs begin with "@".
+    const isOpenRouterPreset = provider.name === "openrouter" && modelName.startsWith("@");
+    if (modelName.includes("@") && !isOpenRouterPreset) {
       throw new Error(
         `ComposedHandler: modelName must not contain '@' (got "${modelName}"). Strip the provider routing prefix before passing modelName. If you need the full routed form, pass it as targetModel.`
       );

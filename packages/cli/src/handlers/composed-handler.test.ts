@@ -7,9 +7,9 @@ import { ComposedHandler } from "./composed-handler.js";
 // confused by provider-prefix characters. Fixed in /dev:fix session
 // dev-fix-20260415-000620-e95d5090.
 
-function makeFakeTransport(): ProviderTransport {
+function makeFakeTransport(name = "test-provider"): ProviderTransport {
   return {
-    name: "test-provider",
+    name,
     displayName: "Test",
     streamFormat: "openai-sse",
     getEndpoint: () => "http://localhost/",
@@ -39,5 +39,19 @@ describe("ComposedHandler — modelName invariant (#102 structural fix)", () => 
     expect(() => {
       new ComposedHandler(transport, "openrouter@x-ai/grok-beta", "x-ai/grok-beta", 8080, {});
     }).not.toThrow();
+  });
+
+  test("accepts OpenRouter preset model IDs that begin with '@'", () => {
+    const transport = makeFakeTransport("openrouter");
+    expect(() => {
+      new ComposedHandler(transport, "@preset/example", "@preset/example", 8080, {});
+    }).not.toThrow();
+  });
+
+  test("rejects leading '@' model IDs for non-OpenRouter providers", () => {
+    const transport = makeFakeTransport();
+    expect(() => {
+      new ComposedHandler(transport, "@preset/example", "@preset/example", 8080, {});
+    }).toThrow(/modelName.*must.*not.*contain/i);
   });
 });
