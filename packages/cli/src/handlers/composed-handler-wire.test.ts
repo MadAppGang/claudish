@@ -52,7 +52,7 @@ function resolved(provider: string, model: string, path = cachePath) {
   if (!r.ok || r.connection.wire.status !== "known") throw new Error("missing fixture");
   return { ...structuredClone(r.connection), wire: structuredClone(r.connection.wire) };
 }
-function request(handler: ModelHandler) {
+function request(handler: ModelHandler, extra: Record<string, unknown> = {}) {
   const app = new Hono();
   app.post("/", (c) =>
     handler.handle(c, {
@@ -61,6 +61,7 @@ function request(handler: ModelHandler) {
       max_tokens: 32000,
       messages: [{ role: "user", content: "hello" }],
       output_config: { effort: "high" },
+      ...extra,
     })
   );
   return app.request("/", { method: "POST" });
@@ -158,6 +159,27 @@ test("request marker context sends priority on OpenAI", async () => {
   expect(calls).toHaveLength(1);
   expect(calls[0]!.body.service_tier).toBe("priority");
   expect(wireMarkerContext.getStore()).toBeUndefined();
+});
+test("Claude Code /fast (speed: fast in the body) sends priority on OpenAI", async () => {
+  const c = resolved("openai", "gpt-6.1-sol");
+  const handler = buildKnownWireHandler(context("openai", "gpt-6.1-sol"), "openai", c, c.wire)!;
+  handlers.push(handler);
+  const calls = capture("invalid value");
+  await request(handler, { speed: "fast" });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.body.service_tier).toBe("priority");
+  expect(calls[0]!.body).not.toHaveProperty("speed");
+});
+test("Claude Code /fast on a connection without the tier is sent at standard speed", async () => {
+  const c = resolved("x-ai", "grok-4.7");
+  const handler = buildKnownWireHandler(context("x-ai", "grok-4.7"), "x-ai", c, c.wire)!;
+  handlers.push(handler);
+  const calls = capture("invalid value");
+  await request(handler, { speed: "fast" });
+  // Reaching the upstream at all is the point: a non-explicit speed is never refused.
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.body).not.toHaveProperty("service_tier");
+  expect(calls[0]!.body).not.toHaveProperty("speed");
 });
 
 test.each(["google/gemini-3.8-flash", "opaque-model"])(

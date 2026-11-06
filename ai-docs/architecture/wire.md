@@ -46,10 +46,13 @@ lists, effort ladders by `gpt-5.x`) being falsified by each new model release.
 | `tokenParam` / `reasoning` `unknown` | send nothing | try the owner's direct-connection value when it is on the SAME API; drop exactly those borrowed fields on the 400 that names them (`recoverBorrowedWireFields`) |
 | `wire.status: unknown`, or model not published for the provider | APIs in fixed order | same (`TryInTurnHandler`): advance only on 404/405/protocol-400, remember the winner per generation |
 | No catalog | wait or fail | local providers only; catalog providers wait, then refuse per request (below) |
-| Pro / speed | `--mode`, `--speed` suggested | `model+pro`, `model#fast` |
+| Pro / speed | `--mode`, `--speed` suggested | `model+pro`, `model#fast`; Claude Code `/fast` is a non-explicit `fast` (below) |
 
 `not_applicable` is an ANSWER, never borrowed over (Codex found the shaper treating it like
 `unknown`). Mode and speed are never borrowed: they carry entitlement and price.
+The one source that may decide speed where the catalog says `unknown` is the account's OWN
+dynamic models catalog — entitlement evidence for that credential, not a value borrowed from
+another connection (step 5s, § Speed). It never overrides an answer.
 
 ## Output limit
 
@@ -111,6 +114,44 @@ first request of every unlabelled turn, and it needed demotion rules, a timeout 
 effort detection. It guessed a fact that the calling agent already had. The work is kept in the
 gitignored session `dev-feature-recommended-effort-20261021-101332-a05a`, under
 `backup-before-rework-*`.
+
+## Speed: `#<speed>`, Claude Code's `/fast`, and the Codex service tier
+
+**Two inputs.** A `#<speed>` marker is EXPLICIT: a connection that does not offer it refuses the
+request with what it does offer. Claude Code's `/fast` arrives as `speed: "fast"` in the
+`/v1/messages` body (`wireChoicesFromClaudeRequest`) and is NOT explicit: a connection without the
+tier gets a `[Wire]` note and the request at standard speed. A marker overrides `/fast`.
+
+**Claude Code's gates (2.1.310, read from the bundle).** It sends `speed: "fast"` only when the
+provider is `firstParty` (no `CLAUDE_CODE_USE_*`; `ANTHROPIC_BASE_URL` does not matter), the org's
+fast-mode status is enabled, and the model passes the `fast_mode` capability (true only for names
+containing `opus-4-8` / `opus-5`). In pure proxy mode the org status is fetched with claudish's
+placeholder credential and the main model is named `cx@…`, so neither holds.
+`applyProxyFastModeGates` (`fast-mode-gates.ts`, called next to `applyProxyPlaceholderAuth` only) sets
+`CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1` — Claude Code then marks the org enabled without fetching —
+and PREPENDS a bare `fast_mode` to `CLAUDE_CODE_MODEL_CAPABILITIES` (`;`-separated
+`pattern=cap,cap`; no `=` means every model; later entries win, so a user's `x=-fast_mode` still
+turns it off). `CLAUDISH_FAST_MODE_GATES` records what claudish set; the monitor and native-auth
+branches and the MCP `run_prompt` print child (`claudeCodePrintEnv`) remove exactly that
+(`scrubInheritedFastModeGates`), because both vars leak into processes
+a proxied session starts and must never skip a real account's org check.
+
+**Codex (step 5s).** Every `codex-subscription` connection is `speed: unknown` in the catalog, but
+`GET /backend-api/codex/models` lists per model the tiers the account may request
+(`service_tiers: [{id: "priority", name: "Fast"}]`), and Codex sends the tier `id` at top-level
+`service_tier` (codex-cli 0.164.0's Responses request struct has no other speed field). For an
+`openai-codex` connection whose catalog speed is `unknown`, 5w DEFERS the speed choice; 5s, after
+the request is signed (discovery needs the binding) and before code mode (5d, so both code-mode
+shapes carry it), asks `getCodexModelInfo` and `decideCodexSpeed` (`codex-service-tier.ts`):
+`fast` is the tier named "Fast" or id `priority`. Not offered → explicit refuses, `/fast` notes.
+A non-explicit tier joins the fields `recoverBorrowedWireFields` drops on the 400 that names
+them; a `service_tier` from `--model-params` is never overwritten or dropped. The first speed
+request of a process may wait up to 2 s for `/models` (code mode's prefetch runs later, at 5d). A
+catalog `supported`, `rejected` or `not_applicable` speed is applied by 5w as before; when
+the backend publishes Codex speed, 5s goes dormant on its own. Measured (one A/B pair,
+`ai-docs/reports/codex-fast-mode-service-tier-20261028.md`): `priority` streamed about 2× faster, but
+the response's own `service_tier` reads `default` with or without it, so verify by timing, never
+by that field.
 
 ## Traps
 
