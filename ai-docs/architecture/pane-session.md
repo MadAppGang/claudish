@@ -832,6 +832,13 @@ capture shows the child scrolled. Measurements:
   `by` is a target ± 1 row. `|by|` is capped at `MAX_SCROLL_ROWS = 200` (201 events in one send
   moved exactly 200 rows). `CLAUDE_CODE_SCROLL_SPEED` in the owner's environment scales it; not
   stripped.
+- **View.** Pane children run with `tui: "fullscreen"` (`buildClaudishSettingsOverlay`, forced in
+  `mergeUserSettingsIfPresent` too, and in `replaySettingsJson` for replays), because the classic
+  view ignores SGR wheel events. With no `tui` key Claude Code 2.1.319 picks the view by install
+  and feature gates (`fresh_install_on`, `tengu_pewter_brook`): a replay (`--setting-sources ""`)
+  did not move for a scroll by -15, while the same replay with `tui: "fullscreen"` moved exactly
+  15 rows. An environment `CLAUDE_CODE_NO_FLICKER` set false, or `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`,
+  outranks the setting.
 - **Position is a belief.** `PaneSessionImpl` keeps `scrollPos {atBottom, lastDirection}`, set
   before the send. A send magmux does not confirm sets `UNKNOWN_POSITION` and answers
   `scroll_unavailable` "magmux did not confirm the scroll" (the bytes may still land: they queue
@@ -916,7 +923,8 @@ environment does not: Claude Code reads the `env` block of its settings after it
 settings file, including a provider switch a later Claude Code adds. `--bare` stops the login, the
 Keychain and an `apiKeyHelper`. The allowlist covers the process environment. `--settings` carries the
 user's `statusLine` and nothing else that is read from the user, so the interface keeps its status
-line. Measurements: `ai-docs/reports/2026-11-05-replay-measurements.md`.
+line; the same JSON sets `wheelScrollAccelerationEnabled: false` and `tui: "fullscreen"`, neither
+read from the user. Measurements: `ai-docs/reports/2026-11-05-replay-measurements.md`.
 
 **The box is read before the dialog.** Ready is `inspectBox` reading `box` on a frame. Only a screen
 with no box, unchanged for `DIALOG_STABLE_MS` (1 s), is named by `nameBootScreen`. A replay draws the

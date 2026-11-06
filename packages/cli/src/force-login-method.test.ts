@@ -558,4 +558,47 @@ describe("pane child wheel acceleration settings", () => {
       });
     }
   }
+
+  // A pane child runs the fullscreen view: the classic view ignores the SGR wheel
+  // events scroll_session sends. Launches outside a pane keep the user's `tui`.
+  for (const proxy of [true, false]) {
+    test(`pane child overlay pins tui to fullscreen (proxy=${proxy})`, () => {
+      withPaneEnv(undefined, undefined, () => {
+        expect(buildClaudishSettingsOverlay(statusLine, proxy, true).tui).toBe("fullscreen");
+      });
+    });
+
+    test(`non-pane overlay has no tui key (proxy=${proxy})`, () => {
+      withPaneEnv(undefined, undefined, () => {
+        expect(Object.hasOwn(buildClaudishSettingsOverlay(statusLine, proxy, false), "tui")).toBe(
+          false
+        );
+      });
+    });
+
+    for (const form of ["inline", "file"] as const) {
+      for (const userValue of ["default", "fullscreen", undefined]) {
+        test(`pane merge forces tui fullscreen over user ${userValue} in ${form} settings (proxy=${proxy})`, () => {
+          withPaneEnv(undefined, undefined, () => {
+            const user = {
+              ...(userValue === undefined ? {} : { tui: userValue }),
+              unrelated: "preserved",
+            };
+            expect(mergeWheelSettings(user, true, proxy, form)).toMatchObject({
+              tui: "fullscreen",
+              unrelated: "preserved",
+              statusLine,
+            });
+          });
+        });
+      }
+
+      test(`non-pane ${form} merge leaves the user tui alone (proxy=${proxy})`, () => {
+        withPaneEnv(undefined, undefined, () => {
+          expect(mergeWheelSettings({ tui: "default" }, false, proxy, form).tui).toBe("default");
+          expect(Object.hasOwn(mergeWheelSettings({}, false, proxy, form), "tui")).toBe(false);
+        });
+      });
+    }
+  }
 });
