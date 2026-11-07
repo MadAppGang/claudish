@@ -306,6 +306,29 @@ function startAllowanceFlight(): () => void {
   }
 }
 
+/**
+ * Replaces each image or document part of the given types with a text part at
+ * the same position, then collapses a message left with a single text part to
+ * that string. Removing the parts instead would leave an image-only message
+ * empty, which providers reject with a 400; the placeholder keeps the message
+ * valid and tells the model an attachment was there.
+ */
+function replaceUnsupportedParts(messages: any[], types: readonly string[]): void {
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    msg.content = msg.content.map((part: any) => {
+      if (!types.includes(part.type)) return part;
+      const kind = part.type === "document" ? "document" : "image";
+      return { type: "text", text: `[${kind} omitted: this model does not accept ${kind} input]` };
+    });
+    if (msg.content.length === 1 && msg.content[0].type === "text") {
+      msg.content = msg.content[0].text;
+    } else if (msg.content.length === 0) {
+      msg.content = "";
+    }
+  }
+}
+
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   const headers = c.req.header();
   const auth: VisionProxyAuthHeaders = {};
@@ -1567,34 +1590,11 @@ export class ComposedHandler implements ModelHandler {
           }
           log(`[ComposedHandler] Vision proxy described ${descriptions.length} image(s)`);
           // Strip any remaining Anthropic-format image/document blocks
-          for (const msg of messages) {
-            if (Array.isArray(msg.content)) {
-              msg.content = msg.content.filter(
-                (part: any) => part.type !== "image" && part.type !== "document"
-              );
-              if (msg.content.length === 1 && msg.content[0].type === "text") {
-                msg.content = msg.content[0].text;
-              } else if (msg.content.length === 0) {
-                msg.content = "";
-              }
-            }
-          }
+          replaceUnsupportedParts(messages, ["image", "document"]);
         } else {
           // Vision proxy failed or not applicable — strip all unsupported image/document blocks
           log("[ComposedHandler] Stripping image/document blocks (vision not supported)");
-          for (const msg of messages) {
-            if (Array.isArray(msg.content)) {
-              msg.content = msg.content.filter(
-                (part: any) =>
-                  part.type !== "image_url" && part.type !== "image" && part.type !== "document"
-              );
-              if (msg.content.length === 1 && msg.content[0].type === "text") {
-                msg.content = msg.content[0].text;
-              } else if (msg.content.length === 0) {
-                msg.content = "";
-              }
-            }
-          }
+          replaceUnsupportedParts(messages, ["image_url", "image", "document"]);
         }
       }
     }
