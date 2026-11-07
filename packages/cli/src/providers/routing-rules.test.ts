@@ -2510,10 +2510,20 @@ describe("routing from account-bound dynamic models catalogs", () => {
     await tick();
     expect(calls).toEqual(["devin"]);
     const before = structuredClone(plan);
-    deliver({ kind: "models", models: [{ id: "test-stable-chain", reported: "chat" }] });
-    await Promise.allSettled(work);
-    expect(await accountCatalog.readAccountModelsList("devin")).not.toBeNull();
-    expect(plan).toEqual(before);
+    let unsubscribe = () => {};
+    const listStored = new Promise<void>((resolve) => {
+      unsubscribe = accountCatalog.onAccountModelsListChanged((provider, list) => {
+        if (provider === "devin" && list !== null) resolve();
+      });
+    });
+    try {
+      deliver({ kind: "models", models: [{ id: "test-stable-chain", reported: "chat" }] });
+      expect(await within(listStored, 1000)).not.toBe("deadline");
+      expect(await accountCatalog.readAccountModelsList("devin")).not.toBeNull();
+      expect(plan).toEqual(before);
+    } finally {
+      unsubscribe();
+    }
   });
 
   test("every discovery-capable non-local subscription is eligible for a missing-list wait", async () => {

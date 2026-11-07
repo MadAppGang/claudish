@@ -136,16 +136,14 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
     expect(getProviderByName("qwen-payg")?.displayName).toBe("Alibaba PAYG");
   });
 
-  test("grok-subscription claims the namespace without displacing x-ai auto-detection", () => {
+  test("grok-subscription declares no pattern and x-ai keeps grok-* auto-detection", () => {
     const subscription = getProviderByName("grok-subscription")!;
     const grokPatternOwner = getNativeModelPatterns().find((entry) =>
       entry.pattern.test("grok-4.6")
     );
 
-    // Namespace claims may overlap; parseModelSpec remains first-wins and x-ai is declared first.
-    expect(subscription.nativeModelPatterns?.map(({ pattern }) => pattern.source)).toEqual([
-      "^grok-",
-    ]);
+    // The subscription becomes a candidate through its vendor claim, never a pattern.
+    expect(subscription.nativeModelPatterns ?? []).toEqual([]);
     expect(grokPatternOwner?.provider).toBe("x-ai");
   });
 
