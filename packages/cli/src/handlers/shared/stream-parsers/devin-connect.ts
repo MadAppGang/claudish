@@ -101,8 +101,14 @@ export interface DevinConnectOptions {
    * caller record the turn as a failure instead of a success.
    */
   onApiError?: (code: string, message: string) => void;
-  /** The uid the backend reports serving (field `7.9`), when it differs from the request. */
+  /** The uid the backend reports serving (field `7.9`), each time a new value arrives. */
   onServedModel?: (uid: string) => void;
+  /**
+   * Fired when a clean end-of-stream frame (`flags = 2`, empty or `{}`) arrives.
+   * A connection that simply ends is also closed as `done`, so this is the only
+   * signal that the backend finished the turn rather than the socket dropping.
+   */
+  onEndOfStream?: () => void;
 
   /**
    * Called once per `tool_use` block start, for the token tracker's tool count.
@@ -471,6 +477,7 @@ export function createDevinConnectStream(
             if (frame.flags === FRAME_FLAG_END_OF_STREAM) {
               const raw = new TextDecoder().decode(frame.payload).trim();
               if (!raw || raw === "{}") {
+                opts.onEndOfStream?.();
                 finalize("done");
                 return;
               }
