@@ -170,7 +170,20 @@ gitignored session `dev-feature-recommended-effort-20261021-101332-a05a`, under
   catalog-routed provider (OpenCode moved Zen to `opencode.ai/inference/v1` on 2026-10-12);
   a user base-URL override keeps the definition's path.
 - **Vision** with a connection reads the catalog's `inputModalities` / `supportsVision`; unknown
-  sends the image the user attached.
+  sends the image the user attached. A non-empty `inputModalities` wins over `supportsVision`
+  (`lookupModelAcceptsImages`), so one wrong list turns vision off: `kimi-k3.1-pro` published
+  `["video"]` on generation `g-20261106161559322-fc9a35c1` with `supportsVision: true`, and every
+  image to `kc@k3.1-pro` was removed. An absent list falls back to `supportsVision`.
+- **A model that takes no images** gets `[image omitted: this model does not accept image input]`
+  in place of each image part (`replaceUnsupportedParts`, `ComposedHandler.handle`), never a
+  deletion: deleting emptied the user message that the chat-completions converter builds from a
+  tool_result's images, and Kimi answered 400 "the message at position N with role 'user' must
+  not be empty". The block runs on the converted messages, after `convertMessages` and before
+  `buildPayload`, so it sees chat-completions `image_url` parts (the Responses wire too: its
+  `input_image` is written later, in `CodexAPIFormat.buildPayload`) and Anthropic `image` parts,
+  including those nested in a `tool_result`. The Gemini wire builds `parts`, which the block does
+  not read; on 2026-11-07 its only non-vision connections were speech models.
+  `composed-handler-vision-strip.test.ts` pins each wire.
 
 ## Verification on record
 
