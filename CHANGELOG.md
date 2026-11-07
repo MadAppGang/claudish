@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.16.0] - 2026-11-07
+
+### Bug Fixes
+
+- print the secret_guard line when a fact holds a key *(subscription)* ([`c9f6fe2`](https://github.com/MadAppGang/claudish/commit/c9f6fe25b61f0a449fdd39f751fb5d52779ca19d))
+
+### Documentation
+
+- update CHANGELOG.md for v14.15.1([`74a17d4`](https://github.com/MadAppGang/claudish/commit/74a17d45ab93afa6154a3d03545c5af87871da0c))
+
+### New Features
+
+- add subscription probe devin --model --request-file *(devin)* ([`4fe5d97`](https://github.com/MadAppGang/claudish/commit/4fe5d978bbad2db934eddd889371b96e01e1079e))
+- add subscription models devin --raw --json *(devin)* ([`35051e4`](https://github.com/MadAppGang/claudish/commit/35051e4429aaa4f7aece0ac3cb003690fa62a39d))
+
 ## [14.15.1] - 2026-11-06
 
 ### Bug Fixes
