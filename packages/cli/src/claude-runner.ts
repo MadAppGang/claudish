@@ -1599,7 +1599,8 @@ async function resolveLocalContextWindow(
   // Providers without a modelDiscovery descriptor short-circuit to
   // undefined without a network call, so this stays free for everyone else.
   // `cached-first`: a stored dynamic models catalog answers without a fetch;
-  // only an account with none waits on discovery for the window.
+  // an account with none gets the cloud models catalog window below while its
+  // list refreshes in the background.
   const win =
     (await discoverContextWindow(provider, wireId, { network: "cached-first" })) ??
     lookupModelForProvider(parsed.model, provider, cachePath) ??

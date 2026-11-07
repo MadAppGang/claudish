@@ -946,11 +946,12 @@ function windowOf(models: DiscoveredModel[], modelId: string): number | undefine
  * Returns undefined when discovery is unavailable or the model isn't listed —
  * callers fall back to the cloud catalog.
  *
- * `network: "cached-first"` is for a launch: when the account has a stored
- * dynamic models catalog (any age up to its cap), its row answers and nothing is
- * fetched, a missing row included. Only with no stored list does it wait on
- * discovery, as `"await"` (the default) always does. Loaded lazily, because the
- * stored-list module imports this one.
+ * `network: "cached-first"` is for a launch and never waits on discovery: a
+ * stored dynamic models catalog (any age up to its cap) answers from its row, a
+ * missing row included; with no stored list it answers undefined at once and
+ * starts one background refresh of the list that nothing awaits. `"await"` (the
+ * default) waits on discovery. The stored-list module is loaded lazily, because
+ * it imports this one.
  */
 export async function discoverContextWindow(
   providerName: string,
@@ -958,9 +959,13 @@ export async function discoverContextWindow(
   opts: { network?: "await" | "cached-first" } = {}
 ): Promise<number | undefined> {
   if (opts.network === "cached-first") {
-    const { readAccountModelsList } = await import("./dynamic-models-catalog.js");
+    const { readAccountModelsList, refreshAccountModelsList } = await import(
+      "./dynamic-models-catalog.js"
+    );
     const stored = await readAccountModelsList(providerName);
     if (stored) return windowOf(stored.models, modelId);
+    void refreshAccountModelsList(providerName, "cold-account");
+    return undefined;
   }
   // Exact-id lookup: an opt-in id the user typed still gets its served window.
   const { served, optIn } = await discoverProviderServedIds(providerName);
