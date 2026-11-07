@@ -79,7 +79,11 @@ import {
 import { findAvailablePort } from "./port-manager.js";
 import { readAllModelsCache } from "./providers/all-models-cache.js";
 import { LIVE_MS } from "./providers/dynamic-models-catalog-store.js";
-import { sweepAccountModelsLists } from "./providers/dynamic-models-catalog.js";
+import {
+  type AccountModelsListSnapshot,
+  loadAccountModelsLists,
+  sweepAccountModelsLists,
+} from "./providers/dynamic-models-catalog.js";
 import { latestEffortRecommendations } from "./providers/effort-recommendations.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
@@ -761,8 +765,11 @@ export interface ModelChoiceFacts {
   userRule: (model: string) => boolean;
   /** The cloud models catalog has the name as a model id or alias. */
   inCatalog: (model: string) => boolean;
-  /** A dynamic subscription claims the name (`swe-1.7` on Devin): the account decides it. */
-  namespaceClaim: (model: string) => boolean;
+  /**
+   * An account's stored dynamic models catalog carries a name the cloud models
+   * catalog lacks (`swe-1.7` on Devin): routing gathers that account's candidate.
+   */
+  accountListed: (model: string) => boolean;
   /**
    * The canonical id the catalog resolves the name to: `MiniMax-M3`, the alias
    * `k3` or the route variant `gemini-4-argon-high` name a recommended model.
@@ -778,7 +785,15 @@ export interface ModelChoiceFacts {
   catalogMissAllowed?: (model: string) => boolean;
 }
 
-function liveModelChoiceFacts(opts: { projectRulesReadable?: boolean } = {}): ModelChoiceFacts {
+/**
+ * The facts for live calls. `lists` is the accounts' stored dynamic models
+ * catalogs, loaded beforehand (`loadAccountModelsLists`, no network); absent, no
+ * name is account-listed.
+ */
+function liveModelChoiceFacts(
+  opts: { projectRulesReadable?: boolean } = {},
+  lists: AccountModelsListSnapshot = new Map()
+): ModelChoiceFacts {
   const recommended = readLastRecommendedModels()?.models ?? null;
   if (!recommended || recommended.length === 0) {
     log("[mcp] model check skipped: no recommended models list on disk");
@@ -791,7 +806,10 @@ function liveModelChoiceFacts(opts: { projectRulesReadable?: boolean } = {}): Mo
       return matchRoutingRuleKey(model, rules) !== null;
     },
     inCatalog: (model) => !gatherRouteCandidates(model).catalogMiss,
-    namespaceClaim: (model) => gatherRouteCandidates(model).candidates.length > 0,
+    accountListed: (model) =>
+      gatherRouteCandidates(model, undefined, lists).candidates.some(
+        (candidate) => candidate.source === "account-listed"
+      ),
     canonicalId: (model) => catalogModelId(model),
     catalogMissAllowed: (model) => {
       if (opts.projectRulesReadable === false) return true;
@@ -833,7 +851,7 @@ function bareNameVerdict(
   const canonical = facts.canonicalId?.(model);
   if (canonical !== undefined && recommendedIds.has(canonical)) return undefined;
   if (facts.inCatalog(model)) return { kind: "not_recommended", model };
-  if (facts.namespaceClaim(model) || facts.catalogMissAllowed?.(model)) return undefined;
+  if (facts.accountListed(model) || facts.catalogMissAllowed?.(model)) return undefined;
   return { kind: "unknown_model", model };
 }
 
@@ -843,8 +861,9 @@ function bareNameVerdict(
  * model the recommended list does not hold (`gpt-5`, guessed from memory).
  * `pairs` holds each spec as the caller wrote it and as it will run (provider
  * removed). Never refused: a model the user named (`required`), an explicit
- * `provider@`, a chain, a native Claude name, a name a user routing rule or a
- * namespace claim routes, and anything at all when no recommended list exists.
+ * `provider@`, a chain, a native Claude name, a name a user routing rule routes or
+ * an account's dynamic models catalog carries, and anything at all when no
+ * recommended list exists.
  */
 export function modelChoiceProblems(
   pairs: ReadonlyArray<{ given: string; spec: string }>,
@@ -972,13 +991,14 @@ function modelChoiceResult(
 }
 
 /** The model-check answer for a call, or undefined when every model may start. */
-function modelChoiceStop(
+async function modelChoiceStop(
   pairs: ReadonlyArray<{ given: string; spec: string }>,
   required: ReadonlySet<string>,
   how: string,
   opts: { projectRulesReadable?: boolean } = {}
-): ReturnType<typeof modelChoiceResult> | undefined {
-  const facts = liveModelChoiceFacts(opts);
+): Promise<ReturnType<typeof modelChoiceResult> | undefined> {
+  // Disk only, never the network: the check must not wait on a provider.
+  const facts = liveModelChoiceFacts(opts, await loadAccountModelsLists());
   const problems = modelChoiceProblems(pairs, required, facts);
   if (problems.length === 0 || !facts.recommended) return undefined;
   return modelChoiceResult(problems, facts.recommended, how);
@@ -1640,7 +1660,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           [args.model as string],
           new Set(args.user_required_provider === true ? [args.model as string] : [])
         );
-        const choice = modelChoiceStop(
+        const choice = await modelChoiceStop(
           [{ given: args.model as string, spec: specs[0] }],
           new Set(args.user_required_model === true ? [args.model as string] : []),
           "with user_required_model: true"
@@ -2404,7 +2424,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         // No projectRulesReadable here: team children run in this process's cwd
         // (team-orchestrator.ts) and `path` must lie inside it, so they route by the
         // same ./.claudish.json this check reads. create_session's work_dir can differ.
-        const choice = modelChoiceStop(
+        const choice = await modelChoiceStop(
           [
             ...(runsModels && givenModels && models
               ? givenModels.map((given, i) => ({ given, spec: models[i] }))
@@ -2907,7 +2927,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           new Set(args.user_required_provider === true ? [args.model as string] : [])
         );
         const requestedModel = specs[0];
-        const choice = modelChoiceStop(
+        const choice = await modelChoiceStop(
           [{ given: args.model as string, spec: requestedModel }],
           new Set(args.user_required_model === true ? [args.model as string] : []),
           "with user_required_model: true",

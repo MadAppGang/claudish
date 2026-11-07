@@ -24,8 +24,7 @@ import type {
  * fourth authority (`lookupFamilyDefaultVariant`, the slim catalog's
  * `routeVariant.isDefault`) that {@link ExpandContext} does not model, and
  * adopting it would mean either regressing that rule or redesigning the seam's
- * context type. Its rule stays in `transport/antigravity.ts`; folding it in is a
- * follow-up, not a merge-time decision.
+ * context type. Its rule stays in `providers/antigravity-model-id.ts`.
  *
  * The routing availability check still resolves Antigravity ids exactly as its
  * transport does: `providerServesModel` calls `resolveAntigravityServedModel`

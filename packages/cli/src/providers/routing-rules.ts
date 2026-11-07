@@ -10,13 +10,22 @@ import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { resolveExternalId } from "./catalog-client.js";
 import type { ConnectionPrice } from "./connection-price.js";
+import { FRESH_MS, LIVE_MS } from "./dynamic-models-catalog-store.js";
+import {
+  type AccountModelsList,
+  type AccountModelsListSnapshot,
+  isPersistedListProvider,
+  readAccountModelsList,
+  refreshAccountModelsList,
+} from "./dynamic-models-catalog.js";
 import { ensureEndpointsRegistered } from "./endpoint-registration.js";
 import { type AvailabilityNetwork, providerServesModel } from "./model-availability.js";
+import { discoverProviderServedIds } from "./model-discovery.js";
 import { AUTO_ROUTE_PROVIDER, PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
 import { type NativeRoute, proxyRouteDecision } from "./native-route.js";
 import { PREDEFINED_ENDPOINTS } from "./predefined-catalog.js";
-import { type RouteTier, getProviderByName } from "./provider-definitions.js";
+import { type RouteTier, getAllProviders, getProviderByName } from "./provider-definitions.js";
 import {
   type RouteCandidate,
   catalogDeniesProvider,
@@ -554,7 +563,7 @@ export interface ExplainedCandidate {
 export type NoRouteCause =
   /** A user rule matched and nothing survived plan membership, a matched `[]` included. */
   | "rule-empty"
-  /** No cloud models catalog could be read and no namespace claim applies. */
+  /** No cloud models catalog could be read and no account's list carries the name. */
   | "catalog-unreadable"
   /** The catalog was read and gathered nothing, and no fallback hop survived. */
   | "catalog-empty"
@@ -783,6 +792,11 @@ async function explainExplicitSpec(
   const availability = accountsFailed
     ? "unknown"
     : await providerServesModel(candidate.provider, candidate.wireId, { network });
+  // Keeps the account's stored list current for the next decision; never
+  // awaited, and a no-op when the availability check just fetched it.
+  if (isPersistedListProvider(candidate.provider)) {
+    void refreshAccountModelsList(candidate.provider, "route-explicit");
+  }
   if (availability === "not-served") {
     candidate.outcome = "not-served";
     explanation.outcome = {
@@ -930,7 +944,8 @@ interface CatalogChainExplanation {
 function explainCatalogChain(
   model: string,
   defaultProvider: string | undefined,
-  cachePath: string | undefined
+  cachePath: string | undefined,
+  lists?: AccountModelsListSnapshot
 ): CatalogChainExplanation {
   // Bundled endpoints (`together`, `fireworks`) have no provider DEFINITION
   // until this has run, and `gatherFromConnections` drops a connection whose
@@ -945,7 +960,7 @@ function explainCatalogChain(
   // so every call after the first is free.
   ensureEndpointsRegistered();
 
-  const gathering = gatherRouteCandidates(model, cachePath);
+  const gathering = gatherRouteCandidates(model, cachePath, lists);
   // The gatherer's excluded candidates join the explanation with THEIR outcome,
   // never `kept`, at the position the chain order gives them. They are shown by
   // `--probe` and never become a hop: every filter below skips them.
@@ -1076,9 +1091,14 @@ function ruleProblemWarnings(problems: RoutingRuleProblem[] | undefined): RouteW
  *   1. a user rule matches?  → that chain, VERBATIM. Never merged, reordered or
  *                              appended to, including by the fallback. A match
  *                              of `[]` is a match: the user said "no route".
- *   2. otherwise             → `gatherRouteCandidates`, which reads every
- *                              connection the catalog publishes for this model
- *                              and orders them by tier, vendor, price, window.
+ *   2. otherwise             → the accounts' dynamic models catalogs
+ *                              ({@link loadChainAccountLists}, which waits for
+ *                              missing ones on the request path), then
+ *                              `gatherRouteCandidates`, which reads every
+ *                              connection the catalog publishes for this model,
+ *                              adds the vendor claims and account-listed
+ *                              candidates, and orders them by tier, vendor,
+ *                              price, window.
  *   3. append the fallback   → last, deduped, disableable, and NOT appended when
  *                              the catalog positively denies it.
  *   4. credential filter     → {@link applyCandidateFilters}.
@@ -1118,7 +1138,9 @@ async function explainBareName(
       warnings: ruleProblemWarnings(routing.ruleProblems),
     };
   } else {
-    const chain = explainCatalogChain(model, routing.defaultProvider, cachePath);
+    const accounts = await loadChainAccountLists(network);
+    const chain = explainCatalogChain(model, routing.defaultProvider, cachePath, accounts.lists);
+    refreshChainCandidateLists(chain.candidates, accounts);
     explanation = {
       requestedModel,
       routedModel: model,
@@ -1136,10 +1158,11 @@ async function explainBareName(
   );
 
   // NO CATALOG MEANS LOCAL ONLY. With nothing readable, claudish knows no
-  // provider serves this name and must say so rather than guess. A namespace
-  // claim still counts — that is claudish's own statement about a plan the
-  // user holds, not an inference from a catalog it could not read — so the
-  // check is on an EMPTY result, not on the catalog being unreadable alone.
+  // provider serves this name and must say so rather than guess. An
+  // account-listed candidate still counts — that is the account's own answer
+  // about a plan the user holds, not an inference from a catalog it could not
+  // read — so the check is on an EMPTY result, not on the catalog being
+  // unreadable alone.
   // Local providers and explicit `provider@model` specs are unaffected: neither
   // comes through here.
   if (explanation.catalog === "unreadable" && remaining.length === 0) {
@@ -1166,6 +1189,137 @@ async function explainBareName(
 
   await applyCandidateFilters(explanation, remaining, network);
   return explanation;
+}
+
+/**
+ * The longest a request waits for missing account lists before its routing
+ * chain is built. All providers are asked in parallel under this one bound.
+ */
+export const MISSING_LIST_WAIT_MS = 5_000;
+
+/** The accounts' dynamic models catalogs one routing decision gathers from. */
+interface ChainAccountLists {
+  /** The lists the gatherer reads, for providers whose credential reads present. */
+  lists: AccountModelsListSnapshot;
+  /** Providers whose list this decision already refreshed or started refreshing. */
+  refreshed: ReadonlySet<string>;
+}
+
+/**
+ * The accounts' dynamic models catalogs, for every provider that keeps one and
+ * whose credential reads present (no 1Password prompt). Read BEFORE the chain is
+ * gathered, and the chain is built once from what this returns: nothing
+ * rebuilds it when a list lands later.
+ *
+ * A provider with no list for its current account, or only an expired one, is
+ * MISSING. On the request path (`await`) the chain waits for every missing list
+ * in parallel, bounded by {@link MISSING_LIST_WAIT_MS}; a list that fails or
+ * runs out of time is left out and the chain is built without it. A launch
+ * (`background`) starts those fetches and never waits for one.
+ *
+ * A stored list older than a day is refreshed for the next decision, not awaited:
+ * it may still add and confirm candidates now.
+ */
+async function loadChainAccountLists(network: RouteNetwork): Promise<ChainAccountLists> {
+  const providers = getAllProviders()
+    .map((def) => def.name)
+    .filter(isPersistedListProvider);
+  const refreshed = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"deadline">((resolve) => {
+    timer = setTimeout(() => resolve("deadline"), MISSING_LIST_WAIT_MS);
+    timer.unref?.();
+  });
+
+  const listFor = async (provider: string): Promise<AccountModelsList | null> => {
+    try {
+      const { readiness } = await credentials.describeReadiness(provider, {
+        allowOpPrompt: false,
+      });
+      if (readiness !== "present") return null;
+      const stored = await readAccountModelsList(provider);
+      if (stored) {
+        if (Date.now() - stored.fetchedAt >= FRESH_MS) {
+          refreshed.add(provider);
+          void refreshAccountModelsList(provider, "route-bare", { minAgeMs: FRESH_MS });
+        }
+        return stored;
+      }
+      refreshed.add(provider);
+      return await fetchMissingList(provider, network, deadline);
+    } catch {
+      return null;
+    }
+  };
+
+  try {
+    const found = await Promise.all(providers.map(listFor));
+    const lists = new Map<string, AccountModelsList>();
+    providers.forEach((provider, i) => {
+      const list = found[i];
+      if (list) lists.set(provider, list);
+    });
+    return { lists, refreshed };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * A missing list: fetched now. `await` waits for it until `deadline`;
+ * `background` starts the fetch and answers `null` at once.
+ */
+async function fetchMissingList(
+  provider: string,
+  network: RouteNetwork,
+  deadline: Promise<"deadline">
+): Promise<AccountModelsList | null> {
+  const fetching = refreshAccountModelsList(provider, "cold-account");
+  if (network === "background") return null;
+  const result = await Promise.race([fetching, deadline]);
+  if (result === "deadline") return null;
+  if (result.kind === "skipped" && result.reason === "no-credential") {
+    return unboundAccountList(provider, deadline);
+  }
+  return readAccountModelsList(provider);
+}
+
+/**
+ * The list of an account whose credential reads present but yields no identity
+ * material to bind a stored list to: plain discovery, held in this process's
+ * memory only and never written, the fallback `providerServesModel` also takes.
+ * Without it such an account's subscription would drop out of every gathered
+ * chain. `null` when discovery fails, answers nothing, or outlasts `deadline`.
+ */
+async function unboundAccountList(
+  provider: string,
+  deadline: Promise<"deadline">
+): Promise<AccountModelsList | null> {
+  const discovered = await Promise.race([discoverProviderServedIds(provider), deadline]);
+  if (discovered === "deadline") return null;
+  const models = [...discovered.served, ...discovered.optIn];
+  if (models.length === 0) return null;
+  return { provider, models, fetchedAt: Date.now(), age: "live", mayDeny: true };
+}
+
+/**
+ * Start a refresh, never awaited, of each list a gathered chain reads from, so
+ * the next decision sees what the account serves now. Skips a provider whose
+ * list this decision already asked for: a failed fetch is not repeated at once.
+ */
+function refreshChainCandidateLists(
+  candidates: readonly ExplainedCandidate[],
+  accounts: ChainAccountLists
+): void {
+  const providers = new Set(
+    candidates
+      .filter((candidate) => candidate.outcome === "kept")
+      .map((candidate) => candidate.provider)
+  );
+  for (const provider of providers) {
+    if (!accounts.lists.has(provider) || accounts.refreshed.has(provider)) continue;
+    void refreshAccountModelsList(provider, "route-candidate", { minAgeMs: LIVE_MS });
+  }
 }
 
 /**
@@ -1368,11 +1522,11 @@ function wireIdOf(route: Route): string {
  * dynamic models catalog, so a `dv@glm-5-2` that ever became `dv@glm-5.2` would
  * request a uid that does not exist.
  *
- * No bare name can reach Devin through a COLLIDING family, which is what makes
- * the bare path safe to rewrite. Devin is a dynamic subscription, so it
- * publishes no catalog connection and can only be gathered from its namespace
- * claim — and that claim is exactly `/^swe-/i`, Cognition's own line. A bare
- * `glm-5-2` therefore never produces a Devin candidate, by either route.
+ * The bare path is still safe to rewrite. A Devin candidate for a bare name
+ * comes only from the account's own dynamic models catalog, and it carries the
+ * REQUESTED name as its wire id: the Devin transport resolves `glm-5.2` onto the
+ * account's own uid (`glm-5-2`) itself, the same resolution that found the row
+ * in the list. No dashed uid is ever rewritten into a request.
  */
 export function normalizeGlmSlug(model: string): string {
   return model.replace(
@@ -1730,8 +1884,8 @@ function describeOrigin(explanation: RouteExplanation): string {
 function describeCatalogOrigin(explanation: RouteExplanation): string {
   if (explanation.catalog === "unreadable") {
     const refresh = "run claudish --models-refresh";
-    // A namespace claim is claudish's own statement, so it gathers with no
-    // catalog: say what became of it rather than implying nothing routes.
+    // An account's own list gathers with no catalog: say what became of its
+    // candidate rather than implying nothing routes.
     return explanation.candidates.length > 0
       ? `no cloud models catalog · ${firstHopPhrase(explanation)} · ${refresh}`
       : `no cloud models catalog · ${refresh}`;
@@ -1754,15 +1908,15 @@ const DROPPED_FALLBACK_PHRASE: Record<Exclude<CandidateOutcome, "kept">, string>
 };
 
 /**
- * A readable catalog with no entry for the name. The only candidates are a
- * namespace claim's and the fallback hop, and each gets words for its outcome.
+ * A readable catalog with no entry for the name. The only candidates are
+ * account-listed ones and the fallback hop, and each gets words for its outcome.
  */
 function describeAbsentEntry(explanation: RouteExplanation): string {
   const head = `catalog has no entry for "${explanation.routedModel}"`;
   const withheld = explanation.fallbackWithheld;
   if (explanation.candidates.some((candidate) => candidate.position === "candidate")) {
-    // A namespace claim gathered something the catalog does not list.
-    // `already-gathered` is not news here: the fallback's provider is that claim.
+    // An account's list gathered something the catalog does not list.
+    // `already-gathered` is not news here: the fallback's provider is that candidate.
     const noFallback =
       withheld && withheld !== "already-gathered" ? ` · no fallback (${withheld})` : "";
     return `${head} · ${firstHopPhrase(explanation)}${noFallback}`;

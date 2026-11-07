@@ -63,9 +63,10 @@ export type TokenStrategy = "delta-aware" | "accumulate-both" | undefined;
  *    (`subscriptionPlanIds[]`), so a candidate can be gathered from the catalog
  *    alone: `kimi-coding`, `glm-coding`, `qwen-token-plan`, `opencode-zen-go`.
  *  - `dynamic-subscription` — flat-rate, but the ACCOUNT's own list decides what
- *    it serves, so the catalog publishes no connection for it at all and a
- *    candidate can only come from a namespace claim plus the account's dynamic
- *    models catalog: `antigravity`, `grok-subscription`, `devin`,
+ *    it serves, so the catalog publishes few or no connections for it and a
+ *    candidate comes from a vendor claim (a catalog chat model of the
+ *    subscription's own vendor) or from the account's dynamic models catalog
+ *    (`route-candidates.ts`): `antigravity`, `grok-subscription`, `devin`,
  *    `sakana-subscription`. Measured on generation
  *    `g-20260921062451697-f490edba`: all four appear in the probe map as
  *    `client_model_selection_required` and publish zero `aggregators[]` rows.
@@ -423,27 +424,6 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
       { prefix: "ag/", stripPrefix: true },
       { prefix: "antigravity/", stripPrefix: true },
     ],
-    // THE NAMESPACE CLAIM, not an auto-detect win. `google` declares the same
-    // `/^gemini-/i` and is defined ABOVE, so `getNativeModelPatterns()` — which
-    // is first-wins on array order — still answers `google` for a bare
-    // `gemini-3.6-flash`, exactly as before. What this adds is the one thing
-    // `route-candidates.ts` needs: `google/antigravity-subscription` sits in the
-    // probe map as `client_model_selection_required` and publishes ZERO
-    // `aggregators[]` rows, so gathering from the catalog alone can never see
-    // this plan. Without a claim here, the 5 Gemini models a seat actually
-    // serves (measured on generation g-20260921062451697-f490edba) would move
-    // off a flat-rate plan onto the metered `google` hop — the one ordering
-    // error that costs money.
-    //
-    // The family, not a list of ids: which VARIANTS a seat serves is per-account
-    // and drifts (`v1internal:fetchAvailableModels`), and the AVAILABILITY
-    // filter asks the account itself. This only says "Gemini is the namespace
-    // this plan sells", which is the provider's product definition.
-    //
-    // Deliberately NOT `/^claude-/i`: the Antigravity backend does serve Claude
-    // ids, but a bare Claude name must never reach `route()` at all
-    // (`nativeRouteFor` handles it first — see CLAUDE.md's Invariants).
-    nativeModelPatterns: [{ pattern: /^gemini-/i }],
     // Not a GET — an OAuth POST to v1internal:fetchAvailableModels, so `path`
     // is ignored. Declared so the picker prefers the per-subscription dynamic
     // models catalog and, more importantly, its per-model `maxTokens`: the backend and
@@ -485,29 +465,6 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
       { prefix: "dv/", stripPrefix: true },
       { prefix: "devin/", stripPrefix: true },
     ],
-    // EXACTLY ONE pattern, and it is Cognition's OWN family.
-    //
-    // The rule this narrows: Devin's RE-SERVED uids collide head-on with other
-    // providers' namespaces — `claude-opus-5-medium` matches native-anthropic's
-    // /^claude-/i, `gpt-5-6-luna-medium` matches OpenAI's, `glm-5-2` matches
-    // GLM's, `kimi-k3-high` matches Kimi's — so those must never auto-detect as
-    // Devin, and Devin must never be prepended to their chains. That reasoning
-    // is intact: access to another vendor's model through the plan stays
-    // EXPLICIT (`dv@claude-opus-5`), same as Alibaba Token Plan.
-    //
-    // `swe-*` is different in kind: it is Cognition's own model line, no other
-    // provider in the catalog carries it, and it collides with nothing. The
-    // pattern is Devin's namespace claim: `gatherFromNamespaceClaims`
-    // (route-candidates.ts) makes Devin a route candidate for a bare `swe-*`
-    // name, which the catalog cannot list because the account decides what the
-    // seat serves. It was added when `parseModelSpec` still sent every
-    // unrecognised bare name to native-anthropic: `swe-1.7` never reached
-    // routing, was silently rewritten to `claude-opus-4-1` and answered by a
-    // different vendor's model, probing byte-identically to a nonsense string
-    // while `dv@swe-1.7` served fine.
-    //
-    // Do NOT extend this list to Devin's re-served families.
-    nativeModelPatterns: [{ pattern: /^swe-/i }],
     modelDiscovery: { path: "", format: "devin-connect" },
     isDirectApi: true,
     description: "Devin subscription (dv@, devin@)",
@@ -669,23 +626,6 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     shortcuts: ["gk", "grok-subscription"],
     shortestPrefix: "gk",
     legacyPrefixes: [{ prefix: "gk/", stripPrefix: true }],
-    // THE NAMESPACE CLAIM. `x-ai` declares the same `/^grok-/i` and is defined
-    // ABOVE, so `getNativeModelPatterns()` — first-wins on array order — still
-    // answers `x-ai` for a bare `grok-4.6`, and this provider does NOT win
-    // auto-detection. A claim is not an auto-detect: it exists so
-    // `route-candidates.ts` can emit a candidate the CATALOG cannot publish.
-    // `x-ai/supergrok-subscription` sits in the probe map as
-    // `client_model_selection_required` with ZERO `aggregators[]` rows, so
-    // gathering would otherwise put a SuperGrok seat's 2 models (measured on
-    // generation g-20260921062451697-f490edba) on the metered `x-ai` hop and
-    // bill per token for what the plan already covers.
-    //
-    // Safe as a bare name for the reason the routing chain relied on before:
-    // these ids are xAI's OWN, so — unlike Devin's re-served uids — there is no
-    // other vendor's namespace to collide with. Which grok ids a seat serves
-    // stays ACCOUNT-SCOPED, so the claim names the family and the availability
-    // filter asks `/v1/models`.
-    nativeModelPatterns: [{ pattern: /^grok-/i }],
     // The dynamic models catalog is ACCOUNT-SCOPED and drifts, so it is discovered, never
     // pinned. `/v1/models` is genuinely authenticated here (401 without a token,
     // unlike Alibaba's coding-intl model list where a 200 proves nothing), and it
@@ -1166,7 +1106,8 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
   // Inert first, because that is what makes the choice cheap: a local server is
   // bound to no catalog route (`ollama/cloud` belongs to `ollamacloud`, not to
   // this entry), so no catalog connection can ever name one, and only a
-  // `dynamic-subscription` may claim a namespace — so no local provider can be
+  // persisted-list subscription or a `dynamic-subscription`'s vendor claim adds
+  // a candidate the catalog does not publish — so no local provider can be
   // gathered as a remote candidate at all. Local models reach a request the way
   // they always have: an explicit `ollama@llama3.2`, or the local-provider path.
   //
@@ -1462,20 +1403,6 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     shortcuts: ["sc"],
     shortestPrefix: "sc",
     legacyPrefixes: [{ prefix: "sc/", stripPrefix: true }],
-    // THE NAMESPACE CLAIM. `sakana` above declares the same `/^fugu/i` (plus
-    // `/^sakana\//i`, which `parseModelSpec` strips to a bare `fugu…` before
-    // routing ever sees it) and is defined FIRST, so auto-detection is
-    // unchanged. This claim is what lets `route-candidates.ts` emit a
-    // subscription candidate at all: `sakana/fugu-subscription` is
-    // `client_model_selection_required` in the probe map with ZERO
-    // `aggregators[]` rows, and without it the 8 Fugu models a plan serves
-    // (measured on generation g-20260921062451697-f490edba) would silently move
-    // onto the metered `sakana` key — which draws PREPAID CREDITS, a different
-    // wallet from the subscription, and has already billed a user once.
-    //
-    // `/^fugu/i` rather than `/^fugu-/i`: the bare id `fugu` is a real model, so
-    // a hyphen-anchored rule would miss the family's own head.
-    nativeModelPatterns: [{ pattern: /^fugu/i }],
     isDirectApi: true,
     description: "Sakana Fugu Subscription (sc@)",
   },
