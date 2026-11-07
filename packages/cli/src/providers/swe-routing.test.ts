@@ -4,36 +4,32 @@ import { getProviderByName } from "./provider-definitions.js";
 import { gatherRouteCandidates } from "./route-candidates.js";
 
 describe("SWE model routing", () => {
-  test("auto-detects bare swe-* names as Devin without marking them explicit", () => {
+  test("leaves bare swe-* names to auto-route without marking them explicit", () => {
     for (const modelId of ["swe-1.7", "SWE-1.7", "swe-2"]) {
       const parsed = parseModelSpec(modelId);
 
-      expect(parsed.provider).toBe("devin");
+      expect(parsed.provider).toBe("auto-route");
       expect(parsed.isExplicitProvider).toBe(false);
     }
   });
 
-  test("Devin claims the swe-* namespace and gathering emits that route candidate", () => {
-    const devin = getProviderByName("devin")!;
-    expect(devin.nativeModelPatterns?.map(({ pattern }) => pattern.source)).toEqual(["^swe-"]);
-
+  test("does not gather Devin from a swe-* spelling without an account list", () => {
     const gathered = gatherRouteCandidates(
       "swe-1.7",
       `${import.meta.dir}/fixtures/intentionally-missing-catalog.json`
     );
-    expect(gathered.candidates).toContainEqual({
-      provider: "devin",
-      wireId: "swe-1.7",
-      tier: "dynamic-subscription",
-      isVendorOwn: false,
-      price: { known: false, label: "unknown" },
-      source: "namespace-claim",
-    });
+    expect(gathered.candidates.map(({ provider }) => provider)).not.toContain("devin");
   });
 
+  test.each(["antigravity", "devin", "grok-subscription", "sakana-subscription"])(
+    "%s declares no regex namespace claim",
+    (provider) => {
+      expect(getProviderByName(provider)?.nativeModelPatterns ?? []).toEqual([]);
+    }
+  );
+
   test("never auto-detects Devin's re-served vendor model collisions", () => {
-    // Devin re-serves these other vendors' models under colliding UIDs. Auto-detecting
-    // a bare name as Devin would let the wrong vendor answer the request.
+    // A bare name keeps its vendor identity; account-listed candidates are gathered later.
     for (const modelId of [
       "claude-opus-5-medium",
       "gpt-5-6-luna-medium",
