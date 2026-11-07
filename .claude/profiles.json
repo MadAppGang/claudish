@@ -56,7 +56,6 @@
         "playground@claude-plugins-official": "latest",
         "typescript-lsp@claude-plugins-official": "latest",
         "skill-creator@claude-plugins-official": "latest",
-        "browser-use@magus": "latest",
         "designer@magus": "latest",
         "multimodel@magus": "latest",
         "dev@magus": "latest",
@@ -96,7 +95,8 @@
             "Authorization": "Bearer ${LINEAR_API_KEY}"
           }
         }
-      }
+      },
+      "updatedAt": "2026-11-07T10:18:07.711Z"
     }
   },
   "default": "magus-main"
