@@ -79,6 +79,8 @@ interface CapturedPart {
   type: string;
   text?: string;
   image_url?: { url: string };
+  tool_use_id?: string;
+  content?: CapturedPart[];
 }
 
 interface CapturedMessage {
@@ -229,6 +231,12 @@ function userAfterTool(body: CapturedBody): CapturedMessage {
   return following!;
 }
 
+function partsOfType(value: unknown, type: string): CapturedPart[] {
+  if (value === null || typeof value !== "object") return [];
+  const matches = "type" in value && value.type === type ? [value as CapturedPart] : [];
+  return [...matches, ...Object.values(value).flatMap((child) => partsOfType(child, type))];
+}
+
 describe("ComposedHandler non-vision image omission", () => {
   test("(a) chat-completions: image-only tool_result retains an omission placeholder", async () => {
     const { body, visionCalls } = await captureRequest(
@@ -296,6 +304,42 @@ describe("ComposedHandler non-vision image omission", () => {
     expect(following.content).toEqual([
       { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } },
     ]);
+    expect(JSON.stringify(body)).not.toContain("[image omitted");
+  });
+
+  test("(f) anthropic-messages: nested tool_result image retains an omission placeholder", async () => {
+    const { body } = await captureRequest("anthropic-messages", toolResultConversation());
+    expect(
+      partsOfType(body, "image"),
+      "No image block may reach a non-vision model, including nested tool_result content"
+    ).toEqual([]);
+    const toolResults = partsOfType(body, "tool_result");
+    expect(toolResults).toHaveLength(1);
+    const toolResult = toolResults[0]!;
+    expect(toolResult.tool_use_id).toBe("toolu_read_pixel");
+    expectNoEmptyContent(body);
+    expect(toolResult.content, "The tool_result content must not be empty").toBeArray();
+    expect(toolResult.content!.length).toBeGreaterThan(0);
+    expect(
+      partsOfType(toolResult.content, "text").some((part) => part.text?.includes("[image omitted")),
+      "The nested tool_result must name the omitted image"
+    ).toBe(true);
+  });
+
+  test("(g) anthropic-messages vision control: nested tool_result image reaches upstream unchanged", async () => {
+    const { body, visionCalls } = await captureRequest(
+      "anthropic-messages",
+      toolResultConversation(),
+      true
+    );
+    expect(visionCalls).toBe(0);
+    expectNoEmptyContent(body);
+    const toolResults = partsOfType(body, "tool_result");
+    expect(toolResults).toHaveLength(1);
+    const toolResult = toolResults[0]!;
+    expect(toolResult.tool_use_id).toBe("toolu_read_pixel");
+    expect(toolResult.content).toEqual([image()]);
+    expect(partsOfType(body, "image")).toEqual([image()]);
     expect(JSON.stringify(body)).not.toContain("[image omitted");
   });
 });
