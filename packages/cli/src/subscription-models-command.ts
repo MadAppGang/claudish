@@ -301,7 +301,11 @@ type InternalCode = (typeof FAILURE_CODES)["internal"][number];
  * awaited `writeStdout`, and return the exit code. Never throws.
  *
  * The line holds only `facts` and fixed strings, never a body. It is still
- * checked against `secrets`; a hit (which cannot happen) prints nothing.
+ * checked against `secrets`: a fact can carry one (a server URL with a
+ * credential in its PATH survives `stripUserinfo`). On a hit the line drops to
+ * its fixed fields, so a line is still printed: it then holds only the
+ * schema, the version, a boolean and fixed failure strings, every byte a
+ * constant in the published source, and is not checked again.
  */
 async function writeInternalFailure(
   deps: SubscriptionModelsDeps,
@@ -312,13 +316,14 @@ async function writeInternalFailure(
 ): Promise<number> {
   const failure = failureOf("internal", code);
   safeStderr(deps, `${stderrLine}\n`);
-  const line = lineOf(buildEnvelope(facts, failure));
-  if (!secrets || !containsSecret(secrets, line)) {
-    try {
-      await deps.writeStdout(line);
-    } catch {
-      // stdout is unusable; the stderr line already says what happened.
-    }
+  let line = lineOf(buildEnvelope(facts, failure));
+  if (secrets && containsSecret(secrets, line)) {
+    line = lineOf(buildEnvelope({ tokenRefreshed: facts.tokenRefreshed }, failure));
+  }
+  try {
+    await deps.writeStdout(line);
+  } catch {
+    // stdout is unusable; the stderr line already says what happened.
   }
   return exitCodeFor(failure);
 }
