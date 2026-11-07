@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { Hono } from "hono";
 import { AnthropicAPIFormat } from "../adapters/anthropic-api-format.js";
+import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { lookupModelAcceptsImages } from "../adapters/model-catalog.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import type { DiskCacheV3 } from "../providers/all-models-cache.js";
@@ -92,10 +93,24 @@ interface CapturedBody {
   messages: CapturedMessage[];
 }
 
-type Api = "chat-completions" | "anthropic-messages";
+interface CapturedResponsesBody {
+  input: CapturedMessage[];
+}
+
+type Api = "chat-completions" | "anthropic-messages" | "responses";
 const upstreamEndpoint = "https://vision-strip-upstream.invalid/v1/messages";
 const visionEndpoint = "https://api.anthropic.com/v1/messages";
 
+async function captureRequest(
+  api: "responses",
+  messages: unknown[],
+  acceptsImages?: boolean
+): Promise<{ body: CapturedResponsesBody; visionCalls: number }>;
+async function captureRequest(
+  api: Exclude<Api, "responses">,
+  messages: unknown[],
+  acceptsImages?: boolean
+): Promise<{ body: CapturedBody; visionCalls: number }>;
 async function captureRequest(api: Api, messages: unknown[], acceptsImages = false) {
   const directory = mkdtempSync(join(tmpdir(), "composed-vision-strip-"));
   const cachePath = join(directory, "catalog.json");
@@ -134,11 +149,17 @@ async function captureRequest(api: Api, messages: unknown[], acceptsImages = fal
   const transport: ProviderTransport = {
     name: connection.provider,
     displayName: "Vision strip test",
-    streamFormat: api === "chat-completions" ? "openai-sse" : "anthropic-sse",
+    streamFormat: (
+      {
+        "chat-completions": "openai-sse",
+        "anthropic-messages": "anthropic-sse",
+        responses: "openai-responses-sse",
+      } as const
+    )[api],
     getEndpoint: () => upstreamEndpoint,
     getHeaders: async () => ({ "content-type": "application/json" }),
   };
-  const upstreamBodies: CapturedBody[] = [];
+  const upstreamBodies: (CapturedBody | CapturedResponsesBody)[] = [];
   let visionCalls = 0;
   const originalFetch = globalThis.fetch;
   let handler: ComposedHandler | undefined;
@@ -157,7 +178,7 @@ async function captureRequest(api: Api, messages: unknown[], acceptsImages = fal
           return new Response("Vision description unavailable in this test", { status: 503 });
         }
         if (url !== upstreamEndpoint) throw new Error(`Unexpected fetch: ${url}`);
-        upstreamBodies.push(JSON.parse(String(init?.body)) as CapturedBody);
+        upstreamBodies.push(JSON.parse(String(init?.body)) as CapturedBody | CapturedResponsesBody);
         // Stop after request construction without running response parsers or usage writes.
         return new Response("Captured upstream request", { status: 400 });
       },
@@ -166,9 +187,11 @@ async function captureRequest(api: Api, messages: unknown[], acceptsImages = fal
 
     handler = new ComposedHandler(transport, modelId, modelId, 0, {
       adapter:
-        connection.wire.status === "known" && connection.wire.api === "chat-completions"
-          ? new OpenAIAPIFormat(modelId)
-          : new AnthropicAPIFormat(modelId, transport.name),
+        api === "responses"
+          ? new CodexAPIFormat(modelId, undefined, { codexExtras: false })
+          : api === "chat-completions"
+            ? new OpenAIAPIFormat(modelId)
+            : new AnthropicAPIFormat(modelId, transport.name),
       catalogCachePath: cachePath,
       connection,
     });
@@ -219,6 +242,15 @@ function expectNoEmptyContent(body: CapturedBody) {
       message.content === "" || (Array.isArray(message.content) && message.content.length === 0)
   );
   expect(empty, 'No outgoing message may have content "" or []').toEqual([]);
+}
+
+function expectNoEmptyInputContent(body: CapturedResponsesBody) {
+  expect(body.input).toBeArray();
+  expect(body.input.length).toBeGreaterThan(0);
+  const empty = body.input.filter(
+    (item) => item.content === "" || (Array.isArray(item.content) && item.content.length === 0)
+  );
+  expect(empty, 'No outgoing input item may have content "" or []').toEqual([]);
 }
 
 function userAfterTool(body: CapturedBody): CapturedMessage {
@@ -340,6 +372,41 @@ describe("ComposedHandler non-vision image omission", () => {
     expect(toolResult.tool_use_id).toBe("toolu_read_pixel");
     expect(toolResult.content).toEqual([image()]);
     expect(partsOfType(body, "image")).toEqual([image()]);
+    expect(JSON.stringify(body)).not.toContain("[image omitted");
+  });
+
+  test("(h) responses: tool_result and top-level images retain text and omission placeholders", async () => {
+    const conversations = [
+      {
+        messages: toolResultConversation(),
+        userText: "Read ./pixel.png and describe it.",
+      },
+      {
+        messages: [{ role: "user", content: [image(), text("Describe the red pixel.")] }],
+        userText: "Describe the red pixel.",
+      },
+    ];
+    for (const { messages, userText } of conversations) {
+      const { body } = await captureRequest("responses", messages);
+      expect(
+        partsOfType(body, "input_image"),
+        "No input_image item may reach a non-vision model"
+      ).toEqual([]);
+      expectNoEmptyInputContent(body);
+      expect(JSON.stringify(body)).toContain("[image omitted");
+      const userTextSent = body.input
+        .filter((item) => item.role === "user")
+        .map(messageText)
+        .join("\n");
+      expect(userTextSent, "The original user text must survive").toContain(userText);
+    }
+  });
+
+  test("(i) responses vision control: tool_result image reaches upstream without a placeholder", async () => {
+    const { body, visionCalls } = await captureRequest("responses", toolResultConversation(), true);
+    expect(visionCalls).toBe(0);
+    expectNoEmptyInputContent(body);
+    expect(partsOfType(body, "input_image").length).toBeGreaterThan(0);
     expect(JSON.stringify(body)).not.toContain("[image omitted");
   });
 });
