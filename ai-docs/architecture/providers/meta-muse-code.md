@@ -409,7 +409,8 @@ With the route binding in place, a bare `muse-*` name with a mapped subscription
 leads with `muse@`, subject to membership, credential and availability filters. The account's
 dynamic models catalog decides entitlement, including Wonder Full on lower tiers.
 `meta-muse-code` is tier `subscription`, not `dynamic-subscription`: it is gathered from the
-connection, not a namespace claim. On `g-20261021063612126-17350b71`, bare `muse-wonder-full`
+catalog connection, not a vendor claim. Its account's dynamic models catalog adds an
+account-listed candidate only for a model the catalog publishes no `meta-muse-code` connection for. On `g-20261021063612126-17350b71`, bare `muse-wonder-full`
 gathers `muse@muse-wonder-full-1.0`; `muse-spark-1.3` orders candidates as `muse@`, then metered
 `meta@`, then OpenCode Zen and OpenRouter. A user routing rule still takes precedence.
 
