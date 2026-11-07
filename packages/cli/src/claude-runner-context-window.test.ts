@@ -1,7 +1,9 @@
-import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { lookupModelForProvider } from "./adapters/model-catalog.js";
+import { credentials } from "./auth/credentials/authority.js";
 import {
   MAX_AUTO_COMPACT_WINDOW,
   MIN_AUTO_COMPACT_WINDOW,
@@ -10,6 +12,11 @@ import {
 } from "./claude-runner.js";
 import { ENV } from "./config.js";
 import { catalogRouteForProvider } from "./providers/catalog-route-bindings.js";
+import {
+  _resetAccountModelsListsForTest,
+  readAccountModelsList,
+} from "./providers/dynamic-models-catalog.js";
+import { discoverContextWindow, invalidateModelDiscovery } from "./providers/model-discovery.js";
 import type { ClaudishConfig } from "./types.js";
 
 const REDUCED_WINDOW_SPEC = "cx@gpt-5.6-sol";
@@ -24,6 +31,22 @@ beforeAll(() => {
   mockCachePath = join(tmpDir, "all-models.json");
 
   const entries = [
+    {
+      modelId: "k3",
+      aliases: [],
+      contextWindow: 1_048_576,
+      aggregators: [
+        {
+          sourceCollectorId: "test",
+          routeStatus: "mapped",
+          route: catalogRouteForProvider("kimi-coding"),
+          sourceProviderId: "kimi-coding",
+          externalModelId: "k3",
+          confidence: "api_official",
+          contextWindow: 131_072,
+        },
+      ],
+    },
     {
       modelId: "gpt-5.6-sol",
       aliases: [],
@@ -163,6 +186,126 @@ describe("computeMainThreadContextWindow", () => {
       else process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = previousKey;
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  describe("discovery must not block launch without a stored list", () => {
+    let home: string;
+    let previousDir: string | undefined;
+    let previousKey: string | undefined;
+    let realFetch: typeof globalThis.fetch;
+    let originalIdentity: typeof credentials.accountIdentity;
+    let originalReadiness: typeof credentials.describeReadiness;
+    let originalAuth: typeof credentials.getRequestAuth;
+
+    // No socket or timer backs this promise: discovery cannot finish during a
+    // launch, and it cannot leave an I/O handle behind after the test either.
+    const fetcher = mock((_input: RequestInfo | URL): Promise<Response> => new Promise(() => {}));
+
+    beforeEach(() => {
+      home = mkdtempSync(join(tmpdir(), "claudish-cold-launch-window-"));
+      previousDir = process.env.CLAUDISH_DYNAMIC_CATALOG_DIR;
+      previousKey = process.env.CLAUDISH_DYNAMIC_CATALOG_KEY;
+      process.env.CLAUDISH_DYNAMIC_CATALOG_DIR = join(home, "dynamic-models-catalog");
+      process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = join(home, "dynamic-models-catalog.key");
+      realFetch = globalThis.fetch;
+      originalIdentity = credentials.accountIdentity;
+      originalReadiness = credentials.describeReadiness;
+      originalAuth = credentials.getRequestAuth;
+      credentials.accountIdentity = mock(async (provider: string) =>
+        provider === "kimi-coding" ? "offline-launch-account" : undefined
+      );
+      credentials.describeReadiness = mock(async (provider: string) => ({
+        readiness: provider === "kimi-coding" ? ("present" as const) : ("absent" as const),
+      }));
+      credentials.getRequestAuth = mock(async () => ({
+        headers: { Authorization: "Bearer offline-test" },
+      }));
+      fetcher.mockReset();
+      fetcher.mockImplementation(() => new Promise<Response>(() => {}));
+      globalThis.fetch = fetcher as unknown as typeof fetch;
+      _resetAccountModelsListsForTest();
+      invalidateModelDiscovery();
+    });
+
+    afterEach(() => {
+      _resetAccountModelsListsForTest();
+      invalidateModelDiscovery();
+      globalThis.fetch = realFetch;
+      credentials.accountIdentity = originalIdentity;
+      credentials.describeReadiness = originalReadiness;
+      credentials.getRequestAuth = originalAuth;
+      if (previousDir === undefined) delete process.env.CLAUDISH_DYNAMIC_CATALOG_DIR;
+      else process.env.CLAUDISH_DYNAMIC_CATALOG_DIR = previousDir;
+      if (previousKey === undefined) delete process.env.CLAUDISH_DYNAMIC_CATALOG_KEY;
+      else process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = previousKey;
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("returns the provider's cloud models catalog window while one background discovery never settles", async () => {
+      expect(await readAccountModelsList("kimi-coding")).toBeNull();
+      expect(lookupModelForProvider("k3", "kimi-coding", mockCachePath)).toBe(131_072);
+      const launch = computeMainThreadContextWindow(
+        { model: "kc@k3" } as ClaudishConfig,
+        mockCachePath
+      );
+
+      // A tick lets fire-and-forget discovery start, but cannot finish it.
+      await Bun.sleep(0);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(fetcher).toHaveBeenCalledWith(
+        expect.stringMatching(/\/models$/),
+        expect.objectContaining({ method: "GET" })
+      );
+
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const window = await Promise.race([
+          launch,
+          new Promise<string>((resolve) => {
+            timer = setTimeout(() => resolve("launch still awaiting discovery after 750ms"), 750);
+          }),
+        ]);
+        expect(window).toBe(131_072);
+        await Bun.sleep(0);
+        expect(fetcher).toHaveBeenCalledTimes(1);
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+
+    test.each([undefined, "await"] as const)(
+      "discoverContextWindow with network=%s still waits for discovery",
+      async (network) => {
+        let answer!: (response: Response) => void;
+        const response = new Promise<Response>((resolve) => {
+          answer = resolve;
+        });
+        fetcher.mockImplementationOnce(() => response);
+        let settled = false;
+        const lookup = discoverContextWindow(
+          "kimi-coding",
+          "k3",
+          network === undefined ? undefined : { network }
+        ).then((window) => {
+          settled = true;
+          return window;
+        });
+
+        try {
+          await Bun.sleep(0);
+          expect(fetcher).toHaveBeenCalledTimes(1);
+          expect(settled).toBe(false);
+        } finally {
+          answer(
+            new Response(JSON.stringify({ data: [{ id: "k3", context_length: 524_288 }] }), {
+              headers: { "Content-Type": "application/json" },
+            })
+          );
+          await lookup;
+        }
+        expect(await lookup).toBe(524_288);
+      }
+    );
   });
 
   test("exposes the Claude Code auto-compaction floor", () => {
