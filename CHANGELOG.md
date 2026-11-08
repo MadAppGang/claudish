@@ -2,6 +2,18 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.16.1] - 2026-11-08
+
+### Bug Fixes
+
+- replace images nested in a tool_result for non-vision *(adapters)* ([`d0ee057`](https://github.com/MadAppGang/claudish/commit/d0ee05702c8380aa45297097d42c21acc2925237))
+- replace a stripped image with a text placeholder *(adapters)* ([`8621c75`](https://github.com/MadAppGang/claudish/commit/8621c757a3545b614ba5b10c3e5a6cb50e192747))
+
+### Documentation
+
+- record the non-vision image placeholder in wire.md *(adapters)* ([`a72a22c`](https://github.com/MadAppGang/claudish/commit/a72a22c83e509684abf9f6d7d32f4fcfcaa5b8b2))
+- update CHANGELOG.md for v14.16.0([`e6886cd`](https://github.com/MadAppGang/claudish/commit/e6886cdcfa04df32290e50eb0c62dccdd0f2386d))
+
 ## [14.16.0] - 2026-11-07
 
 ### Bug Fixes
