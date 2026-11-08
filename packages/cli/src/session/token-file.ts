@@ -4,7 +4,7 @@
  * the writer and all its readers — kept in its own module so the proxy's tracker can
  * import it without the summary's pricing dependencies.
  *
- * An inherited `CLAUDISH_TOKEN_FILE` wins: a parent (team, the MCP channel, a pane)
+ * An inherited `CLAUDISH_TOKEN_FILE` wins: a parent (team, an MCP session, a pane)
  * names the file the child's proxy writes, and the tracker honours it. Otherwise it is
  * `<home>/.claudish/tokens-<port>.json`, `<home>` by the `$HOME`-first rule.
  *
@@ -16,7 +16,7 @@
  */
 
 import { join } from "node:path";
-import { userHomeFrom } from "../channel/home-dir.js";
+import { userHomeFrom } from "../mcp-session/home-dir.js";
 
 /**
  * The token file a PARENT assigned to this process: `CLAUDISH_TOKEN_FILE`, unless it is
@@ -24,7 +24,7 @@ import { userHomeFrom } from "../channel/home-dir.js";
  * (`CLAUDISH_PUBLISHED_TOKEN_FILE` carries the same value). A claudish launched from a
  * claudish session's Bash tool inherits that published path; honouring it made the
  * nested session's tracker overwrite the parent's file, and both status lines (and the
- * parent's summary) showed each other's model, cost and context. Team slots and channel
+ * parent's summary) showed each other's model, cost and context. Team slots and MCP
  * sessions set `CLAUDISH_TOKEN_FILE` to a path of their own, which never equals it.
  */
 export function assignedTokenFile(env: Record<string, string | undefined>): string | null {

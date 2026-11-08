@@ -12,9 +12,13 @@
  * primary, but with DIFFERENT API-key fallback halves keyed on each product's
  * own env var. They MUST stay separate: aliasing kimi-coding onto the regular
  * Kimi credential makes the coding endpoint receive the regular Moonshot key
- * (the wrong product's key) → 401. The OAuth refresh throws
- * "OAuth_FALLBACK_TO_API_KEY" when it fails and an API key is present — the
- * composite's `fallbackSignal` catches exactly that and falls through.
+ * (the wrong product's key) → 401. When the token host REJECTS the login, the
+ * OAuth refresh throws "OAuth_FALLBACK_TO_API_KEY" with the login instruction
+ * as its cause. Each composite's `fallbackSignal` catches it and falls through
+ * ONLY when its own product's key is present (kc@: KIMI_CODING_API_KEY, the
+ * same flat-rate plan; kimi@: MOONSHOT_API_KEY / KIMI_API_KEY); otherwise the
+ * caller gets the cause, "run `claudish login kimi`". A Moonshot key never
+ * signs kc@.
  */
 
 import { KimiOAuth } from "../kimi-oauth.js";

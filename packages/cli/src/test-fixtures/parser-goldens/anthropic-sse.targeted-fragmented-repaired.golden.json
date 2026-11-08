@@ -1,0 +1,23 @@
+{
+  "kind": "parser",
+  "id": "anthropic-sse.targeted-fragmented-repaired",
+  "source": "anthropic-sse behavior repair > reassembles fragmented targeted arguments, repairs them, and emits one delta",
+  "parser": "anthropic-sse",
+  "modelName": "test-model",
+  "repair": {
+    "kind": "replace",
+    "tool": "target_tool",
+    "args": "{\"value\":\"behavior-repaired\"}"
+  },
+  "input": {
+    "encoding": "utf8",
+    "chunks": [
+      "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_anthropic_0\",\"name\":\"target_tool\",\"input\":{}}}\n\n",
+      "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":\\\"model-\"}}\n\n",
+      "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"original\\\"}\"}}\n\n",
+      "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+    ]
+  },
+  "defect": "createToolRepairInterceptor's flush() returns `<content_block_delta frame>` + the stop frame's `data:` line, but enqueueData() has already written the held `event: content_block_stop` line before it. The wire reads `event: content_block_stop\\nevent: content_block_delta\\ndata: <delta>\\n\\ndata: <stop>\\n\\n`: per the SSE spec the delta is dispatched (last `event:` wins) and the stop payload arrives as an UNNAMED event, which a client dispatching on event names drops, leaving the tool_use block unclosed. Compare dataPayloads(), not bytes.",
+  "output": "event: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_anthropic_0\",\"name\":\"target_tool\",\"input\":{}}}\n\n\n\nevent: content_block_stop\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":\\\"behavior-repaired\\\"}\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+}

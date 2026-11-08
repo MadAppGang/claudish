@@ -12,6 +12,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
+import { withRawConfigTransaction } from "./auth/accounts/config-lock.js";
+import { type CodeModeSetting, parseCodeModeSetting } from "./code-mode/policy.js";
 import { activeGlobalConfigFile, getConfigFileOverride } from "./config-override.js";
 
 // Config directory and file paths
@@ -176,6 +178,25 @@ export interface ClaudishProfileConfig {
     enabled?: boolean;
   };
   /**
+   * Multi-account subscription pools, per vendor.
+   *
+   * Holds NO secrets — ids, labels, identity for display, and which store each
+   * account's tokens live in. The token material itself is in the Keychain
+   * (service `claudish-accounts`) or in `~/.claudish/accounts/tokens/`.
+   *
+   * It also holds NO `owner`: the named refresher lives in
+   * `~/.claudish/accounts/state.json` alone. Carrying it in both documents with
+   * no rule for which wins is how a config reload silently overwrites the active
+   * refresher and two processes choose different refresh protocols.
+   *
+   * GLOBAL ONLY, like `customEndpoints`. Validated at the consumption site
+   * (`auth/accounts/registry.ts`, and `config-schema.ts` for a mutation) rather
+   * than here, because `loadConfig` stays Zod-free for the lightweight startup
+   * paths — and because the registry must distinguish a read FAILURE from an
+   * absence, which this function by design cannot.
+   */
+  subscriptionAccounts?: Record<string, unknown>;
+  /**
    * Opt IN to using a real ANTHROPIC_API_KEY for native Claude models, accepting
    * metered API billing. Default (absent/false) hides the key so Claude Code
    * uses the claude.ai subscription — a key bundled into a shared .env /
@@ -241,11 +262,21 @@ export interface ClaudishProfileConfig {
   predefinedEndpoints?: Record<string, unknown>;
 
   /**
-   * Layer 4 behavior-compatibility settings (rule severities, hooks, observer).
-   * Validated at the consumption site via Zod in behavior/config.ts, not here —
-   * `loadConfig` runs on lightweight startup paths and stays Zod-free.
+   * The pre-hook-system `behavior` block. The hook system never reads it: its
+   * only reader there is the reporter in hooks/config.ts, which tells the user
+   * what to move into `hooks`.
+   * It stays on the allowlist as an opaque passthrough so the next global save
+   * does not silently drop it before the user has moved it.
    */
   behavior?: Record<string, unknown>;
+
+  /**
+   * The hook system (modules, severity, injection cap, observer, telemetry
+   * consent). Read from the GLOBAL config only — a project `.claudish.json` is
+   * repo-controlled and must not name code to run. Validated at the consumption
+   * site via Zod in hooks/config.ts; `loadConfig` stays Zod-free.
+   */
+  hooks?: Record<string, unknown>;
 
   /**
    * Apply a model's catalog provider-preset (e.g. `reasoning.mode=pro`) while
@@ -256,6 +287,16 @@ export interface ClaudishProfileConfig {
    * `readProOnUltracode()`, NOT this allowlist — see its doc comment.
    */
   proOnUltracode?: boolean;
+
+  /**
+   * Code mode for `openai-codex` (`auto` | `on` | `off`, default `auto`): Claude
+   * Code's tools are offered to the model as one freeform `exec` tool running
+   * a script, the protocol the official Codex client uses.
+   * Precedence: --code-mode flag > CLAUDISH_CODE_MODE env > project
+   * `.claudish.json` > this field > auto. The scoped read is `readCodeMode()`,
+   * NOT this allowlist — same reason as `proOnUltracode`.
+   */
+  codeMode?: CodeModeSetting;
 
   /**
    * Master switch for connection RECOVERY itself — the retry ladder claudish
@@ -386,6 +427,13 @@ export function loadConfig(): ClaudishProfileConfig {
     if (config.keychain !== undefined) {
       merged.keychain = config.keychain;
     }
+    // Same trap again, and this one costs money: omitted from this allowlist,
+    // the account list survives on disk until the first global save and is
+    // then silently dropped — after which the pool reports "no subscription
+    // configured" and every request signs against a per-token API key.
+    if (config.subscriptionAccounts !== undefined) {
+      merged.subscriptionAccounts = config.subscriptionAccounts;
+    }
     if (config.anthropicApiBilling !== undefined) {
       merged.anthropicApiBilling = config.anthropicApiBilling;
     }
@@ -412,11 +460,21 @@ export function loadConfig(): ClaudishProfileConfig {
     if (config.behavior !== undefined) {
       merged.behavior = config.behavior;
     }
+    // Same trap as keychain/onepasswordEnvironments: omitted from this
+    // allowlist, the block survives on disk until the first global save and is
+    // then silently dropped — every user hook would stop loading with no error.
+    if (config.hooks !== undefined) {
+      merged.hooks = config.hooks;
+    }
     // Same trap as keychain/onepasswordEnvironments above: omitted from this
     // allowlist, the field survives on disk until the first global save and is
     // then silently dropped — quietly turning the feature off with no error.
     if (config.proOnUltracode !== undefined) {
       merged.proOnUltracode = config.proOnUltracode;
+    }
+    // Same trap: omitted here, `codeMode` is dropped at the first global save.
+    if (config.codeMode !== undefined) {
+      merged.codeMode = config.codeMode;
     }
     // Same trap again, for both recovery switches. Omitted here, the field
     // survives on disk until the first global save and is then silently
@@ -440,8 +498,14 @@ export function loadConfig(): ClaudishProfileConfig {
 export function saveConfig(config: ClaudishProfileConfig): void {
   // Writes target the ACTIVE file: with a --config override, persist to that
   // file (never mutate ~/.claudish/config.json with override-derived data).
-  if (!getConfigFileOverride()) ensureConfigDir();
-  writeFileSync(activeConfigFile(), JSON.stringify(config, null, 2), "utf-8");
+  withRawConfigTransaction(activeConfigFile(), (raw) => {
+    const next: Record<string, unknown> = { ...config };
+    // Accounts are disk-owned. A stale picker/TUI save may neither erase an add
+    // nor resurrect a removed row (including its durable suppression marker).
+    if (raw.subscriptionAccounts === undefined) delete next.subscriptionAccounts;
+    else next.subscriptionAccounts = raw.subscriptionAccounts;
+    return { config: next, result: undefined };
+  });
 }
 
 /**
@@ -543,6 +607,32 @@ export function readProOnUltracode(
       if (!existsSync(path)) continue;
       const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
       if (typeof parsed?.proOnUltracode === "boolean") return parsed.proOnUltracode;
+    } catch {
+      // Garbled/unreadable file → skip this scope rather than fail the run.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Read `codeMode` from the project file, else the global file.
+ *
+ * A RAW per-file read, for the same reason `readProOnUltracode` is one: a
+ * project `.claudish.json` that sets only this key is invisible to
+ * `loadConfig`. A value other than `auto`/`on`/`off` is skipped (that scope
+ * states nothing). Returns undefined when neither scope states a setting —
+ * the caller then applies the default (`off`).
+ */
+export function readCodeMode(
+  paths: ScopedConfigPaths = defaultScopedConfigPaths
+): CodeModeSetting | undefined {
+  for (const pathFn of [paths.project, paths.global]) {
+    try {
+      const path = pathFn();
+      if (!existsSync(path)) continue;
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+      const setting = parseCodeModeSetting(parsed?.codeMode);
+      if (setting) return setting;
     } catch {
       // Garbled/unreadable file → skip this scope rather than fail the run.
     }
@@ -864,18 +954,33 @@ export function setDefaultProfile(name: string, scope: ProfileScope = "global"):
   saveConfigForScope(config, scope);
 }
 
+/** The model tiers a run takes from a profile, and where that profile came from. */
+export interface RunModelMapping {
+  models: ModelMapping;
+  /**
+   * The profile's name when it came from the project `.claudish.json`, which ships with
+   * the checkout; null for the user's own config. `project-models.ts` checks a project
+   * profile's tiers before a run uses them.
+   */
+  projectProfile: string | null;
+}
+
 /**
- * Get model mapping from a profile
- * Uses local-first resolution when no scope is given
+ * The model tiers of the profile a run uses: `profileName`, or the default profile,
+ * resolved local-first exactly as `getProfile(name)` / `getDefaultProfile()` resolve it,
+ * keeping the scope those discard.
  */
-export function getModelMapping(profileName?: string): ModelMapping {
-  const profile = profileName ? getProfile(profileName) : getDefaultProfile();
-
-  if (!profile) {
-    return {};
+export function getRunModelMapping(profileName?: string): RunModelMapping {
+  const local = loadLocalConfig();
+  const name = profileName || local?.defaultProfile || undefined;
+  if (name !== undefined) {
+    const fromLocal = local?.profiles[name];
+    if (fromLocal) return { models: fromLocal.models ?? {}, projectProfile: name };
+    const fromGlobal = loadConfig().profiles[name];
+    if (fromGlobal) return { models: fromGlobal.models, projectProfile: null };
+    if (profileName) return { models: {}, projectProfile: null };
   }
-
-  return profile.models;
+  return { models: getDefaultProfile("global").models, projectProfile: null };
 }
 
 /**

@@ -87,7 +87,7 @@ Then just ask Claude:
 | Full coding session with different model | CLI | Replace Claude entirely |
 | Quick second opinion mid-conversation | MCP | Tool call, stay in Claude |
 | Batch automation/scripts | CLI | Single-shot mode |
-| Multi-model comparison | MCP | `compare_models` tool |
+| Multi-model comparison | MCP | `team` tool |
 | Cost-sensitive simple tasks | Either | Pick cheap model |
 
 **TL;DR:** CLI when you want a different brain. MCP when you want Claude + friends.
@@ -104,6 +104,8 @@ Then just ask Claude:
 - **[Single-Shot Mode](usage/single-shot-mode.md)** - Run one task, get result, exit. Perfect for scripts
 - **[MCP Server Mode](usage/mcp-server.md)** - Use external models as tools inside Claude Code
 - **[Monitor Mode](usage/monitor-mode.md)** - Debug by watching real Anthropic API traffic
+- **[Muse Code](usage/muse-code.md)** - Meta's Muse models on your Muse Code subscription (`muse@`), or metered with `META_API_KEY` (`meta@`)
+- **[Several Codex Subscriptions](usage/codex-accounts.md)** - Pool ChatGPT accounts for `cx@`, switch automatically, and forecast your remaining allowance
 
 ### Models
 - **[Choosing Models](models/choosing-models.md)** - Which model for which task? I'll share my picks
@@ -113,6 +115,7 @@ Then just ask Claude:
 - **[Environment Variables](advanced/environment.md)** - All configuration options explained
 - **[Cost Tracking](advanced/cost-tracking.md)** - Monitor your API spending
 - **[Automation](advanced/automation.md)** - Pipes, scripts, CI/CD integration
+- **[Hooks](advanced/hooks.md)** - Your own code at named points of a request and a session: rewrite requests and responses, start a new turn
 
 ### AI Integration
 - **[For AI Agents](ai-integration/for-agents.md)** - How Claude sub-agents should use Claudish

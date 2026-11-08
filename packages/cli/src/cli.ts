@@ -10,22 +10,23 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EFFORT_LEVELS, isEffortLevel } from "./adapters/base-api-format.js";
+import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
+import {
+  CODE_MODE_ENV_VAR,
+  CODE_MODE_SETTINGS,
+  DEFAULT_CODE_MODE_SETTING,
+  parseCodeModeSetting,
+} from "./code-mode/policy.js";
 import { ENV } from "./config.js";
 import { setStderrQuiet } from "./logger.js";
 import {
   type ModelDoc,
-  type RecommendedModelGroup,
-  collectRoutingPrefixes,
-  computeQuickPicks,
-  formatListingPrice,
   getAvailableModels,
   getModelsByProvider,
   getProviderList,
   getRecommendedModels,
   getTop100Models,
-  groupRecommendedModels,
   loadModelInfo,
-  normalizePricingDisplay,
   searchModels,
 } from "./model-loader.js";
 import { parseModelParams } from "./model-params.js";
@@ -49,11 +50,18 @@ import type {
   ProbeStepState,
 } from "./probe/probe-tui-app.js";
 import { startProbeTui } from "./probe/probe-tui-runtime.js";
-import { getModelMapping, loadConfig, readProOnUltracode } from "./profile-config.js";
+import {
+  getRunModelMapping,
+  loadConfig,
+  readCodeMode,
+  readProOnUltracode,
+} from "./profile-config.js";
+import { usableProfileModels } from "./project-models.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
 import { normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
+import { describeMuseSigningSource } from "./providers/meta-muse/muse-credentials.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { NATIVE_NOT_PROBED } from "./providers/native-route.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
@@ -65,7 +73,6 @@ import {
   getProviderByName,
 } from "./providers/provider-definitions.js";
 import { resolveProviderSlug } from "./providers/provider-slug-resolve.js";
-import { nativeProviderForVendor } from "./providers/route-candidates.js";
 import {
   type RouteExplanation,
   type RouteWarning,
@@ -73,6 +80,7 @@ import {
   TIER_LABEL,
   explainRoute,
 } from "./providers/routing-rules.js";
+import { nativeShortcutForVendor, renderRecommendedText } from "./recommended-listing.js";
 import { setRecoveryFlagOverrides } from "./recovery/settings.js";
 import { cliAnsi } from "./theme/ansi.js";
 import type { ClaudishConfig } from "./types.js";
@@ -107,13 +115,14 @@ export function getVersion(): string {
  * NOTE: We intentionally do NOT delete `cloud-models-catalog-v3.json`, the cloud
  * models catalog cache. Deleting it would force a cold re-warm on every
  * --models-refresh call. `all-models.json` is not ours to delete either: older
- * claudish builds still read it.
+ * claudish builds still read it. The same holds for `recommended-models-cache.json`,
+ * the pre-`-v2` recommended list that older builds still read and write.
  */
 function clearAllModelCaches(): void {
   const cacheDir = join(homedir(), ".claudish");
   if (!existsSync(cacheDir)) return;
 
-  const cachePatterns = ["pricing-cache.json", "recommended-models-cache.json"];
+  const cachePatterns = ["pricing-cache.json", "recommended-models-cache-v2.json"];
   let cleared = 0;
 
   try {
@@ -264,6 +273,7 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--effort-override": "value",
   "--pro-on-ultracode": "none",
   "--no-pro-on-ultracode": "none",
+  "--code-mode": "value",
   "--accept-served-model": "none",
   "--op-env": "value",
   "--op": "value",
@@ -767,6 +777,16 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--no-pro-on-ultracode") {
       // Escape hatch when it is enabled via config/env: off for this run.
       config.proOnUltracode = false;
+    } else if (arg === "--code-mode") {
+      // Code mode for `openai-codex`: Claude Code's tools offered as one
+      // freeform `exec` tool running a script. Precedence below.
+      const cmArg = args[++i];
+      const setting = parseCodeModeSetting(cmArg);
+      if (!setting) {
+        console.error(`--code-mode requires one of ${CODE_MODE_SETTINGS.join(", ")}`);
+        process.exit(1);
+      }
+      config.codeMode = setting;
     } else if (arg === "--accept-served-model") {
       // Some connections serve reasoning-off with a DIFFERENT model (Kimi Code
       // k3: thinking off is served by K2.8 Preview — the catalog's
@@ -826,6 +846,10 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       await initializeClaudishSkill();
       process.exit(0);
     } else if (arg === "--probe") {
+      // A probe is a diagnostic and never opens a credential dialog. `runCli`
+      // already decided `never` from argv; this lowers it for any other caller
+      // of parseArgs (`auth/credentials/prompt-role.ts`).
+      setCredentialPromptRole("never");
       // Probe models — show fallback chain for each model
       const probeModels: string[] = [];
       while (i + 1 < args.length && !args[i + 1].startsWith("--")) {
@@ -1113,7 +1137,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     !config.modelHaiku ||
     !config.modelSubagent
   ) {
-    const profileModels = getModelMapping(config.profile);
+    // A project profile's raw-URL tiers are dropped here (project-models.ts).
+    const profileModels = usableProfileModels(getRunModelMapping(config.profile));
 
     // Apply profile models only if not set by CLI flags
     if (!config.modelOpus && profileModels.opus) {
@@ -1140,6 +1165,16 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else {
       config.proOnUltracode = readProOnUltracode() === true;
     }
+  }
+
+  // codeMode precedence: --code-mode flag > CLAUDISH_CODE_MODE env > project
+  // ./.claudish.json > global config.json > auto. An env value other than
+  // auto/on/off states nothing and falls through to the config files.
+  if (config.codeMode === undefined) {
+    config.codeMode =
+      parseCodeModeSetting(process.env[CODE_MODE_ENV_VAR]) ??
+      readCodeMode() ??
+      DEFAULT_CODE_MODE_SETTING;
   }
 
   return config as ClaudishConfig;
@@ -1478,105 +1513,7 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
     return;
   }
 
-  const lastUpdated = doc.lastUpdated || "unknown";
-  const { flagship, fast } = groupRecommendedModels(doc.models);
-
-  // Build a native-prefix lookup: vendor slug → its native API provider → shortcuts[0].
-  const providerByName = new Map(BUILTIN_PROVIDERS.map((p) => [p.name, p] as const));
-  const getNativePrefix = (firebaseSlug: string): string | null => {
-    const canonical = nativeProviderForVendor(firebaseSlug);
-    if (!canonical) return null;
-    const def = providerByName.get(canonical);
-    if (!def || !def.shortcuts || def.shortcuts.length === 0) return null;
-    return def.shortcuts[0];
-  };
-
-  const renderGroup = (group: RecommendedModelGroup): void => {
-    const m = group.primary;
-    const rawId = m.id;
-    const modelId = rawId.length > 28 ? `${rawId.substring(0, 25)}...` : rawId;
-    const modelIdPadded = modelId.padEnd(28);
-
-    const pricing = formatListingPrice(m, { compact: true });
-    const pricingPadded = pricing.padEnd(10);
-
-    const context = m.context || "N/A";
-    const contextPadded = context.padEnd(6);
-
-    // Capability glyphs — omit (not blank) when false so the caps column
-    // naturally narrows for models without reasoning/vision.
-    const caps: string[] = [];
-    if (m.supportsTools) caps.push("🔧");
-    if (m.supportsReasoning) caps.push("🧠");
-    if (m.supportsVision) caps.push("👁️");
-    const capabilities = caps.join(" ");
-
-    console.log(`  ${modelIdPadded} ${pricingPadded} ${contextPadded} ${capabilities}`);
-
-    const prefixes = collectRoutingPrefixes(group, getNativePrefix);
-    if (prefixes.length > 0) {
-      const viaLine = prefixes.map((p) => `${p}@`).join(" · ");
-      console.log(`      via: ${viaLine}`);
-    }
-  };
-
-  console.log(`\nRecommended Models (last updated: ${lastUpdated}):\n`);
-
-  if (flagship.length > 0) {
-    console.log("Flagship models");
-    console.log(`  ${"─".repeat(70)}`);
-    for (let i = 0; i < flagship.length; i++) {
-      renderGroup(flagship[i]);
-      if (i < flagship.length - 1) console.log("");
-    }
-  }
-
-  if (fast.length > 0) {
-    if (flagship.length > 0) console.log("");
-    console.log("Fast variants");
-    console.log(`  ${"─".repeat(70)}`);
-    for (let i = 0; i < fast.length; i++) {
-      renderGroup(fast[i]);
-      if (i < fast.length - 1) console.log("");
-    }
-  }
-
-  console.log("");
-  console.log("  Capabilities: 🔧 Tools  🧠 Reasoning  👁️  Vision");
-
-  // Quick picks — compute over the deduped primaries across both buckets.
-  const primaries = [...flagship, ...fast].map((g) => g.primary);
-  const picks = computeQuickPicks(primaries);
-  const pickLines: string[] = [];
-  if (picks.budget)
-    pickLines.push(
-      `    Budget       → ${picks.budget.id} (${normalizePricingDisplay(
-        picks.budget.pricing?.average
-      )})`
-    );
-  if (picks.largeContext)
-    pickLines.push(
-      `    Large ctx    → ${picks.largeContext.id} (${picks.largeContext.context || "N/A"})`
-    );
-  if (picks.mostCapable) pickLines.push(`    Most capable → ${picks.mostCapable.id}`);
-  if (picks.visionCoding) pickLines.push(`    Vision+code  → ${picks.visionCoding.id}`);
-  if (picks.agentic) pickLines.push(`    Agentic      → ${picks.agentic.id}`);
-
-  if (pickLines.length > 0) {
-    console.log("");
-    console.log("  Quick picks:");
-    for (const line of pickLines) console.log(line);
-  }
-
-  console.log("");
-  console.log("  Set default:  export CLAUDISH_MODEL=<model>");
-  console.log("                 or:  claudish --model <model> ...");
-  console.log("");
-  console.log("  For more: claudish --models                     (browse full catalog)");
-  console.log("            claudish --providers                   (list all providers + counts)");
-  console.log("            claudish -s <query>                    (search by keyword)");
-  console.log("            claudish --models-top --models-refresh (refresh from Firebase)");
-  console.log("");
+  console.log(renderRecommendedText(doc, nativeShortcutForVendor));
 }
 
 // Legacy OpenRouter catalog updater was removed when claudish switched to
@@ -1681,6 +1618,44 @@ async function probeModelRouting(
   type LiveProxy = { url: string; shutdown: () => Promise<void> };
 
   /**
+   * The Muse Code credential as a provenance record, through `effectiveLabel`
+   * (the channel for a credential that is not an env var). `probe` is THIS
+   * hop's own result: read after the request, its `signedWith` names the login
+   * that signed it. Lines (`describeMuseSigningSource`):
+   * `Key  Muse Code borrowed copy · Muse Code Power Usage  (signed this probe request)`,
+   * `Key  Muse Code login rejected  (Meta rejected the Muse Code login (HTTP 401): …)`,
+   * `Key  no claudish Muse Code login  (this process reads login files only, …)`.
+   */
+  function museKeyProvenance(probe?: ProbeResult): KeyProvenance {
+    const muse = describeMuseSigningSource({
+      ...(probe?.signedWith ? { signedWith: probe.signedWith } : {}),
+      // Signed, then failed for another reason (a 5xx, a timeout): say how.
+      ...(probe && probe.state !== "live" ? { failure: describeProbeState(probe) } : {}),
+      probed: probe !== undefined,
+    });
+    return {
+      envVar: "",
+      hasValue: muse.present,
+      effectiveMasked: null,
+      effectiveSource: muse.detail,
+      effectiveLabel: muse.label,
+      layers: [],
+    };
+  }
+
+  /**
+   * The chain's provenance was read BEFORE the live requests. A muse@ hop's is
+   * read again AFTER them, from that hop's own probe result, so its Key line
+   * names the login that signed THAT request (or that it was rejected). Both
+   * the `--json` and the TUI/printer paths call this once their probes settle.
+   */
+  function refreshMuseProvenance(chain: ProbeChainLink[]): void {
+    for (const link of chain) {
+      if (link.provider === "meta-muse-code") link.provenance = museKeyProvenance(link.probe);
+    }
+  }
+
+  /**
    * The remedy a credential-less row shows.
    *
    * Reads it off the PROVENANCE rather than naming providers here: a record that
@@ -1707,6 +1682,8 @@ async function probeModelRouting(
   const probeCredentials: CredentialLookup = {
     hintFor(provider) {
       if (getProviderByName(provider)?.isLocal) return "enable local provider in global config";
+      // A dropped no-login muse@ row names the login fix, not an env var it has none of.
+      if (provider === "meta-muse-code") return describeMuseSigningSource().detail;
       const keyInfo = API_KEY_MAP[provider];
       if (!keyInfo?.envVar) return undefined;
       return credentialHintFrom(
@@ -1715,6 +1692,10 @@ async function probeModelRouting(
       );
     },
     provenanceFor(provider) {
+      // muse@ signs with a login, never an env var: its Key line names the
+      // source and the tier (contract §4.3 item 5), from files and process
+      // state only, so a probe in role `never` asks no Keychain question.
+      if (provider === "meta-muse-code") return museKeyProvenance();
       const keyInfo = API_KEY_MAP[provider];
       return keyInfo?.envVar
         ? resolveCredentialProvenance(provider, keyInfo.envVar, keyInfo.aliases)
@@ -1848,6 +1829,10 @@ async function probeModelRouting(
       // --probe exists to prevent.
       formatAdapterName = "DevinAPIFormat";
       declaredStreamFormat = "connect-proto";
+    } else if (providerName === "meta-muse-code") {
+      // `museCodeProfile`: Responses only, so --probe muse@… names that path.
+      formatAdapterName = "CodexAPIFormat";
+      declaredStreamFormat = "openai-responses-sse";
     } else {
       formatAdapterName = "OpenAIAPIFormat";
       declaredStreamFormat = "openai-sse";
@@ -1895,7 +1880,8 @@ async function probeModelRouting(
           false,
           process.env.ANTHROPIC_API_KEY,
           undefined,
-          { quiet: true }
+          // Hooks never see --probe traffic.
+          { quiet: true, hooks: false }
         );
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -1922,6 +1908,7 @@ async function probeModelRouting(
             link.probe = probes[i];
           });
         }
+        refreshMuseProvenance(probe.chain);
 
         const wiring = await computeWiring(probe.chain, probe.explanation.routedModel);
         results.push(chainProbeOf(probe, wiring));
@@ -2005,7 +1992,8 @@ async function probeModelRouting(
           false,
           process.env.ANTHROPIC_API_KEY,
           undefined,
-          { quiet: true }
+          // Hooks never see --probe traffic.
+          { quiet: true, hooks: false }
         );
         updateStep("Starting probe proxy", "done");
       } catch {
@@ -2111,6 +2099,7 @@ async function probeModelRouting(
     const printable: PrintableModelResult[] = [];
     const results: ProbeModelResult[] = [];
     for (const probe of modelProbes) {
+      refreshMuseProvenance(probe.chain);
       const wiring = await computeWiring(probe.chain, probe.explanation.routedModel);
       const fields = routingFieldsFrom(probe.explanation);
       printable.push({
@@ -2314,6 +2303,7 @@ ${h("OPTIONS")}
   ${green("--effort-override")} ${yellow("<level>")}  Pin reasoning effort verbatim, skipping the per-model clamp
   ${green("--pro-on-ultracode")}       Apply the model's catalog preset while in ultracode (opt-in)
   ${green("--no-pro-on-ultracode")}    Force that off for this run (when enabled in config/env)
+  ${green("--code-mode")} ${yellow("<auto|on|off>")}  cx@ tools as one exec script tool (default auto; env CLAUDISH_CODE_MODE)
   ${green("--accept-served-model")}     Allow a reasoning-off that the connection serves with another model
   ${green("-y, --auto-approve")}       Skip permission prompts (--dangerously-skip-permissions)
   ${green("--no-auto-approve")}        Explicitly enable permission prompts (default)
@@ -2361,6 +2351,20 @@ ${h("SUBCOMMANDS")}
   ${green("claudish providers")} ${yellow("[--json]")}             Show provider credential status (no key material)
   ${green("claudish quota")} ${yellow("[provider]")}              Show remaining quota/usage (alias: usage)
   ${green("claudish serve")} ${yellow("--port <n> --models <p>")}  Run the Claude Desktop redirect gateway
+  ${green("claudish subscription models antigravity")} ${yellow("--raw --json")}
+                                          Print the raw Antigravity fetchAvailableModels
+                                          ${dim("body as one JSON line (for models-index)")}
+  ${green("claudish subscription probe antigravity")} ${yellow("--model <id> --request-file <path> --raw --json")}
+                                          Send the file's Gemini request once through the
+                                          Antigravity login (generateContent, no retry, model
+                                          ${dim("id unchanged); print the raw answer as one JSON line")}
+  ${green("claudish subscription models devin")} ${yellow("--raw --json")}
+                                          Print Devin's decoded GetCliModelConfigs rows and
+                                          ${dim("allowed model uids as one JSON line (for models-index)")}
+  ${green("claudish subscription probe devin")} ${yellow("--model <uid> --request-file <path> --raw --json")}
+                                          Send the file's Anthropic Messages request once through
+                                          the Devin login (GetChatMessage, no retry, uid unchanged);
+                                          ${dim("print the decoded answer as one JSON line")}
   ${green("claudish update")}                        Check for updates and install the latest version
 
   ${bold("Profiles:")}
@@ -2377,6 +2381,22 @@ ${h("SUBCOMMANDS")}
     ${green("claudish login")} ${yellow("[provider]")}              Login to an OAuth provider (interactive if omitted)
     ${green("claudish logout")} ${yellow("[provider]")}             Clear OAuth credentials
     ${dim("Providers: gemini, kimi")}
+
+  ${bold("Subscription accounts:")}
+    ${green("claudish account list")}                 Configured subscription accounts, per claudish provider
+    ${green("claudish account status")} ${yellow("[--json]")}       Usage per window, thresholds and blockers
+    ${green("claudish account add codex")} ${yellow("[--label <label>]")}     Log in a Codex account you own and add it ${dim("(label defaults to the login's email)")}
+    ${green("claudish account login codex")} ${yellow("<label>")}         Log the same Codex identity in again
+    ${green("claudish account enable|disable codex")} ${yellow("<label>")} Include or skip it in selection
+    ${green("claudish account rename codex")} ${yellow("<label> <new-label>")}  Give an account a new label
+    ${green("claudish account remove codex")} ${yellow("<label> [--yes] [--delete-file]")}
+    ${dim("A <label> may also be the account's email.")}
+    ${dim("--id <generated-id> may replace or confirm a label. Removing the legacy login (default)")}
+    ${dim("requires --delete-file. New accounts use the macOS Keychain, or protected plaintext files")}
+    ${dim("where there is none. No token input or export; Claude account mutations are not available.")}
+    ${dim("With Codex accounts configured, use account add/login instead of 'claudish login codex'.")}
+    ${dim("--refresh re-reads the account list and state past every cache — it contacts no vendor,")}
+    ${dim("because claudish never spends quota to measure quota.")}
 
 ${h("1PASSWORD")} ${dim("(SDK-based — no op CLI needed for secrets)")}
   ${dim("Auth via OP_SERVICE_ACCOUNT_TOKEN, or OP_ACCOUNT / onepasswordAccount config (DesktopAuth).")}
@@ -2480,7 +2500,7 @@ ${h("ENVIRONMENT VARIABLES")}
   ${blue("CLAUDISH_DIAG_MODE")}              Diagnostic output: auto / logfile / off
   ${blue("CLAUDISH_DEBUG")}                  Always enable debug logging: 1 / true ${dim("(same as -d)")}
   ${blue("CLAUDISH_ANTHROPIC_API_BILLING")}  Bill native Claude to your API key ${dim("(see --anthropic-api-billing)")}
-  ${blue("CLAUDISH_MCP_TOOLS")}              MCP tool gating: all / low-level / agentic / channel
+  ${blue("CLAUDISH_MCP_TOOLS")}              MCP tool gating: all / low-level / agentic / session / debug
   ${blue("CLAUDISH_MODEL_OPUS")}             Override model for Opus role
   ${blue("CLAUDISH_MODEL_SONNET")}           Override model for Sonnet role
   ${blue("CLAUDISH_MODEL_HAIKU")}            Override model for Haiku role

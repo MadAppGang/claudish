@@ -19,22 +19,46 @@
  *   - "claude" mode (`--fake-as-claude` first, via a CLAUDE_PATH wrapper): the REAL claudish
  *     launches it as Claude Code; it dumps argv, env, cwd and the `--settings` content to
  *     `FAKE_CLAUDE_DUMP`, then emulates the REPL in marker mode.
+ *   - proxied "claude" mode (`FAKE_CLAUDE_PROXY=1`, hook-system §11.2): each delivered
+ *     prompt is POSTed as a streaming `/v1/messages` to `ANTHROPIC_BASE_URL` (the real
+ *     child claudish's proxy) with `metadata.user_id` carrying the `--session-id`; the
+ *     SSE that comes back is folded, and the RECEIVED text is written as the assistant
+ *     record, then `turn_duration`. Whatever the proxy did, rewriting included, is in
+ *     the transcript. `FAKE_CLAUDE_SIDE=<text>` also fires one side request on turn 1
+ *     that is NOT awaited (a background subagent's stream) before the turn ends.
  *
  * A file-delivered prompt (the fixed template) is read back exactly as Read returns it
  * (numbered lines, `toolUseResult.file`), reconstructed (split markers joined), and
  * answered `ANSWER <model> <sha1(reconstructed)[0..8]>`, so a test can compare the hash
  * with sha1 of the caller's prompt and see any loss. A typed line hashes the line.
  *
+ * Scripted mode (`--model fake-scripted`, hook-system §11.5): `FAKE_SCRIPT` is a JSON array
+ * with one entry per submitted turn (see `TurnScript`), so a test fixes each turn's answer,
+ * a partial answer that never ends, a dialog, a missing witness, an unread task file, a
+ * re-wake after the answer, or an exit. `FAKE_KEYLOG` names a file that receives every
+ * submitted line and every Esc, so a test can prove what was (never) typed.
+ * `FAKE_INITIAL_PROMPT` is a prompt given on the command line: its user record is written
+ * before the REPL is first drawn (scripted mode).
+ *
  * Gaps come from `FAKE_GAP_MS_<NAME>` so scenarios keep their ORDER at a fraction of real
  * time. `CONTRACT_FAKE_MAX_MS` (default 20 s) is a safety exit so a broken test never
  * leaves a REPL behind. `CONTRACT_FAKE_SIGTERM_MARKER` is written on SIGTERM or SIGHUP.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { projectDirNameFor } from "../../channel/home-dir.js";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
+import { projectDirNameFor } from "../../mcp-session/home-dir.js";
+import { wrapPrompt } from "./repl-wrap.js";
 
 /* ───────────────────────────── argv and env ───────────────────────────── */
 
@@ -60,8 +84,8 @@ const scenario = asClaude
   : model.startsWith("fake-")
     ? model.slice(5).replace(/-\d+$/, "")
     : "marker";
-const COLS = Number(env.COLUMNS) || 160;
-const ROWS = Number(env.LINES) || 50;
+let COLS = Number(env.COLUMNS) || 160;
+let ROWS = Number(env.LINES) || 50;
 const cwd = (() => {
   try {
     return realpathSync(process.cwd());
@@ -263,6 +287,7 @@ const writeTranscript = ![
   "missing_no_warning",
   "screen_fast",
   "screen_api_error",
+  "never_submit_transcript_off",
 ].includes(scenario);
 
 function newMsgId(): string {
@@ -398,7 +423,6 @@ const rec = {
 /* ───────────────────────────── screen ───────────────────────────── */
 
 const BANNER = screenLines("repl-boot-empty").slice(0, 4);
-const RULE = "─".repeat(COLS);
 const STATUS = [
   "  cwd • fake • $0.000 • N/A",
   "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
@@ -408,12 +432,14 @@ const PLACEHOLDER = 'Try "how does <filepath> work?"'; // repl-boot-placeholder,
 const S = {
   booted: false,
   box: "",
+  drawnBox: "", // F4: bytes reach the editor before its next render
   history: [] as string[],
   working: null as string | null,
   full: null as string[] | null, // a whole fixture screen (dialogs, panels)
   menu: null as string | null,
   statusTick: 0,
   ghost: false,
+  vim: false,
 };
 
 function fit(l: string): string {
@@ -423,33 +449,46 @@ function fit(l: string): string {
 function render(): void {
   let out = "\x1b[H\x1b[2J";
   const rows = S.full ? S.full.slice(0, ROWS) : replRows();
+  let cursorRow = 0;
   rows.forEach((l, y) => {
     if (!l) return;
-    out += `\x1b[${y + 1};1H`;
+    // Claude Code walks down relatively; CUP here would hide stale scroll-region bugs.
+    if (y > cursorRow) out += `\r\x1b[${y - cursorRow}B`;
+    cursorRow = y;
     if (l.startsWith("\u0000ghost")) out += `❯ \x1b[2m${PLACEHOLDER}\x1b[22m`;
     else out += fit(l);
   });
-  const boxRow = S.full ? ROWS - 1 : ROWS - 4;
-  out += `\x1b[${boxRow + 1};${3 + Array.from(S.box.split("\n").pop() ?? "").length}H`;
+  const lastBoxLine = wrapPrompt(S.drawnBox, COLS).at(-1) ?? "❯ ";
+  const selected = S.full?.findIndex((line) => /^❯ /.test(line));
+  const boxRow = S.full
+    ? selected !== undefined && selected >= 0
+      ? selected
+      : ROWS - 1
+    : ROWS - 4;
+  const cursorCol = S.full ? 2 : Math.min(COLS - 1, Bun.stringWidth(lastBoxLine));
+  out += `\x1b[${boxRow + 1};${cursorCol + 1}H`;
   process.stdout.write(out);
 }
 
 function replRows(): string[] {
+  const RULE = "─".repeat(COLS);
   const out: string[] = Array.from({ length: ROWS }, () => "");
-  const boxLines = S.box.split("\n");
+  const boxLines = wrapPrompt(S.drawnBox, COLS).slice(-(ROWS - 9));
   const top = ROWS - 4 - boxLines.length;
   BANNER.forEach((l, i) => {
     out[i] = i === 3 ? `${l.slice(0, 11)}${cwd}` : l;
   });
   out[top] = RULE;
   boxLines.forEach((l, i) => {
-    out[top + 1 + i] = i === 0 ? `❯ ${l}` : `  ${l}`;
+    out[top + 1 + i] = l;
   });
-  if (!S.box && S.ghost) out[top + 1] = "\u0000ghost";
+  if (!S.drawnBox && S.ghost) out[top + 1] = "\u0000ghost";
   out[ROWS - 3] = RULE;
   out[ROWS - 2] = S.statusTick ? `${STATUS[0]} · ${S.statusTick}` : (STATUS[0] as string);
-  out[ROWS - 1] = STATUS[1] as string;
-  const above: string[] = [...S.history];
+  out[ROWS - 1] = S.vim ? "-- INSERT --" : (STATUS[1] as string);
+  const above = S.history.flatMap((line) =>
+    line.startsWith("❯ ") ? wrapPrompt(line.slice(2), COLS, true) : [line]
+  );
   if (S.working) above.push(S.working);
   if (S.menu) above.push("", S.menu);
   const room = top - 4;
@@ -460,6 +499,49 @@ function replRows(): string[] {
   return out;
 }
 
+const renderLagMs = Math.max(0, Number(env.FAKE_RENDER_LAG_MS) || 0);
+let inputRender: ReturnType<typeof setTimeout> | null = null;
+let selfSubmit: ReturnType<typeof setTimeout> | null = null;
+let externalSubmitDone = false;
+
+function drawInput(): void {
+  if (inputRender) clearTimeout(inputRender);
+  inputRender = null;
+  const selfSubmitting = scenario.startsWith("self_submit") && S.box && !externalSubmitDone;
+  const historyWithheld = scenario === "self_submit_history_withheld";
+  // F14a must submit before the first verify read at 150 ms; never draw the exact text.
+  // F14b needs a non-exact prefix visible to verify before the box empties, with no history.
+  S.drawnBox = selfSubmitting ? (historyWithheld ? S.box.slice(0, -1) : "") : S.box;
+  render();
+  if (selfSubmitting) {
+    if (selfSubmit) clearTimeout(selfSubmit);
+    selfSubmit = setTimeout(
+      () => {
+        externalSubmitDone = true;
+        acceptText(S.box);
+      },
+      historyWithheld ? 300 : 75
+    );
+  }
+  if (
+    scenario === "command_left_box" &&
+    !env.FAKE_COMMAND_LEFT_BOX_FILE &&
+    S.box.startsWith("/model ") &&
+    !externalSubmitDone
+  ) {
+    if (selfSubmit) clearTimeout(selfSubmit);
+    selfSubmit = setTimeout(() => {
+      externalSubmitDone = true;
+      acceptText(S.box);
+    }, 1800);
+  }
+}
+
+function renderInput(): void {
+  if (!renderLagMs) drawInput();
+  else if (!inputRender) inputRender = setTimeout(drawInput, renderLagMs);
+}
+
 function showHistory(...rows: string[]): void {
   S.history.push(...rows);
   render();
@@ -467,6 +549,80 @@ function showHistory(...rows: string[]): void {
 
 function finishedRow(): string {
   return "✻ Cogitated for 1s";
+}
+
+/* ───────────────────────────── scripted turns ───────────────────────────── */
+
+/** One turn of `FAKE_SCRIPT` (scenario `scripted`). Every field is optional. */
+interface TurnScript {
+  /** Successful Writes on this turn, in order; every path must be absolute. */
+  writes?: Array<{ path: string; content: string }>;
+  /** the exact answer text (default: `ANSWER <model> <sha8>`) */
+  say?: string;
+  /** stream this text with no ending stop_reason and no end record, then hang */
+  partial?: string;
+  /** write this text (if non-empty), then open an AskUserQuestion and wait for Esc */
+  ask?: string;
+  /**
+   * the turn is never accepted: no user record and no echo in the conversation, so neither
+   * claudish's witness nor magmux's input gate (whose `history` evidence is that echo) has
+   * evidence it was submitted
+   */
+  noWitness?: boolean;
+  /** exit with this code as soon as the line is submitted (before any witness) */
+  exitOnSubmit?: number;
+  /** a file-delivered prompt is not read at all */
+  noRead?: boolean;
+  /** the turn ends with this API error record instead of an answer */
+  apiError?: string;
+  /** wait this long before the answer */
+  delayMs?: number;
+  /**
+   * after the answer and its end record: a background notification, then a continuation.
+   * `workingMs`: the working row shows this long BEFORE any record of the re-wake is
+   * written (the screen leads the transcript). `quietMs`: the re-wake's records are
+   * written and the screen is not redrawn for this long, so a reader sees them only by
+   * polling the transcript. `gateFile`: the re-wake waits for this file to exist before
+   * its `delayMs`, so a test starts it at a point it chose (a hold it observed).
+   * `clearWithRecords` (with `workingMs`): the cleared row is drawn in the same instant
+   * the records are written, so the frame that shows an idle screen is the first sign of
+   * the re-wake, and only a transcript read made after it sees the records.
+   */
+  rewake?: {
+    delayMs: number;
+    say: string;
+    workingMs?: number;
+    quietMs?: number;
+    gateFile?: string;
+    clearWithRecords?: boolean;
+  };
+  /** after the answer: exit with this code, `exitDelayMs` (default 20) later */
+  exitAfter?: number;
+  exitDelayMs?: number;
+}
+
+const SCRIPT: TurnScript[] = (() => {
+  try {
+    const v = JSON.parse(env.FAKE_SCRIPT ?? "[]");
+    return Array.isArray(v) ? (v as TurnScript[]) : [];
+  } catch {
+    return [];
+  }
+})();
+
+function scriptOf(n: number): TurnScript {
+  return SCRIPT[n - 1] ?? {};
+}
+
+/** Every submitted line and every Esc, one per line, for "never typed" assertions. */
+function keylog(entry: string): void {
+  const f = env.FAKE_KEYLOG;
+  if (!f) return;
+  try {
+    appendFileSync(f, `${entry}\n`);
+  } catch {
+    // diagnostics only
+  }
 }
 
 /* ───────────────────────────── turns ───────────────────────────── */
@@ -547,6 +703,7 @@ function deliveredOf(line: string): Delivered {
   if (!m) return { content: line, file: null };
   const file = m[1] as string;
   if (scenario === "no_read") return { content: "", file };
+  if (scenario === "scripted" && scriptOf(turn).noRead) return { content: "", file };
   const content = readTurnFile(file, line, {
     narrate: scenario === "narrate_then_read",
     partial: scenario === "partial_read",
@@ -577,7 +734,63 @@ function effectiveScenario(content: string): string {
   return scenario;
 }
 
+/* ───────────────────────────── proxied "claude" mode ───────────────────────────── */
+
+const PROXIED = asClaude && env.FAKE_CLAUDE_PROXY === "1";
+
+/** One streaming /v1/messages to the child claudish's proxy; the folded text of the reply. */
+async function proxiedAnswer(content: string): Promise<string> {
+  const base = (env.ANTHROPIC_BASE_URL ?? "").replace(/\/$/, "");
+  const res = await fetch(`${base}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": env.ANTHROPIC_API_KEY ?? "placeholder",
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: model,
+      max_tokens: 1024,
+      stream: true,
+      messages: [{ role: "user", content }],
+      metadata: { user_id: JSON.stringify({ session_id: sessionId }) },
+    }),
+  });
+  const raw = await res.text();
+  if (!res.ok) return `PROXY ERROR ${res.status}: ${raw.slice(0, 200)}`;
+  let text = "";
+  for (const event of raw.split(/\r?\n\r?\n/)) {
+    for (const line of event.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      try {
+        const d = JSON.parse(line.slice(5).trim()) as {
+          type?: string;
+          delta?: { type?: string; text?: string };
+        };
+        if (d.type === "content_block_delta" && d.delta?.type === "text_delta")
+          text += d.delta.text ?? "";
+      } catch {
+        // [DONE] or a keepalive
+      }
+    }
+  }
+  return text;
+}
+
+let sideFired = false;
+
 async function answerTurn(content: string): Promise<void> {
+  if (PROXIED) {
+    if (env.FAKE_CLAUDE_SIDE && !sideFired) {
+      sideFired = true;
+      void proxiedAnswer(env.FAKE_CLAUDE_SIDE).catch(() => "");
+    }
+    const text = await proxiedAnswer(content).catch((e) => `PROXY FAILED ${String(e)}`);
+    rec.text(text);
+    rec.td();
+    showHistory(`⏺ ${text}`, finishedRow());
+    return;
+  }
   rec.text(answerFor(content));
   rec.td();
   showHistory(`⏺ ${answerFor(content)}`, finishedRow());
@@ -589,9 +802,100 @@ function waitEsc(): Promise<void> {
   });
 }
 
+/** A settled turn woken by a background notification, then continued (`TurnScript.rewake`). */
+async function rewakeAfter(rw: NonNullable<TurnScript["rewake"]>): Promise<void> {
+  if (rw.gateFile) while (!existsSync(rw.gateFile)) await sleep(20);
+  await sleep(rw.delayMs);
+  if (rw.workingMs) {
+    S.working = "✶ Simmering… (thinking)";
+    render();
+    await sleep(rw.workingMs);
+    S.working = null;
+  }
+  emit(T.bgNotify);
+  rec.text(rw.say);
+  rec.td();
+  if (rw.clearWithRecords) render();
+  if (rw.quietMs) await sleep(rw.quietMs);
+  showHistory(`⏺ ${rw.say}`, finishedRow());
+}
+
+/** One scripted turn (`FAKE_SCRIPT`): the transcript and screen of a real REPL turn. */
+async function runScripted(sc: TurnScript, d: Delivered): Promise<void> {
+  const c = d.content;
+  if (sc.delayMs) await sleep(sc.delayMs);
+  if (sc.partial !== undefined) {
+    rec.text(sc.partial, null);
+    S.history.push(`⏺ ${sc.partial}`);
+    S.working = "✶ Simmering… (thinking)";
+    render();
+    await new Promise(() => {});
+    return;
+  }
+  if (sc.ask !== undefined) {
+    if (sc.ask) {
+      rec.text(sc.ask, "tool_use");
+      S.history.push(`⏺ ${sc.ask}`);
+    }
+    return askUser("ask_user", c);
+  }
+  if (sc.apiError !== undefined) {
+    rec.apiError(sc.apiError);
+    rec.td();
+    showHistory(`⏺ ${sc.apiError}`, finishedRow());
+    return;
+  }
+  for (const { path, content } of sc.writes ?? []) {
+    if (!isAbsolute(path)) throw new Error("scripted Write path must be absolute");
+    const id = rec.toolUse("Write", { file_path: path, content }, { template: T.writeUse });
+    writeFileSync(path, content);
+    rec.toolResult(
+      id,
+      `File created successfully at: ${path} (file state is current in your context — no need to Read it back)`,
+      undefined
+    );
+  }
+  const text = sc.say ?? answerFor(c);
+  rec.text(text);
+  rec.td();
+  showHistory(`⏺ ${text}`, finishedRow());
+  if (sc.rewake) await rewakeAfter(sc.rewake);
+  if (sc.exitAfter !== undefined) {
+    await sleep(sc.exitDelayMs ?? 20);
+    return quit(sc.exitAfter);
+  }
+}
+
 async function runScenario(name: string, d: Delivered): Promise<void> {
   const c = d.content;
   switch (name) {
+    case "write_answer":
+    case "write_nonmatching":
+    case "write_outside": {
+      const file = env.FAKE_WRITE_PATH;
+      if (!file) throw new Error("FAKE_WRITE_PATH is required");
+      let content =
+        name === "write_nonmatching"
+          ? "## Notes\nNo requested marker here.\n"
+          : "## Black-box test contracts\n答え 🍐 — byte-exact deliverable.\n";
+      if (env.FAKE_WRITE_CONTENT_KIND === "binary") content += "\0";
+      const size = Number(env.FAKE_WRITE_SIZE) || 0;
+      if (size > Buffer.byteLength(content))
+        content += "x".repeat(size - Buffer.byteLength(content));
+      const id = rec.toolUse("Write", { file_path: file, content }, { template: T.writeUse });
+      writeFileSync(file, content);
+      rec.toolResult(
+        id,
+        `File created successfully at: ${file} (file state is current in your context — no need to Read it back)`,
+        undefined
+      );
+      if (env.FAKE_WRITE_DELETE === "1") unlinkSync(file);
+      const reply = env.FAKE_WRITE_REPLY ?? "I wrote the deliverable to the requested file.";
+      rec.text(reply);
+      rec.td();
+      showHistory(`⏺ ${reply}`, finishedRow());
+      return;
+    }
     case "hang":
       S.working = "✶ Simmering… (thinking)";
       render();
@@ -628,6 +932,11 @@ async function runScenario(name: string, d: Delivered): Promise<void> {
       rec.text(answerFor(c));
       rec.stopSummary();
       showHistory(`⏺ ${answerFor(c)}`, finishedRow());
+      return;
+    case "settle_box_text":
+      await answerTurn(c);
+      S.box = "Unsent text after the end record";
+      drawInput();
       return;
     case "td_withheld":
       // the answer, but no turn_duration: the test appends it itself, at the moment it chooses
@@ -827,7 +1136,7 @@ async function bgServer(c: string): Promise<void> {
     { template: T.bgBashResult }
   );
   // a real process in the pane group, so the reap can be seen ending "the shell"
-  spawn("sleep", ["300"], { stdio: "ignore" }).unref();
+  spawn("sleep", ["300"], { env: { ...process.env }, stdio: "ignore" }).unref();
   return answerTurn(c);
 }
 
@@ -837,7 +1146,11 @@ async function bgServer(c: string): Promise<void> {
  * the fake never ends it on exit, so only claudish's reap can.
  */
 async function bgDetached(c: string): Promise<void> {
-  const child = spawn("sleep", ["300"], { stdio: "ignore", detached: true });
+  const child = spawn("sleep", ["300"], {
+    env: { ...process.env },
+    stdio: "ignore",
+    detached: true,
+  });
   child.unref();
   if (env.FAKE_BG_PID_FILE && child.pid) writeFileSync(env.FAKE_BG_PID_FILE, String(child.pid));
   return answerTurn(c);
@@ -884,7 +1197,6 @@ async function permission(_c: string): Promise<void> {
 
 async function screenOnlyTurn(line: string): Promise<void> {
   // degraded scenarios: no transcript evidence at all; the screen is the only witness
-  S.history.push(`❯ ${line}`);
   if (scenario === "no_transcript") S.history.push("  ⎿  Transcript saving is off");
   if (scenario !== "screen_fast") {
     S.working = "✶ Simmering… (1s)";
@@ -904,7 +1216,6 @@ async function screenOnlyTurn(line: string): Promise<void> {
 const LOCAL_COMMANDS = new Set(["compact", "model", "color"]);
 
 async function localCommandTurn(name: string, args: string): Promise<void> {
-  S.history.push(`❯ /${name}${args ? ` ${args}` : ""}`);
   let stdout = `Set model to \`${args}\``;
   if (name === "compact") {
     // file order as captured: the typed line, the boundary and summary, then the
@@ -923,7 +1234,7 @@ async function localCommandTurn(name: string, args: string): Promise<void> {
   showHistory(`  ⎿  ${stdout.replace(/\x1b\[[0-9;]*m/g, "")}`);
 }
 
-async function submit(line: string): Promise<void> {
+async function submit(line: string, opts: { argv?: boolean } = {}): Promise<void> {
   turn++;
   busy = true;
   try {
@@ -937,21 +1248,43 @@ async function submit(line: string): Promise<void> {
       ].includes(scenario)
     )
       return await screenOnlyTurn(line);
+    if (scenario === "scripted") {
+      const sc = scriptOf(turn);
+      if (sc.exitOnSubmit !== undefined) {
+        await sleep(30);
+        return await quit(sc.exitOnSubmit);
+      }
+      if (sc.noWitness) return;
+      // A command-line prompt is written at once, before the REPL is drawn.
+      if (!opts.argv) await sleep(gap("WITNESS", 50));
+      rec.user(line);
+      S.history.push(`❯ ${line.split("\n")[0]}`);
+      S.working = "✶ Simmering… (thinking)";
+      render();
+      await sleep(gap("THINK", 50));
+      const d = deliveredOf(line);
+      S.working = null;
+      return await runScripted(sc, d);
+    }
     if (scenario === "slow_prompt_hook") {
-      S.history.push(`❯ ${line}`);
       S.working = "✶ Blanching… (running UserPromptSubmit hook · 2s)";
       render();
       await sleep(gap("PROMPT_HOOK", 12_000));
       S.working = null;
       rec.user(line);
     } else {
-      if (scenario !== "immediate_write") await sleep(gap("WITNESS", 50));
+      if (scenario !== "immediate_write")
+        await sleep(
+          gap(
+            "WITNESS",
+            ["self_submit_history_withheld", "command_left_box"].includes(scenario) ? 5000 : 50
+          )
+        );
       const slash = line.match(/^\/([A-Za-z0-9][A-Za-z0-9:_-]*)\s*(.*)$/);
       if (slash && LOCAL_COMMANDS.has(slash[1] as string))
         return await localCommandTurn(slash[1] as string, slash[2] ?? "");
       if (slash) rec.command(slash[1] as string, slash[2] ?? "");
       else rec.user(line);
-      S.history.push(`❯ ${line.split("\n")[0]}`);
     }
     S.working = "✶ Simmering… (thinking)";
     render();
@@ -968,9 +1301,18 @@ async function submit(line: string): Promise<void> {
 
 /* ───────────────────────────── keys ───────────────────────────── */
 
+let ignoredEnters = 0;
+const ignoredEnterLimit =
+  scenario === "enter_ignored_forever"
+    ? Number.POSITIVE_INFINITY
+    : Number(scenario.match(/^enter_ignored_(\d+)$/)?.[1]) || 0;
+
 function onEnter(): void {
   const text = S.box;
-  if (!text.trim()) return;
+  if (!text.trim() || S.vim) return;
+  if (ignoredEnters++ < ignoredEnterLimit || scenario === "never_submit_transcript_off") return;
+  // only a line Enter submits is logged: an ignored Enter submitted nothing
+  keylog(text);
   if (scenario === "menu_eats_enter" && !menuEaten) {
     menuEaten = true; // the first Enter only closes a menu (phase-2 keylog: Esc/Enter on menus)
     S.menu = null;
@@ -981,12 +1323,22 @@ function onEnter(): void {
   if (scenario === "promptless_first_send_ignored" && !firstSubmitIgnored) {
     firstSubmitIgnored = true;
     S.box = "";
-    render();
+    drawInput();
     return;
   }
+  acceptText(text);
+}
+
+/** F9 counts accepted submissions, not Enter attempts or transient box contents. */
+function acceptText(text: string): void {
+  if (!text.trim() || (busy && !/^\/(exit|quit)$/.test(text.trim()))) return;
+  if (env.FAKE_SUBMIT_LOG)
+    appendFileSync(env.FAKE_SUBMIT_LOG, `${JSON.stringify({ text, at: Date.now() })}\n`);
   S.box = "";
   S.menu = null;
-  render();
+  if (!["history_withheld", "self_submit_history_withheld", "command_left_box"].includes(scenario))
+    S.history.push(`❯ ${text}`);
+  drawInput(); // history and empty box are one render, as in the real REPL
   const t = text.trim();
   if (t === "/exit" || t === "/quit") return void exitCommand(t.slice(1));
   if (t === "/cost") {
@@ -1000,6 +1352,7 @@ function onEnter(): void {
 }
 
 function onEsc(): void {
+  keylog("<ESC>");
   if (swallowUntilEsc) {
     swallowUntilEsc = false;
     S.full = null;
@@ -1026,8 +1379,39 @@ function updateMenu(): void {
   else S.menu = null;
 }
 
+let firstBurstDropped = false;
+let dropUntil = 0;
+
+/** F6/F13 lose a whole typing burst, not just its first character. */
+function dropTyping(ch: string): boolean {
+  if (Date.now() < dropUntil) {
+    dropUntil = Date.now() + 700;
+    return true;
+  }
+  if (
+    !firstBurstDropped &&
+    ch >= " " &&
+    ["late_reset_swallow", "drop_first_prompt"].includes(scenario)
+  ) {
+    firstBurstDropped = true;
+    dropUntil = Date.now() + 700;
+    if (scenario === "late_reset_swallow" && process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+      // A swallowed burst must not become kernel-echoed box text while cooked.
+      spawnSync("stty", ["-echo"], {
+        env: { ...process.env },
+        stdio: ["inherit", "ignore", "ignore"],
+      });
+      setTimeout(() => process.stdin.setRawMode(true), 120);
+    }
+    return true;
+  }
+  return false;
+}
+
 /** One plain key (not an escape sequence). */
 function onKey(ch: string): void {
+  if (dropTyping(ch)) return;
   if (ch === "\x1b") {
     onEsc();
     return;
@@ -1044,8 +1428,13 @@ function onKey(ch: string): void {
   updateMenu();
 }
 
-/** Consume a bracketed paste or a CSI/SS3 sequence at the head of `s`; null when none. */
-function consumeSequence(s: string): string | null {
+// PTY reads can end anywhere in an escape sequence, even after its initial ESC.
+let pendingSequence = "";
+let escapeTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Consume a bracketed paste or CSI/SS3 sequence; null = plain key, undefined = incomplete. */
+function consumeSequence(s: string): string | null | undefined {
+  if (s === "\x1b") return undefined;
   if (s.startsWith("\x1b[200~")) {
     const end = s.indexOf("\x1b[201~");
     if (!swallowUntilEsc) S.box += end >= 0 ? s.slice(6, end) : s.slice(6);
@@ -1053,15 +1442,46 @@ function consumeSequence(s: string): string | null {
   }
   if (s.startsWith("\x1b[") || s.startsWith("\x1bO")) {
     const m = s.slice(2).search(/[@-~]/);
-    return m >= 0 ? s.slice(m + 3) : "";
+    return m >= 0 ? s.slice(m + 3) : undefined;
   }
   return null;
 }
 
 function onData(buf: Buffer): void {
-  let s = buf.toString("utf8");
+  // Opt-in observation only: keep the existing REPL semantics unchanged. Log raw chunks
+  // before parsing so a test can reassemble a sequence split across PTY reads.
+  const inputLog = env.FAKE_INPUT_BYTES_LOG;
+  if (inputLog) {
+    try {
+      appendFileSync(
+        inputLog.replaceAll("{session}", sessionId),
+        `${JSON.stringify({ session_id: sessionId, model, text: buf.toString("utf8") })}\n`
+      );
+    } catch {
+      // diagnostics only, like FAKE_KEYLOG
+    }
+  }
+  if (escapeTimer !== undefined) {
+    clearTimeout(escapeTimer);
+    escapeTimer = undefined;
+  }
+  let s = pendingSequence + buf.toString("utf8");
+  pendingSequence = "";
   while (s.length) {
     const rest = consumeSequence(s);
+    if (rest === undefined) {
+      pendingSequence = s;
+      // A bare Escape must still dismiss menus/dialogs. Give a split CSI/SS3 prefix
+      // a short inter-byte window; once identified, retain it until its final byte.
+      if (s === "\x1b")
+        escapeTimer = setTimeout(() => {
+          escapeTimer = undefined;
+          pendingSequence = "";
+          onKey("\x1b");
+          renderInput();
+        }, 50);
+      break;
+    }
     if (rest !== null) {
       s = rest;
       continue;
@@ -1069,7 +1489,7 @@ function onData(buf: Buffer): void {
     onKey(s[0] as string);
     s = s.slice(1);
   }
-  render();
+  renderInput();
 }
 
 /* ───────────────────────────── lifecycle ───────────────────────────── */
@@ -1091,7 +1511,7 @@ function restore(): void {
 async function exitCommand(name: string): Promise<void> {
   if (env.FAKE_EXIT_RECORDS !== "none") {
     rec.localCommand(name, "", "(no content)");
-    showHistory(`❯ /${name}`, "  ⎿  (no content)");
+    showHistory("  ⎿  (no content)");
     await sleep(gap("EXIT", 600));
   }
   return quit(0);
@@ -1115,6 +1535,33 @@ function markSignal(sig: string): void {
 }
 
 function installSignals(): void {
+  process.on("SIGWINCH", () => {
+    try {
+      // Bun's stdout dimensions can still be stale inside SIGWINCH; query the pty.
+      const size = spawnSync("stty", ["size"], {
+        env: { ...process.env },
+        stdio: ["inherit", "pipe", "ignore"],
+      });
+      const match =
+        size.status === 0
+          ? size.stdout
+              ?.toString()
+              .trim()
+              .match(/^(\d+)\s+(\d+)$/)
+          : null;
+      if (match) {
+        const rows = Number(match[1]);
+        const cols = Number(match[2]);
+        if (Number.isSafeInteger(rows) && rows > 0 && Number.isSafeInteger(cols) && cols > 0) {
+          ROWS = rows;
+          COLS = cols;
+        }
+      }
+    } catch {
+      // Keep the current dimensions if the terminal size cannot be read.
+    }
+    render();
+  });
   const ignoreTerm = scenario === "ignore_term";
   const ignoreHup = scenario === "ignore_hup" || ignoreTerm;
   process.on("SIGTERM", () => {
@@ -1165,7 +1612,7 @@ async function boot(): Promise<void> {
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.on("data", onData);
   if (scenario === "orphan_grandchild") {
-    spawn("sleep", ["300"], { stdio: "ignore" }).unref();
+    spawn("sleep", ["300"], { env: { ...process.env }, stdio: "ignore" }).unref();
     setTimeout(() => process.exit(0), gap("ORPHAN", 3000));
   }
   if (scenario.startsWith("dialog_")) {
@@ -1183,10 +1630,37 @@ async function boot(): Promise<void> {
     mkdirSync(dirname(transcript), { recursive: true });
     writeFileSync(transcript, "");
   }
+  // `claude "<prompt>"`: Claude Code may write the prompt's record before the REPL
+  // is drawn (hook-system §7.5: the interactive driver's first turn opens at offset 0).
+  const initial = env.FAKE_INITIAL_PROMPT;
+  if (initial) void submit(initial, { argv: true });
   process.stdout.write("\x1b[?1049h\x1b[?2004h");
   S.booted = true;
   S.ghost = scenario === "idle_suggestion";
+  S.vim = scenario === "vim_insert" && !env.FAKE_VIM_FILE;
+  if (scenario === "never_submit_transcript_off") S.history.push("  ⎿  Transcript saving is off");
   render();
+  // F1: the first box precedes Claude Code's cooked → raw startup reset.
+  if (scenario !== "no_boot_reset" && process.stdin.isTTY) {
+    await sleep(100);
+    process.stdin.setRawMode(false);
+    await sleep(120);
+    process.stdin.setRawMode(true);
+  }
+  if (env.FAKE_VIM_FILE)
+    setInterval(() => {
+      if (!S.vim && existsSync(env.FAKE_VIM_FILE as string)) {
+        S.vim = true;
+        render();
+      }
+    }, 20);
+  if (scenario === "command_left_box" && env.FAKE_COMMAND_LEFT_BOX_FILE)
+    setInterval(() => {
+      if (externalSubmitDone || !S.box.startsWith("/model ")) return;
+      if (env.FAKE_COMMAND_LEFT_BOX_FILE && !existsSync(env.FAKE_COMMAND_LEFT_BOX_FILE)) return;
+      externalSubmitDone = true;
+      acceptText(S.box);
+    }, 20);
   if (scenario === "status_tick")
     setInterval(() => {
       S.statusTick++;

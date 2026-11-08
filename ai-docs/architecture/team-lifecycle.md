@@ -96,7 +96,9 @@ its handle, then SIGTERM and SIGKILL on the pane's process GROUP after an
 identity check. The group matters: `claudish` runs the real CLI under Bun, which
 runs `claude`, with a Bash-tool grandchild below that, so signalling one process
 leaves the rest billing. `team(mode:"cancel")` stops one slot (`slot`) or the
-whole run and answers per slot `{state, changed}`.
+whole run and answers per slot `{state, changed}`. `team(mode:"resize")` changes
+one slot's terminal size and nothing else — it neither ends nor restarts a turn,
+and its redraw does not count as activity (`pane-session.md`, "Terminal size").
 
 ## `outputSize` is not a progress signal, and callers read it as one
 
@@ -168,7 +170,9 @@ than working around it.
 
 **It does block through boot and admission, and only through them.** The bound
 is boot 90 s + admission 30 s = 120 s, before any work exists, so nothing can be
-lost to it; with the fake child a slot reaches RUNNING in 1.2–1.9 s. Returning any
+lost to it. The 30 s is strict: every gated send of an admission is sized so its
+client timeout ends by the deadline (`pane-session.md`, "Delivery mechanics"). With
+the fake child the gate is ready 3.9–4.2 s after spawn (magmux's 3.5 s boot floor). Returning any
 earlier breaks a real consumer: the dev plugin's team gate polls until no slot is
 RUNNING, so a slot still STARTING on its first poll would end the gate with zero
 ballots. Boot and admission failures are therefore in the `run` answer itself.
@@ -184,20 +188,25 @@ Runs this process started are kept in memory keyed by `run_id`
 (`<team_session_id>-<base36 start ms>-<6 hex>`), with an index of the newest run
 per path. A path holds at most one ACTIVE run; `run` on an ACTIVE path is refused.
 A SETTLED run (every slot terminal) stays listable and capturable for 30 minutes,
-at most 20 of them, oldest evicted first. `status`, `cancel` and `capture` take an
-optional `run_id`, which addresses THAT run while it is retained even after a newer
-run reused the path; without one they address the newest run at `path`. After
+at most 20 of them, oldest evicted first. `status`, `cancel`, `capture`, `resize`, `scroll`
+and `transcript` take an optional `run_id`, which addresses THAT run while it is retained even
+after a newer run reused the path; without one they address the newest run at `path`. After
 eviction, or after a server restart, `status` still answers from `status.json`
-(the newest run at the path only), with every liveness map null.
+(the newest run at the path only), with every liveness map null. `transcript` is the other
+reader that falls back to `status.json` (read with `getStatus`, so an absent file is
+`unknown_run` and an absent slot `unknown_slot`): the slot's `transcriptPath` and `sessionUuid`
+are written at spawn, so even a slot RUNNING under another server is readable. A `run_id` given
+there must equal the file's run id (`status.runId`, else the directory's basename). Its `final`
+from the file needs a terminal state and `completedAt` (else the file's mtime) 30 s old; a slot a
+SIGKILLed server left RUNNING never becomes `final`, the same stuck state `status` shows.
 
 ### The run's record in the sessions directory, ended exactly once
 
-Returning early has a cost: the run's completion reaches the caller only through
-a channel frame, and Claude Code drops channel frames unless the session named
-claudish in `--channels`. The run's own `status.json` sits wherever the caller
-pointed `path`, which no outside observer knows. Review panels finished unseen
+Returning early has a cost: the run's completion is not pushed to the caller at
+all. The run's own `status.json` sits wherever the caller pointed `path`, which
+no outside observer knows. Review panels finished unseen
 for days this way. So `team(mode:"run")` also writes a record into the sessions
-directory the magus `claudish` plugin monitor already watches:
+directory that outside observers already watch:
 
 - `<sessionsDir>/team-<8 hex>/spawn.json` — `kind: "team"`, `teamPath`, `slots`,
   `hostPid`, `mcpPid` (and `launcherPid`, `parentClaudeSessionId` when they
@@ -257,7 +266,7 @@ the non-terminal STARTING, RUNNING, AWAITING_INPUT and AWAITING_PERMISSION
 included — as failed; the verdict is `completed` when any slot is ok (the channel
 frame's rule), `cancelled` when all were cancelled. Only `run` writes a record:
 `run-and-judge` returns its verdict in the call, and `judge`/`status`/`list`/
-`capture`/`cancel` start no work. `loadDiskRecord` returns null for a
+`capture`/`cancel`/`resize` start no work. `loadDiskRecord` returns null for a
 `kind: "team"` directory, so session tools answer a `team-*` id as unknown and
 `list_sessions` (in-memory only) never lists one.
 
@@ -276,8 +285,8 @@ the mapping — `status.txt` prints model names beside slot ids.
 
 ## One driver, two owners
 
-`team` and the channel once had two implementations of one job: team drove a
-stream-json capture and hand-rolled everything around it, while the channel
+`team` and the MCP sessions once had two implementations of one job: team drove a
+stream-json capture and hand-rolled everything around it, while the session manager
 wrapped the same capture in a reducer with a state machine. Both went with print
 mode. Both owners now drive the same `PaneSession` (`pane/`), which owns the
 MECHANISM — boot, delivery, the transcript turn oracle, settle, the reap — and asks
@@ -285,11 +294,11 @@ its owner for POLICY at exactly two points:
 
 - `decide(turn)` when a turn settles. Team's answer writes `response-<slot>.md`
   (byte-exact, once) and returns `classifyRunOutput` with the caller's
-  `require_pattern` and `min_output_bytes` (`team-capture.md`); the channel's
+  `require_pattern` and `min_output_bytes` (`team-capture.md`); the session manager's
   classifies a one-shot turn with no floor and no pattern, or continues an
   interactive one.
 - `onBlocked(block)` when a turn stops on a question or a dialog. Team fails the
-  slot `blocked`; the channel waits for `send_input`.
+  slot `blocked`; an MCP session waits for `send_input`.
 
 So nothing team-specific leaks into the pane module, and nothing pane-specific into
 the policy. Two details that used to need explicit rules now follow from the
@@ -301,7 +310,7 @@ pane is reaped.
 ## Spawn plumbing: what was shared, and what was deliberately not
 
 The obvious next step looked like making `team` a client of
-`SessionManager.createSession`, so each slot would be a channel session
+`SessionManager.createSession`, so each slot would be an MCP session
 addressable by `get_output`, `get_diagnostics` and `cancel_session`. That was
 evaluated and rejected. Reading what `createSession` actually does shows why:
 
@@ -312,7 +321,7 @@ evaluated and rejected. Reading what `createSession` actually does shows why:
   session manager would also need team's whole-answer handling.
 - `session-manager.ts` already imports `classifyRunOutput` FROM
   `team-orchestrator.ts`. Adding team's options would complete the inversion: a
-  channel session manager that knows what a blind-vote panel is.
+  session manager that knows what a blind-vote panel is.
 
 The addressability was also worth less than it looked. `team` already answers the
 same questions through `mode:"status"`, `mode:"capture"` and `mode:"cancel"`, so

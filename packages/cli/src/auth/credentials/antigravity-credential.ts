@@ -7,12 +7,14 @@
  *  - the identity is ALWAYS Antigravity (antigravity UA + ideType ANTIGRAVITY),
  *    independent of CLAUDISH_GEMINI_ANTIGRAVITY;
  *  - the requested model id is resolved to a LIVE-served id
- *    (resolveAntigravityModelId over getServedAntigravityModels) before it goes
+ *    (resolveAntigravityServedModel over getServedAntigravityModels) before it goes
  *    into the CodeAssist envelope.
  *
  * Request artifact:
  *  - Authorization: Bearer <antigravity oauth token>
- *  - User-Agent: antigravity/cli/1.1.9 (...)
+ *  - User-Agent: antigravity/cli/<version> (...), the version the installed agy
+ *    reports, captured per auth session by getValidAntigravityAccessToken()
+ *    (see auth/antigravity-client-version.ts)
  *  - x-activity-request-id: short random id (matches the Antigravity CLI logger)
  *  - payload wrapped in the CodeAssist envelope
  *    {model, project, user_prompt_id, request: <inner>} (+ enabled_credit_types
@@ -20,8 +22,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { lookupFamilyDefaultVariant } from "../../adapters/model-catalog.js";
-import { resolveAntigravityModelId } from "../../providers/transport/antigravity.js";
+import { resolveAntigravityServedModel } from "../../providers/transport/antigravity.js";
 import {
   getValidAntigravityAccessToken,
   readSharedAntigravityToken,
@@ -84,12 +85,9 @@ export class AntigravityCredentialProvider implements CredentialProvider {
     const { projectId, tierId } = await setupAntigravityUser(token);
     // Resolve the requested id against the account's dynamic models catalog
     // (fetchAvailableModels).
-    const { servedIds, defaultId } = await getServedAntigravityModels(token, projectId);
-    const servedModel = resolveAntigravityModelId(
+    const servedModel = resolveAntigravityServedModel(
       ctx.model,
-      servedIds,
-      defaultId,
-      lookupFamilyDefaultVariant(ctx.model, "antigravity")
+      await getServedAntigravityModels(token, projectId)
     );
     return {
       headers: {

@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "types": [],
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "declarationDir": "dist/.hooks-types"
+  },
+  "files": ["src/hooks/public.ts"]
+}

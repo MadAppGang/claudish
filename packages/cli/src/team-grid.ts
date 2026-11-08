@@ -339,13 +339,13 @@ function buildTeamStatus(
  *
  * @param sessionPath  Absolute path to the session directory
  * @param models       Model IDs to run in parallel
- * @param input        Task prompt text
+ * @param input        Task prompt text; undefined keeps the session's existing input.md
  * @param opts         Optional keep (don't auto-exit) and mode (default/interactive)
  */
 export async function runWithGrid(
   sessionPath: string,
   models: string[],
-  input: string,
+  input?: string,
   opts?: { timeout?: number; keep?: boolean; mode?: "default" | "interactive" }
 ): Promise<TeamStatus> {
   const mode = opts?.mode ?? "default";

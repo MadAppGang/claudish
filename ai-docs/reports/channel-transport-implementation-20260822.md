@@ -249,7 +249,7 @@ I wrote no tests, per instruction. Current state, `CLAUDISH_SKIP_LIVE_E2E=1`:
 - The 12th, `team-timeout-repro.test.ts › REPRO: process that completes just before timeout`,
   **passes in isolation** (8/8) and fails only in the contended full run — the documented
   `project_test_contention_false_failures` flake.
-- `channel-wire-format.test.ts` (6) and `scrollback-buffer.test.ts` (11) both pass: **the
+- `session-wire-format.test.ts` (6) and `scrollback-buffer.test.ts` (11) both pass: **the
   channel wire contract is intact.**
 - `team-stats`, `team-stream-capture`, `stats-buffer`, `session/`, `process-tree`,
   `status-line-context`: 123/123 pass.
@@ -696,7 +696,7 @@ the two expectations — G1 and G2 are no longer the same fact.
 ## 3. TWO MORE tests fail, and they are supposed to
 
 `ai-docs/architecture/mcp-channel.md` states the rule: *"The roster is pinned by an EXACT
-frozen array in `channel/e2e-channel.test.ts`, so adding or removing a tool without updating
+frozen array in `mcp-session/e2e-sessions.test.ts`, so adding or removing a tool without updating
 that test fails CI. That is deliberate: it is a wire contract."* `get_diagnostics` is a new
 tool, so both pins fire. This is the guard working, not collateral damage — but it is a
 second and third test change the task did not anticipate, and it is not mine to make.
@@ -706,13 +706,13 @@ second and third test change the task did not anticipate, and it is not mine to 
     "create_session",
 +   "get_diagnostics",
     "get_output",
-  at …/packages/cli/src/channel/e2e-channel.test.ts:87:19
+  at …/packages/cli/src/mcp-session/e2e-sessions.test.ts:87:19
 
 (fail) Group 1b: MCP Protocol — channel-only tools > lists only the 5 channel tools when CLAUDISH_MCP_TOOLS=channel
     "create_session",
 +   "get_diagnostics",
     "get_output",
-  at …/packages/cli/src/channel/e2e-channel.test.ts:262:19
+  at …/packages/cli/src/mcp-session/e2e-sessions.test.ts:262:19
 ```
 
 The second one's TITLE also needs changing — there are six channel tools now, not five.

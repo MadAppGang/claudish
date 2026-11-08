@@ -15,7 +15,7 @@
  * making every caller branch on which one was active.
  */
 
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -24,6 +24,8 @@ import { promisify } from "node:util";
 import { log } from "../logger.js";
 
 const execAsync = promisify(exec);
+/** No shell: for any command that carries a value from the environment. */
+const execFileAsync = promisify(execFile);
 
 /**
  * The ADC file `gcloud auth application-default login` writes.
@@ -35,6 +37,21 @@ const execAsync = promisify(exec);
 export function adcCredentialsPath(): string {
   return join(homedir(), ".config/gcloud/application_default_credentials.json");
 }
+
+/** Every Google Cloud location name: lowercase letters and digits in dash-joined parts. */
+const VERTEX_LOCATION_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+/**
+ * Google Cloud project-id grammar: 6-30 chars, starts with a letter, no trailing hyphen
+ * (Resource Manager, "Creating and managing projects"), optionally behind the domain
+ * prefix of an older domain-scoped project, `example.com:my-project` (Google documents
+ * that form in the BigQuery DDL reference: "If the project name contains special
+ * characters such as colons … `google.com:my_project`"). The domain is dot-separated
+ * labels of lowercase letters, digits and hyphens, so neither part can carry `/`, `?`, `#`
+ * or `%` into the URL path this id becomes a segment of; `:` is a legal path character.
+ */
+const VERTEX_PROJECT_ID =
+  /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 
 /** Vertex location used when VERTEX_LOCATION is unset — a DEFAULT, never a guess. */
 const DEFAULT_VERTEX_LOCATION = "us-central1";
@@ -190,9 +207,14 @@ export class VertexAuthManager {
     }
 
     try {
-      // Use gcloud with service account
-      const { stdout } = await execAsync(
-        `gcloud auth print-access-token --credential-file-override="${credPath}"`,
+      // Use gcloud with service account. The path is an argument, never shell text: a
+      // path can name a file in a checkout whose name carries `"$(…)"`.
+      // GOOGLE_APPLICATION_CREDENTIALS itself is shell-only: a working directory's .env
+      // cannot set it (dotenv-allowlist.ts), because the file it names is credential
+      // logic, not a secret.
+      const { stdout } = await execFileAsync(
+        "gcloud",
+        ["auth", "print-access-token", `--credential-file-override=${credPath}`],
         { timeout: 10000 }
       );
 
@@ -249,7 +271,7 @@ let discoveredProjectSettled: VertexProjectOrigin | null | undefined;
 let syncAdcOrigin: VertexProjectOrigin | null | undefined;
 
 /**
- * Reset the discovery memos. Test seam — production resolves once per process.
+ * Reset the discovery memos, including when credentials.invalidate("vertex") runs after ADC login.
  */
 export function resetVertexProjectDiscovery(): void {
   discoveredProjectPromise = null;
@@ -304,6 +326,29 @@ export function describeVertexProjectSource(origin: VertexProjectOrigin): string
  */
 export const VERTEX_SET_PROJECT_REMEDY =
   "set VERTEX_PROJECT or run `gcloud config set project <id>`";
+
+/** Report the upstream refusal first, then account and project facts and how to change accounts. */
+export function describeVertexAccessDenied({
+  status,
+  upstream,
+  projectId,
+  origin,
+  account,
+}: {
+  status: number;
+  upstream: string;
+  projectId: string;
+  origin: VertexProjectOrigin | null;
+  account?: string;
+}): string {
+  const segments = [`HTTP ${status}: ${upstream}`];
+  if (account) segments.push(`ADC account ${account}`);
+  segments.push(
+    `project ${projectId}` + (origin ? ` (from ${describeVertexProjectSource(origin)})` : "")
+  );
+  segments.push("to sign in as another account: gcloud auth application-default login");
+  return segments.join(" · ");
+}
 
 /** The same two remedies, plus the fact that rules out the third guess. */
 export const VERTEX_NO_PROJECT_REMEDY = `${VERTEX_SET_PROJECT_REMEDY} — Vertex takes no API key`;
@@ -482,6 +527,16 @@ export async function resolveVertexConfig(): Promise<VertexConfig | null> {
     return null;
   }
 
+  // The project id becomes a path segment of the request URL. VERTEX_PROJECT may come
+  // from a working directory's `.env`, so a value carrying `/`, `?` or `#` would reshape
+  // the URL rather than name a project. Refuse anything but Google's project-id grammar
+  // before a URL is built; a real project id always matches.
+  if (!VERTEX_PROJECT_ID.test(origin.projectId)) {
+    throw new Error(
+      `VERTEX_PROJECT must be a Google Cloud project id (6-30 chars: a lowercase letter, then lowercase letters, digits or hyphens, no trailing hyphen; a domain-scoped project as example.com:my-project); got ${JSON.stringify(origin.projectId)}`
+    );
+  }
+
   return {
     projectId: origin.projectId,
     location: process.env.VERTEX_LOCATION || DEFAULT_VERTEX_LOCATION,
@@ -576,6 +631,15 @@ export async function validateVertexOAuthConfig(): Promise<string | null> {
  * Reported by @nickoloss in #145, who found the eu case and verified the host.
  */
 export function vertexApiHost(location: string): string {
+  // The location becomes part of the HOST, and the request carries the user's Google
+  // access token, so anything but a location name is refused before a URL exists
+  // (`attacker.example/x?` would otherwise send the token there). A working
+  // directory's .env may set VERTEX_LOCATION.
+  if (!VERTEX_LOCATION_NAME.test(location)) {
+    throw new Error(
+      `VERTEX_LOCATION must be a Google Cloud location name such as us-central1, eu or global; got ${JSON.stringify(location)}`
+    );
+  }
   if (location === "global") return "aiplatform.googleapis.com";
   if (location === "eu") return "aiplatform.eu.rep.googleapis.com";
   return `${location}-aiplatform.googleapis.com`;
@@ -618,6 +682,11 @@ export function buildVertexOAuthEndpoint(
 
 // Singleton instance
 let authManagerInstance: VertexAuthManager | null = null;
+
+/** Drop the cached token after the ADC login changes. */
+export function resetVertexAuthManager(): void {
+  authManagerInstance = null;
+}
 
 /**
  * Get the shared VertexAuthManager instance

@@ -28,7 +28,10 @@
  * `grok login` is still picked up for free.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { log } from "../logger.js";
+import { credentialHttpError, terminalCredentialError } from "./credentials/credential-error.js";
 import { type BaseCredentials, OAuthManager } from "./oauth-manager.js";
 
 /** OIDC issuer for the Grok CLI's identity provider. */
@@ -122,6 +125,23 @@ interface TokenResponse {
 /** Poll interval floor, per RFC 8628 §3.5 when the server sends none. */
 const DEFAULT_POLL_INTERVAL_S = 5;
 
+/**
+ * Test seam for `~/.claudish/grok-oauth.json`. MANDATORY in any test that reaches
+ * `GrokOAuth`: the default is the developer's real login, and since the file is
+ * read lazily and re-read on change, a test without the seam reads (and, through a
+ * refresh, writes) the real file. The guard does not snapshot this file.
+ */
+let grokOAuthPathOverride: string | null = null;
+
+export function setGrokOAuthPathForTesting(path: string | null): void {
+  grokOAuthPathOverride = path;
+}
+
+/** claudish's OWN Grok login file, written by `claudish login grok`. */
+export function grokOAuthPath(): string {
+  return grokOAuthPathOverride ?? join(homedir(), ".claudish", "grok-oauth.json");
+}
+
 export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
   protected readonly credentialFile = "grok-oauth.json";
   protected readonly providerName = "GrokOAuth";
@@ -136,9 +156,13 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
     return GrokOAuth.instance;
   }
 
-  constructor() {
-    super();
-    this.credentials = this.loadCredentials();
+  /**
+   * claudish's own Grok login file, honouring `setGrokOAuthPathForTesting`. The
+   * readiness check (`hasClaudishGrokOAuth`) reads the same function, so a test
+   * override can never send the two to different files.
+   */
+  protected override getCredentialsPath(): string {
+    return grokOAuthPath();
   }
 
   protected validateCredentials(data: unknown): data is GrokOAuthCredentials {
@@ -159,14 +183,10 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
   /**
    * Exchange the refresh token. Public client: `client_id` in the body, no
    * secret. The IdP may ROTATE the refresh token, so whatever comes back is
-   * persisted — dropping it would strand the next refresh on a dead token.
+   * returned for `refreshAndCommit` to persist — dropping it would strand the next
+   * refresh on a dead token. Nothing is written here.
    */
-  protected async doRefreshToken(): Promise<string> {
-    const current = this.credentials;
-    if (!current) {
-      throw new Error(`No Grok credentials found. Please run \`${this.loginHint}\` first.`);
-    }
-
+  protected async doRefreshToken(current: GrokOAuthCredentials): Promise<GrokOAuthCredentials> {
     const body = new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: current.refresh_token,
@@ -179,12 +199,51 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
       body,
     });
 
-    const parsed = (await response.json().catch(() => ({}))) as TokenResponse;
+    // The body is read apart from its parse: a reset while it streams is a
+    // network fault and keeps its cause and endpoint, so connection recovery
+    // classifies it. Only a body that arrived and does not parse is treated as
+    // an answer with no token (the same split as the Muse mint).
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error) {
+      throw Object.assign(
+        new Error(
+          `Lost the connection to ${TOKEN_ENDPOINT} while reading the Grok token: ${(error as Error).message}`,
+          { cause: error }
+        ),
+        { claudishEndpoint: TOKEN_ENDPOINT }
+      );
+    }
+    let parsed: TokenResponse;
+    try {
+      parsed = JSON.parse(text) as TokenResponse;
+    } catch {
+      // A 2xx that is not JSON is a gateway answering for the token host, not
+      // a verdict on the grant: retryable. A non-2xx falls to its status below.
+      if (response.ok) {
+        throw Object.assign(
+          new Error(
+            "Grok token refresh answered with a body that is not JSON; retrying will usually work."
+          ),
+          { transient: true as const, upstreamStatus: 503 }
+        );
+      }
+      parsed = {};
+    }
     if (!response.ok || !parsed.access_token) {
       const detail = parsed.error_description ?? parsed.error ?? `HTTP ${response.status}`;
       // `invalid_grant` means the refresh token is dead — only a new login
-      // fixes it, so say that rather than leaving the user to guess.
-      throw new Error(
+      // fixes it, so say that rather than leaving the user to guess. A 429 or
+      // 5xx from the token host is NOT that: it is marked transient, so the
+      // request retries instead of stopping on a login instruction.
+      if (!response.ok) {
+        throw credentialHttpError(
+          `Grok token refresh failed: ${detail}. Run \`${this.loginHint}\` to sign in.`,
+          response.status
+        );
+      }
+      throw terminalCredentialError(
         `Grok token refresh failed: ${detail}. Run \`${this.loginHint}\` to sign in.`
       );
     }
@@ -197,9 +256,7 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
       client_id: current.client_id || GROK_PUBLIC_CLIENT_ID,
       scope: parsed.scope ?? current.scope,
     };
-    this.credentials = next;
-    this.saveCredentials(next);
-    return next.access_token;
+    return next;
   }
 
   /**
@@ -223,7 +280,6 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
 
     try {
       const credentials = await this.pollForToken(auth, clientId);
-      this.credentials = credentials;
       this.saveCredentials(credentials);
     } finally {
       // Must run on the failure path too — a timed-out or declined login would
@@ -322,6 +378,8 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
    * surprising outcome of the two.
    */
   async logout(): Promise<void> {
+    // Revoke the login that is on disk now, which may be newer than ours.
+    this.fileState.syncFromDisk();
     const current = this.credentials;
     if (current?.refresh_token) {
       try {

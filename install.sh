@@ -57,7 +57,8 @@ verify_checksum() {
     local checksums_url="https://github.com/${REPO}/releases/download/v${version}/checksums.txt"
     local expected actual
 
-    expected=$(curl -fsSL "$checksums_url" 2>/dev/null | grep "claudish-${platform}" | cut -d' ' -f1)
+    # The whole filename field: checksums.txt lists the magmux binaries too.
+    expected=$(curl -fsSL "$checksums_url" 2>/dev/null | awk -v f="claudish-${platform}" '$2 == f {print $1}')
 
     if [ -z "$expected" ]; then
         warn "Checksums not available, skipping verification"

@@ -33,6 +33,7 @@ export type TransportType =
   | "antigravity"
   | "devin"
   | "grok-subscription"
+  | "meta-muse-code"
   | "openrouter"
   | "ollamacloud"
   | "kimi-coding"
@@ -294,7 +295,7 @@ export interface ProviderDefinition {
    * Single source of truth: keep this in sync with AUTH_PROVIDERS in
    * src/auth/auth-commands.ts.
    */
-  oauthLoginSlug?: "codex" | "kimi" | "antigravity" | "grok";
+  oauthLoginSlug?: "codex" | "kimi" | "antigravity" | "grok" | "muse";
   /** Whether this is a local provider (no API key needed) */
   isLocal?: boolean;
   /** Whether this provider supports direct API access (not just via OpenRouter) */
@@ -335,6 +336,7 @@ const geminiHandler = lazyHandler((m) => m.geminiProfile);
 const antigravityHandler = lazyHandler((m) => m.antigravityProfile);
 const devinHandler = lazyHandler((m) => m.devinProfile);
 const grokSubscriptionHandler = lazyHandler((m) => m.grokSubscriptionProfile);
+const museCodeHandler = lazyHandler((m) => m.museCodeProfile);
 const openaiHandler = lazyHandler((m) => m.openaiProfile);
 const openaiCodexHandler = lazyHandler((m) => m.openaiCodexProfile);
 const anthropicCompatHandler = lazyHandler((m) => m.anthropicCompatProfile);
@@ -695,6 +697,45 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     description: "Grok on your SuperGrok or X Premium+ plan (gk@)",
   },
 
+  // ── Muse Code (Meta subscription) ──────────────────────────────────
+  // Meta's flat-rate Muse Code plan, signed with an `LLM|` key MINTED from a
+  // Meta `dca:` login (claudish's own, its borrowed copy, or — interactive only —
+  // the Muse Code CLI's Keychain item). The mint's entitlement answer is what
+  // permits SUB billing. Wire: OpenAI Responses, `store: false`. The metered
+  // Meta API on META_API_KEY is the separate `meta` provider.
+  // Write-up: ai-docs/sessions/…/research/muse-wire.md (§8: mint and login).
+  {
+    createHandler: museCodeHandler,
+    tier: "subscription",
+    name: "meta-muse-code",
+    displayName: "Muse Code (subscription)",
+    transport: "meta-muse-code",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.meta.ai",
+    // No baseUrlEnvVars, deliberately: the login, the minted key and every
+    // request go only to https://api.meta.ai. Bun loads a cwd `.env` before any
+    // claudish code runs, so an override could be set by any repository
+    // (`MUSE_CODE_BASE_URL` in providers/meta-muse/muse-mint.ts).
+    apiPath: "/v1/responses",
+    // MUST stay empty, as for gk@/ag@/dv@: a non-empty value makes the generic
+    // loop register an api-key provider and lets proxy-server cache a minted
+    // key past its life. META_API_KEY is never aliased (metered `meta`).
+    apiKeyEnvVar: "",
+    apiKeyDescription:
+      "Muse Code login (`claudish login muse`, or `muse login` in an interactive session)",
+    apiKeyUrl: "https://dev.meta.ai",
+    // `claudish login muse`: Meta device code, claudish's own login file.
+    oauthLoginSlug: "muse",
+    shortcuts: ["muse"],
+    shortestPrefix: "muse",
+    legacyPrefixes: [],
+    // The account's own list, with windows and modalities; contributor ids are
+    // moved out of every offered list by the discovery choke point.
+    modelDiscovery: { path: "/muse-code/models", format: "muse-code-models" },
+    isDirectApi: true,
+    description: "Muse Code on your Meta subscription (muse@)",
+  },
+
   // ── MiniMax (Anthropic-compatible) ─────────────────────────────────
   {
     createHandler: anthropicCompatHandler,
@@ -770,8 +811,8 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     baseUrl: "https://api.kimi.com/coding/v1",
     apiPath: "/messages",
     apiKeyEnvVar: "KIMI_CODING_API_KEY",
-    apiKeyDescription: "Kimi Coding API Key",
-    apiKeyUrl: "https://kimi.com/code (get key from membership page, or run: claudish login kimi)",
+    apiKeyDescription: "Kimi Coding API Key (membership page, or run: claudish login kimi)",
+    apiKeyUrl: "https://www.kimi.com/code",
     oauthFallback: "kimi-oauth.json",
     oauthLoginSlug: "kimi",
     shortcuts: ["kc"],
@@ -836,7 +877,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiKeyEnvVar: "ZHIPU_API_KEY",
     apiKeyAliases: ["GLM_API_KEY"],
     apiKeyDescription: "GLM/Zhipu API Key",
-    apiKeyUrl: "https://z.ai/",
+    apiKeyUrl: "https://z.ai/manage-apikey/apikey-list",
     shortcuts: ["glm", "zhipu"],
     shortestPrefix: "glm",
     legacyPrefixes: [
@@ -886,7 +927,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiPath: "/api/anthropic/v1/messages",
     apiKeyEnvVar: "ZAI_API_KEY",
     apiKeyDescription: "Z.AI API Key",
-    apiKeyUrl: "https://z.ai/",
+    apiKeyUrl: "https://z.ai/manage-apikey/apikey-list",
     // Canonical name is "z-ai" (matches the Firebase catalog slug). Bare "zai"
     // stays as an input alias for existing `zai@...` commands.
     shortcuts: ["z-ai", "zai"],
@@ -910,8 +951,8 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiPath: "/api/chat",
     apiKeyEnvVar: "OLLAMA_API_KEY",
     apiKeyDescription: "OllamaCloud API Key",
-    apiKeyUrl: "https://ollama.com/account",
-    shortcuts: ["oc", "llama", "lc", "meta"],
+    apiKeyUrl: "https://ollama.com/settings/keys",
+    shortcuts: ["oc", "llama", "lc"],
     shortestPrefix: "oc",
     legacyPrefixes: [{ prefix: "oc/", stripPrefix: true }],
     nativeModelPatterns: [
@@ -936,8 +977,8 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     baseUrlEnvVars: ["OPENCODE_BASE_URL"],
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENCODE_API_KEY",
-    apiKeyDescription: "OpenCode Zen API Key",
-    apiKeyUrl: "https://opencode.ai/",
+    apiKeyDescription: "OpenCode Zen API Key (Console > Settings > Service accounts)",
+    apiKeyUrl: "https://opencode.ai/console",
     // publicKeyFallback REMOVED (was `"public"`).
     //
     // It sent the literal string "public" as the bearer token on the theory that
@@ -1015,8 +1056,9 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // missing-credential sentence instead of a silent `SUB` label.
     apiKeyEnvVar: "OPENCODE_GO_API_KEY",
     siblingKeyEnvVars: ["OPENCODE_API_KEY"],
-    apiKeyDescription: "OpenCode Zen Go (Lite Plan) API Key",
-    apiKeyUrl: "https://opencode.ai/",
+    apiKeyDescription:
+      "OpenCode Zen Go (Lite Plan) API Key (Console > Settings > Service accounts)",
+    apiKeyUrl: "https://opencode.ai/console",
     shortcuts: ["zengo", "zgo"],
     shortestPrefix: "zengo",
     legacyPrefixes: [
@@ -1184,7 +1226,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // sets LMSTUDIO_API_KEY if their server requires it.
     apiKeyEnvVar: "LMSTUDIO_API_KEY",
     apiKeyDescription: "LM Studio API Key (optional — leave blank for localhost)",
-    apiKeyUrl: "https://lmstudio.ai/docs/local-server",
+    apiKeyUrl: "https://lmstudio.ai/docs/developer/core/server",
     shortcuts: ["lms", "lmstudio", "mlstudio"],
     shortestPrefix: "lms",
     legacyPrefixes: [
@@ -1273,6 +1315,39 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /^deepseek\//i }, { pattern: /^deepseek-/i }],
     isDirectApi: true,
     description: "DeepSeek API (ds@)",
+  },
+
+  // ── Meta (native API, metered) ─────────────────────────────────────
+  // Meta's own model API at api.meta.ai, billed per token on META_API_KEY. Not
+  // the Muse Code subscription, which is a separate claudish provider with its
+  // own login. Requests are built from the catalog's `meta/direct-api`
+  // connections (their wire is `responses`); `apiPath` is only the
+  // off-catalog default.
+  //
+  // NO `modelDiscovery`: `/v1/models` returns ids only, and a successful
+  // discovery replaces the catalog rows in the picker, which carry the
+  // windows, prices and modalities. The picker reads the catalog slug `meta`.
+  {
+    createHandler: openaiHandler,
+    tier: "native",
+    name: "meta",
+    displayName: "Meta",
+    transport: "openai",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.meta.ai",
+    baseUrlEnvVars: ["META_BASE_URL"],
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "META_API_KEY",
+    apiKeyDescription: "Meta Model API key",
+    apiKeyUrl: "https://dev.meta.ai",
+    shortcuts: ["meta"],
+    shortestPrefix: "meta",
+    legacyPrefixes: [],
+    // parseModelSpec auto-detection only: a bare `muse-*` name is still routed
+    // by the catalog (`route()`), never pinned to this provider.
+    nativeModelPatterns: [{ pattern: /^muse-/i }],
+    isDirectApi: true,
+    description: "Meta Model API (meta@)",
   },
 
   // ── Mistral (OpenAI-compatible direct API) ─────────────────────────

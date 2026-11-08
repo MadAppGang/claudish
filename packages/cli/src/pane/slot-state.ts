@@ -15,6 +15,7 @@ export type Phase =
   | "BOOTING" // pane spawned, Claude Code not yet at an empty input box
   | "ADMITTING" // a prompt is being delivered / awaiting its acceptance witness
   | "RUNNING" // accepted turn in progress (incl. Stop hooks and background agents)
+  | "SETTLING" // a settled turn held while the session's hooks run (§7.3); wire RUNNING
   | "IDLE" // interactive session between turns, input box empty
   | "QUESTION" // turn blocked on a pending AskUserQuestion
   | "PERMISSION" // turn blocked on a permission / plan-approval dialog
@@ -34,10 +35,14 @@ export type PhaseEvent =
   | "prompt_accepted" // witness found after the turn's offset
   | "admit_deadline" // first prompt never accepted → FAILED prompt_not_accepted
   | "admit_abandoned" // a later prompt never accepted → back to IDLE (anomaly, frame meta)
+  | "hook_admit_abandoned" // a one-shot chain's injected turn never accepted → SETTLING, concluded
   | "blocked_question"
   | "blocked_permission"
   | "unblocked"
   | "turn_continue" // decide() returned "continue"
+  | "settle_hold" // a turn settled and the session's hooks run before the verdict
+  | "hold_inject" // the hold produced an injection: pump admits it in the same step
+  | "hold_rewake" // a background notification woke the model during the hold (D23)
   | "rewake" // interactive IDLE: a background notification woke the model (D23)
   | "verdict_completed"
   | "verdict_empty"
@@ -52,6 +57,7 @@ export const PHASES: readonly Phase[] = [
   "BOOTING",
   "ADMITTING",
   "RUNNING",
+  "SETTLING",
   "IDLE",
   "QUESTION",
   "PERMISSION",
@@ -90,11 +96,22 @@ export const TRANSITIONS = {
     prompt_accepted: "RUNNING",
     admit_deadline: "FAILED",
     admit_abandoned: "IDLE",
+    hook_admit_abandoned: "SETTLING",
     ...ANY_LIVE,
   },
   RUNNING: {
     blocked_question: "QUESTION",
     blocked_permission: "PERMISSION",
+    turn_continue: "IDLE",
+    settle_hold: "SETTLING",
+    verdict_completed: "COMPLETED",
+    verdict_empty: "EMPTY",
+    verdict_failed: "FAILED",
+    ...ANY_LIVE,
+  },
+  SETTLING: {
+    hold_inject: "IDLE",
+    hold_rewake: "RUNNING",
     turn_continue: "IDLE",
     verdict_completed: "COMPLETED",
     verdict_empty: "EMPTY",
@@ -135,12 +152,26 @@ export function wireState(p: Phase, initialDelivery: boolean): SlotState {
       return initialDelivery ? "STARTING" : "RUNNING";
     case "RUNNING":
       return "RUNNING";
+    // The hold is internal: a chain turn never reads AWAITING_INPUT between turns.
+    case "SETTLING":
+      return "RUNNING";
     case "IDLE":
     case "QUESTION":
       return "AWAITING_INPUT";
     case "PERMISSION":
       return "AWAITING_PERMISSION";
-    default:
+    case "COMPLETED":
+    case "FAILED":
+    case "CANCELLED":
+    case "TIMEOUT":
+    case "EMPTY":
       return p;
+    default:
+      return assertNever(p);
   }
+}
+
+/** Compile-time exhaustiveness for a switch over a closed union. */
+export function assertNever(x: never): never {
+  throw new Error(`unreachable: ${String(x)}`);
 }

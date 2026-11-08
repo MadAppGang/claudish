@@ -64,8 +64,15 @@
  * for — which is the only honest form the claim can take.
  */
 
+import { readFile } from "node:fs/promises";
 import { credentials } from "../../auth/credentials/authority.js";
-import { resolveVertexConfig, vertexApiHost } from "../../auth/vertex-auth.js";
+import {
+  describeVertexAccessDenied,
+  describeVertexProjectSource,
+  resolveVertexConfig,
+  resolveVertexProjectOrigin,
+  vertexApiHost,
+} from "../../auth/vertex-auth.js";
 import { log } from "../../logger.js";
 import { findEntryByModelId } from "../catalog-query.js";
 import { type DiscoveredModel, rankDiscoveredModels } from "../model-discovery.js";
@@ -215,12 +222,54 @@ export async function listVertexPublisherModels(
   });
 
   if (!response.ok) {
-    // The upstream sentence is the whole value of this path: a 403 here says
-    // precisely which permission or quota project is missing, and a guess would
-    // send the user to the wrong console page.
+    log(`[vertex-discovery] HTTP ${response.status} from ${endpoint}`);
     const detail = await response.text().catch(() => "");
+    const upstream = upstreamErrorMessage(detail);
+    const origin = await resolveVertexProjectOrigin();
+    if (response.status === 401 || response.status === 403) {
+      let account: string | undefined;
+      try {
+        const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+        if (credPath) {
+          try {
+            const credential = JSON.parse(await readFile(credPath, "utf-8")) as {
+              client_email?: unknown;
+            };
+            account = str(credential.client_email);
+          } catch {
+            // An unreadable credential file must not prevent the tokeninfo lookup.
+          }
+        }
+        if (!account) {
+          const token = auth.headers.Authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+          if (token) {
+            const tokeninfo = await fetch(
+              `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`,
+              { method: "GET", signal: AbortSignal.timeout(3000) }
+            );
+            if (tokeninfo.ok) {
+              account = str(((await tokeninfo.json()) as { email?: unknown }).email);
+            }
+          }
+        }
+      } catch {
+        // Best-effort account lookup must not hide the upstream refusal or log the token.
+      }
+      const explanation = describeVertexAccessDenied({
+        status: response.status,
+        upstream,
+        account,
+        origin,
+        projectId: config.projectId,
+      });
+      throw new Error(explanation);
+    }
     throw new Error(
-      `HTTP ${response.status} from ${endpoint}${detail ? ` — ${oneLine(detail)}` : ""}`
+      [
+        `HTTP ${response.status}: ${upstream}`,
+        `project ${config.projectId}` +
+          (origin ? ` (from ${describeVertexProjectSource(origin)})` : ""),
+      ].join(" · ")
     );
   }
 
@@ -242,6 +291,17 @@ export async function listVertexPublisherModels(
 function oneLine(text: string, max = 200): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+function upstreamErrorMessage(detail: string): string {
+  try {
+    const body = JSON.parse(detail) as { error?: { message?: unknown } } | null;
+    const message = str(body?.error?.message);
+    if (message) return message;
+  } catch {
+    // Non-JSON refusals retain the upstream body.
+  }
+  return oneLine(detail) || "(no message)";
 }
 
 /** What one `:countTokens` check established about one candidate. */

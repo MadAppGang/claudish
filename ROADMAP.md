@@ -6,38 +6,29 @@ For shipped features see `CLAUDE.md`; for the engineering rationale behind them 
 
 ---
 
-## Channel notifications
+## Session push notifications — removed 2026-10-16
 
-### Phase 1 — SEP-1686 forward-compat fields ✅ Shipped
+Status: **removed** (10.7.0). The server no longer declares `experimental: {"claude/channel": {}}`
+and sends no `notifications/claude/channel` frame; hosts poll `list_sessions` and read the session
+records. Rationale and what replaced each fact: `ai-docs/architecture/mcp-sessions.md` ("Push
+notifications were removed").
 
-Status: complete (this branch).
+The old phases are closed with it: Phase 1 (the SEP-1686 forward-compat fields `task_id`,
+`status`, `created_at`, `last_updated_at` on the channel frame) was deleted with the frame, and
+Phase 2 (`notifications/tasks/status` behind `CLAUDISH_NOTIFY_VIA_TASKS`) and Phase 3 (flip the
+default, drop the legacy method) have no legacy method left to migrate from.
 
-The channel bridge now emits `task_id`, `status` (5-value SEP-1686 enum), `created_at`, `last_updated_at` alongside our existing fields. Wire format pinned by `channel-wire-format.test.ts` (8 tests, perturbation-verified). No consumer behavior change.
+**Trigger to reconsider a push** (all must hold):
+- Claude Code delivers `notifications/tasks/status` (SEP-1686) into the **agent's context** — not
+  only the CLI UI — WITHOUT `--channels`, `.mcp.json` registration or an interactive-only host.
+  Those three gates are why the channel push reached almost no one.
+- The TypeScript MCP SDK ships a server-side helper for emitting it
+  (`modelcontextprotocol/typescript-sdk#1041`).
+- A live `create_session` run shows the completion arriving in the orchestrator agent's context.
 
-See: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/sep-1686-migration-schema.md`
-
-### Phase 2 — `notifications/tasks/status` behind a flag
-
-Status: blocked on upstream. Not started.
-
-When ready, we add a `CLAUDISH_NOTIFY_VIA_TASKS=1` env var. When set, the bridge emits `notifications/tasks/status` with a restructured payload (flatten `meta.task_id → params.taskId`, etc.) alongside the existing `notifications/claude/channel`. Add a parallel test fixture pinning the new wire format.
-
-**Trigger conditions** (all must hold):
-- Claude Code ships a release whose CHANGELOG mentions SEP-1686 / `notifications/tasks/status` receiver support, AND the new method surfaces task notifications into the **agent's context** (not just CLI UI).
-- The TypeScript MCP SDK ships a server-side helper for emitting `notifications/tasks/status`. Reference impl is `modelcontextprotocol/typescript-sdk#1041` (currently OPEN as of 2026-05).
-- We've manually verified per-child completion notifications surface in the orchestrator agent's context during a `team` run.
-
-**Effort**: small. Most work is already done in Phase 1 (the data is in `meta`); Phase 2 is mainly a payload-reshape function + new test fixture + env-var gate.
-
-Reference: same migration schema doc as Phase 1.
-
-### Phase 3 — Flip default + drop the legacy method
-
-Status: blocked on Phase 2.
-
-Default to `notifications/tasks/status`. Keep emitting `notifications/claude/channel` for one major version as a fallback for users still on older Claude Code versions. Then remove.
-
-**Trigger condition**: 6+ months after Phase 2 ships AND > ~80% of Claudish users are on Claude Code versions with Tasks receiver support (heuristic — measure via `--probe` telemetry if we ever add it, otherwise judgment call).
+**Effort if triggered**: small. The facts are already in `SessionManager` (`sessionEventFor`, the
+`waits.jsonl` transitions); a push is one subscriber on the pane's `onTransition` and `onChange`
+hooks plus a payload builder and its wire-format test.
 
 ---
 
@@ -88,7 +79,7 @@ The conclusion drawn at the time — that this would both fire into a void and d
 
 ### Re-measured 2026-07-29 against Claude Code **2.1.220** — one blocker is gone, one is confirmed harder
 
-Probes: `packages/cli/src/channel/test-helpers/capability-probe.ts` (agent context, `-p`) and
+Probes: `packages/cli/src/mcp-session/test-helpers/capability-probe.ts` (agent context, `-p`) and
 `progress-regression-mock.ts` driven through an interactive tmux session (terminal UI).
 Full findings: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md`.
 
@@ -133,7 +124,7 @@ that reaches a reader. It is not, however, a substitute on the *liveness* axis, 
 - Re-measurement against 2.1.220: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md` (lost — same)
 - Idle-timeout measurement against 2.1.231 (the three-arm probe): `ai-docs/reports/mcp-progress-keepalive/findings.md`
 - Keepalive implementation design: `ai-docs/reports/mcp-progress-keepalive/architecture.md`
-- Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`, `capability-probe.ts`, `capability-probe-2.ts`
+- Test artifacts: `packages/cli/src/mcp-session/test-helpers/progress-regression-mock.ts`, `capability-probe.ts`, `capability-probe-2.ts`
 - Field evidence of the transport-kill bug the latch defends against: <https://github.com/GLips/Figma-Context-MCP/issues/362>
 - Stale `progressToken` claim: <https://github.com/anthropics/claude-code/issues/58687>
 
@@ -300,7 +291,7 @@ If a trigger condition has been met, move the item to *In Progress* and create t
 
 ## Consolidate the two channel test-helper stand-ins
 
-`packages/cli/src/channel/test-helpers/` now holds **two** helpers that can echo argv:
+`packages/cli/src/mcp-session/test-helpers/` now holds **two** helpers that can echo argv:
 
 - `fake-claudish.ts` — the original; consumed by BOTH `channel/session-manager.test.ts` and
   `team-orchestrator.test.ts`, the latter via `--print-argv` to assert the exact spawn
@@ -416,62 +407,26 @@ vocabulary Claude Code emits, and the clamp table is what maps it onto each prov
 
 ---
 
-## Route `--advisor` panel calls through subscription-aware routing
-
-Status: not started. Deliberately out of scope for the any-model advisor work.
-
-Every `--advisor` panel model and collector is called through `advisorRouteFor`
-(`handlers/native-handler-advisor.ts`) with a raw metered API key: api.openai.com with
-`OPENAI_API_KEY`, the direct Gemini API with `GEMINI_API_KEY`, api.anthropic.com with
-`ANTHROPIC_API_KEY` for a Claude collector, and OpenRouter with `OPENROUTER_API_KEY` for
-everything else. It never calls `route()`. So a Codex, SuperGrok or Antigravity subscriber pays
-per token for panel calls, and a `cx@` or `gk@` panel spec goes to OpenRouter.
-
-This is visible, not silent: the startup notice prints each panel model's host and key with
-"billed per token" under "panel calls never use a subscription", and a panel model with no key
-is refused at startup.
-
-**Why parked.** Making the panel subscription-aware means sending each panel call through the
-routing chain (the credential authority's OAuth arms, per-provider transports,
-`SUBSCRIPTION_PROVIDERS` billing) instead of one bare `fetch` per model. That rewrites the advice
-retrieval path, which the stub paths and origin records were built around, and the feature's
-out-of-scope list protected panel behaviour.
-
-**Trigger condition** (either is sufficient):
-
-1. A user asks to run the panel on their subscription, or reports unexpected metered spend from
-   panel calls.
-2. The panel's advice retrieval path is being reworked for another reason.
-
-**Must still hold after the change:** origin records still separate `upstream` from `stub` per
-model; billing is decided by the credential that signed (`RequestAuth.arm`), never by the
-provider name (CLAUDE.md invariants); the startup refusal and notice keep reading the same single
-routing function as the runtime.
-
-**Effort**: medium to large.
-
-Reference: `ai-docs/architecture/advisor.md` ("Panel routing and billing");
-`ai-docs/reports/advisor-scope-decisions-20260910.md`.
-
----
-
 ## `--advisor`: a reasoning-only panel reply is recorded as a stub
 
-Status: not started. Recorded as a known limitation of the any-model advisor work.
+Status: not started. Recorded as a known limitation of the any-model advisor work; the reply is
+now NAMED, not accepted.
 
-`extractChatCompletionText` (`packages/cli/src/handlers/native-handler-advisor.ts:2179-2187`)
-reads only `choices[0].message.content`, as a string or as an array of text parts. If a
-reasoning model answers HTTP 200 with its text in a reasoning field and `content` null or empty,
-the check at `:2152` records `origin: "stub"` with "HTTP 200 but the response carried no advice
-text". The main model then receives a failure, not advice, for a call that was billed.
+A routed panel member's answer arrives as an Anthropic message from its chain, and
+`extractAdvice` (`packages/cli/src/handlers/advisor-route-plan.ts`) takes only `text` blocks. A
+reply with reasoning and no text is S4 with `emptyReason: "reasoning-only"` (or
+`max-tokens-during-reasoning` when the output limit cut it off), and the stub text says so
+(`emptyAdviceReason`, `handlers/native-handler-advisor.ts`). The main model receives a failure, not
+advice, for a call that was billed (or drew on a subscription).
 
-This is visible, not silent: the failure text names the model, the call raises one warning, and
-the `advisor_call` record says `stub`.
+This is visible, not silent: the failure text names the model and the reason, the call raises one
+warning, and the `advisor_call` record says `stub` with `emptyReason` and `stopReason`.
 
-**Why parked.** Two questions come first. The field that carries reasoning differs between
-providers, so the shape must come from a real captured response, never a guessed one (fixtures
-come from real debug logs). And reasoning without a final answer is the model's working, not its
-conclusion; whether it counts as advice is a product decision.
+**Why parked.** The shape question is settled: each chain's stream parser hands reasoning to the
+advisor as a `thinking` block. What remains is a product decision: reasoning without a final
+answer is the model's working, not its conclusion, and whether it counts as advice is the owner's
+call. If `max-tokens-during-reasoning` is what real runs show, the first remedy is the lowest
+advertised reasoning effort for the advisor handler set, before a larger output budget.
 
 **Trigger condition**: a real run shows a panel model returning reasoning with empty content, or
 a user reports stub advice from a reasoning model.
@@ -626,13 +581,39 @@ finding id in `ai-docs/reports/mcp-magmux-panes/session-record/implementation-lo
   prehydrate. Trigger: the next change to `team(mode="run")` start-up ordering.
 - **C-L1 — an `invalid_args` spawn model is recorded as `pane_lost`.** Trigger: the next change to
   `create_session` argument handling.
-- **C-L5 — accounting freezes at the terminal transition.** The Magus monitor reads `tokens.json`, so it is
+- **C-L5 — accounting freezes at the terminal transition.** Outside observers read `tokens.json`, so they are
   unaffected today. Trigger: a consumer that reads final tokens from the session row instead.
 - **gpt-5-mini cost is estimated** (`stats/*.json` prices it at $2/$8 per M with `is_estimated:true`), so
   `cost_usd` may be overstated for it. Trigger: the catalog publishing real gpt-5-mini pricing.
 - **`proxy-server.test.ts` "keyless custom endpoint" timed out at 5 s in CI** (once, on PR #288; it
   passes 3/3 locally; main's own CI also failed once on 2026-09-26, cause not checked). Trigger: a second
   CI failure of that test.
+
+---
+
+## Pane sessions: follow-ups from the 10.7.0 MCP update
+
+Status: not started. Evidence: `ai-docs/reports/2026-10-16-mcp-update-validation.md`. The turn
+that never settled after its background agents finished mid-turn was fixed in 11.0.0 (`a6739184`).
+Adopting magmux's `--controller claude-code` input gate, and the prompt typed twice under load,
+were closed by the `resize_session` redesign: panes need magmux 0.17.0, every prompt goes through
+one gated magmux `send` bound to the pane's own transcript, and the retype nudge
+(`PaneSession.nudge`, `awaitClearedBox`) and the `editorMode` overlay key are gone
+(`ai-docs/architecture/pane-session.md`).
+
+- **An upstream stream error is shown as assistant text, so the turn reads COMPLETED.** A
+  `create_session` on `gpt-6.1-sol` (`cx@`, claudish 10.6.3) ended its only turn with the
+  assistant text `[API Error: server_is_overloaded Our servers are currently overloaded. Please
+  try again later.]`; `upstreamErrors` was `[]`, `reason` null, state COMPLETED, after 27 tool calls
+  and no work done. A caller reading only the state takes it for a finished task. Trigger: find
+  where the Responses stream converts a mid-stream `error` event into a text block, and check it
+  on 10.7.0 first.
+- **`redactSecrets` misses three credential shapes.** On 2026-10-20 `redact.ts` left these
+  unmasked: `x-api-key: <value>` in a header, `https://user:password@host`, and a lowercase
+  `?token=<value>` query (`Authorization: Bearer <value>` is masked). `SlotRow.recent` passes a
+  Bash command or WebFetch url through it; the same text is already on the child's screen via
+  `capture_session`, so `recent` adds no exposure, but every caller of `redactSecrets` shares
+  the gap. Trigger: next change to `redact.ts`, or a report of a leaked key.
 
 ---
 

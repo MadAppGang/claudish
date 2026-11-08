@@ -18,8 +18,8 @@
 `scripts/guard-real-config.ts` — the thing `bun run test:safe` runs the suite
 under — does two separate jobs, and conflating them is how each keeps decaying.
 
-**It SNAPSHOTS files.** `GUARDED` lists `~/.claudish/config.json` and
-`~/.claudish/all-models.json`. Each is read before the run and compared after.
+**It SNAPSHOTS files.** `GUARDED` lists the config, the catalog caches and sentinel, and
+the credential stores below. Each is read before the run and compared after.
 Present and changed → restored from the snapshot. Absent before and present
 after → DELETED, because on a clean machine a test fixture that survives becomes
 the machine's first real catalog, and a cold cache is indistinguishable from a
@@ -27,6 +27,21 @@ poisoned one to every caller. Present but unreadable → it refuses and says so,
 which is why `snapshot()` establishes presence with `existsSync` separately from
 reading the bytes: folding "unreadable" into "absent" would make the delete
 branch destroy the file.
+
+**Credential files are SECRET entries, and their rule is different.** `codex-oauth.json`,
+`grok-oauth.json`, `gemini-oauth.json`, `kimi-oauth.json`, the Muse stores and
+`accounts/state.json` get no `.guard-backup` sidecar (a second plaintext copy of a real login
+that `claudish logout` never removes); the in-memory snapshot is the only restore path. A secret
+is restored only when the run left it DELETED, unreadable, unparseable or without a non-empty
+`refresh_token`, through a same-directory temp file created 0600 and renamed over it. A secret
+the run left VALID but different is KEPT with a warning, because Codex and Grok rotate refresh
+tokens: a concurrent claudish process may have refreshed during the run, and writing the old
+document back reinstates a consumed refresh token (`refresh_token_reused`, which can revoke the
+grant). Only a mode change the run made is reported; a login that was already 0644 before the run
+is the developer's state. SIGINT and SIGTERM are forwarded to the child so Ctrl-C still restores.
+Added 2026-10-21 after a full run deleted the real `codex-oauth.json`: a test-only singleton reset
+replaced `CodexOAuth`'s instance, the credential authority kept the old one, and a test's
+`credentials.logout()` reached it. Reset singletons IN PLACE.
 
 **It PREVENTS three things outright,** via env vars set on the child:
 
@@ -36,7 +51,19 @@ branch destroy the file.
 | `CLAUDISH_DISABLE_OP=1` | 1Password handshakes | Denials suppress authorization machine-wide for 15s, for every process |
 | `CLAUDISH_DISABLE_CATALOG_WARM=1` | the live hosted-catalog fetch | The restore returns the bytes; it cannot return the hermeticity |
 
-The third was added 2026-09-15 and is gated inside `refreshCatalog()` rather than
+**`CLAUDISH_DISABLE_KEYCHAIN=1` also keeps the legacy Codex file move off** (MTL-372) for the
+whole suite. The move copies `~/.claudish/codex-oauth.json` into the Keychain and deletes the
+file. It runs on the first Codex sign of any process whose config is the default one, so an
+in-process test that installs a darwin keychain fake without the flag reaches it with the real
+`HOME`, where `activeConfigFile()` was built from `os.homedir()` at module load. A hand-run `bun
+test` does not go through this guard, and that is how the move once reached a developer's real login
+(2026-11-03): the test preload now sets the flag and a temporary `HOME` for EVERY `bun test` run (see
+"The home guard" below). A test that wants the move installs the fake `security`
+(`auth/accounts/fake-security.test-helper.ts`, see `keychain.md`) in a child process with a temp
+`HOME`, and deletes the flag only inside that child, after the fake is installed. The parent keeps
+the flag.
+
+The catalog flag was added 2026-09-15 and is gated inside `refreshCatalog()` rather than
 `warmCatalog()`, because `ensureCatalogReady()` refreshes through the same
 function — a gate on one of two entry points is how a gate stops being true. It
 returns `reason: "disabled"`, never `"network"`: a caller that logs "the catalog
@@ -66,7 +93,7 @@ hosted catalog changed its answer.
 
 ## A gate must not also gate its own diagnostic
 
-`e2e-channel.test.ts` Group 2 spawns a real `claude -p`, so it needs a working credential.
+`e2e-sessions.test.ts` Group 2 spawns a real `claude -p`, so it needs a working credential.
 It gates on a genuine probe — one tiny headless prompt, treating a login/credential error as
 "not usable" — which is the right design. But the probe itself lived inside
 `if (!SKIP_LIVE_E2E) { … }`.
@@ -75,7 +102,7 @@ So running with `CLAUDISH_SKIP_LIVE_E2E=1` — which is the normal, recommended 
 suite — meant the probe never executed, `claudeUsable` stayed `false`, and Group 2 reported:
 
 ```
-[e2e-channel] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated
+[e2e-sessions] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated
 ```
 
 **That message is a claim about the environment that the environment was never asked.** It is
@@ -95,8 +122,8 @@ like a confident answer. Prefer "unknown" to a plausible guess in any automated 
 
 ## A fixture must live where the test lives, never in scratch space
 
-`channel/test-helpers/captured-stream-json.ts` reads real captured stream-json frames at
-MODULE LOAD, via an IIFE. Its `PROBE_DIR` originally pointed at
+`channel/test-helpers/captured-stream-json.ts` (the directory is now `mcp-session/`) read real
+captured stream-json frames at MODULE LOAD, via an IIFE. Its `PROBE_DIR` originally pointed at
 `ai-docs/sessions/dev-arch-*/probes/` — where the probe that recorded them happened to write.
 
 `.gitignore:56` excludes `ai-docs/sessions/`. So the files existed on exactly one machine and
@@ -177,18 +204,160 @@ budgeted at 17 — is 576, almost all `U+1160..U+11FF`, conjoining Hangul Jamo t
 When the pin is bumped, RE-BASELINE the budgets against the new oracle. Never
 widen them to clear a red run: the budget is the entire assertion.
 
+## A green local suite can be reading the developer's own `~/.claudish`
+
+The guard snapshots and prevents writes. It does nothing about READS. A production
+fallback that asks "what is on disk under `homedir()`" answers from the developer's
+real state, and Bun keeps `homedir()` on the real home even when a test assigns
+`process.env.HOME`. The test is then green on every developer machine that has the
+file and red on the clean runner, which has none.
+
+Measured 2026-10-20 on PR #301, two cases, both green locally under `test:safe` and
+red on CI; each reproduced locally by making the read return what a clean runner
+returns:
+
+| Test | Real file it read | Local | CI |
+|---|---|---|---|
+| `openai-codex-refresh-outage.test.ts` C2/E2 "unknown refresh" | `~/.claudish/codex-oauth.json`, through the billing probe's `CodexOAuth.hasCredentials()` fallback (`billing-probe.ts`) | subscription, 503 | metered, 401 |
+| `model-selector.muse-code.test.ts` N3 | `~/.claudish/cloud-models-catalog-v3.json`, through `isChatCapable` → `classifyChatCapability` with no `cachePath` | `muse-spark-1.3` is chat | `unknown`, row dropped |
+
+The injected dependency was right in both. The read happened several layers below
+it, in code the test never named. Two seams now exist for this:
+`registerSubscriptionCredentialProbe` makes the billing probe agree with a fake
+credential, and `_setChatCapabilityCachePathForTest` points the chat filter at a
+test-owned catalog.
+
+Before calling a test that reaches routing, billing or the picker green, ask what it
+would read with an empty `~/.claudish`. CI is the only place that state is empty.
+
+The same CI run showed a third red that was not this class:
+`team-cli-signal.test.ts` exited 0 instead of 130 on SIGINT in 5 of 6 local runs,
+on `main`'s code as well. `shutdown()` in `pane/pane-registry.ts` awaited a reap
+whose last waits (the pane watcher, `waitForExit`'s timer) are unref'd, so Bun
+drained the event loop and exited 0 before `process.exit(code)`. The shutdown now
+holds the loop with an interval until the reap ends. A test of an exit code under
+signals needs `--rerun-each`: one run hides a race that loses more often than it wins.
+
+## A test run never writes into a real session's records (the preload)
+
+A suite run inside a claudish pane (a `create_session` runner, a `team` slot) inherits the pane's
+session variables, and `captureUpstreamError` appended the suite's test doubles (`stub`,
+`fixture-upstream-error`) to `~/.claudish/sessions/<id>/upstream-errors.jsonl`, so that session's
+`get_diagnostics` listed them as upstream failures (`model-failures-2026-10-21.md`, D5).
+
+`scripts/test-preload.ts` deletes `SESSION_ENV_VARS` from `process.env` before the first test file
+loads. The six names live in the import-free `scripts/session-env-vars.ts`, each the literal of the
+production constant whose writer follows it: `CLAUDISH_UPSTREAM_ERROR_LOG`, `CLAUDISH_HOOK_INBOX`,
+`CLAUDISH_HOOK_SESSION`, `CLAUDISH_TOKEN_FILE`, `CLAUDISH_PUBLISHED_TOKEN_FILE`,
+`CLAUDISH_PANE_CHILD`. Neither file imports production code: that would load `hooks/`, `config.ts`
+and the token tracker ahead of the module-scope snapshots tests rely on. A new session-record
+writer means a new name in that list.
+
+**Three bunfig.toml files** register the preload: the repo root, `packages/cli` and
+`packages/macos-bridge`. bun reads `bunfig.toml` from the working directory only and never walks
+up (measured on 1.3.10 and 1.4.0), and the suite runs from all three.
+
+**The trap: a child spawned with no `env` option gets the ORIGINAL environment back.** Measured
+2026-10-22: `Bun.spawn`/`Bun.spawnSync` on 1.3.10 and 1.4.0, and `node:child_process` on 1.3.10 (the
+CI pin; 1.4.0's `child_process` sees the deletion). So the preload covers in-process writers (D5's
+observed records) and children given `env: { ...process.env }`, and two more layers close the rest:
+
+- `scripts/guard-real-config.ts` deletes the same names from the OS environment of a `test:safe`
+  run, so no descendant can inherit them.
+- `scripts/spawn-env.test.ts` fails on any `Bun.spawn`, `Bun.spawnSync` or `node:child_process`
+  spawn/exec/fork in test code (`*.test.ts(x)` and anything under a `test-helpers/` directory)
+  whose options are not an object literal with an `env` key. It parses with the TypeScript
+  compiler API, so a comment cannot satisfy it. A site whose options cannot be read statically goes
+  in its allowlist with the file, the line text and the reason. 42 sites lacked `env` when it
+  landed; each got `env: { ...process.env }`.
+
+Two pane tests "fail inside a pane by design" (`launcher/magmux-wrapper.test.ts`,
+`team-grid.e2e.test.ts`). With `CLAUDISH_PANE_CHILD`, `CLAUDISH_PANE_CWD` and `MAGMUX_SOCK` set,
+magmux-wrapper measured 16 pass / 9 fail both before and after the preload: the 9 come from
+`MAGMUX_SOCK` (the ambient-multiplexer branch), which is not a session-record variable and stays
+inherited. team-grid.e2e was 7 / 0 both times in that simulation.
+
+## The home guard: every `bun test` runs on a temporary HOME with the Keychain off
+
+**What happened (2026-11-03, MTL-372 review round 4).** A plain `bun test` ran the legacy Codex
+file move against the developer's REAL `~/.claudish` and Keychain. `CodexPoolHalf.getRequestAuth`
+starts the move on every Codex sign, and its only test-side guard was `CLAUDISH_DISABLE_KEYCHAIN=1`,
+which `test:safe` sets and a plain `bun test` did not.
+
+**What the preload does now** (`scripts/test-preload.ts`, before any test file loads):
+
+- The three prevention flags `test:safe` sets: `CLAUDISH_DISABLE_KEYCHAIN=1`,
+  `CLAUDISH_DISABLE_OP=1` and `CLAUDISH_DISABLE_CATALOG_WARM=1`, each unless the environment already
+  states a value. The catalog flag became necessary with the empty `HOME`: without it
+  `handlers/explicit-spec-no-credential.test.ts` and `unregistered-credential-name.test.ts` (3
+  tests) live-fetch the hosted catalog past their 5 s timeout; under the real `HOME` they had been
+  reading the developer's cached catalog, the class described above.
+- `HOME` becomes a fresh `claudish-test-home-*` directory under the system temp dir, removed at
+  exit, unless the inherited `HOME` is already under a temp directory (a parent test that spawned
+  this `bun test` with its own throwaway home keeps it).
+- `os.homedir()` follows `process.env.HOME`. **Assigning `HOME` is not enough under Bun.** Measured
+  on 1.4.0: `os.homedir()` and `os.userInfo().homedir` return the HOME the process STARTED with,
+  whatever `process.env.HOME` says later, and a named `import { homedir } from "node:os"` is not
+  reached by patching the `os` object (`require("os")` is). `profile-config.ts` builds its config
+  path from `homedir()` at module load, so an env-only preload would have left the default config,
+  and the move's "default config" check, on the real home. The preload therefore patches the CJS
+  object and `mock.module`s both `node:os` and `os`.
+
+`scripts/test-preload-home.test.ts` proves it from all three bunfig directories: a check file run
+under `bun test` with a non-temporary stand-in `HOME` sees a temp home from `process.env.HOME`, a
+named import, a module-load constant, the namespace, `require("os")` and `userInfo()`, plus the flag.
+It fails 4/5 with the previous preload and 3/5 with an env-only one.
+
+**Which files reached the move.** A static import scan found 247 of 620 test files that can load
+`legacy-move.ts`. Each ran alone under the PREVIOUS preload with a throwaway stand-in `HOME` holding a
+fake `codex-oauth.json`, a recorder in place of `startLegacyCodexMove` (it asks the real
+`legacyMoveApplies`, never moves), every `Bun.spawn`/`spawnSync` of `security` intercepted, and a
+fake `security` first on `PATH`. A fake on `PATH` alone is NOT a safe harness: `keychain.ts` spawns
+the absolute `/usr/bin/security`. One file started the move: `auth/credentials/codex-pool-legacy-2a.test.ts`
+(5 signs, each due). `billing-probe.test.ts` reached the trigger 5 times, never due. Two e2e files
+(`mcp-session/e2e-sessions.test.ts`, `team-grid.e2e.test.ts`) ran a bare `security
+find-generic-password` (existence only, no `-w`) through `claude-runner.ts`'s Claude Code login check:
+a read of the login keychain, not the move. Under the new preload the same harness records zero due
+moves.
+
+**Not covered:** a child spawned with no `env` option gets the original environment, real `HOME`
+included (the trap above); `spawn-env.test.ts` is what forbids that in test code.
+
+## Clearing provider keys: derive the list, never hand-write it
+
+`routing-rules.test.ts` cleared a hand list of 24 key names that missed `POE_API_KEY` and every
+bundled vendor's key (D4). `test-helpers/provider-credential-env.ts` derives the list:
+`providerCredentialEnvVars()` is every `apiKeyEnvVar`/`apiKeyAliases` in `BUILTIN_PROVIDERS` and
+`PREDEFINED_ENDPOINTS` (`providerKeyEnvVars()`), the credential names no definition declares
+(taken from the reader's constant where one exists: `DEVIN_API_KEY_ENV`,
+`VERTEX_PROJECT_ENV_VARS`), and every `CUSTOM_<NAME>_KEY` present; `providerBaseUrlEnvVars()` is
+every declared `baseUrlEnvVars`. `clearProviderCredentialEnv()` deletes both and returns the
+restore function. A test that needs "no provider key" uses it, so a new provider cannot reopen the
+hole.
+
+## Credential files: seams and a redirected HOME
+
+`GrokOAuth`, `KimiOAuth` and the Devin reader re-read their credential files when they change
+(`credential-files.md`), so a test that reaches one without its path seam reads, and through a
+refresh may write, the developer's real login. Use `setGrokOAuthPathForTesting`,
+`setKimiOAuthPathForTesting`, `setKimiDeviceIdPathForTesting`, `KimiOAuth._resetForTests()` and
+`setDevinCredentialsPathForTesting`. A test file that imports `auth/credentials/authority.ts` or
+`auth/kimi-oauth.ts` should also run in a child spawned with `HOME` set to a temp directory in the
+child's environment (Bun resolves `homedir()` from the environment a process starts with, never
+from an in-process assignment), so a missed seam lands there.
+
 ## Pane tests: a real magmux, a fake child, nothing left behind
 
 MCP `team` slots and `create_session` run as interactive Claude Code in headless magmux panes
 (`pane-session.md`), so every suite that starts one — `pane/*.integration.test.ts`,
-`pane/pane-registry.test.ts`, the channel and team suites, `mcp-contract.e2e.test.ts`,
+`pane/pane-registry.test.ts`, the MCP session and team suites, `mcp-contract.e2e.test.ts`,
 `mcp-shutdown.e2e.test.ts` — runs a REAL `magmux --headless`. The transport's behaviour (frames,
 `exit` events, `close_pane`, slow-subscriber drops, socket paths) is magmux's, and a simulated
 magmux would test our model of it instead.
 
 **The child is the fake, never Claude Code.** `pane/test-helpers/fake-interactive-child.ts` is
-started through `CLAUDISH_BIN` (a `*.ts` value becomes `bun run <file>`). It draws the REPL with
-lines copied from the phase-2 screen fixtures, reads raw keystrokes with the key semantics measured
+started through `CLAUDISH_BIN` (a `*.ts` value becomes `bun --no-env-file run <file>`). It draws
+the REPL with lines copied from the phase-2 screen fixtures, reads raw keystrokes with the key semantics measured
 from the real REPL, and writes its transcript by TEMPLATING real records — never hand-written ones.
 A scenario is chosen by `--model fake-<scenario>`, or, in the contract suites' marker mode
 (`contract-fake-model`), by markers in the prompt: `@@TOOL@@`, `@@HANG@@` (accepted, never
@@ -202,10 +371,18 @@ and the fake dumps the argv, env, cwd and `--settings` it was given.
 **The environment is built by ALLOWLIST** (`makePaneTestEnv()`, and `serverEnv(layout)` for a
 real MCP server), never by deleting from `process.env`: no `ANTHROPIC_*` or provider key survives
 because none is listed, and `HOME`, `CLAUDE_CONFIG_DIR`, `ZDOTDIR` and `XDG_CONFIG_HOME` all point
-into a temp directory. `CLAUDISH_PANE_ROOT` is a fresh `/tmp/cpt-<8 hex>` per test or layout:
-short, so socket paths stay under magmux's 100-byte limit, and never the user's
-`/tmp/claudish-mux-<uid>`, whose startup sweep and 48-pane limit belong to the user's own
+into a temp directory. `CLAUDISH_PANE_ROOT` is a fresh `/tmp/cpt-<8 hex>` per test or layout,
+never the user's `/tmp/claudish-mux-<uid>`, whose startup sweep and 48-pane limit belong to the user's own
 sessions.
+
+**Drop `CLAUDISH_PANE_CHILD` from any env spread from `process.env`.** The flag reaches everything a
+claudish-started session runs ([`pane-session.md`](pane-session.md) § One level of nesting), so a
+suite launched from inside one (a runner in a `create_session` pane) inherits it. A claudish child
+spawned with `...process.env` then refuses to run a model (exit 64, `nested session refused`), and
+an MCP server spawned that way lists 4 tools instead of 14. Build the env by allowlist, or set
+`CLAUDISH_PANE_CHILD: undefined` explicitly. `scripts/guard-real-config.ts` deletes the flag for
+`bun run test:safe` as a second layer; a hand-run `bun test <file>` from such a session gets no
+such help.
 
 **Every test asserts that nothing outlived it** (`assertNoOrphans`, `paneOrphans(layout)`): no
 process whose argv contains the test's root or a session uuid, no process left in any pane

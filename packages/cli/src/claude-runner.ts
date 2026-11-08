@@ -1,12 +1,16 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -15,8 +19,20 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
+import { claudeCodeKeychainServiceCandidates } from "./auth/claude-code-facts.js";
+import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
+import { getHookEngine } from "./hooks/index.js";
+import { InProcessSink, setProcessSink } from "./hooks/injection/sinks.js";
+import { sessionHooksNeedBinding } from "./hooks/session/binding.js";
+import { InteractiveDriver } from "./hooks/session/interactive-driver.js";
+import {
+  driverLeadingArgs,
+  planInteractiveSurfaces,
+  sessionFlagsOf,
+} from "./hooks/session/interactive-launch.js";
+import { type NoSurfaceSession, startNoSurfaceSession } from "./hooks/session/no-surface.js";
 import {
   STRIPPED_CHILD_VARS,
   magmuxPaneCapability,
@@ -25,14 +41,20 @@ import {
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
-import { PANE_MARKER_VARS, isPaneChild } from "./pane/child-env.js";
+import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
+import { flagsRemoveRead } from "./pane/pane-launch.js";
 import { loadConfig } from "./profile-config.js";
 import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
-import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
+import {
+  installRecoveryUi,
+  recoveryOverlayHeld,
+  shutdownRecoveryUi,
+} from "./recovery/magmux-ui.js";
 import { applyRetryWatchdog, recoverySurfaceAllowed } from "./recovery/settings.js";
+import { projectsDir } from "./session/session-discovery.js";
 import { assignedTokenFile, resolveTokenFilePath } from "./session/token-file.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
@@ -90,31 +112,64 @@ function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
 export type KeychainCredentialProbe = () => boolean;
 
 // Startup-only memo (see hasResolvableAnthropicAuth call graph — at most a couple of
-// evaluations per launch). Tests inject their own probe, so this stays inert there.
-let macosKeychainAnthropicResult: boolean | undefined;
+// evaluations per launch), keyed by the SERVICE NAMES probed so a changed
+// CLAUDE_CONFIG_DIR is not answered from the previous directory's result.
+// Tests inject their own probe, so this stays inert there.
+const macosKeychainAnthropicMemo = new Map<string, boolean>();
 
 /**
- * Existence-only probe for Claude Code's macOS login-Keychain OAuth item (service
- * "Claude Code-credentials"). Returns true iff the item is present. Uses
- * `security find-generic-password` WITHOUT `-w`, so it never requests the secret,
- * needs no Keychain-access prompt, and never touches the token — Claude Code itself
- * still forwards the OAuth once claudish skips the placeholder key. Non-darwin → false
- * (returns before spawning). Best-effort: any error (security absent, non-zero exit,
- * item missing) → false.
+ * Existence-only probe for Claude Code's macOS login-Keychain OAuth item.
+ *
+ * The service is `Claude Code[-<sha256(configDir)[0:8]>]-credentials` — the hash
+ * suffix appears whenever `CLAUDE_CONFIG_DIR` is not the default. This probe
+ * hardcoded the UNSUFFIXED name, so a user with a custom config dir was reported
+ * as having no Claude login however signed in they were, and claudish then
+ * injected a placeholder key over a perfectly good subscription. Each candidate
+ * from {@link claudeCodeKeychainServiceCandidates} is tried in order.
+ *
+ * Uses `security find-generic-password` WITHOUT `-w`, so it reads item ATTRIBUTES
+ * and never item DATA: no secret is requested, no Keychain-access dialog appears,
+ * and the token is never touched — Claude Code itself still forwards the OAuth
+ * once claudish skips the placeholder key. Non-darwin → false (returns before
+ * spawning). Best-effort: any error (security absent, non-zero exit, item
+ * missing) → false.
+ *
+ * `CLAUDISH_DISABLE_KEYCHAIN=1` short-circuits it to false, mirroring
+ * `hasKeychainSource()`. A test run must be able to guarantee it spawns no
+ * `security` at all — see `keychain.md` on why a flag the production code
+ * honours is the only stub that cannot leak.
  */
 export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = () => {
   if (process.platform !== "darwin") return false;
-  if (macosKeychainAnthropicResult !== undefined) return macosKeychainAnthropicResult;
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return false;
+
+  const services = claudeCodeKeychainServiceCandidates();
+  const memoKey = services.join("|");
+  const memoized = macosKeychainAnthropicMemo.get(memoKey);
+  if (memoized !== undefined) return memoized;
+
+  // `CLAUDISH_KEYCHAIN_FILE` redirects every `security` call to a throwaway
+  // keychain, and it must be the LAST argument on any subcommand. Honoured here
+  // so live verification has the same safe target the rest of the keychain code
+  // has.
+  const keychainFile = process.env.CLAUDISH_KEYCHAIN_FILE;
+  let found = false;
   try {
-    // Existence only — NO `-w`, so no secret is requested and no Keychain prompt appears.
-    const res = spawnSync("security", ["find-generic-password", "-s", "Claude Code-credentials"], {
-      stdio: "ignore",
-    });
-    macosKeychainAnthropicResult = !res.error && res.status === 0;
+    for (const service of services) {
+      const args = ["find-generic-password", "-s", service];
+      if (keychainFile) args.push(keychainFile);
+      // Existence only — NO `-w`, so no secret is requested and no prompt appears.
+      const res = spawnSync("security", args, { stdio: "ignore" });
+      if (!res.error && res.status === 0) {
+        found = true;
+        break;
+      }
+    }
   } catch {
-    macosKeychainAnthropicResult = false;
+    found = false;
   }
-  return macosKeychainAnthropicResult;
+  macosKeychainAnthropicMemo.set(memoKey, found);
+  return found;
 };
 
 /**
@@ -181,6 +236,22 @@ export const CLAUDISH_PLACEHOLDER_API_KEY =
 
 /** The placeholder ANTHROPIC_AUTH_TOKEN paired with CLAUDISH_PLACEHOLDER_API_KEY. */
 export const CLAUDISH_PLACEHOLDER_AUTH_TOKEN = "placeholder-token-not-used-proxy-handles-auth";
+
+/**
+ * Pure proxy mode's placeholder credentials. The token alone suppresses Claude Code's
+ * login (verified on Claude Code 2.1.304). An env ANTHROPIC_API_KEY raises "Detected a
+ * custom API key" on a config that has not answered it, and a headless pane cannot
+ * answer, so the pane child sets no key at all and deletes an inherited one. Other
+ * launches keep the pair unchanged.
+ */
+export function applyProxyPlaceholderAuth(
+  env: Record<string, string | undefined>,
+  paneChild: boolean = isPaneChild()
+): void {
+  env.ANTHROPIC_AUTH_TOKEN = CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
+  if (paneChild) delete env.ANTHROPIC_API_KEY;
+  else env.ANTHROPIC_API_KEY = CLAUDISH_PLACEHOLDER_API_KEY;
+}
 
 /**
  * Remove claudish's OWN placeholder credentials that were inherited from a parent
@@ -313,6 +384,231 @@ export function isProxyAuthMode(config: ClaudishConfig): boolean {
   return !config.monitor && !isAdvisorNativeSession(config) && !shouldPreserveNativeAuth(config);
 }
 
+// The decision's types live in a module with no imports, so the advisor
+// handlers that take a decision do not pull this launcher (and through it the
+// pane launcher and cli.ts) into every program that imports a handler.
+export type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
+
+/** Injectable reads for {@link childAuthControl}; defaults read the real files. */
+export interface ChildAuthControlDeps {
+  readFile?: (path: string) => string;
+  cwd?: string;
+  home?: string;
+}
+
+/**
+ * Does claudish itself control the child's Anthropic auth on this launch?
+ *
+ * The advisor may sign its own Claude call with the bearer Claude Code sends
+ * only when that bearer can be nothing but Claude Code's claude.ai login. The
+ * request cannot prove it: the `oauth-2025-04-20` beta that login requests
+ * carry is client-declared (`ANTHROPIC_BETAS` adds it to any bearer) and the
+ * server does not require it (measured 2026-10-21, S0). So the decision is
+ * made HERE, at launch, from what this launch hands the child, and every other
+ * launch keeps the bearer off the advisor path.
+ *
+ * Controlled only when ALL hold, as far as claudish can see before spawning:
+ *   1. a native-auth launch (`isProxyAuthMode` false), so no placeholder pair;
+ *   2. no user ANTHROPIC_AUTH_TOKEN and no real ANTHROPIC_API_KEY reaches the
+ *      child. The monitor / no-model `--advisor` branch deletes both
+ *      (`runClaudeWithProxy`, "Handle API key and model based on mode"); the
+ *      native-mapping branch scrubs only claudish's placeholders, keeps a
+ *      user's token, and hides an API key only per
+ *      `shouldHideIncidentalAnthropicKey`;
+ *   3. ANTHROPIC_CUSTOM_HEADERS carries no auth header;
+ *   4. no Claude Code settings layer claudish can read — managed settings, the
+ *      user file (and `$CLAUDE_CONFIG_DIR/settings.json`), the project and
+ *      project-local files, and every `--settings` value in either spelling —
+ *      names an `apiKeyHelper` or sets an Anthropic credential in its `env`
+ *      block, and no `--settings` value the child receives is unreadable.
+ *
+ * What it cannot see, and therefore does not claim: settings delivered by a
+ * mechanism claudish does not read (an MDM profile, a file Claude Code adds
+ * later). Mirrors the env builder without editing it: the two must change
+ * together.
+ */
+export function childAuthControl(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ChildAuthControlDeps = {}
+): ChildAuthControl {
+  if (isProxyAuthMode(config)) {
+    return { controlled: false, reason: "proxy-auth", where: "environment" };
+  }
+  // The shouldPreserveNativeAuth branch keeps what the monitor branch deletes.
+  if (!config.monitor && !isAdvisorNativeSession(config)) {
+    if (isRealAnthropicEnvCredential(env, "ANTHROPIC_AUTH_TOKEN")) {
+      return { controlled: false, reason: "user-auth-token", where: "environment" };
+    }
+    if (
+      isRealAnthropicEnvCredential(env, "ANTHROPIC_API_KEY") &&
+      !shouldHideIncidentalAnthropicKey(config, env)
+    ) {
+      return { controlled: false, reason: "user-api-key", where: "environment" };
+    }
+  }
+  if (customHeadersCarryAuth(env.ANTHROPIC_CUSTOM_HEADERS)) {
+    return {
+      controlled: false,
+      reason: "custom-headers",
+      where: "environment",
+      sendsApiKey: customHeaderAuthNames(env.ANTHROPIC_CUSTOM_HEADERS).has("x-api-key"),
+    };
+  }
+  for (const { where, settings } of readableClaudeSettingsLayers(config, env, deps)) {
+    const reason = settings === null ? "settings-unreadable" : settingsAuthSource(settings);
+    if (reason === "custom-headers" && settings) {
+      const sendsApiKey = customHeaderAuthNames(settingsCustomHeaders(settings)).has("x-api-key");
+      return { controlled: false, reason, where, sendsApiKey };
+    }
+    if (reason) return { controlled: false, reason, where };
+  }
+  return { controlled: true };
+}
+
+/** One `--settings` occurrence in the passthrough args, in either spelling. */
+interface SettingsArgOccurrence {
+  /** Index of the flag token in the args. */
+  index: number;
+  /** The value; undefined when the flag is the last token. */
+  value: string | undefined;
+  /** `separate` = `--settings <v>` (two tokens); `inline` = `--settings=<v>`. */
+  spelling: "separate" | "inline";
+}
+
+/**
+ * Every `--settings` occurrence in argv order, in both spellings Claude Code
+ * accepts. `--settings=<v>` is split on the first `=` only, so a value that
+ * itself contains `=` survives.
+ */
+function settingsArgOccurrences(args: readonly string[]): SettingsArgOccurrence[] {
+  const out: SettingsArgOccurrence[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const token = args[index];
+    if (token === "--settings") {
+      out.push({ index, value: args[index + 1], spelling: "separate" });
+      index++; // the next token is this flag's value, never a flag of its own
+    } else if (token.startsWith("--settings=")) {
+      out.push({ index, value: token.slice("--settings=".length), spelling: "inline" });
+    }
+  }
+  return out;
+}
+
+/** The auth header names (lowercase) an ANTHROPIC_CUSTOM_HEADERS value (one `Name: value` per line) sets. */
+function customHeaderAuthNames(value: unknown): Set<"authorization" | "x-api-key"> {
+  const names = new Set<"authorization" | "x-api-key">();
+  if (typeof value !== "string" || !value) return names;
+  for (const line of value.split(/\r?\n/)) {
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    const name = line.slice(0, colon).trim().toLowerCase();
+    if (name === "authorization" || name === "x-api-key") names.add(name);
+  }
+  return names;
+}
+
+/** True when an ANTHROPIC_CUSTOM_HEADERS value sets an auth header. */
+function customHeadersCarryAuth(value: unknown): boolean {
+  return customHeaderAuthNames(value).size > 0;
+}
+
+/** The `ANTHROPIC_CUSTOM_HEADERS` a settings object's `env` block sets, if any. */
+function settingsCustomHeaders(settings: Record<string, unknown>): unknown {
+  return settings.env && typeof settings.env === "object"
+    ? (settings.env as Record<string, unknown>).ANTHROPIC_CUSTOM_HEADERS
+    : undefined;
+}
+
+/** The non-login credential source one settings object declares, or null. */
+function settingsAuthSource(settings: Record<string, unknown>): ChildAuthSource | null {
+  const env =
+    settings.env && typeof settings.env === "object"
+      ? (settings.env as Record<string, unknown>)
+      : {};
+  const realValue = (name: "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY"): boolean => {
+    const value = env[name];
+    return (
+      typeof value === "string" &&
+      value.trim().length > 0 &&
+      !isClaudishPlaceholderCredential(name, value)
+    );
+  };
+  if (realValue("ANTHROPIC_AUTH_TOKEN")) return "settings-auth-token";
+  if (typeof settings.apiKeyHelper === "string" && settings.apiKeyHelper.trim()) {
+    return "api-key-helper";
+  }
+  if (realValue("ANTHROPIC_API_KEY")) return "settings-api-key";
+  if (customHeadersCarryAuth(env.ANTHROPIC_CUSTOM_HEADERS)) return "custom-headers";
+  return null;
+}
+
+/**
+ * Every Claude Code settings layer claudish can read for this launch, parsed.
+ * A missing, unreadable or malformed settings FILE is skipped (Claude Code does
+ * not apply a file it cannot parse either). `where` is the path, or `--settings`.
+ *
+ * `--settings` values follow the launcher exactly (`runClaudeWithProxy`):
+ * `mergeUserSettingsIfPresent` takes only the FIRST two-token `--settings <v>`
+ * (`indexOf`), merges it into claudish's temp file and splices it out — when it
+ * cannot be parsed it is dropped, so the child never sees it and it is skipped
+ * here too. Every other occurrence (a later `--settings <v>`, any
+ * `--settings=<v>`) is forwarded to the child verbatim with the passthrough
+ * args, so each one is inspected, and one claudish cannot read or parse is
+ * returned with `settings: null` — the child may still apply it, and unknown
+ * provenance never counts as controlled (A1).
+ */
+function readableClaudeSettingsLayers(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv,
+  deps: ChildAuthControlDeps
+): Array<{ where: string; settings: Record<string, unknown> | null }> {
+  const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
+  const home = deps.home ?? homedir();
+  const cwd = deps.cwd ?? process.cwd();
+  const files = [
+    managedSettingsPath(),
+    join(home, ".claude", "settings.json"),
+    ...(env.CLAUDE_CONFIG_DIR ? [join(env.CLAUDE_CONFIG_DIR, "settings.json")] : []),
+    join(cwd, ".claude", "settings.json"),
+    join(cwd, ".claude", "settings.local.json"),
+  ];
+  const layers: Array<{ where: string; settings: Record<string, unknown> | null }> = [];
+  for (const file of files) {
+    const settings = readSettingsSource(file, readFile);
+    if (settings) layers.push({ where: file, settings });
+  }
+  const occurrences = settingsArgOccurrences(config.claudeArgs ?? []);
+  const merged = occurrences.find((o) => o.spelling === "separate");
+  occurrences.forEach((occurrence, i) => {
+    // `where` never carries the value: an inline `--settings` may hold a secret.
+    const where = occurrences.length > 1 ? `--settings (occurrence ${i + 1})` : "--settings";
+    // Merge's own guard: a missing or empty value is neither merged nor read.
+    if (!occurrence.value) return;
+    const settings = readSettingsSource(occurrence.value, readFile);
+    if (occurrence === merged && !settings) return; // dropped by the merge
+    layers.push({ where, settings });
+  });
+  return layers;
+}
+
+/**
+ * One settings source, parsed: inline JSON (a `--settings` value starting with
+ * `{`) or a file path. Null when it cannot be read or is not a JSON object.
+ */
+function readSettingsSource(
+  source: string,
+  readFile: (path: string) => string
+): Record<string, unknown> | null {
+  try {
+    const raw = source.trimStart().startsWith("{") ? source : readFile(source);
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * OS-specific path to Claude Code's *managed* settings file — the highest-precedence
  * tier, which "cannot be overridden by anything" (not even our --settings overlay).
@@ -365,8 +661,8 @@ function isWindows(): boolean {
 export function createStatusLineScript(tokenFilePath: string): string {
   const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
   const claudishDir = join(homeDir, ".claudish");
-  const timestamp = Date.now();
-  const scriptPath = join(claudishDir, `status-${timestamp}.js`);
+  // pid + timestamp, like the settings file: unique across same-millisecond launches.
+  const scriptPath = join(claudishDir, `status-${process.pid}-${Date.now()}.js`);
 
   // Escape backslashes for Windows paths in the script
   const escapedTokenPath = tokenFilePath.replace(/\\/g, "\\\\");
@@ -447,6 +743,8 @@ process.stdin.on('end', () => {
       // Plan usage for the subscription actually being spent. Replaces the old
       // scalar quota_remaining, which only ever covered a single model.
       var plan = tokens.plan;
+      // The pool's allowance label (allowance §3.3): epochs only, formatted here.
+      var allowance = tokens.allowance;
     } catch (e) {
       try {
         const json = JSON.parse(input);
@@ -501,7 +799,27 @@ process.stdin.on('end', () => {
         quotaDisplay = ' ' + DIM + '•' + RESET + ' ' + qColor + worst.id + ':' + usedPct + '%' + RESET;
       }
     }
-    console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${modelDisplay}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctxDisplay}\${RESET}\${quotaDisplay}\`);
+    let allowanceDisplay = '';
+    if (allowance && typeof allowance.level === 'string') {
+      const fmtAt = (sec) => {
+        const d = new Date(sec * 1000);
+        return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()] + ' ' +
+          String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      };
+      const start = allowance.gapStartSec, end = allowance.gapEndSec;
+      const hasGap = typeof start === 'number' && typeof end === 'number';
+      if (allowance.level === 'critical' && hasGap) {
+        allowanceDisplay = RED + '⛔ blocked ' + fmtAt(start) + '–' + fmtAt(end) + RESET;
+      } else if (allowance.level === 'warn' && hasGap) {
+        allowanceDisplay = YELLOW + '⚠ gap ' + fmtAt(start) + ' ' + Math.round((end - start) / 3600) + 'h' + RESET;
+      } else if (allowance.level === 'ok' && typeof allowance.remainingPct === 'number') {
+        const left = Math.round(allowance.remainingPct);
+        const aColor = left > 50 ? GREEN : left > 20 ? YELLOW : RED;
+        allowanceDisplay = aColor + 'pool ' + left + '%' + RESET;
+      }
+      if (allowanceDisplay) allowanceDisplay = ' ' + DIM + '•' + RESET + ' ' + allowanceDisplay;
+    }
+    console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${modelDisplay}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctxDisplay}\${RESET}\${quotaDisplay}\${allowanceDisplay}\`);
   } catch (e) {
     console.log('claudish');
   }
@@ -811,11 +1129,13 @@ export function createTempSettingsFile(
     // Directory may already exist
   }
 
-  const timestamp = Date.now();
-  const tempPath = join(claudishDir, `settings-${timestamp}.json`);
+  // The pid keeps the name unique across processes started in the same millisecond
+  // (madbench, team slots): with the timestamp alone they shared one file and each
+  // Claude Code loaded the last writer's status line and hooks.
+  const tempPath = join(claudishDir, `settings-${process.pid}-${Date.now()}.json`);
 
   // The file the proxy's TokenTracker writes: one a parent ASSIGNED (a team slot's or
-  // channel session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
+  // MCP session's own CLAUDISH_TOKEN_FILE), else `tokens-<port>.json` in .claudish.
   // An enclosing claudish session's PUBLISHED file (inherited by a claudish run from its
   // Bash tool) is not an assignment — see assignedTokenFile. Resolved by the same
   // function as the tracker and the summary, so the status line can never be pointed at
@@ -850,6 +1170,7 @@ export function createTempSettingsFile(
     const YELLOW = light ? "\\033[38;2;161;98;7m" : "\\033[93m";
     const GREEN = light ? "\\033[38;2;21;128;61m" : "\\033[92m";
     const MAGENTA = light ? "\\033[38;2;147;51;234m" : "\\033[95m";
+    const RED = light ? "\\033[38;2;220;38;38m" : "\\033[91m";
     const DIM = "\\033[2m";
     const RESET = "\\033[0m";
     const BOLD = "\\033[1m";
@@ -879,6 +1200,15 @@ export function createTempSettingsFile(
     // A float `used_pct` truncates to its integer part, which is also harmless;
     // `toUsedPct()` rounds today, so it never arises.
     const readPlanBash = `PLAN_PAIR=$(echo "$TOKENS" | grep -o '"id": *"[^"]*", *"used_pct": *[0-9]*' | sed 's/"id": *"\\([^"]*\\)", *"used_pct": *\\([0-9]*\\)/\\2 \\1/' | sort -rn | head -1); if [ -n "$PLAN_PAIR" ]; then PLAN_PCT="\${PLAN_PAIR%% *}"; PLAN_ID="\${PLAN_PAIR#* }"; case "$PLAN_PCT" in ''|*[!0-9]*) PLAN_PCT="" ;; esac; [ -n "$PLAN_PCT" ] && PLAN_DISPLAY="$PLAN_ID:$PLAN_PCT%"; fi;`;
+
+    // The pool's allowance label (allowance §3.3), from the `allowance` key:
+    // `{level, remainingPct, gapStartSec, gapEndSec}`, epochs in seconds.
+    // Relative text is never stored, so the time is formatted HERE, at render
+    // time, in local time: `pool 58%` (green/yellow/red at 50/80 % used),
+    // `⚠ gap Thu 14:00 43h`, `⛔ blocked Thu 14:00–Sat 09:00`. `date -r` is BSD,
+    // `date -d @` GNU. No key, or a level without its numbers, prints nothing.
+    const readAllowanceBash = `ALLOW=$(echo "$TOKENS" | grep -o '"allowance": *{[^}]*}'); if [ -n "$ALLOW" ]; then A_LEVEL=$(echo "$ALLOW" | grep -o '"level": *"[a-z]*"' | cut -d'"' -f4); A_PCT=$(echo "$ALLOW" | grep -o '"remainingPct": *[0-9]*' | grep -o '[0-9]*$'); A_S=$(echo "$ALLOW" | grep -o '"gapStartSec": *[0-9]*' | grep -o '[0-9]*$'); A_E=$(echo "$ALLOW" | grep -o '"gapEndSec": *[0-9]*' | grep -o '[0-9]*$'); if [ "$A_LEVEL" = "critical" ] && [ -n "$A_S" ] && [ -n "$A_E" ]; then ALLOW_COLOR='${RED}'; ALLOW_DISPLAY="⛔ blocked $(fmt_at "$A_S")–$(fmt_at "$A_E")"; elif [ "$A_LEVEL" = "warn" ] && [ -n "$A_S" ] && [ -n "$A_E" ]; then ALLOW_COLOR='${YELLOW}'; ALLOW_DISPLAY="⚠ gap $(fmt_at "$A_S") $(( (A_E - A_S + 1800) / 3600 ))h"; elif [ "$A_LEVEL" = "ok" ] && [ -n "$A_PCT" ]; then if [ "$A_PCT" -gt 50 ]; then ALLOW_COLOR='${GREEN}'; elif [ "$A_PCT" -gt 20 ]; then ALLOW_COLOR='${YELLOW}'; else ALLOW_COLOR='${RED}'; fi; ALLOW_DISPLAY="pool $A_PCT%"; fi; fi;`;
+    const fmtAtBash = `fmt_at() { LC_ALL=C date -r "$1" '+%a %H:%M' 2>/dev/null || LC_ALL=C date -d "@$1" '+%a %H:%M' 2>/dev/null; }`;
 
     // Both cost and context percentage come from our token file
     // Helper function to format tokens with k/M suffix (pure bash, no awk)
@@ -921,12 +1251,12 @@ export function createTempSettingsFile(
     // own line already shows it), and the result captured into a variable instead
     // of printed.
     const dirPrelude = `DIR=$(basename "$(pwd)"); [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true; `;
-    const readState = `CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; PLAN_DISPLAY=""; ${formatTokensBash}; ${effWinBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; ${readPlanBash} fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi`;
+    const readState = `CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; PLAN_DISPLAY=""; ALLOW_DISPLAY=""; ALLOW_COLOR=""; ${formatTokensBash}; ${effWinBash}; ${fmtAtBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; ${readPlanBash} ${readAllowanceBash} fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi`;
     // Plan segment, appended only when there is a number to show. Built as a
     // separate printf so the no-plan case emits nothing at all — most providers
     // expose no usage surface, so absence is the common path, and a trailing
     // "• " with nothing after it would be the visible cost of getting it wrong.
-    const planSuffix = `if [ -n "$PLAN_DISPLAY" ]; then printf " ${DIM}•${RESET} ${GREEN}%s${RESET}" "$PLAN_DISPLAY"; fi`;
+    const planSuffix = `if [ -n "$PLAN_DISPLAY" ]; then printf " ${DIM}•${RESET} ${GREEN}%s${RESET}" "$PLAN_DISPLAY"; fi; if [ -n "$ALLOW_DISPLAY" ]; then printf " ${DIM}•${RESET} $ALLOW_COLOR%s${RESET}" "$ALLOW_DISPLAY"; fi`;
 
     const segmentWithDir = `printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"; ${planSuffix}; printf "\\n"`;
     // The CHAINED segment deliberately drops the model name that
@@ -964,7 +1294,11 @@ export function createTempSettingsFile(
   // on top of this temp file.)
   const settings = buildClaudishSettingsOverlay(statusLine, proxyAuthMode);
 
-  writeFileSync(tempPath, JSON.stringify(settings, null, 2), "utf-8");
+  // 0600: mergeUserSettingsIfPresent later writes the caller's --settings into this
+  // file, and that layer can carry settings.local.json `env` secrets (mcp-sessions.md,
+  // inherited-settings layer). The name is unique per pid+ms, so this is a create
+  // and `mode` takes effect.
+  writeFileSync(tempPath, JSON.stringify(settings, null, 2), { encoding: "utf-8", mode: 0o600 });
   // tokenFilePath is RETURNED rather than recomputed by the caller: the child env
   // publishes it as CLAUDISH_TOKEN_FILE, and two independent `join(claudishDir,
   // \`tokens-${port}.json\`)` expressions could silently diverge.
@@ -982,11 +1316,19 @@ export function createTempSettingsFile(
  * writes no transcript. Only the magmux-wrap path stripped it before. Print mode is
  * left as it was.
  *
- * Every launch loses the `CLAUDISH_PANE_*` markers (`PANE_MARKER_VARS`). They describe
- * THIS claudish (an MCP pane child), not Claude Code; inherited, a claudish started
- * from the slot's Bash tool would take itself for a pane child (re-apply a stale
- * environment snapshot, refuse a prompt, lose its recovery surface). The markers stay
- * in this process's own `process.env`, which `magmuxPaneCapability()` reads.
+ * Every launch loses `CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD`, `CLAUDISH_HOOK_INBOX`
+ * and `CLAUDISH_HOOK_SESSION` (`PANE_LAUNCH_VARS`). They describe THIS claudish (an
+ * MCP pane child), not Claude Code; inherited, a claudish started from the slot's Bash
+ * tool would take itself for the pane child (re-apply a stale environment snapshot,
+ * chdir), and the model's Bash tool would see the hook inbox path. They stay in this
+ * process's own `process.env`, which `isPaneChild()`, `magmuxPaneCapability()` and the
+ * child's proxy read.
+ *
+ * `CLAUDISH_PANE_CHILD` is KEPT. It says "this session was started by a claudish
+ * owner", which is true of everything the session starts: a claudish run from its
+ * Bash tool refuses to nest (`assertNotNested`), and the claudish MCP server its
+ * plugins start registers no session tools. Deleting it here silently re-enables a
+ * claudish MCP session inside a claudish MCP session.
  */
 export function scrubChildEnv(
   env: Record<string, string | undefined>,
@@ -995,7 +1337,7 @@ export function scrubChildEnv(
   if (opts.interactive) {
     for (const key of STRIPPED_CHILD_VARS) delete env[key];
   }
-  for (const key of PANE_MARKER_VARS) delete env[key];
+  for (const key of PANE_LAUNCH_VARS) delete env[key];
 }
 
 /**
@@ -1008,10 +1350,33 @@ export function scrubChildEnv(
  *   `forceLoginMethod: "claudeai"` would block that at startup. In native-Anthropic /
  *   --monitor mode we leave it out so the user's real claude.ai subscription keeps working.
  * - `skipDangerousModePermissionPrompt: true` is added ONLY in an MCP pane child
- *   (`CLAUDISH_PANE_CHILD=1`). The pane runs `--dangerously-skip-permissions`, and its
- *   one-time confirmation dialog defaults to "No, exit": nobody is at a headless pane to
- *   answer it, so every slot would fail at boot. Verified to suppress the dialog at this
- *   tier. Gated on the marker so no other launch changes.
+ *   (`isPaneChild()`: `CLAUDISH_PANE_CHILD=1` AND `CLAUDISH_PANE_CWD`). The pane runs
+ *   `--dangerously-skip-permissions`, and its one-time confirmation dialog defaults to
+ *   "No, exit": nobody is at a headless pane to answer it, so every slot would fail at
+ *   boot. Verified to suppress the dialog at this tier. Gated on `isPaneChild()`, not
+ *   the session flag alone, so no other launch changes.
+ * - `editorMode: "normal"` is added ONLY in an MCP pane child, for the same reason
+ *   and on the same gate. A user `editorMode: "vim"` puts the REPL box in vim
+ *   INSERT mode, where the Enter claudish sends to submit the typed prompt is
+ *   swallowed: the prompt sits in the box and the slot fails `prompt_not_accepted`.
+ *   Interactive use outside a pane keeps the user's editorMode. magmux 0.16.0 forces
+ *   the same value for its panes; once that is the minimum, this key can go.
+ * - `wheelScrollAccelerationEnabled: false` is added ONLY in an MCP pane child, on the
+ *   same gate, and forced like `editorMode`. `scroll_session` / `team(mode:"scroll")`
+ *   forward a row count as that many SGR wheel events in ONE magmux send. With Claude
+ *   Code's default acceleration a burst ramps: 50 wheel events moved 237 rows
+ *   (MTL-369 step 1, Claude Code 2.1.316). With it off, each event moves one row, so
+ *   `by` maps to rows (± 1). Interactive use outside a pane keeps the user's value.
+ * - `tui: "fullscreen"` is added ONLY in an MCP pane child, on the same gate, and forced
+ *   like `editorMode`. `scroll_session` / `team(mode:"scroll")` forward wheel events,
+ *   which only Claude Code's fullscreen view handles. With no `tui` key the view is chosen
+ *   by Claude Code's install and feature gates, so a pane child scrolled only when the
+ *   user's own settings said fullscreen. An environment `CLAUDE_CODE_NO_FLICKER` set false, or
+ *   `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` still outranks the setting (measured order in
+ *   Claude Code 2.1.319). Interactive use outside a pane keeps the user's value.
+ *
+ * Claude Code merges settings sources per key, so every other key of the user's
+ * settings files still applies; this overlay only wins on the keys it sets.
  *
  * (The OS *managed* tier can't be overridden — that case aborts before we get here.)
  */
@@ -1026,6 +1391,9 @@ export function buildClaudishSettingsOverlay(
   }
   if (paneChild) {
     settings.skipDangerousModePermissionPrompt = true;
+    settings.editorMode = "normal";
+    settings.wheelScrollAccelerationEnabled = false;
+    settings.tui = "fullscreen";
   }
   return settings;
 }
@@ -1087,8 +1455,37 @@ export function mergeUserSettingsIfPresent(
       userSettings.skipDangerousModePermissionPrompt = true;
     }
 
-    // Overwrite the temp settings file with the merged result
-    writeFileSync(tempSettingsPath, JSON.stringify(userSettings, null, 2), "utf-8");
+    // In an MCP pane child, keep the REPL box out of vim mode so the submit Enter
+    // reaches it (see buildClaudishSettingsOverlay). Forced over the caller's
+    // --settings: a pane child in vim mode cannot accept a prompt at all.
+    if (paneChild) {
+      userSettings.editorMode = "normal";
+    }
+
+    // In an MCP pane child, one wheel event must move one row, or scroll_session's
+    // row count ramps (see buildClaudishSettingsOverlay). Forced over the caller's
+    // --settings, like editorMode.
+    if (paneChild) {
+      userSettings.wheelScrollAccelerationEnabled = false;
+    }
+
+    // In an MCP pane child, run the fullscreen view, the only one that handles
+    // scroll_session's wheel events (see buildClaudishSettingsOverlay). Forced over
+    // the caller's --settings, like editorMode.
+    if (paneChild) {
+      userSettings.tui = "fullscreen";
+    }
+
+    // Overwrite the temp settings file with the merged result. It can carry the
+    // caller's settings.local.json `env` secrets (mcp-sessions.md, inherited-settings
+    // layer), so keep it 0600. `mode` applies only when a file is created, so chmod
+    // an existing overlay FIRST: the secrets never land in a wider file, and a chmod
+    // failure falls into the warn path below instead of writing them.
+    chmodSync(tempSettingsPath, 0o600);
+    writeFileSync(tempSettingsPath, JSON.stringify(userSettings, null, 2), {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
   } catch {
     // User settings unreadable or invalid JSON — claudish temp file keeps its own statusLine.
     if (!config.quiet) {
@@ -1147,6 +1544,21 @@ export function mergeUserSettingsIfPresent(
 export const MIN_AUTO_COMPACT_WINDOW = 200_000;
 
 /**
+ * Claude Code's ceiling for `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. A larger value is
+ * clamped to it, but Claude Code also prints a warning on EVERY launch:
+ *
+ *   CLAUDE_CODE_AUTO_COMPACT_WINDOW="1050000" is too large, so Claude Code
+ *   treats it as the 1M maximum. ...
+ *
+ * Measured 2026-10-20, Claude Code 2.1.304: `cx@gpt-6.1-sol` (catalog window
+ * 1,050,000) and `muse@muse-spark-1.3` (1,007,997). Sending the ceiling changes
+ * no compaction point, since Claude Code uses it anyway, and drops the warning.
+ * `CLAUDE_CODE_MAX_CONTEXT_TOKENS` printed no warning at the same values, so it
+ * keeps the real window.
+ */
+export const MAX_AUTO_COMPACT_WINDOW = 1_000_000;
+
+/**
  * How long `computeMainThreadContextWindow` will wait on the cloud catalog before
  * giving up and launching with today's behaviour (window unknown → env unset).
  *
@@ -1168,12 +1580,14 @@ async function resolveLocalContextWindow(
 ): Promise<{ modelId: string; window: number | null } | null> {
   const parsed = parseModelSpec(spec);
   let provider = parsed.provider;
+  let wireId = parsed.model;
   if (!parsed.isExplicitProvider) {
     // Bare name: resolve the backend the proxy will actually pick — the same
     // (memoized, process-shared) routing the proxy runs on the first request.
     const plan = await route(spec);
     if (plan.kind !== "ok") return null;
     provider = plan.primary.provider;
+    wireId = parseModelSpec(plan.primary.modelSpec).model;
   }
   // Live discovery wins over the catalog: for subscription endpoints the
   // real window depends on the caller's tier (Kimi's k3 is 1M only on
@@ -1181,8 +1595,9 @@ async function resolveLocalContextWindow(
   // Providers without a modelDiscovery descriptor short-circuit to
   // undefined without a network call, so this stays free for everyone else.
   const win =
-    (await discoverContextWindow(provider, parsed.model)) ??
-    lookupModelForProvider(parsed.model, provider, cachePath);
+    (await discoverContextWindow(provider, wireId)) ??
+    lookupModelForProvider(parsed.model, provider, cachePath) ??
+    (wireId !== parsed.model ? lookupModelForProvider(wireId, provider, cachePath) : null);
   return {
     modelId: parsed.model,
     window: typeof win === "number" && win > 0 ? win : null,
@@ -1272,7 +1687,9 @@ export function resolveContextWindowEnv(
   if (processEnv[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]) return { vars };
 
   if (realWindow >= MIN_AUTO_COMPACT_WINDOW) {
-    vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(realWindow);
+    vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(
+      Math.min(realWindow, MAX_AUTO_COMPACT_WINDOW)
+    );
     return {
       vars,
       notice:
@@ -1864,11 +2281,11 @@ export async function runClaudeWithProxy(
       // is dead weight. Forwarding one is actively harmful: Claude Code then
       // reports "API Usage Billing", and pairing it with the placeholder token
       // trips "Both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set · auth may
-      // not work as expected". So overwrite unconditionally with placeholders —
+      // not work as expected". So overwrite any real key with placeholders —
       // their only job is suppressing the login dialog (#13: a placeholder API
-      // key alone still redirected to the payment page, hence the token too).
-      env.ANTHROPIC_API_KEY = CLAUDISH_PLACEHOLDER_API_KEY;
-      env.ANTHROPIC_AUTH_TOKEN = CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
+      // key alone still redirected to the payment page, hence the token). A pane
+      // child gets the token only; see applyProxyPlaceholderAuth.
+      applyProxyPlaceholderAuth(env);
 
       // Drive Claude Code's NATIVE auto-compaction to fire before a backend whose
       // real context window is smaller than the model's advertised spec rejects
@@ -1887,7 +2304,7 @@ export async function runClaudeWithProxy(
       // above go on the CHILD's env, while the proxy runs here in the parent and
       // only knows the model's spec window. No-op unless telemetry is opted in.
       try {
-        const { setSessionContextWindow } = await import("./behavior/telemetry/aggregate.js");
+        const { setSessionContextWindow } = await import("./hooks/telemetry/aggregate.js");
         setSessionContextWindow(realWindow);
       } catch {
         // Telemetry must never affect launching Claude Code.
@@ -2045,8 +2462,40 @@ export async function runClaudeWithProxy(
   // `paneCapability` was resolved before the environment was finalised, and is
   // re-used rather than re-derived: the watchdog above is exported on exactly
   // the launches that reach `planMagmuxWrap` or the ambient branch below.
+  //
+  // SESSION HOOKS are the wrap's SECOND reason (hook-system §7.5). A loaded hook that
+  // declares `responseEnd` or a session event needs the `InteractiveDriver`, which
+  // needs a pane, so `--no-recovery` no longer removes the surface such a hook needs.
+  // That reason plans the wrap and starts the driver and NOTHING else: the recovery UI
+  // and the retry watchdog (exported above by `applyRetryWatchdog`, which asks
+  // `recoverySurfaceAllowed()` itself) stay gated on the recovery switches alone. The
+  // hook engine is the proxy's, already loaded by `createProxyServer`; null when the
+  // proxy runs no hooks (monitor mode).
+  const hookEngine = getHookEngine();
+  const surfaces = planInteractiveSurfaces({
+    capability: paneCapability,
+    recoveryAllowed: recoverySurfaceAllowed(),
+    sessionHooksNeedDriver: hookEngine !== null && sessionHooksNeedBinding(hookEngine),
+  });
+  const sessionFlags = sessionFlagsOf(config.claudeArgs);
+  let driverLaunch: { sink: InProcessSink; turnDir: string; sessionId: string | null } | null =
+    null;
+  if (surfaces.driver) {
+    // The transcript path must be known from boot, so claudish mints the session id
+    // unless the user named one or asked Claude Code to resume. Long injections go to a
+    // turn file the model Reads from the `--add-dir` directory (no prompt there: S2b).
+    const minted = sessionFlags.sessionId || sessionFlags.resumes ? null : randomUUID();
+    const turnDir = mkdtempSync(join(tmpdir(), "claudish-turns-"));
+    chmodSync(turnDir, 0o700);
+    claudeArgs.unshift(...driverLeadingArgs({ mintedSessionId: minted, turnDir }));
+    const sink = new InProcessSink();
+    // Installed before Claude Code starts, so its first request already reports here.
+    setProcessSink(sink);
+    driverLaunch = { sink, turnDir, sessionId: minted ?? sessionFlags.sessionId };
+  }
+
   const wrap =
-    recoverySurfaceAllowed() && paneCapability.kind === "wrap"
+    surfaces.wrap && paneCapability.kind === "wrap"
       ? planMagmuxWrap({
           claudeBinary,
           claudeArgs,
@@ -2068,6 +2517,8 @@ export async function runClaudeWithProxy(
 
   if (wrap) {
     wrap.watch(proc);
+  }
+  if (wrap && surfaces.recoveryUi === "wrap") {
     // Hand the control socket to the proxy as an EXPLICIT input. It cannot be
     // discovered: claudish is magmux's parent and `MAGMUX_SOCK` is exported
     // downward only, so the `--id` path — fixed before magmux starts — is the
@@ -2080,7 +2531,7 @@ export async function runClaudeWithProxy(
       // after the user had already quit.
       void shutdownRecoveryUi();
     });
-  } else if (recoverySurfaceAllowed() && paneCapability.kind === "ambient") {
+  } else if (surfaces.recoveryUi === "ambient") {
     // Already inside someone else's magmux — `team --grid --mode interactive`,
     // or a user who launched claudish in a pane by hand. There is nothing to
     // wrap, but there IS a multiplexer to ask for a pane, so the recovery UI
@@ -2095,6 +2546,56 @@ export async function runClaudeWithProxy(
     // `config.interactive && process.env.MAGMUX_SOCK` — two statements of one
     // rule, which `network-recovery.md` forbids because they drift.
     installRecoveryUi(null);
+  }
+
+  // The session-hook host of this launch: the driver on a pane, or the lifecycle-only
+  // session when there is no pane (`sessionStart` now, `sessionEnd` at exit).
+  let driver: InteractiveDriver | null = null;
+  let noSurfaceSession: NoSurfaceSession | null = null;
+  const sessionModel = modelDisplayName;
+  if (driverLaunch && hookEngine && surfaces.driver) {
+    const sockPath =
+      surfaces.driver === "wrap" && wrap
+        ? wrap.controlSocket
+        : paneCapability.kind === "ambient"
+          ? paneCapability.sock
+          : null;
+    if (sockPath) {
+      const d = new InteractiveDriver({
+        mode: surfaces.driver,
+        sockPath,
+        // A wrap has exactly one `-e` pane, so Claude Code is pane 0; an ambient
+        // pane is found by ancestry.
+        ...(surfaces.driver === "wrap" ? { pane: 0 } : {}),
+        cwd: process.cwd(),
+        sessionId: driverLaunch.sessionId,
+        projectsRoot: projectsDir(env),
+        turnDir: driverLaunch.turnDir,
+        readAvailable: !flagsRemoveRead(config.claudeArgs),
+        model: sessionModel,
+        sink: driverLaunch.sink,
+        engine: hookEngine,
+        overlayHeld: recoveryOverlayHeld,
+      });
+      driver = d;
+      void d.start();
+      wrap?.onClaudeExit((code) => {
+        void d.stop(sessionOutcomeOf(code));
+      });
+    } else {
+      // No socket to drive after all: nothing would ever drain the sink.
+      driverLaunch.sink.markUnavailable();
+    }
+  } else if (surfaces.noSurfaceSession && hookEngine) {
+    noSurfaceSession = startNoSurfaceSession(hookEngine, {
+      kind: "interactive",
+      role: null,
+      id: sessionFlags.sessionId ?? "",
+      claudeSessionId: sessionFlags.sessionId,
+      model: sessionModel,
+      cwd: process.cwd(),
+      shape: config.interactive ? "interactive" : "one-shot",
+    });
   }
 
   if (filterChildStderr && proc.stderr) {
@@ -2167,6 +2668,19 @@ export async function runClaudeWithProxy(
   });
   wrap?.cleanup();
 
+  // `sessionEnd`, awaited at most 1.5 s before the caller shuts the proxy down (§4.4).
+  // The driver's stop is idempotent: in a wrap it began at the pane's exit announcement.
+  if (driver) await driver.stop(sessionOutcomeOf(exitCode));
+  if (noSurfaceSession) await noSurfaceSession.end(sessionOutcomeOf(exitCode));
+  if (driverLaunch) {
+    setProcessSink(null);
+    try {
+      rmSync(driverLaunch.turnDir, { recursive: true, force: true });
+    } catch {
+      // a leftover 0700 temp dir of turn files is harmless
+    }
+  }
+
   // The only durable record of WHY the run ended. The always-on session log
   // carries proxy traffic, so a session that died before its first request left
   // nothing but "[Proxy] Server started" behind, and the caller's error notice
@@ -2193,6 +2707,17 @@ export async function runClaudeWithProxy(
   }
 
   return exitCode;
+}
+
+/** `sessionEnd`'s outcome for the interactive launcher: Claude Code's exit. */
+function sessionOutcomeOf(exitCode: number | null): {
+  state: string;
+  reason: string | null;
+  exitCode: number | null;
+} {
+  return exitCode === 0
+    ? { state: "COMPLETED", reason: null, exitCode }
+    : { state: "FAILED", reason: "child_exited", exitCode };
 }
 
 /**
@@ -2252,10 +2777,10 @@ function setupSignalHandlers(
       // `128 + signum`, the shell convention for "died from signal N" — NOT 0.
       //
       // This one line manufactured the 900-second silent success. A supervisor
-      // (the channel session manager's timeout, `team`'s deadline, a CI runner)
+      // (the MCP session manager's timeout, `team`'s deadline, a CI runner)
       // would SIGTERM the process group, this handler would run its cleanup and
       // exit 0, and every layer above read that 0 as "the run succeeded". The
-      // channel manager then let the exit UPGRADE a state its timeout handler
+      // session manager then let the exit UPGRADE a state its timeout handler
       // had already recorded as failed, and wrote `status: "completed"` to
       // meta.json for a session that had been killed. A graceful shutdown is
       // still a shutdown: the process did not finish its work, and its exit
@@ -2271,13 +2796,15 @@ function setupSignalHandlers(
  * 2. Local installation (~/.claude/local/claude)
  * 3. Global PATH
  */
-async function findClaudeBinary(): Promise<string | null> {
+export async function findClaudeBinary(
+  env: Record<string, string | undefined> = process.env
+): Promise<string | null> {
   const isWindows = process.platform === "win32";
 
   // 1. Check CLAUDE_PATH env var
-  if (process.env.CLAUDE_PATH) {
-    if (existsSync(process.env.CLAUDE_PATH)) {
-      return process.env.CLAUDE_PATH;
+  if (env.CLAUDE_PATH) {
+    if (existsSync(env.CLAUDE_PATH)) {
+      return env.CLAUDE_PATH;
     }
   }
 

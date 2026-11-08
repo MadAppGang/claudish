@@ -3,27 +3,42 @@ import { join } from "node:path";
 import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { isEffortLevel } from "./adapters/base-api-format.js";
-import { LocalModelAdapter } from "./adapters/local-adapter.js";
-import { OpenRouterAPIFormat } from "./adapters/openrouter-api-format.js";
 import { credentials } from "./auth/credentials/authority.js";
-import { loadHookRules } from "./behavior/hooks.js";
-import { parseBehaviorConfig, registerHookRules } from "./behavior/index.js";
 import {
   isAutoModeClassifierRequest,
   rewriteClassifierForNative,
 } from "./classifier-passthrough.js";
+import { type CodeModeSetting, parseCodeModeSetting } from "./code-mode/policy.js";
 import {
   type AdvisorPresenceMonitor,
   createAdvisorPresenceMonitor,
   withAdvisorSwap,
 } from "./handlers/advisor-decorator.js";
-import { ComposedHandler, type ComposedHandlerOptions } from "./handlers/composed-handler.js";
+import {
+  type AdvisorRuntime,
+  createAdvisorPanelGateway,
+} from "./handlers/advisor-panel-gateway.js";
+import { shutdownAdvisorChains } from "./handlers/advisor-route-plan.js";
+import type { ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
+import { createHandlerSet } from "./handlers/handler-set.js";
 import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
+import {
+  SIGNING_SECRETS_KEY,
+  addSigningSecrets,
+  createSigningSecrets,
+  credentialValuesFromRequest,
+  releaseWhenBodyEnds,
+} from "./handlers/shared/call-context.js";
+import { UNHANDLED_ERROR_HEADER } from "./handlers/shared/hop-decision.js";
 import type { ModelHandler } from "./handlers/types.js";
+import type { HookEngine } from "./hooks/engine.js";
+import { loadHooksOnce } from "./hooks/index.js";
+import type { HostMode } from "./hooks/public.js";
+import { withHooks } from "./hooks/response-seam.js";
 import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
@@ -34,8 +49,6 @@ import {
   resolveTargetForCatalog,
   warmCatalog,
 } from "./providers/catalog-client.js";
-import { type ResolvedConnection, resolveConnection } from "./providers/connection-resolver.js";
-import { declaredConnection, declaredWire } from "./providers/declared-wire.js";
 import { getEndpointUnavailableReason } from "./providers/endpoint-diagnostics.js";
 import {
   ensureEndpointsRegistered,
@@ -43,15 +56,7 @@ import {
 } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { proxyRouteDecision } from "./providers/native-route.js";
-import { describeMissingCredential } from "./providers/provider-definitions.js";
-import { createHandlerForProvider } from "./providers/provider-profiles.js";
-import {
-  createUrlProvider,
-  parseUrlModel,
-  resolveProvider,
-} from "./providers/provider-registry.js";
-import { resolveModelProvider } from "./providers/provider-resolver.js";
-import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
+import { describeMissingCredential, getProviderByName } from "./providers/provider-definitions.js";
 import {
   describeRoutingRuleProblem,
   effectiveDefaultProvider,
@@ -60,10 +65,13 @@ import {
   route,
   routingRuleProblems,
 } from "./providers/routing-rules.js";
-import { LocalTransport } from "./providers/transport/local.js";
-import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
-import { PoeProvider } from "./providers/transport/poe.js";
+import { discoverProviderProbeModel } from "./providers/transport/provider-model-discovery.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
+import {
+  describeUnknownShortcut,
+  isKnownProviderName,
+  typedShortcutOf,
+} from "./providers/unknown-shortcut.js";
 import { RefusingHandler } from "./providers/wire-handler.js";
 import {
   WireMarkerError,
@@ -72,7 +80,9 @@ import {
   splitWireMarkers,
 } from "./providers/wire-markers.js";
 import { closeAllEpisodes } from "./recovery/coordinator.js";
+import { redactExactValues, redactForClient } from "./redact.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
+import { resolveUpstreamUrl } from "./test-upstream.js";
 import type { ProxyServer } from "./types.js";
 
 /**
@@ -129,7 +139,7 @@ export interface ProxyServerOptions {
   servedSlotIds?: string[];
   /**
    * An ordered, already-credential-filtered candidate list pinned by a PARENT
-   * claudish process (`team` / channel `create_session`), parsed from a `--model`
+   * claudish process (`team` / `create_session`), parsed from a `--model`
    * chain value. Element 0 is also the `model` argument, so a chain is opt-in and
    * additive: absent it, routing behaves exactly as before.
    *
@@ -162,6 +172,30 @@ export interface ProxyServerOptions {
    * no filesystem work at all.
    */
   proOnUltracode?: boolean;
+  /**
+   * `--code-mode`: code mode for `openai-codex` (`auto` | `on` | `off`).
+   * Absent ⇒ `DEFAULT_CODE_MODE_SETTING` (`auto`).
+   */
+  codeMode?: CodeModeSetting;
+  /**
+   * Every `--advisor` member's startup plan and every routed member's chain,
+   * built before the port was bound (advisor-route-plan.ts). Present ⇒ the
+   * proxy exposes `advisorPanel` and owns the chains: `shutdown` shuts them
+   * down. Absent ⇒ no gateway; nothing is planned lazily.
+   */
+  advisorRuntime?: AdvisorRuntime;
+  /**
+   * Run hooks on this proxy's `/v1/messages` traffic. Default true. `--probe`
+   * passes false: hooks never see probe traffic. Monitor mode and the
+   * classifier passthrough never run hooks whatever this says.
+   */
+  hooks?: boolean;
+  /**
+   * Which host this process is, for hook loading and `ctx.host.mode`: the
+   * interactive launcher, a pane child, `serve`, the MCP server, or other.
+   * Default `"other"`. The first proxy of a process decides it.
+   */
+  hostMode?: HostMode;
 }
 
 /**
@@ -266,17 +300,26 @@ export async function createProxyServer(
     );
   }
 
-  // Load behavior-layer hook rules before any handler is constructed: the
-  // engine is memoized on first use, and registering rules after that point
-  // would leave already-built handlers on a stale rule set.
-  try {
-    const hookRules = await loadHookRules(parseBehaviorConfig(loadConfig().behavior).hooks);
-    if (hookRules.length > 0) registerHookRules(hookRules);
-  } catch (err) {
-    // Same posture as customEndpoints: a broken optional extension warns and is
-    // skipped, it never blocks startup.
-    log(`[Proxy] behavior hooks load skipped: ${err instanceof Error ? err.message : String(err)}`);
+  // Load the hook engine before any handler is built and before the first
+  // request, so no request sees a half-loaded registry. Memoised per process.
+  // Monitor mode forwards everything to Anthropic untouched, so it runs no hooks.
+  let hookEngine: HookEngine | null = null;
+  if (options.hooks !== false && !monitorMode) {
+    try {
+      hookEngine = await loadHooksOnce({ hostMode: options.hostMode ?? "other" });
+    } catch (err) {
+      // loadHooksOnce never rejects; same posture as customEndpoints if it did:
+      // a broken optional extension is skipped, it never blocks startup.
+      log(`[Proxy] hooks load skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
+  /**
+   * `withHooks` goes on the RESOLVED handler, inside the advisor — never inside
+   * `getHandlerForRequest` and never on a FallbackHandler candidate, for the same
+   * `instanceof` reasons as the advisor below. Not on the classifier passthrough.
+   */
+  const withRequestHooks = (handler: ModelHandler): ModelHandler =>
+    hookEngine ? withHooks(handler, hookEngine) : handler;
 
   // Define handlers for different roles
   const nativeHandler = new NativeHandler(
@@ -298,12 +341,22 @@ export async function createProxyServer(
    * launch without the advisor never reaches the wrapper.
    */
   const advisorPresence = createAdvisorPresenceMonitor();
+  // The advisor panel gateway: an in-process Hono app that is never served,
+  // over the chains startup built from the advisor plans. It shares nothing
+  // with `app` below — no lease middleware (the gateway owns one lease per
+  // call), no `resolveHandlerForRequest` (no monitor branch, slot map or
+  // `--model` remap), no advisor wrapper.
+  const advisorRuntime = options.advisorRuntime;
+  const advisorPanel = advisorRuntime ? createAdvisorPanelGateway(advisorRuntime) : undefined;
   const withAdvisor = (handler: ModelHandler, presence?: AdvisorPresenceMonitor): ModelHandler =>
     withAdvisorSwap(
       handler,
       loadAdvisorSwapConfig(options.advisorModels, options.advisorCollector),
       {
         presence,
+        ...(advisorPanel ? { panel: advisorPanel } : {}),
+        // Without a runtime no launch decision exists, so no bearer may sign.
+        ...(advisorRuntime ? { claude: { childAuth: advisorRuntime.childAuth } } : {}),
       }
     );
   /**
@@ -314,7 +367,7 @@ export async function createProxyServer(
    */
   const requestShapingOpts: Pick<
     ComposedHandlerOptions,
-    "effortOverride" | "modelParams" | "proOnUltracode"
+    "effortOverride" | "modelParams" | "proOnUltracode" | "codeMode"
   > = {
     // Narrowed HERE, not at the CLI: createProxyServer is also entered from
     // `serve` and `team`, so the boundary must validate whoever calls it.
@@ -323,324 +376,35 @@ export async function createProxyServer(
     effortOverride: isEffortLevel(options.effortOverride) ? options.effortOverride : undefined,
     modelParams: options.modelParams,
     proOnUltracode: options.proOnUltracode,
+    // Narrowed here for the same reason as effortOverride: `serve` and `team`
+    // enter too. Anything but auto/on/off is dropped, which reads as off.
+    codeMode: parseCodeModeSetting(options.codeMode),
   };
 
-  const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
-  const localProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Local Provider Handler
-  const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler
-  const poeHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Poe Handler
-
-  // The catalog connection behind a gateway handler built here rather than by
-  // a profile (OpenRouter, the legacy `poe:` prefix). Both speak Chat
-  // Completions only, so a known wire on another API — or an unsupported one —
-  // is refused rather than sent a chat body; an unknown wire keeps the
-  // gateway's own handler.
-  const chatWireConnection = (
-    provider: string,
-    modelId: string
-  ): { connection?: ResolvedConnection; refusal?: string } => {
-    const resolution = resolveConnection(provider, modelId);
-    if (!resolution.ok) return {};
-    const { connection } = resolution;
-    const where = `${connection.route.routeId}/${connection.route.routeProfileId} · ${connection.externalModelId}`;
-    if (connection.wire.status === "unsupported") {
-      return {
-        refusal: `${where} speaks ${connection.wire.protocol}, which claudish does not implement`,
-      };
-    }
-    if (connection.wire.status !== "known") return {};
-    if (connection.wire.api !== "chat-completions") {
-      return {
-        refusal: `${where} is published on ${connection.wire.api}, which this gateway handler does not speak`,
-      };
-    }
-    return { connection };
-  };
-
-  // Helper to get or create OpenRouter handler for a target model
-  const getOpenRouterHandler = (
-    targetModel: string,
-    invocationMode?: ComposedHandlerOptions["invocationMode"]
-  ): ModelHandler => {
-    // For explicit @ syntax: strip provider prefix (openrouter@google/gemini → google/gemini)
-    // For already-resolved vendor/model IDs (qwen/qwen3.5-plus-02-15): use as-is to preserve
-    // the vendor prefix that OpenRouter requires. parseModelSpec() would otherwise strip it
-    // (e.g. "qwen/" is a native pattern match → model becomes "qwen3.5-plus-02-15").
-    const parsed = parseModelSpec(targetModel);
-    const modelId = targetModel.includes("@") ? parsed.model : targetModel;
-
-    if (!openRouterHandlers.has(modelId)) {
-      const wired = chatWireConnection("openrouter", modelId);
-      if (wired.refusal) {
-        openRouterHandlers.set(modelId, new RefusingHandler(wired.refusal));
-        return openRouterHandlers.get(modelId)!;
-      }
-      // The OpenRouter key is resolved through the credential authority inside
-      // the transport's getHeaders() (single source of truth) — the legacy
-      // openrouterApiKey param is no longer the signing source.
-      const orProvider = new OpenRouterProviderTransport("", modelId);
-      // A model the catalog does not publish on OpenRouter still gets a wire:
-      // the documented default (chat, max_tokens, no reasoning field), never
-      // the name-picked dialect.
-      const connection =
-        wired.connection ??
-        declaredConnection(
-          "openrouter",
-          modelId,
-          "https://openrouter.ai/api/v1",
-          declaredWire("chat-completions", undefined)
-        );
-      const orAdapter = new OpenRouterAPIFormat(modelId, { vendor: connection.vendor ?? "" });
-      openRouterHandlers.set(
-        modelId,
-        new ComposedHandler(orProvider, modelId, modelId, port, {
-          adapter: orAdapter,
-          isInteractive: options.isInteractive,
-          invocationMode,
-          ...requestShapingOpts,
-          connection,
-        })
-      );
-    }
-    return openRouterHandlers.get(modelId)!;
-  };
-
-  // Helper to get or create Poe handler for a target model
-  const getPoeHandler = async (
-    targetModel: string,
-    invocationMode?: ComposedHandlerOptions["invocationMode"]
-  ): Promise<ModelHandler | null> => {
-    // Gate on the authority (env → config → op://), not a raw env read.
-    if (!(await credentials.isAvailable("poe"))) {
-      log(`[Proxy] Poe credentials not available, cannot use Poe model: ${targetModel}`);
-      return null;
-    }
-    // Strip "poe:" prefix to get the actual model name for the API
-    const modelId = targetModel.replace(/^poe:/, "");
-    if (!poeHandlers.has(modelId)) {
-      const wired = chatWireConnection("poe", modelId);
-      if (wired.refusal) {
-        poeHandlers.set(modelId, new RefusingHandler(wired.refusal));
-        return poeHandlers.get(modelId)!;
-      }
-      const connection =
-        wired.connection ??
-        declaredConnection(
-          "poe",
-          modelId,
-          "https://api.poe.com/v1",
-          declaredWire("chat-completions", undefined)
-        );
-      // The transport resolves its key through the authority in getHeaders().
-      const poeTransport = new PoeProvider();
-      poeHandlers.set(
-        modelId,
-        new ComposedHandler(poeTransport, modelId, modelId, port, {
-          isInteractive: options.isInteractive,
-          invocationMode,
-          ...requestShapingOpts,
-          connection,
-        })
-      );
-    }
-    return poeHandlers.get(modelId)!;
-  };
+  // The four handler getters and their caches, built by one factory so the
+  // advisor can own a second, isolated set (`requestRole: "advisor"`) without
+  // sharing a cached handler, its token tracker or a FallbackHandler's
+  // routing position with the main session. This set is the session's own:
+  // exactly the options these getters captured before the move.
+  const sessionHandlers = createHandlerSet({
+    port,
+    isInteractive: options.isInteractive,
+    quiet: options.quiet,
+    summarizeTools: options.summarizeTools,
+    requestShapingOpts,
+  });
+  const {
+    localProviderHandlers,
+    remoteProviderHandlers,
+    openRouter: getOpenRouterHandler,
+    poe: getPoeHandler,
+    local: getLocalProviderHandler,
+    remote: getRemoteProviderHandler,
+  } = sessionHandlers;
 
   // Check if model is a Poe model (has poe: prefix)
   const isPoeModel = (model: string): boolean => {
     return model.startsWith("poe:");
-  };
-
-  // Helper to get or create Local Provider handler for a target model
-  const getLocalProviderHandler = (
-    targetModel: string,
-    invocationMode?: ComposedHandlerOptions["invocationMode"]
-  ): ModelHandler | null => {
-    if (localProviderHandlers.has(targetModel)) {
-      return localProviderHandlers.get(targetModel)!;
-    }
-
-    // Check for prefix-based local provider (ollama/, lmstudio/, etc.)
-    const resolved = resolveProvider(targetModel);
-    if (resolved) {
-      const provider = new LocalTransport(resolved.provider, resolved.modelName, {
-        concurrency: resolved.concurrency,
-      });
-      const adapter = new LocalModelAdapter(resolved.modelName, resolved.provider.name);
-      const handler = new ComposedHandler(provider, resolved.modelName, resolved.modelName, port, {
-        adapter,
-        tokenStrategy: "local",
-        summarizeTools: options.summarizeTools,
-        isInteractive: options.isInteractive,
-        invocationMode,
-        ...requestShapingOpts,
-      });
-      localProviderHandlers.set(targetModel, handler);
-      log(
-        `[Proxy] Created local provider handler: ${resolved.provider.name}/${resolved.modelName}${resolved.concurrency !== undefined ? ` (concurrency: ${resolved.concurrency})` : ""}`
-      );
-      return handler;
-    }
-
-    // Check for URL-based model (http://localhost:11434/llama3)
-    const urlParsed = parseUrlModel(targetModel);
-    if (urlParsed) {
-      const providerConfig = createUrlProvider(urlParsed);
-      const provider = new LocalTransport(providerConfig, urlParsed.modelName);
-      const adapter = new LocalModelAdapter(urlParsed.modelName, providerConfig.name);
-      const handler = new ComposedHandler(
-        provider,
-        urlParsed.modelName,
-        urlParsed.modelName,
-        port,
-        {
-          adapter,
-          tokenStrategy: "local",
-          summarizeTools: options.summarizeTools,
-          isInteractive: options.isInteractive,
-          invocationMode,
-          ...requestShapingOpts,
-        }
-      );
-      localProviderHandlers.set(targetModel, handler);
-      log(
-        `[Proxy] Created URL-based local provider handler: ${urlParsed.baseUrl}/${urlParsed.modelName}`
-      );
-      return handler;
-    }
-
-    return null;
-  };
-
-  // Helper to get or create remote provider handler (Gemini, OpenAI)
-  // TODO: Consolidate src/ and packages/core/src/ - they're manually synced duplicates
-  const getRemoteProviderHandler = async (
-    targetModel: string,
-    invocationMode?: ComposedHandlerOptions["invocationMode"]
-  ): Promise<ModelHandler | null> => {
-    if (remoteProviderHandlers.has(targetModel)) {
-      return remoteProviderHandlers.get(targetModel)!;
-    }
-
-    // Use centralized resolver with fallback logic
-    const resolution = resolveModelProvider(targetModel);
-
-    if (resolution.wasAutoRouted && resolution.autoRouteMessage) {
-      // logStderr, NOT console.error: this fires PER REQUEST, i.e. while Claude
-      // Code owns the inherited TTY. A raw console write here lands mid-frame.
-      if (!options.quiet) {
-        logStderr(`[Auto-route] ${resolution.autoRouteMessage}`);
-      } else {
-        log(`[Auto-route] ${resolution.autoRouteMessage}`);
-      }
-    }
-
-    // If resolver says use OpenRouter (including fallback cases), create the handler
-    // directly here so we can use the correctly-formatted fullModelId (e.g. "google/gemini-2.0-flash")
-    // rather than the raw targetModel string.
-    if (resolution.category === "openrouter") {
-      if (resolution.wasAutoRouted && resolution.fullModelId) {
-        return getOpenRouterHandler(resolution.fullModelId);
-      }
-      return null;
-    }
-
-    // When auto-routed (e.g. to LiteLLM), use the resolved fullModelId so that
-    // resolveRemoteProvider() receives "litellm@gemini-2.0-flash" instead of the
-    // original bare model name which would match the wrong (native) provider.
-    const resolveTarget =
-      resolution.wasAutoRouted && resolution.fullModelId ? resolution.fullModelId : targetModel;
-
-    // If resolver says use direct-api, resolve credentials via the authority.
-    if (resolution.category === "direct-api") {
-      const resolved = resolveRemoteProvider(resolveTarget);
-      if (!resolved) {
-        // A KNOWN provider name that resolves to nothing has no endpoint: it
-        // declares no static baseUrl, no set `baseUrlEnvVars`, and not
-        // `buildsOwnEndpoint`. Say that here, because everything downstream of
-        // this null (OpenRouter fallback, or a 400 on an explicit spec) reads as
-        // "my key is missing" — which is how `vertex@` sent users looking for a
-        // key that was never involved.
-        log(
-          `[Proxy] No remote provider resolved for "${resolveTarget}" — no endpoint is configured for it (not a credential problem)`
-        );
-        return null;
-      }
-
-      // Skip 'openrouter' provider here - it uses the existing OpenRouterHandler
-      if (resolved.provider.name === "openrouter") {
-        return null; // Will fall through to OpenRouterHandler
-      }
-
-      // Resolve the API key ON DEMAND via the credential authority — the SINGLE
-      // source of truth. This pulls env → aliases → config → 1Password (lazy SDK)
-      // and writes a resolved op:// key through to process.env. Providers that
-      // need no auth (e.g. zen/ free) have no apiKeyEnvVar → empty key.
-      let apiKey = "";
-      // `authScheme: "none"` declares that this provider takes NO credential, so
-      // the whole resolution block is skipped — including the anti-poison
-      // `if (!apiKey) return null` at its end, which cannot otherwise tell
-      // "a key was required and did not resolve" from "no key was ever wanted".
-      //
-      // Checked on apiKeyEnvVar's own condition rather than inside, because a
-      // custom endpoint ALWAYS carries a synthesized `CUSTOM_<NAME>_KEY` — the
-      // variable exists whether or not the endpoint authenticates, so its
-      // presence cannot be the test. This was the last of four gates a keyless
-      // endpoint hit: schema, definition, credential authority, and here.
-      const needsNoAuth = resolved.provider.authScheme === "none";
-      if (resolved.provider.apiKeyEnvVar && !needsNoAuth) {
-        // HARDENING: getRequestAuth THROWS for a name the authority never
-        // registered (e.g. a runtime-renamed provider missing an alias), which
-        // would surface as an HTTP 500. Degrade to the same "no credential"
-        // path a missing key takes (null → explicit-spec routing reject → 400,
-        // or bare-name fallback) — but warn on stderr so the registration gap
-        // stays loud instead of silently masquerading as a missing key.
-        if (!credentials.get(resolved.provider.name)) {
-          logStderr(
-            `[Proxy] No credential provider registered for "${resolved.provider.name}" — treating as missing credential (authority registration gap)`
-          );
-          log(
-            `[Proxy] Credential authority has no provider registered under "${resolved.provider.name}"`
-          );
-          return null;
-        }
-        const auth = await credentials.getRequestAuth(resolved.provider.name, {
-          model: resolved.modelName,
-        });
-        // Extract the bearer / x-api-key value back into the construction-time
-        // key string createHandlerForProvider expects.
-        apiKey =
-          auth.headers.Authorization?.replace(/^Bearer\s+/i, "") || auth.headers["x-api-key"] || "";
-        // ANTI-POISON: a provider that requires a key but resolved empty must NOT
-        // be cached — return null (falls through to OpenRouter) so a key added
-        // later (TUI hydrate-on-add, op:// resolve) is picked up on the next try.
-        if (!apiKey) return null;
-      }
-
-      const handler = await createHandlerForProvider({
-        provider: resolved.provider,
-        modelName: resolved.modelName,
-        apiKey,
-        targetModel,
-        port,
-        sharedOpts: { isInteractive: options.isInteractive, invocationMode, ...requestShapingOpts },
-      });
-      if (!handler) {
-        return null; // Profile returned null (missing config) or unknown provider
-      }
-
-      // Cache under both the original targetModel and the resolveTarget (if different)
-      // so subsequent lookups with either key are served from cache.
-      remoteProviderHandlers.set(resolveTarget, handler);
-      if (resolveTarget !== targetModel) {
-        remoteProviderHandlers.set(targetModel, handler);
-      }
-      return handler;
-    }
-
-    // If we get here, either category is not direct-api or key is not available
-    // Both cases should fall through to OpenRouter or return null
-    return null;
   };
 
   // Direct-provider catalog warmup (LiteLLM, Zen, Zen Go) was removed in
@@ -782,7 +546,7 @@ export async function createProxyServer(
 
     // 2a-chain. A PINNED CHAIN from a parent process.
     //
-    // `team` / channel `create_session` resolve the route in the parent and spawn
+    // `team` / `create_session` resolve the route in the parent and spawn
     // the child with explicit specs, because a bare name would make the child
     // re-resolve credentials and open its own 1Password client — one dialog per
     // child instead of one per run (auth/credentials/prehydrate.ts). The cost used
@@ -831,7 +595,11 @@ export async function createProxyServer(
         // differs (a provider it cannot construct), and the remaining candidates
         // are still strictly better than failing the request.
         if (handler) {
-          candidates.push({ name: DISPLAY_NAMES[parsed.provider] ?? parsed.provider, handler });
+          candidates.push({
+            name: DISPLAY_NAMES[parsed.provider] ?? parsed.provider,
+            provider: parsed.provider,
+            handler,
+          });
         }
       }
 
@@ -935,7 +703,11 @@ export async function createProxyServer(
               handler = await getRemoteProviderHandler(candidate.modelSpec, invocationMode);
             }
             if (handler) {
-              candidates.push({ name: candidate.displayName, handler });
+              candidates.push({
+                name: candidate.displayName,
+                provider: candidate.provider,
+                handler,
+              });
             }
           }
 
@@ -1013,6 +785,19 @@ export async function createProxyServer(
       const parsedExplicit = parseModelSpec(target);
       // openrouter@... legitimately uses the OpenRouter handler below.
       if (parsedExplicit.provider !== "openrouter") {
+        // A shortcut that names no provider is not a missing credential (D9):
+        // say it is unknown, in the same words routing, preflight and --probe use.
+        if (!isKnownProviderName(parsedExplicit.provider)) {
+          const { reason, hint } = describeUnknownShortcut(
+            typedShortcutOf(parsedExplicit.original),
+            parsedExplicit.model,
+            undefined,
+            parsedExplicit.original
+          );
+          throw new RoutingError(
+            `Explicit model "${target}" could not be routed — ${reason} ${hint}`
+          );
+        }
         // "No handler" has exactly one default explanation here, and for an
         // endpoint provider it is sometimes the wrong one — a malformed
         // base-URL override or a name collision produces no handler too, and
@@ -1044,6 +829,40 @@ export async function createProxyServer(
   const app = new Hono();
   app.use("*", cors());
 
+  // Signing-credential redaction (`redact.ts`): every request gets a lease, and
+  // every credential value a handler signs with for it is registered there
+  // (`ComposedHandler`'s `fetchHeaders`). The lease belongs to the INBOUND
+  // request, never to one hop, because `FallbackHandler` logs its combined
+  // error after every hop has returned, and it is released only once the
+  // response body is fully delivered, cancelled or has errored: a streamed body
+  // is still parsed and logged long after the handler returned.
+  app.use("*", async (c, next) => {
+    const secrets = createSigningSecrets();
+    c.set(SIGNING_SECRETS_KEY, secrets);
+    const release = () => secrets.lease.release();
+    try {
+      await next();
+    } catch (err) {
+      // Hono's compose calls `onError` at the layer that caught a thrown Error,
+      // so a route's throw is answered inside `next()` with this lease live.
+      // An error reaches HERE only when that inner `onError` itself threw;
+      // compose then calls `onError` again for this layer, AFTER the release
+      // below. Redact this request's own values out of the error first, so
+      // that second pass (its log lines and its 500 body) cannot carry them.
+      if (err instanceof Error) {
+        try {
+          err.message = redactExactValues(err.message, secrets.values);
+          if (err.stack) err.stack = redactExactValues(err.stack, secrets.values);
+        } catch {
+          // A read-only message (DOMException): onError's registry pass stays.
+        }
+      }
+      release();
+      throw err;
+    }
+    c.res = releaseWhenBodyEnds(c.res, release);
+  });
+
   // Did the child ever ask a MODEL for anything? A failed run with this still at
   // zero died inside Claude Code before any model was contacted — the one fact
   // that separates a harness fault from a provider fault. The CLI reads it when
@@ -1072,7 +891,13 @@ export async function createProxyServer(
   app.onError((err, c) => {
     logStderr(`[Proxy] Unhandled error on ${c.req.method} ${c.req.path}: ${err?.message ?? err}`);
     log(`[Proxy] Unhandled error stack: ${err?.stack ?? "(no stack)"}`);
-    return c.json(wrapAnthropicError(500, `Proxy error: ${err?.message ?? String(err)}`), 500);
+    // Marked so a probe of one pinned hop can tell a throw from an upstream 500
+    // (`UNHANDLED_ERROR_HEADER`); the status and envelope are unchanged.
+    return c.json(
+      wrapAnthropicError(500, redactForClient(`Proxy error: ${err?.message ?? String(err)}`)),
+      500,
+      { [UNHANDLED_ERROR_HEADER]: "1" }
+    );
   });
 
   app.get("/", (c) =>
@@ -1184,11 +1009,21 @@ export async function createProxyServer(
     const handler =
       getLocalProviderHandler(targetModel) ?? (await getRemoteProviderHandler(targetModel));
     const transport = (handler as unknown as { provider?: ProviderTransport })?.provider;
-    if (!transport?.discoverProbeModel) {
+    // A handler that exposes no transport (a catalog provider built as a
+    // try-in-turn handler) still answers from the provider's own dynamic
+    // models catalog when its definition declares one.
+    const definition = getProviderByName(provider);
+    const discover = transport?.discoverProbeModel
+      ? (ex?: ReadonlySet<string>) => transport.discoverProbeModel!(ex)
+      : definition?.modelDiscovery
+        ? (ex?: ReadonlySet<string>) =>
+            discoverProviderProbeModel(provider, definition.displayName, ex)
+        : undefined;
+    if (!discover) {
       return c.json({ provider, model: null, reason: "transport does not support discovery" }, 404);
     }
     try {
-      const outcome = await transport.discoverProbeModel(exclude);
+      const outcome = await discover(exclude);
       return c.json({
         provider,
         model: outcome.model,
@@ -1199,7 +1034,7 @@ export async function createProxyServer(
         {
           provider,
           model: null,
-          reason: e instanceof Error ? e.message : String(e),
+          reason: redactForClient(e instanceof Error ? e.message : String(e)),
         },
         500
       );
@@ -1217,28 +1052,101 @@ export async function createProxyServer(
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
-        const headers: any = { "Content-Type": "application/json" };
-        if (anthropicApiKey) headers["x-api-key"] = anthropicApiKey;
+        // Signed the SAME WAY `/v1/messages` is, and for the same reason.
+        //
+        // This used to send `x-api-key` and nothing else, so a user on a
+        // claude.ai subscription — who has no API key at all — sent an UNSIGNED
+        // count_tokens to api.anthropic.com and got a 401 that was then
+        // published to the client as a 200 with `{"type":"error",…}` in the
+        // body, because the upstream status was discarded by `c.json(await
+        // res.json())`. Claude Code read that as a token count of undefined.
+        //
+        // Precedence mirrors NativeHandler.handle: the caller's own credentials
+        // first (Claude Code injects them), then this process's key, and only
+        // then the credential authority.
+        const inbound = c.req.header();
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "anthropic-version": inbound["anthropic-version"] || "2023-06-01",
+        };
+        if (inbound.authorization) headers.authorization = inbound.authorization;
+        if (inbound["x-api-key"]) headers["x-api-key"] = inbound["x-api-key"];
+        if (inbound["anthropic-beta"]) headers["anthropic-beta"] = inbound["anthropic-beta"];
+        if (!inbound.authorization && !inbound["x-api-key"]) {
+          let fallbackKey = anthropicApiKey;
+          if (!fallbackKey) {
+            try {
+              const auth = await credentials.getRequestAuth("native-anthropic", {
+                model: body.model,
+              });
+              fallbackKey = auth.headers["x-api-key"];
+            } catch (err) {
+              log(`[CountTokens] no resolvable Anthropic credential: ${err}`);
+            }
+          }
+          if (fallbackKey) headers["x-api-key"] = fallbackKey;
+        }
+        // Every credential this count sends — the inbound bearer or key, or the
+        // resolved fallback key — goes on the request's signing lease, as
+        // `NativeHandler` does, so a log line or an echoed upstream body that
+        // quotes it is redacted by value.
+        addSigningSecrets(c, credentialValuesFromRequest(headers));
 
-        const res = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
-          method: "POST",
-          headers,
-          body: JSON.stringify(body),
-        });
-        return c.json(await res.json());
+        const res = await fetch(
+          resolveUpstreamUrl("https://api.anthropic.com/v1/messages/count_tokens"),
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+          }
+        );
+
+        // An auth failure is NOT a token count. Fall back to the local estimate
+        // rather than handing the client an error object shaped like a success:
+        // count_tokens exists to size a request, and a working estimate keeps
+        // the session usable where a propagated 401 would not.
+        if (res.status === 401 || res.status === 403) {
+          log(`[CountTokens] upstream ${res.status} — falling back to the local estimate`);
+          return c.json({ input_tokens: Math.ceil(JSON.stringify(body).length / 4) });
+        }
+
+        // Every other status is the UPSTREAM's, carried through. Discarding it
+        // published a 429 or a 400 as a 200 whose body happened to say "error".
+        // A non-success body is upstream text that may quote the credential it
+        // received, so it is redacted before it is parsed and returned.
+        const raw = await res.text().catch(() => "");
+        let payload: unknown = null;
+        try {
+          payload = JSON.parse(res.ok ? raw : redactForClient(raw));
+        } catch {
+          payload = null;
+        }
+        if (payload === null) {
+          return c.json(
+            wrapAnthropicError(res.status, `count_tokens returned a non-JSON ${res.status}`),
+            res.status as any
+          );
+        }
+        return c.json(payload, res.status as any);
       }
       // OpenRouter handler logic (estimation)
       const txt = JSON.stringify(body);
       return c.json({ input_tokens: Math.ceil(txt.length / 4) });
     } catch (e) {
       if (isTerminalRoutingFailure(e)) {
-        return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
+        return c.json(
+          wrapAnthropicError(400, redactForClient(e.message), "invalid_request_error"),
+          400
+        );
       }
-      return c.json(wrapAnthropicError(500, String(e)), 500);
+      return c.json(wrapAnthropicError(500, redactForClient(String(e))), 500);
     }
   });
 
   app.post("/v1/messages", async (c) => {
+    // Set when the resolved handler itself threw (not the body parse, not routing):
+    // that 500 is marked `UNHANDLED_ERROR_HEADER`, like `app.onError`'s.
+    let handlerThrew = false;
     try {
       const body = await c.req.json();
       // Request-metadata trace (debug log only — the [RequestMeta] prefix is
@@ -1276,23 +1184,42 @@ export async function createProxyServer(
       }
 
       // The advisor wrapper goes on the RESOLVED handler (FallbackHandler
-      // included), once per request. See `withAdvisor` above.
-      const handler = withAdvisor(await getHandlerForRequest(body.model), advisorPresence);
+      // included), once per request, around the hooks. See `withAdvisor` and
+      // `withRequestHooks` above.
+      const handler = withAdvisor(
+        withRequestHooks(await getHandlerForRequest(body.model)),
+        advisorPresence
+      );
 
       // Route. The `await` is load-bearing: `return handler.handle(...)` hands
       // the promise back BEFORE it settles, so a rejection escapes this
       // try/catch entirely and lands in Hono's error handler instead. That is
       // how connect failures bypassed every message we build here.
-      return await handler.handle(c, body);
+      try {
+        return await handler.handle(c, body);
+      } catch (handlerError) {
+        handlerThrew = true;
+        throw handlerError;
+      }
     } catch (e) {
       log(`[Proxy] Error: ${e}`);
       // Routing failures are terminal — surface as a non-retryable 400 so the
       // client shows the real reason (e.g. missing key) instead of looping on
       // "API error · Retrying". Other errors stay 500.
       if (isTerminalRoutingFailure(e)) {
-        return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
+        return c.json(
+          wrapAnthropicError(400, redactForClient(e.message), "invalid_request_error"),
+          400
+        );
       }
-      return c.json(wrapAnthropicError(500, String(e)), 500);
+      // A handler that threw is a hop that threw: inside a routing chain
+      // FallbackHandler advances past it, so a probe of one pinned hop must be
+      // able to tell it from an upstream 500 (`UNHANDLED_ERROR_HEADER`).
+      return c.json(
+        wrapAnthropicError(500, redactForClient(String(e))),
+        500,
+        handlerThrew ? { [UNHANDLED_ERROR_HEADER]: "1" } : undefined
+      );
     }
   });
 
@@ -1342,10 +1269,13 @@ export async function createProxyServer(
     port: resolvedPort,
     url: `http://127.0.0.1:${resolvedPort}`,
     modelRequestCount: () => modelRequestCount,
+    ...(advisorPanel ? { advisorPanel } : {}),
     shutdown: async () => {
       // `true` = close active connections too, so a streamed request in flight
       // can't keep the port alive after shutdown resolves.
       await server.stop(true);
+      // The advisor chains were handed over at startup; the proxy owns them.
+      if (advisorRuntime) await shutdownAdvisorChains(advisorRuntime.chains.values());
       // "No episode may outlive the process that owns its timers" —
       // `closeAllEpisodes`'s own doc, which until now nothing but tests
       // invoked. `server.stop(true)` aborts the client signals, so waiters

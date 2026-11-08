@@ -23,8 +23,10 @@ import {
   type AggregatorEntry,
   type ModelDoc,
   type RecommendedModelEntry,
+  type RecommendedModelsDoc,
   getRecommendedModels,
   getTop100Models,
+  uniqueRecommendedModels,
 } from "./model-loader.js";
 import {
   type CatalogClient,
@@ -119,6 +121,7 @@ export const pickerProviderToFirebaseSlug: Record<string, string> = {
   "openai-codex": "openai",
   "x-ai": "x-ai",
   deepseek: "deepseek",
+  meta: "meta",
   minimax: "minimax",
   "minimax-coding": "minimax",
   kimi: "moonshotai",
@@ -216,29 +219,39 @@ function formatFirebaseProviderLabel(slug: string): string {
  */
 async function loadRecommendedModels(forceRefresh = false): Promise<ModelInfo[]> {
   try {
-    const doc = await getRecommendedModels({ forceRefresh });
-    // Newest-first, like every other picker list. This list is DISPLAYED as the
-    // picker's catalog when the top-100 fetch fails (see `selectModel`), so it
-    // must not fall back to raw doc order there.
-    return sortModelsNewestFirst(
-      doc.models.map((model: RecommendedModelEntry) => ({
-        id: model.id,
-        name: model.name,
-        description: model.description,
-        provider: formatFirebaseProviderLabel(model.provider),
-        providerSlug: model.provider.toLowerCase(),
-        pricing: model.pricing,
-        context: model.context,
-        contextLength: parseContextString(model.context),
-        supportsTools: model.supportsTools,
-        supportsReasoning: model.supportsReasoning,
-        supportsVision: model.supportsVision,
-        source: formatFirebaseProviderLabel(model.provider),
-      }))
-    );
+    return _recommendedFallbackRows(await getRecommendedModels({ forceRefresh }));
   } catch {
     return [];
   }
+}
+
+/**
+ * The picker's recommended fallback list: one row per model id
+ * (`uniqueRecommendedModels`; a model the backend lists in two recommendation
+ * tiers is two doc rows but one picker row), then newest-first. Does not mutate
+ * `doc`.
+ */
+export function _recommendedFallbackRows(doc: RecommendedModelsDoc): ModelInfo[] {
+  // Newest-first, like every other picker list. This list is DISPLAYED as the
+  // picker's catalog when the top-100 fetch fails (see `selectModel`), so it
+  // must not fall back to raw doc order there.
+  return sortModelsNewestFirst(
+    uniqueRecommendedModels(doc.models).map((model: RecommendedModelEntry) => ({
+      id: model.id,
+      name: model.name,
+      description: model.description,
+      provider: formatFirebaseProviderLabel(model.provider),
+      providerSlug: model.provider.toLowerCase(),
+      pricing: model.pricing,
+      context: model.context,
+      contextLength: parseContextString(model.context),
+      supportsTools: model.supportsTools,
+      supportsReasoning: model.supportsReasoning,
+      supportsVision: model.supportsVision,
+      releaseDate: model.releaseDate,
+      source: formatFirebaseProviderLabel(model.provider),
+    }))
+  );
 }
 
 /** Parse "196K" → 196000, "1M" → 1000000. */
@@ -1020,6 +1033,8 @@ const PICKER_COPY: Record<string, { name?: string; description?: string }> = {
   "openai-codex": { description: "ChatGPT Plus/Pro subscription (Responses API)" },
   "x-ai": { name: "xAI / Grok", description: "Direct API" },
   deepseek: { description: "Direct API" },
+  meta: { description: "Direct API" },
+  "meta-muse-code": { name: "Muse Code", description: "Meta subscription" },
   mistralai: { name: "Mistral", description: "Direct API" },
   sakana: { name: "Sakana Fugu", description: "Direct API" },
   "sakana-subscription": { name: "Sakana Fugu Subscription", description: "Subscription plan" },
@@ -1060,6 +1075,8 @@ const PICKER_ORDER = [
   "devin",
   "x-ai",
   "deepseek",
+  "meta",
+  "meta-muse-code",
   "mistralai",
   "sakana",
   "sakana-subscription",
@@ -1639,7 +1656,17 @@ export const _modelsCatalogCollapse = { collapse: collapseModelsCatalog };
  *   notice would be noise on the majority case.
  */
 export type PickerDiscoveryOutcome =
-  | { kind: "rows"; rows: [ModelInfo, ...ModelInfo[]]; servedCount: number; chatCount: number }
+  | {
+      kind: "rows";
+      rows: [ModelInfo, ...ModelInfo[]];
+      servedCount: number;
+      chatCount: number;
+      /**
+       * The rows are in the provider's own picker order (`providerOrder`), not
+       * sorted, so the picker must not caption them `newest first`.
+       */
+      providerOrdered?: true;
+    }
   | { kind: "all-filtered"; servedCount: number; sampleIds: string[]; fallbackRows: ModelInfo[] }
   | { kind: "collapsed-empty"; servedCount: number; chatCount: number; fallbackRows: ModelInfo[] }
   | { kind: "empty-models-catalog"; failure: DiscoveryFailure; fallbackRows: ModelInfo[] }
@@ -1738,7 +1765,10 @@ export async function buildDiscoveredModelOutcome(
     // rather than length-checked so the non-empty tuple needs no cast to assert.
     return { kind: "collapsed-empty", servedCount, chatCount, fallbackRows };
   }
-  return { kind: "rows", rows: [head, ...tail], servedCount, chatCount };
+  const providerOrdered = discovered.some((m) => typeof m.providerOrder === "number");
+  return providerOrdered
+    ? { kind: "rows", rows: [head, ...tail], servedCount, chatCount, providerOrdered: true }
+    : { kind: "rows", rows: [head, ...tail], servedCount, chatCount };
 }
 
 /**
@@ -1844,7 +1874,24 @@ function buildRowsFromDiscovered(
   // is only a stable, deterministic input order — its widest-window-first rule
   // is meaningful for probe candidates, but for a plan whose entire dynamic models catalog is
   // 1M it collapses to alphabetical, which is what made the picker look unsorted.
+  //
+  // The one exception is a provider that publishes its own picker
+  // (`providerOrder`, Antigravity's `agentModelSorts`): the user asked for the
+  // list `agy models` prints — exactly those rows, in its order. The unplaced
+  // rows exist for routing, not for display; see `DiscoveredModel.providerOrder`.
+  const orderById = new Map<string, number>();
+  for (const m of discovered) {
+    if (typeof m.providerOrder === "number") orderById.set(m.id, m.providerOrder);
+  }
+  if (orderById.size > 0) return inProviderOrder(rows, orderById);
   return sortModelsNewestFirst(rows);
+}
+
+/** Only the provider-placed rows, in the provider's order. */
+function inProviderOrder(rows: ModelInfo[], orderById: Map<string, number>): ModelInfo[] {
+  return rows
+    .filter((row) => orderById.has(row.id))
+    .sort((a, b) => (orderById.get(a.id) ?? 0) - (orderById.get(b.id) ?? 0));
 }
 
 /**

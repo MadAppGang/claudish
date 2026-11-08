@@ -1,0 +1,22 @@
+{
+  "kind": "parser",
+  "id": "openai-responses-sse.targeted-repaired",
+  "source": "openai-responses-sse behavior repair > rewrites arguments for a targeted tool",
+  "parser": "openai-responses-sse",
+  "modelName": "test-model",
+  "repair": {
+    "kind": "replace",
+    "tool": "target_tool",
+    "args": "{\"value\":\"behavior-repaired\"}"
+  },
+  "input": {
+    "encoding": "utf8",
+    "chunks": [
+      "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_responses_item_0\",\"call_id\":\"responses_call_0\",\"name\":\"target_tool\"}}\n\n",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"call_id\":\"responses_call_0\",\"item_id\":\"fc_responses_item_0\",\"delta\":\"{\\\"value\\\":\\\"model-original\\\"}\"}\n\n",
+      "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_responses_item_0\",\"call_id\":\"responses_call_0\",\"name\":\"target_tool\"}}\n\n",
+      "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}}\n\n"
+    ]
+  },
+  "output": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_<ID>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"test-model\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":100,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_responses_call_0\",\"name\":\"target_tool\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":\\\"behavior-repaired\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+}

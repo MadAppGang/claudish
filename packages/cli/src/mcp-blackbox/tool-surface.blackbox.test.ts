@@ -5,11 +5,16 @@
  * Written from spec.md and the frozen mod contract v1 only. No implementation file was read.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { version as packageVersion } from "../../package.json";
+import { allowanceStatusAnswerSchema } from "../auth/accounts/allowance-report-schema.js";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
   McpServer,
+  SERVER_ENTRY,
   type ToolResult,
   paneOrphans,
   serverEnv,
@@ -20,22 +25,88 @@ useBlackboxEnv();
 
 type Json = Record<string, unknown>;
 const keys = (v: unknown): string[] => Object.keys(v as Json).sort();
-const CAPABILITIES = ["list", "status", "cancel", "capture", "capture_since_seq", "capture_spans"];
+const CAPABILITIES = [
+  "list",
+  "status",
+  "cancel",
+  "capture",
+  "capture_since_seq",
+  "capture_spans",
+  "resize",
+  "allowance",
+  "scroll",
+  "transcript",
+  "replay",
+];
+
+// REQ-15: literal sorted sets from architecture-contracts.md, not from implementation.
+const ALL_TOOLS = [
+  "allowance_status",
+  "cancel_session",
+  "capture_session",
+  "close_replay",
+  "compare_models",
+  "create_session",
+  "get_diagnostics",
+  "get_output",
+  "list_models",
+  "list_sessions",
+  "preflight",
+  "replay_session",
+  "report_error",
+  "resize_session",
+  "run_prompt",
+  "scroll_session",
+  "search_models",
+  "send_input",
+  "team",
+  "transcript_session",
+];
+const SESSION_TOOLS = [
+  "cancel_session",
+  "capture_session",
+  "close_replay",
+  "create_session",
+  "get_diagnostics",
+  "get_output",
+  "list_sessions",
+  "replay_session",
+  "resize_session",
+  "scroll_session",
+  "send_input",
+  "transcript_session",
+];
+const TOOL_GROUPS: Array<{ value: string | undefined; names: string[] }> = [
+  { value: undefined, names: ALL_TOOLS },
+  { value: "all", names: ALL_TOOLS },
+  { value: "low-level", names: ["list_models", "run_prompt", "search_models"] },
+  { value: "agentic", names: ["allowance_status", "preflight", "report_error", "team"] },
+  { value: "session", names: SESSION_TOOLS },
+  { value: "debug", names: ["compare_models"] },
+  // Removed spelling is not a session alias: unrecognized values fall back to all.
+  { value: "channel", names: ALL_TOOLS },
+];
 
 let layout: TempLayout;
 let server: McpServer;
 
-beforeEach(async () => {
-  layout = makeTempLayout("bbsurface");
-  server = await McpServer.start({ env: serverEnv(layout), cwd: layout.cwd });
-});
+function useStandardServer(): void {
+  beforeEach(async () => {
+    layout = makeTempLayout("bbsurface");
+    server = await McpServer.start({ env: serverEnv(layout), cwd: layout.cwd });
+  });
 
-afterEach(async () => {
-  await server.close();
-  const report = await paneOrphans(layout);
-  layout.cleanup();
-  expect(report).toEqual({ processes: [], files: [] });
-});
+  afterEach(async () => {
+    await server.close();
+    const report = await paneOrphans(layout);
+    layout.cleanup();
+    expect(report).toEqual({ processes: [], files: [] });
+    // REQ-19: none of these public calls may emit the removed push notification.
+    expect(server.notifications.filter((n) => n.method === "notifications/claude/channel")).toEqual(
+      []
+    );
+  });
+}
 
 function contractError(r: ToolResult, code: string): void {
   expect(r.isError).toBe(true);
@@ -46,12 +117,239 @@ function contractError(r: ToolResult, code: string): void {
   expect(typeof (body.error as Json).message).toBe("string");
 }
 
+/** Capture the first initialize response on a fresh public stdio connection.
+ * McpServer.start deliberately discards it; sending initialize twice would test
+ * an unsupported MCP lifecycle rather than the contract's initialization.
+ */
+async function initializeOnce(env: Record<string, string>): Promise<Json> {
+  const child = Bun.spawn([process.execPath, "--no-env-file", SERVER_ENTRY, "--mcp"], {
+    env,
+    cwd: layout.cwd,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stderr = new Response(child.stderr).text();
+  const reader = child.stdout.getReader();
+  const decoder = new TextDecoder();
+  const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+  let buffer = "";
+  try {
+    child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "quick-prompt-blackbox", version: "0.0.0" },
+        },
+      })}\n`
+    );
+    child.stdin.flush();
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error(`MCP initialize ended without a response: ${await stderr}`);
+      buffer += decoder.decode(chunk.value, { stream: true });
+      for (;;) {
+        const newline = buffer.indexOf("\n");
+        if (newline === -1) break;
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!line.startsWith("{")) continue;
+        const message = JSON.parse(line) as Json;
+        if (message.id !== 1) continue;
+        expect(message.error).toBeUndefined();
+        child.stdin.write(
+          `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`
+        );
+        child.stdin.flush();
+        return message.result as Json;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+    child.stdin.end();
+    const ended = await Promise.race([
+      child.exited.then(() => true),
+      Bun.sleep(3_000).then(() => false),
+    ]);
+    if (!ended) child.kill("SIGKILL");
+    await child.exited;
+    clearTimeout(timer);
+    await stderr;
+  }
+}
+
+describe("quick-prompt public surface", () => {
+  useStandardServer();
+  for (const { value, names } of TOOL_GROUPS) {
+    test(`REQ-15 REQ-18: CLAUDISH_MCP_TOOLS=${value ?? "unset"} exposes the exact sorted set and polling-only initialization`, async () => {
+      if (value !== undefined) {
+        await server.close();
+        server = await McpServer.start({
+          env: serverEnv(layout, { CLAUDISH_MCP_TOOLS: value }),
+          cwd: layout.cwd,
+        });
+      }
+      const tools = await server.listTools();
+      expect(tools.map((tool) => tool.name).sort()).toEqual(names);
+
+      const result = await initializeOnce(serverEnv(layout, { CLAUDISH_MCP_TOOLS: value }));
+      expect(result.serverInfo).toEqual({ name: "claudish", version: packageVersion });
+      const capabilities = result.capabilities as Json;
+      expect(Object.hasOwn(capabilities, "tools")).toBe(true);
+      expect(capabilities.experimental).toBeUndefined();
+      expect(Object.hasOwn(capabilities, "experimental")).toBe(false);
+      expect(typeof result.instructions).toBe("string");
+      const instructions = result.instructions as string;
+      expect(instructions).toContain("list_sessions");
+      expect(instructions).toContain("get_output");
+      expect(instructions).not.toContain("<channel");
+      expect(instructions.toLowerCase()).not.toContain("notification");
+    }, 30_000);
+  }
+
+  test("REQ-16 REQ-17: quick-prompt schemas omit output limits and descriptions distinguish prompts from sessions/debug", async () => {
+    const tools = await server.listTools();
+    const prompt = tools.find((tool) => tool.name === "run_prompt");
+    const compare = tools.find((tool) => tool.name === "compare_models");
+    expect(prompt).toBeDefined();
+    expect(compare).toBeDefined();
+    expect(Object.keys(prompt?.inputSchema?.properties ?? {}).sort()).toEqual([
+      "effort",
+      "model",
+      "prompt",
+      "system_prompt",
+      "user_required_model",
+      "user_required_provider",
+    ]);
+    expect(prompt?.inputSchema?.required).toEqual(["model", "prompt"]);
+    expect(prompt?.inputSchema?.properties).not.toHaveProperty("max_tokens");
+    expect(Object.keys(compare?.inputSchema?.properties ?? {}).sort()).toEqual([
+      "models",
+      "prompt",
+      "system_prompt",
+    ]);
+    expect(compare?.inputSchema?.required).toEqual(["models", "prompt"]);
+    expect(compare?.inputSchema?.properties).not.toHaveProperty("max_tokens");
+    const promptDescription = (prompt as unknown as { description: string }).description;
+    const compareDescription = (compare as unknown as { description: string }).description;
+    expect(promptDescription.startsWith("One quick prompt, straight to one model's API")).toBe(
+      true
+    );
+    expect(promptDescription).toContain("create_session");
+    expect(promptDescription).toContain("team");
+    expect(compareDescription.startsWith("DEBUG.")).toBe(true);
+  }, 30_000);
+});
+
+describe("allowance_status contract", () => {
+  useStandardServer();
+  test("14b no pool returns a schema-valid additive v1 answer", async () => {
+    const result = await server.callTool("allowance_status", {});
+    expect(result.isError).toBe(false);
+    const answer = allowanceStatusAnswerSchema.parse(JSON.parse(result.text));
+    expect(answer).toMatchObject({
+      contract_version: 1,
+      capabilities: CAPABILITIES,
+      allowance: null,
+      reason: "no account pool is configured for openai-codex",
+    });
+  });
+  for (const args of [
+    { provider: "claude" },
+    { horizon_hours: 0 },
+    { horizon_hours: 169 },
+    { horizon_hours: "36" },
+  ]) {
+    test("14d rejects invalid allowance arguments " + JSON.stringify(args), async () => {
+      contractError(await server.callTool("allowance_status", args), "invalid_args");
+    });
+  }
+  test("14c configured unused pool returns a schema-valid no-evidence report", async () => {
+    await server.close();
+    const configDir = join(layout.home, ".claudish");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      join(configDir, "config.json"),
+      JSON.stringify({
+        version: "1.0.0",
+        defaultProfile: "default",
+        profiles: {},
+        subscriptionAccounts: {
+          "openai-codex": {
+            generation: 1,
+            accounts: [
+              { id: "aaaaaaaaaaaa", label: "work", store: "file", addedAt: "2026-10-20T00:00:00Z" },
+              { id: "bbbbbbbbbbbb", label: "home", store: "file", addedAt: "2026-10-20T00:00:00Z" },
+            ],
+          },
+        },
+      })
+    );
+    server = await McpServer.start({
+      env: serverEnv(layout, { CLAUDISH_ACCOUNTS_DIR: join(layout.home, "accounts") }),
+      cwd: layout.cwd,
+    });
+    // F1: even a configured read-only tool must not create announcement memory.
+    const memoryPath = join(layout.home, "accounts", "allowance-alerts.json");
+    expect(existsSync(memoryPath)).toBe(false);
+    const result = await server.callTool("allowance_status", { horizon_hours: 36 });
+    expect(result.isError).toBe(false);
+    expect(existsSync(memoryPath)).toBe(false);
+    expect(server.stderrText).not.toContain("Codex allowance:");
+    const answer = allowanceStatusAnswerSchema.parse(JSON.parse(result.text));
+    expect(answer.allowance).toMatchObject({
+      schema: "claudish.allowance.v1",
+      horizonHours: 36,
+      status: "insufficient-evidence",
+    });
+  });
+});
+
+describe("CLAUDISH_MCP_TOOLS startup warnings", () => {
+  useStandardServer();
+  for (const value of ["channel", "lowlevel", undefined, "all", "session", "debug"]) {
+    test(`${value ?? "unset"}: warns exactly once only for an unknown value`, async () => {
+      if (value !== undefined) {
+        await server.close();
+        server = await McpServer.start({
+          env: serverEnv(layout, { CLAUDISH_MCP_TOOLS: value }),
+          cwd: layout.cwd,
+        });
+      }
+      const tools = await server.listTools();
+      await server.close();
+      const warnings = server.stderrText
+        .split(/\r?\n/)
+        .filter((line) => line.includes("CLAUDISH_MCP_TOOLS"));
+      if (value === "channel" || value === "lowlevel") {
+        expect(tools.map((tool) => tool.name).sort()).toEqual(ALL_TOOLS);
+        expect(tools).toHaveLength(20);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain(value);
+        expect(warnings[0]).toContain("all, low-level, agentic, session, debug");
+        if (value === "channel") {
+          expect(warnings[0]).toContain("renamed to");
+          expect(warnings[0]).toContain("session");
+        }
+      } else {
+        expect(warnings).toEqual([]);
+      }
+    }, 30_000);
+  }
+});
+
+// REQ-20 (TEST-21–TEST-26): preserve the existing pane-free session/team regressions.
 describe("tool list (FR11, §4)", () => {
-  test("14 tools, capture_session among them, team modes are exactly the seven", async () => {
+  useStandardServer();
+  test("20 tools, allowance_status among them, team modes are exactly the eleven", async () => {
     const tools = await server.listTools();
     const names = tools.map((t) => t.name);
-    expect(names.length).toBe(14);
-    expect(new Set(names).size).toBe(14);
+    expect(names.length).toBe(20);
+    expect(new Set(names).size).toBe(20);
     for (const n of [
       "team",
       "create_session",
@@ -61,6 +359,11 @@ describe("tool list (FR11, §4)", () => {
       "list_sessions",
       "get_diagnostics",
       "capture_session",
+      "resize_session",
+      "scroll_session",
+      "transcript_session",
+      "replay_session",
+      "close_replay",
     ])
       expect(names).toContain(n);
     // FR8: run_prompt / compare_models are out of scope and stay
@@ -70,7 +373,19 @@ describe("tool list (FR11, §4)", () => {
     const teamTool = tools.find((t) => t.name === "team");
     const props = (teamTool?.inputSchema?.properties ?? {}) as Record<string, Json>;
     expect(((props.mode as Json).enum as string[]).slice().sort()).toEqual(
-      ["run", "judge", "run-and-judge", "status", "cancel", "list", "capture"].sort()
+      [
+        "run",
+        "judge",
+        "run-and-judge",
+        "status",
+        "cancel",
+        "list",
+        "capture",
+        "resize",
+        "scroll",
+        "transcript",
+        "replay",
+      ].sort()
     );
     expect(teamTool?.inputSchema?.required).toEqual(["mode"]);
     for (const p of [
@@ -81,6 +396,8 @@ describe("tool list (FR11, §4)", () => {
       "path",
       "require_pattern",
       "min_output_bytes",
+      "user_required_model",
+      "user_required_provider",
     ])
       expect(Object.keys(props)).toContain(p);
 
@@ -88,10 +405,27 @@ describe("tool list (FR11, §4)", () => {
     const capProps = Object.keys(cap?.inputSchema?.properties ?? {}).sort();
     expect(capProps).toEqual(["session_id", "since_seq", "spans"]);
     expect(cap?.inputSchema?.required).toEqual(["session_id"]);
+    expect(
+      tools.find((tool) => tool.name === "create_session")?.inputSchema?.properties
+    ).toHaveProperty("user_required_provider");
+    expect(props.user_required_model).toMatchObject({
+      type: "array",
+      items: { type: "string" },
+    });
+    expect(teamTool?.inputSchema?.required).not.toContain("user_required_model");
+    for (const name of ["run_prompt", "create_session"]) {
+      const tool = tools.find((entry) => entry.name === name);
+      expect(tool?.inputSchema?.properties).toHaveProperty("user_required_model");
+      expect(tool?.inputSchema?.properties?.user_required_model).toMatchObject({
+        type: "boolean",
+      });
+      expect(tool?.inputSchema?.required).not.toContain("user_required_model");
+    }
   });
 });
 
 describe("team: mode and argument errors", () => {
+  useStandardServer();
   test("an unknown team mode answers the text `Error: Unknown mode: <mode>`", async () => {
     const r = await server.callTool("team", { mode: "bogus-mode", path: join(layout.cwd, "x") });
     expect(r.isError).toBe(true);
@@ -174,7 +508,8 @@ describe("team: mode and argument errors", () => {
   });
 });
 
-describe("channel: argument errors that need no pane", () => {
+describe("session: argument errors that need no pane", () => {
+  useStandardServer();
   test("create_session refuses a print-mode flag with text `Error: invalid_args:`", async () => {
     const r = await server.callTool("create_session", {
       model: "contract-fake-model",
@@ -185,4 +520,161 @@ describe("channel: argument errors that need no pane", () => {
     const list = await server.callTool("list_sessions", { include_completed: true });
     expect((list.json as Json).sessions).toEqual([]);
   });
+});
+
+describe("nested MCP server over stdio", () => {
+  let layout: TempLayout;
+  let client: Client | undefined;
+  let transport: StdioClientTransport | undefined;
+  let stderr: string;
+
+  beforeEach(() => {
+    layout = makeTempLayout("nested-surface");
+    client = undefined;
+    transport = undefined;
+    stderr = "";
+  });
+
+  afterEach(async () => {
+    try {
+      if (client) await client.close();
+    } finally {
+      try {
+        await transport?.close();
+      } finally {
+        const report = await paneOrphans(layout);
+        layout.cleanup();
+        expect(report).toEqual({ processes: [], files: [] });
+      }
+    }
+  }, 30_000);
+
+  async function connect(mode: string | undefined, nested = true): Promise<Client> {
+    transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["--no-env-file", "run", SERVER_ENTRY, "--mcp"],
+      cwd: layout.cwd,
+      env: serverEnv(layout, {
+        CLAUDISH_PANE_CHILD: nested ? "1" : undefined,
+        CLAUDISH_MCP_TOOLS: mode,
+      }),
+      stderr: "pipe",
+    });
+    transport.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    client = new Client({ name: "nested-surface-tests", version: "1.0.0" }, { capabilities: {} });
+    await client.connect(transport);
+    return client;
+  }
+
+  async function waitForStartup(): Promise<void> {
+    // stderr and stdout are separate pipes: wait for the startup line to be drained.
+    const deadline = Date.now() + 2000;
+    while (!stderr.includes("MCP server started") && Date.now() < deadline) await Bun.sleep(10);
+    expect(stderr).toContain("MCP server started");
+  }
+
+  const fourTools = ["compare_models", "list_models", "run_prompt", "search_models"];
+  const removedTools = [
+    "team",
+    "create_session",
+    "send_input",
+    "get_output",
+    "cancel_session",
+    "list_sessions",
+    "get_diagnostics",
+    "capture_session",
+    "resize_session",
+    "scroll_session",
+    "transcript_session",
+    "replay_session",
+    "close_replay",
+    "preflight",
+    "report_error",
+  ];
+
+  test("T-MCP-1: all exposes exactly four nested tools and logs the nested startup line", async () => {
+    const c = await connect("all");
+    const names = (await c.listTools()).tools.map((tool) => tool.name).sort();
+    expect(names).toEqual(fourTools);
+    for (const name of removedTools) expect(names).not.toContain(name);
+    await waitForStartup();
+    expect(stderr.split(/\r?\n/)).toContain(
+      "[claudish] MCP server started (tools: nested, 4 tools)"
+    );
+  }, 30_000);
+
+  for (const [mode, expected] of [
+    ["channel", fourTools],
+    ["low-level", ["list_models", "run_prompt", "search_models"]],
+    ["agentic", []],
+    ["session", []],
+    ["debug", ["compare_models"]],
+    ["all", fourTools],
+    [undefined, fourTools],
+  ] as const) {
+    test(`T-MCP-2: ${mode ?? "unset"} intersects its tool group with nested tools`, async () => {
+      const c = await connect(mode);
+      expect((await c.listTools()).tools.map((tool) => tool.name).sort()).toEqual([...expected]);
+      expect(c.getServerCapabilities()).toHaveProperty("tools");
+      expect(c.getServerCapabilities()).not.toHaveProperty("experimental");
+      expect(c.getInstructions()).toContain("## Nested mode — no sessions");
+      expect(c.getInstructions()).not.toContain("Channel Mode");
+      await waitForStartup();
+      expect(stderr.split(/\r?\n/)).toContain(
+        `[claudish] MCP server started (tools: nested, ${expected.length} tools)`
+      );
+      const warnings = stderr.split(/\r?\n/).filter((line) => line.includes("CLAUDISH_MCP_TOOLS"));
+      if (mode === "channel") {
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain("channel");
+        expect(warnings[0]).toContain("renamed to");
+        expect(warnings[0]).toContain("all, low-level, agentic, session, debug");
+      } else {
+        expect(warnings).toEqual([]);
+      }
+    }, 30_000);
+  }
+
+  test("T-MCP-3: initialize advertises tools without channels and gives nested instructions", async () => {
+    const c = await connect("all");
+    expect(c.getServerCapabilities()).toHaveProperty("tools");
+    expect(c.getServerCapabilities()).not.toHaveProperty("experimental");
+    const instructions = c.getInstructions();
+    const { NESTED_INSTRUCTIONS } = await import("../mcp/nested-mode.js");
+    expect(instructions).toBe(NESTED_INSTRUCTIONS);
+    expect(
+      instructions?.startsWith(
+        "Claudish MCP server provides access to external AI models for one-shot calls."
+      )
+    ).toBe(true);
+    expect(instructions).toContain("## Nested mode — no sessions");
+    expect(instructions).toContain("nested session refused");
+    expect(instructions).toContain(
+      "You are the delegate: do the task with your own tools; a workflow step that says to delegate is satisfied by you running it."
+    );
+    expect(instructions).not.toContain("Channel Mode");
+    expect(instructions).not.toMatch(/^- (?:preflight|report_error):/m);
+  }, 30_000);
+
+  test("T-MCP-4: removed session tools answer Unknown tool and leave no panes", async () => {
+    const c = await connect("all");
+    for (const name of ["create_session", "team"]) {
+      const result = await c.callTool({ name, arguments: { model: "x", prompt: "y" } });
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: `Error: Unknown tool "${name}"` }]);
+    }
+    expect(await paneOrphans(layout)).toEqual({ processes: [], files: [] });
+  }, 30_000);
+
+  test("T-MCP-5: without the flag all still exposes 20 tools without an experimental capability", async () => {
+    const c = await connect("all", false);
+    const tools = (await c.listTools()).tools;
+    expect(tools).toHaveLength(20);
+    expect(new Set(tools.map((tool) => tool.name)).size).toBe(20);
+    expect(c.getServerCapabilities()).toHaveProperty("tools");
+    expect(c.getServerCapabilities()).not.toHaveProperty("experimental");
+    expect(c.getInstructions()).not.toContain("## Nested mode — no sessions");
+  }, 30_000);
 });

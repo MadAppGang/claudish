@@ -17,14 +17,62 @@
 
 import { exec } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { homedir, hostname, platform, release } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
+import { CredentialFileState, refreshAndCommit } from "./credential-file.js";
+import {
+  credentialHttpError,
+  isTransientCredentialError,
+  terminalCredentialError,
+} from "./credentials/credential-error.js";
 
 const execAsync = promisify(exec);
+
+/**
+ * Test seams for the two files this module owns. MANDATORY in any test that reaches
+ * `KimiOAuth`: the defaults are the developer's real `~/.claudish/kimi-oauth.json`
+ * and `~/.claudish/kimi-device-id`, and Bun resolves `homedir()` from the passwd
+ * entry, not from a `HOME` assigned in-process.
+ */
+let kimiOAuthPathOverride: string | null = null;
+let kimiDeviceIdPathOverride: string | null = null;
+
+export function setKimiOAuthPathForTesting(path: string | null): void {
+  kimiOAuthPathOverride = path;
+}
+
+export function setKimiDeviceIdPathForTesting(path: string | null): void {
+  kimiDeviceIdPathOverride = path;
+}
+
+/** claudish's Kimi login file, written by `claudish login kimi`. */
+export function kimiOAuthPath(): string {
+  return kimiOAuthPathOverride ?? join(homedir(), ".claudish", "kimi-oauth.json");
+}
+
+/** The persistent device id sent in the `X-Msh-Device-Id` header. */
+export function kimiDeviceIdPath(): string {
+  return kimiDeviceIdPathOverride ?? join(homedir(), ".claudish", "kimi-device-id");
+}
+
+/** The structure a Kimi credential file must have. */
+function isKimiCredentials(data: unknown): data is KimiCredentials {
+  if (!data || typeof data !== "object") return false;
+  const c = data as Partial<KimiCredentials>;
+  return !!(c.access_token && c.refresh_token && c.expires_at && c.scope && c.token_type);
+}
 
 /**
  * Kimi OAuth credentials structure
@@ -77,10 +125,12 @@ const OAUTH_CONFIG = {
  */
 export class KimiOAuth {
   private static instance: KimiOAuth | null = null;
-  private credentials: KimiCredentials | null = null;
+  /** This process's copy of the login file, re-read when another process changes it. */
+  private state = KimiOAuth.newFileState();
   private refreshPromise: Promise<string> | null = null;
   private tokenRefreshMargin = 5 * 60 * 1000; // Refresh 5 minutes before expiry
-  private deviceId: string; // Persistent device ID (generated once)
+  /** Persistent device ID, loaded (or created) on first use, then cached. */
+  private deviceIdCache: string | null = null;
 
   /**
    * Get singleton instance
@@ -92,69 +142,75 @@ export class KimiOAuth {
     return KimiOAuth.instance;
   }
 
-  /**
-   * Private constructor (singleton pattern)
-   * FIX C3: Generate/load device ID in constructor (not per-request)
-   */
-  private constructor() {
-    // Load or create device ID
-    this.deviceId = this.loadOrCreateDeviceId();
-    log(`[KimiOAuth] Device ID loaded: ${this.deviceId}`);
-
-    // Try to load existing credentials on startup
-    this.credentials = this.loadCredentials();
+  private static newFileState(): CredentialFileState<KimiCredentials> {
+    return new CredentialFileState<KimiCredentials>({
+      path: kimiOAuthPath,
+      validate: isKimiCredentials,
+      label: "KimiOAuth",
+    });
   }
 
   /**
-   * Re-read the credential file from disk into the in-memory singleton.
-   *
-   * The singleton loads credentials ONCE in its constructor, so a login that
-   * happens in a CHILD process (e.g. the config TUI spawns `claudish login
-   * kimi`) writes a fresh token file this long-lived parent never sees — its
-   * request path keeps using the stale startup snapshot and fails until the
-   * process is relaunched. Calling this after a login child returns picks up the
-   * new token in-process, no restart needed. (Device ID is preserved.)
+   * Private constructor (singleton pattern). It does NO I/O: the singleton is built
+   * when the credential authority is imported, before a test can set a path seam, so
+   * reading here read the real login and created the real device-id file. The login
+   * loads on first use (`CredentialFileState`), the device id on first request.
+   */
+  private constructor() {}
+
+  /**
+   * Test seam: reset IN PLACE (the in-memory login, the recorded file stamp, the
+   * cached device id, an in-flight refresh). Never replaces the singleton: the
+   * credential authority's Kimi provider captured this instance at import, so a
+   * replacement would leave it holding a stale one.
+   */
+  static _resetForTests(): void {
+    const instance = KimiOAuth.getInstance();
+    instance.state = KimiOAuth.newFileState();
+    instance.refreshPromise = null;
+    instance.deviceIdCache = null;
+  }
+
+  /**
+   * Re-read the credential file now (the config TUI calls this after its login child
+   * returns). The request path already re-reads a changed file before every use, so
+   * this only makes the check immediate. (Device ID is preserved.)
    */
   reloadCredentials(): void {
-    this.credentials = this.loadCredentials();
+    this.state.syncFromDisk();
     this.refreshPromise = null;
   }
 
   /**
-   * Check if credentials exist (without validating expiry)
-   * Use this to determine if login is needed before making requests
+   * Check if credentials exist (without validating expiry). Asks the file (one
+   * stat), so a login written by another process answers yes; an unreadable file
+   * keeps the last good login and never answers no for a process that was signed in.
    */
   hasCredentials(): boolean {
-    return this.credentials !== null && !!this.credentials.refresh_token;
+    this.state.syncFromDisk();
+    const current = this.state.value;
+    return current !== null && !!current.refresh_token;
+  }
+
+  /** The device id, loaded or created on first use. */
+  private get deviceId(): string {
+    if (this.deviceIdCache === null) {
+      this.deviceIdCache = this.loadOrCreateDeviceId();
+      log(`[KimiOAuth] Device ID loaded: ${this.deviceIdCache}`);
+    }
+    return this.deviceIdCache;
   }
 
   /**
-   * Get credentials file path
-   */
-  private getCredentialsPath(): string {
-    const claudishDir = join(homedir(), ".claudish");
-    return join(claudishDir, "kimi-oauth.json");
-  }
-
-  /**
-   * Get device ID file path
-   */
-  private getDeviceIdPath(): string {
-    const claudishDir = join(homedir(), ".claudish");
-    return join(claudishDir, "kimi-device-id");
-  }
-
-  /**
-   * Load or create persistent device ID
-   * FIX C3: Called once in constructor, cached in instance
+   * Load or create persistent device ID. Called on the first request or login, then
+   * cached in the instance.
    */
   private loadOrCreateDeviceId(): string {
-    const deviceIdPath = this.getDeviceIdPath();
-    const claudishDir = join(homedir(), ".claudish");
+    const deviceIdPath = kimiDeviceIdPath();
+    const claudishDir = dirname(deviceIdPath);
 
     // Ensure directory exists
     if (!existsSync(claudishDir)) {
-      const { mkdirSync } = require("node:fs");
       mkdirSync(claudishDir, { recursive: true });
     }
 
@@ -248,8 +304,9 @@ export class KimiOAuth {
       token_type: tokens.token_type,
     };
 
-    this.saveCredentials(credentials);
-    this.credentials = credentials;
+    // A login is the user's intent: written unconditionally, atomically (0600).
+    this.state.saveLogin(credentials);
+    log(`[KimiOAuth] Credentials saved to ${kimiOAuthPath()}`);
 
     log("[KimiOAuth] Login successful");
   }
@@ -426,14 +483,14 @@ export class KimiOAuth {
    * Logout - delete stored credentials
    */
   async logout(): Promise<void> {
-    const credPath = this.getCredentialsPath();
+    const credPath = kimiOAuthPath();
 
     if (existsSync(credPath)) {
       unlinkSync(credPath);
       log("[KimiOAuth] Credentials deleted");
     }
 
-    this.credentials = null;
+    this.state.forget();
   }
 
   /**
@@ -447,19 +504,33 @@ export class KimiOAuth {
       return this.refreshPromise;
     }
 
+    // Before use: a newer login written by another process replaces ours.
+    await this.state.settle();
+    // The settle awaited: a refresh another caller started meanwhile is joined.
+    if (this.refreshPromise) return this.refreshPromise;
+
     // Check if we have credentials
-    if (!this.credentials) {
-      throw new Error("No Kimi OAuth credentials found. Please run `claudish login kimi` first.");
-    }
+    const current = this.state.value;
+    if (!current) throw noKimiCredentialsError();
 
     // Check if token is still valid (with 5-minute buffer)
-    if (this.isTokenValid()) {
-      return this.credentials.access_token;
+    if (this.isCredentialValid(current)) {
+      return current.access_token;
     }
 
-    // Start refresh (lock to prevent duplicate refreshes)
+    // Start refresh (lock to prevent duplicate refreshes). The shared sequence
+    // commits the result without overwriting a login another process wrote, and
+    // adopts that login when this refresh fails (`credential-file.ts`).
     // FIX C2: Use .finally() to ensure lock is released even on error
-    this.refreshPromise = this.doRefreshToken().finally(() => {
+    this.refreshPromise = refreshAndCommit(
+      this.state,
+      (credentials) => this.doRefreshToken(credentials),
+      {
+        isValid: (credentials) => this.isCredentialValid(credentials),
+        noCredentials: noKimiCredentialsError,
+      },
+      "KimiOAuth"
+    ).finally(() => {
       this.refreshPromise = null;
     });
 
@@ -467,151 +538,146 @@ export class KimiOAuth {
   }
 
   /**
-   * Check if cached token is still valid (with 5-minute buffer)
+   * Check if a token is still valid (with 5-minute buffer)
    * FIX H5: Includes 5-minute buffer
    */
-  private isTokenValid(): boolean {
-    if (!this.credentials) return false;
-    return Date.now() < this.credentials.expires_at - this.tokenRefreshMargin;
+  private isCredentialValid(credentials: KimiCredentials): boolean {
+    return Date.now() < credentials.expires_at - this.tokenRefreshMargin;
   }
 
   /**
-   * Perform the actual token refresh
+   * The token exchange: refresh `current` and RETURN the next credentials. Never
+   * writes them; `refreshAndCommit` commits the result.
    * FIX H4: Falls back to API key if available on failure
    */
-  private async doRefreshToken(): Promise<string> {
-    if (!this.credentials) {
-      throw new Error("No Kimi OAuth credentials found. Please run `claudish login kimi` first.");
-    }
-
+  private async doRefreshToken(current: KimiCredentials): Promise<KimiCredentials> {
     log("[KimiOAuth] Refreshing access token");
 
+    const url = `${OAUTH_CONFIG.authHost}${OAUTH_CONFIG.tokenPath}`;
+    const headers = {
+      "Content-Type": "application/x-www-form-urlencoded",
+      ...this.getPlatformHeaders(),
+    };
+    const body = new URLSearchParams({
+      client_id: OAUTH_CONFIG.clientId,
+      grant_type: "refresh_token",
+      refresh_token: current.refresh_token,
+    });
+
+    // The request and its body are network: a failure of either keeps its cause
+    // and the endpoint, so connection recovery classifies it, and the login on
+    // disk is left alone (the grok-oauth.ts split).
+    let response: Response;
+    let text: string;
     try {
-      const url = `${OAUTH_CONFIG.authHost}${OAUTH_CONFIG.tokenPath}`;
-      const headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        ...this.getPlatformHeaders(),
-      };
-
-      const body = new URLSearchParams({
-        client_id: OAUTH_CONFIG.clientId,
-        grant_type: "refresh_token",
-        refresh_token: this.credentials.refresh_token,
-      });
-
-      const response = await fetch(url, {
-        method: "POST",
-        headers,
-        body,
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Token refresh failed: ${response.status} - ${errorText}`);
-      }
-
-      const tokens = (await response.json()) as TokenResponse;
-
-      // Update credentials (keep existing refresh token if new one not provided)
-      const updatedCredentials: KimiCredentials = {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token || this.credentials.refresh_token,
-        expires_at: Date.now() + tokens.expires_in * 1000,
-        scope: tokens.scope,
-        token_type: tokens.token_type,
-      };
-
-      this.saveCredentials(updatedCredentials);
-      this.credentials = updatedCredentials;
-
-      log(
-        `[KimiOAuth] Token refreshed, valid until ${new Date(updatedCredentials.expires_at).toISOString()}`
-      );
-
-      return updatedCredentials.access_token;
-    } catch (e: any) {
-      log(`[KimiOAuth] Refresh failed: ${e.message}`);
-
-      // Delete invalid credentials
-      const credPath = this.getCredentialsPath();
-      if (existsSync(credPath)) {
-        unlinkSync(credPath);
-      }
-      this.credentials = null;
-
-      // FIX H4: Check for API key fallback (FR5 priority)
-      if (process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY) {
-        log("[KimiOAuth] Falling back to API key mode");
-        // Return empty string to signal fallback to handler
-        // Handler will detect API key and use it instead
-        throw new Error("OAuth_FALLBACK_TO_API_KEY");
-      }
-
-      // No API key available, throw error with instructions
-      throw new Error(
-        `OAuth credentials invalid. Please re-login or set API key:\n  - Run: claudish login kimi\n  - Or set: export MOONSHOT_API_KEY='your-api-key'\n\nDetails: ${e.message}`
+      response = await fetch(url, { method: "POST", headers, body });
+      text = await response.text();
+    } catch (e) {
+      log(`[KimiOAuth] Could not reach ${url}: ${(e as Error).message}`);
+      throw Object.assign(
+        new Error(`Could not reach ${url} to refresh the Kimi token: ${(e as Error).message}`, {
+          cause: e,
+        }),
+        { claudishEndpoint: url }
       );
     }
+
+    if (!response.ok) {
+      const failure = credentialHttpError(
+        `Token refresh failed: ${response.status} - ${text}`,
+        response.status
+      );
+      // A token host that is down or busy (429, 5xx) says nothing about the
+      // login: keep it, and let the request retry.
+      if (isTransientCredentialError(failure)) throw failure;
+      // A CLASSIFIED rejection of the grant is the only case that deletes the
+      // stored login: 401/403, or a 400 whose body names `invalid_grant` (the
+      // grok-oauth.ts rule). Any other status (a 404/405/407/408 from a proxy
+      // in front of the token host, a 400 about something else) is terminal
+      // for this request but proves nothing about the login, so it stays.
+      const status = response.status;
+      const grantRejected =
+        status === 401 || status === 403 || (status === 400 && text.includes("invalid_grant"));
+      if (!grantRejected) throw failure;
+      return await this.rejectLogin(failure, current);
+    }
+
+    // A 2xx that is not JSON is a gateway answering for the token host:
+    // retryable, and the login stays. A 2xx JSON with no access token does not
+    // show the login is dead either: retryable (503), with nothing persisted
+    // and nothing deleted.
+    let tokens: Partial<TokenResponse>;
+    try {
+      tokens = JSON.parse(text) as Partial<TokenResponse>;
+    } catch {
+      throw Object.assign(
+        new Error(
+          "Kimi token refresh answered with a body that is not JSON; retrying will usually work."
+        ),
+        { transient: true as const, upstreamStatus: 503 }
+      );
+    }
+    if (typeof tokens?.access_token !== "string" || tokens.access_token.length === 0) {
+      throw Object.assign(
+        new Error(
+          "The Kimi token host answered without an access token; nothing was saved. Retrying will usually work; run `claudish login kimi` if this persists."
+        ),
+        { transient: true as const, upstreamStatus: 503 }
+      );
+    }
+
+    // Update credentials (keep existing refresh token if new one not provided)
+    const expiresIn = typeof tokens.expires_in === "number" ? tokens.expires_in : 3600;
+    const updatedCredentials: KimiCredentials = {
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token || current.refresh_token,
+      expires_at: Date.now() + expiresIn * 1000,
+      scope: tokens.scope ?? current.scope,
+      token_type: tokens.token_type ?? current.token_type,
+    };
+
+    log(
+      `[KimiOAuth] Token refreshed, valid until ${new Date(updatedCredentials.expires_at).toISOString()}`
+    );
+
+    return updatedCredentials;
   }
 
   /**
-   * Load credentials from file
+   * The token host REJECTED the grant (401/403, or 400 `invalid_grant`): the stored
+   * login cannot recover, so it is deleted, and the caller gets the fallback
+   * signal or the login instruction.
    */
-  private loadCredentials(): KimiCredentials | null {
-    const credPath = this.getCredentialsPath();
+  private async rejectLogin(failure: Error, rejected: KimiCredentials): Promise<never> {
+    log(`[KimiOAuth] Refresh rejected: ${failure.message}`);
+    // Delete only the login that was rejected. If another process logged in since
+    // (`claudish login kimi` in another terminal), its file is kept, and
+    // refreshAndCommit adopts it after this throw instead of answering with the
+    // fallback. An unreadable file (possibly that login mid-write) is kept too.
+    await this.state.deleteIfUnchanged(rejected);
 
-    if (!existsSync(credPath)) {
-      return null;
-    }
-
-    try {
-      const data = readFileSync(credPath, "utf-8");
-      const credentials = JSON.parse(data) as KimiCredentials;
-
-      // Validate structure
-      if (
-        !credentials.access_token ||
-        !credentials.refresh_token ||
-        !credentials.expires_at ||
-        !credentials.scope ||
-        !credentials.token_type
-      ) {
-        log("[KimiOAuth] Invalid credentials file structure");
-        return null;
-      }
-
-      log("[KimiOAuth] Loaded credentials from file");
-      return credentials;
-    } catch (e: any) {
-      log(`[KimiOAuth] Failed to load credentials: ${e.message}`);
-      return null;
-    }
+    // The fallback SIGNAL, always, carrying the login instruction as its cause.
+    // WHICH key may answer is not this login's decision: one KimiOAuth serves
+    // both kimi@ (Moonshot, metered) and kc@ (the Coding Plan), and each
+    // composite owns its own product's key (kimi-credential.ts). The composite
+    // falls back only when ITS key is present, and otherwise throws the cause:
+    // a kc@ user with no KIMI_CODING_API_KEY sees "run `claudish login kimi`",
+    // and MOONSHOT_API_KEY never signs kc@.
+    log("[KimiOAuth] Login rejected; the product's own API key may answer instead");
+    throw new Error("OAuth_FALLBACK_TO_API_KEY", {
+      cause: terminalCredentialError(
+        `Your Kimi login was rejected (${failure.message}). Run \`claudish login kimi\` to sign in again.`,
+        (failure as { upstreamStatus?: number }).upstreamStatus
+      ),
+    });
   }
+}
 
-  /**
-   * Save credentials to file with 0600 permissions
-   */
-  private saveCredentials(credentials: KimiCredentials): void {
-    const credPath = this.getCredentialsPath();
-    const claudishDir = join(homedir(), ".claudish");
-
-    // Ensure directory exists
-    if (!existsSync(claudishDir)) {
-      const { mkdirSync } = require("node:fs");
-      mkdirSync(claudishDir, { recursive: true });
-    }
-
-    // Atomically create file with secure permissions (0600) to prevent race condition
-    const fd = openSync(credPath, "w", 0o600);
-    try {
-      const data = JSON.stringify(credentials, null, 2);
-      writeSync(fd, data, 0, "utf-8");
-    } finally {
-      closeSync(fd);
-    }
-
-    log(`[KimiOAuth] Credentials saved to ${credPath}`);
-  }
+/** The terminal error for a process with no Kimi login. */
+function noKimiCredentialsError(): Error {
+  return terminalCredentialError(
+    "No Kimi OAuth credentials found. Please run `claudish login kimi` first."
+  );
 }
 
 /**
@@ -637,7 +703,7 @@ export async function getValidKimiAccessToken(): Promise<string> {
  */
 export function hasKimiOAuthCredentials(): boolean {
   try {
-    const credPath = join(homedir(), ".claudish", "kimi-oauth.json");
+    const credPath = kimiOAuthPath();
     if (!existsSync(credPath)) return false;
 
     const data = JSON.parse(readFileSync(credPath, "utf-8"));

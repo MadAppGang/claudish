@@ -1,0 +1,21 @@
+{
+  "kind": "parser",
+  "id": "anthropic-sse.untargeted-unchanged",
+  "source": "anthropic-sse behavior repair > passes an untargeted tool through unchanged",
+  "parser": "anthropic-sse",
+  "modelName": "test-model",
+  "repair": {
+    "kind": "replace",
+    "tool": "target_tool",
+    "args": "{\"value\":\"behavior-repaired\"}"
+  },
+  "input": {
+    "encoding": "utf8",
+    "chunks": [
+      "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_anthropic_0\",\"name\":\"untargeted_tool\",\"input\":{}}}\n\n",
+      "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":\\\"model-original\\\"}\"}}\n\n",
+      "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+    ]
+  },
+  "output": "event: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_anthropic_0\",\"name\":\"untargeted_tool\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":\\\"model-original\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+}

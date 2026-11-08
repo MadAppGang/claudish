@@ -59,6 +59,7 @@ describe.skipIf(!MAGMUX)("claudish team run — signals", () => {
     const proc = Bun.spawn(
       [
         process.execPath,
+        "--no-env-file",
         ENTRY,
         "team",
         "run",

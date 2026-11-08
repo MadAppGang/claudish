@@ -30,7 +30,7 @@ describe("scrubChildEnv", () => {
   });
 
   for (const interactive of [true, false]) {
-    test(`the CLAUDISH_PANE_* markers never reach Claude Code (interactive: ${interactive})`, () => {
+    test(`T-U-7: launch variables are removed and the session flag reaches Claude Code (interactive: ${interactive})`, () => {
       const env: Record<string, string | undefined> = {
         CLAUDISH_PANE_CHILD: "1",
         CLAUDISH_PANE_ENV: "{}",
@@ -38,7 +38,18 @@ describe("scrubChildEnv", () => {
         CLAUDISH_TOKEN_FILE: "/run/a.json",
       };
       scrubChildEnv(env, { interactive });
-      expect(env).toEqual({ CLAUDISH_TOKEN_FILE: "/run/a.json" });
+      expect(env).toEqual({ CLAUDISH_PANE_CHILD: "1", CLAUDISH_TOKEN_FILE: "/run/a.json" });
+    });
+
+    test(`the hook inbox and session never reach Claude Code (interactive: ${interactive})`, () => {
+      // hook-system §2.3 step 2: the model's Bash tool must never see the inbox path
+      const env: Record<string, string | undefined> = {
+        CLAUDISH_HOOK_INBOX: "/s/hook-inbox.jsonl",
+        CLAUDISH_HOOK_SESSION: '{"kind":"channel","id":"a","role":null}',
+        KEEP: "me",
+      };
+      scrubChildEnv(env, { interactive });
+      expect(env).toEqual({ KEEP: "me" });
     });
   }
 });

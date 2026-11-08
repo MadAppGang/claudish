@@ -31,10 +31,12 @@ import {
   resolveRouteProfile,
 } from "./connection-resolver.js";
 import { type KnownWire, type WireApi, wireRequestUrl } from "./connection-wire.js";
+import { MUSE_CODE_BASE_URL } from "./meta-muse/muse-mint.js";
 import { getProviderByName } from "./provider-definitions.js";
 import type { ProfileContext } from "./provider-profiles.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
 import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
+import { MuseCodeTransport } from "./transport/meta-muse-code.js";
 import { OpenAICodexTransport } from "./transport/openai-codex.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
 import { OpenCodeZenMessagesTransport, OpenCodeZenTransport } from "./transport/opencode-zen.js";
@@ -76,6 +78,13 @@ export function effectiveBaseUrl(
   return { baseUrl: resolvedBaseUrl.replace(/\/+$/, ""), overridden: true };
 }
 
+/** The registry base, except Muse Code's credentials must stay on the pinned host. */
+function requestBaseUrl(connection: ResolvedConnection, api: WireApi): string | undefined {
+  return connection.provider === "meta-muse-code"
+    ? `${MUSE_CODE_BASE_URL}/v1`
+    : connectionBaseUrl(connection, api);
+}
+
 /**
  * One line saying how a connection is called, for `--probe`: the API and URL,
  * the output-limit field, the reasoning encoding, and the modes and speeds it
@@ -89,7 +98,7 @@ export function describeConnectionWire(connection: ResolvedConnection): string {
     const apis = Object.keys(connection.profile.apis).join(", ") || "none";
     return `${where}: wire unknown — tries ${apis} in turn`;
   }
-  const base = connectionBaseUrl(connection, wire.api);
+  const base = requestBaseUrl(connection, wire.api);
   const url = base ? wireRequestUrl(base, wire.api, connection.externalModelId) : "no base URL";
   const status = (value: string | { status: string }) =>
     typeof value === "string" ? value : value.status;
@@ -161,6 +170,12 @@ function transportFor(
 ): ProviderTransport {
   if (definitionName === "openai-codex") {
     return new OpenAICodexTransport(ctx.provider, ctx.modelName, ctx.apiKey);
+  }
+  // Muse Code signs with a minted key, and only on Responses (the API its
+  // subscription billing was verified on); `buildWireHandler` never builds it
+  // on another API.
+  if (definitionName === "meta-muse-code" && api === "responses") {
+    return withEndpoint(new MuseCodeTransport(ctx.provider, ctx.modelName, ""), url);
   }
   let inner: ProviderTransport;
   if (api === "anthropic-messages") {
@@ -313,6 +328,14 @@ export async function buildWireHandler(
     };
   }
   if (wire.status === "unknown") return tryInTurn(ctx, definitionName, connection, "wire unknown");
+  if (definitionName === "meta-muse-code" && wire.api !== "responses") {
+    return tryInTurn(
+      ctx,
+      definitionName,
+      connection,
+      `Muse Code is billed on responses, not ${wire.api}`
+    );
+  }
 
   const handler = buildKnownWireHandler(ctx, definitionName, connection, wire);
   return handler
@@ -327,7 +350,10 @@ function tryInTurn(
   why: string
 ): WireHandlerOutcome {
   const label = `${connection.route.routeId}/${connection.route.routeProfileId} · ${connection.externalModelId}`;
-  const apis = Object.keys(connection.profile.apis) as WireApi[];
+  // Muse Code: Responses only, whatever else its host serves (see transportFor).
+  const apis = (Object.keys(connection.profile.apis) as WireApi[]).filter(
+    (api) => definitionName !== "meta-muse-code" || api === "responses"
+  );
   if (apis.length === 0) {
     return { kind: "refused", message: `${label}: ${why}, and its route profile publishes no API` };
   }
@@ -348,14 +374,21 @@ export function buildKnownWireHandler(
   connection: ResolvedConnection,
   wire: KnownWire
 ): ModelHandler | null {
-  const registryBase = connectionBaseUrl(connection, wire.api);
+  const registryBase = requestBaseUrl(connection, wire.api);
   if (!registryBase) return null;
   const definition = getProviderByName(definitionName);
-  const { baseUrl, overridden } = effectiveBaseUrl(
-    registryBase,
-    definition?.baseUrl,
-    ctx.provider.baseUrl
-  );
+  // Muse keys stay on Meta, regardless of registry or user base URLs.
+  const { baseUrl, overridden } =
+    definitionName === "meta-muse-code"
+      ? { baseUrl: registryBase, overridden: false }
+      : effectiveBaseUrl(registryBase, definition?.baseUrl, ctx.provider.baseUrl);
+  if (
+    definitionName === "meta-muse-code" &&
+    ctx.provider.baseUrl &&
+    ctx.provider.baseUrl !== definition?.baseUrl
+  ) {
+    log(`[Wire] meta-muse-code: user base URL ignored → ${baseUrl}`);
+  }
   const url = wireRequestUrl(baseUrl, wire.api, connection.externalModelId);
   if (overridden) log(`[Wire] ${definitionName}: base URL overridden by user config → ${baseUrl}`);
 

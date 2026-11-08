@@ -15,9 +15,44 @@
 
 import { Socket } from "node:net";
 
+/**
+ * A failure may carry `reason`, magmux's machine-readable sub-code (`busy` → `starting`,
+ * `dialog:permission`, …; `not_accepted` → `still_in_box`, …), and `typed: true`, which
+ * says bytes of this request reached the pane before it failed. Since 0.17.0 a
+ * `text_mismatch` may also carry `maybeSubmitted: true`: the text may already have been
+ * submitted without magmux's Enter. magmux omits all three when they do not apply (README
+ * "Request/response"), and so does this type: a failure without them is the reply it
+ * always was. `input-gate.ts` reads them; `code` alone still decides everything else.
+ */
 export type MagmuxReply<T = Record<string, unknown>> =
   | { ok: true; result: T }
-  | { ok: false; code: string; error: string };
+  | {
+      ok: false;
+      code: string;
+      error: string;
+      reason?: string;
+      typed?: boolean;
+      maybeSubmitted?: boolean;
+    };
+
+type MagmuxFailure = Extract<MagmuxReply, { ok: false }>;
+
+/**
+ * A wire failure line → the reply, keeping `reason`, `typed` and `maybeSubmitted` only
+ * when magmux sent them.
+ */
+function failureOf(m: Record<string, unknown>): MagmuxFailure {
+  const out: MagmuxFailure = {
+    ok: false,
+    code: String(m.code ?? "error"),
+    error: String(m.error ?? ""),
+  };
+  if (typeof m.reason === "string" && m.reason) out.reason = m.reason;
+  // Present means present: an explicit false is information too.
+  if (typeof m.typed === "boolean") out.typed = m.typed;
+  if (typeof m.maybeSubmitted === "boolean") out.maybeSubmitted = m.maybeSubmitted;
+  return out;
+}
 
 export type MagmuxEventName =
   | "snapshot"
@@ -192,7 +227,7 @@ export class MagmuxClient {
       p.resolve(
         m.ok === true
           ? { ok: true, result: (m.result ?? {}) as Record<string, unknown> }
-          : { ok: false, code: String(m.code ?? "error"), error: String(m.error ?? "") }
+          : failureOf(m)
       );
       return;
     }

@@ -36,6 +36,13 @@
 
 const { execFileSync, execSync, spawn } = require("node:child_process");
 const { resolve } = require("node:path");
+const { NO_ENV_FILE_FLAG, envFileKeys, probeFailedNotice } = require("./env-files.cjs");
+
+/**
+ * The names `childEnv` left out, handed to the child so it prints ONE line for
+ * everything ignored, after its own `.env` load (src/launch-env.ts reads and deletes it).
+ */
+const LAUNCHER_DROPPED_VAR = "CLAUDISH_LAUNCHER_DROPPED";
 
 /**
  * The shell command that asks PATH where bun is.
@@ -90,6 +97,44 @@ function findBun(platform = process.platform, env = process.env) {
   return null;
 }
 
+/**
+ * The arguments Bun is started with. `--no-env-file` comes first: without it Bun
+ * loads `.env`, `.env.local`, `.env.<NODE_ENV>` and `.env.<NODE_ENV>.local` from the
+ * caller's working directory into the environment before claudish runs, and that
+ * directory is often a checkout nobody has reviewed. claudish reads the provider API
+ * keys in `.env` itself, and nothing else (src/dotenv-allowlist.ts).
+ */
+function bunArgv(entry, argv) {
+  return [NO_ENV_FILE_FLAG, entry, ...argv];
+}
+
+/**
+ * The environment the Bun child is given, or null when it cannot be built safely.
+ *
+ * Node never loads env files, so under Node this is the launcher's own environment.
+ * Bun does, unless it was started with `--no-env-file`: `bun <path>/claudish.cjs`
+ * puts the checkout's env files into THIS process, and the child's `--no-env-file`
+ * would then vouch for them as the real environment. So under such a Bun every name
+ * those files set is left out (env-files.cjs asks Bun which). A real value sharing a
+ * name with a file's is left out too, the safe direction; the child still reads the
+ * provider API keys and model settings in `.env`. When Bun cannot answer, there is no child.
+ */
+function childEnv({ isBun, execArgv, bunPath, cwd, env }) {
+  const out = { ...env };
+  delete out[LAUNCHER_DROPPED_VAR];
+  if (!isBun || execArgv.includes(NO_ENV_FILE_FLAG)) return { env: out, dropped: [] };
+  const fileKeys = envFileKeys({ bunPath, execArgv, cwd, env });
+  if (fileKeys === null) return null;
+  const dropped = [];
+  for (const key of fileKeys) {
+    if (out[key] === undefined) continue;
+    delete out[key];
+    dropped.push(key);
+  }
+  if (dropped.length > 0) out[LAUNCHER_DROPPED_VAR] = dropped.join(",");
+  return { env: out, dropped };
+}
+
 function main() {
   const bun = findBun();
   if (!bun) {
@@ -107,9 +152,21 @@ Learn more: https://bun.sh`);
 
   const entry = resolve(__dirname, "..", "dist", "index.js");
 
+  const base = childEnv({
+    isBun: process.versions.bun !== undefined,
+    execArgv: process.execArgv,
+    bunPath: process.execPath,
+    cwd: process.cwd(),
+    env: process.env,
+  });
+  if (base === null) {
+    console.error(probeFailedNotice());
+    process.exit(1);
+  }
+
   let child;
   try {
-    child = spawn(bun, [entry, ...process.argv.slice(2)], {
+    child = spawn(bun, bunArgv(entry, process.argv.slice(2)), {
       stdio: "inherit",
       // The pid pair tells the Bun child who launched it: this launcher, and the
       // launcher's own parent (Claude Code, for an MCP server). The child
@@ -117,7 +174,7 @@ Learn more: https://bun.sh`);
       // (channel/parent-session.ts `hostPidFrom`), so a value leaked into a
       // nested claudish is inert.
       env: {
-        ...process.env,
+        ...base.env,
         CLAUDISH_LAUNCHER_PID: String(process.pid),
         CLAUDISH_LAUNCHER_PPID: String(process.ppid),
       },
@@ -180,5 +237,5 @@ Learn more: https://bun.sh`);
 if (require.main === module) {
   main();
 } else {
-  module.exports = { findBun, lookupCommand, bunCandidates, installHint };
+  module.exports = { findBun, lookupCommand, bunCandidates, installHint, bunArgv, childEnv };
 }

@@ -65,6 +65,13 @@ confirm the merge commit's tree equals
 `git merge-tree --write-tree <main before the merge> <tested PR head>`; if `main`
 moved in between, the tag would mark an untested tree.
 
+When `main` moves under an open release PR, run `gh pr update-branch <n>`. Do not
+re-run the PR's workflow: a re-run reuses the merge SHA of the original event, so it
+tests the stale tree again. `update-branch` makes a new head that already contains
+`main`, its `pull_request` run tests that tree, and the merge commit's tree then equals
+the head's tree exactly. 12.3.2 needed this when PR #320 landed during the release PR's
+CI run.
+
 **Local gates do not replace the clean runner.** Run `bun run typecheck` again
 after the LAST test file lands, not only after the source change. Treat CI as the
 only neutral environment for tests that touch credentials or `~/.claudish`
@@ -108,6 +115,24 @@ green while shipping nothing, so a green conclusion is not evidence of a publish
   not a failure.
 - `update-homebrew` is gated on `vars.ENABLE_HOMEBREW == 'true'` and is SKIPPED,
   not failed, when unset. A skipped job reads as green.
+
+**Reading a red `Tests` run** — shapes observed on PR #351, where the junit
+summary and the log grep disagreed with the job's conclusion:
+
+- junit can report 0 failures while `bun test` exits 1 from an "Unhandled error
+  between tests": an exception at module load or after a test ended. Read the
+  `[ci-tests] rest: … exit N` line and search the log for "Unhandled error"
+  (run 40139308118).
+- A junit failure with no message text does not match a log grep for failed
+  tests. Parse the junit XML: on the first PR #351 run the log grep found 2 of
+  the 4 failures.
+- The CI checkout is shallow: there is no `origin/main` and no old commit. A
+  test that runs git history commands at module load fails the whole `rest`
+  group.
+- The `macos-bridge and script tests` step is skipped when the rest step fails,
+  so its own failures appear only on the next run.
+- A release PR can get no `pull_request` run while main moves
+  (`mergeable: UNKNOWN`). Merging main into the release branch starts one.
 
 ## Deploy monitoring
 
@@ -184,4 +209,4 @@ not the pinned one, so the local red is gone and the gate's coverage is not.
 When the Bun pin is bumped, RE-BASELINE those budgets against the new oracle.
 Never widen them to clear a red run: the budget is the whole assertion.
 
-verified: 2026-10-14 @ 2a0cf33
+verified: 2026-10-30 @ e6c35b6d

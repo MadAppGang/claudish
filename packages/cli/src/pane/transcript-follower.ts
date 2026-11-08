@@ -39,11 +39,18 @@ import {
   statSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { SlotStep } from "./contract.js";
+import { RECENT_STEP_LIMIT, stepOf } from "./slot-steps.js";
 
 export type Witness =
   | { kind: "text"; text: string } // typed plain line or the file-reference instruction (exact)
   /** slash command: its `<command-name>` record, or the plain user record of the typed `line` */
-  | { kind: "command"; name: string; line?: string };
+  | { kind: "command"; name: string; line?: string }
+  /**
+   * A prompt a HUMAN typed (the interactive driver, hook-system §7.5): matched by
+   * provenance, never by text. See `isHumanPrompt`.
+   */
+  | { kind: "human" };
 
 export interface TurnDelivery {
   /** absolute path of the turn file the child must Read */
@@ -83,10 +90,22 @@ export interface TurnView {
   delivery: { file: string; lines: number } | null;
   readCoverage: ReadCoverage;
   preambleBytes: number;
+  /** files the turn created or overwrote with a successful `Write`, de-duplicated, in first-write
+   * order; for a file-delivered turn only Writes after the same Read cut as assistantText */
+  writtenFiles: string[];
   /** offset of the last main-chain chat record (user or assistant) of this turn */
   lastChatOffset: number | null;
   /** a local command's `<local-command-stdout>` after its witness (ANSI removed); null otherwise */
   localCommandOutput: string | null;
+  /** the last RECENT_STEP_LIMIT steps of this turn, oldest first (SlotRow.recent); [] before the first */
+  recent: SlotStep[];
+  /**
+   * Before the witness: the offset of the first main-chain record that shows the model
+   * working without any prompt of this turn (an assistant record, or a task notification
+   * waking it). The interactive driver reads it as a re-wake of the turn it settled
+   * (D23); panes never open a turn ahead of their own delivery and ignore it.
+   */
+  unwitnessedChatOffset: number | null;
 }
 
 export interface SessionFacts {
@@ -102,6 +121,8 @@ export interface TranscriptView {
   toolCalls: number;
   lastAppendAt: number | null;
   session: SessionFacts;
+  /** the agent Claude Code loaded: the latest `agent-setting` record; null = none written */
+  agentSetting: string | null;
 }
 
 /* ───────────────────────────── pure reducer ───────────────────────────── */
@@ -124,6 +145,8 @@ interface TurnState {
   acceptedAt: string | null;
   acceptedOffset: number | null;
   texts: Array<{ offset: number; text: string }>;
+  /** Write tool_uses; ok once a non-error tool_result arrives */
+  writes: Array<{ id: string; path: string; offset: number; ok: boolean }>;
   lastAssistant: {
     messageId: string;
     stopReason: string | null;
@@ -145,6 +168,9 @@ interface TurnState {
   read: ReadState | null;
   lastChatOffset: number | null;
   localOutput: { text: string; offset: number } | null;
+  /** at most RECENT_STEP_LIMIT, oldest dropped first */
+  steps: SlotStep[];
+  unwitnessedChat: number | null;
 }
 
 export interface FollowerState {
@@ -155,6 +181,8 @@ export interface FollowerState {
   mainAssistantIds: string[];
   mainAssistantSeen: Set<string>;
   session: SessionFacts;
+  /** `{"type":"agent-setting","agentSetting":"dev:reviewer"}`: written at line 2, repeated later */
+  agentSetting: string | null;
   records: number;
   resolvePath: (p: string) => string;
 }
@@ -169,6 +197,7 @@ export function initialFollowerState(
     mainAssistantIds: [],
     mainAssistantSeen: new Set(),
     session: { stopHooksSeen: false, provenHookless: false },
+    agentSetting: null,
     records: 0,
     resolvePath,
   };
@@ -219,12 +248,23 @@ function isMainUser(r: Rec): boolean {
 const LOCAL_COMMAND_RE =
   /^\s*<(local-command-caveat|command-name|local-command-stdout|local-command-stderr)>/;
 
-function isLocalCommandText(text: string): boolean {
+export function isLocalCommandText(text: string): boolean {
   return LOCAL_COMMAND_RE.test(text);
 }
 
 function isTaskNotification(r: Rec): boolean {
   return r.origin?.kind === "task-notification" || userText(r).includes("<task-notification>");
+}
+
+/**
+ * A `<task-notification>` Claude Code absorbed into a turn still running: a main-chain
+ * `attachment` with `attachment.type:"queued_command"` (captured 2.1.263 and 2.1.301). The
+ * prefix test keeps out a peer `<agent-message>` that merely quotes one.
+ */
+function queuedTaskNotification(r: Rec): string | null {
+  const a = r.type === "attachment" ? r.attachment : null;
+  if (a?.type !== "queued_command" || typeof a.prompt !== "string") return null;
+  return a.prompt.startsWith("<task-notification>") ? a.prompt : null;
 }
 
 function taskIdOf(text: string): string | null {
@@ -237,7 +277,30 @@ function isLocalCommandSystem(r: Rec): boolean {
   return r.type === "system" && r.subtype === "local_command" && !r.isSidechain;
 }
 
+export const INTERRUPT_PREFIX = "[Request interrupted by user";
+
+/**
+ * A prompt a human typed, by PROVENANCE (hook-system §3.2, §7.5): a main-chain user
+ * record that is not `isMeta`, carries no `tool_result`, and is none of the records
+ * Claude Code writes on its own — a task notification, a local command's records, an
+ * interrupt marker, a compact summary. When the record carries `origin` (2.1.290+ always
+ * does for typed prompts), `origin.kind` must be `"human"`. A background notification
+ * (`origin.kind: "task-notification"`) therefore never reads as a human turn, so a D23
+ * re-wake stays the turn it woke.
+ */
+export function isHumanPrompt(record: Record<string, unknown>): boolean {
+  const r = record as Rec;
+  if (!isMainUser(r) || r.isMeta || hasToolResult(r) || r.isCompactSummary) return false;
+  if (isTaskNotification(r)) return false;
+  const text = userText(r);
+  if (!text.trim() || isLocalCommandText(text) || text.startsWith(INTERRUPT_PREFIX)) return false;
+  const origin = r.origin;
+  if (origin !== undefined && origin !== null) return origin?.kind === "human";
+  return true;
+}
+
 function matchesWitness(r: Rec, w: Witness): boolean {
+  if (w.kind === "human") return isHumanPrompt(r);
   // Some local commands are written as system records, not user records (captured:
   // 2.1.291 `/color yellow` → two `system/local_command` records).
   if (w.kind === "command" && isLocalCommandSystem(r))
@@ -379,7 +442,15 @@ function applyAssistant(state: FollowerState, t: TurnState, r: Rec, offset: numb
   t.waking = false;
   t.apiError = isApiError ? apiErrorOf(r) : null;
   if (isApiError) return;
-  for (const b of m.content ?? []) applyAssistantBlock(state, t, b, offset);
+  const at = typeof r.timestamp === "string" ? r.timestamp : new Date().toISOString();
+  for (const b of m.content ?? []) {
+    applyAssistantBlock(state, t, b, offset);
+    const step = stepOf(b, at);
+    if (step) {
+      t.steps.push(step);
+      if (t.steps.length > RECENT_STEP_LIMIT) t.steps.shift();
+    }
+  }
 }
 
 function apiErrorOf(r: Rec): TurnView["apiError"] {
@@ -402,6 +473,9 @@ function applyAssistantBlock(state: FollowerState, t: TurnState, b: Rec, offset:
   if (b?.type !== "tool_use" || typeof b.id !== "string") return;
   t.pending.set(b.id, String(b.name ?? ""));
   t.pendingInput.set(b.id, b.input);
+  // Write only: an Edit changes a file that predates the task, so its text proves nothing.
+  if (b.name === "Write" && typeof b.input?.file_path === "string")
+    t.writes.push({ id: b.id, path: b.input.file_path, offset, ok: false });
   if (b.name === "Bash" && b.input?.run_in_background)
     t.shellToolIds.set(b.id, String(b.input?.command ?? ""));
   applyReadUse(state, t, b);
@@ -413,6 +487,7 @@ function applyToolResults(t: TurnState, r: Rec, blocks: Rec[], offset: number): 
     if (b?.type !== "tool_result") continue;
     t.pending.delete(b.tool_use_id);
     t.pendingInput.delete(b.tool_use_id);
+    markWriteResult(t, b);
     // A background agent is recognised by its result, not by run_in_background in its input.
     if (tur?.isAsync === true && typeof tur.agentId === "string") t.agents.add(tur.agentId);
     if (typeof tur?.backgroundTaskId === "string")
@@ -421,7 +496,15 @@ function applyToolResults(t: TurnState, r: Rec, blocks: Rec[], offset: number): 
   }
 }
 
-const STDOUT_RE = /^\s*<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/;
+/** A Write counts once its tool_result arrives without is_error: a failed overwrite leaves
+ * the old content, which is not an answer. */
+function markWriteResult(t: TurnState, b: Rec): void {
+  if (b.is_error === true) return;
+  const w = t.writes.find((x) => x.id === b.tool_use_id);
+  if (w) w.ok = true;
+}
+
+export const STDOUT_RE = /^\s*<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences in local-command output
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
@@ -446,6 +529,17 @@ function applyNotification(t: TurnState, text: string): void {
   t.shells.delete(id);
 }
 
+/**
+ * Completes the agent or closes the shell only, never waking and never chat activity: the
+ * attachment rides an API request already in flight, and the assistant record that answers it
+ * follows (1,133 of 1,134 corpus notification attachments; the other was a file still being
+ * written).
+ */
+function applyQueuedNotification(t: TurnState, r: Rec): void {
+  const text = queuedTaskNotification(r);
+  if (text) applyNotification(t, text);
+}
+
 function applyUser(t: TurnState, r: Rec, offset: number): void {
   const c = contentOf(r);
   if (Array.isArray(c) && c.some((b) => b?.type === "tool_result")) {
@@ -461,7 +555,7 @@ function applyUser(t: TurnState, r: Rec, offset: number): void {
     applyLocalCommandRecord(t, text, offset);
     return;
   }
-  if (text.startsWith("[Request interrupted by user")) {
+  if (text.startsWith(INTERRUPT_PREFIX)) {
     t.interrupt = { forToolUse: text.includes("for tool use") };
     t.pending.clear();
     t.pendingInput.clear();
@@ -501,6 +595,8 @@ export function applyRecord(
   recordUsage(state, r);
   if (r.isSidechain) return state;
   noteMainAssistant(state, r);
+  if (r.type === "agent-setting" && typeof r.agentSetting === "string" && r.agentSetting)
+    state.agentSetting = r.agentSetting;
   if (r.type === "system" && r.subtype === "stop_hook_summary") {
     state.session.stopHooksSeen = true;
     state.session.provenHookless = false;
@@ -510,6 +606,8 @@ export function applyRecord(
 
   if (t.acceptedAt === null) {
     acceptIfWitness(t, r, offset);
+    if (t.acceptedAt === null && t.unwitnessedChat === null && wakesModel(r))
+      t.unwitnessedChat = offset;
     return state;
   }
 
@@ -519,8 +617,15 @@ export function applyRecord(
   else if (r.type === "system" && r.subtype === "stop_hook_summary") {
     if (t.lastAssistant) t.stopHookAfterLast = true;
   } else if (r.type === "system" && r.subtype === "turn_duration") applyTurnDuration(state, t, r);
+  applyQueuedNotification(t, r); // attachment records only; the predicate rejects every other type
   // compact_boundary carries no turn fact; compactions are counted on the isCompactSummary record
   return state;
+}
+
+/** A main-chain record that shows the model working with no prompt: its reply, or a notification. */
+function wakesModel(r: Rec): boolean {
+  if (r.type === "assistant") return true;
+  return isMainUser(r) && !hasToolResult(r) && isTaskNotification(r);
 }
 
 function applyTurnDuration(state: FollowerState, t: TurnState, r: Rec): void {
@@ -568,6 +673,7 @@ export function openTurnState(
     acceptedAt: null,
     acceptedOffset: null,
     texts: [],
+    writes: [],
     lastAssistant: null,
     td: null,
     stopHookAfterLast: false,
@@ -584,6 +690,8 @@ export function openTurnState(
     read: t.delivery ? newReadState(t.delivery) : null,
     lastChatOffset: null,
     localOutput: null,
+    steps: [],
+    unwitnessedChat: null,
   });
   return state;
 }
@@ -591,6 +699,7 @@ export function openTurnState(
 export function turnView(t: TurnState): TurnView {
   const rs = t.read;
   let texts = t.texts;
+  let writes = t.writes;
   let preambleBytes = 0;
   if (rs) {
     const cut = rs.completedAtOffset ?? rs.lastReadOffset;
@@ -598,6 +707,8 @@ export function turnView(t: TurnState): TurnView {
       const before = texts.filter((x) => x.offset < cut);
       preambleBytes = before.reduce((n, x) => n + Buffer.byteLength(x.text), 0);
       texts = texts.filter((x) => x.offset > cut);
+      // A file written before the task was read cannot answer it, exactly as narration cannot.
+      writes = writes.filter((x) => x.offset > cut);
     }
   }
   const pendingEntry = [...t.pending.entries()].pop();
@@ -635,8 +746,11 @@ export function turnView(t: TurnState): TurnView {
         }
       : { linesReturned: 0, complete: true, reads: 0, completedAtOffset: null },
     preambleBytes,
+    writtenFiles: [...new Set(writes.filter((x) => x.ok).map((x) => x.path))],
     lastChatOffset: t.lastChatOffset,
     localCommandOutput: t.localOutput?.text ?? null,
+    recent: [...t.steps],
+    unwitnessedChatOffset: t.unwitnessedChat,
   };
 }
 
@@ -651,6 +765,12 @@ export class Tail {
   offset = 0;
   private rest: Buffer = Buffer.alloc(0);
   constructor(readonly path: string) {}
+
+  /** Read again from byte `offset` (a line start): the next `read()` returns every line from there. */
+  seek(offset: number): void {
+    this.offset = Math.max(0, offset);
+    this.rest = Buffer.alloc(0);
+  }
 
   /** Read appended bytes; return complete lines with the byte offset each starts at. */
   read(): Array<{ offset: number; line: string }> {
@@ -710,7 +830,7 @@ export class TranscriptFollower {
     let any = false;
     for (const { offset, line } of this.main.read()) {
       any = true;
-      const rec = parse(line);
+      const rec = parseRecord(line);
       // Offsets are 1-based positions past the line start so a record AT the turn offset
       // (written after the mark) is strictly greater than it.
       if (rec) applyRecord(this.state, rec, offset + 1);
@@ -739,7 +859,7 @@ export class TranscriptFollower {
       }
       for (const { line } of tail.read()) {
         any = true;
-        const rec = parse(line);
+        const rec = parseRecord(line);
         if (rec) applySubagentRecord(this.state, rec, this.main.offset + 1);
       }
     }
@@ -758,6 +878,23 @@ export class TranscriptFollower {
     delivery?: TurnDelivery | null;
   }): void {
     openTurnState(this.state, t);
+  }
+
+  /**
+   * Re-open turn `t` from its own offset and fold its records again. The interactive
+   * driver does this on a re-wake (D23): it had opened the NEXT turn after the settle,
+   * so the continuation's records were read into a turn that never accepted them. Usage,
+   * tool ids and assistant ids are keyed, so folding a record twice counts it once.
+   */
+  rewindTo(t: {
+    index: number;
+    offset: number;
+    witness: Witness;
+    delivery?: TurnDelivery | null;
+  }): void {
+    this.main.seek(t.offset);
+    openTurnState(this.state, t);
+    this.poll();
   }
 
   markSettled(): void {
@@ -795,8 +932,27 @@ export class TranscriptFollower {
       toolCalls: this.state.toolUseIds.size,
       lastAppendAt: this.lastAppend,
       session: { ...this.state.session },
+      agentSetting: this.state.agentSetting,
     };
   }
+}
+
+/**
+ * The byte offset of the line holding the LAST human prompt in a transcript, or null
+ * when it holds none. The interactive driver opens a turn there when it learns a session
+ * id from a proxy request rather than minting it (`--resume`, `--continue`,
+ * `--fork-session`, `/clear`): Claude Code writes the prompt before it sends the
+ * request that names the session, so the prompt is already on disk and is the turn's
+ * witness.
+ */
+export function lastHumanPromptOffset(path: string): number | null {
+  const tail = new Tail(path);
+  let found: number | null = null;
+  for (const { offset, line } of tail.read()) {
+    const rec = parseRecord(line);
+    if (rec && isHumanPrompt(rec)) found = offset;
+  }
+  return found;
 }
 
 function fileSize(p: string): number {
@@ -807,7 +963,8 @@ function fileSize(p: string): number {
   }
 }
 
-function parse(line: string): Record<string, unknown> | null {
+/** One JSONL line as an object, or null (blank, not JSON, or not an object). Never throws. */
+export function parseRecord(line: string): Record<string, unknown> | null {
   if (!line.trim()) return null;
   try {
     const v = JSON.parse(line);

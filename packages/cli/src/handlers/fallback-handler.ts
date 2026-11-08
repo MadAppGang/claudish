@@ -10,16 +10,34 @@
  */
 
 import type { Context } from "hono";
-import { logStderr } from "../logger.js";
-import { ComposedHandler } from "./composed-handler.js";
+import { log, logStderr } from "../logger.js";
+import { redactForClient } from "../redact.js";
+import { ComposedHandler, getRecoveryHint } from "./composed-handler.js";
 import { extractUpstreamStatus } from "./shared/anthropic-error.js";
+import { authVerdict } from "./shared/auth-failure.js";
+import { abortedResponse, callAborted } from "./shared/call-context.js";
+import { decideHopFailure } from "./shared/hop-decision.js";
 import { hasQuotaExhaustionWording } from "./shared/quota-exhaustion.js";
-import { isClaudishConnectionVerdict, isRecoveryHoldResponse } from "./shared/recovery-marker.js";
+import { isSubscriptionProvider } from "./shared/remote-provider-types.js";
 import type { ModelHandler } from "./types.js";
+
+// Moved to `hop-decision.ts`, which the probe shares; re-exported for the
+// existing importers and tests.
+export {
+  isProvider,
+  isRetryableError,
+  isSubscriptionCredentialRejection,
+} from "./shared/hop-decision.js";
 
 export interface FallbackCandidate {
   /** Human-readable provider name for logging */
   name: string;
+  /**
+   * The claudish provider uid (`kimi-coding`), when the caller knows it. `name`
+   * is a DISPLAY name, so a billing question asked of it answers for nobody:
+   * `isSubscriptionProvider("Kimi Coding")` is false.
+   */
+  provider?: string;
   /** The handler to try */
   handler: ModelHandler;
 }
@@ -41,11 +59,19 @@ export class FallbackHandler implements ModelHandler {
   async handle(c: Context, payload: any): Promise<Response> {
     const errors: Array<{ provider: string; status: number; message: string }> = [];
     const startIndex = this.lastSuccessIndex;
+    // The first subscription candidate whose credential was rejected. The chain
+    // moves past it like any retryable failure; this is kept because its
+    // message (log in again, renew the key) is the one a user can act on, so
+    // an exhausted chain still shows it.
+    let firstRejection: { name: string; response: Response; body: string } | undefined;
 
     for (let attempt = 0; attempt < this.candidates.length; attempt++) {
       const idx = (startIndex + attempt) % this.candidates.length;
-      const { name, handler } = this.candidates[idx];
+      const { name, handler, provider } = this.candidates[idx];
       const isLast = attempt === this.candidates.length - 1;
+      // An internal call whose deadline passed (call-context.ts) never reaches
+      // another hop. Never true for a request from Claude Code.
+      if (callAborted(c)) return abortedResponse();
 
       try {
         // If previous attempts failed, signal the winning handler to include fallback metadata
@@ -62,6 +88,9 @@ export class FallbackHandler implements ModelHandler {
         }
 
         const response = await handler.handle(c, payload);
+        // The caller stopped waiting while this hop ran: its answer goes back
+        // as it is, before any retry decision or stderr line.
+        if (callAborted(c)) return response;
 
         // Success — cache the working provider index and return immediately
         if (response.ok) {
@@ -76,55 +105,101 @@ export class FallbackHandler implements ModelHandler {
           return response;
         }
 
-        // ── THE RECOVERY MARKER, CHECKED BEFORE THE BODY IS EVEN READ ─────────
-        //
-        // A recovery-exhaustion 503 is OUR status, not an upstream one. It says
-        // "claudish held this request for its whole deadline, could not reach
-        // the host, and a surface is painting that fact" — so it must leave
-        // this handler UNTOUCHED, for two separate reasons:
-        //
-        //   1. It is not a reason to advance the chain. During a network outage
-        //      the next candidate is unreachable for the same reason, so the
-        //      chain would burn every candidate — and per the standing CLAUDE.md
-        //      invariant, advancing off a SUBSCRIPTION_PROVIDERS candidate onto
-        //      a metered one quotes the user a real per-token price for a fault
-        //      that had nothing to do with any provider.
-        //   2. It must not be FOLDED into a combined error either. Below,
-        //      `formatCombinedError` emits `exhaustedChainStatus(errors)`, which
-        //      returns 503 only if EVERY accumulated error is transient — so one
-        //      earlier auth/404 failure would turn our 503 into a terminal 400,
-        //      Claude Code would never re-POST, and tier 2 would never begin.
-        //
-        // Returning it verbatim answers both at once. This is a HEADER and not a
-        // status, so the "read the upstream status via `extractUpstreamStatus`,
-        // never the wire status" doctrine is untouched. It cannot be forged by
-        // an upstream — see `recovery-marker.ts` for the two source facts that
-        // make that structural rather than hopeful.
-        //
-        // NOT a wording rule, and that is the whole point: `isRetryableError`'s
-        // first statement is a status-agnostic phrase match whose list contains
-        // the bare substring "quota", so a 503 whose message merely MENTIONED a
-        // quota would have advanced the chain and spent the user's money.
-        if (isRecoveryHoldResponse(response)) {
-          logStderr(
-            `[Fallback] ${name} is unreachable and claudish is still retrying it — ` +
-              "holding the chain here rather than switching providers mid-outage."
-          );
-          return response;
-        }
-
-        // Clone before reading body so we can still return the original if needed
+        // Clone before reading body so we can still return the original if needed.
+        // Read BEFORE the decision, also for a recovery hold, a stream failure and
+        // a credential verdict: all three are claudish's own small JSON bodies,
+        // and each is still returned verbatim below.
         const errorBody = await response.clone().text();
 
-        // Non-retryable error (rate limit, server error, bad format) — stop trying
-        if (!isRetryableError(response.status, errorBody, name, response.headers)) {
-          if (errors.length > 0) {
-            // We had previous fallback attempts; show combined error
+        // ONE decision, shared with the probe (`hop-decision.ts`, which carries
+        // the reasons for its order). Each reason maps onto exactly the branch
+        // this handler has always taken for it.
+        const decision = decideHopFailure({
+          kind: "response",
+          status: response.status,
+          headers: response.headers,
+          body: errorBody,
+          provider,
+          name,
+        });
+
+        switch (decision.reason) {
+          // ── THE RECOVERY MARKER ─────────────────────────────────────────────
+          //
+          // A recovery-exhaustion 503 is OUR status, not an upstream one. It says
+          // "claudish held this request for its whole deadline, could not reach
+          // the host, and a surface is painting that fact" — so it must leave
+          // this handler UNTOUCHED, for two separate reasons:
+          //
+          //   1. It is not a reason to advance the chain. During a network outage
+          //      the next candidate is unreachable for the same reason, so the
+          //      chain would burn every candidate — and per the standing CLAUDE.md
+          //      invariant, advancing off a SUBSCRIPTION_PROVIDERS candidate onto
+          //      a metered one quotes the user a real per-token price for a fault
+          //      that had nothing to do with any provider.
+          //   2. It must not be FOLDED into a combined error either. Below,
+          //      `formatCombinedError` emits `exhaustedChainStatus(errors)`, which
+          //      returns 503 only if EVERY accumulated error is transient — so one
+          //      earlier auth/404 failure would turn our 503 into a terminal 400,
+          //      Claude Code would never re-POST, and tier 2 would never begin.
+          //
+          // Returning it verbatim answers both at once.
+          case "recovery-hold":
+            logStderr(
+              `[Fallback] ${name} is unreachable and claudish is still retrying it — ` +
+                "holding the chain here rather than switching providers mid-outage."
+            );
+            return response;
+
+          // ── THE STREAM-FAILURE MARKER, SAME REASONS ─────────────────────────
+          //
+          // A non-streamed turn whose stream ended on an SSE `error` (the provider
+          // answered 200, then the stream failed) is answered by the JSON collector
+          // with an error response. In streaming mode the same failure never comes
+          // back through here as an error, so neither may this one: it is not the
+          // provider's verdict on the request. Neither advanced past nor folded.
+          case "stream-failure":
+            return response;
+
+          // A CREDENTIAL VERDICT leaves this handler untouched too, for the
+          // recovery hold's second reason: folded into `formatCombinedError`, a
+          // transient 503 behind an earlier candidate's 404 became a terminal 400,
+          // so Claude Code stopped instead of retrying the same hop, and the
+          // verdict header was dropped. A terminal verdict keeps its exact message
+          // and `upstream_status` the same way (`auth-failure.ts`).
+          case "credential-hold":
+            if (errors.length > 0) {
+              const verdict = authVerdict(response.headers);
+              logStderr(
+                `[Fallback] ${name}: credential ${verdict === "terminal" ? "rejected" : "temporarily unavailable"} — stopping the chain here.`
+              );
+            }
+            return response;
+
+          // A TERMINAL verdict on a subscription (an expired, wrong or revoked
+          // credential) moves to the next hop, metered included (project owner,
+          // 2026-10-21): an expired key must not block the chain, and a metered
+          // key the user configured is consent to be billed by it. The move is
+          // announced, once per provider and status.
+          case "subscription-credential-rejected": {
             errors.push({ provider: name, status: response.status, message: errorBody });
-            return this.formatCombinedError(c, errors, payload.model);
+            if (!firstRejection) firstRejection = { name, response, body: errorBody };
+            if (!isLast) {
+              const next = this.candidates[(idx + 1) % this.candidates.length];
+              announceCredentialRejection({ name, provider }, response.status, errorBody, next);
+            }
+            continue;
           }
-          // First and only attempt — return original response as-is
-          return response;
+
+          // Non-retryable error (rate limit, server error, bad format) — stop trying
+          case "non-retryable":
+            if (errors.length > 0) {
+              // We had previous fallback attempts; show combined error
+              errors.push({ provider: name, status: response.status, message: errorBody });
+              return this.formatCombinedError(c, errors, payload.model, firstRejection);
+            }
+            // First and only attempt — return original response as-is
+            return response;
         }
 
         // Retryable (auth/not-found) — log and try next provider
@@ -149,42 +224,69 @@ export class FallbackHandler implements ModelHandler {
           }
         }
       } catch (err: any) {
-        errors.push({ provider: name, status: 0, message: err.message });
-        if (!isLast) {
-          logStderr(`[Fallback] ${name} error: ${err.message}, trying next provider...`);
+        if (callAborted(c)) return abortedResponse();
+        // A thrown hop advances (`decideHopFailure({kind: "thrown"})`), as it
+        // always has; the probe judges a thrown hop by the same rule.
+        if (decideHopFailure({ kind: "thrown" }).action === "advance") {
+          errors.push({
+            provider: name,
+            status: 0,
+            message: redactForClient(String(err?.message)),
+          });
+          if (!isLast) {
+            logStderr(`[Fallback] ${name} error: ${err.message}, trying next provider...`);
+          }
         }
       }
     }
 
+    // The rejected credential was the only failure (a chain whose other hops
+    // were never reached): answered as a chain of one would be, with its own
+    // message, status and verdict.
+    if (firstRejection && errors.length === 1) return firstRejection.response;
+
     // All providers failed
-    return this.formatCombinedError(c, errors, payload.model);
+    return this.formatCombinedError(c, errors, payload.model, firstRejection);
   }
 
+  /**
+   * The combined answer of an exhausted chain. When a subscription's
+   * credential was rejected on the way, its message leads: the later hops'
+   * failures (a missing key, a model they do not carry) are not what the user
+   * can fix, and the per-attempt list clips each message at 200 characters,
+   * which cut the `claudish login …` line off.
+   */
   private formatCombinedError(
     c: Context,
     errors: Array<{ provider: string; status: number; message: string }>,
-    modelName?: string
+    modelName?: string,
+    firstRejection?: { name: string; body: string }
   ): Response {
     const summary = errors
       .map(
         (e) =>
-          `  ${e.provider}: HTTP ${e.status || "ERR"} — ${truncate(parseErrorMessage(e.message), 150)}`
+          `  ${e.provider}: HTTP ${e.status || "ERR"} — ${truncate(parseErrorMessage(redactForClient(e.message)), 150)}`
       )
       .join("\n");
 
+    const rejection = firstRejection
+      ? ` First, ${firstRejection.name} rejected its credential: ${parseErrorMessage(redactForClient(firstRejection.body))}`
+      : "";
+
     logStderr(
-      `[Fallback] All ${errors.length} provider(s) failed for ${modelName || "model"}:\n${summary}`
+      `[Fallback] All ${errors.length} provider(s) failed for ${modelName || "model"}:\n${summary}` +
+        (rejection ? `\n ${rejection.trim()}` : "")
     );
 
     return c.json(
       {
         error: {
           type: "all_providers_failed",
-          message: `All ${errors.length} providers failed for model '${modelName || "unknown"}'`,
+          message: `All ${errors.length} providers failed for model '${modelName || "unknown"}'${rejection ? `.${rejection}` : ""}`,
           attempts: errors.map((e) => ({
             provider: e.provider,
             status: e.status,
-            error: truncate(parseErrorMessage(e.message), 200),
+            error: truncate(parseErrorMessage(redactForClient(e.message)), 200),
           })),
         },
       },
@@ -201,232 +303,58 @@ export class FallbackHandler implements ModelHandler {
   }
 }
 
+/** `<provider uid>|<upstream status>` of every rejection already announced on stderr. */
+const announcedRejections = new Set<string>();
+
+/** Test seam: forget which credential rejections were announced. */
+export function _resetCredentialRejectionNotices(): void {
+  announcedRejections.clear();
+}
+
+/** The billing words for a hop the chain moves to; a hop of unknown billing reads metered. */
+function hopBillingWords(provider: string | undefined): string {
+  return provider && isSubscriptionProvider(provider)
+    ? "subscription"
+    : "metered, billed per token";
+}
+
 /**
- * Determine if an HTTP error is retryable (should try next provider).
- * Auth errors, billing errors, rate limits, model-not-found errors and an
- * unavailable endpoint (502/503/504) warrant trying a different provider. A
- * plain 500 does NOT: it may carry account state, and it is the one 5xx a
- * request's own payload can provoke on every provider alike.
+ * Say that a subscription's credential was rejected and which hop the chain
+ * moves to, and how that hop bills. The user did not choose the move (claudish
+ * assembled the chain), and the next hop may bill per token, so it is said on
+ * stderr, once per provider and upstream status per process; every occurrence
+ * is written to the log. The provider message has already been redacted for
+ * the client by `ComposedHandler`; it is redacted again here, and `logStderr`
+ * redacts the request's signing values.
  */
-export function isRetryableError(
+export function announceCredentialRejection(
+  rejected: { name: string; provider?: string },
   status: number,
   errorBody: string,
-  provider?: string,
-  headers?: Headers
-): boolean {
-  // ── CLAUDISH'S OWN "CANNOT REACH THE HOST" IS NEVER A REASON TO ADVANCE ────
-  //
-  // FIRST, above the quota wording check, and the ORDER is the whole point.
-  // The next statement is `hasQuotaExhaustionWording(errorBody)`, which is
-  // deliberately status-agnostic and whose phrase list contains the bare
-  // substring "quota" — so one of our own connection verdicts that merely
-  // mentioned one would be read as a spent subscription and walk the user onto
-  // metered billing in the middle of a network outage. The error text quotes
-  // the endpoint HOST and URL, so "merely mentioned" is not hypothetical: a
-  // host named `quota-…` reproduced it, and only that word did.
-  //
-  // BOTH arms, via one predicate. The 503 handoff carries `x-claudish-recovery`
-  // and is already returned verbatim by `handle()` above, so for that arm this
-  // branch is a second independent mechanism. The 400 arm — every headless run,
-  // where no banner can exist — carries `x-claudish-connection-error`, and for
-  // IT this branch is the only mechanism there is. Asking the combined
-  // predicate rather than either half is what stops chain-safety from being a
-  // property of which arm happened to answer.
-  if (isClaudishConnectionVerdict(headers)) return false;
-
-  // A spent subscription allowance is retryable AT THE CHAIN LEVEL: this
-  // provider cannot serve, but the next one can.
-  //
-  // Checked FIRST, and on wording rather than status, because the transport has
-  // already decided this is terminal for itself and surfaced it as 400 (see the
-  // "terminal errors become 400" doctrine). 400 is otherwise non-retryable, so a
-  // status-based check here would stop the chain dead — which is exactly the
-  // regression that showed up as a bare `minimax-m2.5` hard-failing while Zen
-  // Go's 5-hour window was spent and metered MiniMax stood ready.
-  //
-  // The billing change this causes is announced rather than prevented — see the
-  // warning at the advance site below.
-  //
-  // A first attempt made them terminal, to stop a user being moved from their
-  // subscription onto per-token billing without being told. That was the wrong
-  // lever, for two measured reasons:
-  //
-  //   1. It was unnecessary for the case it was meant to protect. An explicit
-  //      `kc@k3` / `zgo@model` spec resolves to exactly ONE candidate, so there
-  //      is nothing to advance to and the "Out of quota" error surfaces whatever
-  //      this function returns. Terminal only ever affected chains claudish
-  //      assembled on the user's behalf.
-  //   2. In those chains it cost availability outright. With `opencode-zen-go`
-  //      now sitting ahead of the metered APIs, a bare `minimax-m2.5` hard-failed
-  //      whenever the Go plan's rolling 5-hour window was spent — a request that
-  //      had worked a moment earlier via the metered provider. Verified live:
-  //      Zen Go answers `429 GoUsageLimitError "5-hour usage limit reached.
-  //      Resets in 3hr 17min"`, and treating that as terminal stopped the chain
-  //      dead instead of falling through to a provider that was ready to serve.
-  //
-  // So the chain advances, and the billing change is made LOUD instead of being
-  // prevented at the cost of the request.
-  if (hasQuotaExhaustionWording(errorBody)) return true;
-
-  // ── Recover the ORIGINAL status from a remapped terminal error (#148) ──────
-  //
-  // `composed-handler` remaps terminal upstream failures (401/403/terminal-429)
-  // to 400 BEFORE this handler ever sees them, because a 400 is what makes
-  // Claude Code render the reason inline instead of looping on "API error ·
-  // Retrying". Each candidate in the chain IS a ComposedHandler, so by the time
-  // the status reaches here it is 400, falls into the model-not-found branch
-  // below, matches none of its phrases, and the chain STOPS at the first
-  // provider.
-  //
-  // Which inverts the intent exactly. "Terminal" means THIS provider will not
-  // recover on retry, and that is precisely when the next one should be tried.
-  // The errors that most warrant a fallback were the only ones that could no
-  // longer trigger one.
-  //
-  // The quota half of this was fixed first, by the wording check above — that
-  // covers a spent plan, which is the common case. What is left is a genuine
-  // credential failure: a revoked or rotated key hard-fails a model that three
-  // other credentialed providers in the same chain would have served.
-  //
-  // Deliberately ADDITIVE. It only ever turns a `false` into a `true`, using
-  // the status the upstream actually returned, and falls through to the
-  // unchanged status logic when there is no `upstream_status` to recover. A
-  // remapped 400 that carries something non-retryable (say an upstream 400) is
-  // left to the existing branches, so nothing that used to surface now hides.
-  const upstream = status === 400 ? extractUpstreamStatus(errorBody) : undefined;
-  if (upstream === 401 || upstream === 403 || upstream === 402 || upstream === 429) {
-    return true;
+  next: { name: string; provider?: string }
+): void {
+  const upstreamStatus = (status === 400 ? extractUpstreamStatus(errorBody) : undefined) ?? status;
+  const providerMessage = truncate(
+    parseProviderMessage(redactForClient(errorBody)).replace(/\s+/g, " ").trim(),
+    300
+  );
+  const hint = getRecoveryHint(
+    upstreamStatus,
+    errorBody,
+    rejected.name,
+    undefined,
+    rejected.provider
+  );
+  const line =
+    `${rejected.name} rejected its credential (${upstreamStatus}: ${providerMessage}) — ` +
+    `moving to ${next.name} (${hopBillingWords(next.provider)}). ${hint}`;
+  const key = `${rejected.provider ?? rejected.name}|${upstreamStatus}`;
+  if (announcedRejections.has(key)) {
+    log(`[Fallback] ${line}`);
+    return;
   }
-
-  // Auth errors — different provider might have valid credentials
-  if (status === 401 || status === 403) return true;
-
-  // Payment required — billing/credit issue specific to this provider
-  if (status === 402) return true;
-
-  // Not found — model doesn't exist on this provider
-  if (status === 404) return true;
-
-  // Rate limited — per-provider limit, a different provider may have capacity
-  if (status === 429) return true;
-
-  // Unavailable — a gateway or overload answer is about THIS endpoint, not about
-  // the model anywhere else. A bare `grok-4.7` stopped at its first candidate on
-  // Zen Go's `503 Upstream request failed: Endpoint is unavailable.` while the
-  // five candidates behind it answered (`--probe grok-4.7`, 2026-09-24), and
-  // Claude Code's retry loop re-sent the same chain to the same dead hop.
-  //
-  // The old exclusion argued a 503 "cannot silently switch the user off the model
-  // they pinned". A pinned `provider@model` builds no FallbackHandler at all
-  // (proxy-server: one candidate → its handler directly), so inside a chain that
-  // protected nothing. claudish's OWN "cannot reach the host" 503 still holds the
-  // chain: the connection-verdict check at the top of this function answers first,
-  // and `handle()` returns a recovery-hold response before it gets here.
-  if (status === 502 || status === 503 || status === 504) return true;
-
-  const lower = errorBody.toLowerCase();
-
-  // Unprocessable (422) — some providers (OpenRouter) use this for model unavailability
-  if (status === 422) {
-    if (
-      lower.includes("not available") ||
-      lower.includes("model not found") ||
-      lower.includes("not supported")
-    ) {
-      return true;
-    }
-  }
-
-  // Bad request — only retryable if it's a model-not-found variant
-  if (status === 400) {
-    if (
-      lower.includes("model not found") ||
-      lower.includes("not registered") ||
-      lower.includes("does not exist") ||
-      lower.includes("unknown model") ||
-      lower.includes("unsupported model") ||
-      lower.includes("no healthy deployment") ||
-      // Gemini Code Assist config-terminal error (the F1-F7 path returns 400 to
-      // surface it inline for an EXPLICIT ag@ selection). But this handler
-      // only runs for BARE-NAME auto-routing, where Gemini is just the first
-      // candidate — a missing project / revoked-client verdict must advance the
-      // chain to the next provider (e.g. OpenRouter), not abort it. When Gemini
-      // is the LAST candidate the caller returns this same 400 anyway, so the
-      // inline-surface behavior is preserved for the single-provider case.
-      lower.includes("requires a google cloud project") ||
-      lower.includes("unsupported_client")
-    ) {
-      return true;
-    }
-
-    // Antigravity rejects some SERVED variants at generation time with a
-    // generic "Request contains an invalid argument" — `gemini-3.1-pro-high`
-    // is in both the account's dynamic models catalog and the cloud models
-    // catalog (marked the family default), yet 400s on every call. Without
-    // this, a bare `gemini-3.1-pro-*` aborts the whole chain instead of
-    // advancing to a provider that works, which is strictly worse than the 404
-    // it used to produce.
-    //
-    // Deliberately scoped to this provider: "invalid argument" is generic
-    // enough that a blanket rule would mask real payload bugs elsewhere by
-    // silently advancing instead of surfacing them. Still bare-name only — an
-    // explicit `ag@` selection has no next candidate, so the caller returns
-    // this same 400 and the message reaches the user inline.
-    if (provider?.toLowerCase().includes("antigravity") && lower.includes("invalid argument")) {
-      return true;
-    }
-
-    // An AGGREGATOR reporting that its UPSTREAM rejected the request is terminal
-    // for this candidate and says nothing about the next one — the two claims are
-    // different, and conflating them costs the chain a provider that works.
-    //
-    // Zen Go fronts other vendors' models, so a rejection here is the upstream's
-    // verdict on the request SHAPE, not on the model's availability anywhere:
-    //
-    //   {"error":{"type":"server_error","message":"Error from provider (Console
-    //    Go): Upstream request failed: [bad_request_error] invalid params,
-    //    invalid tool type:  (2013)"}}
-    //
-    // That wording matches none of the model-not-found tests above, so a bare
-    // `minimax-m2.5` died at the first candidate while the metered MiniMax API and
-    // OpenRouter sat behind it, credentialed and ready. Same defect class as the
-    // spent-subscription case at the top of this function, one axis over: that one
-    // separated "exhausted for this provider" from "exhausted for the chain", this
-    // one separates "can't serve this request" from "nobody can serve it".
-    //
-    // Keyed on the aggregator's own framing (`Upstream request failed` / `Error
-    // from provider (`) rather than on the upstream's message, which is
-    // vendor-specific and unbounded. Provider-scoped for the same reason the
-    // Antigravity rule above is: a blanket "advance on any 400" would silently
-    // paper over real payload bugs in providers that speak for themselves.
-    // NOTE ON THE PROVIDER STRING: what arrives here is the candidate's DISPLAY
-    // name ("OpenCode Zen Go"), not the canonical id ("opencode-zen-go") —
-    // proxy-server builds candidates as `{ name: candidate.displayName }`. So the
-    // match is made on a punctuation-stripped form, which accepts both. The
-    // Antigravity rule above only works because its display name happens to be a
-    // single word; do not copy its literal shape for a hyphenated provider.
-    if (
-      isProvider(provider, "opencodezen") &&
-      (lower.includes("upstream request failed") || lower.includes("error from provider ("))
-    ) {
-      return true;
-    }
-  }
-
-  // Server errors (500) — only retryable if it's a billing/credit issue
-  // (some providers misuse 500 for account-level problems)
-  if (status === 500) {
-    if (
-      lower.includes("insufficient balance") ||
-      lower.includes("insufficient credit") ||
-      lower.includes("quota exceeded") ||
-      lower.includes("billing")
-    ) {
-      return true;
-    }
-  }
-
-  return false;
+  announcedRejections.add(key);
+  logStderr(line);
 }
 
 /**
@@ -512,20 +440,19 @@ export function exhaustedChainStatus(
 }
 
 /**
- * Match a candidate against a provider family, tolerating the two spellings the
- * same provider reaches this file under: the canonical id (`opencode-zen-go`) and
- * the display name (`OpenCode Zen Go`). Both normalize to `opencodezengo`, so a
- * `needle` of `opencodezen` matches either, and both Zen tiers.
- *
- * Exported for tests — the display-name-vs-id distinction is exactly the kind of
- * thing that silently disables a rule.
+ * The upstream's own words from a claudish error body (`provider_message`,
+ * which carries no hint, provider name or status), else its message.
  */
-export function isProvider(provider: string | undefined, needle: string): boolean {
-  if (!provider) return false;
-  return provider
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-    .includes(needle);
+function parseProviderMessage(body: string): string {
+  try {
+    const parsed = JSON.parse(body);
+    if (typeof parsed?.error?.provider_message === "string" && parsed.error.provider_message) {
+      return parsed.error.provider_message;
+    }
+  } catch {
+    // Not JSON — fall through
+  }
+  return parseErrorMessage(body);
 }
 
 /** Extract a human-readable message from a JSON error body */

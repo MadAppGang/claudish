@@ -10,6 +10,7 @@
  * Only a provider that encodes knobs INTO its model ids needs an entry here.
  */
 
+import { isOptInWireId } from "../content-use.js";
 import { DevinModelResolver } from "./devin.js";
 import type {
   ExpandContext,
@@ -25,6 +26,11 @@ import type {
  * adopting it would mean either regressing that rule or redesigning the seam's
  * context type. Its rule stays in `transport/antigravity.ts`; folding it in is a
  * follow-up, not a merge-time decision.
+ *
+ * The routing availability check still resolves Antigravity ids exactly as its
+ * transport does: `providerServesModel` calls `resolveAntigravityServedModel`
+ * with the transport's own inputs (the full `servedIds` and the backend's
+ * `defaultAgentModelId`), which a resolver here could not receive either.
  */
 const RESOLVERS: ProviderModelResolver[] = [new DevinModelResolver()];
 
@@ -70,5 +76,11 @@ export function expandSelection(
   modelsCatalog: ModelsCatalogEntry[],
   ctx: ExpandContext = {}
 ): string {
-  return getModelResolver(provider)?.expand(selection, modelsCatalog, ctx) ?? selection;
+  // A resolver CHOOSES among the account's wire ids, so it never sees a
+  // content-use opt-in id unless the selection is one, typed exactly
+  // (`content-use.ts`). Devin's list reaches here without passing discovery.
+  const eligible = isOptInWireId(selection)
+    ? modelsCatalog
+    : modelsCatalog.filter((entry) => !isOptInWireId(entry.wireId));
+  return getModelResolver(provider)?.expand(selection, eligible, ctx) ?? selection;
 }

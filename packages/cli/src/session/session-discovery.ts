@@ -22,15 +22,15 @@
 import { execFile, execFileSync } from "node:child_process";
 import { closeSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { projectDirNameFor } from "../channel/home-dir.js";
-import { claudeConfigDir } from "../channel/parent-session.js";
+import { projectDirNameFor } from "../mcp-session/home-dir.js";
+import { claudeConfigDir } from "../mcp-session/parent-session.js";
 
 /** Head bytes scanned for the `entrypoint` marker. See `isAgentSession`. */
 const ENTRYPOINT_BYTES = 8192;
 
 /**
  * Where Claude Code keeps transcripts: `<config dir>/projects`, the config dir being
- * `CLAUDE_CONFIG_DIR`, else `$HOME/.claude` (`claudeConfigDir`, `channel/parent-session.ts`).
+ * `CLAUDE_CONFIG_DIR`, else `$HOME/.claude` (`claudeConfigDir`, `mcp-session/parent-session.ts`).
  *
  * Resolved at CALL time from the environment it is given. It used to be a module
  * constant built from `os.homedir()`, which is wrong twice: it ignored a
@@ -51,7 +51,7 @@ export function projectsDir(env: Record<string, string | undefined> = process.en
  * created `…-fresh-cwd-v1`: the `_` is replaced too. This used to replace only `/` and
  * `.`, so a cwd with `_`, a space or `@` produced a transcript path that did not exist.
  *
- * ONE rule: this is `projectDirNameFor` (`channel/home-dir.ts`), which also cuts a slug
+ * ONE rule: this is `projectDirNameFor` (`mcp-session/home-dir.ts`), which also cuts a slug
  * over 200 characters and appends Claude Code's hash. `session-events`' `slugFromCwd`
  * calls the same function, so no two transcript paths claudish derives can drift apart.
  * Callers pass a realpath (`transcriptPathFor` resolves one; git hands out real paths).
@@ -144,7 +144,7 @@ export interface SessionRow {
 /**
  * Whether this session was machine-driven rather than started by a person.
  *
- * claudish itself is a prolific source of these: every `team` member, every MCP channel
+ * claudish itself is a prolific source of these: every `team` member, every MCP
  * `create_session`, every `-p` one-shot and every e2e test spawns a real Claude Code
  * session that lands in the same project directory as your own work. MEASURED across
  * this repository: 1,923 of 2,018 transcripts are `sdk-cli` — so 95% of an unfiltered
@@ -951,7 +951,7 @@ export function findLatestSessionId(cwd: string = process.cwd(), sinceMs = 0): s
   //
   // Newest-by-mtime is only "necessarily" the session that just ran when one session
   // owns the directory. A second terminal in the same cwd, a `team` run or an MCP
-  // channel child all write here too and any of them can be the most recently touched
+  // session child all write here too and any of them can be the most recently touched
   // at the moment claudish exits — which would print a resume command naming someone
   // else's conversation, as a line the user is invited to paste. Filtering by the
   // proxy's start time cannot make the guess right, but it does make it fail closed:

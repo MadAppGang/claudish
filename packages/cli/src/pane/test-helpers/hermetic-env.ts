@@ -6,7 +6,7 @@
  * `CLAUDE_CONFIG_DIR`, `ZDOTDIR` and `XDG_CONFIG_HOME` all point into a temp dir, so
  * nothing reads or writes the real `~/.claude`, `~/.claudish` or the keychain.
  *
- * `sockRoot` is a short `/tmp/cpt-<8 hex>` so socket paths stay under 100 bytes.
+ * `sockRoot` is a per-test `/tmp/cpt-<8 hex>`, never the user's `/tmp/claudish-mux-<uid>`.
  *
  * `assertNoOrphans` is the per-test no-orphan check: no process whose argv contains the
  * test's sockRoot or a session id, no process in any of the pane pgids, and no socket,
@@ -25,9 +25,14 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectDirNameFor } from "../../channel/home-dir.js";
 import { findMagmuxBinaryOrNull } from "../../launcher/magmux-binary.js";
-import { readProcessTable } from "../process-identity.js";
+import { projectDirNameFor } from "../../mcp-session/home-dir.js";
+import {
+  type PsRow,
+  type PsSpawn,
+  readProcessTable,
+  setPsSpawnForTest,
+} from "../process-identity.js";
 
 export const FAKE_CHILD = join(import.meta.dir, "fake-interactive-child.ts");
 export const MAGMUX = findMagmuxBinaryOrNull();
@@ -124,6 +129,46 @@ export interface OrphanReport {
   files: string[];
 }
 
+/**
+ * The process table, or a throw: an unavailable table must fail a test, never read as
+ * "no process" (an orphan check on it would pass with every orphan still running).
+ */
+export function requireProcessTable(): PsRow[] {
+  const table = readProcessTable();
+  if (!table) throw new Error("process table unavailable: ps could not run");
+  return table;
+}
+
+/** The spawn failure Bun throws from `execFile` itself inside a macOS Seatbelt sandbox. */
+function sandboxEperm(): Error {
+  return Object.assign(new Error("EPERM: operation not permitted, posix_spawn 'ps'"), {
+    code: "EPERM",
+    syscall: "spawn",
+    path: "ps",
+    errno: -1,
+  });
+}
+
+/** `ps` as a sandbox leaves it: both spawns throw synchronously, as Bun does there. */
+export const SANDBOX_REFUSED_PS: PsSpawn = {
+  execFileSync() {
+    throw sandboxEperm();
+  },
+  execFile() {
+    throw sandboxEperm();
+  },
+};
+
+/** Run `fn` with the process table unavailable (`ps` refused), then restore the real spawn. */
+export async function withProcessTableUnavailable<T>(fn: () => T | Promise<T>): Promise<T> {
+  const prev = setPsSpawnForTest(SANDBOX_REFUSED_PS);
+  try {
+    return await fn();
+  } finally {
+    setPsSpawnForTest(prev);
+  }
+}
+
 export function orphanReport(o: {
   sockRoot: string;
   ids?: string[];
@@ -131,7 +176,7 @@ export function orphanReport(o: {
 }): OrphanReport {
   const needles = [o.sockRoot, ...(o.ids ?? [])];
   const pgids = new Set((o.pgids ?? []).filter((p) => p > 1));
-  const processes = readProcessTable()
+  const processes = requireProcessTable()
     .filter((r) => r.pid !== process.pid)
     .filter((r) => needles.some((n) => r.command.includes(n)) || pgids.has(r.pgid))
     .map((r) => `${r.pid} ${r.pgid} ${r.command.slice(0, 200)}`);
@@ -161,7 +206,7 @@ export async function waitNoOrphans(
 /** SIGKILL anything a failed test left behind (by sockRoot / session id needles only). */
 export function killLeftovers(o: { sockRoot: string; ids?: string[] }): void {
   const needles = [o.sockRoot, ...(o.ids ?? [])];
-  for (const r of readProcessTable()) {
+  for (const r of requireProcessTable()) {
     if (r.pid === process.pid) continue;
     if (needles.some((n) => r.command.includes(n))) {
       try {

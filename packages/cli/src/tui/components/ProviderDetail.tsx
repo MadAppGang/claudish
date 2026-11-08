@@ -1,5 +1,5 @@
 import { DETAIL_H } from "../constants.js";
-import type { AuthSource, ProviderDef } from "../providers.js";
+import { type AuthSource, type ProviderDef, providerSetLabel } from "../providers.js";
 /** @jsxImportSource @opentui/react */
 import { A, C } from "../theme.js";
 import type { Mode, TestResultsMap } from "../types.js";
@@ -47,6 +47,10 @@ function wrapToLines(text: string, maxWidth: number, maxLines: number): string[]
     lines[maxLines - 1] = `${last.slice(0, Math.max(1, limit - 1))}…`;
   }
   return lines;
+}
+
+export function credentialNoteLines(note: string, width: number, hasFailure: boolean): string[] {
+  return wrapToLines(note, width - 4 - "Auth:  ".length, hasFailure ? 1 : 2);
 }
 
 interface ProviderDetailProps {
@@ -103,6 +107,13 @@ export function resolveProviderDetailKeyDisplay(input: {
   return "────────";
 }
 
+export function validTestNote(input: { isLocal: boolean; credential: "key" | "login" }): string {
+  if (input.isLocal) return "  Local provider responded through the shared probe path.";
+  return input.credential === "login"
+    ? "  Login is valid and endpoint is reachable."
+    : "  API key is valid and endpoint is reachable.";
+}
+
 export function ProviderDetail({
   selectedProvider,
   mode,
@@ -146,7 +157,7 @@ export function ProviderDetail({
         borderColor={C.focusBorder}
         title={
           mode === "input_key"
-            ? ` Set API Key — ${selectedProvider.displayName} → ${keySaveTarget} `
+            ? ` Set ${providerSetLabel(selectedProvider) === "project" ? "Project" : "API Key"} — ${selectedProvider.displayName} → ${keySaveTarget} `
             : ` Set Endpoint — ${selectedProvider.displayName} `
         }
         backgroundColor={C.bg}
@@ -211,6 +222,7 @@ export function ProviderDetail({
     tr && (tr.status === "failed" || tr.status === "unavailable")
       ? (tr.providerMessage ?? tr.error)
       : undefined;
+  const noteLines = credentialNote ? credentialNoteLines(credentialNote, width, !!failureText) : [];
 
   return (
     <box
@@ -345,23 +357,35 @@ export function ProviderDetail({
           credential is not an environment variable — it names the source
           precisely (which project, from the ADC file or `gcloud config`) or, when
           nothing resolved, both remedies. */}
-      {credentialNote && (
-        <text>
+      {noteLines.map((line, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: positional slices of one string
+        <text key={i}>
           <span fg={C.blue} attributes={A.bold}>
-            {"Auth:  "}
+            {i === 0 ? "Auth:  " : "       "}
           </span>
-          <span fg={hasKey ? C.green : C.yellow}>{credentialNote}</span>
+          <span fg={hasKey ? C.green : C.yellow}>{line}</span>
         </text>
-      )}
+      ))}
+      {/* The API endpoint, printed WITHOUT its scheme. It is not a web page:
+          measured 2026-10-20, 17 of 28 provider endpoints answer a browser with
+          404 or 421, and a terminal turns any `https://` into a link the user
+          clicks while hunting for a key. The key page is `Get Key:` below. */}
       {selectedProvider.endpointEnvVar && (
         <text>
           <span fg={C.blue} attributes={A.bold}>
-            URL:{" "}
+            API:{" "}
           </span>
-          <span fg={C.cyan}>{activeEndpoint || selectedProvider.defaultEndpoint || "default"}</span>
+          <span fg={C.cyan}>
+            {(activeEndpoint || selectedProvider.defaultEndpoint || "default").replace(
+              /^https?:\/\//,
+              ""
+            )}
+          </span>
         </text>
       )}
-      {!failureText && (
+      {/* Two Auth: lines use the description's row; the description remains in
+          the list's DESCRIPTION column. */}
+      {!failureText && noteLines.length < 2 && (
         <text>
           <span fg={C.blue} attributes={A.bold}>
             Desc:{" "}
@@ -401,9 +425,11 @@ export function ProviderDetail({
               </span>
               {tr.ms !== undefined && <span fg={C.dim}>{`  ${tr.ms}ms`}</span>}
               <span fg={C.fgMuted}>
-                {selectedProvider.isLocal
-                  ? "  Local provider responded through the shared probe path."
-                  : "  API key is valid and endpoint is reachable."}
+                {validTestNote({
+                  isLocal: !!selectedProvider.isLocal,
+                  credential:
+                    isOAuth || selectedProvider.catalogName === "vertex" ? "login" : "key",
+                })}
               </span>
             </>
           )}

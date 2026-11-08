@@ -277,7 +277,7 @@ the host, received 5 `notifications/claude/channel` frames: a4a1994e `running`/`
 
 The `running` frame also carries the new optional `meta.activity: "thinking"`.
 
-`bun test <repo>/packages/cli/src/channel/channel-wire-format.test.ts` → `9 pass, 0 fail, 66 expect() calls [18.78s]`.
+`bun test <repo>/packages/cli/src/mcp-session/session-wire-format.test.ts` → `9 pass, 0 fail, 66 expect() calls [18.78s]`.
 
 ## Extras
 

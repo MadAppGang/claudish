@@ -2,6 +2,7 @@ import { appendFile, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DiagOutput } from "./diag-output.js";
+import { redactSigningValues } from "./redact.js";
 
 let logFilePath: string | null = null;
 let logLevel: "debug" | "info" | "minimal" = "info"; // Default to structured logging
@@ -75,10 +76,10 @@ function scheduleFlush(): void {
 /**
  * Keep only the most recent N log files, delete older ones.
  */
-function rotateOldLogs(dir: string, keep: number): void {
+function rotateOldLogs(dir: string, keep: number, name = "claudish"): void {
   try {
     const files = readdirSync(dir)
-      .filter((f) => f.startsWith("claudish_") && f.endsWith(".log"))
+      .filter((f) => f.startsWith(`${name}_`) && f.endsWith(".log"))
       .sort()
       .reverse();
     for (const file of files.slice(keep)) {
@@ -157,6 +158,13 @@ function isStructuralLogWorthy(msg: string): boolean {
     // empty and whose failure the user most needs named.
     msg.startsWith("[Claude Code]") ||
     msg.startsWith("[Fallback]") ||
+    // The MCP server's own failures: a tool that answered from a fallback (an
+    // older catalog generation, no recommended list) says why only here.
+    msg.startsWith("[mcp]") ||
+    msg.startsWith("[recommended]") ||
+    msg.startsWith("[catalog]") ||
+    msg.startsWith("[effort]") ||
+    msg.startsWith("[team]") ||
     // Connection-recovery episodes: which target, which attempt, how long the
     // next gap is, and how the episode ended. Without this entry the ladder's
     // only trace is behind `-d`, and the one thing a user reports about an
@@ -202,7 +210,7 @@ function redactLogLine(message: string, timestamp: string): string {
  * two claudish processes that start in the same second therefore compute the
  * same path and each wipes what the other wrote.
  *
- * That is not a rare race: `team` and channel `create_session` spawn their
+ * That is not a rare race: `team` and `create_session` spawn their
  * children together, so a three-model run reliably lands three processes inside
  * one second. Measured 2026-09-16 on exactly such a run, the surviving file held
  * three interleaved `[Proxy] Server started` lines on three different ports and
@@ -228,22 +236,35 @@ function logFileStamp(): string {
 export function initLogger(
   debugMode: boolean,
   level: "debug" | "info" | "minimal" = "info",
-  noLogs = false
+  noLogs = false,
+  // The file name prefix of the always-on log, rotated per prefix: the MCP server
+  // passes "claudish-mcp" so its files never push a session's log out of those kept.
+  name = "claudish",
+  // Files kept per prefix. Every Claude Code session and every team or session child
+  // starts its own MCP server, so a busy run writes dozens of MCP logs in minutes:
+  // with 20 kept, the files of a failure were gone before anyone read them.
+  keep = 20
 ): void {
   // Tier 1: Always-on structural logging (unless --log-off)
   if (!noLogs) {
-    const logsDir = join(homedir(), ".claudish", "logs");
-    if (!existsSync(logsDir)) {
-      mkdirSync(logsDir, { recursive: true });
+    // A log exists for diagnostics: an unwritable ~/.claudish/logs (read-only home,
+    // sandbox, full disk) turns it off instead of failing the process that asked.
+    try {
+      const logsDir = join(homedir(), ".claudish", "logs");
+      if (!existsSync(logsDir)) {
+        mkdirSync(logsDir, { recursive: true });
+      }
+      alwaysOnLogPath = join(logsDir, `${name}_${logFileStamp()}.log`);
+      writeFileSync(
+        alwaysOnLogPath,
+        `Claudish Session Log - ${new Date().toISOString()}\nMode: structural (content redacted)\n${"=".repeat(60)}\n\n`
+      );
+      rotateOldLogs(logsDir, keep, name);
+      // Start flush timer if not already running
+      scheduleFlush();
+    } catch {
+      alwaysOnLogPath = null;
     }
-    alwaysOnLogPath = join(logsDir, `claudish_${logFileStamp()}.log`);
-    writeFileSync(
-      alwaysOnLogPath,
-      `Claudish Session Log - ${new Date().toISOString()}\nMode: structural (content redacted)\n${"=".repeat(60)}\n\n`
-    );
-    rotateOldLogs(logsDir, 20);
-    // Start flush timer if not already running
-    scheduleFlush();
   }
 
   // Tier 2: Debug verbose logging (existing behavior, only with --debug-claudish)
@@ -273,7 +294,12 @@ export function initLogger(
  * Log a message (to file only in debug mode, silent otherwise)
  * Uses async buffered writes to avoid blocking event loop
  */
-export function log(message: string, forceConsole = false): void {
+export function log(rawMessage: string, forceConsole = false): void {
+  // Before any buffer, file or console write: `log` is the only writer of the
+  // debug file and of the always-on log, so this one pass covers every line
+  // either receives (an echoed credential in a queue 429, a parser frame, an
+  // auth exception). A no-op when no request holds a signing value.
+  const message = redactSigningValues(rawMessage);
   const timestamp = new Date().toISOString();
   const logLine = `[${timestamp}] ${message}\n`;
 
@@ -309,7 +335,9 @@ export function log(message: string, forceConsole = false): void {
  * to avoid corrupting Claude Code's TUI display.
  * When a DiagOutput is set, stderr messages are routed there instead.
  */
-export function logStderr(message: string): void {
+export function logStderr(rawMessage: string): void {
+  // Same pass as `log`, before stderr or DiagOutput sees the line.
+  const message = redactSigningValues(rawMessage);
   if (diagOutput) {
     // Route to DiagOutput (log file) instead of polluting stderr
     diagOutput.write(message);

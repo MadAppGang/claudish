@@ -52,10 +52,10 @@ packages/cli/src/channel/session-manager.test.ts:
 packages/cli/src/channel/scrollback-buffer.test.ts:
 11 pass
 
-packages/cli/src/channel/e2e-channel.test.ts:
+packages/cli/src/mcp-session/e2e-sessions.test.ts:
 [e2e-channel] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated (needs ANTHROPIC_API_KEY or a headless-usable claude.ai login).
 
-packages/cli/src/channel/channel-wire-format.test.ts:
+packages/cli/src/mcp-session/session-wire-format.test.ts:
 8 pass
 
 packages/cli/src/channel/stream-json-reducer.test.ts:

@@ -1,31 +1,38 @@
-#!/usr/bin/env bun
-
 /**
  * Claudish MCP Server
  *
  * Exposes all claudish models (OpenRouter, Kimi, GLM, Qwen, MiniMax, Gemini, OpenAI,
- * local models, etc.) and channel sessions as MCP tools for Claude Code.
+ * local models, etc.) and sessions as MCP tools for Claude Code.
  * Routes through the same proxy engine as the CLI — same auto-routing, fallback chains,
  * custom routing rules, and provider transports.
  *
  * Run with: claudish --mcp (stdio transport)
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { config } from "dotenv";
+import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "./adapters/base-api-format.js";
 import { searchCatalogModels } from "./adapters/model-catalog.js";
+import {
+  ALLOWANCE_REPORT_SECTIONS,
+  type AllowanceReportSection,
+  type AllowanceStatusAnswer,
+} from "./auth/accounts/allowance-report-schema.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
-import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
-import { SessionManager } from "./channel/index.js";
-import { parentSessionForCall } from "./channel/parent-session.js";
-import type { ChannelEventType } from "./channel/types.js";
-import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
+import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
+import { writeFileAtomic } from "./fs-atomic.js";
+import { loadHooksOnce } from "./hooks/index.js";
+import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
+import { initLogger, log } from "./logger.js";
+import { ReplayManager, SessionManager } from "./mcp-session/index.js";
+import { resolveSetupFrom } from "./mcp-session/inherited-settings.js";
+import { parentSessionForCall } from "./mcp-session/parent-session.js";
+import { NESTED_INSTRUCTIONS, NESTED_MCP_TOOL_NAMES } from "./mcp/nested-mode.js";
 import {
   type HeartbeatHandle,
   NOOP_HEARTBEAT,
@@ -33,40 +40,67 @@ import {
   startHeartbeat,
 } from "./mcp/progress-heartbeat.js";
 import {
-  type RecommendedModelGroup,
+  type RunPromptResult,
+  runPromptViaClaudeCode,
+  stopAllClaudeCodePrintChildren,
+} from "./mcp/run-prompt-claude-code.js";
+import {
+  type RecommendedModelEntry,
   type RecommendedModelsDoc,
-  collectRoutingPrefixes,
-  computeQuickPicks,
-  formatListingPrice,
   getRecommendedModels,
-  groupRecommendedModels,
-  normalizePricingDisplay,
+  readLastRecommendedModels,
 } from "./model-loader.js";
+// Imported for the predicate only. child-env's import-time bootstrap is a no-op here:
+// a claudish MCP server is never the pane child (it carries no CLAUDISH_PANE_CWD).
+import { inMcpSession } from "./pane/child-env.js";
 import {
   ContractErrorException,
   type FailureReason,
+  MAX_SCROLL_ROWS,
+  MAX_TRANSCRIPT_LINES,
+  MIN_MAGMUX_VERSION,
   SLOT_STATES,
+  type ScrollRequest,
   type SlotState,
   TERMINAL_STATES,
+  TRANSCRIPT_ANSWER_MAX_BYTES,
+  TRANSCRIPT_LINE_MAX_CHARS,
   type TeamRunRow,
+  type TranscriptCursor,
   assertMagmuxAvailable,
   checkChildFlags,
   contractMeta,
+  decodeCursor,
   ensureSwept,
   installPaneShutdownHooks,
+  isReplayId,
   sockRootFor,
 } from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
+import { readAllModelsCache } from "./providers/all-models-cache.js";
+import { latestEffortRecommendations } from "./providers/effort-recommendations.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
-import { isLocalProviderName } from "./providers/model-parser.js";
-import { NATIVE_NOT_PROBED, nativeRouteFor } from "./providers/native-route.js";
+import { isLocalProviderName, parseModelChain, parseModelSpec } from "./providers/model-parser.js";
+import { nativeRouteFor } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
-import { isReadyState, probeLink } from "./providers/probe-live.js";
+import {
+  type PreflightModelResult,
+  preflightModel,
+  renderPreflightReport,
+} from "./providers/preflight-chain.js";
+import { probeLink } from "./providers/probe-live.js";
+import type { ProbeTarget } from "./providers/probe-runner.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
-import { nativeProviderForVendor } from "./providers/route-candidates.js";
-import { route } from "./providers/routing-rules.js";
+import { catalogModelId, gatherRouteCandidates } from "./providers/route-candidates.js";
+import {
+  DEFAULT_FALLBACK_PROVIDER,
+  effectiveDefaultProvider,
+  loadRoutingRules,
+  matchRoutingRuleKey,
+} from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
+import { renderEffortTableMarkdown, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
 import {
   type ModelStatus,
@@ -81,6 +115,9 @@ import {
   preflightTeamRun,
   readTeamInputFile,
   readTeamStatus,
+  replayTargetOfTeamSlot,
+  resizeTeamSlot,
+  scrollTeamSlot,
   setupSession,
   shutdownAllTeamRuns,
   startModels,
@@ -88,20 +125,17 @@ import {
   teamLiveMaps,
   teamRunRow,
   teamRunRowFromDisk,
+  transcriptTeamSlot,
   validateSessionPath,
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
+import { VERSION } from "./version.js";
 
-// Load environment variables.
-//
-// `quiet: true` is REQUIRED, not cosmetic: this process speaks MCP JSON-RPC over
-// STDOUT, and dotenv v17 otherwise prints a banner there —
-//   [dotenv@17.2.3] injecting env (0) from .env -- tip: …
-// — the moment a .env exists in the cwd. That single non-JSON line corrupts the
-// stream, so the host (Claude Code) fails to initialize the server and the user
-// silently gets NO claudish tools. index.ts already passes quiet for the same
-// reason; this call is the one the MCP path actually hits.
-config({ quiet: true });
+// No `.env` load here. `index.ts` loads the working directory's `.env` through the
+// allowlist (dotenv-allowlist.ts) before it imports this module, and that is the only
+// `.env` load claudish has. Claude Code starts this server in a checkout before its
+// folder-trust dialog, so a second, unfiltered load here would hand the checkout every
+// name the allowlist refused (`CLAUDE_PATH`, `NODE_OPTIONS`, base URLs, the pane markers).
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -116,43 +150,37 @@ const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
 const OPENROUTER_MODELS_CACHE_PATH = join(CLAUDISH_CACHE_DIR, "openrouter-models.json");
 const CACHE_MAX_AGE_DAYS = 2;
 
-/** Instructions added to Claude's system prompt when channel mode is active. */
-const INSTRUCTIONS = `Claudish MCP server provides access to external AI models (OpenRouter, Ollama, LM Studio, etc.) for coding tasks.
+/** The server's `instructions`, which the host adds to its system prompt. */
+const INSTRUCTIONS = `Claudish MCP server gives you access to external AI models (OpenRouter, Ollama, LM Studio and every claudish provider), and to Claude models on the user's own Claude Code login.
 
-## Channel Mode — External Model Sessions
+## Which tool
 
-When channel mode is active, you receive <channel source="claudish" ...> notifications about running external model sessions. Each session is an interactive Claude Code running the model in its own headless terminal pane.
+- run_prompt: one quick prompt to one model's API. One request, one answer; no tools, no files, no session.
+- create_session: one model doing a task as a full Claude Code session (tools, files, several turns).
+- team: several models on the same task, each a full Claude Code session, with optional blind judging.
 
-### Events
+## Sessions
 
-- running: The session's turn is running (its prompt was accepted). Note the session_id for future calls.
-- tool_executing: The model is using a tool (Read, Write, Bash, etc.). Carries tool and tool_count.
-- input_required (event waiting_for_input): The session waits for send_input: an interactive session between turns, or a session stopped on a question (meta activity "AskUserQuestion"). A send declines a question and becomes the next prompt.
-- input_required (event awaiting_permission): A permission or plan-approval dialog is open. A send declines it and becomes the next prompt.
-- completed: The session finished successfully. Call get_output to retrieve the full output.
-- failed: The session failed (boot, prompt not accepted or not read, child exited, API error, pane lost). Call get_diagnostics for the cause.
-- timeout: The session hit its timeout_seconds; the pane was closed. Call get_diagnostics to see how far it got.
-- cancelled: The session was cancelled via cancel_session.
+Each session is an interactive Claude Code running the model in its own headless terminal pane. Nothing is pushed to you while it runs: poll.
 
-### Workflow
+1. create_session returns {session_id, state: "STARTING"} at once while Claude Code boots.
+2. Poll list_sessions (include_completed: true), about once every 10 seconds. Each row has state, activity, idle_seconds and accounting.
+   - STARTING: booting, or the first prompt is not yet accepted.
+   - RUNNING: a turn is in progress (activity names the tool in use).
+   - AWAITING_INPUT: waiting for send_input — an interactive session between turns, or a turn stopped on a question (activity "AskUserQuestion"). A send declines a question and becomes the next prompt.
+   - AWAITING_PERMISSION: a permission or plan-approval dialog is open. A send declines it and becomes the next prompt.
+   - COMPLETED, FAILED, TIMEOUT, CANCELLED, EMPTY: finished.
+3. send_input may be called at any time; it is queued until the session is idle.
+4. COMPLETED: call get_output for the answer.
+5. FAILED or TIMEOUT — or COMPLETED with an empty or surprising answer — call get_diagnostics. It returns the child's final screen, the upstream error bodies, the recent state records, the resolved model chain and the paths to the full records. It needs no re-run and no debug flag.
+6. capture_session reads a session's current screen; resize_session sets its terminal size (any time, mid-turn included); scroll_session scrolls the child's transcript view (by rows, or back to the live bottom); transcript_session reads the conversation as text lines (also after the session finished); cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
+7. replay_session opens a finished session's real interface read only; read it with capture_session under its replay_id; close_replay ends it.
 
-1. Call create_session with a model and prompt to start an async session (state STARTING while Claude Code boots).
-2. Watch for <channel> notifications — they arrive automatically.
-3. send_input may be called at any time; it is queued until the session is idle. On input_required, call send_input with the answer.
-4. On completed: call get_output to get the full response.
-5. On failed or timeout — or on a completed session whose output is empty or
-   surprising — call get_diagnostics. It returns the child's final screen, the
-   upstream error bodies, the recent state records, the resolved model chain and the
-   paths to the full records. It needs no re-run and no debug flag.
-6. Use list_sessions to see sessions: each row has state, activity, idle_seconds and accounting.
-7. Use capture_session to read a session's current terminal screen.
-8. Use cancel_session to stop a running session.
-
-The session_id in the channel tag's meta attributes is the key for all tool calls.`;
+The session_id from create_session is the key for every session tool.`;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type ToolGroup = "low-level" | "agentic" | "channel";
+type ToolGroup = "low-level" | "agentic" | "session" | "debug";
 
 /**
  * Per-call context handed to every tool handler. Built fresh in the CallTool
@@ -171,6 +199,12 @@ interface ToolCallContext {
    * heartbeat has been stopped. Never throws.
    */
   reportProgress: (message?: string) => void;
+  /**
+   * Fires when the host cancels the call (`notifications/cancelled`) or gives up on it
+   * (its own request timeout). From the SDK's `RequestHandlerExtra.signal`. A tool that
+   * starts a child process stops it on this signal.
+   */
+  signal: AbortSignal;
 }
 
 interface ToolDefinition {
@@ -229,17 +263,31 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const data = await response.json();
     const models = data.data || [];
-    mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
-    writeFileSync(
-      OPENROUTER_MODELS_CACHE_PATH,
-      JSON.stringify({ lastUpdated: new Date().toISOString(), models }),
-      "utf-8"
-    );
+    try {
+      writeFileAtomic(
+        OPENROUTER_MODELS_CACHE_PATH,
+        JSON.stringify({ lastUpdated: new Date().toISOString(), models })
+      );
+    } catch (err) {
+      // The fetched list is still the answer; only the cache is lost.
+      log(
+        `[mcp] OpenRouter models cache write failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     return models;
-  } catch {
-    if (existsSync(OPENROUTER_MODELS_CACHE_PATH)) {
-      const cacheData = JSON.parse(readFileSync(OPENROUTER_MODELS_CACHE_PATH, "utf-8"));
-      return cacheData.models || [];
+  } catch (err) {
+    log(
+      `[mcp] OpenRouter models fetch failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+    try {
+      if (existsSync(OPENROUTER_MODELS_CACHE_PATH)) {
+        const cacheData = JSON.parse(readFileSync(OPENROUTER_MODELS_CACHE_PATH, "utf-8"));
+        return cacheData.models || [];
+      }
+    } catch (cacheErr) {
+      log(
+        `[mcp] OpenRouter models cache unreadable: ${cacheErr instanceof Error ? cacheErr.message : String(cacheErr)}`
+      );
     }
     return [];
   }
@@ -266,7 +314,7 @@ async function getProxy(): Promise<ProxyServer> {
       false, // not monitor mode
       process.env.ANTHROPIC_API_KEY,
       undefined, // no model map
-      { quiet: true }
+      { quiet: true, hostMode: "mcp" }
     );
     proxyInstance = proxy;
     return proxy;
@@ -313,23 +361,37 @@ export function parseAnthropicSse(raw: string): {
   return { text, usage: hasUsage ? { input: inputTokens, output: outputTokens } : undefined };
 }
 
+/**
+ * One request through the in-process proxy, for every model that is not a bare
+ * Claude name. The body carries NO `max_tokens`: step 5w strips every output-limit
+ * field the adapters write and adds the wire's own only when the request has one,
+ * except on the Messages API, which requires one and gets the catalog's
+ * `maxOutputTokens`. No model limit is pinned here
+ * (ai-docs/architecture/wire.md "Output limit").
+ *
+ * `effort` goes out as `output_config.effort`, the field Claude Code itself sends,
+ * so step 5w maps it onto the connection's published levels as it does for Claude
+ * Code's own request.
+ */
 export async function runPromptViaProxy(
   model: string,
   prompt: string,
   systemPrompt?: string,
-  maxTokens?: number
-): Promise<{ content: string; usage?: { input: number; output: number } }> {
+  effort?: EffortLevel
+): Promise<RunPromptResult> {
   const proxy = await getProxy();
 
   // Build Anthropic Messages API request
   const body: Record<string, unknown> = {
     model,
     messages: [{ role: "user", content: prompt }],
-    max_tokens: maxTokens || 4096,
     stream: true,
   };
   if (systemPrompt) {
     body.system = systemPrompt;
+  }
+  if (effort) {
+    body.output_config = { effort };
   }
 
   const response = await fetch(`${proxy.url}/v1/messages`, {
@@ -351,6 +413,47 @@ export async function runPromptViaProxy(
   }
 
   return { content: parsed.text, usage: parsed.usage };
+}
+
+/**
+ * One `run_prompt` request, on the path its model needs. `nativeRouteFor` FIRST, as
+ * the proxy does (CLAUDE.md invariant): a bare Claude name (`claude-*`, `opus`,
+ * `sonnet`, `haiku`, `internal`, ...) runs as one Claude Code print-mode call on the
+ * user's own Claude Code login, because the proxy's native route forwards the
+ * caller's credential and an MCP call has none. Every other model, including the
+ * explicit `anthropic@claude-*` (metered), goes through the in-process proxy. The
+ * ORIGINAL model string is passed on; claudish's CLI owns alias normalisation.
+ *
+ * `effort` reaches only the proxy path: on the print path Claude Code sets the
+ * effort of its own Claude model.
+ */
+export async function runPrompt(
+  model: string,
+  prompt: string,
+  systemPrompt?: string,
+  signal?: AbortSignal,
+  effort?: EffortLevel
+): Promise<RunPromptResult> {
+  if (nativeRouteFor(model) !== null) {
+    return runPromptViaClaudeCode(model, prompt, systemPrompt, { signal });
+  }
+  return runPromptViaProxy(model, prompt, systemPrompt, effort);
+}
+
+/** `run_prompt`'s success text: the answer, then a footer of token and auth lines. */
+function formatRunPromptResult(result: RunPromptResult): string {
+  const footer: string[] = [];
+  if (result.usage) {
+    footer.push(`Tokens: ${result.usage.input} input, ${result.usage.output} output`);
+  }
+  if (result.auth !== undefined) {
+    footer.push(
+      result.auth === "subscription"
+        ? "Auth: Claude Code login (subscription)"
+        : `Auth: ${result.auth}`
+    );
+  }
+  return footer.length > 0 ? `${result.content}\n\n---\n${footer.join("\n")}` : result.content;
 }
 
 function fuzzyScore(text: string, query: string): number {
@@ -417,7 +520,7 @@ export const NEXT_STEP: Record<FailureReason, string> = {
     "the child never read all of its task file — check that its agent or tool flags allow " +
     "Read and that the model can call tools; `what` says which lines were read",
   child_exited: "read the evidence screen, then retry or drop the model",
-  pane_lost: "magmux died — check `magmux --version` ≥ 0.14.0 and retry",
+  pane_lost: `magmux died — check \`magmux --version\` ≥ ${MIN_MAGMUX_VERSION} and retry`,
   blocked:
     "the child asked a question team cannot answer — make the prompt self-contained or use " +
     "create_session",
@@ -425,11 +528,14 @@ export const NEXT_STEP: Record<FailureReason, string> = {
   refused: "the model refused — rephrase or drop the model",
   empty_output: "retry once; if it repeats, drop the model",
   shape_mismatch:
-    "the answer (assistant text after the task was read) did not match. Every assistant " +
-    "message of the turn was read from the transcript, so nothing was lost in transit — " +
-    "the model did not produce it. Re-prompt with the required format restated; do NOT " +
-    "count this slot as a vote",
+    "neither the reply (assistant text after the task was read) nor any file the slot wrote " +
+    "with Write matched — the model did not produce it. Re-prompt with the required format " +
+    "restated; do NOT count this slot as a vote",
 };
+
+// The preflight "no route" cell moved to `providers/preflight-chain.ts` with the
+// rest of the preflight report; re-exported for existing importers.
+export { noRouteCell } from "./providers/preflight-chain.js";
 
 /** `18864` → `18.4KB`. */
 function fmtSize(n: number): string {
@@ -457,6 +563,430 @@ function fmtSize(n: number): string {
  * Self-delimiting because MCP `resource_link` blocks arrive flattened into the
  * text stream with no separator — a consumer must be able to see where this ends.
  */
+/**
+ * The MCP `effort` argument: undefined when absent, else a canonical level.
+ * Throws a message naming the levels on anything else.
+ */
+export function effortArg(value: unknown): EffortLevel | undefined {
+  if (value === undefined || value === null || value === "" || value === KEEP_EFFORT) {
+    return undefined;
+  }
+  if (isEffortLevel(value)) return value;
+  throw new Error(
+    `Invalid 'effort': ${JSON.stringify(value)}. Expected one of ${EFFORT_LEVELS.join(", ")} ` +
+      `or "${KEEP_EFFORT}" (list_models shows the recommended level per model and task type).`
+  );
+}
+
+/** The `effort` value that keeps Claude Code's own level, answering the clarification. */
+export const KEEP_EFFORT = "default";
+
+/**
+ * When a caller sent no effort, the recommended levels of the models that have
+ * any, by task type: `{model: {taskType: level}}`, keyed as the caller wrote the
+ * model. Undefined when none has a row, so a call with nothing to recommend is
+ * never stopped. A native Claude name is skipped: it ignores the effort.
+ */
+export function effortClarification(
+  specs: readonly string[],
+  efforts:
+    | Readonly<Record<string, Readonly<Record<string, { effort: string }>>>>
+    | undefined = latestEffortRecommendations()?.efforts
+): Record<string, Record<string, string>> | undefined {
+  if (!efforts) return undefined;
+  const out: Record<string, Record<string, string>> = {};
+  for (const spec of specs) {
+    if (nativeRouteFor(spec) !== null) continue;
+    const row = efforts[parseModelSpec(spec).model];
+    if (!row) continue;
+    out[spec] = Object.fromEntries(Object.entries(row).map(([task, rec]) => [task, rec.effort]));
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * The answer that stops a call made with no effort: the caller knows its task,
+ * so it picks the column and calls again. Starts nothing.
+ */
+function needsEffortResult(
+  recommended: Record<string, Record<string, string>>,
+  how: string
+): { content: Array<{ type: "text"; text: string }>; isError: true } {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text:
+          `needs_effort: nothing was started. Map your task to one task type and call again ${how}.\n` +
+          `Recommended levels: ${JSON.stringify(recommended, null, 2)}`,
+      },
+    ],
+    isError: true,
+  };
+}
+
+/**
+ * The MCP `team` `efforts` argument: one canonical level per model, keyed by a
+ * string of `models` exactly. Undefined when absent; throws on a key that is
+ * not in `models` or a value that is not a level, so a typo never runs a slot
+ * at an effort the caller did not choose.
+ */
+export function modelEffortsArg(
+  value: unknown,
+  models: readonly string[]
+): Record<string, EffortLevel> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid 'efforts': expected an object like {"<model>": "<level>"}.`);
+  }
+  const out: Record<string, EffortLevel> = {};
+  for (const [model, level] of Object.entries(value)) {
+    if (!models.includes(model)) {
+      throw new Error(
+        `Invalid 'efforts': ${JSON.stringify(model)} is not one of 'models' ` +
+          `(${models.join(", ")}). Keys must match a 'models' entry exactly.`
+      );
+    }
+    if (!isEffortLevel(level)) {
+      throw new Error(
+        `Invalid 'efforts' for ${model}: ${JSON.stringify(level)}. ` +
+          `Expected one of ${EFFORT_LEVELS.join(", ")}.`
+      );
+    }
+    out[model] = level;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** True when `id` is exactly a canonical model id of the cached cloud models catalog. */
+function isCanonicalCatalogModel(id: string): boolean {
+  return readAllModelsCache()?.entries.some((e) => e.modelId === id) ?? false;
+}
+
+/**
+ * A model spec as claudish routing must see it. The calling agent often writes a
+ * `provider@` the user never asked for (copied from a listing, or guessed), and
+ * that bypasses the user's routing: their providers, preferences and overrides.
+ * So the provider is removed unless the user required it (`required`), and only
+ * where the bare name routes: a single `provider@model` whose model part is a
+ * canonical model id of the cloud models catalog. Markers (`+pro`, `#fast`) stay.
+ * A chain, a local or custom-URL provider, legacy syntax or a wire id the catalog
+ * does not know as a model id (`kc@k3`) is returned unchanged.
+ */
+export function stripUnrequestedProvider(
+  spec: string,
+  required: boolean,
+  isCatalogModel: (id: string) => boolean = isCanonicalCatalogModel
+): string {
+  if (required || parseModelChain(spec).length !== 1) return spec;
+  const parsed = parseModelSpec(spec);
+  if (!parsed.isExplicitProvider || parsed.isLegacySyntax) return spec;
+  // Only a built-in claudish provider: a user's custom endpoint (`corp-proxy@gpt-4o`)
+  // or an explicit metered `anthropic@claude-*` names a vendor and a bill the
+  // bare name would not reach.
+  const builtin = BUILTIN_PROVIDERS.find((p) => p.name === parsed.provider);
+  if (!builtin || builtin.isLocal || isLocalProviderName(parsed.provider)) return spec;
+  if (!isCatalogModel(parsed.model)) return spec;
+  return spec.slice(spec.indexOf("@") + 1);
+}
+
+/**
+ * The MCP `team` `user_required_provider` (or `user_required_model`, by `name`)
+ * argument: the specs, exactly as in `models` or `judges`, whose provider (or
+ * model) the user named. Throws on anything else.
+ */
+export function userRequiredProvidersArg(
+  value: unknown,
+  specs: readonly string[],
+  name = "user_required_provider"
+): ReadonlySet<string> {
+  if (value === undefined || value === null) return new Set();
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+    throw new Error(`Invalid '${name}': expected an array of model specs.`);
+  }
+  for (const spec of value as string[]) {
+    if (!specs.includes(spec)) {
+      throw new Error(
+        `Invalid '${name}': ${JSON.stringify(spec)} is not one of the ` +
+          `models (${specs.join(", ")}). Entries must match a 'models' or 'judges' entry exactly.`
+      );
+    }
+  }
+  return new Set(value as string[]);
+}
+
+/** One `{from, to}` per spec whose provider was removed, for the tool's answer and the log. */
+export function strippedProviders(
+  specs: readonly string[],
+  required: ReadonlySet<string>,
+  isCatalogModel?: (id: string) => boolean
+): { specs: string[]; stripped: Array<{ from: string; to: string }> } {
+  const proposed = specs.map((from) =>
+    stripUnrequestedProvider(from, required.has(from), isCatalogModel)
+  );
+  // Two different specs that would strip to one name (`or@kimi-k3`, `kc@kimi-k3`)
+  // are a provider comparison: both keep their provider, so neither slot loses
+  // its route or its effort to the other.
+  const stripped: Array<{ from: string; to: string }> = [];
+  const out = specs.map((from, i) => {
+    const to = proposed[i];
+    if (to === from) return from;
+    const collides = proposed.some((other, j) => j !== i && other === to && specs[j] !== from);
+    if (collides) return from;
+    stripped.push({ from, to });
+    return to;
+  });
+  if (stripped.length > 0) {
+    log(`[mcp] provider removed: ${stripped.map((x) => `${x.from} -> ${x.to}`).join(", ")}`);
+  }
+  return { specs: out, stripped };
+}
+
+/** The note a tool answer carries when it removed a provider. */
+function strippedNote(stripped: ReadonlyArray<{ from: string; to: string }>): string | undefined {
+  if (stripped.length === 0) return undefined;
+  return (
+    `Provider removed so claudish routing decides: ${stripped.map((x) => `${x.from} -> ${x.to}`).join(", ")}. ` +
+    "Pass 'user_required_provider' only when the user named the provider."
+  );
+}
+
+/** What {@link modelChoiceProblems} reads about a bare name; a seam for tests. */
+export interface ModelChoiceFacts {
+  /** The recommended list. Null when none is on disk: then nothing is refused. */
+  recommended: readonly RecommendedModelEntry[] | null;
+  /** A user routing rule matches the name: the user's own routing decides it. */
+  userRule: (model: string) => boolean;
+  /** The cloud models catalog has the name as a model id or alias. */
+  inCatalog: (model: string) => boolean;
+  /** A dynamic subscription claims the name (`swe-1.7` on Devin): the account decides it. */
+  namespaceClaim: (model: string) => boolean;
+  /**
+   * The canonical id the catalog resolves the name to: `MiniMax-M3`, the alias
+   * `k3` or the route variant `gemini-4-argon-high` name a recommended model.
+   * Absent: the name itself.
+   */
+  canonicalId?: (model: string) => string | undefined;
+  /**
+   * A name the catalog lacks may still route: the user's `defaultProvider` is a
+   * provider of their choosing (LiteLLM, a custom endpoint), project rules live
+   * in a `work_dir` this server cannot read, or no catalog is readable (routing
+   * then refuses on its own). Absent: false.
+   */
+  catalogMissAllowed?: (model: string) => boolean;
+}
+
+function liveModelChoiceFacts(opts: { projectRulesReadable?: boolean } = {}): ModelChoiceFacts {
+  const recommended = readLastRecommendedModels()?.models ?? null;
+  if (!recommended || recommended.length === 0) {
+    log("[mcp] model check skipped: no recommended models list on disk");
+  }
+  let rules: ReturnType<typeof loadRoutingRules> | undefined;
+  return {
+    recommended: recommended && recommended.length > 0 ? recommended : null,
+    userRule: (model) => {
+      rules ??= loadRoutingRules();
+      return matchRoutingRuleKey(model, rules) !== null;
+    },
+    inCatalog: (model) => !gatherRouteCandidates(model).catalogMiss,
+    namespaceClaim: (model) => gatherRouteCandidates(model).candidates.length > 0,
+    canonicalId: (model) => catalogModelId(model),
+    catalogMissAllowed: (model) => {
+      if (opts.projectRulesReadable === false) return true;
+      if (!gatherRouteCandidates(model).catalogReadable) return true;
+      const fallback = effectiveDefaultProvider();
+      return fallback !== "" && fallback !== DEFAULT_FALLBACK_PROVIDER;
+    },
+  };
+}
+
+/** A model the caller sent that nothing was started for, and the recommended ids that match it. */
+export interface ModelChoiceProblem {
+  /** As the caller wrote it. */
+  spec: string;
+  kind: "unknown_model" | "not_recommended";
+  /** Recommended ids of the same family or vendor, newest first. */
+  matching: string[];
+}
+
+/**
+ * The first run of letters of an id, lowercased: `gpt` for `gpt-6.1-sol`,
+ * `qwen` for `qwen3.8-max`. Two ids with the same one are one family.
+ */
+function familyOf(id: string): string {
+  return /^[a-z]+/i.exec(id)?.[0].toLowerCase() ?? id.toLowerCase();
+}
+
+/** Why one spec may not start unasked, with its model part; undefined when it may. */
+function bareNameVerdict(
+  spec: string,
+  recommendedIds: ReadonlySet<string>,
+  facts: ModelChoiceFacts
+): { kind: ModelChoiceProblem["kind"]; model: string } | undefined {
+  if (parseModelChain(spec).length !== 1 || nativeRouteFor(spec) !== null) return undefined;
+  const parsed = parseModelSpec(spec);
+  if (parsed.isExplicitProvider || parsed.isLegacySyntax) return undefined;
+  const model = parsed.model;
+  if (recommendedIds.has(model) || facts.userRule(model)) return undefined;
+  const canonical = facts.canonicalId?.(model);
+  if (canonical !== undefined && recommendedIds.has(canonical)) return undefined;
+  if (facts.inCatalog(model)) return { kind: "not_recommended", model };
+  if (facts.namespaceClaim(model) || facts.catalogMissAllowed?.(model)) return undefined;
+  return { kind: "unknown_model", model };
+}
+
+/**
+ * The bare names a calling agent sent that are not a model it may start
+ * unasked: a name that is no model at all (`gpt`, `minimax`), or a catalog
+ * model the recommended list does not hold (`gpt-5`, guessed from memory).
+ * `pairs` holds each spec as the caller wrote it and as it will run (provider
+ * removed). Never refused: a model the user named (`required`), an explicit
+ * `provider@`, a chain, a native Claude name, a name a user routing rule or a
+ * namespace claim routes, and anything at all when no recommended list exists.
+ */
+export function modelChoiceProblems(
+  pairs: ReadonlyArray<{ given: string; spec: string }>,
+  required: ReadonlySet<string>,
+  facts: ModelChoiceFacts = liveModelChoiceFacts()
+): ModelChoiceProblem[] {
+  const recommended = facts.recommended;
+  if (!recommended) return [];
+  const ids = new Set(recommended.map((m) => m.id));
+  const problems: ModelChoiceProblem[] = [];
+  for (const { given, spec } of pairs) {
+    if (required.has(given)) continue;
+    const verdict = bareNameVerdict(spec, ids, facts);
+    if (!verdict) continue;
+    const { kind, model } = verdict;
+    const family = familyOf(model);
+    const matching = [
+      ...new Set(
+        recommended
+          .filter(
+            (m) => familyOf(m.id) === family || m.provider.toLowerCase() === model.toLowerCase()
+          )
+          .sort(compareByReleaseDateDesc)
+          .map((m) => m.id)
+      ),
+    ];
+    problems.push({ spec: given, kind, matching });
+  }
+  if (problems.length > 0) {
+    log(`[mcp] model check: ${problems.map((p) => `${p.spec} ${p.kind}`).join(", ")}`);
+  }
+  return problems;
+}
+
+/** The recommended list as a tool answer shows it: one row per id, its tiers joined. */
+function recommendedChoices(
+  recommended: readonly RecommendedModelEntry[]
+): Array<{ id: string; vendor: string; tiers: string[]; released?: string }> {
+  const byId = new Map<
+    string,
+    { id: string; vendor: string; tiers: string[]; released?: string }
+  >();
+  for (const m of recommended) {
+    const row = byId.get(m.id);
+    if (row) {
+      row.tiers.push(m.recommendationTier);
+      continue;
+    }
+    byId.set(m.id, {
+      id: m.id,
+      vendor: m.provider,
+      tiers: [m.recommendationTier],
+      ...(m.releaseDate ? { released: m.releaseDate } : {}),
+    });
+  }
+  return [...byId.values()];
+}
+
+/**
+ * The recommended models a `search_models` query names, newest first: an id
+ * containing a query word, of a query word's family, or of a vendor the query
+ * names. Run13: the agent took `gpt-5.5` from the OpenRouter listing, which
+ * the model check then refused.
+ */
+export function recommendedSearchMatches(
+  query: string,
+  recommended: readonly RecommendedModelEntry[]
+): Array<{ id: string; vendor: string; tiers: string[]; released?: string }> {
+  const words = query
+    .toLowerCase()
+    .split(/[\s,/]+/)
+    .filter((w) => w.length >= 2);
+  if (words.length === 0) return [];
+  const hits = recommended.filter((m) => {
+    const id = m.id.toLowerCase();
+    return words.some(
+      (w) => id.includes(w) || familyOf(m.id) === familyOf(w) || m.provider.toLowerCase() === w
+    );
+  });
+  return recommendedChoices([...hits].sort(compareByReleaseDateDesc));
+}
+
+/**
+ * The answer that stops a call naming a model the agent should not start
+ * unasked. The agent knows the task and what the user asked for, so it picks
+ * from the recommended list and calls again. Starts nothing.
+ */
+function modelChoiceResult(
+  problems: readonly ModelChoiceProblem[],
+  recommended: readonly RecommendedModelEntry[],
+  how: string
+): { content: Array<{ type: "text"; text: string }>; isError: true } {
+  const unknown = problems.filter((p) => p.kind === "unknown_model");
+  const old = problems.filter((p) => p.kind === "not_recommended");
+  const lines = [
+    `${unknown.length > 0 ? "unknown_model" : "not_recommended"}: nothing was started.`,
+  ];
+  if (unknown.length > 0) {
+    lines.push(
+      `Not a model id: ${unknown.map((p) => JSON.stringify(p.spec)).join(", ")}. ` +
+        "Pick the recommended model that best fits the task (for a family name, the newest " +
+        "of the matching ids) and call again with its id."
+    );
+  }
+  if (old.length > 0) {
+    lines.push(
+      `Not in the recommended list: ${old.map((p) => JSON.stringify(p.spec)).join(", ")}. ` +
+        "Re-evaluate the choice against the recommended models below and call again with one " +
+        `of them. If the user named this exact model, call again ${how}.`
+    );
+  }
+  const matching = Object.fromEntries(problems.map((p) => [p.spec, p.matching]));
+  lines.push(`Matching recommended ids: ${JSON.stringify(matching, null, 2)}`);
+  // run13: an agent retried with an effort it made up, so needs_effort never
+  // answered and the table's level never reached it. The rows go with the ids.
+  const efforts = effortClarification([...new Set(problems.flatMap((p) => p.matching))]);
+  if (efforts) {
+    lines.push(
+      "Recommended effort for those ids, by task type (pass your task's level with the model " +
+        `you pick): ${JSON.stringify(efforts, null, 2)}`
+    );
+  }
+  lines.push(`Recommended models: ${JSON.stringify(recommendedChoices(recommended), null, 2)}`);
+  return { content: [{ type: "text" as const, text: lines.join("\n") }], isError: true };
+}
+
+/** The model-check answer for a call, or undefined when every model may start. */
+function modelChoiceStop(
+  pairs: ReadonlyArray<{ given: string; spec: string }>,
+  required: ReadonlySet<string>,
+  how: string,
+  opts: { projectRulesReadable?: boolean } = {}
+): ReturnType<typeof modelChoiceResult> | undefined {
+  const facts = liveModelChoiceFacts(opts);
+  const problems = modelChoiceProblems(pairs, required, facts);
+  if (problems.length === 0 || !facts.recommended) return undefined;
+  return modelChoiceResult(problems, facts.recommended, how);
+}
+
+/** The schema text of the boolean `user_required_model` (run_prompt, create_session). */
+const USER_REQUIRED_MODEL_DESCRIPTION =
+  "True only when the USER named this exact model: it then runs even when it is not in the " +
+  "recommended list. Never set it for a model you chose yourself.";
+
 /**
  * Build the flag list handed to every child Claude Code process.
  *
@@ -666,8 +1196,84 @@ export function formatTeamResult(status: TeamStatus, sessionPath: string): strin
 
 type ToolAnswer = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
+/**
+ * `allowance_status`'s answer: `allowance: null` with a reason when no Codex
+ * account is configured or the report cannot be built. An unreadable account
+ * list is not "no pool": the report reads the ledger, so it is tried anyway.
+ */
+async function allowanceStatus(horizonMs: number): Promise<AllowanceStatusAnswer> {
+  const meta = contractMeta();
+  const { getAccountRegistry } = await import("./auth/accounts/registry.js");
+  try {
+    if (!getAccountRegistry().hasConfiguredAccounts("openai-codex"))
+      return { ...meta, allowance: null, reason: "no account pool is configured for openai-codex" };
+  } catch {
+    /* presence unknown: let the report decide */
+  }
+  try {
+    const { getAllowanceService } = await import("./auth/accounts/allowance-service.js");
+    return { ...meta, allowance: await getAllowanceService().report("openai-codex", horizonMs) };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { ...meta, allowance: null, reason: `the allowance report failed: ${message}` };
+  }
+}
+
+/**
+ * `allowance_status`'s `sections`: absent → undefined (the full report); else a
+ * non-empty array of names from ALLOWANCE_REPORT_SECTIONS, returned sorted and
+ * deduplicated. Anything else is `invalid_args`.
+ */
+function allowanceSectionsArg(value: unknown): AllowanceReportSection[] | undefined {
+  if (value === undefined) return undefined;
+  const known = ALLOWANCE_REPORT_SECTIONS as readonly string[];
+  if (!Array.isArray(value) || value.length === 0)
+    throw new ContractErrorException(
+      "invalid_args",
+      `'sections' must be a non-empty array of ${known.join(", ")}`
+    );
+  for (const name of value) {
+    if (typeof name !== "string" || !known.includes(name))
+      throw new ContractErrorException(
+        "invalid_args",
+        `'sections' has an unknown section ${JSON.stringify(name)}; known: ${known.join(", ")}`
+      );
+  }
+  return [...new Set(value as AllowanceReportSection[])].sort();
+}
+
+/**
+ * The answer cut to `sections` (AFTER the full report was built): the header
+ * keys, and only the requested sections. `sections` is added beside the meta
+ * so a reader tells a partial report from a full one. A null `allowance` is
+ * returned as is.
+ */
+function allowanceSections(
+  answer: AllowanceStatusAnswer,
+  sections: AllowanceReportSection[] | undefined
+): AllowanceStatusAnswer {
+  if (sections === undefined || answer.allowance === null) return answer;
+  const dropped = new Set<string>(
+    ALLOWANCE_REPORT_SECTIONS.filter((section) => !sections.includes(section))
+  );
+  const allowance = Object.fromEntries(
+    Object.entries(answer.allowance).filter(([key]) => !dropped.has(key))
+  ) as AllowanceStatusAnswer["allowance"];
+  const { contract_version, capabilities, ...rest } = answer;
+  return { contract_version, capabilities, sections, ...rest, allowance };
+}
+
 function contractAnswer(value: unknown): ToolAnswer {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
+}
+
+/**
+ * `allowance_status`'s answer, COMPACT: indented, a full report measured 61,681
+ * bytes (37,758 compact), over Claude Code's MCP result cap, which replaces the
+ * answer with a "saved to file" stub the mod band never reads.
+ */
+function compactAnswer(value: unknown): ToolAnswer {
+  return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
 /** Every §8 verb answers its errors as the `ContractError` JSON with `isError: true`. */
@@ -699,6 +1305,18 @@ function optionalString(raw: unknown, name: string): string | undefined {
   return raw;
 }
 
+/**
+ * A required string argument such as `session_id`. The client does not enforce
+ * the schema's `required`: `get_diagnostics {}` once reached a path join and
+ * answered `The "paths[1]" property must be of type string, got undefined`.
+ */
+function requiredString(raw: unknown, name: string): string {
+  const value = optionalString(raw, name);
+  if (value === undefined)
+    throw new ContractErrorException("invalid_args", `'${name}' is required`);
+  return value;
+}
+
 /** A boolean argument: absent → false; anything but a JSON boolean is the caller's error. */
 function optionalBoolean(raw: unknown, name: string): boolean {
   if (raw === undefined || raw === null) return false;
@@ -713,6 +1331,78 @@ function optionalInteger(raw: unknown, name: string): number | undefined {
   if (typeof raw !== "number" || !Number.isInteger(raw))
     throw new ContractErrorException("invalid_args", `'${name}' must be an integer`);
   return raw;
+}
+
+/**
+ * The replay opens' `cols` and `rows`: absent (`undefined`) → undefined; anything GIVEN, a JSON
+ * `null` included, must be an integer, else `invalid_args`, raised before any lookup. The
+ * integer twin of `givenString`.
+ */
+function givenInteger(raw: unknown, name: string): number | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "number" || !Number.isInteger(raw))
+    throw new ContractErrorException("invalid_args", `'${name}' must be an integer`);
+  return raw;
+}
+
+/** A required integer argument such as `cols`; absent or not an integer → `invalid_args`. */
+function requiredInteger(raw: unknown, name: string, mode?: string): number {
+  const n = optionalInteger(raw, name);
+  if (n === undefined)
+    throw new ContractErrorException(
+      "invalid_args",
+      `'${name}' is required${mode ? ` for mode '${mode}'` : ""}`
+    );
+  return n;
+}
+
+/**
+ * The scroll verbs' request (`scroll_session`, `team(mode="scroll")`): exactly one of `by`
+ * (a non-zero integer; negative = toward older content) and `to` (exactly "end").
+ * Neither, both, `by: 0`, a fraction, a string or another `to` answer `invalid_args`.
+ */
+function scrollArgs(args: Record<string, unknown>): ScrollRequest {
+  const by = optionalInteger(args.by, "by");
+  const to = args.to;
+  if (to !== undefined && to !== null && to !== "end")
+    throw new ContractErrorException("invalid_args", `'to' must be "end"`);
+  const hasTo = to === "end";
+  if (by !== undefined && hasTo)
+    throw new ContractErrorException("invalid_args", "give exactly one of 'by' and 'to', not both");
+  if (hasTo) return { to: "end" };
+  if (by === undefined)
+    throw new ContractErrorException("invalid_args", "one of 'by' and 'to' is required");
+  if (by === 0) throw new ContractErrorException("invalid_args", "'by' must not be 0");
+  return { by };
+}
+
+/**
+ * The transcript verbs' `since` (`transcript_session`, `team(mode="transcript")`): absent →
+ * undefined (from the start); else a non-empty string in cursor syntax. Syntax only — a
+ * cursor from another transcript, past the end or off a line start is found after the
+ * lookup. Errors are `invalid_args`.
+ */
+function transcriptSince(raw: unknown): TranscriptCursor | undefined {
+  const since = givenString(raw, "since");
+  return since === undefined ? undefined : decodeCursor(since);
+}
+
+/**
+ * The transcript verbs' optional string arguments (`since`, `run_id`): absent (`undefined`)
+ * → undefined; anything GIVEN, a JSON `null` included, must be a non-empty string, else
+ * `invalid_args`, raised before the session or run is looked up. `optionalString` instead
+ * reads `null` as absent, for the older tools.
+ */
+function givenString(raw: unknown, name: string): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || !raw)
+    throw new ContractErrorException("invalid_args", `'${name}' must be a non-empty string`);
+  return raw;
+}
+
+/** A byte or character count as the tool text writes it: `32,000`. */
+function grouped(n: number): string {
+  return n.toLocaleString("en-US");
 }
 
 /**
@@ -737,7 +1427,13 @@ export function teamStatusAnswer(path: string, runId?: string): Record<string, u
   let status: TeamStatus;
   try {
     status = getStatus(path);
-  } catch {
+  } catch (err) {
+    // An absent status.json is normal before a run starts; a corrupt one is not.
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      log(
+        `[team] unreadable status.json at ${path}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     if (row) return { ...contractMeta(), run: row };
     throw new ContractErrorException(
       "unknown_run",
@@ -756,9 +1452,16 @@ export function teamStatusAnswer(path: string, runId?: string): Record<string, u
   });
 }
 
-/** `list` / `status` / `cancel` / `capture`: memory reads, JSON answers, ContractError errors. */
+/** The read-only replays of this server; `session` tools and `team(mode="replay")` share them. */
+const replays = new ReplayManager();
+
+/**
+ * `list` / `status` / `cancel` / `capture` / `resize` / `scroll` / `transcript` / `replay`:
+ * memory reads, the pane verbs, the transcript reader and the replay open, JSON answers,
+ * ContractError errors.
+ */
 export async function teamContractVerb(
-  mode: "list" | "status" | "cancel" | "capture",
+  mode: "list" | "status" | "cancel" | "capture" | "resize" | "scroll" | "transcript" | "replay",
   args: Record<string, unknown>
 ): Promise<ToolAnswer> {
   try {
@@ -766,10 +1469,29 @@ export async function teamContractVerb(
     // Every argument's TYPE is checked before the run is looked up: a wrongly typed argument
     // is the caller's error whether or not the run exists (§8 E).
     const path = contractPath(args.path, mode);
-    const runId = optionalString(args.run_id, "run_id");
+    // 'transcript' and 'replay' read a given null `run_id` as invalid, not absent
+    const runId =
+      mode === "transcript" || mode === "replay"
+        ? givenString(args.run_id, "run_id")
+        : optionalString(args.run_id, "run_id");
     const slot = optionalString(args.slot, "slot");
-    const since = optionalInteger(args.since_seq, "since_seq");
+    const sinceSeq = optionalInteger(args.since_seq, "since_seq");
     const spans = optionalBoolean(args.spans, "spans");
+    const cols =
+      mode === "resize"
+        ? requiredInteger(args.cols, "cols", mode)
+        : mode === "replay"
+          ? givenInteger(args.cols, "cols")
+          : undefined;
+    const rows =
+      mode === "resize"
+        ? requiredInteger(args.rows, "rows", mode)
+        : mode === "replay"
+          ? givenInteger(args.rows, "rows")
+          : undefined;
+    const scroll = mode === "scroll" ? scrollArgs(args) : undefined;
+    // `since` belongs to 'transcript' only (capture's integer is `since_seq`)
+    const since = mode === "transcript" ? transcriptSince(args.since) : undefined;
     switch (mode) {
       case "status":
         return contractAnswer(teamStatusAnswer(path, runId));
@@ -778,7 +1500,43 @@ export async function teamContractVerb(
       case "capture": {
         if (slot === undefined)
           throw new ContractErrorException("invalid_args", "'slot' is required for mode 'capture'");
-        return contractAnswer(captureTeamSlot(path, slot, since, spans, runId));
+        return contractAnswer(captureTeamSlot(path, slot, sinceSeq, spans, runId));
+      }
+      case "resize": {
+        if (slot === undefined)
+          throw new ContractErrorException("invalid_args", "'slot' is required for mode 'resize'");
+        return contractAnswer(
+          await resizeTeamSlot(path, slot, cols as number, rows as number, runId)
+        );
+      }
+      case "scroll": {
+        if (slot === undefined)
+          throw new ContractErrorException("invalid_args", "'slot' is required for mode 'scroll'");
+        return contractAnswer(await scrollTeamSlot(path, slot, scroll as ScrollRequest, runId));
+      }
+      case "transcript": {
+        if (slot === undefined)
+          throw new ContractErrorException(
+            "invalid_args",
+            "'slot' is required for mode 'transcript'"
+          );
+        // compact: the answer is budgeted in bytes of its compact JSON (§ 2.3)
+        return compactAnswer(transcriptTeamSlot(path, slot, since, runId));
+      }
+      case "replay": {
+        if (slot === undefined)
+          throw new ContractErrorException("invalid_args", "'slot' is required for mode 'replay'");
+        // Without the session tools nothing could read or close the pane this would open.
+        if (
+          !resolveToolGroups((process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase()).has("session")
+        )
+          throw new ContractErrorException(
+            "invalid_args",
+            "mode 'replay' needs the session tools, which CLAUDISH_MCP_TOOLS leaves out"
+          );
+        return contractAnswer(
+          await replays.open(replayTargetOfTeamSlot(path, slot, runId), { cols, rows })
+        );
       }
     }
   } catch (e) {
@@ -798,38 +1556,12 @@ const sanitize = sanitizeForReport;
 
 // ─── Tool Definitions ────────────────────────────────────────────────────────
 
-/**
- * Pushes a live progress frame to the client, or is a no-op when the channel
- * capability is not enabled. `team` uses this to report per-model token/cost
- * stats while a multi-minute run is still in flight.
- *
- * Channels are the ONLY measured-working push mechanism FOR RENDERING:
- * `notifications/progress` renders nowhere on Claude Code 2.1.220 — verified empty
- * in both the agent's context and the interactive terminal UI. See
- * ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md.
- *
- * That says nothing about KEEPALIVE, which is the opposite result: a progress frame
- * resets the client's MCP idle timer and a channel frame does not (measured
- * 2026-08-14 on 2.1.231 — a real `team` run died at exactly 1800s while emitting
- * channel frames throughout). See
- * ai-docs/sessions/mcp-progress-idle-timeout-20260814-000000-b7e21f4a/findings.md.
- * The two mechanisms are complementary and both stay: channel is the visible
- * surface, `notifications/progress` (mcp/progress-heartbeat.ts) is the keepalive.
- */
-type ChannelNotifier = (params: {
-  content: string;
-  sessionId: string;
-  event: string;
-  model: string;
-  elapsedSeconds: number;
-  createdAt: string;
-}) => void;
-
-function defineTools(
-  sessionManager: SessionManager,
-  notifyChannel: ChannelNotifier
-): ToolDefinition[] {
+function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefinition[] {
   const tools: ToolDefinition[] = [];
+
+  // A nested server does not register `report_error` (mcp/nested-mode.ts), so an
+  // error text must not point at it.
+  const reportHint = (text: string): string => (nested ? "" : text);
 
   // ── Low-Level Tools ──────────────────────────────────────────────────
 
@@ -854,18 +1586,45 @@ function defineTools(
   tools.push({
     name: "run_prompt",
     description:
-      "Run a prompt through any model — supports all providers (Kimi, GLM, Qwen, MiniMax, Gemini, GPT, Grok, etc.) with auto-routing, fallback chains, and custom routing rules.",
+      "One quick prompt, straight to one model's API: a single request and its answer. No " +
+      "Claude Code session, no tools, no files, no conversation state — this is not subagent " +
+      "work. For a task that needs tools, files or more than one turn, use create_session " +
+      "(one model) or team (several models). Non-Claude models (Kimi, GLM, Qwen, MiniMax, " +
+      "Gemini, GPT, Grok, …) go through claudish's routing straight to the provider's API. " +
+      "A Claude model name (claude-*, opus, sonnet, haiku) runs as one Claude Code " +
+      "print-mode call on the user's own Claude Code login, with tools, MCP servers and " +
+      "settings off.",
     inputSchema: {
       type: "object",
       properties: {
         model: {
           type: "string",
           description:
-            "Model name or ID. Short names auto-route to the best provider (e.g., 'kimi-k2.5', 'glm-5', 'gpt-5.4'). Provider prefix optional (e.g., 'google@gemini-3.1-pro-preview', 'or@x-ai/grok-3').",
+            "Model name. Pass the bare name (e.g. 'gemini-4-argon'): claudish routing picks " +
+            "the provider from the user's setup. A 'provider@' on a catalog model is removed " +
+            "unless 'user_required_provider' is true. A bare Claude name (claude-*, opus, " +
+            "sonnet, haiku) runs on Claude Code's own login.",
         },
+        user_required_provider: {
+          type: "boolean",
+          description:
+            "True only when the USER named the provider ('use OpenRouter for it'): the " +
+            "'provider@model' spec is then sent as given.",
+        },
+        user_required_model: { type: "boolean", description: USER_REQUIRED_MODEL_DESCRIPTION },
         prompt: { type: "string", description: "The prompt to send to the model" },
         system_prompt: { type: "string", description: "Optional system prompt" },
-        max_tokens: { type: "number", description: "Maximum tokens in response (default: 4096)" },
+        effort: {
+          type: "string",
+          enum: [...EFFORT_LEVELS, KEEP_EFFORT],
+          description:
+            "Reasoning effort for this request. Take it from list_models' " +
+            "'Recommended effort by task type' table: your task's column, this model's row. " +
+            "Omitted for a model that has a row, the call starts nothing and answers " +
+            `'needs_effort' with that row; "${KEEP_EFFORT}" keeps Claude Code's own level. ` +
+            "Mapped onto the levels the model's connection publishes. Ignored for a bare " +
+            "Claude name.",
+        },
       },
       required: ["model", "prompt"],
     },
@@ -873,19 +1632,38 @@ function defineTools(
     // A single reasoning model can block for many minutes with nothing on the
     // wire. Handler body unchanged — the dispatch owns the keepalive.
     heartbeat: true,
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       try {
-        const result = await runPromptViaProxy(
-          args.model as string,
+        const { specs, stripped } = strippedProviders(
+          [args.model as string],
+          new Set(args.user_required_provider === true ? [args.model as string] : [])
+        );
+        const choice = modelChoiceStop(
+          [{ given: args.model as string, spec: specs[0] }],
+          new Set(args.user_required_model === true ? [args.model as string] : []),
+          "with user_required_model: true"
+        );
+        if (choice) return choice;
+        // Keyed as the caller wrote the model, like team's 'efforts' keys.
+        const recommended =
+          args.effort === undefined ? effortClarification([args.model as string]) : undefined;
+        if (recommended) {
+          return needsEffortResult(
+            recommended,
+            `with effort: "<level>" (effort: "${KEEP_EFFORT}" keeps Claude Code's own)`
+          );
+        }
+        const result = await runPrompt(
+          specs[0],
           args.prompt as string,
           args.system_prompt as string | undefined,
-          args.max_tokens as number | undefined
+          ctx.signal,
+          effortArg(args.effort)
         );
-        let response = result.content;
-        if (result.usage) {
-          response += `\n\n---\nTokens: ${result.usage.input} input, ${result.usage.output} output`;
-        }
-        return { content: [{ type: "text" as const, text: response }] };
+        const text = [strippedNote(stripped), formatRunPromptResult(result)]
+          .filter(Boolean)
+          .join("\n\n");
+        return { content: [{ type: "text" as const, text }] };
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         return {
@@ -893,7 +1671,7 @@ function defineTools(
             {
               type: "text" as const,
               text: withOpFailureContext(
-                `Error: ${errMsg}\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.`,
+                `Error: ${errMsg}${reportHint(`\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.`)}`,
                 `while routing ${args.model}`
               ),
             },
@@ -906,108 +1684,47 @@ function defineTools(
 
   tools.push({
     name: "list_models",
-    description: "List recommended models for coding tasks",
+    description:
+      "List recommended models for coding tasks, and the catalog's recommended reasoning " +
+      "effort per model and task type (pass it as team 'efforts' or create_session / " +
+      "run_prompt 'effort')",
     inputSchema: { type: "object" },
     group: "low-level",
     handler: async () => {
-      let doc: RecommendedModelsDoc;
+      // A failed fetch falls back to the list last written to disk, of any
+      // generation, and says so; the reason goes to the log, never to stdout.
+      let doc: RecommendedModelsDoc | null = null;
+      let note = "";
       try {
         doc = await getRecommendedModels();
-      } catch {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "No recommended models found. Try search_models instead.",
-            },
-          ],
-        };
+        if (!doc.models || doc.models.length === 0) {
+          log("[mcp] list_models: the recommended list is empty");
+          doc = null;
+        }
+      } catch (err) {
+        log(`[mcp] list_models: ${err instanceof Error ? err.message : String(err)}`);
       }
-      if (!doc.models || doc.models.length === 0) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "No recommended models found. Try search_models instead.",
-            },
-          ],
-        };
+      if (!doc) {
+        doc = readLastRecommendedModels();
+        if (doc) {
+          note =
+            "_The live catalog could not be read; this list is from generation " +
+            `${doc.generationId ?? "unknown"}, the last one this machine stored._`;
+          log(
+            `[mcp] list_models: answered from stored generation ${doc.generationId ?? "unknown"}`
+          );
+        }
       }
 
-      const { flagship, fast } = groupRecommendedModels(doc.models);
-
-      // Native-prefix lookup: vendor slug → its native API provider → shortcuts[0].
-      const providerByName = new Map(BUILTIN_PROVIDERS.map((p) => [p.name, p] as const));
-      const getNativePrefix = (firebaseSlug: string): string | null => {
-        const canonical = nativeProviderForVendor(firebaseSlug);
-        if (!canonical) return null;
-        const def = providerByName.get(canonical);
-        if (!def || !def.shortcuts || def.shortcuts.length === 0) return null;
-        return def.shortcuts[0];
-      };
-
-      const renderGroup = (group: RecommendedModelGroup): string => {
-        const m = group.primary;
-        const pricing = formatListingPrice(m);
-        const ctx = m.context || "N/A";
-        const caps: string[] = [];
-        if (m.supportsTools) caps.push("tools");
-        if (m.supportsReasoning) caps.push("reasoning");
-        if (m.supportsVision) caps.push("vision");
-        const capsLine = caps.length > 0 ? caps.join(", ") : "none";
-
-        const prefixes = collectRoutingPrefixes(group, getNativePrefix);
-        const accessLine =
-          prefixes.length > 0 ? prefixes.map((p) => `\`${p}@${m.id}\``).join(" · ") : `\`${m.id}\``;
-
-        return [
-          `### ${m.id}`,
-          `- **Pricing**: ${pricing} avg · ${ctx} context`,
-          `- **Capabilities**: ${capsLine}`,
-          `- **Access**: ${accessLine}`,
-          "",
-        ].join("\n");
-      };
-
-      let output = "# Recommended Models\n\n";
-      output += `_Last updated: ${doc.lastUpdated || "unknown"}_\n\n`;
-
-      if (flagship.length > 0) {
-        output += "## Flagship models\n\n";
-        for (const group of flagship) output += renderGroup(group);
-      }
-
-      if (fast.length > 0) {
-        output += "## Fast variants\n\n";
-        for (const group of fast) output += renderGroup(group);
-      }
-
-      // Quick picks — over the deduped primaries
-      const primaries = [...flagship, ...fast].map((g) => g.primary);
-      const picks = computeQuickPicks(primaries);
-      const pickLines: string[] = [];
-      if (picks.budget)
-        pickLines.push(
-          `- **Budget**: \`${picks.budget.id}\` (${normalizePricingDisplay(
-            picks.budget.pricing?.average
-          )})`
-        );
-      if (picks.largeContext)
-        pickLines.push(
-          `- **Large context**: \`${picks.largeContext.id}\` (${
-            picks.largeContext.context || "N/A"
-          })`
-        );
-      if (picks.mostCapable) pickLines.push(`- **Most capable**: \`${picks.mostCapable.id}\``);
-      if (picks.visionCoding) pickLines.push(`- **Vision + coding**: \`${picks.visionCoding.id}\``);
-      if (picks.agentic) pickLines.push(`- **Agentic**: \`${picks.agentic.id}\``);
-
-      if (pickLines.length > 0) {
-        output += "## Quick picks\n\n";
-        output += `${pickLines.join("\n")}\n`;
-      }
-
-      return { content: [{ type: "text" as const, text: output }] };
+      // getRecommendedModels wrote the sidecar on a fetch; an older one still
+      // shows the last generation this machine read.
+      const efforts = latestEffortRecommendations();
+      const effortTable = efforts ? renderEffortTableMarkdown(efforts.efforts) : "";
+      const listing = doc
+        ? renderRecommendedMarkdown(doc)
+        : "No recommended models found. Try search_models instead.";
+      const text = [note, listing, effortTable].filter(Boolean).join("\n\n");
+      return { content: [{ type: "text" as const, text }] };
     },
   });
 
@@ -1068,6 +1785,26 @@ function defineTools(
       // name is unroutable — and that inference is exactly what sends callers
       // to a metered route. Always report what the catalog knows alongside it.
       const catalogMatches = searchCatalogModels(query, Math.max(maxResults, 5));
+      // What to pass: only a recommended id. A listing or catalog id outside the
+      // recommended list is refused by team / create_session / run_prompt.
+      const recommendedHits = recommendedSearchMatches(
+        query,
+        readLastRecommendedModels()?.models ?? []
+      );
+      const renderRecommendedSection = (): string => {
+        if (recommendedHits.length === 0) return "";
+        let s = "## Recommended models (pass one of these)\n\n";
+        s += "| Bare name | Vendor | Tiers | Released |\n";
+        s += "|-----------|--------|-------|----------|\n";
+        for (const m of recommendedHits) {
+          s += `| ${m.id} | ${m.vendor} | ${m.tiers.join(", ")} | ${m.released ?? "-"} |\n`;
+        }
+        return `${s}\n`;
+      };
+      const useWith = (): string =>
+        recommendedHits.length > 0
+          ? `\nUse with: run_prompt(model="${recommendedHits[0].id}", prompt="your prompt")`
+          : "\nNo recommended model matches this query: call `list_models` for the recommended set.";
       const renderCatalogSection = (): string => {
         if (catalogMatches.length === 0) return "";
         let s = "\n## Catalog names (what claudish routes)\n\n";
@@ -1078,7 +1815,8 @@ function defineTools(
           s += `| ${m.modelId} | ${m.matchedAlias ?? "-"} | ${plans} |\n`;
         }
         s +=
-          "\nPass the **bare name**. Routing puts a subscription ahead of the metered API and " +
+          "\nOnly the recommended models above start without `user_required_model`. " +
+          "Pass the **bare name**. Routing puts a subscription ahead of the metered API and " +
           "rewrites the model to that plan's wire id for you. An aggregator-qualified id " +
           "(`moonshotai/...`, `accounts/fireworks/...`) pins that aggregator and bills per token.\n";
         return s;
@@ -1086,6 +1824,10 @@ function defineTools(
 
       if (results.length === 0) {
         const catalog = renderCatalogSection();
+        if (recommendedHits.length > 0) {
+          const text = `No OpenRouter listing matches "${query}".\n\n${renderRecommendedSection()}${catalog}${useWith()}`;
+          return { content: [{ type: "text" as const, text }] };
+        }
         const text = catalog
           ? `No OpenRouter listing matches "${query}", but claudish's catalog knows these:\n${catalog}`
           : `No models found matching "${query}".\n\n` +
@@ -1095,6 +1837,7 @@ function defineTools(
         return { content: [{ type: "text" as const, text }] };
       }
       let output = `# Search Results for "${query}"\n\n`;
+      output += renderRecommendedSection();
       output += "## OpenRouter listing\n\n";
       output += "| Model | Provider | Pricing | Context |\n";
       output += "|-------|----------|---------|----------|\n";
@@ -1111,37 +1854,36 @@ function defineTools(
         output += `| ${model.id} | ${provider} | ${pricing} | ${context} |\n`;
       }
       output += renderCatalogSection();
-      // Suggest the BARE catalog name, never the top aggregator id. The old
-      // footer recommended whatever the listing ranked first — for "kimi" that
-      // was `accounts/fireworks/routers/kimi-k3-fast`, a metered address, so
-      // the tool's own advice routed users off their subscription.
-      const suggested = catalogMatches[0]?.modelId ?? results[0].model.id;
-      output += `\nUse with: run_prompt(model="${suggested}", prompt="your prompt")`;
+      // Suggest a recommended bare name, never the top aggregator id (for "kimi"
+      // that was `accounts/fireworks/routers/kimi-k3-fast`, a metered address)
+      // nor a catalog id outside the recommended list (run13: `gpt-5.5`).
+      output += useWith();
       return { content: [{ type: "text" as const, text: output }] };
     },
   });
 
   tools.push({
     name: "compare_models",
-    description: "Run the same prompt through multiple models and compare responses",
+    description:
+      "DEBUG. Send the same single prompt to several models, one after another, and show " +
+      "their answers side by side — to check that routes answer or to eyeball raw answers. " +
+      "Each model gets exactly what run_prompt sends: one request, no tools, no Claude Code " +
+      "session. Not for real work: use team for a blind-judged multi-model run, or " +
+      "create_session for one model doing a task.",
     inputSchema: {
       type: "object",
       properties: {
         models: {
           type: "array",
           items: { type: "string" },
-          description: "List of model IDs to compare",
+          description: "List of model names or model specs to compare, in the order to run them",
         },
         prompt: { type: "string", description: "The prompt to send to all models" },
         system_prompt: { type: "string", description: "Optional system prompt" },
-        max_tokens: {
-          type: "number",
-          description: "Maximum tokens in response (omit to let model decide)",
-        },
       },
       required: ["models", "prompt"],
     },
-    group: "low-level",
+    group: "debug",
     // N models run SEQUENTIALLY below, so the total blocking time is the sum of
     // every model's latency — the easiest of the three tools to push past the
     // client's idle window.
@@ -1150,7 +1892,6 @@ function defineTools(
       const modelIds = args.models as string[];
       const prompt = args.prompt as string;
       const systemPrompt = args.system_prompt as string | undefined;
-      const maxTokens = args.max_tokens as number | undefined;
 
       // Ordering: ARGUMENT order, deliberately. The caller chose this sequence
       // and reads the comparison against it, so the repo-wide newest-first
@@ -1163,7 +1904,7 @@ function defineTools(
       }> = [];
       for (const model of modelIds) {
         try {
-          const result = await runPromptViaProxy(model, prompt, systemPrompt, maxTokens);
+          const result = await runPrompt(model, prompt, systemPrompt, ctx.signal);
           results.push({ model, response: result.content, tokens: result.usage });
         } catch (error) {
           results.push({
@@ -1194,8 +1935,9 @@ function defineTools(
       }
       const failed = results.filter((r) => r.error);
       if (failed.length > 0) {
-        output +=
-          '---\n**To report failed model(s)**, use the `report_error` tool with `error_type: "provider_failure"` and the model ID(s) above.\n';
+        output += reportHint(
+          '---\n**To report failed model(s)**, use the `report_error` tool with `error_type: "provider_failure"` and the model ID(s) above.\n'
+        );
       }
       return { content: [{ type: "text" as const, text: output }] };
     },
@@ -1231,7 +1973,9 @@ function defineTools(
         },
         timeout_ms: {
           type: "number",
-          description: "Per-model probe timeout in ms (default 20000).",
+          description:
+            "Probe timeout in ms PER HOP (default 20000). A model whose first hop fails is " +
+            "probed down its routing chain until a hop serves, so it can take hops × this.",
         },
       },
       required: ["models"],
@@ -1271,139 +2015,38 @@ function defineTools(
       // Sync, latched, config-only. Free after the first call.
       ensureEndpointsRegistered();
 
-      const rows: string[] = [];
-      const readyModels: string[] = [];
-      const failedModels: string[] = [];
-      const nativeModels: string[] = [];
-      let subCount = 0;
-      let meteredCount = 0;
+      // Each model is judged by its ROUTING CHAIN (`preflight-chain.ts`): kept hops
+      // in chain order, each probed until one serves, a failed hop followed by the
+      // runtime's own advance/stop rule. A native Claude name is never probed (the
+      // native handler forwards the inbound Claude Code header, which this process
+      // does not have), and counts as neither ready nor failed. `timeout_ms` is per
+      // hop. Metered hops are probed too: the runtime would use them.
+      const probe = proxy
+        ? (target: ProbeTarget) =>
+            probeLink(
+              proxy.url,
+              // A kept hop passed the credential filter, so a miss here would be a
+              // routing bug, not a missing key.
+              { provider: target.provider, modelSpec: target.probeSpec, hasCredentials: true },
+              timeoutMs
+            )
+        : null;
 
+      const results: PreflightModelResult[] = [];
       for (const model of models) {
         ctx.reportProgress(`preflight: ${model}`);
-
-        // A bare Claude name never reaches route(): the proxy serves it on the
-        // harness's own auth and checks for that BEFORE routing. route() cannot
-        // see that path — `native-anthropic` has no credential store, so its
-        // filter drops it and the chain degrades to OpenRouter — and preflight
-        // was reporting subscription models as "no route" / "metered".
-        const native = nativeRouteFor(model);
-        if (native) {
-          // Deliberately NOT probed. The native handler authenticates by forwarding
-          // the INBOUND request's Claude Code header (native-handler.ts) and only
-          // falls back to ANTHROPIC_API_KEY. A synthetic probe from this process
-          // carries neither, so it fails "x-api-key header is required" for a
-          // healthy model and a typo alike — measured on the built bundle. That
-          // result is noise, and reporting it drove the very "drop your own
-          // model" advice this guard exists to stop. Counted in its own bucket,
-          // neither ready nor failed: the proxy will serve it on the session's
-          // auth, and that is all this process can say.
-          nativeModels.push(model);
-          rows.push(
-            `| \`${model}\` | ${native.displayName} | native | ${NATIVE_NOT_PROBED} | \`${native.modelSpec}\` |`
-          );
-          continue;
-        }
-
-        let plan: Awaited<ReturnType<typeof route>>;
-        try {
-          plan = await route(model);
-        } catch (err) {
-          failedModels.push(model);
-          rows.push(
-            `| \`${model}\` | — | — | ❌ route error | ${err instanceof Error ? err.message : String(err)} |`
-          );
-          continue;
-        }
-
-        if (plan.kind === "no-route") {
-          // No credentialed provider can serve this at all. Reported as a FAILURE
-          // rather than omitted, because "none of your credentials reaches this model" is the
-          // single most useful thing to learn before the run rather than during it.
-          failedModels.push(model);
-          rows.push(`| \`${model}\` | — | — | ❌ no route | ${plan.reason} |`);
-          continue;
-        }
-
-        const primary = plan.primary;
-        // Billing mode is a property of the PROVIDER, not the model — the same
-        // model can be flat-rate through a plan and metered through a vendor API,
-        // and which one a bare name lands on is exactly what a caller cannot see.
-        const billing = isLocalProviderName(primary.provider)
-          ? "local"
-          : isSubscriptionProvider(primary.provider)
-            ? "SUB"
-            : "metered";
-        if (billing === "SUB") subCount++;
-        else if (billing === "metered") meteredCount++;
-
-        let status = "not probed";
-        let ok = true;
-        if (proxy) {
-          try {
-            const result = await probeLink(
-              proxy.url,
-              {
-                provider: primary.provider,
-                // route() already credential-filtered, so a miss here would be a
-                // routing bug, not a missing key.
-                modelSpec: primary.modelSpec,
-                hasCredentials: true,
-              },
-              timeoutMs
-            );
-            ok = isReadyState(result.state);
-            status = ok
-              ? `✅ ${result.state}`
-              : `❌ ${result.state}${result.errorMessage ? ` — ${result.errorMessage}` : ""}`;
-          } catch (err) {
-            ok = false;
-            status = `❌ probe error — ${err instanceof Error ? err.message : String(err)}`;
-          }
-        }
-
-        if (ok) readyModels.push(model);
-        else failedModels.push(model);
-
-        const fallbacks = plan.fallbacks.length > 0 ? ` (+${plan.fallbacks.length} fallback)` : "";
-        rows.push(
-          `| \`${model}\` | ${primary.displayName}${fallbacks} | ${billing} | ${status} | \`${primary.modelSpec}\` |`
+        results.push(
+          await preflightModel(model, {
+            probe,
+            // The heartbeat names what it is waiting on.
+            onHop: (hop, total) =>
+              ctx.reportProgress(`preflight: ${model} · hop ${hop.index}/${total}`),
+          })
         );
       }
 
-      const lines = [
-        `# Preflight — ${models.length} model${models.length === 1 ? "" : "s"}`,
-        "",
-        `**Ready: ${readyModels.length}** · **Failed: ${failedModels.length}** · ` +
-          (nativeModels.length > 0 ? `native (not probed): ${nativeModels.length} · ` : "") +
-          `subscription: ${subCount} · metered: ${meteredCount}`,
-        "",
-        "| Model | Provider | Billing | Status | Wire id |",
-        "|---|---|---|---|---|",
-        ...rows,
-      ];
-
-      if (failedModels.length > 0) {
-        lines.push(
-          "",
-          `⚠️ Drop or replace before running: ${failedModels.map((m) => `\`${m}\``).join(", ")}`
-        );
-      }
-      if (meteredCount > 0) {
-        lines.push(
-          "",
-          `💸 ${meteredCount} model${meteredCount === 1 ? "" : "s"} will be billed PER TOKEN. ` +
-            "A bare name can land on a metered provider when the subscription that covers it " +
-            "has no credential configured — name the provider explicitly to pin it."
-        );
-      }
-      if (!doProbe) {
-        lines.push(
-          "",
-          "ℹ️ `probe: false` — routing and billing only. Reachability was NOT checked."
-        );
-      }
-
-      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      const text = renderPreflightReport(results, { probed: doProbe });
+      return { content: [{ type: "text" as const, text }] };
     },
   });
 
@@ -1414,8 +2057,9 @@ function defineTools(
       "slot is an interactive Claude Code session in its own headless magmux pane. " +
       "Modes: 'run' (START the models and return once each has taken its prompt — it does " +
       "NOT wait for answers), 'status' (per-slot state; read `run.slots`), 'list' (every " +
-      "run this server holds), 'capture' (one slot's screen), 'cancel' (stop one slot or " +
-      "the whole run), 'judge' (blind-vote on existing outputs), 'run-and-judge' (the " +
+      "run this server holds), 'capture' (one slot's screen), 'resize' (set one slot's " +
+      "terminal size), 'scroll' (scroll one slot's transcript view), 'transcript' (one " +
+      "slot's conversation as text lines), 'cancel' (stop one slot or the whole run), 'judge'(blind-vote on existing outputs), 'run-and-judge' (the " +
       "blocking pipeline). Poll 'status' (read run.slots) or 'list'. " +
       "NO SLOT IS EVER KILLED ON A TIMER once its prompt is accepted. A team slot is a full " +
       "Claude Code session and may work for a long time; a slot inside a build or test " +
@@ -1432,21 +2076,41 @@ function defineTools(
       properties: {
         mode: {
           type: "string",
-          enum: ["run", "judge", "run-and-judge", "status", "cancel", "list", "capture"],
+          enum: [
+            "run",
+            "judge",
+            "run-and-judge",
+            "status",
+            "cancel",
+            "list",
+            "capture",
+            "resize",
+            "scroll",
+            "transcript",
+            "replay",
+          ],
           description:
             "Operation mode. 'run' STARTS the models and returns once every slot has taken " +
             "its prompt (or failed to) — it does not wait for answers. Poll 'status' (read " +
             "`run.slots`) or 'list' for progress, then 'judge' once the slots have " +
-            "finished. 'capture' returns one slot's screen. 'run-and-judge' is the blocking " +
-            "pipeline and holds the call open for the whole run. 'cancel' stops one slot or " +
+            "finished. 'capture' returns one slot's screen; 'resize' sets its terminal size; " +
+            "'scroll' scrolls its transcript view (`by` or `to`). " +
+            "'transcript' reads one slot's conversation as text lines (`since` pages; a " +
+            "`cont` chain may continue in the next answer after `cursor`, in order, never " +
+            "reordered or lost). " +
+            "'replay' opens one finished slot's real interface read only and answers " +
+            "{replay_id, seq}; read it with capture_session, end it with close_replay. " +
+            "'run-and-judge' is the blocking pipeline and holds the call open for the whole run. 'cancel' stops one slot or " +
             "the whole run.",
         },
         slot: {
           type: "string",
           description:
-            "For 'cancel' and 'capture': the anonymised slot id (e.g. '02') from the slot " +
-            "map 'run' returned. 'capture' requires it; for 'cancel', omit it to stop every " +
-            "slot in the run.",
+            "For 'cancel', 'capture', 'resize', 'scroll', 'transcript' and 'replay': the anonymised " +
+            "slot id (e.g. '02') from the slot map 'run' returned. 'capture', 'resize', 'scroll', " +
+            "'transcript' and 'replay' require it; for " +
+            "'cancel', omit it " +
+            "to stop every slot in the run.",
         },
         path: {
           type: "string",
@@ -1457,19 +2121,60 @@ function defineTools(
         run_id: {
           type: "string",
           description:
-            "For 'status', 'cancel' and 'capture': the run_id a 'run' answer returned. It " +
+            "For 'status', 'cancel', 'capture', 'resize', 'scroll', 'transcript' and 'replay': the " +
+            "run_id a 'run' answer " +
+            "returned. It " +
             "addresses THAT run while this server retains it, even after a newer run reused " +
             "the path. Omit it to address the newest run at 'path'.",
         },
         since_seq: {
           type: "number",
           description:
-            "For 'capture': the `seq` of the screen you already hold. When it is still " +
+            "For 'capture' only: the `seq` of the screen you already hold. When it is still " +
             "current the answer is `{unchanged:true}`; any other value returns the full screen.",
+        },
+        since: {
+          type: "string",
+          description:
+            "For 'transcript' only (capture uses since_seq): the `cursor` of a previous " +
+            "answer; returns only the lines after it. Omit to read from the start. Answer " +
+            `{run_id, path, slot, cursor, lines, more, final}, at most ${MAX_TRANSCRIPT_LINES} lines and ` +
+            `${grouped(TRANSCRIPT_ANSWER_MAX_BYTES)} bytes per call; a ` +
+            "`cont` chain may continue in the next answer after `cursor`, in order, never " +
+            "reordered or lost.",
         },
         spans: {
           type: "boolean",
           description: "For 'capture': also return the colour/attribute spans of each line.",
+        },
+        cols: {
+          type: "integer",
+          description:
+            "For 'resize' (required): the terminal width in columns, clamped to 40–9999. The " +
+            "answer {run_id, path, slot, cols, rows, changed, seq} reports the size set. For " +
+            "'replay' (optional): the replay's width, default 160.",
+        },
+        rows: {
+          type: "integer",
+          description:
+            "For 'resize' (required): the terminal height in rows, clamped to 24–9999 and to " +
+            "at most 4 000 000 cells (cols × rows). For 'replay' (optional): the replay's " +
+            "height, default 50.",
+        },
+        by: {
+          type: "integer",
+          description:
+            "For 'scroll': rows to scroll the slot's transcript view; negative = toward older " +
+            `content, positive = toward the live bottom. A target, ± 1 row; |by| is capped at ${MAX_SCROLL_ROWS}. ` +
+            "Not 0. Give exactly one of 'by' and 'to'. The answer {run_id, path, slot, seq} " +
+            "carries the screen's seq after the scroll.",
+        },
+        to: {
+          type: "string",
+          enum: ["end"],
+          description:
+            "For 'scroll': \"end\" returns the slot's view to the live bottom. Give exactly one " +
+            "of 'by' and 'to'.",
         },
         models: {
           type: "array",
@@ -1484,10 +2189,39 @@ function defineTools(
             "so a native reviewer that never produced the required shape is reported " +
             "EMPTY 'shape_mismatch' instead of silently succeeding.",
         },
+        efforts: {
+          type: "object",
+          additionalProperties: { type: "string", enum: [...EFFORT_LEVELS] },
+          description:
+            "Reasoning effort per model for 'run' and 'run-and-judge', e.g. " +
+            '{"gpt-6-luna": "high", "kimi-k3": "max"}. Keys must match a \'models\' ' +
+            "entry exactly. Take each level from list_models' 'Recommended effort by task " +
+            "type' table: your task's column, the model's row. The slot pins that level on " +
+            "every request (claudish --effort-override); a model without an entry keeps " +
+            "Claude Code's own effort. Omitted while a model has a row, nothing starts and " +
+            "the answer is 'needs_effort' with the rows; {} keeps Claude Code's own for all.",
+        },
         judges: {
           type: "array",
           items: { type: "string" },
           description: "Model IDs to use as judges (default: same as runners)",
+        },
+        user_required_provider: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "The 'models' or 'judges' entries whose provider the USER named ('run Kimi on " +
+            "OpenRouter'), exactly as written there. Every other 'provider@' on a catalog " +
+            "model is removed so claudish routing picks the provider from the user's setup; " +
+            "pass bare names unless the user asked for a provider.",
+        },
+        user_required_model: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "The 'models' or 'judges' entries the USER named as exact models, exactly as " +
+            "written there: they run even when not in the recommended list. Never list a " +
+            "model you chose yourself.",
         },
         input_file: {
           type: "string",
@@ -1550,9 +2284,8 @@ function defineTools(
     },
     group: "agentic",
     // The tool the whole keepalive exists for: a real run was aborted at exactly
-    // 1800s of channel-frame-only silence. NOT gated on `channelEnabled` — that
-    // failure happened in a session with channels unregistered, so gating the
-    // keepalive behind the channel group would reproduce the bug exactly.
+    // 1800s with no `notifications/progress` on the wire. A progress frame is the
+    // only notification measured to reset the client's MCP idle timer.
     //
     // Still needed even though `run` no longer blocks on answers: `run-and-judge` is
     // the pipeline mode and holds the call open for the whole run, and `run` itself
@@ -1564,7 +2297,16 @@ function defineTools(
     heartbeat: true,
     handler: async (args, ctx) => {
       const mode = args.mode as string;
-      if (mode === "list" || mode === "status" || mode === "cancel" || mode === "capture") {
+      if (
+        mode === "list" ||
+        mode === "status" ||
+        mode === "cancel" ||
+        mode === "capture" ||
+        mode === "resize" ||
+        mode === "scroll" ||
+        mode === "transcript" ||
+        mode === "replay"
+      ) {
         return teamContractVerb(mode, args);
       }
       try {
@@ -1572,8 +2314,24 @@ function defineTools(
           throw new Error(`Unknown mode: ${mode}`);
         const path = args.path;
         if (typeof path !== "string" || !path) throw new Error(`'path' is required for '${mode}'`);
-        const models = args.models as string[] | undefined;
-        const judges = args.judges as string[] | undefined;
+        const givenModels = args.models as string[] | undefined;
+        const givenJudges = args.judges as string[] | undefined;
+        const requiredProviders = userRequiredProvidersArg(args.user_required_provider, [
+          ...(givenModels ?? []),
+          ...(givenJudges ?? []),
+        ]);
+        const modelStrip = givenModels
+          ? strippedProviders(givenModels, requiredProviders)
+          : undefined;
+        const judgeStrip = givenJudges
+          ? strippedProviders(givenJudges, requiredProviders)
+          : undefined;
+        const models = modelStrip?.specs;
+        const judges = judgeStrip?.specs;
+        const providerNote = strippedNote([
+          ...(modelStrip?.stripped ?? []),
+          ...(judgeStrip?.stripped ?? []),
+        ]);
         // `input_file` is the preferred form: a team prompt is usually a long
         // brief, and inline text is echoed in full in the caller's terminal.
         // Accepting both would silently pick one and discard the other, which is
@@ -1595,36 +2353,38 @@ function defineTools(
 
         const resolved = validateSessionPath(path);
 
-        // Live per-model token/cost progress for the run modes. The session
-        // basename is a stable, human-recognisable id for the channel frames.
-        const teamSessionId = resolved.split("/").filter(Boolean).pop() ?? "team";
-        const teamCreatedAt = new Date().toISOString();
+        // Keys name the models as the caller wrote them; the slots run the stripped specs.
+        const givenEfforts = givenModels ? modelEffortsArg(args.efforts, givenModels) : undefined;
+        const efforts = givenEfforts
+          ? Object.fromEntries(
+              Object.entries(givenEfforts).map(([m, level]) => [
+                models?.[givenModels?.indexOf(m) ?? -1] ?? m,
+                level,
+              ])
+            )
+          : undefined;
+
+        const runsModels = mode === "run" || mode === "run-and-judge";
+        const runsJudges = mode === "judge" || mode === "run-and-judge";
+        // The conversation live in the calling window, read once per call for every mode
+        // that starts panes (slots and judges alike): each child records it as the usage
+        // ledger's `parent`, and `run` also writes it to the run's record.
+        const parentClaudeSessionId =
+          runsModels || runsJudges
+            ? await parentSessionForCall({ hostPid: sessionManager.hostPid })
+            : undefined;
+
         const runOpts = {
           requirePattern,
           minOutputBytes,
           claudeFlags: childFlags,
-          onProgress: (u: {
-            rendered: string;
-            phase: "running" | "settled";
-            allFailed: boolean;
-          }) => {
-            // Two mechanisms, deliberately both: the channel frame below is what
-            // the agent and the human SEE, and this one is what keeps the client
-            // from aborting the call. A state change is real news, so refresh the
-            // idle timer at that moment as well as on the periodic tick. Short
-            // phase string only — the rendered grid stays on the channel path.
+          efforts,
+          parentClaudeSessionId,
+          onProgress: (u: { phase: "running" | "settled" }) => {
+            // A state change is real news, so refresh the client's idle timer at
+            // that moment as well as on the periodic tick. Short phase string only:
+            // the run's progress is read with `team(mode:"status")`, never pushed.
             ctx.reportProgress(`team: ${u.phase}`);
-            notifyChannel({
-              content: u.rendered,
-              sessionId: teamSessionId,
-              // A settled run must emit a TERMINAL event. Emitting "running"
-              // for the final frame leaves any status-tracking consumer
-              // believing the run never closed.
-              event: u.phase === "settled" ? (u.allFailed ? "failed" : "completed") : "running",
-              model: "team",
-              elapsedSeconds: (Date.now() - Date.parse(teamCreatedAt)) / 1000,
-              createdAt: teamCreatedAt,
-            });
           },
         };
 
@@ -1634,6 +2394,38 @@ function defineTools(
           const existing = join(resolved, "input.md");
           return existsSync(existing) ? readFileSync(existing, "utf-8") : undefined;
         };
+
+        // No projectRulesReadable here: team children run in this process's cwd
+        // (team-orchestrator.ts) and `path` must lie inside it, so they route by the
+        // same ./.claudish.json this check reads. create_session's work_dir can differ.
+        const choice = modelChoiceStop(
+          [
+            ...(runsModels && givenModels && models
+              ? givenModels.map((given, i) => ({ given, spec: models[i] }))
+              : []),
+            ...(runsJudges && givenJudges && judges
+              ? givenJudges.map((given, i) => ({ given, spec: judges[i] }))
+              : []),
+          ],
+          userRequiredProvidersArg(
+            args.user_required_model,
+            [...(givenModels ?? []), ...(givenJudges ?? [])],
+            "user_required_model"
+          ),
+          'with user_required_model: ["<that entry>"]'
+        );
+        if (choice) return choice;
+
+        if (runsModels && givenModels && args.efforts === undefined) {
+          // Keyed as the caller wrote the models: that is how 'efforts' keys must read.
+          const recommended = effortClarification(givenModels);
+          if (recommended) {
+            return needsEffortResult(
+              recommended,
+              `with efforts: {"<model>": "<level>"} (efforts: {} keeps Claude Code's own for every model)`
+            );
+          }
+        }
 
         switch (mode) {
           case "run": {
@@ -1651,13 +2443,10 @@ function defineTools(
 
             // The run's record in the sessions directory, for observers outside
             // this process (the magus claudish plugin monitor): the run's own
-            // status.json lives wherever the caller pointed `path`, and its only
-            // completion push is a channel frame Claude Code drops without
-            // `--channels`. Written BEFORE any pane exists; a throw here fails
-            // the call with nothing started.
-            const parentClaudeSessionId = await parentSessionForCall({
-              hostPid: sessionManager.hostPid,
-            });
+            // status.json lives wherever the caller pointed `path`, and the record
+            // is how an observer outside this process learns the run ended.
+            // Written BEFORE any pane exists; a throw here fails the call with
+            // nothing started.
             const monitorRecord = sessionManager.recordTeamRun({
               teamPath: resolved,
               slots: models.length,
@@ -1715,6 +2504,7 @@ function defineTools(
                         cancel: `team(mode:"cancel", path:"${p}", slot:"<id>")`,
                         judge: `team(mode:"judge", path:"${p}") once every slot has finished`,
                       },
+                      ...(providerNote ? { provider_note: providerNote } : {}),
                       note:
                         "Every slot has taken its prompt or failed to. Nothing terminates a " +
                         "working slot on a timer: `status` reports each slot's state, " +
@@ -1729,8 +2519,13 @@ function defineTools(
             };
           }
           case "judge": {
-            const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
-            return { content: [{ type: "text" as const, text: JSON.stringify(verdict, null, 2) }] };
+            const verdict = await judgeResponses(resolved, {
+              judges,
+              claudeFlags: childFlags,
+              parentClaudeSessionId,
+            });
+            const out = providerNote ? { ...verdict, provider_note: providerNote } : verdict;
+            return { content: [{ type: "text" as const, text: JSON.stringify(out, null, 2) }] };
           }
           case "run-and-judge": {
             if (!models?.length) throw new Error("'models' is required for 'run-and-judge' mode");
@@ -1745,12 +2540,25 @@ function defineTools(
             const handle = await startModels(resolved, runOpts);
             await handle.done;
             const run = teamRunRow(resolved, handle.runId);
-            const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
+            const verdict = await judgeResponses(resolved, {
+              judges,
+              claudeFlags: childFlags,
+              parentClaudeSessionId,
+            });
             return {
               content: [
                 {
                   type: "text" as const,
-                  text: JSON.stringify({ ...verdict, run_id: handle.runId, run }, null, 2),
+                  text: JSON.stringify(
+                    {
+                      ...verdict,
+                      run_id: handle.runId,
+                      run,
+                      ...(providerNote ? { provider_note: providerNote } : {}),
+                    },
+                    null,
+                    2
+                  ),
                 },
               ],
             };
@@ -1922,15 +2730,77 @@ function defineTools(
     },
   });
 
-  // ── Channel Tools ────────────────────────────────────────────────────
+  // The allowance band's source (allowance architecture §3.4): the same
+  // `report()` as `claudish account forecast --json`, wrapped in the mod
+  // contract's meta. Read-only, and model-visible: no project, and session
+  // ids cut to 8 characters by the report itself.
+  tools.push({
+    name: "allowance_status",
+    description:
+      "Report the local Codex account pool's allowance: {contract_version, capabilities, " +
+      "allowance, reason?}. `allowance` is the claudish.allowance.v1 report of THIS machine's " +
+      "claudish sessions (accounts, remaining capacity, burn rate, projected gaps with remedies, " +
+      "trajectory, per-session shares, 14 days of hourly usage per account), or null with a " +
+      "`reason` when there is no account pool. " +
+      "`sections` limits the report to those parts (accounts, combined, burn, alerts, " +
+      "trajectory, sessions, usage) beside its header, and the answer then lists them in `sections`; " +
+      'a frequent poll should pass ["accounts","burn","alerts"]. ' +
+      "Read-only; it sends nothing to any vendor.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        provider: {
+          type: "string",
+          enum: ["codex"],
+          description: "The account pool to report (default and only value: codex)",
+        },
+        horizon_hours: {
+          type: "number",
+          description: "Forecast horizon in hours, 1–168 (default: 168)",
+        },
+        sections: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: [...ALLOWANCE_REPORT_SECTIONS],
+          },
+          minItems: 1,
+          description:
+            'Report only these parts beside the header (default: all). Poll with ["accounts","burn","alerts"]; the trajectory, sessions and usage are most of the bytes.',
+        },
+      },
+    },
+    group: "agentic",
+    handler: async (args) => {
+      try {
+        const provider = optionalString(args.provider, "provider");
+        if (provider !== undefined && provider !== "codex")
+          throw new ContractErrorException("invalid_args", "'provider' must be 'codex'");
+        const hours = args.horizon_hours ?? 168;
+        if (typeof hours !== "number" || !Number.isFinite(hours) || hours < 1 || hours > 168)
+          throw new ContractErrorException(
+            "invalid_args",
+            "'horizon_hours' must be a number from 1 to 168"
+          );
+        const sections = allowanceSectionsArg(args.sections);
+        // The report is built in full either way; only the answer is cut.
+        return compactAnswer(allowanceSections(await allowanceStatus(hours * 3_600_000), sections));
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  // ── Session Tools ────────────────────────────────────────────────────
 
   tools.push({
     name: "create_session",
     description:
       "Create a new claudish proxy session for an external model: an interactive Claude Code running " +
-      "it in its own headless magmux pane. Returns at once with state STARTING; the session produces " +
-      "channel notifications as it runs. With a prompt it is one-shot (it ends when that turn " +
-      "settles); without one it is interactive and waits for send_input. Needs magmux >= 0.14.0 " +
+      "it in its own headless magmux pane. Returns at once with state STARTING; nothing is " +
+      "pushed while it runs: poll list_sessions (about once every 10 s) for its state, then " +
+      "call get_output once it is COMPLETED. With a prompt it is one-shot (it ends when that turn " +
+      `settles); without one it is interactive and waits for send_input. Needs magmux >= ${MIN_MAGMUX_VERSION} ` +
       "(darwin and linux).",
     inputSchema: {
       type: "object",
@@ -1938,8 +2808,17 @@ function defineTools(
         model: {
           type: "string",
           description:
-            "Model identifier (e.g., 'google@gemini-2.0-flash', 'x-ai/grok-code-fast-1')",
+            "Model name. Pass the bare name (e.g. 'gpt-6.1-sol'): claudish routing picks the " +
+            "provider from the user's setup. A 'provider@' on a catalog model is removed " +
+            "unless 'user_required_provider' is true.",
         },
+        user_required_provider: {
+          type: "boolean",
+          description:
+            "True only when the USER named the provider: the 'provider@model' spec is then " +
+            "used as given.",
+        },
+        user_required_model: { type: "boolean", description: USER_REQUIRED_MODEL_DESCRIPTION },
         prompt: {
           type: "string",
           description: "Initial prompt to send. If omitted, send later via send_input.",
@@ -1965,17 +2844,38 @@ function defineTools(
             "Flags the pane owns or that only work in print mode are refused. NOTE: split on " +
             "whitespace, so a flag VALUE containing spaces cannot be expressed here.",
         },
+        effort: {
+          type: "string",
+          enum: [...EFFORT_LEVELS, KEEP_EFFORT],
+          description:
+            "Reasoning effort for the whole session. Take it from list_models' " +
+            "'Recommended effort by task type' table: your task's column, this model's row. " +
+            "Pinned on every request (claudish --effort-override), over one in claude_flags. " +
+            "Omitted for a model that has a row, nothing starts and the answer is " +
+            `'needs_effort' with that row; "${KEEP_EFFORT}" keeps Claude Code's own level.`,
+        },
         work_dir: {
           type: "string",
           description: "Working directory for the session (default: current directory)",
         },
+        setup_from: {
+          type: ["string", "null"],
+          description:
+            "Directory whose .claude/settings.json and settings.local.json the session " +
+            "inherits (enabled plugins, permissions, env), so a session in another work_dir " +
+            "keeps the caller's plugins and agents; an explicit path must be an existing " +
+            "directory. Default: the caller's project directory, " +
+            "when work_dir differs from it. null keeps the session on work_dir's own settings only.",
+        },
       },
       required: ["model"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
+        const effort = effortArg(args.effort);
+        if (effort) claudishFlags.push("--effort-override", effort);
         // Refusals first, before any credential work: reserved or positional flags, then
         // a missing magmux (its message starts with the code word). An unknown --agent is
         // refused by the child itself, before any model request (D11).
@@ -1996,7 +2896,30 @@ function defineTools(
         // reads project-local config relative to process.cwd(), so the parent
         // would decide with the wrong project's rules. process.chdir() is not
         // an option — it is process-global and races concurrent calls.
-        const requestedModel = args.model as string;
+        const { specs, stripped } = strippedProviders(
+          [args.model as string],
+          new Set(args.user_required_provider === true ? [args.model as string] : [])
+        );
+        const requestedModel = specs[0];
+        const choice = modelChoiceStop(
+          [{ given: args.model as string, spec: requestedModel }],
+          new Set(args.user_required_model === true ? [args.model as string] : []),
+          "with user_required_model: true",
+          // Project rules are read from this process's cwd, like route() (see pinning above).
+          {
+            projectRulesReadable:
+              typeof args.work_dir !== "string" || resolve(args.work_dir) === process.cwd(),
+          }
+        );
+        if (choice) return choice;
+        const recommended =
+          args.effort === undefined ? effortClarification([args.model as string]) : undefined;
+        if (recommended) {
+          return needsEffortResult(
+            recommended,
+            `with effort: "<level>" (effort: "${KEEP_EFFORT}" keeps Claude Code's own)`
+          );
+        }
         const workDir = args.work_dir as string | undefined;
 
         const plan = await prehydrateCredentialsForSpawn([requestedModel], {
@@ -2004,7 +2927,7 @@ function defineTools(
         });
 
         // The conversation live in the calling window, from the host's session
-        // record: one read at call time, no wait. See channel/parent-session.ts.
+        // record: one read at call time, no wait. See mcp-session/parent-session.ts.
         const parentClaudeSessionId = await parentSessionForCall({
           hostPid: sessionManager.hostPid,
         });
@@ -2018,6 +2941,8 @@ function defineTools(
           timeoutSeconds: args.timeout_seconds as number | undefined,
           claudishFlags,
           cwd: workDir,
+          // Claude Code reads project settings only from the child's own cwd.
+          setupFrom: resolveSetupFrom(args.setup_from, workDir, process.cwd()),
           parentClaudeSessionId,
         });
 
@@ -2028,6 +2953,9 @@ function defineTools(
               text: JSON.stringify({
                 session_id: sessionId,
                 state: sessionManager.getSession(sessionId).state,
+                ...(stripped.length > 0
+                  ? { model: requestedModel, note: strippedNote(stripped) }
+                  : {}),
               }),
             },
           ],
@@ -2077,9 +3005,15 @@ function defineTools(
       },
       required: ["session_id", "text"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
-      const result = sessionManager.sendInput(args.session_id as string, args.text as string);
+      const sessionId = requiredString(args.session_id, "session_id");
+      // Before `text` is read and before any lookup: a replay has no path for text.
+      if (isReplayId(sessionId))
+        return contractErrorAnswer(
+          new ContractErrorException("replay_read_only", "a replay is read only")
+        );
+      const result = sessionManager.sendInput(sessionId, requiredString(args.text, "text"));
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
@@ -2090,7 +3024,8 @@ function defineTools(
     name: "get_output",
     description:
       "Get a session's answer prose (each settled turn's assistant text, from its transcript). " +
-      "Call after the 'completed' notification to get the full response.",
+      "Call once list_sessions shows the session COMPLETED (or between turns of an " +
+      "interactive session).",
     inputSchema: {
       type: "object",
       properties: {
@@ -2102,11 +3037,11 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const output = sessionManager.getOutput(
-          args.session_id as string,
+          requiredString(args.session_id, "session_id"),
           args.tail_lines as number | undefined
         );
         return {
@@ -2139,7 +3074,7 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const sessionId = optionalString(args.session_id, "session_id");
@@ -2155,11 +3090,13 @@ function defineTools(
   tools.push({
     name: "list_sessions",
     description:
-      "List channel sessions: {contract_version, capabilities, sessions}. Optionally include " +
+      "List sessions: {contract_version, capabilities, sessions}. Optionally include " +
       "finished ones. Each row reports `state`, `activity` and `idle_seconds`: how long since " +
       "the session's screen or transcript last changed. Nothing kills a session for being " +
       "idle — a child inside a long Bash call is silent and working — so this is yours to " +
-      "judge against the task you set, and `cancel_session` is yours to call if the answer is no.",
+      "judge against the task you set, and `cancel_session` is yours to call if the answer is no. " +
+      "A failed row's `reason_detail` is one line saying why (for api_error, the provider's " +
+      "own error message); it is null while the session is live and on COMPLETED.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2169,7 +3106,7 @@ function defineTools(
         },
       },
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const includeCompleted = optionalBoolean(args.include_completed, "include_completed");
@@ -2185,7 +3122,7 @@ function defineTools(
 
   // Diagnostics as API.
   //
-  // Two channel sessions once ran 900 seconds of genuine billed work — 241
+  // Two sessions once ran 900 seconds of genuine billed work — 241
   // assistant messages, ~94k output tokens, 150 tool calls — and reported
   // success with an empty output log. The cause was one line, written to
   // `~/.claudish/sessions/<id>/stderr.log` and left there:
@@ -2198,7 +3135,7 @@ function defineTools(
   tools.push({
     name: "get_diagnostics",
     description:
-      "Explain what a channel session actually did — its final screen, upstream error bodies, " +
+      "Explain what a session actually did — its final screen, upstream error bodies, " +
       "the recent state records, anomalies, the resolved model chain, accounting, and the paths " +
       "to the full records (transcript included). Call this FIRST whenever a session fails, times " +
       "out, or completes with empty or surprising output; it needs no re-run and no debug flag. " +
@@ -2218,11 +3155,11 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const diagnostics = sessionManager.getDiagnostics(
-          args.session_id as string,
+          requiredString(args.session_id, "session_id"),
           args.event_limit as number | undefined
         );
         return {
@@ -2245,7 +3182,7 @@ function defineTools(
   tools.push({
     name: "capture_session",
     description:
-      "Read a session's current terminal screen (160×50): {seq, cols, rows, cursor, lines, final, " +
+      "Read a session's current terminal screen: {seq, cols, rows, cursor, lines, final, " +
       "spans?}. A memory read, meant for polling about once per second. Pass the last `seq` as " +
       "since_seq to get {unchanged:true, seq, final} while nothing changed. `final:true` is the " +
       "last screen of a closed pane. Errors are a JSON ContractError.",
@@ -2264,7 +3201,7 @@ function defineTools(
       },
       required: ["session_id"],
     },
-    group: "channel",
+    group: "session",
     handler: async (args) => {
       try {
         const sessionId = optionalString(args.session_id, "session_id");
@@ -2272,7 +3209,220 @@ function defineTools(
           throw new ContractErrorException("invalid_args", "'session_id' is required");
         const since = optionalInteger(args.since_seq, "since_seq");
         const spans = optionalBoolean(args.spans, "spans");
-        return contractAnswer(sessionManager.captureSession(sessionId, since, spans));
+        return contractAnswer(
+          isReplayId(sessionId)
+            ? replays.capture(sessionId, since, spans)
+            : sessionManager.captureSession(sessionId, since, spans)
+        );
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "resize_session",
+    description:
+      "Set a session's terminal size: the child gets a real SIGWINCH and Claude Code reflows. " +
+      "Allowed at any time, mid-turn included; the last call wins. The size is clamped to " +
+      "cols 40–9999, rows 24–9999 and at most 4 000 000 cells (claudish's floor, magmux's " +
+      "ceiling); the answer " +
+      "{session_id, cols, rows, changed, seq, pending?} reports the size set. `seq` is the screen's seq after the resize: the next capture_session " +
+      "shows the new cols/rows. `changed:false` = already that size. `pending:true` = the pane " +
+      "is starting or its socket is reconnecting; the size is applied then. A finished session " +
+      "answers its last size with changed:false. Errors are a JSON ContractError " +
+      "(`resize_unsupported` when the installed magmux has no resize op).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        cols: { type: "integer", description: "Terminal width in columns (clamped to 40–9999)" },
+        rows: {
+          type: "integer",
+          description: "Terminal height in rows (clamped to 24–9999 and 4 000 000 cells)",
+        },
+      },
+      required: ["session_id", "cols", "rows"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        const cols = requiredInteger(args.cols, "cols");
+        const rows = requiredInteger(args.rows, "rows");
+        return contractAnswer(
+          isReplayId(sessionId)
+            ? await replays.resize(sessionId, cols, rows)
+            : await sessionManager.resizeSession(sessionId, cols, rows)
+        );
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "scroll_session",
+    description:
+      "Scroll a session's transcript view, as a mouse wheel over the child's Claude Code " +
+      "would: the next capture_session shows the child scrolled. `by` is a signed row " +
+      "count (negative = toward older content, positive = toward the live bottom); it is a " +
+      `target, ± 1 row, and |by| is capped at ${MAX_SCROLL_ROWS} per call. \`to:"end"\` returns ` +
+      "to the live bottom. Give exactly one of `by` and `to`; `by:0` is refused. It never " +
+      "types into the prompt, submits or answers a dialog, and a prompt claudish delivers " +
+      "next returns the view to the bottom first. The answer {session_id, seq} carries the " +
+      "screen's seq after the scroll (the first changed screen within 1 s, else the current " +
+      "one). Errors are a JSON ContractError: `scroll_unavailable` while the session is " +
+      "still starting, finished, delivering a prompt, reading its turn from the screen or " +
+      "reconnecting, or when magmux did not confirm the send (the scroll may still land). " +
+      "Nothing is queued.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        by: {
+          type: "integer",
+          description: `Rows to scroll; negative = older content. Not 0; |by| capped at ${MAX_SCROLL_ROWS}; a target, ± 1 row`,
+        },
+        to: {
+          type: "string",
+          enum: ["end"],
+          description: '"end" returns the view to the live bottom',
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        const req = scrollArgs(args);
+        return contractAnswer(
+          isReplayId(sessionId)
+            ? await replays.scroll(sessionId, req)
+            : await sessionManager.scrollSession(sessionId, req)
+        );
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "transcript_session",
+    description:
+      "Read a session's conversation as plain text lines, from its Claude Code transcript: " +
+      "prompts (`user`), replies (`assistant`), one line per tool call (`tool`, e.g. " +
+      "`Bash(git status)`), the content of a prompt delivered as a file (`task_file`), " +
+      "notices (`system`) and errors (`error`). Works while the session runs and after it " +
+      "finished. Page with `since`: pass the previous answer's `cursor` to get only newer " +
+      "lines; the cursor can move even when no line is returned. At most " +
+      `${MAX_TRANSCRIPT_LINES} lines (and ${grouped(TRANSCRIPT_ANSWER_MAX_BYTES)} bytes) per call; ` +
+      "`more: true` means call again now. A text over " +
+      `${grouped(TRANSCRIPT_LINE_MAX_CHARS)} characters is split into lines marked ` +
+      "`cont: true`; a `cont` chain may continue in the next answer after `cursor`, in " +
+      "order, never reordered or lost. `final: true` means the session finished, its " +
+      "process exited and every line has been returned; until then keep polling. Read " +
+      "only: it never sends anything to the session. The answer is " +
+      "{session_id, cursor, lines:[{kind, text, cont?}], more, final}. Errors are a JSON " +
+      "ContractError: `unknown_session`, `invalid_args` (a malformed cursor, or one from " +
+      "another session).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        since: {
+          type: "string",
+          description:
+            "The `cursor` of a previous answer; returns only the lines after it. Omit to " +
+            "read from the start. Opaque; valid for this session only.",
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        const since = transcriptSince(args.since);
+        // compact: the answer is budgeted in bytes of its compact JSON (§ 2.3)
+        return compactAnswer(sessionManager.transcriptSession(sessionId, since));
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "replay_session",
+    description:
+      "Open a finished session's real interface, read only, as a pane of its own running " +
+      "Claude Code on a fork of the session's record: the original record is never written. " +
+      "Answers {replay_id, seq}. Read it with capture_session, resize_session and " +
+      "scroll_session, giving the replay_id as session_id; end it with close_replay. send_input " +
+      "refuses a replay_id with `replay_read_only`. A second open of a target whose replay is " +
+      "open answers the same replay_id. A replay is not a session: list_sessions never shows " +
+      "it. Errors are a JSON ContractError: `invalid_args`, `unknown_session`, or " +
+      "`replay_unavailable` with `reason`: `session_live` (still running), `no_record` (no " +
+      "transcript file), `spawn_failed` (magmux or claude missing, no pane free, or claude " +
+      "exited before its input box appeared), `boot_dialog` (a dialog appeared in place of " +
+      "the input box).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        cols: {
+          type: "integer",
+          description: "Terminal width in columns, default 160 (clamped to 40–9999)",
+        },
+        rows: {
+          type: "integer",
+          description:
+            "Terminal height in rows, default 50 (clamped to 24–9999 and 4 000 000 cells)",
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = requiredString(args.session_id, "session_id");
+        const cols = givenInteger(args.cols, "cols");
+        const rows = givenInteger(args.rows, "rows");
+        return contractAnswer(
+          await replays.open(sessionManager.replayTarget(sessionId), { cols, rows })
+        );
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "close_replay",
+    description:
+      "End a replay. When it returns, the process is gone and its fork record removed; it may " +
+      "take about 12 s. Any string answers {closed:true}, so a second close is safe; " +
+      "`reap_unverified:true` is added in the one case the process could not be verified gone. " +
+      "After a close, capture_session, resize_session and scroll_session on that id answer " +
+      "`unknown_session`. Errors are a JSON ContractError: `invalid_args`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        replay_id: { type: "string", description: "The replay_id from replay_session" },
+      },
+      required: ["replay_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        return contractAnswer(await replays.close(requiredString(args.replay_id, "replay_id")));
       } catch (e) {
         return contractErrorAnswer(e);
       }
@@ -2290,161 +3440,124 @@ function resolveToolGroups(mode: string): Set<ToolGroup> {
       return new Set(["low-level"]);
     case "agentic":
       return new Set(["agentic"]);
-    case "channel":
-      return new Set(["channel"]);
+    case "session":
+      return new Set(["session"]);
+    case "debug":
+      return new Set(["debug"]);
     default:
-      return new Set(["low-level", "agentic", "channel"]);
+      // Every other value — `all`, unset, a typo, or the removed `channel` — is
+      // everything. `channel` gets no alias: a rename removes the old name.
+      return new Set(["low-level", "agentic", "session", "debug"]);
   }
 }
 
-// ─── SEP-1686 status mapping ─────────────────────────────────────────────────
-// Maps Claudish's 9-value `event` enum to SEP-1686's 5-value `TaskStatus`.
-// See: https://github.com/modelcontextprotocol/modelcontextprotocol/pull/1732
-// Migration plan: ai-docs/sessions/.../sep-1686-migration-schema.md
-type TaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
+/** Every value `CLAUDISH_MCP_TOOLS` recognises, in the order the docs list them. */
+const TOOL_MODES = ["all", "low-level", "agentic", "session", "debug"] as const;
 
-// A `Record` over `ChannelEventType`, so an event type without a projection is a
-// compile error rather than a silent `"working"` from the fall-through below.
-const TASK_STATUS_BY_EVENT: Record<ChannelEventType, TaskStatus> = {
-  starting: "working",
-  running: "working",
-  tool_executing: "working",
-  waiting_for_input: "input_required",
-  // A permission dialog is open and only the caller's `send_input` moves the
-  // session on. It had no key, so it fell through to "working": a SEP-1686
-  // consumer polled a session that was waiting on it as if it were busy.
-  awaiting_permission: "input_required",
-  completed: "completed",
-  failed: "failed",
-  cancelled: "cancelled",
-  // The key whose ABSENCE forced the channel wire to lie. `mapEventToTaskStatus`
-  // falls through to `?? "working"`, so a session killed by its own timeout was
-  // reported to a SEP-1686 consumer as still working — which is why the timeout
-  // path once emitted `"failed"` on the wire while the record said `"timeout"`.
-  // With this key present the timeout emits its own event; SEP-1686 has no
-  // `timeout` member, and `failed` is the only honest projection of it.
-  timeout: "failed",
-};
-
-const EVENT_TO_TASK_STATUS = new Map<string, TaskStatus>(Object.entries(TASK_STATUS_BY_EVENT));
-
-// Exported ONLY so the regression guard can call it instead of grepping this
-// file's source text. The behaviour worth guarding is the fall-through below: a
-// key missing from EVENT_TO_TASK_STATUS does not throw, it silently yields
-// "working", so a dead session (e.g. one killed by its own timeout) reports to a
-// SEP-1686 consumer as still alive. Only a real call can catch that; a source
-// regex stays green if the entry moves to a dead map, is shadowed, or ends up in
-// a comment.
-export function mapEventToTaskStatus(event: string): TaskStatus {
-  return EVENT_TO_TASK_STATUS.get(event) ?? "working";
+/**
+ * The stderr line for a `CLAUDISH_MCP_TOOLS` value that names no tool mode, or
+ * undefined for a recognised one. The value still selects every tool; the line
+ * exists so a typo, or the removed `channel`, is not silently read as `all`.
+ */
+function unknownToolModeWarning(mode: string): string | undefined {
+  if ((TOOL_MODES as readonly string[]).includes(mode)) return undefined;
+  const renamed = mode === "channel" ? " (`channel` was renamed to `session`)" : "";
+  return `[claudish] CLAUDISH_MCP_TOOLS=${JSON.stringify(mode)} is not a tool mode${renamed}; selecting all tools. Valid values: ${TOOL_MODES.join(", ")}`;
 }
 
 // ─── Server Setup ────────────────────────────────────────────────────────────
 
-async function main() {
-  const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
-  const enabledGroups = resolveToolGroups(toolMode);
+/**
+ * Whether `claudish --mcp` writes the debug log (`logs/` in the working directory):
+ * the same switches as every other claudish run. `--debug-claudish` / `-d` turn it
+ * on and `--no-debug-claudish` off, the last one on the command line winning; without
+ * a flag, `CLAUDISH_DEBUG` decides (1/true on, 0/false or unset off). The MCP server
+ * runs no `parseArgs`, so it reads these itself.
+ */
+export function mcpDebugLogEnabled(
+  argv: readonly string[],
+  env: Record<string, string | undefined>
+): boolean {
+  let flag: boolean | undefined;
+  for (const arg of argv) {
+    if (arg === "--debug-claudish" || arg === "-d") flag = true;
+    else if (arg === "--no-debug-claudish") flag = false;
+  }
+  if (flag !== undefined) return flag;
+  const fromEnv = env.CLAUDISH_DEBUG?.toLowerCase();
+  return fromEnv === "1" || fromEnv === "true";
+}
 
-  // Create server with channel capability
+async function main() {
+  // FIRST, before anything can start loadHooksOnce(): descriptor 1 belongs to
+  // the JSON-RPC writer alone. Every other stdout route — Bun's native
+  // console.log, process.stdout.write, fs.writeSync(1), Bun.write(Bun.stdout),
+  // an inheriting child — lands on stderr or in the debug log, so no hook
+  // output (and no stray write of claudish's own) can corrupt the protocol.
+  // Where libc cannot be bound, `active` is false, stdout is untouched, and the
+  // loader loads no user hook module in this process.
+  const iso: ProtocolStdout = isolateProtocolStdout();
+
+  // The always-on structural log (~/.claudish/logs/claudish-mcp_*.log, never
+  // stdout) records why a tool answered from a fallback; `--log-off` disables it,
+  // as for every other claudish run. The debug log is also where hook output and
+  // diverted stdout writes go.
+  const argv = process.argv.slice(2);
+  initLogger(
+    mcpDebugLogEnabled(argv, process.env),
+    "debug",
+    argv.includes("--log-off"),
+    "claudish-mcp",
+    500
+  );
+  if (!iso.active) log(`[mcp] protocol stdout not isolated: ${iso.reason ?? "unknown"}`);
+
+  // Session hooks need the engine without a proxy, so loading starts now, in the
+  // background. The MCP server's own proxy (run_prompt, preflight) awaits the
+  // same memoised promise before it builds a handler.
+  void loadHooksOnce({ hostMode: "mcp" });
+
+  const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
+  // Inside a session a claudish owner started, one level of nesting is the limit:
+  // only the one-shot tools of NESTED_MCP_TOOL_NAMES, intersected with the groups
+  // CLAUDISH_MCP_TOOLS enables (never widened), no channel capability, and the
+  // nested instructions. See pane-session.md § One level of nesting.
+  const nested = inMcpSession();
+  const enabledGroups = resolveToolGroups(toolMode);
+  const toolModeWarning = unknownToolModeWarning(toolMode);
+  if (toolModeWarning) console.error(toolModeWarning);
+
+  // Tools only, for every tool mode. No `experimental: {"claude/channel": {}}`: the
+  // server pushes nothing; a host polls `list_sessions` and reads the records.
   const server = new Server(
-    { name: "claudish", version: "9.0.0" },
+    // `version.ts` is generated from packages/cli/package.json, so serverInfo names
+    // the release the host is actually talking to.
+    { name: "claudish", version: VERSION },
     {
-      capabilities: {
-        ...(enabledGroups.has("channel") ? { experimental: { "claude/channel": {} } } : {}),
-        tools: {},
-      },
-      instructions: INSTRUCTIONS,
+      capabilities: { tools: {} },
+      instructions: nested ? NESTED_INSTRUCTIONS : INSTRUCTIONS,
     }
   );
 
-  // Create session manager with channel notification bridge.
-  // The bridge translates SessionManager events into MCP notifications.
-  // When CLAUDISH_CHANNEL_TRACE=1 is set, the diagnostics module wraps the
-  // callback to log each step of the producer→bridge→wire pipeline.
-  //
-  // Wire format aligns with SEP-1686 (Tasks) for forward-compat: each
-  // notification carries both Claudish-specific fields (`session_id`, `event`)
-  // and SEP-1686-shaped fields (`task_id`, `status`, `created_at`,
-  // `last_updated_at`). When Claude Code ships notifications/tasks/status
-  // receiver support, the migration is a method-name swap + payload restructure
-  // (no semantic changes).
-  // See: ai-docs/sessions/.../sep-1686-migration-schema.md
-  const sessionManager = new SessionManager({
-    onStateChange: wrapStateChange((sessionId, event) => {
-      // `timeout` is here because it used to arrive AS `failed` — the wire had
-      // no timeout event until EVENT_TO_TASK_STATUS learned to project one — and
-      // dropping the hint when the event split in two would have been a silent
-      // regression. Both are terminal failures worth reporting, and both are now
-      // explainable without a re-run via get_diagnostics.
-      const notificationContent =
-        event.type === "failed" || event.type === "timeout"
-          ? `${event.content}\n\nCall get_diagnostics with session_id: "${sessionId}" for the final screen, the upstream error bodies and the transcript path. To report it, use the report_error tool with error_type: "provider_failure" and model: "${event.model}".`
-          : event.content;
-      const result = server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: notificationContent,
-          meta: {
-            session_id: sessionId,
-            event: event.type,
-            model: event.model,
-            elapsed_seconds: String(event.elapsedSeconds),
-            // SEP-1686 forward-compat fields (additive, do not break consumers
-            // of the existing fields above):
-            task_id: sessionId,
-            status: mapEventToTaskStatus(event.type),
-            created_at: event.createdAt,
-            last_updated_at: new Date().toISOString(),
-            ...event.extraMeta,
-          },
-        },
-      });
-      watchNotificationResult(result, { sessionId, eventType: event.type });
-    }),
-  });
-
-  // Live-progress push for long-running tools. Gated on the channel capability
-  // actually being declared — emitting a channel frame the client never
-  // registered for is silently dropped, and `team` still writes status.txt
-  // regardless, so there is always a visible path.
-  const channelEnabled = enabledGroups.has("channel");
-  const notifyChannel: ChannelNotifier = (p) => {
-    if (!channelEnabled) return;
-    try {
-      const result = server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: p.content,
-          meta: {
-            // meta keys must match [a-zA-Z0-9_]+ — Claude Code silently drops
-            // keys containing hyphens or other characters.
-            session_id: p.sessionId,
-            event: p.event,
-            model: p.model,
-            elapsed_seconds: String(Math.round(p.elapsedSeconds)),
-            task_id: p.sessionId,
-            status: mapEventToTaskStatus(p.event),
-            created_at: p.createdAt,
-            last_updated_at: new Date().toISOString(),
-          },
-        },
-      });
-      watchNotificationResult(result, { sessionId: p.sessionId, eventType: p.event });
-    } catch {
-      // Progress reporting must never fail the tool call it is describing.
-    }
-  };
+  // Sessions are observed by polling (`list_sessions`, `get_output`) and through
+  // their records on disk; nothing is pushed to the host.
+  const sessionManager = new SessionManager();
 
   // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
   // than per call, so a long-lived session cannot change its behaviour mid-flight.
   const progressIntervalMs = resolveProgressIntervalMs();
 
   // Build tool registry
-  const allTools = defineTools(sessionManager, notifyChannel);
-  const enabledTools = allTools.filter((t) => enabledGroups.has(t.group));
+  const allTools = defineTools(sessionManager, nested);
+  const nestedNames: readonly string[] = NESTED_MCP_TOOL_NAMES;
+  const enabledTools = allTools.filter(
+    (t) => enabledGroups.has(t.group) && (!nested || nestedNames.includes(t.name))
+  );
   const toolMap = new Map(enabledTools.map((t) => [t.name, t]));
 
-  console.error(`[claudish] MCP server started (tools: ${toolMode}, ${enabledTools.length} tools)`);
+  console.error(
+    `[claudish] MCP server started (tools: ${nested ? "nested" : toolMode}, ${enabledTools.length} tools)`
+  );
 
   // Register ListTools handler
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -2463,7 +3576,7 @@ async function main() {
   // keepalive for as long as it runs: the client aborts a call that emits nothing
   // for its idle window (30 min on stdio by default — the exact 1800s a real
   // `team` run died at), and a progress frame is the ONLY notification measured to
-  // reset that timer. Channel frames do not.
+  // reset that timer.
   //
   // `extra.sendNotification` is preferred over `server.notification` because it is
   // the request-scoped sender; on non-stdio transports it is what correlates the
@@ -2496,6 +3609,7 @@ async function main() {
       : NOOP_HEARTBEAT;
     const ctx: ToolCallContext = {
       reportProgress: (message) => heartbeat.tick(message),
+      signal: extra.signal,
     };
 
     try {
@@ -2515,22 +3629,25 @@ async function main() {
     }
   });
 
-  // Connect via stdio transport. installWireTap() is a no-op unless
-  // CLAUDISH_CHANNEL_TRACE=1 is set; when active it mirrors outbound channel
-  // notification frames to stderr so we can confirm wire-level delivery.
-  const transport = new StdioServerTransport();
-  installWireTap();
+  // Connect via stdio transport, writing through the protocol writer (the real
+  // stdout's private descriptor when isolation is active).
+  const transport = new StdioServerTransport(process.stdin, iso.protocolOut);
   await server.connect(transport);
   installMcpShutdown(sessionManager);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
   // after an identity check. Asynchronous, and once per root per process — the first
   // pane's own sweep (ensureSwept in startPaneSession) is this one, not a second `ps`.
-  void ensureSwept(sockRootFor()).catch(() => undefined);
+  // A nested server registers no session tools and never spawns a pane, so it has
+  // nothing to sweep.
+  if (!nested)
+    void ensureSwept(sockRootFor()).catch((err: unknown) =>
+      log(`[mcp] stale pane sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+    );
 }
 
 /**
  * Shutdown (D15 layer 3, §20.3 item 8): stdin EOF, transport close, SIGINT, SIGTERM and
- * SIGHUP settle every team run and channel session CANCELLED — so their records end
+ * SIGHUP settle every team run and session CANCELLED — so their records end
  * (`meta.json`, the closing wait line) — then reap every pane in parallel and exit.
  * Installed before any pane exists, so `startPaneSession`'s own default hooks never
  * replace these options. A SIGKILL of this process ends no record; the per-pane
@@ -2538,6 +3655,11 @@ async function main() {
  */
 function installMcpShutdown(sessionManager: SessionManager): void {
   const before = async (): Promise<void> => {
+    // A replay already registered is reaped with every other pane; this stops one that is not yet.
+    replays.beginShutdown();
+    // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
+    // their process groups here, or they outlive the server.
+    stopAllClaudeCodePrintChildren();
     await Promise.allSettled([shutdownAllTeamRuns(), sessionManager.shutdownAll()]);
   };
   // The stdio transport closes when stdin does, so stdin's `end`/`close` is the
@@ -2552,6 +3674,9 @@ function installMcpShutdown(sessionManager: SessionManager): void {
  * Called from index.ts when --mcp flag is used.
  */
 export function startMcpServer() {
+  // An MCP server never opens a credential dialog: its host is a program, and
+  // its panes are pane children (`auth/credentials/prompt-role.ts`).
+  setCredentialPromptRole("never");
   main().catch((error) => {
     console.error("[claudish] MCP fatal error:", error);
     process.exit(1);

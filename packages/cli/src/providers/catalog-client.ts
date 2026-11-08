@@ -1,3 +1,4 @@
+import { log } from "../logger.js";
 import {
   type CachedSubscriptionPlan,
   type DiskCacheV3,
@@ -16,6 +17,7 @@ import {
   type RouteRegistry,
   isRouteRegistry,
 } from "./connection-wire.js";
+import { allConnections, splitOptInConnections } from "./content-use.js";
 import { _clearChatCapabilityIndex } from "./transport/probe-discovery.js";
 
 const DEFAULT_CATALOG_URL =
@@ -114,7 +116,9 @@ export function isCatalogWarm(): boolean {
 }
 
 export function _setCatalogEntriesForTest(entries: SlimModelEntry[] | null): void {
-  _catalogEntriesForTest = entries;
+  // The same normalisation as every other way entries reach memory, so a test
+  // seeds exactly what production reads (`content-use.ts`).
+  _catalogEntriesForTest = entries ? entries.map(splitOptInConnections) : entries;
 }
 
 export function _resetCatalogClient(): void {
@@ -123,8 +127,9 @@ export function _resetCatalogClient(): void {
   _warmPromise = null;
 }
 
+/** Every wire id the entry publishes, opt-in included: an exact reverse lookup. */
 function allExternalIds(entry: SlimModelEntry): string[] {
-  return (entry.aggregators ?? []).flatMap((connection) =>
+  return allConnections(entry).flatMap((connection) =>
     typeof connection.externalModelId === "string" ? [connection.externalModelId] : []
   );
 }
@@ -166,6 +171,16 @@ export function externalIdFor(entry: SlimModelEntry, provider: string): string |
   return wireIds.find((wireId) => !isMovingPointer(wireId)) ?? null;
 }
 
+/** Whether `entry` maps `wireId` exactly on a route bound to `provider`, opt-in rows included. */
+function publishesWireIdFor(entry: SlimModelEntry, provider: string, wireId: string): boolean {
+  return allConnections(entry).some(
+    (connection) =>
+      connection.routeStatus === "mapped" &&
+      connection.externalModelId === wireId &&
+      catalogRouteMatchesProvider(connection.route, provider)
+  );
+}
+
 export function resolveExternalId(
   userInput: string,
   provider: string,
@@ -178,6 +193,12 @@ export function resolveExternalId(
     return userInput;
   }
   if (!entries) return null;
+
+  // An id this provider publishes, typed exactly, is its own answer — opt-in
+  // rows included. This is how `meta@muse-spark-1.3-contributor` is sent
+  // verbatim: every step below CHOOSES a wire id, and a chosen one is never a
+  // content-use opt-in (`content-use.ts`).
+  if (entries.some((entry) => publishesWireIdFor(entry, provider, userInput))) return userInput;
 
   const byModelId = entries.find((entry) => entry.modelId === userInput);
   if (byModelId) return externalIdFor(byModelId, provider);
@@ -447,7 +468,10 @@ async function refreshCatalogOnce(
     return { kind: "fetch_failed", reason: "incomplete" };
   }
 
-  const models = entries.flatMap((entry) => {
+  // The disk keeps the RAW rows (validated above, and what older builds read);
+  // memory gets them split, exactly as `readAllModelsCache` hands them out.
+  const normalised = entries.map(splitOptInConnections);
+  const models = normalised.flatMap((entry) => {
     const id = externalIdFor(entry, "openrouter");
     return id ? [{ id }] : [];
   });
@@ -469,7 +493,7 @@ async function refreshCatalogOnce(
   // withholds models the refresh just described. Its doc comment already said
   // "after a catalog refresh" — nothing had ever called it.
   _clearChatCapabilityIndex();
-  _memCache = entries;
+  _memCache = normalised;
   _warmPromise = Promise.resolve();
   return {
     kind: "refreshed",
@@ -561,9 +585,22 @@ async function fetchRouteRegistry(
 
 function startCatalogWarm(): Promise<void> {
   if (_warmPromise) return _warmPromise;
-  const promise = refreshCatalog(8000).then((result) => {
-    if (result.kind !== "refreshed" && _warmPromise === promise) _warmPromise = null;
-  });
+  const promise = refreshCatalog(8000).then(
+    (result) => {
+      if (result.kind === "refreshed") return;
+      // Without this line the reason is lost: callers only see "no snapshot".
+      log(
+        `[catalog] refresh failed: ${result.kind === "fetch_failed" ? result.reason : `incompatible contract ${result.serverContractVersion ?? "unknown"}`}`
+      );
+      if (_warmPromise === promise) _warmPromise = null;
+    },
+    (err: unknown) => {
+      // A throw (a cache write refused, a bad CLAUDISH_CATALOG_URL) must not stay
+      // the answer for the life of the process: the next caller tries again.
+      log(`[catalog] refresh threw: ${err instanceof Error ? err.message : String(err)}`);
+      if (_warmPromise === promise) _warmPromise = null;
+    }
+  );
   _warmPromise = promise;
   return promise;
 }
@@ -602,8 +639,16 @@ export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> 
 }
 
 async function waitForCatalogWarm(timeoutMs: number): Promise<void> {
+  let timedOut = false;
   await Promise.race([
     startCatalogWarm(),
-    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    new Promise<void>((resolve) =>
+      setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, timeoutMs)
+    ),
   ]);
+  if (timedOut)
+    log(`[catalog] still refreshing after ${timeoutMs} ms; the caller goes on without it`);
 }

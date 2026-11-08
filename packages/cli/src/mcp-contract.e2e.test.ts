@@ -32,13 +32,17 @@ const keys = (v: unknown): string[] => Object.keys(v as Json).sort();
 
 const SLOT_ROW_KEYS = [
   "activity",
+  "agent",
+  "agent_requested",
   "cost_usd",
   "idle_seconds",
   "last_activity_at",
   "model",
   "pane",
+  "recent",
   "provider",
   "reason",
+  "reason_detail",
   "slot",
   "state",
   "tokens_in",
@@ -108,11 +112,20 @@ function contractError(r: ToolResult, code: string): void {
 function expectContractMeta(body: Json): void {
   expect(body.contract_version).toBe(1);
   expect(body.capabilities).toEqual([...CAPABILITIES]);
+  // contract v1 only appends: the replay verbs (MTL-373) are the newest capability
+  expect(CAPABILITIES.at(-1)).toBe("replay");
 }
 
 function expectSlotRow(row: Json, extended: string[] = SLOT_ROW_KEYS): void {
   expect(keys(row)).toEqual(extended);
+  expect(row.agent_requested).toBeNull();
+  expect(row.agent).toBeNull();
   expect(SLOT_STATES).toContain(row.state as never);
+  if (["FAILED", "EMPTY", "CANCELLED", "TIMEOUT"].includes(row.state as string)) {
+    expect(row.reason_detail === null || typeof row.reason_detail === "string").toBe(true);
+  } else {
+    expect(row.reason_detail).toBeNull();
+  }
 }
 
 function expectRunRow(run: Json): void {

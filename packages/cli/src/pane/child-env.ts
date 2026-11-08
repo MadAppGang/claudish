@@ -1,7 +1,21 @@
 /**
  * Runs inside the claudish that an MCP `team` slot or `create_session` starts in a
- * headless magmux pane — "the pane child". Nothing here runs anywhere else: every
- * entry point returns at once unless `CLAUDISH_PANE_CHILD === "1"`.
+ * headless magmux pane — "the pane child" — and decides the one-level nesting rule
+ * for every claudish started below it.
+ *
+ * Two predicates, one flag:
+ *
+ *   - `inMcpSession()`: `CLAUDISH_PANE_CHILD === "1"`. True for the pane child, its
+ *     Claude Code and everything that Claude Code starts (Bash tool, hooks, plugin MCP
+ *     servers): claude-runner keeps the flag in Claude Code's environment.
+ *   - `isPaneChild()`: the flag AND a non-empty `CLAUDISH_PANE_CWD`. True only for the
+ *     claudish the pane launcher started: claude-runner deletes `CLAUDISH_PANE_CWD`
+ *     and `CLAUDISH_PANE_ENV` (`PANE_LAUNCH_VARS`) from Claude Code's environment.
+ *
+ * A process in a session that is not the pane child is one level deep already. It may
+ * not start another session: `assertNotNested` refuses a model-running launch, and the
+ * claudish MCP server registers only its one-shot tools (`mcp/nested-mode.ts`). This
+ * stops ACCIDENTAL recursion; it is not a containment boundary (`env -u` passes it).
  *
  * The pane child must run in EXACTLY the environment and working directory of the MCP
  * server that started it (D16). Two things stand between them:
@@ -16,9 +30,16 @@
  *     Code derives the transcript directory from the cwd, so a profile `cd` would move
  *     the transcript out of the place the server reads it from.
  *
- * This module is imported FIRST by the CLI entry (`index.ts`), before `.env` loading
- * and before any module that reads the environment at import time. Its one side
- * effect is `bootstrapPaneChild()` at the bottom, which is a no-op without the marker.
+ * The markers come only from the parent claudish that spawned the pane, through the
+ * spawn environment (`buildPaneEnv`). Nothing in the working directory can set them:
+ * Bun's env-file autoload is off on every launch path, `launch-guard.ts` drops them
+ * when a launch left it on, and claudish's own `.env` load never sets them
+ * (`launch-env.ts`). That is what lets `isPaneChild` read a plain variable.
+ *
+ * This module is imported by the CLI entry (`index.ts`) right after `launch-guard.ts`,
+ * before `.env` loading and before any module that reads the environment at import
+ * time. Its one side effect is `bootstrapPaneChild()` at the bottom, which is a no-op
+ * outside the pane child.
  *
  * After `parseArgs`, `assertPaneChildInteractive` refuses any flag combination that
  * would make the pane child anything but an interactive Claude Code REPL. The server
@@ -35,15 +56,30 @@ import { ENV } from "../config.js";
 /** Exit status of a refused pane child (EX_USAGE). */
 export const PANE_CHILD_REFUSED_EXIT = 64;
 
+/** The owner-created hook inbox of this pane child (hook-system §2.3). */
+export const HOOK_INBOX_VAR = "CLAUDISH_HOOK_INBOX";
+/** `{"kind","id","role"}` of the session this pane child serves (hook-system §2.3). */
+export const HOOK_SESSION_VAR = "CLAUDISH_HOOK_SESSION";
+
 /**
- * The internal markers. claude-runner deletes all three from Claude Code's
- * environment, so a claudish started from a slot's Bash tool is an ordinary launch.
+ * The markers that describe the LAUNCHED claudish only. claude-runner deletes them
+ * from Claude Code's environment. `CLAUDISH_PANE_CHILD` is deliberately not here: it
+ * is inherited by everything the session starts, so a claudish or a claudish MCP
+ * server started from inside it knows it is already one level deep. The two hook
+ * markers are here: the model's Bash tool never sees the hook inbox path, and a
+ * claudish started from inside the session never writes into its owner's inbox.
+ * They stay in this process's own `process.env`: the child's proxy writes the inbox
+ * named there.
  */
-export const PANE_MARKER_VARS = [
-  ENV.CLAUDISH_PANE_CHILD,
+export const PANE_LAUNCH_VARS: readonly string[] = [
   ENV.CLAUDISH_PANE_ENV,
   ENV.CLAUDISH_PANE_CWD,
-] as const;
+  HOOK_INBOX_VAR,
+  HOOK_SESSION_VAR,
+  // The delegating conversation's id: the child's proxy records it in the usage ledger;
+  // the model's Bash tool, and any claudish started from it, never inherit it.
+  ENV.CLAUDISH_PARENT_SESSION,
+];
 
 /**
  * Keys owned by the pane's shell and terminal, not by the server's environment.
@@ -67,9 +103,45 @@ export function isPaneShellManagedKey(key: string): boolean {
 
 type Env = Record<string, string | undefined>;
 
-/** Whether this process is a pane child. The one predicate every reader uses. */
-export function isPaneChild(env: Env = process.env): boolean {
+/**
+ * Whether this process runs inside a session a claudish owner started: the pane child
+ * itself, its Claude Code, and everything that Claude Code starts (tool shells,
+ * plugin MCP servers). Only the exact string "1" counts.
+ */
+export function inMcpSession(env: Env = process.env): boolean {
   return env[ENV.CLAUDISH_PANE_CHILD] === "1";
+}
+
+/**
+ * Whether this process IS the pane child: the claudish the pane launcher started.
+ * Only it still carries `CLAUDISH_PANE_CWD`, which claude-runner deletes from
+ * Claude Code's environment. An empty value counts as absent.
+ */
+export function isPaneChild(env: Env = process.env): boolean {
+  return inMcpSession(env) && Boolean(env[ENV.CLAUDISH_PANE_CWD]);
+}
+
+/** The reason in the nested refusal line. */
+export const NESTED_SESSION_REFUSAL =
+  "already inside a session started by the claudish MCP server; one level of nesting is the limit";
+
+/**
+ * Why this launch is a second level of nesting, or null when it is not. A claudish
+ * that runs a model from inside an MCP-started session (`claudish -p` from the
+ * session's Bash tool, an interactive claudish, a team run) would be a session inside
+ * a session. The pane child itself is the first level, never refused here.
+ */
+export function nestedLaunchRefusal(env: Env = process.env): string | null {
+  if (!inMcpSession(env) || isPaneChild(env)) return null;
+  return NESTED_SESSION_REFUSAL;
+}
+
+/** Exit 64 when this launch would nest a session inside an MCP-started session. */
+export function assertNotNested(env: Env = process.env): void {
+  const reason = nestedLaunchRefusal(env);
+  if (reason === null) return;
+  process.stderr.write(`claudish: nested session refused: ${reason}\n`);
+  process.exit(PANE_CHILD_REFUSED_EXIT);
 }
 
 export type PaneBootResult = { ok: true; note?: string } | { ok: false; reason: string };
@@ -98,7 +170,16 @@ export function applyPaneEnvSnapshot(env: Env): PaneBootResult {
   for (const value of Object.values(snapshot)) {
     if (typeof value !== "string") return { ok: false, reason: "bad env snapshot" };
   }
-  const keep = new Set<string>([ENV.CLAUDISH_PANE_CHILD, ENV.CLAUDISH_PANE_CWD]);
+  // The hook markers survive like the pane markers: the owner sets them beside the
+  // snapshot for every child (hook-system §2.3 step 2), and a snapshot that lacks them
+  // must not leave the child's proxy without its inbox.
+  const keep = new Set<string>([
+    ENV.CLAUDISH_PANE_CHILD,
+    ENV.CLAUDISH_PANE_CWD,
+    HOOK_INBOX_VAR,
+    HOOK_SESSION_VAR,
+    ENV.CLAUDISH_PARENT_SESSION,
+  ]);
   for (const key of Object.keys(env)) {
     if (Object.hasOwn(snapshot, key) || keep.has(key) || isPaneShellManagedKey(key)) continue;
     delete env[key];
@@ -187,7 +268,9 @@ let bootstrapped = false;
 
 /**
  * Restore the server's environment and cwd. Runs once, at import time from the CLI
- * entry; a no-op without the marker. Exits 64 on a bad snapshot or an unreachable cwd.
+ * entry; a no-op unless this process is the pane child (the flag AND
+ * `CLAUDISH_PANE_CWD`): a nested process carries neither launch variable, so it has
+ * nothing to restore. Exits 64 on a bad snapshot or an unreachable cwd.
  */
 export function bootstrapPaneChild(env: Env = process.env): void {
   if (bootstrapped || !isPaneChild(env)) return;

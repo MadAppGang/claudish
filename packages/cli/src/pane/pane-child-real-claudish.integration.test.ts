@@ -84,7 +84,7 @@ async function run(callerFlags: string[] = []) {
 describe.skipIf(!MAGMUX)(
   `the real pane child claudish (${MAGMUX ? "" : NO_MAGMUX_MESSAGE})`,
   () => {
-    test("snapshot and cwd restored; overlay key; markers, child-session and watchdog stripped; answered", async () => {
+    test("T-INT-1: snapshot and cwd restored; session flag kept; launch variables and child-session stripped; answered", async () => {
       const { t, snap, dump, tokenFile, left } = await run();
       expect(snap.state).toBe("COMPLETED");
       expect(left).toEqual({ processes: [], files: [] });
@@ -100,12 +100,8 @@ describe.skipIf(!MAGMUX)(
       expect(d.env.PANE_TEST_CANARY).toBe("kept");
       expect(d.env.CLAUDE_CONFIG_DIR).toBe(t.configDir);
       expect(d.cwd.endsWith("/cwd")).toBe(true);
-      for (const k of [
-        "CLAUDISH_PANE_CHILD",
-        "CLAUDISH_PANE_ENV",
-        "CLAUDISH_PANE_CWD",
-        "CLAUDE_CODE_CHILD_SESSION",
-      ])
+      expect(d.env.CLAUDISH_PANE_CHILD).toBe("1");
+      for (const k of ["CLAUDISH_PANE_ENV", "CLAUDISH_PANE_CWD", "CLAUDE_CODE_CHILD_SESSION"])
         expect(d.env[k]).toBeUndefined();
       expect(d.env.CLAUDE_CODE_RETRY_WATCHDOG).toBeUndefined();
       expect(typeof d.settings === "object" && d.settings !== null).toBe(true);

@@ -1,17 +1,29 @@
 /**
  * The frozen mod contract, version 1 — the single source of the wire types that the
- * peer's Claude Code mod reads from `team(mode="list"|"status"|"cancel"|"capture")`,
- * `list_sessions`, `cancel_session` and `capture_session`.
+ * peer's Claude Code mod reads from
+ * `team(mode="list"|"status"|"cancel"|"capture"|"resize"|"scroll"|"transcript"|"replay")`,
+ * `list_sessions`, `cancel_session`, `capture_session`, `resize_session`, `scroll_session`,
+ * `transcript_session`, `replay_session` and `close_replay`.
  *
  * Pasted verbatim from the session architecture §8 (including CA-12 `contract_version`
  * / `capabilities` and CA-13 `run_id`). Fields never change meaning or type within
  * version 1; new fields may only be ADDED. `FailureReason` lives here because both
- * owners (team and the channel) produce it.
+ * owners (team and the MCP sessions) produce it.
  */
 
 export const CONTRACT_VERSION = 1;
 
-/** v1 announces exactly these. */
+/**
+ * v1 announces exactly these. `resize` is additive: it needs magmux >= 0.15.1.
+ * `allowance` is additive too: the `allowance_status` tool answers
+ * `claudish.allowance.v1` (allowance architecture §3.4). `scroll` is additive: the
+ * `scroll_session` tool and `team(mode="scroll")` forward wheel events to the child's
+ * transcript view (MTL-369). `transcript` is additive: the `transcript_session` tool and
+ * `team(mode="transcript")` read the child's conversation as text lines (MTL-373).
+ * `replay` is additive: the `replay_session` tool and `team(mode="replay")` open a finished
+ * session's real interface read only, and `close_replay` ends it.
+ * Appended, never inserted: the mod's goldens replay the order.
+ */
 export const CAPABILITIES = [
   "list",
   "status",
@@ -19,11 +31,16 @@ export const CAPABILITIES = [
   "capture",
   "capture_since_seq",
   "capture_spans",
+  "resize",
+  "allowance",
+  "scroll",
+  "transcript",
+  "replay",
 ] as const;
 
 export interface ContractMeta {
   contract_version: 1;
-  /** v1: exactly CAPABILITIES */
+  /** v1: exactly CAPABILITIES (fields and capabilities are only ever added) */
   capabilities: string[];
 }
 
@@ -129,6 +146,11 @@ export interface SlotRow {
   /** set on FAILED / EMPTY / CANCELLED / TIMEOUT; null otherwise (incl. COMPLETED). One exception: a
    * pre-contract state read from disk is FAILED with null (§B) */
   reason: FailureReason | null;
+  /** [additive] one line (≤ 160 chars) saying why `reason`: for api_error the provider's
+   * `error.message` from the last upstream-error record, else the child's API-error text;
+   * for any other reason the first line of its detail. null on non-terminal states, on
+   * COMPLETED, and when nothing readable exists. Never the upstream body. `reasonDetail()` */
+  reason_detail: string | null;
   /** billed input incl. cache reads/writes, main conversation + subagents; null = no source yet */
   tokens_in: number | null;
   tokens_out: number | null;
@@ -143,12 +165,39 @@ export interface SlotRow {
   /** seconds since last_activity_at; null in terminal states */
   idle_seconds: number | null;
   /** RUNNING: tool name, "thinking", "background" (waiting on background agents), or "finishing" (the
-   * model's message ended; waiting for Claude Code's end-of-turn record, typically while Stop hooks run);
+   * model's message ended; waiting for Claude Code's end-of-turn record, typically while Stop hooks run),
+   * or "hook" (the turn settled and claudish's session hooks run before the verdict);
    * AWAITING_PERMISSION: blocked tool; AWAITING_INPUT on a question: "AskUserQuestion"; otherwise null.
    * Treat unknown values as "busy". */
   activity: string | null;
   /** informational only (do not parse, no verb takes it); null if no pane was ever spawned */
   pane: string | null;
+  /** [additive] the last RECENT_STEP_LIMIT (20) steps of the current turn, oldest first, from the
+   * main-chain transcript; null before the first step and on rows built from disk. Kept after the
+   * turn settles until the next turn starts. Each summary is one line (≤ 100 chars), credentials
+   * masked; never a whole tool input and nothing from a tool result. `pane/slot-steps.ts` */
+  recent: SlotStep[] | null;
+  /** [additive] the subagent the caller asked for: the `--agent` value claudish passed to the
+   * child (from `agent`, or from `claude_flags`); null when none. `requestedAgentOf` */
+  agent_requested: string | null;
+  /** [additive] the subagent Claude Code actually loaded: the latest `agent-setting` record of the
+   * child's own transcript. null when the transcript has none: no agent, a rejected agent
+   * (`reason: "agent_rejected"`), or not written yet. Kept on rows built from disk. */
+  agent: string | null;
+}
+
+/** One step of a slot's turn: an assistant text, thinking or tool_use block. */
+export interface SlotStep {
+  /** ISO 8601: the transcript record's own timestamp */
+  at: string;
+  /** "ask" is a tool_use of AskUserQuestion */
+  kind: "text" | "thinking" | "tool" | "ask";
+  /** the tool name for "tool" and "ask"; null for "text" and "thinking" */
+  tool: string | null;
+  /** text and thinking: the first line; tool: the input naming its target (file_path, the first
+   * line of a Bash command, pattern, query, url, description) or "" for any other tool; ask: the
+   * first question */
+  summary: string;
 }
 
 /** list_sessions row = SlotRow + session fields. `slot` equals `session_id`. */
@@ -216,11 +265,11 @@ export type SpanRun = [col: number, len: number, fg: number, bg: number, attr: n
 /** D */
 export interface CaptureResult {
   /** claudish-owned. 0 = no frame received yet (lines all ""); ≥ 1 after the first frame; +1 per visible
-   * change (text, colours, cursor, alt screen); never resets for a pane's life */
+   * change (text, colours, cursor, alt screen, size); never resets for a pane's life */
   seq: number;
-  /** 160 */
+  /** the pane's current width: 160 at launch, then whatever the last resize set */
   cols: number;
-  /** 50 */
+  /** the pane's current height: 50 at launch, then whatever the last resize set */
   rows: number;
   cursor: { x: number; y: number };
   /** exactly `rows` entries, plain text, right-trimmed; Claude Code's screen (no scrollback) */
@@ -236,10 +285,165 @@ export interface CaptureUnchanged {
   final: boolean;
 }
 
-/** E */
+/**
+ * F — `resize_session`. `cols`/`rows` are the size SET (the request clamped to cols 40–9999,
+ * rows 24–9999 and at most 4 000 000 cells, magmux's limits: `clampPaneSize`); `changed` = the pane's size moved; `seq` = the screen's seq after the
+ * resize (the first capture at the new size once `changed`). `pending: true` = the socket
+ * is reconnecting (or the pane is still starting): the size is stored and applied on the
+ * reconnect (or at launch). A terminal session answers its last size with `changed:false`.
+ */
+export interface ResizeResult {
+  session_id: string;
+  cols: number;
+  rows: number;
+  changed: boolean;
+  seq: number;
+  pending?: true;
+}
+/** F — `team(mode="resize")`: the same answer, addressed by run and slot. */
+export interface TeamResizeResult {
+  run_id: string;
+  path: string;
+  slot: string;
+  cols: number;
+  rows: number;
+  changed: boolean;
+  seq: number;
+  pending?: true;
+}
+
+/**
+ * G — `scroll_session`. `seq` = the screen's seq after the wheel events were sent: the first
+ * changed screen within 1000 ms of magmux's reply, otherwise the current seq (at an edge, or
+ * at the live bottom with nothing to move, the screen does not change). `by` is a target,
+ * ± 1 row: Claude Code moves one row per wheel event with acceleration off.
+ */
+export interface ScrollResult {
+  session_id: string;
+  seq: number;
+}
+/** G — `team(mode="scroll")`: the same answer, addressed by run and slot. */
+export interface TeamScrollResult {
+  run_id: string;
+  path: string;
+  slot: string;
+  seq: number;
+}
+
+/**
+ * H — transcript verbs. The kinds of a `TranscriptLine`, a closed set that is only ever
+ * APPENDED to; a reader shows an unknown kind as plain text.
+ */
+export const TRANSCRIPT_KINDS = [
+  "user",
+  "assistant",
+  "tool",
+  "task_file",
+  "system",
+  "error",
+] as const;
+export type TranscriptKind = (typeof TRANSCRIPT_KINDS)[number];
+
+/** H — one line of a session's conversation. */
+export interface TranscriptLine {
+  kind: TranscriptKind;
+  /**
+   * plain text: no escape sequences, no control characters but \n and \t, no lone
+   * surrogate; non-empty; ≤ TRANSCRIPT_LINE_MAX_CHARS UTF-16 code units and
+   * ≤ TRANSCRIPT_LINE_MAX_JSON_BYTES bytes serialised, after masking (a signing value is
+   * masked `*` one for one, so it never adds a character; pane/transcript-redaction.ts)
+   */
+  text: string;
+  /** present (true) on the 2nd and later chunks of one split text; join with no separator */
+  cont?: true;
+}
+
+/**
+ * H — `transcript_session`. `cursor` is opaque (`v1.<offset>.<k>.<id8>`): pass it back as
+ * `since`. `more`: the answer stopped at a cap; call again at once. `final`: the session
+ * finished, its process provably exited, and the answer reached the end.
+ */
+export interface TranscriptResult {
+  session_id: string;
+  cursor: string;
+  lines: TranscriptLine[];
+  more: boolean;
+  final: boolean;
+}
+
+/** H — `team(mode="transcript")`: the same answer, addressed by run and slot. */
+export interface TeamTranscriptResult {
+  run_id: string;
+  path: string;
+  slot: string;
+  cursor: string;
+  lines: TranscriptLine[];
+  more: boolean;
+  final: boolean;
+}
+
+/** H — at most this many lines per transcript answer. */
+export const MAX_TRANSCRIPT_LINES = 200;
+/** H — a line's text is cut into `cont` chunks of at most this many UTF-16 code units… */
+export const TRANSCRIPT_LINE_MAX_CHARS = 8_000;
+/** …and at most this many UTF-8 bytes as `JSON.stringify(text)`. */
+export const TRANSCRIPT_LINE_MAX_JSON_BYTES = 16_000;
+/**
+ * H — the compact JSON answer is at most this many UTF-8 bytes: 15 % under the 37,758
+ * bytes Claude Code was measured to accept (61,681 was replaced by a "saved to file" stub).
+ */
+export const TRANSCRIPT_ANSWER_MAX_BYTES = 32_000;
+
+/**
+ * I — `replay_session` and `team(mode="replay")`: a finished session's real interface, read
+ * only, read with `capture_session`, `resize_session` and `scroll_session` under `replay_id`.
+ * `seq` is the seq a capture would show at that moment.
+ */
+export interface ReplayOpenResult {
+  replay_id: string;
+  seq: number;
+}
+
+/**
+ * I — `close_replay`. When it returns, the process is gone and any fork record removed.
+ * `reap_unverified` is present only when the process could not be verified gone.
+ */
+export interface ReplayCloseResult {
+  closed: true;
+  reap_unverified?: true;
+}
+
+/** I — why a target cannot be opened: `error.reason` on `replay_unavailable`. */
+export type ReplayUnavailableReason = "session_live" | "no_record" | "spawn_failed" | "boot_dialog";
+
+const REPLAY_ID_RE = /^replay-[0-9a-f]{16}$/;
+
+/** A session id cannot match this: it is the first 8 characters of a uuid. */
+export function isReplayId(id: string): boolean {
+  return REPLAY_ID_RE.test(id);
+}
+
+/**
+ * E. `resize_unsupported` and `delivery_unavailable` are emitted only by the resize verbs;
+ * `scroll_unavailable` only by the scroll verbs (a pane still starting, finished, delivering
+ * a prompt, reading its turn from the screen, reconnecting, or a send magmux did not confirm).
+ * `replay_unavailable` only by the replay open verbs, always with `reason`; `replay_read_only`
+ * only by `send_input`, for any id shaped like a `replay_id`.
+ */
 export interface ContractError {
   error: {
-    code: "unknown_run" | "unknown_slot" | "unknown_session" | "invalid_args";
+    code:
+      | "unknown_run"
+      | "unknown_slot"
+      | "unknown_session"
+      | "invalid_args"
+      | "resize_unsupported"
+      | "delivery_unavailable"
+      | "scroll_unavailable"
+      | "replay_unavailable"
+      | "replay_read_only";
+    /** present only on `replay_unavailable` */
+    reason?: ReplayUnavailableReason;
     message: string;
   };
 }
@@ -255,12 +459,19 @@ export function contractMeta(): ContractMeta {
 export class ContractErrorException extends Error {
   constructor(
     readonly code: ContractError["error"]["code"],
-    message: string
+    message: string,
+    readonly reason?: ReplayUnavailableReason
   ) {
     super(message);
   }
 
   toContractError(): ContractError {
-    return { error: { code: this.code, message: this.message } };
+    return {
+      error: {
+        code: this.code,
+        ...(this.reason ? { reason: this.reason } : {}),
+        message: this.message,
+      },
+    };
   }
 }

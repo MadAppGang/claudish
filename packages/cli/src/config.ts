@@ -62,6 +62,25 @@ export const ENV = {
   // Opt IN to using a real ANTHROPIC_API_KEY for native Claude models (metered
   // API billing) instead of the claude.ai subscription. Off by default.
   CLAUDISH_ANTHROPIC_API_BILLING: "CLAUDISH_ANTHROPIC_API_BILLING",
+  // TEST HOOKS. Both are honoured by production code on purpose — a mock-upstream
+  // e2e drives the real binary, where there is no module registry to patch, and a
+  // flag the production code reads is the only stub that cannot leak into a
+  // sibling test (the CLAUDISH_DISABLE_KEYCHAIN reasoning, see keychain.md).
+  // See test-upstream.ts: LOOPBACK targets only, and the fault vocabulary is
+  // armed only when the host override is also set.
+  CLAUDISH_TEST_UPSTREAM: "CLAUDISH_TEST_UPSTREAM",
+  CLAUDISH_ACCOUNTS_FAULT: "CLAUDISH_ACCOUNTS_FAULT",
+  // Relocates ~/.claudish/accounts (state, locks, token files) for the
+  // multi-process e2e, which drives the real built binary and so has no module
+  // registry to patch. The CONFIG file is not affected: `--config` /
+  // CLAUDISH_CONFIG remains its one authority.
+  CLAUDISH_ACCOUNTS_DIR: "CLAUDISH_ACCOUNTS_DIR",
+  // Forces the plaintext file token store. Honoured ONLY alongside
+  // CLAUDISH_TEST_UPSTREAM, or where the platform has no Keychain — otherwise an
+  // env var alone would move a macOS user's refresh tokens into plaintext.
+  // NOTE: CLAUDISH_KEYCHAIN_FILE does NOT do this. It redirects `security` to a
+  // throwaway keychain and exists so live verification has a safe target.
+  CLAUDISH_ACCOUNT_STORE: "CLAUDISH_ACCOUNT_STORE",
   // Classifier passthrough (auto-mode permission classifier → native Anthropic)
   CLAUDISH_CLASSIFIER_PROVIDER: "CLAUDISH_CLASSIFIER_PROVIDER", // "anthropic" enables classifier passthrough
   CLAUDISH_CLASSIFIER_MODEL: "CLAUDISH_CLASSIFIER_MODEL", // native Claude model to rewrite the classifier onto (also enables)
@@ -76,13 +95,25 @@ export const ENV = {
   // is READ, never written, because it is the hard ceiling any in-request hold
   // must land inside. See recovery/settings.ts's resolveTier1DeadlineMs.
   API_TIMEOUT_MS: "API_TIMEOUT_MS",
-  // Internal markers of an MCP pane child: the claudish an MCP `team` slot or
-  // `create_session` starts inside a headless magmux pane. Set by the pane
-  // launcher, consumed by `pane/child-env.ts`, deleted from Claude Code's
-  // environment by claude-runner. Never set by a user.
-  CLAUDISH_PANE_CHILD: "CLAUDISH_PANE_CHILD", // "1" in a pane child, nowhere else
+  // Internal markers set by the pane launcher on the claudish an MCP `team` slot,
+  // `create_session` or CLI `team --mode json` starts inside a headless magmux
+  // pane ("the pane child"), consumed by `pane/child-env.ts`. Never set by a user.
+  //
+  // CLAUDISH_PANE_CHILD is "1" inside ANY session a claudish owner started: the
+  // pane child, its Claude Code and everything that starts. claude-runner KEEPS
+  // it, and `inMcpSession()` reads it to hold nesting to one level.
+  // CLAUDISH_PANE_ENV and CLAUDISH_PANE_CWD are carried by the launched pane child
+  // only: claude-runner deletes them from Claude Code's environment
+  // (`PANE_LAUNCH_VARS`), which is how `isPaneChild()` tells the child apart.
+  CLAUDISH_PANE_CHILD: "CLAUDISH_PANE_CHILD", // "1" anywhere inside a claudish-started session
   CLAUDISH_PANE_ENV: "CLAUDISH_PANE_ENV", // JSON snapshot of the MCP server's environment; re-applied, then deleted
   CLAUDISH_PANE_CWD: "CLAUDISH_PANE_CWD", // realpath of the cwd the pane child must run in
+  // The Claude Code conversation that delegated this pane child (the MCP server's
+  // `parentSessionForCall`), set by the owner in `slotEnv` for `create_session` and
+  // every `team` slot and judge. Read once by the child's AllowanceService, pattern-
+  // checked, and written as the usage ledger's `parent`. A launch var: deleted from
+  // Claude Code's environment (`PANE_LAUNCH_VARS`), and no env file can set it.
+  CLAUDISH_PARENT_SESSION: "CLAUDISH_PARENT_SESSION",
   // Where pane sockets, records and launcher dirs live (default /tmp/claudish-mux-<uid>).
   // A location, like CLAUDISH_SESSIONS_DIR: test suites that start a real MCP server point
   // it at their own root so the startup sweep and the pane limit stay inside the test.

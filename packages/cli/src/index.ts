@@ -1,16 +1,63 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun --no-env-file
+// `env -S` (split the rest into arguments) is in GNU coreutils and BSD `env`, not in
+// BusyBox `env` (Alpine), where this shebang fails. There, start claudish through the npm
+// `claudish` launcher (bin/claudish.cjs passes --no-env-file itself) or run
+// `bun --no-env-file dist/index.js`. Documented in docs/advanced/hooks.md.
 
-// FIRST import, on purpose: in an MCP pane child it restores the server's exact
-// environment and cwd at import time — before `.env` loading and before any module
-// below reads the environment while it is being evaluated. A no-op everywhere else.
-import { assertPaneChildInteractive, paneChildBootNotes } from "./pane/child-env.js";
+// FIRST import, on purpose: drops every control variable (CLAUDISH_CONFIG, the pane
+// markers, …), and every other name those files set, when Bun loaded this directory's
+// env files for the process, before the pane child below can act on one. See
+// launch-env.ts.
+import { droppedAtLaunch } from "./launch-guard.js";
 
-// Load .env file before anything else (quiet mode to suppress verbose output)
-import { config } from "dotenv";
-config({ quiet: true }); // Loads .env from current working directory
+// SECOND: in an MCP pane child it restores the server's exact environment and cwd at
+// import time — before `.env` loading and before any module below reads the
+// environment while it is being evaluated. A no-op everywhere else.
+import {
+  assertNotNested,
+  assertPaneChildInteractive,
+  isPaneChild,
+  paneChildBootNotes,
+} from "./pane/child-env.js";
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { droppedByAutoloadNotice, takeLauncherDropped } from "./launch-env.js";
+
+// Names left out because Bun loaded this directory's env files: by launch-guard.ts for
+// this process, or by the npm launcher before it started this one.
+const autoloadDropped = [...droppedAtLaunch, ...takeLauncherDropped(process.env)];
+
+// The working directory's `.env`, as dotenv's `config()` reads it (an existing value is
+// never overwritten), for provider API keys and model settings only (dotenv-allowlist.ts).
+// The allowlist is derived from the provider table, so it is imported only when there is
+// a file.
+let dotenvText: Buffer | undefined;
+try {
+  dotenvText = readFileSync(join(process.cwd(), ".env"));
+} catch {
+  // no readable .env: nothing to load
+}
+if (dotenvText !== undefined) {
+  const { loadDotenvText, refusedFromDotenvNotice, rejectedModelNotice } = await import(
+    "./dotenv-allowlist.js"
+  );
+  const rejectedModels: string[] = [];
+  const refused = loadDotenvText(process.env, dotenvText, (name) =>
+    rejectedModels.push(name)
+  ).filter((key) => !autoloadDropped.includes(key));
+  if (refused.length > 0) console.error(refusedFromDotenvNotice(refused));
+  // A name the autoload drop already reports below gets that one line, not a second.
+  const rejected = rejectedModels.filter((key) => !autoloadDropped.includes(key));
+  if (rejected.length > 0) console.error(rejectedModelNotice(rejected));
+}
+// One line for the autoload drops, less any the pane snapshot or the `.env` load above
+// set again (a provider API key in `.env`).
+{
+  const ignored = autoloadDropped.filter((key) => process.env[key] === undefined);
+  if (ignored.length > 0) console.error(droppedByAutoloadNotice(ignored));
+}
+
 import { resolveExplicitFlagAuth } from "./auth/credentials/op-source.js";
 import { resolveClassifierConfig } from "./classifier-passthrough.js";
 import {
@@ -52,6 +99,7 @@ function classifyStartupKind(): string {
     "stats",
     "providers",
     "keychain",
+    "subscription",
     "login",
     "logout",
     "quota",
@@ -92,7 +140,7 @@ process.on("exit", () => {
  * Why: the old eager hydration ran the SDK (DesktopAuth prompt) at the top of
  * EVERY process launch whenever a config environment existed — so `--update`,
  * `--version`, `--help`, and OAuth-only (codex) sessions all prompted, and every
- * spawned team/channel child re-prompted (the "storm"). Point-of-need touches
+ * spawned team/MCP session child re-prompted (the "storm"). Point-of-need touches
  * 1Password only when a key is actually needed; no-key runs never prompt. This
  * also changes precedence: environments are now a lazy op source (env/config
  * already set wins), not a startup overwrite.
@@ -243,6 +291,8 @@ async function applyOpImport(): Promise<void> {
 // env→config chain, so it can carry literal provider keys directly.
 async function applyConfigOverride(): Promise<void> {
   const { planConfigOverride, setConfigFileOverride } = await import("./config-override.js");
+  // CLAUDISH_CONFIG here is the real environment's: no env file in the working
+  // directory can set it (launch-guard.ts and loadDotenvText above).
   const plan = planConfigOverride(process.argv.slice(2), process.env, {
     resolve,
     exists: existsSync,
@@ -267,7 +317,7 @@ async function applyConfigOverride(): Promise<void> {
   setConfigFileOverride(plan.path);
 
   // Propagate to the whole process tree via the (absolute) env fallback: team
-  // mode and channel sessions spawn CHILD `claudish` processes, which re-read
+  // mode and MCP sessions spawn CHILD `claudish` processes, which re-read
   // CLAUDISH_CONFIG here and apply the same override. The child `claude` ignores
   // it. Absolute so a child with a different cwd still resolves the same file.
   process.env.CLAUDISH_CONFIG = plan.path;
@@ -276,7 +326,7 @@ async function applyConfigOverride(): Promise<void> {
 // `--default-provider <name>`: strip it from argv and export it as
 // CLAUDISH_DEFAULT_PROVIDER before parseArgs and every subcommand dispatch. The env
 // variable is the ONE place the flag lives after this: route(), the proxy, `--probe`
-// and every child claudish (team, channel sessions) read it through
+// and every child claudish (team, MCP sessions) read it through
 // `resolveDefaultProvider`. `--probe` is why this cannot wait for parseArgs: it
 // runs and exits inside parseArgs's argv loop, so a flag read there or after it
 // never reached it, in either argv order.
@@ -358,8 +408,12 @@ const isServeCommand = firstPositional === "serve";
 const isProvidersCommand = firstPositional === "providers";
 // Keychain subcommand: claudish keychain status|list|import|set|rm|enable|disable
 const isKeychainCommand = firstPositional === "keychain";
-// Behavior subcommand: claudish behavior rules|corpus (Layer 4 introspection)
-const isBehaviorCommand = firstPositional === "behavior";
+// Subscription subcommand: claudish subscription models|probe antigravity … --raw --json
+const isSubscriptionCommand = firstPositional === "subscription";
+// Hooks subcommand: claudish hooks list|check|init|corpus|telemetry
+const isHooksCommand = firstPositional === "hooks";
+// Account subcommand: read-only views and transactional Codex management.
+const isAccountCommand = firstPositional === "account";
 // Team subcommand: claudish team run|run-and-judge (multi-model orchestration)
 const isTeamCommand = firstPositional === "team";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
@@ -409,15 +463,18 @@ if (isMcpMode) {
       process.exit(1);
     })
   );
-} else if (isBehaviorCommand) {
-  // Layer 4 introspection: claudish behavior rules|corpus. Read-only unless
-  // --write is passed to `corpus`.
-  const behaviorArgIndex = args.indexOf("behavior");
-  import("./behavior-command.js").then((m) =>
-    m.behaviorCommand(args.slice(behaviorArgIndex + 1)).catch((e) => {
-      console.error(`[claudish behavior] ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    })
+} else if (isHooksCommand) {
+  // Hook introspection and scaffolding. Read-only except `init` (writes two new
+  // files, never overwriting), `corpus --write` and `telemetry --enable|--disable`.
+  const hooksArgIndex = args.indexOf("hooks");
+  import("./hooks-command.js").then((m) =>
+    m
+      .hooksCommand(args.slice(hooksArgIndex + 1))
+      .then((code) => process.exit(code))
+      .catch((e) => {
+        console.error(`[claudish hooks] ${e instanceof Error ? e.message : String(e)}`);
+        process.exit(1);
+      })
   );
 } else if (isTeamCommand) {
   // Multi-model orchestration: claudish team run|run-and-judge. Routed here
@@ -449,6 +506,58 @@ if (isMcpMode) {
       process.exit(1);
     })
   );
+} else if (isSubscriptionCommand) {
+  // Raw subscription model list for models-index: one JSON line on stdout.
+  // Exit explicitly: an unkilled `security` past its deadline would keep the
+  // loop alive. The catch prints the `internal_error` line (awaited) and a
+  // FIXED stderr line, never the error: its message can carry vendor text.
+  // `probe` sends one request through the login (subscription-probe-command.ts);
+  // everything else stays with the model-list command and its usage error.
+  const subscriptionArgIndex = args.indexOf("subscription");
+  const subscriptionArgv = args.slice(subscriptionArgIndex + 1);
+  const subscriptionModule = () => import("./subscription-models-command.js");
+  const probeModule = () => import("./subscription-probe-command.js");
+  // `subscription-dispatch.ts` decides with the probe parser's own token walk
+  // (flags may precede `probe`) and has no dependency that can fail, so a
+  // failed probe module never sends a probe argv to the models command. If
+  // the probe module will not load, the dispatch module still prints the
+  // probe-schema `internal_error` line (exit 1): one line on every exit.
+  const writeLine = (line: string, code: number) =>
+    new Promise<number>((resolve) => {
+      process.stdout.write(line, () => resolve(code));
+    });
+  import("./subscription-dispatch.js")
+    .then((dispatch) => {
+      const probe = dispatch.isSubscriptionProbeArgv(subscriptionArgv);
+      const run = probe
+        ? probeModule().then((m) => m.subscriptionProbeCommand(subscriptionArgv))
+        : subscriptionModule().then((m) => m.subscriptionModelsCommand(subscriptionArgv));
+      return run.catch(() =>
+        probe
+          ? probeModule()
+              .then((m) => m.reportProbeInternalError())
+              .catch(() => {
+                process.stderr.write("[claudish subscription] internal error\n");
+                return writeLine(dispatch.probeLoadFailureLine(), 1);
+              })
+          : subscriptionModule().then((m) => m.reportSubscriptionInternalError())
+      );
+    })
+    .catch(() => {
+      // A module would not load and no line can be built.
+      process.stderr.write("[claudish subscription] internal error\n");
+      return 1;
+    })
+    .then((code) => process.exit(code));
+} else if (isAccountCommand) {
+  // Account views never enroll; only explicit Codex management publishes mutations.
+  const accountArgIndex = args.indexOf("account");
+  import("./account-command.js").then((m) =>
+    m.accountCommand(args.slice(accountArgIndex + 1)).catch((e) => {
+      console.error(`[claudish account] ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    })
+  );
 } else if (isLoginCommand) {
   // Auth login subcommand: claudish login [provider]
   const loginProviderArg = args.find((a, i) => i > args.indexOf("login") && !a.startsWith("-"));
@@ -477,7 +586,7 @@ if (isMcpMode) {
   import("./auth/quota-command.js").then((m) => m.quotaCommand(quotaProviderArg));
 } else if (isUpdateCommand) {
   // Self-update command (checked early to work with aliases like `claudish -y update`)
-  import("./update-command.js").then((m) => m.updateCommand());
+  import("./update-command.js").then((m) => m.updateCommand(args));
 } else if (isInitCommand) {
   // Profile setup wizard — pass --local/--global scope flag if provided
   const scopeFlag = args.includes("--local")
@@ -628,9 +737,32 @@ async function runCli() {
       await detectAndSetThemeMode();
     });
 
+    // The credential prompt role, fixed BEFORE parseArgs: `--probe` exits inside
+    // it, and the model picker below may need a credential. A pane child, a
+    // piped or CI launch, and `--probe` never open a credential dialog
+    // (`auth/credentials/prompt-role.ts`).
+    {
+      const { decideLaunchRole, setCredentialPromptRole } = await import(
+        "./auth/credentials/prompt-role.js"
+      );
+      setCredentialPromptRole(
+        decideLaunchRole({
+          argv: process.argv.slice(2),
+          stdinIsTTY: process.stdin.isTTY === true,
+          stderrIsTTY: process.stderr.isTTY === true,
+        })
+      );
+    }
+
     // Parse CLI arguments (includes profile/config load; terminal flags like
     // --version/--models/--probe exit inside — the exit-hook fallback covers them)
     const cliConfig = await traceSpan("startup:parse-args", () => parseArgs(process.argv.slice(2)));
+
+    // One level of nesting is the limit: a model-running claudish started from
+    // inside an MCP-started session (anything but the pane child itself: its
+    // Bash tool, a hook, a script) would be a second level, so it exits 64 here.
+    // The `team` subcommand is dispatched before runCli and guards itself.
+    assertNotNested();
 
     // An MCP pane child must be an interactive REPL: a positional prompt, -p,
     // --stdin or --team that slipped past the server's flag check exits 64 here,
@@ -1019,18 +1151,46 @@ async function runCli() {
     //   "skipped"   — local model or --models-skip-update
     //   "hard_fail" — missing cache + network failure → exit 1
     //
-    // AHEAD OF THE --advisor CHECK, deliberately. That check decides whether
-    // each panel model is routable, and every one of its answers is read from
-    // the catalog (`advisorRouteFor` → `lookupOpenRouterId`). With a cold
-    // catalog nothing is known, so the router falls back to passthrough and an
-    // UNROUTABLE panel model cannot be refused — it fails on the first advisor
-    // call instead, which is exactly the refusal this ordering exists to make
-    // possible (`kimi-k3` is refused only because the catalog was warm).
+    // AHEAD OF THE --advisor CHECK, deliberately. That check plans every panel
+    // member through `explainRoute` (`planAdvisorModel`), which reads its route
+    // candidates from the catalog. With a cold catalog a bare member has no
+    // candidates and is refused (`catalog-unreadable`), and an explicit one is
+    // taken as written; warming first is what lets startup plan, and refuse,
+    // from real data.
     const warmOutcome = await traceSpan("startup:catalog-warm", () =>
       warmCatalogIfNeeded(cliConfig)
     );
     if (warmOutcome === "hard_fail") {
       process.exit(1);
+    }
+
+    // === Muse Code login, before Claude Code starts ===
+    // In every launch role: the served context window is read before spawn and
+    // needs a signed key; an interactive launch puts any Keychain dialog here,
+    // in front of the user. Needs the warm catalog to see bare names that
+    // gather `meta-muse-code` (`providers/meta-muse/muse-launch.ts`).
+    if (!cliConfig.monitor) {
+      const { prepareMuseLoginForLaunch } = await import("./providers/meta-muse/muse-launch.js");
+      const museModels =
+        typeof cliConfig.model === "string"
+          ? [cliConfig.model]
+          : [
+              cliConfig.model,
+              cliConfig.modelOpus,
+              cliConfig.modelSonnet,
+              cliConfig.modelHaiku,
+              cliConfig.modelSubagent,
+            ];
+      const muse = await traceSpan("startup:muse-login", () =>
+        prepareMuseLoginForLaunch(museModels)
+      );
+      if (muse.kind === "fatal") {
+        process.stderr.write(`[claudish] Error: ${muse.message}\n`);
+        process.exit(1);
+      }
+      if (muse.kind === "warn" && !cliConfig.quiet) {
+        process.stderr.write(`[claudish] Warning: ${muse.message}\n`);
+      }
     }
 
     // === --advisor: startup refusals and notice ===
@@ -1041,6 +1201,11 @@ async function runCli() {
     // belongs to Claude Code alone, and the cost line (N2) is not optional.
     // `cliConfig.advisor` is set only by the --advisor flag on this command line
     // (N1); nothing stored can turn it on. Decision logic: advisor-startup.ts.
+    //
+    // Startup PLANS every member and BUILDS every routed member's chain here,
+    // before the port exists; the proxy's panel gateway runs on exactly that
+    // runtime (no lazy path), and owns its handlers from then on.
+    let advisorRuntime: import("./handlers/advisor-panel-gateway.js").AdvisorRuntime | undefined;
     if (cliConfig.advisor) {
       const { evaluateAdvisorStartup } = await import("./advisor-startup.js");
       const decision = await traceSpan("startup:advisor-check", () =>
@@ -1056,23 +1221,31 @@ async function runCli() {
         // A DEFAULTED collector that cannot be called is dropped here, before
         // createProxyServer reads advisorCollector, so no doomed call is made.
         cliConfig.advisorCollector = decision.effectiveCollector;
+        advisorRuntime = decision.runtime;
         // The warm step above ran first and hard-fails out, so the catalog is
         // normally populated by now. It can still be COLD — `--models-skip-update`,
         // a local main model (both "skipped"), or a cache claudish could not read.
-        // Then `advisorRouteFor` had no data to check any panel model against, so
-        // "routable" was not decided, it was assumed. Say which models that leaves
-        // unverified instead of proceeding as though they had passed.
+        // A BARE member is then refused above (routing answers `catalog-unreadable`),
+        // so only an explicit `provider@model` member can have passed without the
+        // catalog: its provider was taken as written. Say which ones.
         const { getCatalogEntries } = await import("./providers/catalog-client.js");
         if (getCatalogEntries() === null) {
-          const panel = cliConfig.advisorModels ?? [];
-          decision.notice.push(
-            `  WARNING: the model catalog is not loaded (catalog warm: ${warmOutcome}), so claudish ` +
-              `could not verify that ${panel.length === 1 ? "this panel model is" : "these panel models are"} ` +
-              `routable: ${panel.join(", ")}. An unroutable one fails on its first advisor call instead ` +
-              "of being refused here. Run `claudish --models-refresh` to check them at launch."
-          );
+          const unverified = [...decision.runtime.plans.values()]
+            .filter((p) => p.kind === "routed" && p.invocationMode === "explicit-model")
+            .map((p) => p.spec);
+          if (unverified.length > 0) {
+            decision.notice.push(
+              `  WARNING: the model catalog is not loaded (catalog warm: ${warmOutcome}), so claudish ` +
+                `could not check what ${unverified.length === 1 ? "this model's provider" : "these models' providers"} ` +
+                `publish: ${unverified.join(", ")}. A model the provider does not serve fails on its first ` +
+                "advisor call instead of being refused here. Run `claudish --models-refresh` to check at launch."
+            );
+          }
         }
         process.stderr.write(`${decision.notice.join("\n")}\n`);
+        // The debug and always-on logs get the notice too, so a run's log shows
+        // what the launch promised next to what each advisor call did.
+        for (const line of decision.notice) log(`[advisor-notice] ${line}`);
       }
     }
 
@@ -1167,6 +1340,7 @@ async function runCli() {
           isInteractive: cliConfig.interactive,
           advisorModels: cliConfig.advisorModels,
           advisorCollector: cliConfig.advisorCollector,
+          ...(advisorRuntime ? { advisorRuntime } : {}),
           // Present only when `--model` was a pinned chain; `explicitModel` above
           // is its first element, so the proxy can match the two.
           modelChain: cliConfig.monitor ? undefined : cliConfig.modelChain,
@@ -1174,6 +1348,10 @@ async function runCli() {
           effortOverride: cliConfig.effortOverride,
           modelParams: cliConfig.modelParams,
           proOnUltracode: cliConfig.proOnUltracode,
+          codeMode: cliConfig.codeMode,
+          // Proxy events run in the process that hosts the proxy: a pane child
+          // for MCP/team slots, the interactive launcher otherwise.
+          hostMode: isPaneChild() ? "pane-child" : cliConfig.interactive ? "interactive" : "other",
         }
       )
     );

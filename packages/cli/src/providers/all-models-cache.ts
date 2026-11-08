@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { writeFileAtomic } from "../fs-atomic.js";
+import { log } from "../logger.js";
 import type { AggregatorEntry } from "../model-loader.js";
 import {
   type CachedRouteRegistry,
@@ -10,6 +12,7 @@ import {
   registryVersionAtLeast,
   routeProfile,
 } from "./connection-wire.js";
+import { allConnections, splitOptInConnections } from "./content-use.js";
 
 export type ReasoningControl = "toggle" | "effort" | "adaptive" | "budget" | "none";
 
@@ -58,6 +61,13 @@ export interface SlimModelEntry {
   /** What the model produces. Absent, null or [] means unknown; a list without "text" is not a chat model. */
   outputModalities?: string[] | null;
   aggregators?: AggregatorEntry[];
+  /**
+   * Connections whose wire id opts content into the vendor's product
+   * improvement, moved out of `aggregators` when the catalog is read into memory
+   * (`splitOptInConnections`, `content-use.ts`). Never written to disk. Only an
+   * exact-id reader looks here (`allConnections`); nothing chooses one for a user.
+   */
+  optInConnections?: AggregatorEntry[];
   subscriptionPlanIds?: string[];
   tokenParam?: string;
   routeVariant?: RouteVariant;
@@ -182,8 +192,10 @@ export function wiresMatchRegistry(
   if (routeRegistry.generationId !== catalogGenerationId) return false;
   const { registry } = routeRegistry;
   if (!registryVersionAtLeast(registry.registryVersion, WIRE_REGISTRY_VERSION)) return true;
+  // Every row, opt-in included: an explicit contributor request builds from its
+  // own connection's wire, so that wire is validated like any other.
   return entries.every((entry) =>
-    (entry.aggregators ?? []).every((connection) => {
+    allConnections(entry).every((connection) => {
       if (connection.routeStatus !== "mapped") return true;
       if (!connection.route || !isConnectionWire(connection.wire)) return false;
       const profile = routeProfile(registry, connection.route);
@@ -252,7 +264,12 @@ function readSidecarRegistry(path: string): CachedRouteRegistry | null {
     return typeof raw.generationId === "string" && isRouteRegistry(raw.registry)
       ? (raw as unknown as CachedRouteRegistry)
       : null;
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      log(
+        `[catalog] unreadable route registry for ${path}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     return null;
   }
 }
@@ -287,7 +304,9 @@ export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCa
   let cache: DiskCacheV3 | null;
   try {
     cache = parseAllModelsCache(JSON.parse(readFileSync(path, "utf-8")));
-  } catch {
+  } catch (err) {
+    // Memoized under this mtime and size, so logged once per version of the file.
+    log(`[catalog] unreadable ${path}: ${err instanceof Error ? err.message : String(err)}`);
     cache = null;
   }
   if (cache && !cache.routeRegistry && side) {
@@ -296,6 +315,11 @@ export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCa
       cache = { ...cache, routeRegistry: registry };
     }
   }
+  // Validated RAW above (the parse and the sidecar attach both see every row),
+  // then split here, before any reader can see it. This is the choke point that
+  // keeps a content-use opt-in wire id from being chosen for a user
+  // (`content-use.ts`).
+  if (cache) cache = { ...cache, entries: cache.entries.map(splitOptInConnections) };
   _readMemo.set(path, { key, cache });
   return cache;
 }
@@ -305,16 +329,14 @@ export function writeRouteRegistry(
   routeRegistry: CachedRouteRegistry,
   path: string = ALL_MODELS_CACHE_PATH
 ): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(routeRegistryPathFor(path), JSON.stringify(routeRegistry), "utf-8");
+  writeFileAtomic(routeRegistryPathFor(path), JSON.stringify(routeRegistry));
   _readMemo.delete(path);
 }
 
 export function writeAllModelsCache(data: DiskCacheV3, path: string = ALL_MODELS_CACHE_PATH): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(data), "utf-8");
+  writeFileAtomic(path, JSON.stringify(data));
   if (data.routeRegistry) {
-    writeFileSync(routeRegistryPathFor(path), JSON.stringify(data.routeRegistry), "utf-8");
+    writeFileAtomic(routeRegistryPathFor(path), JSON.stringify(data.routeRegistry));
   }
   _readMemo.delete(path);
 }

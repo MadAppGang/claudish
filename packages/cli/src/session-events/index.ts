@@ -14,8 +14,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { projectDirNameFor } from "../channel/home-dir.js";
 import { log } from "../logger.js";
+import { projectDirNameFor } from "../mcp-session/home-dir.js";
 import { translateLine } from "./event-translator.js";
 import { initialState, reduceEvent } from "./session-state.js";
 import { TranscriptTailer } from "./transcript-tailer.js";

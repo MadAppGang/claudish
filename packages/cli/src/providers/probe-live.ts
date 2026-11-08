@@ -14,6 +14,11 @@
 
 import { extractUpstreamStatus, sseDataPayload } from "../handlers/shared/anthropic-error.js";
 import {
+  type HopFailureReason,
+  UNHANDLED_ERROR_HEADER,
+  decideHopFailure,
+} from "../handlers/shared/hop-decision.js";
+import {
   hasActionableLink,
   hasModelUnsupportedWording,
 } from "../handlers/shared/model-unsupported.js";
@@ -53,7 +58,31 @@ export interface ProbeResult {
    *   streaming = latencyMs - ttftMs     (token generation)
    */
   timing?: ProbeTiming;
+  /**
+   * The credential that signed THIS probe request, when the provider has
+   * several login sources (muse@): `Muse Code borrowed copy · <tier>`. Read off
+   * the response's `x-claudish-signed-with`, so it is per request.
+   */
+  signedWith?: string;
+  /**
+   * What a routing chain would do after this hop's answer, by the runtime's rule
+   * (`decideHopFailure`). Absent on "live", and on a result the probe never sent
+   * (`key-missing`): a caller that walks a chain treats absent as "stop".
+   */
+  chainAction?: "advance" | "stop";
+  /** Why: a `HopFailureReason`, or a probe-only cause. */
+  chainReason?: ProbeChainReason;
 }
+
+/** Why a probed hop advances or stops the chain. */
+export type ProbeChainReason =
+  | HopFailureReason
+  /** The stream failed after a 200, which the runtime already returned. */
+  | "after-200"
+  /** The probe's own deadline; the runtime has none per hop, so it would wait. */
+  | "probe-timeout"
+  /** The probe could not reach the proxy at all. */
+  | "proxy-unreachable";
 
 /**
  * Minimum streaming window (ms) used when deriving tokens/sec. A response whose
@@ -88,7 +117,7 @@ export interface ProbeTiming {
  * token-related failure, we surface a login hint instead of masking the link
  * as "skipped".
  */
-const OAUTH_PROVIDERS = new Set(["vertex", "antigravity", "devin"]);
+const OAUTH_PROVIDERS = new Set(["vertex", "antigravity", "devin", "meta-muse-code"]);
 // Ask for a short paragraph so we can sample streaming throughput (tokens/sec).
 // Capped to keep probes quick while leaving room for reasoning models that
 // spend hidden reasoning tokens BEFORE any visible text: at 64 tokens, models
@@ -254,10 +283,25 @@ export async function probeLink(
     const latencyMs = Date.now() - startedAt;
     const name = e?.name || "";
     const msg = String(e?.message || e);
+    // A routing chain has no per-hop deadline, so a real request would wait on
+    // this hop: the chain stops here. An unreachable proxy says nothing about
+    // the hop, so nothing is claimed about later hops either.
     if (name === "TimeoutError" || name === "AbortError" || /timeout/i.test(msg)) {
-      return { state: "timeout", latencyMs, errorMessage: msg };
+      return {
+        state: "timeout",
+        latencyMs,
+        errorMessage: msg,
+        chainAction: "stop",
+        chainReason: "probe-timeout",
+      };
     }
-    return { state: "network-error", latencyMs, errorMessage: msg };
+    return {
+      state: "network-error",
+      latencyMs,
+      errorMessage: msg,
+      chainAction: "stop",
+      chainReason: "proxy-unreachable",
+    };
   }
 
   // TTFB: response headers are back. Stages before this are network/connect +
@@ -265,9 +309,17 @@ export async function probeLink(
   const ttfbMs = Date.now() - startedAt;
 
   if (!response.ok) {
-    const body = await safeReadBody(response);
+    // The whole body decides the hop (wording rules can sit past the display cut);
+    // the first 500 characters are what the probe shows.
+    const fullBody = await readBodyText(response);
+    const body = fullBody.slice(0, DISPLAY_BODY_CHARS);
     return annotateOAuthHint(
-      classifyHttpError(response.status, body, ttfbMs),
+      // A request that was signed and then failed still names its signer.
+      {
+        ...classifyHttpError(response.status, body, ttfbMs),
+        ...signedWithOf(response),
+        ...chainDecisionOf(response, fullBody, link.provider),
+      },
       link.provider,
       isOAuth
     );
@@ -301,10 +353,27 @@ export async function probeLink(
       ...rest,
       latencyMs: totalMs,
       timing,
+      ...signedWithOf(response),
+      // A failure after a 200: the runtime already handed that 200 to Claude
+      // Code, and FallbackHandler never sees a stream-time failure as an error.
+      ...(rest.state !== "live"
+        ? { chainAction: "stop" as const, chainReason: "after-200" as const }
+        : {}),
     },
     link.provider,
     isOAuth
   );
+}
+
+/** The `x-claudish-signed-with` the proxy set on this response (ComposedHandler). */
+function signedWithOf(response: Response): { signedWith?: string } {
+  const raw = response.headers.get("x-claudish-signed-with");
+  if (!raw) return {};
+  try {
+    return { signedWith: decodeURIComponent(raw) };
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -335,6 +404,17 @@ function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boole
   if (!isOAuth) return result;
   if (result.state === "live") return result;
 
+  // Muse Code's entitlement failure: the login works but the account is not
+  // subscribed. Logging in again changes nothing, so the hint is the subscribe
+  // link the message names — never a login command.
+  if (provider === "meta-muse-code") {
+    const subscribe = /no active Muse Code subscription[^:]*: subscribe at (\S+?)\.?$/i.exec(
+      result.errorMessage || ""
+    );
+    if (subscribe)
+      return { ...result, state: "auth-failed", actionHint: `subscribe at ${subscribe[1]}` };
+  }
+
   const loginCommand =
     provider === "antigravity"
       ? "claudish login antigravity"
@@ -345,7 +425,9 @@ function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boole
           // would send the user to a command that does not exist.
           provider === "devin"
           ? "devin login"
-          : undefined;
+          : provider === "meta-muse-code"
+            ? "claudish login muse"
+            : undefined;
 
   if (!loginCommand) return result;
 
@@ -364,13 +446,40 @@ function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boole
   };
 }
 
-async function safeReadBody(response: Response): Promise<string> {
+/** How much of an error body a probe result shows. */
+const DISPLAY_BODY_CHARS = 500;
+
+async function readBodyText(response: Response): Promise<string> {
   try {
-    const text = await response.text();
-    return text.slice(0, 500);
+    return await response.text();
   } catch {
     return "";
   }
+}
+
+/**
+ * What a routing chain would do after this failed hop: the runtime's own rule
+ * (`decideHopFailure`, shared with `FallbackHandler`). A 500 marked
+ * `UNHANDLED_ERROR_HEADER` is a hop whose handler threw, which a chain advances past.
+ */
+function chainDecisionOf(
+  response: Response,
+  body: string,
+  provider: string
+): Pick<ProbeResult, "chainAction" | "chainReason"> {
+  if (response.headers.get(UNHANDLED_ERROR_HEADER) === "1") {
+    const thrown = decideHopFailure({ kind: "thrown" });
+    return { chainAction: thrown.action, chainReason: thrown.reason };
+  }
+  const decision = decideHopFailure({
+    kind: "response",
+    status: response.status,
+    headers: response.headers,
+    body,
+    provider,
+    name: provider,
+  });
+  return { chainAction: decision.action, chainReason: decision.reason };
 }
 
 // `extractUpstreamStatus` used to live here as a private copy. It is shared with

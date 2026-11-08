@@ -13,9 +13,19 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { UPSTREAM_ERROR_LOG_ENV } from "./handlers/shared/upstream-error-capture.js";
 import type { ModelStatus, TeamManifest, TeamStatus, VoteResult } from "./team-orchestrator.js";
 import {
@@ -735,6 +745,90 @@ describe("team-orchestrator", () => {
       const { validateSessionPath } = await getOrchestrator();
 
       expect(() => validateSessionPath("../../etc/hosts")).toThrow();
+    });
+  });
+
+  // ── validateSessionPath: symlinked spellings of cwd ──────────────────────
+  //
+  // process.cwd() is a realpath; path.resolve() is lexical. On macOS os.tmpdir() is
+  // /var/folders/… while its realpath is /private/var/…, so the same directory has two
+  // spellings. Where the temp dir has no symlinked spelling (Linux), the test makes its own.
+
+  describe("validateSessionPath — symlinks and alternate spellings of cwd", () => {
+    const WITHIN = "Session path must be within current directory";
+    let savedCwd: string;
+    let base: string; // realpath of a fresh temp dir
+    let proj: string; // the cwd under test, a realpath
+
+    beforeEach(() => {
+      savedCwd = process.cwd();
+      base = realpathSync(mkdtempSync(join(tmpdir(), "vsp-")));
+      proj = join(base, "proj");
+      mkdirSync(proj);
+      mkdirSync(join(base, "outside"));
+      process.chdir(proj);
+    });
+
+    afterEach(() => {
+      process.chdir(savedCwd);
+      rmSync(base, { recursive: true, force: true });
+    });
+
+    /** Another spelling of `base`: the os.tmpdir() one when it differs, else a symlink we make. */
+    function aliasOfBase(): string {
+      const tmpSpelling = join(tmpdir(), basename(base));
+      if (tmpSpelling !== base) return tmpSpelling;
+      const link = join(base, "alias-of-base");
+      symlinkSync(base, link);
+      return link;
+    }
+
+    // REGRESSION: validateSessionPath rejects the os.tmpdir() (/var) spelling of a path inside a realpath cwd — Fixed in /dev:fix session dev-fix-20261020-182839-b87ae677
+    it("accepts the alternate (os.tmpdir()) spelling of <cwd>/s and returns the caller's spelling", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+      const aliased = join(aliasOfBase(), "proj", "s");
+      expect(aliased.startsWith(`${proj}/`)).toBe(false); // really a different spelling
+
+      expect(validateSessionPath(aliased)).toBe(resolve(aliased));
+    });
+
+    // REGRESSION: validateSessionPath compares a lexical path against a realpath cwd — Fixed in /dev:fix session dev-fix-20261020-182839-b87ae677
+    it("accepts a nested non-existent path a/b/c and returns resolve() of it", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+
+      expect(validateSessionPath("a/b/c")).toBe(resolve("a/b/c"));
+      expect(validateSessionPath("a/b/c")).toBe(join(proj, "a", "b", "c"));
+    });
+
+    // REGRESSION: validateSessionPath lets a symlink inside cwd escape to a dir outside it — Fixed in /dev:fix session dev-fix-20261020-182839-b87ae677
+    it("rejects link/s where link points to a directory outside cwd", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+      symlinkSync(join(base, "outside"), join(proj, "link"));
+
+      expect(() => validateSessionPath("link/s")).toThrow(WITHIN);
+    });
+
+    // REGRESSION: validateSessionPath accepts a path through a dangling symlink — Fixed in /dev:fix session dev-fix-20261020-182839-b87ae677
+    it("rejects a path through a dangling symlink with the same 'must be within' message", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+      symlinkSync(join(base, "nonexistent-outside", "dir"), join(proj, "dangling"));
+
+      expect(() => validateSessionPath("dangling/s")).toThrow(WITHIN);
+    });
+
+    // REGRESSION: validateSessionPath must keep the path-separator boundary when comparing realpaths — Fixed in /dev:fix session dev-fix-20261020-182839-b87ae677
+    it("rejects a sibling that shares the cwd's name as a prefix (projX)", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+      mkdirSync(join(base, "projX"));
+
+      expect(() => validateSessionPath(join(base, "projX", "s"))).toThrow(WITHIN);
+    });
+
+    // REGRESSION: validateSessionPath must keep rejecting traversal after the realpath change — Fixed in /dev:fix session dev-fix-20261020-182839-b87ae677
+    it("rejects ../x", async () => {
+      const { validateSessionPath } = await getOrchestrator();
+
+      expect(() => validateSessionPath("../x")).toThrow(WITHIN);
     });
   });
 

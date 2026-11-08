@@ -374,6 +374,8 @@ export interface DroppedEntry {
   label?: string;
   outcome: DroppedOutcome;
   credentialHint?: string;
+  /** A no-credential candidate whose credential is not an env var (Muse Code). */
+  provenance?: KeyProvenance;
 }
 
 export interface WiringInfo {
@@ -764,12 +766,17 @@ function formatContextWindow(ctx: number): string {
   return `${Math.round(ctx / 1000)}K`;
 }
 
-function buildKeyLine(activeEntry?: ChainEntry, directKeyVar?: string): string {
+function buildKeyLine(
+  activeEntry?: ChainEntry,
+  directKeyVar?: string,
+  droppedProvenance?: KeyProvenance
+): string {
   if (activeEntry?.notProbed) {
     return `${pc.bold}Key${pc.reset}  ${pc.dim}Claude Code's own auth (not visible to this process)${pc.reset}`;
   }
-  if (activeEntry?.provenance) {
-    const p = activeEntry.provenance;
+  const provenance = activeEntry?.provenance ?? droppedProvenance;
+  if (provenance) {
+    const p = provenance;
     // `effectiveLabel` replaces `$ENV_VAR` for a provider whose credential is not
     // an environment variable — Vertex, whose project comes from the ADC file or
     // `gcloud config`. Printing `$VERTEX_PROJECT (not set)` there names a
@@ -845,7 +852,13 @@ function buildCardLayout(
     result.chain.find((c) => c.probe?.state === "live") ??
     result.chain.find((c) => c.hasCredentials);
 
-  const keyLine = buildKeyLine(activeEntry, directKeyVar);
+  // Nothing kept: a dropped no-login candidate whose credential is not an env
+  // var (muse@ with no Muse Code login) still names its login state and fix,
+  // where `Key  —` said nothing.
+  const droppedKey = activeEntry
+    ? undefined
+    : result.dropped?.find((d) => d.provenance?.effectiveLabel)?.provenance;
+  const keyLine = buildKeyLine(activeEntry, directKeyVar, droppedKey);
   const wireLine =
     result.wiring && !activeEntry?.notProbed
       ? buildWireLine(result.wiring, activeEntry?.displayName)

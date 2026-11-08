@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildTeamStatusPayload, teamStatusNote } from "./mcp-server.js";
-import { CAPABILITIES, type TeamRunRow } from "./pane/index.js";
+import {
+  CAPABILITIES,
+  type PaneSnapshot,
+  type TeamRunRow,
+  mergeAccounting,
+  toSlotRow,
+} from "./pane/index.js";
 import { type ModelStatus, type TeamStatus, teamRunRowFromDisk } from "./team-orchestrator.js";
 
 const PATH = "/tmp/team-status-payload-test";
@@ -71,6 +77,65 @@ describe("teamStatusNote", () => {
 });
 
 describe("teamRunRowFromDisk", () => {
+  test("agent fields survive status.json, including rejected and pre-change slots", () => {
+    const dir = mkdtempSync(join(tmpdir(), "team-disk-agents-"));
+    try {
+      const status: TeamStatus = {
+        startedAt: "2026-10-06T00:00:00.000Z",
+        models: {
+          "01": { ...slot("COMPLETED", 12), agentRequested: "dev:reviewer", agent: "dev:reviewer" },
+          "02": {
+            ...slot("FAILED", 0),
+            agentRequested: "dev:nope",
+            error: {
+              model: "m",
+              command: "--agent dev:nope",
+              reason: "agent_rejected",
+              detail: "Unknown agent",
+              errorLogPath: join(dir, "02.error.log"),
+              workDir: dir,
+            },
+          },
+          "03": slot("COMPLETED", 12),
+        },
+      };
+      const path = join(dir, "status.json");
+      writeFileSync(path, JSON.stringify(status));
+      const persisted: TeamStatus = JSON.parse(readFileSync(path, "utf8"));
+      expect(
+        teamRunRowFromDisk(dir, persisted).slots.map((row) => ({
+          slot: row.slot,
+          agent_requested: row.agent_requested,
+          agent: row.agent,
+          reason: row.reason,
+        }))
+      ).toEqual([
+        { slot: "01", agent_requested: "dev:reviewer", agent: "dev:reviewer", reason: null },
+        { slot: "02", agent_requested: "dev:nope", agent: null, reason: "agent_rejected" },
+        { slot: "03", agent_requested: null, agent: null, reason: null },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("disk rows have recent null in active and settled states", () => {
+    const dir = mkdtempSync(join(tmpdir(), "team-disk-recent-"));
+    try {
+      const status: TeamStatus = {
+        startedAt: "2026-10-06T00:00:00.000Z",
+        models: { "01": slot("RUNNING", 0), "02": slot("COMPLETED", 12) },
+      };
+      const rows = teamRunRowFromDisk(dir, status).slots;
+      expect(rows.map((row) => [row.slot, row.state, row.recent])).toEqual([
+        ["01", "RUNNING", null],
+        ["02", "COMPLETED", null],
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a SETTLED run whose rows carry no completedAt still has a finished_at", () => {
     const dir = mkdtempSync(join(tmpdir(), "team-disk-row-"));
     try {
@@ -130,6 +195,67 @@ describe("buildTeamStatusPayload", () => {
     expect(payload).toHaveProperty("note");
     expect(payload.note).toContain("outputSize");
     expect(payload).not.toHaveProperty("summary");
+  });
+
+  // REGRESSION: one-shot session never settles when background-agent notifications arrive mid-turn as attachment/queued_command — Fixed in /dev:fix session dev-fix-20261016-224933-5e5cb5a4
+  test("carries the live agent_count_mismatch activity and keeps its history after the condition clears", () => {
+    const anomaly = "agent_count_mismatch: claudish 2 pending, Claude Code 0";
+    const snap: PaneSnapshot = {
+      paneId: "c1-k0-t01-abcdef",
+      phase: "RUNNING",
+      state: "RUNNING",
+      reason: null,
+      detail: null,
+      activity: "background",
+      lastActivityAt: "2026-10-06T01:00:00.000Z",
+      idleSeconds: 0,
+      turnsCompleted: 0,
+      tokensIn: 33324,
+      tokensOut: 44,
+      toolCalls: 2,
+      liveAnswerBytes: 0,
+      exitCode: null,
+      captureSource: null,
+      turnSource: "transcript",
+      pendingInputs: 0,
+      pendingHookInputs: 0,
+      connected: true,
+      startedAt: "2026-10-06T00:59:00.000Z",
+      endedAt: null,
+      transcriptPath: "/x.jsonl",
+      panePid: 1,
+      screenTail: "",
+      anomalies: [anomaly],
+      claudeCodeVersion: null,
+      shape: "one-shot",
+      turnEndRecordMissing: false,
+      agentCountMismatch: true,
+      recent: null,
+    };
+    const status: TeamStatus = {
+      startedAt: snap.startedAt,
+      models: { "01": { ...slot("RUNNING", 0), anomalies: snap.anomalies } },
+    };
+    const id = { slot: "01", model: "haiku", spawnModel: null };
+    for (const current of [snap, { ...snap, activity: "Bash", agentCountMismatch: false }]) {
+      const row = toSlotRow(id, current, mergeAccounting(current, null, id));
+      const payload = buildTeamStatusPayload({
+        status,
+        sessionPath: PATH,
+        idle: { "01": 0 },
+        activity: { "01": row.activity! },
+        liveBytes: { "01": 0 },
+        run: { ...runOf(status), slots: [row] },
+      });
+      expect((payload.models as TeamStatus["models"])["01"]?.anomalies).toEqual([anomaly]);
+      expect(payload.activity_by_slot).toEqual({
+        "01": current.agentCountMismatch ? "background: agent_count_mismatch" : "Bash",
+      });
+      expect((payload.run as TeamRunRow).slots[0]?.activity).toBe(
+        current.agentCountMismatch ? "background: agent_count_mismatch" : "Bash"
+      );
+      expect((payload.models as TeamStatus["models"])["01"]?.state).toBe("RUNNING");
+    }
   });
 
   test("keys the note on any non-terminal slot, not only RUNNING", () => {

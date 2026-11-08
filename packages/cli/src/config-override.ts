@@ -110,7 +110,7 @@ export interface ConfigOverrideDeps {
 
 /**
  * Decide the override for a run. Precedence: an explicit `--config` flag wins;
- * otherwise `CLAUDISH_CONFIG` (which is how spawned team/channel child claudish
+ * otherwise `CLAUDISH_CONFIG` (which is how spawned team/MCP session child claudish
  * processes inherit the parent's override).
  *
  * Both `--config <file>` and `--config=<file>` are accepted. A flag with no
@@ -133,6 +133,8 @@ export function planConfigOverride(
     }
     path = flag.value;
   } else {
+    // Trusted as the real environment's: no env file in the working directory can
+    // set a control variable (launch-env.ts).
     path = env.CLAUDISH_CONFIG || undefined;
   }
   if (!path) return { kind: "none" };

@@ -929,11 +929,17 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
           />
         )}
 
+        {/* `idle=""` when the provider published its own order (Antigravity's
+            `agentModelSorts`): the rows are not sorted, so `newest first` would
+            be false — the same reason the provider list passes it. */}
         <FilterRow
           value={filter}
           matches={shown.length}
           total={list.rows.length}
           width={layout.inner}
+          idle={
+            discovery.outcome?.kind === "rows" && discovery.outcome.providerOrdered ? "" : undefined
+          }
         />
         <ColumnHeader layout={rowLayout} />
 

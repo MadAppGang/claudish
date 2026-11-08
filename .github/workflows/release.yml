@@ -91,7 +91,7 @@ jobs:
           VERSION="${GITHUB_REF#refs/tags/v}"
           sed -i.bak "s/VERSION = \".*\"/VERSION = \"$VERSION\"/" packages/cli/src/cli.ts
           # Build from root to preserve workspace resolution
-          bun build packages/cli/src/index.ts --compile --target=${{ matrix.target }} --outfile ${{ matrix.artifact }}
+          bun build packages/cli/src/index.ts --compile --no-compile-autoload-dotenv --target=${{ matrix.target }} --outfile ${{ matrix.artifact }}
 
       - name: Ad-hoc sign binary (macOS Gatekeeper compatibility)
         if: startsWith(matrix.target, 'bun-darwin')
@@ -309,7 +309,10 @@ jobs:
           node -e "
             const pkg = require('./package.json');
             delete pkg.dependencies['@claudish/core'];
-            pkg.files = ['dist/', 'AI_AGENT_GUIDE.md', 'skills/'];
+            // bin/ is more than the launcher: claudish.cjs requires its siblings
+            // (env-files.cjs). npm always ships the bin entry itself, so leaving
+            // bin/ out drops only the siblings and every install fails to start.
+            pkg.files = ['dist/', 'bin/', 'AI_AGENT_GUIDE.md', 'skills/'];
             // Sync optionalDependencies versions to release version
             if (pkg.optionalDependencies) {
               for (const key of Object.keys(pkg.optionalDependencies)) {
@@ -322,6 +325,20 @@ jobs:
           "
           echo 'Modified package.json:'
           cat package.json
+
+      # Install the exact tarball npm will receive and start it. The tests run the
+      # source tree, so a file the files list leaves out is invisible to them;
+      # 13.0.0 shipped without bin/env-files.cjs and could not start at all.
+      - name: Smoke-test the packed package
+        run: |
+          cd packages/cli
+          TARBALL="$PWD/$(npm pack --silent)"
+          SMOKE="$(mktemp -d)"
+          cd "$SMOKE"
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund "$TARBALL"
+          node node_modules/claudish/bin/claudish.cjs --version
+          rm -f "$TARBALL"
 
       - name: Publish to npm
         run: cd packages/cli && npm publish --access public --provenance
@@ -346,8 +363,10 @@ jobs:
           # Get checksums
           curl -sL "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/checksums.txt" -o checksums.txt
 
-          ARM64_SHA=$(grep "darwin-arm64" checksums.txt | awk '{print $1}')
-          X64_SHA=$(grep "darwin-x64" checksums.txt | awk '{print $1}')
+          # Match the whole filename field: checksums.txt also lists magmux-darwin-*, which a
+          # bare "darwin-arm64" grep would match too, giving the formula two sums.
+          ARM64_SHA=$(awk '$2 == "claudish-darwin-arm64" {print $1}' checksums.txt)
+          X64_SHA=$(awk '$2 == "claudish-darwin-x64" {print $1}' checksums.txt)
 
           echo "arm64_sha=$ARM64_SHA" >> $GITHUB_OUTPUT
           echo "x64_sha=$X64_SHA" >> $GITHUB_OUTPUT

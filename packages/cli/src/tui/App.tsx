@@ -47,6 +47,10 @@ import {
   pingLocalProvider,
   pingLocalProviders,
 } from "../providers/local-liveness.js";
+import {
+  prepareMuseLoginForTuiAction,
+  refreshMuseCredentialStatus,
+} from "../providers/meta-muse/muse-credentials.js";
 // 1Password CONFIG persistence (sync, no SDK). Reads/writes the global +
 // project config files for the account / imports / environments fields.
 import {
@@ -115,6 +119,7 @@ import { ProvidersContent } from "./components/ProvidersContent.js";
 import { RoutingContent } from "./components/RoutingContent.js";
 import { RoutingDetail } from "./components/RoutingDetail.js";
 import { TabBar } from "./components/TabBar.js";
+import { configSaveFailure } from "./config-save.js";
 import { DETAIL_H, FOOTER_H, HEADER_H, TABS_H, getChainProviders } from "./constants.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
@@ -132,6 +137,7 @@ import {
 import {
   type AuthSource,
   type ProviderDef,
+  type ProviderLoginAction,
   getProviderDefs,
   maskKey,
   providerAuthCapabilities,
@@ -139,6 +145,8 @@ import {
   providerCredentialNote,
   providerIsReady,
   providerIsReadyForDisplay,
+  providerLoginAction,
+  providerSetLabel,
 } from "./providers.js";
 import { A, C } from "./theme.js";
 import type {
@@ -156,15 +164,16 @@ import type {
 interface AppProps {
   /**
    * Called from the Providers tab `l` handler. The wrapper in
-   * tui/index.tsx records the requested slug, then after the renderer
-   * is destroyed it spawns `claudish login {slug}` as a child process
-   * and re-enters startConfigTui when the child exits. App.tsx just
-   * signals intent; lifecycle is the wrapper's responsibility.
+   * tui/index.tsx records the requested action, then after the renderer
+   * is destroyed it spawns the login command as a child process and
+   * re-enters startConfigTui when the child exits. App.tsx just signals
+   * intent; lifecycle is the wrapper's responsibility.
    */
-  // Derived, not restated: this union had drifted the same way `ProviderDef.
-  // oauthSlug` had, still naming the removed `gemini` provider. Both now follow
-  // the catalog's `oauthLoginSlug`.
-  requestLogin?: (slug: NonNullable<ProviderDef["oauthSlug"]>) => void;
+  requestLogin?: (action: ProviderLoginAction) => void;
+}
+
+export function nextStatusAfterProbeReady(current: string | null): string | null {
+  return current === "Starting probe proxy…" ? null : current;
 }
 
 /**
@@ -536,6 +545,22 @@ export function App({ requestLogin }: AppProps = {}) {
     };
   }, [keychainSupported, refreshKeychainVars, refreshConfig]);
 
+  // The Muse Code row reads one cached status (`museCredentialStatus`): two
+  // file checks plus the Keychain PRESENCE memo. Fill that memo once at mount
+  // (attributes only; no item data is read) and re-derive the rows, so a
+  // Keychain-only Muse login does not render as unconfigured.
+  useEffect(() => {
+    let cancelled = false;
+    void refreshMuseCredentialStatus()
+      .catch(() => undefined)
+      .then(() => {
+        if (!cancelled) refreshConfig();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshConfig]);
+
   // Drop the cached test badge for one provider (keyed by TUI name, as
   // runProbeTest stores it). Call on any credential change — save/remove key or
   // URL, OAuth login — so a stale FAIL / "ready Xms" doesn't outlive the
@@ -836,7 +861,14 @@ export function App({ requestLogin }: AppProps = {}) {
           opPickerResolver.current = (url) => {
             // Persist the chosen account globally so the next run reuses it
             // without re-prompting (resolveSdkAuth itself doesn't write).
-            if (url?.trim()) saveOnepasswordAccount(url.trim(), "global");
+            if (url?.trim()) {
+              try {
+                saveOnepasswordAccount(url.trim(), "global");
+              } catch (err) {
+                // The account still serves this run; only the reuse is lost.
+                setStatusMsg(configSaveFailure(err));
+              }
+            }
             opPickerResolver.current = null;
             resolve(url);
           };
@@ -1319,7 +1351,14 @@ export function App({ requestLogin }: AppProps = {}) {
 
     const startMs = Date.now();
     try {
+      // Muse Code: the user's own action, so its login is resolved HERE,
+      // in-process, before any proxy request — the one TUI path allowed to read
+      // the Muse Code CLI's Keychain item (the access dialog, if any, belongs to
+      // this keypress). The probe proxy runs in this process and finds the key
+      // in memory; the request path itself never prompts.
+      if (prov.catalogName === "meta-muse-code") await prepareMuseLoginForTuiAction();
       const proxyUrl = await ensureProbeProxy();
+      setStatusMsg(nextStatusAfterProbeReady);
       const catalogModel = getProbeModel(prov.catalogName);
       // Models that already failed this round — passed to discovery so we
       // get the NEXT candidate, not the same one again.
@@ -1547,7 +1586,13 @@ export function App({ requestLogin }: AppProps = {}) {
               }
             }
             if (!saved) {
-              setApiKey(envVar, val);
+              try {
+                setApiKey(envVar, val);
+              } catch (err) {
+                // The input stays open with the typed key; Enter retries.
+                setStatusMsg(configSaveFailure(err));
+                return;
+              }
               process.env[envVar] = val;
               // When the keychain write failed, the status line already explains
               // the fallback and must not be clobbered.
@@ -1565,7 +1610,12 @@ export function App({ requestLogin }: AppProps = {}) {
           if (!target.endpointEnvVar) {
             setStatusMsg(`${target.displayName} has no endpointEnvVar — cannot save URL.`);
           } else {
-            setEndpoint(target.endpointEnvVar, val);
+            try {
+              setEndpoint(target.endpointEnvVar, val);
+            } catch (err) {
+              setStatusMsg(configSaveFailure(err));
+              return;
+            }
             process.env[target.endpointEnvVar] = val;
             setStatusMsg(`URL saved for ${target.displayName} (${target.endpointEnvVar}=${val}).`);
           }
@@ -1709,35 +1759,54 @@ export function App({ requestLogin }: AppProps = {}) {
             editingExistingScope !== routingScope &&
             editingExistingPattern === pat;
 
-          if (routingScope === "project") {
-            const local = loadLocalConfig() ?? {
-              version: "1.0.0",
-              defaultProfile: "",
-              profiles: {},
-            };
-            if (!local.routing) local.routing = {};
-            local.routing[pat] = chainOrder;
-            saveLocalConfig(local);
-          } else {
-            const cfg = loadConfig();
-            if (!cfg.routing) cfg.routing = {};
-            cfg.routing[pat] = chainOrder;
-            saveConfig(cfg);
-          }
-          if (isMove && editingExistingScope === "global") {
-            const cfg = loadConfig();
-            if (cfg.routing && cfg.routing[pat] !== undefined) {
-              delete cfg.routing[pat];
+          try {
+            if (routingScope === "project") {
+              const local = loadLocalConfig() ?? {
+                version: "1.0.0",
+                defaultProfile: "",
+                profiles: {},
+              };
+              if (!local.routing) local.routing = {};
+              local.routing[pat] = chainOrder;
+              saveLocalConfig(local);
+            } else {
+              const cfg = loadConfig();
+              if (!cfg.routing) cfg.routing = {};
+              cfg.routing[pat] = chainOrder;
               saveConfig(cfg);
             }
-            setStatusMsg(`Rule moved global → project: ${pat}`);
-          } else if (isMove && editingExistingScope === "project") {
-            const local = loadLocalConfig();
-            if (local?.routing && local.routing[pat] !== undefined) {
-              delete local.routing[pat];
-              saveLocalConfig(local);
+          } catch (err) {
+            // Nothing was written: stay in the chain builder with the user's
+            // pattern and chain, so Enter retries the same save.
+            setStatusMsg(configSaveFailure(err));
+            return;
+          }
+          if (isMove && editingExistingScope === "global") {
+            try {
+              const cfg = loadConfig();
+              if (cfg.routing && cfg.routing[pat] !== undefined) {
+                delete cfg.routing[pat];
+                saveConfig(cfg);
+              }
+              setStatusMsg(`Rule moved global → project: ${pat}`);
+            } catch (err) {
+              setStatusMsg(
+                `Project rule saved; the global copy remains. ${configSaveFailure(err)}`
+              );
             }
-            setStatusMsg(`Rule moved project → global: ${pat}`);
+          } else if (isMove && editingExistingScope === "project") {
+            try {
+              const local = loadLocalConfig();
+              if (local?.routing && local.routing[pat] !== undefined) {
+                delete local.routing[pat];
+                saveLocalConfig(local);
+              }
+              setStatusMsg(`Rule moved project → global: ${pat}`);
+            } catch (err) {
+              setStatusMsg(
+                `Global rule saved; the project copy remains. ${configSaveFailure(err)}`
+              );
+            }
           } else if (routingScope === "project") {
             setStatusMsg(`Project rule saved: ${pat} → ${chainOrder.join(", ")}`);
           } else {
@@ -2113,7 +2182,15 @@ export function App({ requestLogin }: AppProps = {}) {
           resolver(chosen);
         } else {
           // (B) wizard step 2 → save + advance to the kind picker.
-          if (chosen?.trim()) saveOnepasswordAccount(chosen.trim(), "global");
+          if (chosen?.trim()) {
+            try {
+              saveOnepasswordAccount(chosen.trim(), "global");
+            } catch (err) {
+              // Stay on the account picker; Enter retries.
+              setStatusMsg(configSaveFailure(err));
+              return;
+            }
+          }
           setOpKindCursor(0);
           setMode("pick_op_kind");
         }
@@ -2200,12 +2277,16 @@ export function App({ requestLogin }: AppProps = {}) {
         }
       } else if (key.name === "e") {
         if (selectedProviderIsLocal) {
-          if (selectedLocalEnabled) {
-            disableLocalProvider(selectedProvider.catalogName);
-            setStatusMsg(`${selectedProvider.displayName} disabled in global config.`);
-          } else {
-            enableLocalProvider(selectedProvider.catalogName);
-            setStatusMsg(`${selectedProvider.displayName} enabled in global config.`);
+          try {
+            if (selectedLocalEnabled) {
+              disableLocalProvider(selectedProvider.catalogName);
+              setStatusMsg(`${selectedProvider.displayName} disabled in global config.`);
+            } else {
+              enableLocalProvider(selectedProvider.catalogName);
+              setStatusMsg(`${selectedProvider.displayName} enabled in global config.`);
+            }
+          } catch (err) {
+            setStatusMsg(configSaveFailure(err));
           }
           refreshConfig();
         } else if (selectedProvider.endpointEnvVar) {
@@ -2237,9 +2318,13 @@ export function App({ requestLogin }: AppProps = {}) {
         // and its live credential both remained.
         let failureMsg: string | null = null;
         if (hasCfgKey) {
-          removeApiKey(selectedProvider.apiKeyEnvVar);
-          removedFrom.push("config.json");
-          changed = true;
+          try {
+            removeApiKey(selectedProvider.apiKeyEnvVar);
+            removedFrom.push("config.json");
+            changed = true;
+          } catch (err) {
+            failureMsg = configSaveFailure(err);
+          }
         }
         // Delete from the KEYCHAIN too. `x` reads as "remove this provider's
         // stored credential", and clearing only config.json would leave the
@@ -2276,9 +2361,13 @@ export function App({ requestLogin }: AppProps = {}) {
           delete process.env[selectedProvider.apiKeyEnvVar];
         }
         if (activeEndpointEnvVar && config.endpoints?.[activeEndpointEnvVar]) {
-          removeEndpoint(activeEndpointEnvVar);
-          delete process.env[activeEndpointEnvVar];
-          changed = true;
+          try {
+            removeEndpoint(activeEndpointEnvVar);
+            delete process.env[activeEndpointEnvVar];
+            changed = true;
+          } catch (err) {
+            failureMsg = configSaveFailure(err);
+          }
         }
         if (changed) {
           credentials.invalidate(selectedProvider.catalogName);
@@ -2300,9 +2389,9 @@ export function App({ requestLogin }: AppProps = {}) {
               : "No stored config to remove.")
         );
       } else if (key.name === "l") {
-        // OAuth login for the selected provider. Signal the wrapper
-        // (tui/index.tsx) which slug to log into, then destroy the
-        // renderer. The wrapper spawns `claudish login {slug}` as a
+        // Login for the selected provider. Signal the wrapper
+        // (tui/index.tsx) which action to run, then destroy the
+        // renderer. The wrapper spawns the login command as a
         // child process so the OAuth callback server and inquirer
         // prompts run in a clean stdio environment. When the child
         // exits, the wrapper re-enters startConfigTui and we're back
@@ -2311,20 +2400,28 @@ export function App({ requestLogin }: AppProps = {}) {
         // Child-process isolation avoids the ERR_CONNECTION_REFUSED
         // issue that an earlier in-process attempt hit — the child
         // gets a fresh Node runtime with no OpenTUI residue.
-        const slug = selectedProvider.oauthSlug;
-        if (!slug) {
+        const action = providerLoginAction(selectedProvider);
+        const setLabel =
+          providerSetLabel(selectedProvider) === "project" ? "a project" : "an API key";
+        const command =
+          action?.kind === "gcloud-adc"
+            ? "gcloud auth application-default login"
+            : action
+              ? `claudish login ${action.slug}`
+              : "";
+        if (!action) {
           setStatusMsg(
-            `${selectedProvider.displayName} doesn't support OAuth login. Press s to set an API key.`
+            `${selectedProvider.displayName} doesn't support OAuth login. Press s to set ${setLabel}.`
           );
         } else if (!requestLogin) {
           // Fallback: wrapper didn't provide the login bridge. Tell the
           // user the command to run manually.
-          setStatusMsg(`Run: claudish login ${slug}`);
+          setStatusMsg(`Run: ${command}`);
         } else {
-          setStatusMsg(`Launching: claudish login ${slug}…`);
+          setStatusMsg(`Launching: ${command}…`);
           // Defer destroy so React commits the status message first.
           setTimeout(() => {
-            requestLogin(slug);
+            requestLogin(action);
             renderer.destroy();
           }, 50);
         }
@@ -2368,6 +2465,7 @@ export function App({ requestLogin }: AppProps = {}) {
         // we don't want to flip the badge to FAIL just because nothing is
         // configured. Use the right hint based on provider capabilities.
         const caps = providerAuthCapabilities(selectedProvider, config);
+        const setLabel = providerSetLabel(selectedProvider);
         // A running local server is testable even when not config-enabled.
         const localRunning =
           selectedProviderIsLocal && localLiveness[selectedProvider.catalogName] === "running";
@@ -2379,12 +2477,14 @@ export function App({ requestLogin }: AppProps = {}) {
             );
           } else if (caps.apiKey.supported && caps.oauth.supported) {
             setStatusMsg(
-              `${selectedProvider.displayName}: no credentials. Press s to set a key or l to login.`
+              `${selectedProvider.displayName}: no credentials. Press s to set a ${setLabel} or l to login.`
             );
           } else if (caps.oauth.supported) {
             setStatusMsg(`${selectedProvider.displayName}: no credentials. Press l to login.`);
           } else if (caps.apiKey.supported) {
-            setStatusMsg(`${selectedProvider.displayName}: no key set. Press s to set an API key.`);
+            setStatusMsg(
+              `${selectedProvider.displayName}: no ${setLabel} set. Press s to set ${setLabel === "project" ? "a project" : "an API key"}.`
+            );
           } else {
             setStatusMsg(`${selectedProvider.displayName} doesn't support auth from the TUI.`);
           }
@@ -2416,11 +2516,15 @@ export function App({ requestLogin }: AppProps = {}) {
         // Activate selected profile
         const selectedName = allNames[profileIndex];
         if (selectedName) {
-          const cfg = loadConfig();
-          cfg.defaultProfile = selectedName;
-          saveConfig(cfg);
-          refreshConfig();
-          setStatusMsg(`Profile "${selectedName}" activated.`);
+          try {
+            const cfg = loadConfig();
+            cfg.defaultProfile = selectedName;
+            saveConfig(cfg);
+            refreshConfig();
+            setStatusMsg(`Profile "${selectedName}" activated.`);
+          } catch (err) {
+            setStatusMsg(configSaveFailure(err));
+          }
         }
       } else if (key.name === "n") {
         // New profile — first pick scope (delegates to wizard)
@@ -2453,7 +2557,12 @@ export function App({ requestLogin }: AppProps = {}) {
             setStatusMsg("Cannot delete the last global profile.");
           } else if (cfg.profiles[selectedName]) {
             delete cfg.profiles[selectedName];
-            saveConfig(cfg);
+            try {
+              saveConfig(cfg);
+            } catch (err) {
+              setStatusMsg(configSaveFailure(err));
+              return;
+            }
             refreshConfig();
             setProfileIndex((i) => Math.max(0, i - 1));
             setStatusMsg(`Profile "${selectedName}" deleted.`);
@@ -2518,7 +2627,12 @@ export function App({ requestLogin }: AppProps = {}) {
             const cfg = loadConfig();
             if (cfg.routing && cfg.routing[rule.pattern] !== undefined) {
               delete cfg.routing[rule.pattern];
-              saveConfig(cfg);
+              try {
+                saveConfig(cfg);
+              } catch (err) {
+                setStatusMsg(configSaveFailure(err));
+                return;
+              }
               refreshConfig();
               setStatusMsg(`Global rule deleted: '${rule.pattern}'.`);
             }
@@ -2541,7 +2655,12 @@ export function App({ requestLogin }: AppProps = {}) {
           enabled: next,
           askedAt: cfg.telemetry?.askedAt ?? new Date().toISOString(),
         };
-        saveConfig(cfg);
+        try {
+          saveConfig(cfg);
+        } catch (err) {
+          setStatusMsg(configSaveFailure(err));
+          return;
+        }
         refreshConfig();
         setStatusMsg(`Telemetry ${next ? "enabled" : "disabled"}.`);
       } else if (key.name === "u") {
@@ -2554,7 +2673,12 @@ export function App({ requestLogin }: AppProps = {}) {
             ? (cfg.stats?.enabledAt ?? new Date().toISOString())
             : cfg.stats?.enabledAt,
         };
-        saveConfig(cfg);
+        try {
+          saveConfig(cfg);
+        } catch (err) {
+          setStatusMsg(configSaveFailure(err));
+          return;
+        }
         refreshConfig();
         setStatusMsg(`Usage stats ${next ? "enabled" : "disabled"}.`);
       } else if (key.name === "c") {
@@ -2628,12 +2752,17 @@ export function App({ requestLogin }: AppProps = {}) {
           // the config helpers (which take OpConfigScope) type-check. The alias
           // loses the prior narrowing, so map explicitly.
           const scope: OpScope = e.scope === "project" ? "project" : "global";
-          if (e.kind === "account") {
-            clearOnepasswordAccount(scope);
-          } else if (e.kind === "environment") {
-            removeOnepasswordEnvironment(e.value, scope);
-          } else {
-            removeOnepasswordImport(e.value, scope);
+          try {
+            if (e.kind === "account") {
+              clearOnepasswordAccount(scope);
+            } else if (e.kind === "environment") {
+              removeOnepasswordEnvironment(e.value, scope);
+            } else {
+              removeOnepasswordImport(e.value, scope);
+            }
+          } catch (err) {
+            setStatusMsg(configSaveFailure(err));
+            return;
           }
           refreshConfig();
           setOpIndex((i) => Math.max(0, i - 1));
@@ -2819,7 +2948,8 @@ export function App({ requestLogin }: AppProps = {}) {
           activeTab === "providers" && selectedProvider
             ? {
                 apiKey: !!selectedProvider.apiKeyEnvVar,
-                oauth: !!selectedProvider.oauthSlug,
+                oauth: Boolean(providerLoginAction(selectedProvider)),
+                setLabel: providerSetLabel(selectedProvider),
                 endpoint: !!selectedProvider.endpointEnvVar,
                 local: selectedProviderIsLocal,
                 localEnabled: selectedLocalEnabled,

@@ -41,11 +41,10 @@
  * its `ai-docs/feature-request-status-line.md`.
  */
 
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { type Socket, connect as netConnect } from "node:net";
-import { promisify } from "node:util";
 import { log } from "../logger.js";
+import { findOwnPane } from "../pane/own-pane.js";
 import { recoveryClock } from "./clock.js";
 import {
   type RecoveryOutcome,
@@ -56,8 +55,6 @@ import {
   renderableEpisodeFrame,
 } from "./coordinator.js";
 import { FRAME_TICK_MS, type RecoveryEpisodeFrame, UI_LEASE_MS } from "./types.js";
-
-const execFileAsync = promisify(execFile);
 
 /** How long the "recovered" banner stays up before the overlay is cleared. */
 export const OUTCOME_LINGER_MS = 4_000;
@@ -183,6 +180,17 @@ export function describeLease(episodeId: string): {
   };
 }
 
+/**
+ * The recovery banner owns the pane right now: an outage is being painted (its
+ * tick runs), a lease is held, or the recovered outcome is lingering. The
+ * interactive driver never types an injection while this is true: the overlay
+ * sits on top of the screen it reads, and the turn it would start is the turn
+ * the outage is holding (architecture §7.5, the delivery gate).
+ */
+export function recoveryOverlayHeld(): boolean {
+  return state.tickTimer !== null || state.lingerTimer !== null || state.leases.size > 0;
+}
+
 // ─── The magmux control connection ───────────────────────────────────────────
 
 async function connectControl(sock: string): Promise<Socket | null> {
@@ -249,55 +257,13 @@ function dropConnection(): void {
 }
 
 /**
- * This process and its ancestors, nearest first.
- *
- * In an ambient magmux the pane's process is whatever magmux started — usually
- * a login shell or the `claudish` launcher — and this proxy runs somewhere
- * beneath it. Asynchronous on purpose: it runs inside the proxy while requests
- * are being served.
+ * Which pane is ours, in a magmux claudish did not launch: process ancestry
+ * against `list` (`pane/own-pane.ts`, shared with the interactive driver). Null
+ * when nothing matches: the banner is then unavailable, and recovery still
+ * retries and still answers the inline error at exhaustion.
  */
-async function ancestorPids(maxDepth = 6): Promise<Set<number>> {
-  const out = new Set<number>([process.pid]);
-  let pid = process.ppid;
-  for (let i = 0; i < maxDepth && pid > 1; i++) {
-    out.add(pid);
-    try {
-      const { stdout } = await execFileAsync("ps", ["-o", "ppid=", "-p", String(pid)], {
-        timeout: 1_000,
-      });
-      const next = Number(stdout.trim());
-      if (!Number.isFinite(next) || next <= 1) break;
-      pid = next;
-    } catch {
-      break;
-    }
-  }
-  return out;
-}
-
-/**
- * Which pane is ours, in a magmux claudish did not launch.
- *
- * magmux exports `MAGMUX_SOCK` and `MAGMUX_THEME` to its panes and nothing that
- * names the pane, so it is found by process ancestry against `list`. Null when
- * nothing matches: the banner is then unavailable, and recovery still retries
- * and still answers the inline error at exhaustion.
- */
-async function findOwnPane(socket: Socket): Promise<number | null> {
-  const reply = await request(socket, { type: "list" });
-  const result = reply?.result as { panes?: unknown } | unknown[] | undefined;
-  const panes = Array.isArray(result)
-    ? result
-    : Array.isArray((result as { panes?: unknown })?.panes)
-      ? ((result as { panes: unknown[] }).panes as unknown[])
-      : [];
-  const ancestors = await ancestorPids();
-  for (const p of panes) {
-    const pane = (p as { pane?: unknown }).pane;
-    const pid = (p as { pid?: unknown }).pid;
-    if (typeof pane === "number" && typeof pid === "number" && ancestors.has(pid)) return pane;
-  }
-  return null;
+function findPaneOf(socket: Socket): Promise<number | null> {
+  return findOwnPane(async () => (await request(socket, { type: "list" }))?.result ?? null);
 }
 
 /** Connect once and find our pane. Concurrent callers share one attempt. */
@@ -328,7 +294,7 @@ function ensureConnected(): Promise<boolean> {
     state.control = socket;
     // A magmux claudish launched has exactly one `-e` pane, and magmux numbers
     // `-e` panes 0..N-1 in argument order, so Claude Code is pane 0.
-    const pane = endpoint.wrapped ? 0 : await findOwnPane(socket);
+    const pane = endpoint.wrapped ? 0 : await findPaneOf(socket);
     if (pane === null) {
       state.paneNotFound = true;
       log("[Recovery] this claudish's pane was not found in magmux — no banner");

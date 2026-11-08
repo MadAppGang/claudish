@@ -68,11 +68,11 @@ export function captureUpstreamError(record: UpstreamErrorRecord): boolean {
     // Redacted BEFORE truncation, and before the bytes hit disk.
     //
     // A 401/403 body routinely echoes the credential that failed, and this file
-    // is no longer only a path a user opted into: channel sessions now point
+    // is no longer only a path a user opted into: MCP sessions now point
     // every child at `<sessionDir>/upstream-errors.jsonl` and `get_diagnostics`
     // hands its contents to an agent. Redacting at write time is the only point
     // that covers every reader — the same rule and the same reason as team's
-    // error log (team-orchestrator.ts:1070) and the channel's `events.jsonl`.
+    // error log (team-orchestrator.ts:1070) and an MCP session's `events.jsonl`.
     //
     // Before truncation specifically, so the cut cannot fall inside a key and
     // leave a usable prefix of it in the file.

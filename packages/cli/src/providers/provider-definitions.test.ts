@@ -615,6 +615,7 @@ describe("billing classification", () => {
       "glm-coding",
       "grok-subscription",
       "kimi-coding",
+      "meta-muse-code",
       "minimax-coding",
       "opencode-zen-go",
       "qwen-coding",

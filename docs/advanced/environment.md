@@ -187,9 +187,12 @@ Set automatically by Claudish during runtime. Shows the currently active model.
 
 ## Example .env File
 
+A `.env` in the working directory may set provider API keys and claudish model settings only:
+
 ```bash
-# Required
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
+# GEMINI_API_KEY=...
+# CUSTOM_MY_VLLM_KEY=...   # the key for a custom endpoint named my-vllm
 
 # Default model
 CLAUDISH_MODEL=x-ai/grok-code-fast-1
@@ -199,23 +202,35 @@ CLAUDISH_MODEL_OPUS=google/gemini-3-pro-preview
 CLAUDISH_MODEL_SONNET=x-ai/grok-code-fast-1
 CLAUDISH_MODEL_HAIKU=minimax/minimax-m2
 CLAUDISH_MODEL_SUBAGENT=minimax/minimax-m2
+```
 
+Everything else goes in your shell profile, or an MCP server's `env`:
+
+```bash
 # Fixed port (optional)
-# CLAUDISH_PORT=3456
+# export CLAUDISH_PORT=3456
 
 # CI: fail fast on an unreachable provider instead of retrying for ~270s
-# CLAUDISH_RECOVERY=0
+# export CLAUDISH_RECOVERY=0
 ```
 
 ---
 
 ## Loading .env Files
 
-Claudish automatically loads `.env` from the current directory using `dotenv`.
+Claudish loads `.env` from the current directory at startup.
 
 **Priority order:**
 1. Actual environment variables (highest)
 2. `.env` file in current directory
+
+Only these are read from it: each provider's key variable and its aliases, every
+`CUSTOM_<NAME>_KEY`, `ANTHROPIC_API_KEY`, `VERTEX_LOCATION`,
+`CLAUDISH_MODEL` and `CLAUDISH_MODEL_OPUS|SONNET|HAIKU|SUBAGENT`. Any other variable in the file is
+ignored, and claudish prints one line naming them. The directory is often a checkout you have not
+reviewed, and a variable such as `CLAUDE_PATH`, `BUN_OPTIONS`, `OLLAMA_HOST` or a provider base URL
+would let it choose the code claudish runs or send your key and prompts elsewhere. See
+[Settings Reference](../settings-reference.md#3-environment-variables).
 
 ---
 

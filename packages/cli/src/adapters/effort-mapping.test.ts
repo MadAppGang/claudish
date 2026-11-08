@@ -44,12 +44,29 @@ function seedDefaultCatalog(entries: DiskCacheV3["entries"]): () => void {
   );
   return () => rmSync(cachePath, { force: true });
 }
+/**
+ * Dialects that read the seeded catalog at `cachePath`. The base lookups read the real
+ * ~/.claudish catalog, so a test that seeds and then uses a plain dialect is reading whatever
+ * that machine last fetched: it passes on a developer's machine and fails on a fresh runner.
+ */
+const seeded = {
+  capability: (modelId: string) => lookupModelReasoning(modelId, cachePath),
+  status: (modelId: string) => lookupModelReasoningStatus(modelId, cachePath),
+};
 class CatalogDeepSeek extends DeepSeekModelDialect {
   protected override lookupReasoningCapability() {
-    return lookupModelReasoning(this.getModelId(), cachePath);
+    return seeded.capability(this.getModelId());
   }
   protected override lookupReasoningStatus() {
-    return lookupModelReasoningStatus(this.getModelId(), cachePath);
+    return seeded.status(this.getModelId());
+  }
+}
+class CatalogGrok extends GrokModelDialect {
+  protected override lookupReasoningCapability() {
+    return seeded.capability(this.getModelId());
+  }
+  protected override lookupReasoningStatus() {
+    return seeded.status(this.getModelId());
   }
 }
 
@@ -167,7 +184,7 @@ describe("Gemini thinking config", () => {
 // ─── Part 2D: Grok ────────────────────────────────────────────────────────
 
 function grokEffort(modelId: string, req: any): string | undefined {
-  const fmt = new GrokModelDialect(modelId);
+  const fmt = new CatalogGrok(modelId);
   (fmt as any).modelId = modelId;
   const out = (fmt as any).prepareRequest({}, req);
   return out.reasoning_effort;

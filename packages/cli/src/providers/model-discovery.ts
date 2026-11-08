@@ -30,6 +30,7 @@ import { credentials } from "../auth/credentials/authority.js";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
 import { resolveRouteProfile } from "./connection-resolver.js";
+import { isOptInWireId } from "./content-use.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
 import { getProviderByName } from "./provider-definitions.js";
@@ -78,6 +79,20 @@ export interface DiscoveredModel {
    */
   ignoreCatalogReleaseDate?: boolean;
   /**
+   * The row's position in the provider's OWN model picker (0 = first), when the
+   * provider publishes one. When any row of a dynamic models catalog carries it,
+   * the claudish picker lists exactly the rows that do, in this order, instead
+   * of every row newest first.
+   *
+   * Antigravity is the case: `agy models` prints `agentModelSorts`, a curated
+   * subset in a curated order, and the picker is asked to match that list
+   * exactly. The rows WITHOUT it stay in the dynamic models catalog on purpose:
+   * the routing availability filter (`providerServesModel`) and
+   * `discoverContextWindow` read the same list, and a row missing there would
+   * read as "not served". Presentation only — routing never reads this field.
+   */
+  providerOrder?: number;
+  /**
    * What the PROVIDER said about whether this model answers chat turns, when it
    * said anything. Set by the discovery fetcher that holds the evidence, and read
    * by every caller that filters a dynamic models catalog for chat models.
@@ -113,9 +128,10 @@ export interface DiscoveredModel {
   /**
    * Whether the model can call tools, when the endpoint says so.
    *
-   * Only Ollama reports it (via its own capability list / name heuristics), and
-   * it genuinely varies there — a local embedding or vision-only pull cannot
-   * drive Claude Code. Undefined means "not reported", which callers read as
+   * Ollama reports it (via its own capability list / name heuristics), and it
+   * genuinely varies there — a local embedding or vision-only pull cannot drive
+   * Claude Code. Muse Code reports it as `metadata["muse-code"].tool_call`
+   * (`muse-models.ts`). Undefined means "not reported", which callers read as
    * yes, since every hosted dynamic models catalog in claudish is tool-capable.
    */
   supportsTools?: boolean;
@@ -149,8 +165,17 @@ export interface ModelDiscoveryDescriptor {
    *   GET, so `path` is ignored. Owned by `auth/antigravity-user.ts`. Exists
    *   because the response carries a per-subscription `maxTokens` that the
    *   shared catalog contradicts — see the branch below.
+   * - `muse-code-models`: Meta's `GET /muse-code/models`, signed with the key
+   *   minted from the Muse Code login, whose rows carry `metadata["muse-code"]`
+   *   (name, hidden flag, window, modalities). Owned by
+   *   `providers/meta-muse/muse-models.ts`.
    */
-  format: "openai-models-list" | "devin-connect" | "ollama-tags" | "antigravity";
+  format:
+    | "openai-models-list"
+    | "devin-connect"
+    | "ollama-tags"
+    | "antigravity"
+    | "muse-code-models";
 }
 
 /**
@@ -290,7 +315,17 @@ export interface DiscoveryFailure {
  *   fault the user can fix, so it is `failed{unreachable}` naming the variable.
  */
 export type ModelsCatalogOutcome =
-  | { kind: "served"; models: DiscoveredModel[] }
+  | {
+      kind: "served";
+      /** The models claudish may offer or pick: content-use opt-in ids excluded. */
+      models: DiscoveredModel[];
+      /**
+       * Opt-in wire ids the account also serves (`content-use.ts`). Never offered
+       * or picked; read only to confirm an id the user typed exactly. Absent when
+       * there are none.
+       */
+      optInIds?: string[];
+    }
   | { kind: "failed"; failure: DiscoveryFailure }
   | { kind: "unsupported"; reason: "no-descriptor" | "no-fetcher" };
 
@@ -644,6 +679,37 @@ async function discoverViaFetcher(
 export async function discoverProviderModelsCatalog(
   providerName: string
 ): Promise<ModelsCatalogOutcome> {
+  const outcome = await discoverEveryServedModel(providerName);
+  if (outcome.kind !== "served") return outcome;
+  // The single discovery entry, so this is the choke point for dynamic models
+  // catalogs: everything that offers or picks a model reads `models`, and a
+  // content-use opt-in id is never one of them (`content-use.ts`).
+  const models = outcome.models.filter((model) => !isOptInWireId(model.id));
+  if (models.length === outcome.models.length) return outcome;
+  const optInIds = outcome.models.filter((model) => isOptInWireId(model.id)).map((m) => m.id);
+  return { kind: "served", models, optInIds };
+}
+
+/**
+ * Every model the account serves, opt-in ids included, for the EXACT-id readers:
+ * whether a typed id is entitled (`providerServesModel`) and its served window
+ * (`discoverContextWindow`). `optIn` holds the content-use opt-in ids, which
+ * nothing may offer or pick. Fail-soft like {@link discoverProviderModels}: both
+ * lists are empty on any failure. Shares the one discovery cache.
+ */
+export async function discoverProviderServedIds(
+  providerName: string
+): Promise<{ served: DiscoveredModel[]; optIn: DiscoveredModel[] }> {
+  const outcome = await discoverEveryServedModel(providerName);
+  if (outcome.kind !== "served") return { served: [], optIn: [] };
+  return {
+    served: outcome.models.filter((model) => !isOptInWireId(model.id)),
+    optIn: outcome.models.filter((model) => isOptInWireId(model.id)),
+  };
+}
+
+/** The discovery itself: the full list the provider returned, cached unsplit. Never rejects. */
+async function discoverEveryServedModel(providerName: string): Promise<ModelsCatalogOutcome> {
   const cached = _cache.get(providerName);
   if (cached && cached.expiresAt > Date.now()) return { kind: "served", models: cached.models };
 
@@ -668,7 +734,8 @@ export async function discoverProviderModelsCatalog(
       detail: `no base URL resolved — check ${overrides || "the provider's baseUrl"}`,
     });
   }
-  const endpoint = registryModelsEndpoint(providerName, def) ?? `${baseUrl}${descriptor.path}`;
+  const definitionEndpoint = `${baseUrl}${descriptor.path}`;
+  let endpoint = registryModelsEndpoint(providerName, def) ?? definitionEndpoint;
 
   // Auth via the credential authority — it owns OAuth-vs-API-key precedence
   // (Kimi Coding prefers an OAuth token over a stale KIMI_CODING_API_KEY) and
@@ -735,13 +802,24 @@ export async function discoverProviderModelsCatalog(
     ...headers,
   };
 
+  const fetchList = (url: string) =>
+    fetch(url, { method: "GET", headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+
   let response: Response;
   try {
-    response = await fetch(endpoint, {
-      method: "GET",
-      headers,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
+    response = await fetchList(endpoint);
+    // The registry publishes API bases, not a model-list URL, so the registry
+    // endpoint is DERIVED (`<chat base>/models`). That holds for Zen
+    // (`inference/v1`) but not for Zen Go, whose APIs split by family
+    // (`inference/go/openai/v1`) while its list sits at `inference/go/v1/models`.
+    // Measured 2026-10-20, one key: the derived URL answers 404, the
+    // definition's `zen/go/v1/models` answers 200 with 37 models. A 404 says
+    // "no list at this address", never anything about entitlement, so the
+    // definition's URL gets one try before the failure is recorded.
+    if (response.status === 404 && endpoint !== definitionEndpoint) {
+      endpoint = definitionEndpoint;
+      response = await fetchList(endpoint);
+    }
   } catch (e: unknown) {
     return recordFailure({
       kind: "unreachable",
@@ -805,7 +883,7 @@ export async function discoverProviderModelsCatalog(
 
   _failures.delete(providerName);
   log(
-    `[model-discovery:${providerName}] discovered ${models.length} models: ` +
+    `[model-discovery:${providerName}] discovered ${models.length} models from ${endpoint}: ` +
       models.map((m) => `${m.id}(${m.contextWindow ?? "?"})`).join(", ")
   );
   _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -841,8 +919,9 @@ export async function discoverContextWindow(
   providerName: string,
   modelId: string
 ): Promise<number | undefined> {
-  const models = await discoverProviderModels(providerName);
-  const match = models.find((m) => m.id.toLowerCase() === modelId.toLowerCase());
+  // Exact-id lookup: an opt-in id the user typed still gets its served window.
+  const { served, optIn } = await discoverProviderServedIds(providerName);
+  const match = [...served, ...optIn].find((m) => m.id.toLowerCase() === modelId.toLowerCase());
   return match?.contextWindow;
 }
 

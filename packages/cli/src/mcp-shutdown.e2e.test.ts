@@ -1,7 +1,7 @@
 /**
  * MCP server shutdown leaves nothing behind (architecture D15 layer 3, §20.3 item 8).
  *
- * A real claudish MCP server over stdio holds a live channel session and a live team run,
+ * A real claudish MCP server over stdio holds a live session and a live team run,
  * both panes of the pane fake (`@@HANG@@`: the prompt is accepted and never answered) in
  * real headless magmux under the test's own CLAUDISH_PANE_ROOT. Then:
  *
@@ -62,7 +62,7 @@ interface Live {
   monitorRecord: string;
 }
 
-/** A RUNNING channel session and an ACTIVE two-slot team run, both hanging. */
+/** A RUNNING session and an ACTIVE two-slot team run, both hanging. */
 async function startWork(): Promise<Live> {
   const created = await server.callTool("create_session", {
     model: "contract-fake-model",

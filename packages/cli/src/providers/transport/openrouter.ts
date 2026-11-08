@@ -58,8 +58,11 @@ export class OpenRouterProviderTransport implements ProviderTransport {
     };
   }
 
-  async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
-    return this.queue.enqueue(fetchFn);
+  async enqueueRequest(
+    fetchFn: () => Promise<Response>,
+    opts?: { signal?: AbortSignal }
+  ): Promise<Response> {
+    return this.queue.enqueue(fetchFn, opts);
   }
 
   /**

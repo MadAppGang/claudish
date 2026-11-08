@@ -1,7 +1,7 @@
 /**
  * Which `claudish` binary a spawned CHILD is.
  *
- * `team` and channel `create_session` spawn children as `spawn("claudish", …)` —
+ * `team` and `create_session` spawn children as `spawn("claudish", …)` —
  * by NAME, resolved through PATH. In production that is exactly right: the child
  * should be the installed claudish. In a TEST it is a bug, and a particularly
  * dishonest one, because the suite goes green or red against whatever version
@@ -11,7 +11,7 @@
  * path DELETED from this tree came back to life during a run: installed 7.34.0
  * still contained an `op account get` probe removed here, and it fired on every
  * child spawn while the harness asserted on dev spans from the parent. And the
- * channel e2e's `create_session` test failed for an afternoon against a fix that
+ * MCP session e2e's `create_session` test failed for an afternoon against a fix that
  * was already correct in the tree — the child was the installed binary, which
  * still had the bug.
  *
@@ -25,6 +25,8 @@
  * Production behaviour is unchanged: with `CLAUDISH_BIN` unset the result is
  * exactly `spawn("claudish", args)`.
  */
+
+import { NO_ENV_FILE_FLAG } from "./launch-env.js";
 
 /** How to spawn claudish: an executable plus any arguments that must precede argv. */
 export interface ClaudishSpawnTarget {
@@ -41,7 +43,9 @@ export const CLAUDISH_BIN_ENV = "CLAUDISH_BIN";
  * A `.ts`/`.js` value is run through the CURRENT runtime (`process.execPath`, i.e.
  * the same bun that is executing the parent) rather than requiring the harness to
  * write an executable shim — pointing straight at `packages/cli/src/index.ts` is
- * the thing a test actually wants to say. Anything else is treated as an
+ * the thing a test actually wants to say. It runs with `--no-env-file`, as the npm
+ * launcher does: the child starts in the session's cwd, and Bun must not load that
+ * directory's env files (launch-env.ts). Anything else is treated as an
  * executable path or a PATH-resolvable name.
  *
  * `spawn` is always called with `shell: false` at the call sites, so no quoting or
@@ -51,7 +55,7 @@ export function resolveClaudishSpawn(env: NodeJS.ProcessEnv = process.env): Clau
   const bin = env[CLAUDISH_BIN_ENV]?.trim();
   if (!bin) return { command: "claudish", prefixArgs: [] };
   if (/\.(ts|tsx|js|mjs|cjs)$/.test(bin)) {
-    return { command: process.execPath, prefixArgs: ["run", bin] };
+    return { command: process.execPath, prefixArgs: [NO_ENV_FILE_FLAG, "run", bin] };
   }
   return { command: bin, prefixArgs: [] };
 }

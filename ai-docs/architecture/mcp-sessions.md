@@ -1,0 +1,873 @@
+> The 20-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing, scrolling, the transcript as text lines, read-only replays), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
+>
+> Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
+
+# MCP sessions and tool surface
+
+The MCP server runs async model sessions (`create_session` and the other session tools) that the
+host polls, plus `run_prompt` and `team`. It was `mcp-channel.md`, named for the channel push,
+which is gone (see "Push notifications were removed"); the module it describes moved from
+`packages/cli/src/channel/` to `packages/cli/src/mcp-session/` in the same rename.
+
+## Architecture
+
+Uses the low-level `Server` class (not `McpServer`) from `@modelcontextprotocol/sdk/server/index.js`.
+`capabilities` is `{ tools: {} }` for every `CLAUDISH_MCP_TOOLS` value, with no `experimental` key,
+and `serverInfo.version` is `VERSION` from `version.ts` (generated from `packages/cli/package.json`;
+it said `9.0.0` until 10.7.0).
+
+## Components (`packages/cli/src/mcp-session/`)
+
+- **SessionManager** — the sessions' policy and records: creates sessions, owns the queue of
+  `send_input`, decides a turn's verdict, writes the session records, enforces `timeout_seconds`
+- **PaneSession** (`packages/cli/src/pane/`) — the mechanism: one interactive Claude Code in its
+  own headless magmux pane, with the transcript as its turn oracle and magmux's input gate deciding
+  input (readiness, dialogs, prompt acceptance). Team uses the same driver
+- **ScrollbackBuffer** — in-memory ring buffer (2000 lines), holding each settled turn's answer prose
+
+### The transport: an interactive Claude Code in a headless magmux pane
+
+Each session is `claudish -i --model <spawnModel> -y --quiet --session-id <uuid> --add-dir
+<turnDir> [caller flags]` inside its own `magmux --headless` pane, driven over the pane's socket.
+There is no `-p`, no `--stdin`, no stream-json and no positional prompt. Until 10.4.0 the child was
+`claudish -p --output-format stream-json --input-format stream-json …` with its stdin held open for
+`send_input`; that transport and its reducer were deleted because print mode is not a faithful
+subset of the REPL (`headless-vs-interactive.md`): it skips `--agent` validation silently, and an
+interactive Claude Code is what users actually run.
+
+Everything about the pane — boot, the transcript turn oracle and its settle paths, prompt delivery
+by file with read coverage, the child's environment, the watcher and the identity-checked reap,
+the socket traps, the frozen mod contract — is in [`pane-session.md`](pane-session.md). This file
+covers what the session tools add on top.
+
+**`claude_flags` are checked before anything starts** (`checkChildFlags`, shared with `team`):
+claudish's own pane argv, transport breakers (`-p`, `--output-format`, `--input-format`, `--stdin`,
+`--bg`, …), session breakers (`--resume`, `--continue`, `-w`, `--no-session-persistence`, …),
+print-only Claude Code flags (`--max-turns`, `--max-budget-usd`, `--fallback-model`,
+`--json-schema`, `--permission-prompt-tool`, which an interactive child would silently ignore),
+claudish mode flags, claudish subcommand words, and any positional token or `--`. The match is
+exact-token after splitting `--flag=value`, and the positional rule is claudish's own
+value-consumption rule (`classifyPassthroughTokens`, pinned against `parseArgs` by a table test).
+A refusal is an `invalid_args` error before any credential work. `create_session`'s `agent`
+argument becomes `--agent <name>`; an unknown name is refused by the child itself (FAILED
+`agent_rejected`), so claudish runs no agent probe of its own.
+
+**A session is created in this order**: the flag check, `assertMagmuxAvailable` (magmux ≥ 0.18.0,
+else `Error: magmux_unavailable: …`), credential pre-hydration, the parent session read, a pane
+reservation (`Error: pane_limit: …` past 48 live panes per user), `prompt.md`, `spawn.json`, then the
+pane. `create_session` returns `{session_id, state}` once the pane exists, without waiting for boot.
+A pane that fails to start leaves a FAILED `pane_lost` session with its `meta.json`, and the call
+fails.
+
+**The verdict is the owner's (D8).** A one-shot session's settled turn is classified by
+`classifyRunOutput` with no byte floor and no pattern (`api_error`, `prompt_not_read`, `refused`,
+`empty_output`), and the session is terminal at that verdict, before its pane is reaped. An
+interactive session continues after each turn and fails only on an API-error turn (D20); a turn
+whose task file was not fully read records a `prompt_not_read` anomaly in `events.jsonl`. A question or a permission dialog waits for `send_input` (team fails it instead).
+Terminal states are absorbing: a late pane exit can never upgrade or overturn a CANCELLED or
+TIMEOUT already recorded.
+
+**The witness is scoped to the CURRENT turn**, by construction: the follower marks the transcript
+offset before each delivery and turn N owns only the records past its own offset. Turn 1's answer
+can therefore never mark turn 2 completed — the original bug's shape, a session reporting success on
+evidence that does not belong to it.
+
+**`send_input` is queued (D17).** It is accepted in every non-terminal state: STARTING and RUNNING
+queue it, AWAITING_INPUT delivers it at once, and during a question or permission dialog claudish
+presses Esc — which declines the dialog AND interrupts the turn — and delivers the text as the next
+prompt. Any accepted send makes a one-shot session interactive. The answer is
+`{success:true, queued}` or `{success:false, reason, state}` with `reason` one of `terminal`,
+`delivery_unavailable`, `unsupported_command`, `unknown_session`.
+
+**Persistence is redacted and bounded.** `output.log` holds each settled turn's answer prose, plus
+claudish's own `[claudish] <STATE> <reason>: <detail>` note on a session that did not complete.
+`events.jsonl` holds claudish's own records — `state` transitions, `tool` changes, `anomaly` keys and
+one `{type:"assistant", message:{id}, at}` line per main-chain message id — `redactSecrets`-filtered
+per line and capped at 4 MB (`{"type":"claudish_truncated"}` marks the cut); message content is not
+copied, because the transcript already holds it. `screen.txt` is the pane's final screen, redacted,
+written at the terminal transition. These files and the transcript are what `get_diagnostics`
+names for an agent to read.
+
+**Terminal sessions are evicted.** `maxSessions` bounds only ACTIVE sessions, so finished
+ones used to accumulate for the life of the MCP server. A terminal session leaves the map
+after `terminalRetentionMs` (default 30 min), with a hard ceiling of 50 retained. On-disk
+artifacts are unaffected, and `getSession`, `get_output` and `get_diagnostics` fall back to the
+session directory (both generations of `meta.json`: 10.4.0's `status`-only record and the pane
+one). `transcript_session` is a reader too and falls back the same way. The mutators — `send_input`, `cancel_session`, `capture_session` — never do: a recovered
+record describes a process that is gone, and they answer `unknown_session`.
+
+**Shutdown ends the records, then reaps.** At startup the MCP server installs the pane shutdown
+hooks with `stdin: true`: stdin EOF or close (the host closed the transport), SIGINT, SIGTERM and
+SIGHUP first run `shutdownAllTeamRuns()` and `SessionManager.shutdownAll()` — every live session is
+cancelled and its terminal transition writes the closing wait line and `meta.json` — and only then
+reap every pane in parallel and exit (0 on stdin, 128 + n on a signal). `shutdownAll` waits for
+starts still in flight first; one that was skipped would run on unsettled. `stats-buffer.ts`'s
+module-load signal listeners used to exit synchronously before any record was ended;
+`signal-owner.ts` lets the pane registry claim the exit. After a SIGKILL no record ends, but the
+per-pane watchers still remove every process and file.
+
+**`cancel_session` is a synchronous transition with an asynchronous reap.** It returns
+`{session_id, state:"CANCELLED", changed}` at once; the pane close and the process-group reap finish
+in the background (worst case ≈ 12 s). A second call returns the same state with `changed:false`.
+
+**`timeout` is its own state, never `failed`.** A session killed by its own `timeout_seconds` is
+TIMEOUT in memory, `meta.json` `status: "timeout"`, and `to: "timeout"` in `waits.jsonl`. Until
+Phase 3 of the channel work the channel push said `failed` for it, because the SEP-1686 projection
+had no `timeout` key and fell through to `working`; that projection (`mapEventToTaskStatus`) was
+deleted with the push in 10.7.0, and the records never had the split.
+
+**Session shape follows the prompt.** `create_session` WITH a prompt is one-shot: it is terminal
+at the verdict of the turn that prompt started. WITHOUT a prompt it is interactive: it waits in
+`waiting_for_input` once Claude Code has booted and again after every turn, and it ends on
+`cancel_session`, the timeout, or the child exiting 0 after `/exit` or a settled turn. A
+`send_input` call converts a one-shot session to interactive.
+
+**`waiting_for_input` means a real wait, and nothing else.** It holds iff the session is idle
+between turns — the turn settled on Claude Code's own end-of-turn record, and magmux's input gate
+reported the box ready (which means empty) with no dialog, or could not confirm that within 32 s of
+chat quiet (recorded as `settle_gate_unconfirmed:<why>`) — or a turn is blocked on a question
+(a pending AskUserQuestion in the transcript, or another pending tool with the gate reporting
+`dialog:question`). `awaiting_permission` holds iff a tool is pending in the transcript and the gate
+reports `dialog:permission` or `dialog:plan`. Before the gate these rested on claudish finding the
+box on the screen; the moments they open moved slightly: the first wait opens at the gate's `ready`
+(box and raw terminal still 1 s, plus Claude Code's boot reset or a 3.5 s floor), polled every
+250 ms, instead of a box stable 3 s; RUNNING starts at the gate's history evidence, earlier than the
+transcript witness behind a slow UserPromptSubmit hook; and a session that once stayed RUNNING for
+good on a box claudish could not find now reaches `waiting_for_input` after the 32 s grace. The
+record vocabulary of `waits.jsonl` is unchanged. A one-shot session is terminal at its verdict, so there
+is no "answered but still exiting" state for a wait to be confused with — 10.4.0's `finishing`
+event is gone with the transport (RB1). The wait for Claude Code's end-of-turn record after
+the model's message ends survives only as `activity:"finishing"` on a RUNNING session. A
+promptless session's first wait opens at boot-ready, not at creation: before boot a send is queued,
+not answered (RB2).
+
+### `waits.jsonl` — the wait log
+
+`<sessionDir>/waits.jsonl` gets one line per transition INTO a wait (`waiting_for_input` or
+`awaiting_permission`) and one per transition OUT of it (terminal states included):
+
+```jsonc
+{"wait":"open","since":"2026-10-02T10:03:12.000Z","turns":1}
+{"wait":"closed","since":"2026-10-02T10:03:12.000Z","at":"2026-10-02T10:03:13.400Z","to":"running"}
+```
+
+`since` keys the wait (the `closed` line repeats it); `turns` is `turnsCompleted` at the
+open; `to` is the session event of the new state (`sessionEventFor`: `running`, `tool_executing`,
+`completed`, `failed`, `cancelled`, `timeout`, …), never another wait (the phase table has no
+wait-to-wait edge). The vocabulary outlived the push it was named for: the field is a record
+contract outside observers read, so it keeps those words. It is append-only because an observer polling the directory
+must see a wait that opened and closed between two of its reads — a
+marker file that exists only during the wait cannot give it that.
+
+The writer is the pane's `onTransition` hook: synchronous, every wire-state change, never
+coalesced. It reports the net change of one event-processing step, so a turn that settles with a
+send already queued (RUNNING → IDLE → ADMITTING in one step) opens no wait. The terminal transition
+closes any open wait before `meta.json` is written, so a live writer never leaves an open wait
+beside a `meta.json`. One `appendFileSync` of < 200 bytes per line; a write failure goes to stderr
+and loses only that line; the file stops at 1 MB. Interactive sessions write one, and a one-shot
+session writes one only when it stops on a question or permission dialog (RB3) — in both cases the
+right action is `send_input`.
+
+### `spawn.json` — the start-time record, and who started the run
+
+`createSession` writes `<sessionDir>/spawn.json` after `prompt.md` and BEFORE the pane starts,
+atomically (`spawn.json.tmp` + rename), one key per line, and NOT inside a `try`: a session
+that cannot be recorded fails the tool call rather than run unrecorded. It exists before
+every runtime file (`output.log`, `events.jsonl`, `tokens.json`, `waits.jsonl`, `screen.txt`,
+`meta.json`) and is never removed.
+
+```jsonc
+{
+  "schema": 1,                       // versions spawn.json only
+  "kind": "session",                 // "session" | "team"
+  "sessionId": "1a2b3c4d",
+  "parentClaudeSessionId": "<uuid>", // OPTIONAL — absent when no well-formed id could be read
+  "hostPid": 12345,                  // the Claude Code process that launched this server
+  "launcherPid": 12398,              // OPTIONAL — present only on the npm launcher path
+  "mcpPid": 12399,                   // this process: the one that writes meta.json
+  "startedAt": "2026-10-02T10:00:00.000Z",
+  "model": "<as the caller asked for it>",
+  "timeoutSeconds": 600,             // effective: min(requested ?? 600, 3600)
+  "claudeSessionId": "<the child's uuid>",
+  "setupFrom": "/abs/caller/project" // OPTIONAL — present only when the child inherits a settings layer
+}
+```
+
+It exists for observers OUTSIDE this process, which poll the sessions directory to report
+progress to the Claude Code window that started a run.
+`claudeSessionId` is the pane's `--session-id` uuid, the transcript's basename. For a pane session
+`mcpPid` is also the pane record's owner, and the watchers make an observer's liveness inference
+sound: when the writer dies, its panes die with it.
+
+**`transcript_session` is a second reader of both keys.** A session running under another MCP
+server has a directory with `spawn.json` and no `meta.json` (that file is written only at the
+terminal transition). `spawn.json` has no `cwd`, so the transcript path is found by
+`claudeSessionId`: one `readdir` of the projects directory for `<dir>/<uuid>.jsonl`, used only on
+exactly one hit (1,187 project directories: 1.8–2.0 ms warm, 4.6 ms cold). `mcpPid` decides
+`final`: only `process.kill(mcpPid, 0)` failing with ESRCH, plus a transcript quiet for 30 s, counts
+the writer gone; a live pid, EPERM, or a missing or non-integer `mcpPid` never does. Adding `cwd`
+to `spawn.json` was rejected: this file is a cross-repo contract, and every record a released
+server wrote lacks the key anyway.
+
+**`hostPid` is structural, computed once at startup** (`hostPidFrom`, `mcp-session/parent-session.ts`).
+A compiled binary or `bun src/index.ts` is the direct child of Claude Code, so `hostPid` is
+`process.ppid`. An npm/bun global install runs Claude Code → `node bin/claudish.cjs` → `bun
+dist/index.js`, so the launcher puts `CLAUDISH_LAUNCHER_PID` (itself) and
+`CLAUDISH_LAUNCHER_PPID` (its parent) in the child's env, and the child believes the pair only
+when `CLAUDISH_LAUNCHER_PID` is its real `ppid` — a pair leaked into a nested claudish is
+inert. `launcherPid` is recorded exactly when that branch ran. No `ps`, no tree walk. The pane
+environment strips the pair and `CLAUDE_CODE_SESSION_ID`, so a claudish MCP server nested inside a
+pane cannot inherit the host's identity either.
+
+**`parentClaudeSessionId` is the host session record's id, read once per call**
+(`parentSessionForCall`, `mcp-session/parent-session.ts`). At `create_session` and
+`team(mode:"run")` time claudish reads `<configDir>/sessions/<hostPid>.json` (`configDir` is
+`CLAUDE_CONFIG_DIR`, else `$HOME/.claude`) and records its `sessionId` when the file parses,
+its `pid` equals `hostPid` and the id is well formed. Only when no record can be read does it
+fall back to `CLAUDE_CODE_SESSION_ID` (ignored under `CLAUDE_CODE_CHILD_SESSION`); with
+neither, the key is absent. One file read: no transcript search, no polling, no delay.
+`meta.json` carries the same key with the same value exactly when `spawn.json` does.
+
+Why the host record, measured on Claude Code 2.1.290 in live interactive sessions
+(`madbench --manual`, 2026-10-06):
+
+- The host record carries the window's LIVE conversation, `{"pid":…,"sessionId":…,"cwd":…}`:
+  its `sessionId` went `6f9e3d06…` → `d5b9974e…` after `/clear` and back to `6f9e3d06…`
+  after `/resume`. The MCP server's `CLAUDE_CODE_SESSION_ID` equals it at server start and
+  goes stale after the first `/clear`, which is why the env id is only the fallback.
+- The transcript cannot attribute the call. Claude Code writes a call's `tool_use` record
+  only AFTER the MCP tool call returns. With a 10 ms poller: record timestamp `00:41:39.899`,
+  claudish gave up a 2 s transcript poll and spawned at `00:41:41.909`, the record reached
+  disk at `00:41:42.052`; an earlier call, `34.785` / spawn `35.040` / on disk `35.162`. The
+  previous mechanism searched the calling conversation's transcript for the `_meta`
+  tool-use id, polling up to 2 s; it could never find the call it was proving, so every
+  `create_session` came out unattributed and 2 s slower. It is deleted, and claudish no
+  longer reads `_meta["claudecode/toolUseId"]`.
+  `spawn-record.contract.test.ts` "regression: the transcript does not hold the call while
+  the tool runs" replays that order and fails against the transcript search.
+
+Accepted race: a `/clear` typed in the very moment a call runs may attribute that run to the
+new conversation. It is never attributed to another window — the record is keyed by this
+server's own `hostPid`.
+
+### `meta.json` — the final record, and `events.jsonl`'s assistant lines
+
+`meta.json` is written once, at the terminal transition and before the pane is reaped, through
+`toMetaRecord`. Its existence is the run's end record: the magus `claudish-usage` skill and the
+multimodel `team` and `delegate` commands wait, bounded, for this file to appear. It keeps every
+10.4.0 key under its 10.4.0 name, because the monitor reads `status` (an unknown value reads as
+`failed`), `terminalReason`, `elapsedSeconds`, `turnsCompleted`, `toolCallCount`, `costUsd` and
+`exitCode`:
+
+- `status`: COMPLETED → `completed`; FAILED and EMPTY → `failed`; CANCELLED → `cancelled`;
+  TIMEOUT → `timeout`;
+- `terminalReason` is the contract's `FailureReason` (null on COMPLETED), not Claude Code's own
+  text; `costUsd` is null for native routes (no fictional spend, D12); `exitCode` is null when
+  claudish ended the pane — a pane's exit code exists only if the child exited on its own (RB4);
+- additive keys: `state` (tells EMPTY from FAILED), `detail`, `tokensIn`, `tokensOut`,
+  `lastActivityAt`, `shape`, `pane`, `provider`, `captureSource`, `turnSource`, `timeoutSeconds`,
+  and `cwd` (needed to re-derive a stored transcript path; a 10.4.0 record without it keeps its
+  stored path). A `SessionInfo` key that would repeat a pinned key (`toolCalls`, `reason`,
+  `panePid`) is written only under the pinned name, so the record never carries two names for one
+  fact.
+
+`events.jsonl` carries one `assistant` line per main-chain message id, first-seen order, each once,
+which is exactly what the monitor counts as replies (RB5).
+
+### Hook records in an MCP session
+
+When hooks are loaded ([`hooks.md`](hooks.md)), an MCP session's records gain these, all
+additive:
+
+- `<sessionDir>/hook-inbox.jsonl`, created (0600) for **every** child before it spawns and named in
+  the child's `CLAUDISH_HOOK_INBOX`. The child's proxy appends `stop`, `inject`, `annotate`, `end` and
+  `capped` lines; the server reads it at each settle and deletes it at reap.
+- `events.jsonl` anomaly keys: `hook_injection_delivered`, `hook_injection_dropped:<reason>`,
+  `hook_injection_not_read`, `hook_hold_error`, `hook_hold_watchdog`.
+- `get_diagnostics` adds `pendingHookInputs`, and its `phase` can read `SETTLING` while
+  `sessionIdle` hooks run. The row `state` stays `RUNNING`, with activity `hook`, which `sessionEventFor`
+  reports as `running`, never `tool_executing`. `pendingInputs` still counts caller input only.
+- A one-shot session that a hook extends stays `RUNNING` across its turn chain, and its output grows
+  turn by turn: each chain turn's answer is appended when the turn is recorded, before any hook runs.
+
+### Diagnostics are captured unconditionally, and reachable from the API
+
+Two sessions once ran 900 s of genuine billed work — 241 assistant messages, ~94 k output
+tokens, 150 tool calls — and reported success with an empty output log. The whole
+explanation was one line, written to `~/.claudish/sessions/<id>/stderr.log` and left there:
+`[claude-code:unrecognized_model] {"model":"cx@gpt-5.6-sol"}`. No MCP tool returned it.
+**A failure that has already happened cannot be re-run with `--debug`**, so nothing here is
+opt-in. A pane child has no stderr pipe for claudish to keep; what a terminal shows a person is the
+screen, so that is what is captured.
+
+- **`get_diagnostics(session_id, event_limit?)`** returns `state`, `event`, `reason`, `detail`;
+  **both halves of the model chain** (`model` as asked for, `spawnModel` as pinned) and the
+  `provider`; `shape`, `exitCode`, `idleSeconds`, `elapsedSeconds`, `timeoutSeconds`,
+  `outputBytes`, turns, tokens, `costUsd`, `toolCalls`, `pendingInputs`; the pane facts — `phase`,
+  `connected`, the redacted `screenTail`, `sockPath`, the head of magmux's own stderr,
+  `preambleBytes`, the current turn's `readCoverage`, the child's `claudeCodeVersion`,
+  `anomalies`, the input gate's fresh reading `gate: {ready, reason, detail, ageMs} | null` and the
+  last gated send `lastSend: {kind, reason?, accept?, evidence?, retypeCause?, attempts} | null`;
+  the tail of the event ring; the upstream error bodies; and the paths: the
+  transcript, the session directory, `events.jsonl`, `upstream-errors.jsonl`. A session no longer in
+  memory answers from its directory, including `screen.txt`.
+- **`outputBytes` counts the CHILD's prose only.** `recordNote` exists so claudish's own
+  `[claudish] …` failure annotation does not inflate the metric that proves a session
+  produced nothing — measured, it read 312 B for a 0-byte session before the split.
+- **The event ring is in memory, not read back off disk.** 200 records × 800 chars, labelled by
+  `type`, redacted once and shared with `events.jsonl`. It keeps filling after the 4 MB file cap,
+  because the records just before a death are the ones a post-mortem wants.
+
+### `transcriptPath` — realpath, or it is wrong
+
+Claude Code writes an authoritative JSONL transcript at
+`<CLAUDE_CONFIG_DIR or $HOME/.claude>/projects/<slug of cwd>/<session-uuid>.jsonl`. claudish
+mints that uuid and passes it as `--session-id`, so the filename is derived, never searched for by
+mtime. `transcriptPathFor` (in `session/session-discovery.ts`, which owns the layout) is the
+only `realpathSync` in the repo and it is load-bearing: macOS `tmpdir()` is `/var/…` →
+`/private/var/…` and a worktree can be reached through a symlink too, so the slug of the path we
+*spawned* with names a directory that does not exist. That is literally how the incident's
+transcripts were declared missing — they were under the session's own `work_dir`, in a project
+directory nobody looked in. The slug replaces EVERY non-alphanumeric character with `-`, the
+projects root follows the OWNER's `CLAUDE_CONFIG_DIR` (`projectsDir(parentEnv)`), and the pane's
+launcher `cd`s to the realpath before `exec`, so the directory Claude Code writes and the one
+claudish reads come from one rule. Now that the transcript is the turn oracle, a wrong path is not
+a missing diagnostic: it is a session that never sees its own witness.
+
+### `CLAUDISH_UPSTREAM_ERROR_LOG` is set per session
+
+`captureUpstreamError` (`handlers/composed-handler.ts`) is a no-op when that env var is
+unset, and it was unset for every session child. Its own comment states the cost: `log()`
+only persists under `--debug`, so the body distinguishing a retryable rate limit from a hard
+quota wall is gone the moment it is classified. Each session now points its child at
+`<sessionDir>/upstream-errors.jsonl` — set unconditionally, overriding any inherited value,
+because the records carry no session id and a shared path interleaves 20 concurrent sessions
+into one unattributable file. The capture **redacts at write time** now that it is no longer
+only a path a user opted into: a 401/403 body routinely echoes the credential that failed,
+and `get_diagnostics` hands these records to an agent.
+
+### A work_dir child inherits the caller's settings layer
+
+Claude Code reads project-scope settings (`enabledPlugins`, hooks, permissions, `env`) only from
+`<cwd>/.claude/settings{,.local}.json`; it does not walk up to the repository root. A
+`create_session` child runs with `work_dir` as its cwd, so before MTL-185 every plugin the
+caller's project enables was off in it and `--agent dev:qa-engineer` was refused
+(`agent_rejected`). Measured on Claude Code 2.1.306 (session `dev-fix-20261022-023522-f75563b5`):
+
+| Child cwd | Flags | Agents listed |
+|---|---|---|
+| caller project (E1) | none | the full list (24) |
+| sandbox inside the repo (E2) | none | the 5 built-ins |
+| sandbox inside the repo (E8, E16) | `--settings` = the caller's layer | identical to E1 |
+| sandbox outside the repo (E5) | `--settings` = the caller's layer | user-scope installs only: `dev` at the user row's version (9.2.0, not 9.4.0); `designer`, `madbench`, `code-search`, `code-simplifier` absent |
+| sandbox outside the repo (E13) | the layer + one `--plugin-dir` per install row | identical to E1 |
+
+What `createSession` does now (`mcp-session/inherited-settings.ts`, `session-manager.ts`):
+
+- `setup_from` defaults to the server's cwd (the caller's project) and is skipped when it resolves
+  to the child's own cwd, whose files Claude Code already reads. `setup_from: null` opts out: the
+  child's argv and files are byte-for-byte what they were. An explicit `setup_from` that is not an
+  existing directory, or a value that is neither a string nor null, is refused as `invalid_args`;
+  the implicit default is not checked.
+- The layer is `settings.json`, then `settings.local.json`, then every caller `--settings` value
+  (both `--settings v` and `--settings=v`), merged in that order: objects deep, arrays
+  concatenated without duplicates, scalars later-wins.
+- **Exactly one `--settings` reaches the child.** Claude Code keeps only the LAST one (E14: the
+  root settings then `{}` lists the 5 built-ins; E15, reversed, the full list), and claudish's
+  child runner merges only the first bare `--settings` into its own overlay (`claude-runner.ts`).
+  A second token would replace either the inherited layer or claudish's overlay (statusLine,
+  `forceLoginMethod`, `editorMode`), and losing the overlay fails the pane at boot. So the caller's
+  `--settings` are folded into the file and removed from argv.
+- `permissions.additionalDirectories` is removed: it is `--add-dir` in settings form, and the main
+  checkout's `settings.local.json` carries one that would re-open reads outside `work_dir`.
+- The layer is written to `<sessionDir>/inherited-settings.json`, mode 0600, because
+  `settings.local.json` can carry `env` secrets. Nothing is written to `work_dir` or `setup_from`.
+  `spawn.json` records `setupFrom`. A file that is not a JSON object fails the call as
+  `invalid_args`, before any pane starts.
+- The child claudish copies that layer into its own overlay, `~/.claudish/settings-<pid>-<ts>.json`
+  (`createTempSettingsFile`, then `mergeUserSettingsIfPresent` in `claude-runner.ts`), so the
+  overlay carries the same secrets and is 0600 too. Up to v14.4.1 it was 0644 (MTL-207). The
+  `mode` option of `writeFileSync` applies only when it CREATES a file: an overwrite keeps the
+  old bits (measured on Bun 1.4.0, a 0644 file overwritten with `mode: 0o600` stays 0644). So
+  the merge calls `chmodSync(…, 0o600)` before it writes, and a chmod failure skips the write.
+  `claude-runner-settings-mode.test.ts` pins umask 022, because a runner with umask 077 passes
+  the old code. Overlays left behind by older versions are MTL-258.
+
+Known gaps, not carried: exact plugin versions outside the repo (needs per-row `--plugin-dir`,
+E13, which depends on Claude Code's undocumented install-row keying); project `.claude/skills`,
+`.claude/commands` and `.mcp.json`; project hooks with relative paths, which resolve against
+`work_dir`. `team` needs none of this: its slots run in the server's cwd.
+
+An inherited layer also turns on the caller's plugin hooks in the child, and those hooks keep
+per-cwd state: in the live run they wrote `.claude/.coaching/state.json` and `.mnemex/` into the
+sandbox. A `work_dir` that must stay pristine needs `setup_from: null`.
+
+To re-measure the table, ask Claude Code for an agent that does not exist:
+`(cd <dir> && env -u CLAUDECODE claude <flags> --agent __probe__ -p hi </dev/null)` prints
+`--agent '__probe__' not found. Available agents: …` and exits before any model request, so a
+matrix of cwds and flag sets costs nothing. `env -u CLAUDECODE` lets it run from inside a
+session.
+
+## MCP Tools (20 total)
+
+- **Low-level** (3): `run_prompt`, `list_models`, `search_models`
+- **Agentic** (4): `preflight`, `team`, `report_error`, `allowance_status`
+- **Session** (12): `create_session`, `send_input`, `get_output`, `cancel_session`,
+  `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `scroll_session`,
+  `transcript_session`, `replay_session`, `close_replay`
+- **Debug** (1): `compare_models`
+
+`preflight` exists because `--probe` is CLI-ONLY. An MCP consumer had no way to
+check its models before committing to them, so it either shelled out to the CLI or
+discovered provisioning failures minutes in with the slots already spent — a real
+`team` run lost 3 of 10 slots that way. It reports, per model, WHICH provider
+would serve it (via `route()`, the same rules and credential filter a real run
+uses), whether that hop is flat-rate or METERED, and whether it is reachable now.
+The billing column is the non-obvious half: subscription-vs-metered is a property
+of the PROVIDER, not the model, so the same bare name can be free through a plan
+or billed per token depending on which credential is present — which is precisely
+what a caller cannot see from the model id.
+
+**`preflight` judges a model by its ROUTING CHAIN** (`providers/preflight-chain.ts`). It used to
+plan with `route()` and probe only the primary, so a model whose first hop failed got "❌" and
+"Drop or replace before running" even when a later hop served it (six models behind one expired Zen
+Go key on 2026-10-21; `model-failures-2026-10-21.md`, D6). Now `preflightModel` takes the kept hops
+from `explainRoute` → `probeTargets` (the chain `--probe` shows, in order) and probes each until one
+is live. A failed hop is followed by `ProbeResult.chainAction`, which `probeLink` sets with
+`decideHopFailure`, the SAME function `FallbackHandler` uses (`adapters.md`): advance, or stop here
+because a real request would stop here too (a connection fault, a stream failure, a credential hold
+on a metered hop). Two walker defaults stop rather than guess: a non-live result with no
+`chainAction` (`no-decision`, e.g. `key-missing`), and a probe that throws (`probe-error`). A native
+Claude name is never probed (the third outcome). Metered hops are probed like any other: a configured
+key is consent, and the runtime would use that hop.
+
+Output contract: the table's Provider, Billing and Model spec describe the SERVING hop; Status is
+`✅ live · hop i/n`, `❌ <state> · chain stops at hop i/n` or `❌ every hop failed (n)`, with
+` (+k untried)`; every failed hop is listed under "Failed hops:" with its probe spec, billing word
+and where the chain went; "Drop or replace before running" lists only models no hop serves. The
+billing counts follow the serving hop.
+
+Cost: at most one probe per kept hop, stopping at the first live one, so a model whose first hop
+serves costs what it always did. `timeout_ms` applies PER HOP; the worst case per model is hops ×
+`timeout_ms`, carried by `heartbeat: true` and a progress message per hop
+(`preflight: <model> · hop i/n`). Preflight models a FRESH chain: `FallbackHandler` starts at its
+`lastSuccessIndex` in a long-lived proxy, preflight always at hop 1, which is what a new session sees.
+
+**The polling verbs are the frozen mod contract v1** (`pane/contract.ts`, summarised in
+`pane-session.md`): `list_sessions` answers `{contract_version, capabilities, sessions}` with one
+`SessionRow` per session (state, reason, `reason_detail`, tokens, `cost_usd`, tool calls, turns, `idle_seconds`,
+`activity`, `pane`); `cancel_session` answers `{session_id, state, changed}`; `capture_session`
+answers the session's current screen `{seq, cols, rows, cursor, lines, final, spans?}` (160×50 at
+launch), or `{unchanged:true, seq, final}` when `since_seq` is still current — a memory read, meant
+for polling at about 1 Hz. `resize_session` answers `{session_id, cols, rows, changed, seq,
+pending?}`: the size actually set after clamping to 40–9999 × 24–9999 and at most 4 000 000 cells, and the screen `seq` once the
+redraw at that size has landed, so a capture with that `since_seq` already sees it. Their errors
+are a JSON `ContractError`; `resize` is the only verb that emits the two codes it added,
+`resize_unsupported` (the magmux has no `resize` op) and `delivery_unavailable` (magmux refused, or
+the pane is unreachable). `capabilities` lists `resize` since the pin moved to magmux 0.15.1. The
+resize floor was 0.15.1, not 0.15.0 (the first release with the op; the pane floor is now 0.18.0, for
+deep socket paths, above the 0.17.0 the input gate's transcript binding needs): 0.15.0 kept the scroll region's old
+bottom after a row grow and clamped cursor-down to it, so Claude Code's relative-move redraw
+collapsed its input box onto the old last row and `pathPrimary` never settled the next turn. The
+fake child redraws with relative cursor-down for that reason. The per-pane check of magmux's `verbs` stays as the defence against a
+binary that passes the version floor but lacks the op. `team` gains the same verbs as modes (`list`, `status`, `capture`,
+`cancel`, `resize`, `scroll`, `transcript`). Why the size is the viewer's and what resizing costs the screen heuristics:
+`pane-session.md`, "Terminal size".
+
+`scroll_session` (`session_id` and exactly one of `by`, a nonzero signed row count with negative
+toward older content, or `to:"end"`) scrolls the child's own transcript view and answers
+`{session_id, seq}`; `team(mode:"scroll", path, slot, run_id?, by | to)` answers
+`{run_id, path, slot, seq}`. A capture has no rows above the visible screen (the child draws on
+the alternate screen), so the scroll goes to the child as SGR wheel events, `|by|` capped at 200
+and a target ± 1 row. Its one error code is `scroll_unavailable` (starting, finished, delivering a
+prompt, a screen-read turn, reconnecting, or magmux did not confirm); nothing is queued.
+`capabilities` lists `scroll`. The argument errors come before the run lookup, as for `resize`. It
+is not a nested tool. Mechanism, rows and states: `pane-session.md`, "Scrolling the child's view".
+
+`transcript_session` (`session_id`, `since?`) reads the session's conversation as plain text lines
+and answers `{session_id, cursor, lines, more, final}`; `team(mode:"transcript", path, slot,
+run_id?, since?)` answers `{run_id, path, slot, cursor, lines, more, final}` (MTL-373). It exists
+because a finished session cannot scroll, and the status mod's Text view needs the whole
+conversation from the first turn, after the session finished too. Screen stitching and
+`get_output` were rejected as sources (one guesses and loses lines between captures, the other
+holds answers only).
+
+- **Source.** The child's own transcript JSONL, the file that is already the turn oracle
+  (`pane/transcript-page.ts` reads it, `pane/transcript-lines.ts` renders it). Compaction is
+  append-only (42 of 400 transcripts compacted; earlier lines stay), so it is complete from the
+  first turn. Subagent files are not read: an `Agent` call is one `tool` line.
+- **Lines.** `{kind, text, cont?}`, `kind` a closed set appended to only: `user`, `assistant`,
+  `tool` (`Name(arg)`, the argument ≤ 160 characters), `task_file` (the Read result of a claudish
+  task file, which survives the reap that deletes the file), `system`, `error`. Text is
+  sanitised: escape sequences and control characters removed except `\n` and `\t`, a lone surrogate
+  made U+FFFD. A text over 8,000 UTF-16 units or 16,000 serialised bytes is SPLIT, never
+  truncated, into `cont` lines; a chain may continue in the next answer after `cursor`. `renderEntry` is pure, so two servers mint the
+  same lines from one entry.
+- **Redaction** (`pane/transcript-redaction.ts`), one pipeline for every text, a tool argument
+  included: (1) t0 is the sanitised WHOLE text — for a tool line the whole salient argument,
+  before whitespace is collapsed and before the 160 cut, because a cut first destroys the
+  complete string that exact-value redaction needs and leaves a credential's head in the line;
+  (2) signing-value ranges are found on t0 (`signingValueRanges`), because a pattern
+  replacement that ran first breaks a registered value that contains a shape (`opaque-sk-…/
+  suffix` left `/suffix` in the clear); (3) `redactPatternsMapped` applies exactly
+  `redactPatterns` to t0 and says where each output unit came from, and every surviving unit of
+  a signing range becomes `*`, one for one, except whitespace; (4) only then the cuts — the
+  argument's collapse and 160 cut, and the 8,000 / 16,000 split. The cuts are computed on the
+  pattern-redacted text before the signing mask, so the chunk count and every cut are functions
+  of the text alone, never of the leases live at the call (the cursor indexes the k-th line).
+  The mask is length-preserving and keeps whitespace in place, so the same cuts apply to the
+  masked text and a masked line is never longer than its unmasked one in units or JSON bytes
+  (`*` is one byte). A `[redacted]` replacement grew a line past the bound (9,768 characters,
+  measured) and is not used here. A range that ends inside a surrogate pair masks both halves,
+  and no lone surrogate is emitted.
+- **Cursor.** `v1.<offset>.<k>.<id8>`: the byte offset of an entry's line start, the next line
+  within that entry, the first 8 hex of the session uuid. Stateless (a restart, the disk fallback
+  and another server all read the same file); it is the SCAN position and advances over records
+  that render nothing. `v1` names the renderer revision as well: a change to how many lines an
+  entry yields mints `v2`, which resumes a `v1` cursor at `k = 0`.
+- **Caps per call.** 200 lines; 32,000 UTF-8 bytes of the COMPACT answer (15 % under the
+  37,758 bytes Claude Code accepted; 61,681 became a "saved to file" stub with no cursor, which a
+  poller would replay forever), and the first line always fits; 16 MiB of transcript scanned
+  (≈ 34 ms on the 124 MB worst file); a line over 32 MiB is skipped. Only complete lines are
+  read: a half-written entry is left for the next call.
+- **`final`.** `true` only when the writer was PROVABLY gone before the read and the page reached
+  the end. Live: terminal AND the pane's reap VERIFIED (`reapVerified()`: the group and magmux
+  verified gone and the files removed, on the first attempt or a later registry retry). A
+  cancelled turn still appends during the ≈ 12 s reap, and `reaped()` is not enough: it resolves
+  after an unverified reap (`reapFailed`) too, while a survivor may still write. Disk `meta.json`: a raw terminal state, `completedAt` (else the file's
+  mtime) 30 s old, AND the transcript 30 s quiet; the owner's pid is not consulted, because a
+  finished session's owner reaps its pane within seconds, and "never final while the owner lives"
+  would keep every finished tab of a long-lived server non-final for hours. `spawn.json` alone:
+  `mcpPid` ESRCH-dead and the transcript 30 s quiet. A team slot from `status.json`: finished 30 s
+  ago and the transcript 30 s quiet. A transcript still being written is evidence the writer is
+  alive, whatever the records say (MTL-373 blind test TEST-19). A source
+  whose liveness cannot be established answers `false`: a wrong `false` costs one more poll, a
+  wrong `true` shows a running conversation as finished.
+- **Lookup.** A reader, not a mutator: the live map, then the session directory (`meta.json`, or
+  `spawn.json` alone); team: the run registry, then `<path>/status.json` read with `getStatus` so
+  ENOENT (`unknown_run`) differs from a missing slot (`unknown_slot`). The team disk fallback
+  derives the projects directory from the injected parent env, as `SessionManager` does. A path
+  is read only when its basename is `<uuid>.jsonl`, its realpath lies under the (realpath of the)
+  projects directory, and the DESCRIPTOR is the file there (`openContainedTranscript`): opened
+  `O_NOFOLLOW | O_NONBLOCK`, `fstat` a regular file, then after the open the parent still
+  realpaths to itself and `lstat` of the real path has the descriptor's `dev`/`ino` (on Linux the
+  kernel's fd path must also equal it). A `stat` taken before the open followed the same swapped
+  link as the open and proved nothing.
+- **Residual risk (accepted; review round 2, CRITICAL 2).** On macOS an ancestor directory swapped
+  for a symlink to an outside directory before the `openSync`, and restored before the parent
+  `realpathSync`, still points the read outside the projects root: the descriptor and the `lstat`
+  (taken between the two) both name the outside inode, and the parent check then sees the restored
+  directory. Two swaps suffice. Accepted because the attacker must already write the user's own
+  `~/.claude/projects` as the same uid, which already lets them read the outside file directly, and
+  the answer goes only to that user's own Claude Code. A full fix needs descriptor-relative
+  no-follow traversal (`openat` with `O_NOFOLLOW` per component, or `F_GETPATH`), which Bun does
+  not expose on macOS; Linux closes the window with the kernel's fd path.
+- **Read only.** `open(…, O_RDONLY|O_NOFOLLOW|O_NONBLOCK)`, `stat`, `read`, `readdir` and `kill(pid, 0)`; no snapshot refresh,
+  no record written, nothing sent to the child. Not a nested tool; `capabilities` lists
+  `transcript` after `scroll`. Measurements: `ai-docs/reports/2026-11-03-transcript-measurements.md`.
+
+`replay_session` (`session_id`, `cols?`, `rows?`) opens a finished session's real interface, read only,
+in a pane of its own, and answers `{replay_id, seq}`. `capture_session`, `resize_session` and
+`scroll_session` route a `replay_id` to `ReplayManager` (`mcp-session/replay-manager.ts`) before any
+session lookup; `close_replay` ends it. The pane itself, its environment and its argv are in
+`pane-session.md` § Replay panes.
+
+- **Source.** `SessionManager.replayTarget` and `replayTargetOfTeamSlot` are the transcript verbs' own
+  lookups, so a session gone from memory but on disk still replays, the `kind:"team"` refusal stays,
+  and `unknown_session`, `unknown_run` and `unknown_slot` keep their meaning.
+- **States.** `writerGone` is `session_live`'s test, the rule `final` uses above. An open is classified
+  and registered before its first await, so concurrent opens of one target, by either verb, share one
+  process and one answer. A failed open leaves nothing. A replay that finishes by itself answers
+  `final:true` until closed.
+- **Errors.** `invalid_args`, `unknown_session`, or `replay_unavailable` with `reason`: `session_live`,
+  `no_record`, `spawn_failed` (an exit before the box included), `boot_dialog`. `send_input` answers
+  `replay_read_only` for anything shaped like a `replay_id`, open or not, before `text` is read; a
+  missing `session_id` stays the error it was.
+- **Not a session.** No entry in `sessions`, no directory and no record, so `list_sessions`, the
+  accounting, the session limit and `team(mode:"list")` cannot see it, and `get_output`,
+  `cancel_session`, `get_diagnostics` and `transcript_session` answer as for an unknown id.
+- **Tool groups.** Not a nested tool, and `team(mode:"replay")` is unreachable nested because `team` is
+  not registered there. Under `CLAUDISH_MCP_TOOLS=agentic`, where `team` is listed but
+  `capture_session` and `close_replay` are not, that mode answers `invalid_args`: nothing there could
+  read or close the pane. `capabilities` lists `replay` after `transcript`.
+
+`allowance_status` is the read-only source of the mod's allowance band: `{contract_version,
+capabilities, allowance, reason?}`, where `allowance` is the `claudish.allowance.v1` report that
+`claudish account forecast --json` prints (the allowance service's `report()`), or `null` with a
+`reason` when no Codex account is configured or the report fails. It is in `agentic`, not
+`session`, because it reads no session; it is not in `NESTED_MCP_TOOL_NAMES`, so a nested server
+never lists it. The answer is model-visible: no project path, session ids cut to 8 characters.
+Contract and discovery lifecycle: `pane-session.md` § The `allowance` capability; the model:
+`allowance.md`.
+
+**Its answer is compact JSON.** Every other verb answers indented (`contractAnswer`); a full
+allowance report measured 61,681 bytes indented and 37,758 compact (trajectory 26,641, sessions
+9,672, accounts 798, burn 87, header 287). Indented it is over Claude Code's MCP result cap, and
+Claude Code then replaces the answer with a "saved to file" stub: the band parses that stub,
+finds no report, and stays hidden with no error anywhere. `compactAnswer` serves this tool only.
+Compact is still 37 KB, so the tool takes `sections` (a non-empty subset of `accounts`, `combined`,
+`burn`, `alerts`, `trajectory`, `sessions`, `usage`; anything else is `invalid_args`): `allowance`
+then keeps its header and only those parts, and the answer carries the sorted `sections` beside
+`contract_version`, which is how a reader tells a partial report from a full one.
+`allowanceStatusAnswerSchema` requires every NAMED section when `sections` is present; when it is
+absent, it requires the six sections of `ALLOWANCE_REPORT_SECTIONS_V1_BASE` only, because `usage`
+was added later and an older claudish's full answer (and the goldens magus copies) must keep
+validating. A full answer from this claudish always carries `usage`. The band polls
+`["accounts","burn","alerts"]`: 1,547 bytes against 34,875 for the full answer, measured on a
+two-account pool with 72 h of ledger. The cut happens after `report()`: the full report
+(its trajectory simulation included) is computed on every call either way; a lighter report path is
+not built.
+
+The tool list is pinned by an EXACT frozen array in `mcp-session/e2e-sessions.test.ts`, so
+adding or removing a tool without updating that test fails CI. That is deliberate:
+it is a wire contract, and an accidental change to the tool surface should be loud.
+
+Tool gating via the `CLAUDISH_MCP_TOOLS` env var (lower-cased, `resolveToolGroups` in
+`mcp-server.ts`):
+
+| Value | Tools |
+|---|---|
+| unset, `all` | all 20 |
+| `low-level` | `run_prompt`, `list_models`, `search_models` |
+| `agentic` | `preflight`, `team`, `report_error`, `allowance_status` |
+| `session` | the 12 session tools |
+| `debug` | `compare_models` |
+| `channel`, or any other value | all 20, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
+
+Unknown values keep selecting everything, because a server that lists fewer tools than its host
+expects fails later and quietly. The stderr line is there so a typo is not read as `all` with
+no trace.
+
+`session` was `channel` until 10.7.0. The rename removed the old name with no alias, per the
+thesaurus rule, so `channel` now falls into the unknown-value rule and selects everything. The
+stderr startup line shows `tools: channel, 20 tools` after the unknown-value warning, but an MCP
+host does not show stderr.
+`compare_models` moved to `debug` at the same time: it sends one prompt to several models in
+sequence and shows raw answers, which is a route check, not work. Real multi-model work is `team`.
+
+## `run_prompt`: two paths
+
+`run_prompt` (and each entry of `compare_models`) is one quick prompt to one model: one request,
+one answer, no tools, no session. `runPrompt` in `mcp-server.ts` picks the path with
+`nativeRouteFor()` (`providers/native-route.ts`) FIRST — the proxy's own gate, so the tool cannot
+disagree with the proxy (the CLAUDE.md invariant about bare Claude names):
+
+| Model | Path |
+|---|---|
+| a bare Claude name: `claude-*`, `opus`, `sonnet`, `haiku`, `opusplan`, `internal`, `default` | `runPromptViaClaudeCode` (`mcp/run-prompt-claude-code.ts`): one Claude Code print-mode call through claudish |
+| everything else, including `anthropic@claude-*` (metered), `dv@claude-*` and `anthropic/claude-*` | `runPromptViaProxy`: one Anthropic Messages request to the in-process proxy, which routes it like any request |
+
+**Why a Claude name cannot use the proxy.** Until 10.7.0 every model took the proxy path, and
+`run_prompt {model: "claude-opus-5-5"}` answered `Proxy error: 401 … x-api-key header is
+required`: the proxy's native route forwards the CALLER's credential, and an MCP tool call has
+none. claudish must never read the Claude Code OAuth token or its Keychain item, so the only way
+onto the user's subscription is the unmodified `claude` binary signing in on its own login.
+
+**The Claude Code print call.** `resolveClaudishLaunch` (`CLAUDISH_BIN`, else `claudish` on PATH —
+the same claudish the panes start) runs:
+
+```
+<claudish> -p --model <model> --output-format json --tools "" --strict-mcp-config
+  --setting-sources "" --disable-slash-commands --no-session-persistence
+  (--system-prompt-file <file> | --system-prompt "")
+```
+
+The original model string is passed; claudish's CLI owns alias normalisation. Measured on Claude
+Code 2.1.301 (session `dev-feature-mcp-run-prompt-claude-20261016-a7c3`):
+
+| Choice | Why |
+|---|---|
+| prompt on stdin, system prompt in a file | claudish's passthrough parser takes a flag value only when it does not start with `-` (`cli.ts` `passthroughFlagTakesValue`), so a prompt or value starting with `-` would be misparsed. stdin reaches `claude -p` unchanged (`- Say OK` answered correctly), and keeps the prompt out of `ps` |
+| `--system-prompt ""` when none is given | omitting it loads Claude Code's default system prompt (3 232 input tokens against 586); the proxy path sends no system prompt either |
+| a new empty working directory | `--setting-sources ""` does NOT stop CLAUDE.md and memory loading: 8 718 input tokens in this repo, 580–597 in an empty directory. The cwd is `<tmp>/claudish-run-prompt-*/cwd`; the system prompt file sits beside it, so the cwd is empty even then. Both are removed after the call |
+| `--setting-sources ""` | still authenticates: `apiKeySource: "none"`, the Keychain login. The login is not a settings source |
+| `--strict-mcp-config`, `--tools ""` | without them the child loads the user's plugins and starts another `claudish --mcp`; with them the init frame shows `mcp_servers: []`, `tools: []` |
+| no `--bare` | `--bare` reads only `ANTHROPIC_API_KEY`/`apiKeyHelper`, never the login, and 401s again |
+
+**The environment.** `claudeCodePrintEnv` is the server's environment minus
+`isStrippedFromChildEnv` (`pane/pane-launch.ts`, the list the pane spawner uses: `CLAUDECODE`,
+`CLAUDE_CODE_CHILD_SESSION`, `MAGMUX_*`, terminal identity, `CLAUDE_CODE_SESSION_ID` and the launcher
+pids), minus the pane markers (`PANE_LAUNCH_VARS` and `CLAUDISH_PANE_CHILD`: in a nested server
+the flag would make `assertNotNested` refuse `-p` with exit 64; the child is a leaf, so dropping
+it opens no second level), minus `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL`.
+`ANTHROPIC_API_KEY` goes unconditionally, not only claudish's placeholder: a bare Claude name in
+`run_prompt` runs on the Claude Code login, and a user who wants the metered Anthropic API names
+it as `anthropic@claude-*`.
+
+**Process handling.** All three stdio streams are pipes: this process's stdin and stdout are the
+JSON-RPC transport, and an inherited one would eat the host's requests or corrupt the stream. The
+child is `detached` and stopped by its process group (SIGTERM, SIGKILL 5 s later), because
+`claudish` on PATH may be the `bin/claudish.cjs` launcher, which orphans the real process on a
+plain SIGTERM. There is no wall-clock deadline, as on the proxy path: the child stops on the call's
+`AbortSignal` (`ToolCallContext.signal`, from the SDK's `extra.signal`: `notifications/cancelled`
+or the host's own timeout) or at server shutdown (`stopAllClaudeCodePrintChildren` in
+`installMcpShutdown`). Measured end to end: 1.3 s for a 404, 2.4 s for a Haiku answer.
+
+**The answer.** Claude Code 2.1.301 `--output-format json` prints a JSON ARRAY of frames
+(`system/init`, `assistant`, `rate_limit_event`, `result`); older releases printed one result
+object. `parseClaudeCodePrintOutput` accepts both and reads the last `type: "result"` frame and the
+`system/init` frame. `result` is the answer; `usage.input_tokens + cache_creation_input_tokens +
+cache_read_input_tokens` is the input (a cached prefix is context the model saw); the init frame's
+`apiKeySource` becomes the `Auth:` line (`"none"` → `Auth: Claude Code login (subscription)`).
+`total_cost_usd` is not shown: on a subscription it is a list-price equivalent
+(`costBasis: "list"`), not money spent. Exit 0 proves nothing; the verdict is the result frame:
+
+| Condition | Error text |
+|---|---|
+| `is_error: true` (API error, "Not logged in") | `Claude Code: <result>` plus ` (HTTP <api_error_status>)` when it is a number |
+| the executable cannot start | `cannot start claudish (<command>): <code>` |
+| no result frame | `claudish -p exited <code>: <stderr tail, sanitized>` (the missing-`claude` case lands here) |
+| empty `result` | `Model returned empty response` |
+| the call's signal fired | `cancelled` |
+
+**No `max_tokens` on either path.** `run_prompt` and `compare_models` have no output-limit
+parameter, and `runPromptViaProxy`'s body has no `max_tokens`. Step 5w strips every limit field the
+adapters write and adds the wire's `tokenParam` only when the request carries a limit, so the
+upstream applies its own default and no number is pinned ([`wire.md`](wire.md)). Measured 200 with
+no limit on chat-completions (`mm@MiniMax-M3`, `kimi-k3`), responses (`gpt-6.1-sol`) and
+anthropic-messages (`mmc@MiniMax-M3`). The one known host that REQUIRES `max_tokens` is
+`api.anthropic.com`, reached now only by the explicit metered `anthropic@claude-*`; if it 400s,
+the fix belongs in step 5w (write the connection's catalog `maxOutputTokens` for
+`anthropic-messages`), never in the MCP server.
+
+Why `-p` is acceptable for this one call, when the session tools refuse it:
+[`headless-vs-interactive.md`](headless-vs-interactive.md) "The one `-p` the MCP server starts".
+
+### Nested mode
+
+A claudish MCP server whose environment has `CLAUDISH_PANE_CHILD=1` (`inMcpSession()`) runs inside a
+session that a claudish owner started: Claude Code in a `create_session` or `team` pane started it
+as a plugin server. One level of nesting is the limit (why, and the CLI side of the rule:
+[`pane-session.md`](pane-session.md) § One level of nesting). Such a server:
+
+- registers only `NESTED_MCP_TOOL_NAMES` (`mcp/nested-mode.ts`): `run_prompt`, `compare_models`,
+  `list_models`, `search_models`. The rule is that a tool is kept only if it is a one-shot call that
+  starts no session, no pane and no claudish child that could start one. `team` and every session
+  tool start or act on sessions. `preflight` and `report_error` are out as well, so the nested
+  surface is the low-level group plus `compare_models` from the debug group. `run_prompt` on a
+  Claude model does start a `claudish -p`, a leaf with no tools and no MCP servers (see
+  § `run_prompt`: two paths, The environment);
+- INTERSECTS that list with the groups `CLAUDISH_MCP_TOOLS` enables and never widens them:
+  `all` or unset give 4 tools, `low-level` 3, `debug` 1 (`compare_models`), `agentic` or `session`
+  0. Any value still yields no session tool, which matters because madbench forces `all` and an env
+  snapshot can carry the variable;
+- filters by NAME and fails closed. A tool added later is absent in nested mode until someone lists
+  it, whereas a group filter would admit any future tool of its group;
+- declares only the `tools` capability, as every claudish MCP server now does;
+- answers `initialize` with `NESTED_INSTRUCTIONS` in place of the normal instructions, so the model
+  reads why the session tools are absent and what to do instead: it is the delegate, so it does the
+  task with its own tools, and a workflow step that says to delegate is satisfied by its own run.
+  Without that last sentence (10.6.3), a gpt-6.1-sol child running `/dev:qa`-style work found no
+  `create_session` and started `codex exec` through `terminal:mux`. The fix is guidance, not a
+  guard: no CLI is blocked. The text lives here because every child receives the server
+  instructions, including one that never loads the claudish-usage skill, whose section "Inside a
+  claudish session (child mode)" carries the longer version;
+- drops the "use the `report_error` tool" hint from `run_prompt`'s and `compare_models`' error
+  texts, since that tool is not registered;
+- logs `[claudish] MCP server started (tools: nested, 4 tools)`.
+
+A call to a removed tool takes the ordinary unknown-tool path:
+`isError: true`, `Error: Unknown tool "create_session"`.
+
+## Tool Registration Pattern
+
+Uses a `ToolDefinition[]` registry with raw JSON Schema (not Zod). Two `setRequestHandler` calls replace McpServer's ergonomic API:
+- `ListToolsRequestSchema` → returns filtered tool list
+- `CallToolRequestSchema` → dispatches to handler by name
+
+## Push notifications were removed (10.7.0)
+
+Until 10.7.0 the server declared `experimental: {"claude/channel": {}}` and pushed a
+`notifications/claude/channel` frame on every session state change (plus a coalesced
+`tool_executing` repeat at most once a second) and on every `team` progress tick, with SEP-1686
+forward-compatibility fields (`task_id`, `status`, `created_at`, `last_updated_at`). Removed with
+it: the capability, the `onStateChange` bridge and `SessionManager.emitFrame`, `notifyChannel`,
+the SEP-1686 projection (`mapEventToTaskStatus`), the `ChannelEvent` type, and the
+`CLAUDISH_CHANNEL_TRACE` diagnostics (`channel/diagnostics.ts`).
+
+Why: Claude Code rendered those frames only for an interactive host started with `--channels` (or
+`--dangerously-load-development-channels`) and the server in project `.mcp.json` or
+`~/.claude.json` — `--mcp-config` is not consulted by the channel resolver, and `-p` never
+registers channels. Every other host dropped every frame, and a host polling `list_sessions` gets
+the same facts from the records. The frames were never a keepalive either (next section).
+
+Where the facts are now: `list_sessions` rows (`state`, `activity`, `idle_seconds`, accounting),
+`get_output`, `get_diagnostics`, `capture_session`, `transcript_session`, and the session records (`spawn.json`,
+`waits.jsonl`, `meta.json`, `events.jsonl`, `screen.txt`), which outside observers read and which
+are byte-identical to before. `waits.jsonl` keeps the same event names in its `to` field.
+`team` progress is `team(mode:"status")`. The `notifications/progress` keepalive stays.
+
+The trigger to reconsider is in `ROADMAP.md`: Claude Code delivering `notifications/tasks/status`
+(SEP-1686) into the agent's context without `--channels`.
+
+Diagnostic script: `scripts/pane-drive.ts` drives one pane session from the command line
+(`--fake <scenario>` for the hermetic fake child).
+
+## Testing
+
+```bash
+bun test ./packages/cli/src/mcp-session/
+```
+
+Sessions are panes, so the suites that start one run a REAL headless magmux with the pane
+fake child (`pane/test-helpers/fake-interactive-child.ts`) as `CLAUDISH_BIN`, under a per-test
+`CLAUDISH_PANE_ROOT` and an allowlisted environment, and assert after each test that no process,
+socket, record or launcher directory is left. Without magmux they skip with "magmux not installed —
+not checked". `testing.md` has the rules.
+
+- `session-manager.test.ts` — the pure seams (`sessionEventFor` over every `SlotState`,
+  `toMetaRecord`, `sessionRowOf`, `normaliseTimeoutSeconds`), the two-generation disk reader, the
+  hostile-id and bounded-read guards, live pane sessions (one-shot and promptless `waits.jsonl`
+  transitions, a send queued while STARTING (G7) or RUNNING, the timeout staying TIMEOUT in memory,
+  `meta.json` and `waits.jsonl` (G1/G2), cancel, recovery from disk), and the module-load signal
+  exit codes (G3). G4 is the flag check.
+- `session-records.contract.test.ts`, `session-state-records.contract.test.ts`,
+  `spawn-record.contract.test.ts`, `host-pid.contract.test.ts`, `session-timeout.test.ts` — the
+  on-disk records the monitor reads. These were written blind from the 10.4.0 specification; the
+  pane port changed only the adapters and the fake, and every replaced assertion cites its RB/D
+  number.
+- `session-wire-format.test.ts` — the capability declaration: no `experimental` for any tool mode.
+- `../mcp-contract.e2e.test.ts` — the mod contract v1 through a real MCP server over JSON-RPC;
+  `../mcp-shutdown.e2e.test.ts` — stdin EOF, SIGTERM and SIGKILL of a server holding a live session
+  and a live team run.
+
+**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-sessions.test.ts` freezes the full 15-name list, the session-only 8 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics`, `capture_session`, `resize_session`, `scroll_session` and `transcript_session` each broke both pins on the way in, which is the guard working.
+
+E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for isolation. SessionManager tests point child spawns at the tree under test via `CLAUDISH_BIN` (`spawn-claudish.ts`), never at the installed binary.
+
+**`--bare` defers the MCP connection past `system/init` — do not assert MCP discovery under it.** Measured 2026-08-01 with a 20-line dependency-free stdio MCP server, so this is Claude Code behaviour, not a claudish one:
+
+| flags | `system/init` `mcp_servers` | MCP tools in the init `tools` array | what the model did |
+|---|---|---|---|
+| `-p --strict-mcp-config --bare` | `status: "pending"` | none | two `Bash` calls first, then *sometimes* the MCP tool |
+| `-p --strict-mcp-config` | `status: "connected"` | present | `ToolSearch` → the MCP tool |
+
+Under `--bare` the tools are not in the model's toolset when it decides what to do, so it improvises with `Bash` — with the real claudish server it answered *"I don't have access to a tool called `mcp__claudish__list_models`. My available tools are `Bash`, `Edit`, and `Read`."* Any test asserting that a tool was DISCOVERED or CALLED must drop `--bare`; `--strict-mcp-config` alone still restricts MCP to the temp config, which is the isolation that matters. Keep `--bare` for tests that only drive the server directly over JSON-RPC.
+
+Assert on the protocol, never on prose: `--output-format stream-json --verbose` exposes the `init` server status, the `tools` array, and the `tool_use`/`tool_result` pair. An assertion like `stdout.includes("Recommended Models")` passes for the wrong reason — it matched output the model produced via `Bash` while MCP discovery was silently broken. Also `proc.stdin.end()` on the spawned `claude`, or every run stalls 3s on "no stdin data received". (These are the e2e tests' OWN `claude -p` client; the sessions the server starts are panes.)
+
+## The `notifications/progress` keepalive (`mcp/progress-heartbeat.ts`)
+
+Claude Code aborts a tool call that puts nothing on the transport for its idle window — `MCP server "plugin:claudish:claudish" tool "team" sent no response or progress for 1800s; aborting`. Measured 2026-08-14 on **2.1.231** with three tools of identical 90s duration against a 30s window (`ai-docs/reports/mcp-progress-keepalive/findings.md`):
+
+| Tool emits every 10s | Outcome |
+|---|---|
+| nothing | aborted at 30s |
+| `notifications/progress` | survived 90s |
+| `notifications/claude/channel` | aborted at 30s |
+
+**Progress is the keepalive**, and the only one: a channel frame never reset the idle timer (the
+row above is kept as the measurement that showed it; the channel push itself was removed in
+10.7.0). Progress still renders nowhere.
+
+**`heartbeat: true` is set on exactly four tools**: `team`, `run_prompt`, `compare_models`, `preflight`. `team(mode:"run")` itself returns once every slot's prompt is accepted (at most 90 s + 30 s), but `run-and-judge` holds the call for the whole run. `create_session` deliberately does NOT carry it — it returns `{session_id, state}` as soon as the pane exists, without waiting for boot, and cannot reach the idle timer; the session's own long life is read by polling `list_sessions`, which is a different question.
+
+**The emitter is TIME-driven, not event-driven**, and that is the load-bearing choice. `team` once emitted a channel frame on every state change and still died at exactly 1800s, because a model that thinks for 30 minutes produces no state changes — an event-driven emitter goes silent precisely while the idle timer is counting.
+
+Interval defaults to 10s (the measured-working value), overridable with `CLAUDISH_MCP_PROGRESS_INTERVAL_MS`, clamped to `[1000, 60000]`, garbage → default. Resolved once per server, not per call, so a long session cannot change cadence mid-flight. The first frame lands at t+interval, so a 200ms call stays completely silent.
+
+**An absent or invalid `progressToken` degrades to `NOOP_HEARTBEAT`** — a shared frozen handle: no timer, no frame, no warning, no throw. The token is optional in the spec, so a host that omits it has not misbehaved, and a tool call must never fail because its keepalive could not arm. (2.1.231 does send it — observed value `2` in every probe arm. `anthropics/claude-code#58687`, which reports the client sends no `_meta.progressToken`, is STALE.)
+
+**`stop()` latches; `clearInterval` alone would not be enough.** The dispatch owns start and stop in a `finally`, and `stopped` is re-checked at the top of `emit`, so a tick already queued on the macrotask queue when the response was computed is dropped instead of reaching the wire after its own response — the `GLips/Figma-Context-MCP#362` teardown pattern, where a frame arriving after the client cleaned up its token tears down stdio.
+
+**Idle-window defaults, for sizing any test or config**: 30 min on stdio, 5 min on HTTP/SSE/WS. A per-server `timeout` (ms, ≥1000) in `.mcp.json` floors it for that server only; `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` disables the check entirely. **Undocumented floor worth knowing**: values below ~30s are silently ignored by the client — `1000` and `5000` were (a silent 20s call survived a nominal 5s window), `30000` was honoured exactly. Any test using a shorter window is confounded, because its control cannot fail.

@@ -282,7 +282,7 @@ its keepalive could not arm. (Claude Code 2.1.231 does send it, value `2`, every
 
 Nothing about `notifyChannel` (line 1342), the `ChannelNotifier` type (line 423), the
 `SessionManager` bridge (line 1309), or the wire format pinned by
-`channel-wire-format.test.ts` changes. The two mechanisms are complementary and were
+`session-wire-format.test.ts` changes. The two mechanisms are complementary and were
 measured to be:
 
 | | visible to agent / human | resets idle timer |
@@ -386,7 +386,7 @@ function; intervals are 20 ms so the file runs in well under a second.
 ### B. `packages/cli/src/mcp/mcp-progress-wire.test.ts` — dispatch-level over real stdio
 
 Spawns `bun run packages/cli/src/index.ts --mcp` and speaks raw newline-framed JSON-RPC
-to it, exactly like `channel/channel-wire-format.test.ts` (and reusing
+to it, exactly like `mcp-session/session-wire-format.test.ts` (and reusing
 `mcp-e2e/jsonrpc-client.ts`'s framing where convenient). **No API key required**: the
 existing `fake-claudish` PATH shim satisfies `team`, because `team-orchestrator.ts:599`
 spawns through `resolveClaudishSpawn()` just like `SessionManager` does. Child env sets
@@ -410,7 +410,7 @@ spawns through `resolveClaudishSpawn()` just like `SessionManager` does. Child e
 
 ### C. Regression guard on what must not change
 
-`bun test packages/cli/src/channel/channel-wire-format.test.ts` must stay green
+`bun test packages/cli/src/mcp-session/session-wire-format.test.ts` must stay green
 untouched — it pins the channel contract, and §4's whole claim is that channel behaviour
 is unchanged.
 

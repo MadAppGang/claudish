@@ -421,7 +421,7 @@ describe("Hermetic proxy defaultProvider routing", () => {
 // the chain to a per-token provider. The suite's own failure count then tracked quota
 // balance rather than code, which is what makes it unusable as a regression baseline.
 //
-// The flag is the same one `channel/e2e-channel.test.ts` already honours and that
+// The flag is the same one `mcp-session/e2e-sessions.test.ts` already honours and that
 // `.github/workflows/test.yml` sets for CI. It is ANDed with the credential check, not
 // a replacement for it: "do not spend" and "cannot run" both have to be false before a
 // live call is made.

@@ -144,7 +144,7 @@ describe.skipIf(!MAGMUX)("MCP team shape contract", () => {
         }
         writeFileSync(configPath, "{}\n");
 
-        server = spawn(process.execPath, ["run", SERVER_ENTRY, "--mcp"], {
+        server = spawn(process.execPath, ["--no-env-file", "run", SERVER_ENTRY, "--mcp"], {
           cwd: REPO_ROOT,
           stdio: ["pipe", "pipe", "pipe"],
           env: {

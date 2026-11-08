@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectDirNameFor } from "../channel/home-dir.js";
+import { projectDirNameFor } from "../mcp-session/home-dir.js";
 import {
   ACTIVE_WINDOW_MS,
   type SessionRow,

@@ -70,7 +70,7 @@ Raw logs: `impl1/final-{lint,typecheck,test}.log`.
    `EVENT_TO_TASK_STATUS` is now built from a `Record<ChannelEventType, TaskStatus>`, so a missing key is a
    compile error. `ReducerEvent` and `stream-json-reducer.ts` were narrowed from `ChannelEventType` to
    `SessionStatus` (print mode never emits `awaiting_permission`), which keeps the reducer untouched in
-   behaviour and makes its Phase 5 deletion local. `channel-wire-format.test.ts`'s `expectedMapping`
+   behaviour and makes its Phase 5 deletion local. `session-wire-format.test.ts`'s `expectedMapping`
    was NOT given an `awaiting_permission` row (Phase 5 rewrites that file, §12.4).
 4. **F3:** the resolver is `resolveTokenFilePath(port, env)` in `session/session-stats.ts` (renamed from its
    `tokenFilePath`; the old name is gone). Default path uses the `$HOME`-first rule (`userHomeFrom`).
@@ -682,7 +682,7 @@ Remaining, each legitimate:
 
 - `stream-json` in `cli.ts`, `index.ts`, `claude-runner.ts`, `types.ts`, `tui/runtime/*`: claudish's
   own user-facing `-p` single-shot mode and its stdout contract.
-- `stream-json` in `madbench/*`, `channel/e2e-channel.test.ts`, `channel/test-helpers/client-diagnostic.ts`:
+- `stream-json` in `madbench/*`, `mcp-session/e2e-sessions.test.ts`, `channel/test-helpers/client-diagnostic.ts`:
   those drive their OWN `claude -p` client (madbench eval; the e2e/diagnostic harness), not a session child.
 - `--input-format stream-json` in `pane/child-flags.test.ts`, `channel/session-manager.test.ts`:
   asserts the flag is REFUSED.

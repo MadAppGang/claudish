@@ -1286,7 +1286,7 @@ export function setLockRetryTiming(opts?: { seconds?: number; tickMs?: number })
 }
 
 // Styling is applied ONLY when stderr is a real terminal. Under an MCP host or
-// a channel session stderr is a captured pipe, where raw escape codes turn a
+// a MCP session stderr is a captured pipe, where raw escape codes turn a
 // helpful message into noise in the log.
 const styled = (code: string, s: string): string =>
   process.stderr.isTTY === true ? `\x1b[${code}m${s}\x1b[0m` : s;
@@ -1519,7 +1519,7 @@ export function isLockedDenial(err: unknown, env: NodeJS.ProcessEnv = process.en
  * The countdown itself always renders, so a piped run shows the same story.
  *
  * The live `\r` redraw is used ONLY when stderr is a TTY. Under an MCP host or
- * a channel session stderr is a captured pipe, where carriage returns produce
+ * a MCP session stderr is a captured pipe, where carriage returns produce
  * an unreadable log — those get one static line per round instead.
  */
 async function countdownForUnlock(

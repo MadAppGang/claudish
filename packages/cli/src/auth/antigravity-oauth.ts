@@ -38,6 +38,7 @@ import {
   type AntigravityTokenDeps,
   _resetAntigravityTokenState,
   deleteSharedAntigravityToken,
+  getValidAntigravityAccessToken,
   locateAgyBinary,
   readSharedAntigravityToken,
 } from "./antigravity-token.js";
@@ -50,10 +51,11 @@ import { getServedAntigravityModels, setupAntigravityUser } from "./antigravity-
  */
 async function defaultSuggestModel(): Promise<string> {
   try {
-    const tok = readSharedAntigravityToken();
-    if (!tok) return "<model>";
-    const { projectId } = await setupAntigravityUser(tok.access_token);
-    const { servedIds, defaultId } = await getServedAntigravityModels(tok.access_token, projectId);
+    // `getValidAntigravityAccessToken`, not a raw store read: it also captures
+    // agy's client version, and the backend's default depends on that version.
+    const token = await getValidAntigravityAccessToken();
+    const { projectId } = await setupAntigravityUser(token);
+    const { servedIds, defaultId } = await getServedAntigravityModels(token, projectId);
     return defaultId || servedIds[0] || "<model>";
   } catch {
     return "<model>";

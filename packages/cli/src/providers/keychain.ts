@@ -69,8 +69,25 @@
  * and is the existing precedent for talking to `security` from this codebase.
  */
 
-/** Keychain service name for every item claudish owns. */
+/** Keychain service name for claudish's API-KEY items — one item per env var. */
 export const KEYCHAIN_SERVICE = "claudish";
+
+/**
+ * Keychain service name for the ACCOUNT POOL's OAuth token blobs.
+ *
+ * A separate service, and the separation is load-bearing twice over:
+ *
+ * 1. `hydrateKeychainIntoEnv()` enumerates and reads the `claudish` service and
+ *    writes what it finds into `process.env`, where spawned children inherit it.
+ *    A refresh token stored under that service would be copied into every child's
+ *    environment. Under `claudish-accounts` it can never be.
+ * 2. These items are ONE JSON BLOB PER ACCOUNT, where the api-key service is one
+ *    item per variable. That is not an inconsistency: a token set (access,
+ *    refresh, expiry, generation, fingerprint) is a single atomic unit whose
+ *    parts are meaningless apart and must rotate together, whereas env vars are
+ *    independently resolvable and independently deletable.
+ */
+export const KEYCHAIN_ACCOUNTS_SERVICE = "claudish-accounts";
 
 /** Absolute path — `security` must not be resolved through a mutable PATH. */
 const SECURITY_BIN = "/usr/bin/security";
@@ -141,6 +158,8 @@ export interface KeychainRunResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** Set when the spawn itself failed: `stderr` is then claudish/Bun text, never `security` output. */
+  spawnError?: true;
 }
 
 export interface KeychainDeps {
@@ -150,6 +169,38 @@ export interface KeychainDeps {
   run: (args: string[], stdin?: string) => KeychainRunResult;
   /** Async form, used by the parallel hydration pass. */
   runAsync: (args: string[], stdin?: string) => Promise<KeychainRunResult>;
+  /**
+   * Start `security` and hand back its completion as a JOINABLE handle, with NO
+   * deadline and NO kill path. `done` resolves only when `security` itself
+   * exits — never rejects — and `pid` is the child's pid (undefined when the
+   * spawn failed). See {@link KeychainSpawn}.
+   */
+  spawnAsync: (args: string[], stdin?: string) => KeychainSpawn;
+}
+
+/**
+ * One `security` run that may outlive whoever started it.
+ *
+ * WHY NO DEADLINE AND NO KILL. A value read of an item another application owns
+ * (`find-generic-password -w`) can open the macOS access dialog, and the user
+ * may take minutes to answer it. `runAsync`'s `SPAWN_TIMEOUT_MS` would KILL
+ * `security` at ten seconds, and a `security` killed mid-transaction is how
+ * this codebase once made macOS restart `securityd`, which dropped every
+ * running application's keychain session (keychain.md, "NEVER verify against
+ * the real login keychain"). Killing it also throws away the user's answer:
+ * the dialog stays up, and a click on "Always Allow" lands on a process that is
+ * gone.
+ *
+ * So the handle is the contract. A caller races `done` against ITS OWN
+ * deadline and, when the deadline wins, simply stops waiting: `done` stays
+ * alive, a late approval still resolves it, and the next caller can JOIN the
+ * same `done` instead of spawning a second dialog. `pid` lets a caller record
+ * which `security` holds the dialog (a per-machine lock names the child, not
+ * the claudish process that may exit first).
+ */
+export interface KeychainSpawn {
+  done: Promise<KeychainRunResult>;
+  pid: number | undefined;
 }
 
 /**
@@ -194,7 +245,12 @@ function syncRun(args: string[], stdin?: string): KeychainRunResult {
   } catch (err) {
     // A throw here means the spawn itself failed (binary missing, EPERM) — the
     // message is the only diagnostic there is, so it must not be discarded.
-    return { code: 1, stdout: "", stderr: err instanceof Error ? err.message : String(err) };
+    return {
+      code: 1,
+      stdout: "",
+      stderr: err instanceof Error ? err.message : String(err),
+      spawnError: true,
+    };
   }
 }
 
@@ -213,8 +269,111 @@ async function asyncRun(args: string[], stdin?: string): Promise<KeychainRunResu
     ]);
     return normalizeResult(exitCode, proc.signalCode, stdout, stderr);
   } catch (err) {
-    return { code: 1, stdout: "", stderr: err instanceof Error ? err.message : String(err) };
+    return {
+      code: 1,
+      stdout: "",
+      stderr: err instanceof Error ? err.message : String(err),
+      spawnError: true,
+    };
   }
+}
+
+/**
+ * {@link KeychainDeps.spawnAsync}: no `timeout` option, no `kill()`, anywhere.
+ * stderr piped for the same reason as `syncRun`. A spawn that cannot start
+ * resolves `done` with the error, as `asyncRun` reports it.
+ */
+function spawnAsyncRun(args: string[], stdin?: string): KeychainSpawn {
+  try {
+    const proc = Bun.spawn([SECURITY_BIN, ...args], {
+      stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const done = Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]).then(
+      ([stdout, stderr, exitCode]) => normalizeResult(exitCode, proc.signalCode, stdout, stderr),
+      (err: unknown): KeychainRunResult => ({
+        code: 1,
+        stdout: "",
+        stderr: err instanceof Error ? err.message : String(err),
+        spawnError: true,
+      })
+    );
+    return { done, pid: proc.pid };
+  } catch (err) {
+    return {
+      done: Promise.resolve({
+        code: 1,
+        stdout: "",
+        stderr: err instanceof Error ? err.message : String(err),
+        spawnError: true,
+      }),
+      pid: undefined,
+    };
+  }
+}
+
+/** `security` subcommands whose `<name>: returned <int>` line is a fixed message, not an echo. */
+const KNOWN_SECURITY_SUBCOMMANDS = new Set([
+  "add-generic-password",
+  "find-generic-password",
+  "delete-generic-password",
+  "add-internet-password",
+  "find-internet-password",
+  "delete-internet-password",
+  "dump-keychain",
+  "create-keychain",
+  "delete-keychain",
+  "unlock-keychain",
+  "lock-keychain",
+  "set-keychain-settings",
+]);
+
+const SECURITY_RETURNED_LINE = /^([\w-]+): returned -?\d+$/;
+const SECURITY_FIXED_LINES = [
+  /^security: Sec\w+( \([^)]*\))?: .+$/,
+  /^security (killed by \w+|terminated without an exit code)$/,
+  /^Unable to convert password data .+$/,
+  /^User interaction is not allowed\.?$/,
+];
+const SECURITY_DETAIL_MAX = 300;
+
+/**
+ * The text of a failed `security` call that is safe to put in an error message.
+ *
+ * `security -i` echoes stdin text as `security: unknown command "<token>"` and
+ * `<token>: returned <int>` when a line is split (measured: ai-docs/reports/keychain-security-cli-measurements.md §8), so
+ * raw stderr can carry a fragment of a secret that exact-value redaction cannot
+ * match. Only lines that match a fixed `security` message survive; everything
+ * else is dropped. A kill (code -1) always names the signal or timeout, because
+ * `token-store.ts` classifies an ambiguous write on those words.
+ */
+function securityErrorDetail(res: KeychainRunResult): string {
+  // A spawn-wrapper error is claudish/Bun text (binary missing, EPERM, ETIMEDOUT,
+  // EIO), never `security` output, so it cannot echo stdin and passes unchanged.
+  if (res.spawnError) {
+    return res.stderr.trim().slice(0, SECURITY_DETAIL_MAX) || `security exited ${res.code}`;
+  }
+  const kept: string[] = [];
+  for (const raw of res.stderr.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || /unknown command/.test(line)) continue;
+    const returned = SECURITY_RETURNED_LINE.exec(line);
+    if (returned) {
+      if (KNOWN_SECURITY_SUBCOMMANDS.has(returned[1] as string)) kept.push(line);
+      continue;
+    }
+    if (SECURITY_FIXED_LINES.some((re) => re.test(line))) kept.push(line);
+  }
+  if (res.code === -1 && !kept.some((line) => /killed by|timed out/.test(line))) {
+    kept.unshift("security killed by a signal / timed out");
+  }
+  const detail = kept.join("\n").slice(0, SECURITY_DETAIL_MAX);
+  return detail || `security exited ${res.code}`;
 }
 
 function decode(buf: Uint8Array | null | undefined): string {
@@ -245,6 +404,7 @@ const defaultDeps: KeychainDeps = {
   platform: () => process.platform,
   run: syncRun,
   runAsync: asyncRun,
+  spawnAsync: spawnAsyncRun,
 };
 
 let deps: KeychainDeps = defaultDeps;
@@ -374,16 +534,13 @@ function keychainFileArgs(): string[] {
   return file ? [file] : [];
 }
 
-function findArgs(envVar: string): string[] {
-  return [
-    "find-generic-password",
-    "-s",
-    KEYCHAIN_SERVICE,
-    "-a",
-    envVar,
-    "-w",
-    ...keychainFileArgs(),
-  ];
+function findArgs(account: string, service: string = KEYCHAIN_SERVICE): string[] {
+  return ["find-generic-password", "-s", service, "-a", account, "-w", ...keychainFileArgs()];
+}
+
+/** Memo key. Two services can hold the same account name and mean different things. */
+function memoKey(service: string, account: string): string {
+  return `${service} ${account}`;
 }
 
 /** Interpret a `find-generic-password -w` result. Throws on a real failure. */
@@ -394,7 +551,7 @@ function interpretRead(envVar: string, res: KeychainRunResult): string | null {
   }
   if (res.code === EXIT_ITEM_NOT_FOUND) return null;
   throw new KeychainError(
-    `Keychain lookup for ${envVar} failed: ${res.stderr.trim() || `security exited ${res.code}`}`,
+    `Keychain lookup for ${envVar} failed: ${securityErrorDetail(res)}`,
     res.code
   );
 }
@@ -407,26 +564,154 @@ function interpretRead(envVar: string, res: KeychainRunResult): string | null {
  * for every provider in one spawn.
  */
 export function readKeychainSecret(envVar: string): string | null {
-  if (!isKeychainSupported()) return null;
-  const cached = valueMemo.get(envVar);
-  const at = now();
-  if (cached && at - cached.at < MEMO_TTL_MS) return cached.value;
-  const value = interpretRead(envVar, deps.run(findArgs(envVar)));
-  // Memoize the MISS too: "not stored" is the answer that repeats hardest,
-  // and it costs a full failed spawn every time.
-  valueMemo.set(envVar, { at, value });
-  return value;
+  return readKeychainItem(KEYCHAIN_SERVICE, envVar);
 }
 
 /** Async twin of {@link readKeychainSecret}, for parallel batch hydration. */
 export async function readKeychainSecretAsync(envVar: string): Promise<string | null> {
+  return readKeychainItemAsync(KEYCHAIN_SERVICE, envVar);
+}
+
+/** Options shared by the generalized `(service, account)` read paths. */
+export interface KeychainReadOptions {
+  /**
+   * Bypass the 3 s burst memo — and do not populate it either.
+   *
+   * MANDATORY on the token-refresh path. The memo exists to collapse a burst
+   * inside one operation; on a refresh it would hand back the PRE-ROTATION token
+   * for up to three seconds after another process rotated it, and exchanging a
+   * revoked refresh token is `invalid_grant` and a logged-out account. Reads for
+   * DISPLAY may use the memo freely.
+   */
+  uncached?: boolean;
+}
+
+/**
+ * Read one item under an explicit service. Throws on a real failure; returns
+ * null only for a CONFIRMED absence (exit 44).
+ *
+ * That distinction is the whole contract: a caller that cannot tell "the
+ * keychain is locked" from "nothing is stored" will treat a locked store as an
+ * unconfigured one.
+ */
+export function readKeychainItem(
+  service: string,
+  account: string,
+  opts: KeychainReadOptions = {}
+): string | null {
   if (!isKeychainSupported()) return null;
-  const cached = valueMemo.get(envVar);
+  const key = memoKey(service, account);
   const at = now();
-  if (cached && at - cached.at < MEMO_TTL_MS) return cached.value;
-  const value = interpretRead(envVar, await deps.runAsync(findArgs(envVar)));
-  valueMemo.set(envVar, { at, value });
+  if (!opts.uncached) {
+    const cached = valueMemo.get(key);
+    if (cached && at - cached.at < MEMO_TTL_MS) return cached.value;
+  }
+  const value = interpretRead(account, deps.run(findArgs(account, service)));
+  // Memoize the MISS too: "not stored" is the answer that repeats hardest, and
+  // it costs a full failed spawn every time. An uncached read populates nothing,
+  // so it cannot install a value a later uncached read is then asked to trust.
+  if (!opts.uncached) valueMemo.set(key, { at, value });
   return value;
+}
+
+/** Async twin of {@link readKeychainItem}. */
+export async function readKeychainItemAsync(
+  service: string,
+  account: string,
+  opts: KeychainReadOptions = {}
+): Promise<string | null> {
+  if (!isKeychainSupported()) return null;
+  const key = memoKey(service, account);
+  const at = now();
+  if (!opts.uncached) {
+    const cached = valueMemo.get(key);
+    if (cached && at - cached.at < MEMO_TTL_MS) return cached.value;
+  }
+  const value = interpretRead(account, await deps.runAsync(findArgs(account, service)));
+  if (!opts.uncached) valueMemo.set(key, { at, value });
+  return value;
+}
+
+// ---------------------------------------------------------------------------
+// Another application's generic-password item (joinable, no kill path)
+// ---------------------------------------------------------------------------
+
+/** Which generic-password item, in which keychain file. */
+export interface GenericPasswordQuery {
+  service: string;
+  account?: string;
+  /**
+   * A keychain FILE to search instead of the default search list. Absent:
+   * `CLAUDISH_KEYCHAIN_FILE` when set, else the user's default keychains.
+   */
+  keychainFile?: string;
+}
+
+/** The outcome of one item lookup. `failed` is never collapsed into `absent`. */
+export type GenericPasswordResult =
+  | { kind: "found"; value?: string }
+  | { kind: "absent" }
+  | { kind: "failed"; code: number; error: string };
+
+function genericPasswordArgs(query: GenericPasswordQuery, withValue: boolean): string[] {
+  return [
+    "find-generic-password",
+    "-s",
+    query.service,
+    ...(query.account !== undefined ? ["-a", query.account] : []),
+    ...(withValue ? ["-w"] : []),
+    ...(query.keychainFile !== undefined ? [query.keychainFile] : keychainFileArgs()),
+  ];
+}
+
+function interpretGenericPassword(
+  res: KeychainRunResult,
+  withValue: boolean
+): GenericPasswordResult {
+  if (res.code === 0) {
+    if (!withValue) return { kind: "found" };
+    const value = stripOneTrailingNewline(res.stdout);
+    return value.length > 0 ? { kind: "found", value } : { kind: "absent" };
+  }
+  if (res.code === EXIT_ITEM_NOT_FOUND) return { kind: "absent" };
+  return {
+    kind: "failed",
+    code: res.code,
+    error: securityErrorDetail(res),
+  };
+}
+
+/**
+ * Whether an item exists, from its ATTRIBUTES only: `find-generic-password`
+ * without `-w` reads no item data, so it opens no access dialog. Async, and
+ * through {@link KeychainDeps.spawnAsync}, so nothing ever kills it; it is
+ * never on a render path. stdout (the attribute dump) is discarded here.
+ */
+export async function findGenericPasswordPresence(
+  query: GenericPasswordQuery
+): Promise<GenericPasswordResult> {
+  if (!isKeychainSupported()) return { kind: "absent" };
+  const res = await deps.spawnAsync(genericPasswordArgs(query, false)).done;
+  return interpretGenericPassword(res, false);
+}
+
+/**
+ * Start a VALUE read of an item (`find-generic-password -w`). This may open the
+ * macOS access dialog for an item another application owns, so it returns the
+ * joinable handle rather than a promise with a deadline: the caller races
+ * `done` against its own deadline, never kills `security`, and a later caller
+ * may join the same `done` (see {@link KeychainSpawn}). The value is never
+ * memoized here; the caller decides what to keep.
+ */
+export function startGenericPasswordRead(query: GenericPasswordQuery): {
+  done: Promise<GenericPasswordResult>;
+  pid: number | undefined;
+} {
+  if (!isKeychainSupported()) {
+    return { done: Promise.resolve({ kind: "absent" }), pid: undefined };
+  }
+  const spawn = deps.spawnAsync(genericPasswordArgs(query, true));
+  return { done: spawn.done.then((res) => interpretGenericPassword(res, true)), pid: spawn.pid };
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +783,7 @@ export function enumerateKeychainVars(): KeychainEnumeration {
       : {
           names: [],
           failed: true,
-          error: res.stderr.trim() || `security exited ${res.code}`,
+          error: securityErrorDetail(res),
         };
   listMemo = { at, value };
   return value;
@@ -544,7 +829,7 @@ export function lookupKeychainVar(envVar: string): { present: boolean; failed: b
   // resolve, the value memo is the fresher of the two, and consulting it avoids
   // a dump for a question that has already been answered exactly. It also
   // answers correctly while enumeration is failing.
-  const cached = valueMemo.get(envVar);
+  const cached = valueMemo.get(memoKey(KEYCHAIN_SERVICE, envVar));
   if (cached && now() - cached.at < MEMO_TTL_MS && cached.value !== null) {
     return { present: true, failed: false };
   }
@@ -571,18 +856,46 @@ function toHex(value: string): string {
  * because "this particular string can't contain a space" is the kind of
  * assumption that stops being true one refactor later.
  *
- * The secret itself travels as hex and needs none of this; it is quoted anyway
- * so no argument is a special case.
+ * The secret is quoted like every other argument (plaintext `-w` for printable
+ * ASCII, hex `-X` otherwise), so no argument is a special case.
  */
 function quoteForStdin(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 /**
+ * The longest `security -i` stdin line, newline included, that this module sends.
+ *
+ * Counted in UTF-8 bytes, because stdin is written as UTF-8.
+ * Measured (ai-docs/reports/keychain-security-cli-measurements.md §8): `security -i` reads 4095 bytes per chunk. The
+ * first chunk RUNS as a command (with its trailing keychain argument cut off, so
+ * it targets the default keychain), the remainder runs as a second command, and
+ * the exit code and stderr belong to the LAST command, so a success of the first
+ * chunk is invisible. 4096 and 4097 only appear to work because the lost
+ * character is a closing quote. 4000 leaves margin below 4095.
+ */
+const MAX_STDIN_LINE = 4000;
+
+/** Printable ASCII only (0x20 to 0x7E): the values `-w` carries without a hex round trip. */
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+
+/**
+ * The value arguments of `add-generic-password`. Printable ASCII travels as
+ * plaintext `-w` (half the line of hex, so a 2 to 3 KB record fits); any other
+ * value keeps `-X` hex, which needs no quoting. Both stay on the stdin line,
+ * never argv.
+ */
+function valueArgs(value: string): string[] {
+  return PRINTABLE_ASCII.test(value)
+    ? ["-w", quoteForStdin(value)]
+    : ["-X", quoteForStdin(toHex(value))];
+}
+
+/**
  * Store (or replace) `envVar`'s secret.
  *
- * The command goes over stdin so the secret never reaches argv; `-X` carries it
- * as hex so no quoting is needed; `-U` upserts (without it, a second write to
+ * The command goes over stdin so the secret never reaches argv; `-w` carries a
+ * printable-ASCII value and `-X` hex carries any other; `-U` upserts (without it, a second write to
  * the same account fails with -25299); `-T /usr/bin/security` pins the ACL to
  * the same Apple-signed binary every read uses, which is what keeps subsequent
  * reads dialog-free.
@@ -593,13 +906,36 @@ function quoteForStdin(value: string): string {
  * holds. ~17 ms extra on an operation that happens once per key.
  */
 export function writeKeychainSecret(envVar: string, value: string): void {
+  // Order preserved from before the `(service, account)` generalization: the
+  // platform check comes first, so a non-macOS user is told the backend is
+  // unavailable rather than that their variable name is wrong.
   const unsupported = keychainUnavailableReason();
   if (unsupported) throw new KeychainError(`Cannot write ${envVar}: ${unsupported}`);
   if (!isValidKeychainVarName(envVar)) {
     throw new KeychainError(`Cannot write "${envVar}": not a valid environment variable name`);
   }
+  writeKeychainItem(KEYCHAIN_SERVICE, envVar, value);
+}
+
+/**
+ * An account name for a non-env-var item: anything printable without the
+ * characters `security -i`'s shell-like tokenizer would have to interpret.
+ *
+ * The api-key path's `ENV_VAR_NAME` cannot be reused here — account ids match
+ * `^[a-z0-9]{12}$` and may legitimately start with a digit, which that pattern
+ * rejects.
+ */
+const KEYCHAIN_ACCOUNT_NAME = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
+
+/** Store (or replace) a value under an explicit service. See {@link writeKeychainSecret}. */
+export function writeKeychainItem(service: string, account: string, value: string): void {
+  const unsupported = keychainUnavailableReason();
+  if (unsupported) throw new KeychainError(`Cannot write ${account}: ${unsupported}`);
+  if (!KEYCHAIN_ACCOUNT_NAME.test(account)) {
+    throw new KeychainError(`Cannot write "${account}": not a valid keychain account name`);
+  }
   const unstorable = describeUnstorableValue(value);
-  if (unstorable) throw new KeychainError(`Cannot store ${envVar}: ${unstorable}`);
+  if (unstorable) throw new KeychainError(`Cannot store ${account}: ${unstorable}`);
 
   // Invalidate BEFORE the write, so a throwing `security` still leaves the memo
   // dropped rather than serving a value the store may or may not still hold.
@@ -608,17 +944,16 @@ export function writeKeychainSecret(envVar: string, value: string): void {
   const cmd = [
     "add-generic-password",
     "-s",
-    quoteForStdin(KEYCHAIN_SERVICE),
+    quoteForStdin(service),
     "-a",
-    quoteForStdin(envVar),
+    quoteForStdin(account),
     "-l",
-    quoteForStdin(`${KEYCHAIN_SERVICE}: ${envVar}`),
+    quoteForStdin(`${service}: ${account}`),
     "-D",
     quoteForStdin("application password"),
     "-j",
     quoteForStdin("Stored by claudish"),
-    "-X",
-    quoteForStdin(toHex(value)),
+    ...valueArgs(value),
     "-U",
     "-T",
     quoteForStdin(SECURITY_BIN),
@@ -627,19 +962,30 @@ export function writeKeychainSecret(envVar: string, value: string): void {
     ...keychainFileArgs().map(quoteForStdin),
   ].join(" ");
 
-  const res = deps.run(["-i"], `${cmd}\n`);
+  const line = `${cmd}\n`;
+  const lineBytes = Buffer.byteLength(line, "utf8");
+  if (lineBytes > MAX_STDIN_LINE) {
+    throw new KeychainError(
+      `Cannot store ${account}: value is too large for the keychain write path ` +
+        `(${lineBytes} bytes on the command line, limit ${MAX_STDIN_LINE})`
+    );
+  }
+
+  const res = deps.run(["-i"], line);
   if (res.code !== 0) {
     throw new KeychainError(
-      `Failed to store ${envVar} in the keychain: ${res.stderr.trim() || `security exited ${res.code}`}`,
+      `Failed to store ${account} in the keychain: ${securityErrorDetail(res)}`,
       res.code
     );
   }
 
   invalidateKeychainCache();
-  const readBack = readKeychainSecret(envVar);
+  // Read back UNCACHED: the memo was just dropped, but an uncached read also
+  // states the intent — this is a verification, not a lookup.
+  const readBack = readKeychainItem(service, account, { uncached: true });
   if (readBack !== value) {
     throw new KeychainError(
-      `Keychain write for ${envVar} did not round-trip — the stored value differs from what was written. ` +
+      `Keychain write for ${account} did not round-trip — the stored value differs from what was written. ` +
         "The item may exceed the keychain's size limit; nothing should be assumed saved."
     );
   }
@@ -651,21 +997,26 @@ export function writeKeychainSecret(envVar: string, value: string): void {
  * succeeding on an already-absent key is the behaviour every caller wants.
  */
 export function deleteKeychainSecret(envVar: string): boolean {
+  return deleteKeychainItem(KEYCHAIN_SERVICE, envVar);
+}
+
+/** Remove one item under an explicit service. See {@link deleteKeychainSecret}. */
+export function deleteKeychainItem(service: string, account: string): boolean {
   if (!isKeychainSupported()) return false;
   invalidateKeychainCache();
   const res = deps.run([
     "delete-generic-password",
     "-s",
-    KEYCHAIN_SERVICE,
+    service,
     "-a",
-    envVar,
+    account,
     ...keychainFileArgs(),
   ]);
   invalidateKeychainCache();
   if (res.code === 0) return true;
   if (res.code === EXIT_ITEM_NOT_FOUND) return false;
   throw new KeychainError(
-    `Failed to delete ${envVar} from the keychain: ${res.stderr.trim() || `security exited ${res.code}`}`,
+    `Failed to delete ${account} from the keychain: ${securityErrorDetail(res)}`,
     res.code
   );
 }

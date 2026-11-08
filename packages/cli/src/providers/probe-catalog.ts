@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { catalogReadProvidersForRoute } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, parseCatalogV3Envelope } from "./catalog-v3.js";
+import { isOptInWireId } from "./content-use.js";
 
 const PROBE_MODELS_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/probeModels";
 const CACHE_TTL_MS = 60 * 60 * 1000;
@@ -205,9 +206,16 @@ async function fetchAndCacheProbeModels(): Promise<FetchOutcome> {
   return outcome;
 }
 
+/**
+ * The hosted probe pick for a provider, or null.
+ *
+ * Null for a content-use opt-in wire id as well (`content-use.ts`): a probe is
+ * a request claudish chooses to send, and it never opts the user's content in.
+ * The caller then asks the endpoint's own list, which applies the same rule.
+ */
 export function getProbeModel(claudishSlug: string): string | null {
   const value = readProbeModelsCache()?.providers[claudishSlug];
-  return typeof value === "string" && value.length > 0 ? value : null;
+  return typeof value === "string" && value.length > 0 && !isOptInWireId(value) ? value : null;
 }
 
 export function getProbeUnavailability(claudishSlug: string): string | null {

@@ -218,6 +218,11 @@ export const SUBSCRIPTION_PROVIDERS = new Set([
   //
   // Its metered sibling `opencode-zen` deliberately stays OUT.
   "opencode-zen-go",
+  // Muse Code is Meta's flat-rate plan. Its ONE credential is a key minted from
+  // a Meta login, and the core signs it only after a mint confirmed
+  // `is_subs_active && !require_payment` (muse-mint.ts). The metered `meta`
+  // provider (META_API_KEY) stays OUT.
+  "meta-muse-code",
 ]);
 
 /**
@@ -258,8 +263,9 @@ export const SUBSCRIPTION_PROVIDERS = new Set([
  * account type answers `"payer": "developer"` here; a ChatGPT-plan-backed key,
  * if such a thing exists, was not tested.
  *
- * Membership here means "ask the probe". A provider is METERED until the probe
- * says otherwise. `openai-codex` must NEVER also be added to
+ * Membership here means "ask the probe". No registered probe means METERED;
+ * a registered Codex probe failure conservatively reserves SUB because signing
+ * cannot use a key on unknown account configuration. `openai-codex` must NEVER also be added to
  * SUBSCRIPTION_PROVIDERS above — the name check runs first, so that would
  * short-circuit the probe and report SUB to every API-key user.
  *
@@ -288,7 +294,7 @@ let _subscriptionCredentialProbe: ((provider: string) => boolean) | null = null;
  *
  * The probe is only half the run-scoped state behind this answer. The other half
  * is the signed-arm record (`auth/credentials/billing-probe.ts`), which
- * `OpenAICodexTransport.refreshAuth()` writes on EVERY call — so a test that only
+ * `OpenAICodexTransport.signRequest()` writes on EVERY call — so a test that only
  * meant to pin a transport endpoint or header also decides billing for every
  * later file in the run. `clearSignedArm(provider)` in `afterEach` is
  * review-blocking on the same footing as `register(null)`; the measured leak is
@@ -317,7 +323,14 @@ export function isSubscriptionProvider(provider: string): boolean {
   const p = provider.toLowerCase();
   if (SUBSCRIPTION_PROVIDERS.has(p)) return true;
   if (!CREDENTIAL_DECIDED_PROVIDERS.has(p)) return false;
-  return _subscriptionCredentialProbe?.(p) === true;
+  if (!_subscriptionCredentialProbe) return false;
+  try {
+    return _subscriptionCredentialProbe(p) === true;
+  } catch {
+    // Unknown Codex configuration reserves OAuth; no registration remains metered.
+    // Keep this leaf independent of auth, even for an unexpected callback failure.
+    return p === "openai-codex";
+  }
 }
 
 /** Map provider aliases to canonical names used in PROVIDER_DEFAULTS */
@@ -351,6 +364,17 @@ export function registerDynamicPricingLookup(
 }
 
 /**
+ * How one signed request is billed, decided when it was signed. For a
+ * `CREDENTIAL_DECIDED_PROVIDERS` member that is the arm of the credential that
+ * signed it (`RequestAuth.arm === "oauth"` ⇒ subscription); for every other
+ * provider it is its fixed `SUBSCRIPTION_PROVIDERS` category. Carried with the
+ * request into its cost updates, never stored on a shared object.
+ */
+export interface RequestBilling {
+  subscription: boolean;
+}
+
+/**
  * Get pricing for a model.
  * Lookup order:
  *   1. Subscription providers → zero cost, isSubscription: true. Via
@@ -365,12 +389,21 @@ export function registerDynamicPricingLookup(
  * measured dead — see the FREE_PROVIDERS tombstone above for the re-entry test a
  * genuinely free provider would have to meet. A provider that charges nothing but
  * is not listed here lands on step 3's estimate, which is a visible guess.
+ *
+ * `billing` is the decision of ONE signed request (`RequestBilling`). When it is
+ * given, it replaces step 1's `isSubscriptionProvider` call, whose answer for a
+ * credential-decided provider is the process-wide last-signed arm, which a
+ * concurrent request can change before this request's usage arrives.
  */
-export function getModelPricing(provider: string, modelName: string): ModelPricing {
+export function getModelPricing(
+  provider: string,
+  modelName: string,
+  billing?: RequestBilling
+): ModelPricing {
   const p = provider.toLowerCase();
 
   // 1. Subscription providers
-  if (isSubscriptionProvider(p)) {
+  if (billing ? billing.subscription : isSubscriptionProvider(p)) {
     return { inputCostPer1M: 0, outputCostPer1M: 0, isSubscription: true };
   }
 

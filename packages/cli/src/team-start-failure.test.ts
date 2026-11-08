@@ -15,8 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { readProcessTable } from "./pane/process-identity.js";
-import { orphanReport } from "./pane/test-helpers/hermetic-env.js";
+import { orphanReport, requireProcessTable } from "./pane/test-helpers/hermetic-env.js";
 import { setupSession, startModels } from "./team-orchestrator.js";
 import {
   MAGMUX,
@@ -41,7 +40,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   try {
-    chmodSync(join(sessionPath, "status.json"), 0o644);
+    chmodSync(sessionPath, 0o755);
   } catch {
     // not created
   }
@@ -66,7 +65,7 @@ describe.skipIf(!MAGMUX)("team spawn-loop failure", () => {
     }).catch((err: unknown) => err);
     await waitUntil(
       () =>
-        readProcessTable().some(
+        requireProcessTable().some(
           (r) =>
             r.command.includes("--model fake-ignore_term") && r.command.includes(panes.sockRoot)
         ),
@@ -74,8 +73,8 @@ describe.skipIf(!MAGMUX)("team spawn-loop failure", () => {
       5_000
     );
     await Bun.sleep(600); // its module loads and boot() installs the trap
-    // The next slot's STARTING write now throws.
-    chmodSync(join(sessionPath, "status.json"), 0o444);
+    // The next slot's atomic STARTING status write cannot create its temp file.
+    chmodSync(sessionPath, 0o555);
     const error = await run;
 
     expect(error).toBeInstanceOf(Error);

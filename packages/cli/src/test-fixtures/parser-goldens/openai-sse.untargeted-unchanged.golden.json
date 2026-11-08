@@ -1,0 +1,47 @@
+{
+  "kind": "parser",
+  "id": "openai-sse.untargeted-unchanged",
+  "source": "openai-sse behavior repair > passes an untargeted tool through unchanged",
+  "parser": "openai-sse",
+  "modelName": "test-model",
+  "toolSchemas": [
+    {
+      "name": "target_tool",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": ["value"]
+      }
+    },
+    {
+      "name": "untargeted_tool",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": ["value"]
+      }
+    }
+  ],
+  "repair": {
+    "kind": "replace",
+    "tool": "target_tool",
+    "args": "{\"value\":\"behavior-repaired\"}"
+  },
+  "input": {
+    "encoding": "utf8",
+    "chunks": [
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_openai_0\",\"type\":\"function\",\"function\":{\"name\":\"untargeted_tool\",\"arguments\":\"{\\\"value\\\":\\\"model-original\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: [DONE]\n\n"
+    ]
+  },
+  "output": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_<ID>\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"test-model\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":100,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_openai_0\",\"name\":\"untargeted_tool\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":\\\"model-original\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0,\"output_tokens\":0}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\ndata: [DONE]\n\n\n"
+}

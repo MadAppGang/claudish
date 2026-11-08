@@ -25,6 +25,7 @@ import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 import { getLogFilePath, initLogger, setDiagOutput } from "../logger.js";
 import type { RoutingRules } from "../profile-config.js";
+import { clearProviderCredentialEnv } from "../test-helpers/provider-credential-env.js";
 import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
@@ -632,34 +633,29 @@ describe("normalizeGlmSlug", () => {
 // route() — credential-aware single entry point
 // ---------------------------------------------------------------------------
 
-const ENV_KEYS_TO_CLEAR = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "OPENROUTER_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENAI_CODEX_API_KEY",
-  "GEMINI_API_KEY",
-  "MOONSHOT_API_KEY",
-  "KIMI_API_KEY",
-  "KIMI_CODING_API_KEY",
-  "QWEN_TOKEN_PLAN_API_KEY",
-  "QWEN_CODING_PLAN_API_KEY",
-  "DASHSCOPE_API_KEY",
-  "MINIMAX_API_KEY",
-  "MINIMAX_CODING_API_KEY",
-  "ZHIPU_API_KEY",
-  "GLM_API_KEY",
-  "GLM_CODING_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "XAI_API_KEY",
-  "ZAI_API_KEY",
-  "OLLAMA_API_KEY",
-  "OPENCODE_API_KEY",
-  "OPENCODE_GO_API_KEY",
-  "WINDSURF_API_KEY",
-];
+// Every provider credential and base-URL variable is cleared before each test, derived
+// from the provider definitions (`clearProviderCredentialEnv`). A hand list here missed
+// POE_API_KEY, and two tests routed to Poe on a machine that had it set (D4).
+let restoreProviderEnv: () => void = () => {};
 
-const savedEnv: Record<string, string | undefined> = {};
+/**
+ * Route `modelId` against a catalog that publishes it through `providers` only. Without a
+ * catalog path, route() reads the real ~/.claudish catalog: whatever that machine last
+ * fetched, and nothing at all on a fresh runner.
+ */
+async function routeOnCatalog(modelId: string, providers: string[]): Promise<RoutePlan> {
+  const { path, cleanup } = makeTempCatalog(
+    { modelId, externalId: modelId },
+    undefined,
+    {},
+    providers
+  );
+  try {
+    return await route(modelId, {}, undefined, path);
+  } finally {
+    cleanup();
+  }
+}
 
 describe("route()", () => {
   let previousKeychainGuard: string | undefined;
@@ -677,11 +673,8 @@ describe("route()", () => {
     process.env.CLAUDISH_DISABLE_OP = "1";
     __resetSniffForTests();
     credentials.invalidate();
-    // Snapshot and clear credential env vars so each test starts clean.
-    for (const key of ENV_KEYS_TO_CLEAR) {
-      savedEnv[key] = process.env[key];
-      delete process.env[key];
-    }
+    // Snapshot and clear every provider credential and base-URL variable.
+    restoreProviderEnv = clearProviderCredentialEnv();
   });
 
   afterEach(() => {
@@ -692,20 +685,14 @@ describe("route()", () => {
     }
     delete process.env.CLAUDISH_DISABLE_OP;
     __resetSniffForTests();
-    // Restore env vars (preserves the host's actual config for other tests).
-    for (const key of ENV_KEYS_TO_CLEAR) {
-      if (savedEnv[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = savedEnv[key];
-      }
-    }
+    // Restore them (preserves the host environment for other tests).
+    restoreProviderEnv();
     credentials.invalidate();
   });
 
   test("claude-opus-4-7 with ANTHROPIC_API_KEY → primary native-anthropic", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    const plan = await route("claude-opus-4-7", {});
+    const plan = await routeOnCatalog("claude-opus-4-7", ["native-anthropic", "openrouter"]);
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("native-anthropic");
@@ -729,14 +716,14 @@ describe("route()", () => {
 
   test("claude-opus-4-7 with only OPENROUTER_API_KEY → primary openrouter", async () => {
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("claude-opus-4-7", {});
+    const plan = await routeOnCatalog("claude-opus-4-7", ["native-anthropic", "openrouter"]);
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openrouter");
   });
 
   test("claude-opus-4-7 with no credentials → no-route, hint mentions both providers", async () => {
-    const plan = await route("claude-opus-4-7", {});
+    const plan = await routeOnCatalog("claude-opus-4-7", ["native-anthropic", "openrouter"]);
     expect(plan.kind).toBe("no-route");
     if (plan.kind !== "no-route") return;
     expect(plan.hint).toBeDefined();
@@ -781,7 +768,7 @@ describe("route()", () => {
     if (existsSync(codexOauth)) return;
 
     process.env.OPENAI_API_KEY = "sk-openai-test";
-    const plan = await route("gpt-5", {});
+    const plan = await routeOnCatalog("gpt-5", ["openai-codex", "openai"]);
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openai");
@@ -1088,10 +1075,7 @@ describe("route() with defaultProvider", () => {
     process.env.CLAUDISH_DISABLE_OP = "1";
     __resetSniffForTests();
     credentials.invalidate();
-    for (const key of ENV_KEYS_TO_CLEAR) {
-      savedEnv[key] = process.env[key];
-      delete process.env[key];
-    }
+    restoreProviderEnv = clearProviderCredentialEnv();
   });
 
   afterEach(() => {
@@ -1102,13 +1086,7 @@ describe("route() with defaultProvider", () => {
     }
     delete process.env.CLAUDISH_DISABLE_OP;
     __resetSniffForTests();
-    for (const key of ENV_KEYS_TO_CLEAR) {
-      if (savedEnv[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = savedEnv[key];
-      }
-    }
+    restoreProviderEnv();
     credentials.invalidate();
   });
 
@@ -1294,6 +1272,7 @@ function modelsCatalogProvider(name: string): ProviderDefinition {
 describe("route() model-availability filtering", () => {
   const realFetch = globalThis.fetch;
   const realIsAvailable = credentials.isAvailable;
+  const realDescribeReadiness = credentials.describeReadiness;
   const realGetRequestAuth = credentials.getRequestAuth;
 
   let cachePath = "";
@@ -1326,6 +1305,9 @@ describe("route() model-availability filtering", () => {
     cleanupCache = tempCatalog.cleanup;
 
     credentials.isAvailable = async (provider: string) => credentialedProviders.has(provider);
+    credentials.describeReadiness = async (provider: string) => ({
+      readiness: credentialedProviders.has(provider) ? "present" : "absent",
+    });
     credentials.getRequestAuth = async () => ({
       headers: { Authorization: "Bearer offline-routing-test-token" },
     });
@@ -1350,6 +1332,7 @@ describe("route() model-availability filtering", () => {
     invalidateModelDiscovery();
     clearRuntimeRegistry();
     credentials.isAvailable = realIsAvailable;
+    credentials.describeReadiness = realDescribeReadiness;
     credentials.getRequestAuth = realGetRequestAuth;
     globalThis.fetch = realFetch;
   });

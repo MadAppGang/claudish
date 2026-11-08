@@ -129,3 +129,4 @@ gtd/sessions/
 
 # magus: generated profile config (source of truth: .claude/profiles.json)
 .claude/.magus-backups/
+.codegraph/

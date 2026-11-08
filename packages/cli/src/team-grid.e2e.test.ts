@@ -54,6 +54,7 @@ let magmuxPath = "";
 async function probeClaudeUsable(): Promise<boolean> {
   try {
     const probe = spawn("claude", ["-p", "--dangerously-skip-permissions", "--bare", "hi"], {
+      env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";

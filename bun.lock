@@ -25,7 +25,7 @@
     },
     "packages/cli": {
       "name": "claudish",
-      "version": "7.60.0",
+      "version": "10.6.1",
       "bin": {
         "claudish": "bin/claudish.cjs",
       },
@@ -33,10 +33,12 @@
         "@1password/sdk": "0.4.1-beta.1",
         "@inquirer/prompts": "^8.0.1",
         "@inquirer/search": "^4.0.1",
+        "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
         "@modelcontextprotocol/sdk": "^1.27.0",
         "@opentui/core": "^0.1.107",
         "@opentui/react": "^0.1.107",
         "dotenv": "^17.2.3",
+        "quickjs-emscripten-core": "^0.32.0",
         "react": "^19.2.4",
         "zod": "^4.1.13",
       },
@@ -334,6 +336,10 @@
     "@jimp/types": ["@jimp/types@1.6.0", "", { "dependencies": { "zod": "^3.23.8" } }, "sha512-7UfRsiKo5GZTAATxm2qQ7jqmUXP0DxTArztllTcYdyw6Xi5oT4RaoXynVtCD4UyLK5gJgkZJcwonoijrhYFKfg=="],
 
     "@jimp/utils": ["@jimp/utils@1.6.0", "", { "dependencies": { "@jimp/types": "1.6.0", "tinycolor2": "^1.6.0" } }, "sha512-gqFTGEosKbOkYF/WFj26jMHOI5OH2jeP1MmC/zbK6BF6VJBf8rIC5898dPfSzZEbSA0wbbV5slbntWVc5PKLFA=="],
+
+    "@jitl/quickjs-ffi-types": ["@jitl/quickjs-ffi-types@0.32.0", "", {}, "sha512-v9T+GQpmk43VDJ7d72sf0Nexhk+ArvtUihW27dy7lqAl0zBObFKtSBBIm5RBjwIhE8VwsPPm9PNuvPvNqLWUEg=="],
+
+    "@jitl/quickjs-singlefile-mjs-release-sync": ["@jitl/quickjs-singlefile-mjs-release-sync@0.32.0", "", { "dependencies": { "@jitl/quickjs-ffi-types": "0.32.0" } }, "sha512-h9g2Dri6WxKNjX6a1+sFAafOVxj1n5YIA1GAzMoSdIqK1M8cG07tz3GxKVC3Gbdutz14uQ3oc3Q2lll8otInhA=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 
@@ -956,6 +962,8 @@
     "pure-rand": ["pure-rand@7.0.1", "", {}, "sha512-oTUZM/NAZS8p7ANR3SHh30kXB+zK2r2BPcEn/awJIbOvq82WoMN4p62AWWp3Hhw50G0xMsw1mhIBLqHw64EcNQ=="],
 
     "qs": ["qs@6.14.0", "", { "dependencies": { "side-channel": "^1.1.0" } }, "sha512-YWWTjgABSKcvs/nWBi9PycY/JiPJqOD4JA6o9Sej2AtvSGarXxKC3OQSk4pAarbdQlKAh5D4FCQkJNkW+GAn3w=="],
+
+    "quickjs-emscripten-core": ["quickjs-emscripten-core@0.32.0", "", { "dependencies": { "@jitl/quickjs-ffi-types": "0.32.0" } }, "sha512-QFnPfjFey8EqknSrSxe1hZrf1/8z7/6s1QzGOmKo6++02r7QRRX7ZoyNaZh7JuVjWsVW87KnQrbZqnHkOAzUyg=="],
 
     "range-parser": ["range-parser@1.2.1", "", {}, "sha512-Hrgsx+orqoygnmhFbKaHE6c296J+HTAQXoxEF6gNupROmmGJRoyzfG3ccAveqCBrwr/2yxQ5BVd/GTl5agOwSg=="],
 

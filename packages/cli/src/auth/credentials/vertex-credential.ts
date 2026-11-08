@@ -12,6 +12,8 @@
 
 import {
   getVertexAuthManager,
+  resetVertexAuthManager,
+  resetVertexProjectDiscovery,
   resolveVertexConfig,
   selectVertexAuthMode,
   validateVertexOAuthConfig,
@@ -24,6 +26,11 @@ export class VertexCredentialProvider implements CredentialProvider {
   async isAvailable(): Promise<boolean> {
     const config = await resolveVertexConfig();
     return selectVertexAuthMode({ project: config?.projectId }) !== null;
+  }
+
+  invalidate(): void {
+    resetVertexAuthManager();
+    resetVertexProjectDiscovery();
   }
 
   async getRequestAuth(_ctx: RequestAuthContext): Promise<RequestAuth> {

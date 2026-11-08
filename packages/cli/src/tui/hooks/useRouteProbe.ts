@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { prepareMuseLoginForTuiAction } from "../../providers/meta-muse/muse-credentials.js";
 import { NATIVE_NOT_PROBED } from "../../providers/native-route.js";
 import { describeProbeState } from "../../providers/probe-live.js";
 import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../../providers/probe-runner.js";
@@ -266,6 +267,11 @@ export function useRouteProbe(): UseRouteProbeReturn {
         // tested as failed, with a clear error. Dropped rows keep their outcome.
         let proxyUrl: string;
         try {
+          // A Muse Code hop: resolve its login in-process first, the one TUI
+          // path that may read the Muse Code CLI's Keychain item.
+          if (queue.some((item) => item.provider === "meta-muse-code")) {
+            await prepareMuseLoginForTuiAction();
+          }
           proxyUrl = await ensureProbeProxy();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

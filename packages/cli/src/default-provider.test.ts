@@ -210,7 +210,7 @@ function sandboxedProbe(flagBeforeProbe: boolean, provider: string): ProbeJson {
   };
 
   try {
-    const result = Bun.spawnSync([process.execPath, ...args], {
+    const result = Bun.spawnSync([process.execPath, "--no-env-file", ...args], {
       cwd: join(import.meta.dir, "../../.."),
       env,
       stdout: "pipe",

@@ -8,6 +8,7 @@
 
 import type { StreamFormat } from "../providers/transport/types.js";
 import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
+import { lookupModelMaxOutputTokens } from "./model-catalog.js";
 
 /** Text of one inline system message, whatever content shape it arrived in. */
 function systemText(content: unknown): string {
@@ -125,6 +126,25 @@ export class AnthropicAPIFormat extends BaseAPIFormat {
   }
 
   /**
+   * The `max_tokens` this request carries.
+   *
+   * The Messages API requires the field, but the inbound request may lack it
+   * (MCP `run_prompt` and `compare_models` send none). An inbound value is kept
+   * unchanged. A missing one is filled from the catalog's `maxOutputTokens` for
+   * this model, never from a pinned number: the old `|| 4096` capped every
+   * Messages connection at 4096 output tokens whenever the request had none.
+   * With no published ceiling the field is omitted (an unknown value is sent
+   * as nothing, ai-docs/architecture/wire.md "Output limit"); on a catalog
+   * connection step 5w writes the final value from the connection either way.
+   */
+  private outputLimitFor(claudeRequest: any): number | undefined {
+    const inbound = claudeRequest?.max_tokens;
+    if (typeof inbound === "number") return inbound;
+    if (this.modelId.includes("@")) return undefined;
+    return lookupModelMaxOutputTokens(this.modelId);
+  }
+
+  /**
    * Rebuild the Anthropic-format payload from the claudeRequest.
    * This reconstructs the same payload that Claude Code originally sent,
    * with the model name replaced to match the target provider's model.
@@ -149,9 +169,10 @@ export class AnthropicAPIFormat extends BaseAPIFormat {
     const payload: any = {
       model: this.modelId,
       messages: cleanMessages,
-      max_tokens: claudeRequest.max_tokens || 4096,
       stream: true,
     };
+    const maxTokens = this.outputLimitFor(claudeRequest);
+    if (maxTokens !== undefined) payload.max_tokens = maxTokens;
 
     // APPEND, never replace. The reminders are additional context, and the real
     // system prompt is the expensive cached prefix — overwriting it would both

@@ -3,36 +3,27 @@
  *
  * Two tiers, in priority order:
  *   1. `signedArm` — what the transport ACTUALLY resolved on the last request.
- *      Exact. Written by OpenAICodexTransport.refreshAuth(), which is the only
- *      place that knows whether the OAuth arm or the api-key arm won
- *      (providers/transport/openai-codex.ts:56-63).
+ *      Exact. Written by OpenAICodexTransport.signRequest() from the artifact's
+ *      `arm`, the only place that knows whether the OAuth arm or the api-key arm
+ *      won.
  *   2. `PROBES` — what WOULD sign, for surfaces that ask before any request
- *      (preflight, the picker). For openai-codex that is
- *      CodexOAuthHalf.isAvailable() (codex-credential.ts:45-47) ==
- *      CodexOAuth.getInstance().hasCredentials().
+ *      (preflight, the picker). For openai-codex the registry's synchronous
+ *      presence projection is shared with transport safety. It may stat/re-read
+ *      account-list sources, never pooled token material, Keychain or refresh.
  *
- * Deliberately NOT hasOAuthCredentials("openai-codex") (auth/oauth-registry.ts:106)
- * and NOT describeSourceSync (auth/credentials/source.ts:111, whose OAuth branch
- * delegates to the same function). Both return true for an `access_token` with an
- * unexpired `expires_at` and NO `refresh_token` (oauth-registry.ts:88-97) — a state
- * where CodexOAuth.hasCredentials() is FALSE (codex-oauth.ts:104-106, :311, which
- * nulls the whole credential unless all three fields are present) and the API key
- * is what actually signs. Reporting SUB there under-reports real money, which is
- * the one direction that costs the user. Three reviewers verified this
- * independently; billing-probe.test.ts pins it.
+ * Configured rows reserve OAuth even when disabled or unusable. Unknown account
+ * configuration also predicts SUB: signing fails closed, so there is no metered
+ * request for this conservative label to hide. Confirmed absence (including an
+ * empty suppressed pool) predicts metered. No singleton disjunct may resurrect
+ * a suppressed legacy login. Only the registry's confirmed synthesized legacy
+ * case delegates signing to the existing CodexOAuth facade.
  *
- * This adds NO file I/O: the CodexOAuth singleton and its one credential-file read
- * already happen when authority.ts is imported (authority.ts:235 → :157 →
- * codex-credential.ts:43's field initialiser). What is new is that the result now
- * decides a billing label.
- *
- * Both tiers are overridable in tests via the CodexOAuth singleton-override seam
- * (equivalence.test.ts:136-152) — never `mock.module`, never a credential fixture
- * file under $HOME (scripts/guard-real-config.ts:31 sandboxes only config.json).
+ * The registry/probe injection seams and signed-arm reset isolate test data;
+ * never use mock.module or real credentials.
  */
 
 import { registerSubscriptionCredentialProbe } from "../../handlers/shared/remote-provider-types.js";
-import { CodexOAuth } from "../codex-oauth.js";
+import { getAccountRegistry } from "../accounts/registry.js";
 
 /** Which arm of a dual-mode credential signed: the flat-rate one or the metered one. */
 export type SignedArm = "subscription" | "metered";
@@ -53,7 +44,7 @@ export type SignedArm = "subscription" | "metered";
  *
  * The unsafe interleaving is TWO HEALTHY conversations on opposite arms, not
  * "a failure followed by a success" — an earlier version of this comment claimed
- * the latter and it understated the risk. A successful OAuth `refreshAuth`
+ * the latter and it understated the risk. A successful OAuth `signRequest`
  * writes "subscription"; a successful `OPENAI_CODEX_API_KEY` one writes
  * "metered". Neither is a failure. `TokenTracker.getPricing` re-queries per
  * stream delta (token-tracker.ts:347-348), so the metered conversation can pick
@@ -72,7 +63,7 @@ export type SignedArm = "subscription" | "metered";
 const signedArm = new Map<string, SignedArm>();
 
 /**
- * Record which arm signed. Called by OpenAICodexTransport.refreshAuth() — the one
+ * Record which arm signed. Called by OpenAICodexTransport.signRequest() — the one
  * place in the tree that knows.
  */
 export function recordSignedArm(provider: string, arm: SignedArm): void {
@@ -97,7 +88,7 @@ export function recordSignedArm(provider: string, arm: SignedArm): void {
  * in one process, so a record written by one test bleeds into every later file.
  *
  * REVIEW-BLOCKING, exactly like restoring a probe with `register(null)`: any test
- * that reaches `OpenAICodexTransport.refreshAuth()` — including one that only
+ * that reaches `OpenAICodexTransport.signRequest()` — including one that only
  * meant to pin an endpoint or a header — writes this record, and must clear it in
  * `afterEach`. Measured, not theorised: with the OAuth fixture stamped
  * `arm: "oauth"`, `openai-codex-oauth.test.ts` left `"subscription"` behind and
@@ -119,15 +110,12 @@ export function clearSignedArm(provider?: string): void {
 /**
  * "Which credential WOULD sign", per credential-decided provider.
  *
- * openai-codex: exactly the predicate the composite uses to choose its primary —
- * CompositeCredentialProvider.getRequestAuth takes the OAuth half iff
- * `await this.primary.isAvailable()` (composite-credential.ts:50), and that half's
- * isAvailable() is `this.oauth.hasCredentials()` (codex-credential.ts:45-47).
- * getInstance() is called at probe time, not at module load, so the singleton
- * override seam used by the tests is observed.
+ * Same presence fact as CodexPoolHalf.isAvailable(), but unknown configuration
+ * returns true instead of throwing. Read at probe time so invalidation and the
+ * registry override are observed; readiness never depends on stored tokens.
  */
 const PROBES: Record<string, () => boolean> = {
-  "openai-codex": () => CodexOAuth.getInstance().hasCredentials(),
+  "openai-codex": () => getAccountRegistry().mayHaveConfiguredAccounts("openai-codex"),
 };
 
 /**
@@ -143,6 +131,11 @@ export function installBillingProbes(): ((provider: string) => boolean) | null {
     // What DID sign beats what WOULD sign. Order is load-bearing: reading the
     // record second would let the approximate answer mask the exact one.
     if (recorded) return recorded === "subscription";
-    return PROBES[p]?.() === true;
+    try {
+      return PROBES[p]?.() === true;
+    } catch {
+      // A registered Codex prediction must not reopen metered routing on failure.
+      return p === "openai-codex";
+    }
   });
 }

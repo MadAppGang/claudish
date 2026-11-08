@@ -46,6 +46,11 @@ claudish --models-top --json
 claudish --models --json
 ```
 
+In `claudish --models-top --json`, each row's `recommendationTier` names the curated list it
+comes from: `flagship`, `cost_efficient`, `lightweight`, `luxury` or `subscription`. A model
+listed in two tiers is two rows, and the top-level `recommendationTiers` lists the tiers this
+claudish version knows.
+
 ---
 
 ## Understanding the Columns

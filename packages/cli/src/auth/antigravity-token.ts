@@ -34,6 +34,13 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log, logStderr } from "../logger.js";
+import { findGenericPasswordPresence, startGenericPasswordRead } from "../providers/keychain.js";
+import {
+  agyClientVersionReadFor,
+  getAgyClientVersion,
+  recordAgyClientVersionRead,
+} from "./antigravity-client-version.js";
+import { terminalCredentialError } from "./credentials/credential-error.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -65,6 +72,8 @@ const EXPIRY_SKEW_MS = 120_000;
  * and which is precisely the case the "timeout" message now names.
  */
 const AGY_REFRESH_TIMEOUT_MS = 12_000;
+/** Max time to wait for `agy --version` (measured at 0.04 s). */
+const AGY_VERSION_TIMEOUT_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -127,6 +136,17 @@ export interface AntigravityTokenDeps {
    * take minutes.
    */
   runAgyRefresh: () => AgyRefreshOutcome;
+  /**
+   * Read the installed agy's version (`agy --version` → `1.3.5`), or null when
+   * agy is absent or the read fails. The Antigravity backend gates discovery
+   * AND generation on the version in the User-Agent, so claudish presents the
+   * version agy reports rather than a pinned one; see
+   * `antigravity-client-version.ts`.
+   *
+   * Optional so a test fake that omits it captures nothing (and never spawns a
+   * real agy); `defaultDeps` always supplies it.
+   */
+  readAgyVersion?: () => string | null;
   /** Current time in ms since epoch (defaults to Date.now). */
   now: () => number;
 }
@@ -290,13 +310,128 @@ function defaultRunAgyRefresh(): AgyRefreshOutcome {
   }
 }
 
+/**
+ * Read the installed agy's version via `agy --version` (prints `1.3.5`, 0.04 s).
+ * Null on any failure — agy absent, non-zero exit, timeout, or output without a
+ * dotted version — so the caller keeps whatever version it already had.
+ */
+function defaultReadAgyVersion(): string | null {
+  const agy = locateAgyBinary();
+  if (!agy) return null;
+  try {
+    // `stdio` MUST be named, for the reason spelled out in `defaultReadStore`:
+    // without it the child's stderr goes straight to the parent's terminal,
+    // which the Claude Code TUI shares. stdout stays piped — it is the answer.
+    const out = execFileSync(agy, ["--version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: AGY_VERSION_TIMEOUT_MS,
+    });
+    return out.match(/\d+(\.\d+)+/)?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 const defaultDeps: AntigravityTokenDeps = {
   readStore: defaultReadStore,
   writeStore: defaultWriteStore,
   deleteStore: defaultDeleteStore,
   runAgyRefresh: defaultRunAgyRefresh,
+  readAgyVersion: defaultReadAgyVersion,
   now: () => Date.now(),
 };
+
+/**
+ * A fresh copy of the real deps, for a caller that wraps some of them, for
+ * example to record whether `runAgyRefresh` ran and what it reported. A copy,
+ * so wrapping one never changes what the other callers of this module get.
+ */
+export function defaultAntigravityTokenDeps(): AntigravityTokenDeps {
+  return { ...defaultDeps };
+}
+
+// ---------------------------------------------------------------------------
+// Classified, bounded store read (for callers that must not block or guess)
+// ---------------------------------------------------------------------------
+
+/**
+ * The outcome of one bounded read of the shared token item.
+ *
+ * `defaultReadStore` maps every `security` failure to null, so to its callers
+ * a LOCKED keychain reads as "not signed in". It also has no deadline. A caller
+ * with no user to answer a dialog needs the two told apart, and a deadline.
+ */
+export type AntigravityStoreRead =
+  | { kind: "present"; raw: string }
+  | { kind: "absent" }
+  | { kind: "locked" }
+  | { kind: "timeout" }
+  | { kind: "failed" };
+
+/**
+ * `security` exit codes that mean the keychain is locked or would have to ask:
+ * the low byte of the negated OSStatus. 128 is errSecUserCanceled, which a
+ * locked file answers to a `-w` read when the unlock request is cancelled
+ * (measured on a temporary keychain, 2026-10-21). 36 is
+ * errSecInteractionNotAllowed and 51 is errSecAuthFailed; both are derived
+ * from the same arithmetic, which reproduces the measured 44 for "not found".
+ */
+const KEYCHAIN_LOCKED_EXIT_CODES: ReadonlySet<number> = new Set([36, 51, 128]);
+
+/** Race `work` against an absolute deadline. The loser is left running, never killed. */
+async function raceDeadline<T>(work: Promise<T>, deadlineAt: number): Promise<T | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), Math.max(0, deadlineAt - Date.now()));
+  });
+  try {
+    return await Promise.race([work, timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function classifyKeychainFailure(code: number): AntigravityStoreRead {
+  return KEYCHAIN_LOCKED_EXIT_CODES.has(code) ? { kind: "locked" } : { kind: "failed" };
+}
+
+/**
+ * Read the shared token item, bounded by `deadlineMs`, and say WHY when there
+ * is no value. Never kills `security`: a `security` killed mid-transaction once
+ * made macOS restart `securityd` (keychain.md). When the deadline passes, the
+ * caller stops waiting and `security` finishes on its own.
+ *
+ * Two steps, through `providers/keychain.ts`:
+ * 1. Presence (no `-w`) reads no item data. It separates "absent" (exit 44)
+ *    from the rest. It is NOT a lock probe: a locked keychain still answers
+ *    it with exit 0 (measured).
+ * 2. The value read (`-w`) is what a locked keychain refuses.
+ *
+ * `security`'s stderr is never carried in the result. Nothing here writes to
+ * the store, reads stdin, or opens a browser. `CLAUDISH_DISABLE_KEYCHAIN=1` (the
+ * test suite's escape hatch) answers `failed` without spawning anything.
+ */
+export async function readAntigravityStoreClassified(
+  deadlineMs: number
+): Promise<AntigravityStoreRead> {
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return { kind: "failed" };
+  const deadlineAt = Date.now() + deadlineMs;
+  const query = { service: KC_SERVICE, account: KC_ACCOUNT };
+
+  const presence = await raceDeadline(findGenericPasswordPresence(query), deadlineAt);
+  if (presence === "timeout") return { kind: "timeout" };
+  if (presence.kind === "absent") return { kind: "absent" };
+  if (presence.kind === "failed") return classifyKeychainFailure(presence.code);
+
+  const read = await raceDeadline(startGenericPasswordRead(query).done, deadlineAt);
+  if (read === "timeout") return { kind: "timeout" };
+  if (read.kind === "absent") return { kind: "absent" };
+  if (read.kind === "failed") return classifyKeychainFailure(read.code);
+  // Trimmed like `defaultReadStore`, so both reads hand `parseRecord` the same string.
+  const raw = (read.value ?? "").trim();
+  return raw.length > 0 ? { kind: "present", raw } : { kind: "absent" };
+}
 
 // ---------------------------------------------------------------------------
 // Encode / decode
@@ -405,6 +540,34 @@ function needsRefresh(tok: AntigravityToken, now: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Client version (captured once per auth session)
+// ---------------------------------------------------------------------------
+
+/**
+ * Capture agy's version for the auth session this access token belongs to.
+ *
+ * Re-read only when the token differs from the one the last read was made for:
+ * a new token means agy ran (it refreshed or re-minted), and agy auto-updates,
+ * so that is exactly when the version can have changed. Same token → reuse, at
+ * the cost of a string compare per request. A failed read keeps the previous
+ * good version; see `recordAgyClientVersionRead`.
+ */
+function captureAgyClientVersion(accessToken: string, deps: AntigravityTokenDeps): void {
+  if (!deps.readAgyVersion || agyClientVersionReadFor(accessToken)) return;
+  const read = deps.readAgyVersion();
+  recordAgyClientVersionRead(read, accessToken);
+  if (read) {
+    log(`[Antigravity] Client version from agy: ${read}`);
+  } else {
+    const kept = getAgyClientVersion();
+    log(
+      "[Antigravity] Could not read the agy version" +
+        (kept ? `; keeping ${kept}.` : "; using the fallback version.")
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public: valid access token (single-flight)
 // ---------------------------------------------------------------------------
 
@@ -413,7 +576,7 @@ let inFlight: Promise<string> | null = null;
 
 async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   if (process.platform !== "darwin") {
-    throw new Error(
+    throw terminalCredentialError(
       "[Antigravity] The shared Antigravity token store is macOS-only for now. " +
         "Use g@<model> with GEMINI_API_KEY on this platform."
     );
@@ -421,7 +584,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
 
   const rec = parseRecord(deps.readStore());
   if (!rec) {
-    throw new Error(
+    throw terminalCredentialError(
       "[Antigravity] No Antigravity session found. Sign in with `claudish login antigravity`, " +
         "or use g@<model> with GEMINI_API_KEY " +
         "(get one at https://aistudio.google.com/app/apikey)."
@@ -429,6 +592,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   }
 
   if (!needsRefresh(rec.token, deps.now())) {
+    captureAgyClientVersion(rec.token.access_token, deps);
     return rec.token.access_token;
   }
 
@@ -440,6 +604,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   const refreshedRec = parseRecord(deps.readStore());
   if (refreshedRec && !needsRefresh(refreshedRec.token, deps.now())) {
     log("[Antigravity] Shared token refreshed by the Antigravity CLI.");
+    captureAgyClientVersion(refreshedRec.token.access_token, deps);
     return refreshedRec.token.access_token;
   }
 
@@ -447,7 +612,14 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   // these four is fixed by signing in again. Reporting them all as "session
   // expired, re-login" sent users through an OAuth flow that could not help,
   // most often while agy was simply mid-self-update.
-  throw new Error(`[Antigravity] ${describeRefreshFailure(outcome)}`);
+  // What the outcome says about the login decides the error's class: a slow or
+  // failing `agy` is not a dead session (retryable), a missing CLI or a revoked
+  // session is (terminal). `credential-error.ts`.
+  const message = `[Antigravity] ${describeRefreshFailure(outcome)}`;
+  if (outcome.kind === "timeout")
+    throw Object.assign(new Error(message), { transient: true as const });
+  if (outcome.kind === "failed") throw new Error(message);
+  throw terminalCredentialError(message);
 }
 
 /** Turn a refresh outcome into the remediation that actually applies to it. */
@@ -529,7 +701,7 @@ export async function forceRefreshAntigravityToken(
   deps: AntigravityTokenDeps = defaultDeps
 ): Promise<string> {
   if (process.platform !== "darwin") {
-    throw new Error(
+    throw terminalCredentialError(
       "[Antigravity] The shared Antigravity token store is macOS-only for now. " +
         "Use g@<model> with GEMINI_API_KEY on this platform."
     );
@@ -541,7 +713,7 @@ export async function forceRefreshAntigravityToken(
 
   const rec = parseRecord(deps.readStore());
   if (!rec) {
-    throw new Error(
+    throw terminalCredentialError(
       "[Antigravity] No Antigravity session found. Sign in with `claudish login antigravity`, " +
         "or use g@<model> with GEMINI_API_KEY " +
         "(get one at https://aistudio.google.com/app/apikey)."
@@ -554,12 +726,13 @@ export async function forceRefreshAntigravityToken(
     { ...original, expiry: new Date(deps.now() - 1000).toISOString() },
     deps
   );
-  deps.runAgyRefresh();
+  const outcome = deps.runAgyRefresh();
 
   const refreshed = parseRecord(deps.readStore());
   const token = refreshed?.token;
   if (token && token.access_token !== original.access_token && !needsRefresh(token, deps.now())) {
     log("[Antigravity] Shared token re-minted by the Antigravity CLI.");
+    captureAgyClientVersion(token.access_token, deps);
     return token.access_token;
   }
 
@@ -572,7 +745,21 @@ export async function forceRefreshAntigravityToken(
     writeSharedAntigravityToken(original, deps);
   }
   _resetAntigravityTokenState();
-  throw new Error(
+  // The same distinctions as the expiry path: a slow or failing `agy` (mid
+  // self-update, most often) says nothing about the session, so it is
+  // retryable; only a CLI that ran and still produced nothing, or is missing,
+  // is a dead session (`credential-error.ts`).
+  if (outcome.kind === "timeout" || outcome.kind === "failed") {
+    const message = `[Antigravity] ${describeRefreshFailure(outcome)}`;
+    if (outcome.kind === "timeout") {
+      throw Object.assign(new Error(message), { transient: true as const });
+    }
+    throw new Error(message);
+  }
+  if (outcome.kind === "not-installed") {
+    throw terminalCredentialError(`[Antigravity] ${describeRefreshFailure(outcome)}`);
+  }
+  throw terminalCredentialError(
     "[Antigravity] The Antigravity session was rejected upstream and could not be re-minted. " +
       "Run `claudish login antigravity` to sign in again."
   );

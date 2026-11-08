@@ -11,29 +11,37 @@
  *   3. the shutdown hooks below (signals, stdin EOF), a parallel ≤ 3 s reap.
  *
  * Every signal to a process that is not this process's own unreaped child is preceded
- * by an identity check from `process-identity.ts`.
+ * by an identity check from `process-identity.ts`. A process table that does not list
+ * this process (`processTableTrusted`) decides nothing: the sweep keeps the pane.
  */
 
 import {
+  constants,
+  accessSync,
   existsSync,
+  lstatSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { claimSignalExit } from "../signal-owner.js";
 import { MagmuxClient } from "./magmux-client.js";
 import { ensureSockRoot, sockRootFor } from "./pane-launch.js";
 import {
+  type ForkRecordRef,
   type GroupSnapshot,
   type PaneIdentity,
+  type ProcessTable,
   type PsRow,
   findPaneMagmux,
   formatGroupFile,
   groupCheck,
+  isForkRecordPath,
   isLaunchDirPath,
   isPaneMagmux,
   isPaneMagmuxCommand,
@@ -44,10 +52,13 @@ import {
   liveEscaped,
   mergeSnapshots,
   parseGroupFile,
+  pidMayBeAlive,
   readProcessTable,
   readProcessTableAsync,
   recordPathOf,
   sameSnapshot,
+  sockPathOf,
+  startedAt,
   verifiedGroupSnapshot,
 } from "./process-identity.js";
 
@@ -70,6 +81,8 @@ export interface PaneRecord {
   turnDir: string;
   createdAt: string;
   reapFailed?: boolean;
+  /** a replay's fork record (`sessionUuid` is the fork uuid); absent for every other pane */
+  fork?: ForkRecordRef;
 }
 
 export class PaneLimitError extends Error {
@@ -80,20 +93,33 @@ export class PaneLimitError extends Error {
 
 let ownStart: string | null = null;
 
-/** This process's `lstart` (one `ps` call, cached). */
+/** This process's `lstart` (one `ps` call, cached only when it found this process). */
 export function ownerStartOfSelf(): string {
   if (ownStart) return ownStart;
-  const row = readProcessTable().find((r) => r.pid === process.pid);
-  ownStart = row?.lstart ?? "";
-  return ownStart;
+  const row = readProcessTable()?.find((r) => r.pid === process.pid);
+  if (row) ownStart = row.lstart;
+  return row?.lstart ?? "";
 }
 
-export function ownerAlive(
-  rec: Pick<PaneRecord, "ownerPid" | "ownerStart">,
-  table: PsRow[]
-): boolean {
-  const row = table.find((r) => r.pid === rec.ownerPid);
-  return !!row && row.lstart === rec.ownerStart;
+/** Who owns a pane: the record's fields, or the pid a recordless socket's pane id embeds. */
+export type PaneOwner = Pick<PaneRecord, "paneId" | "ownerPid" | "ownerStart">;
+
+/**
+ * THE owner-liveness check, for the pane limit, the record sweep and the recordless-socket
+ * sweep: the owner's pid is alive and is the same process. A recorded `ownerStart` must
+ * equal the row's `lstart`. Without one (written while the owner could not read the
+ * table, or a recordless socket) the start time the pane id embeds must match the row's
+ * timezone-free `startMs`; an id that embeds none is not ours to judge and counts alive.
+ * With the table unavailable only `kill(pid, 0)` can answer (`pidMayBeAlive`): ESRCH is
+ * dead, anything else alive.
+ */
+export function ownerAlive(owner: PaneOwner, table: ProcessTable): boolean {
+  if (!table) return pidMayBeAlive(owner.ownerPid);
+  const row = table.find((r) => r.pid === owner.ownerPid);
+  if (!row) return false;
+  if (owner.ownerStart) return row.lstart === owner.ownerStart;
+  const minted = ownerOfPaneId(owner.paneId);
+  return !minted || startedAt(row, minted.startMs);
 }
 
 /* ───────────────────────────── records ───────────────────────────── */
@@ -138,6 +164,7 @@ function validRecord(v: unknown, stem: string): PaneRecord | null {
   if (typeof r.paneId !== "string" || typeof r.ownerPid !== "number") return null;
   if (!isValidPaneId(r.paneId) || r.paneId !== stem) return null;
   if (typeof r.sockPath !== "string" || typeof r.launcherDir !== "string") return null;
+  const fork = validForkRef(r.fork);
   return {
     paneId: r.paneId,
     ownerPid: r.ownerPid,
@@ -151,6 +178,18 @@ function validRecord(v: unknown, stem: string): PaneRecord | null {
     turnDir: typeof r.turnDir === "string" ? r.turnDir : "",
     createdAt: typeof r.createdAt === "string" ? r.createdAt : "",
     reapFailed: r.reapFailed === true,
+    ...(fork ? { fork } : {}),
+  };
+}
+
+function validForkRef(v: unknown): ForkRecordRef | null {
+  if (!v || typeof v !== "object") return null;
+  const f = v as Record<string, unknown>;
+  if (typeof f.projectsRoot !== "string" || typeof f.path !== "string") return null;
+  return {
+    projectsRoot: f.projectsRoot,
+    path: f.path,
+    removeProjectDir: f.removeProjectDir === true,
   };
 }
 
@@ -190,11 +229,40 @@ export function writeGroupFile(ctlDir: string, snap: GroupSnapshot): void {
   }
 }
 
-/** Remove a pane's files, each path validated first (R3-M2). */
-export function removePaneFiles(
-  root: string,
-  f: { paneId: string; sockPath: string; launcherDir: string; turnDir: string }
-): void {
+/**
+ * A replay's fork record by its exact path, validated against the projects root and the
+ * fork uuid first, and its project directory only when the replay's start created it:
+ * `rmdir` refuses a directory that holds anything else. Nothing here lists a directory or
+ * is recursive. Only once the replay's processes are verified gone, never while a dying
+ * `claude` could rewrite the file.
+ */
+export function removeForkRecord(fork: ForkRecordRef, forkUuid: string): void {
+  if (!isForkRecordPath(fork.projectsRoot, fork.path, forkUuid)) return;
+  try {
+    rmSync(fork.path, { force: true });
+    if (fork.removeProjectDir) rmdirSync(dirname(fork.path));
+  } catch {
+    // a sibling's record keeps the directory, or it is already gone
+  }
+}
+
+/** What `removePaneFiles` removes; `sessionUuid` and `fork` only matter for a replay. */
+export interface PaneFiles {
+  paneId: string;
+  sockPath: string;
+  launcherDir: string;
+  turnDir: string;
+  sessionUuid?: string;
+  fork?: ForkRecordRef;
+}
+
+/**
+ * Remove a pane's files, each path validated first (R3-M2), once its processes are verified
+ * gone. A replay's fork record goes first and the pane record last, so an interruption leaves
+ * a record that still names what is left.
+ */
+export function removePaneFiles(root: string, f: PaneFiles): void {
+  if (f.fork && f.sessionUuid) removeForkRecord(f.fork, f.sessionUuid);
   if (isPaneSockPath(root, f.sockPath, f.paneId)) rmSync(f.sockPath, { force: true });
   for (const d of [f.launcherDir, f.turnDir])
     if (d && isLaunchDirPath(root, d)) rmSync(d, { recursive: true, force: true });
@@ -254,7 +322,10 @@ export function refreshGroups(table: PsRow[]): void {
   for (const p of live.values()) refreshGroupOf(p, table);
 }
 
-export function refreshGroupOf(p: RegisteredPane, table: PsRow[]): void {
+export function refreshGroupOf(
+  p: Pick<RegisteredPane, "panePid" | "group" | "identity">,
+  table: PsRow[]
+): void {
   const pid = p.panePid();
   if (!pid) return;
   const fresh = verifiedGroupSnapshot(table, pid, p.identity);
@@ -268,7 +339,8 @@ async function tick(): Promise<void> {
   if (ticking || live.size === 0) return;
   ticking = true;
   try {
-    refreshGroups(await readProcessTableAsync());
+    const table = await readProcessTableAsync();
+    if (table) refreshGroups(table);
     for (const p of live.values()) if (p.reapFailed) await p.retryReap();
   } finally {
     ticking = false;
@@ -347,7 +419,16 @@ async function shutdown(reason: "stdin_closed" | "signal", code: number): Promis
   } catch {
     // a failing record writer must not keep panes alive
   }
-  await reapAllPanes(reason);
+  // The reap's last waits (the pane watcher, waitForExit's timer) are unref'd. Once
+  // the cancel lets the run's main flow return, they are all that is left, and Bun
+  // exits 0 before process.exit(code) below. This interval holds the loop open for
+  // the reap only: every wait in it is bounded, and `before` is not.
+  const hold = setInterval(() => {}, 1_000);
+  try {
+    await reapAllPanes(reason);
+  } finally {
+    clearInterval(hold);
+  }
   if (reason === "stdin_closed" || hookOpts.exitAfter !== false) process.exit(code);
   shuttingDown = false;
 }
@@ -443,9 +524,10 @@ function sweepTargets(rec: PaneRecord, root: string, table: PsRow[]): SweepTarge
 }
 
 async function killVerified(rec: PaneRecord, root: string): Promise<SweepTargets> {
-  const t = sweepTargets(rec, root, readProcessTable());
+  // an unavailable table verifies nothing, so nothing below is signalled
+  const t = sweepTargets(rec, root, readProcessTable() ?? []);
   for (const sig of ["SIGTERM", "SIGKILL"] as const) {
-    const table = readProcessTable();
+    const table = readProcessTable() ?? [];
     if (t.group && groupCheck(table, t.group)) signal(-t.group.pgid, sig);
     for (const pid of liveEscaped(table, t.group)) signal(pid, sig);
     if (t.mag && isPaneMagmux(t.mag, rec.paneId, table)) signal(t.mag, sig);
@@ -456,7 +538,14 @@ async function killVerified(rec: PaneRecord, root: string): Promise<SweepTargets
 
 async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Promise<void> {
   const table = readProcessTable();
-  if (ownerAlive(rec, table)) return;
+  if (ownerAlive(rec, table)) {
+    if (!table) out.kept.push(rec.paneId); // alive by kill(pid, 0) alone: unverified
+    return;
+  }
+  if (!table) {
+    await sweepUnidentifiable(rec, root, out);
+    return;
+  }
   const watcher = rec.watcherPid ? table.find((r) => r.pid === rec.watcherPid) : undefined;
   if (watcher && isPaneWatcherCommand(watcher.command, rec.paneId)) {
     out.kept.push(rec.paneId); // the watcher is mid-job
@@ -467,6 +556,7 @@ async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Pro
   if (anyVerified) await killVerified(rec, root);
   const after = readProcessTable();
   const stillAlive =
+    !after ||
     (t0.group && groupCheck(after, t0.group)) ||
     liveEscaped(after, t0.group).length > 0 ||
     (t0.mag !== null && isPaneMagmux(t0.mag, rec.paneId, after));
@@ -480,6 +570,114 @@ async function sweepRecord(rec: PaneRecord, root: string, out: SweepResult): Pro
   else out.cleaned.push(rec.paneId);
 }
 
+/**
+ * What one connection attempt says about a pane socket:
+ *   - `answers`: the connect succeeded; some magmux serves it (the caller owns `client`);
+ *   - `stale`: ENOENT, or ECONNREFUSED while the caller has proved the pane's magmux dead;
+ *   - `inconclusive`: any other error (EPERM, EACCES, EMFILE, ENFILE, ...), ECONNREFUSED
+ *     while that magmux may live, or no answer within `SOCKET_PROBE_TIMEOUT_MS`; says
+ *     nothing about the listener, so files stay.
+ *
+ * ECONNREFUSED alone is not proof: on darwin a LIVE listener whose accept queue is full
+ * answers it (measured, magmux `sockdir.go` ReapStale), which is why magmux reaps by pid.
+ * So the caller passes `magmuxMayLive`, its own pid evidence for the pane's magmux.
+ */
+export type SocketProbe =
+  | { state: "answers"; client: MagmuxClient }
+  | { state: "stale"; code: string }
+  | { state: "inconclusive"; code: string };
+
+const SOCKET_PROBE_TIMEOUT_MS = 2000;
+
+let dialSocket: (sockPath: string) => Promise<MagmuxClient> = (p) => MagmuxClient.dial(p);
+
+/** @internal tests: replace how the sweep dials a pane socket; returns the previous dial. */
+export function setSocketDialForTest(
+  next: (sockPath: string) => Promise<MagmuxClient>
+): (sockPath: string) => Promise<MagmuxClient> {
+  const prev = dialSocket;
+  dialSocket = next;
+  return prev;
+}
+
+/** THE pane-socket probe, for the record sweep and the recordless-socket sweep. */
+export async function probeSocket(sockPath: string, magmuxMayLive: boolean): Promise<SocketProbe> {
+  const dial = dialSocket(sockPath);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), SOCKET_PROBE_TIMEOUT_MS);
+  });
+  try {
+    const won = await Promise.race([dial, timeout]);
+    if (won !== "timeout") return { state: "answers", client: won };
+    void dial.then(
+      (c) => c.close(),
+      () => undefined
+    );
+    return { state: "inconclusive", code: "ETIMEDOUT" };
+  } catch (e) {
+    const code = dialErrno((e as { errno?: string | null }).errno ?? "unknown", sockPath);
+    const stale = code === "ENOENT" || (code === "ECONNREFUSED" && !magmuxMayLive);
+    return stale ? { state: "stale", code } : { state: "inconclusive", code };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * A failed dial's errno, with ENOENT checked against the path itself. Bun before 1.4
+ * reports ENOENT for EVERY failed unix connect (measured, 1.3.10 on darwin: a refused
+ * socket, a mode-000 socket and a plain file all answer ENOENT), so ENOENT alone would
+ * read a live pane's socket as gone. The path decides instead: missing (lstat's own
+ * ENOENT) → ENOENT; lstat failing otherwise → its errno; not a socket → ENOTSOCK; not
+ * writable → EACCES; any other socket → ECONNREFUSED, which is
+ * stale only with pid evidence that its magmux is dead (`probeSocket`).
+ */
+function dialErrno(reported: string, sockPath: string): string {
+  if (reported !== "ENOENT") return reported;
+  let isSocket: boolean;
+  try {
+    isSocket = lstatSync(sockPath).isSocket();
+  } catch (e) {
+    // only lstat's own ENOENT proves the path gone; EACCES, EPERM, EIO prove nothing
+    return (e as NodeJS.ErrnoException).code ?? "unknown";
+  }
+  if (!isSocket) return "ENOTSOCK";
+  try {
+    accessSync(sockPath, constants.W_OK);
+  } catch {
+    return "EACCES";
+  }
+  return "ECONNREFUSED";
+}
+
+/**
+ * A dead owner's record (kill(pid, 0) answered ESRCH) while the table is unavailable.
+ * No process can be identified, so nothing is signalled. A watcher pid that may be alive
+ * may be mid-job, and a socket that answers (a live magmux) or whose probe is
+ * inconclusive may still be served: each keeps the files, and the pane is left running
+ * for a sweep that can read the table. Only a stale socket (`probeSocket`, with the
+ * recorded magmux pid as its evidence) means the pane's magmux is gone; then its files are removed, as the dead-owner path does when
+ * nothing is verified alive.
+ */
+async function sweepUnidentifiable(rec: PaneRecord, root: string, out: SweepResult) {
+  if (rec.watcherPid && pidMayBeAlive(rec.watcherPid)) {
+    out.kept.push(rec.paneId);
+    return;
+  }
+  // no recorded pid: the owner died before it recorded magmux, which may still be starting
+  const magmuxMayLive = rec.magmuxPid === null || pidMayBeAlive(rec.magmuxPid);
+  const probe = await probeSocket(sockPathOf(root, rec.paneId), magmuxMayLive);
+  if (probe.state !== "stale") {
+    if (probe.state === "answers") probe.client.close();
+    out.kept.push(rec.paneId);
+    return;
+  }
+  // no process was verified gone, so a replay's fork record is left where it is
+  removePaneFiles(root, { ...rec, fork: undefined });
+  out.cleaned.push(rec.paneId);
+}
+
 /** `c<pid>-<start36>-…`: the owner pid and start (ms) a pane id embeds. */
 export function ownerOfPaneId(id: string): { pid: number; startMs: number } | null {
   const m = id.match(/^c(\d+)-([0-9a-z]+)-/);
@@ -487,26 +685,35 @@ export function ownerOfPaneId(id: string): { pid: number; startMs: number } | nu
   return { pid: Number(m[1]), startMs: Number.parseInt(m[2] ?? "", 36) };
 }
 
-function ownerOfIdAlive(id: string, table: PsRow[]): boolean {
+/** The owner a recordless socket's pane id names; null when the id embeds none. */
+function ownerOfSocketId(id: string): PaneOwner | null {
   const o = ownerOfPaneId(id);
-  if (!o) return true; // not ours to judge
-  const row = table.find((r) => r.pid === o.pid);
-  if (!row) return false;
-  const started = Date.parse(row.lstart);
-  return !Number.isFinite(started) || Math.abs(started - o.startMs) < 2000;
+  return o ? { paneId: id, ownerPid: o.pid, ownerStart: "" } : null;
 }
 
 async function sweepRecordlessSocket(root: string, name: string, out: SweepResult): Promise<void> {
   const id = name.slice("magmux-".length, -".sock".length);
   const table = readProcessTable();
-  if (ownerOfIdAlive(id, table)) return;
+  const owner = ownerOfSocketId(id);
+  if (!owner || ownerAlive(owner, table)) return; // no owner in the id: not ours to judge
   const sockPath = join(root, name);
-  let client: MagmuxClient | null = null;
-  try {
-    client = await MagmuxClient.dial(sockPath);
-  } catch {
+  // the table names the pane's magmux; without it no pid is known for a recordless socket
+  const magmuxMayLive = !table || table.some((r) => isPaneMagmuxCommand(r.command, id));
+  const probe = await probeSocket(sockPath, magmuxMayLive);
+  if (probe.state === "stale") {
     rmSync(sockPath, { force: true });
     out.cleaned.push(id);
+    return;
+  }
+  if (probe.state === "inconclusive") {
+    out.kept.push(id); // the probe says nothing about the listener
+    return;
+  }
+  const client = probe.client;
+  if (!table) {
+    // a live magmux of a dead owner: without the table nothing identifies its processes
+    client.close();
+    out.kept.push(id);
     return;
   }
   const list = await client.request<{ panes?: Array<{ pid?: number; pane?: number }> }>({
