@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as realSetTimeout } from "node:timers/promises";
 import { Hono } from "hono";
 import type { FallbackCandidate } from "./fallback-handler.js";
 
@@ -268,14 +268,13 @@ if (process.env.CLAUDISH_T5_CREDENTIAL_WORKER !== "1") {
     test("stderr is once per provider/status across requests, every occurrence is logged, and signing values are redacted", async () => {
       const path = logger.getLogFilePath();
       expect(path).not.toBeNull();
-      const deadline = performance.now() + 2_000;
       const readLogUntil = async (ready: (contents: string) => boolean) => {
         let contents = readFileSync(path!, "utf8");
-        while (!ready(contents)) {
-          const remaining = deadline - performance.now();
-          if (remaining <= 0) break;
-          await realSetTimeout(Math.min(10, remaining));
-          contents = readFileSync(path!, "utf8");
+        // Bun also fakes captured clocks and promise timers. Count real 10ms sleeps
+        // for a 2s bound, yielding through reads so asynchronous appends can finish.
+        for (let attempts = 0; !ready(contents) && attempts < 200; attempts++) {
+          Bun.sleepSync(10);
+          contents = await readFile(path!, "utf8");
         }
         return contents;
       };

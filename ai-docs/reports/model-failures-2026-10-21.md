@@ -14,7 +14,12 @@ day reclassified three first-draft "account" rows as claudish behaviour; this ve
 | D3 | fixed on main: `56df54b5 fix(muse): route bare muse-wonder-full to the muse@ subscription` (13.3.0) |
 | D7 | fixed in 14.0.0: `9ace3fe5`, `2f282101`; the connection-fault exclusion `f8e09504` |
 | D8 | fixed in 14.0.0: `8452d275`; verified live 2026-10-22 (`ag@gemini-3.8-flash` served by Antigravity, sent `gemini-3.8-flash-high`) |
-| D1, D2, D4, D5, D6, D9 | open |
+| D1 | fixed on branch `worktree-investgiage-gpt-file`, unmerged: `6a4d111d`, `5f0e8aaa`, `0ebd6460` (Grok), `93efa21b`, `9f4da732` (Kimi), `80a41d9f` (Devin); behaviour tests and the live re-login check pending |
+| D4 | fixed on the same branch: `77ad1ebf` (derived key list). Measured: at 14.0.0 the two tests no longer fail even with the old list (they route on a temp catalog) |
+| D5 | fixed on the same branch: `a1c71ad5` (preload), `1cf7bbef` (guard), `0e7e447a` (spawn `env` rule) |
+| D6 | fixed on the same branch: `a41955b4`, `25763f10`, `346310f0`, `b138f00d`; behaviour tests and the live preflight check pending |
+| D9 | fixed on the same branch: `66180b69` (routing), `6e00ea93` (proxy); behaviour tests pending |
+| D2 | open (closed by the owner 2026-10-22 as a stale process) |
 
 Details: `advisor-subscription-routing-2026-10.md`.
 

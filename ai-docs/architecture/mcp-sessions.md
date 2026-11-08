@@ -1,4 +1,4 @@
-> The 15-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
+> The 20-tool MCP surface and its four groups, the sessions behind it (panes, records, polling, resizing, scrolling, the transcript as text lines, read-only replays), `run_prompt`'s two paths, the removed channel push, and the progress keepalive.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
@@ -93,7 +93,7 @@ ones used to accumulate for the life of the MCP server. A terminal session leave
 after `terminalRetentionMs` (default 30 min), with a hard ceiling of 50 retained. On-disk
 artifacts are unaffected, and `getSession`, `get_output` and `get_diagnostics` fall back to the
 session directory (both generations of `meta.json`: 10.4.0's `status`-only record and the pane
-one). The mutators — `send_input`, `cancel_session`, `capture_session` — never do: a recovered
+one). `transcript_session` is a reader too and falls back the same way. The mutators — `send_input`, `cancel_session`, `capture_session` — never do: a recovered
 record describes a process that is gone, and they answer `unknown_session`.
 
 **Shutdown ends the records, then reaps.** At startup the MCP server installs the pane shutdown
@@ -198,6 +198,16 @@ progress to the Claude Code window that started a run.
 `claudeSessionId` is the pane's `--session-id` uuid, the transcript's basename. For a pane session
 `mcpPid` is also the pane record's owner, and the watchers make an observer's liveness inference
 sound: when the writer dies, its panes die with it.
+
+**`transcript_session` is a second reader of both keys.** A session running under another MCP
+server has a directory with `spawn.json` and no `meta.json` (that file is written only at the
+terminal transition). `spawn.json` has no `cwd`, so the transcript path is found by
+`claudeSessionId`: one `readdir` of the projects directory for `<dir>/<uuid>.jsonl`, used only on
+exactly one hit (1,187 project directories: 1.8–2.0 ms warm, 4.6 ms cold). `mcpPid` decides
+`final`: only `process.kill(mcpPid, 0)` failing with ESRCH, plus a transcript quiet for 30 s, counts
+the writer gone; a live pid, EPERM, or a missing or non-integer `mcpPid` never does. Adding `cwd`
+to `spawn.json` was rejected: this file is a cross-repo contract, and every record a released
+server wrote lacks the key anyway.
 
 **`hostPid` is structural, computed once at startup** (`hostPidFrom`, `mcp-session/parent-session.ts`).
 A compiled binary or `bun src/index.ts` is the direct child of Claude Code, so `hostPid` is
@@ -374,6 +384,14 @@ What `createSession` does now (`mcp-session/inherited-settings.ts`, `session-man
   `settings.local.json` can carry `env` secrets. Nothing is written to `work_dir` or `setup_from`.
   `spawn.json` records `setupFrom`. A file that is not a JSON object fails the call as
   `invalid_args`, before any pane starts.
+- The child claudish copies that layer into its own overlay, `~/.claudish/settings-<pid>-<ts>.json`
+  (`createTempSettingsFile`, then `mergeUserSettingsIfPresent` in `claude-runner.ts`), so the
+  overlay carries the same secrets and is 0600 too. Up to v14.4.1 it was 0644 (MTL-207). The
+  `mode` option of `writeFileSync` applies only when it CREATES a file: an overwrite keeps the
+  old bits (measured on Bun 1.4.0, a 0644 file overwritten with `mode: 0o600` stays 0644). So
+  the merge calls `chmodSync(…, 0o600)` before it writes, and a chmod failure skips the write.
+  `claude-runner-settings-mode.test.ts` pins umask 022, because a runner with umask 077 passes
+  the old code. Overlays left behind by older versions are MTL-258.
 
 Known gaps, not carried: exact plugin versions outside the repo (needs per-row `--plugin-dir`,
 E13, which depends on Claude Code's undocumented install-row keying); project `.claude/skills`,
@@ -390,12 +408,13 @@ To re-measure the table, ask Claude Code for an agent that does not exist:
 matrix of cwds and flag sets costs nothing. `env -u CLAUDECODE` lets it run from inside a
 session.
 
-## MCP Tools (15 total)
+## MCP Tools (20 total)
 
 - **Low-level** (3): `run_prompt`, `list_models`, `search_models`
-- **Agentic** (3): `preflight`, `team`, `report_error`
-- **Session** (8): `create_session`, `send_input`, `get_output`, `cancel_session`,
-  `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`
+- **Agentic** (4): `preflight`, `team`, `report_error`, `allowance_status`
+- **Session** (12): `create_session`, `send_input`, `get_output`, `cancel_session`,
+  `list_sessions`, `get_diagnostics`, `capture_session`, `resize_session`, `scroll_session`,
+  `transcript_session`, `replay_session`, `close_replay`
 - **Debug** (1): `compare_models`
 
 `preflight` exists because `--probe` is CLI-ONLY. An MCP consumer had no way to
@@ -408,6 +427,31 @@ The billing column is the non-obvious half: subscription-vs-metered is a propert
 of the PROVIDER, not the model, so the same bare name can be free through a plan
 or billed per token depending on which credential is present — which is precisely
 what a caller cannot see from the model id.
+
+**`preflight` judges a model by its ROUTING CHAIN** (`providers/preflight-chain.ts`). It used to
+plan with `route()` and probe only the primary, so a model whose first hop failed got "❌" and
+"Drop or replace before running" even when a later hop served it (six models behind one expired Zen
+Go key on 2026-10-21; `model-failures-2026-10-21.md`, D6). Now `preflightModel` takes the kept hops
+from `explainRoute` → `probeTargets` (the chain `--probe` shows, in order) and probes each until one
+is live. A failed hop is followed by `ProbeResult.chainAction`, which `probeLink` sets with
+`decideHopFailure`, the SAME function `FallbackHandler` uses (`adapters.md`): advance, or stop here
+because a real request would stop here too (a connection fault, a stream failure, a credential hold
+on a metered hop). Two walker defaults stop rather than guess: a non-live result with no
+`chainAction` (`no-decision`, e.g. `key-missing`), and a probe that throws (`probe-error`). A native
+Claude name is never probed (the third outcome). Metered hops are probed like any other: a configured
+key is consent, and the runtime would use that hop.
+
+Output contract: the table's Provider, Billing and Model spec describe the SERVING hop; Status is
+`✅ live · hop i/n`, `❌ <state> · chain stops at hop i/n` or `❌ every hop failed (n)`, with
+` (+k untried)`; every failed hop is listed under "Failed hops:" with its probe spec, billing word
+and where the chain went; "Drop or replace before running" lists only models no hop serves. The
+billing counts follow the serving hop.
+
+Cost: at most one probe per kept hop, stopping at the first live one, so a model whose first hop
+serves costs what it always did. `timeout_ms` applies PER HOP; the worst case per model is hops ×
+`timeout_ms`, carried by `heartbeat: true` and a progress message per hop
+(`preflight: <model> · hop i/n`). Preflight models a FRESH chain: `FallbackHandler` starts at its
+`lastSuccessIndex` in a long-lived proxy, preflight always at hop 1, which is what a new session sees.
 
 **The polling verbs are the frozen mod contract v1** (`pane/contract.ts`, summarised in
 `pane-session.md`): `list_sessions` answers `{contract_version, capabilities, sessions}` with one
@@ -427,8 +471,152 @@ bottom after a row grow and clamped cursor-down to it, so Claude Code's relative
 collapsed its input box onto the old last row and `pathPrimary` never settled the next turn. The
 fake child redraws with relative cursor-down for that reason. The per-pane check of magmux's `verbs` stays as the defence against a
 binary that passes the version floor but lacks the op. `team` gains the same verbs as modes (`list`, `status`, `capture`,
-`cancel`, `resize`). Why the size is the viewer's and what resizing costs the screen heuristics:
+`cancel`, `resize`, `scroll`, `transcript`). Why the size is the viewer's and what resizing costs the screen heuristics:
 `pane-session.md`, "Terminal size".
+
+`scroll_session` (`session_id` and exactly one of `by`, a nonzero signed row count with negative
+toward older content, or `to:"end"`) scrolls the child's own transcript view and answers
+`{session_id, seq}`; `team(mode:"scroll", path, slot, run_id?, by | to)` answers
+`{run_id, path, slot, seq}`. A capture has no rows above the visible screen (the child draws on
+the alternate screen), so the scroll goes to the child as SGR wheel events, `|by|` capped at 200
+and a target ± 1 row. Its one error code is `scroll_unavailable` (starting, finished, delivering a
+prompt, a screen-read turn, reconnecting, or magmux did not confirm); nothing is queued.
+`capabilities` lists `scroll`. The argument errors come before the run lookup, as for `resize`. It
+is not a nested tool. Mechanism, rows and states: `pane-session.md`, "Scrolling the child's view".
+
+`transcript_session` (`session_id`, `since?`) reads the session's conversation as plain text lines
+and answers `{session_id, cursor, lines, more, final}`; `team(mode:"transcript", path, slot,
+run_id?, since?)` answers `{run_id, path, slot, cursor, lines, more, final}` (MTL-373). It exists
+because a finished session cannot scroll, and the status mod's Text view needs the whole
+conversation from the first turn, after the session finished too. Screen stitching and
+`get_output` were rejected as sources (one guesses and loses lines between captures, the other
+holds answers only).
+
+- **Source.** The child's own transcript JSONL, the file that is already the turn oracle
+  (`pane/transcript-page.ts` reads it, `pane/transcript-lines.ts` renders it). Compaction is
+  append-only (42 of 400 transcripts compacted; earlier lines stay), so it is complete from the
+  first turn. Subagent files are not read: an `Agent` call is one `tool` line.
+- **Lines.** `{kind, text, cont?}`, `kind` a closed set appended to only: `user`, `assistant`,
+  `tool` (`Name(arg)`, the argument ≤ 160 characters), `task_file` (the Read result of a claudish
+  task file, which survives the reap that deletes the file), `system`, `error`. Text is
+  sanitised: escape sequences and control characters removed except `\n` and `\t`, a lone surrogate
+  made U+FFFD. A text over 8,000 UTF-16 units or 16,000 serialised bytes is SPLIT, never
+  truncated, into `cont` lines; a chain may continue in the next answer after `cursor`. `renderEntry` is pure, so two servers mint the
+  same lines from one entry.
+- **Redaction** (`pane/transcript-redaction.ts`), one pipeline for every text, a tool argument
+  included: (1) t0 is the sanitised WHOLE text — for a tool line the whole salient argument,
+  before whitespace is collapsed and before the 160 cut, because a cut first destroys the
+  complete string that exact-value redaction needs and leaves a credential's head in the line;
+  (2) signing-value ranges are found on t0 (`signingValueRanges`), because a pattern
+  replacement that ran first breaks a registered value that contains a shape (`opaque-sk-…/
+  suffix` left `/suffix` in the clear); (3) `redactPatternsMapped` applies exactly
+  `redactPatterns` to t0 and says where each output unit came from, and every surviving unit of
+  a signing range becomes `*`, one for one, except whitespace; (4) only then the cuts — the
+  argument's collapse and 160 cut, and the 8,000 / 16,000 split. The cuts are computed on the
+  pattern-redacted text before the signing mask, so the chunk count and every cut are functions
+  of the text alone, never of the leases live at the call (the cursor indexes the k-th line).
+  The mask is length-preserving and keeps whitespace in place, so the same cuts apply to the
+  masked text and a masked line is never longer than its unmasked one in units or JSON bytes
+  (`*` is one byte). A `[redacted]` replacement grew a line past the bound (9,768 characters,
+  measured) and is not used here. A range that ends inside a surrogate pair masks both halves,
+  and no lone surrogate is emitted.
+- **Cursor.** `v1.<offset>.<k>.<id8>`: the byte offset of an entry's line start, the next line
+  within that entry, the first 8 hex of the session uuid. Stateless (a restart, the disk fallback
+  and another server all read the same file); it is the SCAN position and advances over records
+  that render nothing. `v1` names the renderer revision as well: a change to how many lines an
+  entry yields mints `v2`, which resumes a `v1` cursor at `k = 0`.
+- **Caps per call.** 200 lines; 32,000 UTF-8 bytes of the COMPACT answer (15 % under the
+  37,758 bytes Claude Code accepted; 61,681 became a "saved to file" stub with no cursor, which a
+  poller would replay forever), and the first line always fits; 16 MiB of transcript scanned
+  (≈ 34 ms on the 124 MB worst file); a line over 32 MiB is skipped. Only complete lines are
+  read: a half-written entry is left for the next call.
+- **`final`.** `true` only when the writer was PROVABLY gone before the read and the page reached
+  the end. Live: terminal AND the pane's reap VERIFIED (`reapVerified()`: the group and magmux
+  verified gone and the files removed, on the first attempt or a later registry retry). A
+  cancelled turn still appends during the ≈ 12 s reap, and `reaped()` is not enough: it resolves
+  after an unverified reap (`reapFailed`) too, while a survivor may still write. Disk `meta.json`: a raw terminal state, `completedAt` (else the file's
+  mtime) 30 s old, AND the transcript 30 s quiet; the owner's pid is not consulted, because a
+  finished session's owner reaps its pane within seconds, and "never final while the owner lives"
+  would keep every finished tab of a long-lived server non-final for hours. `spawn.json` alone:
+  `mcpPid` ESRCH-dead and the transcript 30 s quiet. A team slot from `status.json`: finished 30 s
+  ago and the transcript 30 s quiet. A transcript still being written is evidence the writer is
+  alive, whatever the records say (MTL-373 blind test TEST-19). A source
+  whose liveness cannot be established answers `false`: a wrong `false` costs one more poll, a
+  wrong `true` shows a running conversation as finished.
+- **Lookup.** A reader, not a mutator: the live map, then the session directory (`meta.json`, or
+  `spawn.json` alone); team: the run registry, then `<path>/status.json` read with `getStatus` so
+  ENOENT (`unknown_run`) differs from a missing slot (`unknown_slot`). The team disk fallback
+  derives the projects directory from the injected parent env, as `SessionManager` does. A path
+  is read only when its basename is `<uuid>.jsonl`, its realpath lies under the (realpath of the)
+  projects directory, and the DESCRIPTOR is the file there (`openContainedTranscript`): opened
+  `O_NOFOLLOW | O_NONBLOCK`, `fstat` a regular file, then after the open the parent still
+  realpaths to itself and `lstat` of the real path has the descriptor's `dev`/`ino` (on Linux the
+  kernel's fd path must also equal it). A `stat` taken before the open followed the same swapped
+  link as the open and proved nothing.
+- **Residual risk (accepted; review round 2, CRITICAL 2).** On macOS an ancestor directory swapped
+  for a symlink to an outside directory before the `openSync`, and restored before the parent
+  `realpathSync`, still points the read outside the projects root: the descriptor and the `lstat`
+  (taken between the two) both name the outside inode, and the parent check then sees the restored
+  directory. Two swaps suffice. Accepted because the attacker must already write the user's own
+  `~/.claude/projects` as the same uid, which already lets them read the outside file directly, and
+  the answer goes only to that user's own Claude Code. A full fix needs descriptor-relative
+  no-follow traversal (`openat` with `O_NOFOLLOW` per component, or `F_GETPATH`), which Bun does
+  not expose on macOS; Linux closes the window with the kernel's fd path.
+- **Read only.** `open(…, O_RDONLY|O_NOFOLLOW|O_NONBLOCK)`, `stat`, `read`, `readdir` and `kill(pid, 0)`; no snapshot refresh,
+  no record written, nothing sent to the child. Not a nested tool; `capabilities` lists
+  `transcript` after `scroll`. Measurements: `ai-docs/reports/2026-11-03-transcript-measurements.md`.
+
+`replay_session` (`session_id`, `cols?`, `rows?`) opens a finished session's real interface, read only,
+in a pane of its own, and answers `{replay_id, seq}`. `capture_session`, `resize_session` and
+`scroll_session` route a `replay_id` to `ReplayManager` (`mcp-session/replay-manager.ts`) before any
+session lookup; `close_replay` ends it. The pane itself, its environment and its argv are in
+`pane-session.md` § Replay panes.
+
+- **Source.** `SessionManager.replayTarget` and `replayTargetOfTeamSlot` are the transcript verbs' own
+  lookups, so a session gone from memory but on disk still replays, the `kind:"team"` refusal stays,
+  and `unknown_session`, `unknown_run` and `unknown_slot` keep their meaning.
+- **States.** `writerGone` is `session_live`'s test, the rule `final` uses above. An open is classified
+  and registered before its first await, so concurrent opens of one target, by either verb, share one
+  process and one answer. A failed open leaves nothing. A replay that finishes by itself answers
+  `final:true` until closed.
+- **Errors.** `invalid_args`, `unknown_session`, or `replay_unavailable` with `reason`: `session_live`,
+  `no_record`, `spawn_failed` (an exit before the box included), `boot_dialog`. `send_input` answers
+  `replay_read_only` for anything shaped like a `replay_id`, open or not, before `text` is read; a
+  missing `session_id` stays the error it was.
+- **Not a session.** No entry in `sessions`, no directory and no record, so `list_sessions`, the
+  accounting, the session limit and `team(mode:"list")` cannot see it, and `get_output`,
+  `cancel_session`, `get_diagnostics` and `transcript_session` answer as for an unknown id.
+- **Tool groups.** Not a nested tool, and `team(mode:"replay")` is unreachable nested because `team` is
+  not registered there. Under `CLAUDISH_MCP_TOOLS=agentic`, where `team` is listed but
+  `capture_session` and `close_replay` are not, that mode answers `invalid_args`: nothing there could
+  read or close the pane. `capabilities` lists `replay` after `transcript`.
+
+`allowance_status` is the read-only source of the mod's allowance band: `{contract_version,
+capabilities, allowance, reason?}`, where `allowance` is the `claudish.allowance.v1` report that
+`claudish account forecast --json` prints (the allowance service's `report()`), or `null` with a
+`reason` when no Codex account is configured or the report fails. It is in `agentic`, not
+`session`, because it reads no session; it is not in `NESTED_MCP_TOOL_NAMES`, so a nested server
+never lists it. The answer is model-visible: no project path, session ids cut to 8 characters.
+Contract and discovery lifecycle: `pane-session.md` § The `allowance` capability; the model:
+`allowance.md`.
+
+**Its answer is compact JSON.** Every other verb answers indented (`contractAnswer`); a full
+allowance report measured 61,681 bytes indented and 37,758 compact (trajectory 26,641, sessions
+9,672, accounts 798, burn 87, header 287). Indented it is over Claude Code's MCP result cap, and
+Claude Code then replaces the answer with a "saved to file" stub: the band parses that stub,
+finds no report, and stays hidden with no error anywhere. `compactAnswer` serves this tool only.
+Compact is still 37 KB, so the tool takes `sections` (a non-empty subset of `accounts`, `combined`,
+`burn`, `alerts`, `trajectory`, `sessions`, `usage`; anything else is `invalid_args`): `allowance`
+then keeps its header and only those parts, and the answer carries the sorted `sections` beside
+`contract_version`, which is how a reader tells a partial report from a full one.
+`allowanceStatusAnswerSchema` requires every NAMED section when `sections` is present; when it is
+absent, it requires the six sections of `ALLOWANCE_REPORT_SECTIONS_V1_BASE` only, because `usage`
+was added later and an older claudish's full answer (and the goldens magus copies) must keep
+validating. A full answer from this claudish always carries `usage`. The band polls
+`["accounts","burn","alerts"]`: 1,547 bytes against 34,875 for the full answer, measured on a
+two-account pool with 72 h of ledger. The cut happens after `report()`: the full report
+(its trajectory simulation included) is computed on every call either way; a lighter report path is
+not built.
 
 The tool list is pinned by an EXACT frozen array in `mcp-session/e2e-sessions.test.ts`, so
 adding or removing a tool without updating that test fails CI. That is deliberate:
@@ -439,12 +627,12 @@ Tool gating via the `CLAUDISH_MCP_TOOLS` env var (lower-cased, `resolveToolGroup
 
 | Value | Tools |
 |---|---|
-| unset, `all` | all 15 |
+| unset, `all` | all 20 |
 | `low-level` | `run_prompt`, `list_models`, `search_models` |
-| `agentic` | `preflight`, `team`, `report_error` |
-| `session` | the 8 session tools |
+| `agentic` | `preflight`, `team`, `report_error`, `allowance_status` |
+| `session` | the 12 session tools |
 | `debug` | `compare_models` |
-| `channel`, or any other value | all 15, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
+| `channel`, or any other value | all 20, plus one stderr line naming the value and the valid ones (`unknownToolModeWarning`); for `channel` it says the group was renamed to `session` |
 
 Unknown values keep selecting everything, because a server that lists fewer tools than its host
 expects fails later and quietly. The stderr line is there so a typo is not read as `all` with
@@ -452,7 +640,7 @@ no trace.
 
 `session` was `channel` until 10.7.0. The rename removed the old name with no alias, per the
 thesaurus rule, so `channel` now falls into the unknown-value rule and selects everything. The
-stderr startup line shows `tools: channel, 15 tools` after the unknown-value warning, but an MCP
+stderr startup line shows `tools: channel, 20 tools` after the unknown-value warning, but an MCP
 host does not show stderr.
 `compare_models` moved to `debug` at the same time: it sends one prompt to several models in
 sequence and shows raw answers, which is a route check, not work. Real multi-model work is `team`.
@@ -604,7 +792,7 @@ registers channels. Every other host dropped every frame, and a host polling `li
 the same facts from the records. The frames were never a keepalive either (next section).
 
 Where the facts are now: `list_sessions` rows (`state`, `activity`, `idle_seconds`, accounting),
-`get_output`, `get_diagnostics`, `capture_session`, and the session records (`spawn.json`,
+`get_output`, `get_diagnostics`, `capture_session`, `transcript_session`, and the session records (`spawn.json`,
 `waits.jsonl`, `meta.json`, `events.jsonl`, `screen.txt`), which outside observers read and which
 are byte-identical to before. `waits.jsonl` keeps the same event names in its `to` field.
 `team` progress is `team(mode:"status")`. The `notifications/progress` keepalive stays.
@@ -643,7 +831,7 @@ not checked". `testing.md` has the rules.
   `../mcp-shutdown.e2e.test.ts` — stdin EOF, SIGTERM and SIGKILL of a server holding a live session
   and a live team run.
 
-**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-sessions.test.ts` freezes the full 15-name list, the session-only 8 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics`, `capture_session` and `resize_session` each broke both pins on the way in, which is the guard working.
+**The tool list is pinned per group, and adding a tool must break a pin.** `e2e-sessions.test.ts` freezes the full 15-name list, the session-only 8 and the low-level 3, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics`, `capture_session`, `resize_session`, `scroll_session` and `transcript_session` each broke both pins on the way in, which is the guard working.
 
 E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for isolation. SessionManager tests point child spawns at the tree under test via `CLAUDISH_BIN` (`spawn-claudish.ts`), never at the installed binary.
 

@@ -713,6 +713,27 @@ before the subscription 401 rule. An `"Invalid API key."` 401 or 403 is still a 
 `FallbackCandidate.provider` now carries the claudish provider uid. `isRetryableError` used to
 receive the candidate's DISPLAY name, and `isSubscriptionProvider("Kimi Coding")` is false.
 
+### The hop decision is one function (`handlers/shared/hop-decision.ts`)
+
+What `FallbackHandler.handle` does after a hop that did not answer `ok` is the pure function
+`decideHopFailure`, with `isRetryableError`, `isSubscriptionCredentialRejection` and `isProvider`
+beside it (`fallback-handler.ts` re-exports them). Its reasons, in the handler's order:
+`recovery-hold`, `stream-failure`, `credential-hold` (stop, response verbatim);
+`subscription-credential-rejected` (advance, announced); `retryable` (advance) and `non-retryable`
+(stop); and `thrown` (advance), which the handler's `catch` asks for. It lives in its own module so
+the probe can import it without loading `composed-handler.ts`: `probeLink` sets
+`ProbeResult.chainAction` from it, and MCP `preflight` walks a model's routing chain by it
+(`mcp-sessions.md`). A second copy of the rule is how preflight once said "drop or replace" for a
+model whose later hop served (D6). `handle()` now reads the error body from a clone before deciding,
+also for the three verbatim stops; each is claudish's own small JSON body and is still returned as is.
+
+A probe pins one hop, so no `FallbackHandler` catches a hop that throws: the `/v1/messages` route's
+catch answers 500 with the error text (a pinned hop's throw never reaches `app.onError`, measured).
+That 500 carries `x-claudish-unhandled-error: 1` when the resolved handler itself threw, and so does
+`app.onError`'s; `probeLink` maps the marker to `advance / thrown`, which is what the runtime does
+with a throw inside a chain. A malformed body or a terminal routing failure is not marked. The header
+changes nothing for Claude Code (same status, body and envelope).
+
 ## The catalog's endpoint contract has two halves (v9.0.7)
 
 > **Superseded (10.5.0).** The gate, the name rule and the model-level `tokenParam` read
@@ -899,7 +920,9 @@ is parsed and logged long after the handler returned.
 | `CLAUDISH_UPSTREAM_ERROR_LOG`, team/pane/MCP error text | `redactSecrets` runs the registry pass before its shape rules (`redact.ts:246`) |
 | Telemetry report | `buildReport` runs it before `sanitizeMessage` (`telemetry.ts:439`, `:473`) |
 | Text sent back to Claude Code | `redactForClient` (`redact.ts:235`) at each client-body family: the native passthrough's non-success JSON body and the data lines of an SSE error event (every other byte passes unchanged). The passthrough holds each SSE event until its blank separator and only then decides: SSE fixes an event's type at dispatch and `event:` may legally follow the `data:` it names, so redacting line by line once `event: error` had been seen let `data: …` then `event: error` through unredacted. An event is an error when its LAST `event:` names `error` or its data is JSON with `type: "error"` (`redactSseErrorEvent`, `handlers/native-handler.ts`); a non-error event is forwarded byte for byte, one event late at most, `ComposedHandler`'s error bodies, the Responses leg issuer, the error frames of every stream parser (`anthropic-sse`, `openai-sse`, `gemini-sse`, `ollama-jsonl`, `devin-connect`, `responses/claude-sse-sink`), `FallbackHandler`'s combined body and thrown messages, the auth-failure bodies (`respondAuthFailure`), the 7b/7c stream-head failure bodies (`surfaced` and `provider_message`), the proxy's catch and `onError` bodies |
+| The allowance usage ledger (`~/.claudish/accounts/usage/`), `allowance-alerts.json`, and what is built from them (`account forecast`, MCP `allowance_status`, the status-line `allowance` key) | nothing to redact: a row is built only from numbers, closed sets and pattern-checked identifiers (`ledger/ledger-row.ts` guards: `PlanClass`, `ACCOUNT_LABEL_PATTERN`, session and model patterns; a label may be an email: personal data, not a secret), never from header or body text; the raw plan-type header maps to a closed set and is never stored. The guard test that injects a signing value as `x-codex-plan-type` and asserts the segment's bytes lack it is specified (`allowance.md`) and not yet written |
 | An advisor result | the gateway redacts the whole body by value against the call's own set (`redactExactValues`, `redact.ts:215`) before the reason reaches records, warnings or the tool result |
+| `transcript_session` / `team(mode:"transcript")` lines (a child's transcript text returned to the MCP host) | `pane/transcript-redaction.ts` `entryLines`: `signingValueRanges` on the ORIGINAL whole text (a tool argument before its whitespace collapse and 160 cut), then `redactPatternsMapped` (exactly `redactPatterns`, the pure shape half of `redactSecrets`, plus where each output unit came from) carries those ranges through the pattern replacements, and every surviving unit of a registered value is masked `*` one for one, whitespace kept. All cuts (the 160 cut, the `cont` split) are computed on the pattern-redacted text before the mask, so the line count and cut positions never depend on the leases (the cursor indexes them), and a masked line is never longer than the bound. Not `[redacted]`: it grew a line past 8,000 characters. `redactSecrets` is `redactPatterns(redactSigningValues(text))`, unchanged in output |
 
 **Parser rule: close last.** On a normal end the lease is released when the consumer reads
 `done`, which follows the parser's `controller.close()`. A parser that awaits anything, or logs

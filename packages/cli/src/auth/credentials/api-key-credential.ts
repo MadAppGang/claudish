@@ -385,7 +385,7 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     // That is the point: this method never returns null and never throws, so
     // "something came back" says nothing about which arm won. Only this marker
     // does. See CompositeCredentialProvider.getRequestAuth and
-    // OpenAICodexTransport.refreshAuth.
+    // OpenAICodexTransport.signRequest.
     return { arm: "api-key", headers };
   }
 }

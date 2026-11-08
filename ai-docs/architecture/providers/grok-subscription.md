@@ -60,8 +60,18 @@ out of the user's local `agy` binary at runtime.
 **Write-back is not optional.** An OIDC server may rotate the refresh token on use, so refreshing
 without persisting would leave the user's own `grok` CLI holding a dead token — claudish would have
 broken a tool it does not own. The whole file is read-modify-written atomically (temp + rename,
-mode 0600) so unrelated scopes and fields survive. Refresh is also **single-flight**: two concurrent
-refreshes would have the second present a token the first just invalidated.
+mode 0600) so unrelated scopes and fields survive, and only while the scope entry still holds the
+refresh token this refresh presented: a `grok login` that landed during the exchange is kept, and
+the next resolve uses it. Refresh is also **single-flight**: two concurrent refreshes would have
+the second present a token the first just invalidated.
+
+**claudish's own `~/.claudish/grok-oauth.json` follows the file** (`credential-files.md`). A
+long-lived process re-reads it when another process wrote it (`claudish login grok` in another
+terminal), before signing, before refreshing and before reporting a revoked login, so an old MCP
+server no longer answers `Refresh token has been revoked` after a new login (D1). A refresh result
+is written atomically and only while the file still holds the login it refreshed from. A torn file
+(an older claudish writing in place) keeps the last good token and is never read as a sign-out.
+Tests point it at a temp file with `setGrokOAuthPathForTesting`.
 
 **Three client-identity headers are ALL mandatory.** The proxy enforces a minimum CLI version and
 answers anything without them `{"error":"Your Grok CLI version (none) is outdated..."}` — on both

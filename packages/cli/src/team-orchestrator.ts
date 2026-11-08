@@ -13,6 +13,7 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { ENV } from "./config.js";
+import { writeFileAtomic } from "./fs-atomic.js";
 import { UPSTREAM_ERROR_LOG_ENV } from "./handlers/shared/upstream-error-capture.js";
 import type { HookEngine } from "./hooks/engine.js";
 import { loadHooksOnce } from "./hooks/index.js";
@@ -26,6 +27,8 @@ import {
   reportOwnerWithoutHooks,
   sessionHooksNeedBinding,
 } from "./hooks/session/binding.js";
+import { parseInBandApiError } from "./in-band-api-error.js";
+import { log } from "./logger.js";
 import {
   type Accounting,
   type CaptureResult,
@@ -40,15 +43,22 @@ import {
   type PaneSession,
   type PaneSessionOptions,
   type PaneSnapshot,
+  type ReplayTarget,
   SLOT_STATES,
+  type ScrollRequest,
   type SettledTurn,
   type SlotRow,
   type SlotState,
   TERMINAL_STATES,
+  TRANSCRIPT_GRACE_MS,
   type TeamCancelResult,
   type TeamListResult,
   type TeamResizeResult,
   type TeamRunRow,
+  type TeamScrollResult,
+  type TeamTranscriptResult,
+  type TranscriptCursor,
+  type TranscriptSource,
   assertMagmuxAvailable,
   chainAnswerOf,
   checkChildFlags,
@@ -56,16 +66,21 @@ import {
   deliveryRefusal,
   flagsRemoveRead,
   isTerminalState,
+  isUuid,
   livePaneCount,
   mergeAccounting,
   readTokenFileCached,
   reasonDetail,
   releasePaneReservations,
+  requestedAgentOf,
   reservePanes,
   resolveProvider,
   sockRootFor,
   startPaneSession,
   toSlotRow,
+  transcriptAnswer,
+  transcriptHeadCwd,
+  transcriptQuiet,
   upstreamRecordsFor,
 } from "./pane/index.js";
 import { redactSecrets } from "./redact.js";
@@ -151,10 +166,19 @@ export interface ModelStatus {
   toolCalls?: number;
   turnsCompleted?: number;
   lastActivityAt?: string | null;
+  /** SlotRow.agent_requested: the `--agent` the slot was started with; null = none. */
+  agentRequested?: string | null;
+  /** SlotRow.agent: the transcript's `agent-setting`; null = none written. */
+  agent?: string | null;
   /** The child's Claude Code version from its boot banner (R3-M4). */
   claudeCodeVersion?: string | null;
   /** Facts worth a reader's attention that are not failures (R3-M5, truncation). */
   anomalies?: string[];
+  /**
+   * Where the answer in `response-<id>.md` came from: `"reply"` (the turn's assistant text) or
+   * `"file:<path>"` (a file the slot wrote with Write, MTL-229). Absent when no verdict was reached.
+   */
+  answerSource?: string;
 }
 
 export interface TeamStatus {
@@ -167,6 +191,18 @@ export interface TeamStatus {
 
 export interface TeamRunOptions {
   claudeFlags?: string[]; // extra flags passed to child claudish (checked by checkChildFlags)
+  /**
+   * The Claude Code conversation that delegated this run (`parentSessionForCall`),
+   * passed to every slot as `CLAUDISH_PARENT_SESSION`: the slot's proxy records it as
+   * the usage ledger's `parent`. Absent for a run the MCP server did not start.
+   */
+  parentClaudeSessionId?: string;
+  /**
+   * Reasoning effort per model, keyed by the model string as the run's models give
+   * it. A slot with an entry gets `--effort-override <level>` after `claudeFlags`, so
+   * it wins over one there and its proxy pins that level on every request.
+   */
+  efforts?: Readonly<Record<string, string>>;
   onStatusChange?: (id: string, status: ModelStatus) => void;
   /**
    * Opt-in stub threshold: below this many answer bytes a settled slot is recorded
@@ -191,6 +227,13 @@ export interface TeamRunOptions {
    * answer that begins with its verdict even when the model narrated before reading.
    */
   requirePattern?: string;
+  /**
+   * The slots' working directory. Default `process.cwd()`. One value serves every use: the
+   * child starts there, its transcript path is derived from it, the hook session reports it,
+   * and a slot's written files must lie inside its realpath to be read as its answer
+   * (MTL-229; a relative Write path resolves against it).
+   */
+  cwd?: string;
   /**
    * Called on a timer with a rendered, colourless progress block, and once more
    * when the run settles. Used to push live status somewhere a human can see it
@@ -298,6 +341,8 @@ export interface TeamHandle {
 export interface TeamJudgeOptions {
   judges?: string[]; // models to use as judges (default: same models as runners)
   claudeFlags?: string[];
+  /** The delegating conversation, passed to every judge slot (`TeamRunOptions.parentClaudeSessionId`). */
+  parentClaudeSessionId?: string;
   /** The environment the judge panes are built from; default `process.env`. */
   parentEnv?: Record<string, string | undefined>;
   /** @internal test-only pane timing seams */
@@ -333,6 +378,8 @@ interface SlotEntry {
   id: string;
   model: string;
   spawnModel: string | null;
+  /** SlotRow.agent_requested: the `--agent` in the slot's flags; null = none */
+  agentRequested: string | null;
   tokenFile: string;
   /** null = the pane never spawned (its row is FAILED `pane_lost`, `pane: null`) */
   session: PaneSession | null;
@@ -341,10 +388,18 @@ interface SlotEntry {
   /** what `response-<id>.md` holds once it was written (decide, onBlocked or terminal) */
   answer: string | null;
   stopReason: string | null;
+  /** ModelStatus.answerSource; set by the verdict */
+  answerSource?: string;
   /** the slot's session-hook binding (§7.4); null = today's index formulas */
   binding?: SessionHookBinding | null;
   /** the owner-created hook inbox; removed at reap */
   inboxPath?: string | null;
+  /**
+   * the pane's reap was VERIFIED (`PaneSession.reapVerified()`, first attempt or a
+   * registry retry): nothing more can reach the transcript (§ 2.4). Not `reaped()`,
+   * which resolves after an unverified reap (`reapFailed`) too.
+   */
+  reapVerified?: boolean;
 }
 
 interface LiveTeamRun {
@@ -359,6 +414,10 @@ interface LiveTeamRun {
   slots: Map<string, SlotEntry>;
   /** resolves once `done` has ended the run's record (`onSettled`), whatever ended it */
   settled: Promise<void>;
+  /** the slots' Claude Code projects directory: a transcript path must lie under it */
+  projectsRoot: string;
+  /** the slots' working directory */
+  cwd: string;
 }
 
 /** A `startModels` still before its registry entry (credentials, the staggered spawn loop). */
@@ -500,6 +559,8 @@ function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
     activity: null,
     pane: null,
     recent: null,
+    agent_requested: e.agentRequested,
+    agent: null,
   };
 }
 
@@ -507,7 +568,7 @@ function liveSlotRow(run: LiveTeamRun, e: SlotEntry): SlotRow {
   if (!e.session) return neverSpawnedRow(e, run.status.models[e.id]);
   const snap = e.session.snapshot();
   return toSlotRow(
-    { slot: e.id, model: e.model, spawnModel: e.spawnModel },
+    { slot: e.id, model: e.model, spawnModel: e.spawnModel, agentRequested: e.agentRequested },
     snap,
     refreshAccounting(e, snap),
     Date.now(),
@@ -590,6 +651,8 @@ export function teamRunRowFromDisk(path: string, status: TeamStatus): TeamRunRow
         activity: null,
         pane: m?.pane ?? null,
         recent: null,
+        agent_requested: m?.agentRequested ?? null,
+        agent: m?.agent ?? null,
       };
     });
   const settled = slots.length > 0 && slots.every((s) => isTerminalState(s.state));
@@ -751,6 +814,166 @@ export async function resizeTeamSlot(
 }
 
 /**
+ * Contract G: scroll one slot's transcript view (`PaneSession.scroll`), addressed like
+ * `resizeTeamSlot`. A slot whose pane never spawned answers `scroll_unavailable` (still
+ * starting, or finished). Throws `ContractErrorException`: `unknown_run`, `unknown_slot`,
+ * `scroll_unavailable`.
+ */
+export async function scrollTeamSlot(
+  path: string | undefined,
+  slot: string,
+  req: ScrollRequest,
+  runId?: string
+): Promise<TeamScrollResult> {
+  const run = addressRun(path, runId);
+  if (!run) throw unknownRun(path, runId);
+  const e = run.slots.get(slot);
+  if (!e)
+    throw new ContractErrorException(
+      "unknown_slot",
+      `run ${run.runId} has no slot ${JSON.stringify(slot)}`
+    );
+  if (!e.session) {
+    const state = run.status.models[e.id]?.state;
+    throw new ContractErrorException(
+      "scroll_unavailable",
+      state === undefined || isTerminalState(state)
+        ? "the slot has finished"
+        : "the slot is still starting"
+    );
+  }
+  const r = await e.session.scroll(req);
+  return { run_id: run.runId, path: run.path, slot, seq: r.seq };
+}
+
+/**
+ * Contract H: one slot's conversation as plain text lines (`team(mode="transcript")`),
+ * from its Claude Code transcript, after the cursor `since`. A READER: the retained run
+ * (`run_id`, else the newest at `path`), else `<path>/status.json` — read with
+ * `getStatus` so an absent file (`unknown_run`) is told apart from an absent slot
+ * (`unknown_slot`), and used only when `runId` is absent or equals the file's run id
+ * (`status.runId ?? basename(path)`). Read only. `final` needs the writer provably gone
+ * before the read: a live slot terminal AND its reap verified (or never spawned); a `status.json`
+ * slot terminal with `completedAt` (else the file's mtime) at least the grace old AND no
+ * write to its transcript within the grace.
+ * Throws `ContractErrorException`: `unknown_run`, `unknown_slot`, `invalid_args`.
+ */
+export function transcriptTeamSlot(
+  path: string | undefined,
+  slot: string,
+  since?: TranscriptCursor,
+  runId?: string,
+  opts: TeamSlotSourceOptions = {}
+): TeamTranscriptResult {
+  const { src, address } = teamSlotTranscriptSource(path, slot, runId, opts);
+  return transcriptAnswer(src, since, address);
+}
+
+/**
+ * What a replay of one slot needs, from the transcript verb's own lookup, so `unknown_run` and
+ * `unknown_slot` stay its own. The working directory: the retained run's, else the transcript's
+ * first records. Throws `ContractErrorException`: `unknown_run`, `unknown_slot`.
+ */
+export function replayTargetOfTeamSlot(
+  path: string | undefined,
+  slot: string,
+  runId?: string,
+  opts: TeamSlotSourceOptions = {}
+): ReplayTarget {
+  const { src, cwd } = teamSlotTranscriptSource(path, slot, runId, opts);
+  const head =
+    !cwd && src.transcriptPath && isUuid(src.sessionUuid)
+      ? transcriptHeadCwd(src.transcriptPath, src.sessionUuid, src.projectsRoot)
+      : null;
+  return {
+    claudeSessionId: src.sessionUuid,
+    transcriptPath: src.transcriptPath,
+    writerGone: src.writerGone,
+    cwd: cwd ?? head,
+    projectsRoot: src.projectsRoot,
+  };
+}
+
+interface TeamSlotSourceOptions {
+  graceMs?: number;
+  /** the env the run's children inherited (as `startModels`' `parentEnv`); default `process.env` */
+  parentEnv?: Record<string, string | undefined>;
+}
+
+/** One slot's transcript source and answer address; the lookup `transcriptTeamSlot` documents. */
+function teamSlotTranscriptSource(
+  path: string | undefined,
+  slot: string,
+  runId: string | undefined,
+  opts: TeamSlotSourceOptions
+): {
+  src: TranscriptSource;
+  address: { run_id: string; path: string; slot: string };
+  cwd: string | null;
+} {
+  const graceMs = opts.graceMs ?? TRANSCRIPT_GRACE_MS;
+  const run = addressRun(path, runId);
+  if (run) {
+    const e = run.slots.get(slot);
+    if (!e)
+      throw new ContractErrorException(
+        "unknown_slot",
+        `run ${run.runId} has no slot ${JSON.stringify(slot)}`
+      );
+    const m = run.status.models[e.id];
+    const writerGone = e.session
+      ? isTerminalState(e.session.snapshot().state) && e.reapVerified === true
+      : m?.state === undefined || isTerminalState(m.state);
+    const src: TranscriptSource = {
+      transcriptPath: m?.transcriptPath || null,
+      sessionUuid: m?.sessionUuid || null,
+      writerGone,
+      projectsRoot: run.projectsRoot,
+    };
+    return { src, address: { run_id: run.runId, path: run.path, slot }, cwd: run.cwd };
+  }
+  if (path === undefined) throw unknownRun(path, runId);
+  const resolved = resolve(path);
+  let status: TeamStatus;
+  try {
+    status = getStatus(resolved);
+  } catch {
+    throw unknownRun(path, runId);
+  }
+  if (!status || typeof status !== "object" || !status.models || typeof status.models !== "object")
+    throw unknownRun(path, runId);
+  const fileRunId =
+    typeof status.runId === "string" && status.runId ? status.runId : basename(resolved);
+  if (runId !== undefined && runId !== fileRunId) throw unknownRun(path, runId);
+  const m = Object.hasOwn(status.models, slot) ? status.models[slot] : undefined;
+  if (!m || typeof m !== "object")
+    throw new ContractErrorException(
+      "unknown_slot",
+      `run ${fileRunId} has no slot ${JSON.stringify(slot)}`
+    );
+  const now = Date.now();
+  const endedMs = typeof m.completedAt === "string" ? Date.parse(m.completedAt) : Number.NaN;
+  const mtime = statusMtimeMs(resolved);
+  const age = Number.isFinite(endedMs) ? now - endedMs : mtime === null ? null : now - mtime;
+  const terminal =
+    typeof m.state === "string" &&
+    (SLOT_STATES as readonly string[]).includes(m.state) &&
+    isTerminalState(m.state);
+  const transcriptPath =
+    typeof m.transcriptPath === "string" && m.transcriptPath ? m.transcriptPath : null;
+  const src: TranscriptSource = {
+    transcriptPath,
+    sessionUuid: typeof m.sessionUuid === "string" && m.sessionUuid ? m.sessionUuid : null,
+    // and no write to the transcript within the grace: a write means its writer still lives
+    writerGone:
+      terminal && age !== null && age >= graceMs && transcriptQuiet(transcriptPath, now, graceMs),
+    // the same root a live run derives at spawn (`projectsDir(parentEnv)`), as SessionManager does
+    projectsRoot: projectsDir(opts.parentEnv ?? process.env),
+  };
+  return { src, address: { run_id: fileRunId, path: resolved, slot }, cwd: null };
+}
+
+/**
  * Per-slot maps the legacy `status` payload carries beside `run` (§4.1), derived from
  * the live rows: idle seconds and activity of every non-terminal slot, and the answer
  * bytes each has produced so far. Null for a run this server does not hold.
@@ -868,6 +1091,11 @@ export function snippetHeadAndTail(text: string): string {
  */
 export const DEFAULT_MIN_OUTPUT_BYTES = 0;
 
+/** Added to a COMPLETED slot's detail and anomalies when its answer came from a written file. */
+function fileAnswerNote(path: string): string {
+  return `answer was written to ${path}, not to the reply`;
+}
+
 /** Added to `detail` (or the COMPLETED slot's anomalies) when the turn ended on max_tokens. */
 export const TRUNCATION_NOTE =
   "the turn ended on stop_reason max_tokens, so the answer may be truncated";
@@ -906,7 +1134,12 @@ type Verdict = { state: "FAILED" | "EMPTY"; reason: FailureReason; detail: strin
 
 /** The turn's own failure signals: an API error, an unread task file, a refusal. */
 function classifyTurnSignals(input: Parameters<typeof classifyRunOutput>[0]): Verdict | null {
-  const { apiError, stopReason, promptRead } = input;
+  const { stopReason, promptRead } = input;
+  // An error claudish wrote into the stream as text carries no Claude Code flag.
+  const inBand = input.apiError
+    ? null
+    : parseInBandApiError(input.answer, { trailing: promptRead?.complete === false });
+  const apiError = input.apiError ?? (inBand ? { status: null, text: inBand.text } : null);
   if (apiError) {
     const status = apiError.status === null ? "" : ` (status ${apiError.status})`;
     return {
@@ -961,12 +1194,74 @@ function classifyShape(
   return {
     state: "EMPTY",
     reason: "shape_mismatch",
-    detail:
-      `The answer (${Buffer.byteLength(answer, "utf8")} B of assistant text after the task was ` +
-      `read) does not match the required pattern /${requirePattern}/. Every assistant message ` +
-      "of the turn was read from the transcript, so nothing was lost: the model did not " +
-      "produce the shape. Re-prompt it, or relax the contract.",
+    detail: shapeDetail(answer, requirePattern, null),
   };
+}
+
+/**
+ * The `shape_mismatch` detail. `files` is what the turn wrote with Write and what became of
+ * each (MTL-229); null where written files are not consulted (a direct classifyRunOutput).
+ */
+function shapeDetail(answer: string, requirePattern: string, files: string[] | null): string {
+  const reply = `reply (${Buffer.byteLength(answer, "utf8")} B of assistant text after the task was read) does not match`;
+  const advice = "Re-prompt it, or relax the contract.";
+  if (!files) return `The ${reply} the required pattern /${requirePattern}/. ${advice}`;
+  const wrote = files.length ? `the turn wrote ${files.join(", ")}` : "the turn wrote no file";
+  return `No reply text or written file matched /${requirePattern}/: the ${reply}, and ${wrote}. ${advice}`;
+}
+
+/**
+ * A reply's failure detail with what became of the files the turn wrote (MTL-229). A
+ * shape_mismatch is restated with them, keeping classifyRunOutput's truncation note.
+ */
+function answerFailureDetail(
+  v: Verdict,
+  answer: string,
+  requirePattern: string | undefined,
+  outcomes: string[]
+): string {
+  if (v.reason === "shape_mismatch" && requirePattern) {
+    const note = v.detail.endsWith(`(${TRUNCATION_NOTE})`) ? ` (${TRUNCATION_NOTE})` : "";
+    return `${shapeDetail(answer, requirePattern, outcomes)}${note}`;
+  }
+  if (outcomes.length) return `${v.detail} The turn wrote ${outcomes.join(", ")}.`;
+  return v.detail;
+}
+
+/** A written file larger than this is not read as an answer (MTL-229). */
+const MAX_FILE_ANSWER_BYTES = 1024 * 1024;
+
+/**
+ * A file the slot wrote, read from DISK at verdict time (the truth after any later Edit), or
+ * the reason it is skipped. Contained in `root` by realpath, as validateSessionPath does: its
+ * content goes into response-<id>.md and to the judges, so a Write through a symlink or to a
+ * path outside the run's tree must not pull arbitrary disk content into the run's output.
+ */
+function readWrittenFile(path: string, root: string): { text: string } | { skip: string } {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    realRoot = resolve(root);
+  }
+  let real: string;
+  try {
+    real = realpathSync(resolve(root, path));
+  } catch {
+    return { skip: "missing" };
+  }
+  if (real !== realRoot && !real.startsWith(realRoot + sep))
+    return { skip: "outside the working directory" };
+  try {
+    const st = statSync(real);
+    if (!st.isFile()) return { skip: "not a regular file" };
+    if (st.size > MAX_FILE_ANSWER_BYTES) return { skip: "larger than 1 MiB" };
+    const buf = readFileSync(real);
+    if (buf.includes(0)) return { skip: "binary" };
+    return { text: buf.toString("utf8") };
+  } catch {
+    return { skip: "missing" };
+  }
 }
 
 function classifyAnswer(input: Parameters<typeof classifyRunOutput>[0]): Verdict | null {
@@ -1194,7 +1489,7 @@ export function setupSession(sessionPath: string, models: string[], input?: stri
       ])
     ),
   };
-  writeFileSync(join(sessionPath, "status.json"), JSON.stringify(status, null, 2), "utf-8");
+  writeFileAtomic(join(sessionPath, "status.json"), JSON.stringify(status, null, 2));
 
   return manifest;
 }
@@ -1306,6 +1601,7 @@ async function startModelsIn(
   const claudeFlags = opts.claudeFlags ?? [];
   const flagCheck = checkChildFlags(claudeFlags);
   if (!flagCheck.ok) throw new Error(`invalid_args: ${flagCheck.message}`);
+  const agentRequested = requestedAgentOf(claudeFlags);
 
   const path = resolve(sessionPath);
   const manifest: TeamManifest = JSON.parse(readFileSync(join(path, "manifest.json"), "utf-8"));
@@ -1352,7 +1648,7 @@ async function startModelsIn(
     statusCache.models[id] = { ...statusCache.models[id], ...update } as ModelStatus;
   }
   function flushStatus(): void {
-    writeFileSync(statusPath, JSON.stringify(statusCache, null, 2), "utf-8");
+    writeFileAtomic(statusPath, JSON.stringify(statusCache, null, 2));
   }
   function updateModelStatus(id: string, update: Partial<ModelStatus>): void {
     if (aborting) return;
@@ -1369,6 +1665,7 @@ async function startModelsIn(
 
   const minOutputBytes = opts.minOutputBytes ?? DEFAULT_MIN_OUTPUT_BYTES;
   const requirePattern = opts.requirePattern;
+  const cwd = opts.cwd ?? process.cwd();
 
   // Each child writes its token/cost stats here (one file per model).
   mkdirSync(statsDir(path), { recursive: true });
@@ -1377,8 +1674,12 @@ async function startModelsIn(
   let run: LiveTeamRun | null = null;
   const errorLogPathOf = (id: string) => join(path, "errors", `${id}.log`);
   const upstreamLogOf = (id: string) => upstreamLogPath(path, id);
+  const flagsOf = (e: SlotEntry): string[] => {
+    const effort = opts.efforts?.[e.model];
+    return effort ? [...claudeFlags, "--effort-override", effort] : claudeFlags;
+  };
   const commandOf = (e: SlotEntry) =>
-    ["claudish", "-i", "--model", e.spawnModel ?? e.model, "-y", "--quiet", ...claudeFlags].join(
+    ["claudish", "-i", "--model", e.spawnModel ?? e.model, "-y", "--quiet", ...flagsOf(e)].join(
       " "
     );
 
@@ -1417,13 +1718,51 @@ async function startModelsIn(
     return e.session?.turnAnswer(index) ?? "";
   }
 
+  /**
+   * MTL-229: a reply that failed an ANSWER check may have put the deliverable in a file it
+   * wrote. The first file whose on-disk content passes the caller's contract, in write order,
+   * and what became of every file tried before it. Only when the caller set `requirePattern`:
+   * size alone does not prove a file is the deliverable (a min_output_bytes-only slot that
+   * wrote a source module must not become a vote), so without a pattern the files are listed
+   * unread; with one, `minOutputBytes` still applies to the file as an extra floor. Never over
+   * api_error / prompt_not_read / refused, which the classifier returns before these reasons.
+   */
+  function fileAnswerOf(
+    turn: SettledTurn,
+    reason: FailureReason
+  ): { file: { path: string; text: string } | null; outcomes: string[] } {
+    if (reason !== "shape_mismatch" && reason !== "empty_output")
+      return { file: null, outcomes: [] };
+    if (!requirePattern) return { file: null, outcomes: turn.writtenFiles ?? [] };
+    const outcomes: string[] = [];
+    for (const written of turn.writtenFiles ?? []) {
+      // A relative Write is reported resolved, so answerSource names the file without the cwd.
+      const path = resolve(cwd, written);
+      const r = readWrittenFile(path, cwd);
+      if ("skip" in r) {
+        outcomes.push(`${path} (skipped: ${r.skip})`);
+        continue;
+      }
+      const fv = classifyRunOutput({
+        answer: r.text,
+        apiError: null,
+        stopReason: turn.stopReason,
+        promptRead: turn.chainDelivery,
+        minOutputBytes,
+        requirePattern,
+      });
+      if (!fv) return { file: { path, text: r.text }, outcomes };
+      outcomes.push(`${path} (no match)`);
+    }
+    return { file: null, outcomes };
+  }
+
   /** Team policy for a settled turn (D8): the verdict, after the response file exists. */
   function teamDecide(e: SlotEntry, turn: SettledTurn): FinalVerdict {
     e.stopReason = turn.stopReason;
     // A hook-extended chain is the slot's answer: every turn joined, classified with the
     // chain head's prompt-read result. Without hooks both are the turn's own (§7.4).
     const answer = chainAnswerOf(turn);
-    writeResponse(e, answer);
     const v = classifyRunOutput({
       answer,
       chainAnswers: [...turn.chainAnswers, turn.answer],
@@ -1437,13 +1776,26 @@ async function startModelsIn(
     const shells = (e.session?.snapshot().anomalies ?? []).filter((a) =>
       a.startsWith("background_shell_open")
     );
+    const truncated = turn.stopReason === "max_tokens" ? [TRUNCATION_NOTE] : [];
     if (!v) {
-      const notes = [...shells, ...(turn.stopReason === "max_tokens" ? [TRUNCATION_NOTE] : [])];
+      e.answerSource = "reply";
+      writeResponse(e, answer);
+      const notes = [...shells, ...truncated];
       return notes.length
         ? { state: "COMPLETED", detail: notes.join(" · ") }
         : { state: "COMPLETED" };
     }
-    return { state: v.state, reason: v.reason, detail: [v.detail, ...shells].join(" · ") };
+    const { file, outcomes } = fileAnswerOf(turn, v.reason);
+    if (file) {
+      e.answerSource = `file:${file.path}`;
+      writeResponse(e, file.text);
+      const notes = [fileAnswerNote(file.path), ...shells, ...truncated];
+      return { state: "COMPLETED", detail: notes.join(" · ") };
+    }
+    e.answerSource = "reply";
+    writeResponse(e, answer);
+    const detail = answerFailureDetail(v, answer, requirePattern, outcomes);
+    return { state: v.state, reason: v.reason, detail: [detail, ...shells].join(" · ") };
   }
 
   /** D19: team has no answering verb, so a slot blocked on a question can never finish. */
@@ -1472,6 +1824,7 @@ async function startModelsIn(
       lastActivityAt: snap.lastActivityAt,
       turnsCompleted: snap.turnsCompleted,
       claudeCodeVersion: snap.claudeCodeVersion,
+      agent: snap.agent ?? null,
       anomalies: notableAnomalies(snap),
       ...accountingFields(refreshAccounting(e, snap)),
     };
@@ -1483,6 +1836,9 @@ async function startModelsIn(
     const answer = e.answer ?? writeResponse(e, unsettledAnswer(e, index));
     const anomalies = [
       ...notableAnomalies(snap),
+      ...(snap.state === "COMPLETED" && e.answerSource?.startsWith("file:")
+        ? [fileAnswerNote(e.answerSource.slice("file:".length))]
+        : []),
       ...(snap.state === "COMPLETED" && e.stopReason === "max_tokens" ? [TRUNCATION_NOTE] : []),
     ];
     const base: Partial<ModelStatus> = {
@@ -1491,6 +1847,7 @@ async function startModelsIn(
       outputSize: Buffer.byteLength(answer, "utf8"),
       stopReason: e.stopReason,
       anomalies,
+      ...(e.answerSource ? { answerSource: e.answerSource } : {}),
     };
     if (snap.state === "COMPLETED") return { ...base, error: undefined };
     return { ...base, error: slotError(e, snap, answer) };
@@ -1562,7 +1919,6 @@ async function startModelsIn(
     notifyStatus(e.id);
   }
 
-  const cwd = process.cwd();
   const projects = projectsDir(parentEnv);
 
   /** The slot's hook binding: a test's, or the real one when the engine has session hooks. */
@@ -1592,7 +1948,7 @@ async function startModelsIn(
       session = await startPaneSession({
         kind: "t",
         label: e.id,
-        callerFlags: claudeFlags,
+        callerFlags: flagsOf(e),
         spawnModel: e.spawnModel ?? e.model,
         cwd,
         sessionUuid: uuid,
@@ -1611,6 +1967,10 @@ async function startModelsIn(
             id: `${runId}:${e.id}`,
             role: kind === "judge" ? "judge" : "slot",
           }),
+          // The delegating conversation, for the usage ledger's `parent` (sessions[].parent).
+          ...(opts.parentClaudeSessionId
+            ? { [ENV.CLAUDISH_PARENT_SESSION]: opts.parentClaudeSessionId }
+            : {}),
         },
         shape: "one-shot",
         initialPrompt: inputContent,
@@ -1630,6 +1990,10 @@ async function startModelsIn(
     }
     e.session = session;
     // At reap: an owner without a binding checks the inbox once, then the file goes.
+    // `final` waits for a VERIFIED reap; a fake without the method never proves it
+    void session.reapVerified?.().then(() => {
+      e.reapVerified = true;
+    });
     void session.reaped().then(() => {
       if (!binding && e.inboxPath)
         reportOwnerWithoutHooks(e.inboxPath, hookEngine, { model: e.model, sessionId: uuid });
@@ -1675,6 +2039,7 @@ async function startModelsIn(
         id,
         model: entry.model,
         spawnModel,
+        agentRequested,
         tokenFile,
         session: null,
         acct: emptyAccounting(provider),
@@ -1683,7 +2048,7 @@ async function startModelsIn(
       };
       entries.set(id, e);
       const uuid = randomUUID();
-      // Team children run in the server's cwd, as before; the launcher `cd`s there.
+      // Team children run in `cwd` (the server's, unless the caller set one); the launcher `cd`s there.
       const transcriptPath = transcriptPathFor(cwd, uuid, projects);
       updateModelStatus(id, {
         state: "STARTING",
@@ -1694,6 +2059,8 @@ async function startModelsIn(
         model: entry.model,
         spawnModel,
         provider,
+        agentRequested,
+        agent: null,
         sessionUuid: uuid,
         transcriptPath,
         pane: null,
@@ -1816,6 +2183,8 @@ async function startModelsIn(
     status: statusCache,
     slots: entries,
     settled,
+    projectsRoot: projects,
+    cwd,
   };
   teamRuns.set(runId, run);
   newestRunByPath.set(path, runId);
@@ -1855,8 +2224,12 @@ async function startModelsIn(
       // the `onProgress` convention: a consumer can never fail the run.
       try {
         opts.onSettled?.(statusCache);
-      } catch {
-        // A settle consumer must never be able to fail the run.
+      } catch (err) {
+        // A settle consumer must never be able to fail the run, but its failure
+        // leaves the run record unended, so it is logged.
+        log(
+          `[team] onSettled failed for ${path}: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
       resolveSettled();
     }
@@ -1864,7 +2237,9 @@ async function startModelsIn(
   })();
   // A caller that only polls never touches `done`. Without this an unobserved rejection
   // would take down the MCP server, which hosts every other session too.
-  done.catch(() => {});
+  done.catch((err: unknown) =>
+    log(`[team] run failed at ${path}: ${err instanceof Error ? err.message : String(err)}`)
+  );
 
   return {
     runId,
@@ -1946,6 +2321,7 @@ export async function judgeResponses(
   await runModels(judgePath, {
     claudeFlags: opts.claudeFlags,
     kind: "judge",
+    ...(opts.parentClaudeSessionId ? { parentClaudeSessionId: opts.parentClaudeSessionId } : {}),
     ...(opts.parentEnv ? { parentEnv: opts.parentEnv } : {}),
     ...(opts.paneTimings ? { paneTimings: opts.paneTimings } : {}),
   });
@@ -1985,8 +2361,13 @@ export function readTeamStatus(sessionPath: string): TeamStatus {
     ) {
       return parsed;
     }
-  } catch {
-    // Unreadable or partial — `status.json` writes are not atomic.
+  } catch (err) {
+    // status.json is written atomically, so anything but its absence is a fault.
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      log(
+        `[team] unreadable status.json at ${sessionPath}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
   return { startedAt: new Date().toISOString(), models: {} };
 }
@@ -2095,7 +2476,11 @@ export function parseJudgeVotes(judgePath: string, responseIds: string[]): VoteR
     let content: string;
     try {
       content = readFileSync(join(judgePath, file), "utf-8");
-    } catch {
+    } catch (err) {
+      // This judge's votes are dropped from the verdict; say so.
+      log(
+        `[team] judge answer ${file} unreadable: ${err instanceof Error ? err.message : String(err)}`
+      );
       continue;
     }
 

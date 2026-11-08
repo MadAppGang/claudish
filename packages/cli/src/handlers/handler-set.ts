@@ -349,7 +349,17 @@ export function createHandlerSet(opts: HandlerSetOptions): HandlerSet {
       // presence cannot be the test. This was the last of four gates a keyless
       // endpoint hit: schema, definition, credential authority, and here.
       const needsNoAuth = resolved.provider.authScheme === "none";
-      if (resolved.provider.apiKeyEnvVar && !needsNoAuth) {
+      // Codex signs inside ComposedHandler on every request. Construction-time
+      // signing would lease twice and let cold account-list failures escape that
+      // classified boundary as a 500, before FallbackHandler can hold the hop.
+      const signsPerRequest = resolved.provider.name === "openai-codex";
+      if (signsPerRequest) {
+        // Preserve the no-credential refusal without leasing. Failed readiness
+        // must reach signing, where its typed error is classified for this turn.
+        const readiness = await credentials.describeReadiness(resolved.provider.name);
+        if (readiness.readiness === "absent") return null;
+      }
+      if (resolved.provider.apiKeyEnvVar && !needsNoAuth && !signsPerRequest) {
         // HARDENING: getRequestAuth THROWS for a name the authority never
         // registered (e.g. a runtime-renamed provider missing an alias), which
         // would surface as an HTTP 500. Degrade to the same "no credential"

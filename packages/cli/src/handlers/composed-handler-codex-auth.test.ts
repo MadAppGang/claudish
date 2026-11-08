@@ -57,10 +57,10 @@ function context(): Context {
     },
     header() {},
     body: (body: BodyInit | null, init?: ResponseInit) => new Response(body, init),
-    json: (body: unknown, status = 200) =>
+    json: (body: unknown, status = 200, headers: Record<string, string> = {}) =>
       new Response(JSON.stringify(body), {
         status,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...headers },
       }),
   } as unknown as Context;
 }
@@ -127,7 +127,7 @@ describe("T5 primary-request OAuth 401 behavior", () => {
     }
   });
 
-  test("REQ-5 REQ-6 TEST-5 answers 401 not resent when refresh changes account", async () => {
+  test("REQ-5 REQ-6 TEST-5 answers transient 503 not resent when refresh changes account", async () => {
     const a = binding("account-a", "TOKEN_A", "https://a.invalid/codex/responses");
     const b = binding("account-b", "TOKEN_B", "https://b.invalid/codex/responses");
     const sent = upstream([401]);
@@ -141,7 +141,12 @@ describe("T5 primary-request OAuth 401 behavior", () => {
       const response = await h.handle(context(), request());
       const body = await response.text();
 
-      expect(response.status).toBe(401);
+      // implementation-log.md § v14 merge fixes / M6: this is not a rejected credential.
+      expect(response.status).toBe(503);
+      expect(response.headers.get("x-claudish-auth-verdict")).toBe("transient");
+      expect(JSON.parse(body).error).toMatchObject({ type: "overloaded_error" });
+      expect(JSON.parse(body).error.upstream_status).toBeUndefined();
+      expect(body).not.toMatch(/rejected|login|credential/i);
       expect(body).toContain("Codex sign-in changed during the request; it was not resent");
       expect(sent).toEqual([
         { endpoint: a.auth!.endpoint!, authorization: "Bearer TOKEN_A", account: "account-a" },
@@ -149,7 +154,7 @@ describe("T5 primary-request OAuth 401 behavior", () => {
       // R2-6 specifies this stderr summary; the separate `Not resent:` line
       // is a debug-log seam, not a promise about stderr's formatting.
       expect(logs.join("\n")).toContain(
-        "HTTP 401; the sign-in changed to another account during the request, so it was not resent."
+        "the sign-in changed to another account during the request, so it was not resent."
       );
       expect(logs.join("\n")).not.toContain("HTTP 401 after auth retry");
     } finally {

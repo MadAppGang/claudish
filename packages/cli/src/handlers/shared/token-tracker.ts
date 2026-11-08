@@ -22,6 +22,23 @@ import {
   getModelPricing,
 } from "./remote-provider-types.js";
 
+/**
+ * The pooled allowance's status-line label (allowance §3.3). Epochs are Unix
+ * SECONDS, so a shell can hand them to `date` unchanged; null outside a gap.
+ */
+export interface AllowanceLabel {
+  level: "ok" | "warn" | "critical";
+  /** Combined remaining in % of combined capacity; null when no account has been read. */
+  remainingPct: number | null;
+  gapStartSec: number | null;
+  gapEndSec: number | null;
+  /** When the evaluation ran (ms). Not written to the file. */
+  observedAt: number;
+}
+
+/** An `allowance` key older than this is omitted, as a stale `plan` is. */
+export const ALLOWANCE_LABEL_STALE_MS = 10 * 60 * 1000;
+
 export interface TokenTrackerConfig {
   contextWindow: number;
   providerName: string;
@@ -140,6 +157,9 @@ export class TokenTracker {
   private planUsage: PlanUsage | undefined;
   /** Last plan written, so setPlanUsage can write on change only. */
   private lastPlanSerialized = "";
+  /** The pooled allowance's latest evaluation (allowance §3.3), published under `allowance`. */
+  private allowanceLabel: AllowanceLabel | undefined;
+  private lastAllowanceSerialized = "";
   /**
    * Tool calls the model emitted this session, by tool name.
    *
@@ -256,6 +276,20 @@ export class TokenTracker {
     if (next === this.lastPlanSerialized) return;
     this.planUsage = plan;
     this.lastPlanSerialized = next;
+    this.rewrite();
+  }
+
+  /**
+   * Record the pooled allowance's latest evaluation (allowance §3.3). Written on
+   * change; the key is omitted once the evaluation is older than
+   * ALLOWANCE_LABEL_STALE_MS, the same omit-if-stale rule as `plan`. Epochs
+   * only: the status line formats the relative text at render time.
+   */
+  setAllowanceLabel(label: AllowanceLabel | undefined): void {
+    const next = label ? JSON.stringify(label) : "";
+    if (next === this.lastAllowanceSerialized) return;
+    this.allowanceLabel = label;
+    this.lastAllowanceSerialized = next;
     this.rewrite();
   }
 
@@ -623,6 +657,16 @@ export class TokenTracker {
           label: this.planUsage.label,
           windows: this.planUsage.windows,
           source: this.planUsage.source,
+        };
+      }
+
+      const allowance = this.allowanceLabel;
+      if (allowance && Date.now() - allowance.observedAt <= ALLOWANCE_LABEL_STALE_MS) {
+        data.allowance = {
+          level: allowance.level,
+          remainingPct: allowance.remainingPct,
+          gapStartSec: allowance.gapStartSec,
+          gapEndSec: allowance.gapEndSec,
         };
       }
 
