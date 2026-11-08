@@ -63,11 +63,13 @@ export function scrubInheritedFastModeGates(env: NodeJS.ProcessEnv): { removed: 
   }
   const caps = env.CLAUDE_CODE_MODEL_CAPABILITIES;
   if (opened.includes("caps") && caps !== undefined) {
-    if (caps === FAST_MODE_CAPABILITY) delete env.CLAUDE_CODE_MODEL_CAPABILITIES;
-    else if (caps.startsWith(`${FAST_MODE_CAPABILITY};`)) {
+    if (caps === FAST_MODE_CAPABILITY) {
+      delete env.CLAUDE_CODE_MODEL_CAPABILITIES;
+      removed.push("CLAUDE_CODE_MODEL_CAPABILITIES");
+    } else if (caps.startsWith(`${FAST_MODE_CAPABILITY};`)) {
       env.CLAUDE_CODE_MODEL_CAPABILITIES = caps.slice(FAST_MODE_CAPABILITY.length + 1);
+      removed.push("CLAUDE_CODE_MODEL_CAPABILITIES");
     }
-    removed.push("CLAUDE_CODE_MODEL_CAPABILITIES");
   }
   delete env[CLAUDISH_FAST_MODE_GATES_VAR];
   return { removed };

@@ -68,6 +68,15 @@ describe("scrubInheritedFastModeGates", () => {
     }
   });
 
+  test("a capability list the user replaced is kept and not reported as removed", () => {
+    const env: Record<string, string | undefined> = {
+      CLAUDE_CODE_MODEL_CAPABILITIES: "a=b",
+      [CLAUDISH_FAST_MODE_GATES_VAR]: "caps",
+    };
+    expect(scrubInheritedFastModeGates(env).removed).toEqual([]);
+    expect(env).toEqual({ CLAUDE_CODE_MODEL_CAPABILITIES: "a=b" });
+  });
+
   test("without the marker, the user's values are never touched", () => {
     const env = {
       CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK: "1",
