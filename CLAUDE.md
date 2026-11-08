@@ -37,21 +37,25 @@ lives in `ROADMAP.md`.
   box located by the cursor, no width cap), settle on `turn_duration` (32 s quiet path gated
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
   watcher and identity-checked reap, socket traps, one level of nesting (`CLAUDISH_PANE_CHILD` kept,
-  the nested refusal), the frozen mod contract v1, the session registry read as telemetry (and why no
-  in-child mod or argv prompt). Read before editing `pane/`, team spawn or MCP session spawn
+  the nested refusal), replay panes (read-only `claude --resume`, the allowlisted environment, box
+  before dialog), the frozen mod contract v1, the session registry read as telemetry (and why no
+  in-child mod or argv prompt). Read before editing `pane/` (`pane/replay-pane.ts` and
+  `pane/pane-reap.ts` included), team spawn or MCP session spawn
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
 - `credential-files.md` — a long-lived process follows its credential FILE: stat-and-reload on change, the four disk states and why "unreadable" never signs a user out, compare-and-set on the refresh-token lineage so a refresh cannot undo a login. Read before touching `credential-file.ts`, a file-backed OAuth login (`grok-oauth.ts`, `kimi-oauth.ts`, `devin-credentials.ts`) or adding one
-- `accounts.md` — multi-subscription account pools (Codex pool on the request path; Phase 2a shipped in v14.5.0, Phase 2b gated on D8): HTTP quota rotation and the transient 429 when retry is spent, the three availability projections, the fail-closed account list, availability from configuration never stored material, no metered fall-through, the refresh gate that never runs unlocked, decisions 1–11, Claude Code's OAuth facts; row ids in `accounts-validation.md`. Read before editing `auth/accounts/`, the Codex credential or transport, the refresh lock, or the native handler's account swap
+- `accounts.md` — multi-subscription account pools (Codex pool on the request path; Phase 2a shipped in v14.5.0, Phase 2b gated on D8): HTTP quota rotation and the transient 429 when retry is spent, the three availability projections, the fail-closed account list, availability from configuration never stored material, no metered fall-through, the refresh gate that never runs unlocked, decisions 1–11, Claude Code's OAuth facts, the legacy Codex file move into the Keychain (MTL-372); row ids in `accounts-validation.md`. Read before editing `auth/accounts/`, the Codex credential or transport, the refresh lock, or the native handler's account swap
 - `allowance.md` — the allowance model on the Codex pool: the usage ledger (numbers, closed sets,
   pattern-checked ids only), the pure `allowance/` module and its enforced purity, the one `Strategy`
   interface (`sticky` default, opt-in `ebr` / `lookahead`), every adversarial trace with its figures,
   the tournament gate no strategy has passed yet, gap alerts and their measured budgets, and why
   alerts under `lookahead` simulate `ebr`. Read before editing `auth/accounts/allowance/`, `ledger/`,
   `allowance-service.ts` or the pool's `rank` hook
-- `mcp-sessions.md` — the 16-tool MCP surface and its four groups, the 4-tool nested mode, sessions
-  on panes (`send_input` queueing, `capture_session`, `resize_session`, the on-disk session records
+- `mcp-sessions.md` — the 20-tool MCP surface and its four groups, the 4-tool nested mode, sessions
+  on panes (`send_input` queueing, `capture_session`, `resize_session`, `scroll_session`,
+  `transcript_session` (the transcript as text lines: cursor, byte caps, `final`), `replay_session`
+  and `close_replay` (a finished session's real interface, read only), the on-disk session records
   and who reads them), `run_prompt`'s Claude Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
   assistant message of its turn, from the transcript, starting after the task file was read

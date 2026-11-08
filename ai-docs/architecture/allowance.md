@@ -67,6 +67,18 @@ an index. The writer never throws; its queue holds 1024 rows and drops the oldes
 written whatever the strategy (the forecast needs it); `CLAUDISH_ALLOWANCE_LEDGER=off` writes
 nothing.
 
+A row is filed by the UTC day of its own `at`, which is the attempt's OPEN time, and written when the
+response body ends: a request open across midnight UTC lands in yesterday's segment minutes after
+midnight, possibly from another process. The service's load reads rollups up to `handoff` (the
+whole hour of now − 48 h) and raw rows after it, and its live tail (`createLedgerTail`) starts at
+`utcDay(handoff)`: it follows exactly the segments the load reads raw. A tail left at its default
+(the load's own day) never folds that late row, while a fresh process does (MTL-324, fixed in
+14.10.1). Starting the tail at the 42-day history bound was rejected: it follows ~30 retained raw
+segments, including compacted days that a fresh load reads from their hourly files, so live would
+exceed fresh there and an unreadable old segment re-read from offset 0 could outrun the fold's
+4096-id dedup. The remaining live-vs-fresh gaps (the handoff day's hours before `handoff`, days
+compacted after the load) are compaction-timing cases, MTL-325.
+
 ## The `Strategy` interface
 
 ```ts
@@ -235,6 +247,7 @@ then `LOOKAHEAD_TRAJ_PATHS` (40), whose p10/p90 band is about ±5 percentile poi
 |---|---|---|
 | fold 1 639 events (`observeAll`) | 7.5 ms | — |
 | `forecast` (216 h) | 46 ms | off path |
+| `trajectory` (168 h, 200 paths × 2 with `slower`), live 2-account pool | 58-61 ms (28-30 ms before `slower`) | report path, every poll |
 | ranking call `choose` (overlay + decide + report), 500 calls | p50 0.65 ms, p95 1.37 ms | < 2 ms ✓ |
 | `planFor`, `lookahead`, depth 4, 7d + 5h, 40 calls | p50 6.8 ms, p95 43 ms, max 54 ms | < 20 ms ✗; accepted, off path; `PLAN_LATENCY` = 43 ms |
 | alert evaluation | see the table above | ≤ 0.5 s ✓ sticky/ebr; lookahead → ebr's model |
@@ -251,6 +264,99 @@ then `LOOKAHEAD_TRAJ_PATHS` (40), whose p10/p90 band is about ±5 percentile poi
 - MCP `allowance_status` (`mcp-sessions.md`): the same report wrapped in the mod contract's meta;
   the `allowance` capability and the mod's discovery lifecycle are in `pane-session.md`. The answer
   is model-visible: no project, session ids cut to 8 characters.
+
+### The switch likelihood curve (`trajectory.switches[].likelihood`)
+
+Each predicted switch carries `p[]`, the relative likelihood of the account's FIRST takeover per
+hour, built in `trajectory.ts` (`likelihoodOf`) from the takeover times the trajectory's paths
+already hold: no second simulation.
+
+- **Smoothed, because the raw count is spikes.** About 60 of 200 paths take over, spread over about
+  80 hours: an hourly count of mostly 0 or 1. A Gaussian kernel with Silverman's bandwidth
+  (`0.9 × min(sd, IQR/1.34) × n^-0.2`, about 12 h on the live pool) turns it into a hill.
+- **Counted, not smoothed, when the IQR is zero** (or the bandwidth is under 0.5 h). That is a
+  takeover at a fixed reset: most paths in one hour plus stragglers. Silverman's usual fallback to
+  the sd would let the stragglers spread the point mass into the hours BEFORE the reset, which
+  cannot happen. `likelihood-of.contract.test.ts` L8b is the test; it fails with the sd fallback.
+- **Peak 1, not sum 1.** A sum-1 density over 80 hours is about 0.004 per hour, and the 3 decimals
+  the report sends keep almost nothing. The mass is `probability`.
+- **The argmax is noise; show `usual`.** On the live pool both hills stayed within 5 % of their
+  peak for 15-20 h. Inside that plateau the highest hour is sampling noise: switch 2's argmax sat
+  5 h before its own p50 and before switch 1's argmax, while the medians (86, 94) and means (84.1,
+  93.8) kept the order. The schema says so, so a reader draws shape only.
+- **Size.** About 1 KB per switch (169 values); `trajectory` grew from 33.8 KB to 36.2 KB. Claude
+  Code 2.1.312 returned a 36,132-character `allowance_status` answer inline and refused a
+  59,907-character one, so the persist threshold lies between them.
+
+### The slower scenario (`trajectory.slower`)
+
+The forecast panel's `slower` row and its "slow down and it lasts" sentence need the switch plan at
+a lower demand. `trajectory.slower` reruns every Monte Carlo path with its demand × `SLOWER_FACTOR`
+(2/3, the design's "a third less busy"), and reads `switches` and `blocked` from those runs through
+the same `switchesOf` and `blockedRuns`.
+
+- **Common random numbers.** The slower run takes each path's OWN demand draw and capacity draw,
+  so a path is compared with itself: the difference between the two lists is the slowdown, not
+  sampling noise. No rng call is added (`simulate` copies its views in `createWorld`), so every
+  existing field is unchanged.
+- **Not monotone, under any strategy.** A slower run can switch or block EARLIER than the
+  current one, `sticky` included, and the field reports what the simulation does: it is never
+  clamped to look better. `sticky` switches at `SELECTION_THRESHOLD` (0.90 used), not only on
+  exhaustion, so the two runs can cross it on different sides of a short-window reset and then
+  drain different accounts; from there, use within each account's reset periods is no longer
+  guaranteed to be lower in the slower run (in the case below the slower run uses less on BOTH
+  accounts, A 6 → 2.667 cu and B 4 → 3.667 cu, and still gaps first). Measured with
+  the production `simulate` and `sticky`: A has a 5 h window at 0.2 remaining that resets at +2 h,
+  B a 168 h window at 1.0 that resets at +6 h, β 0.5, demand 0.5 cu/h for 18 h with 1.5 cu at
+  hour 12. The current run has no gap; the slower run has a `7d` gap with 0.333 cu unserved at
+  hour 16 (found by the external review of PR #371). Only the FIRST takeover from the starting
+  account, before any reset, is never earlier. `ebr` (simulated with `lookahead`) also switches
+  earlier on purpose. A reader compares the two scenarios; it never assumes the slower one is
+  better.
+- **Not a deterministic run.** One simulation at 2/3 of the mean rate (how the safe pace scans)
+  costs under 1 ms, but it is a point estimate beside the 200-path `usual`, so "slow down and it
+  lasts Y" could read shorter than "it switches in X". The user chose the second Monte Carlo pass
+  on 2026-10-29 and accepted its cost.
+- **Cost.** It doubles the trajectory on every report, the band's 60 s poll included: measured on a
+  two-account pool, trajectory 28 → 59 ms, warm report 35 → 66 ms.
+
+### Hourly usage per account (`usage`)
+
+14 days (`USAGE_HOURS`, 336) of the cu each account served per UTC hour (MTL-297), its own
+`sections` entry so the band's `["trajectory"]` poll does not carry its bytes. It is still computed
+on every report: `buildReport` builds `usage` unconditionally and MCP projects the sections after.
+
+- **Source** `AccountTrack.served` (kept `DEMAND_WEEKS`), summed by `usageByHour`
+  (`allowance/usage.ts`, pure); sessions are not the source, they are dropped after 8 idle days.
+  Censoring is pool-level only, as in the state. A blockage still in progress (`censorOpenAt`, which
+  only a successful response seals into `demand`) is projected onto the grid up to `now` at report
+  time, never written to the state; it is disjoint from every sealed interval, so the two add,
+  capped at 60, and the current cell is clipped at `now`.
+- **Dense, one grid.** One `start`, then per account 336 integers: a zero cell costs 2 bytes and the
+  reader indexes by hour. A positive cell is at least 1, so an hour an account served never reads as
+  idle. Censored hours are sparse `[cell, minutes]` pairs. `coveredFrom` tells "idle" from "not
+  recording yet": the first hour ANY ledger row was folded for (`AllowanceState.recordedFrom`:
+  a response, rollup or `no-eligible`, zero cu included), clamped to `start`. Not `demand[0]`: a
+  zero-cu response never creates a demand bucket while its rollup does, so coverage moved when a
+  day was compacted. Forecast demand (`ledgerDays`) still reads `demand`.
+- **Order.** `accounts[]` first, in order, all zeros when unused; then any disabled or removed
+  account that served in the span. `unit` is always `cu`, even in `account-fraction`.
+- **Measured** (compact): 2,481 bytes for 2 accounts on a realistic 14 days, 6,250 when every cell
+  has 8 digits; +3,060 per further 8-digit account, +707 per unused one, +387 for 48 censored hours.
+- **Schema compatibility.** Without `sections`, `allowanceStatusAnswerSchema` requires only the six
+  original sections (`ALLOWANCE_REPORT_SECTIONS_V1_BASE`), so an older claudish's full answer and
+  the goldens magus copies keep validating; a section named in `sections` is always required.
+
+### Rounded forecast quantiles
+
+`trajectory.forecast[].p10/p50/p90` go out at 4 significant digits (`toSignificant`, in
+`buildReport`); the pure trajectory and `spark48` keep full precision. Four digits cost the bytes of
+three in cu and keep the worst error under 1 % of an hour's p10–p90 spread. Measured: the committed
+2-account baseline 20,423 → 15,941 bytes; a saved live report (`account-fraction`, 169 entries)
+20,536 → 14,227, which takes its trajectory-only answer from 36,312 to 30,003 characters, back
+under Claude Code's inline threshold. `history`, `historyByAccount`, `burn` and `combined` are NOT
+rounded: per-account history sums to `history` within 1e-9 and `sustainable = cutToPercent / 100 ×
+burn.long` holds exactly, and both are published contracts (the user, 2026-10-29).
 
 ## Where to look
 

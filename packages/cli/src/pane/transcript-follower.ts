@@ -248,7 +248,7 @@ function isMainUser(r: Rec): boolean {
 const LOCAL_COMMAND_RE =
   /^\s*<(local-command-caveat|command-name|local-command-stdout|local-command-stderr)>/;
 
-function isLocalCommandText(text: string): boolean {
+export function isLocalCommandText(text: string): boolean {
   return LOCAL_COMMAND_RE.test(text);
 }
 
@@ -277,7 +277,7 @@ function isLocalCommandSystem(r: Rec): boolean {
   return r.type === "system" && r.subtype === "local_command" && !r.isSidechain;
 }
 
-const INTERRUPT_PREFIX = "[Request interrupted by user";
+export const INTERRUPT_PREFIX = "[Request interrupted by user";
 
 /**
  * A prompt a human typed, by PROVENANCE (hook-system §3.2, §7.5): a main-chain user
@@ -504,7 +504,7 @@ function markWriteResult(t: TurnState, b: Rec): void {
   if (w) w.ok = true;
 }
 
-const STDOUT_RE = /^\s*<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/;
+export const STDOUT_RE = /^\s*<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences in local-command output
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
@@ -830,7 +830,7 @@ export class TranscriptFollower {
     let any = false;
     for (const { offset, line } of this.main.read()) {
       any = true;
-      const rec = parse(line);
+      const rec = parseRecord(line);
       // Offsets are 1-based positions past the line start so a record AT the turn offset
       // (written after the mark) is strictly greater than it.
       if (rec) applyRecord(this.state, rec, offset + 1);
@@ -859,7 +859,7 @@ export class TranscriptFollower {
       }
       for (const { line } of tail.read()) {
         any = true;
-        const rec = parse(line);
+        const rec = parseRecord(line);
         if (rec) applySubagentRecord(this.state, rec, this.main.offset + 1);
       }
     }
@@ -949,7 +949,7 @@ export function lastHumanPromptOffset(path: string): number | null {
   const tail = new Tail(path);
   let found: number | null = null;
   for (const { offset, line } of tail.read()) {
-    const rec = parse(line);
+    const rec = parseRecord(line);
     if (rec && isHumanPrompt(rec)) found = offset;
   }
   return found;
@@ -963,7 +963,8 @@ function fileSize(p: string): number {
   }
 }
 
-function parse(line: string): Record<string, unknown> | null {
+/** One JSONL line as an object, or null (blank, not JSON, or not an object). Never throws. */
+export function parseRecord(line: string): Record<string, unknown> | null {
   if (!line.trim()) return null;
   try {
     const v = JSON.parse(line);

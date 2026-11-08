@@ -21,6 +21,14 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  AccountRegistry,
+  getAccountRegistry,
+  setAccountRegistryForTests,
+} from "../../auth/accounts/registry.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import { clearSignedArm } from "../../auth/credentials/billing-probe.js";
 import type { CredentialProvider } from "../../auth/credentials/types.js";
@@ -70,6 +78,26 @@ const fakeCodexCredential: CredentialProvider = {
 };
 
 let realCodexCredential: CredentialProvider | undefined;
+
+// The account list must not come from this machine. A configured Codex pool
+// in ~/.claudish/config.json makes poolConfigured() true, and signRequest then
+// refuses the api-key arm with MeteredEscapeError (MTL-354 item 3).
+let machineRegistry: AccountRegistry | undefined;
+let registryHome: string | undefined;
+beforeAll(() => {
+  machineRegistry = getAccountRegistry();
+  registryHome = mkdtempSync(join(tmpdir(), "claudish-codex-cache-key-"));
+  const emptyConfig = join(registryHome, "config.json");
+  writeFileSync(emptyConfig, "{}\n");
+  const legacyPath = join(registryHome, "no-legacy-codex-oauth.json");
+  setAccountRegistryForTests(
+    new AccountRegistry({ configPath: () => emptyConfig, legacyCodexPath: () => legacyPath })
+  );
+});
+afterAll(() => {
+  setAccountRegistryForTests(machineRegistry ?? null);
+  if (registryHome) rmSync(registryHome, { recursive: true, force: true });
+});
 
 beforeAll(() => {
   realCodexCredential = credentials.get("openai-codex");

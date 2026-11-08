@@ -2354,6 +2354,17 @@ ${h("SUBCOMMANDS")}
   ${green("claudish subscription models antigravity")} ${yellow("--raw --json")}
                                           Print the raw Antigravity fetchAvailableModels
                                           ${dim("body as one JSON line (for models-index)")}
+  ${green("claudish subscription probe antigravity")} ${yellow("--model <id> --request-file <path> --raw --json")}
+                                          Send the file's Gemini request once through the
+                                          Antigravity login (generateContent, no retry, model
+                                          ${dim("id unchanged); print the raw answer as one JSON line")}
+  ${green("claudish subscription models devin")} ${yellow("--raw --json")}
+                                          Print Devin's decoded GetCliModelConfigs rows and
+                                          ${dim("allowed model uids as one JSON line (for models-index)")}
+  ${green("claudish subscription probe devin")} ${yellow("--model <uid> --request-file <path> --raw --json")}
+                                          Send the file's Anthropic Messages request once through
+                                          the Devin login (GetChatMessage, no retry, uid unchanged);
+                                          ${dim("print the decoded answer as one JSON line")}
   ${green("claudish update")}                        Check for updates and install the latest version
 
   ${bold("Profiles:")}

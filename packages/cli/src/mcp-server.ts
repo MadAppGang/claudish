@@ -29,7 +29,7 @@ import { writeFileAtomic } from "./fs-atomic.js";
 import { loadHooksOnce } from "./hooks/index.js";
 import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
 import { initLogger, log } from "./logger.js";
-import { SessionManager } from "./mcp-session/index.js";
+import { ReplayManager, SessionManager } from "./mcp-session/index.js";
 import { resolveSetupFrom } from "./mcp-session/inherited-settings.js";
 import { parentSessionForCall } from "./mcp-session/parent-session.js";
 import { NESTED_INSTRUCTIONS, NESTED_MCP_TOOL_NAMES } from "./mcp/nested-mode.js";
@@ -56,16 +56,24 @@ import { inMcpSession } from "./pane/child-env.js";
 import {
   ContractErrorException,
   type FailureReason,
+  MAX_SCROLL_ROWS,
+  MAX_TRANSCRIPT_LINES,
   MIN_MAGMUX_VERSION,
   SLOT_STATES,
+  type ScrollRequest,
   type SlotState,
   TERMINAL_STATES,
+  TRANSCRIPT_ANSWER_MAX_BYTES,
+  TRANSCRIPT_LINE_MAX_CHARS,
   type TeamRunRow,
+  type TranscriptCursor,
   assertMagmuxAvailable,
   checkChildFlags,
   contractMeta,
+  decodeCursor,
   ensureSwept,
   installPaneShutdownHooks,
+  isReplayId,
   sockRootFor,
 } from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
@@ -107,7 +115,9 @@ import {
   preflightTeamRun,
   readTeamInputFile,
   readTeamStatus,
+  replayTargetOfTeamSlot,
   resizeTeamSlot,
+  scrollTeamSlot,
   setupSession,
   shutdownAllTeamRuns,
   startModels,
@@ -115,6 +125,7 @@ import {
   teamLiveMaps,
   teamRunRow,
   teamRunRowFromDisk,
+  transcriptTeamSlot,
   validateSessionPath,
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
@@ -162,7 +173,8 @@ Each session is an interactive Claude Code running the model in its own headless
 3. send_input may be called at any time; it is queued until the session is idle.
 4. COMPLETED: call get_output for the answer.
 5. FAILED or TIMEOUT — or COMPLETED with an empty or surprising answer — call get_diagnostics. It returns the child's final screen, the upstream error bodies, the recent state records, the resolved model chain and the paths to the full records. It needs no re-run and no debug flag.
-6. capture_session reads a session's current screen; resize_session sets its terminal size (any time, mid-turn included); cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
+6. capture_session reads a session's current screen; resize_session sets its terminal size (any time, mid-turn included); scroll_session scrolls the child's transcript view (by rows, or back to the live bottom); transcript_session reads the conversation as text lines (also after the session finished); cancel_session stops it. Nothing stops a session for being idle: a child inside a long build is silent and working.
+7. replay_session opens a finished session's real interface read only; read it with capture_session under its replay_id; close_replay ends it.
 
 The session_id from create_session is the key for every session tool.`;
 
@@ -1321,6 +1333,18 @@ function optionalInteger(raw: unknown, name: string): number | undefined {
   return raw;
 }
 
+/**
+ * The replay opens' `cols` and `rows`: absent (`undefined`) → undefined; anything GIVEN, a JSON
+ * `null` included, must be an integer, else `invalid_args`, raised before any lookup. The
+ * integer twin of `givenString`.
+ */
+function givenInteger(raw: unknown, name: string): number | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "number" || !Number.isInteger(raw))
+    throw new ContractErrorException("invalid_args", `'${name}' must be an integer`);
+  return raw;
+}
+
 /** A required integer argument such as `cols`; absent or not an integer → `invalid_args`. */
 function requiredInteger(raw: unknown, name: string, mode?: string): number {
   const n = optionalInteger(raw, name);
@@ -1330,6 +1354,55 @@ function requiredInteger(raw: unknown, name: string, mode?: string): number {
       `'${name}' is required${mode ? ` for mode '${mode}'` : ""}`
     );
   return n;
+}
+
+/**
+ * The scroll verbs' request (`scroll_session`, `team(mode="scroll")`): exactly one of `by`
+ * (a non-zero integer; negative = toward older content) and `to` (exactly "end").
+ * Neither, both, `by: 0`, a fraction, a string or another `to` answer `invalid_args`.
+ */
+function scrollArgs(args: Record<string, unknown>): ScrollRequest {
+  const by = optionalInteger(args.by, "by");
+  const to = args.to;
+  if (to !== undefined && to !== null && to !== "end")
+    throw new ContractErrorException("invalid_args", `'to' must be "end"`);
+  const hasTo = to === "end";
+  if (by !== undefined && hasTo)
+    throw new ContractErrorException("invalid_args", "give exactly one of 'by' and 'to', not both");
+  if (hasTo) return { to: "end" };
+  if (by === undefined)
+    throw new ContractErrorException("invalid_args", "one of 'by' and 'to' is required");
+  if (by === 0) throw new ContractErrorException("invalid_args", "'by' must not be 0");
+  return { by };
+}
+
+/**
+ * The transcript verbs' `since` (`transcript_session`, `team(mode="transcript")`): absent →
+ * undefined (from the start); else a non-empty string in cursor syntax. Syntax only — a
+ * cursor from another transcript, past the end or off a line start is found after the
+ * lookup. Errors are `invalid_args`.
+ */
+function transcriptSince(raw: unknown): TranscriptCursor | undefined {
+  const since = givenString(raw, "since");
+  return since === undefined ? undefined : decodeCursor(since);
+}
+
+/**
+ * The transcript verbs' optional string arguments (`since`, `run_id`): absent (`undefined`)
+ * → undefined; anything GIVEN, a JSON `null` included, must be a non-empty string, else
+ * `invalid_args`, raised before the session or run is looked up. `optionalString` instead
+ * reads `null` as absent, for the older tools.
+ */
+function givenString(raw: unknown, name: string): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || !raw)
+    throw new ContractErrorException("invalid_args", `'${name}' must be a non-empty string`);
+  return raw;
+}
+
+/** A byte or character count as the tool text writes it: `32,000`. */
+function grouped(n: number): string {
+  return n.toLocaleString("en-US");
 }
 
 /**
@@ -1379,12 +1452,16 @@ export function teamStatusAnswer(path: string, runId?: string): Record<string, u
   });
 }
 
+/** The read-only replays of this server; `session` tools and `team(mode="replay")` share them. */
+const replays = new ReplayManager();
+
 /**
- * `list` / `status` / `cancel` / `capture` / `resize`: memory reads and the two pane verbs,
- * JSON answers, ContractError errors.
+ * `list` / `status` / `cancel` / `capture` / `resize` / `scroll` / `transcript` / `replay`:
+ * memory reads, the pane verbs, the transcript reader and the replay open, JSON answers,
+ * ContractError errors.
  */
 export async function teamContractVerb(
-  mode: "list" | "status" | "cancel" | "capture" | "resize",
+  mode: "list" | "status" | "cancel" | "capture" | "resize" | "scroll" | "transcript" | "replay",
   args: Record<string, unknown>
 ): Promise<ToolAnswer> {
   try {
@@ -1392,12 +1469,29 @@ export async function teamContractVerb(
     // Every argument's TYPE is checked before the run is looked up: a wrongly typed argument
     // is the caller's error whether or not the run exists (§8 E).
     const path = contractPath(args.path, mode);
-    const runId = optionalString(args.run_id, "run_id");
+    // 'transcript' and 'replay' read a given null `run_id` as invalid, not absent
+    const runId =
+      mode === "transcript" || mode === "replay"
+        ? givenString(args.run_id, "run_id")
+        : optionalString(args.run_id, "run_id");
     const slot = optionalString(args.slot, "slot");
-    const since = optionalInteger(args.since_seq, "since_seq");
+    const sinceSeq = optionalInteger(args.since_seq, "since_seq");
     const spans = optionalBoolean(args.spans, "spans");
-    const cols = mode === "resize" ? requiredInteger(args.cols, "cols", mode) : undefined;
-    const rows = mode === "resize" ? requiredInteger(args.rows, "rows", mode) : undefined;
+    const cols =
+      mode === "resize"
+        ? requiredInteger(args.cols, "cols", mode)
+        : mode === "replay"
+          ? givenInteger(args.cols, "cols")
+          : undefined;
+    const rows =
+      mode === "resize"
+        ? requiredInteger(args.rows, "rows", mode)
+        : mode === "replay"
+          ? givenInteger(args.rows, "rows")
+          : undefined;
+    const scroll = mode === "scroll" ? scrollArgs(args) : undefined;
+    // `since` belongs to 'transcript' only (capture's integer is `since_seq`)
+    const since = mode === "transcript" ? transcriptSince(args.since) : undefined;
     switch (mode) {
       case "status":
         return contractAnswer(teamStatusAnswer(path, runId));
@@ -1406,13 +1500,42 @@ export async function teamContractVerb(
       case "capture": {
         if (slot === undefined)
           throw new ContractErrorException("invalid_args", "'slot' is required for mode 'capture'");
-        return contractAnswer(captureTeamSlot(path, slot, since, spans, runId));
+        return contractAnswer(captureTeamSlot(path, slot, sinceSeq, spans, runId));
       }
       case "resize": {
         if (slot === undefined)
           throw new ContractErrorException("invalid_args", "'slot' is required for mode 'resize'");
         return contractAnswer(
           await resizeTeamSlot(path, slot, cols as number, rows as number, runId)
+        );
+      }
+      case "scroll": {
+        if (slot === undefined)
+          throw new ContractErrorException("invalid_args", "'slot' is required for mode 'scroll'");
+        return contractAnswer(await scrollTeamSlot(path, slot, scroll as ScrollRequest, runId));
+      }
+      case "transcript": {
+        if (slot === undefined)
+          throw new ContractErrorException(
+            "invalid_args",
+            "'slot' is required for mode 'transcript'"
+          );
+        // compact: the answer is budgeted in bytes of its compact JSON (§ 2.3)
+        return compactAnswer(transcriptTeamSlot(path, slot, since, runId));
+      }
+      case "replay": {
+        if (slot === undefined)
+          throw new ContractErrorException("invalid_args", "'slot' is required for mode 'replay'");
+        // Without the session tools nothing could read or close the pane this would open.
+        if (
+          !resolveToolGroups((process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase()).has("session")
+        )
+          throw new ContractErrorException(
+            "invalid_args",
+            "mode 'replay' needs the session tools, which CLAUDISH_MCP_TOOLS leaves out"
+          );
+        return contractAnswer(
+          await replays.open(replayTargetOfTeamSlot(path, slot, runId), { cols, rows })
         );
       }
     }
@@ -1935,7 +2058,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       "Modes: 'run' (START the models and return once each has taken its prompt — it does " +
       "NOT wait for answers), 'status' (per-slot state; read `run.slots`), 'list' (every " +
       "run this server holds), 'capture' (one slot's screen), 'resize' (set one slot's " +
-      "terminal size), 'cancel' (stop one slot or the whole run), 'judge'(blind-vote on existing outputs), 'run-and-judge' (the " +
+      "terminal size), 'scroll' (scroll one slot's transcript view), 'transcript' (one " +
+      "slot's conversation as text lines), 'cancel' (stop one slot or the whole run), 'judge'(blind-vote on existing outputs), 'run-and-judge' (the " +
       "blocking pipeline). Poll 'status' (read run.slots) or 'list'. " +
       "NO SLOT IS EVER KILLED ON A TIMER once its prompt is accepted. A team slot is a full " +
       "Claude Code session and may work for a long time; a slot inside a build or test " +
@@ -1952,20 +2076,40 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       properties: {
         mode: {
           type: "string",
-          enum: ["run", "judge", "run-and-judge", "status", "cancel", "list", "capture", "resize"],
+          enum: [
+            "run",
+            "judge",
+            "run-and-judge",
+            "status",
+            "cancel",
+            "list",
+            "capture",
+            "resize",
+            "scroll",
+            "transcript",
+            "replay",
+          ],
           description:
             "Operation mode. 'run' STARTS the models and returns once every slot has taken " +
             "its prompt (or failed to) — it does not wait for answers. Poll 'status' (read " +
             "`run.slots`) or 'list' for progress, then 'judge' once the slots have " +
-            "finished. 'capture' returns one slot's screen; 'resize' sets its terminal size. " +
+            "finished. 'capture' returns one slot's screen; 'resize' sets its terminal size; " +
+            "'scroll' scrolls its transcript view (`by` or `to`). " +
+            "'transcript' reads one slot's conversation as text lines (`since` pages; a " +
+            "`cont` chain may continue in the next answer after `cursor`, in order, never " +
+            "reordered or lost). " +
+            "'replay' opens one finished slot's real interface read only and answers " +
+            "{replay_id, seq}; read it with capture_session, end it with close_replay. " +
             "'run-and-judge' is the blocking pipeline and holds the call open for the whole run. 'cancel' stops one slot or " +
             "the whole run.",
         },
         slot: {
           type: "string",
           description:
-            "For 'cancel', 'capture' and 'resize': the anonymised slot id (e.g. '02') from the " +
-            "slot map 'run' returned. 'capture' and 'resize' require it; for 'cancel', omit it " +
+            "For 'cancel', 'capture', 'resize', 'scroll', 'transcript' and 'replay': the anonymised " +
+            "slot id (e.g. '02') from the slot map 'run' returned. 'capture', 'resize', 'scroll', " +
+            "'transcript' and 'replay' require it; for " +
+            "'cancel', omit it " +
             "to stop every slot in the run.",
         },
         path: {
@@ -1977,7 +2121,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         run_id: {
           type: "string",
           description:
-            "For 'status', 'cancel', 'capture' and 'resize': the run_id a 'run' answer " +
+            "For 'status', 'cancel', 'capture', 'resize', 'scroll', 'transcript' and 'replay': the " +
+            "run_id a 'run' answer " +
             "returned. It " +
             "addresses THAT run while this server retains it, even after a newer run reused " +
             "the path. Omit it to address the newest run at 'path'.",
@@ -1985,8 +2130,18 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         since_seq: {
           type: "number",
           description:
-            "For 'capture': the `seq` of the screen you already hold. When it is still " +
+            "For 'capture' only: the `seq` of the screen you already hold. When it is still " +
             "current the answer is `{unchanged:true}`; any other value returns the full screen.",
+        },
+        since: {
+          type: "string",
+          description:
+            "For 'transcript' only (capture uses since_seq): the `cursor` of a previous " +
+            "answer; returns only the lines after it. Omit to read from the start. Answer " +
+            `{run_id, path, slot, cursor, lines, more, final}, at most ${MAX_TRANSCRIPT_LINES} lines and ` +
+            `${grouped(TRANSCRIPT_ANSWER_MAX_BYTES)} bytes per call; a ` +
+            "`cont` chain may continue in the next answer after `cursor`, in order, never " +
+            "reordered or lost.",
         },
         spans: {
           type: "boolean",
@@ -1996,13 +2151,30 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           type: "integer",
           description:
             "For 'resize' (required): the terminal width in columns, clamped to 40–9999. The " +
-            "answer {run_id, path, slot, cols, rows, changed, seq} reports the size set.",
+            "answer {run_id, path, slot, cols, rows, changed, seq} reports the size set. For " +
+            "'replay' (optional): the replay's width, default 160.",
         },
         rows: {
           type: "integer",
           description:
             "For 'resize' (required): the terminal height in rows, clamped to 24–9999 and to " +
-            "at most 4 000 000 cells (cols × rows).",
+            "at most 4 000 000 cells (cols × rows). For 'replay' (optional): the replay's " +
+            "height, default 50.",
+        },
+        by: {
+          type: "integer",
+          description:
+            "For 'scroll': rows to scroll the slot's transcript view; negative = toward older " +
+            `content, positive = toward the live bottom. A target, ± 1 row; |by| is capped at ${MAX_SCROLL_ROWS}. ` +
+            "Not 0. Give exactly one of 'by' and 'to'. The answer {run_id, path, slot, seq} " +
+            "carries the screen's seq after the scroll.",
+        },
+        to: {
+          type: "string",
+          enum: ["end"],
+          description:
+            "For 'scroll': \"end\" returns the slot's view to the live bottom. Give exactly one " +
+            "of 'by' and 'to'.",
         },
         models: {
           type: "array",
@@ -2130,7 +2302,10 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         mode === "status" ||
         mode === "cancel" ||
         mode === "capture" ||
-        mode === "resize"
+        mode === "resize" ||
+        mode === "scroll" ||
+        mode === "transcript" ||
+        mode === "replay"
       ) {
         return teamContractVerb(mode, args);
       }
@@ -2565,9 +2740,10 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       "Report the local Codex account pool's allowance: {contract_version, capabilities, " +
       "allowance, reason?}. `allowance` is the claudish.allowance.v1 report of THIS machine's " +
       "claudish sessions (accounts, remaining capacity, burn rate, projected gaps with remedies, " +
-      "trajectory, per-session shares), or null with a `reason` when there is no account pool. " +
+      "trajectory, per-session shares, 14 days of hourly usage per account), or null with a " +
+      "`reason` when there is no account pool. " +
       "`sections` limits the report to those parts (accounts, combined, burn, alerts, " +
-      "trajectory, sessions) beside its header, and the answer then lists them in `sections`; " +
+      "trajectory, sessions, usage) beside its header, and the answer then lists them in `sections`; " +
       'a frequent poll should pass ["accounts","burn","alerts"]. ' +
       "Read-only; it sends nothing to any vendor.",
     inputSchema: {
@@ -2590,7 +2766,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           },
           minItems: 1,
           description:
-            'Report only these parts beside the header (default: all). Poll with ["accounts","burn","alerts"]; the trajectory and sessions are most of the bytes.',
+            'Report only these parts beside the header (default: all). Poll with ["accounts","burn","alerts"]; the trajectory, sessions and usage are most of the bytes.',
         },
       },
     },
@@ -2831,10 +3007,13 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     },
     group: "session",
     handler: async (args) => {
-      const result = sessionManager.sendInput(
-        requiredString(args.session_id, "session_id"),
-        requiredString(args.text, "text")
-      );
+      const sessionId = requiredString(args.session_id, "session_id");
+      // Before `text` is read and before any lookup: a replay has no path for text.
+      if (isReplayId(sessionId))
+        return contractErrorAnswer(
+          new ContractErrorException("replay_read_only", "a replay is read only")
+        );
+      const result = sessionManager.sendInput(sessionId, requiredString(args.text, "text"));
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
@@ -3030,7 +3209,11 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           throw new ContractErrorException("invalid_args", "'session_id' is required");
         const since = optionalInteger(args.since_seq, "since_seq");
         const spans = optionalBoolean(args.spans, "spans");
-        return contractAnswer(sessionManager.captureSession(sessionId, since, spans));
+        return contractAnswer(
+          isReplayId(sessionId)
+            ? replays.capture(sessionId, since, spans)
+            : sessionManager.captureSession(sessionId, since, spans)
+        );
       } catch (e) {
         return contractErrorAnswer(e);
       }
@@ -3069,7 +3252,177 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           throw new ContractErrorException("invalid_args", "'session_id' is required");
         const cols = requiredInteger(args.cols, "cols");
         const rows = requiredInteger(args.rows, "rows");
-        return contractAnswer(await sessionManager.resizeSession(sessionId, cols, rows));
+        return contractAnswer(
+          isReplayId(sessionId)
+            ? await replays.resize(sessionId, cols, rows)
+            : await sessionManager.resizeSession(sessionId, cols, rows)
+        );
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "scroll_session",
+    description:
+      "Scroll a session's transcript view, as a mouse wheel over the child's Claude Code " +
+      "would: the next capture_session shows the child scrolled. `by` is a signed row " +
+      "count (negative = toward older content, positive = toward the live bottom); it is a " +
+      `target, ± 1 row, and |by| is capped at ${MAX_SCROLL_ROWS} per call. \`to:"end"\` returns ` +
+      "to the live bottom. Give exactly one of `by` and `to`; `by:0` is refused. It never " +
+      "types into the prompt, submits or answers a dialog, and a prompt claudish delivers " +
+      "next returns the view to the bottom first. The answer {session_id, seq} carries the " +
+      "screen's seq after the scroll (the first changed screen within 1 s, else the current " +
+      "one). Errors are a JSON ContractError: `scroll_unavailable` while the session is " +
+      "still starting, finished, delivering a prompt, reading its turn from the screen or " +
+      "reconnecting, or when magmux did not confirm the send (the scroll may still land). " +
+      "Nothing is queued.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        by: {
+          type: "integer",
+          description: `Rows to scroll; negative = older content. Not 0; |by| capped at ${MAX_SCROLL_ROWS}; a target, ± 1 row`,
+        },
+        to: {
+          type: "string",
+          enum: ["end"],
+          description: '"end" returns the view to the live bottom',
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        const req = scrollArgs(args);
+        return contractAnswer(
+          isReplayId(sessionId)
+            ? await replays.scroll(sessionId, req)
+            : await sessionManager.scrollSession(sessionId, req)
+        );
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "transcript_session",
+    description:
+      "Read a session's conversation as plain text lines, from its Claude Code transcript: " +
+      "prompts (`user`), replies (`assistant`), one line per tool call (`tool`, e.g. " +
+      "`Bash(git status)`), the content of a prompt delivered as a file (`task_file`), " +
+      "notices (`system`) and errors (`error`). Works while the session runs and after it " +
+      "finished. Page with `since`: pass the previous answer's `cursor` to get only newer " +
+      "lines; the cursor can move even when no line is returned. At most " +
+      `${MAX_TRANSCRIPT_LINES} lines (and ${grouped(TRANSCRIPT_ANSWER_MAX_BYTES)} bytes) per call; ` +
+      "`more: true` means call again now. A text over " +
+      `${grouped(TRANSCRIPT_LINE_MAX_CHARS)} characters is split into lines marked ` +
+      "`cont: true`; a `cont` chain may continue in the next answer after `cursor`, in " +
+      "order, never reordered or lost. `final: true` means the session finished, its " +
+      "process exited and every line has been returned; until then keep polling. Read " +
+      "only: it never sends anything to the session. The answer is " +
+      "{session_id, cursor, lines:[{kind, text, cont?}], more, final}. Errors are a JSON " +
+      "ContractError: `unknown_session`, `invalid_args` (a malformed cursor, or one from " +
+      "another session).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        since: {
+          type: "string",
+          description:
+            "The `cursor` of a previous answer; returns only the lines after it. Omit to " +
+            "read from the start. Opaque; valid for this session only.",
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = optionalString(args.session_id, "session_id");
+        if (sessionId === undefined)
+          throw new ContractErrorException("invalid_args", "'session_id' is required");
+        const since = transcriptSince(args.since);
+        // compact: the answer is budgeted in bytes of its compact JSON (§ 2.3)
+        return compactAnswer(sessionManager.transcriptSession(sessionId, since));
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "replay_session",
+    description:
+      "Open a finished session's real interface, read only, as a pane of its own running " +
+      "Claude Code on a fork of the session's record: the original record is never written. " +
+      "Answers {replay_id, seq}. Read it with capture_session, resize_session and " +
+      "scroll_session, giving the replay_id as session_id; end it with close_replay. send_input " +
+      "refuses a replay_id with `replay_read_only`. A second open of a target whose replay is " +
+      "open answers the same replay_id. A replay is not a session: list_sessions never shows " +
+      "it. Errors are a JSON ContractError: `invalid_args`, `unknown_session`, or " +
+      "`replay_unavailable` with `reason`: `session_live` (still running), `no_record` (no " +
+      "transcript file), `spawn_failed` (magmux or claude missing, no pane free, or claude " +
+      "exited before its input box appeared), `boot_dialog` (a dialog appeared in place of " +
+      "the input box).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        cols: {
+          type: "integer",
+          description: "Terminal width in columns, default 160 (clamped to 40–9999)",
+        },
+        rows: {
+          type: "integer",
+          description:
+            "Terminal height in rows, default 50 (clamped to 24–9999 and 4 000 000 cells)",
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        const sessionId = requiredString(args.session_id, "session_id");
+        const cols = givenInteger(args.cols, "cols");
+        const rows = givenInteger(args.rows, "rows");
+        return contractAnswer(
+          await replays.open(sessionManager.replayTarget(sessionId), { cols, rows })
+        );
+      } catch (e) {
+        return contractErrorAnswer(e);
+      }
+    },
+  });
+
+  tools.push({
+    name: "close_replay",
+    description:
+      "End a replay. When it returns, the process is gone and its fork record removed; it may " +
+      "take about 12 s. Any string answers {closed:true}, so a second close is safe; " +
+      "`reap_unverified:true` is added in the one case the process could not be verified gone. " +
+      "After a close, capture_session, resize_session and scroll_session on that id answer " +
+      "`unknown_session`. Errors are a JSON ContractError: `invalid_args`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        replay_id: { type: "string", description: "The replay_id from replay_session" },
+      },
+      required: ["replay_id"],
+    },
+    group: "session",
+    handler: async (args) => {
+      try {
+        return contractAnswer(await replays.close(requiredString(args.replay_id, "replay_id")));
       } catch (e) {
         return contractErrorAnswer(e);
       }
@@ -3302,6 +3655,8 @@ async function main() {
  */
 function installMcpShutdown(sessionManager: SessionManager): void {
   const before = async (): Promise<void> => {
+    // A replay already registered is reaped with every other pane; this stops one that is not yet.
+    replays.beginShutdown();
     // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
     // their process groups here, or they outlive the server.
     stopAllClaudeCodePrintChildren();

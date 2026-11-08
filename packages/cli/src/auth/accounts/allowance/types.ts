@@ -251,11 +251,38 @@ export interface AllowanceState {
   /** The newest event time folded: the state's own "now" for ages, bounds and calibration weights. */
   lastAt: Ms | null;
   /**
+   * The first hour any ledger row was folded for (a response, rollup or
+   * `no-eligible`, zero cu included): where the usage grid's coverage
+   * starts. Not `demand[0]`, which a zero-cu response never creates. Absent
+   * = fall back to `demand[0]`.
+   */
+  recordedFrom?: Ms | null;
+  /**
    * The account the POOL is on (`state.json` `active`) as of the last
    * `accounts` event: where the alert and trajectory simulations start.
    * Absent = unknown.
    */
   poolActive?: AccountId | null;
+}
+
+/**
+ * claudish cu each account served per hour over `hours` hours (`usageByHour`).
+ * Cell `i` covers [start + i h, start + (i + 1) h); the last is the current,
+ * partial hour. Raw sums: rounding is the shell's.
+ */
+export interface UsageGrid {
+  /** The first cell's hour start. */
+  start: Ms;
+  hours: number;
+  /** Every account in the state, each with `hours` cells; ordering is the shell's. */
+  accounts: { account: AccountId; order: number; enabled: boolean; cu: number[] }[];
+  /**
+   * Minutes of each cell the POOL had no eligible account, `hours` cells, at
+   * most 60: the sealed minutes plus an interval still open, up to `now`.
+   */
+  censoredMinutes: number[];
+  /** The first recorded ledger hour (`recordedFrom`), clamped up to `start`; null with none. */
+  coveredFrom: Ms | null;
 }
 
 export type Semantics = "fixed-start" | "sliding" | "unknown";
@@ -646,8 +673,16 @@ export interface Trajectory {
    * Each account's FIRST takeover inside the horizon, over the paths: the time
    * quantiles of the paths where it takes over and the share of paths that
    * do (only ≥ MIN_PATH_SHARE). Ordered by p50, then account order.
+   * `likelihood.p[i]` is the relative likelihood of that takeover in the hour
+   * starting at `likelihood.start + i h` (`start` is `floor(now/1h)`, one entry
+   * per grid hour to the horizon), peak 1.
    */
-  switches: { account: AccountId; q: Quantiles; probability: number }[];
+  switches: {
+    account: AccountId;
+    q: Quantiles;
+    probability: number;
+    likelihood: { start: Ms; p: number[] };
+  }[];
   /**
    * Per read account with a fixed governing reset: the governing window's
    * remaining fraction just before that reset (`SimResult.leftoverAtReset`),
@@ -661,6 +696,17 @@ export interface Trajectory {
    * with no reading yet at `at` has no point there).
    */
   historyByAccount: Record<AccountId, Trajectory["history"]>;
+  /**
+   * The same paths again with every hour's demand × `factor` (SLOWER_FACTOR),
+   * on each path's own capacity draw: `switches` and `blocked` by the rules
+   * above. Not monotone under any strategy: after a short-window reset the two
+   * runs can drain different accounts (`allowance.md`, "The slower scenario").
+   */
+  slower: {
+    factor: number;
+    switches: Trajectory["switches"];
+    blocked: Trajectory["blocked"];
+  };
 }
 
 export interface Contribution {

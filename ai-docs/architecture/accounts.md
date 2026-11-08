@@ -18,9 +18,11 @@ token and metered listeners. A real two-account run on 2026-10-22 used the owner
 `default` and a second owned login `second`: after one `cx@` turn `default` read `7d 41%`; with
 `switchAt` lowered to 30% the next turn selected `second` (`5h 0% · 7d 0%  active`). Rotation on a
 real quota 429 was not exercised: claudish never exhausts an account on purpose. D8 (a real
-in-stream `usage_limit_reached` capture) now gates Phase 2b, not a merge. Phase 2b, Phase V, the
-Claude pool, the `account use` handoff and polish are planned. **Last updated:** 2026-10-26. Claude
-Code facts: measured against Claude Code **2.1.268**.
+in-stream `usage_limit_reached` capture) now gates Phase 2b, not a merge. Phase 2b, the Claude
+pool, the `account use` handoff and polish are planned. Phase V ran on 2026-10-29: Claude Code
+facts are measured against Claude Code **2.1.312**. MTL-372 (the legacy Codex file move into the
+Keychain) is built on branch `worktree-mtl-260-pool-binary-validation` and not yet released.
+**Last updated:** 2026-11-03.
 
 **Errors go through main's classifier.** Every failed sign, refresh, forced re-sign and
 response-side accounts query is answered by `ComposedHandler.answerAuthFailure`
@@ -86,19 +88,20 @@ Decisions, rows and code comments cite these.
 V (spike) ──────────────┬──────────────────────────► 3 ──► 4*
                         │                            ▲
 0(a..i) ────────────────┴──► 1 ──► 2 ──────────────► 5
-D8 gates Phase 2b · D1/D2 gate import, `account use` and the login rule
-4* ships only on the D1/D2 branches that permit it
+D8 gates Phase 2b · D2 measured positive; D1/D3 moot under the switch rule (conditions: The switch rule)
+4* ships under the switch rule; the D1/D2 table applies only if D2 turns negative
 ```
 
 | Phase | Content | Status |
 |---|---|---|
-| **V** | Resolve D1–D8 against a scratch `CLAUDE_CONFIG_DIR`, into `ai-docs/reports/claude-oauth-facts-<date>.md` | **Not run** |
+| **V** | Resolve D1–D8 against a scratch `CLAUDE_CONFIG_DIR`, into `ai-docs/reports/claude-oauth-facts-<date>.md` | **Run 2026-10-29 on 2.1.312**: [`claude-oauth-facts-2026-10-29.md`](../reports/claude-oauth-facts-2026-10-29.md) |
 | **0** | Nine existing defects, below | **Built**, on the request path |
 | **1** | `auth/accounts/*`; `subscriptionAccounts` in the config type, `loadConfig`'s allowlist and the Zod schema; read-only `claudish account list\|status [--json] [--refresh]` | **Built**, off the request path |
 | **2a** | `CodexPoolHalf`; the three availability projections; routing retention of a failed Codex candidate; HTTP 429/403 quota rotation at the Codex status swap; the capacity-remaining 429; the narrow quota seam in `error-surface.ts`; outcomes and `CLAUDISH_ACCOUNTS_LOG`; false-mode stream marking; the mutating `account … codex` verbs; legacy enrollment and durable suppression; the shared config lock | **Shipped** in v14.5.0, on the request path; loopback-verified by targeted tests and a real two-account run (2026-10-22) |
+| **MTL-372** | The legacy Codex file move into the Keychain (*The legacy file move into the Keychain*): `moveLegacyLogin` and its request-path trigger; `claudish login codex` saves a `keychain` row; the mutating account verbs move first; the two transient branches for readers racing the move; the quota and display readers on the account list | **Built** (commits `a107eea8` … `e78716bb`), not released. `claudish logout codex` is unchanged (the planned one-row removal was dropped) |
 | **2b** | D8 capture; extended stream watch and in-stream rotation; T-C7, T-M3, T-L1 against the capture | Planned; gated on D8 |
-| **3** | `auth/claude-oauth.ts`, PKCE login, `NativeHandler` rotation, launch modes, `account add claude`, `import` where D1/D2 permit | Planned; blocked on ratifying decision 9 and C6 |
-| **4** | `claude-code-credentials.ts`, the journalled `account use`, the dual-store refresh | Planned, conditional on D1/D2; T-C5 first |
+| **3** | `auth/claude-oauth.ts`, PKCE login, `NativeHandler` rotation, launch modes, `account add claude`, `import` (D2 measured positive 2026-10-29, so it ships under the switch rule) | Planned; blocked on ratifying decision 9 and C6 |
+| **4** | `claude-code-credentials.ts`, the journalled `account use` under the switch rule. The dual-store refresh is SUPERSEDED for the account in Claude Code's item by the switch rule (2026-10-29); it applies only if a later Claude Code build stops honouring the locks (the D1/D2 table's fallback branch) | Planned; ships under the switch rule. T-C5 runs only on the fallback branch |
 | **5** | Idle polling, statusline labels, the TUI Accounts block, a `docs/` page, the live run | Planned |
 
 Phase 0, each item independent of the feature:
@@ -146,11 +149,29 @@ deciding anything. With a last-known-good list, the request is served from it an
 exposed as a diagnostic. An I/O failure is never cached and a parse failure is cached only against
 the file's stamp, so the next readable request after a repair recovers with no restart.
 
+**While `config.json` is failed, the legacy source is not advanced** (`refreshLegacySource`). The
+copy that decides whether the file matters is the stale config: before the move it has 0 rows and
+no marker, so a fresh read of the file finds it absent (M8 deleted it), and the snapshot combined
+the OLD config with the NEW file state: 0 Codex accounts and no throw. `CodexPoolHalf.isAvailable()`
+then answered false and the composite signed `OPENAI_CODEX_API_KEY`, metered (MTL-372 review round
+3). Now the legacy copy that was current with the config copy is served with it, and the legacy
+source reports `failed` ("not re-read while the account list config cannot be read"). With no such
+copy, a Codex snapshot throws `AccountListUnavailableError` (503), as a cold failure does; the
+Claude scope still ignores the legacy source. The file is re-read as soon as the config reads.
+
+**Since MTL-372 this population is smaller.** On a Keychain platform with the default config, the
+first Codex sign of a process starts the legacy file move in the background, and `claudish login
+codex` and the mutating account verbs run it first. After the move the user has one `keychain` row
+and no file, so the pool signs. The synthesized legacy account, and the delegation above, remain
+in three places only: a platform with no Keychain (or `CLAUDISH_DISABLE_KEYCHAIN=1`), an alternate
+config, and a process that has not reached its first Codex sign yet (or whose move was deferred).
+See *The legacy file move into the Keychain*.
+
 ## Where things live
 
 ```
 ~/.claudish/config.json                                   subscriptionAccounts — the account list, no secrets
-~/.claudish/codex-oauth.json                              the LEGACY Codex account, left in place
+~/.claudish/codex-oauth.json                              the LEGACY Codex account; moved into the Keychain on macOS (MTL-372)
 ~/.claudish/accounts/state.json                   (0600)  usage, exhaustedUntil, needsReauth, owner, active
 ~/.claudish/accounts/state.lock                           guards state.json's read-modify-write
 ~/.claudish/accounts/locks/<provider>/<id>.lock           the refresh gate, one per account
@@ -165,7 +186,7 @@ Keychain service "claudish-accounts", account "<provider>:<id>"   one JSON blob 
     "switchAt": 0.9,
     "switchAtByWindow": { "primary": 0.8 },
     "noticeAcceptedAt": "2026-10-22T09:00:00Z",
-    "legacyCodexSuppressed": true,          // set by removing the legacy login; see below
+    "legacyCodexSuppressed": true,          // set by removing the legacy login, or by its move; see below
     "accounts": [
       { "id": "a1b2c3d4e5f6", "label": "work", "store": "keychain",
         "addedAt": "2026-09-01T10:00:00Z", "identity": { "plan": "pro" } }
@@ -535,7 +556,10 @@ processes cannot race each other, so three causes of `invalid_grant` remain:
 1. **Out-of-band rotation** by Claude Code, under its own lock, in its own item. The detector reads
    **every** store holding the account (`TokenManager`'s `secondaryStore`, wired in Phase 4), adopts
    moved material, and retries **once**. Re-reading claudish's record alone would call a healthy
-   shared account revoked.
+   shared account revoked. SUPERSEDED for the account in Claude Code's item by the switch rule
+   (2026-10-29): claudish never refreshes that account, so its detector never meets this case
+   there. The `secondaryStore` read applies only if a later Claude Code build stops honouring the
+   locks (the D1/D2 table's fallback branch).
 2. **An interrupted predecessor**: the journal recovery above.
 3. **A genuinely revoked token**, the only cause that sets `needsReauth`.
 
@@ -727,11 +751,11 @@ or a 5xx (`RangeError` otherwise), so a credential 401 can never be dressed as t
 |---|---|---|---|
 | `AllAccountsExhaustedError` | terminal, 429, real blockers | 400 `invalid_request_error`, upstream 429, pinned message, **no V header** (`respondAccountsQuotaFailure`) | bare name may advance, metered included, with `billed PER TOKEN`; `cx@` stops |
 | `NeedsReauthError` | terminal, 401, blockers | 400, upstream 401, V=terminal | bare name advances to the next hop, metered included, announced on stderr; `cx@` stops |
-| `NoUsableAccountError` (incl. `AccountChangedDuringLeaseError`) | terminal, 401, blockers | 400, upstream 401, V=terminal | same |
+| `NoUsableAccountError` (incl. `AccountChangedDuringLeaseError`: removed, disabled or re-identified) | terminal, 401, blockers | 400, upstream 401, V=terminal | same |
 | `AccountListInvalidError` | terminal, 400, path and field | 400, upstream 400, V=terminal | same; a repair instruction, not repeated 503s |
 | `MeteredEscapeError`, pre-record | terminal, no upstream | 400, V=terminal; nothing recorded or sent | same; prior billing evidence unchanged |
 | `MeteredEscapeError`, post-record backstop | same | 400 returned verbatim | none: the metered record makes the probe answer metered |
-| `RefreshUnavailableError` | transient, 503 default or the token host's 429/5xx | 503, or 429 for upstream 429; upstream kept; V=transient | returned verbatim, same-hop retry, no cost warning |
+| `RefreshUnavailableError` (incl. `AccountStoreMovedDuringLeaseError`: a store-only rebind, the legacy move) | transient, 503 default or the token host's 429/5xx | 503, or 429 for upstream 429; upstream kept; V=transient | returned verbatim, same-hop retry, no cost warning |
 | `AccountListUnavailableError` | transient, 503, source/path/type | 503, upstream 503, V=transient | same; never read as absence, never drops the candidate |
 | `PersistOutcomeUnknownError` | transient, 503 | 503, upstream 503, V=transient | same; the next request recovers from the journal |
 | capacity remaining after the one rotation (a response, not an error) | — | 429 `rate_limit_error`, upstream 429, V=transient, `Codex account retry deferred; retry this request.` | same-hop retry |
@@ -821,8 +845,8 @@ sentence is provisional until D8.
 **Usage reading.** `codexQuotaAdapter` has `scrape` and `fetchExplicit` and no poll. Its
 `fetchExplicit` checks `registry.isSynthesizedLegacyOnly()` **before** reading the singleton
 credential, so an explicit pool (even of one row), a suppressed legacy login or an unreadable list
-never probes with the legacy token. Nothing replaces it: idle Codex accounts read `unknown`
-(decision 11). The window-slot constants live in the dependency leaf
+never probes with the legacy token. Nothing replaces it today: idle Codex accounts read `unknown`
+(decision 11). D7 measured positive on 2026-10-29, so that choice reopens. The window-slot constants live in the dependency leaf
 `auth/quota/codex-window-slots.ts`, which breaks the registry ↔ quota-source import cycle.
 
 **Claude (Phases 3–4).** The native pool stays **outside** `CredentialAuthority`: `NativeHandler`
@@ -840,19 +864,48 @@ account an hour later). Both conflated who **holds** the material with who may *
 > The token material is shared between the two stores. Exactly one *refresher* is named. claudish
 > never loses the ability to refresh; it loses the *permission* to refresh unilaterally.
 
+SUPERSEDED for the account in Claude Code's item by the switch rule below (2026-10-29). Under that
+rule Claude Code is that account's only refresher, and claudish never refreshes it. The
+named-refresher design and the table below apply only if a later Claude Code build stops
+honouring the locks (the D1/D2 table's fallback branch).
+
 | D1: rotation? | D2: lock interoperable? | `import claude` | `account use` | Login rule |
 |---|---|---|---|---|
 | no | irrelevant | plain copy; `owner` advisory | ships | the first Claude account is the imported login |
 | yes | yes | shared material, one named refresher, set before the account is selectable | ships | the same |
 | yes | no | does not ship | does not ship; prints the manual re-login instruction | inverted: the pool is disjoint from Claude Code's login, and a startup line says so |
 
-The dual-store refresh takes the claudish gate, then `.oauth_refresh.lock`; reads both stores
-uncached (higher generation wins; on a tie, Claude Code's item, which can rotate without telling
-us); journals `dual-refreshing`; and writes claudish, then `{...otherKeys, claudeAiOauth: new}`. The
-Keychain write is a whole-item upsert that drops unlisted keys, so every routine rotation must merge
-first (D4). The handoff holds **no lock across a human**: the D5 check, reading Claude Code's item
-and the prompt all come before any lock. Revision 1 held three locks across a network call and a
-prompt, and its read-back would have verified a stale token and passed.
+**The switch rule** (Jack, 2026-10-29). On every `account use` switch claudish reads Claude Code's
+current tokens, refresh token included, back into the account being switched away from. Then it
+writes the next account. It holds `.oauth_refresh.lock` with the legacy `<realpath>.lock`, and
+`.storage-write.lock`, across the whole read-save-write. When it writes the next account it still
+merges `otherKeys` (`{...otherKeys, claudeAiOauth: next}`), because the Keychain write is a
+whole-item upsert that drops unlisted keys (D4). Claude Code is the only refresher of the account
+in its item; claudish never refreshes it. D1 and D3 decide nothing under two conditions: D2 is
+positive for both locks (measured, below), and Claude Code refreshes that account exclusively. Then
+no refresh can run inside the switch.
+
+The budget is measured on 2.1.312 ([report](../reports/claude-oauth-facts-2026-10-29.md) D2a,
+D2b). Claude Code waits ≈ 7.9 s on the refresh lock and then sends with the token it holds. It
+waits 7.5 s on `.storage-write.lock` and then skips its write. The switch must therefore finish
+well inside 7.5 s. A running session adopts the changed item at its next request once its 30 s
+item cache has expired; a 401 or the near-expiry check re-reads at once (D5). An idle session
+adopts nothing until it sends a request. Until a session adopts the item, its requests still sign
+with the old account.
+
+The D1/D2 table above is now the fallback branch. It applies only if a later Claude Code build
+stops honouring these locks; then D1 and D3 need a real login again.
+
+The dual-store refresh is SUPERSEDED for the account in Claude Code's item by the switch rule
+(2026-10-29). It applies only on the fallback branch. There it takes the claudish gate, then
+`.oauth_refresh.lock`; reads both stores uncached (higher generation wins; on a tie, Claude Code's
+item, which can rotate without telling us); journals `dual-refreshing`; and writes claudish, then
+`{...otherKeys, claudeAiOauth: new}`. Every routine rotation on that branch must merge first (D4).
+
+The handoff holds **no lock across a human**: any prompt comes before the switch takes its locks.
+Revision 1 held three locks across a network call and a prompt, and its read-back would have
+verified a stale token and passed. Under the switch rule the read of Claude Code's item happens
+inside the locks, so the tokens saved are the current ones.
 
 A mid-conversation switch loses the prompt cache, and Files API and container ids belong to one
 account. That breakage is accepted; stickiness and a startup line naming the signing account are
@@ -864,7 +917,7 @@ the mitigations.
 |---|---|---|
 | `keychain` | service `claudish-accounts`, account `<provider>:<id>`, one JSON blob | macOS default |
 | `file` | `accounts/tokens/<provider>/<id>.json`, 0600 in 0700, symlinks refused | Linux/WSL, tests |
-| `legacy-codex-file` | `~/.claudish/codex-oauth.json`, original shape plus `claudish_generation`, `claudish_journal`, `claudish_write_id` | the migration base |
+| `legacy-codex-file` | `~/.claudish/codex-oauth.json`, original shape plus `claudish_generation`, `claudish_journal`, `claudish_write_id` | migration INPUT on a Keychain platform with the default config: the move copies it into `keychain` and deletes it (MTL-372). The legacy login's store where there is no Keychain, and under an alternate config |
 
 - **Reads throw on failure and return `null` only for a confirmed absence** (Keychain exit 44, or
   `ENOENT`). That rule separates "the keychain is locked" from "no subscription". Refresh-path
@@ -882,6 +935,13 @@ the mitigations.
 - **The legacy file keeps its shape.** Both writers read-merge-write and keep keys they do not own,
   and `CodexOAuth.saveCredentials` bumps `claudish_generation`. Before fix A5 it wrote four keys and
   erased the pool's fields, hiding a rotation from any waiter.
+- **The move copies; it never rotates.** The Keychain record keeps the file's `generation`,
+  `fingerprint`, `journal`, `accountId` and `expiresAt`; only `writeId` (which proves the write)
+  and `updatedAt` are new. `reauthMaterialMoved` reads a generation past `failedGeneration` as proof
+  of a new login, so a bumped generation would clear a valid `needsReauth` mark and spend one
+  exchange on a dead token. An open journal (`unknown`, from a crashed holder) is recovered on the
+  new store under the new gate; dropping it would lose the "a token rotation was interrupted"
+  reason.
 - **Store choice for a new account** (`defaultAccountStore`): `CLAUDISH_DISABLE_KEYCHAIN=1` or no
   Keychain → `file`; otherwise the Keychain store, subject to the test-only
   `CLAUDISH_ACCOUNT_STORE=file` rule above. The row records the chosen store's actual `kind`.
@@ -907,7 +967,7 @@ and every `claude` mutation answer "not available".
 |---|---|
 | `add` | Shows the owned-accounts notice until accepted (`noticeAcceptedAt` is written only inside the publishing config write), prints the store and a plaintext warning for `file`, runs PKCE with no lock, requires a stable `chatgptAccountId`, then under the new id's gate rechecks id and identity and derives the label (`deriveAccountLabel`; exhaustion fails before any token is written), persists the token and proves it by an uncached read-back of its `writeId`, and publishes the row in **one** config write. Nothing names the account before the browser unless `--label` is given. The final config write derives the label again from the live account list, so a concurrent add that took the bare email makes this one `<email>-<plan>`. A failed publication deletes the new token item only when a locked re-read confirms the row absent. Prints `Added Codex account <label> (<identity>); store: <store>.` When the label is longer than 32 characters or holds `@` or `+`, it adds one line: older claudish builds cannot read this label |
 | `rename` | One gated config write that changes `label` and nothing else: id, order, enabled, store, usage and exhaustion stay. The same label writes nothing and leaves the generation alone; a label differing only in case writes. A label taken by another account (case-insensitive) is refused. Renaming the synthesized legacy login records it as a `legacy-codex-file` row with the new label (decision 13) and, like `add`, refuses when it records no `chatgptAccountId`. Prints `Renamed Codex account <old> to <new>.` |
-| `login` | Synthesized default with no pool: the unchanged legacy login. Otherwise PKCE, the same stable identity or a refusal pointing at `account add`, then a gated generation+1 token write. Label, id, order, enabled, store, usage and exhaustion are untouched; no state mark is cleared, because the new material self-heals `needsReauth` on the next lease |
+| `login` | Synthesized default with no pool: the unchanged legacy login. Otherwise PKCE, the same stable identity or a refusal pointing at `account add`, then a gated generation+1 token write. Label, id, order, enabled, store, usage and exhaustion are untouched; no state mark is cleared, because the new material self-heals `needsReauth` on the next lease. On a Keychain platform with the default config the legacy file move runs first, so the synthesized default is already a `keychain` row by the time the account is selected |
 | `enable` / `disable` | One gated config write, no token read, delete or refresh. An idempotent call writes nothing and leaves the generation alone. Disable says configured rows still reserve OAuth |
 | `remove` | Confirmation before any lock unless `--yes`. One config write removes the row (and, for a legacy-backed one, sets the suppression marker), then registry invalidation, then `active` cleared only if it named this account, then deletion of this account's token item only. A cleanup failure is reported, never re-published. Prints the removed identity and the next credential for new requests, warning when that is `OPENAI_CODEX_API_KEY` |
 
@@ -918,13 +978,46 @@ identity would make the duplicate check vacuous). Every verb except `add` select
 decision 13 says and prints the resolved label and id on its first output line; `--yes` does not
 suppress that line.
 
+**The move runs before every mutating verb except `remove`** (`moveBeforeMutation`, MTL-372):
+`add`, `login`, `enable`, `disable` and `rename` await `moveLegacyLogin()` before they inspect or
+select. A `deferred` outcome aborts before any browser or lock with the deferral message (*Diagnosing
+the pool*). `remove` does not move, because a legacy target keeps its `--delete-file` contract.
+`list`, `status` and `forecast` do not move, because reads never enroll. Where the move does not
+apply (no Keychain, an alternate config) it returns `not-applicable` and the verb runs as before.
+
+**`claudish login codex` and `claudish logout codex`, by platform and row count.**
+
+| | No Keychain, or `CLAUDISH_DISABLE_KEYCHAIN=1` | Keychain platform (`codexLoginUsesKeychain()`) |
+|---|---|---|
+| `login codex` | the legacy login: refused before the browser while Codex rows exist or the marker is set; otherwise PKCE and a write to `codex-oauth.json` | `CodexAccountManagement.loginCodex()`: the move first (a deferral refuses before the browser), then by the active config's CONFIGURED rows (a synthesized login does not count). **0 rows:** `add` with label `default`, no owned-accounts notice, no legacy enrolment; it needs a stable `chatgptAccountId` like any `add`, and writes a `keychain` row. **1 row:** that row's `login` (same identity, generation + 1). A different identity is refused, naming `claudish account add codex` and `claudish account remove codex <label>` (plus `--delete-file` for a `legacy-codex-file` row) followed by `claudish login codex`. **2 or more:** refused before the browser: ``Codex has N accounts; log one in with `claudish account login codex <label>`.`` It does not write `codex-oauth.json` (one exception below) |
+
+`claudish logout codex` is the same on both platforms and unchanged by MTL-372. With Codex rows
+configured it refuses before unlinking: a `legacy-codex-file` row is named with ``claudish account
+remove codex <label> --delete-file``, any other row with ``claudish account remove codex <label>``.
+With no rows (marker or not) it unlinks the file. After a move the user has one `keychain` row, so
+`logout codex` refuses and names `account remove`.
+
+The 0-row label is `default` because that is what `account list` already showed for the
+synthesized login. The notice is skipped because one account never switches. `enrollLegacy:
+false` keeps an alternate config from claiming the default config's shared file (MTL-371). On a
+Keychain platform MTL-371 is moot for two independent reasons: `login codex` writes a Keychain item
+keyed by a new generated id and a row in the ACTIVE config, and the move runs only for the default
+config. On a platform with no Keychain MTL-371 remains, and its fix is separate.
+
+The exception: a 1-row `login codex` whose row is `legacy-codex-file`
+re-logs that row into its own store, the file, as `account login` does. That row exists on a
+Keychain platform only under an alternate config, where the move does not run.
+
 ### Legacy enrollment and durable removal suppression
 
 Reads never enroll. The first `add`, `enable` or `disable` on a pool whose only account is the
 synthesized `default` discloses it and writes it as an ordinary **generated-id** row on the
 `legacy-codex-file` store, in the same config write as the change. The file stays where it is and its
 refresh token is never copied; its refresh gate stays `legacy-codex`, shared with `CodexOAuth`, so
-the facade and the pool can never exchange concurrently.
+the facade and the pool can never exchange concurrently. On a Keychain platform with the default
+config this enrolment no longer happens through a verb: the move runs first and leaves a `keychain`
+row, so the verbs find no synthesized login and do not print "its credential file stays where it
+is". The enrolment above remains where the move does not apply, and as the move's own step M2.
 
 Removing a legacy-backed account (the synthesized `default` or an enrolled `legacy-codex-file` row)
 requires `--delete-file`, and `--delete-file` on any other row is refused. The config write that
@@ -936,10 +1029,291 @@ publication leaves the marker durable across restarts. Unrelated saves keep it; 
 and 2a has no re-enrollment verb. The marker is not an account: zero rows plus the marker lets a
 **new** request sign `OPENAI_CODEX_API_KEY`, but never one whose OAuth latch is already set.
 
-With Codex rows configured or the marker set, `claudish login codex` refuses before opening a
-browser and `claudish logout codex` refuses before unlinking, naming `claudish account remove codex
-<label> --delete-file` (F8). `credentials.logout("openai-codex")` reaches the same refusal, since
-`CodexPoolHalf` delegates `login`/`logout` to the legacy half.
+The legacy file move is the second writer of the marker. Its publication sets `store: "keychain"`
+on the row and `legacyCodexSuppressed: true` in one config write, and it is the only valid way to
+set both: `config-validation.ts` refuses a `legacy-codex-file` row beside the marker. A file left
+behind under the marker (a failed `remove --delete-file`, or a move that stopped after publication)
+is deleted by the move's leftover branch (*The legacy file move into the Keychain*).
+
+Where there is no Keychain, with Codex rows configured or the marker set, `claudish login codex`
+refuses before opening a browser, naming `claudish account add codex` and `claudish account login
+codex <label>`. `claudish logout codex` refuses as *Managing Codex accounts* describes (F8).
+`credentials.logout("openai-codex")` reaches the same refusal, since `CodexPoolHalf` delegates
+`login`/`logout` to the legacy half.
+
+### The legacy file move into the Keychain (MTL-372)
+
+`CodexAccountManagement.moveLegacyLogin()` (`auth/accounts/management.ts`) copies the legacy login
+from `codex-oauth.json` into the `keychain` store (service `claudish-accounts`, account
+`openai-codex:<id>`), rebinds the account row, sets the marker and deletes the file. The applicability
+checks and the request-path trigger live in `auth/accounts/legacy-move.ts`, which stays
+import-light: the request path reaches it on every Codex sign and loads `management.ts` (with
+`@inquirer/prompts` and PKCE) only when a move is due.
+
+**It applies only where both hold:**
+
+- **a Keychain platform:** `CLAUDISH_DISABLE_KEYCHAIN` is not `1`, `isKeychainSupported()`, and the
+  destination store's `kind` is `keychain`. The flag check is not redundant: `KeychainTokenStore.kind`
+  is `keychain` even when the store is disabled.
+- **the default config:** the active config's realpath equals `<claudishHome>/config.json`. The
+  legacy file is per `HOME` and a config is per path, so a move run against an alternate `--config`
+  or `CLAUDISH_CONFIG` would hand the shared file to a config that does not own it (MTL-371 in the
+  other direction).
+
+Elsewhere (Linux, Windows, WSL, `bun run test:safe`) the 0600 file and every legacy path stay as
+built. The move needs a destination better than its source, and the file store is the same 0600
+plaintext.
+
+| Before | After |
+|---|---|
+| synthesized legacy account only (no rows, no marker) | enrolled first (M2) as a `legacy-codex-file` row: a new generated id, label `default`, identity from the file, `addedAt` = the file's mtime, no `noticeAcceptedAt`. Then moved as the next row |
+| a `legacy-codex-file` row (e.g. `4463fa7e5c82`, `default`) | the same row with `store: "keychain"`: same id, label, order, `enabled`, identity and `addedAt`. Marker set, file deleted |
+| marker set, no legacy row, file still present | the leftover branch deletes the file under the legacy gate (`leftover-deleted`) |
+| all rows `keychain`, no file | unchanged: `not-applicable`, no `security` call |
+
+**Why the same id.** `state.json` (usage, `exhaustedUntil`, `needsReauth`, `active`), the usage
+ledger and the pool's `managerFor` cache all key on the account id. A new id would orphan the
+account's usage and exhaustion marks and reset stickiness. The refresh gate path changes from
+`locks/openai-codex/legacy-codex.lock` to `locks/openai-codex/<id>.lock`, because
+`accountRefreshLockPath` derives it from the store.
+
+**Why a synthesized login is enrolled first.** M2 writes a fixed generated id before any Keychain
+write. A crash after the write then resumes against that id. Writing the item under a fresh id and
+publishing a `keychain` row in one step would leave an orphaned item under a random id that no later
+run can identify.
+
+**The sequence.** Lock order is the legacy refresh gate, then the config lock; `state.lock` is never
+taken.
+
+```
+M0  no lock: platform, default config, then under the config lock the target:
+      the one legacy-codex-file row | the synthesized login | the leftover | none
+M1  gate: locks/openai-codex/legacy-codex.lock (20 s wait, then deferred/gate-busy)
+M2  synthesized only: enrol it as a legacy-codex-file row (one config write)
+M3  read codex-oauth.json uncached          absent → already-moved | not-applicable
+M4  config lock: the row is still this id, legacy store, same chatgptAccountId
+    read the Keychain item uncached         throws → deferred/keychain-unreadable
+M5  item holds every durable field of the file → reuse it (crash resume)
+    otherwise write the copy (-U -T /usr/bin/security), then an uncached read-back
+      that must show this writeId, generation and fingerprint
+M6  one config write: row.store = "keychain"; legacyCodexSuppressed = true
+M7  invalidate (request path: the registry only; commands: the authority memo too)
+M8  compare-and-delete: re-read the file; delete only if every durable field is
+      unchanged; otherwise keep it and log once
+```
+
+**Durable fields** are everything but `writeId` and `updatedAt`: both tokens, `expiresAt`,
+`accountId`, `generation`, `fingerprint` and `journal` (absent and `null` equal), compared by
+`sameDurableRecord` (`token-store.ts`), the one helper M5 and M8 share. Fingerprint plus generation
+is not enough: a journal write and a re-issued access token change neither. With only those two, a
+crash-resumed attempt published the earlier attempt's item and deleted a file that had gained a
+refresh journal in between, so the journal was lost (MTL-372 review).
+
+At every instant either the config names the file and the file holds the material, or the config
+names the Keychain item and the item holds it, verified before publication. A failed or unverified
+Keychain write leaves `codex-oauth.json` and `config.json` byte-identical (V19). A synthesized
+login keeps its M2 enrolment, which is a valid state.
+
+**Outcomes** (`LegacyMoveOutcome`): `moved` (with `fileDeleted`), `already-moved` (a peer moved it
+while this process waited on the gate), `leftover-deleted`, `not-applicable` (`no-keychain`,
+`alternate-config`, `no-legacy-account`), and `deferred` with one reason:
+
+| Reason | Cause |
+|---|---|
+| `gate-busy` | the legacy gate was held past 20 s, from another host, or unwritable |
+| `file-unreadable` | `codex-oauth.json` exists and cannot be used: torn, empty, `EACCES`, `EMFILE`, no token pair. No `security` call is made |
+| `keychain-unreadable` | the destination item cannot be read: locked, ACL refused, `security` killed. No write is attempted |
+| `keychain-write-failed` | a known write failure: non-zero exit, a record over `MAX_STDIN_LINE`, a round-trip mismatch |
+| `keychain-unverified` | an ambiguous write whose read-back does not show it, or a read-back without this `writeId` |
+| `config-unavailable` | `config.json` busy past 250 ms, invalid or unreadable |
+| `target-changed` | the row changed id, store or identity between two reads |
+
+`detail` passes through `redactSecrets`; no token or file content reaches it.
+
+**An ambiguous Keychain write is resolved by reading, never by a second write.** A killed or
+timed-out `security` (`TokenStoreAmbiguousWriteError`) is followed by one uncached read-back. It
+shows this `writeId`: the move continues. Otherwise: `deferred/keychain-unverified`. A second
+`security` call against a wedged keychain repeats the 10 s kill, the securityd incident class in
+`keychain.md`. So each attempt makes at most one write.
+
+**A failure after publication never fails the move.** An M8 delete that fails, or a file that
+changed since the copy, is logged and returns `moved` with `fileDeleted: false`. The marker already
+makes the file dead to every reader. A failed leftover delete (gate busy, unreadable config, `rm`
+error) is logged and answers `not-applicable/no-legacy-account`, not `deferred`: a dead file must not
+make `account add` or `login codex` refuse. M8 compares every durable field, so any doubt keeps
+the file.
+
+**The leftover branch does NOT compare** (checked in review round 4). `deleteLeftover` re-checks
+the marker, the absence of any `legacy-codex-file` row and the file's presence under the config
+lock, then deletes the file whatever it holds; it reads neither the file nor the Keychain copy. A
+file that differs from the Keychain copy is the ORDINARY case: the Keychain row rotates on its
+first refresh after the move and leaves the file's token dead, so "differs" cannot mean "newer". A
+genuinely newer token in the file can come only from a writer that ignores the marker: an older
+claudish build's gate-less login or refresh, or (before R4-2) this build exchanging the file from a
+stale list. No reader of this build adopts the file under the marker, so deleting it changes no
+signing; the Keychain row would need a login either way. Left as is.
+
+**No file bytes in `detail`.** Bun's `JSON.parse` error quotes the bytes it failed on, which in a
+torn `codex-oauth.json` are token material. The token stores report a parse failure as `invalid
+JSON` only, and `detail` passes through `redactSecrets` where `legacy-move.ts` and `management.ts`
+build it and where `legacyMoveDeferredMessage` prints it.
+
+**The triggers.**
+
+- **The first Codex sign of a process, in the background.** `CodexPoolHalf.getRequestAuth()` calls
+  `startLegacyCodexMove()` and does not await it. `legacyMoveApplies()` is synchronous: the env flag,
+  the platform, one registry snapshot (stat-cached), one `lstat` only for the leftover case, the
+  config path and the store kind. An unreadable account list answers "not due". One move runs per
+  process at a time. A `deferred` or `not-applicable` outcome starts a 10-minute cooldown
+  (`LEGACY_MOVE_RETRY_MS`, a judgement value) for request-path triggers. `not-applicable` counts
+  because the cheap check said a move was due; without a cooldown a leftover that cannot be removed
+  would cost a gate acquisition on every request. A failed dynamic import of `management.ts` is
+  recorded as `deferred/config-unavailable` and starts the cooldown too. Outcomes go to the debug
+  log only: a background stderr line would interleave with Claude Code's TUI.
+- **`claudish login codex` and `account add|login|enable|disable|rename codex`**, awaited. They
+  ignore the cooldown, and a `deferred` outcome refuses before any browser or lock.
+- **Not at startup and not on reads.** A process that never signs Codex never spawns `security`.
+
+Awaiting on the request path would put up to 20 s of gate wait and a `security` spawn on a user's
+first request. Both the pre-move and the post-move state sign correctly, and every race with a
+concurrent reader is a transient 503, so the request does not wait. The move signs and records
+nothing, so billing is unaffected (V22). A process that exits mid-move is a crash at an await
+boundary, and the next attempt resumes it.
+
+**Readers racing the move.** The gate path changes at publication, so a reader that took its snapshot
+before M6 can read the store after M8 and find the file gone. Two branches turn that into a transient
+answer, retried on the same hop:
+
+- **A pool lease** (`TokenManager`): a `null` store read runs `validateAccount(ref, "store-empty")`
+  before throwing `NeedsReauthError`, at all three empty-store branches: `resolve`, the uncached
+  re-read in `refreshUnderGate`, and the re-read after the exchange in `exchangeAndPersist` (whose
+  `before-persist` check ran before that read, so it cannot see a rebind landing in between). The
+  registry re-stats `config.json` and sees the row rebound to `keychain`. A rebind that changed
+  ONLY the store (same id, same `chatgptAccountId`, still enabled) throws
+  `AccountStoreMovedDuringLeaseError`, a `RefreshUnavailableError` (transient, 503). It is not recorded as a lease failure: an unpinned
+  `acquire` re-evaluates and leases the same id from its Keychain store in the same call, with no
+  exclusion and no `LEASE_FAILURE_DEPRIORITIZE_MS`. A PINNED lease (the 401 re-sign, a Responses leg
+  pinned to its account) answers it transient, and its same-hop retry leases the same id, so the pin
+  holds. The post-lease `stillConfigured` check makes the same distinction. A removed, disabled or
+  re-identified row still throws `AccountChangedDuringLeaseError` (a `NoUsableAccountError`), which
+  is terminal for a pin. A terminal 401 for a store-only move would walk a bare chain to a metered
+  hop. A store that is `null` with the row unchanged still means "needs a login".
+
+  **"No exception" is not "fresh".** `AccountRegistry.snapshot()` throws only when a source read
+  failed AND there is no last-known-good copy. A warm registry serves the copy and reports the
+  failure only in `snapshot.config.state === "failed"` (and `snapshot.legacy.state`);
+  `invalidate()` clears stamps, not the copy. A copy taken before the move still shows the
+  `legacy-codex-file` row, so the binding looks unchanged. In the `store-empty` phase the pool's
+  validator therefore invalidates the registry (the registry re-reads only on a stat-stamp change,
+  so `chmod 000` or an `EMFILE` on an unchanged file would keep reporting `present`) and checks
+  the sources first (`codexSourceFailed` for `openai-codex`, which covers the legacy source too):
+  failed → `AccountListUnreadableDuringLeaseError`, a `RefreshUnavailableError` (transient, 503).
+  It tried no credential, so it is unavailable for THIS request only: no
+  `LEASE_FAILURE_DEPRIORITIZE_MS`, and, like a store-only move, the lease's re-auth stamp is
+  restored, pinned or not. An unpinned lease tries the next account. `before-persist` keeps
+  deciding from the copy and still returns on a cold unreadable list, and so does `before-exchange`
+  for every row except one: a store that holds material keeps serving through a short config
+  outage.
+
+  **The exception: an exchange of a `legacy-codex-file` row** (review round 4, R4-2). Another
+  process can publish the move (M6: the row says `keychain`) and stop before M8 deletes the file.
+  If this process's registry then serves a pre-move copy because `config.json` cannot be read, the
+  copy still names `legacy-codex-file`, and the file's refresh token is the one the Keychain row
+  also holds. Exchanging it rotates the token under a row the list no longer names, and the
+  Keychain copy dies. So `before-exchange` for that store invalidates the registry, re-reads, and
+  on a failed source throws the same `AccountListUnreadableDuringLeaseError`: no journal, no
+  exchange, stores untouched. It runs first under the gate, before the uncached re-read and any
+  journal write. `pool-legacy-exchange-stale-list.test.ts` pins it, with two controls: a readable
+  list still exchanges the legacy row, and a `file` row still exchanges from the copy.
+
+  **A store-only move is not a re-auth attempt** (`AccountPool.leaseStep`). `acquire` stamps each
+  lease as the row's re-auth attempt (`lastReauthAttempt` and the request context) before it
+  leases. A pass that ends in a store-only move restores both to their previous values: left
+  stamped, a due `needsReauth` retry reads "attempted just now" on the next pass and blocks the
+  rebound row, so a single-account pool answers a terminal `NeedsReauthError`, and the pool's map
+  keeps suppressing the retry on later requests. That includes a pinned move's transient throw: a
+  pin itself is honoured even when it needs re-auth, but the next unpinned request copies the
+  pool's map.
+
+  **The pool's stamp is withdrawn, never put back** (review round 4, R4-1). The pool's map is
+  shared by overlapping acquires, so `ReauthAttemptStamps` keeps a committed value per account
+  plus one mark per lease in flight, and reads the latest of them (a concurrent request still sees
+  an attempt in progress). A lease that tried no credential withdraws ONLY its own mark; every other
+  lease commits when it settles, unless `healReauthMarks` cleared the account meanwhile (then it
+  commits nothing, as before). The earlier save-and-put-back raced: acquire B saved acquire A's
+  in-flight stamp as its "previous" value, A withdrew, then B put A's stamp back as if committed,
+  and the next request read a due retry as "attempted just now" and answered `NeedsReauthError`
+  with nothing attempted. `pool-reauth-overlap.test.ts` pins it. The request's own map belongs to
+  one acquire, whose passes run one at a time, so it keeps save-and-restore.
+
+  A store-only move does not spend the loop's `records + 1` attempts, which are for
+  removals; it has its own budget of the same size. `healReauthMarks` heals a second time against
+  the rebound record when the old store read empty because the row just moved.
+- **The legacy facade** (`CodexOAuth.refreshHoldingGate`): a process that delegated before the move
+  keeps signing with its in-memory token, which the Keychain item also holds. Only its refresh reads
+  the file. With the file absent under the gate it invalidates the registry and takes ONE snapshot.
+  Any configured Codex row: `CodexOAuthLocalError("The Codex login moved to the macOS Keychain;
+  retry the request.")`, a transient 503 with no upstream status; the retry reaches
+  `CodexPoolHalf`, which leases the row. An unreadable account list is transient too: unknown
+  presence is not a logout. That includes a snapshot served from the last-known-good copy
+  (`codexSourceFailed(snapshot)`): a pre-move copy shows no configured row, and with the file gone no
+  synthesized one either, so trusting it answered the terminal error for a moved login. None: the
+  terminal `CodexOAuthRefreshError`, as before. When the refresh found the file gone and the list
+  READ, the in-memory token is dropped too (`dropCredentials`), so a still-valid bearer stops
+  signing after a logout or a move; an unreadable list keeps it. The check is
+  "any configured Codex account" and not `isSynthesizedLegacyOnly()`: with the file absent the
+  registry cannot synthesize, so that check is false after a genuine logout as well and would turn
+  every logout into the transient error. `getAccessToken` with no credentials after a failed read,
+  and a file removed during the exchange, answer through the same check.
+- **The facade with the file still present.** The move can publish and stop before M8 (the delete
+  failed, or the process stopped at `beforeDelete`), leaving the file. Under the gate, before it
+  adopts a token from the file or exchanges, the facade invalidates the registry, takes ONE
+  snapshot (`legacyFileOwnership`) and goes on only while the account list is the synthesized
+  legacy login alone. Otherwise (configured rows, `legacyCodexSuppressed`, or an unreadable list)
+  it throws the transient `CodexOAuthLocalError` without adopting or exchanging: rotating the
+  file's refresh token would revoke the copy in the Keychain, and the leftover cleanup would later
+  delete the rotated file. "Unreadable" includes a snapshot whose config or legacy source FAILED
+  while the registry served its last-known-good copy: a pre-move copy still says "synthesized
+  only", and trusting it exchanged the moved login's refresh token (MTL-372 review round 2). When
+  the list positively no longer names the file ("elsewhere"), the in-memory token is dropped as
+  well; "unknown" and a configured `legacy-codex-file` row keep it. The gate-unavailable path
+  (`refreshWithoutGate`) adopts the holder's token only under the same "facade" answer, and drops
+  the in-memory token by the same rules ("elsewhere", or the file gone with the list readable)
+  before it throws the gate's transient error. The check runs again before the save. There it
+  refuses only when the list positively no longer names the file (marker set, or no row reads
+  it). A configured `legacy-codex-file` row, or an unreadable list, keeps the save, because the
+  file is the rotated token's only home.
+- **A request latched to OAuth after the facade dropped its token.** `CodexOAuthHalf` refuses a
+  `requireOAuth` request with no login, so it never continues on the metered arm. After the move
+  the facade drops its token, and a stale snapshot can still route the retry into the legacy
+  half; a terminal `MeteredEscapeError` there ended a live subscription request. The refusal is
+  now classified by `CodexOAuth.missingLoginError()` (the `credentialFileGoneError` rule): a login
+  that moved to configured rows, or an account list that cannot be read, throws the transient
+  `CodexOAuthLocalError`; only a genuine logout (a readable list with no Codex account) stays
+  the terminal `MeteredEscapeError`. Neither signs.
+
+A Responses turn that spans the move does not raise `BindingChanged`: the legacy artifact and the
+pool lease carry the same `chatgpt-account-id`, copied verbatim, so `isSameCredentialSilo` sees one
+silo.
+
+**Readers that no longer look at the file.** `codexQuotaAdapter.isAvailable()` reads
+`mayHaveConfiguredAccounts("openai-codex")` (an unreadable list answers true). `hasOAuthCredentials(
+"openai-codex")`, display only (the `claudish login` status line, `describeSourceSync`, the TUI
+provider list), reads `hasConfiguredAccounts`, and an unreadable list shows "not logged in" as an
+unreadable file did. Neither makes a Keychain call. The billing probe was already on the registry.
+
+**Accepted risks.** A claudish older than v14.5 on the same Mac loses the token when the file goes
+(accepted by Jack). A v14.5 or later build without the facade branch above, mid-refresh on the facade when the file
+vanishes, answers one terminal error; its next request uses the row. An alternate config that
+synthesized its login from the shared file loses it after the default config's move. A locked login
+keychain now fails Codex requests that the file used to serve, with a transient 503, as it already did
+for every `keychain` row. A record over `MAX_STDIN_LINE` defers forever; Codex records fit, and the
+escape is `CLAUDISH_DISABLE_KEYCHAIN=1`.
+
+**Never run under the real `HOME` by a test or a session.** It would move the owner's real file. The
+move happens when the owner first uses a released build. Afterwards `claudish account list --json`
+shows `4463fa7e5c82` with `store: "keychain"` and label `default`, `~/.claudish/codex-oauth.json` is
+gone, and a `cx@` request signs SUB.
 
 ### Config ownership
 
@@ -964,6 +1338,11 @@ handshake lock.
   "Not saved — …" with the dialog and the user's values intact (F3).
 - **Lock order** is account gate → config lock → `state.lock`, never the reverse; no lock crosses a
   browser, a prompt or a network call.
+- **The legacy file move follows the same order:** the legacy gate (`legacy-codex.lock`), then the
+  config lock for each read and for its two writes (the M2 enrolment and the M6 publication), and
+  never `state.lock`. Its `security` calls run under the gate and outside the config lock. A config
+  lock busy past 250 ms at M6 is `deferred/config-unavailable`; the Keychain item stays unpublished
+  and the next attempt reuses or overwrites it.
 
 ## Billing invariants
 
@@ -996,7 +1375,9 @@ is the conservative reading. Decisions 12 and 13 were taken by Jack on 2026-10-2
    selection has no eligible account. A spent rotation with capacity remaining is NOT exhaustion and
    answers the transient 429 (R4). E7 pins the bare-chain advance against a real metered socket.
 2. **`account import claude` ships in Phase 3 on the D1/D2 branches that permit it**, and there the
-   first Claude account must be the existing login. *Planned.*
+   first Claude account must be the existing login. *Planned.* Phase V result (2026-10-29): D2
+   measured positive for both locks, so `import` ships under the switch rule. The D1/D2 table is
+   now a fallback branch, used only if a later Claude Code build stops honouring the locks.
 3. **The native `.plan` statusline label is deferred** to Phase 5. *Planned.*
 4. **Per-model Anthropic buckets are display-only**; a rejection on any bucket exhausts the account.
    *Planned*; the usage parser already records which window rejected.
@@ -1022,15 +1403,22 @@ is the conservative reading. Decisions 12 and 13 were taken by Jack on 2026-10-2
    pending the user's ratification. Round 3 added **C6**: the same branch drops C2's `import`, which
    needs the same ratification. The compliant fallback if the user declines: ship `import` and hold
    the imported account non-selectable until a refresher protocol exists. *Pending; blocks Phase 3.*
+   Phase V result (2026-10-29): D2 measured positive for both locks, and the switch rule makes
+   Claude Code the only refresher of the account in its item. The D1-rotation /
+   D2-non-interoperable branch therefore does not apply on 2.1.312, and the D1/D2 table is now a
+   fallback branch. The ratification above is still pending.
 10. **An exhausted Codex pool fails visibly.** No metered fall-through within `openai-codex` (its
     own api-key half never signs after the OAuth arm failed), and no flag to enable one. *Built* for
     the legacy path (A4) and the pool (2a). Moving a bare chain to ANOTHER hop is the routing
     chain's decision, not a fall-through: exhaustion advances with the cost warning (decision 1),
     a terminal credential failure advances announced (decision 7, `9ace3fe5`); a transient failure
     and a spent rotation with capacity remaining (R4) hold the hop.
-11. **claudish never spends quota to measure quota.** On the D7-negative branch an idle Codex
-    account reads `unknown`, which is eligible; `unknown` never means a stale reading decayed.
-    *Built* in the policy; `account status --refresh` contacts no vendor.
+11. **claudish never spends quota to measure quota.** An idle Codex account reads `unknown`, which
+    is eligible; `unknown` never means a stale reading decayed. *Built* in the policy;
+    `account status --refresh` contacts no vendor. The policy was built on the D7-negative branch.
+    D7 measured positive on 2026-10-29: `GET /backend-api/wham/usage` returns the rate-limit windows
+    with no inference. The idle `unknown` reading is therefore no longer forced, and the choice
+    reopens.
 12. **The default Codex account label is the login's email, chosen after the browser.** The email
     is not known before the login, so nothing asks for a label first and nothing prompts for one.
     The clash ladder takes the first free of `<email>`, `<email>-<plan>`, then numbers
@@ -1052,18 +1440,24 @@ is the conservative reading. Decisions 12 and 13 were taken by Jack on 2026-10-2
 
 ## Claude Code's OAuth facts
 
-Read from the installed 2.1.268 binary with `strings`; the Keychain secret was never read. Anthropic
-documents none of this, and any release can change it (C3).
+Read from the installed 2.1.312 binary and measured against it on 2026-10-29 with fake tokens in a
+throwaway keychain ([report](../reports/claude-oauth-facts-2026-10-29.md)); the real Keychain
+secret was never read. Anthropic documents none of this, and any release can change it (C3).
 
 | Fact | Value | In claudish's code |
 |---|---|---|
-| Keychain service | `Claude Code[-<sha256(configDir)[0:8]>]-credentials`, account `$USER`; the suffix appears when `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR` is set | `claudeCodeKeychainService()` (`auth/claude-code-facts.ts`), used by `claude-runner.ts`'s login probe |
+| Keychain service | `Claude Code${OAUTH_FILE_SUFFIX}-credentials[-<sha256(configDir)[0:8]>]`; `OAUTH_FILE_SUFFIX` is `""` in prod (`-local-oauth`, `-custom-oauth` otherwise). The hash suffix appears whenever `CLAUDE_CONFIG_DIR` is non-empty, even when it names the default dir; `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when set, overrides. Static: the hash input is the configured dir string, NFC-normalized (live only for one ordinary path; see below). The login keychain holds 252 suffixed items in this order and none in the old one | `claudeCodeKeychainService()` (`auth/claude-code-facts.ts`), used by `claude-runner.ts`'s login probe, is **wrong**: it builds `Claude Code-<hash>-credentials` and drops the suffix for the default dir (MTL-316) |
+| Account attribute | `$USER`; `claude-code-user` when `$USER` is unreadable or fails `/^[a-zA-Z0-9._-]+$/`. Every start also reads the legacy API-key service `Claude Code-<hash>` | Phase 4 |
 | Item format | JSON with the key `claudeAiOauth`, beside keys such as `designOauth` | the key only |
 | Access | `security -i`, hex `-X`, argv fallback for large payloads — so the ACL trusts `/usr/bin/security`, which claudish also uses | Phase 4 |
-| Refresh lock | `<configDir>/.oauth_refresh.lock` (proper-lockfile, stale 60 s, update 5 s) plus a legacy `<realpath(configDir)>.lock`; re-reads the store under the lock | Phase 4 |
+| Refresh lock | `<configDir>/.oauth_refresh.lock` (proper-lockfile, stale 60 s, update 5 s), taken first, then a legacy `<realpath(configDir)>.lock`; re-reads the store under the lock and adopts a stored token that differs. Owner file `.oauth_refresh.lock.owner`: a holder is taken over only with an owner record and the flag `tengu_quiet_marten`; with no record (`no_owner_record`) it is never taken over. Measured wait ≈ 7.9 s, then Claude Code sends with the token it holds | Phase 4 |
+| Write lock | `<configDir>/.storage-write.lock` (stale 15 s, 10 retries of 100 to 1000 ms) around every item read-modify-write. Measured wait 7.5 s, then Claude Code skips its write | Phase 4 |
+| Refresh trigger | on demand only, when `now + 300000 >= expiresAt` (5 min before expiry); no timer | Phase 4 |
+| Item cache | item reads are cached 30 s. A running session adopts a changed item at its next request once its 30 s item cache has expired; a 401 or the near-expiry check re-reads at once. An idle session adopts nothing until it sends a request | Phase 4 |
+| Refresh result | stores `refreshTokenExpiresAt`; keeps the old refresh token when the response carries none | Phase 4 |
 | Authorize | subscription `https://claude.com/cai/oauth/authorize`; console `https://platform.claude.com/oauth/authorize` | Phase 3 |
 | Token | `https://platform.claude.com/v1/oauth/token` | Phase 3 |
-| Client id | `9d1c250a-e61b-44d9-88ed-5944d1962f5e`; a second id `22422756-…` sits in another block, environment unknown | Phase 3 |
+| Client id | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` (prod); the second id `22422756-…` is the local-dev OAuth config (`OAUTH_FILE_SUFFIX: "-local-oauth"`, localhost URLs) | Phase 3 |
 | Scopes | `user:inference`, `user:profile`, `user:sessions:claude_code`, `user:mcp_servers`, `user:file_upload`, `user:office` | Phase 3 |
 
 Phase 3 puts the ids and URLs in `claude-code-facts.ts` with their measured version, and
@@ -1071,27 +1465,38 @@ Phase 3 puts the ids and URLs in `claude-code-facts.ts` with their measured vers
 `account add claude`, not the whole pool.
 
 Reported by outside sources, unverified here: Anthropic's `GET /api/oauth/usage` needs
-`user:profile` (a setup-token with only `user:inference` gets 403). Codex's
-`GET chatgpt.com/backend-api/wham/usage` is reported by CodexBar and openai/codex issue 10869, and
-contradicts claudish's own probe of 2026-08-05, which found no usage endpoint.
+`user:profile` (a setup-token with only `user:inference` gets 403).
 
-**The Phase V gates, still unverified**, each with a written branch:
+Measured 2026-10-29 (D7): Codex's `GET https://chatgpt.com/backend-api/wham/usage`, sent with
+`Authorization` and `ChatGPT-Account-Id` from `~/.codex/auth.json`, answers 200 with
+`rate_limit.primary_window` and `rate_limit.secondary_window`, and makes no model call. This
+overturns claudish's probe of 2026-08-05, which found no usage endpoint.
 
-| Gate | Question | Branch |
-|---|---|---|
-| D1 | Does Anthropic rotate the refresh token on exchange? | the D1/D2 table |
-| D2 | Can claudish take `.oauth_refresh.lock` compatibly? | the D1/D2 table |
-| D3 | Is the old refresh token revoked immediately? | immediate: ship the "a token rotation was interrupted" message and a `docs/` line that it costs one browser login; deferred: journal recovery repairs it silently |
-| D4 | The item's account attribute; whether `security -i -U` keeps the ACL | blocks Phase 4 |
-| D5 | Does a running `claude` reload a changed item? | if not, the handoff refuses or defers **before** any write |
-| D6 | The PKCE redirect shape and exchange body | blocks claudish's own Claude login |
-| D7 | Does a free, non-inference Codex usage endpoint exist? | negative branch decided: idle Codex usage reads `unknown` |
-| D8 | A real in-stream `usage_limit_reached` frame, metadata prefix included | gates Phase 2b (2a shipped in v14.5.0 without it); every quota fixture is PROVISIONAL until then |
+**The Phase V gates, resolved 2026-10-29** on 2.1.312
+([report](../reports/claude-oauth-facts-2026-10-29.md)):
 
-Also unmeasured: whether the binary hashes the raw or the resolved `CLAUDE_CONFIG_DIR`, and whether a
-trailing slash survives. `claudeCodeKeychainServiceCandidates()` probes resolved, raw,
-slash-stripped and unsuffixed names, which is cheap because the probe reads attributes only and
-never prompts. The `security -i` stdin size limit is unmeasured too.
+| Gate | Question | Branch | Answer |
+|---|---|---|---|
+| D1 | Does Anthropic rotate the refresh token on exchange? | the D1/D2 table | moot under the switch rule, given D2 positive for both locks and Claude Code as the only refresher of the account in its item |
+| D2 | Can claudish take `.oauth_refresh.lock` compatibly? | the D1/D2 table | **positive** for both locks: Claude Code waits ≈ 7.9 s on `.oauth_refresh.lock` with its legacy lock and posts nothing, and 7.5 s on `.storage-write.lock` and writes nothing |
+| D3 | Is the old refresh token revoked immediately? | immediate: ship the "a token rotation was interrupted" message and a `docs/` line that it costs one browser login; deferred: journal recovery repairs it silently | moot under the switch rule, given D2 positive for both locks and Claude Code as the only refresher of the account in its item |
+| D4 | The item's account attribute; whether `security -i -U` keeps the ACL | blocks Phase 4 | ACL byte-identical after `-U` for current items; items created by older builds not examined; `acct` = `$USER` |
+| D5 | Does a running `claude` reload a changed item? | if not, the handoff refuses or defers **before** any write | yes, request-driven: a running session adopts the changed item at its next request once its 30 s item cache has expired; a 401 or the near-expiry check re-reads at once. An idle session adopts nothing until it sends a request. The handoff needs no refusal, only the lock |
+| D6 | The PKCE redirect shape and exchange body | blocks claudish's own Claude login | static, from the binary; server acceptance remains to be verified by the first real Phase 3 login |
+| D7 | Does a free, non-inference Codex usage endpoint exist? | negative branch decided: idle Codex usage reads `unknown` | **positive**: `GET /backend-api/wham/usage` 200 with the `rate_limit` windows, no inference |
+| D8 | A real in-stream `usage_limit_reached` frame, metadata prefix included | gates Phase 2b (2a shipped in v14.5.0 without it); every quota fixture is PROVISIONAL until then | unchanged (MTL-261) |
+
+The hash input has two kinds of evidence. Live: the wrapper's computed service name matched Claude
+Code's first read for this scratch path. That path held no symlink, so a raw and a resolved path
+were not separated live. Static (the report's appendix, `HW()`, `dN()` and `Le` in 2.1.312): the
+input is `B8t()` (or `~/.claude`) NFC-normalized, with no `realpath` call in `Le`. The body of
+`B8t()` is not extracted, so whether it returns `CLAUDE_CONFIG_DIR` raw, resolved or
+slash-stripped is unverified, statically and live. Still unmeasured live: whether a trailing slash
+survives. `claudeCodeKeychainServiceCandidates()` probes resolved, raw, slash-stripped and
+unsuffixed names, which is cheap because the probe reads attributes only and never prompts. The
+`security -i` stdin limit is 4095 bytes per chunk (measured 2026-10-26, MTL-268); 2.1.312 sends
+`-i` lines up to 4032 bytes and switches to argv above that (`re=4032`, static; quoted in the
+report's appendix).
 
 ## Terms of service
 
@@ -1129,6 +1534,11 @@ per request, which is why claudish owns the tokens.
 | a Codex request says "run `claudish login codex`" although `OPENAI_CODEX_API_KEY` is set | the OAuth refresh failed, and there is no metered fall-through | log in again, or remove the OAuth login to use the key |
 | `needs login: run \`claudish account login codex <label>\`` | the token host rejected that account's refresh token (`invalid_grant`, `refresh_token_expired`, …) | run the named command |
 | `Could not read the OpenAI Codex credential file (<path>): …` | the legacy facade signed and `codex-oauth.json` names a refresh token beside an unusable access token or expiry | fix its contents, or run `claudish login codex` |
+| `The Codex login moved to the macOS Keychain; retry the request.` (503, transient) | a process that delegated to the legacy file refreshed after another process moved the file into the Keychain | retry; the next request leases the `keychain` row |
+| `The OpenAI Codex credential file is gone and the Codex account list could not be read. Retry the request.` (503, transient) | the same refresh found the file gone and `config.json` unreadable | retry; fix `config.json` if it persists |
+| `Could not move the existing Codex login into the macOS Keychain (<reason>: <detail>). The login was not moved; <path> was kept. <hint>` | `claudish login codex` or a mutating `account … codex` verb ran the move and it was deferred; nothing was sent to a browser | the hint: "Retry in a moment." (`gate-busy`, `target-changed`); "Retry in a moment; if this persists, repair config.json." (`config-unavailable`); "Unlock the login keychain and retry." (`keychain-*`); "Repair or remove the file, then retry." (`file-unreadable`) |
+| `Codex has N accounts; log one in with \`claudish account login codex <label>\`.` | `claudish login codex` on a Keychain platform with two or more configured rows | name the account |
+| `[accounts] legacy Codex move (request path): <outcome>` (debug log only) | the background move's result in this process; `deferred` and `not-applicable` start a 10-minute cooldown | read the preceding `legacy Codex move deferred (<reason>)` line; `claudish account enable codex <label>` (idempotent, no browser) retries at once and prints the cause; reads such as `account list` never move |
 
 ## Tests and seams
 
@@ -1159,11 +1569,18 @@ No test uses `mock.module()`: Bun's registry is process-global and has broken si
   PKCE browser and loopback listeners; the owner's real logins and Keychain are never read to
   simulate one. The real two-account run of 2026-10-22 proved threshold selection (`default` at
   `7d 41%`, `switchAt` 30%, next turn on `second`), not a live quota rejection.
-- **Idle polling.** There is no free Codex usage endpoint (D7 negative), and claudish never spends
-  quota to measure quota, so an idle Codex account reads `unknown` and is eligible. The legacy
-  explicit probe is fenced to the legacy-only population, with no replacement.
+- **Idle polling.** Built on the D7-negative branch: claudish never spends quota to measure quota,
+  so an idle Codex account reads `unknown` and is eligible. D7 measured positive on 2026-10-29
+  (`GET /backend-api/wham/usage` returns the rate-limit windows with no inference), so `unknown` is
+  no longer forced and the choice reopens. The legacy
+  explicit probe (`codexQuotaAdapter.fetchExplicit`, `claudish quota`) is fenced to the legacy-only
+  population, with no replacement. Since MTL-372 that population no longer includes a moved user, so
+  on a Keychain platform with the default config the explicit probe covers no Codex user after the
+  first move. That is consistent with decision 11; D7 reopens it.
 - **The Claude pool, `account add|import claude`, `account use`** (Phases 3–4): blocked on decision 9
-  and C6, and on D1/D2 for the handoff. `NativeHandler` is unchanged.
+  and C6. The handoff is no longer blocked on D1/D2: Phase V (2026-10-29) measured D2 positive
+  for both locks. With Claude Code as the only refresher of the account in its item, the switch
+  rule makes D1/D3 moot. `NativeHandler` is unchanged.
 - **The TUI Accounts block, statusline labels, a `docs/` page** (Phase 5).
 - **Re-enrolling a suppressed legacy file.** No verb exists; a suppressed user adds accounts with
   `account add`.
@@ -1171,15 +1588,17 @@ No test uses `mock.module()`: Bun's registry is process-global and has broken si
 ## Known gaps, carried
 
 - **T-C4**, the fence read/write window; **T-C5**, whether `journal.committed` must precede each
-  destination write (before Phase 4); **T-C7**, a one-account in-stream quota must still write
+  destination write (fallback branch only; MTL-263 replaces it with switch-rule cases); **T-C7**, a one-account in-stream quota must still write
   `exhaustedUntil` (2a marks it on scripted frames; closing T-C7 needs D8).
 - **C6 and decision 9**: the user's ratification, blocking Phase 3.
 - **M3**: extended mode has no absolute ceiling and no latency test for a healthy pooled stream; a
   logged 60 s ceiling is the fallback if real streams show long runs without a delta (T-M3, 2b).
 - **L1**: the provisional regex sentence, until D8.
-- **E20 executable parity is unverified.** Legacy-only, API-key-only and native-no-pool parity with
-  the pinned pre-2a build `6b572b7f` is shown by component tests on pinned modules, not by two built
-  binaries.
+- **E20 executable parity is recorded, except for the native-no-pool case.** On 2026-11-01 two built binaries
+  were compared: the parent of the Phase 2a commit (`579114b1`, v14.4.1) with the test seam backported,
+  and 14.10.1. Legacy success, legacy upstream error and API-key-only are identical; the refresh
+  rejection diverges as designed (A2/A4). Native-no-pool parity is not compared and rests on component
+  tests. See [`../reports/account-pool-built-binary-validation-20261101.md`](../reports/account-pool-built-binary-validation-20261101.md).
 - **The process-wide signed-arm record** can be overwritten by a concurrent request on the opposite
   arm; older than this feature and not fixed.
 - **A legacy login whose `account_id` came from `user_id`** cannot be duplicate-checked against a new
@@ -1187,7 +1606,9 @@ No test uses `mock.module()`: Bun's registry is process-global and has broken si
 - **The `needsReauth` self-heal runs on a lease, not on display.** `account status` is read-only and
   shows a re-logged-in account as needing a login until the next `acquire()`. The heal reads the
   primary store only; whether a rotation found in Claude Code's item (`secondaryStore`) should also
-  heal is a Phase 4 decision.
+  heal is a Phase 4 decision. SUPERSEDED for the account in Claude Code's item by the switch rule
+  (2026-10-29): claudish never refreshes that account, so the decision arises only if a later
+  Claude Code build stops honouring the locks (the D1/D2 table's fallback branch).
 - **`forceRefreshAuth` transports** (Vertex, Antigravity, Grok subscription) keep raw-status and
   bare-401 returns after a failed re-sign: the #148 shape, older than this branch, left unchanged.
 

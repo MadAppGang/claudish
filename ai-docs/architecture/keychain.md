@@ -219,6 +219,34 @@ agy/claudish token path, which deserves its own change.
 data; rather than hard-code a ceiling this cannot verify, the round-trip proves the store holds
 what the user was told it holds. ~17 ms extra on an operation that happens once per key.
 
+## The account token store: service `claudish-accounts`
+
+The multi-subscription pool keeps one JSON token record per account under service
+`claudish-accounts`, account `<provider>:<id>` (`KeychainTokenStore`, `auth/accounts/token-store.ts`;
+rationale in [`accounts.md`](./accounts.md)). A separate service means `hydrateKeychainIntoEnv` can
+never copy a refresh token into a child's environment. Writes go through `writeKeychainItem` with
+`-U` (overwrite) and `-T /usr/bin/security` (pin the ACL), and verify themselves by reading back.
+
+**Since MTL-372 this service also receives the migrated legacy Codex login.** On a Keychain platform
+with the default config, `~/.claudish/codex-oauth.json` is copied into
+`claudish-accounts` / `openai-codex:<id>` under the account's existing id, and the file is deleted
+after the config names the item. `claudish login codex` writes a `keychain` account here and no
+longer writes the file.
+
+**One write per attempt, and an ambiguous write is never retried in that attempt.** The move makes
+at most one `add-generic-password` call. When `security` is killed or times out
+(`TokenStoreAmbiguousWriteError`), the move does one uncached read-back: it shows this attempt's
+`writeId`, so the write committed; or it does not, and the move defers with the file kept. It does
+not write again. A second `security` call against a wedged keychain repeats the 10 s kill, and
+killed `security` processes are what restarted `securityd` in the incident under *NEVER verify
+against the real login keychain*. On the request path a deferred move also starts a 10-minute
+cooldown, so a locked or wedged keychain costs one `security` spawn per process per cooldown, not one
+per request.
+
+`-U` matters for the move: an item left by a crashed attempt, under a row that still names the file,
+is unpublished. The file is authoritative while the row names it, so the next attempt overwrites the
+item, or reuses it when it already holds the same fingerprint and generation.
+
 ## The laziness gate, and why no name index
 
 `config.json` gains ONE field:
@@ -411,6 +439,28 @@ because it raises a password dialog.
 Live verification is still worth doing — it is the only thing that caught the raw-mode hang — but
 it goes here, never at the default keychain.
 
+### `security` finds keychains through `$HOME`, and a throwaway keychain is not free either
+
+Measured 2026-11-02 (MTL-260, V2e), read-only, with `/usr/bin/security` on this Mac:
+
+| `HOME` | `default-keychain -d user` | `list-keychains -d user` |
+|---|---|---|
+| real | `…/login.keychain-db`, exit 0 | the login keychain |
+| a temp dir | `A default keychain could not be found.`, exit 1 | empty |
+| a temp dir with symlinks `Library/Keychains` and `Library/Preferences/com.apple.security.plist` to the real ones | `…/login.keychain-db`, exit 0 | the login keychain |
+
+So a claudish started with a temporary `HOME` (every bench does this to hide the real `~/.claudish`)
+sees NO keychain. Five V2e runs failed on that and were misdiagnosed as ACL or partition problems.
+
+The throwaway-keychain recipe above also cost a desktop session on 2026-11-02. The V2e guard observed
+the new file in the user search list and restored the list around each run; the search list is one
+per-user setting shared by every running program, and during those runs other programs (`gh`, Claude
+Code) raised stacked "wants to use the login keychain" dialogs until the Mac had to be rebooted. The
+cause chain is inferred, not proven, but the design is retired: V2e now uses the login keychain
+through the product's own `writeKeychainItem` on a fake item (`openai-codex:aaaaaaaaaaaa`), allows only
+`find-generic-password` and `delete-generic-password`, and stops after the first call that waits 15 s.
+Under the real `HOME`, the product's write, two reads and a delete took 11-79 ms with no dialog.
+
 ## `CLAUDISH_DISABLE_KEYCHAIN=1` — the escape hatch tests need
 
 `hasKeychainSource()` returns false when this is set, mirroring `CLAUDISH_DISABLE_OP` for
@@ -444,6 +494,25 @@ not hand-authored approximations.
 
 `mock.module()` is NOT used: Bun's module registry leaks across files in one run and has broken
 sibling e2e tests in this repo before.
+
+**The fake `security` for the legacy move** (`auth/accounts/fake-security.test-helper.ts`) is a
+`KeychainDeps` implementation installed through `setKeychainTestDeps`. It is file-backed (one JSON
+file in the test's temp `HOME`), so two child processes that move at once share one fake keychain.
+It accepts exactly three operations and throws on anything else, so a real `security` call cannot
+pass unnoticed:
+
+- `-i` with one `add-generic-password` line: it requires `-U` and `-T /usr/bin/security`, and exactly
+  one of `-w` or `-X`;
+- `find-generic-password -s -a -w`: the value plus `\n`, or exit 44;
+- `delete-generic-password`.
+
+Only service `claudish-accounts` and account `openai-codex:<12 chars>` are accepted, and a payload in
+argv fails the test. The call log records commands and flags, never a value. Fault knobs: `writeExit`,
+`writeKilled` (`before` or `after` the commit, exit -1 with `killed by SIGTERM`), `readExit` (exit 1,
+`User interaction is not allowed`) and `truncateStored` (round-trip mismatch). Each scenario runs in a
+child process (`legacy-move-harness.test-helper.ts`) with a temp `HOME`, which sees no keychain at all,
+and boots with `CLAUDISH_DISABLE_KEYCHAIN=1`. The child deletes the flag only after the fake is
+installed. The parent never imports a product module.
 
 ## Known gap, deliberately not fixed here
 

@@ -10,9 +10,10 @@
 
 import { resolveUpstreamUrl } from "../../test-upstream.js";
 import { MeteredEscapeError } from "../accounts/errors.js";
+import { startLegacyCodexMove } from "../accounts/legacy-move.js";
 import { type AccountPool, getAccountPool } from "../accounts/pool.js";
 import { type AccountRegistry, getAccountRegistry } from "../accounts/registry.js";
-import { CodexOAuth } from "../codex-oauth.js";
+import { CodexOAuth, CodexOAuthLocalError } from "../codex-oauth.js";
 import { ApiKeyCredentialProvider } from "./api-key-credential.js";
 import { CompositeCredentialProvider } from "./composite-credential.js";
 import type { CredentialProvider, RequestAuth, RequestAuthContext } from "./types.js";
@@ -77,6 +78,14 @@ export class CodexOAuthHalf implements CredentialProvider {
 
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {
     if (ctx.requireOAuth && !this.oauth.hasCredentials()) {
+      // Never the metered arm: this request already signed OAuth. But the
+      // facade also drops its token when the legacy move published (MTL-372),
+      // and a stale snapshot can still route the retry here. A login that moved
+      // to configured rows, or an account list that cannot be read, is the
+      // transient `CodexOAuthLocalError` (the retry reaches the pool); only a
+      // genuine logout (a readable list with no Codex account) stays terminal.
+      const why = await this.oauth.missingLoginError();
+      if (why instanceof CodexOAuthLocalError) throw why;
       throw new MeteredEscapeError("Codex OAuth login disappeared during this request");
     }
     // The 401 path (`forceRefresh`). Upstream has just rejected the bearer we
@@ -156,6 +165,11 @@ export class CodexPoolHalf implements CredentialProvider {
   }
 
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {
+    // The legacy Codex file move into the Keychain (MTL-372), on the first
+    // Codex sign of a process. Not awaited: this request signs from whichever
+    // state the move has reached, and both sign correctly. It signs and records
+    // nothing itself, so billing is unaffected.
+    startLegacyCodexMove();
     // A pin must be validated by acquisition, even after the last row disappears.
     if (!ctx.pin && this.registry.isSynthesizedLegacyOnly()) {
       return this.legacy.getRequestAuth(ctx);

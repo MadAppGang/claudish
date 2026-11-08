@@ -72,19 +72,29 @@ import {
   type PaneSessionOptions,
   type PaneSize,
   type PaneSnapshot,
+  type ReplayTarget,
   type ResizeResult,
   SLOT_STATES,
+  type ScrollRequest,
+  type ScrollResult,
   type SessionCancelResult,
   type SessionRow,
   type SettledTurn,
   type SlotState,
+  TRANSCRIPT_GRACE_MS,
+  type TranscriptCursor,
+  type TranscriptResult,
+  type TranscriptSource,
   assertMagmuxAvailable,
   chainAnswerOf,
   checkChildFlags,
   clampPaneSize,
   deliveryRefusal,
+  fileAgeMs,
   flagsRemoveRead,
   isTerminalState,
+  isUuid,
+  locateTranscriptByUuid,
   mergeAccounting,
   readTokenFileCached,
   reasonDetail,
@@ -94,7 +104,11 @@ import {
   resolveProvider,
   sockRootFor,
   startPaneSession,
+  transcriptAnswer,
+  transcriptHeadCwd,
+  transcriptQuiet,
   upstreamRecordsFor,
+  writerLiveness,
 } from "../pane/index.js";
 import { redactSecrets } from "../redact.js";
 import { projectsDir, transcriptPathFor } from "../session/session-discovery.js";
@@ -229,6 +243,9 @@ export type SendInputResult =
       state: SlotState | null;
     };
 
+/** A disk record's transcript source, with the working directory `meta.json` recorded. */
+type DiskTranscriptSource = TranscriptSource & { cwd: string | null };
+
 interface SessionEntry {
   info: SessionInfo;
   /** null before the pane started, and for a session whose pane never started */
@@ -267,6 +284,15 @@ interface SessionEntry {
   anomaliesLogged: Set<string>;
   /** A size asked for while the pane was still starting (L2): its launch size, else applied once it started. */
   requestedSize: PaneSize | null;
+  /**
+   * The pane's reap was VERIFIED (`PaneSession.reapVerified()`, the first attempt or a
+   * registry retry): its process group and magmux are gone, so nothing more can be
+   * appended to the transcript (`transcript_session`'s `final`, § 2.4). `reaped()`
+   * resolving is not enough: it resolves after an unverified reap (`reapFailed`) too.
+   */
+  reapVerified: boolean;
+  /** The child's Claude Code projects directory: a transcript path must lie under it. */
+  projectsRoot: string;
 }
 
 const DEFAULT_MAX_SESSIONS = 20;
@@ -682,6 +708,8 @@ export class SessionManager {
   private scrollbackCapacity: number;
   private sessionsDir: string;
   private terminalRetentionMs: number;
+  /** A disk record's writer counts as gone this long after its last sign of life (§ 2.4). */
+  private readonly transcriptGraceMs: number;
   private readonly parentEnv: Record<string, string | undefined>;
   private readonly paneTimings: SessionManagerOptions["paneTimings"];
   /** createSession calls past their checks whose entry is not in the map yet. */
@@ -712,6 +740,7 @@ export class SessionManager {
     this.maxSessions = options?.maxSessions ?? DEFAULT_MAX_SESSIONS;
     this.scrollbackCapacity = options?.scrollbackCapacity ?? DEFAULT_SCROLLBACK;
     this.terminalRetentionMs = options?.terminalRetentionMs ?? TERMINAL_RETENTION_MS;
+    this.transcriptGraceMs = options?.transcriptGraceMs ?? TRANSCRIPT_GRACE_MS;
     // `$HOME` before `os.homedir()`, by the rule the plugin monitor shares —
     // see home-dir.ts. Diverging here makes every run invisible to it.
     this.sessionsDir = options?.sessionsDir ?? sessionsDirFrom(process.env);
@@ -1045,6 +1074,8 @@ export class SessionManager {
       assistantIdsLogged: 0,
       anomaliesLogged: new Set(),
       requestedSize: null,
+      reapVerified: false,
+      projectsRoot: projectsDir(parentEnv),
     };
   }
 
@@ -1119,6 +1150,10 @@ export class SessionManager {
     if (asked && (asked.cols !== launch?.cols || asked.rows !== launch?.rows))
       session.resize(asked.cols, asked.rows).catch(() => undefined);
     // At reap: an owner without a binding checks the inbox once, then the file goes.
+    // `final` waits for a VERIFIED reap; a fake without the method never proves it
+    void session.reapVerified?.().then(() => {
+      entry.reapVerified = true;
+    });
     void session.reaped().then(() => {
       if (!binding && entry.inboxPath)
         reportOwnerWithoutHooks(entry.inboxPath, engine, {
@@ -1546,6 +1581,28 @@ export class SessionManager {
   }
 
   /**
+   * Scroll a session's transcript view (§8 G): `by` rows (negative = older, a target
+   * ± 1 row, clamped to MAX_SCROLL_ROWS) or `to:"end"`, as wheel / ctrl-End bytes the
+   * child's Claude Code reads as scrolling, never as typing. Mirrors `resizeSession`'s
+   * addressing. Throws `ContractErrorException`: `unknown_session`, and
+   * `scroll_unavailable` while the pane is still starting or finished, or the pane
+   * refuses (`PaneSession.scroll`). Nothing is queued.
+   */
+  async scrollSession(sessionId: string, req: ScrollRequest): Promise<ScrollResult> {
+    const entry = this.liveEntry(sessionId);
+    if (!entry) throw unknownSession(sessionId);
+    if (!entry.session)
+      throw new ContractErrorException(
+        "scroll_unavailable",
+        isTerminalState(entry.info.state)
+          ? "the session has finished"
+          : "the session is still starting"
+      );
+    const r = await entry.session.scroll(req);
+    return { session_id: sessionId, seq: r.seq };
+  }
+
+  /**
    * The session's screen (§8 D): a memory read. `CaptureUnchanged` when `sinceSeq`
    * equals the current seq. A session whose pane never started answers a blank final
    * screen. Throws `ContractErrorException("unknown_session")` once it is not retained.
@@ -1560,6 +1617,128 @@ export class SessionManager {
     if (!entry.session)
       return sinceSeq === 0 ? { unchanged: true, seq: 0, final: true } : blankFinalCapture();
     return entry.session.capture(sinceSeq, { spans: spans === true });
+  }
+
+  /**
+   * The session's conversation as plain text lines (§8 H, `transcript_session`), from its
+   * Claude Code transcript, after the cursor `since`. A READER: the live entry, else the
+   * session's directory (`meta.json`, or `spawn.json` alone for a session running under
+   * another server or whose owner died), so it answers for as long as `get_output` does.
+   * Read only: it reads `PaneSession.snapshot()` and files, and changes no record.
+   * `final` needs the writer provably gone BEFORE the read. Throws
+   * `ContractErrorException`: `unknown_session`; `invalid_args` for a cursor from another
+   * transcript, past the end, or off a line start.
+   */
+  transcriptSession(sessionId: string, since?: TranscriptCursor): TranscriptResult {
+    const address = { session_id: sessionId };
+    const entry = this.sessions.get(sessionId);
+    const src = entry ? this.liveTranscriptSource(entry) : this.diskTranscriptSource(sessionId);
+    if (!src) throw unknownSession(sessionId);
+    return transcriptAnswer(src, since, address);
+  }
+
+  /**
+   * What a replay of this session needs, from the transcript verb's own lookup, so eviction,
+   * the disk records and the team-directory refusal stay one rule. The working directory: the
+   * live entry's, else the record's, else the transcript's first records. A reader, like
+   * `transcriptSession`. Throws `unknown_session`.
+   */
+  replayTarget(sessionId: string): ReplayTarget {
+    const entry = this.sessions.get(sessionId);
+    const src = entry ? this.liveTranscriptSource(entry) : this.diskTranscriptSource(sessionId);
+    if (!src) throw unknownSession(sessionId);
+    const recorded = entry ? entry.cwd : (src as DiskTranscriptSource).cwd;
+    const { transcriptPath, sessionUuid, writerGone, projectsRoot } = src;
+    const head =
+      !recorded && transcriptPath && isUuid(sessionUuid)
+        ? transcriptHeadCwd(transcriptPath, sessionUuid, projectsRoot)
+        : null;
+    return {
+      claudeSessionId: sessionUuid,
+      transcriptPath,
+      writerGone,
+      cwd: recorded || head,
+      projectsRoot,
+    };
+  }
+
+  /** A live entry's transcript source. Gone = terminal AND the reap verified (or never spawned). */
+  private liveTranscriptSource(entry: SessionEntry): TranscriptSource {
+    const writerGone = entry.session
+      ? isTerminalState(entry.session.snapshot().state) && entry.reapVerified
+      : isTerminalState(entry.info.state);
+    return {
+      transcriptPath: entry.info.transcriptPath || null,
+      sessionUuid: entry.info.claudeSessionId || null,
+      writerGone,
+      projectsRoot: entry.projectsRoot,
+    };
+  }
+
+  /**
+   * A disk record's transcript source (§ 2.1, § 2.4), or null when there is no session
+   * directory (or it is a team run's). The writer's liveness is read FIRST, the file last.
+   *
+   * - `meta.json` parses: gone when its RAW state is terminal and `completedAt` (else the
+   *   `meta.json` mtime) is at least the grace old AND the transcript has had no write
+   *   within the grace. The owner's pid is not consulted.
+   * - `spawn.json` alone: gone only when its `mcpPid` is provably dead (ESRCH) — or is this
+   *   process, which no longer holds the session — and the transcript (else `spawn.json`)
+   *   has been quiet for the grace. Unknown liveness is never gone.
+   *
+   * The path: the stored one when it exists, else re-derived from the recorded cwd, else
+   * one level of search for `<uuid>.jsonl` under the projects directory.
+   */
+  private diskTranscriptSource(sessionId: string): DiskTranscriptSource | null {
+    const sessionDir = this.diskSessionDir(sessionId);
+    if (sessionDir === null) return null;
+    try {
+      if (!statSync(sessionDir).isDirectory()) return null;
+    } catch {
+      return null;
+    }
+    const spawnPath = join(sessionDir, "spawn.json");
+    const metaPath = join(sessionDir, "meta.json");
+    const spawnRecord = readJsonObject(spawnPath, META_READ_LIMIT);
+    if (spawnRecord?.kind === "team") return null;
+    const meta = readJsonObject(metaPath, META_READ_LIMIT);
+    if (meta?.kind === "team") return null;
+    const projectsRoot = projectsDir(this.parentEnv);
+    const uuid =
+      metaString(meta?.claudeSessionId) ?? metaString(spawnRecord?.claudeSessionId) ?? null;
+    const now = Date.now();
+
+    let writerGone: boolean;
+    let transcriptPath: string | null = null;
+    const cwd = meta !== null ? metaString(meta.cwd) : undefined;
+    if (meta !== null) {
+      const completedAt = metaString(meta.completedAt);
+      const endedMs = completedAt ? Date.parse(completedAt) : Number.NaN;
+      const age = Number.isFinite(endedMs) ? now - endedMs : fileAgeMs(metaPath, now);
+      if (uuid) {
+        const stored = metaString(meta.transcriptPath);
+        if (stored && existsSync(stored)) transcriptPath = stored;
+        else if (cwd) transcriptPath = transcriptPathFor(cwd, uuid, projectsRoot);
+        else transcriptPath = locateTranscriptByUuid(projectsRoot, uuid);
+      }
+      // the owner's pid is not consulted: a final record means the session finished. A
+      // transcript written within the grace means its writer is still alive.
+      writerGone =
+        rawStateTerminal(meta) &&
+        age !== null &&
+        age >= this.transcriptGraceMs &&
+        transcriptQuiet(transcriptPath, now, this.transcriptGraceMs);
+    } else {
+      const pid = spawnRecord?.mcpPid;
+      const liveness = pid === process.pid ? "dead" : writerLiveness(pid);
+      if (uuid) transcriptPath = locateTranscriptByUuid(projectsRoot, uuid);
+      // the quiet window is read AFTER the pid check
+      const quiet =
+        (transcriptPath !== null ? fileAgeMs(transcriptPath, now) : null) ??
+        fileAgeMs(spawnPath, now);
+      writerGone = liveness === "dead" && quiet !== null && quiet >= this.transcriptGraceMs;
+    }
+    return { transcriptPath, sessionUuid: uuid, writerGone, projectsRoot, cwd: cwd ?? null };
   }
 
   /**
@@ -1989,6 +2168,19 @@ function diskState(meta: Record<string, unknown> | null): {
   if (state === "CANCELLED") return { state, reason: "cancelled" };
   if (state === "TIMEOUT") return { state, reason: "timeout" };
   return { state, reason: null };
+}
+
+/**
+ * Whether a `meta.json`'s RAW recorded state is terminal: the pane generation's `state`,
+ * else 10.4.0's `status`. Unlike `diskState`, an unknown or non-terminal value is NOT
+ * terminal (`transcript_session` must never call a running writer gone).
+ */
+function rawStateTerminal(meta: Record<string, unknown>): boolean {
+  const raw = meta.state;
+  if (typeof raw === "string" && (SLOT_STATES as readonly string[]).includes(raw))
+    return isTerminalState(raw as SlotState);
+  const status = typeof meta.status === "string" ? STATE_OF_10_4_STATUS[meta.status] : undefined;
+  return status !== undefined && isTerminalState(status);
 }
 
 /**

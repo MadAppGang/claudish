@@ -43,15 +43,22 @@ import {
   type PaneSession,
   type PaneSessionOptions,
   type PaneSnapshot,
+  type ReplayTarget,
   SLOT_STATES,
+  type ScrollRequest,
   type SettledTurn,
   type SlotRow,
   type SlotState,
   TERMINAL_STATES,
+  TRANSCRIPT_GRACE_MS,
   type TeamCancelResult,
   type TeamListResult,
   type TeamResizeResult,
   type TeamRunRow,
+  type TeamScrollResult,
+  type TeamTranscriptResult,
+  type TranscriptCursor,
+  type TranscriptSource,
   assertMagmuxAvailable,
   chainAnswerOf,
   checkChildFlags,
@@ -59,6 +66,7 @@ import {
   deliveryRefusal,
   flagsRemoveRead,
   isTerminalState,
+  isUuid,
   livePaneCount,
   mergeAccounting,
   readTokenFileCached,
@@ -70,6 +78,9 @@ import {
   sockRootFor,
   startPaneSession,
   toSlotRow,
+  transcriptAnswer,
+  transcriptHeadCwd,
+  transcriptQuiet,
   upstreamRecordsFor,
 } from "./pane/index.js";
 import { redactSecrets } from "./redact.js";
@@ -383,6 +394,12 @@ interface SlotEntry {
   binding?: SessionHookBinding | null;
   /** the owner-created hook inbox; removed at reap */
   inboxPath?: string | null;
+  /**
+   * the pane's reap was VERIFIED (`PaneSession.reapVerified()`, first attempt or a
+   * registry retry): nothing more can reach the transcript (§ 2.4). Not `reaped()`,
+   * which resolves after an unverified reap (`reapFailed`) too.
+   */
+  reapVerified?: boolean;
 }
 
 interface LiveTeamRun {
@@ -397,6 +414,10 @@ interface LiveTeamRun {
   slots: Map<string, SlotEntry>;
   /** resolves once `done` has ended the run's record (`onSettled`), whatever ended it */
   settled: Promise<void>;
+  /** the slots' Claude Code projects directory: a transcript path must lie under it */
+  projectsRoot: string;
+  /** the slots' working directory */
+  cwd: string;
 }
 
 /** A `startModels` still before its registry entry (credentials, the staggered spawn loop). */
@@ -790,6 +811,166 @@ export async function resizeTeamSlot(
   if (!e.session)
     return { ...where, cols: DEFAULT_PANE_COLS, rows: DEFAULT_PANE_ROWS, changed: false, seq: 0 };
   return { ...where, ...(await e.session.resize(cols, rows)) };
+}
+
+/**
+ * Contract G: scroll one slot's transcript view (`PaneSession.scroll`), addressed like
+ * `resizeTeamSlot`. A slot whose pane never spawned answers `scroll_unavailable` (still
+ * starting, or finished). Throws `ContractErrorException`: `unknown_run`, `unknown_slot`,
+ * `scroll_unavailable`.
+ */
+export async function scrollTeamSlot(
+  path: string | undefined,
+  slot: string,
+  req: ScrollRequest,
+  runId?: string
+): Promise<TeamScrollResult> {
+  const run = addressRun(path, runId);
+  if (!run) throw unknownRun(path, runId);
+  const e = run.slots.get(slot);
+  if (!e)
+    throw new ContractErrorException(
+      "unknown_slot",
+      `run ${run.runId} has no slot ${JSON.stringify(slot)}`
+    );
+  if (!e.session) {
+    const state = run.status.models[e.id]?.state;
+    throw new ContractErrorException(
+      "scroll_unavailable",
+      state === undefined || isTerminalState(state)
+        ? "the slot has finished"
+        : "the slot is still starting"
+    );
+  }
+  const r = await e.session.scroll(req);
+  return { run_id: run.runId, path: run.path, slot, seq: r.seq };
+}
+
+/**
+ * Contract H: one slot's conversation as plain text lines (`team(mode="transcript")`),
+ * from its Claude Code transcript, after the cursor `since`. A READER: the retained run
+ * (`run_id`, else the newest at `path`), else `<path>/status.json` — read with
+ * `getStatus` so an absent file (`unknown_run`) is told apart from an absent slot
+ * (`unknown_slot`), and used only when `runId` is absent or equals the file's run id
+ * (`status.runId ?? basename(path)`). Read only. `final` needs the writer provably gone
+ * before the read: a live slot terminal AND its reap verified (or never spawned); a `status.json`
+ * slot terminal with `completedAt` (else the file's mtime) at least the grace old AND no
+ * write to its transcript within the grace.
+ * Throws `ContractErrorException`: `unknown_run`, `unknown_slot`, `invalid_args`.
+ */
+export function transcriptTeamSlot(
+  path: string | undefined,
+  slot: string,
+  since?: TranscriptCursor,
+  runId?: string,
+  opts: TeamSlotSourceOptions = {}
+): TeamTranscriptResult {
+  const { src, address } = teamSlotTranscriptSource(path, slot, runId, opts);
+  return transcriptAnswer(src, since, address);
+}
+
+/**
+ * What a replay of one slot needs, from the transcript verb's own lookup, so `unknown_run` and
+ * `unknown_slot` stay its own. The working directory: the retained run's, else the transcript's
+ * first records. Throws `ContractErrorException`: `unknown_run`, `unknown_slot`.
+ */
+export function replayTargetOfTeamSlot(
+  path: string | undefined,
+  slot: string,
+  runId?: string,
+  opts: TeamSlotSourceOptions = {}
+): ReplayTarget {
+  const { src, cwd } = teamSlotTranscriptSource(path, slot, runId, opts);
+  const head =
+    !cwd && src.transcriptPath && isUuid(src.sessionUuid)
+      ? transcriptHeadCwd(src.transcriptPath, src.sessionUuid, src.projectsRoot)
+      : null;
+  return {
+    claudeSessionId: src.sessionUuid,
+    transcriptPath: src.transcriptPath,
+    writerGone: src.writerGone,
+    cwd: cwd ?? head,
+    projectsRoot: src.projectsRoot,
+  };
+}
+
+interface TeamSlotSourceOptions {
+  graceMs?: number;
+  /** the env the run's children inherited (as `startModels`' `parentEnv`); default `process.env` */
+  parentEnv?: Record<string, string | undefined>;
+}
+
+/** One slot's transcript source and answer address; the lookup `transcriptTeamSlot` documents. */
+function teamSlotTranscriptSource(
+  path: string | undefined,
+  slot: string,
+  runId: string | undefined,
+  opts: TeamSlotSourceOptions
+): {
+  src: TranscriptSource;
+  address: { run_id: string; path: string; slot: string };
+  cwd: string | null;
+} {
+  const graceMs = opts.graceMs ?? TRANSCRIPT_GRACE_MS;
+  const run = addressRun(path, runId);
+  if (run) {
+    const e = run.slots.get(slot);
+    if (!e)
+      throw new ContractErrorException(
+        "unknown_slot",
+        `run ${run.runId} has no slot ${JSON.stringify(slot)}`
+      );
+    const m = run.status.models[e.id];
+    const writerGone = e.session
+      ? isTerminalState(e.session.snapshot().state) && e.reapVerified === true
+      : m?.state === undefined || isTerminalState(m.state);
+    const src: TranscriptSource = {
+      transcriptPath: m?.transcriptPath || null,
+      sessionUuid: m?.sessionUuid || null,
+      writerGone,
+      projectsRoot: run.projectsRoot,
+    };
+    return { src, address: { run_id: run.runId, path: run.path, slot }, cwd: run.cwd };
+  }
+  if (path === undefined) throw unknownRun(path, runId);
+  const resolved = resolve(path);
+  let status: TeamStatus;
+  try {
+    status = getStatus(resolved);
+  } catch {
+    throw unknownRun(path, runId);
+  }
+  if (!status || typeof status !== "object" || !status.models || typeof status.models !== "object")
+    throw unknownRun(path, runId);
+  const fileRunId =
+    typeof status.runId === "string" && status.runId ? status.runId : basename(resolved);
+  if (runId !== undefined && runId !== fileRunId) throw unknownRun(path, runId);
+  const m = Object.hasOwn(status.models, slot) ? status.models[slot] : undefined;
+  if (!m || typeof m !== "object")
+    throw new ContractErrorException(
+      "unknown_slot",
+      `run ${fileRunId} has no slot ${JSON.stringify(slot)}`
+    );
+  const now = Date.now();
+  const endedMs = typeof m.completedAt === "string" ? Date.parse(m.completedAt) : Number.NaN;
+  const mtime = statusMtimeMs(resolved);
+  const age = Number.isFinite(endedMs) ? now - endedMs : mtime === null ? null : now - mtime;
+  const terminal =
+    typeof m.state === "string" &&
+    (SLOT_STATES as readonly string[]).includes(m.state) &&
+    isTerminalState(m.state);
+  const transcriptPath =
+    typeof m.transcriptPath === "string" && m.transcriptPath ? m.transcriptPath : null;
+  const src: TranscriptSource = {
+    transcriptPath,
+    sessionUuid: typeof m.sessionUuid === "string" && m.sessionUuid ? m.sessionUuid : null,
+    // and no write to the transcript within the grace: a write means its writer still lives
+    writerGone:
+      terminal && age !== null && age >= graceMs && transcriptQuiet(transcriptPath, now, graceMs),
+    // the same root a live run derives at spawn (`projectsDir(parentEnv)`), as SessionManager does
+    projectsRoot: projectsDir(opts.parentEnv ?? process.env),
+  };
+  return { src, address: { run_id: fileRunId, path: resolved, slot }, cwd: null };
 }
 
 /**
@@ -1809,6 +1990,10 @@ async function startModelsIn(
     }
     e.session = session;
     // At reap: an owner without a binding checks the inbox once, then the file goes.
+    // `final` waits for a VERIFIED reap; a fake without the method never proves it
+    void session.reapVerified?.().then(() => {
+      e.reapVerified = true;
+    });
     void session.reaped().then(() => {
       if (!binding && e.inboxPath)
         reportOwnerWithoutHooks(e.inboxPath, hookEngine, { model: e.model, sessionId: uuid });
@@ -1998,6 +2183,8 @@ async function startModelsIn(
     status: statusCache,
     slots: entries,
     settled,
+    projectsRoot: projects,
+    cwd,
   };
   teamRuns.set(runId, run);
   newestRunByPath.set(path, runId);

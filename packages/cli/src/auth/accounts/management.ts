@@ -16,11 +16,18 @@
  * `default`) becomes a configured row only through an explicit add, enable or
  * disable, which says so before it happens; its refresh gate stays
  * `legacy-codex` (`accountRefreshLockPath`), shared with the `CodexOAuth` facade.
+ *
+ * On a Keychain platform with the default config, every mutating verb except
+ * `remove` first moves the legacy login into the Keychain
+ * ({@link CodexAccountManagement.moveLegacyLogin}, MTL-372), so there the
+ * enrolment branches above find no legacy login left to enrol.
  */
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, lstatSync, readFileSync } from "node:fs";
 import { confirm } from "@inquirer/prompts";
+import { log } from "../../logger.js";
 import { activeConfigFile } from "../../profile-config.js";
+import { redactSecrets } from "../../redact.js";
 import { type CodexPkceResult, loginCodexPkce } from "../codex-pkce.js";
 import {
   ACCOUNT_LABEL_RULE,
@@ -31,9 +38,10 @@ import {
 } from "./account-label.js";
 import { mutateAccountsConfig, withRawConfigTransaction } from "./config-lock.js";
 import { FileLockUnavailableError } from "./file-lock.js";
+import { isDefaultConfigPath, legacyMoveKeychainBlocked } from "./legacy-move.js";
 import { accountRefreshLockPath, legacyCodexCredentialsPath } from "./paths.js";
 import { type AcquireGateOptions, withRefreshGate } from "./refresh-lock.js";
-import { AccountRegistry, getAccountRegistry } from "./registry.js";
+import { AccountRegistry, LEGACY_CODEX_LABEL, getAccountRegistry } from "./registry.js";
 import { type StateStore, getStateStore } from "./state-store.js";
 import {
   type StoredTokenRecord,
@@ -41,15 +49,18 @@ import {
   TokenStoreAmbiguousWriteError,
   defaultAccountStore,
   fingerprintOf,
+  sameDurableRecord,
   storeFor,
 } from "./token-store.js";
 import {
   ACCOUNT_ID_PATTERN,
   ACCOUNT_LABEL_PATTERN,
   type AccountIdentity,
+  AccountListUnavailableError,
   type AccountRecord,
   type AccountRef,
   type AccountStoreKind,
+  LEGACY_CODEX_ACCOUNT_ID,
   RefreshUnavailableError,
   type SubscriptionAccountsEntry,
 } from "./types.js";
@@ -76,6 +87,20 @@ const LEGACY_LOGIN_REFUSED =
 /** How long a finished legacy browser login waits for a busy config lock. */
 const LEGACY_SAVE_WAIT_MS = 15_000;
 
+/**
+ * Test seam: callbacks between the steps of {@link CodexAccountManagement.moveLegacyLogin},
+ * so a test can observe each published state (billing presence, the file) or
+ * throw to model a crash at that boundary. Production passes none.
+ */
+export interface LegacyMoveHooks {
+  /** After a synthesized legacy login was enrolled as a `legacy-codex-file` row (M2). */
+  afterEnroll?: () => Promise<void> | void;
+  /** After the Keychain item is written and proven, before the config publication (M5 → M6). */
+  beforePublish?: () => Promise<void> | void;
+  /** After the publication and the registry invalidation, before the file is deleted (M7 → M8). */
+  beforeDelete?: () => Promise<void> | void;
+}
+
 export interface AccountManagementDeps {
   configPath?: () => string;
   env?: NodeJS.ProcessEnv;
@@ -90,7 +115,122 @@ export interface AccountManagementDeps {
   gateOptions?: Pick<AcquireGateOptions, "deps">;
   invalidate?: () => Promise<void> | void;
   legacyLogin?: () => Promise<void>;
+  moveHooks?: LegacyMoveHooks;
 }
+
+// ---------------------------------------------------------------------------
+// The legacy Codex file move into the Keychain (MTL-372)
+// ---------------------------------------------------------------------------
+
+/** Why a move published nothing. The file and the account row are untouched by the move itself. */
+export type LegacyMoveDeferral =
+  /** The legacy refresh gate: held (a refresh in flight), from another host, unwritable, or lost. */
+  | "gate-busy"
+  /** `codex-oauth.json` exists and cannot be read: torn, `EACCES`, `EMFILE`, no token pair. */
+  | "file-unreadable"
+  /** The destination Keychain item cannot be read: locked, ACL refused, `security` killed. */
+  | "keychain-unreadable"
+  /** The Keychain write failed with a known outcome: non-zero exit, too large, round-trip mismatch. */
+  | "keychain-write-failed"
+  /** The write's outcome is unknown, or its read-back does not show this write. */
+  | "keychain-unverified"
+  /** `config.json` is busy (250 ms), invalid, or unreadable. */
+  | "config-unavailable"
+  /** The account row changed id, store or identity between two reads. */
+  | "target-changed";
+
+export type LegacyMoveOutcome =
+  | { kind: "not-applicable"; reason: "no-keychain" | "alternate-config" | "no-legacy-account" }
+  | { kind: "moved"; id: string; label: string; fileDeleted: boolean }
+  /** A peer moved it while this process queued on the gate. */
+  | { kind: "already-moved" }
+  /** The marker was set, no legacy row remained, and a stale file was removed (§3.6). */
+  | { kind: "leftover-deleted" }
+  | { kind: "deferred"; reason: LegacyMoveDeferral; detail: string };
+
+/** A move step refused with a known deferral. Internal: always mapped to an outcome. */
+class LegacyMoveDeferredError extends Error {
+  constructor(
+    readonly reason: LegacyMoveDeferral,
+    detail: string
+  ) {
+    super(detail);
+    this.name = "LegacyMoveDeferredError";
+  }
+}
+
+const MOVE_HINTS: Record<LegacyMoveDeferral, string> = {
+  "gate-busy": "Retry in a moment.",
+  "config-unavailable": "Retry in a moment; if this persists, repair config.json.",
+  "target-changed": "Retry in a moment.",
+  "file-unreadable": "Repair or remove the file, then retry.",
+  "keychain-unreadable": "Unlock the login keychain and retry.",
+  "keychain-write-failed": "Unlock the login keychain and retry.",
+  "keychain-unverified": "Unlock the login keychain and retry.",
+};
+
+/**
+ * The refusal an explicit command prints when the move was deferred: before any
+ * browser or lock, naming the cause and that the file was kept.
+ */
+export function legacyMoveDeferredMessage(
+  outcome: Extract<LegacyMoveOutcome, { kind: "deferred" }>,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  return (
+    `Could not move the existing Codex login into the macOS Keychain (${outcome.reason}: ` +
+    `${redactSecrets(outcome.detail)}). The login was not moved; ${legacyCodexCredentialsPath(env)} was kept. ` +
+    MOVE_HINTS[outcome.reason]
+  );
+}
+
+/** `new CodexAccountManagement(deps).moveLegacyLogin()`. */
+export function moveLegacyCodexLogin(
+  deps: AccountManagementDeps = {},
+  opts: LegacyMoveOptions = {}
+): Promise<LegacyMoveOutcome> {
+  return new CodexAccountManagement(deps).moveLegacyLogin(opts);
+}
+
+export interface LegacyMoveOptions {
+  /**
+   * `"command"` (default) also clears the credential authority's memo, as every
+   * management verb does. `"request"` invalidates only the account registry: it
+   * runs in the background beside requests that are signing.
+   */
+  trigger?: "command" | "request";
+}
+
+/** `add`'s options; see {@link CodexAccountManagement} `add`. */
+interface AddOptions {
+  label?: string;
+  /** Ask the owned-accounts notice when none was accepted (default true). */
+  notice?: boolean;
+  /** Enrol the synthesized legacy login alongside (default true). */
+  enrollLegacy?: boolean;
+}
+
+/**
+ * Does `claudish login codex` save into the Keychain account store here? The
+ * same condition as the legacy file move: no `CLAUDISH_DISABLE_KEYCHAIN`, a
+ * macOS Keychain, and a new account's store really is `keychain`. Elsewhere it
+ * keeps writing the legacy file.
+ */
+export function codexLoginUsesKeychain(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !legacyMoveKeychainBlocked(env) && defaultAccountStore(env).kind === "keychain";
+}
+
+/** `claudish login codex` on a Keychain platform: `new CodexAccountManagement(deps).loginCodex()`. */
+export function loginCodexAccount(deps: AccountManagementDeps = {}): Promise<string[]> {
+  return new CodexAccountManagement(deps).loginCodex();
+}
+
+/** What M0 found to move. */
+type MoveTarget =
+  | { kind: "row"; row: AccountRecord }
+  | { kind: "synthesized"; row: AccountRecord }
+  | { kind: "leftover" }
+  | { kind: "none" };
 
 // ---------------------------------------------------------------------------
 // The legacy `claudish login codex`
@@ -493,7 +633,8 @@ export class CodexAccountManagement {
   async run(command: CodexManagementCommand): Promise<string[]> {
     if (command.verb === "add") {
       if (command.label !== undefined) validLabel(command.label);
-      return this.add(command.label);
+      await this.moveBeforeMutation();
+      return this.add({ label: command.label });
     }
     if (command.verb === "rename") validLabel(command.newLabel);
     if (command.id !== undefined && !ACCOUNT_ID_PATTERN.test(command.id)) {
@@ -505,6 +646,9 @@ export class CodexAccountManagement {
       throw new Error("Name the Codex account by label or email, or with --id <generated-id>.");
     }
     if (command.selector !== undefined) validSelector(command.selector);
+    // `remove` deletes rather than moves: a legacy target keeps its
+    // `--delete-file` contract.
+    if (command.verb !== "remove") await this.moveBeforeMutation();
     const target = this.inspect((entry) => this.select(entry, command));
     if (command.verb === "login") return this.login(target);
     if (command.verb === "rename") return this.rename(target, command.newLabel);
@@ -514,13 +658,25 @@ export class CodexAccountManagement {
 
   // -- add -----------------------------------------------------------------
 
-  private async add(requestedLabel?: string): Promise<string[]> {
+  /**
+   * `notice: false` skips the owned-accounts notice and records no acceptance
+   * (`claudish login codex`'s first account: one account never switches).
+   * `enrollLegacy: false` neither enrols nor counts the synthesized legacy login:
+   * under an alternate config that login is another config's shared file, which
+   * this add must not claim (MTL-371).
+   */
+  private async add(opts: AddOptions = {}): Promise<string[]> {
+    const requestedLabel = opts.label;
+    const askNotice = opts.notice !== false;
+    const enrollLegacy = opts.enrollLegacy !== false;
+    const rowsFor = (entry: SubscriptionAccountsEntry): AccountRecord[] =>
+      enrollLegacy ? this.rowsOf(entry) : entry.accounts.map(asRecord);
     const initial = this.inspect((entry) => {
-      const legacy = this.synthesizedLegacy(entry);
+      const legacy = enrollLegacy ? this.synthesizedLegacy(entry) : undefined;
       if (
         requestedLabel !== undefined &&
         labelTaken(
-          this.rowsOf(entry).map((r) => r.label),
+          rowsFor(entry).map((r) => r.label),
           requestedLabel
         )
       ) {
@@ -534,7 +690,7 @@ export class CodexAccountManagement {
       }
       return { notice: entry.noticeAcceptedAt, legacy, id: this.newId(entry) };
     });
-    if (!initial.notice && !(await this.ask(OWNED_ACCOUNTS_NOTICE))) {
+    if (askNotice && !initial.notice && !(await this.ask(OWNED_ACCOUNTS_NOTICE))) {
       return ["Cancelled; no account was added."];
     }
     const acceptedAt = new Date(this.now()).toISOString();
@@ -575,7 +731,7 @@ export class CodexAccountManagement {
       this.inspect((entry) => {
         if (entry.accounts.some((a) => a.id === row.id))
           throw new Error("The generated account id is taken; retry the add.");
-        const rows = this.rowsOf(entry);
+        const rows = rowsFor(entry);
         this.refuseIdentity(rows, result.identity);
         this.chooseLabel(rows, result.identity, requestedLabel);
       });
@@ -590,11 +746,11 @@ export class CodexAccountManagement {
           this.fence(holds);
           if (entry.accounts.some((a) => a.id === row.id))
             throw new Error("The generated account id is taken; retry the add.");
-          const rows = this.rowsOf(entry);
+          const rows = rowsFor(entry);
           this.refuseIdentity(rows, result.identity);
           // Derived again from the live entry: the row published is the row checked.
           const label = this.chooseLabel(rows, result.identity, requestedLabel);
-          const legacy = rows.find((r) => r.legacy);
+          const legacy = enrollLegacy ? rows.find((r) => r.legacy) : undefined;
           if (legacy) {
             if (legacy.identity.chatgptAccountId !== initial.legacy?.identity.chatgptAccountId) {
               throw new Error(
@@ -611,7 +767,7 @@ export class CodexAccountManagement {
             });
           }
           entry.accounts.push({ ...row, label });
-          entry.noticeAcceptedAt ??= acceptedAt;
+          if (askNotice) entry.noticeAcceptedAt ??= acceptedAt;
           finalLabel = label;
         });
       } catch (error) {
@@ -659,9 +815,24 @@ export class CodexAccountManagement {
 
   // -- login ---------------------------------------------------------------
 
-  private async login(target: AccountRecord): Promise<string[]> {
+  /**
+   * `differentIdentity` replaces the refusal's guidance when the login is a
+   * different identity than the row (`claudish login codex` names more ways
+   * forward than `claudish account login codex`).
+   */
+  private async login(
+    target: AccountRecord,
+    opts: { differentIdentity?: string } = {}
+  ): Promise<string[]> {
     if (target.legacy) {
-      // The unsuppressed synthesized default, with no configured pool: the legacy login, unchanged.
+      // A Keychain platform: THIS instance's Keychain login, with these deps
+      // and this config. The facade would redispatch to `loginCodexAccount()`
+      // with default deps (the default config, no identity check, a second
+      // "login saved" line). It adds a `keychain` row and never writes the
+      // shared legacy file, which an alternate config does not own (MTL-371).
+      if (codexLoginUsesKeychain(this.env)) return this.loginCodex();
+      // No Keychain: the unsuppressed synthesized default, with no configured
+      // pool: the legacy login, unchanged.
       if (this.deps.legacyLogin) await this.deps.legacyLogin();
       else await (await import("../codex-oauth.js")).CodexOAuth.getInstance().login();
       await this.invalidate();
@@ -674,8 +845,9 @@ export class CodexAccountManagement {
     // one) has nothing to contradict; the duplicate check below still applies.
     if (target.identity.chatgptAccountId && stable !== target.identity.chatgptAccountId) {
       throw new Error(
-        `This login is a different Codex identity than ${target.label}; ` +
-          "use `claudish account add codex` for a different account."
+        opts.differentIdentity ??
+          `This login is a different Codex identity than ${target.label}; ` +
+            "use `claudish account add codex` for a different account."
       );
     }
     await this.gate(target, async (holds) => {
@@ -916,6 +1088,475 @@ export class CodexAccountManagement {
       ...warnings,
     ];
   }
+
+  /**
+   * `account add|login|enable|disable|rename codex`: the legacy file move runs
+   * first (MTL-372), so on a Keychain platform these verbs find the login
+   * already a `keychain` row and never enrol the file as `legacy-codex-file`.
+   * A deferral aborts before any browser or lock, naming the cause. Where the
+   * move does not apply (no Keychain, an alternate config) nothing changes.
+   * Reads (`list`, `status`, `forecast`) never reach this.
+   */
+  private async moveBeforeMutation(): Promise<void> {
+    const moved = await this.moveLegacyLogin();
+    if (moved.kind === "deferred") throw new Error(legacyMoveDeferredMessage(moved, this.env));
+  }
+
+  // -- `claudish login codex` on a Keychain platform (MTL-372) -------------
+
+  /**
+   * `claudish login codex` where the Codex login belongs in the Keychain: it
+   * never writes `codex-oauth.json`.
+   *
+   * 1. The legacy file move runs first, awaited; a deferral refuses before the
+   *    browser, naming the cause and that the file was kept.
+   * 2. By the active config's CONFIGURED rows (a synthesized login under an
+   *    alternate config does not count, and is never enrolled):
+   *    - 0: a new account labelled `default`, store `keychain`, with no
+   *      owned-accounts notice (one account never switches);
+   *    - 1: that row is logged in again (same identity, or a refusal);
+   *    - 2 or more: refused before the browser.
+   */
+  async loginCodex(): Promise<string[]> {
+    await this.moveBeforeMutation();
+    const rows = this.inspect((entry) => entry.accounts.map(asRecord));
+    if (rows.length === 0) {
+      return this.add({ label: LEGACY_CODEX_LABEL, notice: false, enrollLegacy: false });
+    }
+    if (rows.length === 1) {
+      const [row] = rows;
+      const remove =
+        `claudish account remove codex ${shellWord(row.label)}` +
+        (row.store === "legacy-codex-file" ? " --delete-file" : "");
+      return this.login(row, {
+        differentIdentity:
+          `This login is a different Codex identity than ${row.label}. Run ` +
+          `\`claudish account add codex\` to add it, or \`${remove}\` and then ` +
+          "`claudish login codex` to replace it.",
+      });
+    }
+    throw new Error(
+      `Codex has ${rows.length} accounts; log one in with \`claudish account login codex <label>\`.`
+    );
+  }
+
+  // -- the legacy file move into the Keychain (MTL-372) --------------------
+
+  /**
+   * Move the legacy Codex login (`codex-oauth.json`) into the Keychain account
+   * store, keeping its account row.
+   *
+   * Applies only on a Keychain platform with the default config
+   * (`legacy-move.ts`). Lock order is the module's: the legacy refresh gate
+   * (`legacy-codex.lock`), then the config lock; `state.lock` is never taken.
+   *
+   * M0  what to move: the one `legacy-codex-file` row, the synthesized legacy
+   *     login, or a leftover file under the suppression marker (§3.6).
+   * M1  take the legacy gate, so no refresh rotates the file mid-copy.
+   * M2  a synthesized login is enrolled first as an ordinary `legacy-codex-file`
+   *     row with a generated id, so a crash after the Keychain write resumes
+   *     against that same id instead of orphaning an item under a random one.
+   * M3  read the file uncached. M4 recheck the row; read the Keychain item.
+   * M5  write a COPY (generation, fingerprint, journal and accountId kept; a
+   *     new writeId proves the write) and read it back uncached. An item that
+   *     already holds this material (a crashed earlier attempt) is reused.
+   * M6  ONE config write: the row's `store` becomes `keychain` and
+   *     `legacyCodexSuppressed` is set. M7 invalidate.
+   * M8  delete the file only if it still holds the material copied.
+   *
+   * At every instant either the config names the file and the file holds the
+   * material, or the config names the Keychain item and the item holds it. A
+   * failed or unverified Keychain write leaves the file and `config.json` as
+   * they were (Pop. (a) keeps its M2 enrolment, which is a valid state).
+   *
+   * Never throws: every failure before publication is a `deferred` outcome
+   * whose `detail` passed through `redactSecrets`.
+   */
+  async moveLegacyLogin(opts: LegacyMoveOptions = {}): Promise<LegacyMoveOutcome> {
+    // M0 — applicability. No lock, no `security` call.
+    if (legacyMoveKeychainBlocked(this.env)) return notApplicable("no-keychain");
+    const dest = this.deps.newStore?.() ?? defaultAccountStore(this.env);
+    if (dest.kind !== "keychain") return notApplicable("no-keychain");
+    if (!isDefaultConfigPath(this.configPath(), this.env)) return notApplicable("alternate-config");
+
+    let target: MoveTarget;
+    try {
+      target = this.inspect((entry) => this.moveTargetOf(entry));
+    } catch (err) {
+      // A permission denial on the legacy file (itself, or `~/.claudish` above
+      // it, which also holds config.json) never clears on retry, so it is
+      // file-unreadable, not "retry in a moment". A busy lock or an invalid
+      // config.json leaves the file accessible and stays config-unavailable.
+      if (this.legacyFileDenied()) return this.moveDeferred(err, "file-unreadable");
+      return this.moveDeferred(err, "config-unavailable");
+    }
+    if (target.kind === "none") return notApplicable("no-legacy-account");
+    if (target.kind === "leftover") return this.deleteLeftover();
+
+    const found = target;
+    let outcome: LegacyMoveOutcome;
+    try {
+      // M1 — the legacy gate. A refresh in flight holds it; the move then
+      // copies the ROTATED material, or defers when the wait times out.
+      outcome = await this.gate(found.row, (holds) =>
+        this.moveHoldingGate(found, dest, holds, opts)
+      );
+    } catch (err) {
+      return this.moveDeferred(err, "gate-busy");
+    }
+    if (outcome.kind === "moved") {
+      log(
+        `[accounts] moved the legacy Codex login into the Keychain as ${outcome.label} ` +
+          `(id ${outcome.id})${outcome.fileDeleted ? "" : "; the credential file was kept"}`
+      );
+    }
+    return outcome;
+  }
+
+  /** M0's target, read under the config lock. Throws when the legacy file is unreadable. */
+  private moveTargetOf(entry: SubscriptionAccountsEntry): MoveTarget {
+    const legacyRow = entry.accounts.find((row) => row.store === "legacy-codex-file");
+    if (legacyRow) return { kind: "row", row: asRecord(legacyRow) };
+    if (entry.accounts.length === 0 && !entry.legacyCodexSuppressed) {
+      const synthesized = this.synthesizedLegacy(entry);
+      return synthesized ? { kind: "synthesized", row: synthesized } : { kind: "none" };
+    }
+    if (entry.legacyCodexSuppressed && this.legacyFilePresent()) return { kind: "leftover" };
+    return { kind: "none" };
+  }
+
+  /** One `lstat`. Only `ENOENT`/`ENOTDIR` is absence; any other error is "not now". */
+  private legacyFilePresent(): boolean {
+    try {
+      lstatSync(legacyCodexCredentialsPath(this.env));
+      return true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
+        log(`[accounts] legacy Codex file check failed: ${redactSecrets(errorText(err))}`);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * M0's classification of a failed config inspection: is the legacy file
+   * denied by permissions (`EACCES`/`EPERM` on the file or a directory above
+   * it)? Read-only, and no `security` call.
+   */
+  private legacyFileDenied(): boolean {
+    try {
+      accessSync(legacyCodexCredentialsPath(this.env), fsConstants.R_OK);
+      return false;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      return code === "EACCES" || code === "EPERM";
+    }
+  }
+
+  /** M2 → M8, with the legacy gate held. Returns `deferred` for every failure before M6. */
+  private async moveHoldingGate(
+    target: Extract<MoveTarget, { kind: "row" | "synthesized" }>,
+    dest: TokenStore,
+    holds: () => boolean,
+    opts: LegacyMoveOptions
+  ): Promise<LegacyMoveOutcome> {
+    const hooks = this.deps.moveHooks;
+    const source = this.store("legacy-codex-file");
+    let phase: LegacyMoveDeferral = "config-unavailable";
+    let row = target.row;
+    let material: StoredTokenRecord;
+    try {
+      // M2 — enrol a synthesized login as a row with a fixed, generated id.
+      if (target.kind === "synthesized") {
+        const enrolled = this.enrolSynthesizedLegacy(target.row, holds);
+        if (enrolled === "already-moved") return { kind: "already-moved" };
+        if (enrolled === "gone") return notApplicable("no-legacy-account");
+        row = enrolled;
+        await hooks?.afterEnroll?.();
+      }
+
+      // M3 — the material, uncached. Absent: a peer moved it, or a logout.
+      phase = "file-unreadable";
+      const read = await source.read(row, { uncached: true });
+      phase = "config-unavailable";
+      if (!read) {
+        const state = this.inspect((entry) => moveTargetState(entry, row));
+        return state === "moved" ? { kind: "already-moved" } : notApplicable("no-legacy-account");
+      }
+      material = read;
+
+      // M4 — the row is still this legacy account; then the destination item.
+      const state = this.inspect((entry) => moveTargetState(entry, row));
+      if (state === "moved") return { kind: "already-moved" };
+      if (state === "removed") return notApplicable("no-legacy-account");
+      if (state === "changed") {
+        throw new LegacyMoveDeferredError(
+          "target-changed",
+          "the Codex account row changed while the move was pending"
+        );
+      }
+      phase = "keychain-unreadable";
+      const existing = await dest.read(row, { uncached: true });
+
+      // M5 — a copy, never a rotation (§3.5): only writeId and updatedAt are new.
+      const record: StoredTokenRecord = {
+        ...material,
+        writeId: randomBytes(16).toString("hex"),
+        updatedAt: this.now(),
+      };
+      // Reused only when it holds EVERY durable field of the file as read now.
+      // A journal write or a re-issued access token changes neither fingerprint
+      // nor generation, and publishing the older item would drop it.
+      const resumed = existing !== null && sameDurableRecord(existing, material);
+      if (!resumed) {
+        // Any other item under a row that still names the file is unpublished
+        // debris from a crashed attempt: the file is authoritative, so `-U`
+        // overwrites it.
+        phase = "keychain-write-failed";
+        this.fence(holds);
+        await this.persistMovedRecord(dest, row, record);
+      }
+      phase = "config-unavailable";
+      await hooks?.beforePublish?.();
+
+      // M6 — ONE atomic write: the row names the Keychain and the marker lands
+      // with it. config-validation refuses a legacy row beside the marker, so
+      // this is the only valid way to set both.
+      this.fence(holds);
+      const published = row;
+      mutateAccountsConfig(this.configPath(), PROVIDER, (entry) => {
+        this.fence(holds);
+        if (moveTargetState(entry, published) !== "same") {
+          throw new LegacyMoveDeferredError(
+            "target-changed",
+            "the Codex account row changed while the move was pending"
+          );
+        }
+        const current = entry.accounts.find((a) => a.id === published.id);
+        if (current) current.store = dest.kind;
+        entry.legacyCodexSuppressed = true;
+      });
+    } catch (err) {
+      return this.moveDeferred(err, phase);
+    }
+
+    // Published. Nothing below may report the move as failed.
+    // M7
+    try {
+      if (opts.trigger === "request") getAccountRegistry().invalidate();
+      else await this.invalidate();
+    } catch (err) {
+      log(`[accounts] legacy Codex move: invalidation failed: ${redactSecrets(errorText(err))}`);
+    }
+    try {
+      await hooks?.beforeDelete?.();
+    } catch (err) {
+      // A crash at this boundary: the leftover branch (§3.6) deletes the file later.
+      log(`[accounts] legacy Codex move: stopped before the file delete: ${errorText(err)}`);
+      return { kind: "moved", id: row.id, label: row.label, fileDeleted: false };
+    }
+    // M8
+    const fileDeleted = await this.deleteMovedLegacyFile(source, row, material);
+    return { kind: "moved", id: row.id, label: row.label, fileDeleted };
+  }
+
+  /**
+   * M2: enrol the synthesized legacy login under the config lock, re-resolved
+   * there. Writes no `noticeAcceptedAt`: this is not an `add`.
+   */
+  private enrolSynthesizedLegacy(
+    expected: AccountRecord,
+    holds: () => boolean
+  ): AccountRecord | "already-moved" | "gone" {
+    const out: { value: AccountRecord | "already-moved" | "gone" } = { value: "gone" };
+    mutateAccountsConfig(this.configPath(), PROVIDER, (entry) => {
+      this.fence(holds);
+      const legacyRow = entry.accounts.find((a) => a.store === "legacy-codex-file");
+      if (legacyRow) {
+        // Enrolled meanwhile (an `add`, or a peer's M2): move that row.
+        out.value = asRecord(legacyRow);
+        return;
+      }
+      if (entry.accounts.length > 0 || entry.legacyCodexSuppressed) {
+        out.value = "already-moved";
+        return;
+      }
+      const current = this.synthesizedLegacy(entry);
+      if (!current) return;
+      if (current.identity.chatgptAccountId !== expected.identity.chatgptAccountId) {
+        throw new LegacyMoveDeferredError(
+          "target-changed",
+          "the legacy Codex login changed while the move was pending"
+        );
+      }
+      const row: ConfigRow = {
+        id: this.newId(entry),
+        label: current.label,
+        identity: current.identity,
+        store: "legacy-codex-file",
+        enabled: true,
+        addedAt: current.addedAt,
+      };
+      entry.accounts.push(row);
+      out.value = asRecord(row);
+    });
+    return out.value;
+  }
+
+  /**
+   * M5's persist: write, then prove the write by its id with an uncached read.
+   * An ambiguous write (a killed or timed-out `security`) is resolved by that
+   * read and never retried in this attempt: a second write against a wedged
+   * keychain repeats the 10 s kill (keychain.md, the securityd incident).
+   */
+  private async persistMovedRecord(
+    dest: TokenStore,
+    ref: AccountRef,
+    record: StoredTokenRecord
+  ): Promise<void> {
+    let ambiguous = false;
+    try {
+      await dest.write(ref, record);
+    } catch (err) {
+      if (!(err instanceof TokenStoreAmbiguousWriteError)) {
+        throw new LegacyMoveDeferredError("keychain-write-failed", errorText(err));
+      }
+      ambiguous = true;
+      log("[accounts] legacy Codex move: ambiguous Keychain write, reading it back");
+    }
+    let proven: StoredTokenRecord | null;
+    try {
+      proven = await dest.read(ref, { uncached: true });
+    } catch (err) {
+      throw new LegacyMoveDeferredError(
+        "keychain-unverified",
+        `the Keychain item could not be read back: ${errorText(err)}`
+      );
+    }
+    if (
+      !proven ||
+      proven.writeId !== record.writeId ||
+      proven.generation !== record.generation ||
+      proven.fingerprint !== record.fingerprint
+    ) {
+      throw new LegacyMoveDeferredError(
+        "keychain-unverified",
+        ambiguous
+          ? "the Keychain write timed out and its read-back does not show it"
+          : "the Keychain read-back does not show this write"
+      );
+    }
+  }
+
+  /**
+   * M8: compare-and-delete. The file goes only while it still holds the
+   * material that was copied; a file rewritten since (only an older build's
+   * gate-less login can do that) is kept and, under the marker, ignored.
+   */
+  private async deleteMovedLegacyFile(
+    source: TokenStore,
+    ref: AccountRef,
+    copied: StoredTokenRecord
+  ): Promise<boolean> {
+    try {
+      const now = await source.read(ref, { uncached: true });
+      if (!now) return true;
+      // Every durable field, not fingerprint + generation: a journal written
+      // since the copy changes neither (defence in depth; this runs under the gate).
+      if (!sameDurableRecord(now, copied)) {
+        log(
+          "[accounts] legacy Codex move: the credential file changed after the copy; kept it " +
+            "(the account list no longer names it)"
+        );
+        return false;
+      }
+      await source.delete(ref);
+      return true;
+    } catch (err) {
+      log(
+        "[accounts] legacy Codex move: could not delete the credential file: " +
+          redactSecrets(errorText(err))
+      );
+      return false;
+    }
+  }
+
+  /**
+   * §3.6: the marker is set, no legacy row remains, and the file still exists
+   * (a crash between M6 and M8, or a failed `remove --delete-file`). Every
+   * reader ignores it; under the gate, with the facts re-checked under the
+   * config lock, it is deleted. A failure here is logged, never a deferral: a
+   * dead file must not block an account command.
+   */
+  private async deleteLeftover(): Promise<LegacyMoveOutcome> {
+    const legacy: AccountRecord = {
+      id: LEGACY_CODEX_ACCOUNT_ID,
+      label: LEGACY_CODEX_LABEL,
+      provider: PROVIDER,
+      identity: {},
+      store: "legacy-codex-file",
+      enabled: true,
+      addedAt: "",
+      legacy: true,
+    };
+    try {
+      return await this.gate(legacy, async () => {
+        const still = this.inspect(
+          (entry) =>
+            entry.legacyCodexSuppressed === true &&
+            !entry.accounts.some((row) => row.store === "legacy-codex-file") &&
+            this.legacyFilePresent()
+        );
+        if (!still) return notApplicable("no-legacy-account");
+        await this.store("legacy-codex-file").delete(legacy);
+        log("[accounts] removed the leftover legacy Codex credential file; nothing reads it");
+        return { kind: "leftover-deleted" } as const;
+      });
+    } catch (err) {
+      log(`[accounts] leftover legacy Codex file not removed: ${redactSecrets(errorText(err))}`);
+      return notApplicable("no-legacy-account");
+    }
+  }
+
+  private moveDeferred(err: unknown, fallback: LegacyMoveDeferral): LegacyMoveOutcome {
+    const reason = moveDeferralOf(err, fallback);
+    const detail = redactSecrets(errorText(err));
+    log(`[accounts] legacy Codex move deferred (${reason}): ${detail}`);
+    return { kind: "deferred", reason, detail };
+  }
+}
+
+function notApplicable(
+  reason: Extract<LegacyMoveOutcome, { kind: "not-applicable" }>["reason"]
+): LegacyMoveOutcome {
+  return { kind: "not-applicable", reason };
+}
+
+/** Where the row the move is about stands now. */
+function moveTargetState(
+  entry: SubscriptionAccountsEntry,
+  row: AccountRecord
+): "same" | "moved" | "removed" | "changed" {
+  const current = entry.accounts.find((a) => a.id === row.id);
+  if (!current) return "removed";
+  if (current.identity?.chatgptAccountId !== row.identity.chatgptAccountId) return "changed";
+  if (current.store !== "legacy-codex-file") return "moved";
+  return "same";
+}
+
+/**
+ * The deferral an error stands for. A typed refusal names itself; an
+ * unreadable legacy file and a lost gate are recognised wherever they surface;
+ * anything else is the deferral of the step that was running.
+ */
+function moveDeferralOf(err: unknown, fallback: LegacyMoveDeferral): LegacyMoveDeferral {
+  if (err instanceof LegacyMoveDeferredError) return err.reason;
+  if (err instanceof AccountListUnavailableError && err.failure?.source === "legacy") {
+    return "file-unreadable";
+  }
+  if (err instanceof RefreshUnavailableError) return "gate-busy";
+  return fallback;
 }
 
 function errorText(err: unknown): string {

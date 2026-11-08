@@ -52,6 +52,8 @@ Detection turned a silent wrong verdict into a loud failure, but the generated a
 
 One piece of chatter is now cut deliberately, because it is not about the task: when the prompt is delivered as a task file (anything but one plain line), the answer starts AFTER the Read result that returned the last unread line of that file. Narration before the task was read never reaches `response-<slot>.md` or `require_pattern`; its size is reported as `preambleBytes`. A slot whose task file was not fully read is FAILED `prompt_not_read` instead of being judged on an answer to a task it never saw.
 
+**The Text view reads the same transcript and keeps everything** (`team(mode:"transcript")`, MTL-373). The answer above is one turn's assistant text, cut after the task file was read, because a judge must see the answer and nothing else. The status mod's Text view wants the opposite: the whole conversation, every turn, as a human watched it. So `transcript` renders every kind (the task-file pointer as `user`, the task file's content as `task_file`, each tool call as one `tool` line, notices and errors) from the same JSONL, and nothing in it feeds `response-<slot>.md`, `require_pattern` or the verdict. The two readers share the file, not a rule.
+
 `response-<slot>.md` stays prose, written once, byte-exact, so the judge phase and every downstream reader are unaffected. `shape_mismatch` therefore means one thing: every assistant message of the turn was read, every file the turn wrote with `Write` after the task was read was read too (below), and neither had the shape. The old "your answer was discarded" explanation, the `captureMode: "print"` escape hatch and `CLAUDISH_TEAM_CAPTURE` were removed with print mode.
 
 ## A file the slot wrote can be the answer (MTL-229)

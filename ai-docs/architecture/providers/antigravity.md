@@ -372,3 +372,123 @@ LaunchAgent, with two effects:
 The write is awaited before `process.exit`. Measured: an unawaited `process.stdout.write` of the
 200 KB line followed by `process.exit` reaches a pipe as exactly 65,536 bytes, 3 runs of 3. Awaiting
 the write callback delivers all of it.
+
+## Wire probe for models-index (`claudish subscription probe antigravity`)
+
+```
+claudish subscription probe antigravity --model <wire model id> --request-file <path> --raw --json
+```
+
+**Why it exists.** The models-index wire-probe runner must send ONE real request through the
+user's Antigravity login, to prove what a connection does on the wire, without ever holding the
+token. The runner writes the inner Gemini-format `request` object to a file (`contents`,
+`generationConfig` with `thinkingConfig`, `tools`, `toolConfig`, `systemInstruction`) and seals the
+printed answer as evidence. Code: `subscription-probe-command.ts`. The steps it shares with the
+model-list command (platform, bounded keychain read, observed token refresh, client version,
+`loadCodeAssist`) live in `subscription-antigravity-session.ts`, so the two cannot drift.
+
+**It sends exactly what the file says.**
+- One `POST <host>/v1internal:generateContent`, non-streamed. Measured 2026-11-02 on
+  `daily-cloudcode-pa`: 200 with a complete body (`gemini-3-flash`), and 404 `NOT_FOUND` for an
+  unserved id. No SSE collection is needed.
+- The CodeAssist envelope and headers are the ones `AntigravityCredentialProvider` builds for `ag@`:
+  `{model, project, user_prompt_id, request}`, plus `enabled_credit_types: ["GOOGLE_ONE_AI"]` on a
+  paid tier; `Authorization`, the agy `User-Agent`, `x-activity-request-id`.
+- `request` is the file's own text spliced into the envelope, never parsed and re-serialized (a
+  round trip turns `1.0` into `1`). The file is parsed once, only to check it is a JSON object.
+- No retry, no model-id rewrite (the `ag@` path resolves the id against the dynamic models
+  catalog; the probe does not call `fetchAvailableModels`), no thinking or effort translation.
+- The request file is read BEFORE the keychain: a request that cannot be sent touches no
+  credential.
+- The file's text is spliced untrimmed: JSON allows whitespace around a value, so the caller's
+  bytes, trailing newline included, reach the wire as written.
+- `redirect: "manual"`. A 3xx is the answer, printed with its body. `fetch` follows a 307/308 by
+  default and repeats the POST, which would be a second generation and would report the second
+  status.
+- `index.ts` routes an argv with `isSubscriptionProbeArgv` from `subscription-dispatch.ts`, the
+  probe parser's own token walk, so flags may precede `probe`. That module imports only the
+  version, so the routing decision never depends on the probe module loading. If the probe module
+  will not load, a probe argv still gets one line: `probeLoadFailureLine()`, the probe schema's
+  `internal_error`, exit 1. A models argv never loads the probe module.
+
+### Schema `claudish.subscription-probe.v1`
+
+One JSON object on ONE stdout line on every exit, through the awaited write. Keys in this order:
+
+```
+schema, provider? ("antigravity"), claudishVersion, model?,
+fetchedAt?, sourceUrl?, clientVersion?, clientVersionSource?,
+tokenRefreshed, httpStatus?, failure?, bodyRedacted?, body?
+```
+
+The field-presence rule and the meaning of the shared fields are the model-list schema's.
+Differences:
+
+| Field | Present when |
+|---|---|
+| `model` | the argv parsed: the `--model` value, sent unchanged |
+| `clientVersion`, `clientVersionSource` | a valid token was obtained, as in the model-list schema (so also on a `load_code_assist_*` failure). Once `generateContent` was attempted, the version that request presented |
+| `sourceUrl` | `generateContent` was attempted: `<host>/v1internal:generateContent`, userinfo stripped |
+| `fetchedAt`, `httpStatus` | `generateContent` answered |
+| `body` | it answered, 2xx OR NOT, within the cap. The response text as read, apart from redaction. A non-2xx answer is exit 0 with its body: the vendor's error is evidence |
+| `bodyRedacted` | with `body`: `true` when a credential value inside it was replaced by `[REDACTED]` |
+
+### Failures and exit codes
+
+The classes and exit codes of the model-list command, with these codes of its own:
+
+| Class | `code` | Exit |
+|---|---|---|
+| `network` | `generate_content_network_error` (fetch threw, or the body could not be read), `generate_content_timeout` (300 s abort, fetch and body read) | 6 |
+| `list_incomplete` | `body_too_large` (over 512 KiB, any status, no body), `body_not_json` (a 2xx body that does not parse), `body_unverifiable` (any status: the secret guard could not decode it to a fixed point within its budget, no body) | 7 |
+| `internal` | `usage`, `request_file_unreadable`, `request_file_invalid` (not one JSON object, or over 8 MiB) | 2 |
+| `internal` | `secret_guard`, `internal_error` | 1 |
+
+The 300 s bound is not the 30 s `fetchAvailableModels` bound: a thinking model's answer can take
+minutes, and a 30 s abort turns slow evidence into a `network` failure.
+
+### Redaction, then the guard
+
+A vendor error body can quote the project id (a 403 naming the resource). Refusing the whole line
+would destroy the evidence the probe exists to collect, so the body is redacted by exact value,
+longest value first, also in the `\/` spelling (a Google refresh token holds `1//`). The
+refuse-on-hit guard of the model-list command still runs over the final line and the body text as
+the backstop.
+
+Text redaction cannot see every spelling: JSON writes one string many ways (`CANARY…` is
+`CANARY…` to any parser). The guard therefore also checks every form `jsonUnescapedForms(body)`
+returns: each round decodes every JSON escape sequence ANYWHERE in the text, and the rounds repeat
+until nothing changes. A hit in any form refuses (`secret_guard`, exit 1, no body) rather than
+printing a body a parser chain would decode into a credential.
+
+`MAX_UNESCAPE_ROUNDS` (64) is a BUDGET, not a cap. A body that has not reached a fixed point within
+it is withheld: `list_incomplete`/`body_unverifiable`, exit 7, with `httpStatus`. Review round 4
+broke the first version, a 16-round cap, with a valid 1,503-byte body nested 17 deep: a cap passes
+what it did not decode, a budget fails closed. Decoding with no limit is not the answer either:
+`\` followed by repeated `u005c` decodes ONE escape per round, so a 512 KiB body would take
+about 100,000 rounds. Real bodies need 1 to 3 rounds; the worst case at the cap stops after 64
+rounds in about 10 ms (test `G12`). Scope: a credential in
+literal form or under any depth of JSON string escaping. Other transforms (base64, reversal) are
+outside what any text guard can see.
+
+It ignores string boundaries on purpose. Three review rounds broke every guard that first located
+string literals:
+
+| Body | Broke | Test |
+|---|---|---|
+| `{"m":"<escaped token>","m":"safe"}` | one `JSON.parse` of the whole body: it keeps only the last duplicate member | `G7` |
+| `{"m":"{\"t\":\"<doubly escaped token>\"}"}` | decoding each literal once: JSON nested in a JSON string needs two decodes | `G8` |
+| `" {"m":"<escaped token>"}` (a non-JSON 401 body) | a literal regex: the stray quote pairs the wrong quotes | `G9` |
+
+One round is one level of escaping, so nesting depth N needs N rounds. Over-decoding text that was
+never inside a string is harmless: the forms are only checked, never printed.
+
+The reduced `secret_guard` line (below) is printed without a second check. It is built only from
+constants in the published source, so a credential that happens to match part of it (a project id
+spelled `internal` would match `"class":"internal"`) reveals nothing, and suppressing it would
+break one line on every exit.
+
+`--model` is caller input and can equal a credential (a caller passing its own project id). The
+`secret_guard` line would then carry it too; instead of printing nothing, that line drops every
+fact except `schema`, `claudishVersion`, `tokenRefreshed` and `failure`. One line on every exit
+holds.

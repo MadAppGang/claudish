@@ -1,7 +1,9 @@
 /**
  * The frozen mod contract, version 1 — the single source of the wire types that the
- * peer's Claude Code mod reads from `team(mode="list"|"status"|"cancel"|"capture"|"resize")`,
- * `list_sessions`, `cancel_session`, `capture_session` and `resize_session`.
+ * peer's Claude Code mod reads from
+ * `team(mode="list"|"status"|"cancel"|"capture"|"resize"|"scroll"|"transcript"|"replay")`,
+ * `list_sessions`, `cancel_session`, `capture_session`, `resize_session`, `scroll_session`,
+ * `transcript_session`, `replay_session` and `close_replay`.
  *
  * Pasted verbatim from the session architecture §8 (including CA-12 `contract_version`
  * / `capabilities` and CA-13 `run_id`). Fields never change meaning or type within
@@ -14,7 +16,13 @@ export const CONTRACT_VERSION = 1;
 /**
  * v1 announces exactly these. `resize` is additive: it needs magmux >= 0.15.1.
  * `allowance` is additive too: the `allowance_status` tool answers
- * `claudish.allowance.v1` (allowance architecture §3.4).
+ * `claudish.allowance.v1` (allowance architecture §3.4). `scroll` is additive: the
+ * `scroll_session` tool and `team(mode="scroll")` forward wheel events to the child's
+ * transcript view (MTL-369). `transcript` is additive: the `transcript_session` tool and
+ * `team(mode="transcript")` read the child's conversation as text lines (MTL-373).
+ * `replay` is additive: the `replay_session` tool and `team(mode="replay")` open a finished
+ * session's real interface read only, and `close_replay` ends it.
+ * Appended, never inserted: the mod's goldens replay the order.
  */
 export const CAPABILITIES = [
   "list",
@@ -25,6 +33,9 @@ export const CAPABILITIES = [
   "capture_spans",
   "resize",
   "allowance",
+  "scroll",
+  "transcript",
+  "replay",
 ] as const;
 
 export interface ContractMeta {
@@ -301,7 +312,124 @@ export interface TeamResizeResult {
   pending?: true;
 }
 
-/** E. `resize_unsupported` and `delivery_unavailable` are emitted only by the resize verbs. */
+/**
+ * G — `scroll_session`. `seq` = the screen's seq after the wheel events were sent: the first
+ * changed screen within 1000 ms of magmux's reply, otherwise the current seq (at an edge, or
+ * at the live bottom with nothing to move, the screen does not change). `by` is a target,
+ * ± 1 row: Claude Code moves one row per wheel event with acceleration off.
+ */
+export interface ScrollResult {
+  session_id: string;
+  seq: number;
+}
+/** G — `team(mode="scroll")`: the same answer, addressed by run and slot. */
+export interface TeamScrollResult {
+  run_id: string;
+  path: string;
+  slot: string;
+  seq: number;
+}
+
+/**
+ * H — transcript verbs. The kinds of a `TranscriptLine`, a closed set that is only ever
+ * APPENDED to; a reader shows an unknown kind as plain text.
+ */
+export const TRANSCRIPT_KINDS = [
+  "user",
+  "assistant",
+  "tool",
+  "task_file",
+  "system",
+  "error",
+] as const;
+export type TranscriptKind = (typeof TRANSCRIPT_KINDS)[number];
+
+/** H — one line of a session's conversation. */
+export interface TranscriptLine {
+  kind: TranscriptKind;
+  /**
+   * plain text: no escape sequences, no control characters but \n and \t, no lone
+   * surrogate; non-empty; ≤ TRANSCRIPT_LINE_MAX_CHARS UTF-16 code units and
+   * ≤ TRANSCRIPT_LINE_MAX_JSON_BYTES bytes serialised, after masking (a signing value is
+   * masked `*` one for one, so it never adds a character; pane/transcript-redaction.ts)
+   */
+  text: string;
+  /** present (true) on the 2nd and later chunks of one split text; join with no separator */
+  cont?: true;
+}
+
+/**
+ * H — `transcript_session`. `cursor` is opaque (`v1.<offset>.<k>.<id8>`): pass it back as
+ * `since`. `more`: the answer stopped at a cap; call again at once. `final`: the session
+ * finished, its process provably exited, and the answer reached the end.
+ */
+export interface TranscriptResult {
+  session_id: string;
+  cursor: string;
+  lines: TranscriptLine[];
+  more: boolean;
+  final: boolean;
+}
+
+/** H — `team(mode="transcript")`: the same answer, addressed by run and slot. */
+export interface TeamTranscriptResult {
+  run_id: string;
+  path: string;
+  slot: string;
+  cursor: string;
+  lines: TranscriptLine[];
+  more: boolean;
+  final: boolean;
+}
+
+/** H — at most this many lines per transcript answer. */
+export const MAX_TRANSCRIPT_LINES = 200;
+/** H — a line's text is cut into `cont` chunks of at most this many UTF-16 code units… */
+export const TRANSCRIPT_LINE_MAX_CHARS = 8_000;
+/** …and at most this many UTF-8 bytes as `JSON.stringify(text)`. */
+export const TRANSCRIPT_LINE_MAX_JSON_BYTES = 16_000;
+/**
+ * H — the compact JSON answer is at most this many UTF-8 bytes: 15 % under the 37,758
+ * bytes Claude Code was measured to accept (61,681 was replaced by a "saved to file" stub).
+ */
+export const TRANSCRIPT_ANSWER_MAX_BYTES = 32_000;
+
+/**
+ * I — `replay_session` and `team(mode="replay")`: a finished session's real interface, read
+ * only, read with `capture_session`, `resize_session` and `scroll_session` under `replay_id`.
+ * `seq` is the seq a capture would show at that moment.
+ */
+export interface ReplayOpenResult {
+  replay_id: string;
+  seq: number;
+}
+
+/**
+ * I — `close_replay`. When it returns, the process is gone and any fork record removed.
+ * `reap_unverified` is present only when the process could not be verified gone.
+ */
+export interface ReplayCloseResult {
+  closed: true;
+  reap_unverified?: true;
+}
+
+/** I — why a target cannot be opened: `error.reason` on `replay_unavailable`. */
+export type ReplayUnavailableReason = "session_live" | "no_record" | "spawn_failed" | "boot_dialog";
+
+const REPLAY_ID_RE = /^replay-[0-9a-f]{16}$/;
+
+/** A session id cannot match this: it is the first 8 characters of a uuid. */
+export function isReplayId(id: string): boolean {
+  return REPLAY_ID_RE.test(id);
+}
+
+/**
+ * E. `resize_unsupported` and `delivery_unavailable` are emitted only by the resize verbs;
+ * `scroll_unavailable` only by the scroll verbs (a pane still starting, finished, delivering
+ * a prompt, reading its turn from the screen, reconnecting, or a send magmux did not confirm).
+ * `replay_unavailable` only by the replay open verbs, always with `reason`; `replay_read_only`
+ * only by `send_input`, for any id shaped like a `replay_id`.
+ */
 export interface ContractError {
   error: {
     code:
@@ -310,7 +438,12 @@ export interface ContractError {
       | "unknown_session"
       | "invalid_args"
       | "resize_unsupported"
-      | "delivery_unavailable";
+      | "delivery_unavailable"
+      | "scroll_unavailable"
+      | "replay_unavailable"
+      | "replay_read_only";
+    /** present only on `replay_unavailable` */
+    reason?: ReplayUnavailableReason;
     message: string;
   };
 }
@@ -326,12 +459,19 @@ export function contractMeta(): ContractMeta {
 export class ContractErrorException extends Error {
   constructor(
     readonly code: ContractError["error"]["code"],
-    message: string
+    message: string,
+    readonly reason?: ReplayUnavailableReason
   ) {
     super(message);
   }
 
   toContractError(): ContractError {
-    return { error: { code: this.code, message: this.message } };
+    return {
+      error: {
+        code: this.code,
+        ...(this.reason ? { reason: this.reason } : {}),
+        message: this.message,
+      },
+    };
   }
 }

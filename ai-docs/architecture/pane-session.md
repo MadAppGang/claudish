@@ -811,7 +811,174 @@ for the launch width. Documented, not fixed.
 ships the op), and two `ContractError` codes that only this verb emits: `resize_unsupported` and
 `delivery_unavailable`.
 
+## Scrolling the child's view
+
+**A viewer scrolls the child's own transcript, not a buffer of ours.** Claude Code draws on the
+alternate screen, and magmux keeps scrollback only for the primary one, so a capture has nothing
+above the visible screen. `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` gives magmux rows, but they are
+a log of repaints (`2..146 2..170`), not the conversation. So `scroll_session` and
+`team(mode:"scroll")` forward the scroll to the child as SGR mouse wheel events, and the next
+capture shows the child scrolled. Measurements:
+`ai-docs/reports/2026-11-03-scroll-session-measurements.md`.
+
+- **Bytes.** `pane/scroll-input.ts` `planScroll`: wheel-up `ESC[<64;1;1M`, wheel-down
+  `ESC[<65;1;1M`, one per row; `to:"end"` is ctrl-End `ESC[1;5F` (`scroll:bottom`). Plain End
+  `ESC[F` edits the prompt and is never sent. One call is ONE magmux `send` with `text`,
+  `enter:false`, `noGate:true`, never `typed` or `paste`: the same raw path as `key()`.
+- **Rows.** Pane children run with `wheelScrollAccelerationEnabled: false`
+  (`buildClaudishSettingsOverlay`, forced in `mergeUserSettingsIfPresent` too); with it on, 50
+  events moved 237 rows. Off, one event is one row, but the first event after a direction change
+  moves 0 and leaving the live bottom costs one, so the planner adds one event in both cases and
+  `by` is a target ± 1 row. `|by|` is capped at `MAX_SCROLL_ROWS = 200` (201 events in one send
+  moved exactly 200 rows). `CLAUDE_CODE_SCROLL_SPEED` in the owner's environment scales it; not
+  stripped.
+- **View.** Pane children run with `tui: "fullscreen"` (`buildClaudishSettingsOverlay`, forced in
+  `mergeUserSettingsIfPresent` too, and in `replaySettingsJson` for replays), because the classic
+  view ignores SGR wheel events. With no `tui` key Claude Code 2.1.319 picks the view by install
+  and feature gates (`fresh_install_on`, `tengu_pewter_brook`): a replay (`--setting-sources ""`)
+  did not move for a scroll by -15, while the same replay with `tui: "fullscreen"` moved exactly
+  15 rows. An environment `CLAUDE_CODE_NO_FLICKER` set false, or `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`,
+  outranks the setting.
+- **Position is a belief.** `PaneSessionImpl` keeps `scrollPos {atBottom, lastDirection}`, set
+  before the send. A send magmux does not confirm sets `UNKNOWN_POSITION` and answers
+  `scroll_unavailable` "magmux did not confirm the scroll" (the bytes may still land: they queue
+  behind claudish's own send on the lane). A wheel-down at a believed bottom is still sent: a wrong
+  belief costs one row, never a dead wheel.
+- **Answer.** `{session_id, seq}` / `{run_id, path, slot, seq}`: the first changed screen within
+  `SCROLL_SCREEN_MS = 1000` after magmux's reply, else the current seq (at an edge nothing changes).
+  The redraw opens the resize quiet window (`extendResizeQuiet()`), because a scroll redraw is not
+  the child working.
+- **States.** Allowed: RUNNING, SETTLING, IDLE, QUESTION, PERMISSION (measured harmless: a
+  201-event burst interrupted no turn and answered no dialog; a permission dialog stays in the
+  fixed bottom area; a question dialog scrolls out of view but the gate and the transcript still
+  report it). Refused with `scroll_unavailable`, nothing sent or queued: still starting (no pane,
+  BOOTING, screen seq 0), finished, ADMITTING, a screen-read turn while it is in progress
+  (`turnSource="screen"` in RUNNING, QUESTION or PERMISSION; `turnSource` stays "screen" after the
+  turn settles, so SETTLING and IDLE allow scroll), reconnecting. Reconnecting includes an attached
+  connection whose binding check has not passed (`!gateTrusted`): `attach()` sets `client` first.
+- **Back to the bottom before claudish types.** A submit snaps Claude Code's view to the bottom
+  (measured) and `accept()` resets `scrollPos`. Claudish does not rely on that: when the view is
+  not at `LIVE_BOTTOM`, `runAdmission` sends ctrl-End after its trusted-client wait and before the
+  prompt, at most once per admission per connection (`Admission.liveBottomClient`); a failed or
+  unconfirmed ctrl-End never blocks the prompt. `returnToLiveBottom` sends nothing on an
+  unverified connection and leaves the position unchanged.
+- **A screen-read turn never settles from a scrolled view.** A static scrolled view looks quiet.
+  While a ctrl-End is in flight or the view is not at `LIVE_BOTTOM`, `evalScreenTurn` does not
+  settle and (re)sends ctrl-End when none is out; the screen-settle quiet counts only from
+  magmux's last ctrl-End confirmation (`scrollEndConfirmedAt`). A session never scrolled keeps its
+  settle timing unchanged.
+- **Costs, documented and not changed.** A scroll moves `aboveBoxChangedAt`, so path S (the 32 s
+  quiet fallback) and corroboration can wait longer while someone keeps scrolling; path P
+  (`turn_duration`) is unaffected. `get_diagnostics`' screen tail can show a scrolled view.
+
+**Contract additions (additive in v1).** The `scroll` verb on both owners, the `scroll` capability
+(appended to `CAPABILITIES`), `ScrollResult` / `TeamScrollResult`, and the code
+`scroll_unavailable`.
+
+## Replay panes
+
+`replay_session` and `team(mode:"replay")` show a finished session's real interface, read only: a
+pane of its own running `claude --resume`, read with `capture_session`, `resize_session` and
+`scroll_session`, closed with `close_replay`. No path in claudish can send it text.
+
+**A class of its own.** `ReplayPane` (`pane/replay-pane.ts`) implements `RegisteredPane` beside
+`PaneSessionImpl`, not as flags on it. A session is a turn machine: its controller, gate poll,
+follower and settle all exist to send prompts and judge turns, and each flag that turned one off
+would be one more way to reach them. `ReplayPane` has no method that takes text; its only `send`
+carries `planScroll`'s wheel bytes. It shares the reap (`pane/pane-reap.ts`) and the registry with
+every other pane, and copies small parts of capture, resize, scroll and reconnect.
+
+**No controller, no gate.** magmux is started without either, so `list` shows `input: null`. A wheel
+`send` passes `noGate`. A replay never holds a turn, so there is nothing for the gate to decide.
+
+**The environment is an allowlist.** `buildReplayEnv` keeps `HOME`, `PATH`, `USER`, `LOGNAME`, `LANG`,
+`LC_ALL`, `LC_CTYPE`, `TZ`, `TMPDIR` and `CLAUDE_CONFIG_DIR`, then sets the shell shim's `SHELL`,
+`CLAUDISH_PANE_CHILD=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`,
+`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1`, `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING=1`,
+`COLUMNS` and `LINES`. It does not start from `buildPaneEnv`, because that one removes names from the
+parent's environment and a credential under a name nobody listed would pass through.
+
+**Two switches keep plugin state out of the user's config.** `--bare` stops neither of these,
+although its help says it does. On a config with no official marketplace, a replay's first start
+installs it: 582 files, 14 MB under `plugins/`. Once a marketplace is installed, the "LSP plugin
+recommendation" dialog is drawn over the conversation. It offers `typescript-lsp` when the resumed
+conversation touched `.ts` files and the binary is on `PATH`, and the open then answers `boot_dialog`.
+The marketplace switch stops the install. It does not stop the dialog for a user who already has the
+marketplace. The recommendation's only off switch is `lspRecommendationDisabled` in `.claude.json`,
+which a replay must not write. Disabling file checkpointing leaves the recommendation's file list empty,
+so no file is matched, and it also stops an empty `file-history/<fork>/`. Claude Code still rewrites
+`.claude.json` (start count, built-in plugin usage) and writes a backup of it on each start. No switch in
+2.1.318 stops that. Measurements: the plugin section of the replay report.
+
+**The argv is the turn barrier.**
+
+```
+claude --resume <id> --fork-session --session-id <fork> --bare \
+  --setting-sources "" --strict-mcp-config --settings <json>
+```
+
+Three independent parts stop a typed prompt from reaching a provider, because a clean process
+environment does not: Claude Code reads the `env` block of its settings after it starts, so a key in
+`~/.claude/settings.json` starts a real turn from a clean process. `--setting-sources ""` closes every
+settings file, including a provider switch a later Claude Code adds. `--bare` stops the login, the
+Keychain and an `apiKeyHelper`. The allowlist covers the process environment. `--settings` carries the
+user's `statusLine` and nothing else that is read from the user, so the interface keeps its status
+line; the same JSON sets `wheelScrollAccelerationEnabled: false` and `tui: "fullscreen"`, neither
+read from the user. Measurements: `ai-docs/reports/2026-11-05-replay-measurements.md`.
+
+**The box is read before the dialog.** Ready is `inspectBox` reading `box` on a frame. Only a screen
+with no box, unchanged for `DIALOG_STABLE_MS` (1 s), is named by `nameBootScreen`. A replay draws the
+whole conversation, and a conversation can quote a dialog's text: read the other way round, a session
+that discussed the trust dialog would refuse to open. The cost is that a dialog coexisting with a box
+goes unseen, and none has been captured. A dialog is never accepted: the open answers
+`replay_unavailable` with `boot_dialog` and leaves nothing. `REPLAY_READY_MS` (15 s) bounds the wait; a
+slow pane still answers its `replay_id`, and the caller polls `capture_session`.
+
+**Identity.**
+
+| name | what | who holds it |
+|---|---|---|
+| `replay_id` | `replay-<16 hex>`, the only address a caller has | `ReplayManager`'s maps |
+| target | the session's uuid, lowercase; a second open of it answers the same `replay_id` | `openByTarget` |
+| fork uuid | minted per open, `--session-id`; names the only path a fork can write | the pane |
+| pane id | `mintPaneId` kind `r`, the registry record | the registry |
+
+A `replay_id` is not a session id. `send_input` refuses the shape before any lookup, and the session
+tools that do not route it answer as for an unknown id.
+
+**The fork record.** A fork that receives no prompt writes nothing, and the original transcript is never
+written. The reap removes the fork's exact path, and the project directory only if it did not exist
+before the open. Nothing lists a directory or guesses the newest file.
+
+**Who removes it.** The replay's pane record and its watcher's argv (`$8`–`$10`) carry `fork`: the projects
+root, the exact path, and whether the open created the project directory. `removePaneFiles` removes it
+first and the pane record last, so whichever path verifies the replay's processes gone removes it: the
+in-process reap on `close_replay`, on a replay that ends by itself, and on a clean server exit; the pane
+watcher after a server SIGKILL (853 ms measured); the next server's startup sweep when the watcher was
+killed too (2.8 s after that server started). A watcher killed between the two removals leaves the pane
+record, so the sweep still finds the path. The path is checked in TypeScript (`isForkRecordPath`) and in the
+watcher's shell (`fork_ok`): a root named `projects`, one `[A-Za-z0-9-]` segment, `<fork uuid>.jsonl`. The
+sweep of an unreadable process table verifies nothing gone and leaves the fork record where it is.
+
+**The working directory.** The session's own folder when it is still a directory, else the MCP server's.
+An untrusted folder raises the trust dialog (cases L and L2), and a new scratch folder is untrusted by
+definition, so the fallback is the folder the host already runs in.
+
+**Lifetime.** A replay counts against the 48 panes and has the same watcher, record and sweep. A clean
+server exit calls `beginShutdown` first, so an open between its awaits refuses before it registers;
+`reapAllPanes` covers the rest. `close_replay` awaits the one reap and removes the entry; a pane that
+cannot be verified gone answers `reap_unverified:true`. A replay that finishes by itself stays readable
+with `final:true` until closed, and the oldest are dropped past `FINISHED_REPLAYS_MAX` (20), since a
+screen can be 4 M cells and a caller may never close.
+
+**Liveness.** `writerGone`, the transcript verbs' own rule, is the test (`replayTarget`,
+`replayTargetOfTeamSlot`). A session read from disk answers `session_live` for 30 s after it finished,
+and a live one until its reap verifies: a write after `final` is the case that rule guards against.
+
 ## Nothing outlives its owner (D15)
+
+The reap itself is in `pane/pane-reap.ts` (`reapPaneProcesses`, `retryPaneReap`); `PaneSessionImpl` and
+`ReplayPane` each hold only their timers and a `reapSubject`.
 
 Three layers, because magmux is detached into its own session and a client disconnect has no effect
 on its panes: without them a SIGKILLed MCP server would leave REPLs running and billing.
@@ -1017,9 +1184,21 @@ type and new fields may only be added.
   `cancel_session` return per-slot `{state, changed}`; `team(mode="capture")` and `capture_session`
   return the screen at its current size `{seq, cols, rows, cursor, lines, final, spans?}` or
   `{unchanged:true, seq, final}` when `since_seq` is current; `team(mode="resize")` and
-  `resize_session` return `{…, cols, rows, changed, seq, pending?}` ("Terminal size"). Errors are a
-  JSON `ContractError` (`unknown_run`, `unknown_slot`, `unknown_session`, `invalid_args`, and from
-  `resize` only `resize_unsupported`, `delivery_unavailable`).
+  `resize_session` return `{…, cols, rows, changed, seq, pending?}` ("Terminal size");
+  `team(mode="scroll")` and `scroll_session` return `{…, seq}` ("Scrolling the child's view");
+  `team(mode="transcript")` and `transcript_session` (verb H, capability `transcript`, MTL-373)
+  return `{…, cursor, lines, more, final}`, the conversation from the child's transcript as
+  `{kind, text, cont?}` lines (`user`, `assistant`, `tool`, `task_file`, `system`, `error`; a
+  reader shows an unknown kind as plain text), at most 200 lines and 32,000 bytes per answer, a
+  `cont` chain continuing in order into the next answer. They read files only and keep answering
+  after the session finished, from its record on disk (`mcp-sessions.md`, `transcript_session`).
+  `team(mode="replay")` and `replay_session` (verb I, capability `replay`) return
+  `{replay_id, seq}`, and `close_replay` returns `{closed:true, reap_unverified?}` ("Replay panes").
+  Errors are a JSON `ContractError` (`unknown_run`, `unknown_slot`, `unknown_session`,
+  `invalid_args`, from `resize` only `resize_unsupported`, `delivery_unavailable`, from
+  `scroll` only `scroll_unavailable`, from the replay opens only `replay_unavailable` with
+  `reason` (`session_live`, `no_record`, `spawn_failed`, `boot_dialog`), and from `send_input` only
+  `replay_read_only`); the transcript verbs add no code.
 - `run_id` (`<team_session_id>-<base36 start ms>-<6 hex>`) addresses one run even after a newer
   run reused its path, while the server retains it (30 minutes after it settles, at most 20 settled
   runs). A path holds at most one ACTIVE run.
@@ -1086,6 +1265,9 @@ verb is unknown would send every mod into the unsupported state for nothing. Eve
 | `pane/pane-launch.ts` | root, ids, environment, launcher, shim, flag check, magmux check, spawns |
 | `pane/process-identity.ts` | the identity predicates and the generated watcher script |
 | `pane/pane-registry.ts` | records, the cross-process limit, shutdown hooks, the sweep |
+| `pane/pane-reap.ts` | the reap every pane shares: `reapPaneProcesses`, `retryPaneReap`, the identity checks before each signal |
+| `pane/replay-pane.ts` | `ReplayPane`, `startReplayPane`: a read-only pane on a finished session, box before dialog |
+| `mcp-session/replay-manager.ts` | `ReplayManager`: the replay id maps, classification, shared opens, the bound on finished replays |
 | `pane/child-env.ts` | the pane child: snapshot, cwd, pane-child refusal; `inMcpSession`/`isPaneChild` and the nested refusal |
 | `mcp/nested-mode.ts` | the nested MCP tool list and instructions |
 | `pane/contract.ts` | the frozen mod contract v1 |

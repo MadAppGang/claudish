@@ -67,7 +67,7 @@ import {
 } from "./allowance/alerts.js";
 import { accountViews, combinedNow, isRead } from "./allowance/capacity.js";
 import { choose, planFor } from "./allowance/choose.js";
-import { DEFAULT_ALLOWANCE_CONFIG, alertStrategy } from "./allowance/constants.js";
+import { DEFAULT_ALLOWANCE_CONFIG, USAGE_HOURS, alertStrategy } from "./allowance/constants.js";
 import { contributions } from "./allowance/contributions.js";
 import { forecastKey } from "./allowance/digest.js";
 import { forecastSliced } from "./allowance/forecast.js";
@@ -94,8 +94,10 @@ import type {
   StrategyName,
   ThreadKey,
   TokenCounts,
+  Trajectory,
   Transition,
 } from "./allowance/types.js";
+import { usageByHour } from "./allowance/usage.js";
 import { atomicWriteFileSync } from "./atomic-write.js";
 import { FileLockUnavailableError, acquireFileLock } from "./file-lock.js";
 import { type LedgerTail, createLedgerTail, readLedger } from "./ledger/ledger-reader.js";
@@ -105,6 +107,7 @@ import {
   buildNoEligibleRow,
   buildResponseRow,
   toEvent,
+  utcDay,
 } from "./ledger/ledger-row.js";
 import { appendUsageRow, setLedgerIdleProbe } from "./ledger/ledger-writer.js";
 import { allowanceAlertsLockPath, allowanceAlertsPath, statePath } from "./paths.js";
@@ -793,14 +796,23 @@ export class AllowanceService {
     m.loading = true;
     try {
       const now = this.clock();
-      // The tail is primed BEFORE the reads: a row another process appends in
-      // between is in both, and the fold's id dedup drops the second copy. Primed
-      // after, it would be in neither.
-      const tail = createLedgerTail({ startAtEnd: true, now, env: this.env });
-      await tail.tail();
       // The rollup/raw handoff on a whole hour: an hourly rollup covers its
       // whole hour, so a cutoff inside one would count its later half twice.
       const handoff = Math.floor((now - LOAD_RAW_MS) / HOUR_MS) * HOUR_MS;
+      // The tail is primed BEFORE the reads: a row another process appends in
+      // between is in both, and the fold's id dedup drops the second copy. Primed
+      // after, it would be in neither. It covers every day the raw read covers
+      // (the handoff's day on), so a row appended later to one of them (a
+      // request open across midnight UTC) is folded as a fresh load would read
+      // it. Older days are compacted and read from their hourly files; a late
+      // raw row there is MTL-325.
+      const tail = createLedgerTail({
+        startAtEnd: true,
+        fromDay: utcDay(handoff),
+        now,
+        env: this.env,
+      });
+      await tail.tail();
       const [older, recent] = await Promise.all([
         readLedger({ sinceMs: now - LOAD_HISTORY_MS, untilMs: handoff, env: this.env }),
         readLedger({ sinceMs: handoff, source: "raw", env: this.env }),
@@ -1203,6 +1215,20 @@ async function runSliced<T>(gen: Generator<void, T>): Promise<T> {
 const iso = (at: number): string => new Date(at).toISOString();
 
 /**
+ * `x` to `digits` significant digits, 0 kept as 0. The report rounds the
+ * trajectory's forecast quantiles with it (4 digits): the model's 16 digits
+ * were about a fifth of the trajectory's bytes, and 4 keep the worst error
+ * under 1 % of an hour's p10–p90 spread. Monotone, so p10 ≤ p50 ≤ p90 holds.
+ * Values ≥ 1e21 print in exponent notation, which `Number` still parses.
+ */
+export function toSignificant(x: number, digits: number): number {
+  return x === 0 ? 0 : Number(x.toPrecision(digits));
+}
+
+/** The forecast quantiles' significant digits (R3): 4 cost the bytes of 3 in cu. */
+const FORECAST_DIGITS = 4;
+
+/**
  * The ONE "remaining" of the report's `combined` and the status line's
  * `pool N%`: `combinedNow` (Σ_a min_w r/β in cu, or Σ_a min_w r in
  * account-fraction) over the full capacity in the same unit (Σ_a min_w 1/β, or
@@ -1237,6 +1263,40 @@ export interface ReportAlerts {
 }
 
 /**
+ * A switch's likelihood curve as the report sends it (MTL-299): 3 decimals,
+ * leading and trailing zeros trimmed with `start` moved to the first kept
+ * hour. Absent when nothing survives the rounding.
+ */
+function likelihoodView(l: {
+  start: number;
+  p: readonly number[];
+}): { start: string; stepHours: 1; p: number[] } | undefined {
+  const p = l.p.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 1000) / 1000);
+  const first = p.findIndex((v) => v > 0);
+  if (first < 0) return undefined;
+  let last = p.length - 1;
+  while (last > first && p[last] === 0) last--;
+  return { start: iso(l.start + first * HOUR_MS), stepHours: 1, p: p.slice(first, last + 1) };
+}
+
+/** A trajectory switch as the report sends it: p10 / p50 / p90 as ISO, the curve trimmed. */
+function switchView(sw: Trajectory["switches"][number]) {
+  return {
+    accountId: sw.account,
+    soonest: iso(sw.q.p10),
+    usual: iso(sw.q.p50),
+    latest: iso(sw.q.p90),
+    probability: Math.min(1, Math.max(0, sw.probability)),
+    likelihood: likelihoodView(sw.likelihood),
+  };
+}
+
+/** A trajectory blocked run as the report sends it: the paths' median start and end. */
+function blockedView(b: Trajectory["blocked"][number]) {
+  return { from: iso(b.from.p50), to: iso(b.to.p50), kind: b.kind, probability: b.probability };
+}
+
+/**
  * `burn.sustainable` in cu/h (§T1): under an active alert the top remedy's
  * cut × the raw `burn.long`, or 0 for a pause or a not-addressable gap, always
  * computed here so `cutToPercent / 100 × burn.long` holds exactly; otherwise
@@ -1250,6 +1310,47 @@ function sustainableOf(
   const long = Number.isFinite(burnLong) ? Math.max(0, burnLong) : 0;
   if (top) return top.remedy.kind === "cut" ? top.remedy.cutToFraction * long : 0;
   return pace ? paceInCuPerHour(pace, long) : null;
+}
+
+/**
+ * The report's `usage` section (MTL-297): `usageByHour` in whole cu, a
+ * positive cell at least 1 so a served hour never reads as idle. Every
+ * `accounts[]` entry first, in its order (all zeros when unused), then any
+ * other account that served in the span, by `order` then id. Censored minutes
+ * are sparse `[cell, minutes]` pairs, minutes that round to 0 omitted.
+ */
+function usageView(
+  s: AllowanceState,
+  now: number,
+  views: readonly AccountView[]
+): NonNullable<AllowanceReport["usage"]> {
+  const grid = usageByHour(s, now, USAGE_HOURS);
+  const cell = (cu: number) => (cu > 0 ? Math.max(1, Math.round(cu)) : 0);
+  const byId = new Map(grid.accounts.map((a) => [a.account, a]));
+  const listed = new Set(views.map((v) => v.account));
+  const others = grid.accounts
+    .filter((a) => !listed.has(a.account) && a.cu.some((cu) => cu > 0))
+    .sort((a, b) => a.order - b.order || (a.account < b.account ? -1 : 1));
+  const censored: [number, number][] = [];
+  grid.censoredMinutes.forEach((minutes, i) => {
+    const m = Math.min(60, Math.round(minutes));
+    if (m > 0) censored.push([i, m]);
+  });
+  return {
+    start: iso(grid.start),
+    stepHours: 1,
+    hours: USAGE_HOURS,
+    unit: "cu",
+    coveredFrom: grid.coveredFrom === null ? null : iso(grid.coveredFrom),
+    accounts: [
+      ...views.map((v) => ({
+        accountId: v.account,
+        cu: (byId.get(v.account)?.cu ?? new Array<number>(grid.hours).fill(0)).map(cell),
+      })),
+      ...others.map((a) => ({ accountId: a.account, cu: a.cu.map(cell) })),
+    ],
+    censored,
+  };
 }
 
 /** The inputs of one report: the model's state and the last evaluation. */
@@ -1401,9 +1502,10 @@ export function buildReport(input: ReportInput): AllowanceReport {
       })),
       forecast: traj.forecast.map((f) => ({
         at: iso(f.at),
-        p10: f.q.p10,
-        p50: f.q.p50,
-        p90: f.q.p90,
+        // Rounded here, never in the model: spark48 below reads the full-precision trajectory.
+        p10: toSignificant(f.q.p10, FORECAST_DIGITS),
+        p50: toSignificant(f.q.p50, FORECAST_DIGITS),
+        p90: toSignificant(f.q.p90, FORECAST_DIGITS),
         pBlocked: f.pBlocked,
       })),
       resets: traj.resets.map((r) => ({
@@ -1412,12 +1514,7 @@ export function buildReport(input: ReportInput): AllowanceReport {
         window: r.window,
         projected: r.projected,
       })),
-      blocked: traj.blocked.map((b) => ({
-        from: iso(b.from.p50),
-        to: iso(b.to.p50),
-        kind: b.kind,
-        probability: b.probability,
-      })),
+      blocked: traj.blocked.map(blockedView),
       // The last 24 h only: the window spark48 draws. A week per account would add
       // about 12.7 KB per account to every model-visible allowance_status answer.
       historyByAccount: none
@@ -1430,13 +1527,12 @@ export function buildReport(input: ReportInput): AllowanceReport {
                 .filter((h) => h.at >= now - 24 * HOUR_MS)
                 .map((h) => ({ at: iso(h.at), remaining: h.remaining, provenance: h.provenance })),
             })),
-      switches: traj.switches.map((sw) => ({
-        accountId: sw.account,
-        soonest: iso(sw.q.p10),
-        usual: iso(sw.q.p50),
-        latest: iso(sw.q.p90),
-        probability: Math.min(1, Math.max(0, sw.probability)),
-      })),
+      switches: traj.switches.map(switchView),
+      slower: {
+        factor: Math.round(traj.slower.factor * 1000) / 1000,
+        switches: traj.slower.switches.map(switchView),
+        blocked: traj.slower.blocked.map(blockedView),
+      },
       spark48: sparkline(
         {
           ...traj,
@@ -1467,6 +1563,7 @@ export function buildReport(input: ReportInput): AllowanceReport {
           firstAt: iso(c.firstAt),
           lastAt: iso(c.lastAt),
         })),
+    usage: usageView(s, now, views),
   };
   return allowanceReportSchema.parse(report);
 }

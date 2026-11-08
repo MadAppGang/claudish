@@ -141,6 +141,13 @@ export const LOOKAHEAD_TRAJ_PATHS = 40;
 export const MIN_PATH_SHARE = 0.1;
 
 /**
+ * The trajectory's `slower` scenario runs every path again with its demand
+ * times this factor: the approved forecast panel's "a third less busy" row
+ * and its "slow down and it lasts" sentence (MTL-298). Not a config field.
+ */
+export const SLOWER_FACTOR = 2 / 3;
+
+/**
  * The safe pace's upward bracket (`paceScan`) doubles the anchor up to this
  * multiple. The anchor is at least the pool's refill throughput, so 64 × it is
  * a demand no pool sustains: a result capped here is a lower bound, never a
@@ -154,6 +161,13 @@ export const PACE_MAX_MULT = 64;
  * 6 %), finer than the remedy's 10 % cut grid, for at most 4 more `simulate`.
  */
 export const PACE_BISECT_STEPS = 4;
+
+/**
+ * The report's `usage` grid: 14 days of hours (MTL-297), the span the forecast
+ * panel draws. Two accounts at 8 digits a cell measured 6,250 bytes compact.
+ * Not a config field.
+ */
+export const USAGE_HOURS = 336;
 
 /** The Monte Carlo path count for `cfg`'s strategy (alerts and trajectory alike). */
 export function trajPaths(cfg: Pick<AllowanceConfig, "strategy" | "TRAJ_PATHS">): number {
