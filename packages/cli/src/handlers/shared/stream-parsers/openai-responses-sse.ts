@@ -20,10 +20,14 @@ import type { RawStreamTap } from "../../../hooks/raw.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 import type { UsageCacheDetail } from "../token-tracker.js";
 import { ClaudeSseSink } from "./responses/claude-sse-sink.js";
-import { type ResponsesRetryOptions, runResponsesTurn } from "./responses/responses-turn.js";
+import {
+  type ResponsesRetryOptions,
+  type TurnBilledUsage,
+  runResponsesTurn,
+} from "./responses/responses-turn.js";
 import { type ParserSource, cancelEndsUpstreamWork } from "./upstream-cancel.js";
 
-export type { ResponsesRetryOptions } from "./responses/responses-turn.js";
+export type { ResponsesRetryOptions, TurnBilledUsage } from "./responses/responses-turn.js";
 export type { CodeModeTurnHooks, ExecTurnStep } from "../../../code-mode/types.js";
 export { resolveStallPolicy, type StallPolicy } from "./responses/stall-guard.js";
 
@@ -99,6 +103,8 @@ export function createResponsesStreamHandler(
     onExtraBilledInput?: (inputTokens: number, detail?: UsageCacheDetail) => void;
     /** Fires after onExtraBilledInput, before onTokenUpdate. */
     onTurnSummary?: (s: { legs: number; legRetries: number }) => void;
+    /** Fires after onTurnSummary, before onTokenUpdate: billed usage over every leg. */
+    onTurnBilled?: (u: TurnBilledUsage) => void;
     toolNameMap?: Map<string, string>;
     /**
      * Real per-provider context window (tokens) for the model on THIS backend,
@@ -172,6 +178,7 @@ export function createResponsesStreamHandler(
         retry: opts.retry,
         onExtraBilledInput: opts.onExtraBilledInput,
         onTurnSummary: opts.onTurnSummary,
+        onTurnBilled: opts.onTurnBilled,
         codeMode: opts.codeMode,
       });
     },

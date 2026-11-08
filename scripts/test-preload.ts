@@ -15,10 +15,100 @@
  * and `scripts/guard-real-config.ts` deletes the same names from the OS environment
  * of a `test:safe` run.
  *
+ * ## The home guard (MTL-372 review round 4)
+ *
+ * A plain `bun test` once ran the legacy Codex file move against the developer's REAL
+ * `~/.claudish` and Keychain: the credential request path starts the move on every
+ * Codex sign, and `codex-pool-legacy-2a.test.ts` set neither `HOME` nor
+ * `CLAUDISH_DISABLE_KEYCHAIN`. So, before any test file loads:
+ *
+ * - The three prevention flags `test:safe` sets (`scripts/guard-real-config.ts`), each
+ *   unless the environment already states a value: `CLAUDISH_DISABLE_KEYCHAIN=1` (a
+ *   test that exercises the Keychain path deletes it and injects a fake `security`, as
+ *   those tests already do), `CLAUDISH_DISABLE_OP=1` and
+ *   `CLAUDISH_DISABLE_CATALOG_WARM=1`. The last one matters once `HOME` is empty: a
+ *   proxy test that fired the hosted-catalog warm used to read the developer's cached
+ *   catalog, and against an empty cache it live-fetches past its 5 s timeout.
+ * - `HOME` becomes a fresh temporary directory, unless the inherited `HOME` is already
+ *   under a temporary directory (a parent test that spawned this `bun test` with its
+ *   own throwaway home keeps it).
+ * - `os.homedir()` follows `process.env.HOME`. Bun (measured on 1.4.0) reads the
+ *   environment the process STARTED with, so assigning `process.env.HOME` alone leaves
+ *   every `import { homedir } from "node:os"` at the real home; `profile-config.ts`
+ *   builds its config path from it at module load. `mock.module` reaches ESM imports
+ *   and the patched CJS object reaches `require("os")`; `userInfo().homedir` follows
+ *   too. Proven by `scripts/test-preload-home.test.ts`.
+ *
  * Keep this file import-light: it must not load production code (see session-env-vars.ts).
  */
+import { mock } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
+import * as nodeOs from "node:os";
+import { join, sep } from "node:path";
 import { SESSION_ENV_VARS } from "./session-env-vars.ts";
 
 for (const name of SESSION_ENV_VARS) {
   delete process.env[name];
 }
+
+for (const flag of [
+  "CLAUDISH_DISABLE_KEYCHAIN",
+  "CLAUDISH_DISABLE_OP",
+  "CLAUDISH_DISABLE_CATALOG_WARM",
+]) {
+  if (process.env[flag] === undefined) process.env[flag] = "1";
+}
+
+function canonical(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/** Is `home` inside a temporary directory, i.e. a throwaway a parent test made? */
+function isTemporaryHome(home: string): boolean {
+  const resolved = canonical(home);
+  const roots = [nodeOs.tmpdir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
+  return roots.some((root) => {
+    const base = canonical(root);
+    return resolved.startsWith(base.endsWith(sep) ? base : base + sep);
+  });
+}
+
+const inherited = process.env.HOME;
+if (!inherited || !isTemporaryHome(inherited)) {
+  const home = mkdtempSync(join(nodeOs.tmpdir(), "claudish-test-home-"));
+  process.env.HOME = home;
+  process.on("exit", () => {
+    try {
+      rmSync(home, { recursive: true, force: true });
+    } catch {
+      // best effort: the directory is under the system temp dir
+    }
+  });
+}
+const fallbackHome = process.env.HOME as string;
+
+// Capture the originals before any replacement: `nodeOs` is a live namespace.
+const originalUserInfo = nodeOs.userInfo;
+const homedir = (): string => {
+  const home = process.env.HOME;
+  return home && home.length > 0 ? home : fallbackHome;
+};
+const userInfo = ((options?: Parameters<typeof nodeOs.userInfo>[0]) => ({
+  ...originalUserInfo(options as never),
+  homedir: homedir(),
+})) as typeof nodeOs.userInfo;
+
+// CJS: `require("os")` and `require("node:os")` share one mutable object.
+const cjsOs = createRequire(import.meta.url)("node:os") as typeof nodeOs;
+const replaced = { ...cjsOs, homedir, userInfo };
+cjsOs.homedir = homedir;
+cjsOs.userInfo = userInfo;
+
+// ESM: named imports are bound to the module record, so replace the module.
+mock.module("node:os", () => ({ ...replaced, default: cjsOs }));
+mock.module("os", () => ({ ...replaced, default: cjsOs }));

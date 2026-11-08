@@ -53,9 +53,10 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { projectDirNameFor } from "../../mcp-session/home-dir.js";
 import { wrapPrompt } from "./repl-wrap.js";
 
@@ -554,6 +555,8 @@ function finishedRow(): string {
 
 /** One turn of `FAKE_SCRIPT` (scenario `scripted`). Every field is optional. */
 interface TurnScript {
+  /** Successful Writes on this turn, in order; every path must be absolute. */
+  writes?: Array<{ path: string; content: string }>;
   /** the exact answer text (default: `ANSWER <model> <sha8>`) */
   say?: string;
   /** stream this text with no ending stop_reason and no end record, then hang */
@@ -842,6 +845,16 @@ async function runScripted(sc: TurnScript, d: Delivered): Promise<void> {
     showHistory(`⏺ ${sc.apiError}`, finishedRow());
     return;
   }
+  for (const { path, content } of sc.writes ?? []) {
+    if (!isAbsolute(path)) throw new Error("scripted Write path must be absolute");
+    const id = rec.toolUse("Write", { file_path: path, content }, { template: T.writeUse });
+    writeFileSync(path, content);
+    rec.toolResult(
+      id,
+      `File created successfully at: ${path} (file state is current in your context — no need to Read it back)`,
+      undefined
+    );
+  }
   const text = sc.say ?? answerFor(c);
   rec.text(text);
   rec.td();
@@ -856,6 +869,33 @@ async function runScripted(sc: TurnScript, d: Delivered): Promise<void> {
 async function runScenario(name: string, d: Delivered): Promise<void> {
   const c = d.content;
   switch (name) {
+    case "write_answer":
+    case "write_nonmatching":
+    case "write_outside": {
+      const file = env.FAKE_WRITE_PATH;
+      if (!file) throw new Error("FAKE_WRITE_PATH is required");
+      let content =
+        name === "write_nonmatching"
+          ? "## Notes\nNo requested marker here.\n"
+          : "## Black-box test contracts\n答え 🍐 — byte-exact deliverable.\n";
+      if (env.FAKE_WRITE_CONTENT_KIND === "binary") content += "\0";
+      const size = Number(env.FAKE_WRITE_SIZE) || 0;
+      if (size > Buffer.byteLength(content))
+        content += "x".repeat(size - Buffer.byteLength(content));
+      const id = rec.toolUse("Write", { file_path: file, content }, { template: T.writeUse });
+      writeFileSync(file, content);
+      rec.toolResult(
+        id,
+        `File created successfully at: ${file} (file state is current in your context — no need to Read it back)`,
+        undefined
+      );
+      if (env.FAKE_WRITE_DELETE === "1") unlinkSync(file);
+      const reply = env.FAKE_WRITE_REPLY ?? "I wrote the deliverable to the requested file.";
+      rec.text(reply);
+      rec.td();
+      showHistory(`⏺ ${reply}`, finishedRow());
+      return;
+    }
     case "hang":
       S.working = "✶ Simmering… (thinking)";
       render();
@@ -1388,8 +1428,13 @@ function onKey(ch: string): void {
   updateMenu();
 }
 
-/** Consume a bracketed paste or a CSI/SS3 sequence at the head of `s`; null when none. */
-function consumeSequence(s: string): string | null {
+// PTY reads can end anywhere in an escape sequence, even after its initial ESC.
+let pendingSequence = "";
+let escapeTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Consume a bracketed paste or CSI/SS3 sequence; null = plain key, undefined = incomplete. */
+function consumeSequence(s: string): string | null | undefined {
+  if (s === "\x1b") return undefined;
   if (s.startsWith("\x1b[200~")) {
     const end = s.indexOf("\x1b[201~");
     if (!swallowUntilEsc) S.box += end >= 0 ? s.slice(6, end) : s.slice(6);
@@ -1397,15 +1442,46 @@ function consumeSequence(s: string): string | null {
   }
   if (s.startsWith("\x1b[") || s.startsWith("\x1bO")) {
     const m = s.slice(2).search(/[@-~]/);
-    return m >= 0 ? s.slice(m + 3) : "";
+    return m >= 0 ? s.slice(m + 3) : undefined;
   }
   return null;
 }
 
 function onData(buf: Buffer): void {
-  let s = buf.toString("utf8");
+  // Opt-in observation only: keep the existing REPL semantics unchanged. Log raw chunks
+  // before parsing so a test can reassemble a sequence split across PTY reads.
+  const inputLog = env.FAKE_INPUT_BYTES_LOG;
+  if (inputLog) {
+    try {
+      appendFileSync(
+        inputLog.replaceAll("{session}", sessionId),
+        `${JSON.stringify({ session_id: sessionId, model, text: buf.toString("utf8") })}\n`
+      );
+    } catch {
+      // diagnostics only, like FAKE_KEYLOG
+    }
+  }
+  if (escapeTimer !== undefined) {
+    clearTimeout(escapeTimer);
+    escapeTimer = undefined;
+  }
+  let s = pendingSequence + buf.toString("utf8");
+  pendingSequence = "";
   while (s.length) {
     const rest = consumeSequence(s);
+    if (rest === undefined) {
+      pendingSequence = s;
+      // A bare Escape must still dismiss menus/dialogs. Give a split CSI/SS3 prefix
+      // a short inter-byte window; once identified, retain it until its final byte.
+      if (s === "\x1b")
+        escapeTimer = setTimeout(() => {
+          escapeTimer = undefined;
+          pendingSequence = "";
+          onKey("\x1b");
+          renderInput();
+        }, 50);
+      break;
+    }
     if (rest !== null) {
       s = rest;
       continue;

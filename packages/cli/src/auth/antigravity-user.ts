@@ -127,6 +127,14 @@ function userAgentFor(version: string): string {
 }
 
 /**
+ * The User-Agent for a version the caller already resolved, so a caller that
+ * reports the version names the one its request presented.
+ */
+export function antigravityUserAgentFor(version: string): string {
+  return userAgentFor(version);
+}
+
+/**
  * Antigravity's own User-Agent — the Antigravity CLI's, with the version the
  * installed `agy` reports.
  *

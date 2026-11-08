@@ -3,6 +3,7 @@ import { credentials } from "../auth/credentials/authority.js";
 import { requestHooksOf } from "../hooks/request-stage.js";
 import { log, maskCredential } from "../logger.js";
 import { redactForClient } from "../redact.js";
+import { resolveUpstreamUrl } from "../test-upstream.js";
 import { ANTHROPIC_API_ORIGIN } from "./advisor-claude-route.js";
 import { ADVISOR_SWAPPED_CONTEXT_KEY } from "./advisor-decorator.js";
 import {
@@ -70,6 +71,32 @@ export function redactSseErrorEvent(lines: string[]): string[] {
   return lines.map((line) => (sseField(line).name === "data" ? redactForClient(line) : line));
 }
 
+/**
+ * Response headers the native path must pass through to Claude Code.
+ *
+ * `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}` plus `-status` and
+ * `-representative-claim` are the ONLY report of a claude.ai plan window that
+ * exists — there is no free endpoint to poll for it — so dropping them makes
+ * plan usage unobservable and makes a quota 429 indistinguishable from a
+ * per-minute one. The prefix is matched rather than the exact names, because the
+ * window set is the vendor's to change.
+ */
+function collectRateLimitHeaders(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, name) => {
+    const lower = name.toLowerCase();
+    if (
+      lower.startsWith("anthropic-ratelimit-") ||
+      lower === "retry-after" ||
+      lower === "request-id" ||
+      lower === "x-request-id"
+    ) {
+      out[lower] = value;
+    }
+  });
+  return out;
+}
+
 export class NativeHandler implements ModelHandler {
   private apiKey?: string;
   private baseUrl: string;
@@ -78,8 +105,11 @@ export class NativeHandler implements ModelHandler {
 
   constructor(apiKey?: string, advisorModels?: string[], advisorCollector?: string | null) {
     this.apiKey = apiKey;
-    // Always forward to real Anthropic API (the origin the advisor's Claude call uses too)
-    this.baseUrl = ANTHROPIC_API_ORIGIN;
+    // Always forward to the real Anthropic API (the origin the advisor's Claude
+    // call uses too). `resolveUpstreamUrl` is a no-op unless
+    // CLAUDISH_TEST_UPSTREAM names a LOOPBACK target, which is how the
+    // mock-upstream e2e drives the real binary without a module mock.
+    this.baseUrl = resolveUpstreamUrl(ANTHROPIC_API_ORIGIN);
     this.advisorModels = advisorModels;
     this.advisorCollector = advisorCollector;
   }
@@ -194,15 +224,33 @@ export class NativeHandler implements ModelHandler {
     // results; an ordinary native turn had an empty lease.
     addSigningSecrets(c, credentialValuesFromRequest(headers));
 
+    // The body is serialized ONCE and reused byte-for-byte.
+    //
+    // Inline `JSON.stringify(payload)` at the fetch made a second attempt a
+    // second serialization, and two stringifies of one object are byte-identical
+    // only as long as nothing in the payload pipeline becomes non-idempotent. A
+    // retry that differs by a byte is a different request to the prompt cache
+    // and a different request to any signature the vendor computes over it.
+    const body = JSON.stringify(payload);
+
     // Execute fetch
     try {
       const anthropicResponse = await fetch(`${this.baseUrl}/v1/messages`, {
         method: "POST",
         headers,
-        body: JSON.stringify(payload),
+        body,
       });
 
       const contentType = anthropicResponse.headers.get("content-type") || "";
+
+      // Rate-limit and correlation headers, harvested ABOVE the branch split so
+      // both branches carry them. Anthropic reports plan usage in
+      // `anthropic-ratelimit-unified-*` (utilization, reset, status,
+      // representative-claim); dropping them left a status line with nothing to
+      // read and left a 429 with no reset time to report. `request-id` is what
+      // support asks for, and `retry-after` is the only honest input to a
+      // client's own backoff.
+      const passthrough = collectRateLimitHeaders(anthropicResponse.headers);
 
       // Handle streaming
       if (contentType.includes("text/event-stream")) {
@@ -305,6 +353,7 @@ export class NativeHandler implements ModelHandler {
               "Cache-Control": "no-cache",
               Connection: "keep-alive",
               "anthropic-version": "2023-06-01",
+              ...passthrough,
             },
           }
         );
@@ -318,7 +367,10 @@ export class NativeHandler implements ModelHandler {
       log("\n=== [NATIVE] Response ===");
       log(JSON.stringify(data, null, 2));
 
-      const responseHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      const responseHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...passthrough,
+      };
       if (anthropicResponse.headers.has("anthropic-version")) {
         responseHeaders["anthropic-version"] = anthropicResponse.headers.get("anthropic-version")!;
       }

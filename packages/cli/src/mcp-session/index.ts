@@ -1,3 +1,4 @@
+export { ReplayManager } from "./replay-manager.js";
 export { ScrollbackBuffer } from "./scrollback-buffer.js";
 export {
   SessionManager,

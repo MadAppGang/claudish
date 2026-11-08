@@ -47,7 +47,6 @@ import type {
   SessionHookBinding,
 } from "../hooks/session/binding.js";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
-import { waitForExit } from "../process-tree.js";
 import { redactSecrets } from "../redact.js";
 import { locateBox, locatedBoxText } from "./box-locate.js";
 import {
@@ -90,6 +89,7 @@ import {
   versionAtLeast,
   writeLauncherFiles,
 } from "./pane-launch.js";
+import { type PaneReapSubject, alive, reapPaneProcesses, retryPaneReap } from "./pane-reap.js";
 import {
   type RegisteredPane,
   ensureSwept,
@@ -101,7 +101,6 @@ import {
   removePaneFiles,
   reservePanes,
   takePaneReservation,
-  unregisterPane,
   updateRecord,
   writeRecord,
 } from "./pane-registry.js";
@@ -116,13 +115,10 @@ import {
 import {
   type GroupSnapshot,
   type PaneIdentity,
-  groupCheck,
   isLaunchDirPath,
-  liveEscaped,
   readProcessTableAsync,
   recordPathOf,
   sockPathOf,
-  verifiedGroupSnapshot,
 } from "./process-identity.js";
 import { type Delivery, deliveryRefusal, planDelivery, writeTurnFile } from "./prompt-delivery.js";
 import {
@@ -149,6 +145,15 @@ import {
   applyFrame,
   emptyScreen,
 } from "./screen-model.js";
+import {
+  CTRL_END,
+  LIVE_BOTTOM,
+  type ScrollPosition,
+  type ScrollRequest,
+  UNKNOWN_POSITION,
+  isLiveBottom,
+  planScroll,
+} from "./scroll-input.js";
 import { KNOWN_STATUSES, type RegistryRecord, SessionRegistry } from "./session-registry.js";
 import {
   CORROBORATION_MS,
@@ -215,6 +220,10 @@ const TURN_END_MISSING_FACTOR = 3;
 /** A resize reply, and the screen showing the new size after it. */
 const RESIZE_REPLY_MS = 10_000;
 const RESIZE_SCREEN_MS = 1_000;
+/** A scroll send's reply (one raw `send`, no gate). */
+const SCROLL_REPLY_MS = 5_000;
+/** After a scroll's reply: wait at most this for the screen to change (`timings.scrollScreenMs`). */
+const SCROLL_SCREEN_MS = 1_000;
 /**
  * magmux's input gate is read by polling `list` (it publishes no readiness event and
  * refreshes `input` at 4 Hz): one request in flight at a time, this often, while connected.
@@ -346,6 +355,8 @@ export interface PaneSessionOptions {
     pollDebounceMs?: number;
     /** with no frame, the transcript is polled this often (default 1 000) */
     pollBackstopMs?: number;
+    /** SCROLL_SCREEN_MS: after a scroll's reply, the wait for a changed screen */
+    scrollScreenMs?: number;
   };
 }
 
@@ -416,6 +427,16 @@ export interface PaneSession {
    * `resize_unsupported` (magmux lacks the op) or `delivery_unavailable`.
    */
   resize(cols: number, rows: number): Promise<PaneResizeOutcome>;
+  /**
+   * Scroll the child's transcript view: `by` rows (negative = toward older content, a
+   * target ± 1 row, clamped to MAX_SCROLL_ROWS) or `to:"end"` (the live bottom), as raw
+   * wheel / ctrl-End bytes in one ungated magmux send that types nothing. Answers the
+   * screen's seq after it (the first changed screen within SCROLL_SCREEN_MS, else the
+   * current one). Throws `ContractErrorException` `scroll_unavailable` while the pane is
+   * starting, finished, delivering a prompt, reading its turn from the screen or
+   * reconnecting, or when magmux did not confirm the send; nothing is queued.
+   */
+  scroll(req: ScrollRequest): Promise<{ seq: number }>;
   turnAnswer(index: number): string;
   /** The recorded chain answers plus the running chain turn's partial, joined like chainAnswerOf. */
   chainText(): string;
@@ -425,6 +446,14 @@ export interface PaneSession {
   cancel(): { changed: boolean; state: SlotState };
   expire(): { changed: boolean; state: SlotState };
   reaped(): Promise<void>;
+  /**
+   * Resolves once a reap VERIFIED the pane group and magmux gone and removed the pane's
+   * files: on the first attempt, or on a later registry retry. Never resolves while the
+   * reap is unverified (`reapFailed`): `reaped()` resolves then too, and a survivor may
+   * still write. The only signal that proves the child's writer is gone
+   * (`transcript_session`'s `final`).
+   */
+  reapVerified(): Promise<void>;
 }
 
 /**
@@ -487,6 +516,8 @@ interface Admission {
   last: SendOutcome | null;
   /** anomaly keys counted once per admission */
   noted: Set<string>;
+  /** the connection this admission's ctrl-End check ran on: at most once per connection */
+  liveBottomClient: MagmuxClient | null;
 }
 
 /** A `resize` call waiting for the drain worker's send that carries its size (or a later one). */
@@ -521,10 +552,6 @@ const VERDICT_EVENT: Record<FinalVerdict["state"], PhaseEvent> = {
 
 function iso(ms: number): string {
   return new Date(ms).toISOString();
-}
-
-function alive(p: ChildProcess | null): boolean {
-  return !!p && p.exitCode === null && p.signalCode === null;
 }
 
 function screenTailOf(s: ScreenState, n = 12): string {
@@ -617,6 +644,15 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private resizeQuietUntil = 0;
   /** the last screen change that is activity, i.e. not a resize redraw (M4) */
   private activityChangedAt = 0;
+  /**
+   * Where the child's transcript view is believed to be (`scroll-input.ts`). An accepted
+   * submit snaps the view to the bottom, so `accept()` resets it.
+   */
+  private scrollPos: ScrollPosition = LIVE_BOTTOM;
+  /** ctrl-End sends awaiting magmux's reply */
+  private scrollEndsInFlight = 0;
+  /** when magmux last confirmed a ctrl-End; 0 = never (a screen turn's quiet counts from it) */
+  private scrollEndConfirmedAt = 0;
 
   /** the last `list` → pane 0 `input` reading; read through `gateNow()`, never directly */
   private gate: GateInput | null = null;
@@ -641,7 +677,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   /* session hooks (§7.3); untouched without a binding */
   private readonly hooks: SessionHookBinding | null;
   /** the turn chain: every recorded answer since the last caller admission */
-  private chain: Array<{ index: number; answer: string }> = [];
+  private chain: Array<{ index: number; answer: string; writtenFiles: string[] }> = [];
   private chainHead: SettledTurn["delivery"] | null = null;
   private hookTurns = 0;
   /** the current turn was admitted from a hook item */
@@ -671,6 +707,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private reaping = false;
   private fastReap = false;
   private reapPromise: Promise<void> | null = null;
+  private readonly verifiedReap = Promise.withResolvers<void>();
   private reconnecting = false;
 
   private depth = 0;
@@ -1645,8 +1682,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
           await this.pause(adm, TICK_MS);
           continue;
         }
-        if (!this.client || !this.gateTrusted) {
-          await this.awaitTrustedClient(adm);
+        if (!this.trustedConnection() || this.needsAdmissionLiveBottom(adm)) {
+          await this.connectionStep(adm);
           continue;
         }
         // a stop row, an ended admission or a wait re-checks from the top of the loop
@@ -1658,10 +1695,32 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
   }
 
+  /**
+   * A view the caller scrolled up goes back to the live bottom before the prompt: once per
+   * admission per trusted connection. A failed or unconfirmed ctrl-End never blocks the
+   * prompt (a submit snaps the view to the bottom, measured).
+   */
+  private needsAdmissionLiveBottom(adm: Admission): boolean {
+    if (adm.liveBottomClient === this.client) return false;
+    adm.liveBottomClient = this.client;
+    return !isLiveBottom(this.scrollPos);
+  }
+
+  /** An open connection whose binding check passed: the only one claudish writes to. */
+  private trustedConnection(): boolean {
+    return !!this.client && !this.client.isClosed && this.gateTrusted;
+  }
+
+  /** Wait for a trusted connection, else return the view to the live bottom on it. */
+  private connectionStep(adm: Admission): Promise<void> {
+    if (!this.trustedConnection()) return this.awaitTrustedClient(adm);
+    return this.returnToLiveBottom(Math.max(0, adm.deadline - Date.now()));
+  }
+
   /** Nothing is written while disconnected: the redial's attach re-checks the binding first. */
   private awaitTrustedClient(adm: Admission): Promise<void> {
     return this.waitFor(
-      () => !this.admitting(adm) || (!!this.client && this.gateTrusted),
+      () => !this.admitting(adm) || this.trustedConnection(),
       Math.max(0, adm.deadline - Date.now())
     );
   }
@@ -2210,6 +2269,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private accept(): void {
     this.admission = null;
     this.initialDelivery = false;
+    // an evidenced submit snaps Claude Code's view to the live bottom (measured, MTL-369)
+    this.scrollPos = LIVE_BOTTOM;
     const now = Date.now();
     this.lastChatSeenAt = now;
     this.turnAcceptedAt = now;
@@ -2318,6 +2379,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       const d = this.currentDelivery;
       this.turnSource = "screen";
       this.anomaly("degraded_mode");
+      // the screen turn reads the live bottom; a scrolled view would hide it
+      void this.returnToLiveBottom(SCROLL_REPLY_MS);
       this.screenTurn = {
         echo: d && d.mode !== "refused" ? d.line : "",
         acceptedAt: at,
@@ -2509,6 +2572,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         complete: t.delivery && !unverified ? t.readCoverage.complete : null,
         preambleBytes: t.preambleBytes,
       },
+      writtenFiles: decision.by === "local_command" ? [] : t.writtenFiles,
     };
   }
 
@@ -2586,8 +2650,11 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       this.follower.markSettled();
     }
     const last = this.chain[this.chain.length - 1];
-    if (last && last.index === core.index) last.answer = core.answer;
-    else this.chain.push({ index: core.index, answer: core.answer });
+    const writtenFiles = core.writtenFiles ?? [];
+    if (last && last.index === core.index) {
+      last.answer = core.answer;
+      last.writtenFiles = writtenFiles;
+    } else this.chain.push({ index: core.index, answer: core.answer, writtenFiles });
     if (!this.turnHookCaused) this.chainHead = core.delivery;
     const turn: SettledTurn = {
       ...core,
@@ -2595,6 +2662,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       chainDelivery: this.chainHead ?? core.delivery,
       hookTurns: this.hookTurns,
       hookCaused: this.turnHookCaused,
+      writtenFiles: [...new Set(this.chain.flatMap((c) => c.writtenFiles))],
     };
     this.heldTurn = turn;
     try {
@@ -2892,11 +2960,25 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
   private screenSettleReady(view: TranscriptView, answer: string, apiError: unknown): boolean {
     const g = this.gateNow();
     if (!g || !g.ready || g.dialog !== null || workingAboveBox(this.screen) === true) return false;
-    const quiet = this.aboveBoxQuietMs() ?? Date.now() - this.screen.changedAt;
+    let quiet = this.aboveBoxQuietMs() ?? Date.now() - this.screen.changedAt;
+    // a static scrolled view looks quiet: count only from the confirmed return to the bottom
+    if (this.scrollEndConfirmedAt > 0)
+      quiet = Math.min(quiet, Date.now() - this.scrollEndConfirmedAt);
     if (view.availability === "off" && quiet >= this.secondaryQuietMs) return true;
     return (
       (!!answer || !!apiError) && quiet >= 2 * this.t("screenSettleQuietMs", SCREEN_SETTLE_QUIET_MS)
     );
+  }
+
+  /**
+   * A screen-read turn never settles from a scrolled view: false while a ctrl-End is out or
+   * the view may not be at the live bottom, sending ctrl-End when none is out.
+   */
+  private screenViewLive(): boolean {
+    if (this.scrollEndsInFlight > 0) return false;
+    if (isLiveBottom(this.scrollPos)) return true;
+    void this.returnToLiveBottom(SCROLL_REPLY_MS);
+    return false;
   }
 
   private evalScreenTurn(view: TranscriptView): void {
@@ -2913,7 +2995,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     const answer = screenAnswer(this.screen, st.echo);
     const apiError = this.screenApiError(st, answer);
     this.activity = "thinking";
-    if (!this.screenSettleReady(view, answer, apiError)) return;
+    if (!this.screenViewLive() || !this.screenSettleReady(view, answer, apiError)) return;
     // one last poll before a screen-mode settle, with the same reversion
     this.follower.poll();
     if (this.witnessed(this.follower.view().current)) return;
@@ -3094,6 +3176,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         this.turnEndMissing,
       agentCountMismatch: !terminal && this.phase === "RUNNING" && this.agentMismatch !== null,
       recent: cur && cur.recent.length > 0 ? cur.recent : null,
+      agent: view.agentSetting,
     };
   }
 
@@ -3326,6 +3409,92 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
   }
 
+  async scroll(req: ScrollRequest): Promise<{ seq: number }> {
+    const refusal = this.scrollRefusal();
+    if (refusal) throw new ContractErrorException("scroll_unavailable", refusal);
+    const c = this.client;
+    if (!c || c.isClosed)
+      throw new ContractErrorException("scroll_unavailable", "the pane's socket is reconnecting");
+    const plan = planScroll(this.scrollPos, req);
+    if (plan.bytes === "") return { seq: this.screen.seq };
+    // Before any await: a concurrent scroll plans from where this one leaves the view, and
+    // the redraw falls in the quiet window (a scroll redraw is not the child working).
+    this.scrollPos = plan.next;
+    const seq0 = this.screen.seq;
+    this.extendResizeQuiet();
+    const r = await c.request(
+      { type: "send", pane: 0, text: plan.bytes, enter: false, noGate: true },
+      SCROLL_REPLY_MS
+    );
+    if (!r.ok) {
+      // the bytes may still be delivered (they queue behind claudish's own in-flight send
+      // on the pane's lane), so the position is unknown, never assumed unmoved
+      this.scrollPos = UNKNOWN_POSITION;
+      if (r.code === "client_lost" || r.code === "client_timeout") this.extendResizeQuiet();
+      throw new ContractErrorException(
+        "scroll_unavailable",
+        `magmux did not confirm the scroll: ${r.code}${r.error ? `: ${r.error}` : ""}`
+      );
+    }
+    this.extendResizeQuiet();
+    await this.waitFor(
+      () => isTerminalPhase(this.phase) || this.screen.seq !== seq0,
+      this.t("scrollScreenMs", SCROLL_SCREEN_MS)
+    );
+    return { seq: this.screen.seq };
+  }
+
+  /**
+   * A screen-read turn is in progress. `turnSource` stays "screen" after it settles (until
+   * the next delivery), so the phase decides: SETTLING and IDLE hold a settled turn.
+   */
+  private screenTurnActive(): boolean {
+    if (this.turnSource !== "screen") return false;
+    return this.phase === "RUNNING" || this.phase === "QUESTION" || this.phase === "PERMISSION";
+  }
+
+  /** Why a scroll is refused now (nothing is sent), or null when it is allowed. */
+  private scrollRefusal(): string | null {
+    if (isTerminalPhase(this.phase) || this.final) return "the session has finished";
+    if (this.phase === "BOOTING" || this.screen.seq === 0) return "the session is still starting";
+    if (this.phase === "ADMITTING") return "a prompt is being delivered to the session";
+    if (this.screenTurnActive())
+      return "the session's turn is being read from its screen (no transcript)";
+    // a closed client is not connected: it is replaced only when `disconnected` fires; an
+    // attached one is not trusted until its binding check passes
+    if (!this.client || this.client.isClosed || !this.gateTrusted)
+      return "the pane's socket is reconnecting";
+    return null;
+  }
+
+  /**
+   * ctrl-End before claudish needs the live bottom (an admission's delivery, a screen-read
+   * turn) when a scroll may have left the view elsewhere. One ungated send, no Enter.
+   */
+  private async returnToLiveBottom(ms: number): Promise<void> {
+    if (isLiveBottom(this.scrollPos)) return;
+    const c = this.client;
+    // an unverified connection is a reconnecting one: nothing is sent, the position stays
+    if (!c || c.isClosed || !this.gateTrusted || ms <= 0) return;
+    this.scrollPos = LIVE_BOTTOM;
+    this.extendResizeQuiet();
+    this.scrollEndsInFlight++;
+    try {
+      const r = await c.request(
+        { type: "send", pane: 0, text: CTRL_END, enter: false, noGate: true },
+        Math.min(SCROLL_REPLY_MS, ms)
+      );
+      if (r.ok) {
+        this.scrollEndConfirmedAt = Date.now();
+      } else {
+        this.scrollPos = UNKNOWN_POSITION;
+        this.anomaly(`scroll_end_unconfirmed:${r.code}`);
+      }
+    } finally {
+      this.scrollEndsInFlight--;
+    }
+  }
+
   turnAnswer(index: number): string {
     const done = this.answers.get(index);
     if (done !== undefined) return done;
@@ -3390,6 +3559,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     return this.reapPromise ?? this.terminal.then(() => this.reapPromise ?? Promise.resolve());
   }
 
+  reapVerified(): Promise<void> {
+    return this.verifiedReap.promise;
+  }
+
   panePid(): number | null {
     return this.panePidValue;
   }
@@ -3423,25 +3596,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (!this.reapPromise) this.reapPromise = this.reap();
   }
 
-  private files(): { paneId: string; sockPath: string; launcherDir: string; turnDir: string } {
-    return {
-      paneId: this.paneId,
-      sockPath: this.sockPath,
-      launcherDir: this.ctlDir,
-      turnDir: this.turnDir,
-    };
-  }
-
-  private ms(normal: number, fast: number): number {
-    return this.fastReap ? fast : normal;
-  }
-
   private async waitFor(pred: () => boolean, ms: number): Promise<void> {
     const end = Date.now() + ms;
     while (!pred() && Date.now() < end) await Bun.sleep(25);
   }
 
-  /** §2.10 — close_pane, magmux by its handle, the verified group backstop, verify, clean, watcher. */
+  /** The identity-checked reap, in `pane-reap.ts`: this pane's own steps first. */
   private async reap(): Promise<void> {
     await Promise.resolve(); // let the terminal step finish first
     this.reaping = true;
@@ -3449,106 +3609,51 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     this.ticker = null;
     if (this.gateTimer) clearInterval(this.gateTimer);
     this.gateTimer = null;
-    await this.captureGroupBeforeReap();
-    const c = this.client;
-    if (c && !c.isClosed && !this.paneClosed) {
-      const r = await c.request({ type: "close_pane", pane: 0, force: true }, this.ms(1000, 500));
-      if (r.ok || r.code === "no_such_pane")
-        await this.waitFor(() => this.paneClosed || c.isClosed, this.ms(3000, 1000));
-    }
-    if (this.magmux) await waitForExit(this.magmux, this.ms(3000, 1000));
-    if (alive(this.magmux)) {
-      this.magmux?.kill("SIGTERM");
-      if (this.magmux) await waitForExit(this.magmux, this.ms(2000, 500));
-      if (alive(this.magmux)) this.magmux?.kill("SIGKILL");
-      if (this.magmux) await waitForExit(this.magmux, 1000);
-    }
-    await this.groupBackstop();
-    await this.verifyAndClean();
+    await reapPaneProcesses(this.reapSubject);
   }
 
-  /** Step 0: refresh the verified group while its members still carry their identity. */
-  private async captureGroupBeforeReap(): Promise<void> {
-    const table = await readProcessTableAsync();
-    if (!table) return;
-    if (!this.panePidValue && this.magmux?.pid) {
-      const lead = table.find((r) => r.ppid === this.magmux?.pid && r.pgid === r.pid);
-      if (lead) {
-        const snap = verifiedGroupSnapshot(table, lead.pgid, this.identity);
-        if (snap) this.panePidValue = lead.pid;
-      }
-    }
-    refreshGroupOf(this, table);
+  /** What the shared reap reads and writes: this pane's own fields, never a copy. */
+  private get reapSubject(): PaneReapSubject {
+    const pane = this;
+    return {
+      paneId: this.paneId,
+      root: this.root,
+      identity: this.identity,
+      get group() {
+        return pane.group;
+      },
+      set group(g) {
+        pane.group = g;
+      },
+      get reapFailed() {
+        return pane.reapFailed;
+      },
+      set reapFailed(v) {
+        pane.reapFailed = v;
+      },
+      panePid: () => this.panePidValue,
+      adoptPanePid: (pid) => {
+        this.panePidValue = pid;
+      },
+      client: () => this.client,
+      paneClosed: () => this.paneClosed,
+      magmux: () => this.magmux,
+      watcher: () => this.watcher,
+      files: () => ({
+        paneId: this.paneId,
+        sockPath: this.sockPath,
+        launcherDir: this.ctlDir,
+        turnDir: this.turnDir,
+      }),
+      fast: () => this.fastReap,
+      onVerified: () => this.verifiedReap.resolve(),
+      onUnverified: () => this.anomaly("reap_unverified"),
+    };
   }
 
-  /**
-   * The verified group, or a recorded escaped descendant (own process group), is alive.
-   * True while the table is unavailable: the reap stays unverified and keeps its files.
-   */
-  private async groupAlive(): Promise<boolean> {
-    if (!this.group) return false;
-    const table = await readProcessTableAsync();
-    if (!table) return true;
-    return groupCheck(table, this.group) || liveEscaped(table, this.group).length > 0;
-  }
-
-  /** The verified group (`-pgid`) and each live escaped descendant (its pid), re-read now. */
-  private async backstopTargets(): Promise<number[]> {
-    if (!this.group) return [];
-    const table = await readProcessTableAsync();
-    if (!table) return [];
-    return [
-      ...(groupCheck(table, this.group) ? [-this.group.pgid] : []),
-      ...liveEscaped(table, this.group),
-    ];
-  }
-
-  private async groupBackstop(): Promise<void> {
-    for (const sig of ["SIGTERM", "SIGKILL"] as const) {
-      const targets = await this.backstopTargets();
-      if (targets.length === 0) return;
-      for (const target of targets) signalQuietly(target, sig);
-      const end = Date.now() + (sig === "SIGTERM" ? this.ms(2000, 500) : 1000);
-      while (Date.now() < end && (await this.groupAlive())) await Bun.sleep(150);
-    }
-  }
-
-  private async verifyAndClean(): Promise<void> {
-    const groupGone = !(await this.groupAlive());
-    const magGone = !alive(this.magmux);
-    this.client?.close();
-    if (groupGone && magGone) {
-      removePaneFiles(this.root, this.files());
-      this.reapFailed = false;
-      await this.endWatcher();
-      unregisterPane(this.paneId);
-      return;
-    }
-    this.reapFailed = true;
-    this.anomaly("reap_unverified");
-    updateRecord(this.root, this.paneId, { reapFailed: true });
-  }
-
-  /** Re-run steps 4–6 (the registry's 2 s tick, after an unverified reap). */
-  async retryReap(): Promise<boolean> {
-    if (alive(this.magmux)) this.magmux?.kill("SIGKILL");
-    await this.groupBackstop();
-    await this.verifyAndClean();
-    return !this.reapFailed;
-  }
-
-  /** Step 6, only after a verified reap: `done`, end stdin, then SIGKILL through the handle. */
-  private async endWatcher(): Promise<void> {
-    const w = this.watcher;
-    if (!w || !alive(w)) return;
-    try {
-      w.stdin?.write("done\n");
-      w.stdin?.end();
-    } catch {
-      // EPIPE: the watcher is already gone (R3-M1)
-    }
-    await waitForExit(w, 1000);
-    if (alive(w)) w.kill("SIGKILL");
+  /** Re-run the last steps (the registry's 2 s tick, after an unverified reap). */
+  retryReap(): Promise<boolean> {
+    return retryPaneReap(this.reapSubject);
   }
 
   async shutdownReap(_reason: string): Promise<void> {
@@ -3559,14 +3664,6 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   killMagmuxSync(): void {
     if (alive(this.magmux)) this.magmux?.kill("SIGKILL");
-  }
-}
-
-function signalQuietly(target: number, sig: NodeJS.Signals): void {
-  try {
-    process.kill(target, sig);
-  } catch {
-    // gone between the read and the signal
   }
 }
 
@@ -3608,6 +3705,7 @@ function newAdmission(a: {
     lostType: null,
     last: null,
     noted: new Set(),
+    liveBottomClient: null,
   };
 }
 

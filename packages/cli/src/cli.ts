@@ -2354,6 +2354,17 @@ ${h("SUBCOMMANDS")}
   ${green("claudish subscription models antigravity")} ${yellow("--raw --json")}
                                           Print the raw Antigravity fetchAvailableModels
                                           ${dim("body as one JSON line (for models-index)")}
+  ${green("claudish subscription probe antigravity")} ${yellow("--model <id> --request-file <path> --raw --json")}
+                                          Send the file's Gemini request once through the
+                                          Antigravity login (generateContent, no retry, model
+                                          ${dim("id unchanged); print the raw answer as one JSON line")}
+  ${green("claudish subscription models devin")} ${yellow("--raw --json")}
+                                          Print Devin's decoded GetCliModelConfigs rows and
+                                          ${dim("allowed model uids as one JSON line (for models-index)")}
+  ${green("claudish subscription probe devin")} ${yellow("--model <uid> --request-file <path> --raw --json")}
+                                          Send the file's Anthropic Messages request once through
+                                          the Devin login (GetChatMessage, no retry, uid unchanged);
+                                          ${dim("print the decoded answer as one JSON line")}
   ${green("claudish update")}                        Check for updates and install the latest version
 
   ${bold("Profiles:")}
@@ -2370,6 +2381,22 @@ ${h("SUBCOMMANDS")}
     ${green("claudish login")} ${yellow("[provider]")}              Login to an OAuth provider (interactive if omitted)
     ${green("claudish logout")} ${yellow("[provider]")}             Clear OAuth credentials
     ${dim("Providers: gemini, kimi")}
+
+  ${bold("Subscription accounts:")}
+    ${green("claudish account list")}                 Configured subscription accounts, per claudish provider
+    ${green("claudish account status")} ${yellow("[--json]")}       Usage per window, thresholds and blockers
+    ${green("claudish account add codex")} ${yellow("[--label <label>]")}     Log in a Codex account you own and add it ${dim("(label defaults to the login's email)")}
+    ${green("claudish account login codex")} ${yellow("<label>")}         Log the same Codex identity in again
+    ${green("claudish account enable|disable codex")} ${yellow("<label>")} Include or skip it in selection
+    ${green("claudish account rename codex")} ${yellow("<label> <new-label>")}  Give an account a new label
+    ${green("claudish account remove codex")} ${yellow("<label> [--yes] [--delete-file]")}
+    ${dim("A <label> may also be the account's email.")}
+    ${dim("--id <generated-id> may replace or confirm a label. Removing the legacy login (default)")}
+    ${dim("requires --delete-file. New accounts use the macOS Keychain, or protected plaintext files")}
+    ${dim("where there is none. No token input or export; Claude account mutations are not available.")}
+    ${dim("With Codex accounts configured, use account add/login instead of 'claudish login codex'.")}
+    ${dim("--refresh re-reads the account list and state past every cache — it contacts no vendor,")}
+    ${dim("because claudish never spends quota to measure quota.")}
 
 ${h("1PASSWORD")} ${dim("(SDK-based — no op CLI needed for secrets)")}
   ${dim("Auth via OP_SERVICE_ACCOUNT_TOKEN, or OP_ACCOUNT / onepasswordAccount config (DesktopAuth).")}

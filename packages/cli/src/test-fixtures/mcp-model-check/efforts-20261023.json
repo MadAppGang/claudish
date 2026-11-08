@@ -1,0 +1,977 @@
+{
+  "contractVersion": 3,
+  "format": 2,
+  "generations": {
+    "g-20261023103553152-06aca043": {
+      "writtenAt": 1792752143002,
+      "efforts": {
+        "gpt-6.1-sol": {
+          "implementation": {
+            "effort": "medium",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6.1-sol",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "planning": {
+            "effort": "max",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6.1-sol",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "research": {
+            "effort": "xhigh",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6.1-sol",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "code_review": {
+            "effort": "xhigh",
+            "basis": "vendor_guidance",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6.1-sol",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "debugging": {
+            "effort": "high",
+            "basis": "vendor_guidance",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6.1-sol",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "quick_edit": {
+            "effort": "low",
+            "basis": "vendor_guidance",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6.1-sol",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "frontend_ui": {
+            "effort": "high",
+            "basis": "owner_choice",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6.1-sol",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "tool_automation": {
+            "effort": "high",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6.1-sol",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "terminal_ops": {
+            "effort": "xhigh",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6.1-sol",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "long_context": {
+            "effort": "low",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6.1-sol",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6.1-sol",
+                "encoding": "request_parameter"
+              }
+            ]
+          }
+        },
+        "gpt-6-luna": {
+          "implementation": {
+            "effort": "max",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "go-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-luna",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "planning": {
+            "effort": "max",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "go-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-luna",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "research": {
+            "effort": "max",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "go-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-luna",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "code_review": {
+            "effort": "xhigh",
+            "basis": "vendor_guidance",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "go-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-luna",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "debugging": {
+            "effort": "high",
+            "basis": "vendor_guidance",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "go-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-luna",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "quick_edit": {
+            "effort": "low",
+            "basis": "vendor_guidance",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "go-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-luna",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "frontend_ui": {
+            "effort": "xhigh",
+            "basis": "owner_choice",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "go-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-luna",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "tool_automation": {
+            "effort": "max",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "go-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-luna",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "terminal_ops": {
+            "effort": "max",
+            "basis": "owner_choice",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "go-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-luna",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "long_context": {
+            "effort": "high",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "go-subscription",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-luna",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-luna",
+                "encoding": "request_parameter"
+              }
+            ]
+          }
+        },
+        "gpt-6-astra": {
+          "implementation": {
+            "effort": "high",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-astra",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "planning": {
+            "effort": "max",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-astra",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "research": {
+            "effort": "xhigh",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-astra",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "code_review": {
+            "effort": "xhigh",
+            "basis": "owner_choice",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-astra",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "debugging": {
+            "effort": "high",
+            "basis": "vendor_guidance",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-astra",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "quick_edit": {
+            "effort": "low",
+            "basis": "vendor_guidance",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-astra",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "frontend_ui": {
+            "effort": "xhigh",
+            "basis": "owner_choice",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-astra",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "tool_automation": {
+            "effort": "xhigh",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-astra",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "terminal_ops": {
+            "effort": "xhigh",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-astra",
+                "encoding": "request_parameter"
+              }
+            ]
+          },
+          "long_context": {
+            "effort": "low",
+            "basis": "benchmark_knee",
+            "sendableOn": [
+              {
+                "routeId": "openai",
+                "routeProfileId": "codex-subscription",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openai",
+                "routeProfileId": "direct-api",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "opencode",
+                "routeProfileId": "zen",
+                "externalModelId": "gpt-6-astra",
+                "encoding": "request_parameter"
+              },
+              {
+                "routeId": "openrouter",
+                "routeProfileId": "gateway",
+                "externalModelId": "openai/gpt-6-astra",
+                "encoding": "request_parameter"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
