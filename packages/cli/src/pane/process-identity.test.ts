@@ -224,8 +224,10 @@ function shell(script: string, opts: { ctl?: string; root?: string; rows?: PsRow
 
 describe("the generated watcher shell agrees with the TS predicates on the same table", () => {
   test("the script parses under bash's sh and under dash", () => {
-    expect(spawnSync("/bin/sh", ["-n", "-c", WATCHER_SCRIPT]).status).toBe(0);
-    const dash = spawnSync("dash", ["-n", "-c", WATCHER_SCRIPT]);
+    expect(
+      spawnSync("/bin/sh", ["-n", "-c", WATCHER_SCRIPT], { env: { ...process.env } }).status
+    ).toBe(0);
+    const dash = spawnSync("dash", ["-n", "-c", WATCHER_SCRIPT], { env: { ...process.env } });
     if (!dash.error) expect(dash.status).toBe(0);
   });
 
@@ -419,7 +421,7 @@ describe("the process table when ps cannot run (macOS refuses the setuid ps in a
       const res = spawnSync(
         "/usr/bin/sandbox-exec",
         ["-p", "(version 1)(allow default)", process.execPath, "--no-env-file", "-e", script],
-        { encoding: "utf8", timeout: 20_000 }
+        { env: { ...process.env }, encoding: "utf8", timeout: 20_000 }
       );
       expect({ status: res.status, stdout: res.stdout.trim() }).toEqual({
         status: 0,

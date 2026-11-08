@@ -217,6 +217,10 @@ export function recordStats(partial: Partial<StatsEvent>): void {
     if (partial.recovery_client_retry !== undefined)
       event.recovery_client_retry = partial.recovery_client_retry;
     if (partial.recovery_outcome !== undefined) event.recovery_outcome = partial.recovery_outcome;
+    // Same half-the-job rule: also pushed in `eventToLogRecord`.
+    if (partial.leg_retries !== undefined) event.leg_retries = partial.leg_retries;
+    // Same rule again: `request_role` is pushed in `eventToLogRecord` too.
+    if (partial.request_role !== undefined) event.request_role = partial.request_role;
 
     appendEvent(event);
 

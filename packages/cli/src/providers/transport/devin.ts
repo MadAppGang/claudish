@@ -45,7 +45,7 @@ import { resolveDevinModelUid } from "../devin/model-id-resolver.js";
 import type { ProviderTransport, SerializedBody, StreamFormat } from "./types.js";
 
 /** The streaming rpc. The unary metadata rpcs live in `devin-models.ts`. */
-const CHAT_PATH = "/exa.api_server_pb.ApiServerService/GetChatMessage";
+export const CHAT_PATH = "/exa.api_server_pb.ApiServerService/GetChatMessage";
 
 /** Connect streaming content type. The unary rpcs use bare `application/proto`. */
 const CHAT_CONTENT_TYPE = "application/connect+proto";
@@ -113,6 +113,15 @@ export class DevinProviderTransport implements ProviderTransport {
    * dynamic models catalog. Effort rides the PAYLOAD rather than the transport because a
    * cached handler serves overlapping turns that may carry different levels.
    */
+  /**
+   * The key `serializeBody` embeds in metadata field 1.3, for exact-value
+   * redaction: it never appears in a header, so `fetchHeaders` cannot see it.
+   */
+  redactionSecrets(): string[] {
+    const apiKey = readDevinApiKey();
+    return apiKey ? [apiKey] : [];
+  }
+
   serializeBody(payload: any): { body: SerializedBody; contentType: string } {
     const apiKey = readDevinApiKey();
     if (!apiKey) {

@@ -1,0 +1,126 @@
+/**
+ * Shapes shared by the code-mode modules: Responses `input` items and the
+ * parts of Claude Code's `/v1/messages` body the input builder and the stores
+ * read. Deliberately loose: both sides are external wire formats, and code mode
+ * only ever reads the fields named here.
+ */
+
+/** One Responses `input` item (message, reasoning, custom_tool_call, custom_tool_call_output, …). */
+export interface ResponsesItem {
+  type: string;
+  [field: string]: unknown;
+}
+
+/** A content block of a Claude Code message. */
+export interface ClaudeContentBlock {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: unknown;
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
+  source?: unknown;
+  [field: string]: unknown;
+}
+
+/** One message of `claudeRequest.messages`. */
+export interface ClaudeMessage {
+  role: string;
+  content: string | ClaudeContentBlock[];
+}
+
+/**
+ * The conversation's own messages: `user` and `assistant`, in order.
+ *
+ * Claude Code also sends `role: "system"` messages INSIDE `messages` (the
+ * SessionStart hook's output, MCP server instructions, the token reminder), and
+ * 2.1.303 ENDS a request with one: `user, system, assistant(tool_use×3),
+ * user(tool_result×3), system`. Code mode reasons about message ORDER — the
+ * last message, the message before an assistant message, a message after a
+ * batch — so it reads this view: a trailing system message hid every batch's
+ * answer and no script ever resumed. The input builder never rendered a system
+ * message, so dropping them changes no output.
+ */
+export function conversationMessages(messages: unknown): ClaudeMessage[] {
+  if (!Array.isArray(messages)) return [];
+  return messages.filter((m): m is ClaudeMessage => m?.role === "user" || m?.role === "assistant");
+}
+
+/** A nested tool call relayed to Claude Code as one tool_use block. */
+export interface NestedToolUse {
+  /** `toolu_cx_<hex>_<seq>` (`encodeNestedId`). */
+  id: string;
+  /** Claude Code's own tool name. */
+  name: string;
+  /** The input as relayed to Claude Code (after a recorded repair, when one applied). */
+  input: Record<string, unknown>;
+  /** The script's own input, set only when a recorded repair changed what was relayed. */
+  scriptInput?: Record<string, unknown>;
+}
+
+/**
+ * The input JSON Claude Code gets for `block`: `repair` applied ONCE
+ * to the script's input. A repaired input is written back onto the block — the
+ * exec record holds the same object — with the script's own kept as
+ * `scriptInput`, so a duplicate reply re-sends exactly what was relayed and a
+ * replay can tell a repair from a divergence. A pure function, safe for the
+ * turn driver to import (it loads no sandbox).
+ */
+export function relayNestedInput(
+  block: NestedToolUse,
+  repair: (name: string, argsJson: string) => string
+): string {
+  const args = JSON.stringify(block.input ?? {});
+  if (block.scriptInput !== undefined) return args;
+  const sent = repair(block.name, args);
+  if (sent === args) return args;
+  try {
+    const parsed: unknown = JSON.parse(sent);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      block.scriptInput = block.input;
+      block.input = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // An unparsable repair is sent as it is and not recorded.
+  }
+  return sent;
+}
+
+/**
+ * What the turn driver does after an exec call: relay the script's batch as
+ * tool_use blocks (the message ends `tool_use`), or continue the turn with
+ * another upstream leg whose input carries the exec items.
+ */
+export type ExecTurnStep =
+  | { kind: "emit-tool-uses"; blocks: [NestedToolUse, ...NestedToolUse[]] }
+  | { kind: "continue"; appendItems: ResponsesItem[] };
+
+/**
+ * How the Responses turn driver reaches code mode. The driver never imports
+ * code mode itself, so classic providers never load QuickJS.
+ */
+export interface CodeModeTurnHooks {
+  /**
+   * An exec call ended a leg. `precedingItems` are that leg's assistant text
+   * and reasoning items in order; `truncated` means `response.incomplete` cut
+   * the exec input, which is then never run. Never rejects: a store or sandbox
+   * failure becomes a `Script failed` continuation.
+   */
+  onExecCall(call: {
+    callId: string;
+    input: string;
+    precedingItems: ResponsesItem[];
+    truncated: boolean;
+  }): ExecTurnStep | Promise<ExecTurnStep>;
+  /**
+   * The message ended: store its Responses items (they end before the final
+   * exec call when it ended on nested calls). `anchor` is the message's first
+   * tool_use id; undefined when it has none, and `texts` (its text blocks, in
+   * order) then derive it.
+   */
+  onTurnEnd(record: { anchor?: string; items: ResponsesItem[]; texts: string[] }): void;
+  /** The client went away before the `message_stop` of a relayed batch. */
+  onTurnAbandoned(callId: string): void;
+}

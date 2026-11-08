@@ -188,11 +188,17 @@ Runs this process started are kept in memory keyed by `run_id`
 (`<team_session_id>-<base36 start ms>-<6 hex>`), with an index of the newest run
 per path. A path holds at most one ACTIVE run; `run` on an ACTIVE path is refused.
 A SETTLED run (every slot terminal) stays listable and capturable for 30 minutes,
-at most 20 of them, oldest evicted first. `status`, `cancel`, `capture` and `resize` take an
-optional `run_id`, which addresses THAT run while it is retained even after a newer
-run reused the path; without one they address the newest run at `path`. After
+at most 20 of them, oldest evicted first. `status`, `cancel`, `capture`, `resize`, `scroll`
+and `transcript` take an optional `run_id`, which addresses THAT run while it is retained even
+after a newer run reused the path; without one they address the newest run at `path`. After
 eviction, or after a server restart, `status` still answers from `status.json`
-(the newest run at the path only), with every liveness map null.
+(the newest run at the path only), with every liveness map null. `transcript` is the other
+reader that falls back to `status.json` (read with `getStatus`, so an absent file is
+`unknown_run` and an absent slot `unknown_slot`): the slot's `transcriptPath` and `sessionUuid`
+are written at spawn, so even a slot RUNNING under another server is readable. A `run_id` given
+there must equal the file's run id (`status.runId`, else the directory's basename). Its `final`
+from the file needs a terminal state and `completedAt` (else the file's mtime) 30 s old; a slot a
+SIGKILLed server left RUNNING never becomes `final`, the same stuck state `status` shows.
 
 ### The run's record in the sessions directory, ended exactly once
 

@@ -1,0 +1,1617 @@
+> Several subscriptions per claudish provider, switched automatically when one runs out: why the
+> account list is read fail-closed, why availability is a configuration fact, why a failed
+> subscription never falls through to a metered key, and why the refresh gate never runs unlocked.
+>
+> Indexed in [`README.md`](./README.md). Scenario matrix with mutations:
+> [`accounts-validation.md`](./accounts-validation.md). Review history and evidence:
+> [`../reports/multi-subscription-plan-review-2026-09.md`](../reports/multi-subscription-plan-review-2026-09.md).
+> Siblings: [`keychain.md`](./keychain.md), [`onepassword.md`](./onepassword.md).
+
+# Multi-subscription accounts
+
+**Status:** Phases 0, 1 and **2a** are built, and Phase 2a **shipped in v14.5.0** (2026-10-25,
+merge commit `8567bab8`, PR #351). The Codex pool is **on the request path**:
+`makeCodexCredential()` installs `CodexPoolHalf`, HTTP quota rotation runs in `ComposedHandler`, and
+the mutating `claudish account … codex` verbs exist. Phase 2a is verified two ways. Targeted tests
+drive the production factory, transport and handler in an isolated child against loopback OAuth,
+token and metered listeners. A real two-account run on 2026-10-22 used the owner's legacy login
+`default` and a second owned login `second`: after one `cx@` turn `default` read `7d 41%`; with
+`switchAt` lowered to 30% the next turn selected `second` (`5h 0% · 7d 0%  active`). Rotation on a
+real quota 429 was not exercised: claudish never exhausts an account on purpose. D8 (a real
+in-stream `usage_limit_reached` capture) now gates Phase 2b, not a merge. Phase 2b, the Claude
+pool, the `account use` handoff and polish are planned. Phase V ran on 2026-10-29: Claude Code
+facts are measured against Claude Code **2.1.312**. MTL-372 (the legacy Codex file move into the
+Keychain) is built on branch `worktree-mtl-260-pool-binary-validation` and not yet released.
+**Last updated:** 2026-11-03.
+
+**Errors go through main's classifier.** Every failed sign, refresh, forced re-sign and
+response-side accounts query is answered by `ComposedHandler.answerAuthFailure`
+(`handlers/shared/auth-failure.ts`). A terminal Codex failure is 400 with
+`x-claudish-auth-verdict: terminal`: an explicit `cx@` stops there, and a bare-name routing chain
+moves to its next hop, metered included, with one stderr notice naming that hop's billing (owner
+decision 2026-10-21, `9ace3fe5`; `routing.md`). A transient one is 503 (or the token host's real
+429/5xx) with `x-claudish-auth-verdict: transient`, retried on the same hop and never advanced.
+True pool exhaustion takes the verdict-free quota seam, which advances a bare chain with the
+`billed PER TOKEN` warning. The table is in *The error surface, as
+built*; anything below that says a chain "advances on 401" or names `mapAccountsError` describes
+the pre-v13 design and is superseded.
+
+A Claude Pro/Max or ChatGPT/Codex subscription runs out of its 5-hour or weekly window in the middle
+of a working day, and users who pay for several want claudish to change account on its own. Before
+this feature claudish held one credential per OAuth provider (`CodexOAuth` is a singleton over one
+file). On the native Claude path it held none: `NativeHandler` forwarded Claude Code's own
+`authorization` header and dropped every `anthropic-ratelimit-unified-*` header.
+
+The finished feature keeps one **sticky** account per claudish provider, because the prompt cache
+belongs to one account. It switches **before** a request when any window passes a threshold
+(default 0.90). On a quota rejection it marks the account exhausted until its reset and retries the
+identical request **once** on the next account. When nothing is left, the error names every account
+and its reset.
+
+One rule carries the design; most of this document is the failure modes that forced it:
+
+> Whether the metered arm is in play is decided ONCE, ahead of the credential chain, by a predicate
+> over CONFIGURATION — never by an exception inside the chain, never by a catch above it, and never
+> by an I/O result.
+
+The cost is deliberate. A pooled user can no longer degrade silently to a working metered request,
+so a claudish bug or an unreadable store becomes a visible failed request instead of an invisible
+charge.
+
+## Requirement ids
+
+Decisions, rows and code comments cite these.
+
+| Id | Requirement |
+|---|---|
+| F1 | Several accounts per claudish provider; version 1 is `native-anthropic` and `openai-codex` |
+| F2 | One active, sticky account per claudish provider |
+| F3 | Switch before a request past a threshold (default 0.90, overall and per window) |
+| F4 | On a quota rejection, mark exhausted until reset and retry the identical request once. Anthropic: 429 with `anthropic-ratelimit-unified-status: rejected`. Codex: a 429/403 quota body, or in-stream `usage_limit_reached` before any content |
+| F5 | When every account is spent, name each account and its reset, or say it needs a login |
+| F6 | Usage comes from ordinary response headers; idle accounts are polled only in long-lived processes |
+| F7 | `claudish account add\|import\|login\|list\|status\|remove\|enable\|disable\|use` |
+| F8 | `account use <label>` (Claude only) also writes Claude Code's own Keychain item |
+| F9 | The TUI Providers tab shows each account's usage, state and reset |
+| F10 | Single-account users migrate with no action: `~/.claudish/codex-oauth.json` becomes account `default` |
+| N1 | Every pooled OAuth artifact carries `arm: "oauth"`; exhaustion never falls through to `OPENAI_CODEX_API_KEY` |
+| N2 | Concurrent processes share state on disk, written atomically under a lock |
+| N3 | Exactly one process refreshes a given account; rotation must not lock the user out |
+| N4 | No secret in config, output, exports or env vars |
+| N5 | No test touches the real login Keychain; no `mock.module()` |
+| N6 | Nothing changes for a user with one account |
+| C1–C4 | Constraints: the terms-of-service gray area; `account import claude` ships beside claudish's own PKCE login (C2); Claude Code's facts are re-checked, never pinned silently; the unverified facts that became gates D1–D8 |
+
+## Built and planned
+
+```
+V (spike) ──────────────┬──────────────────────────► 3 ──► 4*
+                        │                            ▲
+0(a..i) ────────────────┴──► 1 ──► 2 ──────────────► 5
+D8 gates Phase 2b · D2 measured positive; D1/D3 moot under the switch rule (conditions: The switch rule)
+4* ships under the switch rule; the D1/D2 table applies only if D2 turns negative
+```
+
+| Phase | Content | Status |
+|---|---|---|
+| **V** | Resolve D1–D8 against a scratch `CLAUDE_CONFIG_DIR`, into `ai-docs/reports/claude-oauth-facts-<date>.md` | **Run 2026-10-29 on 2.1.312**: [`claude-oauth-facts-2026-10-29.md`](../reports/claude-oauth-facts-2026-10-29.md) |
+| **0** | Nine existing defects, below | **Built**, on the request path |
+| **1** | `auth/accounts/*`; `subscriptionAccounts` in the config type, `loadConfig`'s allowlist and the Zod schema; read-only `claudish account list\|status [--json] [--refresh]` | **Built**, off the request path |
+| **2a** | `CodexPoolHalf`; the three availability projections; routing retention of a failed Codex candidate; HTTP 429/403 quota rotation at the Codex status swap; the capacity-remaining 429; the narrow quota seam in `error-surface.ts`; outcomes and `CLAUDISH_ACCOUNTS_LOG`; false-mode stream marking; the mutating `account … codex` verbs; legacy enrollment and durable suppression; the shared config lock | **Shipped** in v14.5.0, on the request path; loopback-verified by targeted tests and a real two-account run (2026-10-22) |
+| **MTL-372** | The legacy Codex file move into the Keychain (*The legacy file move into the Keychain*): `moveLegacyLogin` and its request-path trigger; `claudish login codex` saves a `keychain` row; the mutating account verbs move first; the two transient branches for readers racing the move; the quota and display readers on the account list | **Built** (commits `a107eea8` … `e78716bb`), not released. `claudish logout codex` is unchanged (the planned one-row removal was dropped) |
+| **2b** | D8 capture; extended stream watch and in-stream rotation; T-C7, T-M3, T-L1 against the capture | Planned; gated on D8 |
+| **3** | `auth/claude-oauth.ts`, PKCE login, `NativeHandler` rotation, launch modes, `account add claude`, `import` (D2 measured positive 2026-10-29, so it ships under the switch rule) | Planned; blocked on ratifying decision 9 and C6 |
+| **4** | `claude-code-credentials.ts`, the journalled `account use` under the switch rule. The dual-store refresh is SUPERSEDED for the account in Claude Code's item by the switch rule (2026-10-29); it applies only if a later Claude Code build stops honouring the locks (the D1/D2 table's fallback branch) | Planned; ships under the switch rule. T-C5 runs only on the fallback branch |
+| **5** | Idle polling, statusline labels, the TUI Accounts block, a `docs/` page, the live run | Planned |
+
+Phase 0, each item independent of the feature:
+
+| | Defect | Fix |
+|---|---|---|
+| (a) | the Codex token file was written truncate-first; a crash left a zero-byte file and a logged-out user | `atomic-write.ts`: temp, `fsync`, explicit `chmod 0600` (the umask masks `openSync`'s mode), rename, directory `fsync` |
+| (b) | no cross-process lock | `file-lock.ts`, `refresh-lock.ts`, `state-lock.ts` |
+| (c) | a Codex 401 dead-ended at 400 | re-sign through main's `forceRefreshAuth(ctx)`, which `OpenAICodexTransport` implements as a forced `signRequest` carrying `pin`, `rejected` and `requireOAuth` (the one re-sign path since the v14 rebase), rebuilding endpoint and headers from the returned binding; main's `isSameCredentialSilo` backstop refuses to resend under another account — only on `arm: "oauth"`, since re-signing a bad api key would trade the inline 400 for a retryable 401 (#148) |
+| (d) | the artifact lived on the shared transport, so concurrent turns could sign with each other's credentials | `signRequest()` returns it; `handle()` holds it as a local `AuthBinding` (main's shape), passed to `transformPayload`, `getEndpoint` and `getHeaders` |
+| (e) | in-stream `usage_limit_reached` froze into the transcript as `[API Error: …]` | a `quota` sniffer verdict, surfaced as 400 with `upstream_status: 429` |
+| (f) | `NativeHandler` dropped the plan-window headers | `anthropic-ratelimit-*`, `retry-after` and request ids pass through on both branches; the body is serialized once |
+| (g) | `count_tokens` republished a 401 as a 200 | signs like `/v1/messages`, keeps the status |
+| (h) | the hardcoded Keychain service missed the `CLAUDE_CONFIG_DIR` hash suffix | `claudeCodeKeychainService(env)` |
+| (i) | no way to point the real binary at a fake upstream | the loopback-only `CLAUDISH_TEST_UPSTREAM` and the `CLAUDISH_ACCOUNTS_FAULT` vocabulary |
+
+**On the request path:** everything in Phase 0 and Phase 2a. The Codex credential's primary half is
+`CodexPoolHalf`, whose `isAvailable()` is the registry's presence fact, not
+`CodexOAuth.hasCredentials()`. Every `CodexOAuth` refresh still runs through
+`withRefreshGate("openai-codex", "legacy-codex", …)` (fix A1), the same lock file the pool uses for
+the synthesized legacy account and for an enrolled `legacy-codex-file` row, whatever that row's
+generated id.
+
+**The migration population (F10, N6).** When the registry reports the synthesized legacy account,
+no configured rows and no suppression marker, `CodexPoolHalf` delegates signing verbatim to the old
+`CodexOAuthHalf` and returns its artifact **without `account`**, so rotation and outcomes never
+activate for a single-login user. `requireOAuth` and `forceRefresh` are forwarded unchanged. The
+registry is consulted **first**, so what decides the request is the registry's view of
+`codex-oauth.json`:
+
+| `~/.claudish/codex-oauth.json`, no Codex rows | Registry | The request |
+|---|---|---|
+| no file: `stat` fails `ENOENT`/`ENOTDIR` | absent | api-key half, as before |
+| readable, but names no refresh token | absent ("present-and-empty") | api-key half |
+| `EACCES` on the file or its parent, `EIO`, `EMFILE`; or truncated, empty or invalid JSON | failed; with no last-known-good, throws `AccountListUnavailableError` | **503**, `upstream_status: 503`, verdict `transient`, naming the source. Never the key |
+| a readable login | present | delegated to `CodexOAuth`, `arm: "oauth"`, byte-identical to the pre-2a build |
+
+The third row is the **N6 exception** owner question 3 accepted: before 2a the singleton answered a
+terminal 400 naming `claudish login codex`; the registry now answers a transient 503, because it
+cannot tell an `EMFILE` from damage. `config.json` follows the same rule with one split: an I/O
+failure is the transient 503, but malformed JSON or an invalid `subscriptionAccounts` block is
+`AccountListInvalidError`, a terminal 400 naming the file and field. That applies to **every**
+`cx@` user, legacy-only and API-key-only included, because the registry reads `config.json` before
+deciding anything. With a last-known-good list, the request is served from it and the failure is
+exposed as a diagnostic. An I/O failure is never cached and a parse failure is cached only against
+the file's stamp, so the next readable request after a repair recovers with no restart.
+
+**While `config.json` is failed, the legacy source is not advanced** (`refreshLegacySource`). The
+copy that decides whether the file matters is the stale config: before the move it has 0 rows and
+no marker, so a fresh read of the file finds it absent (M8 deleted it), and the snapshot combined
+the OLD config with the NEW file state: 0 Codex accounts and no throw. `CodexPoolHalf.isAvailable()`
+then answered false and the composite signed `OPENAI_CODEX_API_KEY`, metered (MTL-372 review round
+3). Now the legacy copy that was current with the config copy is served with it, and the legacy
+source reports `failed` ("not re-read while the account list config cannot be read"). With no such
+copy, a Codex snapshot throws `AccountListUnavailableError` (503), as a cold failure does; the
+Claude scope still ignores the legacy source. The file is re-read as soon as the config reads.
+
+**Since MTL-372 this population is smaller.** On a Keychain platform with the default config, the
+first Codex sign of a process starts the legacy file move in the background, and `claudish login
+codex` and the mutating account verbs run it first. After the move the user has one `keychain` row
+and no file, so the pool signs. The synthesized legacy account, and the delegation above, remain
+in three places only: a platform with no Keychain (or `CLAUDISH_DISABLE_KEYCHAIN=1`), an alternate
+config, and a process that has not reached its first Codex sign yet (or whose move was deferred).
+See *The legacy file move into the Keychain*.
+
+## Where things live
+
+```
+~/.claudish/config.json                                   subscriptionAccounts — the account list, no secrets
+~/.claudish/codex-oauth.json                              the LEGACY Codex account; moved into the Keychain on macOS (MTL-372)
+~/.claudish/accounts/state.json                   (0600)  usage, exhaustedUntil, needsReauth, owner, active
+~/.claudish/accounts/state.lock                           guards state.json's read-modify-write
+~/.claudish/accounts/locks/<provider>/<id>.lock           the refresh gate, one per account
+~/.claudish/accounts/tokens/<provider>/<id>.json  (0600)  the file token store (directory 0700)
+Keychain service "claudish-accounts", account "<provider>:<id>"   one JSON blob per account
+```
+
+```jsonc
+"subscriptionAccounts": {
+  "openai-codex": {
+    "generation": 3,
+    "switchAt": 0.9,
+    "switchAtByWindow": { "primary": 0.8 },
+    "noticeAcceptedAt": "2026-10-22T09:00:00Z",
+    "legacyCodexSuppressed": true,          // set by removing the legacy login, or by its move; see below
+    "accounts": [
+      { "id": "a1b2c3d4e5f6", "label": "work", "store": "keychain",
+        "addedAt": "2026-09-01T10:00:00Z", "identity": { "plan": "pro" } }
+    ]
+  }
+}
+```
+
+`subscriptionAccounts` is owned by the file on disk, never by an in-memory config object: see
+*Config ownership* below.
+
+`id` is generated and opaque (`^[a-z0-9]{12}$`) because it is interpolated into two paths; both
+`registry.ts` and `paths.ts` refuse any other. `label` is the user-facing handle and the only thing a
+command line names. The provider is in the **path**, not the filename, because two claudish
+providers can mint the same id (V15). The synthesized legacy account's id is `legacy-codex` —
+outside the pattern, so no configured account can collide with it — and its label is `default`.
+
+A label matches `^\w[\w@+. -]{0,63}$`: ASCII letters, digits, `_`, `@`, `+`, `.`, `-` and space, the
+first character a letter, digit or underscore, 64 characters at most. The pattern, its rule sentence
+and the label derivation live in `auth/accounts/account-label.ts` alone; `types.ts` re-exports the
+constant and `config-schema.ts` imports it, so the schema, the entry invariants and the ledger row
+guard cannot disagree. Widening only one copy would make a saved email label fail schema parse.
+
+**`owner` lives in `state.json` alone.** Two documents holding the named refresher, with no rule for
+which wins, is how two processes come to choose different refresh protocols.
+
+## Who pays: the single decision point
+
+```mermaid
+flowchart TD
+  sign["OpenAICodexTransport.signRequest(ctx)"] --> comp["CompositeCredentialProvider.getRequestAuth()"]
+  comp -- "ctx.requireOAuth" --> lease
+  comp -- "otherwise" --> avail{"CodexPoolHalf.isAvailable()<br/>registry.hasConfiguredAccounts"}
+  avail -- "false: confirmed no account" --> metered["api-key half: OPENAI_CODEX_API_KEY<br/>arm api-key, metered"]
+  avail -- "throws: list unreadable / invalid" --> typed["typed 503 transient / 400 terminal<br/>never the key"]
+  avail -- "true" --> lease["CodexPoolHalf.getRequestAuth()<br/>pool lease, or legacy delegation"]
+  lease -- "arm: oauth" --> check{"pre-record check in signRequest"}
+  check -- "accepted" --> sub["recordSignedArm(subscription)<br/>chatgpt.com/backend-api"]
+  check -- "non-OAuth where OAuth is reserved" --> escape["MeteredEscapeError, terminal 400<br/>nothing recorded, nothing sent"]
+  lease -- "throws: exhausted, needs login, store unreadable" --> typed
+```
+
+### One configuration fact, three consumer contracts
+
+```ts
+registry.hasConfiguredAccounts("openai-codex")   // the presence fact
+  == ≥1 Codex row in config.subscriptionAccounts["openai-codex"].accounts, ENABLED OR NOT
+     OR (no rows, not suppressed, and a readable legacy ~/.claudish/codex-oauth.json)
+```
+
+No Keychain call, no token file, no `await`: it stats the two account-list documents and re-reads
+one only when its stamp changed. One computation feeds three consumers, which answer an unknown
+list differently on purpose:
+
+| Consumer | Configured / absent | Cold unreadable or invalid, no last-known-good |
+|---|---|---|
+| **Sign-time availability:** `CodexPoolHalf.isAvailable()`, `AccountPool.hasAnyCredentials()` | true / false | **throws** `AccountListUnavailableError` (I/O) or `AccountListInvalidError` (malformed `config.json`) |
+| **Transport safety:** `OpenAICodexTransport.poolConfigured()` | true / false | **true**, never throws: an unknown list reserves the subscription side |
+| **Unsigned billing:** the registered Codex probe in `billing-probe.ts` | SUB / metered | **SUB**, never throws: a conservative label, not evidence that signing can succeed |
+
+The last two are `registry.mayHaveConfiguredAccounts()`, which catches and answers true. The probe
+still reads the signed-arm record **first** (what did sign beats what would), and an unexpected
+throw from a registered Codex callback is contained as SUB both in `installBillingProbes` and in
+the auth-free pricing leaf (`remote-provider-types.ts`). A genuinely unregistered probe keeps the
+old metered default. The singleton disjunct is gone (M4): `CodexOAuth.hasCredentials()` is no
+longer anyone's billing oracle.
+
+**A disabled row still reserves OAuth** (owner question 2). `enabled` is a selection predicate, not
+presence: disabling the last row, or the whole pool, gives `NoUsableAccountError` and never signs the
+key. Only `account remove` makes the key effective, and it says so. **Suppression with zero rows is
+confirmed absence**: after the legacy login is removed, a NEW request may sign the key.
+
+Two escapes shaped presence, both found in plan review:
+
+1. **The transport catch.** `refreshAuth()` was `try { … } catch { this.cachedAuth = null }`, and a
+   null artifact meant `api.openai.com`, `Bearer $OPENAI_CODEX_API_KEY` and a `metered` record.
+   Phase 0 replaced it with `signRequest()`, which has **no** `try/catch`, and review fix F11
+   deleted the Codex `refreshAuth()` bridge and `legacyAuth` outright.
+2. **The availability contract.** `CredentialProvider.isAvailable` is documented "never throws — a
+   1Password auth failure resolves to false". Revision 1 computed the predicate from stored token
+   material, so a locked Keychain, a denied ACL or an `EIO` became `false`, and the composite took
+   the api-key half.
+
+So availability answers a **configuration** question. Exhaustion, `needsReauth` and an unreadable
+token store are **readiness** facts and never lower it; `false` means only "no OAuth configured".
+
+`CodexPoolHalf.isAvailable()` **may throw** — a deliberate departure from the never-throws contract,
+which exists so a 1Password prompt failure cannot take the server down and predates any provider
+using availability to pick between a free and a paid credential. Where the answer decides who pays,
+"unknown" must resolve to the safe side, and the only way to say it through a `Promise<boolean>` is
+to throw. The throw is safe: `makeCodexCredential()` passes no `fallbackSignal`, so the composite
+rethrows, and `CredentialAuthority.getRequestAuth` does not catch. `CodexPoolHalf` is the only
+provider permitted this.
+
+### The request's OAuth latch and the nets
+
+Configuration can change mid-request: a row removed by `account remove`, a `claudish logout codex`,
+a config file going unreadable. So the handler keeps one request-scoped `state.requireOAuth`, set
+once any accepted artifact has `arm: "oauth"` and never cleared, and every later sign (rotation,
+401 forced re-sign, a Responses retry leg's re-sign, which is also pinned to the turn's account)
+forwards it. Four independent checks enforce it:
+
+- **Composite dispatch.** For `openai-codex` with `requireOAuth`, the composite calls the primary
+  **before** asking availability, so a removed pool cannot select the key half. It rejects an
+  artifact that is not `oauth`, or names an account of another claudish provider (F12).
+- **The pool half.** With no pin and no configured rows under `requireOAuth`, it throws
+  `MeteredEscapeError` ("the account list disappeared during this request"); a pin is always
+  validated by acquisition, so a removed pinned account is an account error, not a fallback.
+- **The transport, before the arm is recorded.** `signRequest` throws `MeteredEscapeError` when
+  `requireOAuth || poolConfigured() || signed.account` holds and the artifact is not a Codex OAuth
+  artifact. Nothing is recorded, so a rejected artifact can never poison the billing record.
+  `recordSignedArm` is written here and nowhere else, from the accepted `auth.arm`.
+- **The handler, before fetch.** `attempt()` repeats the check with `state.requireOAuth ||
+  poolConfigured()`, independent of the transport. A post-record backstop that does fire returns
+  its terminal 400 verbatim: the metered record makes the probe answer metered, so
+  `FallbackHandler` does not continue.
+
+Parameter, network and overload re-issues reuse the already-accepted artifact; they never re-sign.
+
+### Routing keeps a failed Codex candidate
+
+`applyCandidateFilters` drops every `failed` readiness verdict, which for Codex would route a bare
+`gpt-*` straight to a metered hop when the account list is merely unreadable. The authority now
+attaches `failureReason: "accounts-list"` to a readiness failure caused by
+`AccountListUnavailableError` or `AccountListInvalidError` only, and `routing-rules.ts`
+(`isCodexAccountsFailure`) keeps that candidate at its original position, with its diagnostic,
+neither skipped nor reported as no-credential. Its availability stays unknown, with no discovery
+call, so cached not-served evidence cannot remove it either. The handler then answers the typed
+503 or 400. Other providers' failed credentials are filtered as before; no text is parsed.
+
+The proxy used to sign every API-key-named transport at construction. For Codex that leased once
+at startup and, with a cold failed list, threw outside the classifier as a proxy 500. Codex now asks
+non-leasing readiness at construction: confirmed absence keeps the no-credential refusal, a failed
+list reaches the handler, and signing happens per request.
+
+## The account list is read fail-closed
+
+When the design was written, both of the repo's existing accessors answered a read **failure** with
+**absence**. `loadConfig()` still does: it returns `{...DEFAULT_CONFIG}` on any read or parse error,
+leaving `subscriptionAccounts` undefined. `CodexOAuth.loadCredentials()` returned `null`, which
+`hasCredentials()` read as "no credentials". Either made the predicate false and billed a flat-rate
+user per token. Round 3 found this unanimously, after revision 2 had called the predicate one that
+"cannot fail" — true of the predicate, false of its two inputs. The V16b fix made `CodexOAuth`
+record the failure instead, but its answer was still not the registry's (no last-known-good list,
+no throw). Since 2a the registry is consulted before the facade, so the registry's answer is the
+one a request gets (the migration table above).
+
+`registry.ts` therefore calls neither. It parses both documents itself:
+
+| Outcome | Decided by | Answer |
+|---|---|---|
+| **present** | read, parsed and valid | the account list as written |
+| **absent** | `stat` gives `ENOENT` or `ENOTDIR`, and nothing else | a legitimately empty list |
+| **failed** | any other `stat` error; any read, parse or validation error | the last known-good list; with none, **throw**: `AccountListUnavailableError` (transient 503) for an I/O failure of either source and for a malformed legacy file; `AccountListInvalidError` (terminal 400) for malformed JSON or an invalid account block in `config.json` |
+
+```
+Could not read the <path> account list: <detail>. Refusing to treat an unreadable account list as an empty one.
+Invalid account list in <path>: <field>: <problem>. Repair the named config field.
+```
+
+The failure carries its source, actual path and type (`io` or `invalid`) as structured fields, never
+inferred from message words. A JSON syntax diagnostic says `invalid JSON` instead of echoing source
+bytes, which may hold a secret. Malformed `config.json` is terminal because repeating a 503 forever
+would hide a file only the user can repair; a malformed legacy file stays transient, the disclosed
+N6 exception.
+
+- **`existsSync` is not an absence test.** It answers `false` for a permission-denied parent, which
+  read an unreadable directory as "no accounts" (B1). The token stores follow the same rule, and so
+  does `CodexOAuth`'s own read of the legacy file since the V16b fix.
+- **The stamp is recorded only after the bytes were read.** A transient `EACCES` or `EMFILE` is
+  retried on the next answer instead of cached until the file changes. A parse or validation failure
+  *is* cached against `{mtimeMs, size, ino}`, being a pure function of the bytes.
+- **Validation rejects; it never drops or accepts.** After `SubscriptionAccountsSchema`: the id
+  pattern, unique ids, at most one Codex row on the legacy store (one refresh token, two gates) and
+  none on Claude, and only `switchAtByWindow` keys the usage layer can produce. A bad entry fails
+  the whole read and names the field. Dropping it silently changes who pays; accepting it silently
+  never applies.
+- **`snapshot(scope)` narrows which failure is fatal.** An unreadable legacy file fails Codex
+  answers closed and leaves Claude answers alone. `config.json` carries both, so its failure is
+  always fatal.
+- **The legacy account is synthesized in memory, only when no Codex account is configured and
+  `legacyCodexSuppressed` is not set**, and is never written into `config.json` by a read. That
+  covers the whole F10 migration base with zero user action. Once rows exist, or the marker is set,
+  the legacy file is ignored entirely: even an unreadable leftover cannot fail an independent pool.
+- **`subscriptionAccounts` is in `loadConfig`'s allowlist.** Without it the account list survives
+  until the first global save and is then dropped, and every request signs metered.
+
+## No metered fall-through when a subscription fails
+
+**Decision 10**, built for both populations. On the legacy path, fix A4 makes every `CodexOAuth`
+refresh failure throw `CodexOAuthRefreshError` (`terminal`, `upstreamStatus: 401`, one line naming
+`claudish login codex`), surfaced as an inline 400. On the pool, every failure is a typed accounts
+error from the table below, and none of them, nor any catch above them, returns an api-key
+artifact.
+
+User-visible consequence: someone whose ChatGPT login has expired **and** who has
+`OPENAI_CODEX_API_KEY` set used to be served silently on that metered key; they now get the error.
+A user with no OAuth login at all (no rows, and no file or one naming no refresh token) still signs
+with the key: the composite's api-key half returns an artifact rather than throwing.
+
+Within `openai-codex` there is no fall-through and no config flag to enable one: the request's own
+api-key half never signs after its OAuth arm failed. A **bare** `gpt-*` name is a routing chain of
+OTHER hops, and what happens there depends on the answer's verdict:
+
+- **Terminal credential failure** (`NeedsReauthError`, `NoUsableAccountError`,
+  `AccountListInvalidError`, a pre-record `MeteredEscapeError`): main's rule since `9ace3fe5`
+  (owner, 2026-10-21). The chain moves to its next hop, whatever that hop bills, and
+  `announceCredentialRejection` prints one stderr line per provider and status naming the next hop
+  and its billing, with the login hint. `FallbackHandler` asks `isSubscriptionProvider("openai-codex")`,
+  which the registered probe answers SUB for a configured pool, so these errors count as a
+  subscription's rejection. If no hop serves, the chain answers `all_providers_failed` with the
+  first rejection's message; a rejection that was the only failure returns its own 400. The rule it
+  replaced (v13) continued only to subscription candidates.
+- **Transient failure**: returned verbatim and retried on the same hop, even behind an earlier
+  failed candidate, with no cost warning.
+- **True pool exhaustion** (`AllAccountsExhaustedError`): decision 1, the only answer that may advance
+  onto a metered hop, with the `billed PER TOKEN` warning. An explicit `cx@` stops with the message.
+
+## The refresh gate never runs unlocked
+
+A refresh that proceeds unlocked is two exchanges against a server that rotates refresh tokens: the
+second presenter gets `invalid_grant` and the account is logged out. The 1Password handshake lock
+wants the opposite — "an OPTIMISATION OF WHEN, not a gate on WHETHER" — and runs its work unlocked on
+timeout or any filesystem error. Round 1 found, unanimously, that the first design had extracted
+exactly that lock for token refresh.
+
+`file-lock.ts` therefore makes the failure semantics the **caller's** choice,
+`withFileLock(path, {onUnavailable: "fail" | "proceed"}, work)`, with **no default**: choosing it
+silently is the mistake copying the nearest precedent produces. `refresh-lock.ts` has no proceed
+mode at all.
+
+| Property | Refresh gate | `state.lock` |
+|---|---|---|
+| Path | `accounts/locks/<provider>/<id>.lock` | `accounts/state.lock` |
+| Create | `openSync(path, "wx")`, mode 0600 | same |
+| Acquire timeout | **20 s**, polled at 50 ms + jitter | **2 s**, polled at 25 ms + jitter |
+| Heartbeat | every **10 s**, for the **whole** hold | none; the hold is milliseconds |
+| Stale TTL | **60 s**, six missed heartbeats | **10 s** |
+| Dead holder | same host and `kill(pid, 0)` fails: stolen at once | same |
+| Foreign host | never stolen, never waited out: `foreign-host` | same |
+| On failure | `RefreshUnavailableError`, never unlocked | the caller drops the update, silently or loudly |
+
+They fail differently on purpose. Failing a turn because an **exhaustion mark** could not be written
+is worse than the mark arriving late; failing a **refresh** because the gate was held is better than
+two refreshes.
+
+When the gate cannot be taken, the waiter re-reads the store **uncached**. If the `generation`
+advanced and the token is fresh, the holder persisted while it waited, and that is success.
+Otherwise it raises `RefreshUnavailableError`: transient, with no quota wording, so it can never
+pass for exhaustion. Beyond that:
+
+- **An unwritable lock directory disables refresh** ("refresh disabled"). There is no bypass env
+  var; `CLAUDISH_NO_OP_HANDSHAKE_LOCK` belongs to 1Password.
+- **Shared HOME across hosts is unsupported.** A remote holder's liveness is unobservable, so any TTL
+  is a guess, and claiming exactly-once refresh across hosts would not be true.
+- **`state.lock` is always innermost** and never held across a gate acquisition, so there is no
+  deadlock to bound.
+- **No lock is held across a browser.** `CodexOAuth.login()` takes no gate: it presents an
+  authorization code, not the refresh token, and a completed browser login must never be discarded
+  because a lock was busy (its config-lock check after the browser waits up to 15 s rather than
+  failing). `claudish account login codex <label>` runs PKCE with no lock, then holds the account's
+  gate only for the final uncached, generation-aware token write and target revalidation.
+- **The refresh side re-reads before it persists**, on both paths. `TokenManager` re-reads
+  uncached after the exchange: newer material (generation or fingerprint moved) wins and is not
+  overwritten; a store that vanished is never recreated (`NeedsReauthError`). Its account check is
+  phased: **before the exchange** it refuses a removed, rebound or disabled row and propagates a
+  typed list error; **after the exchange** it refuses only a confirmed removal or rebinding and
+  ignores a list read failure, because the vendor has already rotated and refusing would discard the
+  new grant and strand the journal.
+
+The 1Password lock is untouched (decision 6). It keeps its own ~60 lines of `O_EXCL` code because it
+also carries `lastHandshake`, `isAbandoned`, `peerHoldsHandshakeLock` and its bypass variable, none
+of which belong to a renewable lease.
+
+## Identity over properties
+
+Several review findings had one shape: a check compared a **property** two different things can
+share, where it needed an **identity** only one thing has.
+
+| Where | The property that lied | The identity compared now |
+|---|---|---|
+| Lock release and fence | `pid`: two hosts sharing a HOME can hold the same pid, and a paused holder can resume after a steal | a 16-byte **nonce** per acquisition; release and `holdsLock()` compare `{host, pid, nonce}` |
+| Forced refresh after a 401 (B6) | `expiresAt`: a revoked bearer looks fresh, so the gate holder handed the dead token back | `sha256(rejectedAccessToken)[0:16]`: under the gate the stored token is exchanged **if it is still that one**, whatever its expiry |
+| Ambiguous write (B7) | `generation` and fingerprint: a journal write changes neither, so every ambiguous journal write resolved as committed | a random **`writeId`** minted per persist; committed iff it is on disk after an uncached re-read |
+| Lock steal (B4) | "the holder I read": two waiters judge the same stale holder, both `rm`, and the second deletes the first's new lock | **rename** to a unique tombstone, then compare nonce, pid, host **and** `at`; a mismatch is restored with `link()`, which refuses to overwrite a third party. Release does the same |
+| Heartbeat (B5) | the **path**: `holdsLock()` then `openSync(path, "r+")` could rewrite a successor's file | one positional write through the **descriptor** the acquire opened, padded to 256 bytes, no truncate; a late heartbeat lands on the orphaned inode |
+| In-process refresh slot (A1) | "a flight is running": an unconditional `finally` nulled a newer flight | cleared only if it still holds that same promise |
+| Absence (B1) | `existsSync() === false` | `stat` returning `ENOENT`/`ENOTDIR` |
+
+B5 also fixed the empty lock file, which nobody could ever take. A failed holder write now unlinks
+the file it created (checked by inode), and an unreadable record becomes stealable once the file's
+own mtime is older than the stale TTL. A forced request single-flights as
+`provider:id#forced:<fp>`, so it never joins a refresh whose result may be the rejected token.
+
+**Residual.** `CodexOAuth`'s forced refresh is not given the rejected bearer; it approximates it by
+"the token this process held when the refresh was requested". The worst case is one extra
+*sequential* exchange, never a reuse. `SignRequestContext` now carries `rejected?: RequestAuth`, and
+`CodexPoolHalf` passes its bearer to the pool as `rejectedAccessToken` (in memory only, never
+logged); the delegated legacy facade still ignores it.
+
+**Still open by construction: the T-C4 window.** The fence is a read followed by a write, so a
+same-host holder suspended past 60 s *between* them can be replaced and still write. The fault
+`steal-lock-after-fence` opens exactly that window, the write proceeds, and a post-write check logs
+"(T-C4 window)". T-C4 has not run. If it shows two writers, the persist must consume the nonce
+atomically: rename onto a path that embeds it, so the loser's rename targets a name nobody reads.
+
+## Rotation persistence and `invalid_grant`
+
+Every stored record carries `generation` (bumped on every persist) and
+`fingerprint = sha256(refreshToken)[0:16]`. The refresh, entirely under the gate:
+
+```
+1. single-flight in-process, then acquire the gate (onUnavailable: "fail")
+2. re-read UNCACHED — the Keychain's 3 s value memo would return the pre-rotation token
+     fresh (> 120 s left) and not the rejected token → return it, no exchange
+     an open journal from another actor → recover it first
+3. write the journal {state: "refreshing", from: fingerprint, at, pid, host, nonce} DURABLY
+4. exchange, bounded at 10 s (half the gate's acquire timeout)
+5. fence, then persist {tokens, generation + 1, new fingerprint, journal: null}
+6. only now return the new access token
+```
+
+- **Persist before return.** A token returned before its persist resolves is one no other process
+  has. A final persist that throws raises `PersistOutcomeUnknownError`; the token is neither cached
+  nor used.
+- **An ambiguous write is resolved by reading, never by writing.** On a timed-out `security` call or
+  an `EIO`, re-read uncached and look for the `writeId`. Present: committed. Absent: flip the journal
+  to `unknown` and raise `PersistOutcomeUnknownError`. Revision 1 wrote the pre-write record back,
+  which turns "committed, acknowledgement lost" into definite loss of the new refresh token.
+- **No usable answer from the exchange is "unknown", not "failed".** A timeout, a dropped connection
+  or an unreadable 2xx body raises `ExchangeOutcomeUnknownError`, because the vendor may have
+  rotated. Bounding the exchange (B9) also fixed a stall: the heartbeat kept an unbounded `fetch`'s
+  holder looking alive while every waiter timed out.
+- **Journal recovery.** The next holder to find an open journal checks the fingerprint. Moved: the
+  write landed; clear the journal. Unmoved: exchange the on-disk token once. `invalid_grant` there
+  means the write landed and was lost, and the account needs a login with the reason **"a token
+  rotation was interrupted"**.
+- **A connection failure is not a rejection.** A refused, reset or timed-out exchange (the 10 s
+  bound is tagged as claudish's own timeout) carries its structural cause and the actual token
+  endpoint, leaves the journal unknown, and propagates as a connection error that the handler holds
+  in the recovery ladder. The pool never leases around it: an outage would otherwise fail over
+  every account and end as a false "needs login". An unreadable **2xx** body is the opposite case:
+  the token may have been consumed, so it raises `PersistOutcomeUnknownError` with no recoverable
+  cause and is recovered from the journal on the next request, never re-exchanged at once.
+- **Token-host statuses survive.** A 429/5xx becomes a transient `RefreshUnavailableError` carrying
+  that status, through the manager, each account's blocker and the aggregate. A 400/401/403 other
+  than `invalid_grant` (`refresh_token_expired`, `refresh_token_reused`) is
+  `RefreshTokenRejectedError`, which takes the same gate-holder path as `invalid_grant` and marks
+  `needsReauth`, so the pool records the account and tries the next (review fix F1; before it the
+  pool re-exchanged a dead token forever). Any other non-2xx stays terminal.
+- **A rejected exchange closes its journal.** `invalid_grant` is an answer: nothing was issued.
+  The gate holder closes its own journal before it writes `needsReauth`, so the next retry is a
+  plain exchange, not a recovery. Left open, a revoked token was reported as "a token rotation
+  was interrupted" from its second attempt on. The clear keeps the fingerprint and generation,
+  and is skipped if an uncached re-read no longer shows this holder's journal on the presented
+  material. Every other failure keeps the journal: no usable answer, a crash, an unresolved
+  persist, a lost gate, and any other vendor error (a 5xx may follow a committed rotation). A
+  retry of the same material keeps its first reason, because only the first attempt could tell
+  the two causes apart.
+
+**Contested decision 1.** In round 1, one reviewer held that "re-read under the lock" sufficed; two
+held that the re-read could manufacture a false permanent lockout and proposed polling with backoff
+before quarantining. The design accepted the objection and rejected both remedies: the defect was a
+sticky quarantine writable by a process that might not hold the lock. Under the gate, claudish
+processes cannot race each other, so three causes of `invalid_grant` remain:
+
+1. **Out-of-band rotation** by Claude Code, under its own lock, in its own item. The detector reads
+   **every** store holding the account (`TokenManager`'s `secondaryStore`, wired in Phase 4), adopts
+   moved material, and retries **once**. Re-reading claudish's record alone would call a healthy
+   shared account revoked. SUPERSEDED for the account in Claude Code's item by the switch rule
+   (2026-10-29): claudish never refreshes that account, so its detector never meets this case
+   there. The `secondaryStore` read applies only if a later Claude Code build stops honouring the
+   locks (the D1/D2 table's fallback branch).
+2. **An interrupted predecessor**: the journal recovery above.
+3. **A genuinely revoked token**, the only cause that sets `needsReauth`.
+
+`quarantine` was replaced by `needsReauth: {since, attempts, lastReason, failedGeneration,
+failedFingerprint}` (decision 5). Only the gate holder writes it, after the fence still names it; a
+holder that lost the gate mid-exchange has proven nothing and raises `RefreshUnavailableError` (B10
+corrected code that threw `NeedsReauthError`).
+
+It self-heals against the recorded baseline, which names the material whose exchange failed:
+
+- **The material moved: clear at once.** `reauthMaterialMoved` (`policy.ts`) is true when the stored
+  fingerprint differs from `failedFingerprint`, because the user logged in again or another process
+  wrote new material. It is also true when the stored generation is past `failedGeneration`, which
+  only a successful exchange or a login produces. The check runs on every read that decides a token
+  (`TokenManager.resolve`, the gate-unavailable re-read, the under-gate re-read), and before
+  selection in `AccountPool.acquire` (`TokenManager.healNeedsReauth`). The second site is needed
+  because a marked account is not leased until its retry is due. A check that ran only on a lease
+  would leave a re-logged-in account blocked for up to 30 min. The clear costs no exchange and waits
+  for no interval.
+- **The same material: the retry schedule.** The account comes back after 1 min, then 5 min, then
+  every 30 min. A revoked token costs a trickle of failed exchanges, and a heal needs a new write to
+  the store, so the two cannot loop. A false lockout of a working paid account costs more than the
+  trickle. A due retry is an exchange whatever the access token's expiry, because that bearer may
+  be the one a 401 rejected; the open journal used to force this by accident.
+- **A successful rotation** still clears only a failure recorded below its new generation.
+
+The self-heal clear carries the baseline it judged stale (`failedAgainst`). Under `state.lock` it
+removes a mark only if that mark names the same fingerprint and generation, so a failure another
+process records against the new material survives, even when the clear rides on a later write. The
+schedule counts failures of one material: a failure of new material starts at attempt 1 rather than
+inheriting a stale mark's count. The selection-time read is a cached store read, made only for
+marked, enabled accounts. It never exchanges, and an unreadable store heals nothing.
+
+## Shared state: `state.json`
+
+Every write is a **field-wise read-modify-write under `state.lock`**, re-reading inside the lock.
+The defect is not the rename — a correct locked merge also renames — it is persisting a snapshot
+taken before the lock, under which one process's usage write erases another's exhaustion mark.
+
+| Field | Merge rule |
+|---|---|
+| `usage` | newest `observedAt` wins |
+| `exhaustedUntil` | `max(existing, incoming)`; a clear removes only a mark it had seen; on a tie a reported reset beats an estimate |
+| `needsReauth` | set by the gate holder only; a generation-bounded clear keeps a newer failure; a self-heal clear removes only a mark about the material it saw replaced |
+| `owner`, `handoff` | compare-and-set on the previous value |
+| `active` | compare-and-set with reload-and-reapply; a reapplied target must still be in the account list, or the current value stands (and is cleared if it too was removed) |
+
+- **The pending overlay (B3).** A mark is recorded in memory, then written, and only a write that
+  landed clears it. A mark dropped for lock contention rides on the next successful write of any
+  field; the old rule discarded it after any unrelated write.
+- **Revalidated every call.** `read()` re-stats the file, so a `serve` process sees another's
+  exhaustion within one answer.
+- **A file that could not be read is never overwritten (B2).** Unreadable: write nothing and keep the
+  mark pending. Corrupt: under the lock only, move it to `state.json.corrupt-<ts>`, then start fresh.
+  A lock-free reader that quarantined could move aside a valid document a writer had put in place.
+- **Loud and silent drops.** A sub-threshold usage update that cannot be written is dropped silently.
+  A selection-relevant one (a crossing, exhaustion, `needsReauth`, `active`, `owner`) is logged and
+  shown by `account status` as `state not persisted — <field> for <account>` until a later write
+  carries it.
+- **A write failure never fails a request** (review fix F2). A throw from taking `state.lock` or from
+  the atomic write becomes the outcome `write-failed`: the pending overlay keeps the mark, the drop is
+  recorded, and `setActive`, `setNeedsReauth`, `markExhausted` and `clearNeedsReauth` resolve
+  `false`. A full disk therefore cannot turn a good lease into an unclassified error.
+- **Coalescing.** Sub-threshold usage writes at most once per 5 s per account, flushed on
+  `beforeExit` once per pending version. Selection-relevant changes persist **immediately**, which
+  bounds overshoot to the requests in flight at a crossing.
+
+## Selection policy
+
+`policy.ts` is pure, with no clock of its own. The order: a **pin** (the 401 re-sign of one account)
+wins; then the **active** account while under threshold; then the **first account under threshold
+in config order** — the user's stated preference, stable across processes; then the **lowest
+pressure**, where pressure is the **maximum** used fraction over live windows; then none, with a
+blocker per account.
+
+- **`unknown` is eligible** (decision 11). claudish never spends quota to measure quota, so an idle
+  account's usage is genuinely unknown; skipping it would make "not asked" mean "full".
+- **A stale reading never decays into `unknown`.** An account seen at 92 % stays at 92 % until its
+  window's recorded reset passes. Revision 1 decayed readings older than 15 min and would have
+  re-selected a spent account minutes after it rejected a request.
+- **`unknown-failed` is eligible but ranked last**, never ahead of a known-good account.
+- **An optional `rank` comes from the allowance model** when `subscriptionAccounts[provider].strategy`
+  is `ebr` or `lookahead` and no pin applies: it reorders the eligible accounts after every rule
+  above, and declines (this order decides) whenever its plan is stale or anything fails. The default
+  `sticky` passes no `rank`. Strategies, the tournament gate and its first result: `allowance.md`.
+
+`AccountPool.acquire()` adds lease failover (B8). When the chosen account's token cannot be had, the
+account is excluded, deprioritised for 60 s, and the next one tried, in one bounded pass. A
+**pinned** account's failure propagates: signing a different account would make the 401 retry a
+different experiment. Stickiness goes through `state.setActive()`, so a process starting a second
+later makes the same choice.
+
+- **Pins are exact.** A pin naming a missing, removed, disabled, excluded or failed account is an
+  error, never a quiet fallback to another account, both in the pure policy and in acquisition.
+- **A removal or disable during a lease tries the next account** (F7):
+  `AccountChangedDuringLeaseError`, a `NoUsableAccountError` subclass, becomes an `unavailable`
+  blocker for an unpinned lease; a pinned one still fails.
+- **Lease failover is not outage failover.** A connection failure reaching the token host propagates
+  unchanged instead of trying the next account.
+- **Selection evidence is request-scoped.** `AccountSelectionContext` holds this request's failed
+  leases and ranking evidence. A fresh context copies earlier requests' failures for ranking only,
+  never as blockers, so a prior lease failure ranks an account last but does not exclude it.
+- **The chatgpt account id comes from the leased token record**, never from config identity or the
+  singleton.
+
+### How switching works on a request
+
+1. **Before the request**, `acquire` runs the order above. Usage from earlier responses' headers is
+   in `state.json`, so an active account past its threshold (default 0.90 overall, or a
+   `switchAtByWindow` value per slot) is passed over for the first account under threshold in
+   config order. That is the threshold switch; it costs no extra request.
+2. **On an HTTP 429 or 403 whose body or headers say the subscription window is spent**, for an
+   artifact with `arm: "oauth"` and a Codex `account`, the handler marks that account exhausted,
+   excludes it, and signs exactly **one** replacement with the same `requireOAuth` and selection
+   context. It re-sends the identical serialized bytes through the same `attempt()` helper, so
+   queueing, a fresh request init and the account's own headers all apply. A per-minute 429, a
+   non-quota 403, a model or region refusal, and any API-key response do not rotate.
+3. **One rotation per request.** The budget is spent before the replacement signs. A lease failure
+   during that one acquisition may try around (A quota, B lease failure, C becomes the second
+   contacted account), but once a replacement has received inference no third account is selected.
+   Independent 401, parameter and network retries may re-contact an account already selected; they
+   never authorize another.
+4. **If the replacement also hits quota**, it is marked too, and the handler asks the read-only
+   `errorIfNoEligible()`. That query reads current rows, settings, state and this request's
+   evidence; it never leases, reads a token store, heals, refreshes or changes `active`. Its answer
+   decides between the two responses below.
+
+| After the second quota | Answer | Chain |
+|---|---|---|
+| no account is policy-eligible | the exact error `acquire` would raise, through the same `noEligibleError` builder: usually `AllAccountsExhaustedError`, 400, `upstream_status: 429`, no verdict header, the pinned message | decision 1: a bare chain may advance to metered with the cost warning; `cx@` stops |
+| another account is still eligible, `unknown` usage included | 429 `rate_limit_error`, `upstream_status: 429`, `x-claudish-auth-verdict: transient`, `Codex account retry deferred; retry this request.` | returned verbatim; the next request may select that account. No quota wording, no all-accounts claim, no cost warning |
+
+The second row is **R4** (owner question 5), a deliberate departure from the earlier rule that the
+second account's vendor quota error goes back unchanged. That wording would advance a bare chain onto
+metered billing while subscription capacity remained. Exhaustion dominates a mixed pool only when
+selection really has nothing eligible. The pinned message's `(n of total)` counts every configured
+row, disabled ones included, so A and B exhausted with C disabled renders `(3 of 3)` with C's
+disabled line.
+
+**Reset time**, in order: the body's `resets_at` (absolute wins) or `resets_in_seconds`, via
+`resolveUsageLimitResetAt`; else the earliest future reset of a 100 %-used Codex header window; else
+an **estimate** of 15 min × 2^(consecutive estimates), capped at 5 h. Past or invalid values are not
+resets, and `Retry-After` is not subscription-window evidence. Only the last case is marked
+`estimated`. Its counter is persisted per account under `state.lock`, deduplicated per request and
+account, survives a restart, and resets on an authoritative reset or on successful usage observed
+after the reset. On a tie a reported reset beats an estimate.
+
+**Outcomes** go through `reportAccountOutcome` (`outcomes.ts`) → `AccountPool.report`, one fold per
+`{requestId, account}`: a later quota upgrades an earlier ok or usage, newer usage wins, and the
+observation is staged in the state overlay synchronously **before** anything is awaited, so even an
+unexpected report exception cannot lose an exhaustion mark. Outcome writes take no refresh gate. A
+report or log failure is logged and never changes the response or the route. `capturePlanUsage`
+stays synchronous at every call site and, for a pooled account, only publishes: an inactive A's
+reading is persisted by the fold without replacing active B's displayed usage. A 401 response never
+writes `needsReauth`; only the refresh gate holder proves that. Stats describe the final request,
+so A-quota then B-success is one success with no red line on the shared terminal.
+
+`CLAUDISH_ACCOUNTS_LOG=<path>` appends one JSONL line per observation, mode 0600, opened without
+following a symlink: request id, provider, account id and label, the selection reason
+(`initial-selection`, `forced-sign`, `quota-switch`), outcome, reset and whether it is estimated,
+and the signed arm. Never request content, tokens, PKCE data or an upstream body. The label is the
+one exception that can hold an email: a default label is the login's email (decision 12), so the
+email reaches this log, the `[accounts]` log lines, the usage ledger, `account list` and
+`account forecast` output (and their `--json`), stderr hints, and the client-facing error body built
+from `ref.label` (`errors.ts:160-167`, `pool.ts:636`). That body does not truncate the label;
+`padEnd` widens. The `identity` object is still never logged. Stats and OTLP carry no label, and a
+label must not be added to `StatsEvent`. A write failure is ignored.
+
+**Windows are positions, not durations.** On a Codex Pro account the PRIMARY slot measured as the
+seven-day window, with the secondary reporting zero (`auth/quota/sources/codex.ts`).
+`scrapeCodexHeaders` overwrites the slot id with the formatted duration, so `usage/codex.ts`
+recovers it from the header pair, and `switchAtByWindow` keys on the slot:
+
+```
+{slot: "primary", displayId: "7d", lengthMinutes: 10080, usedFraction: 0.41}
+```
+
+Anthropic's windows are **discovered** from `anthropic-ratelimit-unified-<name>-utilization` header
+names, never pinned; each length is parsed from its name, because `"30d" < "5h"` lexically.
+
+## The error surface, as built
+
+`V` is `x-claudish-auth-verdict`; "upstream" is the `upstream_status` `wrapAnthropicError` writes
+into the body. Each error carries explicit `terminal` and `transient` flags. The three transient
+classes take their status as a constructor argument that **defaults to 503** and accepts only 429
+or a 5xx (`RangeError` otherwise), so a credential 401 can never be dressed as transient.
+
+| Error or response | Flags, upstream | Client sees | Routing chain |
+|---|---|---|---|
+| `AllAccountsExhaustedError` | terminal, 429, real blockers | 400 `invalid_request_error`, upstream 429, pinned message, **no V header** (`respondAccountsQuotaFailure`) | bare name may advance, metered included, with `billed PER TOKEN`; `cx@` stops |
+| `NeedsReauthError` | terminal, 401, blockers | 400, upstream 401, V=terminal | bare name advances to the next hop, metered included, announced on stderr; `cx@` stops |
+| `NoUsableAccountError` (incl. `AccountChangedDuringLeaseError`: removed, disabled or re-identified) | terminal, 401, blockers | 400, upstream 401, V=terminal | same |
+| `AccountListInvalidError` | terminal, 400, path and field | 400, upstream 400, V=terminal | same; a repair instruction, not repeated 503s |
+| `MeteredEscapeError`, pre-record | terminal, no upstream | 400, V=terminal; nothing recorded or sent | same; prior billing evidence unchanged |
+| `MeteredEscapeError`, post-record backstop | same | 400 returned verbatim | none: the metered record makes the probe answer metered |
+| `RefreshUnavailableError` (incl. `AccountStoreMovedDuringLeaseError`: a store-only rebind, the legacy move) | transient, 503 default or the token host's 429/5xx | 503, or 429 for upstream 429; upstream kept; V=transient | returned verbatim, same-hop retry, no cost warning |
+| `AccountListUnavailableError` | transient, 503, source/path/type | 503, upstream 503, V=transient | same; never read as absence, never drops the candidate |
+| `PersistOutcomeUnknownError` | transient, 503 | 503, upstream 503, V=transient | same; the next request recovers from the journal |
+| capacity remaining after the one rotation (a response, not an error) | — | 429 `rate_limit_error`, upstream 429, V=transient, `Codex account retry deferred; retry this request.` | same-hop retry |
+
+**Order at every catch** (initial sign, rotation sign, forced re-sign, header and attempt failures,
+response dispatch, recovery's later-failure catch): connection classification and recovery first;
+then the quota seam, which recognizes **only** `AllAccountsExhaustedError`; then
+`answerAuthFailure`, which answers typed terminal and transient errors **without consulting the
+billing probe** and before any generic "Auth/health check failed" log, fictional HTTP-401 telemetry
+or "Check API key" advice; then the existing unknown-error behaviour. No accounts exception reaches
+`FallbackHandler`'s status-0 catch. A response-side accounts query that throws something
+unclassified becomes `RefreshUnavailableError` (503). An unclassified throw on a pooled stream-head
+re-issue answers the existing overload 503 (F5).
+
+The seam exists because `respondAuthFailure` puts a verdict on both terminal and transient answers,
+and neither represents advancing quota exhaustion.
+
+**Decision 7, history:** "`NeedsReauthError` carries 401 so the chain advances" predates the
+verdict header. v13 made a terminal verdict continue only to subscription candidates; `9ace3fe5`
+(owner, 2026-10-21) made it advance to the next hop, metered included, announced (`routing.md`, "A
+subscription's rejected credential moves the chain to its next hop"). The design's `mapAccountsError()`,
+which mapped every taxonomy error to an advancing 400, was never built; `error-surface.ts` holds
+only the narrow quota seam.
+
+**The exhaustion wording is pinned** (decision 1). `hasQuotaExhaustionWording` decides both whether
+a bare chain advances and whether the "billed PER TOKEN" warning fires. The template leads with
+`usage limit`, which also survives the balance-phrase veto:
+
+```
+Codex subscription usage limit reached on every account (3 of 3).
+  work     — resets 14:32 (in 1h 12m)
+  personal — resets 18:05 (in 4h 45m)
+  spare    — needs login: run `claudish account login codex spare`
+```
+
+The non-quota message (`No Codex subscription account can serve this request (0 of 2 usable).`)
+must never carry quota wording, or a disabled pool would advance a chain as if its plan were spent.
+
+Deliberately absent: `NoPooledCredentialError` (a named error that cannot be thrown implies a third
+outcome; "no pool" is `isAvailable() === false`) and `RetryBudgetSpentError` (L2). Retry budgets
+are request-local state on the handler, never exceptions.
+
+## The request flows
+
+**Codex (built, Phase 2a).** The swap point is the top of `ComposedHandler`'s bounded dispatch
+loop, immediately around `this.capturePlanUsage(response, auth?.account)` and before the first
+`if (!response.ok)`. The terminal-remap block further down was rejected: it runs after
+`logStderr`, `reportError` and `recordStats({success: false})`, so a successful retry would print a
+red line on the file descriptor shared with Claude Code's TUI and record a false failure.
+
+One request-scoped state object is created before the first sign and owns every budget: the OAuth
+latch, the one quota rotation and its exclusions, the selection context, the one successful forced
+re-sign (shared by every account on the request), the one parameter rewrite and the current
+payload version's cached bytes, the replacement-artifact latch, the derived connection deadline,
+the recovery tally and overload progress. Every response, from any retry or recovery, re-enters the
+same dispatcher with the same object; no budget is re-created. Every send, primary or re-issue, goes
+through one `attempt()` helper, which binds the current artifact's endpoint and headers, mints a
+fresh request init, and goes through the transport's queue. Only the primary and pooled attempts are
+deadline-clamped (F10), and the primary reuses the headers already fetched for its artifact (F9).
+
+How the flow composes: A quota → B 401 force-refreshes **B**, pinned, once. A 401 → refreshed A quota
+→ B may rotate but cannot force-refresh again. A replacement whose fetch drops is recovered with the
+same artifact, never re-acquired. A parameter rewrite followed by quota sends the corrected bytes to
+B, and a pooled quota response after a rewrite replaces the old complaint so its reset survives.
+
+**The in-stream boundary.** Phase 0 built the sniffer half. The quota test runs **before**
+`isRetryableStreamError`: classified as retryable, a spent window burns 3 s + 15 s + 30 s on the same
+account and then 503s. The verdict cancels the reader, carries no response, and is unreachable after
+a content delta. `extendedQuotaWatch` exists and every call passes `false`: **false mode classifies
+and marks, and never rotates**, and is otherwise today's fail-open module.
+
+Phase 2a, built: a pooled stream quota verdict **always** marks the account and its reset, even a
+lone account or one reached after an HTTP rotation, then asks the same read-only
+`errorIfNoEligible()` as HTTP. No eligible account answers the real pool error; remaining capacity
+answers the transient 429. A pooled non-ok HTTP response from an overload re-issue returns to the
+common dispatcher with the same budgets instead of collapsing to an overload 503. Non-pooled and
+synthesized-legacy streams are unchanged. This is wiring evidence on scripted frames, not D8.
+
+Phase 2b, not built: extended watch, only for pooled OAuth with an account, another eligible
+account and an unused rotation budget. It replaces the wall clock with a **12 s idle timeout**,
+since a stream still sending metadata is not stalled. The handler drives the swap, the replacement
+stream runs in false mode, and after a content or tool boundary the stream replays once and never
+rotates. D8 defines that boundary, so D8 gates Phase 2b. The design's claim that Codex's
+"Try again after …" matches the retryable regex is wrong (L1); the ordering stands, and the
+sentence is provisional until D8.
+
+**Usage reading.** `codexQuotaAdapter` has `scrape` and `fetchExplicit` and no poll. Its
+`fetchExplicit` checks `registry.isSynthesizedLegacyOnly()` **before** reading the singleton
+credential, so an explicit pool (even of one row), a suppressed legacy login or an unreadable list
+never probes with the legacy token. Nothing replaces it today: idle Codex accounts read `unknown`
+(decision 11). D7 measured positive on 2026-10-29, so that choice reopens. The window-slot constants live in the dependency leaf
+`auth/quota/codex-window-slots.ts`, which breaks the registry ↔ quota-source import cycle.
+
+**Claude (Phases 3–4).** The native pool stays **outside** `CredentialAuthority`: `NativeHandler`
+calls `getAccountPool()` directly, so `native-anthropic`'s credential filter and `nativeRouteFor()`
+never change. It swaps the inbound `authorization` for the pool's bearer and, on a 429 with
+`unified-status: rejected`, marks the account and re-sends the body once; a per-minute 429 passes
+through, and there is no native in-stream branch. A pool-only launch (mode C, a placeholder token
+and a `forceLoginMethod: "console"` overlay) hard-fails under managed settings; the fallback is
+keeping the existing login (mode A) via `account import claude`.
+
+**Contested decision 2.** Round 1 split between "move, never copy" (two refreshers destroy each
+other under rotation) and "move is a CRITICAL defect" (deleting claudish's copy kills a handed-off
+account an hour later). Both conflated who **holds** the material with who may **refresh** it:
+
+> The token material is shared between the two stores. Exactly one *refresher* is named. claudish
+> never loses the ability to refresh; it loses the *permission* to refresh unilaterally.
+
+SUPERSEDED for the account in Claude Code's item by the switch rule below (2026-10-29). Under that
+rule Claude Code is that account's only refresher, and claudish never refreshes it. The
+named-refresher design and the table below apply only if a later Claude Code build stops
+honouring the locks (the D1/D2 table's fallback branch).
+
+| D1: rotation? | D2: lock interoperable? | `import claude` | `account use` | Login rule |
+|---|---|---|---|---|
+| no | irrelevant | plain copy; `owner` advisory | ships | the first Claude account is the imported login |
+| yes | yes | shared material, one named refresher, set before the account is selectable | ships | the same |
+| yes | no | does not ship | does not ship; prints the manual re-login instruction | inverted: the pool is disjoint from Claude Code's login, and a startup line says so |
+
+**The switch rule** (Jack, 2026-10-29). On every `account use` switch claudish reads Claude Code's
+current tokens, refresh token included, back into the account being switched away from. Then it
+writes the next account. It holds `.oauth_refresh.lock` with the legacy `<realpath>.lock`, and
+`.storage-write.lock`, across the whole read-save-write. When it writes the next account it still
+merges `otherKeys` (`{...otherKeys, claudeAiOauth: next}`), because the Keychain write is a
+whole-item upsert that drops unlisted keys (D4). Claude Code is the only refresher of the account
+in its item; claudish never refreshes it. D1 and D3 decide nothing under two conditions: D2 is
+positive for both locks (measured, below), and Claude Code refreshes that account exclusively. Then
+no refresh can run inside the switch.
+
+The budget is measured on 2.1.312 ([report](../reports/claude-oauth-facts-2026-10-29.md) D2a,
+D2b). Claude Code waits ≈ 7.9 s on the refresh lock and then sends with the token it holds. It
+waits 7.5 s on `.storage-write.lock` and then skips its write. The switch must therefore finish
+well inside 7.5 s. A running session adopts the changed item at its next request once its 30 s
+item cache has expired; a 401 or the near-expiry check re-reads at once (D5). An idle session
+adopts nothing until it sends a request. Until a session adopts the item, its requests still sign
+with the old account.
+
+The D1/D2 table above is now the fallback branch. It applies only if a later Claude Code build
+stops honouring these locks; then D1 and D3 need a real login again.
+
+The dual-store refresh is SUPERSEDED for the account in Claude Code's item by the switch rule
+(2026-10-29). It applies only on the fallback branch. There it takes the claudish gate, then
+`.oauth_refresh.lock`; reads both stores uncached (higher generation wins; on a tie, Claude Code's
+item, which can rotate without telling us); journals `dual-refreshing`; and writes claudish, then
+`{...otherKeys, claudeAiOauth: new}`. Every routine rotation on that branch must merge first (D4).
+
+The handoff holds **no lock across a human**: any prompt comes before the switch takes its locks.
+Revision 1 held three locks across a network call and a prompt, and its read-back would have
+verified a stale token and passed. Under the switch rule the read of Claude Code's item happens
+inside the locks, so the tokens saved are the current ones.
+
+A mid-conversation switch loses the prompt cache, and Files API and container ids belong to one
+account. That breakage is accepted; stickiness and a startup line naming the signing account are
+the mitigations.
+
+## Where tokens live
+
+| Store | Where | When |
+|---|---|---|
+| `keychain` | service `claudish-accounts`, account `<provider>:<id>`, one JSON blob | macOS default |
+| `file` | `accounts/tokens/<provider>/<id>.json`, 0600 in 0700, symlinks refused | Linux/WSL, tests |
+| `legacy-codex-file` | `~/.claudish/codex-oauth.json`, original shape plus `claudish_generation`, `claudish_journal`, `claudish_write_id` | migration INPUT on a Keychain platform with the default config: the move copies it into `keychain` and deletes it (MTL-372). The legacy login's store where there is no Keychain, and under an alternate config |
+
+- **Reads throw on failure and return `null` only for a confirmed absence** (Keychain exit 44, or
+  `ENOENT`). That rule separates "the keychain is locked" from "no subscription". Refresh-path
+  reads also pass `uncached`, bypassing the 3 s value memo.
+- **A separate service, one blob per account.** A token set is one unit (the `claudish` service
+  stores one item per env var because env vars resolve independently), and a separate service means
+  `hydrateKeychainIntoEnv` can never copy a refresh token into a child's environment.
+- **A Keychain write that timed out is ambiguous, not failed** (`killed by`, `timed out`,
+  `ETIMEDOUT`, `EIO`): the engine writes and reads back, so a killed call may have committed.
+- **`CLAUDISH_DISABLE_KEYCHAIN=1` is checked inside `KeychainTokenStore`**, at call time; a store
+  calling the engine directly would otherwise walk past the one other place it is read.
+  `CLAUDISH_KEYCHAIN_FILE` never selects the file store — it is the throwaway-keychain target for
+  live tests. `CLAUDISH_ACCOUNT_STORE=file` is honoured only with `CLAUDISH_TEST_UPSTREAM` or on a
+  platform with no Keychain, so an env var alone cannot move a macOS user's tokens into plaintext.
+- **The legacy file keeps its shape.** Both writers read-merge-write and keep keys they do not own,
+  and `CodexOAuth.saveCredentials` bumps `claudish_generation`. Before fix A5 it wrote four keys and
+  erased the pool's fields, hiding a rotation from any waiter.
+- **The move copies; it never rotates.** The Keychain record keeps the file's `generation`,
+  `fingerprint`, `journal`, `accountId` and `expiresAt`; only `writeId` (which proves the write)
+  and `updatedAt` are new. `reauthMaterialMoved` reads a generation past `failedGeneration` as proof
+  of a new login, so a bumped generation would clear a valid `needsReauth` mark and spend one
+  exchange on a dead token. An open journal (`unknown`, from a crashed holder) is recovered on the
+  new store under the new gate; dropping it would lose the "a token rotation was interrupted"
+  reason.
+- **Store choice for a new account** (`defaultAccountStore`): `CLAUDISH_DISABLE_KEYCHAIN=1` or no
+  Keychain → `file`; otherwise the Keychain store, subject to the test-only
+  `CLAUDISH_ACCOUNT_STORE=file` rule above. The row records the chosen store's actual `kind`.
+
+## Managing Codex accounts
+
+```
+claudish account add codex [--label <label>]
+claudish account login|enable|disable codex <label-or-email> [--id <generated-id>]
+claudish account rename codex <label-or-email> <new-label> [--id <generated-id>]
+claudish account remove codex <label-or-email> [--id <generated-id>] [--yes] [--delete-file]
+claudish account list|status [--json] [--refresh]
+```
+
+The parser (`parseAccountMutation`) is strict and runs before any prompt, browser, lock or store:
+duplicate, valueless, unknown or misplaced flags and extra positionals are usage errors. `--id`
+must match the generated-id pattern, so the synthesized legacy account is reachable only by its
+label `default`. `--id` may replace the selector or confirm it; for `rename`, `--id` with one
+positional makes that positional the new label. `--label` belongs to `add` alone. `use`, `import`
+and every `claude` mutation answer "not available".
+
+| Verb | What it does |
+|---|---|
+| `add` | Shows the owned-accounts notice until accepted (`noticeAcceptedAt` is written only inside the publishing config write), prints the store and a plaintext warning for `file`, runs PKCE with no lock, requires a stable `chatgptAccountId`, then under the new id's gate rechecks id and identity and derives the label (`deriveAccountLabel`; exhaustion fails before any token is written), persists the token and proves it by an uncached read-back of its `writeId`, and publishes the row in **one** config write. Nothing names the account before the browser unless `--label` is given. The final config write derives the label again from the live account list, so a concurrent add that took the bare email makes this one `<email>-<plan>`. A failed publication deletes the new token item only when a locked re-read confirms the row absent. Prints `Added Codex account <label> (<identity>); store: <store>.` When the label is longer than 32 characters or holds `@` or `+`, it adds one line: older claudish builds cannot read this label |
+| `rename` | One gated config write that changes `label` and nothing else: id, order, enabled, store, usage and exhaustion stay. The same label writes nothing and leaves the generation alone; a label differing only in case writes. A label taken by another account (case-insensitive) is refused. Renaming the synthesized legacy login records it as a `legacy-codex-file` row with the new label (decision 13) and, like `add`, refuses when it records no `chatgptAccountId`. Prints `Renamed Codex account <old> to <new>.` |
+| `login` | Synthesized default with no pool: the unchanged legacy login. Otherwise PKCE, the same stable identity or a refusal pointing at `account add`, then a gated generation+1 token write. Label, id, order, enabled, store, usage and exhaustion are untouched; no state mark is cleared, because the new material self-heals `needsReauth` on the next lease. On a Keychain platform with the default config the legacy file move runs first, so the synthesized default is already a `keychain` row by the time the account is selected |
+| `enable` / `disable` | One gated config write, no token read, delete or refresh. An idempotent call writes nothing and leaves the generation alone. Disable says configured rows still reserve OAuth |
+| `remove` | Confirmation before any lock unless `--yes`. One config write removes the row (and, for a legacy-backed one, sets the suppression marker), then registry invalidation, then `active` cleared only if it named this account, then deletion of this account's token item only. A cleanup failure is reported, never re-published. Prints the removed identity and the next credential for new requests, warning when that is `OPENAI_CODEX_API_KEY` |
+
+Identity is the stable `chatgptAccountId` from the login's claims; email and plan are display only.
+`add` refuses a duplicate identity or label, a missing identity, and a synthesized legacy login
+with no recorded `account_id` (run `claudish login codex` once first; enrolling it without an
+identity would make the duplicate check vacuous). Every verb except `add` selects its account as
+decision 13 says and prints the resolved label and id on its first output line; `--yes` does not
+suppress that line.
+
+**The move runs before every mutating verb except `remove`** (`moveBeforeMutation`, MTL-372):
+`add`, `login`, `enable`, `disable` and `rename` await `moveLegacyLogin()` before they inspect or
+select. A `deferred` outcome aborts before any browser or lock with the deferral message (*Diagnosing
+the pool*). `remove` does not move, because a legacy target keeps its `--delete-file` contract.
+`list`, `status` and `forecast` do not move, because reads never enroll. Where the move does not
+apply (no Keychain, an alternate config) it returns `not-applicable` and the verb runs as before.
+
+**`claudish login codex` and `claudish logout codex`, by platform and row count.**
+
+| | No Keychain, or `CLAUDISH_DISABLE_KEYCHAIN=1` | Keychain platform (`codexLoginUsesKeychain()`) |
+|---|---|---|
+| `login codex` | the legacy login: refused before the browser while Codex rows exist or the marker is set; otherwise PKCE and a write to `codex-oauth.json` | `CodexAccountManagement.loginCodex()`: the move first (a deferral refuses before the browser), then by the active config's CONFIGURED rows (a synthesized login does not count). **0 rows:** `add` with label `default`, no owned-accounts notice, no legacy enrolment; it needs a stable `chatgptAccountId` like any `add`, and writes a `keychain` row. **1 row:** that row's `login` (same identity, generation + 1). A different identity is refused, naming `claudish account add codex` and `claudish account remove codex <label>` (plus `--delete-file` for a `legacy-codex-file` row) followed by `claudish login codex`. **2 or more:** refused before the browser: ``Codex has N accounts; log one in with `claudish account login codex <label>`.`` It does not write `codex-oauth.json` (one exception below) |
+
+`claudish logout codex` is the same on both platforms and unchanged by MTL-372. With Codex rows
+configured it refuses before unlinking: a `legacy-codex-file` row is named with ``claudish account
+remove codex <label> --delete-file``, any other row with ``claudish account remove codex <label>``.
+With no rows (marker or not) it unlinks the file. After a move the user has one `keychain` row, so
+`logout codex` refuses and names `account remove`.
+
+The 0-row label is `default` because that is what `account list` already showed for the
+synthesized login. The notice is skipped because one account never switches. `enrollLegacy:
+false` keeps an alternate config from claiming the default config's shared file (MTL-371). On a
+Keychain platform MTL-371 is moot for two independent reasons: `login codex` writes a Keychain item
+keyed by a new generated id and a row in the ACTIVE config, and the move runs only for the default
+config. On a platform with no Keychain MTL-371 remains, and its fix is separate.
+
+The exception: a 1-row `login codex` whose row is `legacy-codex-file`
+re-logs that row into its own store, the file, as `account login` does. That row exists on a
+Keychain platform only under an alternate config, where the move does not run.
+
+### Legacy enrollment and durable removal suppression
+
+Reads never enroll. The first `add`, `enable` or `disable` on a pool whose only account is the
+synthesized `default` discloses it and writes it as an ordinary **generated-id** row on the
+`legacy-codex-file` store, in the same config write as the change. The file stays where it is and its
+refresh token is never copied; its refresh gate stays `legacy-codex`, shared with `CodexOAuth`, so
+the facade and the pool can never exchange concurrently. On a Keychain platform with the default
+config this enrolment no longer happens through a verb: the move runs first and leaves a `keychain`
+row, so the verbs find no synthesized login and do not print "its credential file stays where it
+is". The enrolment above remains where the move does not apply, and as the move's own step M2.
+
+Removing a legacy-backed account (the synthesized `default` or an enrolled `legacy-codex-file` row)
+requires `--delete-file`, and `--delete-file` on any other row is refused. The config write that
+removes the row also sets `subscriptionAccounts["openai-codex"].legacyCodexSuppressed: true`;
+removing the synthesized default creates an empty provider entry just to carry it. The marker lands
+**before** any token-file deletion, so a reader sees either the old row or the marker, never an
+empty unsuppressed document that would re-synthesize the login. A failed deletion or a crash after
+publication leaves the marker durable across restarts. Unrelated saves keep it; nothing clears it,
+and 2a has no re-enrollment verb. The marker is not an account: zero rows plus the marker lets a
+**new** request sign `OPENAI_CODEX_API_KEY`, but never one whose OAuth latch is already set.
+
+The legacy file move is the second writer of the marker. Its publication sets `store: "keychain"`
+on the row and `legacyCodexSuppressed: true` in one config write, and it is the only valid way to
+set both: `config-validation.ts` refuses a `legacy-codex-file` row beside the marker. A file left
+behind under the marker (a failed `remove --delete-file`, or a move that stopped after publication)
+is deleted by the move's leftover branch (*The legacy file move into the Keychain*).
+
+Where there is no Keychain, with Codex rows configured or the marker set, `claudish login codex`
+refuses before opening a browser, naming `claudish account add codex` and `claudish account login
+codex <label>`. `claudish logout codex` refuses as *Managing Codex accounts* describes (F8).
+`credentials.logout("openai-codex")` reaches the same refusal, since `CodexPoolHalf` delegates
+`login`/`logout` to the legacy half.
+
+### The legacy file move into the Keychain (MTL-372)
+
+`CodexAccountManagement.moveLegacyLogin()` (`auth/accounts/management.ts`) copies the legacy login
+from `codex-oauth.json` into the `keychain` store (service `claudish-accounts`, account
+`openai-codex:<id>`), rebinds the account row, sets the marker and deletes the file. The applicability
+checks and the request-path trigger live in `auth/accounts/legacy-move.ts`, which stays
+import-light: the request path reaches it on every Codex sign and loads `management.ts` (with
+`@inquirer/prompts` and PKCE) only when a move is due.
+
+**It applies only where both hold:**
+
+- **a Keychain platform:** `CLAUDISH_DISABLE_KEYCHAIN` is not `1`, `isKeychainSupported()`, and the
+  destination store's `kind` is `keychain`. The flag check is not redundant: `KeychainTokenStore.kind`
+  is `keychain` even when the store is disabled.
+- **the default config:** the active config's realpath equals `<claudishHome>/config.json`. The
+  legacy file is per `HOME` and a config is per path, so a move run against an alternate `--config`
+  or `CLAUDISH_CONFIG` would hand the shared file to a config that does not own it (MTL-371 in the
+  other direction).
+
+Elsewhere (Linux, Windows, WSL, `bun run test:safe`) the 0600 file and every legacy path stay as
+built. The move needs a destination better than its source, and the file store is the same 0600
+plaintext.
+
+| Before | After |
+|---|---|
+| synthesized legacy account only (no rows, no marker) | enrolled first (M2) as a `legacy-codex-file` row: a new generated id, label `default`, identity from the file, `addedAt` = the file's mtime, no `noticeAcceptedAt`. Then moved as the next row |
+| a `legacy-codex-file` row (e.g. `4463fa7e5c82`, `default`) | the same row with `store: "keychain"`: same id, label, order, `enabled`, identity and `addedAt`. Marker set, file deleted |
+| marker set, no legacy row, file still present | the leftover branch deletes the file under the legacy gate (`leftover-deleted`) |
+| all rows `keychain`, no file | unchanged: `not-applicable`, no `security` call |
+
+**Why the same id.** `state.json` (usage, `exhaustedUntil`, `needsReauth`, `active`), the usage
+ledger and the pool's `managerFor` cache all key on the account id. A new id would orphan the
+account's usage and exhaustion marks and reset stickiness. The refresh gate path changes from
+`locks/openai-codex/legacy-codex.lock` to `locks/openai-codex/<id>.lock`, because
+`accountRefreshLockPath` derives it from the store.
+
+**Why a synthesized login is enrolled first.** M2 writes a fixed generated id before any Keychain
+write. A crash after the write then resumes against that id. Writing the item under a fresh id and
+publishing a `keychain` row in one step would leave an orphaned item under a random id that no later
+run can identify.
+
+**The sequence.** Lock order is the legacy refresh gate, then the config lock; `state.lock` is never
+taken.
+
+```
+M0  no lock: platform, default config, then under the config lock the target:
+      the one legacy-codex-file row | the synthesized login | the leftover | none
+M1  gate: locks/openai-codex/legacy-codex.lock (20 s wait, then deferred/gate-busy)
+M2  synthesized only: enrol it as a legacy-codex-file row (one config write)
+M3  read codex-oauth.json uncached          absent → already-moved | not-applicable
+M4  config lock: the row is still this id, legacy store, same chatgptAccountId
+    read the Keychain item uncached         throws → deferred/keychain-unreadable
+M5  item holds every durable field of the file → reuse it (crash resume)
+    otherwise write the copy (-U -T /usr/bin/security), then an uncached read-back
+      that must show this writeId, generation and fingerprint
+M6  one config write: row.store = "keychain"; legacyCodexSuppressed = true
+M7  invalidate (request path: the registry only; commands: the authority memo too)
+M8  compare-and-delete: re-read the file; delete only if every durable field is
+      unchanged; otherwise keep it and log once
+```
+
+**Durable fields** are everything but `writeId` and `updatedAt`: both tokens, `expiresAt`,
+`accountId`, `generation`, `fingerprint` and `journal` (absent and `null` equal), compared by
+`sameDurableRecord` (`token-store.ts`), the one helper M5 and M8 share. Fingerprint plus generation
+is not enough: a journal write and a re-issued access token change neither. With only those two, a
+crash-resumed attempt published the earlier attempt's item and deleted a file that had gained a
+refresh journal in between, so the journal was lost (MTL-372 review).
+
+At every instant either the config names the file and the file holds the material, or the config
+names the Keychain item and the item holds it, verified before publication. A failed or unverified
+Keychain write leaves `codex-oauth.json` and `config.json` byte-identical (V19). A synthesized
+login keeps its M2 enrolment, which is a valid state.
+
+**Outcomes** (`LegacyMoveOutcome`): `moved` (with `fileDeleted`), `already-moved` (a peer moved it
+while this process waited on the gate), `leftover-deleted`, `not-applicable` (`no-keychain`,
+`alternate-config`, `no-legacy-account`), and `deferred` with one reason:
+
+| Reason | Cause |
+|---|---|
+| `gate-busy` | the legacy gate was held past 20 s, from another host, or unwritable |
+| `file-unreadable` | `codex-oauth.json` exists and cannot be used: torn, empty, `EACCES`, `EMFILE`, no token pair. No `security` call is made |
+| `keychain-unreadable` | the destination item cannot be read: locked, ACL refused, `security` killed. No write is attempted |
+| `keychain-write-failed` | a known write failure: non-zero exit, a record over `MAX_STDIN_LINE`, a round-trip mismatch |
+| `keychain-unverified` | an ambiguous write whose read-back does not show it, or a read-back without this `writeId` |
+| `config-unavailable` | `config.json` busy past 250 ms, invalid or unreadable |
+| `target-changed` | the row changed id, store or identity between two reads |
+
+`detail` passes through `redactSecrets`; no token or file content reaches it.
+
+**An ambiguous Keychain write is resolved by reading, never by a second write.** A killed or
+timed-out `security` (`TokenStoreAmbiguousWriteError`) is followed by one uncached read-back. It
+shows this `writeId`: the move continues. Otherwise: `deferred/keychain-unverified`. A second
+`security` call against a wedged keychain repeats the 10 s kill, the securityd incident class in
+`keychain.md`. So each attempt makes at most one write.
+
+**A failure after publication never fails the move.** An M8 delete that fails, or a file that
+changed since the copy, is logged and returns `moved` with `fileDeleted: false`. The marker already
+makes the file dead to every reader. A failed leftover delete (gate busy, unreadable config, `rm`
+error) is logged and answers `not-applicable/no-legacy-account`, not `deferred`: a dead file must not
+make `account add` or `login codex` refuse. M8 compares every durable field, so any doubt keeps
+the file.
+
+**The leftover branch does NOT compare** (checked in review round 4). `deleteLeftover` re-checks
+the marker, the absence of any `legacy-codex-file` row and the file's presence under the config
+lock, then deletes the file whatever it holds; it reads neither the file nor the Keychain copy. A
+file that differs from the Keychain copy is the ORDINARY case: the Keychain row rotates on its
+first refresh after the move and leaves the file's token dead, so "differs" cannot mean "newer". A
+genuinely newer token in the file can come only from a writer that ignores the marker: an older
+claudish build's gate-less login or refresh, or (before R4-2) this build exchanging the file from a
+stale list. No reader of this build adopts the file under the marker, so deleting it changes no
+signing; the Keychain row would need a login either way. Left as is.
+
+**No file bytes in `detail`.** Bun's `JSON.parse` error quotes the bytes it failed on, which in a
+torn `codex-oauth.json` are token material. The token stores report a parse failure as `invalid
+JSON` only, and `detail` passes through `redactSecrets` where `legacy-move.ts` and `management.ts`
+build it and where `legacyMoveDeferredMessage` prints it.
+
+**The triggers.**
+
+- **The first Codex sign of a process, in the background.** `CodexPoolHalf.getRequestAuth()` calls
+  `startLegacyCodexMove()` and does not await it. `legacyMoveApplies()` is synchronous: the env flag,
+  the platform, one registry snapshot (stat-cached), one `lstat` only for the leftover case, the
+  config path and the store kind. An unreadable account list answers "not due". One move runs per
+  process at a time. A `deferred` or `not-applicable` outcome starts a 10-minute cooldown
+  (`LEGACY_MOVE_RETRY_MS`, a judgement value) for request-path triggers. `not-applicable` counts
+  because the cheap check said a move was due; without a cooldown a leftover that cannot be removed
+  would cost a gate acquisition on every request. A failed dynamic import of `management.ts` is
+  recorded as `deferred/config-unavailable` and starts the cooldown too. Outcomes go to the debug
+  log only: a background stderr line would interleave with Claude Code's TUI.
+- **`claudish login codex` and `account add|login|enable|disable|rename codex`**, awaited. They
+  ignore the cooldown, and a `deferred` outcome refuses before any browser or lock.
+- **Not at startup and not on reads.** A process that never signs Codex never spawns `security`.
+
+Awaiting on the request path would put up to 20 s of gate wait and a `security` spawn on a user's
+first request. Both the pre-move and the post-move state sign correctly, and every race with a
+concurrent reader is a transient 503, so the request does not wait. The move signs and records
+nothing, so billing is unaffected (V22). A process that exits mid-move is a crash at an await
+boundary, and the next attempt resumes it.
+
+**Readers racing the move.** The gate path changes at publication, so a reader that took its snapshot
+before M6 can read the store after M8 and find the file gone. Two branches turn that into a transient
+answer, retried on the same hop:
+
+- **A pool lease** (`TokenManager`): a `null` store read runs `validateAccount(ref, "store-empty")`
+  before throwing `NeedsReauthError`, at all three empty-store branches: `resolve`, the uncached
+  re-read in `refreshUnderGate`, and the re-read after the exchange in `exchangeAndPersist` (whose
+  `before-persist` check ran before that read, so it cannot see a rebind landing in between). The
+  registry re-stats `config.json` and sees the row rebound to `keychain`. A rebind that changed
+  ONLY the store (same id, same `chatgptAccountId`, still enabled) throws
+  `AccountStoreMovedDuringLeaseError`, a `RefreshUnavailableError` (transient, 503). It is not recorded as a lease failure: an unpinned
+  `acquire` re-evaluates and leases the same id from its Keychain store in the same call, with no
+  exclusion and no `LEASE_FAILURE_DEPRIORITIZE_MS`. A PINNED lease (the 401 re-sign, a Responses leg
+  pinned to its account) answers it transient, and its same-hop retry leases the same id, so the pin
+  holds. The post-lease `stillConfigured` check makes the same distinction. A removed, disabled or
+  re-identified row still throws `AccountChangedDuringLeaseError` (a `NoUsableAccountError`), which
+  is terminal for a pin. A terminal 401 for a store-only move would walk a bare chain to a metered
+  hop. A store that is `null` with the row unchanged still means "needs a login".
+
+  **"No exception" is not "fresh".** `AccountRegistry.snapshot()` throws only when a source read
+  failed AND there is no last-known-good copy. A warm registry serves the copy and reports the
+  failure only in `snapshot.config.state === "failed"` (and `snapshot.legacy.state`);
+  `invalidate()` clears stamps, not the copy. A copy taken before the move still shows the
+  `legacy-codex-file` row, so the binding looks unchanged. In the `store-empty` phase the pool's
+  validator therefore invalidates the registry (the registry re-reads only on a stat-stamp change,
+  so `chmod 000` or an `EMFILE` on an unchanged file would keep reporting `present`) and checks
+  the sources first (`codexSourceFailed` for `openai-codex`, which covers the legacy source too):
+  failed → `AccountListUnreadableDuringLeaseError`, a `RefreshUnavailableError` (transient, 503).
+  It tried no credential, so it is unavailable for THIS request only: no
+  `LEASE_FAILURE_DEPRIORITIZE_MS`, and, like a store-only move, the lease's re-auth stamp is
+  restored, pinned or not. An unpinned lease tries the next account. `before-persist` keeps
+  deciding from the copy and still returns on a cold unreadable list, and so does `before-exchange`
+  for every row except one: a store that holds material keeps serving through a short config
+  outage.
+
+  **The exception: an exchange of a `legacy-codex-file` row** (review round 4, R4-2). Another
+  process can publish the move (M6: the row says `keychain`) and stop before M8 deletes the file.
+  If this process's registry then serves a pre-move copy because `config.json` cannot be read, the
+  copy still names `legacy-codex-file`, and the file's refresh token is the one the Keychain row
+  also holds. Exchanging it rotates the token under a row the list no longer names, and the
+  Keychain copy dies. So `before-exchange` for that store invalidates the registry, re-reads, and
+  on a failed source throws the same `AccountListUnreadableDuringLeaseError`: no journal, no
+  exchange, stores untouched. It runs first under the gate, before the uncached re-read and any
+  journal write. `pool-legacy-exchange-stale-list.test.ts` pins it, with two controls: a readable
+  list still exchanges the legacy row, and a `file` row still exchanges from the copy.
+
+  **A store-only move is not a re-auth attempt** (`AccountPool.leaseStep`). `acquire` stamps each
+  lease as the row's re-auth attempt (`lastReauthAttempt` and the request context) before it
+  leases. A pass that ends in a store-only move restores both to their previous values: left
+  stamped, a due `needsReauth` retry reads "attempted just now" on the next pass and blocks the
+  rebound row, so a single-account pool answers a terminal `NeedsReauthError`, and the pool's map
+  keeps suppressing the retry on later requests. That includes a pinned move's transient throw: a
+  pin itself is honoured even when it needs re-auth, but the next unpinned request copies the
+  pool's map.
+
+  **The pool's stamp is withdrawn, never put back** (review round 4, R4-1). The pool's map is
+  shared by overlapping acquires, so `ReauthAttemptStamps` keeps a committed value per account
+  plus one mark per lease in flight, and reads the latest of them (a concurrent request still sees
+  an attempt in progress). A lease that tried no credential withdraws ONLY its own mark; every other
+  lease commits when it settles, unless `healReauthMarks` cleared the account meanwhile (then it
+  commits nothing, as before). The earlier save-and-put-back raced: acquire B saved acquire A's
+  in-flight stamp as its "previous" value, A withdrew, then B put A's stamp back as if committed,
+  and the next request read a due retry as "attempted just now" and answered `NeedsReauthError`
+  with nothing attempted. `pool-reauth-overlap.test.ts` pins it. The request's own map belongs to
+  one acquire, whose passes run one at a time, so it keeps save-and-restore.
+
+  A store-only move does not spend the loop's `records + 1` attempts, which are for
+  removals; it has its own budget of the same size. `healReauthMarks` heals a second time against
+  the rebound record when the old store read empty because the row just moved.
+- **The legacy facade** (`CodexOAuth.refreshHoldingGate`): a process that delegated before the move
+  keeps signing with its in-memory token, which the Keychain item also holds. Only its refresh reads
+  the file. With the file absent under the gate it invalidates the registry and takes ONE snapshot.
+  Any configured Codex row: `CodexOAuthLocalError("The Codex login moved to the macOS Keychain;
+  retry the request.")`, a transient 503 with no upstream status; the retry reaches
+  `CodexPoolHalf`, which leases the row. An unreadable account list is transient too: unknown
+  presence is not a logout. That includes a snapshot served from the last-known-good copy
+  (`codexSourceFailed(snapshot)`): a pre-move copy shows no configured row, and with the file gone no
+  synthesized one either, so trusting it answered the terminal error for a moved login. None: the
+  terminal `CodexOAuthRefreshError`, as before. When the refresh found the file gone and the list
+  READ, the in-memory token is dropped too (`dropCredentials`), so a still-valid bearer stops
+  signing after a logout or a move; an unreadable list keeps it. The check is
+  "any configured Codex account" and not `isSynthesizedLegacyOnly()`: with the file absent the
+  registry cannot synthesize, so that check is false after a genuine logout as well and would turn
+  every logout into the transient error. `getAccessToken` with no credentials after a failed read,
+  and a file removed during the exchange, answer through the same check.
+- **The facade with the file still present.** The move can publish and stop before M8 (the delete
+  failed, or the process stopped at `beforeDelete`), leaving the file. Under the gate, before it
+  adopts a token from the file or exchanges, the facade invalidates the registry, takes ONE
+  snapshot (`legacyFileOwnership`) and goes on only while the account list is the synthesized
+  legacy login alone. Otherwise (configured rows, `legacyCodexSuppressed`, or an unreadable list)
+  it throws the transient `CodexOAuthLocalError` without adopting or exchanging: rotating the
+  file's refresh token would revoke the copy in the Keychain, and the leftover cleanup would later
+  delete the rotated file. "Unreadable" includes a snapshot whose config or legacy source FAILED
+  while the registry served its last-known-good copy: a pre-move copy still says "synthesized
+  only", and trusting it exchanged the moved login's refresh token (MTL-372 review round 2). When
+  the list positively no longer names the file ("elsewhere"), the in-memory token is dropped as
+  well; "unknown" and a configured `legacy-codex-file` row keep it. The gate-unavailable path
+  (`refreshWithoutGate`) adopts the holder's token only under the same "facade" answer, and drops
+  the in-memory token by the same rules ("elsewhere", or the file gone with the list readable)
+  before it throws the gate's transient error. The check runs again before the save. There it
+  refuses only when the list positively no longer names the file (marker set, or no row reads
+  it). A configured `legacy-codex-file` row, or an unreadable list, keeps the save, because the
+  file is the rotated token's only home.
+- **A request latched to OAuth after the facade dropped its token.** `CodexOAuthHalf` refuses a
+  `requireOAuth` request with no login, so it never continues on the metered arm. After the move
+  the facade drops its token, and a stale snapshot can still route the retry into the legacy
+  half; a terminal `MeteredEscapeError` there ended a live subscription request. The refusal is
+  now classified by `CodexOAuth.missingLoginError()` (the `credentialFileGoneError` rule): a login
+  that moved to configured rows, or an account list that cannot be read, throws the transient
+  `CodexOAuthLocalError`; only a genuine logout (a readable list with no Codex account) stays
+  the terminal `MeteredEscapeError`. Neither signs.
+
+A Responses turn that spans the move does not raise `BindingChanged`: the legacy artifact and the
+pool lease carry the same `chatgpt-account-id`, copied verbatim, so `isSameCredentialSilo` sees one
+silo.
+
+**Readers that no longer look at the file.** `codexQuotaAdapter.isAvailable()` reads
+`mayHaveConfiguredAccounts("openai-codex")` (an unreadable list answers true). `hasOAuthCredentials(
+"openai-codex")`, display only (the `claudish login` status line, `describeSourceSync`, the TUI
+provider list), reads `hasConfiguredAccounts`, and an unreadable list shows "not logged in" as an
+unreadable file did. Neither makes a Keychain call. The billing probe was already on the registry.
+
+**Accepted risks.** A claudish older than v14.5 on the same Mac loses the token when the file goes
+(accepted by Jack). A v14.5 or later build without the facade branch above, mid-refresh on the facade when the file
+vanishes, answers one terminal error; its next request uses the row. An alternate config that
+synthesized its login from the shared file loses it after the default config's move. A locked login
+keychain now fails Codex requests that the file used to serve, with a transient 503, as it already did
+for every `keychain` row. A record over `MAX_STDIN_LINE` defers forever; Codex records fit, and the
+escape is `CLAUDISH_DISABLE_KEYCHAIN=1`.
+
+**Never run under the real `HOME` by a test or a session.** It would move the owner's real file. The
+move happens when the owner first uses a released build. Afterwards `claudish account list --json`
+shows `4463fa7e5c82` with `store: "keychain"` and label `default`, `~/.claudish/codex-oauth.json` is
+gone, and a `cx@` request signs SUB.
+
+### Config ownership
+
+Account management and every global save share one lock beside the active config file
+(`<config>.lock`, following `--config`/`CLAUDISH_CONFIG`, resolved through a symlink so a
+dotfiles-managed `config.json` stays a link). It reuses `file-lock.ts`'s O_EXCL/nonce/fence protocol
+through a **synchronous** entry point that waits at most 250 ms and then throws, because
+`saveConfig()` is synchronous and its TUI callers do not await it. It never touches the 1Password
+handshake lock.
+
+- **`saveConfig()` never writes `subscriptionAccounts` from memory.** Under the lock it re-reads the
+  block from disk, validates it and copies it unchanged; absent on disk, a stale in-memory block is
+  dropped. A TUI session that loaded the config before an `account add` or `remove` therefore cannot
+  erase the new row, resurrect a removed one or lose the marker.
+- **Transactions read raw bytes under the lock**, preserve unknown fields and refuse an unreadable or
+  invalid file; only a confirmed `ENOENT` permits creating one. `loadConfig()`, which answers a
+  failure with defaults, is never a transaction reader. A file that is not JSON raises
+  `ConfigInvalidError` ("Cannot save <path>: it is not valid JSON…"); a bad account block raises
+  `AccountListInvalidError`.
+- **The other raw writers go through it too:** the global 1Password config writer and `claudish
+  hooks telemetry --enable/--disable` (F4). Every TUI save site catches a failed save and shows
+  "Not saved — …" with the dialog and the user's values intact (F3).
+- **Lock order** is account gate → config lock → `state.lock`, never the reverse; no lock crosses a
+  browser, a prompt or a network call.
+- **The legacy file move follows the same order:** the legacy gate (`legacy-codex.lock`), then the
+  config lock for each read and for its two writes (the M2 enrolment and the M6 publication), and
+  never `state.lock`. Its `security` calls run under the gate and outside the config lock. A config
+  lock busy past 250 ms at M6 is `deferred/config-unavailable`; the Keychain item stays unpublished
+  and the next attempt reuses or overwrites it.
+
+## Billing invariants
+
+- Every pooled OAuth artifact carries `arm: "oauth"` and a Codex `account`, stamped by the
+  credential half itself. A missing `arm` means metered. `recordSignedArm("openai-codex", …)` is
+  written by `signRequest()` alone, from the accepted `auth.arm`, after the pre-record check.
+- Availability reads **configuration presence only**; I/O failure, exhaustion, `needsReauth` and
+  `enabled: false` never lower it. Sign-time availability throws on an unknown list; the safety and
+  billing projections answer subscription.
+- `openai-codex` stays in `CREDENTIAL_DECIDED_PROVIDERS` and never enters `SUBSCRIPTION_PROVIDERS`.
+- The billing probe stays **synchronous** — no `await`, no subprocess — because the picker, price
+  resolution and `TokenTracker.getPricing` (per stream delta) call it. It reads the signed-arm
+  record, then `registry.mayHaveConfiguredAccounts("openai-codex")`, the same presence fact as
+  sign-time availability, so the two cannot drift (M4, T-M4). The process-wide signed-arm record
+  can still be overwritten by a concurrent request on the opposite arm; that pre-existing limit is
+  not fixed, and the request's own safety does not depend on it.
+- **`native-anthropic`'s billing label is unchanged in version 1** (decision 8). The pool presents a
+  flat-rate token on a provider in neither set, but `recordSignedArm` is not called on the native
+  path and `NativeHandler` has no `TokenTracker`, so nothing accrues. Adding it to
+  `CREDENTIAL_DECIDED_PROVIDERS` would make the sync probe answer a Keychain question.
+
+## Decisions 1–13
+
+Numbered as the code cites them. Decisions 9–11 were taken when the approval dialog timed out; each
+is the conservative reading. Decisions 12 and 13 were taken by Jack on 2026-10-27 (MTL-278).
+
+1. **Pool exhaustion keeps today's error shape; the wording is pinned to preserve it.** An explicit
+   `cx@` stops with the message; a bare `gpt-*` chain advances with the cost warning. *Built:* the
+   template and the verdict-free quota seam (`respondAccountsQuotaFailure`), which applies only when
+   selection has no eligible account. A spent rotation with capacity remaining is NOT exhaustion and
+   answers the transient 429 (R4). E7 pins the bare-chain advance against a real metered socket.
+2. **`account import claude` ships in Phase 3 on the D1/D2 branches that permit it**, and there the
+   first Claude account must be the existing login. *Planned.* Phase V result (2026-10-29): D2
+   measured positive for both locks, so `import` ships under the switch rule. The D1/D2 table is
+   now a fallback branch, used only if a later Claude Code build stops honouring the locks.
+3. **The native `.plan` statusline label is deferred** to Phase 5. *Planned.*
+4. **Per-model Anthropic buckets are display-only**; a rejection on any bucket exhausts the account.
+   *Planned*; the usage parser already records which window rejected.
+5. **`needsReauth` replaces quarantine**: self-healing against a recorded baseline, retried on a
+   1 / 5 / 30 min schedule. *Built*, including the fingerprint and generation comparison (the
+   heal before selection, 2026-09-24). `account login` does **not** clear the mark explicitly: its
+   new material moves the baseline, and the guarded self-heal clears it on the next lease, so a
+   newer failure recorded against the new material survives (C6).
+6. **The 1Password handshake lock is not touched**; `refresh-lock.ts` is a sibling with opposite
+   failure semantics, at the cost of ~60 duplicated lines. *Built.* The Phase 0 prompt asked for the
+   op lock to be re-based on the new helper; the implementer declined, citing this decision.
+7. **`NeedsReauthError` advances a bare routing chain, metered included, and says so.** It is 400
+   with `upstream_status: 401` and `x-claudish-auth-verdict: terminal`. v13's credential-stop rule
+   held it to subscription candidates; owner decision `9ace3fe5` (2026-10-21) moves the chain to
+   its next hop whatever it bills, with one stderr notice per provider and status
+   (`announceCredentialRejection`). `NoUsableAccountError` and `AccountListInvalidError` follow the
+   same rule. An explicit `cx@` stops with the error.
+8. **`native-anthropic`'s subscription label is unchanged in version 1.** *Stated.*
+9. **`account use` (F8), `account import claude` and the Claude pool's relationship to the login are
+   conditional on Phase V.** On the D1-rotation / D2-non-interoperable branch, `use` and `import` are
+   dropped, Phase 4 is cut, and the pool is built from claudish's own PKCE logins; claudish-only
+   switching ships on every branch. Cutting F8 **amends a user-confirmed requirement**, so this is
+   pending the user's ratification. Round 3 added **C6**: the same branch drops C2's `import`, which
+   needs the same ratification. The compliant fallback if the user declines: ship `import` and hold
+   the imported account non-selectable until a refresher protocol exists. *Pending; blocks Phase 3.*
+   Phase V result (2026-10-29): D2 measured positive for both locks, and the switch rule makes
+   Claude Code the only refresher of the account in its item. The D1-rotation /
+   D2-non-interoperable branch therefore does not apply on 2.1.312, and the D1/D2 table is now a
+   fallback branch. The ratification above is still pending.
+10. **An exhausted Codex pool fails visibly.** No metered fall-through within `openai-codex` (its
+    own api-key half never signs after the OAuth arm failed), and no flag to enable one. *Built* for
+    the legacy path (A4) and the pool (2a). Moving a bare chain to ANOTHER hop is the routing
+    chain's decision, not a fall-through: exhaustion advances with the cost warning (decision 1),
+    a terminal credential failure advances announced (decision 7, `9ace3fe5`); a transient failure
+    and a spent rotation with capacity remaining (R4) hold the hop.
+11. **claudish never spends quota to measure quota.** An idle Codex account reads `unknown`, which
+    is eligible; `unknown` never means a stale reading decayed. *Built* in the policy;
+    `account status --refresh` contacts no vendor. The policy was built on the D7-negative branch.
+    D7 measured positive on 2026-10-29: `GET /backend-api/wham/usage` returns the rate-limit windows
+    with no inference. The idle `unknown` reading is therefore no longer forced, and the choice
+    reopens.
+12. **The default Codex account label is the login's email, chosen after the browser.** The email
+    is not known before the login, so nothing asks for a label first and nothing prompts for one.
+    The clash ladder takes the first free of `<email>`, `<email>-<plan>`, then numbers
+    (`<email>-<plan>-2`, or `<email>-2` when the plan is missing). The email is lowercased; the
+    plan is cleaned to lowercase letters and digits, 16 at most. `--label` is an override and is
+    checked before the browser. A login that returns no email falls back to the first 8 characters
+    of `chatgptAccountId`, filtered to the allowed set, with the same ladder. The email in logs
+    and the ledger is an accepted exception to the audit rule (Jack, 2026-10-26 and 2026-10-27;
+    see the `CLAUDISH_ACCOUNTS_LOG` paragraph under *Selection policy*). *Built.*
+13. **Accounts are selected by label or email; `rename` changes only the label.** An exact label
+    match wins. Only when no label matches does the selector fall back to the logins' emails
+    (case-insensitive), and only on exactly one match: the fallback never picks among several, so
+    removing or renaming one account cannot silently retarget `remove` at another that shares the
+    email. Two or more matches fail and list each `<label> (id <id>)`; `--id` names one. Every
+    mutation prints the resolved label and id. The legacy login `default` may be renamed. Nothing
+    on disk keys on a label (`state.json` is by `provider:id`, `active` holds an id, lock and token
+    paths use the id), so a rename moves no state. A running proxy picks the new label up from its
+    stamp-based reads, not verified. *Built.*
+
+## Claude Code's OAuth facts
+
+Read from the installed 2.1.312 binary and measured against it on 2026-10-29 with fake tokens in a
+throwaway keychain ([report](../reports/claude-oauth-facts-2026-10-29.md)); the real Keychain
+secret was never read. Anthropic documents none of this, and any release can change it (C3).
+
+| Fact | Value | In claudish's code |
+|---|---|---|
+| Keychain service | `Claude Code${OAUTH_FILE_SUFFIX}-credentials[-<sha256(configDir)[0:8]>]`; `OAUTH_FILE_SUFFIX` is `""` in prod (`-local-oauth`, `-custom-oauth` otherwise). The hash suffix appears whenever `CLAUDE_CONFIG_DIR` is non-empty, even when it names the default dir; `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when set, overrides. Static: the hash input is the configured dir string, NFC-normalized (live only for one ordinary path; see below). The login keychain holds 252 suffixed items in this order and none in the old one | `claudeCodeKeychainService()` (`auth/claude-code-facts.ts`), used by `claude-runner.ts`'s login probe, is **wrong**: it builds `Claude Code-<hash>-credentials` and drops the suffix for the default dir (MTL-316) |
+| Account attribute | `$USER`; `claude-code-user` when `$USER` is unreadable or fails `/^[a-zA-Z0-9._-]+$/`. Every start also reads the legacy API-key service `Claude Code-<hash>` | Phase 4 |
+| Item format | JSON with the key `claudeAiOauth`, beside keys such as `designOauth` | the key only |
+| Access | `security -i`, hex `-X`, argv fallback for large payloads — so the ACL trusts `/usr/bin/security`, which claudish also uses | Phase 4 |
+| Refresh lock | `<configDir>/.oauth_refresh.lock` (proper-lockfile, stale 60 s, update 5 s), taken first, then a legacy `<realpath(configDir)>.lock`; re-reads the store under the lock and adopts a stored token that differs. Owner file `.oauth_refresh.lock.owner`: a holder is taken over only with an owner record and the flag `tengu_quiet_marten`; with no record (`no_owner_record`) it is never taken over. Measured wait ≈ 7.9 s, then Claude Code sends with the token it holds | Phase 4 |
+| Write lock | `<configDir>/.storage-write.lock` (stale 15 s, 10 retries of 100 to 1000 ms) around every item read-modify-write. Measured wait 7.5 s, then Claude Code skips its write | Phase 4 |
+| Refresh trigger | on demand only, when `now + 300000 >= expiresAt` (5 min before expiry); no timer | Phase 4 |
+| Item cache | item reads are cached 30 s. A running session adopts a changed item at its next request once its 30 s item cache has expired; a 401 or the near-expiry check re-reads at once. An idle session adopts nothing until it sends a request | Phase 4 |
+| Refresh result | stores `refreshTokenExpiresAt`; keeps the old refresh token when the response carries none | Phase 4 |
+| Authorize | subscription `https://claude.com/cai/oauth/authorize`; console `https://platform.claude.com/oauth/authorize` | Phase 3 |
+| Token | `https://platform.claude.com/v1/oauth/token` | Phase 3 |
+| Client id | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` (prod); the second id `22422756-…` is the local-dev OAuth config (`OAUTH_FILE_SUFFIX: "-local-oauth"`, localhost URLs) | Phase 3 |
+| Scopes | `user:inference`, `user:profile`, `user:sessions:claude_code`, `user:mcp_servers`, `user:file_upload`, `user:office` | Phase 3 |
+
+Phase 3 puts the ids and URLs in `claude-code-facts.ts` with their measured version, and
+`scripts/recheck-claude-facts.ts` diffs the installed binary; a mismatch warns by name and disables
+`account add claude`, not the whole pool.
+
+Reported by outside sources, unverified here: Anthropic's `GET /api/oauth/usage` needs
+`user:profile` (a setup-token with only `user:inference` gets 403).
+
+Measured 2026-10-29 (D7): Codex's `GET https://chatgpt.com/backend-api/wham/usage`, sent with
+`Authorization` and `ChatGPT-Account-Id` from `~/.codex/auth.json`, answers 200 with
+`rate_limit.primary_window` and `rate_limit.secondary_window`, and makes no model call. This
+overturns claudish's probe of 2026-08-05, which found no usage endpoint.
+
+**The Phase V gates, resolved 2026-10-29** on 2.1.312
+([report](../reports/claude-oauth-facts-2026-10-29.md)):
+
+| Gate | Question | Branch | Answer |
+|---|---|---|---|
+| D1 | Does Anthropic rotate the refresh token on exchange? | the D1/D2 table | moot under the switch rule, given D2 positive for both locks and Claude Code as the only refresher of the account in its item |
+| D2 | Can claudish take `.oauth_refresh.lock` compatibly? | the D1/D2 table | **positive** for both locks: Claude Code waits ≈ 7.9 s on `.oauth_refresh.lock` with its legacy lock and posts nothing, and 7.5 s on `.storage-write.lock` and writes nothing |
+| D3 | Is the old refresh token revoked immediately? | immediate: ship the "a token rotation was interrupted" message and a `docs/` line that it costs one browser login; deferred: journal recovery repairs it silently | moot under the switch rule, given D2 positive for both locks and Claude Code as the only refresher of the account in its item |
+| D4 | The item's account attribute; whether `security -i -U` keeps the ACL | blocks Phase 4 | ACL byte-identical after `-U` for current items; items created by older builds not examined; `acct` = `$USER` |
+| D5 | Does a running `claude` reload a changed item? | if not, the handoff refuses or defers **before** any write | yes, request-driven: a running session adopts the changed item at its next request once its 30 s item cache has expired; a 401 or the near-expiry check re-reads at once. An idle session adopts nothing until it sends a request. The handoff needs no refusal, only the lock |
+| D6 | The PKCE redirect shape and exchange body | blocks claudish's own Claude login | static, from the binary; server acceptance remains to be verified by the first real Phase 3 login |
+| D7 | Does a free, non-inference Codex usage endpoint exist? | negative branch decided: idle Codex usage reads `unknown` | **positive**: `GET /backend-api/wham/usage` 200 with the `rate_limit` windows, no inference |
+| D8 | A real in-stream `usage_limit_reached` frame, metadata prefix included | gates Phase 2b (2a shipped in v14.5.0 without it); every quota fixture is PROVISIONAL until then | unchanged (MTL-261) |
+
+The hash input has two kinds of evidence. Live: the wrapper's computed service name matched Claude
+Code's first read for this scratch path. That path held no symlink, so a raw and a resolved path
+were not separated live. Static (the report's appendix, `HW()`, `dN()` and `Le` in 2.1.312): the
+input is `B8t()` (or `~/.claude`) NFC-normalized, with no `realpath` call in `Le`. The body of
+`B8t()` is not extracted, so whether it returns `CLAUDE_CONFIG_DIR` raw, resolved or
+slash-stripped is unverified, statically and live. Still unmeasured live: whether a trailing slash
+survives. `claudeCodeKeychainServiceCandidates()` probes resolved, raw, slash-stripped and
+unsuffixed names, which is cheap because the probe reads attributes only and never prompts. The
+`security -i` stdin limit is 4095 bytes per chunk (measured 2026-10-26, MTL-268); 2.1.312 sends
+`-i` lines up to 4032 bytes and switches to argv above that (`re=4032`, static; quoted in the
+report's appendix).
+
+## Terms of service
+
+Anthropic's Consumer Terms §2: *"You may not share your Account login information, Anthropic API
+key, or Account credentials with anyone else. You also may not make your Account available to
+anyone else."* §3 bans access "through automated or non-human means" except by API key or with
+explicit permission. Neither addresses one person rotating several subscriptions they own and pay
+for: a **gray area, not a permission**. The research also recorded a February 2026 Anthropic update
+saying subscription OAuth tokens may not be used with the Agent SDK; it was not re-fetched for this
+document. OpenAI's terms page returned HTTP 403 to the fetch, so its wording is unverified.
+
+The feature must never help anyone use an account they do not own. Hence a one-time notice the user
+accepts (`noticeAcceptedAt`), the identity shown at add time, duplicate identities refused, no token
+export and no `--token` flag, and a documented risk note. The most exposed part is claudish's own
+PKCE login under Claude Code's client id; `account import claude`, adopting a login the user already
+made, is the lower-exposure path — and it is what decision 9 and C6 may cut.
+
+Prior art switches a config directory per account (a relaunch, losing MCP servers and plugins) or
+rewrites Claude Code's Keychain item (the whole machine switches). Neither lets one process choose
+per request, which is why claudish owns the tokens.
+
+## Diagnosing the pool
+
+| What you see | Cause | Action |
+|---|---|---|
+| `Could not read the <path> account list: …` (503, transient) | `config.json` or `codex-oauth.json` cannot be read, or the legacy file cannot be parsed; no last-known-good in this process | fix the permission or contents; the next request re-reads it |
+| `Invalid account list in <path>: <field>: …` (400, terminal) | `config.json` is not valid JSON or its account block fails validation | repair the named field |
+| `Codex account retry deferred; retry this request.` (429) | two accounts hit quota on this request and another is still eligible | retry; the next request selects that account |
+| `Codex subscription usage limit reached on every account (n of total).` | no account is eligible | wait for the listed reset, or add an account |
+| `Refusing to sign a pooled subscription request with a metered credential (…)` | an internal net caught a non-OAuth artifact where OAuth is reserved | a claudish bug: no request was sent; report it |
+| `Cannot save <path>: it is not valid JSON…` / TUI "Not saved — …" | the config file is not JSON, or its lock is busy past 250 ms | repair the file, or retry the save |
+| `Account refresh unavailable: another process holds the refresh gate (…)` | a live holder kept the gate past 20 s, or it is held from another host (`foreign-host`) | wait; shared HOME across hosts is unsupported |
+| `Account refresh unavailable: refresh disabled (…)` | the lock directory or file cannot be created | fix permissions under `~/.claudish/accounts/locks/` |
+| `state not persisted — <field> for <account>` | `state.lock` busy, or `state.json` unreadable or corrupt | clears when a later write lands; `state.json.corrupt-<ts>` keeps the evidence |
+| a Codex request says "run `claudish login codex`" although `OPENAI_CODEX_API_KEY` is set | the OAuth refresh failed, and there is no metered fall-through | log in again, or remove the OAuth login to use the key |
+| `needs login: run \`claudish account login codex <label>\`` | the token host rejected that account's refresh token (`invalid_grant`, `refresh_token_expired`, …) | run the named command |
+| `Could not read the OpenAI Codex credential file (<path>): …` | the legacy facade signed and `codex-oauth.json` names a refresh token beside an unusable access token or expiry | fix its contents, or run `claudish login codex` |
+| `The Codex login moved to the macOS Keychain; retry the request.` (503, transient) | a process that delegated to the legacy file refreshed after another process moved the file into the Keychain | retry; the next request leases the `keychain` row |
+| `The OpenAI Codex credential file is gone and the Codex account list could not be read. Retry the request.` (503, transient) | the same refresh found the file gone and `config.json` unreadable | retry; fix `config.json` if it persists |
+| `Could not move the existing Codex login into the macOS Keychain (<reason>: <detail>). The login was not moved; <path> was kept. <hint>` | `claudish login codex` or a mutating `account … codex` verb ran the move and it was deferred; nothing was sent to a browser | the hint: "Retry in a moment." (`gate-busy`, `target-changed`); "Retry in a moment; if this persists, repair config.json." (`config-unavailable`); "Unlock the login keychain and retry." (`keychain-*`); "Repair or remove the file, then retry." (`file-unreadable`) |
+| `Codex has N accounts; log one in with \`claudish account login codex <label>\`.` | `claudish login codex` on a Keychain platform with two or more configured rows | name the account |
+| `[accounts] legacy Codex move (request path): <outcome>` (debug log only) | the background move's result in this process; `deferred` and `not-applicable` start a 10-minute cooldown | read the preceding `legacy Codex move deferred (<reason>)` line; `claudish account enable codex <label>` (idempotent, no browser) retries at once and prints the cause; reads such as `account list` never move |
+
+## Tests and seams
+
+No test uses `mock.module()`: Bun's registry is process-global and has broken sibling e2e files here.
+
+- `setAccountPoolForTests`, `setAccountRegistryForTests`, `setStateStoreForTests`, and injectable
+  options on every class (clock, paths, file reader, write-id minting, `holdForever`).
+  `FileLockDeps` (`now`, `hostname`, `isProcessAlive`, `sleep`) per call.
+- `CLAUDISH_ACCOUNTS_DIR` relocates the accounts directory only, for tests that drive the built
+  binary; the config file still follows `--config`/`CLAUDISH_CONFIG`.
+- `CLAUDISH_TEST_UPSTREAM` rewrites outbound hosts to **loopback only**; one non-loopback entry
+  rejects the whole value, so a typo sends traffic to the vendor, never to a stranger.
+- `CLAUDISH_ACCOUNTS_FAULT` arms one of 13 faults, **only with a valid `CLAUDISH_TEST_UPSTREAM`**, so
+  an env var alone cannot corrupt a real token store. Every accepted name has a live injection site;
+  the two whose site is a later phase are rejected until then. The list is in
+  [`accounts-validation.md`](./accounts-validation.md).
+- Keychain tests install `setKeychainTestDeps` or run under `CLAUDISH_DISABLE_KEYCHAIN=1`; live work
+  targets a throwaway keychain via `CLAUDISH_KEYCHAIN_FILE` ([`keychain.md`](./keychain.md)).
+
+## Not built, and why
+
+- **In-stream rotation (2b).** A stream quota verdict marks and answers; it never swaps accounts.
+  The content boundary after which a swap would duplicate output is defined by D8, a real
+  `usage_limit_reached` capture with its metadata prefix, which only real vendor traffic provides.
+  Every quota frame in the tests is scripted and PROVISIONAL. D8 gates Phase 2b; 2a shipped in
+  v14.5.0 without it. claudish will not exhaust an account on purpose to obtain it.
+- **Rotation on a real quota 429.** Every automated 2a check uses simulated tokens, an injected
+  PKCE browser and loopback listeners; the owner's real logins and Keychain are never read to
+  simulate one. The real two-account run of 2026-10-22 proved threshold selection (`default` at
+  `7d 41%`, `switchAt` 30%, next turn on `second`), not a live quota rejection.
+- **Idle polling.** Built on the D7-negative branch: claudish never spends quota to measure quota,
+  so an idle Codex account reads `unknown` and is eligible. D7 measured positive on 2026-10-29
+  (`GET /backend-api/wham/usage` returns the rate-limit windows with no inference), so `unknown` is
+  no longer forced and the choice reopens. The legacy
+  explicit probe (`codexQuotaAdapter.fetchExplicit`, `claudish quota`) is fenced to the legacy-only
+  population, with no replacement. Since MTL-372 that population no longer includes a moved user, so
+  on a Keychain platform with the default config the explicit probe covers no Codex user after the
+  first move. That is consistent with decision 11; D7 reopens it.
+- **The Claude pool, `account add|import claude`, `account use`** (Phases 3–4): blocked on decision 9
+  and C6. The handoff is no longer blocked on D1/D2: Phase V (2026-10-29) measured D2 positive
+  for both locks. With Claude Code as the only refresher of the account in its item, the switch
+  rule makes D1/D3 moot. `NativeHandler` is unchanged.
+- **The TUI Accounts block, statusline labels, a `docs/` page** (Phase 5).
+- **Re-enrolling a suppressed legacy file.** No verb exists; a suppressed user adds accounts with
+  `account add`.
+
+## Known gaps, carried
+
+- **T-C4**, the fence read/write window; **T-C5**, whether `journal.committed` must precede each
+  destination write (fallback branch only; MTL-263 replaces it with switch-rule cases); **T-C7**, a one-account in-stream quota must still write
+  `exhaustedUntil` (2a marks it on scripted frames; closing T-C7 needs D8).
+- **C6 and decision 9**: the user's ratification, blocking Phase 3.
+- **M3**: extended mode has no absolute ceiling and no latency test for a healthy pooled stream; a
+  logged 60 s ceiling is the fallback if real streams show long runs without a delta (T-M3, 2b).
+- **L1**: the provisional regex sentence, until D8.
+- **E20 executable parity is recorded, except for the native-no-pool case.** On 2026-11-01 two built binaries
+  were compared: the parent of the Phase 2a commit (`579114b1`, v14.4.1) with the test seam backported,
+  and 14.10.1. Legacy success, legacy upstream error and API-key-only are identical; the refresh
+  rejection diverges as designed (A2/A4). Native-no-pool parity is not compared and rests on component
+  tests. See [`../reports/account-pool-built-binary-validation-20261101.md`](../reports/account-pool-built-binary-validation-20261101.md).
+- **The process-wide signed-arm record** can be overwritten by a concurrent request on the opposite
+  arm; older than this feature and not fixed.
+- **A legacy login whose `account_id` came from `user_id`** cannot be duplicate-checked against a new
+  `add`; disclosed in step 11.
+- **The `needsReauth` self-heal runs on a lease, not on display.** `account status` is read-only and
+  shows a re-logged-in account as needing a login until the next `acquire()`. The heal reads the
+  primary store only; whether a rotation found in Claude Code's item (`secondaryStore`) should also
+  heal is a Phase 4 decision. SUPERSEDED for the account in Claude Code's item by the switch rule
+  (2026-10-29): claudish never refreshes that account, so the decision arises only if a later
+  Claude Code build stops honouring the locks (the D1/D2 table's fallback branch).
+- **`forceRefreshAuth` transports** (Vertex, Antigravity, Grok subscription) keep raw-status and
+  bare-401 returns after a failed re-sign: the #148 shape, older than this branch, left unchanged.
+
+Closed by 2a: M4 (the probe reads the registry), L2 (`RetryBudgetSpentError` stays absent), the
+pool's missing pre-persist re-read for a concurrent login, and the Codex transport's `refreshAuth()`
+and `legacyAuth` (deleted, F11).

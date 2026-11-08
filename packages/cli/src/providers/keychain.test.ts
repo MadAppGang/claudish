@@ -199,7 +199,7 @@ describe("parseDumpAccounts and keychain enumeration", () => {
     expect(enumerated).toEqual({
       names: [],
       failed: true,
-      error: UNKNOWN_COMMAND_STDERR,
+      error: "security exited 1",
     });
     expect(typeof enumerated.error).toBe("string");
     expect(enumerated.error).not.toContain(keyMaterial);
@@ -285,9 +285,9 @@ describe("lookupKeychainVar", () => {
 });
 
 describe("writeKeychainSecret", () => {
-  it("uses security -i, hex stdin, quoted values, and -U without exposing plaintext in argv", () => {
+  it("uses security -i, plaintext stdin, quoted values, and -U without exposing plaintext in argv", () => {
     const value = 'value with spaces, "quotes", and \\backslashes';
-    const hex = Buffer.from(value, "utf8").toString("hex");
+    const quotedValue = '"value with spaces, \\"quotes\\", and \\\\backslashes"';
     runImpl = (args) => {
       if (args[0] === "-i") return result(0);
       if (args[0] === "find-generic-password") return result(0, `${value}\n`);
@@ -300,12 +300,12 @@ describe("writeKeychainSecret", () => {
     const write = runCalls[0];
     expect(write?.args).toEqual(["-i"]);
     expect({
-      argvHasHexPayload: write?.args.join(" ").includes(`-X "${hex}"`) ?? false,
-      stdinHasHexPayload: write?.stdin?.includes(`-X "${hex}"`) ?? false,
-    }).toEqual({ argvHasHexPayload: false, stdinHasHexPayload: true });
+      argvHasPlaintextPayload: write?.args.join(" ").includes(`-w ${quotedValue}`) ?? false,
+      stdinHasPlaintextPayload: write?.stdin?.includes(`-w ${quotedValue}`) ?? false,
+    }).toEqual({ argvHasPlaintextPayload: false, stdinHasPlaintextPayload: true });
     expect(write?.args.join(" ")).not.toContain(value);
-    expect(write?.stdin).toContain(`-X "${hex}"`);
-    expect(write?.stdin).not.toContain(value);
+    expect(write?.stdin).toContain(`-w ${quotedValue}`);
+    expect(write?.stdin).not.toContain(" -X ");
     expect(write?.stdin).toContain('-s "claudish"');
     expect(write?.stdin).toContain('-a "GEMINI_API_KEY"');
     expect(write?.stdin).toContain('-l "claudish: GEMINI_API_KEY"');
@@ -313,6 +313,27 @@ describe("writeKeychainSecret", () => {
     expect(write?.stdin).toContain('-j "Stored by claudish"');
     expect(write?.stdin).toContain(" -U ");
     expect(write?.stdin).toContain('-T "/usr/bin/security"');
+  });
+
+  it("uses hex stdin for an accepted non-ASCII value without exposing it in argv", () => {
+    const value = "café";
+    const hex = Buffer.from(value, "utf8").toString("hex");
+    runImpl = (args) => {
+      if (args[0] === "-i") return result(0);
+      if (args[0] === "find-generic-password") return result(0, `${value}\n`);
+      throw new Error(`unexpected keychain command: ${args[0]}`);
+    };
+
+    writeKeychainSecret("GEMINI_API_KEY", value);
+
+    expect(runCalls).toHaveLength(2);
+    const write = runCalls[0];
+    expect(write?.args).toEqual(["-i"]);
+    expect(write?.args.join(" ")).not.toContain(value);
+    expect(write?.args.join(" ")).not.toContain(hex);
+    expect(write?.stdin).toContain(`-X "${hex}"`);
+    expect(write?.stdin).not.toContain(value);
+    expect(write?.stdin).not.toContain(" -w ");
   });
 
   it("rejects control characters before running security", () => {

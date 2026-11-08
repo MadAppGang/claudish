@@ -114,7 +114,7 @@ async function staleSocket(path: string): Promise<void> {
       "-e",
       `require("node:net").createServer().listen(${JSON.stringify(path)}, () => console.log("up"));`,
     ],
-    { stdout: "pipe", stderr: "inherit" }
+    { env: { ...process.env }, stdout: "pipe", stderr: "inherit" }
   );
   await child.stdout.getReader().read(); // "up": bound and listening
   child.kill("SIGKILL");
@@ -123,7 +123,7 @@ async function staleSocket(path: string): Promise<void> {
 }
 
 function deadPid(): number {
-  const p = Bun.spawnSync(["/usr/bin/true"]);
+  const p = Bun.spawnSync(["/usr/bin/true"], { env: { ...process.env } });
   return p.pid;
 }
 
@@ -192,7 +192,10 @@ function unixFds(pids: number[]): Map<number, Array<{ fd: string; addr: string; 
   const out = new Map<number, Array<{ fd: string; addr: string; peer: string }>>();
   let text = "";
   try {
-    text = execFileSync("lsof", ["-a", "-U", "-p", pids.join(",")], { encoding: "utf8" });
+    text = execFileSync("lsof", ["-a", "-U", "-p", pids.join(",")], {
+      env: { ...process.env },
+      encoding: "utf8",
+    });
   } catch (e) {
     text = String((e as { stdout?: string }).stdout ?? "");
   }
@@ -305,7 +308,11 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
   test("decoy: the watcher never signals a pid that fails its identity check", async () => {
     const t = env();
     ensureSockRoot(t.sockRoot);
-    const decoy = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+    const decoy = spawn("sleep", ["60"], {
+      env: { ...process.env },
+      detached: true,
+      stdio: "ignore",
+    });
     extraProcs.push(decoy);
     const ctl = join(t.sockRoot, "launch-DeCoY1");
     const turn = join(t.sockRoot, "launch-DeCoY2");
@@ -340,7 +347,11 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
   test("sweep: a dead-owner record is identity-validated; a decoy pid is kept, never signalled", async () => {
     const t = env();
     ensureSockRoot(t.sockRoot);
-    const decoy = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+    const decoy = spawn("sleep", ["60"], {
+      env: { ...process.env },
+      detached: true,
+      stdio: "ignore",
+    });
     extraProcs.push(decoy);
     const ctl = join(t.sockRoot, "launch-SwEeP1");
     mkdirSync(ctl, { mode: 0o700 });
@@ -379,7 +390,7 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
     const fakeWatcher = spawn(
       "/bin/sh",
       ["-c", "sleep 30; :", "claudish-pane-watcher", paneId, "x"],
-      { stdio: "ignore" }
+      { env: { ...process.env }, stdio: "ignore" }
     );
     extraProcs.push(fakeWatcher);
     await Bun.sleep(100);
@@ -570,7 +581,10 @@ describe.skipIf(!MAGMUX)(`pane registry, real magmux (${MAGMUX ? "" : NO_MAGMUX_
 /** `ps -o <field>= -p <pid>`, or null when the pid is gone. */
 function psField(pid: number, field: string): number | null {
   try {
-    const v = execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" });
+    const v = execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], {
+      env: { ...process.env },
+      encoding: "utf8",
+    });
     return Number(v.trim());
   } catch {
     return null;
@@ -683,6 +697,7 @@ describe("records", () => {
     const mode =
       Bun.file(join(t.sockRoot, "panes", `${rec.paneId}.json`)).size >= 0
         ? execFileSync("stat", ["-f", "%Lp", join(t.sockRoot, "panes", `${rec.paneId}.json`)], {
+            env: { ...process.env },
             encoding: "utf8",
           }).trim()
         : "";
@@ -1082,7 +1097,9 @@ describe("the pane-socket probe: ENOENT, or ECONNREFUSED with magmux proven dead
     const sock = sockPathOf(root, id);
     await staleSocket(sock);
     // a process whose argv carries the pane's magmux needle, as a busy magmux's would
-    const mag = Bun.spawn(["/bin/sh", "-c", "sleep 30; true", "sh", magmuxNeedle(id)]);
+    const mag = Bun.spawn(["/bin/sh", "-c", "sleep 30; true", "sh", magmuxNeedle(id)], {
+      env: { ...process.env },
+    });
     try {
       expect(await sweepOrphanPanes(root)).toEqual({ reaped: [], cleaned: [], kept: [id] });
       expect(existsSync(sock)).toBe(true);

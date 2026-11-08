@@ -9,8 +9,9 @@
  * await pays the SDK cost and subsequent reads are free.
  *
  *  - `isAvailable()` — ASYNC readiness: env var set? config key? oauth file on
- *    disk? local provider enabled? op:// resolvable? Never throws (a 1Password
- *    auth failure resolves to `false`, it does not bring down the caller).
+ *    disk? local provider enabled? op:// resolvable? Normally never throws (a
+ *    1Password auth failure resolves to `false`). Codex pool presence is the
+ *    exception: unknown account configuration throws so signing cannot use a key.
  *  - `getRequestAuth()` — ASYNC, produces the rich artifact (headers, optional
  *    endpoint override, optional payload transform) for an outgoing request.
  *    OAuth token refreshes and op:// pulls happen here, internally.
@@ -34,11 +35,10 @@
  *  - `failed`  — a source could not be consulted at all. TRANSIENT, and it says
  *                nothing about whether the credential exists.
  *
- * `failed` still keeps a candidate out of the chain — a credential that will
- * not resolve cannot sign a request either — so routing is unchanged. What is
- * new is that the REASON survives to the caller. The same line the keychain
- * engine draws (`{present, failed}` / `{value?, failed}`) and the same line the
- * op source draws for denied handshakes, carried one layer further up.
+ * `failed` normally keeps a candidate out of the chain. A typed Codex account-list
+ * failure is the exception: routing retains it and skips credential-dependent
+ * discovery so signing can return the repair/transient verdict, never a metered
+ * substitute. The keychain/op source's failure evidence survives to the caller.
  */
 export type CredentialReadiness = "present" | "absent" | "failed";
 
@@ -50,6 +50,8 @@ export interface ReadinessResult {
    * key material — these strings reach stderr and the routing warning.
    */
   detail?: string;
+  /** A typed account-list failure must reach Codex signing, never a metered hop. */
+  failureReason?: "accounts-list";
 }
 
 /**
@@ -106,8 +108,16 @@ export function redactSecrets(text: string): string {
   );
 }
 
+import type { SelectReason } from "../accounts/policy.js";
+import type { AccountRef, AccountSelectionContext } from "../accounts/types.js";
+
 export interface RequestAuthContext {
   model: string;
+  exclude?: AccountRef[];
+  pin?: AccountRef;
+  rejected?: RequestAuth;
+  requireOAuth?: boolean;
+  selectionContext?: AccountSelectionContext;
   forceRefresh?: boolean;
   /**
    * When set, 1Password resolution is allowed to prompt interactively (TTY only)
@@ -133,6 +143,12 @@ export interface RequestAuthContext {
 export type CredentialArm = "oauth" | "api-key";
 
 export interface RequestAuth {
+  account?: AccountRef;
+  /**
+   * Why the pool chose `account` (`AccountLease.reason`). Data only: the usage
+   * ledger records it, and nothing decides on it.
+   */
+  selectReason?: SelectReason;
   headers: Record<string, string>;
   endpoint?: string;
   transformPayload?(payload: any): any;
@@ -144,7 +160,7 @@ export interface RequestAuth {
    * Optional, and its ABSENCE must be read as "unknown", never as a default arm:
    * a consumer that maps arms to money resolves unknown toward the metered/paid
    * answer, so a provider that forgets to set it over-reports cost rather than
-   * hiding a real bill. See `OpenAICodexTransport.refreshAuth`.
+   * hiding a real bill. See `OpenAICodexTransport.signRequest`.
    */
   arm?: CredentialArm;
   /**
@@ -160,8 +176,9 @@ export interface CredentialProvider {
   readonly catalogName: string;
   /**
    * ASYNC readiness: env var / config key / oauth file / local enabled / op://
-   * resolvable. Never throws — a 1Password auth failure resolves to false so the
-   * server keeps running. Memoized: the SDK is touched at most once per provider.
+   * resolvable. Normally never throws — a 1Password auth failure resolves to
+   * false. CodexPoolHalf throws typed account-list errors on unknown presence;
+   * the authority describes those as failed, while sign-time dispatch rethrows.
    */
   isAvailable(opts?: { allowOpPrompt?: boolean }): Promise<boolean>;
   /**

@@ -20,6 +20,7 @@
  */
 
 import { getLogLevel, log } from "../../logger.js";
+import { callAbortError } from "./call-context.js";
 
 /**
  * Queued request with Promise callbacks
@@ -28,6 +29,10 @@ interface QueuedRequest {
   fetchFn: () => Promise<Response>;
   resolve: (response: Response) => void;
   reject: (error: Error) => void;
+  /** The caller's abort signal, when it passed one. */
+  signal?: AbortSignal;
+  /** Removes this entry from the queue on abort, while it is still waiting. */
+  onAbort?: () => void;
 }
 
 /**
@@ -50,6 +55,18 @@ interface RateLimitState {
   totalProcessed: number;
   totalErrors: number;
   total429Errors: number;
+}
+
+/**
+ * Called by the worker once it has taken an entry: the entry no longer waits in
+ * the queue, so its abort listener goes, and an entry whose caller already
+ * aborted is rejected instead of started. True when it was rejected.
+ */
+function rejectIfAborted(request: QueuedRequest): boolean {
+  if (request.onAbort) request.signal?.removeEventListener("abort", request.onAbort);
+  if (!request.signal?.aborted) return false;
+  request.reject(callAbortError());
+  return true;
 }
 
 /**
@@ -128,7 +145,12 @@ export class OpenRouterRequestQueue {
    * @returns Promise that resolves with the response
    * @throws Error if queue is full
    */
-  async enqueue(fetchFn: () => Promise<Response>): Promise<Response> {
+  async enqueue(
+    fetchFn: () => Promise<Response>,
+    opts?: { signal?: AbortSignal }
+  ): Promise<Response> {
+    const signal = opts?.signal;
+    if (signal?.aborted) throw callAbortError();
     // Check queue size limit
     if (this.queue.length >= this.maxQueueSize) {
       if (getLogLevel() === "debug") {
@@ -147,7 +169,20 @@ export class OpenRouterRequestQueue {
         fetchFn,
         resolve,
         reject,
+        signal,
       };
+      // An abort while the entry still WAITS removes it and rejects at once:
+      // nothing of the call starts after its deadline, and it stops holding a
+      // place in line. Once the worker has taken it, the worker checks again.
+      if (signal) {
+        queuedRequest.onAbort = () => {
+          const index = this.queue.indexOf(queuedRequest);
+          if (index === -1) return;
+          this.queue.splice(index, 1);
+          reject(callAbortError());
+        };
+        signal.addEventListener("abort", queuedRequest.onAbort, { once: true });
+      }
 
       this.queue.push(queuedRequest);
       if (getLogLevel() === "debug") {
@@ -177,6 +212,7 @@ export class OpenRouterRequestQueue {
     while (this.queue.length > 0) {
       const request = this.queue.shift();
       if (!request) break;
+      if (rejectIfAborted(request)) continue;
 
       if (getLogLevel() === "debug") {
         log(`[OpenRouterQueue] Processing request (${this.queue.length} remaining in queue)`);
@@ -185,6 +221,8 @@ export class OpenRouterRequestQueue {
       try {
         // Wait for next available slot
         await this.waitForNextSlot();
+        // Aborted during the rate-limit wait: never start it.
+        if (rejectIfAborted(request)) continue;
 
         // Execute the request
         const response = await request.fetchFn();

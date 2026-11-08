@@ -151,6 +151,7 @@ async function runChild(opts: ChildOpts): Promise<ChildResult> {
   ].join("\n");
 
   const p = Bun.spawn(["bun", "-e", src], {
+    env: { ...process.env },
     cwd: SKILL_ROOT,
     stdin: "ignore",
     stdout: "ignore",

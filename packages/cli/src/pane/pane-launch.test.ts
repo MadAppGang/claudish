@@ -19,6 +19,7 @@ import {
   launcherScript,
   mintPaneId,
   paneCommand,
+  requestedAgentOf,
   sockRootFor,
   versionAtLeast,
 } from "./pane-launch.js";
@@ -46,6 +47,23 @@ function versionBelow(v: string): string {
   const [major = 0, minor = 0, patch = 0] = v.split(".").map((x) => Number.parseInt(x, 10));
   return patch > 0 ? `${major}.${minor}.${patch - 1}` : `${major}.${minor - 1}.9`;
 }
+
+describe("requestedAgentOf", () => {
+  test.each([
+    { flags: [], expected: null },
+    { flags: ["--agent", "dev:reviewer"], expected: "dev:reviewer" },
+    { flags: ["--agent=dev:reviewer"], expected: "dev:reviewer" },
+    { flags: ["--agent", "dev:first", "--agent=dev:reviewer"], expected: "dev:reviewer" },
+    { flags: ["--agent=dev:first", "--agent", "dev:reviewer"], expected: "dev:reviewer" },
+    { flags: ["--agent", "--effort", "high"], expected: null },
+    { flags: ["--agent"], expected: null },
+    { flags: ["--agents", '{"reviewer":{}}'], expected: null },
+    { flags: ["--agent="], expected: null },
+    { flags: ["--agent=-invalid"], expected: null },
+  ])("agent request from $flags is $expected", ({ flags, expected }) => {
+    expect(requestedAgentOf(flags)).toBe(expected);
+  });
+});
 
 describe("launcher and shim", () => {
   test("the launcher cds to the realpath cwd, then execs claudish; no watcher, no PATH line", () => {
