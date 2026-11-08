@@ -306,6 +306,36 @@ function startAllowanceFlight(): () => void {
   }
 }
 
+/**
+ * Replaces each image or document part of the given types with a text part at
+ * the same position, then collapses a message left with a single text part to
+ * that string. Parts nested in a `tool_result` part's `content` array are
+ * replaced the same way, and that array stays an array; a string
+ * `tool_result` content is left alone. Removing the parts instead would leave
+ * an image-only message or tool result empty, which providers reject with a
+ * 400; the placeholder keeps the request valid and tells the model an
+ * attachment was there.
+ */
+function replaceUnsupportedParts(messages: any[], types: readonly string[]): void {
+  const replacePart = (part: any): any => {
+    if (part?.type === "tool_result" && Array.isArray(part.content)) {
+      return { ...part, content: part.content.map(replacePart) };
+    }
+    if (!types.includes(part?.type)) return part;
+    const kind = part.type === "document" ? "document" : "image";
+    return { type: "text", text: `[${kind} omitted: this model does not accept ${kind} input]` };
+  };
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    msg.content = msg.content.map(replacePart);
+    if (msg.content.length === 1 && msg.content[0].type === "text") {
+      msg.content = msg.content[0].text;
+    } else if (msg.content.length === 0) {
+      msg.content = "";
+    }
+  }
+}
+
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   const headers = c.req.header();
   const auth: VisionProxyAuthHeaders = {};
@@ -1524,24 +1554,31 @@ export class ComposedHandler implements ModelHandler {
 
     // Handle image content for models that don't support vision
     if (!this.getModelSupportsVision()) {
-      // Collect all image blocks from all messages with their positions.
+      // Collect all top-level image blocks from all messages with their positions.
       // Supports both OpenAI format (image_url) and Anthropic format (type:"image"|"document").
+      // Parts nested in a tool_result's content array are only counted: they never
+      // go to the vision proxy and take the strip path below.
+      const isUnsupportedPart = (part: any): boolean =>
+        part?.type === "image_url" || part?.type === "image" || part?.type === "document";
       const imageBlocks: Array<{ msgIdx: number; partIdx: number; block: OpenAIImageBlock }> = [];
+      let nestedImageCount = 0;
       for (let msgIdx = 0; msgIdx < messages.length; msgIdx++) {
         const msg = messages[msgIdx];
         if (Array.isArray(msg.content)) {
           for (let partIdx = 0; partIdx < msg.content.length; partIdx++) {
             const part = msg.content[partIdx];
-            if (part.type === "image_url" || part.type === "image" || part.type === "document") {
+            if (isUnsupportedPart(part)) {
               imageBlocks.push({ msgIdx, partIdx, block: part as OpenAIImageBlock });
+            } else if (part?.type === "tool_result" && Array.isArray(part.content)) {
+              nestedImageCount += part.content.filter(isUnsupportedPart).length;
             }
           }
         }
       }
 
-      if (imageBlocks.length > 0) {
+      if (imageBlocks.length + nestedImageCount > 0) {
         log(
-          `[ComposedHandler] Non-vision model received ${imageBlocks.length} image(s), calling vision proxy`
+          `[ComposedHandler] Non-vision model received ${imageBlocks.length + nestedImageCount} image(s), calling vision proxy`
         );
         // Only attempt vision proxy for OpenAI-format image_url blocks (proxy expects that format).
         // Anthropic-format image/document blocks are stripped directly.
@@ -1567,34 +1604,11 @@ export class ComposedHandler implements ModelHandler {
           }
           log(`[ComposedHandler] Vision proxy described ${descriptions.length} image(s)`);
           // Strip any remaining Anthropic-format image/document blocks
-          for (const msg of messages) {
-            if (Array.isArray(msg.content)) {
-              msg.content = msg.content.filter(
-                (part: any) => part.type !== "image" && part.type !== "document"
-              );
-              if (msg.content.length === 1 && msg.content[0].type === "text") {
-                msg.content = msg.content[0].text;
-              } else if (msg.content.length === 0) {
-                msg.content = "";
-              }
-            }
-          }
+          replaceUnsupportedParts(messages, ["image", "document"]);
         } else {
           // Vision proxy failed or not applicable — strip all unsupported image/document blocks
           log("[ComposedHandler] Stripping image/document blocks (vision not supported)");
-          for (const msg of messages) {
-            if (Array.isArray(msg.content)) {
-              msg.content = msg.content.filter(
-                (part: any) =>
-                  part.type !== "image_url" && part.type !== "image" && part.type !== "document"
-              );
-              if (msg.content.length === 1 && msg.content[0].type === "text") {
-                msg.content = msg.content[0].text;
-              } else if (msg.content.length === 0) {
-                msg.content = "";
-              }
-            }
-          }
+          replaceUnsupportedParts(messages, ["image_url", "image", "document"]);
         }
       }
     }
