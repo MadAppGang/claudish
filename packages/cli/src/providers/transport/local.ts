@@ -41,6 +41,21 @@ const DISPLAY_NAMES: Record<string, string> = {
   custom: "Custom",
 };
 
+/**
+ * Whether an `/api/tags` response has Ollama's `{models: [...]}` shape. A
+ * non-2xx status or a body that is not JSON (a 200 HTML catch-all) is not
+ * Ollama. Consumes the body.
+ */
+async function hasOllamaTagsShape(response: Response): Promise<boolean> {
+  if (!response.ok) return false;
+  try {
+    const data = (await response.json()) as { models?: unknown } | null;
+    return Array.isArray(data?.models);
+  } catch {
+    return false;
+  }
+}
+
 export class LocalTransport implements ProviderTransport {
   readonly name: string;
   readonly displayName: string;
@@ -233,6 +248,9 @@ export class LocalTransport implements ProviderTransport {
    * once against Ollama's /api/tags, whose {models:[...]} shape a generic
    * OpenAI-compatible server does not return. The result is cached, and a
    * network failure is treated as "not Ollama" rather than thrown.
+   *
+   * `checkHealth()` sends the same GET first and records its answer here, so
+   * after a passing health check this method issues no request of its own.
    */
   private async isOllamaBackend(): Promise<boolean> {
     if (this.config.name === "ollama") return true;
@@ -244,12 +262,7 @@ export class LocalTransport implements ProviderTransport {
         method: "GET",
         signal: AbortSignal.timeout(5000),
       });
-      if (response.ok) {
-        const data = (await response.json()) as any;
-        this._isOllamaBackend = Array.isArray(data?.models);
-      } else {
-        this._isOllamaBackend = false;
-      }
+      this._isOllamaBackend = await hasOllamaTagsShape(response);
     } catch {
       this._isOllamaBackend = false;
     }
@@ -276,6 +289,9 @@ export class LocalTransport implements ProviderTransport {
         signal: AbortSignal.timeout(5000),
       });
 
+      // An HTTP answer settles the Ollama question too; a network failure
+      // does not, so it leaves the cache for the probe to fill later.
+      this._isOllamaBackend ??= await hasOllamaTagsShape(response);
       if (response.ok) {
         this.isHealthy = true;
         this.healthChecked = true;

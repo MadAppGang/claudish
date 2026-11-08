@@ -1,7 +1,8 @@
 /**
- * Tests for LocalTransport Ollama-backend auto-detection: a custom endpoint
- * pointed at an Ollama server gets num_ctx even when it is not named "ollama",
- * while genuinely non-Ollama endpoints do not.
+ * Tests for LocalTransport Ollama-backend auto-detection: a URL model
+ * (`http://host:11434/model`, whose provider createUrlProvider names
+ * "custom-url") pointed at an Ollama server gets num_ctx even though it is not
+ * named "ollama", while genuinely non-Ollama endpoints do not.
  *
  * Run: bun test packages/cli/src/providers/transport/local.test.ts
  */
@@ -43,20 +44,20 @@ describe("LocalTransport — Ollama backend detection", () => {
     return `http://localhost:${server.port}`;
   }
 
-  test("a custom endpoint backed by Ollama gets num_ctx", async () => {
+  test("a URL model backed by Ollama gets num_ctx", async () => {
     const baseUrl = serve((req) =>
       new URL(req.url).pathname === "/api/tags" ? ollamaTags() : new Response(null, { status: 404 })
     );
-    const t = new LocalTransport(config("custom", baseUrl), "llama3");
+    const t = new LocalTransport(config("custom-url", baseUrl), "llama3");
 
     const extra = await t.getExtraPayloadFields();
     expect(extra.options?.num_ctx).toBeGreaterThanOrEqual(32768);
   });
 
-  test("a non-Ollama custom endpoint gets no num_ctx", async () => {
+  test("a URL model on a non-Ollama server gets no num_ctx", async () => {
     // No /api/tags route: a plain OpenAI-compatible server.
     const baseUrl = serve(() => new Response(null, { status: 404 }));
-    const t = new LocalTransport(config("custom", baseUrl), "some-model");
+    const t = new LocalTransport(config("custom-url", baseUrl), "some-model");
 
     expect(await t.getExtraPayloadFields()).toEqual({});
   });
@@ -69,7 +70,7 @@ describe("LocalTransport — Ollama backend detection", () => {
           headers: { "Content-Type": "text/html" },
         })
     );
-    const t = new LocalTransport(config("custom", baseUrl), "x");
+    const t = new LocalTransport(config("custom-url", baseUrl), "x");
 
     // /api/tags answered 200 but .json() throws, so the probe must reject it.
     expect(await t.getExtraPayloadFields()).toEqual({});
@@ -112,10 +113,38 @@ describe("LocalTransport — Ollama backend detection", () => {
       }
       return new Response(null, { status: 404 });
     });
-    const t = new LocalTransport(config("custom", baseUrl), "x");
+    const t = new LocalTransport(config("custom-url", baseUrl), "x");
 
     await t.getExtraPayloadFields();
     await t.getExtraPayloadFields();
     expect(tagsHits).toBe(1);
+  });
+
+  test("a passing health check answers the probe without a second /api/tags", async () => {
+    let tagsHits = 0;
+    let showHits = 0;
+    const baseUrl = serve((req) => {
+      const path = new URL(req.url).pathname;
+      if (path === "/api/tags") {
+        tagsHits++;
+        return ollamaTags();
+      }
+      if (path === "/api/show") {
+        showHits++;
+        return new Response(JSON.stringify({ model_info: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    const t = new LocalTransport(config("custom-url", baseUrl), "llama3");
+
+    await t.refreshAuth();
+    const extra = await t.getExtraPayloadFields();
+    expect(extra.options?.num_ctx).toBeGreaterThanOrEqual(32768);
+    expect(tagsHits).toBe(1);
+    // The health check's answer also routed context detection to /api/show.
+    expect(showHits).toBe(1);
   });
 });
