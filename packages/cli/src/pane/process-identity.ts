@@ -26,7 +26,7 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import { lstatSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 
 export interface PsRow {
   pid: number;
@@ -468,18 +468,53 @@ export function isPaneRecordPath(root: string, p: string, paneId: string): boole
   );
 }
 
+/**
+ * The one file a replay's fork can write, and whether its project directory was created for
+ * it. Carried by a replay's record and its watcher, so the fork record is removed on every
+ * path that verifies the replay's processes gone.
+ */
+export interface ForkRecordRef {
+  /** `<config dir>/projects` */
+  projectsRoot: string;
+  /** `<projectsRoot>/<slug>/<fork uuid>.jsonl` */
+  path: string;
+  /** the replay's start created `dirname(path)`, so an empty one may be removed */
+  removeProjectDir: boolean;
+}
+
+const FORK_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** `projectDirNameFor`'s alphabet: every other character became `-` */
+const PROJECT_SLUG_RE = /^[A-Za-z0-9-]{1,255}$/;
+
+/**
+ * `p` is exactly `<projectsRoot>/<one slug segment>/<uuid>.jsonl`, with `projectsRoot` an
+ * absolute, normalised path named `projects` and `uuid` a lowercase uuid. Compared against
+ * the root and the uuid, never against `p` itself.
+ */
+export function isForkRecordPath(projectsRoot: string, p: string, uuid: string): boolean {
+  if (!isAbsolute(projectsRoot) || normalize(projectsRoot) !== projectsRoot) return false;
+  if (basename(projectsRoot) !== "projects" || !FORK_UUID_RE.test(uuid)) return false;
+  const dir = dirname(p);
+  return (
+    dirname(dir) === projectsRoot &&
+    PROJECT_SLUG_RE.test(basename(dir)) &&
+    basename(p) === `${uuid}.jsonl`
+  );
+}
+
 /* ───────────────────────────── the watcher, as shell ───────────────────────────── */
 
 /**
  * Shell versions of the predicates above. Positional parameters (values are NEVER
  * interpolated into the script): $1 paneId, $2 sessionUuid, $3 ctlDir, $4 sockPath,
- * $5 recordPath, $6 turnDir, $7 sockRoot. `ps` and `pgrep` come from PATH, so a test can
- * source these functions against a recorded table.
+ * $5 recordPath, $6 turnDir, $7 sockRoot, and for a replay only $8 projectsRoot, $9 the fork
+ * record's path, $10 `1` when its project directory was created for it. `ps` and `pgrep` come
+ * from PATH, so a test can source these functions against a recorded table.
  */
 export const WATCHER_FUNCTIONS = `
 set -f
 export LC_ALL=C
-PANE=$1 UUID=$2 CTL=$3 SOCKP=$4 REC=$5 TURN=$6 ROOT=$7
+PANE=$1 UUID=$2 CTL=$3 SOCKP=$4 REC=$5 TURN=$6 ROOT=$7 PROJ=$8 FORK=$9 FORKDIR=\${10}
 pstable() { ps -ax -ww -o pid=,pgid=,lstart=,command=; }
 ps_ok() { ps -o pid= -p $$ >/dev/null 2>&1; }
 mag=""
@@ -527,6 +562,17 @@ launch_dir_ok() {
   case "$b" in (*[!A-Za-z0-9]*) return 1;; esac
   [ -d "$1" ] && [ ! -L "$1" ]
 }
+fork_ok() {
+  [ -n "$FORK" ] || return 1
+  case "$PROJ" in (/*/projects) ;; (*) return 1;; esac
+  case "$PROJ" in (*/./*|*/../*|*//*) return 1;; esac
+  case "$UUID" in (????????-????-????-????-????????????) ;; (*) return 1;; esac
+  case "$UUID" in (*[!0-9a-f-]*) return 1;; esac
+  s=\${FORK#"$PROJ"/}
+  s=\${s%/"$UUID".jsonl}
+  case "$s" in (''|*[!A-Za-z0-9-]*) return 1;; esac
+  [ "$FORK" = "$PROJ/$s/$UUID.jsonl" ]
+}
 `;
 
 /** The pane watcher's main body, run after the functions. */
@@ -546,6 +592,11 @@ for s in TERM KILL; do
   if [ "$s" = TERM ]; then settle_wait 10; else settle_wait 5; fi
 done
 alive && exit 1
+# a replay's fork record, before the record that names it: a watcher killed here leaves both for the sweep
+if fork_ok; then
+  rm -f -- "$FORK"
+  [ "$FORKDIR" = 1 ] && rmdir -- "\${FORK%/*}" 2>/dev/null
+fi
 [ "$SOCKP" = "$ROOT/magmux-$PANE.sock" ] && rm -f -- "$SOCKP"
 [ "$REC" = "$ROOT/panes/$PANE.json" ] && rm -f -- "$REC"
 launch_dir_ok "$CTL" && rm -rf -- "$CTL"
@@ -566,10 +617,15 @@ export interface WatcherArgs {
   recordPath: string;
   turnDir: string;
   sockRoot: string;
+  /** a replay's fork record; absent for every other pane */
+  fork?: ForkRecordRef;
 }
 
 /** `/bin/sh` argv for one watcher: values only as positional parameters. */
 export function watcherArgv(a: WatcherArgs): string[] {
+  const fork = a.fork
+    ? [a.fork.projectsRoot, a.fork.path, a.fork.removeProjectDir ? "1" : "0"]
+    : [];
   return [
     "-c",
     WATCHER_SCRIPT,
@@ -581,6 +637,7 @@ export function watcherArgv(a: WatcherArgs): string[] {
     a.recordPath,
     a.turnDir,
     a.sockRoot,
+    ...fork,
   ];
 }
 

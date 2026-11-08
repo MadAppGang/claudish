@@ -99,6 +99,7 @@ function classifyStartupKind(): string {
     "stats",
     "providers",
     "keychain",
+    "subscription",
     "login",
     "logout",
     "quota",
@@ -407,8 +408,12 @@ const isServeCommand = firstPositional === "serve";
 const isProvidersCommand = firstPositional === "providers";
 // Keychain subcommand: claudish keychain status|list|import|set|rm|enable|disable
 const isKeychainCommand = firstPositional === "keychain";
+// Subscription subcommand: claudish subscription models|probe antigravity … --raw --json
+const isSubscriptionCommand = firstPositional === "subscription";
 // Hooks subcommand: claudish hooks list|check|init|corpus|telemetry
 const isHooksCommand = firstPositional === "hooks";
+// Account subcommand: read-only views and transactional Codex management.
+const isAccountCommand = firstPositional === "account";
 // Team subcommand: claudish team run|run-and-judge (multi-model orchestration)
 const isTeamCommand = firstPositional === "team";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
@@ -498,6 +503,58 @@ if (isMcpMode) {
   import("./keychain-command.js").then((m) =>
     m.keychainCommand(args.slice(keychainArgIndex + 1)).catch((e) => {
       console.error(`[claudish keychain] ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    })
+  );
+} else if (isSubscriptionCommand) {
+  // Raw subscription model list for models-index: one JSON line on stdout.
+  // Exit explicitly: an unkilled `security` past its deadline would keep the
+  // loop alive. The catch prints the `internal_error` line (awaited) and a
+  // FIXED stderr line, never the error: its message can carry vendor text.
+  // `probe` sends one request through the login (subscription-probe-command.ts);
+  // everything else stays with the model-list command and its usage error.
+  const subscriptionArgIndex = args.indexOf("subscription");
+  const subscriptionArgv = args.slice(subscriptionArgIndex + 1);
+  const subscriptionModule = () => import("./subscription-models-command.js");
+  const probeModule = () => import("./subscription-probe-command.js");
+  // `subscription-dispatch.ts` decides with the probe parser's own token walk
+  // (flags may precede `probe`) and has no dependency that can fail, so a
+  // failed probe module never sends a probe argv to the models command. If
+  // the probe module will not load, the dispatch module still prints the
+  // probe-schema `internal_error` line (exit 1): one line on every exit.
+  const writeLine = (line: string, code: number) =>
+    new Promise<number>((resolve) => {
+      process.stdout.write(line, () => resolve(code));
+    });
+  import("./subscription-dispatch.js")
+    .then((dispatch) => {
+      const probe = dispatch.isSubscriptionProbeArgv(subscriptionArgv);
+      const run = probe
+        ? probeModule().then((m) => m.subscriptionProbeCommand(subscriptionArgv))
+        : subscriptionModule().then((m) => m.subscriptionModelsCommand(subscriptionArgv));
+      return run.catch(() =>
+        probe
+          ? probeModule()
+              .then((m) => m.reportProbeInternalError())
+              .catch(() => {
+                process.stderr.write("[claudish subscription] internal error\n");
+                return writeLine(dispatch.probeLoadFailureLine(), 1);
+              })
+          : subscriptionModule().then((m) => m.reportSubscriptionInternalError())
+      );
+    })
+    .catch(() => {
+      // A module would not load and no line can be built.
+      process.stderr.write("[claudish subscription] internal error\n");
+      return 1;
+    })
+    .then((code) => process.exit(code));
+} else if (isAccountCommand) {
+  // Account views never enroll; only explicit Codex management publishes mutations.
+  const accountArgIndex = args.indexOf("account");
+  import("./account-command.js").then((m) =>
+    m.accountCommand(args.slice(accountArgIndex + 1)).catch((e) => {
+      console.error(`[claudish account] ${e instanceof Error ? e.message : String(e)}`);
       process.exit(1);
     })
   );
@@ -1094,13 +1151,12 @@ async function runCli() {
     //   "skipped"   — local model or --models-skip-update
     //   "hard_fail" — missing cache + network failure → exit 1
     //
-    // AHEAD OF THE --advisor CHECK, deliberately. That check decides whether
-    // each panel model is routable, and every one of its answers is read from
-    // the catalog (`advisorRouteFor` → `lookupOpenRouterId`). With a cold
-    // catalog nothing is known, so the router falls back to passthrough and an
-    // UNROUTABLE panel model cannot be refused — it fails on the first advisor
-    // call instead, which is exactly the refusal this ordering exists to make
-    // possible (`kimi-k3` is refused only because the catalog was warm).
+    // AHEAD OF THE --advisor CHECK, deliberately. That check plans every panel
+    // member through `explainRoute` (`planAdvisorModel`), which reads its route
+    // candidates from the catalog. With a cold catalog a bare member has no
+    // candidates and is refused (`catalog-unreadable`), and an explicit one is
+    // taken as written; warming first is what lets startup plan, and refuse,
+    // from real data.
     const warmOutcome = await traceSpan("startup:catalog-warm", () =>
       warmCatalogIfNeeded(cliConfig)
     );
@@ -1145,6 +1201,11 @@ async function runCli() {
     // belongs to Claude Code alone, and the cost line (N2) is not optional.
     // `cliConfig.advisor` is set only by the --advisor flag on this command line
     // (N1); nothing stored can turn it on. Decision logic: advisor-startup.ts.
+    //
+    // Startup PLANS every member and BUILDS every routed member's chain here,
+    // before the port exists; the proxy's panel gateway runs on exactly that
+    // runtime (no lazy path), and owns its handlers from then on.
+    let advisorRuntime: import("./handlers/advisor-panel-gateway.js").AdvisorRuntime | undefined;
     if (cliConfig.advisor) {
       const { evaluateAdvisorStartup } = await import("./advisor-startup.js");
       const decision = await traceSpan("startup:advisor-check", () =>
@@ -1160,23 +1221,31 @@ async function runCli() {
         // A DEFAULTED collector that cannot be called is dropped here, before
         // createProxyServer reads advisorCollector, so no doomed call is made.
         cliConfig.advisorCollector = decision.effectiveCollector;
+        advisorRuntime = decision.runtime;
         // The warm step above ran first and hard-fails out, so the catalog is
         // normally populated by now. It can still be COLD — `--models-skip-update`,
         // a local main model (both "skipped"), or a cache claudish could not read.
-        // Then `advisorRouteFor` had no data to check any panel model against, so
-        // "routable" was not decided, it was assumed. Say which models that leaves
-        // unverified instead of proceeding as though they had passed.
+        // A BARE member is then refused above (routing answers `catalog-unreadable`),
+        // so only an explicit `provider@model` member can have passed without the
+        // catalog: its provider was taken as written. Say which ones.
         const { getCatalogEntries } = await import("./providers/catalog-client.js");
         if (getCatalogEntries() === null) {
-          const panel = cliConfig.advisorModels ?? [];
-          decision.notice.push(
-            `  WARNING: the model catalog is not loaded (catalog warm: ${warmOutcome}), so claudish ` +
-              `could not verify that ${panel.length === 1 ? "this panel model is" : "these panel models are"} ` +
-              `routable: ${panel.join(", ")}. An unroutable one fails on its first advisor call instead ` +
-              "of being refused here. Run `claudish --models-refresh` to check them at launch."
-          );
+          const unverified = [...decision.runtime.plans.values()]
+            .filter((p) => p.kind === "routed" && p.invocationMode === "explicit-model")
+            .map((p) => p.spec);
+          if (unverified.length > 0) {
+            decision.notice.push(
+              `  WARNING: the model catalog is not loaded (catalog warm: ${warmOutcome}), so claudish ` +
+                `could not check what ${unverified.length === 1 ? "this model's provider" : "these models' providers"} ` +
+                `publish: ${unverified.join(", ")}. A model the provider does not serve fails on its first ` +
+                "advisor call instead of being refused here. Run `claudish --models-refresh` to check at launch."
+            );
+          }
         }
         process.stderr.write(`${decision.notice.join("\n")}\n`);
+        // The debug and always-on logs get the notice too, so a run's log shows
+        // what the launch promised next to what each advisor call did.
+        for (const line of decision.notice) log(`[advisor-notice] ${line}`);
       }
     }
 
@@ -1271,6 +1340,7 @@ async function runCli() {
           isInteractive: cliConfig.interactive,
           advisorModels: cliConfig.advisorModels,
           advisorCollector: cliConfig.advisorCollector,
+          ...(advisorRuntime ? { advisorRuntime } : {}),
           // Present only when `--model` was a pinned chain; `explicitModel` above
           // is its first element, so the proxy can match the two.
           modelChain: cliConfig.monitor ? undefined : cliConfig.modelChain,
@@ -1278,6 +1348,7 @@ async function runCli() {
           effortOverride: cliConfig.effortOverride,
           modelParams: cliConfig.modelParams,
           proOnUltracode: cliConfig.proOnUltracode,
+          codeMode: cliConfig.codeMode,
           // Proxy events run in the process that hosts the proxy: a pane child
           // for MCP/team slots, the interactive launcher otherwise.
           hostMode: isPaneChild() ? "pane-child" : cliConfig.interactive ? "interactive" : "other",

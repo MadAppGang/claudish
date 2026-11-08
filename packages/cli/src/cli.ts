@@ -11,6 +11,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EFFORT_LEVELS, isEffortLevel } from "./adapters/base-api-format.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
+import {
+  CODE_MODE_ENV_VAR,
+  CODE_MODE_SETTINGS,
+  DEFAULT_CODE_MODE_SETTING,
+  parseCodeModeSetting,
+} from "./code-mode/policy.js";
 import { ENV } from "./config.js";
 import { setStderrQuiet } from "./logger.js";
 import {
@@ -44,7 +50,12 @@ import type {
   ProbeStepState,
 } from "./probe/probe-tui-app.js";
 import { startProbeTui } from "./probe/probe-tui-runtime.js";
-import { getRunModelMapping, loadConfig, readProOnUltracode } from "./profile-config.js";
+import {
+  getRunModelMapping,
+  loadConfig,
+  readCodeMode,
+  readProOnUltracode,
+} from "./profile-config.js";
 import { usableProfileModels } from "./project-models.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
@@ -262,6 +273,7 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--effort-override": "value",
   "--pro-on-ultracode": "none",
   "--no-pro-on-ultracode": "none",
+  "--code-mode": "value",
   "--accept-served-model": "none",
   "--op-env": "value",
   "--op": "value",
@@ -765,6 +777,16 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--no-pro-on-ultracode") {
       // Escape hatch when it is enabled via config/env: off for this run.
       config.proOnUltracode = false;
+    } else if (arg === "--code-mode") {
+      // Code mode for `openai-codex`: Claude Code's tools offered as one
+      // freeform `exec` tool running a script. Precedence below.
+      const cmArg = args[++i];
+      const setting = parseCodeModeSetting(cmArg);
+      if (!setting) {
+        console.error(`--code-mode requires one of ${CODE_MODE_SETTINGS.join(", ")}`);
+        process.exit(1);
+      }
+      config.codeMode = setting;
     } else if (arg === "--accept-served-model") {
       // Some connections serve reasoning-off with a DIFFERENT model (Kimi Code
       // k3: thinking off is served by K2.8 Preview — the catalog's
@@ -1143,6 +1165,16 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else {
       config.proOnUltracode = readProOnUltracode() === true;
     }
+  }
+
+  // codeMode precedence: --code-mode flag > CLAUDISH_CODE_MODE env > project
+  // ./.claudish.json > global config.json > auto. An env value other than
+  // auto/on/off states nothing and falls through to the config files.
+  if (config.codeMode === undefined) {
+    config.codeMode =
+      parseCodeModeSetting(process.env[CODE_MODE_ENV_VAR]) ??
+      readCodeMode() ??
+      DEFAULT_CODE_MODE_SETTING;
   }
 
   return config as ClaudishConfig;
@@ -2271,6 +2303,7 @@ ${h("OPTIONS")}
   ${green("--effort-override")} ${yellow("<level>")}  Pin reasoning effort verbatim, skipping the per-model clamp
   ${green("--pro-on-ultracode")}       Apply the model's catalog preset while in ultracode (opt-in)
   ${green("--no-pro-on-ultracode")}    Force that off for this run (when enabled in config/env)
+  ${green("--code-mode")} ${yellow("<auto|on|off>")}  cx@ tools as one exec script tool (default auto; env CLAUDISH_CODE_MODE)
   ${green("--accept-served-model")}     Allow a reasoning-off that the connection serves with another model
   ${green("-y, --auto-approve")}       Skip permission prompts (--dangerously-skip-permissions)
   ${green("--no-auto-approve")}        Explicitly enable permission prompts (default)
@@ -2318,6 +2351,20 @@ ${h("SUBCOMMANDS")}
   ${green("claudish providers")} ${yellow("[--json]")}             Show provider credential status (no key material)
   ${green("claudish quota")} ${yellow("[provider]")}              Show remaining quota/usage (alias: usage)
   ${green("claudish serve")} ${yellow("--port <n> --models <p>")}  Run the Claude Desktop redirect gateway
+  ${green("claudish subscription models antigravity")} ${yellow("--raw --json")}
+                                          Print the raw Antigravity fetchAvailableModels
+                                          ${dim("body as one JSON line (for models-index)")}
+  ${green("claudish subscription probe antigravity")} ${yellow("--model <id> --request-file <path> --raw --json")}
+                                          Send the file's Gemini request once through the
+                                          Antigravity login (generateContent, no retry, model
+                                          ${dim("id unchanged); print the raw answer as one JSON line")}
+  ${green("claudish subscription models devin")} ${yellow("--raw --json")}
+                                          Print Devin's decoded GetCliModelConfigs rows and
+                                          ${dim("allowed model uids as one JSON line (for models-index)")}
+  ${green("claudish subscription probe devin")} ${yellow("--model <uid> --request-file <path> --raw --json")}
+                                          Send the file's Anthropic Messages request once through
+                                          the Devin login (GetChatMessage, no retry, uid unchanged);
+                                          ${dim("print the decoded answer as one JSON line")}
   ${green("claudish update")}                        Check for updates and install the latest version
 
   ${bold("Profiles:")}
@@ -2334,6 +2381,22 @@ ${h("SUBCOMMANDS")}
     ${green("claudish login")} ${yellow("[provider]")}              Login to an OAuth provider (interactive if omitted)
     ${green("claudish logout")} ${yellow("[provider]")}             Clear OAuth credentials
     ${dim("Providers: gemini, kimi")}
+
+  ${bold("Subscription accounts:")}
+    ${green("claudish account list")}                 Configured subscription accounts, per claudish provider
+    ${green("claudish account status")} ${yellow("[--json]")}       Usage per window, thresholds and blockers
+    ${green("claudish account add codex")} ${yellow("[--label <label>]")}     Log in a Codex account you own and add it ${dim("(label defaults to the login's email)")}
+    ${green("claudish account login codex")} ${yellow("<label>")}         Log the same Codex identity in again
+    ${green("claudish account enable|disable codex")} ${yellow("<label>")} Include or skip it in selection
+    ${green("claudish account rename codex")} ${yellow("<label> <new-label>")}  Give an account a new label
+    ${green("claudish account remove codex")} ${yellow("<label> [--yes] [--delete-file]")}
+    ${dim("A <label> may also be the account's email.")}
+    ${dim("--id <generated-id> may replace or confirm a label. Removing the legacy login (default)")}
+    ${dim("requires --delete-file. New accounts use the macOS Keychain, or protected plaintext files")}
+    ${dim("where there is none. No token input or export; Claude account mutations are not available.")}
+    ${dim("With Codex accounts configured, use account add/login instead of 'claudish login codex'.")}
+    ${dim("--refresh re-reads the account list and state past every cache — it contacts no vendor,")}
+    ${dim("because claudish never spends quota to measure quota.")}
 
 ${h("1PASSWORD")} ${dim("(SDK-based — no op CLI needed for secrets)")}
   ${dim("Auth via OP_SERVICE_ACCOUNT_TOKEN, or OP_ACCOUNT / onepasswordAccount config (DesktopAuth).")}

@@ -31,6 +31,7 @@ export function paneRunOptions(
   env: Record<string, string> = {}
 ): TeamRunOptions {
   return {
+    cwd: t.cwd,
     parentEnv: { ...t.env, ...env },
     spawnPlanner,
     paneTimings: { replStableMs: 200 },

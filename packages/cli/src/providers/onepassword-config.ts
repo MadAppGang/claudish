@@ -17,7 +17,8 @@
  *  - "global"  → ~/.claudish/config.json   (all projects).
  *  - "project" → ./.claudish.json          (this project; overrides global on read).
  *
- * Write strategy — RAW read-modify-write for BOTH scopes:
+ * Write strategy — RAW read-modify-write for BOTH scopes (the global one inside
+ * `withRawConfigTransaction`, the lock account management writes under):
  *  - Each write reads the target JSON file, mutates ONLY the field in question,
  *    and writes it back. Every other key is preserved byte-for-faithful. This is
  *    the same approach index.ts's original project-scope saveOnepasswordAccount
@@ -43,6 +44,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { withRawConfigTransaction } from "../auth/accounts/config-lock.js";
 import { activeOpConfigPaths } from "../config-override.js";
 import {
   type OpEntryValueKey,
@@ -128,6 +130,18 @@ function mutateConfig(
         "the override file is the only config for this run. Save to global scope " +
         "(which writes to the override file), or re-run without --config."
     );
+  }
+  if (scope === "global") {
+    // The global file also holds `subscriptionAccounts`, which account
+    // management rewrites under the config lock. A raw write here could restore
+    // a removed account (or lose an added one), and turned a garbled file into
+    // `{}`; the transaction re-reads under the lock, refuses a garbled file and
+    // writes atomically.
+    withRawConfigTransaction(path, (raw) => {
+      mutate(raw);
+      return { config: raw, result: undefined };
+    });
+    return;
   }
   const cfg = readRawConfig(path);
   mutate(cfg);

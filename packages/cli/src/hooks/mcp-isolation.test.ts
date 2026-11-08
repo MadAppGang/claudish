@@ -186,6 +186,7 @@ describe.skipIf(!SUPPORTED)("MCP protocol stdout with hooks loaded", () => {
     writeFileSync(script, `await import(${JSON.stringify(modulePath)});\n`);
 
     const proc = Bun.spawn(["bun", script], {
+      env: { ...process.env },
       cwd: layout.cwd,
       stdin: "pipe",
       stdout: "pipe",

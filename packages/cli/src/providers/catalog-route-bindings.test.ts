@@ -29,6 +29,7 @@ const subscriptionBindings = [
   ["qwen-token-plan", "qwen", "qwencloud-token-plan"],
   ["opencode-zen-go", "opencode", "go-subscription"],
   ["ollamacloud", "ollama", "cloud"],
+  ["meta-muse-code", "meta", "muse-code-subscription"],
 ] as const;
 
 const gatewayBindings = [
@@ -41,6 +42,7 @@ const gatewayBindings = [
 
 describe("v3 route bindings", () => {
   for (const [provider, routeId, routeProfileId] of [...subscriptionBindings, ...gatewayBindings]) {
+    // MTL-189: meta/muse-code-subscription must stay bound.
     test(`${provider} executes only ${routeId}/${routeProfileId}`, () => {
       const route = { routeId, routeProfileId };
       expect(catalogRouteForProvider(provider)).toEqual(route);

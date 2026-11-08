@@ -15,6 +15,7 @@ const tempDirs = new Set<string>();
 
 function spawnChild(body: string): ChildProcess {
   const child = spawn(process.execPath, ["-e", body], {
+    env: { ...process.env },
     detached: KILL_PROCESS_GROUP,
     stdio: ["pipe", "pipe", "pipe"],
   });

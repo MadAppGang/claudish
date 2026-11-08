@@ -1,0 +1,481 @@
+{
+  "contractVersion": 3,
+  "generationId": "g-20261023083613563-57fd1690",
+  "projectionVersion": 2,
+  "version": "g-20261023083613563-57fd1690",
+  "lastUpdated": "2026-10-23T10:23:42.307Z",
+  "generatedAt": "2026-10-23T10:23:42.307Z",
+  "recommendationTiers": ["flagship", "cost_efficient", "lightweight", "luxury", "subscription"],
+  "models": [
+    {
+      "id": "claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "description": "",
+      "provider": "anthropic",
+      "nativeRouteAvailable": false,
+      "recommendationTier": "flagship",
+      "priority": 1,
+      "pricing": {
+        "input": "$4/1M",
+        "output": "$20/1M",
+        "average": "$12.00/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-09-22",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "name": "GPT-6.1-Sol",
+      "description": "Meet GPT-6.1 Sol: near-Astra intelligence for coding, computer use, and professional work at one-fifth of Astra’s standard API input and output token prices.",
+      "provider": "openai",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "flagship",
+      "priority": 2,
+      "pricing": {
+        "input": "$2/1M",
+        "output": "$10/1M",
+        "average": "$6.00/1M"
+      },
+      "context": "1050000",
+      "releaseDate": "2026-09-29",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "gemini-4-argon",
+      "name": "Gemini 4 Argon",
+      "description": "Our flagship reasoning model, built for complex software engineering, deep mathematical and scientific problem solving, autonomous multi-step agents, and long-decode generation up to 1M tokens.",
+      "provider": "google",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "flagship",
+      "priority": 3,
+      "pricing": {
+        "input": "$2/1M",
+        "output": "$10/1M",
+        "average": "$6.00/1M"
+      },
+      "context": "1048576",
+      "releaseDate": "2026-10-13",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "grok-4.7",
+      "name": "Grok 4.7",
+      "description": "SpaceXSI's most powerful model for coding and knowledge work. Twice as fast, at half the price of comparable models.",
+      "provider": "x-ai",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "flagship",
+      "priority": 4,
+      "pricing": {
+        "input": "$2/1M",
+        "output": "$6/1M",
+        "average": "$4.00/1M"
+      },
+      "context": "500000",
+      "releaseDate": "2026-09-21",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "kimi-k3",
+      "name": "Kimi K3",
+      "description": "Use Kimi K3 in Codex > Connect Codex directly to Kimi K3 through the Kimi Responses API: set an API key, edit /.codex/config.toml, and verify the connection in both Codex Desktop and the CLI.",
+      "provider": "moonshotai",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "flagship",
+      "priority": 5,
+      "pricing": {
+        "input": "$3/1M",
+        "output": "$15/1M",
+        "average": "$9.00/1M"
+      },
+      "context": "1048576",
+      "releaseDate": "2026-07-16",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "qwen3.8-max",
+      "name": "Qwen3.8-Max",
+      "description": "A 2.4-trillion-parameter MoE flagship with a major leap in coding and office productivity, able to autonomously code for over ten days to deliver complete projects. It handles hundreds of professional tasks across law, finance, design, and more, delivering production-grade results end-to-end in a single conversation. Native visual understanding runs through the entire planning, execution, and verification pipeline, enabling deep semantic parsing of ultra-long documents and long videos. It plans autonomously and iterates in closed loops during long-horizon tasks, continuously improving.",
+      "provider": "qwen",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "flagship",
+      "priority": 6,
+      "pricing": {
+        "input": "$2/1M",
+        "output": "$6/1M",
+        "average": "$4.00/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-08-02",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "glm-5.3",
+      "name": "GLM-5.3",
+      "description": "GLM-5.3 is Z.ai's latest flagship model, delivering comprehensive advancements in complex software engineering and agent capabilities. It uses the same base model as GLM-5.2, with all improvements driven by post-training. Compared with GLM-5.2, it delivers significantly stronger performance in complex programming and long-horizon tasks: Stronger Coding Capability GLM-5.3 delivers a significant improvement in coding capabilities, achieving a 50% performance gain over GLM-5.2 on Z.ai Code Bench. It also reaches state-of-the-art (SOTA) performance among open-source models on public benchmarks, including Terminal Bench 3.0 and Agents’ Last Exam (CLI). Emergent Cyber Capability As the scale of post-training continues to expand, the model’s cybersecurity capabilities have improved at a rate that exceeds expectations. GLM-5.3 achieves the best performance to date on the CyberGym vulnerability discovery benchmark. Moreover, the deeper it progresses along the vulnerability exploitation chain, the more pronounced its gains over GLM-5.2 become, with scores on vulnerability exploitation benchmarks exceeding twice those of GLM-5.2. ↗ Blog",
+      "provider": "z-ai",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "flagship",
+      "priority": 7,
+      "pricing": {
+        "input": "$1.4/1M",
+        "output": "$4.4/1M",
+        "average": "$2.90/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-08-14",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": false
+    },
+    {
+      "id": "minimax-m3",
+      "name": "MiniMax-M3",
+      "description": "Frontier multimodal coding model with 1M context window",
+      "provider": "minimax",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "flagship",
+      "priority": 8,
+      "pricing": {
+        "input": "$0.3/1M",
+        "output": "$1.2/1M",
+        "average": "$0.75/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-06-01",
+      "supportsTools": true,
+      "supportsReasoning": true
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "name": "DeepSeek-V4-Pro",
+      "description": "",
+      "provider": "deepseek",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "flagship",
+      "priority": 9,
+      "pricing": {
+        "input": "N/A",
+        "output": "N/A",
+        "average": "N/A"
+      },
+      "context": "1048576",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": false
+    },
+    {
+      "id": "muse-wonder-full",
+      "name": "Muse Wonder Full",
+      "description": "",
+      "provider": "meta",
+      "nativeRouteAvailable": false,
+      "recommendationTier": "flagship",
+      "priority": 10,
+      "pricing": {
+        "input": "N/A",
+        "output": "N/A",
+        "average": "N/A"
+      },
+      "context": "N/A",
+      "supportsReasoning": true
+    },
+    {
+      "id": "mimo-v2.6-pro",
+      "name": "mimo-v2.6-pro",
+      "description": "MiMo V2.6 Pro is Xiaomi's trillion-parameter flagship for agentic work, long-horizon tasks, and research. It accepts text, image, and video input with a 1M token context, and supports reasoning, function calling, and native web search.",
+      "provider": "xiaomi",
+      "nativeRouteAvailable": false,
+      "recommendationTier": "flagship",
+      "priority": 11,
+      "pricing": {
+        "input": "$0.435/1M",
+        "output": "$0.87/1M",
+        "average": "$0.65/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-09-22",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "name": "Claude Haiku 5.5",
+      "description": "Anthropic's Claude Haiku 5.5 for fast, cost-efficient coding and everyday tasks, with a 1M-token context window, image understanding, adjustable reasoning effort, and web search.",
+      "provider": "anthropic",
+      "nativeRouteAvailable": false,
+      "recommendationTier": "lightweight",
+      "priority": 1,
+      "pricing": {
+        "input": "$0.1/1M",
+        "output": "$0.5/1M",
+        "average": "$0.30/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-10-07",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "gpt-6-luna",
+      "name": "GPT-6 Luna",
+      "description": "GPT-6 Luna is our most efficient model for focused, high-volume tasks.",
+      "provider": "openai",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "lightweight",
+      "priority": 2,
+      "pricing": {
+        "input": "$0.1/1M",
+        "output": "$0.5/1M",
+        "average": "$0.30/1M"
+      },
+      "context": "1050000",
+      "releaseDate": "2026-09-22",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash",
+      "description": "Gemini 3.8 Flash is our most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and complex enterprise workflows—all with the speed and cost efficiency of Flash.",
+      "provider": "google",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "lightweight",
+      "priority": 3,
+      "pricing": {
+        "input": "$0.75/1M",
+        "output": "$3.75/1M",
+        "average": "$2.25/1M"
+      },
+      "context": "1048576",
+      "releaseDate": "2026-09-02",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek-V4.1-Flash",
+      "description": "Introducing the smallest model in our new architecture family, with native visual understanding. Designed for greater capability, faster inference, and higher throughput.",
+      "provider": "deepseek",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "lightweight",
+      "priority": 4,
+      "pricing": {
+        "input": "$0.3/1M",
+        "output": "$1.2/1M",
+        "average": "$0.75/1M"
+      },
+      "context": "1048576",
+      "releaseDate": "2026-09-10",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "glm-5.3-flash",
+      "name": "GLM-5.3-Flash",
+      "description": "GLM-5.3-Flash/GLM-5.3-FlashX is the first native multimodal model in the GLM-5 series, delivering stronger intelligence than GLM-5.2 at an exceptionally low cost. * Highly Efficient Hybrid Architecture GLM-5.3-Flash has 320B total parameters with 18B activated. As the first open-source frontier model to combine sparse and linear attention, it significantly cuts computation and serving costs while preserving long-context quality — reducing attention computation and KV cache by 3.01× and 4.44× versus GLM-5.3. * Native Multimodal Visual Coding Visual capabilities are built into the coding loop: the model observes interfaces, rendered results, and interaction feedback to continuously test and improve its work. It coordinates tasks across code, browsers, and GUIs — from frontend and game development to Blender 3D scenes and real-world operation via BUA and CUA. * A Professional Work Partner Beyond Coding Beyond coding, GLM-5.3-Flash supports professional workflows such as Office tasks, financial research, and document processing. It autonomously breaks down goals, invokes tools, and reviews outputs — from research and analysis to finished PPTX, PDF, DOCX, and XLSX deliverables. GLM-5.3-FlashX is now live, delivering inference speeds of 200 tokens/s for faster responses and a smoother experience. ↗ blog > Input Modality > > Video / Image / Text / File > Output Modality > > Text > Context Length > > 1M > Maximum Output Tokens > > 128K",
+      "provider": "z-ai",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "lightweight",
+      "priority": 5,
+      "pricing": {
+        "input": "$0.15/1M",
+        "output": "$0.5/1M",
+        "average": "$0.33/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-08-26",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "qwen3.8-omni-flash",
+      "name": "Qwen3.8-Omni-Flash",
+      "description": "A model for audio and video understanding and content analysis, with text, image, audio, and video input and text output.",
+      "provider": "qwen",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "lightweight",
+      "priority": 6,
+      "pricing": {
+        "input": "$0.15/1M",
+        "output": "$0.47/1M",
+        "average": "$0.31/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-09-17",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "mimo-v2.6-flash",
+      "name": "mimo-v2.6-flash",
+      "description": "MiMo V2.6 Flash is Xiaomi's low-cost reasoning model for high-frequency and large-scale workloads. It accepts text, image, and video input with a 1M token context, and supports reasoning, function calling, and native web search.",
+      "provider": "xiaomi",
+      "nativeRouteAvailable": false,
+      "recommendationTier": "lightweight",
+      "priority": 7,
+      "pricing": {
+        "input": "$0.14/1M",
+        "output": "$0.28/1M",
+        "average": "$0.21/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-09-22",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "muse-spark-1.3",
+      "name": "Muse Spark 1.3",
+      "description": "Introducing Muse Spark 1.3, with max reasoning for challenging reasoning and agentic tasks and improved real-world usability.",
+      "provider": "meta",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "lightweight",
+      "priority": 8,
+      "pricing": {
+        "input": "$1.25/1M",
+        "output": "$4.25/1M",
+        "average": "$2.75/1M"
+      },
+      "context": "1048576",
+      "releaseDate": "2026-09-02",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "mimo-v2.6-pro",
+      "name": "mimo-v2.6-pro",
+      "description": "MiMo V2.6 Pro is Xiaomi's trillion-parameter flagship for agentic work, long-horizon tasks, and research. It accepts text, image, and video input with a 1M token context, and supports reasoning, function calling, and native web search.",
+      "provider": "xiaomi",
+      "nativeRouteAvailable": false,
+      "recommendationTier": "cost_efficient",
+      "priority": 1,
+      "pricing": {
+        "input": "$0.435/1M",
+        "output": "$0.87/1M",
+        "average": "$0.65/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-09-22",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "name": "GPT-6.1-Sol",
+      "description": "Meet GPT-6.1 Sol: near-Astra intelligence for coding, computer use, and professional work at one-fifth of Astra’s standard API input and output token prices.",
+      "provider": "openai",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "cost_efficient",
+      "priority": 2,
+      "pricing": {
+        "input": "$2/1M",
+        "output": "$10/1M",
+        "average": "$6.00/1M"
+      },
+      "context": "1050000",
+      "releaseDate": "2026-09-29",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5",
+      "description": "Anthropic's Claude Sonnet 5.5 for fast everyday work, coding, and document creation, with a 1M-token context window, image understanding, adjustable reasoning effort, and web search.",
+      "provider": "anthropic",
+      "nativeRouteAvailable": false,
+      "recommendationTier": "cost_efficient",
+      "priority": 3,
+      "pricing": {
+        "input": "$2/1M",
+        "output": "$10/1M",
+        "average": "$6.00/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-09-28",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "gemini-4-argon",
+      "name": "Gemini 4 Argon",
+      "description": "Our flagship reasoning model, built for complex software engineering, deep mathematical and scientific problem solving, autonomous multi-step agents, and long-decode generation up to 1M tokens.",
+      "provider": "google",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "cost_efficient",
+      "priority": 4,
+      "pricing": {
+        "input": "$2/1M",
+        "output": "$10/1M",
+        "average": "$6.00/1M"
+      },
+      "context": "1048576",
+      "releaseDate": "2026-10-13",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "claude-fable-5-1",
+      "name": "Claude Fable 5.1",
+      "description": "Successor to Claude Fable 5, for long-running agentic coding, knowledge work, and research",
+      "provider": "anthropic",
+      "nativeRouteAvailable": false,
+      "recommendationTier": "luxury",
+      "priority": 1,
+      "pricing": {
+        "input": "$10/1M",
+        "output": "$50/1M",
+        "average": "$30.00/1M"
+      },
+      "context": "1000000",
+      "releaseDate": "2026-09-01",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    },
+    {
+      "id": "gpt-6-astra",
+      "name": "GPT-6-Astra",
+      "description": "Introducing ChatGPT for Financial Services, combining built-in financial data and GPT-6 Astra for research, modeling, and client-ready materials.",
+      "provider": "openai",
+      "nativeRouteAvailable": true,
+      "recommendationTier": "luxury",
+      "priority": 2,
+      "pricing": {
+        "input": "$10/1M",
+        "output": "$50/1M",
+        "average": "$30.00/1M"
+      },
+      "context": "1050000",
+      "releaseDate": "2026-09-03",
+      "supportsTools": true,
+      "supportsReasoning": true,
+      "supportsVision": true
+    }
+  ]
+}

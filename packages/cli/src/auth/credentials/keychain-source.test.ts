@@ -14,7 +14,9 @@ import {
   resolveKeychainKeyForEnvVars,
 } from "./keychain-source.js";
 
-const UNKNOWN_COMMAND_STDERR = 'security: unknown command "..."';
+// Captured in ai-docs/reports/keychain-security-cli-measurements.md §2.
+const SEARCH_FAILURE_STDERR =
+  "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.";
 const PRIMARY_ENV = "GEMINI_API_KEY";
 const ALIAS_ENV = "GOOGLE_API_KEY";
 const MISSING_ENV = "CLAUDISH_KEYCHAIN_TEST_MISSING_API_KEY";
@@ -209,7 +211,7 @@ describe("resolveKeychainKeyForEnvVars", () => {
 
   it("propagates an enumeration failure as a transient failure", () => {
     enableKeychainSource();
-    runImpl = () => result(1, "", UNKNOWN_COMMAND_STDERR);
+    runImpl = () => result(1, "", SEARCH_FAILURE_STDERR);
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
     try {
@@ -219,7 +221,7 @@ describe("resolveKeychainKeyForEnvVars", () => {
       // "unavailable" but not WHICH store was unreachable, which is the
       // difference between telling a user to unlock their keychain and telling
       // them they have no subscription.
-      expect(resolved).toEqual({ failed: true, error: UNKNOWN_COMMAND_STDERR });
+      expect(resolved).toEqual({ failed: true, error: SEARCH_FAILURE_STDERR });
       expect("value" in resolved).toBe(false);
       expect(runCalls).toEqual([{ args: ["dump-keychain"], stdin: undefined }]);
     } finally {
@@ -232,7 +234,7 @@ describe("resolveKeychainKeyForEnvVars", () => {
     runImpl = (args) =>
       args[0] === "dump-keychain"
         ? result(0, REAL_DUMP_BLOCK)
-        : result(1, "", UNKNOWN_COMMAND_STDERR);
+        : result(1, "", SEARCH_FAILURE_STDERR);
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
     try {
@@ -240,7 +242,7 @@ describe("resolveKeychainKeyForEnvVars", () => {
       expect(resolved.failed).toBe(true);
       // A per-item read failure surfaces the engine's KeychainError message,
       // not the enumeration diagnostic — enumeration succeeded here.
-      expect(resolved.error).toContain(UNKNOWN_COMMAND_STDERR);
+      expect(resolved.error).toContain(SEARCH_FAILURE_STDERR);
       expect("value" in resolved).toBe(false);
     } finally {
       errorSpy.mockRestore();
@@ -291,7 +293,7 @@ describe("hydrateKeychainIntoEnv", () => {
 
   it("hydrates nothing when enumeration fails", async () => {
     enableKeychainSource();
-    runImpl = () => result(1, "", UNKNOWN_COMMAND_STDERR);
+    runImpl = () => result(1, "", SEARCH_FAILURE_STDERR);
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
     try {

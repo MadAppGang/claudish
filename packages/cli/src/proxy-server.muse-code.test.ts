@@ -155,7 +155,7 @@ async function runHomeScenario(
 ) {
   const absoluteImports = (source: string) =>
     source.replace(
-      /import\((["'])(\.[^"']+)\1\)/g,
+      /import\(\s*(["'])(\.[^"']+)\1\s*\)/g,
       (_match, _quote, path) => `import(${JSON.stringify(resolve(import.meta.dir, path))})`
     );
   const scriptPath = join(home, "scenario.ts");
@@ -269,11 +269,36 @@ process.on("unhandledRejection", error => { console.error(error); realExit(1); }
 }
 
 for (const transportAvailable of [true, false]) {
-  test(`N5: isolated-home Muse probe-discover before binding with transport=${transportAvailable}; borrowed concurrent requests never read Keychain`, async () => {
+  // MTL-189: meta/muse-code-subscription must stay bound.
+  test(`N5: isolated-home Muse probe-discover with subscription binding and transport=${transportAvailable}; borrowed concurrent requests never read Keychain`, async () => {
     const scenario = async (transportAvailable: boolean) => {
       const { createProxyServer } = await import("./proxy-server.js");
       const { discoverProbeModelFromEndpoint } = await import("./providers/probe-catalog.js");
       const { catalogRouteForProvider } = await import("./providers/catalog-route-bindings.js");
+      const { writeAllModelsCache, readAllModelsCache } = await import(
+        "./providers/all-models-cache.js"
+      );
+      // Extracted with jq from cloud models catalog generation g-20261021063612126-17350b71.
+      const { default: museCatalog } = await import(
+        "./test-fixtures/catalog-v3/muse-code-g-20261021063612126-17350b71.json"
+      );
+      const data = structuredClone(museCatalog) as import(
+        "./providers/all-models-cache.js"
+      ).DiskCacheV3;
+      // A catalog predating the profile still reaches the provider factory, so
+      // the no-transport variant keeps testing provider-level discovery.
+      if (!transportAvailable) {
+        delete data.routeRegistry!.registry.routes.meta.profiles["muse-code-subscription"];
+        data.entries = data.entries.map((entry) => ({
+          ...entry,
+          aggregators: entry.aggregators?.filter(
+            (connection) => connection.route?.routeProfileId !== "muse-code-subscription"
+          ),
+        }));
+        data.plans = [];
+      }
+      writeAllModelsCache(data);
+      expect(readAllModelsCache()).not.toBeNull();
       const { getProviderByName } = await import("./providers/provider-definitions.js");
       const { getConfigFileOverride, setConfigFileOverride } = await import("./config-override.js");
       const { _clearProbeDiscoveryCache } = await import(
@@ -349,7 +374,10 @@ for (const transportAvailable of [true, false]) {
         };
       let proxy: Awaited<ReturnType<typeof createProxyServer>> | undefined;
       try {
-        expect(catalogRouteForProvider("meta-muse-code")).toBeUndefined();
+        expect(catalogRouteForProvider("meta-muse-code")).toEqual({
+          routeId: "meta",
+          routeProfileId: "muse-code-subscription",
+        });
         proxy = await createProxyServer(0, "", "muse@muse-spark-1.3", false, undefined, undefined, {
           quiet: true,
         });

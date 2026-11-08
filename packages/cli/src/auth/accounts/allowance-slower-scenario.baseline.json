@@ -1,0 +1,2508 @@
+{
+  "schema": "claudish.allowance.v1",
+  "generatedAt": "2026-10-26T00:00:00.000Z",
+  "forecastAt": "2026-10-26T00:00:00.000Z",
+  "provider": "openai-codex",
+  "strategy": "sticky",
+  "alertModel": "sticky",
+  "evidence": "full",
+  "unit": "cu",
+  "assumption": null,
+  "horizonHours": 168,
+  "accounts": [
+    {
+      "label": "aaaaaaaaaaaa",
+      "id": "aaaaaaaaaaaa",
+      "planClass": "pro",
+      "deliverable": 0.030000000000000027,
+      "binding": "len:10080",
+      "windows": [
+        {
+          "key": "len:10080",
+          "displayId": "secondary",
+          "usedFraction": 0.97,
+          "resetAt": "2026-10-29T00:00:00.000Z",
+          "provenance": "observed",
+          "semantics": "fixed-start"
+        }
+      ],
+      "lambda": null,
+      "calibration": {
+        "beta": "calibrated",
+        "kappa": null
+      },
+      "active": true,
+      "order": 0,
+      "lostAtReset": {
+        "at": "2026-10-29T00:00:00.000Z",
+        "p10": 0.004881256552964599,
+        "p50": 0.029999999999993282,
+        "p90": 0.02999999999999678
+      }
+    },
+    {
+      "label": "bbbbbbbbbbbb",
+      "id": "bbbbbbbbbbbb",
+      "planClass": "pro",
+      "deliverable": 0.99,
+      "binding": "len:10080",
+      "windows": [
+        {
+          "key": "len:10080",
+          "displayId": "secondary",
+          "usedFraction": 0.010000000000000009,
+          "resetAt": "2026-10-30T00:00:00.000Z",
+          "provenance": "observed",
+          "semantics": "fixed-start"
+        }
+      ],
+      "lambda": null,
+      "calibration": {
+        "beta": "calibrated",
+        "kappa": null
+      },
+      "active": false,
+      "order": 1,
+      "lostAtReset": {
+        "at": "2026-10-30T00:00:00.000Z",
+        "p10": 0.007558030587396053,
+        "p50": 0.15829396242909408,
+        "p90": 0.48461106423934014
+      }
+    }
+  ],
+  "combined": {
+    "remainingNow": 102000000.00000028,
+    "capacity": 200000000.00000057
+  },
+  "burn": {
+    "long": 963301.2102158058,
+    "short": 1249086.9887290054,
+    "sustainable": 1488095.238095242,
+    "unit": "cu/h"
+  },
+  "alerts": [],
+  "blockedNow": false,
+  "status": "ok",
+  "trajectory": {
+    "history": [
+      {
+        "at": "2026-10-19T00:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T01:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T02:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T03:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T04:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T05:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T06:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T07:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T08:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T09:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T10:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T11:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T12:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T13:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T14:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T15:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T16:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T17:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T18:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T19:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T20:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T21:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T22:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-19T23:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T00:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T01:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T02:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T03:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T04:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T05:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T06:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T07:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T08:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T09:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T10:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T11:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T12:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T13:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T14:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T15:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T16:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T17:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T18:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T19:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T20:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T21:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T22:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-20T23:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T00:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T01:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T02:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T03:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T04:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T05:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T06:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T07:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T08:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T09:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T10:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T11:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T12:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T13:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T14:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T15:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T16:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T17:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T18:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T19:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T20:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T21:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T22:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-21T23:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T00:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T01:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T02:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T03:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T04:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T05:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T06:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T07:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T08:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T09:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T10:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T11:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T12:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T13:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T14:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T15:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T16:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T17:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T18:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T19:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T20:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T21:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T22:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-22T23:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T00:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T01:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T02:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T03:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T04:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T05:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T06:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T07:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T08:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T09:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T10:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T11:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T12:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T13:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T14:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T15:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T16:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T17:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T18:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T19:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T20:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T21:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T22:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-23T23:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T00:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T01:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T02:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T03:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T04:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T05:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T06:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T07:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T08:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T09:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T10:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T11:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T12:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T13:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T14:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T15:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T16:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T17:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T18:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T19:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T20:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T21:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T22:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-24T23:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T00:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T01:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T02:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T03:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T04:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T05:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T06:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T07:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T08:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T09:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T10:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T11:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T12:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T13:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T14:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T15:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T16:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T17:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T18:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T19:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T20:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T21:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T22:00:00.000Z",
+        "remaining": 108000000.00000031,
+        "provenance": "observed"
+      },
+      {
+        "at": "2026-10-25T23:00:00.000Z",
+        "remaining": 200000000.00000057,
+        "provenance": "reset-inferred"
+      },
+      {
+        "at": "2026-10-26T00:00:00.000Z",
+        "remaining": 102000000.00000028,
+        "provenance": "observed"
+      }
+    ],
+    "historyByAccount": [
+      {
+        "accountId": "aaaaaaaaaaaa",
+        "history": [
+          {
+            "at": "2026-10-25T00:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T01:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T02:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T03:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T04:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T05:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T06:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T07:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T08:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T09:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T10:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T11:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T12:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T13:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T14:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T15:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T16:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T17:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T18:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T19:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T20:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T21:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T22:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T23:00:00.000Z",
+            "remaining": 100000000.00000028,
+            "provenance": "reset-inferred"
+          },
+          {
+            "at": "2026-10-26T00:00:00.000Z",
+            "remaining": 3000000.000000011,
+            "provenance": "observed"
+          }
+        ]
+      },
+      {
+        "accountId": "bbbbbbbbbbbb",
+        "history": [
+          {
+            "at": "2026-10-25T00:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T01:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T02:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T03:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T04:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T05:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T06:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T07:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T08:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T09:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T10:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T11:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T12:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T13:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T14:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T15:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T16:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T17:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T18:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T19:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T20:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T21:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T22:00:00.000Z",
+            "remaining": 54000000.00000016,
+            "provenance": "observed"
+          },
+          {
+            "at": "2026-10-25T23:00:00.000Z",
+            "remaining": 100000000.00000028,
+            "provenance": "reset-inferred"
+          },
+          {
+            "at": "2026-10-26T00:00:00.000Z",
+            "remaining": 99000000.00000027,
+            "provenance": "observed"
+          }
+        ]
+      }
+    ],
+    "forecast": [
+      {
+        "at": "2026-10-26T00:00:00.000Z",
+        "p10": 99130000,
+        "p50": 101900000,
+        "p90": 103900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T01:00:00.000Z",
+        "p10": 98110000,
+        "p50": 101000000,
+        "p90": 103300000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T02:00:00.000Z",
+        "p10": 96500000,
+        "p50": 99980000,
+        "p90": 102800000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T03:00:00.000Z",
+        "p10": 95070000,
+        "p50": 99210000,
+        "p90": 102200000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T04:00:00.000Z",
+        "p10": 93420000,
+        "p50": 98130000,
+        "p90": 101700000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T05:00:00.000Z",
+        "p10": 92010000,
+        "p50": 97580000,
+        "p90": 101300000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T06:00:00.000Z",
+        "p10": 89950000,
+        "p50": 96970000,
+        "p90": 100900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T07:00:00.000Z",
+        "p10": 88000000,
+        "p50": 96300000,
+        "p90": 100400000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T08:00:00.000Z",
+        "p10": 86120000,
+        "p50": 95620000,
+        "p90": 99890000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T09:00:00.000Z",
+        "p10": 84010000,
+        "p50": 94860000,
+        "p90": 99520000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T10:00:00.000Z",
+        "p10": 82640000,
+        "p50": 94150000,
+        "p90": 99110000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T11:00:00.000Z",
+        "p10": 81500000,
+        "p50": 93750000,
+        "p90": 98840000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T12:00:00.000Z",
+        "p10": 79940000,
+        "p50": 93060000,
+        "p90": 98480000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T13:00:00.000Z",
+        "p10": 78150000,
+        "p50": 92490000,
+        "p90": 98180000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T14:00:00.000Z",
+        "p10": 76650000,
+        "p50": 91910000,
+        "p90": 97740000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T15:00:00.000Z",
+        "p10": 75880000,
+        "p50": 91320000,
+        "p90": 97490000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T16:00:00.000Z",
+        "p10": 73580000,
+        "p50": 90540000,
+        "p90": 96900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T17:00:00.000Z",
+        "p10": 72030000,
+        "p50": 89840000,
+        "p90": 96290000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T18:00:00.000Z",
+        "p10": 70110000,
+        "p50": 89320000,
+        "p90": 95880000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T19:00:00.000Z",
+        "p10": 67960000,
+        "p50": 88890000,
+        "p90": 95610000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T20:00:00.000Z",
+        "p10": 65550000,
+        "p50": 88170000,
+        "p90": 95310000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T21:00:00.000Z",
+        "p10": 63730000,
+        "p50": 87270000,
+        "p90": 95050000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T22:00:00.000Z",
+        "p10": 61910000,
+        "p50": 86420000,
+        "p90": 94830000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-26T23:00:00.000Z",
+        "p10": 59310000,
+        "p50": 85730000,
+        "p90": 94570000,
+        "pBlocked": 0.005
+      },
+      {
+        "at": "2026-10-27T00:00:00.000Z",
+        "p10": 57830000,
+        "p50": 84890000,
+        "p90": 94150000,
+        "pBlocked": 0.005
+      },
+      {
+        "at": "2026-10-27T01:00:00.000Z",
+        "p10": 57280000,
+        "p50": 84210000,
+        "p90": 93370000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T02:00:00.000Z",
+        "p10": 56360000,
+        "p50": 83110000,
+        "p90": 92890000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T03:00:00.000Z",
+        "p10": 55560000,
+        "p50": 82550000,
+        "p90": 92430000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T04:00:00.000Z",
+        "p10": 53990000,
+        "p50": 81250000,
+        "p90": 91890000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T05:00:00.000Z",
+        "p10": 53080000,
+        "p50": 80260000,
+        "p90": 91430000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T06:00:00.000Z",
+        "p10": 52310000,
+        "p50": 79170000,
+        "p90": 90490000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T07:00:00.000Z",
+        "p10": 51390000,
+        "p50": 78100000,
+        "p90": 90000000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T08:00:00.000Z",
+        "p10": 50040000,
+        "p50": 77300000,
+        "p90": 89070000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T09:00:00.000Z",
+        "p10": 47460000,
+        "p50": 76240000,
+        "p90": 88410000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T10:00:00.000Z",
+        "p10": 45780000,
+        "p50": 75360000,
+        "p90": 87810000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T11:00:00.000Z",
+        "p10": 43100000,
+        "p50": 74690000,
+        "p90": 87400000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T12:00:00.000Z",
+        "p10": 41760000,
+        "p50": 73880000,
+        "p90": 86540000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-27T13:00:00.000Z",
+        "p10": 39750000,
+        "p50": 72960000,
+        "p90": 85800000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-10-27T14:00:00.000Z",
+        "p10": 37730000,
+        "p50": 72230000,
+        "p90": 85370000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-10-27T15:00:00.000Z",
+        "p10": 35960000,
+        "p50": 71480000,
+        "p90": 84890000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-10-27T16:00:00.000Z",
+        "p10": 34210000,
+        "p50": 70890000,
+        "p90": 84460000,
+        "pBlocked": 0.025
+      },
+      {
+        "at": "2026-10-27T17:00:00.000Z",
+        "p10": 32170000,
+        "p50": 69940000,
+        "p90": 84020000,
+        "pBlocked": 0.025
+      },
+      {
+        "at": "2026-10-27T18:00:00.000Z",
+        "p10": 31090000,
+        "p50": 69280000,
+        "p90": 83450000,
+        "pBlocked": 0.025
+      },
+      {
+        "at": "2026-10-27T19:00:00.000Z",
+        "p10": 29200000,
+        "p50": 68610000,
+        "p90": 83010000,
+        "pBlocked": 0.025
+      },
+      {
+        "at": "2026-10-27T20:00:00.000Z",
+        "p10": 27560000,
+        "p50": 67900000,
+        "p90": 82450000,
+        "pBlocked": 0.025
+      },
+      {
+        "at": "2026-10-27T21:00:00.000Z",
+        "p10": 24830000,
+        "p50": 67150000,
+        "p90": 81790000,
+        "pBlocked": 0.025
+      },
+      {
+        "at": "2026-10-27T22:00:00.000Z",
+        "p10": 24670000,
+        "p50": 66280000,
+        "p90": 80640000,
+        "pBlocked": 0.03
+      },
+      {
+        "at": "2026-10-27T23:00:00.000Z",
+        "p10": 24010000,
+        "p50": 65750000,
+        "p90": 80260000,
+        "pBlocked": 0.03
+      },
+      {
+        "at": "2026-10-28T00:00:00.000Z",
+        "p10": 23530000,
+        "p50": 64980000,
+        "p90": 79940000,
+        "pBlocked": 0.03
+      },
+      {
+        "at": "2026-10-28T01:00:00.000Z",
+        "p10": 23020000,
+        "p50": 64180000,
+        "p90": 79490000,
+        "pBlocked": 0.03
+      },
+      {
+        "at": "2026-10-28T02:00:00.000Z",
+        "p10": 21140000,
+        "p50": 63040000,
+        "p90": 78630000,
+        "pBlocked": 0.03
+      },
+      {
+        "at": "2026-10-28T03:00:00.000Z",
+        "p10": 19710000,
+        "p50": 62050000,
+        "p90": 77890000,
+        "pBlocked": 0.035
+      },
+      {
+        "at": "2026-10-28T04:00:00.000Z",
+        "p10": 17720000,
+        "p50": 60920000,
+        "p90": 77190000,
+        "pBlocked": 0.035
+      },
+      {
+        "at": "2026-10-28T05:00:00.000Z",
+        "p10": 16500000,
+        "p50": 59810000,
+        "p90": 76980000,
+        "pBlocked": 0.045
+      },
+      {
+        "at": "2026-10-28T06:00:00.000Z",
+        "p10": 15540000,
+        "p50": 58580000,
+        "p90": 76430000,
+        "pBlocked": 0.055
+      },
+      {
+        "at": "2026-10-28T07:00:00.000Z",
+        "p10": 15270000,
+        "p50": 57330000,
+        "p90": 75320000,
+        "pBlocked": 0.055
+      },
+      {
+        "at": "2026-10-28T08:00:00.000Z",
+        "p10": 14730000,
+        "p50": 56470000,
+        "p90": 74290000,
+        "pBlocked": 0.06
+      },
+      {
+        "at": "2026-10-28T09:00:00.000Z",
+        "p10": 14240000,
+        "p50": 55470000,
+        "p90": 73590000,
+        "pBlocked": 0.065
+      },
+      {
+        "at": "2026-10-28T10:00:00.000Z",
+        "p10": 12500000,
+        "p50": 54760000,
+        "p90": 72770000,
+        "pBlocked": 0.07
+      },
+      {
+        "at": "2026-10-28T11:00:00.000Z",
+        "p10": 10170000,
+        "p50": 54360000,
+        "p90": 72220000,
+        "pBlocked": 0.07
+      },
+      {
+        "at": "2026-10-28T12:00:00.000Z",
+        "p10": 8768000,
+        "p50": 53310000,
+        "p90": 71490000,
+        "pBlocked": 0.07
+      },
+      {
+        "at": "2026-10-28T13:00:00.000Z",
+        "p10": 8140000,
+        "p50": 52180000,
+        "p90": 70920000,
+        "pBlocked": 0.07
+      },
+      {
+        "at": "2026-10-28T14:00:00.000Z",
+        "p10": 6911000,
+        "p50": 50380000,
+        "p90": 70470000,
+        "pBlocked": 0.08
+      },
+      {
+        "at": "2026-10-28T15:00:00.000Z",
+        "p10": 6838000,
+        "p50": 49290000,
+        "p90": 69950000,
+        "pBlocked": 0.085
+      },
+      {
+        "at": "2026-10-28T16:00:00.000Z",
+        "p10": 5230000,
+        "p50": 48780000,
+        "p90": 69470000,
+        "pBlocked": 0.085
+      },
+      {
+        "at": "2026-10-28T17:00:00.000Z",
+        "p10": 4320000,
+        "p50": 47110000,
+        "p90": 68650000,
+        "pBlocked": 0.085
+      },
+      {
+        "at": "2026-10-28T18:00:00.000Z",
+        "p10": 3502000,
+        "p50": 46290000,
+        "p90": 67820000,
+        "pBlocked": 0.09
+      },
+      {
+        "at": "2026-10-28T19:00:00.000Z",
+        "p10": 2108000,
+        "p50": 44890000,
+        "p90": 67300000,
+        "pBlocked": 0.09
+      },
+      {
+        "at": "2026-10-28T20:00:00.000Z",
+        "p10": 1535000,
+        "p50": 43700000,
+        "p90": 67010000,
+        "pBlocked": 0.105
+      },
+      {
+        "at": "2026-10-28T21:00:00.000Z",
+        "p10": 1449000,
+        "p50": 43070000,
+        "p90": 66460000,
+        "pBlocked": 0.115
+      },
+      {
+        "at": "2026-10-28T22:00:00.000Z",
+        "p10": 1250000,
+        "p50": 42320000,
+        "p90": 65780000,
+        "pBlocked": 0.14
+      },
+      {
+        "at": "2026-10-28T23:00:00.000Z",
+        "p10": 1085000,
+        "p50": 41430000,
+        "p90": 65130000,
+        "pBlocked": 0.14
+      },
+      {
+        "at": "2026-10-29T00:00:00.000Z",
+        "p10": 101500000,
+        "p50": 137000000,
+        "p90": 162100000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T01:00:00.000Z",
+        "p10": 99840000,
+        "p50": 136400000,
+        "p90": 161400000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T02:00:00.000Z",
+        "p10": 98490000,
+        "p50": 135500000,
+        "p90": 160800000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T03:00:00.000Z",
+        "p10": 97640000,
+        "p50": 134700000,
+        "p90": 160300000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T04:00:00.000Z",
+        "p10": 96720000,
+        "p50": 133400000,
+        "p90": 159400000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T05:00:00.000Z",
+        "p10": 95830000,
+        "p50": 132600000,
+        "p90": 158800000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T06:00:00.000Z",
+        "p10": 95090000,
+        "p50": 132100000,
+        "p90": 158000000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T07:00:00.000Z",
+        "p10": 93910000,
+        "p50": 131100000,
+        "p90": 156800000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T08:00:00.000Z",
+        "p10": 93020000,
+        "p50": 130300000,
+        "p90": 156500000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T09:00:00.000Z",
+        "p10": 91820000,
+        "p50": 129500000,
+        "p90": 155800000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T10:00:00.000Z",
+        "p10": 90560000,
+        "p50": 128600000,
+        "p90": 155300000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T11:00:00.000Z",
+        "p10": 89170000,
+        "p50": 127800000,
+        "p90": 154700000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T12:00:00.000Z",
+        "p10": 87930000,
+        "p50": 126800000,
+        "p90": 154200000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T13:00:00.000Z",
+        "p10": 87010000,
+        "p50": 125900000,
+        "p90": 153700000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T14:00:00.000Z",
+        "p10": 84600000,
+        "p50": 124900000,
+        "p90": 153200000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T15:00:00.000Z",
+        "p10": 83420000,
+        "p50": 124200000,
+        "p90": 152900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T16:00:00.000Z",
+        "p10": 82180000,
+        "p50": 122800000,
+        "p90": 152400000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T17:00:00.000Z",
+        "p10": 81350000,
+        "p50": 122200000,
+        "p90": 152400000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T18:00:00.000Z",
+        "p10": 80030000,
+        "p50": 121100000,
+        "p90": 151600000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T19:00:00.000Z",
+        "p10": 78840000,
+        "p50": 120000000,
+        "p90": 150600000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T20:00:00.000Z",
+        "p10": 77590000,
+        "p50": 118800000,
+        "p90": 150200000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T21:00:00.000Z",
+        "p10": 75920000,
+        "p50": 118300000,
+        "p90": 149500000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T22:00:00.000Z",
+        "p10": 74140000,
+        "p50": 117600000,
+        "p90": 149100000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-29T23:00:00.000Z",
+        "p10": 73230000,
+        "p50": 116900000,
+        "p90": 148500000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T00:00:00.000Z",
+        "p10": 168600000,
+        "p50": 197400000,
+        "p90": 202700000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T01:00:00.000Z",
+        "p10": 167300000,
+        "p50": 196600000,
+        "p90": 201900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T02:00:00.000Z",
+        "p10": 165900000,
+        "p50": 195300000,
+        "p90": 201000000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T03:00:00.000Z",
+        "p10": 163800000,
+        "p50": 194200000,
+        "p90": 200400000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T04:00:00.000Z",
+        "p10": 161500000,
+        "p50": 192600000,
+        "p90": 199700000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T05:00:00.000Z",
+        "p10": 159400000,
+        "p50": 191700000,
+        "p90": 199200000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T06:00:00.000Z",
+        "p10": 156800000,
+        "p50": 191000000,
+        "p90": 198500000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T07:00:00.000Z",
+        "p10": 154700000,
+        "p50": 189500000,
+        "p90": 197900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T08:00:00.000Z",
+        "p10": 153800000,
+        "p50": 188300000,
+        "p90": 197200000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T09:00:00.000Z",
+        "p10": 152500000,
+        "p50": 187100000,
+        "p90": 196800000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T10:00:00.000Z",
+        "p10": 150500000,
+        "p50": 185700000,
+        "p90": 196500000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T11:00:00.000Z",
+        "p10": 148900000,
+        "p50": 184700000,
+        "p90": 196100000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T12:00:00.000Z",
+        "p10": 146800000,
+        "p50": 183800000,
+        "p90": 195500000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T13:00:00.000Z",
+        "p10": 145000000,
+        "p50": 182500000,
+        "p90": 195000000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T14:00:00.000Z",
+        "p10": 142800000,
+        "p50": 181500000,
+        "p90": 194500000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T15:00:00.000Z",
+        "p10": 141900000,
+        "p50": 180200000,
+        "p90": 194300000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T16:00:00.000Z",
+        "p10": 140100000,
+        "p50": 179500000,
+        "p90": 193600000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T17:00:00.000Z",
+        "p10": 139800000,
+        "p50": 178900000,
+        "p90": 193200000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T18:00:00.000Z",
+        "p10": 137900000,
+        "p50": 178500000,
+        "p90": 192900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T19:00:00.000Z",
+        "p10": 135700000,
+        "p50": 178000000,
+        "p90": 192300000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T20:00:00.000Z",
+        "p10": 134000000,
+        "p50": 177600000,
+        "p90": 191900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T21:00:00.000Z",
+        "p10": 132700000,
+        "p50": 176600000,
+        "p90": 191500000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T22:00:00.000Z",
+        "p10": 132000000,
+        "p50": 175500000,
+        "p90": 190900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-30T23:00:00.000Z",
+        "p10": 130400000,
+        "p50": 174600000,
+        "p90": 190600000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T00:00:00.000Z",
+        "p10": 129200000,
+        "p50": 173700000,
+        "p90": 190200000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T01:00:00.000Z",
+        "p10": 128500000,
+        "p50": 172500000,
+        "p90": 189600000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T02:00:00.000Z",
+        "p10": 126800000,
+        "p50": 169800000,
+        "p90": 188500000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T03:00:00.000Z",
+        "p10": 124800000,
+        "p50": 168600000,
+        "p90": 188200000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T04:00:00.000Z",
+        "p10": 121200000,
+        "p50": 166500000,
+        "p90": 186900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T05:00:00.000Z",
+        "p10": 119800000,
+        "p50": 166000000,
+        "p90": 186600000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T06:00:00.000Z",
+        "p10": 116700000,
+        "p50": 164800000,
+        "p90": 185700000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T07:00:00.000Z",
+        "p10": 113300000,
+        "p50": 161800000,
+        "p90": 184400000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T08:00:00.000Z",
+        "p10": 111500000,
+        "p50": 160200000,
+        "p90": 183900000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T09:00:00.000Z",
+        "p10": 110200000,
+        "p50": 158900000,
+        "p90": 183700000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T10:00:00.000Z",
+        "p10": 109200000,
+        "p50": 157900000,
+        "p90": 183100000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T11:00:00.000Z",
+        "p10": 107600000,
+        "p50": 157100000,
+        "p90": 182600000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T12:00:00.000Z",
+        "p10": 106600000,
+        "p50": 156200000,
+        "p90": 182100000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T13:00:00.000Z",
+        "p10": 105300000,
+        "p50": 155600000,
+        "p90": 181800000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T14:00:00.000Z",
+        "p10": 104000000,
+        "p50": 154400000,
+        "p90": 181400000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T15:00:00.000Z",
+        "p10": 102900000,
+        "p50": 153800000,
+        "p90": 181200000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T16:00:00.000Z",
+        "p10": 99410000,
+        "p50": 153000000,
+        "p90": 180000000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T17:00:00.000Z",
+        "p10": 97620000,
+        "p50": 151900000,
+        "p90": 179500000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T18:00:00.000Z",
+        "p10": 95440000,
+        "p50": 150900000,
+        "p90": 179100000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T19:00:00.000Z",
+        "p10": 91470000,
+        "p50": 149900000,
+        "p90": 178300000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T20:00:00.000Z",
+        "p10": 88680000,
+        "p50": 148800000,
+        "p90": 178000000,
+        "pBlocked": 0
+      },
+      {
+        "at": "2026-10-31T21:00:00.000Z",
+        "p10": 86580000,
+        "p50": 147600000,
+        "p90": 177400000,
+        "pBlocked": 0.005
+      },
+      {
+        "at": "2026-10-31T22:00:00.000Z",
+        "p10": 83750000,
+        "p50": 146700000,
+        "p90": 177000000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-10-31T23:00:00.000Z",
+        "p10": 83030000,
+        "p50": 145600000,
+        "p90": 176400000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-11-01T00:00:00.000Z",
+        "p10": 82220000,
+        "p50": 144200000,
+        "p90": 175700000,
+        "pBlocked": 0.01
+      },
+      {
+        "at": "2026-11-01T01:00:00.000Z",
+        "p10": 79160000,
+        "p50": 143500000,
+        "p90": 175100000,
+        "pBlocked": 0.015
+      },
+      {
+        "at": "2026-11-01T02:00:00.000Z",
+        "p10": 73770000,
+        "p50": 139700000,
+        "p90": 172300000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T03:00:00.000Z",
+        "p10": 73690000,
+        "p50": 138700000,
+        "p90": 171800000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T04:00:00.000Z",
+        "p10": 71310000,
+        "p50": 135200000,
+        "p90": 169100000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T05:00:00.000Z",
+        "p10": 70470000,
+        "p50": 134100000,
+        "p90": 168300000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T06:00:00.000Z",
+        "p10": 69540000,
+        "p50": 132800000,
+        "p90": 168000000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T07:00:00.000Z",
+        "p10": 61600000,
+        "p50": 131100000,
+        "p90": 165700000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T08:00:00.000Z",
+        "p10": 60040000,
+        "p50": 130300000,
+        "p90": 165400000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T09:00:00.000Z",
+        "p10": 60040000,
+        "p50": 129800000,
+        "p90": 165400000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T10:00:00.000Z",
+        "p10": 58280000,
+        "p50": 129300000,
+        "p90": 164700000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T11:00:00.000Z",
+        "p10": 56260000,
+        "p50": 128800000,
+        "p90": 164300000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T12:00:00.000Z",
+        "p10": 52870000,
+        "p50": 127800000,
+        "p90": 163900000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T13:00:00.000Z",
+        "p10": 50260000,
+        "p50": 127400000,
+        "p90": 163700000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T14:00:00.000Z",
+        "p10": 48280000,
+        "p50": 126200000,
+        "p90": 163200000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T15:00:00.000Z",
+        "p10": 47640000,
+        "p50": 125800000,
+        "p90": 162700000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T16:00:00.000Z",
+        "p10": 46010000,
+        "p50": 124600000,
+        "p90": 162300000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T17:00:00.000Z",
+        "p10": 44210000,
+        "p50": 124100000,
+        "p90": 161800000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T18:00:00.000Z",
+        "p10": 44080000,
+        "p50": 123600000,
+        "p90": 161100000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T19:00:00.000Z",
+        "p10": 42890000,
+        "p50": 123200000,
+        "p90": 161000000,
+        "pBlocked": 0.02
+      },
+      {
+        "at": "2026-11-01T20:00:00.000Z",
+        "p10": 41700000,
+        "p50": 122300000,
+        "p90": 160200000,
+        "pBlocked": 0.025
+      },
+      {
+        "at": "2026-11-01T21:00:00.000Z",
+        "p10": 39170000,
+        "p50": 121100000,
+        "p90": 159400000,
+        "pBlocked": 0.025
+      },
+      {
+        "at": "2026-11-01T22:00:00.000Z",
+        "p10": 38450000,
+        "p50": 120500000,
+        "p90": 159300000,
+        "pBlocked": 0.025
+      },
+      {
+        "at": "2026-11-01T23:00:00.000Z",
+        "p10": 37460000,
+        "p50": 119200000,
+        "p90": 158700000,
+        "pBlocked": 0.025
+      }
+    ],
+    "resets": [
+      {
+        "at": "2026-10-29T00:00:00.000Z",
+        "account": "aaaaaaaaaaaa",
+        "window": "len:10080",
+        "projected": false
+      },
+      {
+        "at": "2026-10-30T00:00:00.000Z",
+        "account": "bbbbbbbbbbbb",
+        "window": "len:10080",
+        "projected": false
+      }
+    ],
+    "blocked": [],
+    "switches": [
+      {
+        "accountId": "bbbbbbbbbbbb",
+        "soonest": "2026-10-26T00:00:00.000Z",
+        "usual": "2026-10-26T00:00:00.000Z",
+        "latest": "2026-10-26T00:00:00.000Z",
+        "probability": 1,
+        "likelihood": {
+          "start": "2026-10-26T00:00:00.000Z",
+          "stepHours": 1,
+          "p": [1, 0.02]
+        }
+      },
+      {
+        "accountId": "aaaaaaaaaaaa",
+        "soonest": "2026-10-28T03:36:00.000Z",
+        "usual": "2026-10-29T08:00:00.000Z",
+        "latest": "2026-11-01T13:00:00.000Z",
+        "probability": 0.52,
+        "likelihood": {
+          "start": "2026-10-26T05:00:00.000Z",
+          "stepHours": 1,
+          "p": [
+            0.001, 0.001, 0.001, 0.002, 0.003, 0.005, 0.007, 0.01, 0.013, 0.017, 0.022, 0.028,
+            0.034, 0.041, 0.048, 0.055, 0.062, 0.068, 0.074, 0.08, 0.084, 0.088, 0.092, 0.095,
+            0.098, 0.101, 0.103, 0.105, 0.107, 0.108, 0.11, 0.112, 0.115, 0.12, 0.126, 0.134, 0.144,
+            0.156, 0.171, 0.187, 0.204, 0.222, 0.239, 0.255, 0.27, 0.284, 0.296, 0.307, 0.317,
+            0.328, 0.339, 0.352, 0.368, 0.388, 0.411, 0.438, 0.47, 0.505, 0.545, 0.588, 0.633,
+            0.679, 0.726, 0.772, 0.815, 0.856, 0.892, 0.924, 0.95, 0.971, 0.986, 0.996, 1, 0.999,
+            0.993, 0.982, 0.965, 0.944, 0.918, 0.888, 0.853, 0.815, 0.774, 0.73, 0.683, 0.634,
+            0.583, 0.531, 0.478, 0.424, 0.371, 0.32, 0.27, 0.224, 0.183, 0.146, 0.114, 0.087, 0.065,
+            0.047, 0.033, 0.023, 0.016, 0.01, 0.007, 0.004, 0.003, 0.002, 0.001, 0.001, 0, 0, 0, 0,
+            0, 0.001, 0.001, 0.002, 0.003, 0.005, 0.008, 0.011, 0.015, 0.021, 0.028, 0.037, 0.047,
+            0.058, 0.071, 0.083, 0.097, 0.109, 0.121, 0.132, 0.142, 0.15, 0.157, 0.164, 0.17, 0.177,
+            0.185, 0.194, 0.206, 0.22, 0.236, 0.255, 0.274, 0.294, 0.313, 0.329, 0.343, 0.351,
+            0.354, 0.352, 0.343, 0.329, 0.31, 0.288, 0.262, 0.236, 0.208, 0.181, 0.156, 0.131
+          ]
+        }
+      }
+    ],
+    "spark48": "▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅█▅▅▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▒▒▒▒"
+  },
+  "sessions": [
+    {
+      "session": "unattributed",
+      "parent": null,
+      "account": "all",
+      "window": "binding",
+      "share": 0,
+      "usedFraction": null,
+      "cu": 0,
+      "tokens": {
+        "in": 0,
+        "out": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "models": {},
+      "exactness": "pro-rata",
+      "firstAt": "2026-10-26T00:00:00.000Z",
+      "lastAt": "2026-10-26T00:00:00.000Z"
+    }
+  ],
+  "usage": {
+    "start": "2026-10-12T01:00:00.000Z",
+    "stepHours": 1,
+    "hours": 336,
+    "unit": "cu",
+    "coveredFrom": "2026-10-18T00:00:00.000Z",
+    "accounts": [
+      {
+        "accountId": "aaaaaaaaaaaa",
+        "cu": [
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12000000, 0,
+          12000000, 0, 0, 12000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000,
+          1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 0
+        ]
+      },
+      {
+        "accountId": "bbbbbbbbbbbb",
+        "cu": [
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12000000, 0,
+          12000000, 0, 0, 12000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]
+      }
+    ],
+    "censored": []
+  }
+}

@@ -1,0 +1,610 @@
+{
+  "anthropic": {
+    "routeId": "anthropic",
+    "consumerProviderId": "anthropic",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "anthropic-direct",
+        "credentialProfileId": "anthropic-api-key",
+        "nativeModelProviders": ["anthropic"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.anthropic.com/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://api.anthropic.com/v1"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "claude-code-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "anthropic-claude-code",
+        "credentialProfileId": "anthropic-claude-code-oauth",
+        "nativeModelProviders": ["anthropic"],
+        "apis": {
+          "anthropic-messages": {
+            "baseUrl": "https://api.anthropic.com/v1"
+          }
+        },
+        "admission": "docs_roster"
+      }
+    }
+  },
+  "openai": {
+    "routeId": "openai",
+    "consumerProviderId": "openai",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "openai-direct",
+        "credentialProfileId": "openai-api-key",
+        "nativeModelProviders": ["openai"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.openai.com/v1"
+          },
+          "responses": {
+            "baseUrl": "https://api.openai.com/v1"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "codex-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "openai-codex",
+        "credentialProfileId": "openai-codex-oauth",
+        "nativeModelProviders": ["openai"],
+        "apis": {
+          "responses": {
+            "baseUrl": "https://chatgpt.com/backend-api/codex"
+          }
+        },
+        "admission": "docs_roster"
+      }
+    }
+  },
+  "google": {
+    "routeId": "google",
+    "consumerProviderId": "google",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "google-gemini-direct",
+        "credentialProfileId": "google-gemini-api-key",
+        "nativeModelProviders": ["google"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai"
+          },
+          "gemini": {
+            "baseUrl": "https://generativelanguage.googleapis.com/v1beta"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "antigravity-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "google-antigravity",
+        "credentialProfileId": "google-antigravity-oauth",
+        "nativeModelProviders": ["google"],
+        "apis": {},
+        "admission": "docs_roster"
+      }
+    }
+  },
+  "x-ai": {
+    "routeId": "x-ai",
+    "consumerProviderId": "x-ai",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "xai-direct",
+        "credentialProfileId": "xai-api-key",
+        "nativeModelProviders": ["x-ai"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.x.ai/v1"
+          },
+          "responses": {
+            "baseUrl": "https://api.x.ai/v1"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "supergrok-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "xai-grok-build",
+        "credentialProfileId": "xai-grok-build-oauth",
+        "nativeModelProviders": ["x-ai"],
+        "apis": {},
+        "admission": "docs_roster"
+      }
+    }
+  },
+  "mistralai": {
+    "routeId": "mistralai",
+    "consumerProviderId": "mistralai",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "mistral-direct",
+        "credentialProfileId": "mistral-api-key",
+        "nativeModelProviders": ["mistralai"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.mistral.ai/v1"
+          }
+        },
+        "admission": "api_roster"
+      }
+    }
+  },
+  "moonshotai": {
+    "routeId": "moonshotai",
+    "consumerProviderId": "moonshotai",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "moonshot-direct",
+        "credentialProfileId": "moonshot-api-key",
+        "nativeModelProviders": ["moonshotai"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.moonshot.ai/v1"
+          },
+          "responses": {
+            "baseUrl": "https://api.moonshot.ai/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://api.moonshot.ai/anthropic/v1"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "kimi-code-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "kimi-code",
+        "credentialProfileId": "kimi-code-membership-token",
+        "nativeModelProviders": ["moonshotai"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.kimi.ai/coding/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://api.kimi.ai/coding/v1"
+          }
+        },
+        "admission": "docs_roster"
+      }
+    }
+  },
+  "minimax": {
+    "routeId": "minimax",
+    "consumerProviderId": "minimax",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "minimax-direct",
+        "credentialProfileId": "minimax-api-key",
+        "nativeModelProviders": ["minimax"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.minimax.io/v1"
+          },
+          "responses": {
+            "baseUrl": "https://api.minimax.io/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://api.minimax.io/anthropic/v1"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "coding-plan-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "minimax-coding-plan",
+        "credentialProfileId": "minimax-subscription-key",
+        "nativeModelProviders": ["minimax"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.minimax.io/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://api.minimax.io/anthropic/v1"
+          }
+        },
+        "admission": "docs_roster"
+      }
+    }
+  },
+  "deepseek": {
+    "routeId": "deepseek",
+    "consumerProviderId": "deepseek",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "deepseek-direct",
+        "credentialProfileId": "deepseek-api-key",
+        "nativeModelProviders": ["deepseek"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.deepseek.com"
+          },
+          "responses": {
+            "baseUrl": "https://api.deepseek.com"
+          }
+        },
+        "admission": "api_roster"
+      }
+    }
+  },
+  "qwen": {
+    "routeId": "qwen",
+    "consumerProviderId": "qwen",
+    "profiles": {
+      "dashscope-direct": {
+        "kind": "direct",
+        "endpointProfileId": "dashscope-direct",
+        "credentialProfileId": "dashscope-api-key",
+        "nativeModelProviders": ["qwen"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+          },
+          "responses": {
+            "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://dashscope-intl.aliyuncs.com/apps/anthropic/v1"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "realtime-websocket": {
+        "kind": "direct",
+        "endpointProfileId": "modelstudio-realtime-websocket",
+        "credentialProfileId": "dashscope-api-key",
+        "nativeModelProviders": ["qwen"],
+        "apis": {},
+        "admission": "api_roster"
+      },
+      "modelstudio-coding-plan": {
+        "kind": "subscription",
+        "endpointProfileId": "modelstudio-coding-plan",
+        "credentialProfileId": "modelstudio-coding-plan-key",
+        "nativeModelProviders": ["qwen"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://coding-intl.dashscope.aliyuncs.com/v1"
+          }
+        },
+        "admission": "docs_roster"
+      },
+      "qwencloud-token-plan": {
+        "kind": "subscription",
+        "endpointProfileId": "qwencloud-token-plan",
+        "credentialProfileId": "qwencloud-token-plan-key",
+        "nativeModelProviders": ["qwen"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1"
+          }
+        },
+        "admission": "docs_roster"
+      }
+    }
+  },
+  "z-ai": {
+    "routeId": "z-ai",
+    "consumerProviderId": "z-ai",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "zai-direct",
+        "credentialProfileId": "zai-api-key",
+        "nativeModelProviders": ["z-ai"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.z.ai/api/paas/v4"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "glm-coding-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "zai-glm-coding",
+        "credentialProfileId": "zai-glm-coding-token",
+        "nativeModelProviders": ["z-ai"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.z.ai/api/coding/paas/v4"
+          },
+          "responses": {
+            "baseUrl": "https://api.z.ai/api/v1"
+          }
+        },
+        "admission": "docs_roster"
+      }
+    }
+  },
+  "openrouter": {
+    "routeId": "openrouter",
+    "consumerProviderId": "openrouter",
+    "profiles": {
+      "gateway": {
+        "kind": "gateway",
+        "endpointProfileId": "openrouter-gateway",
+        "credentialProfileId": "openrouter-api-key",
+        "nativeModelProviders": [],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://openrouter.ai/api/v1"
+          },
+          "responses": {
+            "baseUrl": "https://openrouter.ai/api/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://openrouter.ai/api/v1"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "decisions": {
+        "kind": "gateway",
+        "endpointProfileId": "openrouter-decisions",
+        "credentialProfileId": "openrouter-api-key",
+        "nativeModelProviders": [],
+        "apis": {},
+        "admission": "api_roster"
+      }
+    }
+  },
+  "together-ai": {
+    "routeId": "together-ai",
+    "consumerProviderId": "together-ai",
+    "profiles": {
+      "gateway": {
+        "kind": "gateway",
+        "endpointProfileId": "together-inference",
+        "credentialProfileId": "together-api-key",
+        "nativeModelProviders": [],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.together.ai/v1"
+          }
+        },
+        "admission": "api_roster"
+      }
+    }
+  },
+  "fireworks": {
+    "routeId": "fireworks",
+    "consumerProviderId": "fireworks",
+    "profiles": {
+      "gateway": {
+        "kind": "gateway",
+        "endpointProfileId": "fireworks-inference",
+        "credentialProfileId": "fireworks-api-key",
+        "nativeModelProviders": [],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.fireworks.ai/inference/v1"
+          },
+          "responses": {
+            "baseUrl": "https://api.fireworks.ai/inference/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://api.fireworks.ai/inference/v1"
+          }
+        },
+        "admission": "api_roster"
+      }
+    }
+  },
+  "poe": {
+    "routeId": "poe",
+    "consumerProviderId": "poe",
+    "profiles": {
+      "gateway": {
+        "kind": "gateway",
+        "endpointProfileId": "poe-api",
+        "credentialProfileId": "poe-api-key",
+        "nativeModelProviders": [],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.poe.com/v1"
+          },
+          "responses": {
+            "baseUrl": "https://api.poe.com/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://api.poe.com/v1"
+          }
+        },
+        "admission": "api_roster"
+      }
+    }
+  },
+  "vertex": {
+    "routeId": "vertex",
+    "consumerProviderId": "vertex",
+    "profiles": {
+      "google-cloud": {
+        "kind": "gateway",
+        "endpointProfileId": "vertex-google-cloud",
+        "credentialProfileId": "vertex-auth",
+        "nativeModelProviders": [],
+        "apis": {},
+        "admission": "docs_roster"
+      }
+    }
+  },
+  "opencode": {
+    "routeId": "opencode",
+    "consumerProviderId": "opencode",
+    "profiles": {
+      "zen": {
+        "kind": "gateway",
+        "endpointProfileId": "opencode-zen",
+        "credentialProfileId": "opencode-zen-api-key",
+        "nativeModelProviders": [],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://opencode.ai/inference/v1"
+          },
+          "responses": {
+            "baseUrl": "https://opencode.ai/inference/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://opencode.ai/inference/v1"
+          },
+          "gemini": {
+            "baseUrl": "https://opencode.ai/inference/v1"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "systemone": {
+        "kind": "gateway",
+        "endpointProfileId": "opencode-zen-systemone",
+        "credentialProfileId": "opencode-zen-api-key",
+        "nativeModelProviders": [],
+        "apis": {},
+        "admission": "api_roster"
+      },
+      "go-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "opencode-go",
+        "credentialProfileId": "opencode-go-token",
+        "nativeModelProviders": [],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://opencode.ai/inference/go/openai/v1"
+          },
+          "responses": {
+            "baseUrl": "https://opencode.ai/inference/go/openai/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://opencode.ai/inference/go/anthropic/v1"
+          },
+          "gemini": {
+            "baseUrl": "https://opencode.ai/inference/go/google/v1beta"
+          }
+        },
+        "admission": "api_roster"
+      }
+    }
+  },
+  "sakana": {
+    "routeId": "sakana",
+    "consumerProviderId": "sakana",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "sakana-direct",
+        "credentialProfileId": "sakana-api-key",
+        "nativeModelProviders": ["sakana"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.sakana.ai/v1"
+          },
+          "responses": {
+            "baseUrl": "https://api.sakana.ai/v1"
+          }
+        },
+        "admission": "api_roster"
+      },
+      "fugu-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "sakana-fugu",
+        "credentialProfileId": "sakana-subscription-key",
+        "nativeModelProviders": ["sakana"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.sakana.ai/v1"
+          },
+          "responses": {
+            "baseUrl": "https://api.sakana.ai/v1"
+          }
+        },
+        "admission": "api_roster"
+      }
+    }
+  },
+  "ollama": {
+    "routeId": "ollama",
+    "consumerProviderId": "ollama",
+    "profiles": {
+      "cloud": {
+        "kind": "gateway",
+        "endpointProfileId": "ollama-cloud",
+        "credentialProfileId": "ollama-cloud-token",
+        "nativeModelProviders": [],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://ollama.com/v1"
+          },
+          "responses": {
+            "baseUrl": "https://ollama.com/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://ollama.com/v1"
+          }
+        },
+        "admission": "api_roster"
+      }
+    }
+  },
+  "cognition": {
+    "routeId": "cognition",
+    "consumerProviderId": "cognition",
+    "profiles": {
+      "devin-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "cognition-devin-connect",
+        "credentialProfileId": "cognition-devin-session",
+        "nativeModelProviders": ["cognition"],
+        "apis": {},
+        "admission": "docs_roster"
+      }
+    }
+  },
+  "meta": {
+    "routeId": "meta",
+    "consumerProviderId": "meta",
+    "profiles": {
+      "direct-api": {
+        "kind": "direct",
+        "endpointProfileId": "meta-direct",
+        "credentialProfileId": "meta-api-key",
+        "nativeModelProviders": ["meta"],
+        "apis": {
+          "chat-completions": {
+            "baseUrl": "https://api.meta.ai/v1"
+          },
+          "responses": {
+            "baseUrl": "https://api.meta.ai/v1"
+          },
+          "anthropic-messages": {
+            "baseUrl": "https://api.meta.ai/v1"
+          }
+        },
+        "admission": "docs_roster"
+      },
+      "muse-code-subscription": {
+        "kind": "subscription",
+        "endpointProfileId": "meta-muse-code",
+        "credentialProfileId": "meta-muse-code-oauth",
+        "nativeModelProviders": ["meta"],
+        "apis": {
+          "responses": {
+            "baseUrl": "https://api.meta.ai/v1"
+          }
+        },
+        "admission": "api_roster"
+      }
+    }
+  }
+}

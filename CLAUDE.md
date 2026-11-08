@@ -9,9 +9,10 @@ lives in `ROADMAP.md`.
 
 ## Where the rationale lives — all files below are in `ai-docs/architecture/`
 
-- `routing.md` — `provider@model` syntax, every provider prefix, catalog-gathered route candidates and their tier order, `defaultProvider` as the fallback position, the derived picker provider list, `SUBSCRIPTION_PROVIDERS`, local models
-- `wire.md` — every request built from the connection's catalog `wire` + route registry (no model-name rules anywhere); clamp / borrow-and-drop / try-in-turn; the first-run refusal trap; `+pro` vs the `+` chain separator; custom endpoints' declared wire; read before touching `connection-*.ts`, `wire-*.ts`, step 5w, or any limit/reasoning field
-- `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array
+- `routing.md` — `provider@model` syntax, every provider prefix, why MCP tools remove an unrequested `provider@` (`user_required_provider`) and refuse a bare name outside the recommended list (`unknown_model` / `not_recommended`, `user_required_model`), catalog-gathered route candidates and their tier order, `defaultProvider` as the fallback position, the derived picker provider list, `SUBSCRIPTION_PROVIDERS`, local models
+- `wire.md` — every request built from the connection's catalog `wire` + route registry (no model-name rules anywhere); clamp / borrow-and-drop / try-in-turn; the first-run refusal trap; `+pro` vs the `+` chain separator; custom endpoints' declared wire; recommended effort (the efforts sidecar, shown by MCP `list_models`; a call with no effort answers `needs_effort`; the calling agent passes one effort per model); read before touching `connection-*.ts`, `wire-*.ts`, step 5w, or any limit/reasoning field
+- `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array; Codex zero-delta tool calls, the `parallel` wrapper, the Responses leg/turn split with in-turn retry and the 150 s stall guard, and the non-streamed SSE-error contract (`x-claudish-stream-failure`); the signing-value registry (exact-value redaction of the credentials a request signed with, its leases and the sink table) and an internal call's abort signal and every reach point. Read before adding any log or client-body sink of upstream text
+- `code-mode.md` — `--code-mode` for `openai-codex`: one `exec` tool running JavaScript in a QuickJS sandbox, nested calls relayed as `tool_use` blocks; the decision order, lite/classic shapes and the lite → classic fallback, step 5r resume and tombstones, the input builder, store byte caps, and the sandbox limits (a 32 MiB heap limit does NOT bound wasm memory). Read before editing `code-mode/`, step 5d/5r, or the leg parser's exec handling
 - `network-recovery.md` — the two-tier connection hold: the DERIVED deadline (`API_TIMEOUT_MS`, not a
   watchdog), why tier 2 answers 503 and never 429, why the banner is magmux's `overlay` and never a
   pane of ours (closing a pane wedged Claude Code), the five auth sites
@@ -20,7 +21,7 @@ lives in `ROADMAP.md`.
   the owner-created inbox, the `SETTLING` hold and turn chains, the interactive driver, and the
   harness-conformance supervisor with its plan-mode measurement. Read before editing `hooks/`, a stream
   parser's raw tap, or the settle path. User guide: `docs/advanced/hooks.md`
-- `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10, Claude Code's gates, metered panel billing; read before editing advisor, decorator, monitor-launch or native-auth code
+- `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10 and the record fields, Claude Code's gates; panel routing through `planAdvisorModel` + `buildAdvisorChains` before the port (no lazy path), the advisor handler set, the never-served panel gateway, stickiness, and the Claude rule (login only where `childAuthControl` says claudish controls the child's auth, S0 request shape, the 429 "Error" shape refusal); read before editing advisor, decorator, panel gateway, `planAdvisorModel`/`buildAdvisorChains`, monitor-launch or native-auth code
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `providers/meta-muse-code.md`: `muse@` on a Muse Code subscription and its metered sibling `meta@`: the mint
   as entitlement evidence (per process, on 401, 30-min TTL), the Muse Keychain item read only by an
@@ -36,13 +37,25 @@ lives in `ROADMAP.md`.
   box located by the cursor, no width cap), settle on `turn_duration` (32 s quiet path gated
   on Stop hooks), prompt delivery by file with read coverage, boot dialogs never accepted, the pane
   watcher and identity-checked reap, socket traps, one level of nesting (`CLAUDISH_PANE_CHILD` kept,
-  the nested refusal), the frozen mod contract v1, the session registry read as telemetry (and why no
-  in-child mod or argv prompt). Read before editing `pane/`, team spawn or MCP session spawn
+  the nested refusal), replay panes (read-only `claude --resume`, the allowlisted environment, box
+  before dialog), the frozen mod contract v1, the session registry read as telemetry (and why no
+  in-child mod or argv prompt). Read before editing `pane/` (`pane/replay-pane.ts` and
+  `pane/pane-reap.ts` included), team spawn or MCP session spawn
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
-- `mcp-sessions.md` — the 15-tool MCP surface and its four groups, the 4-tool nested mode, sessions
-  on panes (`send_input` queueing, `capture_session`, `resize_session`, the on-disk session records
+- `credential-files.md` — a long-lived process follows its credential FILE: stat-and-reload on change, the four disk states and why "unreadable" never signs a user out, compare-and-set on the refresh-token lineage so a refresh cannot undo a login. Read before touching `credential-file.ts`, a file-backed OAuth login (`grok-oauth.ts`, `kimi-oauth.ts`, `devin-credentials.ts`) or adding one
+- `accounts.md` — multi-subscription account pools (Codex pool on the request path; Phase 2a shipped in v14.5.0, Phase 2b gated on D8): HTTP quota rotation and the transient 429 when retry is spent, the three availability projections, the fail-closed account list, availability from configuration never stored material, no metered fall-through, the refresh gate that never runs unlocked, decisions 1–11, Claude Code's OAuth facts, the legacy Codex file move into the Keychain (MTL-372); row ids in `accounts-validation.md`. Read before editing `auth/accounts/`, the Codex credential or transport, the refresh lock, or the native handler's account swap
+- `allowance.md` — the allowance model on the Codex pool: the usage ledger (numbers, closed sets,
+  pattern-checked ids only), the pure `allowance/` module and its enforced purity, the one `Strategy`
+  interface (`sticky` default, opt-in `ebr` / `lookahead`), every adversarial trace with its figures,
+  the tournament gate no strategy has passed yet, gap alerts and their measured budgets, and why
+  alerts under `lookahead` simulate `ebr`. Read before editing `auth/accounts/allowance/`, `ledger/`,
+  `allowance-service.ts` or the pool's `rank` hook
+- `mcp-sessions.md` — the 20-tool MCP surface and its four groups, the 4-tool nested mode, sessions
+  on panes (`send_input` queueing, `capture_session`, `resize_session`, `scroll_session`,
+  `transcript_session` (the transcript as text lines: cursor, byte caps, `final`), `replay_session`
+  and `close_replay` (a finished session's real interface, read only), the on-disk session records
   and who reads them), `run_prompt`'s Claude Code print path, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing, and why a slot's answer is every
   assistant message of its turn, from the transcript, starting after the task file was read
@@ -100,6 +113,7 @@ negative case: if you are about to type one of those words, stop and use the lef
 | fallback | (the whole chain) | only the last-resort `defaultProvider` hop |
 | subscription | plan (as a billing category) | claudish's flat-rate category (`SUBSCRIPTION_PROVIDERS`); "plan" is the vendor's product name |
 | dynamic subscription | client subscription | a subscription whose models the account's own discovery decides (Antigravity, SuperGrok, Devin) |
+| account list | roster (for a list of accounts), membership (for accounts) | the accounts registered for one claudish provider in `subscriptionAccounts`; a list of CREDENTIALS, never a list of models |
 | native API | direct API | the vendor's own metered endpoint (the `direct-api` profile) |
 | gateway | aggregator (as a tier) | a metered service reselling many vendors: OpenRouter, Together, Fireworks, Poe, Vertex |
 | metered | pay-as-you-go, PAYG | billed per token. PAYG survives only in the names `qwen-payg` and "Alibaba PAYG" |
@@ -133,7 +147,7 @@ negative case: if you are about to type one of those words, stop and use the lef
 - Terminal errors are remapped to 400, so any `status ===` under `handlers/` is suspect — recover the real one with `extractUpstreamStatus`.
 - Read `C.*` / `tokens.*` at RENDER time; a module-level `const` snapshots the dark palette before detection runs.
 - A provider absent from `SUBSCRIPTION_PROVIDERS` quotes flat-rate users a per-token price and accrues fictional spend.
-- `openai-codex` bills by the CREDENTIAL that signed, never by its name, so it is in `CREDENTIAL_DECIDED_PROVIDERS` and must never also be in `SUBSCRIPTION_PROVIDERS` — the name check short-circuits the probe. The probe is installed only as a side effect of importing `auth/credentials/authority.ts`; unregistered, `cx@` silently reports metered (safe as money, but it also suppresses the `routing-rules.ts:413` cost warning). Probe with `CodexOAuth.hasCredentials()`, never `hasOAuthCredentials`/`describeSourceSync`.
+- `openai-codex` bills by the CREDENTIAL that signed, never by its name, so it is in `CREDENTIAL_DECIDED_PROVIDERS` and must never also be in `SUBSCRIPTION_PROVIDERS` — the name check short-circuits the probe. The probe is installed only as a side effect of importing `auth/credentials/authority.ts`; unregistered, `cx@` silently reports metered (safe as money, but it also suppresses the `routing-rules.ts:413` cost warning). The probe and the transport's `poolConfigured()` read the account registry's non-throwing `mayHaveConfiguredAccounts` (unknown configuration → subscription); sign-time availability (`hasConfiguredAccounts`) instead THROWS on a cold unreadable account list. Never probe with `CodexOAuth.hasCredentials()`, `hasOAuthCredentials` or `describeSourceSync`. `recordSignedArm` is written only by `signRequest`, from the accepted `auth.arm`; once a request has signed OAuth its `requireOAuth` latch stays set for every later sign of that request.
 - What makes an arm the SUBSCRIPTION arm is `RequestAuth.arm === "oauth"`, set by the credential half itself — never "the composite returned an artifact". `CompositeCredentialProvider` falls through to the api-key half, which ALWAYS returns an object (`{headers:{}}` even with no key), so a truthiness test on the cached artifact labels every metered request SUB and accrues $0. Absent `arm` ⇒ metered. This shipped once and three reviewers read it as correct.
 - Cross-vendor subscriptions such as Devin and the Alibaba Token Plan send a candidate only when its exact catalog route/profile membership includes it; a model the account itself selects stays discoverable through the provider's dynamic models catalog.
 - `gk@` is the Grok SUBSCRIPTION; `grok@`/`xai@` is the metered `x-ai`. `moonshot-cn@` is a different service from `moonshot@`.
@@ -142,8 +156,12 @@ negative case: if you are about to type one of those words, stop and use the lef
 - A new `StatsEvent` field MUST also be pushed in `eventToLogRecord` — `stats-otlp.ts` is a HAND-WRITTEN attribute allowlist, so a field wired only into the interface and `stats.ts` is typed, buffered to `~/.claudish/stats-buffer.json`, and never sent. Nothing errors; the number is just missing from every dashboard, a quarter later. `stats-otlp.test.ts`'s table is `satisfies Record<OptionalStatsKey, …>`, so adding the field breaks compilation until it is listed there too — keep that.
 - A connection failure can arrive wearing an AUTH status code, at FIVE sites in `composed-handler.ts` (`refreshAuth`, `forceRefreshAuth`, the parameter-recovery re-fetch, `getHeaders`, the primary fetch). 401 is retryable to `FallbackHandler`, so answering it for a network fault walks a subscription user onto metered billing mid-outage; an unclassified THROW is the same bug one layer out (`{status: 0}` + an unconditional advance, with no cost warning). Classify first or rethrow unchanged — never invent a status. `getHeaders()` is the non-obvious one: for `gk@` it is the request's first network touch, and refresh-conditional, so it is rare rather than safe. A TRANSPORT's own `refreshAuth` catch that returns normally is the same bug one layer earlier: `openai-codex.ts` swallowed an unreachable token host and fell through to the metered api-key path.
 - Anything that renders a TUI to **stderr** must `setStderrQuiet(true)` for as long as it owns the screen, and release it in a `finally`. `logStderr` writes there too, so the two interleave inside one frame: the TUI repaints its own cells over part of the line and the surviving fragments read as a layout bug. `--probe` hit this — the tell was a stray `[c`, the head of `[claudish] `, left in a failed row. The message is not lost; `logStderr` always writes the debug log as well.
+- An `--advisor` panel or collector handler comes ONLY from the advisor handler set (`createHandlerSet({requestRole: "advisor"})`, built at startup in `advisor-startup.ts`), and `requestRole` must stay in `sharedOpts`' `Pick` (`provider-profiles.ts`). A panel handler taken from the session set, or a profile-built one that lost `requestRole`, writes the status-line token file, so the main status line silently shows the panel model and its counts; `CLAUDISH_TOKEN_FILE` outranks the port, so no port change isolates it.
+- Claude Code's inbound bearer may sign a Claude advisor call only on a launch where `childAuthControl` (`claude-runner.ts`) says claudish controls the child's auth, and it reaches exactly one function, `runClaudeAdvisorCall`, which posts to the fixed `ANTHROPIC_MESSAGES_URL` and takes no URL. The request cannot prove provenance (the `oauth-2025-04-20` beta is client-declared, S0), so do NOT gate the login on a header. A bearer logged, put into an internal request (the panel gateway's request carries no auth header), sent to a configurable URL, or used on an uncontrolled launch is a credential leak or a user's own token billed as a subscription, and nothing reports it. A bearer that cannot sign is never moved to a metered key silently: the call warns.
+- Every credential a request signed with is registered on that request's signing lease (`fetchHeaders`, `redactionSecrets?()`, the advisor's inbound bearer) and redacted by value in `log`, `logStderr`, `redactSecrets`, telemetry and `redactForClient`. A new sink that writes upstream text without going through `log`/`logStderr`/`redactSecrets`, or a body sent to Claude Code built from upstream text without `redactForClient`, reopens credential echo (a provider quoting the key it rejected), and nothing errors. A lease is released when the protected work ends (body done, cancelled or errored), never on a timer: a TTL expires under a stream that is still logging. See `adapters.md`.
 - A `route binding` names one endpoint AND one credential silo. A provider that owns neither does not belong in `CATALOG_ROUTE_BINDINGS`, even when its name matches the `routeId`: since `routingProvidersForRoute` returns every provider bound to a route, a placeholder listed there becomes a route candidate and `--probe` prints a hop no key can ever satisfy. A name that only READS catalog data through a route (a vendor slug such as `anthropic` for the savings-panel price, `moonshotai` for the Kimi picker list) goes in `LOOKUP_ONLY_ROUTE_BINDINGS`, which the lookups consult and routing never does; a test pins that table's members. Do NOT fix that by filtering `reason: "virtual"` out of the gatherer — `native-anthropic` is virtual and genuinely routable through the native passthrough, so that filter takes `claude-*` away from anyone holding an `ANTHROPIC_API_KEY`.
 - `CLAUDISH_PANE_CHILD` must never be scrubbed from Claude Code's env: `scrubChildEnv` deletes only `PANE_LAUNCH_VARS` (`CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD`). The flag is how a claudish or claudish MCP server started inside a session knows it is one level deep; scrubbing it silently re-enables `create_session` inside `create_session`, with no error. See `pane-session.md` § One level of nesting.
+- A file-backed OAuth credential held in memory goes through `CredentialFileState` (`auth/credential-file.ts`); a refresh writes back only through `saveRefreshed`; an unreadable file never signs a process out. A constructor that reads the file, or a refresh that writes it directly, brings back D1 (an old process keeps a revoked token after a new login) or walks a subscription user onto a metered hop on one torn read. See `credential-files.md`.
 
 ## Commands
 
@@ -225,6 +243,24 @@ and merge it, or `git push origin HEAD:main` after `git rebase origin/main`. Eit
 the MERGE COMMIT, never the branch head CI did not validate. After any rebase merge, verify
 `git show origin/main:packages/cli/package.json | grep version` really carries your bump.
 
+## Linear tickets
+
+Planning lives in Linear only: project **Claudish** (`P-MTL-73`), team **MAG Tools** (`MTL-`). The
+milestones are delivery waves (`Wave 0 — Now, no blocker` … `Wave 5 — Low priority`); the order and
+the dependencies are in the project document "Claudish delivery flow". Every open GitHub issue has
+exactly one Linear ticket that links it.
+
+- **Start a task:** find its ticket (search the project, and the GitHub issue's mirror). If there is
+  none, create one in the Claudish project with a milestone, a priority and the evidence. Then set it
+  **In Progress** before the first edit. An In Progress ticket is how parallel sessions see that the
+  work is taken; work with no ticket is invisible and gets done twice.
+- **While working:** record what changes the plan on the ticket: a narrowed cause, a new blocker
+  (`blocks` / `blockedBy`, not prose), a split-out follow-up as its own ticket.
+- **Finish a task:** set the ticket **Done** only after the fix is merged and verified, with a
+  comment naming the commit or PR and the verification. Stopped or obsolete work goes to
+  **Canceled** with the reason, never left In Progress. A ticket that tracks a GitHub issue closes
+  together with that issue.
+
 ## Session artifacts
 
 `ai-docs/` is TRACKED; `ai-docs/sessions/{task-slug}-{YYYYMMDD-HHMMSS}-{hash}/` is GITIGNORED and
@@ -255,3 +291,42 @@ for rationale. Three write-ups already died this way.
   Set work aside with a temporary WIP commit, or copy the file out and back. To revert a
   file for a mutation test, copy it — do not use git.
 - Deep rationale goes in `ai-docs/architecture/`, not here. Add it there and name the trigger in the list above.
+
+## Code Search
+
+Added by the `code-search` plugin.
+
+### The tool surface
+
+| Tool | Present | Takes |
+|---|---|---|
+| `code_search` | always | `query` (free-form), `intent`, `scope` |
+| `find_dependencies`, `find_dependents`, `call_tree`, `find_implementations`, `impact` | only when the configured engine genuinely supports that operation | `symbol`, `depth` / `max_depth`, `scope` |
+| `Read`, `Grep`, `Glob` | always | — |
+
+**Read the tool list; never assume a structural tool exists.** Absence means the configured
+engine cannot answer that class of question at all — not that it would be slower or
+approximate. Say so in the report and answer with what is present.
+
+`code_search` infers intent from the query, so write the real question. Pass `intent` only to
+override an inference you have watched go wrong. Every response names the capability that
+served it — read that field.
+
+### Routing
+
+| The request is about | Route to |
+|---|---|
+| meaning, behaviour or a flow | `code_search` |
+| the shape of the system, or a **named** symbol and what touches it | `code_search`, then the structural tools |
+| an exact literal, an occurrence count, or a filename pattern | `Grep` / `Glob` |
+
+Text search is the correct tool for the third row — that is routing, not a fallback. The rule
+is to name the method behind each finding, never to avoid a tool.
+
+### Discipline
+
+- Search before reading. Three or more files in one investigation means one ranked query first.
+- Read only the line ranges returned, and re-resolve them before acting — edits move them.
+- Never rank-truncate a result set; narrow with `scope` instead.
+- An error and an empty result look alike and mean opposite things. Establish which you have.
+- Centrality is tiers, not a threshold. Absent centrality means unknown, not low.

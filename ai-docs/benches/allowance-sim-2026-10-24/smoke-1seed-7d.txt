@@ -1,0 +1,319 @@
+$ bun run packages/cli/src/auth/accounts/allowance/sim/cli.ts --seeds "1" --days "7" --jobs "8"
+[sim] PLAN_LATENCY 2 ms (p95 of planFor, in-process)
+[shard 6] bursty · 2× offset 26 h seed 1: 15.6 s
+[shard 5] steady · 2× offset 26 h seed 1: 18.0 s
+[shard 7] weekday-heavy · 2× offset 26 h seed 1: 18.0 s
+[shard 7] weekday-heavy · 1× seed 1: 7.6 s
+[shard 6] steady · 2× unequal 1:2 seed 1: 21.4 s
+[shard 5] steady · 3× seed 1: 30.9 s
+[shard 6] external-drift · 2× offset 26 h · quantum 0.001 seed 1: 13.4 s
+[shard 5] external-drift · 2× offset 26 h · first-use 7d seed 1: 13.0 s
+[shard 2] over-subscribed · 2× offset 26 h · first-use 7d seed 1: 82.6 s
+[shard 0] over-subscribed · 2× offset 26 h seed 1: 88.4 s
+[shard 2] steady · 1× seed 1: 6.5 s
+[shard 1] over-subscribed · 2× offset 26 h · sliding 5h seed 1: 89.2 s
+[shard 3] over-subscribed · 2× offset 26 h · quantum 0.001 seed 1: 89.3 s
+[shard 1] external-drift · 2× offset 26 h seed 1: 15.6 s
+[shard 3] steady · 2× balanced seed 1: 15.9 s
+[shard 0] refactor-day · 2× offset 26 h seed 1: 18.0 s
+[shard 1] weekday-heavy · 2× one at 0.6 seed 1: 13.0 s
+[shard 2] weekday-heavy · 3× seed 1: 28.8 s
+[shard 0] weekday-heavy · 2× balanced seed 1: 12.6 s
+[shard 3] weekday-heavy · 2× unequal 1:2 seed 1: 18.0 s
+[shard 4] over-subscribed recovery · 2× offset 26 h seed 1: 124.7 s
+[shard 4] steady · 2× one at 0.6 seed 1: 8.8 s
+[shard 4] external-drift · 2× offset 26 h · sliding 5h seed 1: 16.3 s
+# allowance tournament · 1 seeds × 7 d · PLAN_LATENCY 2 ms · 152 s
+
+## Adversarial traces (served tasks; oracle; 7d gaps in hours)
+
+| trace | contestant | served | promised | oracle | gaps | pass |
+|---|---|---|---|---|---|---|
+| R1 | sticky | 3 | 3 | 3 | none | ✓ |
+| R1 | ebr | 3 | 3 | 3 | none | ✓ |
+| R1 | lookahead | 3 | 3 | 3 | none | ✓ |
+| R1 | governing-fefo | 2 | 2 | 3 | none | ✓ |
+| R1 | water-fill | 3 | — | 3 | none | ✓ |
+| gpt #1 | sticky | 4 | 4 | 4 | none | ✓ |
+| gpt #1 | ebr | 3 | 3 | 4 | 2→6 | ✓ |
+| gpt #1 | lookahead | 4 | 4 | 4 | none | ✓ |
+| gpt #1 | governing-fefo | 3 | 3 | 4 | 2→6 | ✓ |
+| gpt #1 | water-fill | 3 | — | 4 | none | ✓ |
+| opus H1 | sticky | 4 | 4 | 5 | 50→100 | ✓ |
+| opus H1 | ebr | 4 | 4 | 5 | 50→100 | ✓ |
+| opus H1 | lookahead | 5 | 5 | 5 | none | ✓ |
+| opus H1 | governing-fefo | 5 | 5 | 5 | none | ✓ |
+| opus H1 | water-fill | 4 | — | 5 | 50→100 | ✓ |
+| opus choose | sticky | 4 | — | 6 | 10→169 | ✓ |
+| opus choose | ebr | 6 | — | 6 | none | ✓ |
+| opus choose | lookahead | 6 | — | 6 | none | ✓ |
+| opus choose | governing-fefo | 6 | — | 6 | none | ✓ |
+| opus choose | water-fill | 4 | — | 6 | 10→169 | ✓ |
+
+| trace | under | pass | result |
+|---|---|---|---|
+| R2 @ 21 cu/h | sticky | ✓ | gaps [h9, h10] [h14, h100] [h104, h124]; level critical |
+| R2 @ 21 cu/h | ebr | ✓ | gaps [h9, h10] [h14, h100] [h104, h124]; level critical |
+| R2 @ 21 cu/h | lookahead | ✓ | gaps [h9, h10] [h14, h100] [h104, h124]; level critical |
+| R2 @ 15 cu/h | sticky | ✓ | gaps [h19, h100] [h106, h124]; level critical |
+| R2 @ 15 cu/h | ebr | ✓ | gaps [h20, h100] [h106, h124]; level critical |
+| R2 @ 15 cu/h | lookahead | ✓ | gaps [h20, h100] [h106, h124]; level critical |
+| R3 | sticky | ✓ | → bbbbbbbbbbbb (sticky); deliverable(aaaaaaaaaaaa) 0.0503 |
+| R3 | ebr | ✓ | → bbbbbbbbbbbb (ebr-sticky); deliverable(aaaaaaaaaaaa) 0.0503 |
+| R3 | lookahead | ✓ | → bbbbbbbbbbbb (lookahead-sticky); deliverable(aaaaaaaaaaaa) 0.0503 |
+| gpt #8 @ 0 cu/h | sticky | ✓ | gaps [h5, h100]; level critical; remedy not-addressable/external-use |
+| gpt #8 @ 0 cu/h | ebr | ✓ | gaps [h5, h100]; level critical; remedy not-addressable/external-use |
+| gpt #8 @ 0 cu/h | lookahead | ✓ | gaps [h5, h100]; level critical; remedy not-addressable/external-use |
+| opus M4 | alertStep | ✓ | transitions raised@15m; episodes 1 |
+| sliding release | simulate | ✓ | r at bucket 5 = 0.6000 |
+| window retired by complete snapshots | observeAll | ✓ | 3/3 expectations hold |
+| stripped headers | observeAll | ✓ | head 0.4@h0, demand 2000 cu |
+
+## over-subscribed · 2× offset 26 h
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 24.78 / 24.78 | 72.3 / 72.3 | 55 / 0 | 0.0 | 30 | 3.8 · 8.1 | 4.07 | — | 0 · — | 6 | 42 % | 0.88 | 38.3 | 0 % | 0 / 1 | 1 |
+| ebr | 22.46 / 22.46 (-2.32) | 67.8 / 67.8 (-4.5) | 49 / 0 | 0.0 | 24 | 1.1 · 2.4 | 1.72 | 0.3 | 0 · — | 3 | 31 % | 0.92 | 41.7 | 0 % | 0 / 1 | 1 |
+| lookahead | 23.41 / 23.41 (-1.37) | 69.9 / 69.9 (-2.4) | 49 / 1 | 0.0 | 24 | 2.4 · 5.4 | 2.70 | 4.6 | 265 · 2.7 | 60 | 29 % | 0.88 | 41.3 | 0 % | 0 / 1 | 1 |
+| governing-fefo | 21.81 / 21.81 (-2.97) | 67.0 / 67.0 (-5.4) | 48 / 1 | 0.0 | 24 | 0.6 · 1.4 | 1.06 | 0.7 | 0 · — | — | 24 % | 0.92 | — | — | — | — |
+| water-fill | 34.77 / 34.77 (+9.99) | 102.9 / 102.9 (+30.6) | 74 / 6 | 0.0 | 49 | 12.6 · 20.6 | 14.03 | 0.6 | 0 · — | — | 46 % | 0.88 | — | — | — | — |
+
+## refactor-day · 2× offset 26 h
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 13.16 / 13.16 | 43.5 / 43.5 | 15 / 0 | 0.5 | 4 | 1.3 · 3.6 | 2.79 | — | 0 · — | — | 40 % | 0.76 | — | — | — | — |
+| ebr | 13.78 / 13.78 (+0.62) | 44.7 / 44.7 (+1.3) | 15 / 0 | 1.6 | 4 | 1.1 · 2.9 | 1.32 | 1.2 | 0 · — | — | 38 % | 0.68 | — | — | — | — |
+| lookahead | 13.84 / 13.84 (+0.69) | 44.7 / 44.7 (+1.3) | 15 / 0 | 0.2 | 4 | 0.9 · 2.4 | 1.59 | 6.9 | 319 · 4.1 | — | 35 % | 0.68 | — | — | — | — |
+| governing-fefo | 15.18 / 15.18 (+2.02) | 52.0 / 52.0 (+8.5) | 16 / 0 | 0.0 | 4 | 0.3 · 0.9 | 0.51 | 1.2 | 0 · — | — | 29 % | 0.68 | — | — | — | — |
+| water-fill | 30.69 / 30.69 (+17.54) | 88.3 / 88.3 (+44.8) | 33 / 3 | 0.0 | 24 | 20.2 · 35.9 | 22.51 | 0.3 | 0 · — | — | 89 % | 0.68 | — | — | — | — |
+
+## weekday-heavy · 2× balanced
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 4.77 / 4.77 | 41.1 / 41.1 | 8 / 1 | 0.0 | 4 | 2.2 · 4.6 | 3.74 | — | 0 · — | — | 59 % | 0.64 | — | — | — | — |
+| ebr | 3.96 / 3.96 (-0.81) | 29.4 / 29.4 (-11.7) | 6 / 0 | 0.0 | 4 | 2.0 · 4.1 | 2.92 | 0.5 | 0 · — | — | 78 % | 0.64 | — | — | — | — |
+| lookahead | 3.65 / 3.65 (-1.12) | 32.8 / 32.8 (-8.3) | 7 / 0 | 0.0 | 4 | 1.7 · 3.6 | 2.63 | 9.3 | 284 · 2.9 | — | 71 % | 0.60 | — | — | — | — |
+| governing-fefo | 4.95 / 4.95 (+0.18) | 33.3 / 33.3 (-7.8) | 7 / 0 | 0.0 | 4 | 1.5 · 3.0 | 1.77 | 1.4 | 0 · — | — | 47 % | 0.60 | — | — | — | — |
+| water-fill | 12.34 / 12.34 (+7.57) | 76.0 / 76.0 (+34.9) | 14 / 7 | 0.0 | 5 | 10.7 · 17.7 | 11.22 | 1.9 | 0 · — | — | 69 % | 0.64 | — | — | — | — |
+
+## over-subscribed · 2× offset 26 h · sliding 5h
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 25.85 / 25.85 | 80.6 / 80.6 | 56 / 4 | 0.0 | 30 | 4.1 · 8.6 | 5.11 | — | 0 · — | 6 | 42 % | 0.88 | 38.8 | 0 % | 0 / 1 | 1 |
+| ebr | 23.90 / 23.90 (-1.95) | 73.6 / 73.6 (-7.0) | 50 / 2 | 0.0 | 24 | 2.6 · 5.7 | 3.17 | 1.2 | 0 · — | 3 | 26 % | 0.88 | 43.8 | 0 % | 0 / 1 | 1 |
+| lookahead | 25.66 / 25.66 (-0.19) | 78.7 / 78.7 (-1.9) | 55 / 3 | 0.0 | 28 | 4.3 · 9.1 | 4.99 | 12.5 | 340 · 2.8 | 62 | 22 % | 0.88 | 39.3 | 0 % | 0 / 1 | 1 |
+| governing-fefo | 23.20 / 23.20 (-2.65) | 77.0 / 77.0 (-3.6) | 51 / 3 | 0.0 | 24 | 1.2 · 2.7 | 2.48 | 1.7 | 0 · — | — | 25 % | 0.92 | — | — | — | — |
+| water-fill | 35.68 / 35.68 (+9.82) | 108.9 / 108.9 (+28.3) | 74 / 13 | 0.0 | 48 | 15.7 · 24.6 | 15.26 | 1.4 | 0 · — | — | 53 % | 0.88 | — | — | — | — |
+
+## external-drift · 2× offset 26 h
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 0.87 / 0.87 | 4.6 / 4.6 | 4 / 0 | 0.0 | 4 | 0.7 · 1.6 | 1.46 | — | 0 · — | — | 46 % | 0.84 | — | — | — | — |
+| ebr | 1.48 / 1.48 (+0.60) | 8.7 / 8.7 (+4.0) | 3 / 0 | 1.1 | 2 | 0.6 · 1.3 | 0.50 | 0.8 | 0 · — | — | 38 % | 0.84 | — | — | — | — |
+| lookahead | 1.75 / 1.75 (+0.87) | 8.7 / 8.7 (+4.0) | 3 / 0 | 0.0 | 2 | 0.5 · 1.1 | 1.13 | 5.1 | 234 · 4.8 | — | 35 % | 0.84 | — | — | — | — |
+| governing-fefo | 1.48 / 1.48 (+0.60) | 8.7 / 8.7 (+4.0) | 3 / 0 | 0.0 | 2 | 0.3 · 0.7 | 0.41 | 0.8 | 0 · — | — | 30 % | 0.84 | — | — | — | — |
+| water-fill | 10.74 / 10.74 (+9.86) | 55.3 / 55.3 (+50.7) | 39 / 4 | 0.0 | 30 | 18.8 · 31.9 | 18.90 | 0.6 | 0 · — | — | 97 % | 0.84 | — | — | — | — |
+
+## weekday-heavy · 2× one at 0.6
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 2.81 / 2.81 | 28.4 / 28.4 | 3 / 4 | 0.0 | 3 | 2.9 · 6.1 | 4.57 | — | 0 · — | — | 91 % | 0.64 | — | — | — | — |
+| ebr | 1.45 / 1.45 (-1.36) | 15.4 / 15.4 (-13.0) | 3 / 2 | 0.0 | 2 | 2.6 · 5.9 | 3.28 | 1.1 | 0 · — | — | 88 % | 0.64 | — | — | — | — |
+| lookahead | 2.57 / 2.57 (-0.23) | 23.1 / 23.1 (-5.3) | 3 / 3 | 0.0 | 3 | 2.8 · 6.0 | 4.75 | 8.9 | 284 · 2.8 | — | 90 % | 0.60 | — | — | — | — |
+| governing-fefo | 2.08 / 2.08 (-0.73) | 19.8 / 19.8 (-8.6) | 2 / 3 | 0.0 | 3 | 2.6 · 5.7 | 3.50 | 1.4 | 0 · — | — | 65 % | 0.64 | — | — | — | — |
+| water-fill | 10.87 / 10.87 (+8.06) | 64.4 / 64.4 (+36.0) | 9 / 11 | 0.0 | 8 | 16.4 · 29.0 | 17.32 | 2.0 | 0 · — | — | 157 % | 0.64 | — | — | — | — |
+
+## over-subscribed · 2× offset 26 h · first-use 7d
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 24.78 / 24.78 | 72.3 / 72.3 | 55 / 0 | 0.0 | 30 | 3.8 · 8.1 | 4.07 | — | 0 · — | 5 | 44 % | 0.88 | 38.3 | 0 % | 0 / 1 | 1 |
+| ebr | 22.46 / 22.46 (-2.32) | 67.8 / 67.8 (-4.5) | 49 / 0 | 0.0 | 24 | 1.1 · 2.4 | 1.72 | 0.3 | 0 · — | 3 | 36 % | 0.92 | 41.7 | 0 % | 0 / 1 | 1 |
+| lookahead | 24.17 / 24.17 (-0.61) | 72.3 / 72.3 (0.0) | 55 / 0 | 0.0 | 30 | 2.8 · 6.0 | 3.46 | 4.7 | 261 · 2.7 | 55 | 24 % | 0.88 | 38.6 | 0 % | 0 / 1 | 1 |
+| governing-fefo | 21.81 / 21.81 (-2.97) | 67.0 / 67.0 (-5.4) | 48 / 1 | 0.0 | 24 | 0.6 · 1.4 | 1.06 | 0.7 | 0 · — | — | 25 % | 0.92 | — | — | — | — |
+| water-fill | 34.77 / 34.77 (+9.99) | 102.9 / 102.9 (+30.6) | 74 / 6 | 0.0 | 49 | 12.6 · 20.6 | 14.03 | 0.6 | 0 · — | — | 44 % | 0.88 | — | — | — | — |
+
+## steady · 1×
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 0.37 / 0.37 | 5.3 / 5.3 | 2 / 1 | 0.0 | 2 | 0.0 · 0.0 | 0.00 | — | 0 · — | — | 34 % | 0.79 | — | — | — | — |
+| ebr | 0.37 / 0.37 (0.00) | 5.3 / 5.3 (0.0) | 2 / 1 | 0.0 | 2 | 0.0 · 0.0 | 0.00 | 1.1 | 0 · — | — | 34 % | 0.79 | — | — | — | — |
+| lookahead | 0.37 / 0.37 (0.00) | 5.3 / 5.3 (0.0) | 2 / 1 | 0.0 | 2 | 0.0 · 0.0 | 0.00 | 4.7 | 97 · 2.3 | — | 34 % | 0.79 | — | — | — | — |
+| governing-fefo | 0.37 / 0.37 (0.00) | 5.3 / 5.3 (0.0) | 2 / 1 | 0.0 | 2 | 0.0 · 0.0 | 0.00 | 1.1 | 0 · — | — | 34 % | 0.79 | — | — | — | — |
+| water-fill | 0.37 / 0.37 (0.00) | 5.3 / 5.3 (0.0) | 2 / 1 | 0.0 | 2 | 0.0 · 0.0 | 0.00 | 1.1 | 0 · — | — | 34 % | 0.79 | — | — | — | — |
+
+## weekday-heavy · 3×
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 11.77 / 11.77 | 48.7 / 48.7 | 11 / 1 | 0.6 | 4 | 3.6 · 10.9 | 9.45 | — | 0 · — | — | 64 % | 0.68 | — | — | — | — |
+| ebr | 7.90 / 7.90 (-3.86) | 34.0 / 34.0 (-14.7) | 9 / 0 | 0.0 | 3 | 3.4 · 10.9 | 8.77 | 1.0 | 0 · — | — | 54 % | 0.64 | — | — | — | — |
+| lookahead | 8.50 / 8.50 (-3.27) | 34.0 / 34.0 (-14.7) | 7 / 2 | 0.3 | 3 | 3.9 · 12.4 | 7.37 | 13.0 | 517 · 5.6 | — | 55 % | 0.68 | — | — | — | — |
+| governing-fefo | 11.28 / 11.28 (-0.49) | 51.2 / 51.2 (+2.5) | 12 / 0 | 0.0 | 4 | 3.2 · 9.6 | 6.31 | 1.8 | 0 · — | — | 41 % | 0.68 | — | — | — | — |
+| water-fill | 19.74 / 19.74 (+7.97) | 70.2 / 70.2 (+21.5) | 16 / 1 | 0.5 | 5 | 15.6 · 40.9 | 24.25 | 1.3 | 0 · — | — | 77 % | 0.68 | — | — | — | — |
+
+## over-subscribed · 2× offset 26 h · quantum 0.001
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 26.06 / 26.06 | 75.3 / 75.3 | 60 / 0 | 0.0 | 35 | 5.5 · 11.3 | 5.66 | — | 0 · — | 6 | 47 % | 0.92 | 35.8 | 0 % | 0 / 1 | 1 |
+| ebr | 22.78 / 22.78 (-3.29) | 67.8 / 67.8 (-7.5) | 49 / 0 | 0.0 | 24 | 1.7 · 3.9 | 2.29 | 0.9 | 0 · — | 4 | 25 % | 0.92 | 41.6 | 0 % | 0 / 1 | 1 |
+| lookahead | 23.44 / 23.44 (-2.63) | 71.3 / 71.3 (-4.0) | 51 / 1 | 0.0 | 26 | 2.1 · 4.6 | 2.96 | 4.0 | 257 · 2.9 | 60 | 27 % | 0.92 | 40.3 | 0 % | 0 / 1 | 1 |
+| governing-fefo | 22.09 / 22.09 (-3.98) | 69.9 / 69.9 (-5.4) | 49 / 1 | 0.0 | 24 | 1.4 · 3.1 | 1.59 | 1.5 | 0 · — | — | 25 % | 0.88 | — | — | — | — |
+| water-fill | 35.23 / 35.23 (+9.17) | 104.2 / 104.2 (+28.9) | 75 / 6 | 0.0 | 50 | 14.4 · 23.1 | 14.84 | 1.2 | 0 · — | — | 43 % | 0.92 | — | — | — | — |
+
+## steady · 2× balanced
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 0.64 / 0.64 | 4.3 / 4.3 | 2 / 0 | 2.5 | 2 | 1.0 · 2.3 | 2.26 | — | 0 · — | — | 29 % | 0.88 | — | — | — | — |
+| ebr | 1.29 / 1.29 (+0.64) | 6.2 / 6.2 (+1.9) | 2 / 0 | 7.0 | 1 | 0.8 · 1.9 | 0.96 | 0.8 | 0 · — | — | 33 % | 0.84 | — | — | — | — |
+| lookahead | 1.45 / 1.45 (+0.81) | 8.7 / 8.7 (+4.4) | 3 / 0 | 2.7 | 2 | 1.0 · 2.3 | 1.80 | 4.9 | 231 · 4.9 | — | 36 % | 0.88 | — | — | — | — |
+| governing-fefo | 1.29 / 1.29 (+0.64) | 6.2 / 6.2 (+1.9) | 2 / 0 | 0.0 | 1 | 0.4 · 0.9 | 0.47 | 0.8 | 0 · — | — | 15 % | 0.84 | — | — | — | — |
+| water-fill | 0.32 / 0.32 (-0.32) | 1.8 / 1.8 (-2.5) | 1 / 2 | 1.7 | 2 | 4.3 · 9.6 | 6.92 | 0.3 | 0 · — | — | 70 % | 0.92 | — | — | — | — |
+
+## weekday-heavy · 2× unequal 1:2
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 7.09 / 7.09 | 26.1 / 26.1 | 4 / 5 | 0.8 | 3 | 3.6 · 11.4 | 7.75 | — | 0 · — | — | 45 % | 0.72 | — | — | — | — |
+| ebr | 3.14 / 3.14 (-3.95) | 19.4 / 19.4 (-6.7) | 2 / 4 | 0.4 | 2 | 2.4 · 8.0 | 6.34 | 0.7 | 0 · — | — | 53 % | 0.72 | — | — | — | — |
+| lookahead | 4.30 / 4.30 (-2.80) | 20.9 / 20.9 (-5.2) | 2 / 5 | 0.6 | 3 | 3.6 · 11.9 | 7.28 | 9.8 | 442 · 2.7 | — | 61 % | 0.72 | — | — | — | — |
+| governing-fefo | 6.83 / 6.83 (-0.26) | 31.0 / 31.0 (+4.9) | 5 / 5 | 0.0 | 3 | 2.5 · 8.0 | 5.19 | 1.0 | 0 · — | — | 42 % | 0.72 | — | — | — | — |
+| water-fill | 10.20 / 10.20 (+3.11) | 31.4 / 31.4 (+5.3) | 3 / 6 | 2.2 | 3 | 7.0 · 21.3 | 13.54 | 0.8 | 0 · — | — | 80 % | 0.64 | — | — | — | — |
+
+## over-subscribed recovery · 2× offset 26 h
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 0.00 / 0.00 | 0.0 / 0.0 | 0 / 0 | 0.0 | 0 | 0.0 · 0.0 | 0.00 | — | 0 · — | 6 | — | 0.00 | — | 100 % | 0 / 1 | 0 |
+| ebr | 0.00 / 0.00 (0.00) | 0.0 / 0.0 (0.0) | 0 / 0 | 0.0 | 0 | 0.4 · 0.3 | 0.33 | 0.0 | 0 · — | 4 | — | 0.00 | — | 100 % | 0 / 1 | 0 |
+| lookahead | 0.00 / 0.00 (0.00) | 0.0 / 0.0 (0.0) | 0 / 0 | 0.0 | 0 | 0.0 · 0.0 | 0.00 | 2.6 | 148 · 3.1 | 84 | 60 % | 0.80 | — | 100 % | 0 / 1 | 0 |
+| governing-fefo | 21.81 / 21.81 (+21.81) | 67.0 / 67.0 (+67.0) | 48 / 1 | 0.0 | 24 | 0.6 · 1.4 | 1.06 | 0.7 | 0 · — | — | 24 % | 0.92 | — | — | — | — |
+| water-fill | 34.77 / 34.77 (+34.77) | 102.9 / 102.9 (+102.9) | 74 / 6 | 0.0 | 49 | 12.6 · 20.6 | 14.03 | 0.6 | 0 · — | — | 46 % | 0.88 | — | — | — | — |
+
+## steady · 2× one at 0.6
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 0.64 / 0.64 | 4.3 / 4.3 | 2 / 0 | 0.5 | 2 | 0.9 · 2.0 | 1.96 | — | 0 · — | — | 39 % | 0.92 | — | — | — | — |
+| ebr | 1.29 / 1.29 (+0.64) | 6.2 / 6.2 (+1.9) | 2 / 0 | 1.6 | 1 | 0.8 · 1.7 | 0.78 | 0.8 | 0 · — | — | 28 % | 0.84 | — | — | — | — |
+| lookahead | 1.33 / 1.33 (+0.69) | 6.2 / 6.2 (+1.9) | 2 / 0 | 0.2 | 1 | 0.7 · 1.6 | 0.94 | 4.6 | 225 · 1.8 | — | 22 % | 0.84 | — | — | — | — |
+| governing-fefo | 1.29 / 1.29 (+0.64) | 6.2 / 6.2 (+1.9) | 2 / 0 | 0.0 | 1 | 0.4 · 0.9 | 0.51 | 0.8 | 0 · — | — | 20 % | 0.84 | — | — | — | — |
+| water-fill | 9.35 / 9.35 (+8.71) | 45.9 / 45.9 (+41.6) | 33 / 3 | 0.0 | 24 | 20.2 · 35.9 | 22.51 | 0.5 | 0 · — | — | 89 % | 0.76 | — | — | — | — |
+
+## external-drift · 2× offset 26 h · sliding 5h
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 1.73 / 1.73 | 10.2 / 10.2 | 0 / 3 | 0.0 | 3 | 1.4 · 3.0 | 1.94 | — | 0 · — | — | 38 % | 0.40 | — | — | — | — |
+| ebr | 1.57 / 1.57 (-0.16) | 10.2 / 10.2 (0.0) | 3 / 0 | 0.0 | 3 | 5.7 · 12.6 | 4.96 | 0.0 | 0 · — | — | 59 % | 0.64 | — | — | — | — |
+| lookahead | 1.73 / 1.73 (-0.00) | 10.2 / 10.2 (0.0) | 3 / 0 | 0.0 | 3 | 4.3 · 9.4 | 2.72 | 44.5 | 458 · 2.3 | — | 37 % | 0.44 | — | — | — | — |
+| governing-fefo | 1.95 / 1.95 (+0.22) | 14.8 / 14.8 (+4.5) | 5 / 0 | 0.0 | 5 | 0.5 · 1.1 | 0.42 | 0.5 | 0 · — | — | 26 % | 0.44 | — | — | — | — |
+| water-fill | 2.39 / 2.39 (+0.66) | 14.8 / 14.8 (+4.6) | 7 / 1 | 0.0 | 4 | 7.9 · 17.0 | 8.54 | 0.5 | 0 · — | — | 51 % | 0.48 | — | — | — | — |
+
+## steady · 2× offset 26 h
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 0.64 / 0.64 | 4.3 / 4.3 | 2 / 0 | 0.5 | 2 | 0.9 · 2.0 | 1.96 | — | 0 · — | — | 39 % | 0.92 | — | — | — | — |
+| ebr | 1.29 / 1.29 (+0.64) | 6.2 / 6.2 (+1.9) | 2 / 0 | 1.6 | 1 | 0.8 · 1.7 | 0.78 | 0.8 | 0 · — | — | 28 % | 0.84 | — | — | — | — |
+| lookahead | 1.33 / 1.33 (+0.69) | 6.2 / 6.2 (+1.9) | 2 / 0 | 0.2 | 1 | 0.7 · 1.6 | 0.94 | 4.6 | 225 · 5.8 | — | 22 % | 0.84 | — | — | — | — |
+| governing-fefo | 1.29 / 1.29 (+0.64) | 6.2 / 6.2 (+1.9) | 2 / 0 | 0.0 | 1 | 0.4 · 0.9 | 0.51 | 0.8 | 0 · — | — | 20 % | 0.84 | — | — | — | — |
+| water-fill | 9.35 / 9.35 (+8.71) | 45.9 / 45.9 (+41.6) | 33 / 3 | 0.0 | 24 | 20.2 · 35.9 | 22.51 | 0.5 | 0 · — | — | 89 % | 0.76 | — | — | — | — |
+
+## steady · 3×
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 0.36 / 0.36 | 2.2 / 2.2 | 1 / 0 | 1.5 | 1 | 1.7 · 5.7 | 5.59 | — | 0 · — | — | 51 % | 0.88 | — | — | — | — |
+| ebr | 0.00 / 0.00 (-0.36) | 0.0 / 0.0 (-2.2) | 0 / 0 | 1.8 | 0 | 2.1 · 7.1 | 5.37 | 0.0 | 0 · — | — | 50 % | 0.88 | — | — | — | — |
+| lookahead | 0.00 / 0.00 (-0.36) | 0.0 / 0.0 (-2.2) | 0 / 0 | 1.1 | 0 | 2.1 · 7.0 | 4.68 | 6.5 | 396 · 6.4 | — | 50 % | 0.88 | — | — | — | — |
+| governing-fefo | 1.03 / 1.03 (+0.68) | 5.8 / 5.8 (+3.6) | 2 / 0 | 0.0 | 2 | 1.8 · 6.0 | 4.33 | 0.3 | 0 · — | — | 38 % | 0.88 | — | — | — | — |
+| water-fill | 2.86 / 2.86 (+2.50) | 10.6 / 10.6 (+8.4) | 4 / 0 | 0.0 | 3 | 10.3 · 33.9 | 20.14 | 0.6 | 0 · — | — | 67 % | 0.88 | — | — | — | — |
+
+## external-drift · 2× offset 26 h · first-use 7d
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 0.87 / 0.87 | 4.6 / 4.6 | 4 / 0 | 0.0 | 4 | 0.7 · 1.6 | 1.46 | — | 0 · — | — | 47 % | 0.84 | — | — | — | — |
+| ebr | 1.48 / 1.48 (+0.60) | 8.7 / 8.7 (+4.0) | 3 / 0 | 1.1 | 2 | 0.6 · 1.3 | 0.50 | 0.8 | 0 · — | — | 45 % | 0.84 | — | — | — | — |
+| lookahead | 1.75 / 1.75 (+0.87) | 8.7 / 8.7 (+4.0) | 3 / 0 | 0.0 | 2 | 0.7 · 1.4 | 1.15 | 5.0 | 234 · 2.7 | — | 37 % | 0.84 | — | — | — | — |
+| governing-fefo | 1.48 / 1.48 (+0.60) | 8.7 / 8.7 (+4.0) | 3 / 0 | 0.0 | 2 | 0.3 · 0.7 | 0.41 | 0.8 | 0 · — | — | 32 % | 0.84 | — | — | — | — |
+| water-fill | 10.74 / 10.74 (+9.86) | 55.3 / 55.3 (+50.7) | 39 / 4 | 0.0 | 30 | 18.8 · 31.9 | 18.90 | 0.6 | 0 · — | — | 101 % | 0.84 | — | — | — | — |
+
+## bursty · 2× offset 26 h
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 3.80 / 3.80 | 26.9 / 26.9 | 0 / 5 | 4.0 | 3 | 2.0 · 3.6 | 3.56 | — | 0 · — | — | 54 % | 0.64 | — | — | — | — |
+| ebr | 2.49 / 2.49 (-1.30) | 19.9 / 19.9 (-6.9) | 0 / 4 | 3.4 | 3 | 1.5 · 2.9 | 2.59 | 1.2 | 0 · — | — | 59 % | 0.56 | — | — | — | — |
+| lookahead | 3.48 / 3.48 (-0.31) | 26.9 / 26.9 (0.0) | 0 / 5 | 2.6 | 3 | 2.3 · 4.1 | 3.92 | 8.3 | 225 · 5.9 | — | 60 % | 0.56 | — | — | — | — |
+| governing-fefo | 3.43 / 3.43 (-0.36) | 26.9 / 26.9 (0.0) | 0 / 5 | 2.8 | 3 | 1.6 · 3.0 | 2.30 | 1.1 | 0 · — | — | 61 % | 0.52 | — | — | — | — |
+| water-fill | 16.35 / 16.35 (+12.55) | 93.2 / 93.2 (+66.4) | 32 / 14 | 0.0 | 25 | 32.6 · 39.9 | 30.58 | 1.7 | 0 · — | — | 94 % | 0.84 | — | — | — | — |
+
+## steady · 2× unequal 1:2
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 0.00 / 0.00 | 0.0 / 0.0 | 0 / 0 | 0.7 | 0 | 1.6 · 5.4 | 4.22 | — | 0 · — | — | 46 % | 0.92 | — | — | — | — |
+| ebr | 0.00 / 0.00 (0.00) | 0.0 / 0.0 (0.0) | 0 / 0 | 1.9 | 0 | 1.1 · 3.6 | 2.72 | 0.0 | 0 · — | — | 45 % | 0.92 | — | — | — | — |
+| lookahead | 0.00 / 0.00 (0.00) | 0.0 / 0.0 (0.0) | 0 / 0 | 0.7 | 0 | 1.2 · 4.0 | 2.80 | 4.6 | 308 · 4.5 | — | 43 % | 0.92 | — | — | — | — |
+| governing-fefo | 0.00 / 0.00 (0.00) | 0.0 / 0.0 (0.0) | 0 / 0 | 0.0 | 0 | 0.8 · 2.7 | 2.24 | 0.0 | 0 · — | — | 37 % | 0.92 | — | — | — | — |
+| water-fill | 0.24 / 0.24 (+0.24) | 2.2 / 2.2 (+2.2) | 0 / 1 | 2.4 | 1 | 5.4 · 18.3 | 14.04 | 0.2 | 0 · — | — | 70 % | 0.76 | — | — | — | — |
+
+## external-drift · 2× offset 26 h · quantum 0.001
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 0.87 / 0.87 | 4.6 / 4.6 | 4 / 0 | 0.0 | 4 | 0.7 · 1.4 | 1.42 | — | 0 · — | — | 44 % | 0.88 | — | — | — | — |
+| ebr | 1.43 / 1.43 (+0.55) | 8.7 / 8.7 (+4.0) | 3 / 0 | 0.9 | 2 | 0.7 · 1.4 | 0.54 | 0.8 | 0 · — | — | 43 % | 0.84 | — | — | — | — |
+| lookahead | 1.75 / 1.75 (+0.87) | 8.7 / 8.7 (+4.0) | 3 / 0 | 0.0 | 2 | 0.7 · 1.6 | 1.52 | 4.9 | 234 · 3.1 | — | 37 % | 0.84 | — | — | — | — |
+| governing-fefo | 1.48 / 1.48 (+0.60) | 8.7 / 8.7 (+4.0) | 3 / 0 | 0.0 | 2 | 0.9 · 1.9 | 0.36 | 0.8 | 0 · — | — | 33 % | 0.84 | — | — | — | — |
+| water-fill | 11.48 / 11.48 (+10.60) | 51.4 / 51.4 (+46.8) | 39 / 1 | 0.0 | 30 | 20.6 · 34.0 | 19.69 | 1.1 | 0 · — | — | 101 % | 0.80 | — | — | — | — |
+
+## weekday-heavy · 2× offset 26 h
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 2.81 / 2.81 | 28.4 / 28.4 | 3 / 4 | 0.0 | 3 | 2.9 · 6.1 | 4.57 | — | 0 · — | — | 91 % | 0.64 | — | — | — | — |
+| ebr | 1.45 / 1.45 (-1.36) | 15.4 / 15.4 (-13.0) | 3 / 2 | 0.0 | 2 | 2.6 · 5.9 | 3.28 | 1.1 | 0 · — | — | 88 % | 0.64 | — | — | — | — |
+| lookahead | 2.57 / 2.57 (-0.23) | 23.1 / 23.1 (-5.3) | 3 / 3 | 0.0 | 3 | 2.8 · 6.0 | 4.75 | 8.9 | 284 · 5.7 | — | 90 % | 0.60 | — | — | — | — |
+| governing-fefo | 2.08 / 2.08 (-0.73) | 19.8 / 19.8 (-8.6) | 2 / 3 | 0.0 | 3 | 2.6 · 5.7 | 3.50 | 1.4 | 0 · — | — | 65 % | 0.64 | — | — | — | — |
+| water-fill | 10.87 / 10.87 (+8.06) | 64.4 / 64.4 (+36.0) | 9 / 11 | 0.0 | 8 | 16.4 · 29.0 | 17.32 | 2.0 | 0 · — | — | 157 % | 0.64 | — | — | — | — |
+
+## weekday-heavy · 1×
+
+| contestant | unserved Mcu med / p95 (Δ sticky) | DW blocked h med / p95 (Δ) | blocked h 7d / 5h | waste % | longest gap h | switches /100 req · /day | rebuild Mcu | stale % | plans /day · p95 ms | alert step p95 ms | fc err | band | WARN lead h | false alarms | flaps / clears | missed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sticky | 1.53 / 1.53 | 16.5 / 16.5 | 7 / 0 | 0.0 | 7 | 0.0 · 0.0 | 0.00 | — | 0 · — | — | 100 % | 0.50 | — | — | — | — |
+| ebr | 1.53 / 1.53 (0.00) | 16.5 / 16.5 (0.0) | 7 / 0 | 0.0 | 7 | 0.0 · 0.0 | 0.00 | 1.5 | 0 · — | — | 100 % | 0.50 | — | — | — | — |
+| lookahead | 1.53 / 1.53 (0.00) | 16.5 / 16.5 (0.0) | 7 / 0 | 0.0 | 7 | 0.0 · 0.0 | 0.00 | 5.8 | 96 · 4.2 | — | 100 % | 0.50 | — | — | — | — |
+| governing-fefo | 1.53 / 1.53 (0.00) | 16.5 / 16.5 (0.0) | 7 / 0 | 0.0 | 7 | 0.0 · 0.0 | 0.00 | 1.5 | 0 · — | — | 100 % | 0.50 | — | — | — | — |
+| water-fill | 1.53 / 1.53 (0.00) | 16.5 / 16.5 (0.0) | 7 / 0 | 0.0 | 7 | 0.0 · 0.0 | 0.00 | 1.5 | 0 · — | — | 100 % | 0.50 | — | — | — | — |
+
+## Gate (§4)
+
+- **ebr: does not pass**
+  - 1. ✗ gpt #1: 3 < sticky 4; gpt #1: 3 < oracle 4; opus H1: 4 < oracle 5
+  - 2. ✗ more unserved on: refactor-day · 2× offset 26 h, external-drift · 2× offset 26 h, steady · 2× balanced, steady · 2× one at 0.6, steady · 2× offset 26 h, external-drift · 2× offset 26 h · first-use 7d, external-drift · 2× offset 26 h · quantum 0.001; strictly lower on a 2× offset 26 h scenario
+  - 3. ✗ more blocked on: refactor-day · 2× offset 26 h, external-drift · 2× offset 26 h, steady · 2× balanced, steady · 2× one at 0.6, steady · 2× offset 26 h, external-drift · 2× offset 26 h · first-use 7d, external-drift · 2× offset 26 h · quantum 0.001
+  - 4. ✓ reported, never a gate
+  - 5. ✗ too many switches on: external-drift · 2× offset 26 h · sliding 5h
+  - 6. ✗ over-subscribed · 2× offset 26 h: 1 missed gaps; over-subscribed · 2× offset 26 h · sliding 5h: 1 missed gaps; over-subscribed · 2× offset 26 h · first-use 7d: 1 missed gaps; over-subscribed · 2× offset 26 h · quantum 0.001: 1 missed gaps
+  - 7. ✓ plan time p95 and staleDecisions reported
+- **lookahead: does not pass**
+  - 1. ✓ every trace
+  - 2. ✗ more unserved on: refactor-day · 2× offset 26 h, external-drift · 2× offset 26 h, steady · 2× balanced, steady · 2× one at 0.6, steady · 2× offset 26 h, external-drift · 2× offset 26 h · first-use 7d, external-drift · 2× offset 26 h · quantum 0.001; strictly lower on a 2× offset 26 h scenario
+  - 3. ✗ more blocked on: refactor-day · 2× offset 26 h, external-drift · 2× offset 26 h, steady · 2× balanced, steady · 2× one at 0.6, steady · 2× offset 26 h, external-drift · 2× offset 26 h · first-use 7d, external-drift · 2× offset 26 h · quantum 0.001
+  - 4. ✓ reported, never a gate
+  - 5. ✗ too many switches on: external-drift · 2× offset 26 h · sliding 5h
+  - 6. ✗ over-subscribed · 2× offset 26 h: 1 missed gaps; over-subscribed · 2× offset 26 h · sliding 5h: 1 missed gaps; over-subscribed · 2× offset 26 h · first-use 7d: 1 missed gaps; over-subscribed · 2× offset 26 h · quantum 0.001: 1 missed gaps
+  - 7. ✓ plan time p95 and staleDecisions reported

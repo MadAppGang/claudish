@@ -1,0 +1,3 @@
+# See the repo-root bunfig.toml: bun does not walk up for it, so this directory needs its own.
+[test]
+preload = ["../../scripts/test-preload.ts"]
