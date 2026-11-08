@@ -38,9 +38,9 @@ afterEach(async () => {
 describe("decideCodexSpeed", () => {
   const info = { slug: "m", serviceTiers: [{ id: "priority", name: "Fast" }] };
 
-  test("fast is the tier Codex labels Fast, by name or by the priority id", () => {
+  test("fast is the tier the account names Fast; a tier is matched by id or name only", () => {
     expect(findCodexServiceTier("fast", info.serviceTiers)?.id).toBe("priority");
-    expect(findCodexServiceTier("fast", [{ id: "priority", name: "Turbo" }])?.id).toBe("priority");
+    expect(findCodexServiceTier("fast", [{ id: "priority", name: "Turbo" }])).toBeUndefined();
     expect(findCodexServiceTier("priority", info.serviceTiers)?.id).toBe("priority");
     expect(findCodexServiceTier("flex", info.serviceTiers)).toBeUndefined();
   });

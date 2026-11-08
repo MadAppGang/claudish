@@ -28,9 +28,9 @@ export interface CodexSpeedOutcome {
 }
 
 /**
- * The tier for `speed` among the account's `service_tiers`. claudish's `fast`
- * (Claude Code's `/fast`, `#fast`) is the tier Codex itself labels "Fast",
- * whose id is `priority`; any other speed matches a tier by id or by name.
+ * The tier for `speed` among the account's `service_tiers`, matched by id or
+ * by name. claudish's `fast` (Claude Code's `/fast`, `#fast`) is the tier the
+ * account's dynamic models catalog itself names "Fast".
  */
 export function findCodexServiceTier(
   speed: WireSpeed,
@@ -38,9 +38,7 @@ export function findCodexServiceTier(
 ): CodexServiceTier | undefined {
   if (!tiers) return undefined;
   const matches = (tier: CodexServiceTier) =>
-    tier.id === speed ||
-    tier.name.toLowerCase() === speed ||
-    (speed === "fast" && tier.id === "priority");
+    tier.id === speed || tier.name.toLowerCase() === speed;
   return tiers.find(matches);
 }
 

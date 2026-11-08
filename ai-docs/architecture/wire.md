@@ -143,7 +143,8 @@ a proxied session starts and must never skip a real account's org check.
 `openai-codex` connection whose catalog speed is `unknown`, 5w DEFERS the speed choice; 5s, after
 the request is signed (discovery needs the binding) and before code mode (5d, so both code-mode
 shapes carry it), asks `getCodexModelInfo` and `decideCodexSpeed` (`codex-service-tier.ts`):
-`fast` is the tier named "Fast" or id `priority`. Not offered → explicit refuses, `/fast` notes.
+`fast` is the tier the account names "Fast" (matched by id or name, never a pinned id). Not
+offered → explicit refuses, `/fast` notes.
 A non-explicit tier joins the fields `recoverBorrowedWireFields` drops on the 400 that names
 them; a `service_tier` from `--model-params` is never overwritten or dropped. The first speed
 request of a process may wait up to 2 s for `/models` (code mode's prefetch runs later, at 5d). A
