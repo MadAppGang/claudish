@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EVIDENCE_FILES, isProductOutput, scanLeaks, withReleases } from "./harness.ts";
+import { parentFetch } from "./direct.ts";
+import { startFake } from "./fake-upstream.ts";
+import { EVIDENCE_FILES, isProductOutput, runSecrets, scanLeaks, withReleases } from "./harness.ts";
 
 const roots: string[] = [];
 function dirWith(files: Record<string, string>): string {
@@ -81,6 +83,65 @@ describe("every product-output file is scanned", () => {
     }
     expect(names.has("account-disable.txt")).toBe(true);
     for (const n of names) expect(isProductOutput(n)).toBe(true);
+  });
+});
+
+// Review finding (round 5, MEDIUM): files over 5 MB were skipped without failing, and the
+// tokens the fake issued were matched by shape only.
+describe("scanLeaks reads every file whole", () => {
+  test("a seeded token at the end of a 6 MB product-output file is found", () => {
+    const pad = "x".repeat(6 * 1024 * 1024);
+    const dir = dirWith({ "stdout.txt": `${pad} refresh-A` });
+    expect(scanLeaks(dir, ["refresh-A"]).join("|")).toContain(
+      "stdout.txt: seeded credential echoed to a product-output file: refresh-A"
+    );
+  });
+
+  test("a value straddling a window boundary is found, once", () => {
+    // 1000-byte windows: `at-rotated-7` starts 5 bytes before the first boundary.
+    const dir = dirWith({ "stdout.txt": `${"x".repeat(995)} at-rotated-7 ${"y".repeat(3000)}` });
+    const found = scanLeaks(dir, [], { chunkBytes: 1000, overlapBytes: 64 });
+    expect(found).toEqual([
+      "stdout.txt: fake credential echoed to a product-output file: at-rotated-7",
+    ]);
+  });
+});
+
+describe("tokens the fake issued are matched by exact value", () => {
+  const stops: Array<() => void> = [];
+  afterEach(() => {
+    for (const s of stops.splice(0)) s();
+  });
+
+  test("Fake.issued() lists every issued value, and runSecrets carries them", async () => {
+    const dir = dirWith({});
+    const fake = startFake({
+      logPath: join(dir, "fake.jsonl"),
+      script: () => ({ type: "text", text: "OK" }),
+      validRefreshTokens: ["refresh-A"],
+    });
+    stops.push(() => fake.stop());
+    for (const rt of ["refresh-A", "rt-rotated-1"]) {
+      const res = await parentFetch(`${fake.origin}/oauth/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ grant_type: "refresh_token", refresh_token: rt }),
+      });
+      expect(res.status).toBe(200);
+    }
+    expect(fake.issued()).toEqual(["at-rotated-1", "rt-rotated-1", "at-rotated-2", "rt-rotated-2"]);
+    const known = runSecrets({ accounts: [] }, ["refresh-A"], fake);
+    for (const v of fake.issued()) expect(known).toContain(v);
+  });
+
+  test("an issued token glued to other text is caught only by its exact value", () => {
+    // No word boundary on either side: the shape net cannot see it, the exact net does.
+    const dir = dirWith({ "response.json": "xxat-rotated-2yy" });
+    expect(scanLeaks(dir)).toEqual([]);
+    const known = runSecrets({ accounts: [] }, [], { issued: () => ["at-rotated-2"] });
+    expect(scanLeaks(dir, known).join("|")).toContain(
+      "seeded credential echoed to a product-output file: at-rotated-2"
+    );
   });
 });
 

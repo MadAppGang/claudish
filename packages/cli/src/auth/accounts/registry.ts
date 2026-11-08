@@ -419,13 +419,40 @@ export class AccountRegistry {
     }
   }
 
-  /** Suppressed/explicit pools never depend on an unrelated legacy file. */
+  /**
+   * Suppressed/explicit pools never depend on an unrelated legacy file.
+   *
+   * **While `config.json` is failed and served from its last-known-good copy,
+   * the legacy source is NOT advanced.** Whether the file matters is decided
+   * from that copy, which may predate the legacy file move (MTL-372): 0 rows,
+   * no marker. Re-reading the file then finds it absent (M8 deleted it), and
+   * the snapshot would combine the OLD config with the NEW file state — 0 Codex
+   * accounts and no throw — so availability answers false and the composite
+   * signs the metered api-key half. Instead the legacy copy that was current
+   * with the config copy is served, and the legacy source reports failed: with
+   * no such copy, a Codex snapshot throws `AccountListUnavailableError`, as a
+   * cold failure does. The stamp is cleared so the file is re-read as soon as
+   * the config reads again.
+   */
   private refreshLegacySource(): boolean {
     const entry = this.lastGoodSettings?.["openai-codex"];
     if (entry?.legacyCodexSuppressed || (entry?.accounts.length ?? 0) > 0) {
       this.legacyStatus = { state: "absent", path: this.legacyPath(), ignored: true };
       this.legacyStamp = undefined;
       return false;
+    }
+    if (this.configStatus.state === "failed" && this.lastGoodSettings !== undefined) {
+      const path = this.legacyPath();
+      const detail = "not re-read while the account list config cannot be read";
+      this.legacyStamp = undefined;
+      this.legacyStatus = {
+        state: "failed",
+        error: detail,
+        failure: { source: "legacy", path, type: "io", detail },
+        path,
+        servingLastKnownGood: this.lastGoodLegacy !== undefined,
+      };
+      return true;
     }
     this.refreshLegacy();
     return true;
@@ -542,15 +569,7 @@ export class AccountRegistry {
 
   /** Confirmed migration-only case; never permits a legacy read on unknown input. */
   isSynthesizedLegacyOnly(): boolean {
-    const snapshot = this.snapshot("openai-codex");
-    const rows = snapshot.accounts["openai-codex"];
-    const entry = snapshot.settings["openai-codex"];
-    return (
-      !entry?.legacyCodexSuppressed &&
-      !entry?.accounts.length &&
-      rows.length === 1 &&
-      rows[0].legacy
-    );
+    return isSynthesizedLegacyOnlySnapshot(this.snapshot("openai-codex"));
   }
 
   /** Every configured account for one provider, in config order. */
@@ -584,6 +603,33 @@ export class AccountRegistry {
     this.refreshLegacySource();
     return { config: this.configStatus, legacy: this.legacyStatus };
   }
+}
+
+/**
+ * {@link AccountRegistry.isSynthesizedLegacyOnly} on a snapshot the caller
+ * already holds, so a caller that must also check the snapshot's source states
+ * decides both from ONE read.
+ */
+export function isSynthesizedLegacyOnlySnapshot(snapshot: AccountListSnapshot): boolean {
+  const rows = snapshot.accounts["openai-codex"];
+  const entry = snapshot.settings["openai-codex"];
+  return (
+    !entry?.legacyCodexSuppressed && !entry?.accounts.length && rows.length === 1 && rows[0].legacy
+  );
+}
+
+/**
+ * Whether a snapshot is served from a last-known-good copy because a Codex
+ * source read FAILED just now. `snapshot()` does not throw then: it serves the
+ * copy and reports the failure only in the source states. A caller about to do
+ * something irreversible on the strength of "the list still looks the same"
+ * (spend a refresh token, answer a terminal login demand) must check this
+ * first; `invalidate()` clears stamps, not the copy.
+ */
+export function codexSourceFailed(snapshot: AccountListSnapshot): SourceStatus | undefined {
+  if (snapshot.config.state === "failed") return snapshot.config;
+  if (snapshot.legacy.state === "failed") return snapshot.legacy;
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------

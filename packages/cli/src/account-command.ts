@@ -290,8 +290,10 @@ A command that takes <label> also takes the account's email.
 --id <generated-id> may replace or confirm the label; labels are unique per claudish provider.
 Removing the legacy login (default, legacy-codex-file) requires --delete-file.
 New accounts use the macOS Keychain, or protected plaintext files where there is none.
+On macOS the legacy login (~/.claudish/codex-oauth.json) moves into the Keychain on first use.
 Add only accounts you own; vendor terms may restrict switching between subscriptions.
-With Codex accounts configured, use account add/login instead of \`claudish login codex\`.
+On macOS, \`claudish login codex\` adds or logs in your one Codex account; with several, use account login.
+Elsewhere, with Codex accounts configured, use account add/login instead of \`claudish login codex\`.
 Claude account mutations, import and use are not available. No token input or export.`;
 
 const MUTATION_VERBS = ["add", "login", "enable", "disable", "remove", "rename"] as const;

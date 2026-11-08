@@ -216,8 +216,15 @@ export interface TokenManagerOptions {
    * for any reason (nothing was spent yet); `before-persist` runs after the
    * vendor rotated, so it refuses only a CONFIRMED removal or rebinding — a
    * disabled row or an unreadable account list must not discard a new grant.
+   * `store-empty` runs when the store held nothing, before the terminal login
+   * demand: it refuses like `before-exchange`, and it must also refuse when the
+   * account list could not be READ just now — a last-known-good list still
+   * names this store, so "unchanged" is unproven there (MTL-372 review round 2).
    */
-  validateAccount?: (ref: AccountRef, phase: "before-exchange" | "before-persist") => void;
+  validateAccount?: (
+    ref: AccountRef,
+    phase: "before-exchange" | "before-persist" | "store-empty"
+  ) => void;
   /**
    * A SECOND store that also holds this account's material (Claude Code's
    * item). Phase 4 (ai-docs/architecture/accounts.md) wires it; the out-of-band
@@ -406,6 +413,15 @@ export class TokenManager {
   ): Promise<AccessTokenResult> {
     const current = await this.readOrThrow(ref, { uncached: forced });
     if (!current) {
+      // An empty store is "needs a login" only while the row still names it.
+      // A row rebound to another store (the legacy Codex file moved into the
+      // Keychain, MTL-372) left this store empty on purpose: revalidating first
+      // turns that into the transient "account changed while leasing" (503),
+      // retried on the same hop, instead of a terminal login demand that walks a
+      // bare chain to a metered hop. Its own phase: an account list that could
+      // not be read is transient HERE, while `before-exchange` keeps serving
+      // the last-known-good list for a store that does hold material.
+      this.validateAccount?.(ref, "store-empty");
       throw new NeedsReauthError(
         `No stored credential for ${ref.label}. Run a login for this account.`
       );
@@ -570,6 +586,9 @@ export class TokenManager {
     this.validateAccount?.(ref, "before-exchange");
     let record = await this.readOrThrow(ref, { uncached: true });
     if (!record) {
+      // As in `resolve`: a store emptied by a store-only rebind, or an empty
+      // store read while the account list cannot be, is transient.
+      this.validateAccount?.(ref, "store-empty");
       throw new NeedsReauthError(
         `No stored credential for ${ref.label}. Run a login for this account.`
       );
@@ -707,6 +726,10 @@ export class TokenManager {
     this.validateAccount?.(ref, "before-persist");
     const latest = await this.readOrThrow(ref, { uncached: true });
     if (!latest) {
+      // The `before-persist` check above ran BEFORE this read, so a rebind that
+      // emptied the store in between is caught only here. `store-empty`, not
+      // `before-persist`: an unknown binding must not become a login demand.
+      this.validateAccount?.(ref, "store-empty");
       throw new NeedsReauthError(
         `The stored credential for ${ref.label} was removed during refresh.`
       );

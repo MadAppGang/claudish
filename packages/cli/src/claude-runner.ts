@@ -1367,6 +1367,13 @@ export function scrubChildEnv(
  *   Code's default acceleration a burst ramps: 50 wheel events moved 237 rows
  *   (MTL-369 step 1, Claude Code 2.1.316). With it off, each event moves one row, so
  *   `by` maps to rows (± 1). Interactive use outside a pane keeps the user's value.
+ * - `tui: "fullscreen"` is added ONLY in an MCP pane child, on the same gate, and forced
+ *   like `editorMode`. `scroll_session` / `team(mode:"scroll")` forward wheel events,
+ *   which only Claude Code's fullscreen view handles. With no `tui` key the view is chosen
+ *   by Claude Code's install and feature gates, so a pane child scrolled only when the
+ *   user's own settings said fullscreen. An environment `CLAUDE_CODE_NO_FLICKER` set false, or
+ *   `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` still outranks the setting (measured order in
+ *   Claude Code 2.1.319). Interactive use outside a pane keeps the user's value.
  *
  * Claude Code merges settings sources per key, so every other key of the user's
  * settings files still applies; this overlay only wins on the keys it sets.
@@ -1386,6 +1393,7 @@ export function buildClaudishSettingsOverlay(
     settings.skipDangerousModePermissionPrompt = true;
     settings.editorMode = "normal";
     settings.wheelScrollAccelerationEnabled = false;
+    settings.tui = "fullscreen";
   }
   return settings;
 }
@@ -1459,6 +1467,13 @@ export function mergeUserSettingsIfPresent(
     // --settings, like editorMode.
     if (paneChild) {
       userSettings.wheelScrollAccelerationEnabled = false;
+    }
+
+    // In an MCP pane child, run the fullscreen view, the only one that handles
+    // scroll_session's wheel events (see buildClaudishSettingsOverlay). Forced over
+    // the caller's --settings, like editorMode.
+    if (paneChild) {
+      userSettings.tui = "fullscreen";
     }
 
     // Overwrite the temp settings file with the merged result. It can carry the
@@ -2781,13 +2796,15 @@ function setupSignalHandlers(
  * 2. Local installation (~/.claude/local/claude)
  * 3. Global PATH
  */
-async function findClaudeBinary(): Promise<string | null> {
+export async function findClaudeBinary(
+  env: Record<string, string | undefined> = process.env
+): Promise<string | null> {
   const isWindows = process.platform === "win32";
 
   // 1. Check CLAUDE_PATH env var
-  if (process.env.CLAUDE_PATH) {
-    if (existsSync(process.env.CLAUDE_PATH)) {
-      return process.env.CLAUDE_PATH;
+  if (env.CLAUDE_PATH) {
+    if (existsSync(env.CLAUDE_PATH)) {
+      return env.CLAUDE_PATH;
     }
   }
 

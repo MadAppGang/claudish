@@ -36,8 +36,17 @@ export interface ServeProc {
  * port, its lock file and its timers (found in stage 4b on the first run). The
  * descendants are collected BEFORE the first signal, because a killed parent
  * re-parents its children to pid 1 and they can no longer be found by ppid.
+ * Returns every pid it signalled (descendants first, `pid` last).
+ *
+ * `group: true` is for a tree started `detached` (its own process group, `pid` its leader):
+ * the whole group is signalled too (`kill(-pid)`), so a member whose parent already died and
+ * was re-parented to pid 1 is still reached. The collected tree is signalled either way.
  */
-export function killTree(pid: number, signal: NodeJS.Signals = "SIGKILL"): void {
+export function killTree(
+  pid: number,
+  signal: NodeJS.Signals = "SIGKILL",
+  opts: { group?: boolean } = {}
+): number[] {
   const listing = Bun.spawnSync(["ps", "-axo", "pid=,ppid="]).stdout.toString();
   const children = new Map<number, number[]>();
   for (const line of listing.split("\n")) {
@@ -51,6 +60,13 @@ export function killTree(pid: number, signal: NodeJS.Signals = "SIGKILL"): void 
     order.push(p);
   };
   walk(pid);
+  if (opts.group) {
+    try {
+      process.kill(-pid, signal);
+    } catch {
+      /* the group is already gone */
+    }
+  }
   for (const p of order) {
     try {
       process.kill(p, signal);
@@ -58,6 +74,92 @@ export function killTree(pid: number, signal: NodeJS.Signals = "SIGKILL"): void 
       /* already gone */
     }
   }
+  return order;
+}
+
+/**
+ * True when `pid` no longer runs: no such process, or a zombie (dead, waiting to be
+ * reaped; it can no longer make a call).
+ */
+export function pidGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ESRCH";
+  }
+  const stat = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)])
+    .stdout.toString()
+    .trim();
+  return stat === "" || stat.startsWith("Z");
+}
+
+/**
+ * A process tree that may touch the keychain (the V2e seed child, each V2e `serve`). The
+ * guard kills and AWAITS every producer before its single cleanup delete (review round 6:
+ * a delete that ran while a producer was alive could be followed by that producer's write).
+ */
+export interface Producer {
+  name: string;
+  /** The root pid, for the security watch (`security` processes under it). */
+  pid: number;
+  /** Kill the whole tree (SIGKILL). Idempotent. */
+  kill(): void;
+  /** Kills, then resolves true once every process of the tree is gone; false if not confirmed in time. */
+  confirmGone(timeoutMs: number): Promise<boolean>;
+  /** The same, synchronously, for the 'exit' handler (which cannot await). */
+  confirmGoneSync(timeoutMs: number): boolean;
+}
+
+/**
+ * A `Producer` for a real process tree rooted at `pid` (a direct child of this process).
+ * `group: true` when the tree runs in its own process group (`startServe({detached: true})`).
+ */
+export function treeProducer(
+  name: string,
+  pid: number,
+  exited: Promise<unknown>,
+  opts: { group?: boolean } = {}
+): Producer {
+  let pids: number[] = [pid];
+  let killed = false;
+  const kill = () => {
+    if (killed) return;
+    killed = true;
+    pids = killTree(pid, "SIGKILL", opts);
+  };
+  return {
+    name,
+    pid,
+    kill,
+    async confirmGone(timeoutMs) {
+      kill();
+      const deadline = Date.now() + timeoutMs;
+      // The root is our child: its exit is observed (and it is reaped) through `exited`.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const rootDone = await Promise.race([
+        exited.then(() => true),
+        new Promise<boolean>((r) => {
+          timer = setTimeout(() => r(false), timeoutMs);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (!rootDone) return false;
+      while (Date.now() < deadline) {
+        if (pids.every(pidGone)) return true;
+        await Bun.sleep(50);
+      }
+      return pids.every(pidGone);
+    },
+    confirmGoneSync(timeoutMs) {
+      kill();
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (pids.every(pidGone)) return true;
+        Bun.sleepSync(50);
+      }
+      return pids.every(pidGone);
+    },
+  };
 }
 
 export async function freePort(): Promise<number> {
@@ -76,6 +178,21 @@ export async function startServe(opts: {
   readyTimeoutMs?: number;
   /** A mutant tree's launcher; default is the built `packages/cli/bin/claudish.cjs`. */
   launcher?: string;
+  /**
+   * Called synchronously the moment the process exists, before any await: V2e registers it
+   * with the keychain guard here, so no cleanup can run between the spawn and the registration.
+   */
+  onSpawn?: (p: Producer) => void;
+  /**
+   * Start the tree in its OWN process group (review round 8, GPT HIGH 1). A terminal Ctrl-C
+   * signals the whole FOREGROUND group; a serve in that group would get SIGINT directly (the
+   * launcher forwards it, the product exits at once) while the parent is still waiting for
+   * the refresh gate. Detached, only the parent gets the terminal's signals and the serves
+   * die only when the parent kills them. stdout and stderr stay piped. Used by `v2e-real.ts`;
+   * the bench rows keep the default (same group), so a Ctrl-C of a row run still reaches its
+   * serves and nothing a row starts can outlive an abrupt parent death.
+   */
+  detached?: boolean;
 }): Promise<ServeProc> {
   const port = await freePort();
   const inner = [
@@ -94,7 +211,10 @@ export async function startServe(opts: {
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
+    detached: opts.detached === true,
   });
+  const group = { group: opts.detached === true };
+  opts.onSpawn?.(treeProducer("serve", child.pid, child.exited, group));
   let out = "";
   let err = "";
   const drain = async (stream: ReadableStream<Uint8Array>, into: (s: string) => void) => {
@@ -114,8 +234,10 @@ export async function startServe(opts: {
   });
   const deadline = Date.now() + (opts.readyTimeoutMs ?? 30_000);
   while (!out.includes("listening on")) {
-    if (Date.now() > deadline || child.exitCode !== null) {
-      killTree(child.pid, "SIGKILL");
+    // A child killed by a signal has `exitCode === null` and `signalCode` set: without the
+    // second test a serve killed while starting was polled until the readiness timeout.
+    if (Date.now() > deadline || child.exitCode !== null || child.signalCode !== null) {
+      killTree(child.pid, "SIGKILL", group);
       throw new Error(`serve did not start: stdout=${out} stderr=${err}`);
     }
     await Bun.sleep(50);
@@ -127,9 +249,37 @@ export async function startServe(opts: {
     stdout: () => out,
     stderr: () => err,
     exited: child.exited,
-    kill: (signal = "SIGTERM") => killTree(child.pid, signal),
+    kill: (signal = "SIGTERM") => killTree(child.pid, signal, group),
   };
 }
+
+/** A 3xx answer the parent received and did NOT follow. */
+export interface CapturedRedirect {
+  status: number;
+  /** The `Location` header as sent (null when absent). Never contacted. */
+  location: string | null;
+}
+
+/**
+ * The ONLY way bench code in the Bun parent sends an HTTP request. The offline sandbox
+ * wraps the product child, not the parent, so a parent `fetch` that followed a product
+ * redirect to a non-loopback host would contact that host from an unsandboxed process.
+ * `redirect: "manual"` is forced (a caller cannot override it): a 3xx comes back as the
+ * response itself, and `redirectOf` turns it into a captured failure.
+ */
+export function parentFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(url, { ...init, redirect: "manual" });
+}
+
+/** The captured redirect when `res` is a 3xx, else null. */
+export function redirectOf(res: Response): CapturedRedirect | null {
+  if (res.status < 300 || res.status > 399) return null;
+  return { status: res.status, location: res.headers.get("location") };
+}
+
+/** One line naming a captured redirect: a harness error, never a PASS. */
+export const describeRedirect = (r: CapturedRedirect): string =>
+  `the product answered HTTP ${r.status} redirecting to ${JSON.stringify(r.location)}; the parent did not follow it (harness error)`;
 
 export interface DirectReply {
   /** 0 when the connection failed (the process died mid-request: V9 `crash-after-refresh`). */
@@ -138,6 +288,8 @@ export interface DirectReply {
   body: unknown;
   /** Set when `fetch` itself threw. */
   connectionError?: string;
+  /** Set when the product answered 3xx: recorded, never followed. The row is a harness error. */
+  redirect?: CapturedRedirect;
 }
 
 export async function postMessage(
@@ -148,7 +300,7 @@ export async function postMessage(
   timeoutMs = 120_000
 ): Promise<DirectReply> {
   try {
-    const res = await fetch(`${url}/v1/messages`, {
+    const res = await parentFetch(`${url}/v1/messages`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -171,7 +323,13 @@ export async function postMessage(
     } catch {
       /* keep text */
     }
-    return { status: res.status, headers: Object.fromEntries(res.headers), body };
+    const redirect = redirectOf(res);
+    return {
+      status: res.status,
+      headers: Object.fromEntries(res.headers),
+      body,
+      ...(redirect ? { redirect } : {}),
+    };
   } catch (err) {
     return { status: 0, headers: {}, body: null, connectionError: String(err) };
   }

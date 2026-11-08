@@ -213,8 +213,10 @@ export function accountTokenPath(
 /**
  * The legacy single-account Codex credential file.
  *
- * Left exactly where it is. It is the entire migration base — every current
- * single-account Codex user — and moving it would log all of them out.
+ * Its PATH never changes: renaming it would log every legacy user out. On a
+ * Keychain platform its CONTENT is moved into the Keychain account store and
+ * the file deleted (MTL-372, `management.ts` `moveLegacyLogin`); where there is
+ * no Keychain it stays the legacy login.
  */
 export function legacyCodexCredentialsPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(claudishHome(env), "codex-oauth.json");

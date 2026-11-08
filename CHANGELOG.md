@@ -2,6 +2,119 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.16.1] - 2026-11-08
+
+### Bug Fixes
+
+- replace images nested in a tool_result for non-vision *(adapters)* ([`d0ee057`](https://github.com/MadAppGang/claudish/commit/d0ee05702c8380aa45297097d42c21acc2925237))
+- replace a stripped image with a text placeholder *(adapters)* ([`8621c75`](https://github.com/MadAppGang/claudish/commit/8621c757a3545b614ba5b10c3e5a6cb50e192747))
+
+### Documentation
+
+- record the non-vision image placeholder in wire.md *(adapters)* ([`a72a22c`](https://github.com/MadAppGang/claudish/commit/a72a22c83e509684abf9f6d7d32f4fcfcaa5b8b2))
+- update CHANGELOG.md for v14.16.0([`e6886cd`](https://github.com/MadAppGang/claudish/commit/e6886cdcfa04df32290e50eb0c62dccdd0f2386d))
+
+## [14.16.0] - 2026-11-07
+
+### Bug Fixes
+
+- print the secret_guard line when a fact holds a key *(subscription)* ([`c9f6fe2`](https://github.com/MadAppGang/claudish/commit/c9f6fe25b61f0a449fdd39f751fb5d52779ca19d))
+
+### Documentation
+
+- update CHANGELOG.md for v14.15.1([`74a17d4`](https://github.com/MadAppGang/claudish/commit/74a17d45ab93afa6154a3d03545c5af87871da0c))
+
+### New Features
+
+- add subscription probe devin --model --request-file *(devin)* ([`4fe5d97`](https://github.com/MadAppGang/claudish/commit/4fe5d978bbad2db934eddd889371b96e01e1079e))
+- add subscription models devin --raw --json *(devin)* ([`35051e4`](https://github.com/MadAppGang/claudish/commit/35051e4429aaa4f7aece0ac3cb003690fa62a39d))
+
+## [14.15.1] - 2026-11-06
+
+### Bug Fixes
+
+- start replay and pane children in the fullscreen tui view *(mcp)* ([`2c686a6`](https://github.com/MadAppGang/claudish/commit/2c686a67830b99fb5e94f994d9499b70c9120b0f))
+
+### Documentation
+
+- update CHANGELOG.md for v14.15.0([`fe805bd`](https://github.com/MadAppGang/claudish/commit/fe805bd2c8fc8751c782e85757fdc4dd4d89b85f))
+
+## [14.15.0] - 2026-11-05
+
+### Bug Fixes
+
+- resolve a relative CLAUDE_PATH and config dir for a replay *(mcp)* ([`4bba023`](https://github.com/MadAppGang/claudish/commit/4bba0236758d22f0008d17da8f506619ab243fed))
+- reap a replay pane whose start throws after registration *(team)* ([`9f937b2`](https://github.com/MadAppGang/claudish/commit/9f937b280edf9c64c14d198f25943cb19e75c0d3))
+- redial a replay whose reconnect drops during capabilities *(team)* ([`2008fcb`](https://github.com/MadAppGang/claudish/commit/2008fcba023ec3c454f5625f9ea38c05a4481f5a))
+- remove a replay's fork record after a server SIGKILL *(team)* ([`9403eb8`](https://github.com/MadAppGang/claudish/commit/9403eb87741eb533b3cf50eb57ab5452dd973d75))
+- stop replay panes installing plugins or drawing the LSP dialog *(team)* ([`b6ccf73`](https://github.com/MadAppGang/claudish/commit/b6ccf736747637e4240ec7d6493aa1a6de45301c))
+- answer spawn_failed when CLAUDE_PATH names no executable file *(mcp)* ([`cd91a2b`](https://github.com/MadAppGang/claudish/commit/cd91a2b0103b2cafadd7b3e4b281c9f0995c508d))
+- reject a null or empty run_id, cols or rows on a replay open *(mcp)* ([`241eb08`](https://github.com/MadAppGang/claudish/commit/241eb0861890f6cb6dc4db31c8aac116a2e5a741))
+
+### Documentation
+
+- document who removes a replay's fork record on each path *(team)* ([`466c53e`](https://github.com/MadAppGang/claudish/commit/466c53efade3bfabda6b725b29ae605792e619ba))
+- document the replay plugin switches and their measurements *(team)* ([`4f14dcf`](https://github.com/MadAppGang/claudish/commit/4f14dcfda7ad010033c6fd23c027162be899c032))
+- document replay_session, close_replay and replay panes *(mcp)* ([`5a692f8`](https://github.com/MadAppGang/claudish/commit/5a692f8f4ba22fe6306760e08d713dde07ba4c3b))
+- update CHANGELOG.md for v14.14.0([`31179f5`](https://github.com/MadAppGang/claudish/commit/31179f5981aea12490a2be54819f99f7e6513719))
+
+### New Features
+
+- add replay_session and close_replay for finished sessions *(mcp)* ([`a55867a`](https://github.com/MadAppGang/claudish/commit/a55867a18d862693cb5012a2f3a29df2af24b111))
+- add replay_session, close_replay and team replay mode *(mcp)* ([`32ef385`](https://github.com/MadAppGang/claudish/commit/32ef3858727b6f4b1fbfb1e12f2f2424fe836d65))
+- add ReplayManager for read-only replays *(mcp)* ([`5589560`](https://github.com/MadAppGang/claudish/commit/5589560ae32776646d8170918a227f9e4ff84986))
+- add ReplayPane, a read-only pane for a finished session *(team)* ([`5608ee4`](https://github.com/MadAppGang/claudish/commit/5608ee4559730d37fbc4ce65cf24f2ee48a3f022))
+- add the launch functions of a read-only replay pane *(team)* ([`bb4906d`](https://github.com/MadAppGang/claudish/commit/bb4906d8aa6346373e9cfabb3547b778facaccee))
+- add the replay error codes and reason to pane/contract.ts *(mcp)* ([`ebb1cb7`](https://github.com/MadAppGang/claudish/commit/ebb1cb79da43c4536f6fe5eb1b387a72d3bd94f1))
+
+### Refactoring
+
+- split the replay target out of the transcript lookups *(mcp)* ([`471db07`](https://github.com/MadAppGang/claudish/commit/471db07f90c5a54aacca1fe66f5ab2d67678b235))
+- move the pane reap to pane-reap.ts *(team)* ([`342c5ac`](https://github.com/MadAppGang/claudish/commit/342c5ac317f439cf6da83496503c02cc07c6e741))
+
+## [14.14.0] - 2026-11-05
+
+### Bug Fixes
+
+- refuse a legacy-file exchange on an unreadable list *(accounts)* ([`a9d6029`](https://github.com/MadAppGang/claudish/commit/a9d6029a72bd0f92b0ced11f3c46fc7ebb8a2472))
+- withdraw only a lease's own re-auth stamp on restore *(accounts)* ([`99ac941`](https://github.com/MadAppGang/claudish/commit/99ac941855ff8f224a3986d5675fc12b53b7c2da))
+- drop the moved legacy token when the refresh gate is busy *(codex)* ([`1551b2e`](https://github.com/MadAppGang/claudish/commit/1551b2ed759029bcdfecfbf163e1b2f287f7b3d3))
+- answer 503 when the legacy login moved under requireOAuth *(codex)* ([`b4b1d67`](https://github.com/MadAppGang/claudish/commit/b4b1d675137cddabdf4f9a316c788c286f1d077b))
+- re-read the account list before an empty-store 503 check *(accounts)* ([`3c756cc`](https://github.com/MadAppGang/claudish/commit/3c756cc2a54f11bda5bc2fa23c0be1a72b222bde))
+- restore the re-auth stamp when the list is unreadable *(accounts)* ([`101cfbd`](https://github.com/MadAppGang/claudish/commit/101cfbd849f79928afff7bacd2339ed07b347a00))
+- keep the legacy Codex record while config is unreadable *(accounts)* ([`d954874`](https://github.com/MadAppGang/claudish/commit/d9548748fadb8741eb848eab61469751973dc5ed))
+- decide legacy file ownership from a fresh account list *(codex)* ([`19b6b93`](https://github.com/MadAppGang/claudish/commit/19b6b938a8dc39c1c27588a44f1d50dfefad52e2))
+- restore the re-auth stamp when a leased row moved store *(accounts)* ([`a1e625c`](https://github.com/MadAppGang/claudish/commit/a1e625c1a70896d94215610366ce7413de0a7a8d))
+- return 503 for an empty store when config is unreadable *(accounts)* ([`eb27482`](https://github.com/MadAppGang/claudish/commit/eb274824a584dec6ae589a85c47aed6845b235b1))
+- log in a synthesized Codex target with this instance's deps *(accounts)* ([`2f29793`](https://github.com/MadAppGang/claudish/commit/2f29793462aebf6c0bfba3154f51d9cfc1f4379e))
+- keep JSON parse text out of token store read errors *(accounts)* ([`dcdd7b9`](https://github.com/MadAppGang/claudish/commit/dcdd7b9c227a9023e53da022e9807069e346f1b5))
+- refuse a legacy refresh after the move publishes *(codex)* ([`ac7e872`](https://github.com/MadAppGang/claudish/commit/ac7e8728260a50fae0aa21c39f556eb84a3c762d))
+- compare every durable field before reusing a moved item *(accounts)* ([`f2021b6`](https://github.com/MadAppGang/claudish/commit/f2021b6a3a00db8a837c1b85de7c250c3609413c))
+- answer a pinned lease with 503 when its row moved store *(accounts)* ([`75efe9a`](https://github.com/MadAppGang/claudish/commit/75efe9a61594adacc554b3778e38c4043041d92a))
+- report a denied ~/.claudish as file-unreadable in the move *(accounts)* ([`7f48a70`](https://github.com/MadAppGang/claudish/commit/7f48a70675a8e52c0fbf2ff0a880a805af4f9e83))
+- show codex logged in when Codex accounts are configured *(auth)* ([`afe2f63`](https://github.com/MadAppGang/claudish/commit/afe2f636c94d053bd8d19326eb09cbdf0aa62b29))
+- report Codex quota available for Keychain accounts *(quota)* ([`0ef0da2`](https://github.com/MadAppGang/claudish/commit/0ef0da215d16eaa159c20b0e57e90f5a0729cc1e))
+- answer a removed credential file with 503 when accounts exist *(codex)* ([`c79ab8c`](https://github.com/MadAppGang/claudish/commit/c79ab8c138f45e830d1f9c646044b8da61d9a5ae))
+- retry a lease whose token store vanished with its row rebound *(accounts)* ([`a107eea`](https://github.com/MadAppGang/claudish/commit/a107eea8ed25915440b245a96902c58fb1c175db))
+
+### Documentation
+
+- update CHANGELOG.md for v14.13.0([`c788035`](https://github.com/MadAppGang/claudish/commit/c7880353a5344c9132ef9bd9844c536038d3eb1b))
+- record the review round 4 fixes to the Codex move *(accounts)* ([`7a1a7c4`](https://github.com/MadAppGang/claudish/commit/7a1a7c4a60b7699e5ef1f0cb38d8ac75450946f0))
+- record the review round 3 fixes to the Codex move *(accounts)* ([`19d8b35`](https://github.com/MadAppGang/claudish/commit/19d8b35a67ffc0a9fe8b0f352d85cb46f62a815c))
+- record the stale account list rules for the Codex move *(accounts)* ([`cd10b75`](https://github.com/MadAppGang/claudish/commit/cd10b75e806a82653aab9bd5621b12f4b7b4772a))
+- record the review fixes to the legacy Codex move *(accounts)* ([`768a641`](https://github.com/MadAppGang/claudish/commit/768a64112c0f82bce2774824904be9ed5c5e7272))
+- record the legacy Codex file move into the Keychain *(accounts)* ([`6cad80d`](https://github.com/MadAppGang/claudish/commit/6cad80dda5771449fde1aff429d41acafdc430f8))
+- record V2e run 3 and the unreachable 3 s reply check *(accounts)* ([`2a1b0a0`](https://github.com/MadAppGang/claudish/commit/2a1b0a0aff8059c619b8d5885a79ded9702db20c))
+- record V2e on the login keychain and real-account runs *(accounts)* ([`3e523c8`](https://github.com/MadAppGang/claudish/commit/3e523c89c84b24744be4d95f804a92404cf45aa4))
+
+### New Features
+
+- move the legacy Codex file before mutating account verbs *(accounts)* ([`e78716b`](https://github.com/MadAppGang/claudish/commit/e78716bb49661785a9ff04101839d94dd26fa11f))
+- save claudish login codex as a Keychain account *(codex)* ([`97a51ea`](https://github.com/MadAppGang/claudish/commit/97a51eafc9e0adb90f31f09c86a28a9b5d22a1a5))
+- start the legacy file move on the first Codex request *(codex)* ([`fd96a31`](https://github.com/MadAppGang/claudish/commit/fd96a31a73c60c37ea969fd869f6d5502097cc7b))
+- move the legacy Codex credential file into the Keychain *(accounts)* ([`f18f73a`](https://github.com/MadAppGang/claudish/commit/f18f73ab29df197cbd402ef81353528b6d11c0e5))
+
 ## [14.13.0] - 2026-11-03
 
 ### Documentation

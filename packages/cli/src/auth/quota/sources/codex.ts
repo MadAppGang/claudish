@@ -187,11 +187,14 @@ export const codexQuotaAdapter: QuotaAdapter = {
   isAvailable(): boolean {
     // Sync on purpose: called from the CLI's provider list and from registry
     // lookups, neither of which can await.
-    try {
-      return existsSync(credentialsPath());
-    } catch {
-      return false;
-    }
+    //
+    // The account list, not the legacy file: a Codex login can live in the
+    // Keychain (a `keychain` account row, and since MTL-372 the moved legacy
+    // login), where no `codex-oauth.json` exists. The registry still synthesizes
+    // the legacy account from that file, so a legacy-only user stays available.
+    // Configuration only: no Keychain call, no token read. An unreadable account
+    // list answers true, the registry's safe projection.
+    return getAccountRegistry().mayHaveConfiguredAccounts("openai-codex");
   },
 
   scrape(response: Response): PlanUsage | undefined {

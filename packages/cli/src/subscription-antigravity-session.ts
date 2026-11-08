@@ -24,6 +24,9 @@ import {
 } from "./auth/antigravity-user.js";
 import type { CredentialFailureFields } from "./auth/credentials/credential-error.js";
 
+/** The claudish providers the `subscription models|probe` commands serve. */
+export type SubscriptionCommandProvider = "antigravity" | "devin";
+
 export type FailureClass =
   | "credential_missing"
   | "keychain_locked"

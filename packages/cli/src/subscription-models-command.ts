@@ -1,12 +1,15 @@
 /**
- * `claudish subscription models antigravity --raw --json`
+ * `claudish subscription models antigravity|devin --raw --json`
  *
- * Prints the body of Antigravity's `fetchAvailableModels` exactly as the
- * backend sent it (the response text, byte for byte, as a JSON string) inside
- * one JSON envelope on ONE stdout line. The caller is
+ * Antigravity (this module): prints the body of `fetchAvailableModels`
+ * exactly as the backend sent it (the response text, byte for byte, as a JSON
+ * string) inside one JSON envelope on ONE stdout line. The caller is
  * the models-index wire-probe runner: a macOS LaunchAgent with no TTY and no
  * browser. It uploads stdout, and models-index seals the body as evidence of
  * what this account's subscription serves.
+ *
+ * Devin: `subscription-devin-models.ts`, loaded only for a `devin` argv. It
+ * shares the envelope, the run wrapper and the guard defined here.
  *
  * Everything reuses the claudish Antigravity path. Nothing is re-implemented:
  *   readAntigravityStoreClassified  bounded keychain read, never kills `security`
@@ -14,8 +17,8 @@
  *   setupAntigravityUser            loadCodeAssist -> project
  *   fetchAntigravityAvailableModelsRaw  the body, before any processing
  *
- * Contract (ai-docs/architecture/providers/antigravity.md, "Raw model list for
- * models-index"):
+ * Contract (ai-docs/architecture/providers/antigravity.md and
+ * ai-docs/architecture/providers/devin.md, "Raw model list for models-index"):
  * - Every exit (0 and 1 to 7) writes exactly one JSON object built from the
  *   typed envelope to stdout, and nothing else. An error message is never
  *   printed: messages embed vendor text and agy's stderr.
@@ -45,6 +48,7 @@ import {
   type FailureClass,
   SESSION_FAILURE_CODES,
   type Secrets,
+  type SubscriptionCommandProvider,
   containsSecret,
   establishAntigravitySession,
   newSecrets,
@@ -63,15 +67,26 @@ export type { FailureClass } from "./subscription-antigravity-session.js";
 
 /** Every fixed `failure.code`, grouped by the class it belongs to. */
 export const FAILURE_CODES = {
-  credential_missing: SESSION_FAILURE_CODES.credential_missing,
+  credential_missing: [...SESSION_FAILURE_CODES.credential_missing, "devin_credential_absent"],
   keychain_locked: SESSION_FAILURE_CODES.keychain_locked,
   mint_failed: SESSION_FAILURE_CODES.mint_failed,
   network: [
     ...SESSION_FAILURE_CODES.network,
     "fetch_available_models_network_error",
     "fetch_available_models_timeout",
+    "model_configs_network_error",
+    "model_configs_timeout",
+    "team_settings_network_error",
+    "team_settings_timeout",
   ],
-  list_incomplete: ["models_absent", "models_empty", "body_not_json"],
+  list_incomplete: [
+    "models_absent",
+    "models_empty",
+    "body_not_json",
+    "configs_empty",
+    "team_settings_http_error",
+    "allowed_uids_empty",
+  ],
   internal: ["usage", "secret_guard", "internal_error"],
 } as const satisfies Record<FailureClass, readonly string[]>;
 
@@ -112,30 +127,36 @@ export interface SubscriptionModelListFailure {
 export interface SubscriptionModelListEnvelope {
   schema: typeof SUBSCRIPTION_MODEL_LIST_SCHEMA;
   /** Present whenever the provider was determined; absent on a usage error. */
-  provider?: "antigravity";
+  provider?: SubscriptionCommandProvider;
   claudishVersion: string;
-  /** ISO-8601 UTC, once `fetchAvailableModels` answered. */
+  /** ISO-8601 UTC, once the model-list request answered. */
   fetchedAt?: string;
-  /** `<host>/v1internal:fetchAvailableModels`, userinfo stripped, once it was attempted. */
+  /** The model-list request URL, userinfo stripped, once it was attempted. */
   sourceUrl?: string;
-  /** The client version in the User-Agent, once a valid token was obtained. */
+  /** The client version the request presented, once it was determined. */
   clientVersion?: string;
+  /** Antigravity only. */
   clientVersionSource?: AntigravityClientVersionSource;
-  /** Whether this run asked agy to refresh (true even if that refresh failed). */
+  /** Whether this run asked agy to refresh (true even if that refresh failed). Devin: false. */
   tokenRefreshed: boolean;
-  /** `fetchAvailableModels` status, once it answered. */
+  /** The model-list request's status, once it answered. */
   httpStatus?: number;
+  /** Devin only: the `GetCliTeamSettings` URL, userinfo stripped, once it was attempted. */
+  teamSettingsUrl?: string;
+  /** Devin only: the `GetCliTeamSettings` status, once it answered. */
+  teamSettingsHttpStatus?: number;
   failure?: SubscriptionModelListFailure;
   /**
-   * The 2xx response text, byte for byte as `res.text()` read it: never parsed
-   * and re-serialized, never trimmed. Success only.
+   * Success only. Antigravity: the 2xx response text, byte for byte as
+   * `res.text()` read it, never parsed and re-serialized, never trimmed.
+   * Devin: the decoded configs and allowed uids as JSON text.
    */
   body?: string;
 }
 
 /** The fixed usage line (stderr, exit 2; stdout carries the `usage` failure). */
 export const SUBSCRIPTION_MODELS_USAGE =
-  "usage: claudish subscription models antigravity --raw --json";
+  "usage: claudish subscription models antigravity|devin --raw --json";
 /** The fixed line when the secret guard trips (stderr, exit 1; stdout carries `secret_guard`). */
 export const SECRET_GUARD_MESSAGE =
   "[claudish subscription] refused: output contained a credential value";
@@ -155,7 +176,7 @@ export interface SubscriptionModelsDeps {
   tokenDeps: () => AntigravityTokenDeps;
   /** Clock for `fetchedAt`. */
   now: () => number;
-  /** Bound on `loadCodeAssist` and on `fetchAvailableModels` (30 s). */
+  /** Bound on each metadata request (30 s). */
   httpTimeoutMs: number;
   /** Bound on the keychain read (10 s). */
   keychainDeadlineMs: number;
@@ -168,6 +189,9 @@ export interface SubscriptionModelsDeps {
   /** Write one complete line (its trailing newline included) to stderr. */
   writeStderr: (line: string) => void;
 }
+
+/** What every provider's model-list run uses from the deps. */
+export type ModelListOutputDeps = Pick<SubscriptionModelsDeps, "writeStdout" | "writeStderr">;
 
 export function defaultSubscriptionModelsDeps(): SubscriptionModelsDeps {
   return {
@@ -191,21 +215,30 @@ export function defaultSubscriptionModelsDeps(): SubscriptionModelsDeps {
 // Argv
 // ---------------------------------------------------------------------------
 
-export type SubscriptionModelsArgs = { ok: true; provider: "antigravity" } | { ok: false };
+export type SubscriptionModelsArgs =
+  | { ok: true; provider: SubscriptionCommandProvider }
+  | { ok: false };
+
+const MODEL_LIST_PROVIDERS: readonly string[] = ["antigravity", "devin"];
 
 /**
  * Parse the argv that follows `subscription`. v1 accepts exactly
- * `models antigravity` plus `--raw` and `--json`, each once, in any order.
- * Anything else is a usage error: a missing flag, the `ag` shortcut, or an
- * extra token. That leaves the bare form free for a later human view.
+ * `models antigravity` or `models devin` plus `--raw` and `--json`, each once,
+ * in any order. Anything else is a usage error: a missing flag, the `ag` or
+ * `dv` shortcut, or an extra token. That leaves the bare form free for a later
+ * human view.
  */
 export function parseSubscriptionModelsArgs(argv: readonly string[]): SubscriptionModelsArgs {
   const positionals = argv.filter((a) => !a.startsWith("-"));
   const flags = argv.filter((a) => a.startsWith("-"));
   const positionalsOk =
-    positionals.length === 2 && positionals[0] === "models" && positionals[1] === "antigravity";
+    positionals.length === 2 &&
+    positionals[0] === "models" &&
+    MODEL_LIST_PROVIDERS.includes(positionals[1]);
   const flagsOk = flags.length === 2 && flags.includes("--raw") && flags.includes("--json");
-  return positionalsOk && flagsOk ? { ok: true, provider: "antigravity" } : { ok: false };
+  return positionalsOk && flagsOk
+    ? { ok: true, provider: positionals[1] as SubscriptionCommandProvider }
+    : { ok: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -213,19 +246,21 @@ export function parseSubscriptionModelsArgs(argv: readonly string[]): Subscripti
 // ---------------------------------------------------------------------------
 
 /** What this run has determined so far: the envelope's optional fields. */
-interface Facts {
-  provider?: "antigravity";
+export interface ModelListFacts {
+  provider?: SubscriptionCommandProvider;
   fetchedAt?: string;
   sourceUrl?: string;
   clientVersion?: string;
   clientVersionSource?: AntigravityClientVersionSource;
   tokenRefreshed: boolean;
   httpStatus?: number;
+  teamSettingsUrl?: string;
+  teamSettingsHttpStatus?: number;
 }
 
 /** Build the envelope with its keys in contract order, omitting what is unknown. */
-function buildEnvelope(
-  facts: Facts,
+export function buildModelListEnvelope(
+  facts: ModelListFacts,
   failure?: SubscriptionModelListFailure,
   body?: string
 ): SubscriptionModelListEnvelope {
@@ -241,12 +276,16 @@ function buildEnvelope(
       : {}),
     tokenRefreshed: facts.tokenRefreshed,
     ...(facts.httpStatus !== undefined ? { httpStatus: facts.httpStatus } : {}),
+    ...(facts.teamSettingsUrl !== undefined ? { teamSettingsUrl: facts.teamSettingsUrl } : {}),
+    ...(facts.teamSettingsHttpStatus !== undefined
+      ? { teamSettingsHttpStatus: facts.teamSettingsHttpStatus }
+      : {}),
     ...(failure ? { failure } : {}),
     ...(body !== undefined ? { body } : {}),
   };
 }
 
-function failureOf(
+export function modelListFailureOf(
   cls: FailureClass,
   code: FailureCode,
   httpStatus?: number
@@ -261,23 +300,26 @@ function listFailure(value: unknown, status: number): SubscriptionModelListFailu
       ? (value as { models?: unknown }).models
       : undefined;
   if (models === null || typeof models !== "object" || Array.isArray(models)) {
-    return failureOf("list_incomplete", "models_absent", status);
+    return modelListFailureOf("list_incomplete", "models_absent", status);
   }
   if (Object.keys(models).length === 0) {
-    return failureOf("list_incomplete", "models_empty", status);
+    return modelListFailureOf("list_incomplete", "models_empty", status);
   }
   return null;
 }
 
-interface RunResult {
+export interface ModelListRunResult {
   envelope: SubscriptionModelListEnvelope;
   exitCode: number;
-  /** The raw response text printed as `body`, kept for the secret guard. */
+  /** The text printed as `body`, kept for the secret guard. */
   bodyText?: string;
 }
 
-function fail(facts: Facts, failure: SubscriptionModelListFailure): RunResult {
-  return { envelope: buildEnvelope(facts, failure), exitCode: exitCodeFor(failure) };
+export function modelListFail(
+  facts: ModelListFacts,
+  failure: SubscriptionModelListFailure
+): ModelListRunResult {
+  return { envelope: buildModelListEnvelope(facts, failure), exitCode: exitCodeFor(failure) };
 }
 
 /** One serialized envelope line, trailing newline included. */
@@ -286,7 +328,7 @@ function lineOf(envelope: SubscriptionModelListEnvelope): string {
 }
 
 /** A stderr write that never throws. It carries only fixed lines. */
-function safeStderr(deps: SubscriptionModelsDeps, line: string): void {
+function safeStderr(deps: ModelListOutputDeps, line: string): void {
   try {
     deps.writeStderr(line);
   } catch {
@@ -301,24 +343,29 @@ type InternalCode = (typeof FAILURE_CODES)["internal"][number];
  * awaited `writeStdout`, and return the exit code. Never throws.
  *
  * The line holds only `facts` and fixed strings, never a body. It is still
- * checked against `secrets`; a hit (which cannot happen) prints nothing.
+ * checked against `secrets`: a fact can carry one (a server URL with a
+ * credential in its PATH survives `stripUserinfo`). On a hit the line drops to
+ * its fixed fields, so a line is still printed: it then holds only the
+ * schema, the version, a boolean and fixed failure strings, every byte a
+ * constant in the published source, and is not checked again.
  */
 async function writeInternalFailure(
-  deps: SubscriptionModelsDeps,
-  facts: Facts,
+  deps: ModelListOutputDeps,
+  facts: ModelListFacts,
   code: InternalCode,
   stderrLine: string,
   secrets?: Secrets
 ): Promise<number> {
-  const failure = failureOf("internal", code);
+  const failure = modelListFailureOf("internal", code);
   safeStderr(deps, `${stderrLine}\n`);
-  const line = lineOf(buildEnvelope(facts, failure));
-  if (!secrets || !containsSecret(secrets, line)) {
-    try {
-      await deps.writeStdout(line);
-    } catch {
-      // stdout is unusable; the stderr line already says what happened.
-    }
+  let line = lineOf(buildModelListEnvelope(facts, failure));
+  if (secrets && containsSecret(secrets, line)) {
+    line = lineOf(buildModelListEnvelope({ tokenRefreshed: facts.tokenRefreshed }, failure));
+  }
+  try {
+    await deps.writeStdout(line);
+  } catch {
+    // stdout is unusable; the stderr line already says what happened.
   }
   return exitCodeFor(failure);
 }
@@ -348,10 +395,10 @@ export async function reportSubscriptionInternalError(
 
 /** Step 7's verdict: the envelope and exit code for one raw `fetchAvailableModels` result. */
 function classifyAvailableModels(
-  facts: Facts,
+  facts: ModelListFacts,
   raw: FetchAvailableModelsRaw,
   timedOut: boolean
-): RunResult {
+): ModelListRunResult {
   // What was SENT: the same value as step 5 unless the version changed in between.
   facts.sourceUrl = stripUserinfo(raw.url);
   facts.clientVersion = raw.clientVersion;
@@ -360,41 +407,46 @@ function classifyAvailableModels(
     ? "fetch_available_models_timeout"
     : "fetch_available_models_network_error";
 
-  if (raw.kind === "unreachable") return fail(facts, failureOf("network", networkCode));
+  if (raw.kind === "unreachable") {
+    return modelListFail(facts, modelListFailureOf("network", networkCode));
+  }
   facts.fetchedAt = raw.fetchedAt;
   facts.httpStatus = raw.status;
 
   if (raw.status < 200 || raw.status >= 300) {
     // Not a failure: the backend answered, and its status is the answer.
-    return { envelope: buildEnvelope(facts), exitCode: EXIT.ok };
+    return { envelope: buildModelListEnvelope(facts), exitCode: EXIT.ok };
   }
   switch (raw.body.kind) {
     case "json": {
       // The parse decides success; the TEXT is what gets printed.
       const incomplete = listFailure(raw.body.value, raw.status);
-      if (incomplete) return fail(facts, incomplete);
+      if (incomplete) return modelListFail(facts, incomplete);
       return {
-        envelope: buildEnvelope(facts, undefined, raw.body.text),
+        envelope: buildModelListEnvelope(facts, undefined, raw.body.text),
         exitCode: EXIT.ok,
         bodyText: raw.body.text,
       };
     }
     case "not-json":
-      return fail(facts, failureOf("list_incomplete", "body_not_json", raw.status));
+      return modelListFail(
+        facts,
+        modelListFailureOf("list_incomplete", "body_not_json", raw.status)
+      );
     default:
       // read-failed (`unread` cannot occur on a 2xx).
-      return fail(facts, failureOf("network", networkCode, raw.status));
+      return modelListFail(facts, modelListFailureOf("network", networkCode, raw.status));
   }
 }
 
 /** Steps 2-7 of the sequence: determine the envelope and its exit code. */
-async function determine(
+async function determineAntigravity(
   deps: SubscriptionModelsDeps,
   secrets: Secrets,
-  facts: Facts
-): Promise<RunResult> {
+  facts: ModelListFacts
+): Promise<ModelListRunResult> {
   const session = await establishAntigravitySession(deps, secrets, facts);
-  if (!session.ok) return fail(facts, session.failure);
+  if (!session.ok) return modelListFail(facts, session.failure);
   const { accessToken, projectId } = session;
 
   const controller = new AbortController();
@@ -411,8 +463,9 @@ async function determine(
 }
 
 /**
- * Determine the envelope, run the secret guard, write ONE flushed line, and
- * return the exit code. Never throws.
+ * The shared tail of every provider's model list: run `determine`, run the
+ * secret guard, write ONE flushed line, and return the exit code. Never
+ * throws.
  *
  * Both exit-1 paths write their fixed stderr line and a class-`internal` line:
  * - an unexpected error: `internal_error`, with `provider` and the
@@ -420,14 +473,17 @@ async function determine(
  * - a secret-guard hit: `secret_guard`, with every fact determined so far and
  *   never a body.
  */
-export async function runAntigravityRawModelList(deps: SubscriptionModelsDeps): Promise<number> {
-  const secrets: Secrets = newSecrets();
-  const facts: Facts = { provider: "antigravity", tokenRefreshed: false };
+export async function runModelListWith(
+  deps: ModelListOutputDeps,
+  facts: ModelListFacts,
+  secrets: Secrets,
+  determine: () => Promise<ModelListRunResult>
+): Promise<number> {
   let line: string;
   let exitCode: number;
   let bodyText: string | undefined;
   try {
-    const result = await determine(deps, secrets, facts);
+    const result = await determine();
     line = lineOf(result.envelope);
     exitCode = result.exitCode;
     bodyText = result.bodyText;
@@ -455,6 +511,13 @@ export async function runAntigravityRawModelList(deps: SubscriptionModelsDeps): 
   return exitCode;
 }
 
+/** The Antigravity model list. Never throws. */
+export async function runAntigravityRawModelList(deps: SubscriptionModelsDeps): Promise<number> {
+  const secrets: Secrets = newSecrets();
+  const facts: ModelListFacts = { provider: "antigravity", tokenRefreshed: false };
+  return runModelListWith(deps, facts, secrets, () => determineAntigravity(deps, secrets, facts));
+}
+
 /**
  * Entry point for the argv that follows `subscription`. Returns the exit code;
  * the caller exits with it (an unkilled `security` would keep the loop alive).
@@ -463,7 +526,8 @@ export async function subscriptionModelsCommand(
   argv: readonly string[],
   deps: SubscriptionModelsDeps = defaultSubscriptionModelsDeps()
 ): Promise<number> {
-  if (!parseSubscriptionModelsArgs(argv).ok) {
+  const args = parseSubscriptionModelsArgs(argv);
+  if (!args.ok) {
     // No provider was determined, so the line omits it.
     return writeInternalFailure(
       deps,
@@ -471,6 +535,21 @@ export async function subscriptionModelsCommand(
       "usage",
       SUBSCRIPTION_MODELS_USAGE
     );
+  }
+  if (args.provider === "devin") {
+    // Loaded only for a Devin argv, so the Antigravity run never imports it.
+    let devin: typeof import("./subscription-devin-models.js");
+    try {
+      devin = await import("./subscription-devin-models.js");
+    } catch {
+      return writeInternalFailure(
+        deps,
+        { provider: args.provider, tokenRefreshed: false },
+        "internal_error",
+        INTERNAL_ERROR_MESSAGE
+      );
+    }
+    return devin.runDevinRawModelList(deps);
   }
   return runAntigravityRawModelList(deps);
 }

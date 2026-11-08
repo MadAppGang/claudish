@@ -1,24 +1,29 @@
 /**
- * `claudish subscription probe antigravity --model <wire model id>
+ * `claudish subscription probe antigravity|devin --model <wire model id>
  *    --request-file <path> --raw --json`
  *
- * Sends ONE real request through the user's Antigravity login and prints the
+ * Sends ONE real request through the user's subscription login and prints the
  * vendor's answer inside one JSON envelope on ONE stdout line. The caller is
- * the models-index wire-probe runner: it never holds the token, it hands over
- * the inner Gemini-format `request` object in a file, and it seals the answer
- * as evidence of what the connection does on the wire.
+ * the models-index wire-probe runner: it never holds the credential, it hands
+ * over the request in a file, and it seals the answer as evidence of what the
+ * connection does on the wire.
  *
- * The request is sent exactly as the file says: no retry, no model-id rewrite
- * (the `ag@` path resolves the id against the account's dynamic models
+ * Antigravity (this module): the file is the inner Gemini-format `request`
+ * object. The request is sent exactly as the file says: no retry, no model-id
+ * rewrite (the `ag@` path resolves the id against the account's dynamic models
  * catalog; this command does not), no thinking or effort translation. The
  * file's bytes are spliced into the CodeAssist envelope, never parsed and
  * re-serialized. The envelope and headers are the ones
  * `AntigravityCredentialProvider` builds for `ag@`.
  *
- * Contract: ai-docs/architecture/providers/antigravity.md, "Wire probe for
- * models-index". It mirrors `subscription models antigravity`
- * (`subscription-models-command.ts`): one line on every exit, field presence,
- * fixed failure classes and exit codes, and the secret guard. Two differences:
+ * Devin: `subscription-devin-probe.ts`, loaded only for a `devin` argv. It
+ * shares the envelope, the run wrapper and the guard defined here.
+ *
+ * Contract: ai-docs/architecture/providers/antigravity.md and
+ * ai-docs/architecture/providers/devin.md, "Wire probe for models-index". It
+ * mirrors `subscription models` (`subscription-models-command.ts`): one line on
+ * every exit, field presence, fixed failure classes and exit codes, and the
+ * secret guard. Two differences:
  * - A non-2xx answer is exit 0 WITH its body: the vendor's error is evidence.
  * - A credential value inside the vendor's body is replaced by `[REDACTED]`
  *   and `bodyRedacted` says so; the refuse-on-hit guard still runs over the
@@ -26,7 +31,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
 import {
   defaultAntigravityTokenDeps,
   readAntigravityStoreClassified,
@@ -42,6 +46,7 @@ import {
   type FailureClass,
   SESSION_FAILURE_CODES,
   type Secrets,
+  type SubscriptionCommandProvider,
   containsSecret,
   establishAntigravitySession,
   newSecrets,
@@ -49,9 +54,26 @@ import {
   stripUserinfo,
 } from "./subscription-antigravity-session.js";
 import { SUBSCRIPTION_PROBE_SCHEMA } from "./subscription-dispatch.js";
+import {
+  PROBE_BODY_CAP_BYTES,
+  defaultReadRequestFile,
+  jsonUnescapedForms,
+  readCapped,
+  readRequestFileChecked,
+  redactSecretValues,
+} from "./subscription-secret-guard.js";
 import { VERSION } from "./version.js";
 
 export { isSubscriptionProbeArgv, SUBSCRIPTION_PROBE_SCHEMA } from "./subscription-dispatch.js";
+export {
+  MAX_UNESCAPE_ROUNDS,
+  PROBE_BODY_CAP_BYTES,
+  PROBE_REQUEST_FILE_CAP_BYTES,
+  REDACTED,
+  jsonUnescapedForms,
+  readCapped,
+  redactSecretValues,
+} from "./subscription-secret-guard.js";
 
 // ---------------------------------------------------------------------------
 // Contract
@@ -59,13 +81,15 @@ export { isSubscriptionProbeArgv, SUBSCRIPTION_PROBE_SCHEMA } from "./subscripti
 
 /** Every fixed `failure.code`, grouped by the class it belongs to. */
 export const PROBE_FAILURE_CODES = {
-  credential_missing: SESSION_FAILURE_CODES.credential_missing,
+  credential_missing: [...SESSION_FAILURE_CODES.credential_missing, "devin_credential_absent"],
   keychain_locked: SESSION_FAILURE_CODES.keychain_locked,
   mint_failed: SESSION_FAILURE_CODES.mint_failed,
   network: [
     ...SESSION_FAILURE_CODES.network,
     "generate_content_network_error",
     "generate_content_timeout",
+    "get_chat_message_network_error",
+    "get_chat_message_timeout",
   ],
   list_incomplete: ["body_too_large", "body_not_json", "body_unverifiable"],
   internal: [
@@ -111,12 +135,11 @@ export function probeExitCodeFor(failure: SubscriptionProbeFailure): number {
   return PROBE_EXIT[failure.class];
 }
 
-/** The largest response body printed. A larger one is `body_too_large`, with no body. */
-export const PROBE_BODY_CAP_BYTES = 512 * 1024;
-/** The largest request file read. A larger one is `request_file_invalid`. */
-export const PROBE_REQUEST_FILE_CAP_BYTES = 8 * 1024 * 1024;
-/** What replaces a credential value inside the vendor's body. */
-export const REDACTED = "[REDACTED]";
+/** A Devin error frame inside an HTTP 200: its code and whether it is retryable. */
+export interface ProbeStreamError {
+  code: string;
+  retryable: boolean;
+}
 
 /**
  * The one object on stdout. Key order on the wire is the order below. Optional
@@ -125,31 +148,37 @@ export const REDACTED = "[REDACTED]";
 export interface SubscriptionProbeEnvelope {
   schema: typeof SUBSCRIPTION_PROBE_SCHEMA;
   /** Present once the argv parsed; absent on a usage error. */
-  provider?: "antigravity";
+  provider?: SubscriptionCommandProvider;
   claudishVersion: string;
-  /** The `--model` value, sent unchanged as the envelope's `model`. Present with `provider`. */
+  /** The `--model` value, sent unchanged. Present with `provider`. */
   model?: string;
-  /** ISO-8601 UTC, once `generateContent` answered. */
+  /** ISO-8601 UTC, once the request answered. */
   fetchedAt?: string;
-  /** `<host>/v1internal:generateContent`, userinfo stripped, once it was attempted. */
+  /** The request URL, userinfo stripped, once it was attempted. */
   sourceUrl?: string;
   clientVersion?: string;
+  /** Antigravity only. */
   clientVersionSource?: AntigravityClientVersionSource;
   tokenRefreshed: boolean;
-  /** `generateContent` status, once it answered. */
+  /** The request's HTTP status, once it answered. */
   httpStatus?: number;
+  /** Devin only: the uid the backend reported serving (field 7.9), when it reported one. */
+  servedModel?: string;
+  /** Devin only: an error frame carried inside the HTTP 200. */
+  streamError?: ProbeStreamError;
   failure?: SubscriptionProbeFailure;
   /** Present with `body`: whether a credential value was replaced inside it. */
   bodyRedacted?: boolean;
   /**
-   * The response text, 2xx or not, as read, apart from redaction. A 2xx body
-   * parsed as JSON; a non-2xx body is printed whatever it is.
+   * The response text, 2xx or not, as read, apart from redaction. Antigravity:
+   * a 2xx body parsed as JSON; a non-2xx body is printed whatever it is.
+   * Devin: a 2xx answer is the decoded Messages object as JSON text.
    */
   body?: string;
 }
 
 export const SUBSCRIPTION_PROBE_USAGE =
-  "usage: claudish subscription probe antigravity --model <wire-model-id> --request-file <path> --raw --json";
+  "usage: claudish subscription probe antigravity|devin --model <wire-model-id> --request-file <path> --raw --json";
 export const PROBE_REQUEST_FILE_MESSAGE =
   "[claudish subscription] the request file must hold one JSON object (the inner Gemini request)";
 const SECRET_GUARD_MESSAGE = "[claudish subscription] refused: output contained a credential value";
@@ -161,7 +190,7 @@ const INTERNAL_ERROR_MESSAGE = "[claudish subscription] internal error";
 
 export interface SubscriptionProbeDeps extends AntigravitySessionDeps {
   now: () => number;
-  /** Bound on `generateContent`: the fetch AND the body read (300 s). */
+  /** Bound on the probe request: the fetch AND the body read (300 s). */
   requestTimeoutMs: number;
   /** Read the request file. Rejects when it is unreadable; `null` when it is over the cap. */
   readRequestFile: (path: string) => Promise<string | null>;
@@ -170,12 +199,8 @@ export interface SubscriptionProbeDeps extends AntigravitySessionDeps {
   writeStderr: (line: string) => void;
 }
 
-async function defaultReadRequestFile(path: string): Promise<string | null> {
-  const info = await stat(path);
-  if (!info.isFile()) throw new Error("not a file");
-  if (info.size > PROBE_REQUEST_FILE_CAP_BYTES) return null;
-  return readFile(path, "utf8");
-}
+/** What every provider's probe run uses from the deps. */
+export type ProbeOutputDeps = Pick<SubscriptionProbeDeps, "writeStdout" | "writeStderr">;
 
 export function defaultSubscriptionProbeDeps(): SubscriptionProbeDeps {
   return {
@@ -202,14 +227,17 @@ export function defaultSubscriptionProbeDeps(): SubscriptionProbeDeps {
 // ---------------------------------------------------------------------------
 
 export type SubscriptionProbeArgs =
-  | { ok: true; provider: "antigravity"; model: string; requestFile: string }
+  | { ok: true; provider: SubscriptionCommandProvider; model: string; requestFile: string }
   | { ok: false };
 
+const PROBE_PROVIDERS: readonly string[] = ["antigravity", "devin"];
+
 /**
- * Parse the argv that follows `subscription`: exactly `probe antigravity`,
- * `--model <id>`, `--request-file <path>`, `--raw` and `--json`, each once, in
- * any order. A value is the next token and must not start with `-`. Anything
- * else (the `ag` shortcut, `--model=x`, an extra token) is a usage error.
+ * Parse the argv that follows `subscription`: exactly `probe antigravity` or
+ * `probe devin`, `--model <id>`, `--request-file <path>`, `--raw` and
+ * `--json`, each once, in any order. A value is the next token and must not
+ * start with `-`. Anything else (the `ag` or `dv` shortcut, `--model=x`, an
+ * extra token) is a usage error.
  */
 export function parseSubscriptionProbeArgs(argv: readonly string[]): SubscriptionProbeArgs {
   const positionals: string[] = [];
@@ -238,22 +266,28 @@ export function parseSubscriptionProbeArgs(argv: readonly string[]): Subscriptio
   if (
     positionals.length !== 2 ||
     positionals[0] !== "probe" ||
-    positionals[1] !== "antigravity" ||
+    !PROBE_PROVIDERS.includes(positionals[1]) ||
     switches.size !== 2 ||
     model === undefined ||
     requestFile === undefined
   ) {
     return { ok: false };
   }
-  return { ok: true, provider: "antigravity", model, requestFile };
+  return {
+    ok: true,
+    provider: positionals[1] as SubscriptionCommandProvider,
+    model,
+    requestFile,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
 
-interface Facts {
-  provider?: "antigravity";
+/** What a probe run has determined so far: the envelope's optional fields. */
+export interface ProbeFacts {
+  provider?: SubscriptionCommandProvider;
   model?: string;
   fetchedAt?: string;
   sourceUrl?: string;
@@ -261,9 +295,11 @@ interface Facts {
   clientVersionSource?: AntigravityClientVersionSource;
   tokenRefreshed: boolean;
   httpStatus?: number;
+  servedModel?: string;
+  streamError?: ProbeStreamError;
 }
 
-function failureOf(
+export function probeFailureOf(
   cls: FailureClass,
   code: ProbeFailureCode,
   httpStatus?: number
@@ -271,8 +307,9 @@ function failureOf(
   return sessionFailureOf(cls, code, httpStatus);
 }
 
-function buildEnvelope(
-  facts: Facts,
+/** Build the envelope with its keys in contract order, omitting what is unknown. */
+export function buildProbeEnvelope(
+  facts: ProbeFacts,
   failure?: SubscriptionProbeFailure,
   body?: { text: string; redacted: boolean }
 ): SubscriptionProbeEnvelope {
@@ -289,12 +326,14 @@ function buildEnvelope(
       : {}),
     tokenRefreshed: facts.tokenRefreshed,
     ...(facts.httpStatus !== undefined ? { httpStatus: facts.httpStatus } : {}),
+    ...(facts.servedModel !== undefined ? { servedModel: facts.servedModel } : {}),
+    ...(facts.streamError !== undefined ? { streamError: facts.streamError } : {}),
     ...(failure ? { failure } : {}),
     ...(body ? { bodyRedacted: body.redacted, body: body.text } : {}),
   };
 }
 
-interface RunResult {
+export interface ProbeRunResult {
   envelope: SubscriptionProbeEnvelope;
   exitCode: number;
   /** The printed body text, kept for the secret guard. */
@@ -303,15 +342,40 @@ interface RunResult {
   bodyForms?: string[];
 }
 
-function fail(facts: Facts, failure: SubscriptionProbeFailure): RunResult {
-  return { envelope: buildEnvelope(facts, failure), exitCode: probeExitCodeFor(failure) };
+export function probeFail(facts: ProbeFacts, failure: SubscriptionProbeFailure): ProbeRunResult {
+  return { envelope: buildProbeEnvelope(facts, failure), exitCode: probeExitCodeFor(failure) };
+}
+
+/**
+ * The success result for a body text that was read within the cap: redact it,
+ * decode every escaped form, and withhold it as `body_unverifiable` when the
+ * forms do not reach a fixed point within the budget.
+ */
+export function probeBodyResult(
+  facts: ProbeFacts,
+  text: string,
+  secrets: Secrets,
+  status: number
+): ProbeRunResult {
+  const body = redactSecretValues(text, secrets);
+  const unescaped = jsonUnescapedForms(body.text);
+  if (!unescaped.complete) {
+    // The guard could not decode it to a fixed point, so it cannot vouch for it.
+    return probeFail(facts, probeFailureOf("list_incomplete", "body_unverifiable", status));
+  }
+  return {
+    envelope: buildProbeEnvelope(facts, undefined, body),
+    exitCode: PROBE_EXIT.ok,
+    bodyText: body.text,
+    bodyForms: unescaped.forms,
+  };
 }
 
 function lineOf(envelope: SubscriptionProbeEnvelope): string {
   return `${JSON.stringify(envelope)}\n`;
 }
 
-function safeStderr(deps: SubscriptionProbeDeps, line: string): void {
+function safeStderr(deps: ProbeOutputDeps, line: string): void {
   try {
     deps.writeStderr(line);
   } catch {
@@ -325,15 +389,15 @@ function safeStderr(deps: SubscriptionProbeDeps, line: string): void {
  * checked against `secrets`; on a hit the line drops to its fixed fields. Never throws.
  */
 async function writeInternalFailure(
-  deps: SubscriptionProbeDeps,
-  facts: Facts,
+  deps: ProbeOutputDeps,
+  facts: ProbeFacts,
   code: (typeof PROBE_FAILURE_CODES)["internal"][number],
   stderrLine: string,
   secrets?: Secrets
 ): Promise<number> {
-  const failure = failureOf("internal", code);
+  const failure = probeFailureOf("internal", code);
   safeStderr(deps, `${stderrLine}\n`);
-  let line = lineOf(buildEnvelope(facts, failure));
+  let line = lineOf(buildProbeEnvelope(facts, failure));
   if (secrets && containsSecret(secrets, line)) {
     // A caller-supplied value (`--model`) can equal a credential. Drop every
     // fact but the fixed ones, so a line is still printed: it then holds only
@@ -342,7 +406,7 @@ async function writeInternalFailure(
     // published source, so a "credential" that matches part of it (a project
     // id spelled `internal`) reveals nothing, while suppressing it would break
     // the one-line-on-every-exit contract.
-    line = lineOf(buildEnvelope({ tokenRefreshed: facts.tokenRefreshed }, failure));
+    line = lineOf(buildProbeEnvelope({ tokenRefreshed: facts.tokenRefreshed }, failure));
   }
   try {
     await deps.writeStdout(line);
@@ -353,108 +417,49 @@ async function writeInternalFailure(
 }
 
 /**
- * Replace every secret value in `text`, longest first, also in its `\/`
- * spelling (JSON may escape `/`, and a Google refresh token holds `1//`).
- */
-export function redactSecretValues(
-  text: string,
-  secrets: Secrets
-): { text: string; redacted: boolean } {
-  let out = text;
-  const values = [...secrets.values].sort((a, b) => b.length - a.length);
-  for (const value of values) {
-    for (const form of new Set([value, value.replaceAll("/", "\\/")])) {
-      if (out.includes(form)) out = out.replaceAll(form, REDACTED);
-    }
-  }
-  return { text: out, redacted: out !== text };
-}
-
-/** One JSON escape sequence: a backslash-u code unit, or a backslash and one escape letter. */
-const JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g;
-const SIMPLE_ESCAPES: Record<string, string> = {
-  '"': '"',
-  "\\": "\\",
-  "/": "/",
-  b: "\b",
-  f: "\f",
-  n: "\n",
-  r: "\r",
-  t: "\t",
-};
-/**
- * The decode budget. A real body needs 1 to 3 rounds. It is a budget, not a
- * depth limit: a body that has not reached a fixed point within it is
- * withheld (`body_unverifiable`), never printed half-checked. Round 4 of the
- * review broke a 16-round CAP with a body nested 17 deep; a cap silently
- * passes what it did not decode, a budget fails closed. 64 rounds over the
- * 512 KiB cap bound the work at about 32 MiB of scanning.
- */
-export const MAX_UNESCAPE_ROUNDS = 64;
-
-/**
- * Every form of `text` a chain of JSON parsers could produce: each round
- * decodes every JSON escape sequence ANYWHERE in the text, left to right, and
- * the rounds repeat until nothing changes. The guard checks each form.
+ * The shared tail of every provider's probe: run `determine`, run the secret
+ * guard, write ONE flushed line, and return the exit code. Never throws.
  *
- * It ignores string boundaries on purpose. A guard that first finds string
- * literals can be misled: a stray quote in a non-JSON error body pairs the
- * wrong quotes, one `JSON.parse` keeps only the last of two duplicate
- * members, and JSON nested inside a JSON string needs a second decode. Here
- * one round is one level of escaping: a doubly escaped letter (two
- * backslashes, then `u0043`) needs two rounds to become `C`. Over-decoding text that was never inside a string is harmless: these
- * forms are only checked, never printed.
- *
- * Scope: a credential in literal form or under any depth of JSON string
- * escaping. Other transforms (base64, reversal) are outside any text guard.
- *
- * `complete` is true only when a fixed point was reached within
- * `MAX_UNESCAPE_ROUNDS`: then every form a decode chain can produce was
- * returned. When false, the caller must not print the text.
+ * `requestFileMessage` is the fixed stderr line printed on a request-file
+ * failure; it names what the provider's file must hold.
  */
-export function jsonUnescapedForms(text: string | undefined): {
-  forms: string[];
-  complete: boolean;
-} {
-  const forms: string[] = [];
-  if (text === undefined) return { forms, complete: true };
-  let current = text;
-  for (let round = 0; round < MAX_UNESCAPE_ROUNDS; round++) {
-    const next = current.replace(JSON_ESCAPE, (_match, hex: string | undefined, letter: string) =>
-      hex !== undefined ? String.fromCharCode(Number.parseInt(hex, 16)) : SIMPLE_ESCAPES[letter]
+export async function runProbeWith(
+  deps: ProbeOutputDeps,
+  facts: ProbeFacts,
+  secrets: Secrets,
+  requestFileMessage: string,
+  determine: () => Promise<ProbeRunResult>
+): Promise<number> {
+  let result: ProbeRunResult;
+  try {
+    result = await determine();
+  } catch {
+    return writeInternalFailure(
+      deps,
+      { provider: facts.provider, model: facts.model, tokenRefreshed: facts.tokenRefreshed },
+      "internal_error",
+      INTERNAL_ERROR_MESSAGE,
+      secrets
     );
-    if (next === current) return { forms, complete: true };
-    forms.push(next);
-    current = next;
   }
-  return { forms, complete: false };
-}
-
-/** The request file, checked: one JSON object. Its text is what gets sent. */
-type RequestFileStep =
-  | { ok: true; text: string }
-  | { ok: false; code: "request_file_unreadable" | "request_file_invalid" };
-
-async function readRequest(deps: SubscriptionProbeDeps, path: string): Promise<RequestFileStep> {
-  let text: string | null;
+  if (
+    result.envelope.failure?.code === "request_file_unreadable" ||
+    result.envelope.failure?.code === "request_file_invalid"
+  ) {
+    safeStderr(deps, `${requestFileMessage}\n`);
+  }
+  const line = lineOf(result.envelope);
+  // Redaction ran on the body; this is the backstop over everything printed.
+  if (containsSecret(secrets, line, result.bodyText, ...(result.bodyForms ?? []))) {
+    return writeInternalFailure(deps, facts, "secret_guard", SECRET_GUARD_MESSAGE, secrets);
+  }
   try {
-    text = await deps.readRequestFile(path);
+    await deps.writeStdout(line);
   } catch {
-    return { ok: false, code: "request_file_unreadable" };
+    safeStderr(deps, `${INTERNAL_ERROR_MESSAGE}\n`);
+    return PROBE_EXIT.internal;
   }
-  if (text === null) return { ok: false, code: "request_file_invalid" };
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return { ok: false, code: "request_file_invalid" };
-  }
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return { ok: false, code: "request_file_invalid" };
-  }
-  // Untrimmed: JSON allows whitespace around a value, so the splice stays valid
-  // and the caller's bytes reach the wire as written.
-  return { ok: true, text };
+  return result.exitCode;
 }
 
 /**
@@ -482,37 +487,18 @@ function createActivityRequestId(): string {
   return Math.random().toString(36).substring(7);
 }
 
-/** Read at most `cap + 1` bytes. `null` means the body is over the cap. */
-async function readCapped(res: Response, cap: number): Promise<string | null> {
-  if (!res.body) return "";
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > cap) {
-      await reader.cancel().catch(() => {});
-      return null;
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-async function determine(
+async function determineAntigravity(
   deps: SubscriptionProbeDeps,
   secrets: Secrets,
-  facts: Facts,
+  facts: ProbeFacts,
   args: { model: string; requestFile: string }
-): Promise<RunResult> {
+): Promise<ProbeRunResult> {
   // The caller's file first: a request that cannot be sent touches no credential.
-  const request = await readRequest(deps, args.requestFile);
-  if (!request.ok) return fail(facts, failureOf("internal", request.code));
+  const request = await readRequestFileChecked(deps.readRequestFile, args.requestFile);
+  if (!request.ok) return probeFail(facts, probeFailureOf("internal", request.code));
 
   const session = await establishAntigravitySession(deps, secrets, facts);
-  if (!session.ok) return fail(facts, session.failure);
+  if (!session.ok) return probeFail(facts, session.failure);
 
   // URL, version and User-Agent in one synchronous step, so the envelope
   // names what this request presented.
@@ -525,7 +511,7 @@ async function determine(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.requestTimeoutMs);
   const networkFailure = () =>
-    failureOf(
+    probeFailureOf(
       "network",
       controller.signal.aborted ? "generate_content_timeout" : "generate_content_network_error",
       facts.httpStatus
@@ -541,6 +527,8 @@ async function determine(
           "User-Agent": antigravityUserAgentFor(version.version),
           "x-activity-request-id": createActivityRequestId(),
         },
+        // Untrimmed: JSON allows whitespace around a value, so the splice stays
+        // valid and the caller's bytes reach the wire as written.
         body: buildProbeEnvelopeBody(args.model, session.projectId, session.tierId, request.text),
         signal: controller.signal,
         // A 3xx is the answer. Following it would POST a second generation
@@ -548,7 +536,7 @@ async function determine(
         redirect: "manual",
       });
     } catch {
-      return fail(facts, networkFailure());
+      return probeFail(facts, networkFailure());
     }
     facts.fetchedAt = new Date(deps.now()).toISOString();
     facts.httpStatus = res.status;
@@ -557,31 +545,20 @@ async function determine(
     try {
       text = await readCapped(res, PROBE_BODY_CAP_BYTES);
     } catch {
-      return fail(facts, networkFailure());
+      return probeFail(facts, networkFailure());
     }
     if (text === null)
-      return fail(facts, failureOf("list_incomplete", "body_too_large", res.status));
+      return probeFail(facts, probeFailureOf("list_incomplete", "body_too_large", res.status));
 
     if (res.ok) {
       try {
         JSON.parse(text);
       } catch {
-        return fail(facts, failureOf("list_incomplete", "body_not_json", res.status));
+        return probeFail(facts, probeFailureOf("list_incomplete", "body_not_json", res.status));
       }
     }
     // A non-2xx answer is not a failure: the vendor's error body is the evidence.
-    const body = redactSecretValues(text, secrets);
-    const unescaped = jsonUnescapedForms(body.text);
-    if (!unescaped.complete) {
-      // The guard could not decode it to a fixed point, so it cannot vouch for it.
-      return fail(facts, failureOf("list_incomplete", "body_unverifiable", res.status));
-    }
-    return {
-      envelope: buildEnvelope(facts, undefined, body),
-      exitCode: PROBE_EXIT.ok,
-      bodyText: body.text,
-      bodyForms: unescaped.forms,
-    };
+    return probeBodyResult(facts, text, secrets, res.status);
   } finally {
     clearTimeout(timer);
   }
@@ -596,37 +573,10 @@ export async function runAntigravityProbe(
   args: { model: string; requestFile: string }
 ): Promise<number> {
   const secrets = newSecrets();
-  const facts: Facts = { provider: "antigravity", model: args.model, tokenRefreshed: false };
-  let result: RunResult;
-  try {
-    result = await determine(deps, secrets, facts, args);
-  } catch {
-    return writeInternalFailure(
-      deps,
-      { provider: facts.provider, model: facts.model, tokenRefreshed: facts.tokenRefreshed },
-      "internal_error",
-      INTERNAL_ERROR_MESSAGE,
-      secrets
-    );
-  }
-  if (
-    result.envelope.failure?.code === "request_file_unreadable" ||
-    result.envelope.failure?.code === "request_file_invalid"
-  ) {
-    safeStderr(deps, `${PROBE_REQUEST_FILE_MESSAGE}\n`);
-  }
-  const line = lineOf(result.envelope);
-  // Redaction ran on the body; this is the backstop over everything printed.
-  if (containsSecret(secrets, line, result.bodyText, ...(result.bodyForms ?? []))) {
-    return writeInternalFailure(deps, facts, "secret_guard", SECRET_GUARD_MESSAGE, secrets);
-  }
-  try {
-    await deps.writeStdout(line);
-  } catch {
-    safeStderr(deps, `${INTERNAL_ERROR_MESSAGE}\n`);
-    return PROBE_EXIT.internal;
-  }
-  return result.exitCode;
+  const facts: ProbeFacts = { provider: "antigravity", model: args.model, tokenRefreshed: false };
+  return runProbeWith(deps, facts, secrets, PROBE_REQUEST_FILE_MESSAGE, () =>
+    determineAntigravity(deps, secrets, facts, args)
+  );
 }
 
 /**
@@ -658,6 +608,22 @@ export async function subscriptionProbeCommand(
   const args = parseSubscriptionProbeArgs(argv);
   if (!args.ok) {
     return writeInternalFailure(deps, { tokenRefreshed: false }, "usage", SUBSCRIPTION_PROBE_USAGE);
+  }
+  if (args.provider === "devin") {
+    // Loaded only for a Devin argv: the Antigravity probe never pulls in the
+    // Devin adapter, codec and stream parser.
+    let devin: typeof import("./subscription-devin-probe.js");
+    try {
+      devin = await import("./subscription-devin-probe.js");
+    } catch {
+      return writeInternalFailure(
+        deps,
+        { provider: args.provider, model: args.model, tokenRefreshed: false },
+        "internal_error",
+        INTERNAL_ERROR_MESSAGE
+      );
+    }
+    return devin.runDevinProbe(deps, args);
   }
   return runAntigravityProbe(deps, args);
 }
