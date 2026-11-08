@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { clearReasoningCache, reasoningForCall } from "../../../../adapters/reasoning-cache.js";
 import type { Context } from "hono";
+import { CodexAPIFormat } from "../../../../adapters/codex-api-format.js";
+import { clearReasoningCache, reasoningForCall } from "../../../../adapters/reasoning-cache.js";
 import { HookEngine } from "../../../../hooks/engine.js";
 import { UnavailableSink } from "../../../../hooks/injection/sinks.js";
 import type { HookDefinition } from "../../../../hooks/public.js";
@@ -280,6 +281,55 @@ describe("plaintext reasoning items are kept for passback", () => {
     )?.content_block.id;
     expect(toolId).toBeDefined();
     expect(reasoningForCall(toolId)).toBeUndefined();
+    clearReasoningCache();
+  });
+
+  test("the next request replays the plaintext reasoning item before its function_call", async () => {
+    clearReasoningCache();
+    const events = await folded(translated(plaintextReasoningThenCall(true)));
+    const start = events.find(
+      (e) => e.type === "content_block_start" && e.content_block.type === "tool_use"
+    );
+    expect(start).toBeDefined();
+    const [call] = toolArguments(events);
+
+    // The client's next request: the tool_use it was given, then its result.
+    const claudeRequest = {
+      model: "capture-model",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "Say hi in one word" }] },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: start.content_block.id,
+              name: call.name,
+              input: call.args,
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: start.content_block.id, content: "hi" }],
+        },
+      ],
+    };
+    const { convertMessagesToOpenAI } = await import("../../format/openai-messages.js");
+    const messages = convertMessagesToOpenAI(claudeRequest, "capture-model");
+    const input = new CodexAPIFormat("capture-model").buildPayload(claudeRequest, messages, [])
+      .input as any[];
+
+    const callIdx = input.findIndex(
+      (i) => i.type === "function_call" && i.call_id === start.content_block.id
+    );
+    expect(callIdx).toBeGreaterThan(0);
+    const reasoning = input[callIdx - 1];
+    expect(reasoning.type).toBe("reasoning");
+    expect(reasoning.encrypted_content).toBeUndefined();
+    expect(reasoning.content).toHaveLength(1);
+    expect(reasoning.content[0].type).toBe("reasoning_text");
+    expect(reasoning.content[0].text).toContain("Say hi in one word");
     clearReasoningCache();
   });
 });
