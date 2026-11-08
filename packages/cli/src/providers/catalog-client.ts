@@ -488,6 +488,30 @@ async function refreshCatalogOnce(
     routeRegistry,
   };
 
+  // Another process may have published a newer generation while this refresh
+  // was paging through an older one. Generation ids are opaque, so publish
+  // times decide: a different disk generation published later is kept, models
+  // file and routes sidecar both, and becomes the in-process copy. The same id
+  // is the same generation and is written as usual.
+  const onDisk = readAllModelsCache(options.cachePath);
+  if (
+    onDisk &&
+    onDisk.catalogGenerationId !== generationId &&
+    isPublishedLater(onDisk.lastUpdated, generatedAt)
+  ) {
+    log(
+      `[catalog] refresh skipped: disk holds newer generation ${onDisk.catalogGenerationId}, downloaded ${generationId}`
+    );
+    _clearChatCapabilityIndex();
+    _memCache = onDisk.entries;
+    _warmPromise = Promise.resolve();
+    return {
+      kind: "refreshed",
+      modelCount: onDisk.entries.length,
+      catalogGenerationId: onDisk.catalogGenerationId,
+    };
+  }
+
   writeAllModelsCache(cache, options.cachePath);
   // The chat-capability projection is memoized for 60s and keyed by cache path,
   // so without this a refresh leaves it serving the PREVIOUS generation for up
@@ -504,6 +528,13 @@ async function refreshCatalogOnce(
     catalogGenerationId: generationId,
     pages,
   };
+}
+
+/** True when `candidate` is a valid timestamp strictly later than `reference`. */
+function isPublishedLater(candidate: string, reference: string): boolean {
+  const candidateMs = Date.parse(candidate);
+  const referenceMs = Date.parse(reference);
+  return Number.isFinite(candidateMs) && Number.isFinite(referenceMs) && candidateMs > referenceMs;
 }
 
 async function fetchSubscriptionPlans(
