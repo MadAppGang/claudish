@@ -273,16 +273,13 @@ export const CUSTOM_ENDPOINT_TIER: RouteTier = "gateway";
  * All 27 bundled rows in `predefined-catalog.ts` travel this same function and
  * land on the path their vendor serves.
  *
- * Until now a custom endpoint declared no discovery at all, so `hasDiscovery`
- * was false in the picker and NOTHING EVER ASKED THE HOST what it serves. The
- * provider row read `0 models` and `⏎` opened an empty list — the founding
- * defect of `picker.md`, in the one place where the endpoint itself could have
- * answered. That row's other phrasing, `lists its own models`, was written for
- * this exact case ("a self-hosted vLLM", `rows.tsx:315`) and was unreachable.
+ * Without a descriptor `hasDiscovery` is false in the picker and nothing asks
+ * the host what it serves: the provider row reads `0 models` and `⏎` opens an
+ * empty list, the defect `picker.md` is built against. With one, the row reads
+ * `lists its own models` (`providerCountText` in `rows.tsx`).
  *
- * An endpoint that does not serve the path is now a `failed` outcome naming the
- * URL and the status, which is strictly more than the silent empty list it
- * replaces.
+ * An endpoint that does not serve the path is a `failed` outcome naming the
+ * URL and the status, never a silent empty list.
  *
  * Only `openai`. The `anthropic` transport's own `/v1/models` wants an
  * `anthropic-version` header and answers `created_at` where

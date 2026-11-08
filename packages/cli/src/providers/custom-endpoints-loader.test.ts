@@ -17,7 +17,8 @@ import {
 } from "./custom-endpoints-loader.js";
 import { __resetEndpointDiagnosticsForTests } from "./endpoint-diagnostics.js";
 import { invalidateEndpointRegistration } from "./endpoint-registration.js";
-import { __resetPredefinedStateForTests } from "./predefined-endpoints.js";
+import type { PredefinedEndpoint } from "./predefined-endpoint-schema.js";
+import { __resetPredefinedStateForTests, loadPredefinedEndpoints } from "./predefined-endpoints.js";
 import { getProviderByName } from "./provider-definitions.js";
 import type { ProfileContext } from "./provider-profiles.js";
 import {
@@ -286,6 +287,40 @@ describe("custom-endpoints-loader", () => {
       const def = getRuntimeProviders().get("default-path");
       expect(def?.apiPath).toBe("/v1/chat/completions");
       expect(def?.modelDiscovery).toEqual({ path: "/v1/models", format: "openai-models-list" });
+    });
+
+    /**
+     * A bundled predefined row compiles to the same complex definition, so it
+     * asks its own `/models` too. The picker shows catalog rows when that
+     * request fails: `discoverProviderModelsCatalog`'s `failed` outcome carries
+     * them as `fallbackRows` (model-selector-discovery.test.ts, STATE D).
+     */
+    test("predefined catalog row: the sibling of the row's apiPath", () => {
+      const envVar = "PREDEF_DISCOVERY_TEST_KEY";
+      const saved = process.env[envVar];
+      process.env[envVar] = "sk-fake-key";
+      try {
+        const row: PredefinedEndpoint = {
+          name: "predef-discovery-vendor",
+          displayName: "Predef Discovery Vendor",
+          baseUrl: "https://api.predef-discovery.invalid",
+          apiPath: "/openai/v1/chat/completions",
+          format: "openai",
+          apiKeyEnvVar: envVar,
+          evidence: { tier: "probe", verdict: "auth-realm", measuredAt: "2026-08-14" },
+        };
+
+        const res = loadPredefinedEndpoints(makeConfig(), { catalog: [row] });
+
+        expect(res.registered).toEqual([row.name]);
+        expect(getRuntimeProviders().get(row.name)?.modelDiscovery).toEqual({
+          path: "/openai/v1/models",
+          format: "openai-models-list",
+        });
+      } finally {
+        if (saved === undefined) delete process.env[envVar];
+        else process.env[envVar] = saved;
+      }
     });
 
     test.each([
