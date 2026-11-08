@@ -1,20 +1,54 @@
 import { describe, expect, test } from "bun:test";
+import type {
+  AdvisorPanelCall,
+  AdvisorPanelGateway,
+  AdvisorPanelResult,
+} from "./advisor-route-plan";
 import { ADVISOR_STUB_PATHS, runAdvisorCall } from "./native-handler-advisor";
 
 const messages = [{ role: "user", content: "Review this change." }];
-const apiKeys = { openrouter: "test-openrouter-key" };
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
+function gateway(
+  reply: (request: AdvisorPanelCall) => Pick<AdvisorPanelResult, "status" | "bodyText" | "hops">
+): AdvisorPanelGateway {
+  return {
+    plan(spec, role) {
+      return {
+        kind: "routed",
+        spec,
+        role,
+        explanation: {
+          requestedModel: spec,
+          routedModel: spec.slice(spec.indexOf("@") + 1),
+          source: "explicit",
+          candidates: [],
+          warnings: [],
+          outcome: { kind: "ok" },
+        },
+        hops: [
+          {
+            provider: "openrouter",
+            displayName: "OpenRouter",
+            modelSpec: spec,
+            wireId: spec.slice(spec.indexOf("@") + 1),
+            billing: "metered",
+          },
+        ],
+        invocationMode: "explicit-model",
+      };
+    },
+    async call(request) {
+      return { streamFailure: false, latencyMs: 1, ...reply(request) };
+    },
+  };
 }
 
-function fixedFetch(response: Response): typeof fetch {
-  return Object.assign(async () => response.clone(), {
-    preconnect(_url: string | URL): void {},
-  });
+function errorGateway(message: string): AdvisorPanelGateway {
+  return gateway(() => ({
+    status: 400,
+    bodyText: JSON.stringify({ error: { message } }),
+    hops: [],
+  }));
 }
 
 describe("runAdvisorCall failure handling", () => {
@@ -27,8 +61,7 @@ describe("runAdvisorCall failure handling", () => {
       messages,
       models: [model],
       collector: null,
-      apiKeys,
-      fetchImpl: fixedFetch(jsonResponse({ error: { message: reason } }, 400)),
+      gateway: errorGateway(reason),
       warn: () => {},
     });
 
@@ -40,7 +73,7 @@ describe("runAdvisorCall failure handling", () => {
     expect(outcome.panel[0].stubPath).toBe(ADVISOR_STUB_PATHS.PANEL_ERROR);
     expect(outcome.result.isError).toBe(true);
     expect(outcome.result.text).toContain(model);
-    expect(outcome.result.text).toContain(reason);
+    expect(outcome.result.text).toContain(`HTTP 400: ${reason}`);
   });
 
   test("treats an HTTP 200 response with an empty answer as a failure", async () => {
@@ -51,8 +84,11 @@ describe("runAdvisorCall failure handling", () => {
       messages,
       models: [model],
       collector: null,
-      apiKeys,
-      fetchImpl: fixedFetch(jsonResponse({ choices: [{ message: { content: "   " } }] })),
+      gateway: gateway(() => ({
+        status: 200,
+        bodyText: JSON.stringify({ content: [{ type: "text", text: "   " }] }),
+        hops: [],
+      })),
       warn: () => {},
     });
 
@@ -69,20 +105,34 @@ describe("runAdvisorCall failure handling", () => {
     const successfulText = "Keep the validation at the boundary.";
     const failureReason = "temporary provider rejection";
     const warnings: string[] = [];
-    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const request = JSON.parse(String(init?.body)) as { model: string };
-      return request.model === "acme/failing-peer"
-        ? jsonResponse({ error: { message: failureReason } }, 400)
-        : jsonResponse({ choices: [{ message: { content: successfulText } }] });
-    }) as typeof fetch;
 
     const outcome = await runAdvisorCall({
       toolUseId: "advisor-partial-panel",
       messages,
       models: [failedModel, successfulModel],
       collector: null,
-      apiKeys,
-      fetchImpl,
+      gateway: gateway((request) =>
+        request.plan.spec === failedModel
+          ? {
+              status: 400,
+              bodyText: JSON.stringify({ error: { message: failureReason } }),
+              hops: [],
+            }
+          : {
+              status: 200,
+              bodyText: JSON.stringify({ content: [{ type: "text", text: successfulText }] }),
+              hops: [
+                {
+                  provider: "openrouter",
+                  wireModel: "acme/successful-peer",
+                  arm: "api-key",
+                  billing: "metered",
+                  uid: "openrouter",
+                  displayName: "OpenRouter",
+                },
+              ],
+            }
+      ),
       warn: (message) => warnings.push(message),
     });
 
@@ -93,6 +143,18 @@ describe("runAdvisorCall failure handling", () => {
     expect(outcome.panel.find((item) => item.requestedModel === failedModel)).toMatchObject({
       origin: "stub",
       stubPath: ADVISOR_STUB_PATHS.PANEL_ERROR,
+    });
+    expect(outcome.panel.find((item) => item.requestedModel === successfulModel)).toMatchObject({
+      origin: "upstream",
+      servedBy: {
+        provider: "openrouter",
+        displayName: "OpenRouter",
+        arm: "api-key",
+        billing: "metered",
+      },
+      billing: "metered",
+      hopsTried: ["openrouter"],
+      recordRoute: { kind: "routed", plannedChain: ["OpenRouter"] },
     });
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain(failedModel);
@@ -107,8 +169,7 @@ describe("runAdvisorCall failure handling", () => {
       messages,
       models,
       collector: null,
-      apiKeys,
-      fetchImpl: fixedFetch(jsonResponse({ error: { message: "provider refused" } }, 400)),
+      gateway: errorGateway("provider refused"),
       warn: (message) => warnings.push(message),
     });
 
@@ -127,10 +188,7 @@ describe("runAdvisorCall failure handling", () => {
       messages,
       models: [model],
       collector: null,
-      apiKeys,
-      fetchImpl: fixedFetch(
-        jsonResponse({ error: { message: `${reasonPrefix}: ${rawSecret}; request denied` } }, 400)
-      ),
+      gateway: errorGateway(`${reasonPrefix}: ${rawSecret}; request denied`),
       warn: () => {},
     });
 

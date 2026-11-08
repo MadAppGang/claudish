@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { planDelivery } from "./prompt-delivery.js";
 import { FIXTURES } from "./test-helpers/fixtures.js";
@@ -11,6 +13,7 @@ import {
   witnessIndex,
 } from "./test-helpers/transcript-fixtures.js";
 import {
+  TranscriptFollower,
   type TranscriptView,
   type Witness,
   applyRecord,
@@ -47,6 +50,37 @@ function longLine(n: number): string {
   while (s.length < n) s += ` w${i++}`;
   return `${s} END`;
 }
+
+describe("agent-setting records", () => {
+  test("agent-setting before a turn is exposed; latest valid record wins", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-setting-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, "transcript.jsonl");
+    writeFileSync(path, "");
+    const follower = new TranscriptFollower(path, join(dir, "subagents"));
+    follower.poll();
+    expect(follower.view().agentSetting).toBeNull();
+    // Real record supplied in the test brief; mutations below exercise replacement and invalid data.
+    const record = {
+      type: "agent-setting",
+      agentSetting: "dev:reviewer",
+      sessionId: "1998dd91-53e0-4e85-9f05-73030ac49763",
+    };
+    const append = (agentSetting: unknown) => {
+      appendFileSync(path, `${JSON.stringify({ ...record, agentSetting })}\n`);
+      follower.poll();
+    };
+    append(record.agentSetting);
+    expect(follower.view().current).toBeNull();
+    expect(follower.view().agentSetting).toBe("dev:reviewer");
+    append("dev:second");
+    expect(follower.view().agentSetting).toBe("dev:second");
+    for (const invalid of ["", null, 42, {}, false]) {
+      append(invalid);
+      expect(follower.view().agentSetting).toBe("dev:second");
+    }
+  });
+});
 
 describe("witness and turn scoping", () => {
   const PEAR = "Reply with exactly PEAR and nothing else.";
@@ -959,5 +993,94 @@ describe("byte-safe tail", () => {
       expect(l.offset).toBe(pos);
       pos += Buffer.byteLength(lines[i] as string) + 1;
     }
+  });
+});
+
+describe("MTL-229 written files after the task Read", () => {
+  function view(
+    opts: {
+      before?: boolean;
+      error?: boolean;
+      name?: string;
+      count?: number;
+      pending?: boolean;
+    } = {}
+  ) {
+    const records = transcriptRecords("tools-session");
+    const w = records.map(textOf).find((s) => s.startsWith("Your task is in the file"))!;
+    const file = w.match(/`([^`]+)`/)![1]!;
+    const body = records[133]!.toolUseResult.file.content;
+    const state = initialFollowerState((p) => p);
+    openTurnState(state, { index: 1, offset: 0, witness: text(w), delivery: { file, text: body } });
+    let offset = 1;
+    const feed = (r: Rec) => applyRecord(state, r, offset++);
+    feed(records[witnessIndex("tools-session", w)]!);
+    const writes = () => {
+      for (let i = 0; i < (opts.count ?? 1); i++) {
+        const use = structuredClone(transcriptRecords("permission-write-esc")[19]!);
+        use.uuid = `write-use-${i}`;
+        use.message.id = `write-msg-${i}`;
+        use.message.content[0] = {
+          ...use.message.content[0],
+          id: `write-${i}`,
+          name: opts.name ?? "Write",
+          input: { file_path: "/work/answer.md", content: "answer" },
+        };
+        feed(use);
+        if (!opts.pending) {
+          // Real incident success content, templated into the captured tool_result envelope.
+          const result = structuredClone(records[20]!);
+          result.uuid = `write-result-${i}`;
+          result.message.content = [
+            {
+              type: "tool_result",
+              tool_use_id: `write-${i}`,
+              content:
+                "File created successfully at: /work/answer.md (file state is current in your context — no need to Read it back)",
+              is_error: !!opts.error,
+            },
+          ];
+          delete result.toolUseResult;
+          feed(result);
+        }
+      }
+    };
+    if (opts.before) writes();
+    feed(records[132]!);
+    feed(records[133]!);
+    if (!opts.before) writes();
+    const result = turnView(state.turns[0]!);
+    expect(result.readCoverage?.complete).toBe(true);
+    return result as typeof result & { writtenFiles?: string[] };
+  }
+
+  // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
+  test("lists a successful Write after the task Read result", () => {
+    expect(view().writtenFiles).toEqual(["/work/answer.md"]);
+  });
+
+  // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
+  test("excludes a Write before the task Read cut", () => {
+    expect(view({ before: true }).writtenFiles).toEqual([]);
+  });
+
+  // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
+  test("excludes a Write with an error result", () => {
+    expect(view({ error: true }).writtenFiles).toEqual([]);
+  });
+
+  // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
+  test("excludes a successful Edit", () => {
+    expect(view({ name: "Edit" }).writtenFiles).toEqual([]);
+  });
+
+  // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
+  test("deduplicates two Writes to the same path", () => {
+    expect(view({ count: 2 }).writtenFiles).toEqual(["/work/answer.md"]);
+  });
+
+  // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
+  test("excludes a Write whose result has not arrived", () => {
+    expect(view({ pending: true }).writtenFiles).toEqual([]);
   });
 });

@@ -127,6 +127,14 @@ function userAgentFor(version: string): string {
 }
 
 /**
+ * The User-Agent for a version the caller already resolved, so a caller that
+ * reports the version names the one its request presented.
+ */
+export function antigravityUserAgentFor(version: string): string {
+  return userAgentFor(version);
+}
+
+/**
  * Antigravity's own User-Agent — the Antigravity CLI's, with the version the
  * installed `agy` reports.
  *
@@ -642,6 +650,20 @@ export async function getServedAntigravityModels(
   // Returning empty collections would assert "there are none", which is a claim
   // we cannot make; the fields are optional and consumers default them.
   return { servedIds: [], defaultId: null, meta: {} };
+}
+
+/**
+ * The `servedIds` and `defaultId` the last fetch cached under this process's client version,
+ * without fetching; null when there is none. For the routing availability
+ * check (`providerServesModel`), which runs right after discovery fetched this
+ * set and must resolve against the same `servedIds` and `defaultId` the
+ * transport resolves against (`resolveAntigravityServedModel`). The discovery
+ * list it also reads has the backend's unselectable ids removed, so it cannot
+ * stand in for them.
+ */
+export function peekServedAntigravityModels(): AntigravityServedModels | null {
+  if (!agServedCache || agServedCacheVersion !== antigravityClientVersion()) return null;
+  return agServedCache;
 }
 
 /** Test seam: clear the Antigravity served-models cache between tests. */

@@ -84,6 +84,158 @@ const TOKEN_PATTERNS: Array<{ name: string; re: RegExp }> = [
   { name: "bearer", re: /\b(?:Bearer|Basic|Token)\s+[A-Za-z0-9_.\-+/=]{12,}/g },
 ];
 
+// ─── Signing-value registry ──────────────────────────────────────────────────
+//
+// Shape rules (below) catch a credential by what it LOOKS like. A provider's
+// opaque token, a Devin body credential or an OAuth access token has no shape
+// to match, and an upstream error that echoes it back would reach the debug
+// log, the always-on log, stderr and the error capture verbatim. The registry
+// catches those by exact VALUE instead: every request registers the values it
+// signs with, and every sink that redacts reads the union of the values of all
+// requests in flight.
+//
+// Process-wide on purpose, not per request: a provider queue's loop runs in the
+// async context of whichever request started it, so a line it logs for request
+// B would be checked against request A's scope. Redacting B's line against A's
+// values as well is harmless.
+//
+// A lease lives exactly as long as the work it protects: the holder releases it
+// when that work has ended (a response body fully read, cancelled or errored).
+// There is deliberately NO timer here. A fixed TTL can expire while a stream is
+// still producing frames, and a later frame echoing the credential would then
+// be logged in the clear. A lease nobody releases costs retained strings and
+// extra redaction, never exposure.
+
+/** What a registered signing value is replaced with. */
+const SIGNING_MASK = "[redacted]";
+
+/** Shorter values are ignored: they would mask ordinary words. */
+const SIGNING_VALUE_MIN_LENGTH = 8;
+
+/** Every live form of every live value -> how many leases hold it. */
+const liveSigningValues = new Map<string, number>();
+
+/** Live forms, longest first; rebuilt lazily after any change. */
+let sortedSigningValues: string[] | null = null;
+
+/** A set of signing values held for the duration of one piece of work. */
+export interface SigningLease {
+  /** Register values; ignored once released, and below the minimum length. */
+  add(values: Iterable<string>): void;
+  /** Drop this lease's hold on every value it added. Idempotent. */
+  release(): void;
+  /** True once `release()` has run. */
+  readonly released: boolean;
+}
+
+/**
+ * The forms one value can take in text a sink receives: verbatim, JSON-escaped
+ * (an error body quoting it inside a JSON string), JSON-escaped twice (that body
+ * embedded in another JSON string, as a log of a JSON envelope does), and
+ * URL-encoded (a query parameter echoed back). Escaping only adds characters,
+ * so a form differs from the value only when the value needs escaping.
+ */
+function signingValueForms(value: string): string[] {
+  const forms = new Set<string>([value]);
+  let escaped = value;
+  for (let depth = 0; depth < 2; depth++) {
+    escaped = JSON.stringify(escaped).slice(1, -1);
+    forms.add(escaped);
+  }
+  try {
+    forms.add(encodeURIComponent(value));
+  } catch {
+    // A lone surrogate cannot be URL-encoded; the other forms still apply.
+  }
+  return [...forms];
+}
+
+/** Hold every form of `value` for one lease: counted once per lease, not per call. */
+function holdSigningValue(held: Set<string>, value: unknown): void {
+  if (typeof value !== "string" || value.length < SIGNING_VALUE_MIN_LENGTH) return;
+  for (const form of signingValueForms(value)) {
+    if (held.has(form)) continue;
+    held.add(form);
+    liveSigningValues.set(form, (liveSigningValues.get(form) ?? 0) + 1);
+    sortedSigningValues = null;
+  }
+}
+
+/** Acquire a lease. The holder must call `release()` when its work has ended. */
+export function acquireSigningLease(): SigningLease {
+  const held = new Set<string>();
+  let released = false;
+  return {
+    add(values: Iterable<string>): void {
+      if (released) return;
+      for (const value of values) holdSigningValue(held, value);
+    },
+    release(): void {
+      if (released) return;
+      released = true;
+      for (const form of held) {
+        const count = (liveSigningValues.get(form) ?? 0) - 1;
+        if (count > 0) liveSigningValues.set(form, count);
+        else liveSigningValues.delete(form);
+      }
+      held.clear();
+      sortedSigningValues = null;
+    },
+    get released(): boolean {
+      return released;
+    },
+  };
+}
+
+/**
+ * Replace every live signing value in `text` with `[redacted]`, longest first.
+ * Returns `text` untouched when no request holds a value (the common case).
+ * Exact substring matching, no regular expression: a value is data, not a
+ * pattern, and a shared global regex would carry `lastIndex` between calls.
+ * Replacements only shorten, so JSON stays JSON.
+ */
+export function redactSigningValues(text: string): string {
+  if (liveSigningValues.size === 0 || !text) return text;
+  if (!sortedSigningValues) {
+    sortedSigningValues = [...liveSigningValues.keys()].sort((a, b) => b.length - a.length);
+  }
+  let out = text;
+  for (const value of sortedSigningValues) {
+    if (out.includes(value)) out = out.split(value).join(SIGNING_MASK);
+  }
+  return out;
+}
+
+/**
+ * Replace every form of every value in `values` with `[redacted]`, longest
+ * first: the same forms and the same minimum length as the registry, for a
+ * holder that keeps its own set and must redact after its lease is released
+ * (the advisor gateway's result). Exact substring matching, no regex.
+ */
+export function redactExactValues(text: string, values: Iterable<string>): string {
+  if (!text) return text;
+  const forms = new Set<string>();
+  for (const value of values) {
+    if (typeof value !== "string" || value.length < SIGNING_VALUE_MIN_LENGTH) continue;
+    for (const form of signingValueForms(value)) forms.add(form);
+  }
+  if (forms.size === 0) return text;
+  let out = text;
+  for (const form of [...forms].sort((a, b) => b.length - a.length)) {
+    if (out.includes(form)) out = out.split(form).join(SIGNING_MASK);
+  }
+  return out;
+}
+
+/**
+ * The registry pass for text sent back to Claude Code (an error body, an SSE
+ * error frame). A response body is not a log line, so it never passes through
+ * `log`; every site that puts upstream text into one calls this instead.
+ */
+export function redactForClient(text: string): string {
+  return redactSigningValues(text);
+}
+
 /**
  * Strip credentials from text. Safe to run on anything; never throws.
  *
@@ -93,24 +245,194 @@ const TOKEN_PATTERNS: Array<{ name: string; re: RegExp }> = [
  */
 export function redactSecrets(text: string | undefined | null): string {
   if (!text) return "";
-  let out = text;
+  // Exact values first: a registered opaque token has no shape the rules below
+  // could match.
+  return redactPatterns(redactSigningValues(text));
+}
 
+/**
+ * One piece of a pattern replacement: literal text, or the `[start, end)` of the
+ * match that is kept as it was.
+ */
+type ReplacementPart = string | readonly [start: number, end: number];
+
+/** One shape rule: what it matches, and what replaces a match (null: the match stays). */
+interface PatternRule {
+  re: RegExp;
+  parts(match: string, groups: ReadonlyArray<string | undefined>): ReplacementPart[] | null;
+}
+
+/**
+ * The shape rules, in the order they run. Data, so `redactPatterns` and
+ * `redactPatternsMapped` cannot drift apart: both apply exactly these replacements.
+ */
+const PATTERN_RULES: PatternRule[] = [
   // Named assignments first, so `FOO_API_KEY=sk-abc…` is masked once as a whole
   // rather than leaving a dangling `FOO_API_KEY=` next to a separate mask.
-  out = out.replace(ASSIGNMENT_RE, (match, lhs: string, value: string) =>
-    isPlaceholder(value) ? match : `${lhs}${MASK}`
-  );
+  {
+    re: ASSIGNMENT_RE,
+    parts: (_m, [lhs = "", value = ""]) => (isPlaceholder(value) ? null : [[0, lhs.length], MASK]),
+  },
+  ...TOKEN_PATTERNS.map(
+    ({ re }): PatternRule => ({
+      re,
+      parts: (m) => {
+        // Preserve the scheme word on Authorization headers so the log still
+        // shows WHICH auth scheme was used.
+        const scheme = /^(Bearer|Basic|Token)\s/.exec(m);
+        return scheme ? [[0, (scheme[1] as string).length], ` ${MASK}`] : [MASK];
+      },
+    })
+  ),
+];
 
-  for (const { re } of TOKEN_PATTERNS) {
-    out = out.replace(re, (match) => {
-      // Preserve the scheme word on Authorization headers so the log still
-      // shows WHICH auth scheme was used.
-      const scheme = /^(Bearer|Basic|Token)\s/.exec(match);
-      return scheme ? `${scheme[1]} ${MASK}` : MASK;
-    });
-  }
-
+function applyParts(match: string, parts: ReplacementPart[] | null): string {
+  if (parts === null) return match;
+  let out = "";
+  for (const p of parts) out += typeof p === "string" ? p : match.slice(p[0], p[1]);
   return out;
+}
+
+/**
+ * The SHAPE half of `redactSecrets`: named assignments and known token shapes,
+ * without the signing-value registry. A pure function of `text` — the same input
+ * always gives the same output, whatever leases are live. Never throws.
+ */
+export function redactPatterns(text: string): string {
+  if (!text) return text;
+  let out = text;
+  for (const rule of PATTERN_RULES) {
+    out = out.replace(rule.re, (match: string, ...rest: unknown[]) =>
+      // rest = the capture groups, then the offset and the whole string
+      applyParts(match, rule.parts(match, rest.slice(0, -2) as Array<string | undefined>))
+    );
+  }
+  return out;
+}
+
+/**
+ * A run of the output of `redactPatternsMapped`: `length` code units that are
+ * the input's code units from `origin` on, or (`origin` -1) text a replacement
+ * inserted (a mask, the space after a scheme word).
+ */
+export interface TextSegment {
+  length: number;
+  origin: number;
+}
+
+/**
+ * Appends runs, merging one that continues the last: two inserted runs, or two original
+ * runs whose sources are contiguous. Never an inserted run and an original one, in either
+ * order. An inserted run (`origin` -1) of length L followed by original text starting at
+ * L - 1 satisfies `last.origin + last.length === origin`; merged, that text would carry
+ * origin -1 and a signing range inside it would never be masked (review round 2).
+ */
+class SegmentBuilder {
+  readonly segments: TextSegment[] = [];
+  push(length: number, origin: number): void {
+    if (length <= 0) return;
+    const last = this.segments[this.segments.length - 1];
+    const bothInserted = last !== undefined && last.origin < 0 && origin < 0;
+    const contiguousOriginal =
+      last !== undefined && last.origin >= 0 && origin >= 0 && last.origin + last.length === origin;
+    if (last && (bothInserted || contiguousOriginal)) last.length += length;
+    else this.segments.push({ length, origin });
+  }
+}
+
+/** Reads the runs of one string front to back; every `copy` starts at or after the last one's end. */
+class SegmentCursor {
+  private idx = 0;
+  private segStart = 0;
+  constructor(private readonly segs: TextSegment[]) {}
+  copy(from: number, to: number, into: SegmentBuilder): void {
+    let pos = from;
+    while (pos < to) {
+      let seg = this.segs[this.idx] as TextSegment;
+      while (this.segStart + seg.length <= pos) {
+        this.segStart += seg.length;
+        seg = this.segs[++this.idx] as TextSegment;
+      }
+      const take = Math.min(to, this.segStart + seg.length) - pos;
+      into.push(take, seg.origin < 0 ? -1 : seg.origin + (pos - this.segStart));
+      pos += take;
+    }
+  }
+}
+
+/**
+ * `redactPatterns(text)` (the same output, exactly) together with where every code
+ * unit of the output came from, so a caller can carry ranges of the INPUT through
+ * the replacements (`transcript_session` masks signing values found on the input,
+ * pane/transcript-redaction.ts). Linear in the text and the matches.
+ */
+export function redactPatternsMapped(text: string): { text: string; segments: TextSegment[] } {
+  let cur = text;
+  let segs: TextSegment[] = text ? [{ length: text.length, origin: 0 }] : [];
+  for (const rule of PATTERN_RULES) {
+    if (!cur) break;
+    const out = new SegmentBuilder();
+    const src = new SegmentCursor(segs);
+    let built = "";
+    let last = 0;
+    let hit = false;
+    for (const m of cur.matchAll(rule.re)) {
+      const parts = rule.parts(m[0], m.slice(1));
+      if (parts === null) continue;
+      hit = true;
+      const at = m.index;
+      built += cur.slice(last, at);
+      src.copy(last, at, out);
+      for (const p of parts) {
+        if (typeof p === "string") {
+          built += p;
+          out.push(p.length, -1);
+        } else {
+          built += cur.slice(at + p[0], at + p[1]);
+          src.copy(at + p[0], at + p[1], out);
+        }
+      }
+      last = at + m[0].length;
+    }
+    if (!hit) continue;
+    built += cur.slice(last);
+    src.copy(last, cur.length, out);
+    cur = built;
+    segs = out.segments;
+  }
+  return { text: cur, segments: segs };
+}
+
+/**
+ * The `[start, end)` UTF-16 ranges of every live signing-value form in `text`,
+ * sorted and merged (overlapping or touching ranges become one). Empty when no
+ * lease holds a value. For a sink that must mask by POSITION rather than by
+ * replacement (`transcript_session`: the ranges are found on the original text,
+ * carried through `redactPatternsMapped`, and masked one-for-one so no line grows,
+ * pane/transcript-redaction.ts). Exact substring search, no regex.
+ */
+export function signingValueRanges(text: string): Array<[start: number, end: number]> {
+  if (liveSigningValues.size === 0 || !text) return [];
+  if (!sortedSigningValues) {
+    sortedSigningValues = [...liveSigningValues.keys()].sort((a, b) => b.length - a.length);
+  }
+  const found: Array<[number, number]> = [];
+  for (const value of sortedSigningValues) {
+    let at = text.indexOf(value);
+    while (at !== -1) {
+      found.push([at, at + value.length]);
+      at = text.indexOf(value, at + 1);
+    }
+  }
+  if (found.length === 0) return [];
+  found.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged: Array<[number, number]> = [];
+  for (const [s, e] of found) {
+    const last = merged[merged.length - 1];
+    if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+    else merged.push([s, e]);
+  }
+  return merged;
 }
 
 /**

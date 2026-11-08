@@ -17,22 +17,20 @@
  * cannot damage the developer's real config. We `mock.module()` the leaf
  * functions that BOTH the new authority and the old oracle consult, driving them
  * from a single shared mutable `state`:
- *   - ../oauth-registry.js     → hasOAuthCredentials  (kimi, gemini, AND the
- *                                 oracle's openai-codex oauth branch). No
- *                                 singleton, so the mock is reliable cross-file.
+ *   - ../oauth-registry.js     → hasOAuthCredentials (non-Codex OAuth paths).
+ *                                 Codex availability uses the account registry.
  *   - ../../profile-config.js  → getApiKey, isLocalProviderEnabled  (config keys,
  *                                 local-enabled state). No singleton.
  *
- * The NEW codex path does NOT read oauth-registry — its OAuth half reads the
- * `CodexOAuth` SINGLETON's `hasCredentials()`. A `mock.module("../codex-oauth.js")`
- * is unreliable here: another test file may construct the real singleton first.
- * So we instead OVERRIDE the real singleton's `hasCredentials` method in place
- * (the authority's CodexOAuthHalf holds a reference to that same instance) and
- * restore it after. This is robust whether the file runs alone or in the suite.
+ * CodexPoolHalf reads the account registry's configuration-only presence fact,
+ * not CodexOAuth.hasCredentials(). Override the registry singleton's
+ * hasConfiguredAccounts method BEFORE importing the authority, which captures it
+ * at construction, and restore the method after the file.
  *
  * We do NOT mock node:fs: no provider in our matrix takes the oracle path
- * through `isProviderAvailable`'s existsSync branch (codex/kimi short-circuit at
- * hasOAuthCredentials; publicKeyFallback short-circuits before existsSync; no
+ * through `isProviderAvailable`'s existsSync branch (Codex uses the authority;
+ * kimi short-circuits at hasOAuthCredentials; publicKeyFallback short-circuits
+ * before existsSync; no
  * buildDefault ApiKeyCredentialProvider carries an oauthFallback). The dedicated
  * oauthFallback-existsSync branch is unit-tested in authority.test.ts instead.
  *
@@ -52,7 +50,7 @@ import { join } from "node:path";
 interface MatrixState {
   /** Provider names for which hasOAuthCredentials() returns true. */
   oauthAuthed: Set<string>;
-  /** Whether CodexOAuth.hasCredentials() returns true (new-codex path). */
+  /** Whether the registry reports a configured Codex account. */
   codexHasCreds: boolean;
   /** envVar -> value for the config.json apiKeys map (getApiKey). */
   configKeys: Map<string, string>;
@@ -133,18 +131,18 @@ function seedLocalProviders(): void {
   resetOpSniff();
 }
 
-// ── Override the real CodexOAuth singleton's hasCredentials (robust cross-file) ─
+// ── Override the registry presence fact before the authority captures it ──────
 //
-// The new codex path reads the CodexOAuth SINGLETON's hasCredentials() (not the
-// oauth-registry mock). We override that method in place. Re-applied in
-// `beforeEach` too, in case another file reset/reconstructed the singleton.
+// CodexPoolHalf uses this registry instance, not the CodexOAuth singleton.
+// Re-apply the same method override in beforeEach and restore it in afterAll.
 
-const { CodexOAuth } = await import("../codex-oauth.js");
-const codexSingleton = CodexOAuth.getInstance();
-const realCodexHasCreds = codexSingleton.hasCredentials.bind(codexSingleton);
+const { getAccountRegistry } = await import("../accounts/registry.js");
+const codexRegistry = getAccountRegistry();
+const realCodexHasCreds = codexRegistry.hasConfiguredAccounts;
 
 function installCodexOverride(): void {
-  codexSingleton.hasCredentials = () => state.codexHasCreds;
+  codexRegistry.hasConfiguredAccounts = (provider) =>
+    provider === "openai-codex" && state.codexHasCreds;
 }
 
 installCodexOverride();
@@ -176,7 +174,7 @@ const savedEnv = new Map<string, string | undefined>();
 
 beforeEach(() => {
   // Cross-file isolation guard: re-establish the mocks/override that CAN reliably
-  // re-point (oauth-registry function + the CodexOAuth method we patch in place),
+  // re-point (oauth-registry function + the registry method we patch in place),
   // in case another file's `mock.restore()` ran since the last test. The local
   // path is handled separately via the temp config fixture (see seedLocalProviders).
   installModuleMocks();
@@ -213,7 +211,7 @@ afterEach(() => {
 
 afterAll(() => {
   try {
-    codexSingleton.hasCredentials = realCodexHasCreds;
+    codexRegistry.hasConfiguredAccounts = realCodexHasCreds;
     mock.restore();
   } finally {
     setConfigFileOverride(null);
@@ -304,12 +302,9 @@ describe("credential equivalence: openai-codex (OAuth-OR-CODEX-key, OPENAI_API_K
     await assertEquivalent("openai-codex", false);
   });
 
-  // OAuth credentials present (codex path): both sides must see it as authed.
-  // Oracle reads hasOAuthCredentials("openai-codex"); the new authority reads the
-  // CodexOAuth singleton's hasCredentials(). We drive both from the same intent.
+  // Both availability paths read the registry's configured-account presence.
   test("codex oauth credentials present → true", async () => {
-    state.oauthAuthed.add("openai-codex"); // oracle's hasOAuthCredentials branch
-    state.codexHasCreds = true; // new authority's CodexOAuth.hasCredentials path
+    state.codexHasCreds = true;
     await assertEquivalent("openai-codex", true);
   });
 });

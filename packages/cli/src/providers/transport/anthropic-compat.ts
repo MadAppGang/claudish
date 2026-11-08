@@ -10,6 +10,7 @@
 
 import { credentials } from "../../auth/credentials/authority.js";
 import { terminalCredentialError } from "../../auth/credentials/credential-error.js";
+import { callAbortError, sleepUnlessAborted } from "../../handlers/shared/call-context.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
 import { getProviderByName } from "../provider-definitions.js";
@@ -193,7 +194,10 @@ export class AnthropicProviderTransport implements ProviderTransport {
    * Terminal 429s (billing/quota) skip the retry chain — see isTerminal429
    * in transport/openai.ts for the patterns matched.
    */
-  async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
+  async enqueueRequest(
+    fetchFn: () => Promise<Response>,
+    opts?: { signal?: AbortSignal }
+  ): Promise<Response> {
     const maxRetries = 2;
     let lastResponse: Response | null = null;
 
@@ -221,7 +225,9 @@ export class AnthropicProviderTransport implements ProviderTransport {
         log(
           `[${this.displayName}] 429 rate limited, retry ${attempt + 1}/${maxRetries} in ${(delayMs / 1000).toFixed(1)}s`
         );
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        // An internal call's deadline ends the wait; the re-try would be
+        // refused by the caller's pre-start check anyway, so stop here.
+        if (await sleepUnlessAborted(delayMs, opts?.signal)) throw callAbortError();
         continue;
       }
 

@@ -101,8 +101,10 @@ export interface ProfileContext {
     | "effortOverride"
     | "modelParams"
     | "proOnUltracode"
+    | "codeMode"
     | "wireMode"
     | "wireSpeed"
+    | "requestRole"
   >;
 }
 

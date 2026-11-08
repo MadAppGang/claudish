@@ -1,0 +1,50 @@
+{
+  "headers": {
+    "authorization": "<redacted>",
+    "chatgpt-account-id": "<redacted>",
+    "content-type": "application/json",
+    "accept": "text/event-stream",
+    "originator": "codex_exec",
+    "user-agent": "codex_exec/0.161.0 (variant-probe)",
+    "version": "0.161.0"
+  },
+  "body": {
+    "model": "gpt-6.1-sol",
+    "stream": true,
+    "store": false,
+    "tool_choice": "auto",
+    "parallel_tool_calls": false,
+    "include": ["reasoning.encrypted_content"],
+    "reasoning": {
+      "effort": "low"
+    },
+    "text": {
+      "verbosity": "low"
+    },
+    "instructions": "You are a coding agent. Use the exec tool for any file access.",
+    "tools": [
+      {
+        "type": "custom",
+        "name": "exec",
+        "description": "Run JavaScript code to orchestrate/compose tool calls\n- Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.\n- All nested tools are available on the global `tools` object.\n- Global helpers:\n- `text(value)`: Appends a text item.\n\n### `exec_command`\nRuns a command.\n\nexec tool declaration:\n```ts\ndeclare const tools: { exec_command(args: {\n  // Shell command to execute.\n  cmd: string;\n}): Promise<{ output: string; exit_code?: number; wall_time_seconds: number }>; };\n```",
+        "format": {
+          "type": "grammar",
+          "syntax": "lark",
+          "definition": "\nstart: pragma_source | plain_source\npragma_source: PRAGMA_LINE NEWLINE SOURCE\nplain_source: SOURCE\n\nPRAGMA_LINE: /[ \\t]*\\/\\/ @exec:[^\\r\\n]*/\nNEWLINE: /\\r?\\n/\nSOURCE: /[\\s\\S]+/\n"
+        }
+      }
+    ],
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Read README.md and notes.txt in parallel and report line counts."
+          }
+        ]
+      }
+    ]
+  }
+}

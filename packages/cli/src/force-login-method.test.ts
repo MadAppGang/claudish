@@ -416,3 +416,189 @@ describe("shouldHideIncidentalAnthropicKey", () => {
     ).toBe(false);
   });
 });
+
+describe("pane child wheel acceleration settings", () => {
+  function withPaneEnv<T>(marker: string | undefined, cwd: string | undefined, fn: () => T): T {
+    const savedMarker = process.env.CLAUDISH_PANE_CHILD;
+    const savedCwd = process.env.CLAUDISH_PANE_CWD;
+    try {
+      if (marker === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+      else process.env.CLAUDISH_PANE_CHILD = marker;
+      if (cwd === undefined) delete process.env.CLAUDISH_PANE_CWD;
+      else process.env.CLAUDISH_PANE_CWD = cwd;
+      return fn();
+    } finally {
+      if (savedMarker === undefined) delete process.env.CLAUDISH_PANE_CHILD;
+      else process.env.CLAUDISH_PANE_CHILD = savedMarker;
+      if (savedCwd === undefined) delete process.env.CLAUDISH_PANE_CWD;
+      else process.env.CLAUDISH_PANE_CWD = savedCwd;
+    }
+  }
+
+  function mergeWheelSettings(
+    user: Record<string, unknown>,
+    paneChild: boolean | undefined,
+    proxy: boolean,
+    form: "inline" | "file"
+  ): Record<string, unknown> {
+    const dir = mkdtempSync(join(tmpdir(), "claudish-wheel-settings-"));
+    try {
+      const path = join(dir, "overlay.json");
+      const userPath = join(dir, "caller.json");
+      writeFileSync(
+        path,
+        JSON.stringify(buildClaudishSettingsOverlay(statusLine, proxy, paneChild))
+      );
+      if (form === "file") writeFileSync(userPath, JSON.stringify(user));
+      const config = baseConfig({
+        claudeArgs: ["--settings", form === "file" ? userPath : JSON.stringify(user)],
+      });
+      mergeUserSettingsIfPresent(config, path, statusLine, proxy, paneChild);
+      expect(config.claudeArgs).toEqual([]);
+      return JSON.parse(readFileSync(path, "utf8"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  for (const proxy of [true, false]) {
+    // REQ: 6
+    test(`explicit pane child disables acceleration (proxy=${proxy})`, () => {
+      withPaneEnv(undefined, undefined, () => {
+        expect(buildClaudishSettingsOverlay(statusLine, proxy, true)).toMatchObject({
+          wheelScrollAccelerationEnabled: false,
+          editorMode: "normal",
+          skipDangerousModePermissionPrompt: true,
+          statusLine,
+        });
+      });
+    });
+
+    // REQ: 6
+    test(`non-pane launches do not acquire the acceleration key (proxy=${proxy})`, () => {
+      withPaneEnv("1", "/pane", () => {
+        expect(
+          Object.hasOwn(
+            buildClaudishSettingsOverlay(statusLine, proxy, false),
+            "wheelScrollAccelerationEnabled"
+          )
+        ).toBe(false);
+      });
+      withPaneEnv(undefined, undefined, () => {
+        expect(
+          Object.hasOwn(
+            buildClaudishSettingsOverlay(statusLine, proxy),
+            "wheelScrollAccelerationEnabled"
+          )
+        ).toBe(false);
+      });
+    });
+
+    // REQ: 6
+    test(`default acceleration gate is the existing marker-and-cwd gate (proxy=${proxy})`, () => {
+      for (const marker of ["1", "0", "", undefined]) {
+        for (const cwd of ["/pane", "", undefined]) {
+          withPaneEnv(marker, cwd, () => {
+            const overlay = buildClaudishSettingsOverlay(statusLine, proxy);
+            if (marker === "1" && cwd) expect(overlay.wheelScrollAccelerationEnabled).toBe(false);
+            else expect(Object.hasOwn(overlay, "wheelScrollAccelerationEnabled")).toBe(false);
+          });
+        }
+      }
+    });
+
+    for (const form of ["inline", "file"] as const) {
+      for (const userValue of [true, false, undefined]) {
+        // REQ: 6
+        test(`pane overlay forces false over user ${userValue} in ${form} settings (proxy=${proxy})`, () => {
+          withPaneEnv(undefined, undefined, () => {
+            const user = {
+              ...(userValue === undefined ? {} : { wheelScrollAccelerationEnabled: userValue }),
+              unrelated: "preserved",
+            };
+            expect(mergeWheelSettings(user, true, proxy, form)).toMatchObject({
+              wheelScrollAccelerationEnabled: false,
+              unrelated: "preserved",
+              statusLine,
+            });
+          });
+        });
+      }
+
+      // REQ: 6
+      test(`non-pane ${form} merge leaves an explicit user acceleration setting alone (proxy=${proxy})`, () => {
+        withPaneEnv(undefined, undefined, () => {
+          expect(
+            mergeWheelSettings({ wheelScrollAccelerationEnabled: true }, false, proxy, form)
+              .wheelScrollAccelerationEnabled
+          ).toBe(true);
+          expect(
+            Object.hasOwn(
+              mergeWheelSettings({}, false, proxy, form),
+              "wheelScrollAccelerationEnabled"
+            )
+          ).toBe(false);
+        });
+      });
+
+      // REQ: 6
+      test(`merged default gate forces acceleration off only for marker plus cwd in ${form} settings (proxy=${proxy})`, () => {
+        withPaneEnv("1", "/pane", () => {
+          expect(
+            mergeWheelSettings({ wheelScrollAccelerationEnabled: true }, undefined, proxy, form)
+              .wheelScrollAccelerationEnabled
+          ).toBe(false);
+        });
+        withPaneEnv("1", undefined, () => {
+          expect(
+            mergeWheelSettings({ wheelScrollAccelerationEnabled: true }, undefined, proxy, form)
+              .wheelScrollAccelerationEnabled
+          ).toBe(true);
+        });
+      });
+    }
+  }
+
+  // A pane child runs the fullscreen view: the classic view ignores the SGR wheel
+  // events scroll_session sends. Launches outside a pane keep the user's `tui`.
+  for (const proxy of [true, false]) {
+    test(`pane child overlay pins tui to fullscreen (proxy=${proxy})`, () => {
+      withPaneEnv(undefined, undefined, () => {
+        expect(buildClaudishSettingsOverlay(statusLine, proxy, true).tui).toBe("fullscreen");
+      });
+    });
+
+    test(`non-pane overlay has no tui key (proxy=${proxy})`, () => {
+      withPaneEnv(undefined, undefined, () => {
+        expect(Object.hasOwn(buildClaudishSettingsOverlay(statusLine, proxy, false), "tui")).toBe(
+          false
+        );
+      });
+    });
+
+    for (const form of ["inline", "file"] as const) {
+      for (const userValue of ["default", "fullscreen", undefined]) {
+        test(`pane merge forces tui fullscreen over user ${userValue} in ${form} settings (proxy=${proxy})`, () => {
+          withPaneEnv(undefined, undefined, () => {
+            const user = {
+              ...(userValue === undefined ? {} : { tui: userValue }),
+              unrelated: "preserved",
+            };
+            expect(mergeWheelSettings(user, true, proxy, form)).toMatchObject({
+              tui: "fullscreen",
+              unrelated: "preserved",
+              statusLine,
+            });
+          });
+        });
+      }
+
+      test(`non-pane ${form} merge leaves the user tui alone (proxy=${proxy})`, () => {
+        withPaneEnv(undefined, undefined, () => {
+          expect(mergeWheelSettings({ tui: "default" }, false, proxy, form).tui).toBe("default");
+          expect(Object.hasOwn(mergeWheelSettings({}, false, proxy, form), "tui")).toBe(false);
+        });
+      });
+    }
+  }
+});

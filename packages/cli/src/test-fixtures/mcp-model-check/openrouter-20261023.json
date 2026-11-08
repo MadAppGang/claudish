@@ -1,0 +1,200 @@
+{
+  "lastUpdated": "2026-10-22T15:42:57.308Z",
+  "models": [
+    {
+      "id": "openai/gpt-5",
+      "canonical_slug": "openai/gpt-5-2025-08-07",
+      "hugging_face_id": "",
+      "name": "OpenAI: GPT-5",
+      "created": 1754587413,
+      "description": "GPT-5 is OpenAI’s most advanced model, offering major improvements in reasoning, code quality, and user experience. It is optimized for complex tasks that require step-by-step reasoning, instruction following, and accuracy...",
+      "context_length": 400000,
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": ["text", "image", "file"],
+        "output_modalities": ["text"],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.00000125",
+        "completion": "0.00001",
+        "web_search": "0.01",
+        "input_cache_read": "0.000000125"
+      },
+      "top_provider": {
+        "context_length": 400000,
+        "max_completion_tokens": 128000,
+        "is_moderated": true
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "seed",
+        "structured_outputs",
+        "tool_choice",
+        "tools",
+        "verbosity"
+      ],
+      "default_parameters": {
+        "temperature": null,
+        "top_p": null,
+        "top_k": null,
+        "frequency_penalty": null,
+        "presence_penalty": null,
+        "repetition_penalty": null
+      },
+      "supported_voices": null,
+      "knowledge_cutoff": "2024-09-30",
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/openai/gpt-5-2025-08-07/endpoints"
+      },
+      "benchmarks": {
+        "design_arena": [
+          {
+            "arena": "models",
+            "category": "3d",
+            "elo": 1056,
+            "win_rate": 41.3,
+            "rank": 104
+          },
+          {
+            "arena": "models",
+            "category": "asciiart",
+            "elo": 1141,
+            "win_rate": 49,
+            "rank": 48
+          },
+          {
+            "arena": "models",
+            "category": "codecategories",
+            "elo": 1168,
+            "win_rate": 54.5,
+            "rank": 75
+          },
+          {
+            "arena": "models",
+            "category": "dataviz",
+            "elo": 1221,
+            "win_rate": 60.5,
+            "rank": 51
+          },
+          {
+            "arena": "models",
+            "category": "gamedev",
+            "elo": 1185,
+            "win_rate": 59.3,
+            "rank": 62
+          },
+          {
+            "arena": "models",
+            "category": "svg",
+            "elo": 1189,
+            "win_rate": 64.1,
+            "rank": 30
+          },
+          {
+            "arena": "models",
+            "category": "uicomponent",
+            "elo": 1177,
+            "win_rate": 57.4,
+            "rank": 65
+          },
+          {
+            "arena": "models",
+            "category": "website",
+            "elo": 1184,
+            "win_rate": 53.7,
+            "rank": 74
+          }
+        ],
+        "artificial_analysis": {
+          "intelligence_index": 23,
+          "coding_index": 37.8,
+          "agentic_index": null
+        }
+      },
+      "reasoning": {
+        "mandatory": true,
+        "supported_efforts": ["high", "medium", "low", "minimal"],
+        "default_effort": "medium"
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-vision-exp",
+      "canonical_slug": "deepseek/deepseek-v4-flash-vision-exp-20260821",
+      "hugging_face_id": "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
+      "name": "DeepSeek: DeepSeek V4 Flash Vision Exp",
+      "created": 1787311563,
+      "description": "DeepSeek V4 Flash Vision Exp is an experimental vision-enabled version of [DeepSeek V4 Flash 0731](https://openrouter.ai/deepseek/deepseek-v4-flash-0731) from DeepSeek, adding image understanding while matching the base model on text capabilities including agents,...",
+      "context_length": 1048576,
+      "architecture": {
+        "modality": "text+image->text",
+        "input_modalities": ["text", "image"],
+        "output_modalities": ["text"],
+        "tokenizer": "DeepSeek",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.0000002156",
+        "completion": "0.0000006468",
+        "input_cache_read": "0.00000000686"
+      },
+      "top_provider": {
+        "context_length": 1048576,
+        "max_completion_tokens": 262144,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "reasoning",
+        "reasoning_effort",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_logprobs",
+        "top_p"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/deepseek/deepseek-v4-flash-vision-exp-20260821/endpoints"
+      },
+      "benchmarks": {
+        "design_arena": [],
+        "artificial_analysis": {
+          "intelligence_index": 34.8,
+          "coding_index": 65,
+          "agentic_index": 47.5
+        }
+      },
+      "reasoning": {
+        "mandatory": false,
+        "default_enabled": true,
+        "supported_efforts": ["max", "high", "low", "none"],
+        "default_effort": "high"
+      }
+    }
+  ]
+}

@@ -282,6 +282,14 @@ afterEach(() => {
 const { OpenAICodexTransport } = await import("../../providers/transport/openai-codex.js");
 
 const singleton = CodexOAuth.getInstance();
+const { getAccountRegistry } = await import("../accounts/registry.js");
+const registry = getAccountRegistry();
+const registryMethods = [
+  "hasConfiguredAccounts",
+  "mayHaveConfiguredAccounts",
+  "isSynthesizedLegacyOnly",
+] as const;
+let savedRegistryMethods: Array<PropertyDescriptor | undefined> = [];
 
 /** A model name that cannot be in any warmed dynamic pricing cache. */
 const SYNTHETIC_MODEL = "billing-probe-test-model";
@@ -294,8 +302,11 @@ let savedProvider: ReturnType<typeof credentials.get>;
 let savedHasCredentials: PropertyDescriptor | undefined;
 let savedEnvCodexKey: string | undefined;
 
-/** Drive "which credential WOULD sign" without touching the filesystem. */
-function setHasCredentials(value: boolean): void {
+/** Drive registry presence; legacy facade signing is exercised separately below. */
+function setConfiguredAccounts(value: boolean): void {
+  registry.hasConfiguredAccounts = () => value;
+  registry.mayHaveConfiguredAccounts = () => value;
+  registry.isSynthesizedLegacyOnly = () => value;
   singleton.hasCredentials = () => value;
 }
 
@@ -312,6 +323,9 @@ function restoreOwn(target: object, key: string, saved: PropertyDescriptor | und
 beforeEach(() => {
   savedProvider = credentials.get("openai-codex");
   savedHasCredentials = Object.getOwnPropertyDescriptor(singleton, "hasCredentials");
+  savedRegistryMethods = registryMethods.map((name) =>
+    Object.getOwnPropertyDescriptor(registry, name)
+  );
   savedEnvCodexKey = process.env.OPENAI_CODEX_API_KEY;
   credentials.invalidate();
 });
@@ -325,6 +339,7 @@ afterEach(() => {
   } else {
     delete (singleton as unknown as Record<string, unknown>).hasCredentials;
   }
+  registryMethods.forEach((name, index) => restoreOwn(registry, name, savedRegistryMethods[index]));
   clearSignedArm();
   if (savedEnvCodexKey === undefined) delete process.env.OPENAI_CODEX_API_KEY;
   else process.env.OPENAI_CODEX_API_KEY = savedEnvCodexKey;
@@ -400,25 +415,18 @@ describe("FR-3: openai-codex billing follows the credential in play", () => {
     });
   });
   test("wiring: importing authority.js installs the probe, and the answer tracks it", () => {
-    // Fails on ANY machine when the probe is not registered — the first assertion
-    // is false without it, regardless of whether a real oauth file exists.
-    //
-    // LOAD-BEARING, and more so than it looks: this is also the assertion that
-    // kills the "use hasOAuthCredentials instead" substitution HERMETICALLY. That
-    // oracle reads a file, so its answer is CONSTANT across the two halves below,
-    // while these assertions demand two different answers from the same call. One
-    // half or the other must fail, whichever way the machine is configured —
-    // measured both ways (file present: this test + 3 others red; file absent:
-    // this test + 4 others red). Do not collapse it into a single-value check.
-    setHasCredentials(true);
+    // Phase 2a predicts from the registry's conservative configuration projection,
+    // not the singleton or token usability. Both presence states exercise the
+    // installed production probe independently of this machine's credential files.
+    setConfiguredAccounts(true);
     expect(isSubscriptionProvider("openai-codex")).toBe(true);
 
-    setHasCredentials(false);
+    setConfiguredAccounts(false);
     expect(isSubscriptionProvider("openai-codex")).toBe(false);
   });
 
   test("OAuth would sign → subscription, and the pricing is a real zero", () => {
-    setHasCredentials(true);
+    setConfiguredAccounts(true);
 
     const pricing = getModelPricing("openai-codex", SYNTHETIC_MODEL);
     expect(pricing.isSubscription).toBe(true);
@@ -427,9 +435,9 @@ describe("FR-3: openai-codex billing follows the credential in play", () => {
   });
 
   test("THE TRAP: access_token unexpired with NO refresh_token → METERED", () => {
-    // The pure qualification rule accepts an unexpired access token. Billing
-    // consults the public hasCredentials predicate, overridden below per B2.
-    // Its real file-backed evaluation runs in the B2 child-process case above.
+    // The pure qualification rule accepts an unexpired access token. The
+    // registry treats a legacy file without refresh material as present-and-empty;
+    // the B2 child case above exercises that real file-backed projection.
     const trap = { access_token: "at-no-refresh", expires_at: Date.now() + 3_600_000 };
     expect(trap.access_token).toBeTruthy();
     expect(trap.expires_at).toBeGreaterThan(Date.now());
@@ -442,10 +450,10 @@ describe("FR-3: openai-codex billing follows the credential in play", () => {
     expect(oauthCredentialWouldQualify("openai-codex", trap)).toBe(true);
 
     // This control isolates probe wiring; B2 above exercises the real file reader.
-    setHasCredentials(false);
+    setConfiguredAccounts(false);
 
     // The mechanism, asserted so a change to either half is attributable.
-    expect(singleton.hasCredentials()).toBe(false);
+    expect(registry.hasConfiguredAccounts("openai-codex")).toBe(false);
     expect(isSubscriptionProvider("openai-codex")).toBe(false);
 
     const pricing = getModelPricing("openai-codex", SYNTHETIC_MODEL);
@@ -455,16 +463,11 @@ describe("FR-3: openai-codex billing follows the credential in play", () => {
   });
 
   test("presence probe: no OAuth credential → METERED", () => {
-    // Scope, stated so this is not read as more than it is: the probe path is
-    // isSubscriptionProvider → the closure at billing-probe.ts:104 →
-    // CodexOAuth.hasCredentials(). It reads NO env var, so setting
-    // OPENAI_CODEX_API_KEY here would be inert and is deliberately not done —
-    // an earlier version set it and read as a second case when it was the same
-    // one. The api-key arm is exercised for real in "the REAL composite's
-    // api-key arm" below, which drives the composite and the transport.
-    setHasCredentials(false);
+    // Unsigned billing follows registry presence; the real API-key arm below
+    // separately drives composite signing and the transport's recorded-arm path.
+    setConfiguredAccounts(false);
 
-    expect(singleton.hasCredentials()).toBe(false);
+    expect(registry.hasConfiguredAccounts("openai-codex")).toBe(false);
     expect(isSubscriptionProvider("openai-codex")).toBe(false);
 
     const pricing = getModelPricing("openai-codex", SYNTHETIC_MODEL);
@@ -497,7 +500,7 @@ describe("FR-3: the REAL composite's api-key arm", () => {
     // key comes from process.env, which is step 1 of the resolution chain
     // (api-key-credential.ts:168-172) — the keychain and 1Password steps are never
     // reached, so nothing here depends on this machine.
-    setHasCredentials(false);
+    setConfiguredAccounts(false);
     process.env.OPENAI_CODEX_API_KEY = METERED_KEY;
     credentials.invalidate("openai-codex"); // drop any memoized resolution first
 
@@ -512,9 +515,11 @@ describe("FR-3: the REAL composite's api-key arm", () => {
 
     // (2) The transport really does sign the METERED host with that key.
     const transport = makeCodexTransport(METERED_KEY);
-    await transport.refreshAuth();
-    expect(transport.getEndpoint()).toBe("https://api.openai.com/v1/responses");
-    expect((await transport.getHeaders()).Authorization).toBe(`Bearer ${METERED_KEY}`);
+    const auth = await transport.signRequest({});
+    expect(transport.getEndpoint(undefined, { auth })).toBe("https://api.openai.com/v1/responses");
+    expect((await transport.getHeaders(undefined, { auth })).Authorization).toBe(
+      `Bearer ${METERED_KEY}`
+    );
 
     // (3) …so every billing surface must say METERED, and the price must be a
     //     real per-token figure rather than a subscription zero.
@@ -531,7 +536,7 @@ describe("FR-3: the REAL composite's api-key arm", () => {
     // resolving "no key" for real would fall through to the keychain and 1Password
     // steps (api-key-credential.ts:176-205) and touch this developer's machine.
     // The stub reproduces the artifact those steps would produce, exactly.
-    setHasCredentials(true); // the presence probe would say subscription…
+    setConfiguredAccounts(false); // no pool reserves OAuth; absent arm is metered
     const real = credentials.get("openai-codex")!;
     try {
       credentials.register(
@@ -544,8 +549,9 @@ describe("FR-3: the REAL composite's api-key arm", () => {
         ["openai-codex"]
       );
       const transport = makeCodexTransport("");
-      await transport.refreshAuth();
-      // …but nothing said an arm, so the answer is metered.
+      const auth = await transport.signRequest({});
+      expect(auth.arm).toBeUndefined();
+      // Nothing said an arm and no pool is configured, so the answer is metered.
       expect(isSubscriptionProvider("openai-codex")).toBe(false);
     } finally {
       credentials.register(real, ["openai-codex"]);
@@ -556,19 +562,19 @@ describe("FR-3: the REAL composite's api-key arm", () => {
 
 describe("FR-3: the recorded arm beats the presence probe", () => {
   test("a metered signed arm overrides an available OAuth presence probe", () => {
-    setHasCredentials(true);
+    setConfiguredAccounts(true);
     recordSignedArm("openai-codex", "metered");
     expect(isSubscriptionProvider("openai-codex")).toBe(false);
     expect(getModelPricing("openai-codex", SYNTHETIC_MODEL).isSubscription).not.toBe(true);
   });
   test("a subscription signed arm overrides an absent presence probe", () => {
-    setHasCredentials(false);
+    setConfiguredAccounts(false);
     recordSignedArm("openai-codex", "subscription");
     expect(isSubscriptionProvider("openai-codex")).toBe(true);
     expect(getModelPricing("openai-codex", SYNTHETIC_MODEL).inputCostPer1M).toBe(0);
   });
   test("clear a provider record and clear all both restore the presence probe", () => {
-    setHasCredentials(true);
+    setConfiguredAccounts(true);
     recordSignedArm("openai-codex", "metered");
     clearSignedArm("openai-codex");
     expect(isSubscriptionProvider("openai-codex")).toBe(true);
@@ -579,7 +585,7 @@ describe("FR-3: the recorded arm beats the presence probe", () => {
   test.each(["invalidate", "logout"] as const)(
     "authority %s clears a signed record",
     async (action) => {
-      setHasCredentials(true);
+      setConfiguredAccounts(true);
       recordSignedArm("openai-codex", "metered");
       expect(isSubscriptionProvider("openai-codex")).toBe(false);
       // Local credential registration keeps logout free of browser/remote work.
@@ -612,9 +618,9 @@ describe("FR-3: the recorded arm beats the presence probe", () => {
     }
   );
 
-  test("refreshAuth() writes the record, per request, from the REAL arms", async () => {
+  test("signRequest() writes the record, per request, from the REAL arms", async () => {
     // The only production writer, driven end to end through the real
-    // CodexOAuthHalf → CompositeCredentialProvider → ApiKeyCredentialProvider.
+    // CodexPoolHalf → legacy CodexOAuthHalf, with the real composite's key half.
     // NOTHING is stubbed on the credential authority.
     //
     // The previous version of this test replaced `credentials.getRequestAuth`
@@ -630,7 +636,7 @@ describe("FR-3: the recorded arm beats the presence probe", () => {
     const transport = makeCodexTransport(METERED_KEY);
 
     // OAuth credentials exist, so "what WOULD sign" says subscription…
-    setHasCredentials(true);
+    setConfiguredAccounts(true);
     const savedToken = Object.getOwnPropertyDescriptor(singleton, "getAccessToken");
     const savedAccount = Object.getOwnPropertyDescriptor(singleton, "getAccountId");
     const mutable = singleton as unknown as Record<string, unknown>;
@@ -639,7 +645,7 @@ describe("FR-3: the recorded arm beats the presence probe", () => {
       mutable.getAccessToken = async () => {
         throw unavailable;
       };
-      await expect(transport.refreshAuth()).rejects.toBe(unavailable);
+      await expect(transport.signRequest({})).rejects.toBe(unavailable);
       expect(isSubscriptionProvider("openai-codex")).toBe(true);
 
       // The OAuth arm wins on the next request → back to subscription. The
@@ -647,9 +653,11 @@ describe("FR-3: the recorded arm beats the presence probe", () => {
       // CodexOAuthHalf, so this assertion fails if it ever stops marking itself.
       mutable.getAccessToken = async () => "oauth-access-token-fixture";
       mutable.getAccountId = () => "acct-fixture";
-      await transport.refreshAuth();
-      expect(transport.getEndpoint()).toBe("https://chatgpt.com/backend-api/codex/responses");
-      expect((await transport.getHeaders()).Authorization).toBe(
+      const auth = await transport.signRequest({});
+      expect(transport.getEndpoint(undefined, { auth })).toBe(
+        "https://chatgpt.com/backend-api/codex/responses"
+      );
+      expect((await transport.getHeaders(undefined, { auth })).Authorization).toBe(
         "Bearer oauth-access-token-fixture"
       );
       expect(isSubscriptionProvider("openai-codex")).toBe(true);
@@ -663,7 +671,7 @@ describe("FR-3: the recorded arm beats the presence probe", () => {
       await expect(credentials.getRequestAuth("openai-codex", { model: "" })).rejects.toBe(
         rejected
       );
-      await expect(transport.refreshAuth()).rejects.toBe(rejected);
+      await expect(transport.signRequest({})).rejects.toBe(rejected);
       expect(isSubscriptionProvider("openai-codex")).toBe(true);
       const { ComposedHandler } = await import("../../handlers/composed-handler.js");
       const { DefaultAPIFormat } = await import("../../adapters/base-api-format.js");
@@ -708,13 +716,36 @@ describe("FR-3: the recorded arm beats the presence probe", () => {
 });
 
 describe("FR-3: the registration seam", () => {
+  test("E11/M4 registry presence overrides the singleton in both directions", () => {
+    setConfiguredAccounts(false);
+    singleton.hasCredentials = () => true;
+    expect(isSubscriptionProvider("openai-codex")).toBe(false);
+    setConfiguredAccounts(true);
+    singleton.hasCredentials = () => false;
+    expect(isSubscriptionProvider("openai-codex")).toBe(true);
+  });
+
+  test("E11 a registered throwing Codex projection is conservatively subscription", () => {
+    registry.mayHaveConfiguredAccounts = () => {
+      throw new Error("unexpected registry failure");
+    };
+    expect(isSubscriptionProvider("openai-codex")).toBe(true);
+    const previous = registerSubscriptionCredentialProbe(() => {
+      throw new Error("unexpected callback failure");
+    });
+    try {
+      expect(isSubscriptionProvider("openai-codex")).toBe(true);
+    } finally {
+      registerSubscriptionCredentialProbe(previous);
+    }
+  });
   test("an unregistered probe means METERED, the safe default", () => {
     const previous = registerSubscriptionCredentialProbe(null);
     try {
       // Also proves the production probe WAS installed: null here would mean the
       // authority import registered nothing.
       expect(typeof previous).toBe("function");
-      setHasCredentials(true);
+      setConfiguredAccounts(true);
       expect(isSubscriptionProvider("openai-codex")).toBe(false);
       expect(getModelPricing("openai-codex", SYNTHETIC_MODEL).isSubscription).toBeUndefined();
     } finally {
@@ -736,7 +767,7 @@ describe("FR-3: the registration seam", () => {
   });
 
   test("only the canonical uid is credential-decided; the shortcut is not", () => {
-    setHasCredentials(true);
+    setConfiguredAccounts(true);
     expect(isSubscriptionProvider("cx")).toBe(false);
     expect(isSubscriptionProvider("OPENAI-CODEX")).toBe(true);
   });

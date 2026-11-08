@@ -1,5 +1,8 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
-import { GrokOAuth, type GrokOAuthCredentials } from "./grok-oauth.js";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { GrokOAuth, type GrokOAuthCredentials, setGrokOAuthPathForTesting } from "./grok-oauth.js";
 
 const realFetch = globalThis.fetch;
 const realSetTimeout = globalThis.setTimeout;
@@ -14,7 +17,6 @@ interface DeviceAuthorizationFixture {
 }
 
 interface GrokOAuthTestInternals {
-  credentials: GrokOAuthCredentials | null;
   requestDeviceCode(clientId: string): Promise<DeviceAuthorizationFixture>;
   saveCredentials(credentials: GrokOAuthCredentials): void;
   deleteCredentials(): void;
@@ -22,17 +24,35 @@ interface GrokOAuthTestInternals {
   presentAuthUrl(url: string): () => void;
 }
 
-class HermeticGrokOAuth extends GrokOAuth {
-  protected override loadCredentials(): GrokOAuthCredentials | null {
-    // Constructor dispatches here, keeping tests independent of the developer's real home.
-    return null;
-  }
-}
+// The credential file is read lazily and re-read on change, so every test points
+// GrokOAuth at a temp file (`setGrokOAuthPathForTesting`), never at the developer's
+// real ~/.claudish/grok-oauth.json.
+class HermeticGrokOAuth extends GrokOAuth {}
+
+let credentialDir: string;
+let credentialPath: string;
+
+beforeEach(() => {
+  credentialDir = mkdtempSync(join(tmpdir(), "claudish-grok-oauth-"));
+  credentialPath = join(credentialDir, "grok-oauth.json");
+  setGrokOAuthPathForTesting(credentialPath);
+});
 
 afterEach(() => {
   globalThis.fetch = realFetch;
   globalThis.setTimeout = realSetTimeout;
+  setGrokOAuthPathForTesting(null);
+  rmSync(credentialDir, { recursive: true, force: true });
 });
+
+/** Write the login another process (or an earlier session) left on disk. */
+function seedCredentialFile(credentials: GrokOAuthCredentials): void {
+  writeFileSync(credentialPath, JSON.stringify(credentials, null, 2), { mode: 0o600 });
+}
+
+function readCredentialFile(): GrokOAuthCredentials {
+  return JSON.parse(readFileSync(credentialPath, "utf-8")) as GrokOAuthCredentials;
+}
 
 function internals(oauth: GrokOAuth): GrokOAuthTestInternals {
   return oauth as unknown as GrokOAuthTestInternals;
@@ -276,10 +296,7 @@ describe("GrokOAuth refresh", () => {
 
   test("uses a public-client refresh form and persists a rotated refresh token", async () => {
     const oauth = new HermeticGrokOAuth();
-    const state = internals(oauth);
-    state.credentials = expiredCredentials();
-    const saveCredentials = mock((_credentials: GrokOAuthCredentials) => {});
-    state.saveCredentials = saveCredentials;
+    seedCredentialFile(expiredCredentials());
     const fetchMock = mock(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({
         access_token: "tok-aaa",
@@ -304,7 +321,8 @@ describe("GrokOAuth refresh", () => {
     });
     // Public-client refresh must never grow an accidental confidential-client secret.
     expect([...form.keys()].some((key) => /secret/i.test(key))).toBe(false);
-    expect(saveCredentials.mock.calls[0][0]).toMatchObject({
+    // The refresh is committed to the credential file (refreshAndCommit), not to memory only.
+    expect(readCredentialFile()).toMatchObject({
       access_token: "tok-aaa",
       refresh_token: "ref-aaa",
       client_id: "client-aaa",
@@ -313,10 +331,7 @@ describe("GrokOAuth refresh", () => {
 
   test("keeps the existing refresh token when the server does not rotate it", async () => {
     const oauth = new HermeticGrokOAuth();
-    const state = internals(oauth);
-    state.credentials = expiredCredentials();
-    const saveCredentials = mock((_credentials: GrokOAuthCredentials) => {});
-    state.saveCredentials = saveCredentials;
+    seedCredentialFile(expiredCredentials());
     globalThis.fetch = mock(async () =>
       jsonResponse({ access_token: "tok-aaa", expires_in: 3600 })
     ) as unknown as typeof fetch;
@@ -324,13 +339,13 @@ describe("GrokOAuth refresh", () => {
     await expect(oauth.getToken()).resolves.toBe("tok-aaa");
 
     // Dropping the old value here would strand the very next refresh attempt.
-    expect(saveCredentials.mock.calls[0][0].refresh_token).toBe("ref-old");
+    expect(readCredentialFile().refresh_token).toBe("ref-old");
   });
 
   test("names claudish login grok when refresh fails", async () => {
     const oauth = new HermeticGrokOAuth();
     const state = internals(oauth);
-    state.credentials = expiredCredentials();
+    seedCredentialFile(expiredCredentials());
     const saveCredentials = mock((_credentials: GrokOAuthCredentials) => {});
     state.saveCredentials = saveCredentials;
     globalThis.fetch = mock(async () =>
@@ -360,7 +375,7 @@ describe("GrokOAuth logout", () => {
   test("revokes the refresh token before clearing local state", async () => {
     const oauth = new HermeticGrokOAuth();
     const state = internals(oauth);
-    state.credentials = loggedInCredentials();
+    seedCredentialFile(loggedInCredentials());
     const order: string[] = [];
     const deleteCredentials = mock(() => order.push("delete"));
     state.deleteCredentials = deleteCredentials;
@@ -387,7 +402,7 @@ describe("GrokOAuth logout", () => {
   test("clears local state even when revocation fails", async () => {
     const oauth = new HermeticGrokOAuth();
     const state = internals(oauth);
-    state.credentials = loggedInCredentials();
+    seedCredentialFile(loggedInCredentials());
     const deleteCredentials = mock(() => {});
     state.deleteCredentials = deleteCredentials;
     globalThis.fetch = mock(async () => {
