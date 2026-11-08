@@ -66,7 +66,7 @@ describe("peerHoldsHandshakeLock", () => {
   });
 
   test("returns false when the lock owner has exited", () => {
-    const deadProcess = spawnSync(process.execPath, ["-e", ""]);
+    const deadProcess = spawnSync(process.execPath, ["-e", ""], { env: { ...process.env } });
     expect(deadProcess.status).toBe(0);
     expect(deadProcess.pid).toBeGreaterThan(0);
     expect(() => process.kill(deadProcess.pid!, 0)).toThrow();
@@ -226,7 +226,7 @@ describe("withHandshakeLock", () => {
   });
 
   test("steals a fresh lock whose owner process has exited", async () => {
-    const deadProcess = spawnSync(process.execPath, ["-e", ""]);
+    const deadProcess = spawnSync(process.execPath, ["-e", ""], { env: { ...process.env } });
     expect(deadProcess.status).toBe(0);
     expect(deadProcess.pid).toBeGreaterThan(0);
     writeFileSync(lockPath, `${deadProcess.pid} ${Date.now()}`);

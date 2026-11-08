@@ -561,7 +561,10 @@ describe.skipIf(!MAGMUX)(
           rmSync(pidFile, { force: true });
           try {
             const pgid = Number(
-              execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" })
+              execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], {
+                env: { ...process.env },
+                encoding: "utf8",
+              })
             );
             expect(pgid).toBe(pid); // its own group: a group signal to the pane never reaches it
             expect((await finish(r)).state).toBe("COMPLETED");

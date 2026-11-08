@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DiskCacheV3 } from "../providers/all-models-cache.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "../providers/catalog-client.js";
 import {
   ADVISOR_STUB_PATHS,
   _debug_resetTrackedAdvisorIds,
-  advisorRouteFor,
   findPendingAdvisorToolResults,
   getAdvisorCall,
   markAdvisorCallConsumed,
@@ -68,30 +66,6 @@ beforeEach(() => {
 afterEach(() => {
   // `null` is a sticky empty-catalog override, not a reset between tests.
   _resetCatalogClient();
-});
-
-describe("advisorRouteFor", () => {
-  it("routes OpenAI, Google, OpenRouter, and Anthropic models with provider credentials", () => {
-    const openai = advisorRouteFor("gpt-5.6-sol", "panel");
-    const google = advisorRouteFor("gemini-3.8-flash", "panel");
-    const openrouter = advisorRouteFor("grok-4.6", "panel");
-    const anthropic = advisorRouteFor("haiku", "collector");
-
-    expect(openai.kind).toBe("openai");
-    expect(openai.host).toBe("api.openai.com");
-    expect(google.kind).toBe("google");
-    expect(openrouter.kind).toBe("openrouter");
-    expect(typeof openrouter.wireModel).toBe("string");
-    expect(openrouter.wireModel).toContain("grok-4.6");
-    expect(openrouter.wireModel).not.toContain("{");
-    expect(openrouter.wireModel).not.toContain("resolvedId");
-    expect(anthropic.kind).toBe("anthropic");
-
-    expect(openai.credential).toBe("openai");
-    expect(google.credential).toBe("google");
-    expect(openrouter.credential).toBe("openrouter");
-    expect(new Set([openai.credential, google.credential, openrouter.credential]).size).toBe(3);
-  });
 });
 
 describe("session-keyed pending advisor state", () => {
@@ -187,113 +161,104 @@ describe("ADVISOR_STUB_PATHS", () => {
   });
 });
 
-describe("OpenRouter advisor wire-model resolution", () => {
-  it("refuses a known model that only publishes another vendor's external id", () => {
-    _setCatalogEntriesForTest([
-      {
-        modelId: "kimi-k3",
-        aliases: [],
-      },
-    ]);
-
-    expect(() => advisorRouteFor("kimi-k3", "panel")).toThrow(/kimi-k3/);
-  });
-
-  it("resolves a bare served model to OpenRouter's published id", () => {
-    _setCatalogEntriesForTest([
-      {
-        modelId: "grok-4.6",
-        aliases: [],
-        aggregators: [
-          {
-            sourceProviderId: "openrouter",
-            sourceCollectorId: "test",
-            confidence: "aggregator_reported",
-            routeStatus: "mapped",
-            route: { routeId: "openrouter", routeProfileId: "gateway" },
-            externalModelId: "x-ai/grok-4.6",
-          },
-        ],
-      },
-    ]);
-
-    expect(advisorRouteFor("grok-4.6", "panel").wireModel).toBe("x-ai/grok-4.6");
-  });
-
-  it("resolves a subscription prefix to the OpenRouter vendor id", () => {
-    _setCatalogEntriesForTest([
-      {
-        modelId: "gpt-5.6-sol",
-        aliases: [],
-        aggregators: [
-          {
-            sourceProviderId: "openrouter",
-            sourceCollectorId: "test",
-            confidence: "aggregator_reported",
-            routeStatus: "mapped",
-            route: { routeId: "openrouter", routeProfileId: "gateway" },
-            externalModelId: "openai/gpt-5.6-sol",
-          },
-        ],
-      },
-    ]);
-
-    const route = advisorRouteFor("cx@gpt-5.6-sol", "panel");
-
-    expect(route.kind).toBe("openrouter");
-    expect(route.wireModel).toBe("openai/gpt-5.6-sol");
-    expect(route.wireModel).not.toBe("openai-codex/gpt-5.6-sol");
-    expect(route.wireModel).not.toBe("cx/gpt-5.6-sol");
-  });
-});
-
-describe("advisor request wire routing", () => {
-  const fixture: DiskCacheV3 = JSON.parse(
+describe("advisor startup-chain routing", () => {
+  const replay = JSON.parse(
     readFileSync(
-      new URL(
-        "../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json",
-        import.meta.url
-      ),
+      new URL("../test-fixtures/advisor/replay-results-1792535079405.json", import.meta.url),
       "utf8"
     )
   );
-  function capture(
-    models: string[],
-    collector: string | null = null,
-    cache: DiskCacheV3 | null = fixture
-  ) {
-    const home = mkdtempSync(join(tmpdir(), "advisor-wire-"));
+  const opus = replay.results.find(
+    (result: any) => result.tier === "claude-opus-5-5" && result.shape === "A"
+  );
+  const haiku = replay.results.find(
+    (result: any) => result.tier === "claude-haiku-5-5" && result.shape === "A"
+  );
+  const messages = [
+    { role: "user", content: "Review this design" },
+    { role: "assistant", content: "I will check the boundary." },
+    { role: "user", content: "Include the earlier context." },
+  ];
+
+  function capture(models: string[], collector: string | null = null) {
+    const home = mkdtempSync(join(tmpdir(), "advisor-routing-"));
     try {
-      if (cache) {
-        mkdirSync(join(home, ".claudish"));
-        writeFileSync(join(home, ".claudish/cloud-models-catalog-v3.json"), JSON.stringify(cache));
-      }
       const child = Bun.spawnSync(
         [
           process.execPath,
           "--eval",
           `
-        const { advisorRouteFor, runAdvisorCall } = await import(${JSON.stringify(new URL("./native-handler-advisor.ts", import.meta.url).pathname)});
-        const models = ${JSON.stringify(models)}, collector = ${JSON.stringify(collector)};
-        const routes = models.map(m => advisorRouteFor(m, "panel"));
-        if (collector) routes.push(advisorRouteFor(collector, "collector"));
-        const calls = [];
         const originalFetch = globalThis.fetch;
-        globalThis.fetch = async (url, init) => {
-          calls.push({ url: String(url), method: init.method, headers: Object.fromEntries(new Headers(init.headers)), body: JSON.parse(init.body) });
-          if (String(url).endsWith("/responses")) return Response.json({ output: [{ type: "reasoning", summary: [] }, { type: "message", content: [{ type: "output_text", text: "Responses advice" }] }] });
-          if (String(url).includes(":generateContent")) return Response.json({ candidates: [{ content: { parts: [{ text: "Gemini advice" }] } }] });
-          if (String(url).endsWith("/messages")) return Response.json({ content: [{type: "text", text: "Messages synthesis"}] });
-          return Response.json({ choices: [{ message: { content: "Chat advice" } }] });
+        const networkCalls = [];
+        globalThis.fetch = async (...args) => {
+          networkCalls.push(String(args[0]));
+          throw new Error("Unexpected network call");
         };
         try {
-          const outcome = await runAdvisorCall({ toolUseId: "wire-advisor", messages: [{role: "user", content: "Review this design"}], models, collector,
-            apiKeys: { openai: "openai-fake", google: "google-fake", openrouter: "openrouter-fake", anthropic: "anthropic-fake" }, fetchImpl: globalThis.fetch, warn: () => {} });
-          console.log(JSON.stringify({ routes, calls, outcome }));
+          const { runAdvisorCall } = await import(${JSON.stringify(new URL("./native-handler-advisor.ts", import.meta.url).pathname)});
+          const { _setCatalogEntriesForTest } = await import(${JSON.stringify(new URL("../providers/catalog-client.ts", import.meta.url).pathname)});
+          _setCatalogEntriesForTest(null);
+          const models = ${JSON.stringify(models)}, collector = ${JSON.stringify(collector)};
+          const opus = ${JSON.stringify(opus)}, haiku = ${JSON.stringify(haiku)};
+          const message = result => ({
+            model: result.ok.model,
+            content: [{ type: "text", text: result.ok.text }],
+            stop_reason: result.ok.stop_reason,
+            usage: result.ok.usage,
+          });
+          const gatewayCalls = [], claudeCalls = [], plans = new Map();
+          for (const [role, specs] of [["panel", models], ["collector", collector ? [collector] : []]]) {
+            for (const spec of specs) {
+              if (spec === "claude-opus-5-5") {
+                plans.set(role + ":" + spec, { kind: "claude-native", spec, role, model: spec, expectedArm: "api-key" });
+                continue;
+              }
+              const wireId = spec.slice(spec.indexOf("@") + 1);
+              const provider = spec.slice(0, spec.indexOf("@"));
+              const displayName = { openai: "OpenAI", google: "Google", openrouter: "OpenRouter", anthropic: "Anthropic" }[provider];
+              plans.set(role + ":" + spec, {
+                kind: "routed", spec, role,
+                explanation: { requestedModel: spec, routedModel: wireId, source: "explicit", candidates: [], warnings: [], outcome: { kind: "ok" } },
+                hops: [{ provider, displayName, modelSpec: spec, wireId, billing: "metered" }],
+                invocationMode: "explicit-model",
+              });
+            }
+          }
+          let claudeAuthLookups = 0;
+          const outcome = await runAdvisorCall({
+            toolUseId: "routed-advisor", messages: ${JSON.stringify(messages)}, models, collector,
+            gateway: {
+              plan: (spec, role) => plans.get(role + ":" + spec),
+              async call(request) {
+                if (request.plan !== plans.get(request.plan.role + ":" + request.plan.spec)) throw new Error("Not the startup plan");
+                gatewayCalls.push(structuredClone(request));
+                const hop = request.plan.hops[0];
+                const result = request.plan.spec.startsWith("google@") ? haiku : opus;
+                return {
+                  status: result.status, bodyText: JSON.stringify(message(result)), streamFailure: false, latencyMs: 1,
+                  hops: [{ provider: hop.provider, wireModel: hop.wireId, arm: "api-key", billing: "metered", uid: hop.provider, displayName: hop.displayName }],
+                };
+              },
+            },
+            claude: {
+              async resolveAuth() {
+                claudeAuthLookups++;
+                return { arm: "api-key", source: "ANTHROPIC_API_KEY", apiKey: "anthropic-fake", facts: {} };
+              },
+              async fetchImpl(input, init) {
+                const request = input instanceof Request ? input : new Request(input, init);
+                claudeCalls.push({ url: request.url, method: request.method, headers: Object.fromEntries(request.headers), body: await request.json() });
+                return Response.json(message(opus), { status: opus.status });
+              },
+            },
+            warn: () => {},
+          });
+          console.log(JSON.stringify({ gatewayCalls, claudeCalls, claudeAuthLookups, networkCalls, outcome }));
         } finally { globalThis.fetch = originalFetch; }
       `,
         ],
         {
+          cwd: home,
           env: {
             PATH: process.env.PATH,
             HOME: home,
@@ -306,91 +271,138 @@ describe("advisor request wire routing", () => {
         }
       );
       expect(child.exitCode, child.stderr.toString()).toBe(0);
-      return JSON.parse(child.stdout.toString());
+      const result = JSON.parse(child.stdout.toString());
+      expect(result.networkCalls).toEqual([]);
+      return result;
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   }
-  it("OpenAI panel follows Responses wire and extracts output_text", () => {
-    const { routes, calls, outcome } = capture(["openai@gpt-6.1-sol"]);
-    expect(routes[0]).toMatchObject({
-      api: "responses",
-      url: "https://api.openai.com/v1/responses",
-      wire: { status: "known" },
+
+  function expectPanelCall(call: any, spec: string) {
+    expect(call.plan).toMatchObject({
+      kind: "routed",
+      spec,
+      role: "panel",
+      invocationMode: "explicit-model",
     });
-    const wire = routes[0].wire;
-    const effort = wire.reasoning.effort;
-    expect(typeof effort.default).toBe("string");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({
-      method: "POST",
-      url: routes[0].url,
-      headers: { authorization: "Bearer openai-fake" },
-      body: {
-        stream: false,
-        max_output_tokens: 2048,
-        reasoning: { effort: effort.values[effort.default] },
-      },
+    expect(call.timeoutMs).toBe(60_000);
+    expect(Object.keys(call.payload).sort()).toEqual([
+      "max_tokens",
+      "messages",
+      "model",
+      "stream",
+      "system",
+    ]);
+    expect(call.payload).toMatchObject({
+      model: call.plan.hops[0].modelSpec,
+      max_tokens: 2048,
+      stream: false,
     });
-    expect(calls[0].body.instructions).toBeString();
-    expect(calls[0].body.input).toContainEqual({ role: "user", content: "Review this design" });
-    expect(calls[0].body).not.toHaveProperty("messages");
-    expect(calls[0].body).not.toHaveProperty("max_tokens");
-    expect(outcome.result).toEqual({ text: "Responses advice", isError: false });
+    expect(call.payload.system).toBeString();
+    expect(call.payload.system.length).toBeGreaterThan(0);
+    expect(call.payload.messages.slice(0, messages.length)).toEqual(messages);
+  }
+
+  it("sends an OpenAI panel call through its startup chain and extracts translated advice", () => {
+    const spec = "openai@gpt-6.1-sol";
+    const { gatewayCalls, claudeCalls, claudeAuthLookups, outcome } = capture([spec]);
+    expect(gatewayCalls).toHaveLength(1);
+    expectPanelCall(gatewayCalls[0], spec);
+    expect(claudeCalls).toEqual([]);
+    expect(claudeAuthLookups).toBe(0);
+    expect(outcome.result).toEqual({ text: opus.ok.text, isError: false });
+    expect(outcome.panel[0]).toMatchObject({
+      origin: "upstream",
+      billing: "metered",
+      hopsTried: ["openai"],
+      servedBy: { provider: "openai", displayName: "OpenAI", arm: "api-key", billing: "metered" },
+      recordRoute: { kind: "routed", plannedChain: ["OpenAI"] },
+    });
   });
-  it("Google panel follows native Gemini wire and extracts candidate text", () => {
-    const { routes, calls, outcome } = capture(["google@gemini-3.8-flash"]);
-    expect(routes[0]).toMatchObject({
-      api: "gemini",
-      url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
-      wire: { status: "known" },
-    });
-    expect(calls[0]).toMatchObject({
-      url: routes[0].url,
-      headers: { "x-goog-api-key": "google-fake" },
-      body: { generationConfig: { maxOutputTokens: 2048 } },
-    });
-    expect(calls[0].body.systemInstruction.parts[0].text).toBeString();
-    expect(calls[0].body.contents).toContainEqual({
-      role: "user",
-      parts: [{ text: "Review this design" }],
-    });
-    expect(calls[0].body).not.toHaveProperty("messages");
-    expect(outcome.result).toEqual({ text: "Gemini advice", isError: false });
+
+  it("sends a Google panel call through its startup chain without resolving Claude credentials", () => {
+    const spec = "google@gemini-3.8-flash";
+    const { gatewayCalls, claudeCalls, claudeAuthLookups, outcome } = capture([spec]);
+    expect(gatewayCalls).toHaveLength(1);
+    expectPanelCall(gatewayCalls[0], spec);
+    expect(claudeCalls).toEqual([]);
+    expect(claudeAuthLookups).toBe(0);
+    expect(outcome.result).toEqual({ text: haiku.ok.text, isError: false });
   });
-  it("Anthropic collector uses Messages body, required limit and credential headers", () => {
-    const { routes, calls, outcome } = capture(
-      ["openai@gpt-6.1-sol", "google@gemini-3.8-flash"],
-      "anthropic@claude-opus-5-5"
+
+  it("uses the fixed Anthropic Messages endpoint for a bare Claude collector with both panel answers", () => {
+    const models = ["openai@gpt-6.1-sol", "google@gemini-3.8-flash"];
+    const { gatewayCalls, claudeCalls, claudeAuthLookups, outcome } = capture(
+      models,
+      "claude-opus-5-5"
     );
-    expect(routes[2]).toMatchObject({
-      api: "anthropic-messages",
+    expect(gatewayCalls).toHaveLength(2);
+    for (const spec of models)
+      expectPanelCall(
+        gatewayCalls.find((call: any) => call.plan.spec === spec),
+        spec
+      );
+    expect(claudeAuthLookups).toBe(1);
+    expect(claudeCalls).toHaveLength(1);
+    expect(claudeCalls[0]).toMatchObject({
+      method: "POST",
       url: "https://api.anthropic.com/v1/messages",
-    });
-    expect(calls).toHaveLength(3);
-    expect(calls[2]).toMatchObject({
-      url: routes[2].url,
       headers: { "x-api-key": "anthropic-fake", "anthropic-version": "2023-06-01" },
       body: { model: "claude-opus-5-5", max_tokens: 2048 },
     });
-    expect(calls[2].body.system).toBeString();
-    expect(calls[2].body.messages[0].content).toContain("Responses advice");
-    expect(calls[2].body.messages[0].content).toContain("Gemini advice");
-    expect(outcome.result).toEqual({ text: "Messages synthesis", isError: false });
+    expect(claudeCalls[0].headers).not.toHaveProperty("authorization");
+    expect(claudeCalls[0].body.system).toBeString();
+    expect(claudeCalls[0].body.messages[0].role).toBe("user");
+    for (const spec of models) expect(claudeCalls[0].body.messages[0].content).toContain(spec);
+    expect(claudeCalls[0].body.messages[0].content).toContain(opus.ok.text);
+    expect(claudeCalls[0].body.messages[0].content).toContain(haiku.ok.text);
+    expect(outcome.result).toEqual({ text: opus.ok.text, isError: false });
+    expect(outcome.collectorOutcome).toMatchObject({
+      recordRoute: { kind: "claude-native", host: "api.anthropic.com" },
+      servedBy: { provider: "native-anthropic", arm: "api-key", billing: "metered" },
+      credentialSource: "ANTHROPIC_API_KEY",
+      billing: "metered",
+    });
   });
-  it.each([
-    ["openai@unpublished", "https://api.openai.com/v1/chat/completions"],
-    [
-      "google@unpublished",
-      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-    ],
-    ["openrouter@acme/unpublished", "https://openrouter.ai/api/v1/chat/completions"],
-  ])("cold catalog uses documented chat endpoint for %s", (model, url) => {
-    const { routes, calls, outcome } = capture([model!], null, null);
-    expect(routes[0]).toMatchObject({ api: "chat-completions", url });
-    expect(routes[0]).not.toHaveProperty("wire");
-    expect(calls[0].body.messages).toBeArray();
-    expect(calls[0].body).not.toHaveProperty("input");
-    expect(outcome.result).toEqual({ text: "Chat advice", isError: false });
+
+  it.each(["openai@unpublished", "google@unpublished", "openrouter@acme/unpublished"])(
+    "uses the startup chain for %s even with a cold cloud models catalog",
+    (spec) => {
+      const { gatewayCalls, claudeCalls, claudeAuthLookups, outcome } = capture([spec]);
+      expect(gatewayCalls).toHaveLength(1);
+      expectPanelCall(gatewayCalls[0], spec);
+      expect(claudeCalls).toEqual([]);
+      expect(claudeAuthLookups).toBe(0);
+      expect(outcome.result).toEqual({
+        text: spec.startsWith("google@") ? haiku.ok.text : opus.ok.text,
+        isError: false,
+      });
+    }
+  );
+
+  it("keeps an explicit Anthropic collector on its routed chain, not the native Claude arm", () => {
+    const collector = "anthropic@claude-opus-5-5";
+    const { gatewayCalls, claudeCalls, claudeAuthLookups, outcome } = capture(
+      ["openai@gpt-6.1-sol", "google@gemini-3.8-flash"],
+      collector
+    );
+    expect(gatewayCalls).toHaveLength(3);
+    const call = gatewayCalls.find((call: any) => call.plan.role === "collector");
+    expect(call.plan.spec).toBe(collector);
+    expect(call.timeoutMs).toBe(30_000);
+    expect(call.payload.model).toBe(call.plan.hops[0].modelSpec);
+    expect(Object.keys(call.payload).sort()).toEqual([
+      "max_tokens",
+      "messages",
+      "model",
+      "stream",
+      "system",
+    ]);
+    expect(call.payload.messages[0].content).toContain(opus.ok.text);
+    expect(call.payload.messages[0].content).toContain(haiku.ok.text);
+    expect(claudeCalls).toEqual([]);
+    expect(claudeAuthLookups).toBe(0);
+    expect(outcome.result).toEqual({ text: opus.ok.text, isError: false });
   });
 });

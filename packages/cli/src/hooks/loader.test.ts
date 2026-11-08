@@ -287,6 +287,7 @@ describe("hook output stays off stdout (spawned process)", () => {
     const dir = tempDir();
     const mod = write(dir, "noisy.ts", NOISY);
     const proc = Bun.spawn(["bun", HELPER, "interactive", mod], {
+      env: { ...process.env },
       cwd: dir,
       stdout: "pipe",
       stderr: "pipe",
@@ -318,7 +319,7 @@ describe("hook output stays off stdout (spawned process)", () => {
     const mod = write(dir, "noisy.ts", NOISY);
     const proc = Bun.spawn(
       ["bun", "-e", `await import(${JSON.stringify(mod)}); await Bun.sleep(100);`],
-      { cwd: dir, stdout: "pipe", stderr: "pipe" }
+      { env: { ...process.env }, cwd: dir, stdout: "pipe", stderr: "pipe" }
     );
     const stdout = await new Response(proc.stdout).text();
     await proc.exited;

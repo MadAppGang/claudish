@@ -26,6 +26,11 @@ import type {
  * adopting it would mean either regressing that rule or redesigning the seam's
  * context type. Its rule stays in `transport/antigravity.ts`; folding it in is a
  * follow-up, not a merge-time decision.
+ *
+ * The routing availability check still resolves Antigravity ids exactly as its
+ * transport does: `providerServesModel` calls `resolveAntigravityServedModel`
+ * with the transport's own inputs (the full `servedIds` and the backend's
+ * `defaultAgentModelId`), which a resolver here could not receive either.
  */
 const RESOLVERS: ProviderModelResolver[] = [new DevinModelResolver()];
 

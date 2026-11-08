@@ -26,6 +26,7 @@
  */
 
 import { log } from "../../logger.js";
+import { streamFailureHeaders } from "./recovery-marker.js";
 
 /**
  * Give up after this long with NOTHING on the wire — not one byte, not a ping.
@@ -72,6 +73,34 @@ export interface CollectedMessage {
   stop_reason: string | null;
   stop_sequence: string | null;
   usage: { input_tokens: number; output_tokens: number };
+  /**
+   * Set when the stream carried an SSE `error` event: the turn FAILED after the
+   * provider answered 200. `content` is then empty (every collected block is
+   * discarded) and `sseResponseToJson` answers an error, not this message.
+   * Never serialised as part of a message.
+   */
+  streamError?: CollectedStreamError;
+}
+
+/** The error an SSE `error` event declared: `{type, message}` of its `error` object. */
+export interface CollectedStreamError {
+  type: string;
+  message: string;
+}
+
+/**
+ * The HTTP status the Anthropic Messages API defines for an error type. Any
+ * type not listed is answered 500.
+ */
+const STATUS_FOR_ERROR_TYPE: Record<string, number> = {
+  invalid_request_error: 400,
+  api_error: 500,
+  overloaded_error: 529,
+};
+
+/** The status an Anthropic error body of this `type` is answered with. */
+export function statusForStreamErrorType(type: string): number {
+  return STATUS_FOR_ERROR_TYPE[type] ?? 500;
 }
 
 export interface CollectSseOptions {
@@ -134,6 +163,7 @@ export async function collectSseMessage(
   };
 
   const blocks = new Map<number, CollectedBlock>();
+  let streamError: CollectedStreamError | undefined;
 
   /**
    * A delta may name a block no `content_block_start` announced.
@@ -204,6 +234,19 @@ export async function collectSseMessage(
           message.usage.output_tokens = data.usage.output_tokens;
         break;
       }
+      case "error": {
+        // The parsers' terminal failure: Claude Code discards a streamed message
+        // that ends this way and retries the turn. The first one wins.
+        if (!streamError) {
+          const e = data.error ?? {};
+          streamError = {
+            type: typeof e.type === "string" && e.type ? e.type : "api_error",
+            message:
+              typeof e.message === "string" && e.message ? e.message : "Stream ended with an error",
+          };
+        }
+        break;
+      }
       default:
         break;
     }
@@ -253,6 +296,17 @@ export async function collectSseMessage(
     log(`[CollectSSE] read failed, keeping ${blocks.size} block(s): ${e}`);
   }
 
+  if (streamError) {
+    // A failed turn has no partial answer worth keeping: in streaming mode the
+    // client discards every block of it, so the JSON form does too.
+    log(
+      `[CollectSSE] stream ended with SSE error (${streamError.type}): discarding ${blocks.size} block(s)`
+    );
+    message.content = [];
+    message.streamError = streamError;
+    return message;
+  }
+
   // Emit blocks in index order; the map is keyed by the wire index.
   for (const index of Array.from(blocks.keys()).sort((a, b) => a - b)) {
     message.content.push(finalizeBlock(blocks.get(index)!));
@@ -274,8 +328,17 @@ export async function collectSseMessage(
 /**
  * Wrap a Claude SSE Response as a non-streaming JSON Response.
  *
- * Always a 200: an error response never reaches here, because ComposedHandler
- * returns those directly without building a stream.
+ * A 200 carrying the message, unless the stream carried an SSE `error` event.
+ * Every ComposedHandler parser (openai-responses-sse, openai-sse, gemini-sse,
+ * ollama-jsonl, devin-connect, anthropic-sse) emits one from its terminal
+ * failure path, and in streaming mode Claude Code discards that message and
+ * retries the turn. The non-streamed form now does the same: the Anthropic
+ * error body `{type:"error", error:{type, message}}` with the status the
+ * Messages API defines for that type (`statusForStreamErrorType`), and the
+ * stream-failure marker, so `FallbackHandler` returns it verbatim and never
+ * advances a routing chain on it. The status is the one the event declares,
+ * not an upstream status claim. An upstream non-ok response never reaches
+ * here: ComposedHandler returns those directly without building a stream.
  */
 export async function sseResponseToJson(
   sse: Response,
@@ -283,6 +346,13 @@ export async function sseResponseToJson(
   opts: CollectSseOptions = {}
 ): Promise<Response> {
   const message = await collectSseMessage(sse, fallbackModel, opts);
+  if (message.streamError) {
+    const { type, message: text } = message.streamError;
+    return new Response(JSON.stringify({ type: "error", error: { type, message: text } }), {
+      status: statusForStreamErrorType(type),
+      headers: streamFailureHeaders(),
+    });
+  }
   return new Response(JSON.stringify(message), {
     status: 200,
     headers: { "Content-Type": "application/json" },

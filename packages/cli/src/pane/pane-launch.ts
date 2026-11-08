@@ -22,9 +22,16 @@
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 import {
   CLAUDISH_EXITING_FLAGS,
   CLAUDISH_FLAG_ARITY,
@@ -104,7 +111,7 @@ export const OWNER_START36 = Math.round(Date.now() - process.uptime() * 1000).to
 export { isValidPaneId };
 
 /** `c<pid>-<ownerStart36>-<kind><label>-<6 hex>`, at most 40 characters. */
-export function mintPaneId(kind: "t" | "s", label: string): string {
+export function mintPaneId(kind: "t" | "s" | "r", label: string): string {
   const head = `c${process.pid}-${OWNER_START36}-${kind}`;
   const tail = `-${randomBytes(3).toString("hex")}`;
   const room = Math.max(0, 40 - head.length - tail.length);
@@ -216,6 +223,9 @@ export function buildPaneEnv(input: PaneEnvInput): { magmuxEnv: Record<string, s
   if (input.parentEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC === undefined)
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   if (input.parentEnv.CLAUDE_CODE_NATIVE_CURSOR === undefined) env.CLAUDE_CODE_NATIVE_CURSOR = "1";
+  // The delegating conversation comes from this spawn's `slotEnv` only: a value the
+  // owner inherited (its user's shell) names no conversation of this call.
+  delete env[ENV.CLAUDISH_PARENT_SESSION];
   Object.assign(env, input.slotEnv);
   if (input.configFile !== null) env.CLAUDISH_CONFIG = input.configFile;
   env[ENV.CLAUDISH_PANE_CHILD] = "1";
@@ -236,6 +246,123 @@ export function buildPaneEnv(input: PaneEnvInput): { magmuxEnv: Record<string, s
   env[ENV.CLAUDISH_PANE_ENV] = json;
   env.SHELL = join(input.ctlDir, "sh-shim");
   return { magmuxEnv: env };
+}
+
+/* ───────────────────────────── a replay's environment and argv ───────────────────────────── */
+
+/**
+ * The only parent variables a replay inherits. An allowlist, so a credential or a provider
+ * switch a later Claude Code adds cannot pass by being unknown. `HOME` and `CLAUDE_CONFIG_DIR`
+ * lead to credential files; `--bare` stops those reads.
+ */
+export const REPLAY_ENV_ALLOWLIST = [
+  "HOME",
+  "PATH",
+  "USER",
+  "LOGNAME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TMPDIR",
+  "CLAUDE_CONFIG_DIR",
+] as const;
+
+/**
+ * magmux's environment for a replay: the allowlist and seven fixed keys, nothing else. No
+ * snapshot and no `CLAUDISH_PANE_CWD`, which exist for a claudish child, and a replay has
+ * none. `CLAUDE_CONFIG_DIR` is copied or overridden, never defaulted: unset, Claude Code
+ * reads `~/.claude.json`, and pointing it at `~/.claude` would lose every trust entry.
+ *
+ * Two switches keep a read-only replay from writing plugin state into that config or drawing a
+ * dialog over the conversation; `--bare` stops neither. Without the first, a start against a
+ * config with no official marketplace installs it (about 580 files, 14 MB under `plugins/`).
+ * The second leaves file history empty, so the LSP plugin recommendation, which offers a
+ * plugin for the file types the resumed conversation touched, finds no file to match even
+ * where a marketplace is already installed; it also stops an empty `file-history/<fork>/`.
+ */
+export function buildReplayEnv(input: {
+  parentEnv: Record<string, string | undefined>;
+  ctlDir: string;
+  cols: number;
+  rows: number;
+  /** set only when it differs from `claudeConfigDir(parentEnv)` */
+  configDirOverride?: string;
+}): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const k of REPLAY_ENV_ALLOWLIST) {
+    const v = input.parentEnv[k];
+    if (v) env[k] = v;
+  }
+  if (input.configDirOverride) env.CLAUDE_CONFIG_DIR = input.configDirOverride;
+  env.SHELL = join(input.ctlDir, "sh-shim");
+  env[ENV.CLAUDISH_PANE_CHILD] = "1";
+  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+  env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL = "1";
+  env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING = "1";
+  env.COLUMNS = String(input.cols);
+  env.LINES = String(input.rows);
+  return env;
+}
+
+/**
+ * `claude`'s argv. `--setting-sources ""` closes every settings file, whose `env` block could
+ * otherwise carry a key or a provider switch; `--session-id` names the one record a fork could
+ * write. `claudeSessionId` comes from a record on disk: the caller checks it is a uuid first,
+ * because quoting stops the shell but not a value that starts with `-`.
+ */
+export function buildReplayArgv(
+  claudeSessionId: string,
+  forkUuid: string,
+  settingsJson: string
+): string[] {
+  return [
+    "--resume",
+    claudeSessionId,
+    "--fork-session",
+    "--session-id",
+    forkUuid,
+    "--bare",
+    "--setting-sources",
+    "",
+    "--strict-mcp-config",
+    "--settings",
+    settingsJson,
+  ];
+}
+
+/**
+ * The `--settings` value: only the known keys `statusLine`, `wheelScrollAccelerationEnabled`
+ * and `tui`, so `env` and `apiKeyHelper` cannot enter. `tui: "fullscreen"` is set because
+ * `--setting-sources ""` keeps the user's `tui` from reaching the replay, and without it Claude
+ * Code picks its view by install and feature gates; the classic view ignores the SGR wheel
+ * events `scroll_session` sends.
+ */
+export function replaySettingsJson(statusLine: unknown | null): string {
+  return JSON.stringify({
+    ...(statusLine === null ? {} : { statusLine }),
+    wheelScrollAccelerationEnabled: false,
+    tui: "fullscreen",
+  });
+}
+
+const MAX_USER_SETTINGS_BYTES = 1024 * 1024;
+
+/**
+ * The `statusLine` object of `<configDir>/settings.json`, else null: absent, unreadable,
+ * oversized, invalid JSON or any other value. Never throws. Project and local settings files
+ * are never read.
+ */
+export function readUserStatusLine(configDir: string): unknown | null {
+  try {
+    const path = join(configDir, "settings.json");
+    if (statSync(path).size > MAX_USER_SETTINGS_BYTES) return null;
+    const v = (JSON.parse(readFileSync(path, "utf8")) as { statusLine?: unknown } | null)
+      ?.statusLine;
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 /* ───────────────────────────── child argv and flags ───────────────────────────── */
@@ -331,6 +458,7 @@ const MODE_FLAGS = [
  * a subcommand instead of the REPL, which the child-side assertion cannot catch.
  */
 export const SUBCOMMAND_WORDS = [
+  "account",
   "update",
   "init",
   "profile",
@@ -363,6 +491,22 @@ function reservedMessage(flag: string): string | null {
   if ((MODE_FLAGS as readonly string[]).includes(flag))
     return `${flag} would start a different claudish mode inside the pane`;
   return null;
+}
+
+/**
+ * SlotRow.agent_requested: the value of the LAST `--agent` in the child's flags (both
+ * `--agent x` and `--agent=x`); null when there is none. `buildChildClaudeFlags` has
+ * already folded the `agent` argument and any `--agent` in `claude_flags` into one pair.
+ */
+export function requestedAgentOf(flags: readonly string[]): string | null {
+  let agent: string | null = null;
+  for (let i = 0; i < flags.length; i++) {
+    const [name, inline] = splitFlag(flags[i] as string);
+    if (name !== "--agent") continue;
+    const value = inline ?? flags[i + 1];
+    if (value && !value.startsWith("-")) agent = value;
+  }
+  return agent;
 }
 
 /** Whether the flags visibly remove the Read tool (§2.3 rule 4). */
@@ -529,7 +673,6 @@ type MagmuxBinary = { binary: string; version: string };
 const magmuxCache = new Map<string, MagmuxBinary>();
 /** The probe in flight per key: six slots starting at once run `--version` once, not six times. */
 const magmuxProbes = new Map<string, Promise<MagmuxBinary>>();
-const execFileAsync = promisify(execFile);
 
 /** The magmux binary and its version (≥ `MIN_MAGMUX_VERSION`), cached per process. Never a `-p` fallback. */
 export async function assertMagmuxAvailable(binary?: string): Promise<MagmuxBinary> {
@@ -569,20 +712,60 @@ async function probeMagmux(binary?: string): Promise<MagmuxBinary> {
   return { binary: found, version };
 }
 
+/** How long one `magmux --version` run may take before it is killed and counted as no answer. */
+const MAGMUX_VERSION_TIMEOUT_MS = 5000;
+
 /** The `X.Y.Z` from one `<binary> --version` run, read from stdout and stderr together; "" when absent. */
 async function readMagmuxVersion(found: string): Promise<string> {
-  let out = "";
-  try {
-    // async: the first create_session or team run must not stall the MCP server's event
-    // loop for up to 5 s (every other session's frames and socket share it)
-    const r = await execFileAsync(found, ["--version"], { encoding: "utf8", timeout: 5000 });
-    out = `${r.stdout}\n${r.stderr}`;
-  } catch (e) {
-    throw new MagmuxUnavailableError(
-      `magmux_unavailable: ${found} --version failed: ${e instanceof Error ? e.message : String(e)}`
-    );
-  }
+  const out = await runMagmuxVersion(found, MAGMUX_VERSION_TIMEOUT_MS);
   return out.match(/(\d+\.\d+\.\d+)/)?.[1] ?? "";
+}
+
+/**
+ * One `<binary> --version` run, bounded by a deadline that does NOT depend on the child exiting.
+ * execFile's own `timeout` only sends a signal and then waits for the child to close: a child that
+ * ignores SIGTERM (or whose exit is never observed) kept the promise pending, and because
+ * `assertMagmuxAvailable` hands one in-flight probe to every caller, every later pane start in the
+ * process hung with it. On expiry the run rejects at once, the child is SIGKILLed, and its pipes
+ * are released (a grandchild may still hold them open).
+ */
+function runMagmuxVersion(found: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolveRun, rejectRun) => {
+    let settled = false;
+    let child: ChildProcess | undefined;
+    const timer = setTimeout(() => {
+      fail(`no answer in ${timeoutMs} ms`);
+      try {
+        child?.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
+    }, timeoutMs);
+    const settle = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      clearTimeout(timer);
+      return true;
+    };
+    const fail = (detail: string): void => {
+      if (!settle()) return;
+      rejectRun(
+        new MagmuxUnavailableError(`magmux_unavailable: ${found} --version failed: ${detail}`)
+      );
+    };
+    try {
+      // async: the first create_session or team run must not stall the MCP server's event
+      // loop for up to 5 s (every other session's frames and socket share it)
+      child = execFile(found, ["--version"], { encoding: "utf8" }, (error, stdout, stderr) => {
+        if (error) return fail(error.message);
+        if (settle()) resolveRun(`${stdout}\n${stderr}`);
+      });
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
+  });
 }
 
 /* ───────────────────────────── launcher ───────────────────────────── */
@@ -616,6 +799,19 @@ export function shq(s: string): string {
 export function launcherScript(cwd: string, launch: ClaudishLaunch, argv: string[]): string {
   const words = [launch.command, ...launch.prefixArgs, ...argv].map(shq).join(" ");
   return `cd -- ${shq(cwd)} || exit 97\nexec ${words}\n`;
+}
+
+/**
+ * A replay's launcher: the real `SHELL` back in place first, because magmux needed the shim
+ * and a status line or a `!` command should see the user's own shell.
+ */
+export function replayLauncherScript(
+  realShell: string,
+  cwd: string,
+  launch: ClaudishLaunch,
+  argv: string[]
+): string {
+  return `export SHELL=${shq(realShell)}\n${launcherScript(cwd, launch, argv)}`;
 }
 
 export const SHELL_SHIM = '#!/bin/sh\n[ "$1" = -l ] && shift\nexec /bin/sh "$@"\n';
@@ -720,6 +916,38 @@ export function paneMagmuxArgv(input: Omit<MagmuxSpawnInput, "binary" | "cwd" | 
 
 export function spawnPaneMagmux(input: MagmuxSpawnInput): ChildProcess {
   const proc = spawn(input.binary, paneMagmuxArgv(input), {
+    cwd: input.cwd,
+    env: input.env,
+    stdio: ["ignore", "ignore", "pipe"],
+    detached: true,
+  });
+  proc.on("error", () => {});
+  return proc;
+}
+
+export type ReplayMagmuxInput = Omit<MagmuxSpawnInput, "sessionUuid" | "transcriptPath">;
+
+/**
+ * A replay's magmux argv: no `--controller`, `--session-id` or `--transcript`, because nothing
+ * reads a gate on this pane. `--id <paneId> --sock-dir` stays adjacent, for `magmuxNeedle`.
+ */
+export function replayMagmuxArgv(
+  input: Omit<ReplayMagmuxInput, "binary" | "cwd" | "env">
+): string[] {
+  return [
+    "--headless",
+    "--no-status",
+    "--id",
+    input.paneId,
+    "--sock-dir",
+    input.sockRoot,
+    "-e",
+    paneCommand(input.ctlDir),
+  ];
+}
+
+export function spawnReplayMagmux(input: ReplayMagmuxInput): ChildProcess {
+  const proc = spawn(input.binary, replayMagmuxArgv(input), {
     cwd: input.cwd,
     env: input.env,
     stdio: ["ignore", "ignore", "pipe"],

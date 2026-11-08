@@ -165,6 +165,25 @@ describe("readTokenFileCached", () => {
 });
 
 describe("toSlotRow (§8 B)", () => {
+  test("agent fields keep requested and transcript agents independent", () => {
+    const snapshot = snap({ agent: "dev:reviewer" });
+    const row = toSlotRow(
+      { slot: "01", model: "haiku", spawnModel: null, agentRequested: "dev:requested" },
+      snapshot,
+      mergeAccounting(snapshot, null)
+    );
+    expect(row).toMatchObject({
+      agent_requested: "dev:requested",
+      agent: "dev:reviewer",
+    });
+    const absent = toSlotRow(
+      { slot: "01", model: "haiku", spawnModel: null },
+      snap(),
+      mergeAccounting(snap(), null)
+    );
+    expect(absent).toMatchObject({ agent_requested: null, agent: null });
+  });
+
   test("a running row: idle seconds from last activity, activity kept, reason null", () => {
     const now = Date.parse("2026-10-06T01:00:07.900Z");
     const row = toSlotRow(
@@ -190,10 +209,14 @@ describe("toSlotRow (§8 B)", () => {
       activity: "Bash",
       pane: "c1-k0-t01-abcdef",
       recent: null,
+      agent_requested: null,
+      agent: null,
     });
     expect(Object.keys(row).sort()).toEqual(
       [
         "activity",
+        "agent_requested",
+        "agent",
         "cost_usd",
         "idle_seconds",
         "last_activity_at",

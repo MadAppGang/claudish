@@ -180,7 +180,10 @@ describe("recommended listing renderers", () => {
       test("T10/T14a R6/R8/R10 markdown prints ordered headings with descriptions on the next nonblank line", () => {
         const doc = project(snapshot);
         const before = structuredClone(doc);
-        const output = renderRecommendedMarkdown(doc, noNativePrefix);
+        const output = renderRecommendedMarkdown(doc);
+        expect(output).not.toContain("**Access**");
+        expect(output).not.toContain("@");
+        expect(output).toContain("Pass each model by its bare id");
         const lines = output.split("\n");
         expect(
           lines.filter(
@@ -215,10 +218,7 @@ describe("recommended listing renderers", () => {
     expect(absent.some((section) => section.recommendationTier === "luxury")).toBe(true);
     const doc = project(dryrun);
     const groups = groupRecommendedModels(doc.models);
-    const outputs = [
-      renderRecommendedText(doc, noNativePrefix),
-      renderRecommendedMarkdown(doc, noNativePrefix),
-    ];
+    const outputs = [renderRecommendedText(doc, noNativePrefix), renderRecommendedMarkdown(doc)];
     for (const def of absent) {
       expect(groups.some((section) => section.recommendationTier === def.recommendationTier)).toBe(
         false
@@ -249,7 +249,7 @@ describe("recommended listing renderers", () => {
     const rows = doc.models.filter((row) => row.recommendationTier === "luxury");
     expect(rows.map((row) => row.id)).toEqual([...new Set(expectedIds)]);
     const text = renderRecommendedText(doc, noNativePrefix);
-    const markdown = renderRecommendedMarkdown(doc, noNativePrefix);
+    const markdown = renderRecommendedMarkdown(doc);
     for (const row of rows) {
       const rich = live.richModels.find((model) => model.modelId === row.id);
       expect(typeof rich?.pricing?.input).toBe("number");
@@ -270,7 +270,7 @@ describe("recommended listing renderers", () => {
     const rows = doc.models.filter((row) => row.recommendationTier === "luxury");
     expect(rows.length).toBeGreaterThan(0);
     const text = renderRecommendedText(doc, noNativePrefix);
-    const markdown = renderRecommendedMarkdown(doc, noNativePrefix);
+    const markdown = renderRecommendedMarkdown(doc);
     for (const row of rows) {
       expect(row.pricing).toEqual({ input: "N/A", output: "N/A", average: "N/A" });
       expect(formatListingPrice(row, { compact: true })).toBe("N/A");
@@ -303,7 +303,7 @@ describe("recommended listing renderers", () => {
       doc,
       row,
       renderRecommendedText(doc, noNativePrefix),
-      renderRecommendedMarkdown(doc, noNativePrefix)
+      renderRecommendedMarkdown(doc)
     );
     for (const other of doc.models.filter((candidate) => candidate.id !== seed.id)) {
       const previous = baseline.models.find(
@@ -325,7 +325,7 @@ describe("recommended listing renderers", () => {
     if (!section) throw new Error("T14a requires a recorded nonempty subscription section");
     expect(section.groups.length).toBeGreaterThan(0);
     const text = renderRecommendedText(doc, noNativePrefix);
-    const markdown = renderRecommendedMarkdown(doc, noNativePrefix);
+    const markdown = renderRecommendedMarkdown(doc);
     for (const group of section.groups) {
       const row = group.primary;
       expect(typeof row.subscription?.command).toBe("string");
@@ -342,7 +342,7 @@ describe("recommended listing renderers", () => {
     const error = spyOn(console, "error").mockImplementation(() => {});
     try {
       expect(typeof renderRecommendedText(doc, noNativePrefix)).toBe("string");
-      expect(typeof renderRecommendedMarkdown(doc, noNativePrefix)).toBe("string");
+      expect(typeof renderRecommendedMarkdown(doc)).toBe("string");
       expect(log).not.toHaveBeenCalled();
       expect(warn).not.toHaveBeenCalled();
       expect(error).not.toHaveBeenCalled();

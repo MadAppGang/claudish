@@ -91,12 +91,33 @@ function modelsCatalogHas(ids: string[], wireId: string): boolean {
  * with the request's real effort when it sends. For a provider with no
  * resolver, `expandSelection` returns `wireId` unchanged, so their answer is
  * exactly what it was.
+ *
+ * Antigravity resolves outside the resolver registry (see its comment there)
+ * and the same rule applies: `ag@gemini-3.8-flash` read as not served on an
+ * account serving only `gemini-3.8-flash-tiered`, which the transport sends,
+ * so a bare name lost its subscription hop. It resolves here with the
+ * transport's own function over the transport's own inputs: the full served
+ * set and the backend's default id, cached by the discovery that just ran.
+ * Only when that cache is absent does it fall back to the dynamic models
+ * catalog's ids with no backend default. Loaded lazily, so no other provider's
+ * check pulls in the Antigravity transport.
  */
-function resolveAgainstModelsCatalog(
+async function resolveAgainstModelsCatalog(
   provider: string,
   wireId: string,
   models: DiscoveredModel[]
-): string {
+): Promise<string> {
+  if (provider === "antigravity") {
+    const [{ resolveAntigravityServedModel }, { peekServedAntigravityModels }] = await Promise.all([
+      import("./transport/antigravity.js"),
+      import("../auth/antigravity-user.js"),
+    ]);
+    const served = peekServedAntigravityModels() ?? {
+      servedIds: models.map((m) => m.id),
+      defaultId: null,
+    };
+    return resolveAntigravityServedModel(wireId, served);
+  }
   const entries = models.map(({ id, ...rest }) => ({ wireId: id, ...rest }));
   return expandSelection(provider, wireId, entries);
 }
@@ -127,7 +148,7 @@ export async function providerServesModel(
     if (models.length > 0) {
       return modelsCatalogHas(
         models.map((m) => m.id),
-        resolveAgainstModelsCatalog(provider, wireId, models)
+        await resolveAgainstModelsCatalog(provider, wireId, models)
       )
         ? "serves"
         : "not-served";

@@ -327,6 +327,24 @@ headers from nothing, and the only path that copies upstream headers verbatim
 **If a future edit ever returns an upstream `Response` object on a non-ok path, the marker must be
 stripped there.**
 
+### A third marker, for a stream that failed after its 200: `x-claudish-stream-failure`
+
+Not a connection verdict, but it rests on the same two facts and lives in the same file
+(`recovery-marker.ts`: `STREAM_FAILURE_HEADER`, `streamFailureHeaders()`, `isStreamFailureResponse()`).
+A non-streamed request (`stream` absent or false) is answered by `sseResponseToJson`, which folds
+the parser's Claude SSE into one JSON message. When that SSE ended on an `error` event (a cut-off
+tool call, a degenerate `parallel` wrapper, an exhausted in-turn retry, a mid-stream failure on any
+other parser), the collector answers the Anthropic error body with the status the Messages API
+defines for its type, and this header. The streamed form of the same failure never reaches
+`FallbackHandler` as an error, so neither may this one: `handle()` returns it verbatim beside the
+recovery marker, before reading the body, and `isRetryableError` returns `false` on it directly
+after `isClaudishConnectionVerdict`, above the quota wording. The order matters for the same reason
+as above: a retry leg's error quotes the upstream body, which can say "usage limit reached".
+
+Unforgeable by the same argument: `sseResponseToJson` builds a new `Response` whose headers start
+empty. Rationale and the collector contract: [`adapters.md`](adapters.md), "A non-streamed turn that
+ends in an SSE error".
+
 ---
 
 ## 4. The banner and its lease

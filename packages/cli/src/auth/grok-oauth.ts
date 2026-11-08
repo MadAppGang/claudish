@@ -28,6 +28,8 @@
  * `grok login` is still picked up for free.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { log } from "../logger.js";
 import { credentialHttpError, terminalCredentialError } from "./credentials/credential-error.js";
 import { type BaseCredentials, OAuthManager } from "./oauth-manager.js";
@@ -123,6 +125,23 @@ interface TokenResponse {
 /** Poll interval floor, per RFC 8628 §3.5 when the server sends none. */
 const DEFAULT_POLL_INTERVAL_S = 5;
 
+/**
+ * Test seam for `~/.claudish/grok-oauth.json`. MANDATORY in any test that reaches
+ * `GrokOAuth`: the default is the developer's real login, and since the file is
+ * read lazily and re-read on change, a test without the seam reads (and, through a
+ * refresh, writes) the real file. The guard does not snapshot this file.
+ */
+let grokOAuthPathOverride: string | null = null;
+
+export function setGrokOAuthPathForTesting(path: string | null): void {
+  grokOAuthPathOverride = path;
+}
+
+/** claudish's OWN Grok login file, written by `claudish login grok`. */
+export function grokOAuthPath(): string {
+  return grokOAuthPathOverride ?? join(homedir(), ".claudish", "grok-oauth.json");
+}
+
 export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
   protected readonly credentialFile = "grok-oauth.json";
   protected readonly providerName = "GrokOAuth";
@@ -137,9 +156,13 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
     return GrokOAuth.instance;
   }
 
-  constructor() {
-    super();
-    this.credentials = this.loadCredentials();
+  /**
+   * claudish's own Grok login file, honouring `setGrokOAuthPathForTesting`. The
+   * readiness check (`hasClaudishGrokOAuth`) reads the same function, so a test
+   * override can never send the two to different files.
+   */
+  protected override getCredentialsPath(): string {
+    return grokOAuthPath();
   }
 
   protected validateCredentials(data: unknown): data is GrokOAuthCredentials {
@@ -160,16 +183,10 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
   /**
    * Exchange the refresh token. Public client: `client_id` in the body, no
    * secret. The IdP may ROTATE the refresh token, so whatever comes back is
-   * persisted — dropping it would strand the next refresh on a dead token.
+   * returned for `refreshAndCommit` to persist — dropping it would strand the next
+   * refresh on a dead token. Nothing is written here.
    */
-  protected async doRefreshToken(): Promise<string> {
-    const current = this.credentials;
-    if (!current) {
-      throw terminalCredentialError(
-        `No Grok credentials found. Please run \`${this.loginHint}\` first.`
-      );
-    }
-
+  protected async doRefreshToken(current: GrokOAuthCredentials): Promise<GrokOAuthCredentials> {
     const body = new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: current.refresh_token,
@@ -239,9 +256,7 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
       client_id: current.client_id || GROK_PUBLIC_CLIENT_ID,
       scope: parsed.scope ?? current.scope,
     };
-    this.credentials = next;
-    this.saveCredentials(next);
-    return next.access_token;
+    return next;
   }
 
   /**
@@ -265,7 +280,6 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
 
     try {
       const credentials = await this.pollForToken(auth, clientId);
-      this.credentials = credentials;
       this.saveCredentials(credentials);
     } finally {
       // Must run on the failure path too — a timed-out or declined login would
@@ -364,6 +378,8 @@ export class GrokOAuth extends OAuthManager<GrokOAuthCredentials> {
    * surprising outcome of the two.
    */
   async logout(): Promise<void> {
+    // Revoke the login that is on disk now, which may be newer than ours.
+    this.fileState.syncFromDisk();
     const current = this.credentials;
     if (current?.refresh_token) {
       try {
