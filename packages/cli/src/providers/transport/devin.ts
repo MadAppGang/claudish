@@ -45,7 +45,7 @@ import { resolveDevinModelUid } from "../devin/model-id-resolver.js";
 import type { ProviderTransport, SerializedBody, StreamFormat } from "./types.js";
 
 /** The streaming rpc. The unary metadata rpcs live in `devin-models.ts`. */
-const CHAT_PATH = "/exa.api_server_pb.ApiServerService/GetChatMessage";
+export const CHAT_PATH = "/exa.api_server_pb.ApiServerService/GetChatMessage";
 
 /** Connect streaming content type. The unary rpcs use bare `application/proto`. */
 const CHAT_CONTENT_TYPE = "application/connect+proto";

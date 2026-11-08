@@ -10,6 +10,7 @@
  * sentinel's `cause` — the primary's own terminal error.
  */
 
+import { MeteredEscapeError } from "../accounts/errors.js";
 import type {
   CredentialProvider,
   ReadinessResult,
@@ -118,6 +119,19 @@ export class CompositeCredentialProvider implements CredentialProvider {
    * caller learns which credential won.
    */
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {
+    if (this.catalogName === "openai-codex" && ctx.requireOAuth) {
+      // Dispatch before availability: a removed pool must not select the key arm.
+      const auth = await this.primary.getRequestAuth(ctx);
+      // A pooled artifact must also name a CODEX account: another provider's
+      // lease is not this subscription. The synthesized legacy artifact names none.
+      if (
+        auth.arm !== "oauth" ||
+        (auth.account !== undefined && auth.account.provider !== "openai-codex")
+      ) {
+        throw new MeteredEscapeError("Codex request requires OAuth");
+      }
+      return auth;
+    }
     if (await this.primary.isAvailable({ allowOpPrompt: ctx.allowOpPrompt })) {
       try {
         return await this.primary.getRequestAuth(ctx);

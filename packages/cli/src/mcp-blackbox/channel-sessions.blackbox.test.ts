@@ -39,6 +39,10 @@ const CAPABILITIES = [
   "capture_since_seq",
   "capture_spans",
   "resize",
+  "allowance",
+  "scroll",
+  "transcript",
+  "replay",
 ];
 const SLOT_STATES = [
   "STARTING",
@@ -71,6 +75,8 @@ const FAILURE_REASONS = [
 ];
 const SLOT_ROW_KEYS = [
   "activity",
+  "agent",
+  "agent_requested",
   "cost_usd",
   "idle_seconds",
   "last_activity_at",

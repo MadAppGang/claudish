@@ -87,6 +87,10 @@ export interface SessionInfo {
   activity: string | null;
   /** SlotRow.recent: the current turn's last steps; null before the first and when read from disk. */
   recent: SlotStep[] | null;
+  /** SlotRow.agent_requested: the `--agent` the child was started with; absent or null = none. */
+  agentRequested?: string | null;
+  /** SlotRow.agent: the transcript's `agent-setting`; absent or null = none written. */
+  agent?: string | null;
   /** Set on FAILED / EMPTY / CANCELLED / TIMEOUT; null otherwise (incl. COMPLETED). */
   reason: FailureReason | null;
   detail: string | null;
@@ -190,6 +194,13 @@ export interface SessionManagerOptions {
    * on-disk artifacts are unaffected by eviction.
    */
   terminalRetentionMs?: number;
+  /**
+   * `transcript_session` on a session read from DISK: how long after its writer's last sign
+   * of life (`completedAt`, the `meta.json` mtime, or a quiet transcript under a dead owner)
+   * the writer counts as gone and `final` may be true. Defaults to 30 s (TRANSCRIPT_GRACE_MS),
+   * 2.5× the measured reap bound. Tests shorten it.
+   */
+  transcriptGraceMs?: number;
   /**
    * Test override for the host pid recorded in `spawn.json`. Default:
    * `hostPidFrom(process.env, process.ppid)` (mcp-session/parent-session.ts). An

@@ -2,6 +2,424 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.16.1] - 2026-11-08
+
+### Bug Fixes
+
+- replace images nested in a tool_result for non-vision *(adapters)* ([`d0ee057`](https://github.com/MadAppGang/claudish/commit/d0ee05702c8380aa45297097d42c21acc2925237))
+- replace a stripped image with a text placeholder *(adapters)* ([`8621c75`](https://github.com/MadAppGang/claudish/commit/8621c757a3545b614ba5b10c3e5a6cb50e192747))
+
+### Documentation
+
+- record the non-vision image placeholder in wire.md *(adapters)* ([`a72a22c`](https://github.com/MadAppGang/claudish/commit/a72a22c83e509684abf9f6d7d32f4fcfcaa5b8b2))
+- update CHANGELOG.md for v14.16.0([`e6886cd`](https://github.com/MadAppGang/claudish/commit/e6886cdcfa04df32290e50eb0c62dccdd0f2386d))
+
+## [14.16.0] - 2026-11-07
+
+### Bug Fixes
+
+- print the secret_guard line when a fact holds a key *(subscription)* ([`c9f6fe2`](https://github.com/MadAppGang/claudish/commit/c9f6fe25b61f0a449fdd39f751fb5d52779ca19d))
+
+### Documentation
+
+- update CHANGELOG.md for v14.15.1([`74a17d4`](https://github.com/MadAppGang/claudish/commit/74a17d45ab93afa6154a3d03545c5af87871da0c))
+
+### New Features
+
+- add subscription probe devin --model --request-file *(devin)* ([`4fe5d97`](https://github.com/MadAppGang/claudish/commit/4fe5d978bbad2db934eddd889371b96e01e1079e))
+- add subscription models devin --raw --json *(devin)* ([`35051e4`](https://github.com/MadAppGang/claudish/commit/35051e4429aaa4f7aece0ac3cb003690fa62a39d))
+
+## [14.15.1] - 2026-11-06
+
+### Bug Fixes
+
+- start replay and pane children in the fullscreen tui view *(mcp)* ([`2c686a6`](https://github.com/MadAppGang/claudish/commit/2c686a67830b99fb5e94f994d9499b70c9120b0f))
+
+### Documentation
+
+- update CHANGELOG.md for v14.15.0([`fe805bd`](https://github.com/MadAppGang/claudish/commit/fe805bd2c8fc8751c782e85757fdc4dd4d89b85f))
+
+## [14.15.0] - 2026-11-05
+
+### Bug Fixes
+
+- resolve a relative CLAUDE_PATH and config dir for a replay *(mcp)* ([`4bba023`](https://github.com/MadAppGang/claudish/commit/4bba0236758d22f0008d17da8f506619ab243fed))
+- reap a replay pane whose start throws after registration *(team)* ([`9f937b2`](https://github.com/MadAppGang/claudish/commit/9f937b280edf9c64c14d198f25943cb19e75c0d3))
+- redial a replay whose reconnect drops during capabilities *(team)* ([`2008fcb`](https://github.com/MadAppGang/claudish/commit/2008fcba023ec3c454f5625f9ea38c05a4481f5a))
+- remove a replay's fork record after a server SIGKILL *(team)* ([`9403eb8`](https://github.com/MadAppGang/claudish/commit/9403eb87741eb533b3cf50eb57ab5452dd973d75))
+- stop replay panes installing plugins or drawing the LSP dialog *(team)* ([`b6ccf73`](https://github.com/MadAppGang/claudish/commit/b6ccf736747637e4240ec7d6493aa1a6de45301c))
+- answer spawn_failed when CLAUDE_PATH names no executable file *(mcp)* ([`cd91a2b`](https://github.com/MadAppGang/claudish/commit/cd91a2b0103b2cafadd7b3e4b281c9f0995c508d))
+- reject a null or empty run_id, cols or rows on a replay open *(mcp)* ([`241eb08`](https://github.com/MadAppGang/claudish/commit/241eb0861890f6cb6dc4db31c8aac116a2e5a741))
+
+### Documentation
+
+- document who removes a replay's fork record on each path *(team)* ([`466c53e`](https://github.com/MadAppGang/claudish/commit/466c53efade3bfabda6b725b29ae605792e619ba))
+- document the replay plugin switches and their measurements *(team)* ([`4f14dcf`](https://github.com/MadAppGang/claudish/commit/4f14dcfda7ad010033c6fd23c027162be899c032))
+- document replay_session, close_replay and replay panes *(mcp)* ([`5a692f8`](https://github.com/MadAppGang/claudish/commit/5a692f8f4ba22fe6306760e08d713dde07ba4c3b))
+- update CHANGELOG.md for v14.14.0([`31179f5`](https://github.com/MadAppGang/claudish/commit/31179f5981aea12490a2be54819f99f7e6513719))
+
+### New Features
+
+- add replay_session and close_replay for finished sessions *(mcp)* ([`a55867a`](https://github.com/MadAppGang/claudish/commit/a55867a18d862693cb5012a2f3a29df2af24b111))
+- add replay_session, close_replay and team replay mode *(mcp)* ([`32ef385`](https://github.com/MadAppGang/claudish/commit/32ef3858727b6f4b1fbfb1e12f2f2424fe836d65))
+- add ReplayManager for read-only replays *(mcp)* ([`5589560`](https://github.com/MadAppGang/claudish/commit/5589560ae32776646d8170918a227f9e4ff84986))
+- add ReplayPane, a read-only pane for a finished session *(team)* ([`5608ee4`](https://github.com/MadAppGang/claudish/commit/5608ee4559730d37fbc4ce65cf24f2ee48a3f022))
+- add the launch functions of a read-only replay pane *(team)* ([`bb4906d`](https://github.com/MadAppGang/claudish/commit/bb4906d8aa6346373e9cfabb3547b778facaccee))
+- add the replay error codes and reason to pane/contract.ts *(mcp)* ([`ebb1cb7`](https://github.com/MadAppGang/claudish/commit/ebb1cb79da43c4536f6fe5eb1b387a72d3bd94f1))
+
+### Refactoring
+
+- split the replay target out of the transcript lookups *(mcp)* ([`471db07`](https://github.com/MadAppGang/claudish/commit/471db07f90c5a54aacca1fe66f5ab2d67678b235))
+- move the pane reap to pane-reap.ts *(team)* ([`342c5ac`](https://github.com/MadAppGang/claudish/commit/342c5ac317f439cf6da83496503c02cc07c6e741))
+
+## [14.14.0] - 2026-11-05
+
+### Bug Fixes
+
+- refuse a legacy-file exchange on an unreadable list *(accounts)* ([`a9d6029`](https://github.com/MadAppGang/claudish/commit/a9d6029a72bd0f92b0ced11f3c46fc7ebb8a2472))
+- withdraw only a lease's own re-auth stamp on restore *(accounts)* ([`99ac941`](https://github.com/MadAppGang/claudish/commit/99ac941855ff8f224a3986d5675fc12b53b7c2da))
+- drop the moved legacy token when the refresh gate is busy *(codex)* ([`1551b2e`](https://github.com/MadAppGang/claudish/commit/1551b2ed759029bcdfecfbf163e1b2f287f7b3d3))
+- answer 503 when the legacy login moved under requireOAuth *(codex)* ([`b4b1d67`](https://github.com/MadAppGang/claudish/commit/b4b1d675137cddabdf4f9a316c788c286f1d077b))
+- re-read the account list before an empty-store 503 check *(accounts)* ([`3c756cc`](https://github.com/MadAppGang/claudish/commit/3c756cc2a54f11bda5bc2fa23c0be1a72b222bde))
+- restore the re-auth stamp when the list is unreadable *(accounts)* ([`101cfbd`](https://github.com/MadAppGang/claudish/commit/101cfbd849f79928afff7bacd2339ed07b347a00))
+- keep the legacy Codex record while config is unreadable *(accounts)* ([`d954874`](https://github.com/MadAppGang/claudish/commit/d9548748fadb8741eb848eab61469751973dc5ed))
+- decide legacy file ownership from a fresh account list *(codex)* ([`19b6b93`](https://github.com/MadAppGang/claudish/commit/19b6b938a8dc39c1c27588a44f1d50dfefad52e2))
+- restore the re-auth stamp when a leased row moved store *(accounts)* ([`a1e625c`](https://github.com/MadAppGang/claudish/commit/a1e625c1a70896d94215610366ce7413de0a7a8d))
+- return 503 for an empty store when config is unreadable *(accounts)* ([`eb27482`](https://github.com/MadAppGang/claudish/commit/eb274824a584dec6ae589a85c47aed6845b235b1))
+- log in a synthesized Codex target with this instance's deps *(accounts)* ([`2f29793`](https://github.com/MadAppGang/claudish/commit/2f29793462aebf6c0bfba3154f51d9cfc1f4379e))
+- keep JSON parse text out of token store read errors *(accounts)* ([`dcdd7b9`](https://github.com/MadAppGang/claudish/commit/dcdd7b9c227a9023e53da022e9807069e346f1b5))
+- refuse a legacy refresh after the move publishes *(codex)* ([`ac7e872`](https://github.com/MadAppGang/claudish/commit/ac7e8728260a50fae0aa21c39f556eb84a3c762d))
+- compare every durable field before reusing a moved item *(accounts)* ([`f2021b6`](https://github.com/MadAppGang/claudish/commit/f2021b6a3a00db8a837c1b85de7c250c3609413c))
+- answer a pinned lease with 503 when its row moved store *(accounts)* ([`75efe9a`](https://github.com/MadAppGang/claudish/commit/75efe9a61594adacc554b3778e38c4043041d92a))
+- report a denied ~/.claudish as file-unreadable in the move *(accounts)* ([`7f48a70`](https://github.com/MadAppGang/claudish/commit/7f48a70675a8e52c0fbf2ff0a880a805af4f9e83))
+- show codex logged in when Codex accounts are configured *(auth)* ([`afe2f63`](https://github.com/MadAppGang/claudish/commit/afe2f636c94d053bd8d19326eb09cbdf0aa62b29))
+- report Codex quota available for Keychain accounts *(quota)* ([`0ef0da2`](https://github.com/MadAppGang/claudish/commit/0ef0da215d16eaa159c20b0e57e90f5a0729cc1e))
+- answer a removed credential file with 503 when accounts exist *(codex)* ([`c79ab8c`](https://github.com/MadAppGang/claudish/commit/c79ab8c138f45e830d1f9c646044b8da61d9a5ae))
+- retry a lease whose token store vanished with its row rebound *(accounts)* ([`a107eea`](https://github.com/MadAppGang/claudish/commit/a107eea8ed25915440b245a96902c58fb1c175db))
+
+### Documentation
+
+- update CHANGELOG.md for v14.13.0([`c788035`](https://github.com/MadAppGang/claudish/commit/c7880353a5344c9132ef9bd9844c536038d3eb1b))
+- record the review round 4 fixes to the Codex move *(accounts)* ([`7a1a7c4`](https://github.com/MadAppGang/claudish/commit/7a1a7c4a60b7699e5ef1f0cb38d8ac75450946f0))
+- record the review round 3 fixes to the Codex move *(accounts)* ([`19d8b35`](https://github.com/MadAppGang/claudish/commit/19d8b35a67ffc0a9fe8b0f352d85cb46f62a815c))
+- record the stale account list rules for the Codex move *(accounts)* ([`cd10b75`](https://github.com/MadAppGang/claudish/commit/cd10b75e806a82653aab9bd5621b12f4b7b4772a))
+- record the review fixes to the legacy Codex move *(accounts)* ([`768a641`](https://github.com/MadAppGang/claudish/commit/768a64112c0f82bce2774824904be9ed5c5e7272))
+- record the legacy Codex file move into the Keychain *(accounts)* ([`6cad80d`](https://github.com/MadAppGang/claudish/commit/6cad80dda5771449fde1aff429d41acafdc430f8))
+- record V2e run 3 and the unreachable 3 s reply check *(accounts)* ([`2a1b0a0`](https://github.com/MadAppGang/claudish/commit/2a1b0a0aff8059c619b8d5885a79ded9702db20c))
+- record V2e on the login keychain and real-account runs *(accounts)* ([`3e523c8`](https://github.com/MadAppGang/claudish/commit/3e523c89c84b24744be4d95f804a92404cf45aa4))
+
+### New Features
+
+- move the legacy Codex file before mutating account verbs *(accounts)* ([`e78716b`](https://github.com/MadAppGang/claudish/commit/e78716bb49661785a9ff04101839d94dd26fa11f))
+- save claudish login codex as a Keychain account *(codex)* ([`97a51ea`](https://github.com/MadAppGang/claudish/commit/97a51eafc9e0adb90f31f09c86a28a9b5d22a1a5))
+- start the legacy file move on the first Codex request *(codex)* ([`fd96a31`](https://github.com/MadAppGang/claudish/commit/fd96a31a73c60c37ea969fd869f6d5502097cc7b))
+- move the legacy Codex credential file into the Keychain *(accounts)* ([`f18f73a`](https://github.com/MadAppGang/claudish/commit/f18f73ab29df197cbd402ef81353528b6d11c0e5))
+
+## [14.13.0] - 2026-11-03
+
+### Documentation
+
+- update CHANGELOG.md for v14.12.0([`c160280`](https://github.com/MadAppGang/claudish/commit/c1602809e799a24c5dc2d2e127634fb265c4aa02))
+
+### New Features
+
+- add transcript_session tool and team mode transcript *(mcp)* ([`b6b9a25`](https://github.com/MadAppGang/claudish/commit/b6b9a259ca37318afb82b745c96361e7bf42d125))
+
+## [14.12.0] - 2026-11-03
+
+### Documentation
+
+- document scroll_session and the wheel-scroll measurements *(mcp)* ([`0c296d3`](https://github.com/MadAppGang/claudish/commit/0c296d3dd5fea230532e54d76a77c9f2b8d9e009))
+- update CHANGELOG.md for v14.11.0([`0c67b0b`](https://github.com/MadAppGang/claudish/commit/0c67b0b6ed108356e08dc7d1edcf3b83a695ce4a))
+
+### New Features
+
+- add scroll_session tool and team mode scroll *(mcp)* ([`2cd063b`](https://github.com/MadAppGang/claudish/commit/2cd063bb911e9459e5f7eeb3a2e0ea4fc5ca6ff9))
+- run pane children with wheelScrollAccelerationEnabled false *(pane)* ([`5d519b2`](https://github.com/MadAppGang/claudish/commit/5d519b2aa8e79518beb10d8a10f3c6bab155bfcc))
+
+## [14.11.0] - 2026-11-02
+
+### Documentation
+
+- update CHANGELOG.md for v14.10.2([`068a54e`](https://github.com/MadAppGang/claudish/commit/068a54eb95e7ad74b4946513cffedaefc1619b4d))
+
+### New Features
+
+- add subscription probe to send one generateContent *(antigravity)* ([`752b3fd`](https://github.com/MadAppGang/claudish/commit/752b3fd0db2c037e82b58d611a075fadd561085d))
+
+### Refactoring
+
+- move shared Antigravity steps to a session module *(subscription)* ([`4a55d18`](https://github.com/MadAppGang/claudish/commit/4a55d184f440bd46ab0f09c37ecfb528db8439e9))
+
+## [14.10.2] - 2026-11-01
+
+### Documentation
+
+- record the built-binary run and correct the E20 baseline *(accounts)* ([`7b81243`](https://github.com/MadAppGang/claudish/commit/7b81243aa199f35270738da6c918cd9b707d41d0))
+- stamp the playbook verified at the v14.10.1 merge commit *(release)* ([`5bdf998`](https://github.com/MadAppGang/claudish/commit/5bdf9982e919a9bcbdec79dc353ca3532beb8730))
+- update CHANGELOG.md for v14.10.1([`7889816`](https://github.com/MadAppGang/claudish/commit/7889816664a2c6e77e1103bb425854f97f320bea))
+
+## [14.10.1] - 2026-10-29
+
+### Bug Fixes
+
+- fold rows appended to yesterday's ledger after a load *(accounts)* ([`7e2b82b`](https://github.com/MadAppGang/claudish/commit/7e2b82b21f75f0a4465307e5f38a5d44377dd7f9))
+
+### Documentation
+
+- record why the ledger tail starts at the 48 h handoff *(accounts)* ([`13b8e32`](https://github.com/MadAppGang/claudish/commit/13b8e321b53191fca14b3d0cbf3cc2f092bcb4b5))
+- stamp the playbook verified at the v14.10.0 merge commit *(release)* ([`41062a5`](https://github.com/MadAppGang/claudish/commit/41062a5793dd9e43b025cfc6a162e665084426ac))
+- update CHANGELOG.md for v14.10.0([`afa268a`](https://github.com/MadAppGang/claudish/commit/afa268a7de9960c174c22edeaecd3b5760aacfe1))
+
+## [14.10.0] - 2026-10-29
+
+### Bug Fixes
+
+- start usage.coveredFrom at the first recorded ledger hour *(accounts)* ([`0444462`](https://github.com/MadAppGang/claudish/commit/04444625aab1134d6c32d8d887cb584f24d49c39))
+- count an open no-eligible interval in usage.censored *(accounts)* ([`ea48683`](https://github.com/MadAppGang/claudish/commit/ea486832b5c8747c60bad750ae8267c3e78055ad))
+
+### Documentation
+
+- document the 4 significant digit forecast quantiles *(accounts)* ([`9be0f5f`](https://github.com/MadAppGang/claudish/commit/9be0f5f6dbd39091d0003e9e53cf43ae5adb16cb))
+- document the usage section of the allowance report *(accounts)* ([`7e879c0`](https://github.com/MadAppGang/claudish/commit/7e879c09cad21f7c85dbe14d25fd5065d710bc34))
+- record Claude Code 2.1.312 OAuth facts for Phase V (#373) *(accounts)* ([`28981d7`](https://github.com/MadAppGang/claudish/commit/28981d7b3cc1c6bcbfb308c814176ffbe7dd5c18))
+- stamp the playbook verified at the v14.9.0 merge commit *(release)* ([`438f00e`](https://github.com/MadAppGang/claudish/commit/438f00ebb835d54b8f4a2954c9a1fa4487db036a))
+- update CHANGELOG.md for v14.9.0([`50cbb36`](https://github.com/MadAppGang/claudish/commit/50cbb36e0285fb17978f2b43ad40bb55e5d7df15))
+
+### New Features
+
+- add a usage section with 14 days of cu per account *(accounts)* ([`5244670`](https://github.com/MadAppGang/claudish/commit/52446705cda58077c8ef25be0fa2db6dced90640))
+- send forecast p10/p50/p90 at 4 significant digits *(accounts)* ([`8543170`](https://github.com/MadAppGang/claudish/commit/8543170c38d5da64d9c7164b2411e1cff97f54c2))
+
+## [14.9.0] - 2026-10-29
+
+### Documentation
+
+- state that reset divergence removes the lower-use guarantee *(accounts)* ([`717dce7`](https://github.com/MadAppGang/claudish/commit/717dce78112de7e57873b67d57323f0e152dc4f7))
+- remove the sticky monotonicity claim for trajectory.slower *(accounts)* ([`88592e4`](https://github.com/MadAppGang/claudish/commit/88592e429d92e12cddb1c707c4a57da3a56fc525))
+- record why the slower scenario reuses each path's draws *(accounts)* ([`f3559b2`](https://github.com/MadAppGang/claudish/commit/f3559b2aea736d443e09f42083ac56c328af3745))
+- stamp the playbook verified at the v14.8.0 merge commit *(release)* ([`74c77da`](https://github.com/MadAppGang/claudish/commit/74c77dac6de4971fe18992c7c367137e465d5d8d))
+- update CHANGELOG.md for v14.8.0([`684bc61`](https://github.com/MadAppGang/claudish/commit/684bc6127d894c82eebe34a508db77bf39ab778f))
+
+### New Features
+
+- send a slower scenario in the allowance_status trajectory *(accounts)* ([`c406b0c`](https://github.com/MadAppGang/claudish/commit/c406b0cc7cd0954ce3b9b2183c10a7533e1b5ec2))
+
+## [14.8.0] - 2026-10-28
+
+### Documentation
+
+- record why the switch likelihood is a kernel with a count fallback *(accounts)* ([`76a855e`](https://github.com/MadAppGang/claudish/commit/76a855edf37fb3cc9b2cd6acfa77387fb6bc294f))
+- say the switch likelihood is shape only, not its argmax *(accounts)* ([`1777797`](https://github.com/MadAppGang/claudish/commit/1777797646b1cf329bfa92449a978e0822315d97))
+- update CHANGELOG.md for v14.7.0([`31eac45`](https://github.com/MadAppGang/claudish/commit/31eac450c90b158a1e95f2fde519918f4a9d4bd2))
+
+### New Features
+
+- send a likelihood curve per switch in allowance_status *(accounts)* ([`16d6172`](https://github.com/MadAppGang/claudish/commit/16d6172751d64efd463249cc8343e9a58590d015))
+
+## [14.7.0] - 2026-10-28
+
+### Bug Fixes
+
+- skip the e2e lifecycle test with bun:test when no model is picked *(tests)* ([`5b38e2b`](https://github.com/MadAppGang/claudish/commit/5b38e2b2f2005a1f05fde811c089030ea899bda4))
+- credit a rolled-up hour's usage without a later reading *(accounts)* ([`f333093`](https://github.com/MadAppGang/claudish/commit/f3330931360acf5cac6a22f1aac8f08a383d1835))
+- answer allowance_status in compact JSON *(mcp)* ([`453d65c`](https://github.com/MadAppGang/claudish/commit/453d65c76aa6b6e59c5737fc6848d67263b6ccca))
+
+### Documentation
+
+- stamp the playbook verified at v14.6.0 *(release)* ([`e9c16ca`](https://github.com/MadAppGang/claudish/commit/e9c16ca660e9c6d56d3ef808c4f4ae43ce4cf4d2))
+- update CHANGELOG.md for v14.6.0([`742c3f4`](https://github.com/MadAppGang/claudish/commit/742c3f411b5492f8c0399e43b0b3eb2878611f64))
+
+### New Features
+
+- add a sections argument to allowance_status *(mcp)* ([`c425a42`](https://github.com/MadAppGang/claudish/commit/c425a42f96a69a590bce13dad08af5eccd3b1295))
+- add trajectory.historyByAccount for the last 24 h *(accounts)* ([`2ee9ff8`](https://github.com/MadAppGang/claudish/commit/2ee9ff86a7fcb374aea7ececa6cbcff2b66daff4))
+- record the delegating session as sessions[].parent *(accounts)* ([`dae2c8e`](https://github.com/MadAppGang/claudish/commit/dae2c8e149136b03fe57c72799bef7d6459da607))
+- add accounts[].lostAtReset to the allowance report *(accounts)* ([`de914b3`](https://github.com/MadAppGang/claudish/commit/de914b343bd7416e1138c571bcc58d38ccb2eca0))
+- add trajectory.switches to the allowance report *(accounts)* ([`af793ce`](https://github.com/MadAppGang/claudish/commit/af793ce978a4f935dd1ef2fcb32a97f09d865f8e))
+- report burn.sustainable when no alert is active *(accounts)* ([`cf4788c`](https://github.com/MadAppGang/claudish/commit/cf4788cdb4af5f8b16915f41e706a6e6b2d53c69))
+- add accounts[].order to the allowance report *(accounts)* ([`f5f1f79`](https://github.com/MadAppGang/claudish/commit/f5f1f79c56c76e75af8e43656fb456b0a39f8cc1))
+- add accounts[].active to the allowance report *(accounts)* ([`fd636f9`](https://github.com/MadAppGang/claudish/commit/fd636f95cf7646731f481ce42029b0592a6d67df))
+
+## [14.6.0] - 2026-10-27
+
+### Documentation
+
+- record the email label decisions *(accounts)* ([`6960925`](https://github.com/MadAppGang/claudish/commit/696092554a9352e3f11d017cc48858932f9152e9))
+- update CHANGELOG.md for v14.5.2([`71dc37d`](https://github.com/MadAppGang/claudish/commit/71dc37dc70ea39ff7b32be932d03214b5b448fa7))
+
+### New Features
+
+- name a new Codex account after its login email *(accounts)* ([`bdf2958`](https://github.com/MadAppGang/claudish/commit/bdf2958f5e5ca4dbc8d2c21b441df30f950bb248))
+
+### Other Changes
+
+- v14.6.0 *(release)* ([`631fffe`](https://github.com/MadAppGang/claudish/commit/631fffe3efa4bd86f68ea19de862ed47817b0f2f))
+
+## [14.5.2] - 2026-10-27
+
+### Bug Fixes
+
+- hide usage windows past their reset in account list *(accounts)* ([`354355e`](https://github.com/MadAppGang/claudish/commit/354355eec80b308da3c8e5b698730e08a87b5150))
+
+### Documentation
+
+- add the allowance band, gauge and panel mockups (#362) *(accounts)* ([`5a72509`](https://github.com/MadAppGang/claudish/commit/5a725099c727cf3dbf27d966a731275093cf4c68))
+- stamp the playbook verified at v14.5.1 (#359) *(release)* ([`b78b488`](https://github.com/MadAppGang/claudish/commit/b78b488ed8facdb1ac698b3bec69cdeeb94fc832))
+- update CHANGELOG.md for v14.5.1([`643aba7`](https://github.com/MadAppGang/claudish/commit/643aba78e5c7b232146c697311178073d262d93f))
+
+## [14.5.1] - 2026-10-26
+
+### Bug Fixes
+
+- keep security -i write lines under 4000 bytes *(keychain)* ([`57c42f2`](https://github.com/MadAppGang/claudish/commit/57c42f2957d67a3bdf769237eee77742dd74b1a0))
+- report a relative Write path as absolute in answerSource *(team)* ([`2a34061`](https://github.com/MadAppGang/claudish/commit/2a34061d8e6d0f218f1d07928c1e2e48c913b43a))
+- accept a slot answer written to a file with Write *(team)* ([`fe727c0`](https://github.com/MadAppGang/claudish/commit/fe727c070b8342e26b1130c4c949e7e84af3d7f7))
+- name account add codex in the empty account status hint *(accounts)* ([`6ff8722`](https://github.com/MadAppGang/claudish/commit/6ff872283f1e20278c70d600a921a48cd83212c4))
+
+### Documentation
+
+- record security -i stdin line measurements *(keychain)* ([`ebfdef5`](https://github.com/MadAppGang/claudish/commit/ebfdef5ec832a5ba590131fed45050f626de694f))
+- missing keychain file path writes to the login keychain *(keychain)* ([`7be3e81`](https://github.com/MadAppGang/claudish/commit/7be3e81f12e7627197e63e510bb59a5d776463b3))
+- add the red Tests run shapes seen on PR #351 *(release)* ([`849c0e7`](https://github.com/MadAppGang/claudish/commit/849c0e7f08ec2fc377e6e84202a7b781df7e1a3c))
+- record Phase 2a as shipped and D8 as the Phase 2b gate *(accounts)* ([`3b5d04e`](https://github.com/MadAppGang/claudish/commit/3b5d04e9682677c26581f3be092fcbb3dcdcd27b))
+- stamp the playbook verified at v14.5.0 (#354) *(release)* ([`af0592b`](https://github.com/MadAppGang/claudish/commit/af0592b455f2eec0abc8d38998bfd53a60d9f299))
+- update CHANGELOG.md for v14.5.0([`c651d39`](https://github.com/MadAppGang/claudish/commit/c651d3943a28245a982f0d0fad7ea001313f699e))
+
+### Other Changes
+
+- v14.5.1 *(release)* ([`cd55981`](https://github.com/MadAppGang/claudish/commit/cd55981047902c4ec02effb289f8b5dfc0d84871))
+- turn off noExcessiveCognitiveComplexity for test files *(lint)* ([`df8b7ce`](https://github.com/MadAppGang/claudish/commit/df8b7ce42270a576b5f9568dc575e831db0ac32e))
+
+### Refactoring
+
+- replace TeamRunOptions.answerRoot with a cwd option *(team)* ([`439a515`](https://github.com/MadAppGang/claudish/commit/439a51579aef8c0f37f2f5559f77a1962f3271d3))
+
+## [14.5.0] - 2026-10-24
+
+### Bug Fixes
+
+- read the Codex account registry per call in CodexPoolHalf *(accounts)* ([`974fb1b`](https://github.com/MadAppGang/claudish/commit/974fb1b25fca08f611ef3449c008afc9c3892d65))
+
+### Documentation
+
+- stamp the playbook verified at v14.4.2 (#353) *(release)* ([`d3d0e34`](https://github.com/MadAppGang/claudish/commit/d3d0e34abf5c92e26c41afeb4668fc861dd3c2ea))
+- update CHANGELOG.md for v14.4.2([`dcb7e9b`](https://github.com/MadAppGang/claudish/commit/dcb7e9b1e99f86f926282798fab2ea65bfe55e98))
+
+### New Features
+
+- allowance model — usage ledger, forecast, gap alerts, account forecast *(accounts)* ([`accf9b0`](https://github.com/MadAppGang/claudish/commit/accf9b044ff8ae9e4fe53bf1cb33b2e44c39e2dd))
+- Codex account pool on the request path (Phase 2a) *(accounts)* ([`52fb426`](https://github.com/MadAppGang/claudish/commit/52fb426be5b772e66662e2ad9d5b86acf956fee2))
+
+### Other Changes
+
+- v14.5.0 (#351) *(release)* ([`8567bab`](https://github.com/MadAppGang/claudish/commit/8567bab81d2dc965c31b74d0f6826288d238e391))
+- merge main v14.4.2 into release/v14.5.0 *(release)* ([`8e2169e`](https://github.com/MadAppGang/claudish/commit/8e2169e554616739b5298c594997a53485d47de6))
+- v14.5.0 *(release)* ([`b404b24`](https://github.com/MadAppGang/claudish/commit/b404b24979d8f99f839de76c779ffcf0568b79e5))
+
+## [14.4.2] - 2026-10-24
+
+### Bug Fixes
+
+- write ~/.claudish/settings-*.json with mode 0600 *(settings)* ([`6823aca`](https://github.com/MadAppGang/claudish/commit/6823acaa29d608b526d6c47249d0cb5476023247))
+
+### Documentation
+
+- record the 0600 mode of the child's settings overlay *(mcp)* ([`7197e73`](https://github.com/MadAppGang/claudish/commit/7197e73aa43cb0116b4de917aa3685ca046399ad))
+- update CHANGELOG.md for v14.4.1([`579114b`](https://github.com/MadAppGang/claudish/commit/579114b125ed03324ef8bb9cf1f3fe659ab4443a))
+
+### Other Changes
+
+- v14.4.2 (#352) *(release)* ([`b1e671e`](https://github.com/MadAppGang/claudish/commit/b1e671eaf1bc84121daa3315d8f5225052b5d92a))
+- v14.4.2 *(release)* ([`d87a6a7`](https://github.com/MadAppGang/claudish/commit/d87a6a7cc74dcebcc777b53815bd576a92665d99))
+
+## [14.4.1] - 2026-10-23
+
+### Bug Fixes
+
+- classify a context overflow as api_error via the in-band marker (#349) *(team)* ([`6468bd0`](https://github.com/MadAppGang/claudish/commit/6468bd05ed8c649f06496c5160bac74a870014c6))
+- classify a context overflow as api_error via the in-band marker *(team)* ([`412a14d`](https://github.com/MadAppGang/claudish/commit/412a14d980f5192275eb58ffc8d6b1bb6bda683d))
+
+### Documentation
+
+- state why team's model check reads the server's project rules *(mcp)* ([`d62baa1`](https://github.com/MadAppGang/claudish/commit/d62baa10ffbb37aeb56fbf7ad93a2633b8c64dce))
+- update CHANGELOG.md for v14.4.0([`8d13a5f`](https://github.com/MadAppGang/claudish/commit/8d13a5fdabd136e83813bb38c6b809887a21de4a))
+- mark the release playbook verified by v14.4.0 *(release)* ([`fa8eba9`](https://github.com/MadAppGang/claudish/commit/fa8eba93e219b9c95e22870959c9c9e6abb12ee6))
+
+### Other Changes
+
+- v14.4.1 (#350) *(release)* ([`1cb0683`](https://github.com/MadAppGang/claudish/commit/1cb06839149ce66b222fc1aaa7fea570e1f9159d))
+- v14.4.1 *(release)* ([`dc5decf`](https://github.com/MadAppGang/claudish/commit/dc5decfe5e2b55acdfa5009bba7713d3d1ea0307))
+
+## [14.4.0] - 2026-10-23
+
+### Bug Fixes
+
+- read a trailing in-band API error on an unread turn *(team)* ([`13c0cf0`](https://github.com/MadAppGang/claudish/commit/13c0cf0a1d095f5caf7d089602042ab67af5e7ab))
+- compare canonical catalog ids in the model check *(mcp)* ([`0e5a79f`](https://github.com/MadAppGang/claudish/commit/0e5a79fde53eecd5b03baeb44934f0ca19b49da1))
+- suggest only a recommended model in search_models *(mcp)* ([`edd4cef`](https://github.com/MadAppGang/claudish/commit/edd4cef53f39fa45362567a7cd359ec2f186fdc2))
+- report an in-band API error as api_error, not prompt_not_read *(team)* ([`6c48093`](https://github.com/MadAppGang/claudish/commit/6c480936b741a85e80a356e398a5494a3b292dcb))
+- answer 'session_id' is required instead of a path-join error *(mcp)* ([`89e8230`](https://github.com/MadAppGang/claudish/commit/89e82304facc053b3aa5c049c23bc45cdc2af1c3))
+- add effort rows of the matching ids to the model-check answer *(mcp)* ([`64fc5fa`](https://github.com/MadAppGang/claudish/commit/64fc5faf81b0be2c275d8e05e9d2405edf1cb90b))
+
+### Documentation
+
+- update CHANGELOG.md for v14.3.0([`8f0ebdf`](https://github.com/MadAppGang/claudish/commit/8f0ebdf4700c905341d45ec4c3b0ddb874b86d3d))
+
+### New Features
+
+- refuse a bare name outside the recommended models list *(mcp)* ([`621a523`](https://github.com/MadAppGang/claudish/commit/621a5232a87ff08a4fe2095ea0ca80c471ac7a49))
+
+### Other Changes
+
+- v14.4.0 (#347) *(release)* ([`1728cca`](https://github.com/MadAppGang/claudish/commit/1728ccab4e595d105f24e2ecca800d5bb314d90b))
+- v14.4.0 *(release)* ([`cdab576`](https://github.com/MadAppGang/claudish/commit/cdab5765780124d96426019e900c5f09df089928))
+
+## [14.3.0] - 2026-10-23
+
+### Documentation
+
+- record agent_requested and agent in the mod contract v1 *(mcp)* ([`e92101b`](https://github.com/MadAppGang/claudish/commit/e92101b1937ba3f7b9ba5f7fa7a500ccd10faac0))
+- mark the release playbook verified by v14.2.0 (#343) *(release)* ([`f1dabfb`](https://github.com/MadAppGang/claudish/commit/f1dabfb5391d630e688996f21b2773646bc6ec48))
+- mark the release playbook verified by v14.2.0 *(release)* ([`8827764`](https://github.com/MadAppGang/claudish/commit/8827764b976023214aefa9a4714c7c5e6ff4e5d3))
+- update CHANGELOG.md for v14.2.0([`8ea8084`](https://github.com/MadAppGang/claudish/commit/8ea80841f6688d72023dba685fc638c25dea89b8))
+
+### New Features
+
+- add agent_requested and agent to session and team slot rows *(mcp)* ([`c8c1ccd`](https://github.com/MadAppGang/claudish/commit/c8c1ccd6cf88228fd74962dc00134c50a8a16b14))
+
+### Other Changes
+
+- v14.3.0 (#346) *(release)* ([`ffdd4e9`](https://github.com/MadAppGang/claudish/commit/ffdd4e911284df7a6136c571ae4ac876ff5b34c5))
+- v14.3.0 *(release)* ([`33a5a8c`](https://github.com/MadAppGang/claudish/commit/33a5a8c581c25e9538146fcca7ccbda44be2a304))
+
+## [14.2.0] - 2026-10-23
+
+### Bug Fixes
+
+- add a random suffix to atomic-write temp file names *(catalog)* ([`8529038`](https://github.com/MadAppGang/claudish/commit/85290388ad7691fec14418edec178abe2a84ad62))
+- disable the always-on log when its directory is unwritable *(logging)* ([`cbbad80`](https://github.com/MadAppGang/claudish/commit/cbbad806b85fa40400c47f619a75fe199893ecbb))
+- keep a custom endpoint's or anthropic@ provider in MCP specs *(mcp)* ([`6261395`](https://github.com/MadAppGang/claudish/commit/6261395931802abb69fd38b59e5da689c7af487a))
+- list models in list_models without provider specs *(mcp)* ([`ec80094`](https://github.com/MadAppGang/claudish/commit/ec80094ed97aaa31b9c6290fa83cdeaa8c671ca8))
+- write the models cache and route registry atomically *(catalog)* ([`d27b930`](https://github.com/MadAppGang/claudish/commit/d27b930cbdda40358335e6179340440bc541381e))
+- log refresh failures and retry a refresh that threw *(catalog)* ([`c297881`](https://github.com/MadAppGang/claudish/commit/c297881dee87e182a2b0908feb44a159e3be8ccf))
+
+### Documentation
+
+- document per-model effort, needs_effort and bare model names *(mcp)* ([`7518d4a`](https://github.com/MadAppGang/claudish/commit/7518d4adcf64709699f71c27d702eff467212c80))
+- update CHANGELOG.md for v14.1.0([`0a5e7ac`](https://github.com/MadAppGang/claudish/commit/0a5e7ac909786b9a204826478c5d10d3229d1b29))
+
+### New Features
+
+- accept one reasoning effort per model from the calling agent *(mcp)* ([`09f9cde`](https://github.com/MadAppGang/claudish/commit/09f9cde34cd28cafb3ca88a6f11e15432a3f58be))
+- store the recommended effort per model and task type *(catalog)* ([`acc0c17`](https://github.com/MadAppGang/claudish/commit/acc0c179f314874f0c1e5b1e2670336d0eb3794a))
+- rotate the always-on log per process name *(logging)* ([`80cbf4c`](https://github.com/MadAppGang/claudish/commit/80cbf4c99c3a17d7aa5021a747d27c16b9985f98))
+
+### Other Changes
+
+- v14.2.0 (#342) *(release)* ([`cfbd61a`](https://github.com/MadAppGang/claudish/commit/cfbd61a5a043653880d682446461ff1021018497))
+- v14.2.0 *(release)* ([`5ce42d3`](https://github.com/MadAppGang/claudish/commit/5ce42d33dfad56f0db14f7ce5cea6a4d6bc7c6a9))
+
 ## [14.1.0] - 2026-10-22
 
 ### Bug Fixes

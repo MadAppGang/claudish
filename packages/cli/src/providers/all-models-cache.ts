@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { writeFileAtomic } from "../fs-atomic.js";
+import { log } from "../logger.js";
 import type { AggregatorEntry } from "../model-loader.js";
 import {
   type CachedRouteRegistry,
@@ -262,7 +264,12 @@ function readSidecarRegistry(path: string): CachedRouteRegistry | null {
     return typeof raw.generationId === "string" && isRouteRegistry(raw.registry)
       ? (raw as unknown as CachedRouteRegistry)
       : null;
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      log(
+        `[catalog] unreadable route registry for ${path}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     return null;
   }
 }
@@ -297,7 +304,9 @@ export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCa
   let cache: DiskCacheV3 | null;
   try {
     cache = parseAllModelsCache(JSON.parse(readFileSync(path, "utf-8")));
-  } catch {
+  } catch (err) {
+    // Memoized under this mtime and size, so logged once per version of the file.
+    log(`[catalog] unreadable ${path}: ${err instanceof Error ? err.message : String(err)}`);
     cache = null;
   }
   if (cache && !cache.routeRegistry && side) {
@@ -320,16 +329,14 @@ export function writeRouteRegistry(
   routeRegistry: CachedRouteRegistry,
   path: string = ALL_MODELS_CACHE_PATH
 ): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(routeRegistryPathFor(path), JSON.stringify(routeRegistry), "utf-8");
+  writeFileAtomic(routeRegistryPathFor(path), JSON.stringify(routeRegistry));
   _readMemo.delete(path);
 }
 
 export function writeAllModelsCache(data: DiskCacheV3, path: string = ALL_MODELS_CACHE_PATH): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(data), "utf-8");
+  writeFileAtomic(path, JSON.stringify(data));
   if (data.routeRegistry) {
-    writeFileSync(routeRegistryPathFor(path), JSON.stringify(data.routeRegistry), "utf-8");
+    writeFileAtomic(routeRegistryPathFor(path), JSON.stringify(data.routeRegistry));
   }
   _readMemo.delete(path);
 }

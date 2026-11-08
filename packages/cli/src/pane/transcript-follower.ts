@@ -90,6 +90,9 @@ export interface TurnView {
   delivery: { file: string; lines: number } | null;
   readCoverage: ReadCoverage;
   preambleBytes: number;
+  /** files the turn created or overwrote with a successful `Write`, de-duplicated, in first-write
+   * order; for a file-delivered turn only Writes after the same Read cut as assistantText */
+  writtenFiles: string[];
   /** offset of the last main-chain chat record (user or assistant) of this turn */
   lastChatOffset: number | null;
   /** a local command's `<local-command-stdout>` after its witness (ANSI removed); null otherwise */
@@ -118,6 +121,8 @@ export interface TranscriptView {
   toolCalls: number;
   lastAppendAt: number | null;
   session: SessionFacts;
+  /** the agent Claude Code loaded: the latest `agent-setting` record; null = none written */
+  agentSetting: string | null;
 }
 
 /* ───────────────────────────── pure reducer ───────────────────────────── */
@@ -140,6 +145,8 @@ interface TurnState {
   acceptedAt: string | null;
   acceptedOffset: number | null;
   texts: Array<{ offset: number; text: string }>;
+  /** Write tool_uses; ok once a non-error tool_result arrives */
+  writes: Array<{ id: string; path: string; offset: number; ok: boolean }>;
   lastAssistant: {
     messageId: string;
     stopReason: string | null;
@@ -174,6 +181,8 @@ export interface FollowerState {
   mainAssistantIds: string[];
   mainAssistantSeen: Set<string>;
   session: SessionFacts;
+  /** `{"type":"agent-setting","agentSetting":"dev:reviewer"}`: written at line 2, repeated later */
+  agentSetting: string | null;
   records: number;
   resolvePath: (p: string) => string;
 }
@@ -188,6 +197,7 @@ export function initialFollowerState(
     mainAssistantIds: [],
     mainAssistantSeen: new Set(),
     session: { stopHooksSeen: false, provenHookless: false },
+    agentSetting: null,
     records: 0,
     resolvePath,
   };
@@ -238,7 +248,7 @@ function isMainUser(r: Rec): boolean {
 const LOCAL_COMMAND_RE =
   /^\s*<(local-command-caveat|command-name|local-command-stdout|local-command-stderr)>/;
 
-function isLocalCommandText(text: string): boolean {
+export function isLocalCommandText(text: string): boolean {
   return LOCAL_COMMAND_RE.test(text);
 }
 
@@ -267,7 +277,7 @@ function isLocalCommandSystem(r: Rec): boolean {
   return r.type === "system" && r.subtype === "local_command" && !r.isSidechain;
 }
 
-const INTERRUPT_PREFIX = "[Request interrupted by user";
+export const INTERRUPT_PREFIX = "[Request interrupted by user";
 
 /**
  * A prompt a human typed, by PROVENANCE (hook-system §3.2, §7.5): a main-chain user
@@ -463,6 +473,9 @@ function applyAssistantBlock(state: FollowerState, t: TurnState, b: Rec, offset:
   if (b?.type !== "tool_use" || typeof b.id !== "string") return;
   t.pending.set(b.id, String(b.name ?? ""));
   t.pendingInput.set(b.id, b.input);
+  // Write only: an Edit changes a file that predates the task, so its text proves nothing.
+  if (b.name === "Write" && typeof b.input?.file_path === "string")
+    t.writes.push({ id: b.id, path: b.input.file_path, offset, ok: false });
   if (b.name === "Bash" && b.input?.run_in_background)
     t.shellToolIds.set(b.id, String(b.input?.command ?? ""));
   applyReadUse(state, t, b);
@@ -474,6 +487,7 @@ function applyToolResults(t: TurnState, r: Rec, blocks: Rec[], offset: number): 
     if (b?.type !== "tool_result") continue;
     t.pending.delete(b.tool_use_id);
     t.pendingInput.delete(b.tool_use_id);
+    markWriteResult(t, b);
     // A background agent is recognised by its result, not by run_in_background in its input.
     if (tur?.isAsync === true && typeof tur.agentId === "string") t.agents.add(tur.agentId);
     if (typeof tur?.backgroundTaskId === "string")
@@ -482,7 +496,15 @@ function applyToolResults(t: TurnState, r: Rec, blocks: Rec[], offset: number): 
   }
 }
 
-const STDOUT_RE = /^\s*<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/;
+/** A Write counts once its tool_result arrives without is_error: a failed overwrite leaves
+ * the old content, which is not an answer. */
+function markWriteResult(t: TurnState, b: Rec): void {
+  if (b.is_error === true) return;
+  const w = t.writes.find((x) => x.id === b.tool_use_id);
+  if (w) w.ok = true;
+}
+
+export const STDOUT_RE = /^\s*<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences in local-command output
 const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
@@ -573,6 +595,8 @@ export function applyRecord(
   recordUsage(state, r);
   if (r.isSidechain) return state;
   noteMainAssistant(state, r);
+  if (r.type === "agent-setting" && typeof r.agentSetting === "string" && r.agentSetting)
+    state.agentSetting = r.agentSetting;
   if (r.type === "system" && r.subtype === "stop_hook_summary") {
     state.session.stopHooksSeen = true;
     state.session.provenHookless = false;
@@ -649,6 +673,7 @@ export function openTurnState(
     acceptedAt: null,
     acceptedOffset: null,
     texts: [],
+    writes: [],
     lastAssistant: null,
     td: null,
     stopHookAfterLast: false,
@@ -674,6 +699,7 @@ export function openTurnState(
 export function turnView(t: TurnState): TurnView {
   const rs = t.read;
   let texts = t.texts;
+  let writes = t.writes;
   let preambleBytes = 0;
   if (rs) {
     const cut = rs.completedAtOffset ?? rs.lastReadOffset;
@@ -681,6 +707,8 @@ export function turnView(t: TurnState): TurnView {
       const before = texts.filter((x) => x.offset < cut);
       preambleBytes = before.reduce((n, x) => n + Buffer.byteLength(x.text), 0);
       texts = texts.filter((x) => x.offset > cut);
+      // A file written before the task was read cannot answer it, exactly as narration cannot.
+      writes = writes.filter((x) => x.offset > cut);
     }
   }
   const pendingEntry = [...t.pending.entries()].pop();
@@ -718,6 +746,7 @@ export function turnView(t: TurnState): TurnView {
         }
       : { linesReturned: 0, complete: true, reads: 0, completedAtOffset: null },
     preambleBytes,
+    writtenFiles: [...new Set(writes.filter((x) => x.ok).map((x) => x.path))],
     lastChatOffset: t.lastChatOffset,
     localCommandOutput: t.localOutput?.text ?? null,
     recent: [...t.steps],
@@ -801,7 +830,7 @@ export class TranscriptFollower {
     let any = false;
     for (const { offset, line } of this.main.read()) {
       any = true;
-      const rec = parse(line);
+      const rec = parseRecord(line);
       // Offsets are 1-based positions past the line start so a record AT the turn offset
       // (written after the mark) is strictly greater than it.
       if (rec) applyRecord(this.state, rec, offset + 1);
@@ -830,7 +859,7 @@ export class TranscriptFollower {
       }
       for (const { line } of tail.read()) {
         any = true;
-        const rec = parse(line);
+        const rec = parseRecord(line);
         if (rec) applySubagentRecord(this.state, rec, this.main.offset + 1);
       }
     }
@@ -903,6 +932,7 @@ export class TranscriptFollower {
       toolCalls: this.state.toolUseIds.size,
       lastAppendAt: this.lastAppend,
       session: { ...this.state.session },
+      agentSetting: this.state.agentSetting,
     };
   }
 }
@@ -919,7 +949,7 @@ export function lastHumanPromptOffset(path: string): number | null {
   const tail = new Tail(path);
   let found: number | null = null;
   for (const { offset, line } of tail.read()) {
-    const rec = parse(line);
+    const rec = parseRecord(line);
     if (rec && isHumanPrompt(rec)) found = offset;
   }
   return found;
@@ -933,7 +963,8 @@ function fileSize(p: string): number {
   }
 }
 
-function parse(line: string): Record<string, unknown> | null {
+/** One JSONL line as an object, or null (blank, not JSON, or not an object). Never throws. */
+export function parseRecord(line: string): Record<string, unknown> | null {
   if (!line.trim()) return null;
   try {
     const v = JSON.parse(line);

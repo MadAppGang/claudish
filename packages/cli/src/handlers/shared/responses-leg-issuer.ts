@@ -18,7 +18,9 @@
  *  3. its own ceiling `deadlineClamp(now + tier-1 deadline)`, merged with the
  *     turn's signal and disarmed at headers;
  *  4. 401 → `forceRefreshAuth()` (same binding check) + fresh headers + one
- *     re-fetch;
+ *     re-fetch, while `mayForceRefresh()` allows it; once the request's forced
+ *     re-sign is spent, the 401 is the leg's error (step 5) — resending the
+ *     rejected bearer can only be rejected again;
  *  5. any other non-200 → error carrying the upstream status and the first 500
  *     bytes of the body; no parameter recovery on legs;
  *  6. 200 → the 7b stream-head settle (in-stream overload backoff);
@@ -60,6 +62,11 @@ export interface LegIssuerDeps<B extends LegAuthBinding = LegAuthBinding> {
   setBinding: (binding: B) => void;
   refreshAuth?: () => Promise<B | undefined>;
   forceRefreshAuth?: () => Promise<B | undefined>;
+  /**
+   * Whether a 401 may still take `forceRefreshAuth` (the request's one forced
+   * re-sign is unspent). Absent: always.
+   */
+  mayForceRefresh?: () => boolean;
   getEndpoint: (binding: B | undefined) => string;
   /** The request's own header builder (wire headers merged). */
   fetchHeaders: (binding: B | undefined) => Promise<Record<string, string>>;
@@ -167,7 +174,7 @@ export function createLegIssuer<B extends LegAuthBinding = LegAuthBinding>(
 
       // The RAW upstream status of this leg's own fetch: no remap has happened
       // on this path, so there is nothing for extractUpstreamStatus to recover.
-      if (response.status === 401 && deps.forceRefreshAuth) {
+      if (response.status === 401 && deps.forceRefreshAuth && (deps.mayForceRefresh?.() ?? true)) {
         await response.body?.cancel().catch(() => {});
         adoptBinding(await deps.forceRefreshAuth());
         binding = deps.getBinding();

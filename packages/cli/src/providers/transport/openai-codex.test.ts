@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { MeteredEscapeError } from "../../auth/accounts/errors.js";
+import { credentials } from "../../auth/credentials/authority.js";
 import { clearSignedArm } from "../../auth/credentials/billing-probe.js";
-import type { RequestAuth } from "../../auth/credentials/types.js";
+import type { RequestAuth, RequestAuthContext } from "../../auth/credentials/types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
-import { type CodexOAuthRefresher, OpenAICodexTransport } from "./openai-codex.js";
+import { OpenAICodexTransport } from "./openai-codex.js";
 import type { AuthBinding } from "./types.js";
 
 const provider: RemoteProvider = {
@@ -20,7 +22,18 @@ const capture = JSON.parse(
   )
 );
 const realFetch = globalThis.fetch;
+const originalGetRequestAuth = credentials.getRequestAuth;
+beforeEach(() => {
+  noNetwork();
+});
+function installCredential(sign: (ctx: RequestAuthContext) => Promise<RequestAuth>) {
+  credentials.getRequestAuth = async (name, ctx) => {
+    expect(name).toBe("openai-codex");
+    return sign(ctx);
+  };
+}
 afterEach(() => {
+  credentials.getRequestAuth = originalGetRequestAuth;
   globalThis.fetch = realFetch;
   clearSignedArm("openai-codex");
 });
@@ -59,16 +72,14 @@ describe("T5 request-scoped Codex auth bindings", () => {
     };
     const refreshEntered = deferred<void>();
     const refreshDone = deferred<void>();
-    const refresher: CodexOAuthRefresher = {
-      async refreshToken() {
-        refreshEntered.resolve();
-        await refreshDone.promise;
-      },
-      async mintOAuthAuth() {
-        return b;
-      },
-    };
-    const transport = new OpenAICodexTransport(provider, capture.model, "API_KEY", refresher);
+    // Rebase resolution decision 3: exercise the credential seam through the real signRequest.
+    installCredential(async (ctx) => {
+      expect(ctx.forceRefresh).toBe(true);
+      refreshEntered.resolve();
+      await refreshDone.promise;
+      return b;
+    });
+    const transport = new OpenAICodexTransport(provider, capture.model, "API_KEY");
     const firstCanSign = deferred<void>();
     const firstRequest = (async () => {
       await firstCanSign.promise;
@@ -109,12 +120,11 @@ describe("T5 request-scoped Codex auth bindings", () => {
 
   test("REQ-1 REQ-3 TEST-2 an explicit null binding stays on the api-key path after OAuth refresh", async () => {
     noNetwork();
-    const transport = new OpenAICodexTransport(provider, capture.model, "API_KEY", {
-      async refreshToken() {},
-      async mintOAuthAuth() {
-        return auth("account-a", "OAUTH_TOKEN", "https://a.invalid/codex/responses");
-      },
+    installCredential(async (ctx) => {
+      expect(ctx.forceRefresh).toBe(true);
+      return auth("account-a", "OAUTH_TOKEN", "https://a.invalid/codex/responses");
     });
+    const transport = new OpenAICodexTransport(provider, capture.model, "API_KEY");
     await transport.forceRefreshAuth();
 
     const binding: AuthBinding = { auth: null };
@@ -134,7 +144,7 @@ describe("T5 request-scoped Codex auth bindings", () => {
     expect(transformed.include).toBeUndefined();
   });
 
-  test("REQ-7 TEST-3 rethrows the identical connection failure from the injected refresher", async () => {
+  test("REQ-7 TEST-3 rethrows the identical connection failure from the credential seam", async () => {
     noNetwork();
     // Error test data, not protocol data. Bun's connection vocabulary is already documented
     // by composed-handler-connection-error.test.ts; no socket or OAuth singleton is touched.
@@ -142,27 +152,28 @@ describe("T5 request-scoped Codex auth bindings", () => {
       new TypeError("Unable to connect. Is the computer able to access the url?"),
       { code: "ConnectionRefused" }
     );
-    const transport = new OpenAICodexTransport(provider, capture.model, "API_KEY", {
-      async refreshToken() {
-        throw error;
-      },
-      async mintOAuthAuth() {
-        throw new Error("must not mint after failed rotation");
-      },
+    installCredential(async (ctx) => {
+      expect(ctx.forceRefresh).toBe(true);
+      throw error;
     });
+    const transport = new OpenAICodexTransport(provider, capture.model, "API_KEY");
 
     await expect(transport.forceRefreshAuth()).rejects.toBe(error);
   });
 
-  test("REQ-3 forced refresh cannot substitute an api-key artifact when OAuth minting returns null", async () => {
+  test("REQ-3 forced refresh cannot substitute an api-key artifact when OAuth is required", async () => {
     noNetwork();
-    const transport = new OpenAICodexTransport(provider, capture.model, "API_KEY", {
-      async refreshToken() {},
-      async mintOAuthAuth() {
-        return null;
-      },
+    const rejected = auth("account-a", "REJECTED", "https://a.invalid/codex/responses");
+    const pin = { provider: "openai-codex" as const, id: "aaaaaaaaaaaa", label: "A" };
+    installCredential(async (ctx) => {
+      expect(ctx).toMatchObject({ forceRefresh: true, requireOAuth: true, pin, rejected });
+      return { arm: "api-key", headers: { Authorization: "Bearer API_KEY" } };
     });
+    const transport = new OpenAICodexTransport(provider, capture.model, "API_KEY");
 
-    expect(await transport.forceRefreshAuth()).toEqual({ auth: null });
+    // Decision 3 removes nullable minting; the real signRequest guard must reject the key.
+    await expect(
+      transport.forceRefreshAuth({ requireOAuth: true, pin, rejected })
+    ).rejects.toBeInstanceOf(MeteredEscapeError);
   });
 });

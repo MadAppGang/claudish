@@ -104,11 +104,13 @@ describe.skipIf(!MAGMUX)(
         expect(failedAt - began).toBeGreaterThanOrEqual(29_000);
         expect(failedAt - began).toBeLessThanOrEqual(31_000);
         expect(gatedSends(r).length).toBeGreaterThan(0);
+        // The trace stamps Date.now() after production sizes the timeout from its own clock read.
+        const CLOCK_READ_SKEW_MS = 5;
         for (const send of gatedSends(r)) {
           expect(send.message.readyTimeoutMs as number).toBeGreaterThanOrEqual(1000);
           expect(send.message.readyTimeoutMs as number).toBeLessThanOrEqual(10_000);
           expect(send.at + (send.timeout ?? Number.POSITIVE_INFINITY)).toBeLessThanOrEqual(
-            began + 30_000
+            began + 30_000 + CLOCK_READ_SKEW_MS
           );
           expect(send.repliedAt).toBeDefined();
         }

@@ -100,3 +100,114 @@ BOTH fetch call sites (the main request and the 401-retry twin), so the other ~1
 the identical instruction sequence they always did. It lives on Layer 3, not Layer 1, because the
 encoded body embeds the credential — the same reason `transformPayload` is a transport hook.
 `supportsVision()` is false, which routes images through the existing vision-proxy path for free.
+
+## Raw model list for models-index (`claudish subscription models devin --raw --json`)
+
+**Why it exists.** models-index publishes Devin connections with a fixed effort (the tier lives in
+the uid), and its wire-probe runner (a macOS LaunchAgent, no TTY, no browser) needs the account's
+dynamic models catalog inputs as evidence. Code: `subscription-devin-models.ts`, loaded by
+`subscription-models-command.ts` only for a `devin` argv. The contract is the Antigravity one
+(`antigravity.md`, "Raw model list for models-index"): one flushed JSON line on stdout on every exit,
+the field-presence rule, the failure classes and exit codes, the secret guard, argv only, stdin never
+read. `devin` is the only accepted spelling; the `dv` shortcut is a usage error, as `ag` is.
+
+**It reuses discovery's rpcs; it does not copy them.** `postDevinUnaryRaw` (`devin-models.ts`) sends
+`GetCliModelConfigs` and `GetCliTeamSettings` with the bare `application/proto` body and the six-field
+unary metadata discovery uses, and returns what the wire did: unreachable, or the status plus the
+2xx bytes (or a read failure). Discovery's fail-soft `postUnary` is built on it and still collapses
+every failure to `null`. Decoding is the same code: `decodeModelConfigs` and `decodeAllowedUids`.
+Each rpc is bounded at 30 s, fetch and read.
+
+Sequence and outcomes:
+1. `readDevinApiKey()` (env, then config, then `~/.local/share/devin/credentials.toml`). None:
+   `credential_missing` / `devin_credential_absent`, exit 3. No platform check: the Devin CLI's
+   file exists on Linux too.
+2. `GetCliModelConfigs`. Unreachable: `network` / `model_configs_network_error`, or
+   `model_configs_timeout` when the bound fired (also a 2xx body that could not be read). Non-2xx:
+   exit 0 with `httpStatus` and no body; the status is the answer. 2xx with no decoded config:
+   `list_incomplete` / `configs_empty`.
+3. `GetCliTeamSettings`. Unreachable: `team_settings_network_error` / `team_settings_timeout`.
+   Non-2xx: `list_incomplete` / `team_settings_http_error` with `failure.httpStatus` (configs without
+   entitlement are half an answer). No allowed uid: `list_incomplete` / `allowed_uids_empty`.
+4. Success: `body` is JSON TEXT `{"configs":[DevinModelConfig…],"allowedModelUids":[…]}`. Every
+   decoded config row is listed UNFILTERED, the `adaptive` ctx-0 row and rows the account is not
+   entitled to included: the consumer intersects, exactly as `getServedDevinModels` does.
+
+**Why decoded JSON and not the protobuf as base64.** The guard's scope is literal text plus JSON
+escaping. Base64 would carry a credential straight past it, and the decoded fields (uid, context
+window, max output, family, the axes with the effort label) are what models-index needs anyway.
+`GetCliTeamSettings` is reduced to `allowed_model_uids`, so no team or user field of that answer
+reaches stdout.
+
+Envelope keys, in order (`claudish.subscription-model-list.v1`):
+
+```
+schema, provider ("devin"), claudishVersion, fetchedAt?, sourceUrl?, clientVersion?,
+tokenRefreshed (always false: Devin has no refresh), httpStatus?, teamSettingsUrl?,
+teamSettingsHttpStatus?, failure?, body?
+```
+
+| Field | Present when |
+|---|---|
+| `sourceUrl`, `clientVersion` | `GetCliModelConfigs` was attempted. The URL honours `WINDSURF_API_SERVER_URL`, userinfo stripped; the version is `DEVIN_CLI_VERSION`, the one the metadata claims |
+| `fetchedAt`, `httpStatus` | `GetCliModelConfigs` answered |
+| `teamSettingsUrl` | `GetCliTeamSettings` was attempted (only after a 2xx configs answer with rows) |
+| `teamSettingsHttpStatus` | `GetCliTeamSettings` answered |
+| `clientVersionSource` | never on Devin |
+
+**Secrets.** The api key, and the part after `devin-session-token$` when that prefix is present: a
+vendor echo of the bare JWT must trip the guard too. The body text and the line are checked for both;
+a hit exits 1 with the body-free `internal` / `secret_guard` line.
+
+## Wire probe for models-index (`claudish subscription probe devin`)
+
+```
+claudish subscription probe devin --model <uid> --request-file <path> --raw --json
+```
+
+**Why it exists.** The runner must send ONE real `GetChatMessage` through the user's Devin login to
+prove what a connection does on the wire (a `-low` uid against a `-max` uid of the same family),
+without ever holding the key. Code: `subscription-devin-probe.ts`, loaded by
+`subscription-probe-command.ts` only for a `devin` argv. The envelope, the run wrapper and the exit
+codes are the Antigravity probe's (`antigravity.md`, "Wire probe for models-index"); the guard
+helpers live in `subscription-secret-guard.ts`.
+
+**The request goes through `dv@`'s own Layer 1, with the uid pinned.** The file holds one Anthropic
+Messages body. It is read FIRST (same reader, 8 MiB cap, `request_file_unreadable` /
+`request_file_invalid`, exit 2): a request that cannot be sent touches no credential. Then
+`new DevinAPIFormat(uid)` runs as `ComposedHandler` drives it (`convertMessages` with the same
+identity filter, `convertTools`, `buildPayload`, `prepareRequest`), and the payload's `modelUid` is
+set to `--model` verbatim with `effort` deleted. `resolveDevinModelUid` is NOT called: it expands a
+tier-less uid (`glm-5-2-1m`) with the request's `output_config.effort`, and the probe exists to test
+the uid itself. `encodeDevinRequest`, `devinAuthHeaders` + `content-type: application/connect+proto`,
+one `fetch` to `<server>` + `CHAT_PATH`, `redirect: "manual"`, a 300 s bound over the fetch and the
+read. No retry, no supervisor hooks, no status-line token file, no stats.
+
+**The answer is decoded, never printed as protobuf** (same reason as the model list):
+- Unreachable: `network` / `get_chat_message_network_error`, or `get_chat_message_timeout` when the
+  bound fired. A stream that fails with no error frame (the read broke), or that ends without the clean end-of-stream frame (a dropped socket: the parser closes such a turn as `end_turn`, `onEndOfStream` never fires), is the same failure: a truncated turn is never printed as an answer.
+- Non-2xx: exit 0 with the body text, capped at 512 KiB and redacted: the vendor's error is evidence.
+- 2xx: errors ride the 200, so `sniffDevinStreamHead` reads the head. An error frame is exit 0 with
+  `streamError: {code, retryable}` (the `classifyDevinStreamError` verdict) and body
+  `{"error":{"code","message"}}`. A clean head goes through `createDevinConnectStream` (the `dv@`
+  parser) into `collectSseMessage`: body is the Messages object
+  `{id,type,role,model,content,stop_reason,stop_sequence,usage}`. An error frame mid-stream sets
+  `streamError` as well, and `content` is then empty.
+- Over 512 KiB: `list_incomplete` / `body_too_large`. Not decodable to a fixed point:
+  `body_unverifiable`.
+
+Envelope keys, in order (`claudish.subscription-probe.v1`):
+
+```
+schema, provider ("devin"), claudishVersion, model, fetchedAt?, sourceUrl?, clientVersion?,
+tokenRefreshed (false), httpStatus?, servedModel?, streamError?, failure?, bodyRedacted?, body?
+```
+
+`servedModel` is the uid the backend reports in field `7.9`, whenever it reports one, equal to `--model` or not: an equal value is the backend confirming the uid it served. `usage` is the
+field-28 counters the parser reports through `onTokenUpdate`, never the collected SSE usage: the
+collector keeps `message_start`'s seed (`input_tokens` 100, `message-start-usage.ts`) whenever the
+real input count is 0, and that estimate is not evidence. An absent field-28 value prints as 0.
+
+The secrets and the guard are the model list's, plus the probe's redaction: the body is redacted by
+exact value (`[REDACTED]`, `bodyRedacted: true`), and the final line, the body and every
+`jsonUnescapedForms` form are then checked for the key and the bare JWT.

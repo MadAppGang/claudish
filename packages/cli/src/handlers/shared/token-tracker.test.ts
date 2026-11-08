@@ -88,6 +88,27 @@ describe("the token file path: one rule for the writer and its readers", () => {
   });
 });
 
+describe("TokenTracker allowance contract", () => {
+  test("F16 token-file gap labels use explicit seconds, never report epoch names", () => {
+    const { tracker, tokenFile } = createTracker();
+    const now = Date.now();
+    const gapStartSec = Math.floor(now / 1000) + 3600;
+    const gapEndSec = gapStartSec + 43 * 3600;
+    tracker.setAllowanceLabel({
+      level: "warn",
+      remainingPct: 50,
+      gapStartSec,
+      gapEndSec,
+      observedAt: now,
+    });
+    tracker.updateWithDelta(1000, 10);
+    const allowance = JSON.parse(readFileSync(tokenFile, "utf8")).allowance;
+    expect(allowance).toMatchObject({ level: "warn", remainingPct: 50, gapStartSec, gapEndSec });
+    expect(allowance).not.toHaveProperty("gapStartEpoch");
+    expect(allowance).not.toHaveProperty("gapEndEpoch");
+  });
+});
+
 describe("TokenTracker live input-token tracking", () => {
   test("grow then compact writes the current context and recovers context-left percentage", () => {
     const { tracker, tokenFile } = createTracker();

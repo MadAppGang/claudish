@@ -201,6 +201,16 @@ function findCatalogEntry(entries: SlimModelEntry[], model: string): SlimModelEn
 }
 
 /**
+ * The canonical model id the cloud models catalog resolves `model` to (exact id,
+ * alias, or either ignoring case), the lookup routing itself uses. Undefined
+ * when the catalog is unreadable or lacks the name.
+ */
+export function catalogModelId(model: string, cachePath?: string): string | undefined {
+  const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
+  return entries ? findCatalogEntry(entries, model)?.modelId : undefined;
+}
+
+/**
  * Candidates from the catalog's own connections — the primary source.
  *
  * Every skip below is deliberate and each has a different reason:

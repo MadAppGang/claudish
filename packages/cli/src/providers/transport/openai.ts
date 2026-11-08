@@ -10,6 +10,7 @@ import { callAbortError, sleepUnlessAborted } from "../../handlers/shared/call-c
 import { isQuotaExhaustionError } from "../../handlers/shared/quota-exhaustion.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
+import { resolveUpstreamUrl } from "../../test-upstream.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
@@ -35,7 +36,11 @@ export class OpenAIProviderTransport implements ProviderTransport {
   }
 
   getEndpoint(): string {
-    return `${this.provider.baseUrl}${this.provider.apiPath}`;
+    // No-op unless CLAUDISH_TEST_UPSTREAM names a loopback target. This is the
+    // METERED host for `openai-codex` (api.openai.com), which the e2e matrix
+    // points at a recording canary listener so that "claudish contacted the
+    // metered path" is an OBSERVED event rather than an absence.
+    return resolveUpstreamUrl(`${this.provider.baseUrl}${this.provider.apiPath}`);
   }
 
   /**

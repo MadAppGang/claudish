@@ -1,0 +1,385 @@
+/**
+ * The golden `allowance_status` answers (allowance architecture §3.4, §6 step
+ * 5): what claudish answers the mod, written down before the tool exists so the
+ * magus plugin's `fake-claudish.ts` can answer exactly this and its tests
+ * cannot drift from the server. magus copies the TEXTS verbatim, as it copies
+ * `GOLDEN_LIST`; a contract test here validates each against
+ * `allowanceStatusAnswerSchema`.
+ *
+ * Three answers, one per mod state:
+ * - `GOLDEN_ALLOWANCE_WARN`: supported, a WARN alert → the band shows.
+ * - `GOLDEN_ALLOWANCE_NO_EVIDENCE`: supported, `insufficient-evidence` → band
+ *   hidden, poll backs off to 5 min.
+ * - `GOLDEN_ALLOWANCE_UNAVAILABLE`: supported, `allowance: null` with a reason
+ *   (no account pool) → band hidden.
+ *
+ * An UNSUPPORTED claudish is not an answer of ours: it is the MCP client's
+ * unknown-tool error, or a list answer whose `capabilities` lacks `allowance`.
+ * Session ids are 8 characters, as on every model-visible surface.
+ */
+
+import type { AllowanceStatusAnswer } from "./allowance-report-schema.js";
+
+/** Mod contract v1's capabilities once `allowance_status` ships (§6 step 14). */
+export const GOLDEN_ALLOWANCE_CAPABILITIES = [
+  "list",
+  "status",
+  "cancel",
+  "capture",
+  "capture_since_seq",
+  "capture_spans",
+  "resize",
+  "allowance",
+  "scroll",
+  "transcript",
+];
+
+/** Monday 2026-10-26 09:00 UTC. The gap runs Thu 14:00 → Sat 09:00 (43 h). */
+export const GOLDEN_ALLOWANCE_AT = "2026-10-26T09:00:00.000Z";
+
+/** `usage.start` at GOLDEN_ALLOWANCE_AT: its hour − 335 h. */
+const GOLDEN_USAGE_START = "2026-10-12T10:00:00.000Z";
+
+/**
+ * One account's 336 `usage.cu` cells from GOLDEN_USAGE_START: `cu` in the UTC
+ * hours [fromHour, toHour) of the days [fromDay, toDay], 0 elsewhere. Built,
+ * not listed, so the golden stays readable; its JSON text is fixed all the same.
+ */
+function goldenUsageCells(
+  fromDay: string,
+  toDay: string,
+  fromHour: number,
+  toHour: number,
+  cu: number
+): number[] {
+  const start = Date.parse(GOLDEN_USAGE_START);
+  return Array.from({ length: 336 }, (_, i) => {
+    const at = new Date(start + i * 3_600_000);
+    const day = at.toISOString().slice(0, 10);
+    const hour = at.getUTCHours();
+    return day >= fromDay && day <= toDay && hour >= fromHour && hour < toHour ? cu : 0;
+  });
+}
+
+export const GOLDEN_ALLOWANCE_WARN_ANSWER = {
+  contract_version: 1,
+  capabilities: GOLDEN_ALLOWANCE_CAPABILITIES,
+  allowance: {
+    schema: "claudish.allowance.v1",
+    generatedAt: GOLDEN_ALLOWANCE_AT,
+    forecastAt: "2026-10-26T08:57:12.000Z",
+    provider: "openai-codex",
+    strategy: "lookahead",
+    alertModel: "ebr",
+    evidence: "full",
+    unit: "cu",
+    assumption: null,
+    horizonHours: 168,
+    accounts: [
+      {
+        label: "work",
+        id: "aaaaaaaaaaaa",
+        planClass: "pro",
+        deliverable: 0.52,
+        binding: "len:10080",
+        windows: [
+          {
+            key: "len:10080",
+            displayId: "7d",
+            usedFraction: 0.48,
+            resetAt: "2026-10-31T09:00:00.000Z",
+            provenance: "observed",
+            semantics: "fixed-start",
+          },
+        ],
+        lambda: null,
+        calibration: { beta: "calibrated", kappa: null },
+        active: true,
+        order: 0,
+        lostAtReset: { at: "2026-10-31T09:00:00.000Z", p10: 0, p50: 0, p90: 0.02 },
+      },
+      {
+        label: "home",
+        id: "bbbbbbbbbbbb",
+        planClass: "plus",
+        deliverable: 0.32,
+        binding: "len:300",
+        windows: [
+          {
+            key: "len:10080",
+            displayId: "7d",
+            usedFraction: 0.36,
+            resetAt: "2026-11-01T06:00:00.000Z",
+            provenance: "observed",
+            semantics: "fixed-start",
+          },
+          {
+            key: "len:300",
+            displayId: "5h",
+            usedFraction: 0.81,
+            resetAt: "2026-10-26T11:00:00.000Z",
+            provenance: "observed",
+            semantics: "sliding",
+          },
+        ],
+        lambda: null,
+        calibration: { beta: "coarse", kappa: "calibrated" },
+        active: false,
+        order: 1,
+        lostAtReset: { at: "2026-11-01T06:00:00.000Z", p10: 0, p50: 0.01, p90: 0.06 },
+      },
+    ],
+    combined: { remainingNow: 58_000_000, capacity: 100_000_000 },
+    // Under the cut-60 alert the safe pace is the remedy's: 0.60 × 410_000 (cutToPercent / 100 × long).
+    burn: { long: 410_000, short: 520_000, sustainable: 246_000, unit: "cu/h" },
+    alerts: [
+      {
+        level: "warn",
+        since: "2026-10-26T08:15:00.000Z",
+        gapStartEpoch: 1_793_282_400_000,
+        gapStart: {
+          p10: "2026-10-29T08:00:00.000Z",
+          p25: "2026-10-29T11:00:00.000Z",
+          p50: "2026-10-29T14:00:00.000Z",
+          p75: "2026-10-29T17:00:00.000Z",
+          p90: "2026-10-29T20:00:00.000Z",
+        },
+        gapEnd: {
+          p10: "2026-10-31T09:00:00.000Z",
+          p25: "2026-10-31T09:00:00.000Z",
+          p50: "2026-10-31T09:00:00.000Z",
+          p75: "2026-10-31T09:00:00.000Z",
+          p90: "2026-10-31T09:00:00.000Z",
+        },
+        gapHours: { p10: 31, p25: 37, p50: 43, p75: 49, p90: 55 },
+        pGap: 0.86,
+        binding: [
+          { account: "work", window: "7d" },
+          { account: "home", window: "7d" },
+        ],
+        remedy: {
+          kind: "cut",
+          cutToPercent: 60,
+          until: "2026-10-31T09:00:00.000Z",
+          pauseHours: 14,
+          reason: null,
+          text: "cut to 60 % of current rate until Sat 09:00, or pause 14 h",
+        },
+      },
+    ],
+    blockedNow: false,
+    status: "ok",
+    trajectory: {
+      history: [
+        { at: "2026-10-26T06:00:00.000Z", remaining: 0.61, provenance: "observed" },
+        { at: "2026-10-26T07:00:00.000Z", remaining: 0.6, provenance: "observed" },
+        { at: "2026-10-26T08:00:00.000Z", remaining: 0.59, provenance: "observed" },
+        { at: "2026-10-26T09:00:00.000Z", remaining: 0.58, provenance: "observed" },
+      ],
+      historyByAccount: [
+        {
+          accountId: "aaaaaaaaaaaa",
+          history: [
+            { at: "2026-10-26T06:00:00.000Z", remaining: 0.29, provenance: "observed" },
+            { at: "2026-10-26T07:00:00.000Z", remaining: 0.28, provenance: "observed" },
+            { at: "2026-10-26T08:00:00.000Z", remaining: 0.27, provenance: "observed" },
+            { at: "2026-10-26T09:00:00.000Z", remaining: 0.26, provenance: "observed" },
+          ],
+        },
+        {
+          accountId: "bbbbbbbbbbbb",
+          history: [
+            { at: "2026-10-26T06:00:00.000Z", remaining: 0.32, provenance: "observed" },
+            { at: "2026-10-26T07:00:00.000Z", remaining: 0.32, provenance: "observed" },
+            { at: "2026-10-26T08:00:00.000Z", remaining: 0.32, provenance: "observed" },
+            { at: "2026-10-26T09:00:00.000Z", remaining: 0.32, provenance: "observed" },
+          ],
+        },
+      ],
+      forecast: [
+        { at: "2026-10-27T09:00:00.000Z", p10: 0.38, p50: 0.45, p90: 0.5, pBlocked: 0 },
+        { at: "2026-10-28T09:00:00.000Z", p10: 0.16, p50: 0.27, p90: 0.36, pBlocked: 0.02 },
+        { at: "2026-10-29T09:00:00.000Z", p10: 0, p50: 0.08, p90: 0.21, pBlocked: 0.31 },
+        { at: "2026-10-30T09:00:00.000Z", p10: 0, p50: 0, p90: 0.04, pBlocked: 0.86 },
+        { at: "2026-10-31T09:00:00.000Z", p10: 0.48, p50: 0.5, p90: 0.5, pBlocked: 0 },
+      ],
+      resets: [
+        { at: "2026-10-31T09:00:00.000Z", account: "work", window: "7d", projected: false },
+        { at: "2026-11-01T06:00:00.000Z", account: "home", window: "7d", projected: false },
+      ],
+      blocked: [
+        {
+          from: "2026-10-29T14:00:00.000Z",
+          to: "2026-10-31T09:00:00.000Z",
+          kind: "7d",
+          probability: 0.86,
+        },
+      ],
+      switches: [
+        {
+          accountId: "bbbbbbbbbbbb",
+          soonest: "2026-10-28T09:00:00.000Z",
+          usual: "2026-10-28T20:00:00.000Z",
+          latest: "2026-10-29T06:00:00.000Z",
+          probability: 0.97,
+          likelihood: {
+            start: "2026-10-28T08:00:00.000Z",
+            stepHours: 1,
+            p: [
+              0.04, 0.08, 0.15, 0.25, 0.37, 0.51, 0.65, 0.78, 0.89, 0.96, 1, 0.99, 0.95, 0.87, 0.77,
+              0.65, 0.52, 0.4, 0.29, 0.2, 0.13, 0.08, 0.05, 0.02,
+            ],
+          },
+        },
+        {
+          accountId: "aaaaaaaaaaaa",
+          soonest: "2026-10-31T09:00:00.000Z",
+          usual: "2026-10-31T09:00:00.000Z",
+          latest: "2026-10-31T09:00:00.000Z",
+          probability: 0.86,
+          likelihood: { start: "2026-10-31T09:00:00.000Z", stepHours: 1, p: [1] },
+        },
+      ],
+      slower: {
+        factor: 0.667,
+        switches: [
+          {
+            accountId: "bbbbbbbbbbbb",
+            soonest: "2026-10-28T19:00:00.000Z",
+            usual: "2026-10-29T08:00:00.000Z",
+            latest: "2026-10-29T21:00:00.000Z",
+            probability: 0.91,
+            likelihood: {
+              start: "2026-10-28T17:00:00.000Z",
+              stepHours: 1,
+              p: [
+                0.06, 0.14, 0.27, 0.43, 0.61, 0.78, 0.91, 0.99, 1, 0.94, 0.82, 0.66, 0.49, 0.33,
+                0.2, 0.1, 0.04,
+              ],
+            },
+          },
+        ],
+        blocked: [],
+      },
+      spark48: "▇▇▇▆▆▆▅▅▅▄▄▄▃▃▃▂▂▂▁▁▁   ▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒┊▁▁▁",
+    },
+    sessions: [
+      {
+        session: "1a2b3c4d",
+        parent: "5e6f7a8b",
+        account: "work",
+        window: "7d",
+        share: 0.38,
+        usedFraction: 0.19,
+        cu: 19_000_000,
+        tokens: { in: 41_200_000, out: 900_000, cacheRead: 35_000_000, cacheWrite: 0 },
+        models: { "gpt-6-astra": 412 },
+        exactness: "pro-rata",
+        firstAt: "2026-10-26T01:12:00.000Z",
+        lastAt: "2026-10-26T08:55:00.000Z",
+      },
+      {
+        session: "9f8e7d6c",
+        parent: null,
+        account: "work",
+        window: "7d",
+        share: 0.21,
+        usedFraction: 0.11,
+        cu: 11_000_000,
+        tokens: { in: 22_000_000, out: 400_000, cacheRead: 18_500_000, cacheWrite: 0 },
+        models: { "gpt-6-astra": 230 },
+        exactness: "pro-rata",
+        firstAt: "2026-10-25T13:40:00.000Z",
+        lastAt: "2026-10-26T07:30:00.000Z",
+      },
+      {
+        session: "unattributed",
+        parent: null,
+        account: "all",
+        window: "7d",
+        share: 0.12,
+        usedFraction: 0.06,
+        cu: 6_000_000,
+        tokens: { in: 0, out: 0, cacheRead: 0, cacheWrite: 0 },
+        models: {},
+        exactness: "external-unidentified",
+        firstAt: "2026-10-24T09:00:00.000Z",
+        lastAt: "2026-10-26T09:00:00.000Z",
+      },
+    ],
+    // `home` served the first week, `work` the second, 410_000 cu/h (burn.long) in working hours.
+    usage: {
+      start: GOLDEN_USAGE_START,
+      stepHours: 1,
+      hours: 336,
+      unit: "cu",
+      coveredFrom: GOLDEN_USAGE_START,
+      accounts: [
+        {
+          accountId: "aaaaaaaaaaaa",
+          cu: goldenUsageCells("2026-10-19", "2026-10-26", 1, 18, 410_000),
+        },
+        {
+          accountId: "bbbbbbbbbbbb",
+          cu: goldenUsageCells("2026-10-12", "2026-10-18", 1, 18, 380_000),
+        },
+      ],
+      censored: [],
+    },
+  },
+} satisfies AllowanceStatusAnswer;
+
+export const GOLDEN_ALLOWANCE_NO_EVIDENCE_ANSWER = {
+  contract_version: 1,
+  capabilities: GOLDEN_ALLOWANCE_CAPABILITIES,
+  allowance: {
+    schema: "claudish.allowance.v1",
+    generatedAt: GOLDEN_ALLOWANCE_AT,
+    forecastAt: null,
+    provider: "openai-codex",
+    strategy: "sticky",
+    alertModel: "sticky",
+    evidence: "none",
+    unit: "account-fraction",
+    assumption: "equal-capacity",
+    horizonHours: 168,
+    accounts: [],
+    combined: { remainingNow: null, capacity: null },
+    burn: { long: null, short: null, sustainable: null, unit: "account-fraction/h" },
+    alerts: [],
+    blockedNow: false,
+    status: "insufficient-evidence",
+    trajectory: {
+      history: [],
+      historyByAccount: [],
+      forecast: [],
+      resets: [],
+      blocked: [],
+      switches: [],
+      slower: { factor: 0.667, switches: [], blocked: [] },
+      spark48: "",
+    },
+    sessions: [],
+    usage: {
+      start: GOLDEN_USAGE_START,
+      stepHours: 1,
+      hours: 336,
+      unit: "cu",
+      coveredFrom: null,
+      accounts: [],
+      censored: [],
+    },
+  },
+} satisfies AllowanceStatusAnswer;
+
+export const GOLDEN_ALLOWANCE_UNAVAILABLE_ANSWER = {
+  contract_version: 1,
+  capabilities: GOLDEN_ALLOWANCE_CAPABILITIES,
+  allowance: null,
+  reason: "no account pool is configured for openai-codex",
+} satisfies AllowanceStatusAnswer;
+
+/** The MCP text content of each answer, as the mod receives it. */
+export const GOLDEN_ALLOWANCE_WARN = JSON.stringify(GOLDEN_ALLOWANCE_WARN_ANSWER);
+export const GOLDEN_ALLOWANCE_NO_EVIDENCE = JSON.stringify(GOLDEN_ALLOWANCE_NO_EVIDENCE_ANSWER);
+export const GOLDEN_ALLOWANCE_UNAVAILABLE = JSON.stringify(GOLDEN_ALLOWANCE_UNAVAILABLE_ANSWER);

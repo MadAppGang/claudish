@@ -112,6 +112,23 @@ function sampleInfo(over: Partial<SessionInfo> = {}): SessionInfo {
 // ─── pure ────────────────────────────────────────────────────────────────────
 
 describe("exported session seams (pure)", () => {
+  test("agent fields project to session rows and meta records with explicit null defaults", () => {
+    const info = sampleInfo({ agentRequested: "dev:requested", agent: "dev:reviewer" });
+    expect(sessionRowOf(info)).toMatchObject({
+      agent_requested: "dev:requested",
+      agent: "dev:reviewer",
+    });
+    expect(toMetaRecord(info, "/work")).toMatchObject({
+      agentRequested: "dev:requested",
+      agent: "dev:reviewer",
+    });
+    expect(sessionRowOf(sampleInfo())).toMatchObject({ agent_requested: null, agent: null });
+    expect(toMetaRecord(sampleInfo(), "/work")).toMatchObject({
+      agentRequested: null,
+      agent: null,
+    });
+  });
+
   test("sessionEventFor maps every SlotState (§3.4)", () => {
     const cases: Array<[SlotState, string | null, string, string | null]> = [
       ["STARTING", null, "starting", null],
@@ -208,6 +225,8 @@ describe("exported session seams (pure)", () => {
         "activity",
         "pane",
         "recent",
+        "agent_requested",
+        "agent",
         "session_id",
         "started_at",
         "completed_at",
@@ -289,6 +308,63 @@ describe("SessionManager disk reader", () => {
     });
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  test("agent fields persist through disk getSession with spawn-only request fallback", () => {
+    const cases = [
+      {
+        id: "meta-agents",
+        meta: { agentRequested: "dev:requested", agent: "dev:reviewer" },
+        spawn: { agentRequested: "dev:older" },
+        requested: "dev:requested",
+        agent: "dev:reviewer",
+      },
+      {
+        id: "spawn-fallback",
+        meta: {},
+        spawn: { agentRequested: "dev:nope" },
+        requested: "dev:nope",
+        agent: null,
+      },
+      {
+        id: "spawn-only",
+        meta: null,
+        spawn: { agentRequested: "dev:reviewer" },
+        requested: "dev:reviewer",
+        agent: null,
+      },
+      { id: "pre-change", meta: {}, spawn: {}, requested: null, agent: null },
+    ];
+    for (const c of cases) {
+      const dir = join(sessionsDir, c.id);
+      mkdirSync(dir);
+      writeFileSync(
+        join(dir, "spawn.json"),
+        JSON.stringify({
+          kind: "session",
+          sessionId: c.id,
+          model: "m",
+          startedAt: "2026-10-06T00:00:00.000Z",
+          ...c.spawn,
+        })
+      );
+      if (c.meta !== null)
+        writeFileSync(
+          join(dir, "meta.json"),
+          JSON.stringify({
+            sessionId: c.id,
+            model: "m",
+            state: "COMPLETED",
+            startedAt: "2026-10-06T00:00:00.000Z",
+            completedAt: "2026-10-06T00:01:00.000Z",
+            ...c.meta,
+          })
+        );
+      expect(sessionRowOf(manager.getSession(c.id))).toMatchObject({
+        agent_requested: c.requested,
+        agent: c.agent,
+      });
+    }
+  });
 
   test("unknown ids: the readers throw not found, the mutators answer unknown_session", () => {
     expect(() => manager.getSession("nonexistent")).toThrow("not found");

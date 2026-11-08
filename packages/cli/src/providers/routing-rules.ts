@@ -541,6 +541,8 @@ export interface ExplainedCandidate {
   /** Catalog-gathered candidates only, when the catalog publishes one. */
   contextWindow?: number;
   outcome: CandidateOutcome;
+  /** Credential evidence, including typed account-list failures retained for signing. */
+  credentialReadiness?: ReadinessResult;
   /**
    * Kept candidates whose availability was checked: `serves` when the account
    * confirmed the model, `unknown` when nothing denied it.
@@ -686,6 +688,15 @@ function entryOutcome(resolved: ResolvedEntry): CandidateOutcome {
   return resolved.exclusion ?? "kept";
 }
 
+/** Unknown Codex account configuration must reach the handler's typed response. */
+function isCodexAccountsFailure(provider: string, verdict?: ReadinessResult): boolean {
+  return (
+    provider === "openai-codex" &&
+    verdict?.readiness === "failed" &&
+    verdict.failureReason === "accounts-list"
+  );
+}
+
 /**
  * Path 1: an explicit "provider@model" spec. Probe ONLY that provider's
  * credentials; never fall back silently.
@@ -705,13 +716,19 @@ async function explainExplicitSpec(
     return explainUnknownShortcut(requestedModel, modelSpec, model, provider, cachePath);
   }
 
-  const credentialed = await hasCredentialsForProvider(provider);
+  const readiness: ReadinessResult =
+    provider === "openai-codex"
+      ? await credentials.describeReadiness(provider)
+      : { readiness: (await hasCredentialsForProvider(provider)) ? "present" : "absent" };
+  const accountsFailed = isCodexAccountsFailure(provider, readiness);
+  const credentialed = readiness.readiness === "present" || accountsFailed;
 
   // The one candidate is built whatever the credential says, so a display can
   // name what the spec asks for. Built AFTER the credential read, the order
   // route() has always used; building it is a catalog lookup and nothing else.
   const [resolved] = resolveRoutingEntries([modelSpec], model, cachePath);
   const candidate = explainCandidate(resolved.route, "candidate", entryOutcome(resolved));
+  candidate.credentialReadiness = readiness;
   const explanation: RouteExplanation = {
     requestedModel,
     routedModel: model,
@@ -750,7 +767,10 @@ async function explainExplicitSpec(
   // Without this the request still fails, just later and less clearly: OpenCode
   // Zen Go answers for a model it does not carry with HTTP 401, which reads as a
   // credential problem and sends the user to check a key that works.
-  const availability = await providerServesModel(candidate.provider, candidate.wireId);
+  // Do not discover with an unknown account list or let cached discovery erase it.
+  const availability = accountsFailed
+    ? "unknown"
+    : await providerServesModel(candidate.provider, candidate.wireId);
   if (availability === "not-served") {
     candidate.outcome = "not-served";
     explanation.outcome = {
@@ -1163,13 +1183,13 @@ async function applyCandidateFilters(
   // can disagree, and a credential that recovered between them would fall out
   // of both partitions and erase the evidence of the failure that removed it.
   //
-  // Non-subscription candidates keep the boolean, which is all they can
-  // contribute: `skippedFailed` is subscription-only by construction. The
-  // boolean is itself the `=== "present"` projection of one `describeReadiness`
-  // (authority.ts), so the partition is byte-identical to what it was.
+  // Other non-subscription candidates keep the boolean. Codex always needs the
+  // full verdict: typed account-list failure is retained, not counted as skipped,
+  // even if the process's last signed-arm record currently predicts metered.
   const verdicts = await Promise.all(
     candidates.map(async (candidate): Promise<ReadinessResult> => {
-      if (isSubscriptionProvider(candidate.provider)) {
+      // Codex needs typed readiness even if an earlier request recorded metered.
+      if (candidate.provider === "openai-codex" || isSubscriptionProvider(candidate.provider)) {
         return credentials.describeReadiness(candidate.provider);
       }
       const present = await hasCredentialsForProvider(candidate.provider);
@@ -1178,7 +1198,8 @@ async function applyCandidateFilters(
   );
   candidates.forEach((candidate, i) => {
     const verdict = verdicts[i];
-    if (verdict.readiness === "present") {
+    candidate.credentialReadiness = verdict;
+    if (verdict.readiness === "present" || isCodexAccountsFailure(candidate.provider, verdict)) {
       credentialed.push(candidate);
       return;
     }
@@ -1224,7 +1245,11 @@ async function applyCandidateFilters(
   // neither source covers, which is almost entirely the SUBSCRIPTION providers,
   // and would move users off plans they pay for onto metered hops.
   const availability = await Promise.all(
-    credentialed.map((candidate) => providerServesModel(candidate.provider, candidate.wireId))
+    credentialed.map((candidate) =>
+      isCodexAccountsFailure(candidate.provider, candidate.credentialReadiness)
+        ? "unknown"
+        : providerServesModel(candidate.provider, candidate.wireId)
+    )
   );
   const serving: ExplainedCandidate[] = [];
   const notServing: string[] = [];

@@ -61,6 +61,7 @@ describe("dropControlVars", () => {
       "CLAUDISH_PANE_CHILD",
       "CLAUDISH_PANE_CWD",
       "CLAUDISH_PANE_ENV",
+      "CLAUDISH_PARENT_SESSION",
     ]);
   });
 });
