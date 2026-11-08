@@ -26,6 +26,9 @@ export const ENV = {
   CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
   // Claude Code treats its base URL as Anthropic's own API only with this set to 1.
   CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+  // Set beside the two above when claudish itself set them, so a process that
+  // inherits all three knows the pair is claudish's and not the user's.
+  CLAUDISH_SET_HOST_ROUTING_VARS: "CLAUDISH_SET_HOST_ROUTING_VARS",
   // Claudish model mapping overrides (highest priority)
   CLAUDISH_MODEL_OPUS: "CLAUDISH_MODEL_OPUS",
   CLAUDISH_MODEL_SONNET: "CLAUDISH_MODEL_SONNET",

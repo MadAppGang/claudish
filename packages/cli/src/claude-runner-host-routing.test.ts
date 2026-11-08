@@ -11,7 +11,10 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
  * The environment claudish gives a stand-in `claude`, launched with `args` from an
  * environment that grants first-party trust, as a shell inside a trusted session does.
  */
-async function childEnvFor(args: string[]): Promise<Record<string, string>> {
+async function childEnvFor(
+  args: string[],
+  inherited: Record<string, string> = {}
+): Promise<Record<string, string>> {
   const dir = mkdtempSync(join(root, "case-"));
   const home = join(dir, "home");
   mkdirSync(home);
@@ -40,6 +43,7 @@ async function childEnvFor(args: string[]): Promise<Record<string, string>> {
         CLAUDISH_DISABLE_KEYCHAIN: "1",
         CLAUDISH_DISABLE_OP: "1",
         CLAUDISH_NO_PREDEFINED_ENDPOINTS: "1",
+        ...inherited,
       },
       stdio: "ignore",
     }
@@ -53,6 +57,7 @@ describe.skipIf(process.platform === "win32")("the environment claudish gives Cl
     const env = await childEnvFor(["--model", "ollama@llama3.2"]);
     expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe("1");
     expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBe("");
+    expect(env.CLAUDISH_SET_HOST_ROUTING_VARS).toBe("1");
     expect(env.ANTHROPIC_BASE_URL).toStartWith("http://127.0.0.1:");
   }, 30_000);
 
@@ -70,5 +75,37 @@ describe.skipIf(process.platform === "win32")("the environment claudish gives Cl
       "claude-opus-4-7",
     ]);
     expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBeUndefined();
+  }, 30_000);
+
+  // What a shell inside a routed session hands a claudish it starts.
+  const fromRoutedSession = {
+    CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "1",
+    _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "",
+    CLAUDISH_SET_HOST_ROUTING_VARS: "1",
+  };
+  const nativeRoleArgs = ["--model", "ollama@llama3.2", "--model-opus", "claude-opus-4-7"];
+
+  test("removes the host-routing pair a routed parent set from a native-role launch", async () => {
+    const env = await childEnvFor(nativeRoleArgs, fromRoutedSession);
+    expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBeUndefined();
+    expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBeUndefined();
+    expect(env.CLAUDISH_SET_HOST_ROUTING_VARS).toBeUndefined();
+  }, 30_000);
+
+  test("removes the host-routing pair a routed parent set from a --monitor launch", async () => {
+    const env = await childEnvFor(["--monitor"], fromRoutedSession);
+    expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBeUndefined();
+    expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBeUndefined();
+    expect(env.CLAUDISH_SET_HOST_ROUTING_VARS).toBeUndefined();
+  }, 30_000);
+
+  test("keeps a host-routing pair the user set, with no claudish marker", async () => {
+    const env = await childEnvFor(nativeRoleArgs, {
+      CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "1",
+      _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "",
+    });
+    expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe("1");
+    expect(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL).toBe("");
+    expect(env.CLAUDISH_SET_HOST_ROUTING_VARS).toBeUndefined();
   }, 30_000);
 });

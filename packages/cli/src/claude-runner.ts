@@ -33,6 +33,7 @@ import {
   sessionFlagsOf,
 } from "./hooks/session/interactive-launch.js";
 import { type NoSurfaceSession, startNoSurfaceSession } from "./hooks/session/no-surface.js";
+import { applyHostRouting, scrubInheritedHostRouting } from "./host-routing-env.js";
 import {
   STRIPPED_CHILD_VARS,
   magmuxPaneCapability,
@@ -277,6 +278,18 @@ export function scrubInheritedClaudishPlaceholders(env: NodeJS.ProcessEnv): { re
     }
   }
   return { removed };
+}
+
+/**
+ * A launch on the user's own login removes the host-routing pair a parent proxy-auth
+ * session set: under the host marker Claude Code ignores the stored claude.ai login.
+ * A pair the user set (no claudish marker) stays.
+ */
+function removeInheritedHostRouting(env: NodeJS.ProcessEnv): void {
+  const { removed } = scrubInheritedHostRouting(env);
+  if (removed.length > 0) {
+    debugLog(`[claude-runner] Removed inherited host-routing variables: ${removed.join(", ")}`);
+  }
 }
 
 /**
@@ -2214,6 +2227,7 @@ export async function runClaudeWithProxy(
     // Delete any placeholder keys from environment
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
+    removeInheritedHostRouting(env);
     // Don't override ANTHROPIC_MODEL - let Claude Code use its default
     // (unless user explicitly specified a model)
     if (modelId) {
@@ -2260,6 +2274,7 @@ export async function runClaudeWithProxy(
           `[claude-runner] Removed inherited claudish placeholder credentials: ${scrubbed.removed.join(", ")}`
         );
       }
+      removeInheritedHostRouting(env);
       if (shouldHideIncidentalAnthropicKey(config, env)) {
         delete env.ANTHROPIC_API_KEY;
         hidAnthropicApiKey = true;
@@ -2296,8 +2311,9 @@ export async function runClaudeWithProxy(
       // process inherited, as a claudish started from a shell inside a trusted
       // session inherits it. ai-docs/architecture/settings-env.md has the
       // measurements.
-      env[ENV.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST] = "1";
-      env[ENV.CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL] = "";
+      // The marker set beside them lets a later launch on the user's login remove
+      // them (scrubInheritedHostRouting).
+      applyHostRouting(env);
 
       // Drive Claude Code's NATIVE auto-compaction to fire before a backend whose
       // real context window is smaller than the model's advertised spec rejects
