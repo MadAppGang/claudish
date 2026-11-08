@@ -120,6 +120,7 @@ const HOOK_ADMIT_BOUND_MS = 16_000;
 /* ───────────────────────────── helpers ───────────────────────────── */
 
 interface TurnScript {
+  writes?: Array<{ path: string; content: string }>;
   say?: string;
   partial?: string;
   ask?: string;
@@ -148,12 +149,14 @@ afterAll(() => {
   }
 });
 
-function env(script: TurnScript[], extra: Record<string, string> = {}): PaneTestEnv {
+type Script = TurnScript[] | ((t: PaneTestEnv) => TurnScript[]);
+
+function env(script: Script, extra: Record<string, string> = {}): PaneTestEnv {
   const t = makePaneTestEnv({
-    FAKE_SCRIPT: JSON.stringify(script),
     CONTRACT_FAKE_MAX_MS: "60000",
     ...extra,
   });
+  t.env.FAKE_SCRIPT = JSON.stringify(typeof script === "function" ? script(t) : script);
   t.env.FAKE_KEYLOG = join(t.tmp, "keylog.txt");
   openEnvs.add(t);
   return t;
@@ -192,7 +195,7 @@ interface Chan {
 }
 
 async function channel(o: {
-  script: TurnScript[];
+  script: Script;
   /** null = an interactive (promptless) session; the test sends turn 1 */
   prompt?: string | null;
   binding?: SessionHookBinding | SessionManagerOptions["hookBinding"];
@@ -284,7 +287,7 @@ interface Team {
 }
 
 async function team(o: {
-  script: TurnScript[];
+  script: Script;
   binding: SessionHookBinding;
   input?: string;
   extra?: TeamRunOptions;
@@ -294,6 +297,7 @@ async function team(o: {
   const path = join(t.tmp, "team");
   setupSession(path, ["fake-scripted"], o.input ?? "Reply with the first answer.");
   const handle = await startModels(path, {
+    cwd: t.cwd,
     parentEnv: t.env,
     spawnPlanner: async () => ({ pinned: new Map<string, string>() }),
     paneTimings: { replStableMs: 200, corroborationMs: 200, ...o.timings },
@@ -532,6 +536,48 @@ wait $child
   });
 
   describe.concurrent("team slots: chains, verdicts, terminal paths", () => {
+    // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
+    test(
+      "MTL-229 team uses the head's written answer after a narration-only hook turn",
+      async () => {
+        const ctl = controlled();
+        const content = "## Black-box test contracts\n答え 🍐 — chain deliverable.\n";
+        let path = "";
+        const x = await team({
+          script: (t) => {
+            path = join(t.cwd, "file-answer.md");
+            return [
+              { writes: [{ path, content }], say: "I wrote the deliverable." },
+              { say: "The requested work is complete." },
+            ];
+          },
+          binding: ctl.binding,
+          input: "Read the task and write the deliverable.\nPreserve its bytes.",
+          extra: { requirePattern: "[Bb]lack-box" },
+        });
+        const rootAnswer = join(import.meta.dir, "../../../..", "file-answer.md");
+        try {
+          expect(existsSync(rootAnswer)).toBe(false);
+          await until(() => ctl.calls.length === 1, "head settle()");
+          ctl.calls[0]?.resolve(inject("Confirm the work is complete."));
+          await until(() => ctl.calls.length === 2, "hook turn settle()");
+          ctl.calls[1]?.resolve(nothing);
+          const status = await x.handle.done;
+          const row = status.models[x.slot];
+          expect(row?.state).toBe("COMPLETED");
+          expect(row?.answerSource).toBe(`file:${path}`);
+          expect(row?.anomalies).toContain(`answer was written to ${path}, not to the reply`);
+          expect(readFileSync(path, "utf8")).toBe(content);
+          expect(x.response()).toBe(content);
+          expect(row?.outputSize).toBe(Buffer.byteLength(content));
+        } finally {
+          await teamDone(x);
+          expect(existsSync(rootAnswer)).toBe(false);
+        }
+      },
+      T
+    );
+
     test(
       "H-9 team cancelled while chain turn 3 runs: response is A1\\n\\nA2\\n\\nA3-part, outputSize its byte length",
       async () => {
@@ -1422,7 +1468,7 @@ wait $child
       }
 
       async function direct(o: {
-        script: TurnScript[];
+        script: Script;
         hooks?: SessionHookBinding;
         exitCaptureDelayMs?: number;
       }): Promise<Direct> {
@@ -1472,6 +1518,102 @@ wait $child
         expect(left).toEqual({ processes: [], files: [] });
         return d.s.snapshot();
       }
+
+      // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
+      test(
+        "MTL-229 settled chain retains the head's Write after a narration-only hook turn",
+        async () => {
+          const ctl = controlled();
+          const content = "## Black-box test contracts\nThe head wrote this answer.\n";
+          let path = "";
+          const d = await direct({
+            script: (t) => {
+              path = join(t.cwd, "file-answer.md");
+              return [
+                { writes: [{ path, content }], say: "I wrote the deliverable." },
+                { say: "The requested work is complete." },
+              ];
+            },
+            hooks: ctl.binding,
+          });
+          const rootAnswer = join(import.meta.dir, "../../../..", "file-answer.md");
+          try {
+            expect(existsSync(rootAnswer)).toBe(false);
+            await until(() => ctl.calls.length === 1, "head settle()");
+            expect(d.recorded[0]?.writtenFiles).toEqual([path]);
+            ctl.calls[0]?.resolve(inject("Confirm the work is complete."));
+            await until(() => ctl.calls.length === 2, "hook turn settle()");
+            ctl.calls[1]?.resolve(nothing);
+            await d.s.terminal;
+            expect(d.decided).toHaveLength(1);
+            expect(d.decided[0]?.hookCaused).toBe(true);
+            expect(d.decided[0]?.hookTurns).toBe(1);
+            expect(d.decided[0]?.answer).toBe("The requested work is complete.");
+            expect(d.decided[0]?.writtenFiles).toEqual([path]);
+            expect(readFileSync(path, "utf8")).toBe(content);
+          } finally {
+            await directDone(d);
+            expect(existsSync(rootAnswer)).toBe(false);
+          }
+        },
+        T
+      );
+
+      // REGRESSION: MTL-229 team slot with a file deliverable reported EMPTY shape_mismatch — Fixed in /dev:fix session dev-fix-20261024-232556-1434416719
+      test(
+        "MTL-229 settled chain de-duplicates Writes in head-first first-write order",
+        async () => {
+          const ctl = controlled();
+          let head = "";
+          let shared = "";
+          let tail = "";
+          const d = await direct({
+            script: (t) => {
+              head = join(t.cwd, "z-head.md");
+              shared = join(t.cwd, "a-shared.md");
+              tail = join(t.cwd, "b-tail.md");
+              return [
+                {
+                  writes: [
+                    { path: head, content: "Head only" },
+                    { path: shared, content: "Head version" },
+                  ],
+                  say: "I wrote the files.",
+                },
+                {
+                  writes: [
+                    { path: shared, content: "Hook version" },
+                    { path: tail, content: "Hook only" },
+                  ],
+                  say: "I updated the files.",
+                },
+              ];
+            },
+            hooks: ctl.binding,
+          });
+          const rootPaths = ["z-head.md", "a-shared.md", "b-tail.md"].map((name) =>
+            join(import.meta.dir, "../../../..", name)
+          );
+          try {
+            expect(rootPaths.some(existsSync)).toBe(false);
+            await until(() => ctl.calls.length === 1, "head settle()");
+            expect(d.recorded[0]?.writtenFiles).toEqual([head, shared]);
+            ctl.calls[0]?.resolve(inject("Update the shared file and write the last file."));
+            await until(() => ctl.calls.length === 2, "hook turn settle()");
+            ctl.calls[1]?.resolve(nothing);
+            await d.s.terminal;
+            expect(d.decided).toHaveLength(1);
+            expect(d.decided[0]?.writtenFiles).toEqual([head, shared, tail]);
+            expect(readFileSync(head, "utf8")).toBe("Head only");
+            expect(readFileSync(shared, "utf8")).toBe("Hook version");
+            expect(readFileSync(tail, "utf8")).toBe("Hook only");
+          } finally {
+            await directDone(d);
+            expect(rootPaths.some(existsSync)).toBe(false);
+          }
+        },
+        T
+      );
 
       test(
         "H-25 snapshot during a hold: state RUNNING, activity hook, phase SETTLING, turnEndRecordMissing false",

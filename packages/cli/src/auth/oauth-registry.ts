@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAccountRegistry } from "./accounts/registry.js";
 
 interface OAuthProviderDescriptor {
   credentialFile: string;
@@ -150,8 +151,27 @@ function hasValidOAuthCredentials(descriptor: OAuthProviderDescriptor): boolean 
   }
 }
 
+/**
+ * Is an OAuth login configured for this provider? DISPLAY ONLY: the `claudish
+ * login` status line, `describeSourceSync` and the config TUI's provider list.
+ * Billing never reads it (`auth/credentials/billing-probe.ts`).
+ *
+ * `openai-codex` answers from the account list, not the file: its login can be
+ * a `keychain` account row (and, since MTL-372, the legacy file moved into the
+ * Keychain), which has no `codex-oauth.json`. The registry still synthesizes the
+ * legacy account from a readable file with a refresh token, so a legacy-only
+ * login still shows. Configuration only: no Keychain call. An account list that
+ * cannot be read shows as not logged in, as an unreadable file did before.
+ */
 export function hasOAuthCredentials(providerName: string): boolean {
   const descriptor = OAUTH_PROVIDERS[providerName];
   if (!descriptor) return false;
+  if (providerName === "openai-codex") {
+    try {
+      return getAccountRegistry().hasConfiguredAccounts("openai-codex");
+    } catch {
+      return false;
+    }
+  }
   return hasValidOAuthCredentials(descriptor);
 }

@@ -12,6 +12,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
+import { withRawConfigTransaction } from "./auth/accounts/config-lock.js";
+import { type CodeModeSetting, parseCodeModeSetting } from "./code-mode/policy.js";
 import { activeGlobalConfigFile, getConfigFileOverride } from "./config-override.js";
 
 // Config directory and file paths
@@ -176,6 +178,25 @@ export interface ClaudishProfileConfig {
     enabled?: boolean;
   };
   /**
+   * Multi-account subscription pools, per vendor.
+   *
+   * Holds NO secrets — ids, labels, identity for display, and which store each
+   * account's tokens live in. The token material itself is in the Keychain
+   * (service `claudish-accounts`) or in `~/.claudish/accounts/tokens/`.
+   *
+   * It also holds NO `owner`: the named refresher lives in
+   * `~/.claudish/accounts/state.json` alone. Carrying it in both documents with
+   * no rule for which wins is how a config reload silently overwrites the active
+   * refresher and two processes choose different refresh protocols.
+   *
+   * GLOBAL ONLY, like `customEndpoints`. Validated at the consumption site
+   * (`auth/accounts/registry.ts`, and `config-schema.ts` for a mutation) rather
+   * than here, because `loadConfig` stays Zod-free for the lightweight startup
+   * paths — and because the registry must distinguish a read FAILURE from an
+   * absence, which this function by design cannot.
+   */
+  subscriptionAccounts?: Record<string, unknown>;
+  /**
    * Opt IN to using a real ANTHROPIC_API_KEY for native Claude models, accepting
    * metered API billing. Default (absent/false) hides the key so Claude Code
    * uses the claude.ai subscription — a key bundled into a shared .env /
@@ -266,6 +287,16 @@ export interface ClaudishProfileConfig {
    * `readProOnUltracode()`, NOT this allowlist — see its doc comment.
    */
   proOnUltracode?: boolean;
+
+  /**
+   * Code mode for `openai-codex` (`auto` | `on` | `off`, default `auto`): Claude
+   * Code's tools are offered to the model as one freeform `exec` tool running
+   * a script, the protocol the official Codex client uses.
+   * Precedence: --code-mode flag > CLAUDISH_CODE_MODE env > project
+   * `.claudish.json` > this field > auto. The scoped read is `readCodeMode()`,
+   * NOT this allowlist — same reason as `proOnUltracode`.
+   */
+  codeMode?: CodeModeSetting;
 
   /**
    * Master switch for connection RECOVERY itself — the retry ladder claudish
@@ -396,6 +427,13 @@ export function loadConfig(): ClaudishProfileConfig {
     if (config.keychain !== undefined) {
       merged.keychain = config.keychain;
     }
+    // Same trap again, and this one costs money: omitted from this allowlist,
+    // the account list survives on disk until the first global save and is
+    // then silently dropped — after which the pool reports "no subscription
+    // configured" and every request signs against a per-token API key.
+    if (config.subscriptionAccounts !== undefined) {
+      merged.subscriptionAccounts = config.subscriptionAccounts;
+    }
     if (config.anthropicApiBilling !== undefined) {
       merged.anthropicApiBilling = config.anthropicApiBilling;
     }
@@ -434,6 +472,10 @@ export function loadConfig(): ClaudishProfileConfig {
     if (config.proOnUltracode !== undefined) {
       merged.proOnUltracode = config.proOnUltracode;
     }
+    // Same trap: omitted here, `codeMode` is dropped at the first global save.
+    if (config.codeMode !== undefined) {
+      merged.codeMode = config.codeMode;
+    }
     // Same trap again, for both recovery switches. Omitted here, the field
     // survives on disk until the first global save and is then silently
     // dropped — turning the user's off-switch back ON with no error.
@@ -456,8 +498,14 @@ export function loadConfig(): ClaudishProfileConfig {
 export function saveConfig(config: ClaudishProfileConfig): void {
   // Writes target the ACTIVE file: with a --config override, persist to that
   // file (never mutate ~/.claudish/config.json with override-derived data).
-  if (!getConfigFileOverride()) ensureConfigDir();
-  writeFileSync(activeConfigFile(), JSON.stringify(config, null, 2), "utf-8");
+  withRawConfigTransaction(activeConfigFile(), (raw) => {
+    const next: Record<string, unknown> = { ...config };
+    // Accounts are disk-owned. A stale picker/TUI save may neither erase an add
+    // nor resurrect a removed row (including its durable suppression marker).
+    if (raw.subscriptionAccounts === undefined) delete next.subscriptionAccounts;
+    else next.subscriptionAccounts = raw.subscriptionAccounts;
+    return { config: next, result: undefined };
+  });
 }
 
 /**
@@ -559,6 +607,32 @@ export function readProOnUltracode(
       if (!existsSync(path)) continue;
       const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
       if (typeof parsed?.proOnUltracode === "boolean") return parsed.proOnUltracode;
+    } catch {
+      // Garbled/unreadable file → skip this scope rather than fail the run.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Read `codeMode` from the project file, else the global file.
+ *
+ * A RAW per-file read, for the same reason `readProOnUltracode` is one: a
+ * project `.claudish.json` that sets only this key is invisible to
+ * `loadConfig`. A value other than `auto`/`on`/`off` is skipped (that scope
+ * states nothing). Returns undefined when neither scope states a setting —
+ * the caller then applies the default (`off`).
+ */
+export function readCodeMode(
+  paths: ScopedConfigPaths = defaultScopedConfigPaths
+): CodeModeSetting | undefined {
+  for (const pathFn of [paths.project, paths.global]) {
+    try {
+      const path = pathFn();
+      if (!existsSync(path)) continue;
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+      const setting = parseCodeModeSetting(parsed?.codeMode);
+      if (setting) return setting;
     } catch {
       // Garbled/unreadable file → skip this scope rather than fail the run.
     }

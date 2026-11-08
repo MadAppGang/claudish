@@ -60,10 +60,11 @@ import {
 } from "./proto-codec.js";
 
 /** Capability rpc — every model the backend knows about. */
-const MODEL_CONFIGS_PATH = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
+export const MODEL_CONFIGS_PATH = "/exa.api_server_pb.ApiServerService/GetCliModelConfigs";
 
 /** Entitlement rpc — note the DIFFERENT service, not ApiServerService. */
-const TEAM_SETTINGS_PATH = "/exa.seat_management_pb.SeatManagementService/GetCliTeamSettings";
+export const TEAM_SETTINGS_PATH =
+  "/exa.seat_management_pb.SeatManagementService/GetCliTeamSettings";
 
 /** Dynamic models catalog TTL. It moves on a daily cadence, not per request. */
 const MODELS_CATALOG_TTL_MS = 5 * 60 * 1000;
@@ -160,11 +161,36 @@ function unaryMetadata(apiKey: string): Uint8Array {
   );
 }
 
-/** POST a bare-protobuf unary rpc. Returns the raw body, or null on any failure. */
-async function postUnary(path: string, apiKey: string): Promise<Uint8Array | null> {
+/**
+ * One unary rpc as the wire answered it. Nothing is hidden: an unreachable
+ * backend, the HTTP status, and whether a 2xx body could be read are distinct.
+ * A non-2xx body is left unread.
+ */
+export type DevinUnaryRaw =
+  | { kind: "unreachable"; url: string; error: unknown }
+  | {
+      kind: "answered";
+      url: string;
+      status: number;
+      body:
+        | { kind: "bytes"; bytes: Uint8Array }
+        | { kind: "read-failed"; error: unknown }
+        | { kind: "unread" };
+    };
+
+/**
+ * POST a bare-protobuf unary rpc and report exactly what happened. Never
+ * throws. The caller's `signal` bounds the fetch AND the body read.
+ */
+export async function postDevinUnaryRaw(
+  path: string,
+  apiKey: string,
+  opts: { signal?: AbortSignal } = {}
+): Promise<DevinUnaryRaw> {
   const url = `${readDevinServerUrl()}${path}`;
+  let response: Response;
   try {
-    const response = await fetch(url, {
+    response = await fetch(url, {
       method: "POST",
       headers: {
         // The key doubled with a `-` separator is the literal scheme the CLI uses.
@@ -173,17 +199,40 @@ async function postUnary(path: string, apiKey: string): Promise<Uint8Array | nul
         "connect-protocol-version": "1",
       },
       body: msg(bytes(1, unaryMetadata(apiKey))),
-      signal: AbortSignal.timeout(UNARY_TIMEOUT_MS),
+      signal: opts.signal,
     });
-    if (!response.ok) {
-      log(`[Devin] ${path} failed: HTTP ${response.status}`);
-      return null;
-    }
-    return new Uint8Array(await response.arrayBuffer());
-  } catch (err) {
-    log(`[Devin] ${path} error: ${err}`);
+  } catch (error) {
+    return { kind: "unreachable", url, error };
+  }
+  if (!response.ok) {
+    return { kind: "answered", url, status: response.status, body: { kind: "unread" } };
+  }
+  try {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return { kind: "answered", url, status: response.status, body: { kind: "bytes", bytes } };
+  } catch (error) {
+    return { kind: "answered", url, status: response.status, body: { kind: "read-failed", error } };
+  }
+}
+
+/** POST a bare-protobuf unary rpc. Returns the raw body, or null on any failure. */
+async function postUnary(path: string, apiKey: string): Promise<Uint8Array | null> {
+  const raw = await postDevinUnaryRaw(path, apiKey, {
+    signal: AbortSignal.timeout(UNARY_TIMEOUT_MS),
+  });
+  if (raw.kind === "unreachable") {
+    log(`[Devin] ${path} error: ${raw.error}`);
     return null;
   }
+  if (raw.status < 200 || raw.status >= 300) {
+    log(`[Devin] ${path} failed: HTTP ${raw.status}`);
+    return null;
+  }
+  if (raw.body.kind === "read-failed") {
+    log(`[Devin] ${path} error: ${raw.body.error}`);
+    return null;
+  }
+  return raw.body.kind === "bytes" ? raw.body.bytes : null;
 }
 
 /** The nested capability sub-message (field 23): `13` max output, `23` family. */
@@ -356,12 +405,22 @@ export async function fetchDevinAllowedUids(apiKey: string): Promise<string[]> {
   const body = await postUnary(TEAM_SETTINGS_PATH, apiKey);
   if (!body) return [];
 
+  const uids = decodeAllowedUids(body);
+  log(`[Devin] GetCliTeamSettings: ${uids.length} allowed uids`);
+  return uids;
+}
+
+/**
+ * Pure decode of a `GetCliTeamSettings` response body: `allowed_model_uids`,
+ * top-level repeated field 7, trimmed, empties dropped. Every other field of
+ * the answer (team and user settings) is ignored.
+ */
+export function decodeAllowedUids(body: Uint8Array): string[] {
   const uids: string[] = [];
   for (const field of topLevelDelimited(body, 7)) {
     const uid = readString(field).trim();
     if (uid) uids.push(uid);
   }
-  log(`[Devin] GetCliTeamSettings: ${uids.length} allowed uids`);
   return uids;
 }
 

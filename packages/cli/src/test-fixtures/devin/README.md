@@ -21,3 +21,26 @@ staleness the live-discovery design removes, and would stop catching the case th
 for: a dynamic models catalog shape nobody anticipated.
 
 Contains no credentials — the request metadata carrying the api key is not part of a response body.
+
+## `GetChatMessage` answers
+
+Two **real, unmodified** `GetChatMessage` response bodies, captured from `server.codeium.com` on
+2026-11-07 against the developer's own Devin subscription through `buildDevinProbePayload` (the
+probe's Layer 1). The request was one user turn asking a train-timing question, with a system
+prompt and `output_config.effort: "low"`. Connect-enveloped protobuf, as the stream parser reads it.
+
+- `GetChatMessage-claude-haiku-5-5-low.res.bin`: HTTP 200, 7593 bytes. A clean answer: thinking
+  (field 9), text (field 3), the served uid `claude-haiku-5-5-low` (field 7.9), usage in field 28,
+  then the `{}` end-of-stream frame. The probe decodes it to `end_turn`, 212 input and 232 output tokens.
+- `GetChatMessage-claude-opus-99.res.bin`: HTTP 200, 143 bytes. An unserved uid: no content, one
+  `flags=2` end-of-stream frame carrying `{"error":{"code":"permission_denied","message":…}}`.
+
+Neither body contains a credential (checked byte for byte at capture time); the `bot-<uuid>`
+strings are Devin's per-response message id.
+
+## `GetCliTeamSettings` answer
+
+`GetCliTeamSettings.res.bin`: a **real, unmodified** answer, captured on 2026-11-07 against the
+developer's own Devin subscription (HTTP 200, 6143 bytes, bare protobuf). Its only strings are 260
+`allowed_model_uids` (field 7) and one uid-like value in field 30; every other field is a varint or a
+message of varints. No credential, no name, no address (checked field by field at capture time).

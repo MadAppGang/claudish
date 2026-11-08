@@ -54,6 +54,7 @@ describe("MCP session and pane-child predicates", () => {
       "CLAUDISH_PANE_CWD",
       "CLAUDISH_HOOK_INBOX",
       "CLAUDISH_HOOK_SESSION",
+      "CLAUDISH_PARENT_SESSION",
     ]);
   });
 

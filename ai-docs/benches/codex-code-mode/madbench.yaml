@@ -1,0 +1,214 @@
+description: "codex-code-mode: cx@ zero-delta tool calls keep their arguments, and code-mode exec scripts resume"
+
+# Real Claude Code -> this worktree's claudish build -> the REAL Codex backend
+# on the ChatGPT subscription (cx@, OAuth credential ~/.claudish/codex-oauth.json).
+# No mock upstream. README.md explains each Check and how to read a failure.
+#
+# Every claim that matters here is in claudish's debug log, not in the answer:
+# D1 shipped with right answers and zero resumed scripts. The `exec` Checks
+# read logs/claudish_*.log, which claudish writes into the workspace because
+# claudish-under-test passes --debug-claudish.
+
+harness:
+  type: claude-code
+  # This worktree's packages/cli/dist/index.js, via a shim that records the
+  # build it ran (claudish-provenance.txt). A path with a `/` resolves against
+  # this file, so the claudish on PATH is never used.
+  binary: ./claudish-under-test
+  model: cx@gpt-6.1-sol
+  # Interactive (the default): Bash parks at an approval menu nobody answers
+  # unless the mode is bypassPermissions. claudish forwards it to claude.
+  args: ["--permission-mode", "bypassPermissions"]
+
+defaults:
+  # workspace, not home: home replaces HOME and hides ~/.claudish, so the
+  # Codex OAuth credential would be gone and cx@ could only sign metered (or
+  # not at all). workspace keeps the real HOME; that is the subscription.
+  sandbox: workspace
+  # Every prompt is an order, so a question is a defect: fail it by name
+  # instead of letting a Driver answer it and become a variable.
+  driver: false
+  # Phase 7 measured 8-20 s per -p session; an interactive cold start adds
+  # Claude Code's boot. Tighten after more runs.
+  timeout: 300s
+
+scenarios:
+  # ── classic: --code-mode off, the Part A regression ─────────────────────────
+  - name: classic
+    description: "code mode off: three parallel Reads arrive with their file_path (zero-delta function calls)"
+    testdata: ./testdata/parallel-read
+    # claudish's documented equivalent of `--code-mode off`
+    # (code-mode/policy.ts: flag > CLAUDISH_CODE_MODE > project > global >
+    # auto). Nothing passes the flag, so this decides it. An env var because
+    # harness.args is per Bench and this Scenario alone runs classic.
+    sandbox:
+      level: workspace
+      env:
+        CLAUDISH_CODE_MODE: "off"
+    prompt: "Use the Read tool to read a.ts, b.ts and c.ts in this directory. Issue all three Read calls in parallel in ONE turn. Then reply with the sum of the three exported numbers."
+    checks:
+      - type: regex
+        metric: answer
+        value: '\b6\b'
+      # The Reads reached Claude Code with their arguments, and none came back
+      # as `InputValidationError: ... The required parameter 'file_path' is
+      # missing` (the pre-fix symptom). The absence half sits inside the set
+      # so the set as a whole is a positive Check.
+      - type: assert-set
+        metric: args_intact
+        checks:
+          - { type: session:tool-args-match, value: Read, tool_args: { file_path: "suffix:a.ts" } }
+          - { type: session:tool-args-match, value: Read, tool_args: { file_path: "suffix:b.ts" } }
+          - { type: session:tool-args-match, value: Read, tool_args: { file_path: "suffix:c.ts" } }
+          - type: session:match
+            value: "InputValidationError|required parameter .file_path. is missing"
+            regex: true
+            event_type: tool_result
+            eq: 0
+      - &code_mode_off
+        type: exec
+        metric: code_mode_off
+        cmd: 'L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" && grep -h "\[CodeMode\] off (" $L && ! grep -q "\[CodeMode\] on (" $L'
+      # Measures whether this session hit the defect's trigger at all: Codex
+      # sent a function_call with no argument deltas and claudish emitted the
+      # arguments from `.done`. A readout: a session whose model happened to
+      # stream deltas is not a failure, just a weaker sample.
+      - type: exec
+        metric: zero_delta_seen
+        readout: true
+        cmd: 'L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" && grep -h "zero-delta function_call" $L && ! grep -q "zero-delta function_call.*emitted 0 bytes" $L'
+      - &subscription
+        type: exec
+        metric: subscription
+        # Every upstream call went to chatgpt.com/backend-api/codex (only the
+        # OAuth credential signs there; an API key goes to api.openai.com), and
+        # every handler was openai-codex: no metered hop, no fallback.
+        cmd: 'L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" && grep -h -e "Calling API:" -e "Handler: provider=" -e "\[Wire\]" $L | sed "s/^\[[^]]*\] //" | sort | uniq -c && grep -q "Calling API: https://chatgpt.com/backend-api/codex/" $L && ! grep -h "Calling API:" $L | grep -vq "Calling API: https://chatgpt.com/backend-api/codex/" && ! grep -h "Handler: provider=" $L | grep -vq "Handler: provider=openai-codex,"'
+      - &provenance
+        type: exec
+        metric: provenance
+        # The shim ran, so this worktree's dist/index.js is what claudish was.
+        cmd: |
+          cat claudish-provenance.txt && grep -q "^dist=/.*/packages/cli/dist/index.js$" claudish-provenance.txt && grep -q "^version=claudish version " claudish-provenance.txt
+
+  # ── auto: code mode by discovery, the D1 regression ─────────────────────────
+  - name: auto
+    description: "code mode auto: the same Reads go through one exec script, and every relayed script resumes"
+    testdata: ./testdata/parallel-read
+    prompt: "Use the Read tool to read a.ts, b.ts and c.ts in this directory. Issue all three Read calls in parallel in ONE turn. Then reply with the sum of the three exported numbers."
+    checks:
+      - type: regex
+        metric: answer
+        value: '\b6\b'
+      - type: assert-set
+        metric: args_intact
+        checks:
+          - { type: session:tool-args-match, value: Read, tool_args: { file_path: "suffix:a.ts" } }
+          - { type: session:tool-args-match, value: Read, tool_args: { file_path: "suffix:b.ts" } }
+          - { type: session:tool-args-match, value: Read, tool_args: { file_path: "suffix:c.ts" } }
+          - type: session:match
+            value: "InputValidationError|required parameter .file_path. is missing"
+            regex: true
+            event_type: tool_result
+            eq: 0
+      - &code_mode_on
+        type: exec
+        metric: code_mode_on
+        # auto chose code mode from Codex /models discovery, not a forced flag.
+        cmd: 'L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" && grep -h "\[CodeMode\] on (" $L && grep -q "\[CodeMode\] on ([a-z]*, discovery: " $L'
+      - &resumed
+        type: exec
+        metric: resumed
+        # THE D1 detector. Every exec relayed to Claude Code as tool_use blocks
+        # must later log `exec <id>: resumed;` (completed, blocked again or a
+        # genuine script failure), and no script may take the lost-state path.
+        # D1 had right answers and relayed=N resumed=0.
+        cmd: |
+          L=$(ls logs/claudish_*.log 2>/dev/null); test -n "$L" || exit 1
+          grep -h -e "relayed as" -e ": resumed;" -e "script lost" -e "answered as Script failed" $L | sed "s/^\[[^]]*\] //"
+          awk '
+            /\[ResponsesTurn\] exec call_[A-Za-z0-9]+ relayed as/ { id=$0; sub(/.*\] exec /,"",id); sub(/ .*/,"",id); r[id]=1 }
+            /\[CodeMode\] exec call_[A-Za-z0-9]+: resumed;/ { id=$0; sub(/.*\] exec /,"",id); sub(/:.*/,"",id); if (id in r) s[id]=1 }
+            /script lost|answered as Script failed/ { lost++ }
+            END { n=0; m=0; for (i in r) { n++; if (i in s) m++ }
+                  printf "relayed=%d resumed=%d lost=%d\n", n, m, lost+0
+                  exit (n > 0 && m == n && lost == 0) ? 0 : 1 }' $L
+      - *subscription
+      - *provenance
+
+  # ── auto-edit: a script that writes, then runs Bash, then resumes ───────────
+  - name: auto-edit
+    description: "code mode auto: create a file and run Bash through exec; the Bash output reaches the model"
+    testdata: ./testdata/edit-bash
+    prompt: "Create notes.txt containing the word alpha, then use the Bash tool to run `wc -c notes.txt` and tell me the byte count."
+    checks:
+      # The file changed as asked (absent in the testdata, so a no-op fails).
+      - type: exec
+        metric: file_written
+        cmd: 'test -f notes.txt && grep -q alpha notes.txt && cat notes.txt'
+      # wc ran through Bash, and the number it printed is in the answer.
+      - type: ts
+        metric: bash_output_reported
+        value: "file://./checks/bash-count-reported.ts"
+      - type: assert-set
+        metric: args_intact
+        checks:
+          - { type: session:tool-used, value: Bash }
+          - type: session:match
+            value: "InputValidationError"
+            event_type: tool_result
+            eq: 0
+      - *code_mode_on
+      - *resumed
+      - *subscription
+      - *provenance
+
+  # ── single-call: one classic tool call whose arguments Codex DOES stream ───
+  # Replaces the hand-run live check V3 on the subscription. A lone function
+  # call streams its arguments as function_call_arguments.delta events
+  # (measured: the lone `Bash pwd` in the first full run streamed 30 deltas,
+  # and claudish logged no zero-delta line for it). claudish must forward
+  # those deltas and NOT also emit the .done arguments, or Claude Code gets
+  # the arguments twice and the tool input is not valid JSON.
+  - name: single-call
+    description: "code mode off: one lone Bash call streams its argument deltas; claudish forwards them once"
+    testdata: ./testdata/single-call
+    # Same mechanism as classic: harness.args is per Bench.
+    sandbox:
+      level: workspace
+      env:
+        CLAUDISH_CODE_MODE: "off"
+    prompt: "Use the Bash tool to run exactly this command: cat token.txt — make it a single Bash call on its own, with no other tool call before or after it. Then reply with the line it printed."
+    checks:
+      # The token is only in token.txt, never in the prompt, so an answer that
+      # carries it came from the tool's output.
+      - type: regex
+        metric: answer
+        value: '\bkestrel-4182\b'
+      # Claude Code ran the call with the intended arguments, its output came
+      # back, and no tool_result carries an input error (arguments sent twice
+      # are not valid JSON, and come back as one). The absence half sits
+      # inside the set so the set as a whole is a positive Check.
+      - type: assert-set
+        metric: args_intact
+        checks:
+          - { type: session:tool-args-match, value: Bash, tool_args: { command: "cat token.txt" } }
+          - { type: session:match, value: "kestrel-4182", event_type: tool_result }
+          - type: session:match
+            value: "InputValidationError|not valid JSON|invalid tool input"
+            regex: true
+            ignore_case: true
+            event_type: tool_result
+            eq: 0
+      # In claudish's log: that call was alone in its response, streamed >0
+      # argument deltas that add up to the .done arguments, and claudish wrote
+      # no zero-delta / suffix / divergence line for it.
+      - type: ts
+        metric: single_call_streamed
+        value: "file://./checks/single-call-streamed.ts"
+        config:
+          tool: Bash
+          args: { command: "cat token.txt" }
+      - *code_mode_off
+      - *subscription
+      - *provenance
