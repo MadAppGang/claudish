@@ -97,4 +97,39 @@ describe("anthropic-sse usage reporting", () => {
     const calls = await reported([start], { dropAfter: true });
     expect(calls).toEqual([[502, 0, { cacheReadTokens: 400, cacheCreationTokens: 100 }]]);
   });
+
+  it("reports the split for a turn the client cancelled", async () => {
+    const [start, blockStart, delta] = turn(
+      { input_tokens: 2, cache_read_input_tokens: 400, cache_creation_input_tokens: 100 },
+      0
+    );
+    // The upstream sends the opening frames and then stays open: only the
+    // client's cancel ends this turn.
+    const upstream = new Response(
+      new ReadableStream({
+        start(controller) {
+          for (const f of [start, blockStart, delta]) controller.enqueue(encoder.encode(f));
+        },
+        pull: () => new Promise<void>(() => {}),
+      }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+    const calls: Array<[number, number, UsageCacheDetail | undefined]> = [];
+    const body = createAnthropicPassthroughStream(ctx, upstream, {
+      modelName: "test-model",
+      onTokenUpdate: (input, output, detail) => calls.push([input, output, detail]),
+    }).body!;
+
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let seen = "";
+    while (!seen.includes("text_delta")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      seen += decoder.decode(value);
+    }
+    await reader.cancel();
+
+    expect(calls).toEqual([[502, 0, { cacheReadTokens: 400, cacheCreationTokens: 100 }]]);
+  });
 });

@@ -215,11 +215,12 @@ export function createAnthropicPassthroughStream(
    * some (message_start carries input_tokens, so a started turn usually has it).
    */
   const endCancelled = (): void => {
-    const sawUsage = inputTokens > 0 || outputTokens > 0;
+    const sawUsage =
+      inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0;
     log(
       `[AnthropicSSE] Client cancelled the stream for ${opts.modelName}; usage ${sawUsage ? "reported" : "not received, not recorded"}`
     );
-    if (sawUsage) opts.onTokenUpdate?.(inputTokens, outputTokens);
+    if (sawUsage) reportUsage();
     if (pingInterval) {
       clearInterval(pingInterval);
       pingInterval = null;
