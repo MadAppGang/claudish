@@ -111,4 +111,13 @@ describe("the shipped predefined endpoint catalog", () => {
   test("keeps apiPath explicit because at least one vendor uses a non-default path", () => {
     expect(PREDEFINED_ENDPOINTS.some((row) => row.apiPath !== "/v1/chat/completions")).toBe(true);
   });
+
+  test("ships runcrate as an OpenAI-format row on the chat completions path", () => {
+    const row = PREDEFINED_ENDPOINTS.find((r) => r.name === "runcrate");
+    expect(row).toBeDefined();
+    expect(row?.baseUrl).toBe("https://api.runcrate.ai");
+    expect(row?.apiPath).toBe("/v1/chat/completions");
+    expect(row?.format).toBe("openai");
+    expect(row?.apiKeyEnvVar).toBe("RUNCRATE_API_KEY");
+  });
 });

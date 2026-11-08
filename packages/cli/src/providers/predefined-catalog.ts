@@ -327,6 +327,18 @@ export const PREDEFINED_ENDPOINTS: readonly PredefinedEndpoint[] = [
     evidence: { tier: "probe", verdict: "auth-realm", status: 401, measuredAt: "2026-08-14" },
   },
   {
+    name: "runcrate",
+    displayName: "Runcrate",
+    baseUrl: "https://api.runcrate.ai",
+    apiPath: "/v1/chat/completions",
+    format: "openai",
+    apiKeyEnvVar: "RUNCRATE_API_KEY",
+    apiKeyUrl: "https://www.runcrate.ai",
+    description:
+      "Runcrate AI cloud, OpenAI-compatible inference for open-weight models (runcrate@)",
+    evidence: { tier: "probe", verdict: "auth-realm", status: 401, measuredAt: "2026-11-08" },
+  },
+  {
     // Contributed by @cerebrixos in PR #136, which proposed this vendor as a
     // full builtin (definition + profile + transport). It ships here as one
     // data row instead: same reachability for the user, none of the two-table

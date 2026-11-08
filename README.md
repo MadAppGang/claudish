@@ -406,6 +406,7 @@ All 25 rows ship *probe*-verified — the configured path was confirmed to reach
 | `WRITER_API_KEY` | Writer Palmyra (`writer@`) | |
 | `MOONSHOT_CN_API_KEY` | Moonshot AI China region (`moonshot-cn@`) | Different service from `MOONSHOT_API_KEY` / `moonshot@` above |
 | `TUNING_ENGINES_API_KEY` | Tuning Engines (`tuningengines@`) | Self-hosted: also set `TUNING_ENGINES_BASE_URL` |
+| `RUNCRATE_API_KEY` | Runcrate (`runcrate@`) | OpenAI-compatible API for open-weight models |
 
 Every one of these also accepts `CUSTOM_<NAME>_KEY` as an alias, and any of them can be replaced outright by a `customEndpoints` entry of the same name.
 
