@@ -42,13 +42,21 @@ export function findCodexServiceTier(
   return tiers.find(matches);
 }
 
-/** Decide one request's `service_tier` from the account's `/models` entry. */
+/**
+ * Decide one request's `service_tier` from the account's `/models` entry.
+ * `"unsigned"`: no subscription account signed the request (the api-key arm),
+ * so there is no account whose dynamic models catalog could be asked.
+ */
 export function decideCodexSpeed(
   speed: { value: WireSpeed; explicit: boolean },
-  modelInfo: CodexModelInfo | undefined
+  modelInfo: CodexModelInfo | undefined | "unsigned"
 ): CodexSpeedOutcome {
   if (speed.value === "standard") {
     return { note: "speed standard: field omitted (connection default)" };
+  }
+  if (modelInfo === "unsigned") {
+    const message = `speed "${speed.value}" is not available on this connection (no subscription account signed the request)`;
+    return speed.explicit ? { note: message, refusal: message } : { note: message };
   }
   const tier = findCodexServiceTier(speed.value, modelInfo?.serviceTiers);
   if (tier) {

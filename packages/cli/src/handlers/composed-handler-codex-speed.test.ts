@@ -2,7 +2,7 @@
  * Step 5s: speed on an `openai-codex` connection whose catalog wire says
  * `speed: unknown`, decided from the account's dynamic models catalog.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { Hono } from "hono";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
@@ -11,7 +11,7 @@ import { decideCodexSpeed, findCodexServiceTier } from "../providers/codex-servi
 import { resolveConnection } from "../providers/connection-resolver.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import { wireMarkerContext } from "../providers/wire-markers.js";
-import { ComposedHandler } from "./composed-handler.js";
+import { ComposedHandler, _resetFastIgnoredNotices } from "./composed-handler.js";
 import type { ModelHandler } from "./types.js";
 
 const cachePath = new URL(
@@ -28,7 +28,10 @@ const ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const realFetch = globalThis.fetch;
 const handlers: ModelHandler[] = [];
 
-beforeEach(() => clearCodexModelsMemo());
+beforeEach(() => {
+  clearCodexModelsMemo();
+  _resetFastIgnoredNotices();
+});
 afterEach(async () => {
   globalThis.fetch = realFetch;
   clearCodexModelsMemo();
@@ -64,6 +67,13 @@ describe("decideCodexSpeed", () => {
     expect(implicit.tier).toBeUndefined();
     expect(implicit.note).toContain(text);
   });
+
+  test("api-key arm: the reason is that no subscription account signed", () => {
+    const explicit = decideCodexSpeed({ value: "fast", explicit: true }, "unsigned");
+    expect(explicit.refusal).toContain("no subscription account signed the request");
+    expect(explicit.refusal).not.toContain("retry");
+    expect(decideCodexSpeed({ value: "fast", explicit: false }, "unsigned").tier).toBeUndefined();
+  });
 });
 
 function connection(model: string) {
@@ -73,32 +83,36 @@ function connection(model: string) {
   return structuredClone(r.connection);
 }
 
-/** An OAuth-armed Codex transport, without the account pool `signRequest` reaches. */
-function transport(): ProviderTransport {
+/** A Codex transport signing with `arm`, without the account pool `signRequest` reaches. */
+function transport(arm: "oauth" | "api-key" = "oauth"): ProviderTransport {
   return {
     name: "openai-codex",
     displayName: "Codex",
     streamFormat: "openai-responses-sse",
     getEndpoint: () => ENDPOINT,
     getHeaders: async (_req, binding) => ({ ...(binding?.auth?.headers ?? {}) }),
-    refreshAuth: async () => ({
-      auth: {
-        arm: "oauth",
-        endpoint: ENDPOINT,
-        headers: { Authorization: "Bearer TOKEN", "chatgpt-account-id": "account-speed" },
-      },
-    }),
+    refreshAuth: async () =>
+      arm === "oauth"
+        ? {
+            auth: {
+              arm: "oauth",
+              endpoint: ENDPOINT,
+              headers: { Authorization: "Bearer TOKEN", "chatgpt-account-id": "account-speed" },
+            },
+          }
+        : { auth: { arm: "api-key", headers: { Authorization: "Bearer sk-metered" } } },
   } as ProviderTransport;
 }
 
 function handler(
   model: string,
   edit?: (c: ReturnType<typeof connection>) => void,
-  modelParams?: Record<string, unknown>
+  modelParams?: Record<string, unknown>,
+  arm: "oauth" | "api-key" = "oauth"
 ): ModelHandler {
   const c = connection(model);
   edit?.(c);
-  const h = new ComposedHandler(transport(), `openai-codex@${model}`, model, 0, {
+  const h = new ComposedHandler(transport(arm), `openai-codex@${model}`, model, 0, {
     adapter: new CodexAPIFormat(model),
     tokenStrategy: "delta-aware",
     codeMode: "off",
@@ -207,5 +221,103 @@ describe("step 5s on cx@ with catalog speed unknown", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0].service_tier).toBe("priority");
     expect(calls[1]).not.toHaveProperty("service_tier");
+  });
+});
+
+/** Run `body` with stderr captured; returns the lines that report an ignored /fast. */
+async function fastNotices(body: () => unknown): Promise<string[]> {
+  const lines: string[] = [];
+  const write = spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+    lines.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write);
+  try {
+    await body();
+  } finally {
+    write.mockRestore();
+  }
+  return lines.filter((line) => line.includes("/fast ignored"));
+}
+
+describe("Claude Code /fast is sent only on a subscription-signed Codex request", () => {
+  test("api-key arm: no tier, no discovery call, one stderr line per model", async () => {
+    let modelsCalls = 0;
+    const calls: any[] = [];
+    globalThis.fetch = (async (input: any, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/codex/models")) {
+        modelsCalls++;
+        return Response.json(modelsBody);
+      }
+      calls.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ error: { message: "x" } }), { status: 400 });
+    }) as typeof fetch;
+    const h = handler("gpt-6.1-sol", undefined, undefined, "api-key");
+    const notices = await fastNotices(async () => {
+      await send(h, { speed: "fast" });
+      await send(h, { speed: "fast" });
+    });
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call).not.toHaveProperty("service_tier");
+      expect(call).not.toHaveProperty("speed");
+    }
+    expect(modelsCalls).toBe(0);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain("gpt-6.1-sol");
+    expect(notices[0]).toContain("metered");
+  });
+
+  test("api-key arm: #fast is refused naming the missing subscription account", async () => {
+    const calls = upstream("some other failure");
+    const h = handler("gpt-6.1-sol", undefined, undefined, "api-key");
+    const refused = await wireMarkerContext.run({ spec: "cx@gpt-6.1-sol", speed: "fast" }, () =>
+      send(h)
+    );
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("no subscription account signed the request");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("oauth arm: /fast sends the Fast tier with no stderr line", async () => {
+    const calls = upstream("some other failure");
+    const notices = await fastNotices(() => send(handler("gpt-6.1-sol"), { speed: "fast" }));
+    expect(calls[0].service_tier).toBe("priority");
+    expect(notices).toHaveLength(0);
+  });
+
+  const supported = (c: ReturnType<typeof connection>) => {
+    if (c.wire.status === "known") {
+      c.wire.speed = {
+        status: "supported",
+        path: "/service_tier",
+        values: { fast: "priority" },
+        default: "standard",
+        headers: [],
+        echo: "/service_tier",
+        access: "open",
+      };
+    }
+  };
+
+  test.each([
+    ["oauth", "priority"],
+    ["api-key", undefined],
+  ] as const)("catalog speed supported, %s arm: /fast tier is %p", async (arm, tier) => {
+    const calls = upstream("some other failure");
+    const notices = await fastNotices(() =>
+      send(handler("gpt-6.1-sol", supported, undefined, arm), { speed: "fast" })
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].service_tier).toBe(tier);
+    expect(notices).toHaveLength(arm === "oauth" ? 0 : 1);
+  });
+
+  test("catalog speed supported, api-key arm: an explicit #fast still applies", async () => {
+    const calls = upstream("some other failure");
+    const h = handler("gpt-6.1-sol", supported, undefined, "api-key");
+    await wireMarkerContext.run({ spec: "cx@gpt-6.1-sol", speed: "fast" }, () => send(h));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].service_tier).toBe("priority");
   });
 });

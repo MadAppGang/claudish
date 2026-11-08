@@ -106,10 +106,12 @@ import {
   type WireChoices,
   type WireMode,
   type WireSpeed,
+  applyWireSpeed,
   mergeWireHeaders,
   recoverBorrowedWireFields,
   shapeRequestFromWire,
   wireChoicesFromClaudeRequest,
+  wireSpeedOffered,
 } from "../providers/wire-request.js";
 import { recoveryClock } from "../recovery/clock.js";
 import {
@@ -432,6 +434,14 @@ export interface ComposedHandlerOptions {
    * that serves Claude Code's own requests.
    */
   requestRole?: "advisor";
+}
+
+/** Target models whose ignored Claude Code `/fast` was already reported on stderr. */
+const fastIgnoredNoticed = new Set<string>();
+
+/** Test seam: forget which ignored `/fast` requests were reported. */
+export function _resetFastIgnoredNotices(): void {
+  fastIgnoredNoticed.clear();
 }
 
 export class ComposedHandler implements ModelHandler {
@@ -758,6 +768,25 @@ export class ComposedHandler implements ModelHandler {
         ? binding?.auth?.arm === "oauth"
         : isSubscriptionProvider(name),
     };
+  }
+
+  /** The connection a `[Wire]` log line is about: route binding and wire id. */
+  private wireWhere(): string {
+    const connection = this.options.connection;
+    return `${connection?.route.routeId}/${connection?.route.routeProfileId} · ${connection?.externalModelId}`;
+  }
+
+  /**
+   * Tell the user, once per model per process, that Claude Code's `/fast` was
+   * not sent because the request is metered. Only stderr can say it: the
+   * request itself succeeds at standard speed.
+   */
+  private noticeFastIgnored(): void {
+    if (fastIgnoredNoticed.has(this.targetModel)) return;
+    fastIgnoredNoticed.add(this.targetModel);
+    logStderr(
+      `${this.targetModel}: Claude Code /fast ignored, the request is metered and the fast tier is billed at a higher per-token price. Add #fast to the model spec to send it anyway.`
+    );
   }
 
   /**
@@ -1708,6 +1737,7 @@ export class ComposedHandler implements ModelHandler {
     let wireHeaders: WireHeader[] = [];
     let wireBorrowed: string[] = [];
     let codexSpeed: WireChoices["speed"];
+    let fastSpeed: WireChoices["speed"];
     const wire = this.options.connection?.wire;
     if (wire?.status === "known") {
       const choices: WireChoices = {
@@ -1744,6 +1774,11 @@ export class ComposedHandler implements ModelHandler {
         wire.speed.status === "unknown"
       ) {
         codexSpeed = choices.speed;
+        choices.speed = undefined;
+      } else if (choices.speed && !choices.speed.explicit) {
+        // Claude Code's `/fast`: decided at 5f, once the signing credential
+        // says whether the faster tier would be billed per token.
+        fastSpeed = choices.speed;
         choices.speed = undefined;
       }
 
@@ -1960,6 +1995,27 @@ export class ComposedHandler implements ModelHandler {
       }
     }
 
+    // 5f. Claude Code's `/fast` (deferred at 5w). Claude Code keeps `fastMode`
+    // in the user's settings, so it arrives on every request of every later
+    // session without the user naming it for this model. It is applied only
+    // to a request billed as a subscription (`signedBilling`: the signing arm
+    // for `openai-codex`, the fixed category for every other provider); on a
+    // metered request it would raise the per-token price, so it is dropped,
+    // with one stderr line per model. `#fast` on the model spec is explicit
+    // and was applied at 5w.
+    if (fastSpeed && wire?.status === "known") {
+      if (!this.signedBilling(binding).subscription) {
+        log(
+          `[Wire] ${this.wireWhere()}: speed ${fastSpeed.value} (Claude Code /fast) not sent: the request is metered`
+        );
+        if (wireSpeedOffered(wire.speed, fastSpeed.value)) this.noticeFastIgnored();
+      } else {
+        const applied = applyWireSpeed(requestPayload, wire, fastSpeed);
+        for (const note of applied.notes) log(`[Wire] ${this.wireWhere()}: ${note}`);
+        wireHeaders = [...wireHeaders, ...applied.headers];
+      }
+    }
+
     // 5r. Code-mode resume (`openai-codex`): tool_results answering a suspended
     // exec script's batch feed the script. After 5b, so the account is THIS
     // request's; after 3b, so a synthetic reply gets the same raw hooks (the
@@ -2013,15 +2069,22 @@ export class ComposedHandler implements ModelHandler {
     // both code-mode shapes are built from a payload that already carries it.
     // A non-explicit tier (Claude Code's `/fast`) is recoverable: a 400 naming
     // `service_tier` resends without it, like a borrowed field.
+    // On the api-key arm no account can be asked, and a `/fast` the user did
+    // not name for this model is never billed per token (see 5f).
     if (codexSpeed) {
       const accountKey = accountKeyFromBinding(binding);
-      const modelInfo =
-        binding && accountKey
+      const subscription = this.signedBilling(binding).subscription;
+      const modelInfo = !subscription
+        ? ("unsigned" as const)
+        : binding && accountKey
           ? await getCodexModelInfo(String(requestPayload?.model ?? ""), binding, accountKey)
           : undefined;
       const outcome = decideCodexSpeed(codexSpeed, modelInfo);
-      const where = `${this.options.connection?.route.routeId}/${this.options.connection?.route.routeProfileId} · ${this.options.connection?.externalModelId}`;
+      const where = this.wireWhere();
       log(`[Wire] ${where}: ${outcome.note}`);
+      if (!subscription && !codexSpeed.explicit && codexSpeed.value !== "standard") {
+        this.noticeFastIgnored();
+      }
       if (outcome.refusal) {
         return c.json(
           wrapAnthropicError(

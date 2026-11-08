@@ -112,6 +112,16 @@ export function setPointer(body: Record<string, unknown>, path: string, value: u
   node[tokens[tokens.length - 1]] = value;
 }
 
+/** The value at `path` in `body`, or `undefined` when nothing is there. */
+export function readPointer(body: Record<string, unknown>, path: string): unknown {
+  let node: unknown = body;
+  for (const token of pointerTokens(path)) {
+    if (node === null || typeof node !== "object" || Array.isArray(node)) return undefined;
+    node = (node as Record<string, unknown>)[token];
+  }
+  return node;
+}
+
 /** Remove the value at `path`, then any objects left empty above it. */
 export function deletePointer(body: Record<string, unknown>, path: string): void {
   const tokens = pointerTokens(path);
@@ -224,6 +234,31 @@ function applyControl(
   result.notes.push(
     `${label} ${requested}: ${control.path} = ${JSON.stringify(native)}${control.access !== "open" ? ` (access: ${control.access})` : ""}`
   );
+}
+
+/** True when `speed` would be written on this connection: its control is `supported` and offers it. */
+export function wireSpeedOffered(control: WireControl, speed: WireSpeed): boolean {
+  return control.status === "supported" && control.values[speed] !== undefined;
+}
+
+/**
+ * Apply one speed choice to a body `shapeRequestFromWire` already shaped
+ * without it: Claude Code's `/fast`, which waits until the request is signed,
+ * because only the signing credential says who pays for the faster tier. A
+ * value already at the speed pointer came from `--model-params` and is kept.
+ */
+export function applyWireSpeed(
+  body: Record<string, unknown>,
+  wire: KnownWire,
+  speed: { value: WireSpeed; explicit: boolean }
+): WireShapeResult {
+  const result: WireShapeResult = { headers: [], notes: [], borrowed: [] };
+  if (wire.speed.status === "supported" && readPointer(body, wire.speed.path) !== undefined) {
+    result.notes.push(`speed ${speed.value}: ${wire.speed.path} already set by --model-params`);
+    return result;
+  }
+  applyControl(body, wire.speed, speed.value, "speed", speed.explicit, result);
+  return result;
 }
 
 // ─── Reasoning ─────────────────────────────────────────────────────────────
