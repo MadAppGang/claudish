@@ -809,7 +809,7 @@ Full control over transport, auth, headers, and stream format:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `kind` | `"complex"` | yes | Discriminator |
-| `displayName` | string | no | Human-readable name (shown in logs) |
+| `displayName` | string | yes | Human-readable name (shown in logs). Without it the entry fails validation and is skipped with a warning |
 | `transport` | string | yes | Transport type (e.g., `"openai"`, `"anthropic"`) |
 | `baseUrl` | string | yes | Server base URL |
 | `apiPath` | string | no | Custom API path (overrides default for transport) |
