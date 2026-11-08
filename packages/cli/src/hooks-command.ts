@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { withRawConfigTransaction } from "./auth/accounts/config-lock.js";
 import { HOOKS_AMBIENT_DTS } from "./hooks/ambient-dts.generated.js";
 import { OBSERVER_HOOK_ID, observerEnabled } from "./hooks/builtins/observer.js";
 import { parseHooksConfig } from "./hooks/config.js";
@@ -292,26 +293,18 @@ function corpus(write: boolean, json: boolean): number {
  */
 function setTelemetryEnabled(value: boolean): void {
   // The ACTIVE global config: with `--config` / `CLAUDISH_CONFIG` that is the
-  // override, which is also the file `loadConfig` reads back below.
-  const path = activeConfigFile();
-  let cfg: Record<string, unknown> = {};
-  try {
-    if (existsSync(path)) {
-      const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        cfg = parsed as Record<string, unknown>;
-      }
-    }
-  } catch {
-    // Garbled file → start from empty rather than crash. Matches readRawConfig.
-  }
-  const hooks =
-    cfg.hooks && typeof cfg.hooks === "object" && !Array.isArray(cfg.hooks)
-      ? { ...(cfg.hooks as Record<string, unknown>) }
-      : {};
-  hooks.telemetry = { enabled: value };
-  cfg.hooks = hooks;
-  writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`, "utf-8");
+  // override, which is also the file `loadConfig` reads back below. Under the
+  // config lock, like every global writer: a raw write could undo a concurrent
+  // account change, and a garbled file is refused rather than replaced by `{}`.
+  withRawConfigTransaction(activeConfigFile(), (cfg) => {
+    const hooks =
+      cfg.hooks && typeof cfg.hooks === "object" && !Array.isArray(cfg.hooks)
+        ? { ...(cfg.hooks as Record<string, unknown>) }
+        : {};
+    hooks.telemetry = { enabled: value };
+    cfg.hooks = hooks;
+    return { config: cfg, result: undefined };
+  });
 }
 
 /**
@@ -320,7 +313,15 @@ function setTelemetryEnabled(value: boolean): void {
  * unstated is not consent.
  */
 function telemetry(action: "status" | "enable" | "disable", json: boolean): number {
-  if (action !== "status") setTelemetryEnabled(action === "enable");
+  if (action !== "status") {
+    try {
+      setTelemetryEnabled(action === "enable");
+    } catch (err) {
+      // A busy or garbled config: nothing was written, and the file says why.
+      console.error(err instanceof Error ? err.message : String(err));
+      return 1;
+    }
+  }
 
   const on = parseHooksConfig(loadConfig().hooks, () => {}).telemetry?.enabled === true;
   // Reports are spooled at exit and delivered by a LATER run, so a non-zero

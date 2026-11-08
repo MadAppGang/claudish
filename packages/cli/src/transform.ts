@@ -374,6 +374,15 @@ export function stripBillingHeader(text: string): string {
 }
 
 /**
+ * Whether a system text block is Claude Code's billing-header block. A
+ * predicate, so it never touches the global (stateful) `BILLING_HEADER_RE`:
+ * a case-insensitive substring test of the same header name.
+ */
+export function isBillingHeaderText(text: string): boolean {
+  return typeof text === "string" && text.toLowerCase().includes("x-anthropic-billing-header:");
+}
+
+/**
  * Main transformation function from OpenAI to Claude format
  */
 export function transformOpenAIToClaude(claudeRequestInput: any): {

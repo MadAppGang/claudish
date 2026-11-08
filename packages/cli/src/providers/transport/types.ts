@@ -5,6 +5,58 @@
  * Does NOT own: message conversion, tool format, pricing (those are ModelAdapter concerns).
  */
 
+import type { RequestAuth, RequestAuthContext } from "../../auth/credentials/types.js";
+
+/**
+ * The auth ONE request signs with, held in a request-local by ComposedHandler.
+ *
+ * A transport that mints a per-request artifact (`openai-codex`) returns it from
+ * `signRequest`/`refreshAuth`/`forceRefreshAuth`, and ComposedHandler hands it
+ * back to `transformPayload`, `getEndpoint` and `getHeaders`. Every
+ * auth-dependent value of the request is then computed from this one artifact,
+ * never from a field on the transport instance, which concurrent requests on
+ * one handler share (one request's refresh could otherwise change what another
+ * request signs with; with an account pool, one request could sign with
+ * another's ACCOUNT).
+ *
+ * `auth === null` ⇒ the transport's base (api-key) path.
+ */
+export interface AuthBinding {
+  readonly auth: RequestAuth | null;
+}
+
+/**
+ * What a caller may ask of {@link ProviderTransport.signRequest}.
+ *
+ * Deliberately open to extension: the account pool adds `exclude`/`pin` here so
+ * a quota rotation can ask for "anything but this account". Everything is
+ * optional, so `signRequest({})` is the ordinary request-time call.
+ */
+export interface SignRequestContext extends Omit<RequestAuthContext, "model"> {
+  /**
+   * Force a token exchange rather than accepting whatever is cached.
+   *
+   * Set by the 401 retry: upstream has just rejected the bearer we signed with,
+   * so a cached token is worthless however fresh its stated expiry is.
+   */
+  forceRefresh?: boolean;
+}
+
+/**
+ * What ComposedHandler hands {@link ProviderTransport.forceRefreshAuth} on a 401.
+ *
+ * `rejectedHeaders` are the headers of the request the upstream just rejected,
+ * so a transport holding several credentials can tell a stale failure (its
+ * credential already changed) from one that names the credential it holds now.
+ * The rest is the request's signing state, for a transport whose 401 re-sign
+ * goes through `signRequest` (`openai-codex`): the account to stay on (`pin`),
+ * the artifact that was rejected, and the `requireOAuth` latch, so the ONE 401
+ * re-sign path is also the pool's.
+ */
+export interface ForceRefreshContext extends Omit<SignRequestContext, "forceRefresh"> {
+  rejectedHeaders?: Record<string, string>;
+}
+
 /** The wire format used for streaming responses */
 export type StreamFormat =
   | "openai-sse"
@@ -49,11 +101,23 @@ export interface ProviderTransport {
   /** Which stream parser to use for this provider's responses */
   readonly streamFormat: StreamFormat;
 
-  /** Get the full API endpoint URL for a request */
-  getEndpoint(model?: string): string;
+  /**
+   * Get the full API endpoint URL for a request.
+   *
+   * `binding` is the request's auth binding (from `signRequest` or
+   * `refreshAuth`); a transport that returns one reads auth from it ONLY. A
+   * handler instance and its transport are shared across concurrent turns, so
+   * anything auth-derived that lives on `this` is read back after an `await` by
+   * whichever request got there second. Optional, so transports that bind
+   * nothing ignore it.
+   */
+  getEndpoint(model?: string, binding?: AuthBinding): string;
 
   /**
    * Get HTTP headers (may be async for OAuth token refresh).
+   *
+   * BOTH parameters are per-request, and neither may be read back off the
+   * transport instance — one transport serves overlapping requests.
    *
    * `claudeRequest` is the ORIGINAL inbound Claude-format body, for a header that
    * carries conversation identity (OpenCode Zen's `x-opencode-session`). Besides
@@ -63,8 +127,12 @@ export interface ProviderTransport {
    * serves overlapping requests from different conversations (the same race as
    * `classifyTerminalError` below). Optional, so existing implementers that
    * ignore it are untouched.
+   *
+   * `binding`: the request's auth binding, as for `getEndpoint`. A transport
+   * that reads a cached artifact off itself instead can sign one request with
+   * another's credential once several accounts exist.
    */
-  getHeaders(claudeRequest?: unknown): Promise<Record<string, string>>;
+  getHeaders(claudeRequest?: unknown, binding?: AuthBinding): Promise<Record<string, string>>;
 
   /**
    * Override the adapter's stream format selection.
@@ -101,20 +169,58 @@ export interface ProviderTransport {
   /**
    * Optional auth refresh (e.g., OAuth token rotation).
    * Called once before each request if defined.
+   *
+   * A transport that returns an `AuthBinding` binds the request to that
+   * artifact: ComposedHandler passes it to every later auth-dependent call of
+   * the same request. `void` ⇒ a legacy transport with nothing to bind.
+   *
+   * ComposedHandler prefers {@link signRequest} where a transport implements
+   * both: `refreshAuth` takes no signing context, so it cannot carry the
+   * request's `requireOAuth` latch or account selection.
    */
-  refreshAuth?(): Promise<void>;
+  // biome-ignore lint/suspicious/noConfusingVoidType: legacy transports return Promise<void>, which `undefined` would reject
+  refreshAuth?(): Promise<AuthBinding | void>;
+
+  /**
+   * Resolve this request's credential and RETURN it, instead of caching it on
+   * the transport.
+   *
+   * The artifact is then threaded explicitly through `transformPayload` /
+   * `getEndpoint` / `getHeaders`, which is what makes a shared transport safe
+   * under concurrency: two turns in flight hold two artifacts, and neither can
+   * read the other's after an `await`.
+   *
+   * It must NOT swallow errors. "There is no OAuth here" is expressed by the
+   * credential layer returning an api-key artifact, never by a `catch` that
+   * degrades to the metered path — see `openai-codex.ts` for the money-losing
+   * version of that mistake.
+   */
+  signRequest?(ctx: SignRequestContext): Promise<RequestAuth>;
+
+  /**
+   * Does this provider have a subscription ACCOUNT POOL configured?
+   *
+   * Read by the handler's redundant net: with a pool configured, an artifact
+   * that is not `arm: "oauth"` is an internal failure, not a fallback, and the
+   * request must fail visibly rather than sign against a metered host.
+   * Configuration-only — never an I/O question.
+   */
+  poolConfigured?(): boolean;
 
   /**
    * Force refresh auth credentials after a 401 response.
    * Used by OAuth providers (Vertex, CodeAssist) to handle token expiry.
    * ComposedHandler calls this automatically on 401 and retries the request.
+   * A returned binding REPLACES the request's binding for the retry.
    *
-   * `ctx.rejectedHeaders` are the headers of the request the upstream just
-   * rejected, so a transport holding several credentials can tell a stale
-   * failure (its credential already changed) from one that names the
-   * credential it holds now.
+   * The ONE 401 re-sign path: a transport that signs through `signRequest`
+   * implements this as a forced `signRequest`, with the request's signing
+   * state from `ctx` ({@link ForceRefreshContext}).
    */
-  forceRefreshAuth?(ctx?: { rejectedHeaders?: Record<string, string> }): Promise<void>;
+  forceRefreshAuth?(
+    ctx?: ForceRefreshContext
+    // biome-ignore lint/suspicious/noConfusingVoidType: legacy transports return Promise<void>, which `undefined` would reject
+  ): Promise<AuthBinding | void>;
 
   /**
    * Optional: a display-safe name of the credential that signed a request
@@ -164,8 +270,10 @@ export interface ProviderTransport {
    * `metadata`, so conversation identity (`metadata.user_id`) is unreachable
    * from `payload` alone. Optional and second, so the existing implementers
    * that ignore it are untouched.
+   *
+   * `binding`: the request's auth binding, as for `getEndpoint`.
    */
-  transformPayload?(payload: any, claudeRequest?: any): any;
+  transformPayload?(payload: any, claudeRequest?: any, binding?: AuthBinding): any;
 
   /**
    * Serialize the request payload to wire bytes.
@@ -188,6 +296,19 @@ export interface ProviderTransport {
    * Called after `transformPayload`, so it sees the final payload.
    */
   serializeBody?(payload: any): { body: SerializedBody; contentType: string };
+
+  /**
+   * Optional: credential values this transport sends OUTSIDE the headers that
+   * `getHeaders()` returns, for exact-value redaction (`redact.ts`). Devin
+   * encodes its key into the request body; Antigravity's capacity fallback
+   * signs its own fetches. ComposedHandler registers what this returns for
+   * the request's lifetime, so an upstream error echoing the value is masked
+   * in every log sink and in the error text returned to Claude Code.
+   *
+   * Values only, read at call time; never logged. A transport whose every
+   * credential travels in `getHeaders()` leaves this undefined.
+   */
+  redactionSecrets?(): string[];
 
   /**
    * Extra options to merge into the fetch RequestInit.

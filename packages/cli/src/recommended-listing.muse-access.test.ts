@@ -8,7 +8,7 @@ import {
 } from "./recommended-listing.js";
 import museCatalog from "./test-fixtures/catalog-v3/muse-code-g-20261021063612126-17350b71.json";
 
-// MTL-189 follow-up: D — Access lists only published routes and wire ids (generation g-20261021063612126-17350b71).
+// MTL-189 follow-up: CLI access lists published routes; MCP markdown names no provider.
 const data = museCatalog as DiskCacheV3;
 const plan = data.plans[0]!;
 
@@ -25,10 +25,13 @@ function listing(modelId: string) {
   );
 }
 
-function access(modelId: string): string {
-  return renderRecommendedMarkdown(listing(modelId), nativeShortcutForVendor)
-    .split("\n")
-    .find((line) => line.startsWith("- **Access**:"))!;
+function expectProviderFreeMarkdown(modelId: string): void {
+  const markdown = renderRecommendedMarkdown(listing(modelId));
+  expect(markdown).toContain(modelId);
+  expect(markdown).not.toContain("**Access**");
+  expect(markdown).not.toContain("meta@");
+  expect(markdown).not.toContain("muse@");
+  expect(markdown).not.toContain("@");
 }
 
 test("Wonder Full has no metered Meta connection in the real data", () => {
@@ -39,12 +42,13 @@ test("Wonder Full has no metered Meta connection in the real data", () => {
   expect(listing(model.modelId).models[0]!.subscription!.command).toBe("muse@muse-wonder-full-1.0");
 });
 
-test("Wonder Full Access does not offer the unserved meta@ route", () => {
-  expect(access("muse-wonder-full")).not.toContain("`meta@muse-wonder-full`");
+test("Wonder Full markdown names no provider for its base model", () => {
+  expectProviderFreeMarkdown("muse-wonder-full");
 });
 
-test("Wonder Full Access offers the muse@ subscription shortcut", () => {
-  expect(access("muse-wonder-full")).toContain("`muse@muse-wonder-full`");
+test("Wonder Full markdown omits the subscription command's provider", () => {
+  const modelId = data.entries.find((entry) => entry.modelId === "muse-wonder-full")!.modelId;
+  expectProviderFreeMarkdown(modelId);
 });
 
 test("Wonder Full text lists muse@ without the unserved meta@ route", () => {
@@ -59,8 +63,7 @@ test("Spark retains meta@ where the native API publishes a connection", () => {
   expect(model.aggregators).toContainEqual(
     expect.objectContaining({ route: { routeId: "meta", routeProfileId: "direct-api" } })
   );
-  expect(access(model.modelId)).toContain("`meta@muse-spark-1.3`");
-  expect(access(model.modelId)).toContain("`muse@muse-spark-1.3`");
+  expectProviderFreeMarkdown(model.modelId);
   const text = renderRecommendedText(listing(model.modelId), nativeShortcutForVendor);
   const via = text.split("\n").find((line) => line.includes("via:"))!;
   expect(via).toContain("meta@");

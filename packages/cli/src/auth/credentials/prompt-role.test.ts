@@ -198,6 +198,7 @@ describe("P1: permission to read a credential", () => {
       "CLAUDISH_PANE_CWD",
       "CLAUDISH_HOOK_INBOX",
       "CLAUDISH_HOOK_SESSION",
+      "CLAUDISH_PARENT_SESSION",
     ]);
     for (const marker of ["1", "0", "", "true", undefined]) {
       const env = marker === undefined ? {} : { CLAUDISH_PANE_CHILD: marker };

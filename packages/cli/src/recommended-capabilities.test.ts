@@ -36,7 +36,6 @@ const catalog: RecommendationCatalogSnapshot = {
 const now = new Date(meta.capturedAt);
 const project = (snapshot = catalog) =>
   projectRecommendations(recommendations, snapshot, top100.models, now);
-const noNativePrefix = (_vendorSlug: string): string | null => null;
 const capabilityLines = (markdown: string) =>
   markdown.split("\n").filter((line) => line.startsWith("- **Capabilities**:"));
 const expectedCapabilityLine = (entry: SlimEntry) => {
@@ -102,7 +101,7 @@ describe("recommended model capabilities", () => {
 
   test("renders one nonempty capabilities line per recorded row with flags in contract order", () => {
     const doc = project();
-    const lines = capabilityLines(renderRecommendedMarkdown(doc, noNativePrefix));
+    const lines = capabilityLines(renderRecommendedMarkdown(doc));
     expect(doc.models.length).toBeGreaterThanOrEqual(20);
     expect(lines).toHaveLength(doc.models.length);
     expect(lines).not.toContain("- **Capabilities**: none");
@@ -119,15 +118,13 @@ describe("recommended model capabilities", () => {
     const { modelId, doc } = withoutCapabilities();
     const affected = doc.models.filter((row) => row.id === modelId);
     expect(affected.length).toBeGreaterThan(0);
-    const lines = capabilityLines(renderRecommendedMarkdown(doc, noNativePrefix));
+    const lines = capabilityLines(renderRecommendedMarkdown(doc));
     expect(lines).toHaveLength(doc.models.length);
     expect(lines.filter((line) => line === "- **Capabilities**: none")).toHaveLength(
       affected.length
     );
     // Render only the affected projected rows to verify which model owns the none lines.
-    const modelLines = capabilityLines(
-      renderRecommendedMarkdown({ ...doc, models: affected }, noNativePrefix)
-    );
+    const modelLines = capabilityLines(renderRecommendedMarkdown({ ...doc, models: affected }));
     expect(modelLines).toHaveLength(affected.length);
     for (const line of modelLines) expect(line).toBe("- **Capabilities**: none");
   });

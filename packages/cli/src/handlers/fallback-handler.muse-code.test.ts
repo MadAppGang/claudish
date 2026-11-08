@@ -94,7 +94,9 @@ afterAll(() => {
   }
   rmSync(testHome, { recursive: true, force: true });
 });
-const { FallbackHandler, isRetryableError } = await import("./fallback-handler.js");
+const { FallbackHandler, isRetryableError, _resetCredentialRejectionNotices } = await import(
+  "./fallback-handler.js"
+);
 import { authVerdictHeaders } from "./shared/auth-failure.js";
 
 const subscriptions = [
@@ -115,9 +117,12 @@ const rejection = JSON.stringify({
   error: { type: "invalid_api_key", message: "Unauthorized", upstream_status: 401 },
 });
 
-describe("B1: routing-chain stop decisions", () => {
+// Owner rule 2026-10-21: a subscription's rejected credential advances to the
+// next hop, metered included; a transient verdict still holds. (These tests
+// pinned the earlier stop and were updated.)
+describe("B1: routing-chain decisions on a subscription credential verdict", () => {
   test.each(subscriptions)(
-    "%s holds terminal/transient verdicts before status recovery",
+    "%s advances a terminal verdict and holds a transient one before status recovery",
     (provider) => {
       for (const verdict of ["terminal", "transient"] as const) {
         for (const upstream of [401, 403]) {
@@ -132,13 +137,13 @@ describe("B1: routing-chain stop decisions", () => {
               new Headers(authVerdictHeaders(verdict)),
               provider
             )
-          ).toBe(false);
+          ).toBe(verdict === "terminal");
         }
       }
     }
   );
-  test.each(subscriptions)("%s stops a credential rejection without a verdict", (provider) => {
-    expect(isRetryableError(401, rejection, provider, new Headers(), provider)).toBe(false);
+  test.each(subscriptions)("%s advances a credential rejection without a verdict", (provider) => {
+    expect(isRetryableError(401, rejection, provider, new Headers(), provider)).toBe(true);
   });
   test("metered Meta 401 remains eligible to advance", () => {
     expect(isRetryableError(401, rejection, "meta", new Headers(), "meta")).toBe(true);
@@ -231,13 +236,14 @@ async function twoHop(provider: string, firstResponse: () => Response) {
   }
 }
 
-describe("B1: actual two-hop subscription stops", () => {
+describe("B1: actual two-hop chain after a subscription credential verdict", () => {
   test.each([...subscriptions, "openai-codex"])(
-    "%s never calls metered Meta on auth failure",
+    "%s moves on to metered Meta, announced, on a rejected credential",
     async (provider) => {
       recordSignedArm("openai-codex", "subscription");
       for (const verdict of ["terminal", "transient"] as const) {
         for (const upstream of [401, 403]) {
+          _resetCredentialRejectionNotices();
           const result = await twoHop(
             provider,
             () =>
@@ -251,19 +257,26 @@ describe("B1: actual two-hop subscription stops", () => {
                 { status: verdict === "terminal" ? 400 : 503, headers: authVerdictHeaders(verdict) }
               )
           );
-          expect(result.status).toBe(verdict === "terminal" ? 400 : 503);
-          expect(result.verdict).toBe(verdict);
-          expect(result.body).toContain("login muse");
           expect(result.firstCalls).toBe(1);
-          expect(result.meteredCalls).toBe(0);
+          if (verdict === "terminal") {
+            expect(result.status).toBe(200);
+            expect(result.body).toBe("metered success");
+            expect(result.meteredCalls).toBe(1);
+            expect(result.warnings).toContain("meta@fixture (metered, billed per token)");
+          } else {
+            expect(result.status).toBe(503);
+            expect(result.verdict).toBe("transient");
+            expect(result.body).toContain("login muse");
+            expect(result.meteredCalls).toBe(0);
+          }
         }
       }
       for (const upstream of [401, 403]) {
         const result = await twoHop(provider, () => new Response(rejection, { status: upstream }));
-        expect(result.status).not.toBe(200);
-        expect(result.body).toContain("Unauthorized");
+        expect(result.status).toBe(200);
+        expect(result.body).toBe("metered success");
         expect(result.firstCalls).toBe(1);
-        expect(result.meteredCalls).toBe(0);
+        expect(result.meteredCalls).toBe(1);
       }
     }
   );

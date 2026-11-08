@@ -37,8 +37,8 @@ class TestOAuthManager extends OAuthManager<BaseCredentials> {
   protected readonly loginHint = "unused";
   readonly clipboardCalls: string[] = [];
 
-  protected async doRefreshToken(): Promise<string> {
-    return "tok-unused";
+  protected async doRefreshToken(current: BaseCredentials): Promise<BaseCredentials> {
+    return current;
   }
 
   protected validateCredentials(_data: unknown): _data is BaseCredentials {

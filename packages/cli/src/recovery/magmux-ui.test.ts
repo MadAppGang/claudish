@@ -378,7 +378,7 @@ async function awaitBanner(
 }
 
 function ancestorOf(pid: number): number | null {
-  const r = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)]);
+  const r = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { env: { ...process.env } });
   const n = Number.parseInt(String(r.stdout ?? "").trim(), 10);
   return Number.isFinite(n) && n > 1 ? n : null;
 }
