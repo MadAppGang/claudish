@@ -461,13 +461,6 @@ describe("buildRoutingChain", () => {
     expect(typeof routes[0].modelSpec).toBe("string");
   });
 
-  test("preserves the leading '@' in OpenRouter preset IDs", () => {
-    const routes = buildRoutingChain(["openrouter@@preset/example"], "original");
-    expect(routes).toHaveLength(1);
-    expect(routes[0].provider).toBe("openrouter");
-    expect(routes[0].modelSpec).toBe("@preset/example");
-  });
-
   test("unknown provider name passes through without crashing", () => {
     const routes = buildRoutingChain(["totally-unknown-provider"], "my-model");
     expect(routes).toHaveLength(1);
@@ -2244,6 +2237,17 @@ describe("explainRoute", () => {
     expect(explanation.warnings.map((warning) => warning.type)).toEqual([
       "subscription-not-served",
       "subscription-credential-unreadable",
+    ]);
+  });
+
+  test("keeps the leading '@' of an OpenRouter preset in the wire id", async () => {
+    const explanation = await explainRoute("openrouter@@preset/example", {
+      rules: {},
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+
+    expect(explanation.candidates.map(({ provider, wireId }) => [provider, wireId])).toEqual([
+      ["openrouter", "@preset/example"],
     ]);
   });
 

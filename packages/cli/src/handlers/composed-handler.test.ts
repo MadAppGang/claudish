@@ -48,10 +48,23 @@ describe("ComposedHandler — modelName invariant (#102 structural fix)", () => 
     }).not.toThrow();
   });
 
-  test("rejects leading '@' model IDs for non-OpenRouter providers", () => {
+  test("accepts a leading '@' for any provider, since it carries no provider prefix", () => {
     const transport = makeFakeTransport();
     expect(() => {
-      new ComposedHandler(transport, "@preset/example", "@preset/example", 8080, {});
+      new ComposedHandler(transport, "test-provider@@preset/example", "@preset/example", 8080, {});
+    }).not.toThrow();
+  });
+
+  test("throws when a provider prefix precedes a leading-'@' id", () => {
+    const transport = makeFakeTransport("openrouter");
+    expect(() => {
+      new ComposedHandler(
+        transport,
+        "openrouter@@preset/example",
+        "openrouter@@preset/example",
+        8080,
+        {}
+      );
     }).toThrow(/modelName.*must.*not.*contain/i);
   });
 });

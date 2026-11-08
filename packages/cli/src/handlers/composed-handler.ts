@@ -223,6 +223,9 @@ import { captureUpstreamError } from "./shared/upstream-error-capture.js";
  */
 const STREAM_RETRY_DELAYS_MS = [3_000, 15_000, 30_000];
 
+/** A `provider@` routing prefix: one or more non-'@' characters, then '@'. */
+const PROVIDER_PREFIX = /^[^@]+@/;
+
 /**
  * A retry leg's binding: the request's `AuthBinding` plus the account it names
  * (`accountKeyFromBinding`), which the leg issuer compares between legs.
@@ -444,8 +447,9 @@ export class ComposedHandler implements ModelHandler {
   private targetModel: string;
   /**
    * Bare model name (e.g. "glm-4.7"), provider prefix stripped. Used for model identity:
-   * dialect selection, catalog lookup, raw-hook routing, context tracking. Never contains '@'.
-   * @invariant no provider routing syntax; OpenRouter preset IDs may begin with "@"
+   * dialect selection, catalog lookup, raw-hook routing, context tracking. Never carries a
+   * `provider@` prefix; a leading '@' is part of the id (OpenRouter presets: "@preset/name").
+   * @invariant !/^[^@]+@/.test(bareModelName)
    */
   private readonly bareModelName: string;
   private options: ComposedHandlerOptions;
@@ -466,12 +470,14 @@ export class ComposedHandler implements ModelHandler {
     port: number,
     options: ComposedHandlerOptions = {}
   ) {
-    // Enforce the bare-name invariant — modelName must not contain provider routing
-    // syntax. OpenRouter presets are the exception: their wire IDs begin with "@".
-    const isOpenRouterPreset = provider.name === "openrouter" && modelName.startsWith("@");
-    if (modelName.includes("@") && !isOpenRouterPreset) {
+    // Enforce the bare-name invariant — modelName must not carry a `provider@` prefix.
+    // This prevents #102-class bugs where a routed string leaks into dialect selection
+    // (e.g. "zai@glm-4.7" falsely matching GLMModelDialect via the "@glm" substring).
+    // A leading '@' has no provider before it and is part of the id itself
+    // (OpenRouter presets such as "@preset/name").
+    if (PROVIDER_PREFIX.test(modelName)) {
       throw new Error(
-        `ComposedHandler: modelName must not contain '@' (got "${modelName}"). Strip the provider routing prefix before passing modelName. If you need the full routed form, pass it as targetModel.`
+        `ComposedHandler: modelName must not contain a provider prefix (got "${modelName}"). Strip the provider routing prefix before passing modelName. If you need the full routed form, pass it as targetModel.`
       );
     }
 

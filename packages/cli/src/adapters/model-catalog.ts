@@ -362,7 +362,7 @@ function stripVendorPrefix(lowerId: string): string {
 
 function findCacheEntry(modelId: string, cachePath?: string): SlimModelEntry | undefined {
   if (modelId.startsWith("@")) return undefined;
-  if (modelId.includes("@") && !modelId.startsWith("@")) {
+  if (modelId.includes("@")) {
     throw new Error(
       `model-catalog lookup received provider-routed ID "${modelId}" — callers must strip the "@" prefix before calling`
     );
