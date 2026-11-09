@@ -489,7 +489,7 @@ describe("warmCatalogIfNeeded", () => {
       expect(refreshSpy).toHaveBeenCalledTimes(1);
       const stderrText = stderrChunks.join("");
       expect(stderrText).toContain("model catalog");
-      expect(stderrText).not.toMatch(/^WARNING: Catalog\\b/);
+      expect(stderrText).not.toMatch(/^WARNING: Catalog\b/);
     }
   );
 

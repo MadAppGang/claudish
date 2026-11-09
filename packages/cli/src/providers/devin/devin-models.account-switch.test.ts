@@ -12,7 +12,13 @@ import {
   refreshAccountModelsList,
 } from "../dynamic-models-catalog.js";
 import { providerServesModel } from "../model-availability.js";
-import { invalidateModelDiscovery } from "../model-discovery.js";
+import {
+  discoverProviderModelsCatalog,
+  discoverProviderServedIds,
+  getModelDiscoveryFetcher,
+  invalidateModelDiscovery,
+  registerModelDiscoveryFetcher,
+} from "../model-discovery.js";
 import "../model-discovery-builtins.js";
 import {
   DEVIN_API_KEY_ENV,
@@ -121,6 +127,57 @@ describe("Devin dynamic models catalog account switching", () => {
         .sort()
     ).toEqual([MODEL_CONFIGS_PATH, TEAM_SETTINGS_PATH].sort());
   });
+
+  test("removing the credential returns no models even while the old cache is live", async () => {
+    expect((await getServedDevinModels()).map((model) => model.uid)).toEqual(["m-a"]);
+    expect(calls).toHaveLength(2);
+    rmSync(credentialPath);
+
+    expect(await getServedDevinModels()).toEqual([]);
+    expect(calls).toHaveLength(2);
+  });
+
+  for (const surface of ["models catalog", "served ids"] as const) {
+    test(`generic discovery ${surface} refetches after an external Devin account switch`, async () => {
+      const originalFetcher = getModelDiscoveryFetcher("devin-connect")!;
+      let fetcherCalls = 0;
+      registerModelDiscoveryFetcher("devin-connect", async (provider) => {
+        fetcherCalls++;
+        return originalFetcher(provider);
+      });
+      try {
+        const discover = async () => {
+          if (surface === "served ids") {
+            return (await discoverProviderServedIds("devin")).served.map((model) => model.id);
+          }
+          const outcome = await discoverProviderModelsCatalog("devin");
+          expect(outcome.kind).toBe("served");
+          return outcome.kind === "served" ? outcome.models.map((model) => model.id) : [];
+        };
+        expect(await discover()).toEqual(["m-a"]);
+        expect(fetcherCalls).toBe(1);
+        const identityA = await credentials.accountIdentity("devin");
+        replaceCredential(KEY_B);
+        expect(await credentials.accountIdentity("devin")).not.toBe(identityA);
+
+        const ids = await discover();
+        expect({
+          ids,
+          fetcherCalls,
+          requestsB: calls
+            .filter((call) => call.key === KEY_B)
+            .map((call) => call.path)
+            .sort(),
+        }).toEqual({
+          ids: ["m-b"],
+          fetcherCalls: 2,
+          requestsB: [MODEL_CONFIGS_PATH, TEAM_SETTINGS_PATH].sort(),
+        });
+      } finally {
+        registerModelDiscoveryFetcher("devin-connect", originalFetcher);
+      }
+    });
+  }
 
   test("refresh stores only the new account's models under its account key", async () => {
     const bindingA = deriveAccountKey("devin", await credentials.accountIdentity("devin"));
