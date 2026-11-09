@@ -68,7 +68,7 @@ describe("decideCodexSpeed", () => {
   });
 
   test.each([
-    [{ slug: "m", serviceTiers: [] }, "offered: none"],
+    [{ slug: "m", serviceTiers: [] }, "lists 0 service tiers"],
     [undefined, "did not answer"],
   ])("not offered: explicit refuses, /fast only notes (%j)", (modelInfo, text) => {
     const explicit = decideCodexSpeed({ value: "fast", explicit: true }, modelInfo);
@@ -80,27 +80,28 @@ describe("decideCodexSpeed", () => {
     expect(implicit.note).toContain(text);
   });
 
-  test("an upstream tier id that is not a plain short id never reaches the note or refusal", () => {
+  test("no upstream tier id reaches the note or refusal, only how many tiers there are", () => {
     const secret = "sk-".concat("a".repeat(61));
     const odd = {
       slug: "m",
       serviceTiers: [
         { id: secret, name: "Turbo" },
-        { id: "flex", name: "Flex" },
+        { id: "flexid", name: "Flex" },
       ],
     };
     const refused = decideCodexSpeed({ value: "fast", explicit: true }, odd);
-    expect(refused.refusal).toBeDefined();
-    expect(refused.refusal).not.toContain(secret);
-    expect(refused.note).not.toContain(secret);
-    expect(refused.refusal).toContain("flex");
+    expect(refused.refusal).toContain("lists 2 service tiers");
+    for (const text of [refused.refusal, refused.note]) {
+      expect(text).not.toContain(secret);
+      expect(text).not.toContain("flexid");
+    }
 
     const matched = decideCodexSpeed(
       { value: "fast", explicit: false },
-      { slug: "m", serviceTiers: [{ id: secret, name: "Fast" }] }
+      { slug: "m", serviceTiers: [{ id: "prioid", name: "Fast" }] }
     );
-    expect(matched.tier).toBe(secret);
-    expect(matched.note).not.toContain(secret);
+    expect(matched.tier).toBe("prioid");
+    expect(matched.note).not.toContain("prioid");
   });
 
   test("api-key arm: the reason is that no subscription account signed", () => {
@@ -278,6 +279,59 @@ describe("step 5s on cx@ with catalog speed unknown", () => {
     } finally {
       logSpy.mockRestore();
     }
+  });
+
+  test("a memoized tier id no lease holds (an old token) reaches neither the 400 nor the log", async () => {
+    const oldToken = `old_${crypto.randomUUID().replaceAll("-", "").slice(0, 22)}`;
+    const calls = upstream("some other failure", {
+      models: modelsBody.models.map((m: any) => ({
+        ...m,
+        service_tiers: [{ id: oldToken, name: "Turbo" }],
+      })),
+    });
+    const lines: string[] = [];
+    const logSpy = spyOn(logger, "log").mockImplementation((message: string) => {
+      lines.push(redactSigningValues(message));
+    });
+    try {
+      for (let n = 0; n < 2; n++) {
+        const h = handler("gpt-6.1-sol");
+        const refused = await wireMarkerContext.run({ spec: "cx@gpt-6.1-sol", speed: "fast" }, () =>
+          send(h)
+        );
+        expect(refused.status).toBe(400);
+        const body = await refused.text();
+        expect(body).toContain("is not offered");
+        expect(body).not.toContain(oldToken);
+      }
+      expect(lines.filter((line) => line.includes("is not offered"))).toHaveLength(2);
+      for (const line of lines) expect(line).not.toContain(oldToken);
+      expect(calls).toHaveLength(0);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  test("an applied tier is sent upstream but named in no log line", async () => {
+    const tierId = `tier_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const calls = upstream("some other failure", {
+      models: modelsBody.models.map((m: any) => ({
+        ...m,
+        service_tiers: [{ id: tierId, name: "Fast" }],
+      })),
+    });
+    const lines: string[] = [];
+    const logSpy = spyOn(logger, "log").mockImplementation((message: string) => {
+      lines.push(message);
+    });
+    try {
+      await send(handler("gpt-6.1-sol"), { speed: "fast" });
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(calls[0].service_tier).toBe(tierId);
+    expect(lines.some((line) => line.includes("speed fast"))).toBe(true);
+    for (const line of lines) expect(line).not.toContain(tierId);
   });
 
   test("a catalog answer wins: speed rejected is never overlaid", async () => {
