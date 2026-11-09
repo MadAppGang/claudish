@@ -295,6 +295,47 @@ describe("custom-endpoints-loader", () => {
       });
     });
 
+    test.each([
+      ["simple", { kind: "simple", url: "https://p.invalid/v1", format: "openai" }],
+      [
+        "complex chat",
+        {
+          kind: "complex",
+          displayName: "P",
+          transport: "openai",
+          baseUrl: "https://p.invalid",
+          apiPath: "/v1/chat/completions",
+        },
+      ],
+      [
+        "complex responses",
+        {
+          kind: "complex",
+          displayName: "P",
+          transport: "openai",
+          baseUrl: "https://p.invalid",
+          apiPath: "/v1/responses",
+          wire: { api: "responses" },
+        },
+      ],
+    ])(
+      "a %s endpoint with a modelPrefix declares no discovery; without one it does",
+      (_label, entry) => {
+        loadCustomEndpoints(
+          makeConfig({
+            prefixed: { ...entry, apiKey: "sk-fake-key", modelPrefix: "gpt-" },
+            plain: { ...entry, apiKey: "sk-fake-key" },
+          })
+        );
+
+        expect(getRuntimeProviders().get("prefixed")).toBeDefined();
+        expect(getRuntimeProviders().get("prefixed")?.modelDiscovery).toBeUndefined();
+        expect(getRuntimeProviders().get("plain")?.modelDiscovery?.format).toBe(
+          "openai-models-list"
+        );
+      }
+    );
+
     test("complex openai endpoint with no apiPath: the default path's sibling", () => {
       loadCustomEndpoints(
         makeConfig({

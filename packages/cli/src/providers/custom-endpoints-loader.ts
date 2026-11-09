@@ -288,8 +288,15 @@ export const CUSTOM_ENDPOINT_TIER: RouteTier = "gateway";
  */
 function openaiModelsDiscovery(
   wireFormat: string,
-  apiPath: string
+  apiPath: string,
+  modelPrefix: string | undefined
 ): ModelDiscoveryDescriptor | undefined {
+  // A discovered id is a wire id, and every reader of the list (picker,
+  // availability, context window, probe pick) uses it as the name after
+  // `endpoint@`. With a `modelPrefix` the handler sends `modelPrefix + name`,
+  // so a listed id is not a callable name and those readers would disagree
+  // with the handler. Such an endpoint gets no discovery: its names are typed.
+  if (modelPrefix) return undefined;
   // The Chat Completions and the Responses API sit beside the same `/models`.
   const api = ["/chat/completions", "/responses"].find((suffix) => apiPath.endsWith(suffix));
   if (wireFormat !== "openai" || !api) return undefined;
@@ -338,7 +345,7 @@ function buildProviderDefinition(
       // and then demanded a key anyway. Bearer stays the DEFAULT (that is what
       // every simple endpoint got before), but a declared scheme now survives.
       authScheme: ep.authScheme ?? "bearer",
-      modelDiscovery: openaiModelsDiscovery(ep.format, "/chat/completions"),
+      modelDiscovery: openaiModelsDiscovery(ep.format, "/chat/completions", ep.modelPrefix),
     };
   }
 
@@ -363,7 +370,7 @@ function buildProviderDefinition(
     description: ovr?.description ?? `Custom endpoint: ${ep.displayName}`,
     headers: ep.headers,
     authScheme: ep.authScheme ?? "bearer",
-    modelDiscovery: openaiModelsDiscovery(ep.transport, apiPath),
+    modelDiscovery: openaiModelsDiscovery(ep.transport, apiPath, ep.modelPrefix),
   };
 }
 
