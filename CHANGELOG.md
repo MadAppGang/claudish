@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.18.1] - 2026-11-09
+
+### Bug Fixes
+
+- limit the forwarded request to Claude Code's measured fields *(native)* ([`8f5de57`](https://github.com/MadAppGang/claudish/commit/8f5de57fdbc41a081415080188f5475de1fe944f))
+- forward only Claude Code's own headers to api.anthropic.com *(native)* ([`59d9554`](https://github.com/MadAppGang/claudish/commit/59d9554d2bb5307dd0ddaf97fe3c9ab3b4e9a089))
+- send terminateChildTree's SIGKILL to a non-detached child *(runner)* ([`8304c29`](https://github.com/MadAppGang/claudish/commit/8304c29c6fc3adea96f26148a1fd57814ca704be))
+- forward Claude Code's headers, query and body bytes as sent *(native)* ([`a9910a3`](https://github.com/MadAppGang/claudish/commit/a9910a392fb107f60efb84607c05751dbddf0bc8))
+- wait for Claude Code to exit before exiting on a signal *(runner)* ([`7380b83`](https://github.com/MadAppGang/claudish/commit/7380b8377067c2fd661dc05b874a8222fe8a3252))
+- drop /models service tiers carrying the signing token *(openai-codex)* ([`5860a36`](https://github.com/MadAppGang/claudish/commit/5860a368f432a80206bbee4031149640ffabf50e))
+
+### Documentation
+
+- update CHANGELOG.md for v14.18.0([`90f56fd`](https://github.com/MadAppGang/claudish/commit/90f56fd0359e11f7461a4914f4e757cc17a600c8))
+
 ## [14.18.0] - 2026-11-09
 
 ### Bug Fixes
