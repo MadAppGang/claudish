@@ -2043,6 +2043,10 @@ export async function runClaudeWithProxy(
     tokenFilePath,
   } = createTempSettingsFile(modelId ?? "default", port, proxyAuthMode, userStatusLineCommand);
 
+  // From the moment the file exists: a signal before this line would leave it behind
+  // and end the process without the caller's teardown. Claude Code is attached below.
+  const signalShutdown = setupSignalHandlers(tempSettingsPath, config.quiet, onCleanup);
+
   // Merge user's --settings into our temp settings file if user provided one
   mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine, proxyAuthMode);
 
@@ -2403,6 +2407,15 @@ export async function runClaudeWithProxy(
 
   // Find Claude binary (supports CLAUDE_PATH, local installation, and global PATH)
   const claudeBinary = await findClaudeBinary();
+
+  // The last `await` before Claude Code starts, on either spawn path below, so a signal
+  // handler can run only up to here. One that has run means nothing is to be started.
+  const stoppedBeforeSpawn = signalShutdownExitCode();
+  if (stoppedBeforeSpawn !== null) {
+    signalShutdown.removeSettingsFile();
+    return stoppedBeforeSpawn;
+  }
+
   if (!claudeBinary) {
     console.error("Error: Claude Code CLI not found");
     console.error("Install it from: https://claude.com/claude-code");
@@ -2562,6 +2575,7 @@ export async function runClaudeWithProxy(
         stdio,
         shell: needsShell,
       });
+  signalShutdown.attachClaudeCode(proc);
 
   if (wrap) {
     wrap.watch(proc);
@@ -2676,9 +2690,6 @@ export async function runClaudeWithProxy(
       }
     });
   }
-
-  // Handle process termination signals (includes cleanup)
-  const signalShutdown = setupSignalHandlers(proc, tempSettingsPath, config.quiet, onCleanup);
 
   // Wait for claude to exit.
   //
@@ -2810,6 +2821,11 @@ export function signalShutdownExitCode(): number | null {
 
 /** A signal shutdown, shared between the signal handlers and the launcher's exit path. */
 interface SignalShutdown {
+  /**
+   * Hands the handlers the Claude Code process to stop. Call it right after `spawn`,
+   * with no `await` between them, so no signal can find a live child unattached.
+   */
+  attachClaudeCode(child: ChildProcess): void;
   /** Removes the settings file, once however many paths reach it. */
   removeSettingsFile(): void;
   /**
@@ -2821,7 +2837,9 @@ interface SignalShutdown {
 }
 
 /**
- * Installs the SIGINT / SIGTERM / SIGHUP handlers that stop Claude Code.
+ * Installs the SIGINT / SIGTERM / SIGHUP handlers that stop Claude Code. They are
+ * installed before it is spawned: a signal with no child attached records the exit
+ * code and arms the deadline, and the launcher then does not spawn.
  *
  * The handlers signal Claude Code, wait (bounded) for it to exit, and SIGKILL it
  * if it did not. They do not exit: Claude Code's `exit` event lets the launcher
@@ -2836,7 +2854,6 @@ interface SignalShutdown {
  * and changes nothing.
  */
 export function setupSignalHandlers(
-  proc: ChildProcess,
   tempSettingsPath: string,
   quiet: boolean,
   onCleanup?: () => void
@@ -2848,6 +2865,7 @@ export function setupSignalHandlers(
     : ["SIGINT", "SIGTERM", "SIGHUP"];
 
   let shuttingDown: NodeJS.Signals | null = null;
+  let claudeCode: ChildProcess | null = null;
   let claudeCodeStopped: Promise<void> = Promise.resolve();
   let settingsFileRemoved = false;
   const removeSettingsFile = (): void => {
@@ -2860,7 +2878,7 @@ export function setupSignalHandlers(
     }
   };
 
-  const stopClaudeCode = async (): Promise<void> => {
+  const stopClaudeCode = async (proc: ChildProcess): Promise<void> => {
     try {
       proc.kill("SIGTERM");
       if (await waitForExit(proc, SIGNAL_CHILD_EXIT_GRACE_MS)) return;
@@ -2945,11 +2963,17 @@ export function setupSignalHandlers(
         // on stdout, which may carry Claude Code's machine-readable output.
         console.error(`\n[claudish] Received ${signal}, shutting down...`);
       }
-      claudeCodeStopped = stopClaudeCode();
+      if (claudeCode) claudeCodeStopped = stopClaudeCode(claudeCode);
     });
   }
 
-  return { removeSettingsFile, claudeCodeStopped: () => claudeCodeStopped };
+  return {
+    attachClaudeCode: (child) => {
+      claudeCode = child;
+    },
+    removeSettingsFile,
+    claudeCodeStopped: () => claudeCodeStopped,
+  };
 }
 
 /**
