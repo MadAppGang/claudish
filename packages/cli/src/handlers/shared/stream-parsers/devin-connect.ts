@@ -11,7 +11,10 @@
  * retryable-vs-terminal while the status is still ours to choose. By the time
  * this parser runs the head is already clean, so an error frame here is a
  * mid-stream fault: it is reported through `onApiError` and ends the turn as an
- * `error` event rather than a successful `end_turn`.
+ * `error` event rather than a successful `end_turn`. The event's type comes from
+ * the same `classifyDevinStreamError` verdict the sniffer uses: a terminal code
+ * is `invalid_request_error`, a retryable one `overloaded_error`. A read failure
+ * with no error frame has no code and stays `api_error`.
  *
  * ## Response fields (VERIFIED live — see protocol-spec.md)
  *
@@ -58,6 +61,7 @@ import {
   readVarintValue,
 } from "../../../providers/devin/proto-codec.js";
 import { redactForClient } from "../../../redact.js";
+import { classifyDevinStreamError } from "../devin-stream-head-sniffer.js";
 import { messageStartUsage } from "./message-start-usage.js";
 import {
   type ParserSource,
@@ -228,7 +232,15 @@ export function createDevinConnectStream(
         call.closed = true;
       };
 
-      const finalize = (reason: "done" | "error", errorMessage?: string) => {
+      /**
+       * `errorFrame` is the code and message of a Devin error frame; it is absent
+       * when the stream failed without one (a read failure, no body).
+       */
+      const finalize = (
+        reason: "done" | "error",
+        errorMessage?: string,
+        errorFrame?: { code: string; message: string }
+      ) => {
         if (finalized) return;
         finalized = true;
 
@@ -267,10 +279,15 @@ export function createDevinConnectStream(
 
         if (reason === "error") {
           log(`[DevinConnect] stream error: ${errorMessage}`);
+          const errorType = !errorFrame
+            ? "api_error"
+            : classifyDevinStreamError(errorFrame.code, errorFrame.message) === "terminal"
+              ? "invalid_request_error"
+              : "overloaded_error";
           send("error", {
             type: "error",
             error: {
-              type: "api_error",
+              type: errorType,
               message: errorMessage === undefined ? errorMessage : redactForClient(errorMessage),
             },
           });
@@ -491,7 +508,7 @@ export function createDevinConnectStream(
                 // Not JSON — surface the body verbatim rather than inventing one.
               }
               opts.onApiError?.(code, message);
-              finalize("error", `${code}: ${message}`);
+              finalize("error", `${code}: ${message}`, { code, message });
               return;
             }
             readMessageFrame(frame.payload);
