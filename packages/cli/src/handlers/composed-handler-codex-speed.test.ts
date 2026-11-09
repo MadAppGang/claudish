@@ -3,9 +3,12 @@
  * `speed: unknown`, decided from the account's dynamic models catalog.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Hono } from "hono";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
+import * as discovery from "../providers/codex-models-discovery.js";
 import { clearCodexModelsMemo } from "../providers/codex-models-discovery.js";
 import { decideCodexSpeed, findCodexServiceTier } from "../providers/codex-service-tier.js";
 import { resolveConnection } from "../providers/connection-resolver.js";
@@ -206,6 +209,38 @@ describe("step 5s on cx@ with catalog speed unknown", () => {
     expect(refused.status).toBe(400);
     expect(await refused.text()).toContain("(rejected)");
     expect(calls).toHaveLength(1);
+  });
+
+  test("/models unanswered: the Codex CLI cache never decides the tier", async () => {
+    const codexHome = mkdtempSync(join(tmpdir(), "claudish-speed-cli-cache-"));
+    writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify(modelsBody));
+    const real = discovery.getCodexModelInfo;
+    const lookup = spyOn(discovery, "getCodexModelInfo").mockImplementation(
+      (slug, binding, accountKey, opts) => real(slug, binding, accountKey, { ...opts, codexHome })
+    );
+    const calls: any[] = [];
+    globalThis.fetch = (async (input: any, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/codex/models")) throw new TypeError("offline");
+      calls.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ error: { message: "x" } }), { status: 400 });
+    }) as typeof fetch;
+    try {
+      await send(handler("gpt-6.1-sol"), { speed: "fast" });
+      expect(lookup).toHaveBeenCalled();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).not.toHaveProperty("service_tier");
+
+      const h = handler("gpt-6.1-sol");
+      const refused = await wireMarkerContext.run({ spec: "cx@gpt-6.1-sol", speed: "fast" }, () =>
+        send(h)
+      );
+      expect(refused.status).toBe(400);
+      expect(await refused.text()).toContain("did not answer");
+    } finally {
+      lookup.mockRestore();
+      rmSync(codexHome, { recursive: true, force: true });
+    }
   });
 
   test("--model-params service_tier wins and is never dropped by recovery", async () => {

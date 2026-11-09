@@ -2068,7 +2068,9 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 5s. Codex speed (deferred at 5w): the tier the account's dynamic models
-    // catalog lists for this model, written at `service_tier`. Before 5d, so
+    // catalog lists for this model, written at `service_tier`. Only the signing
+    // account's own answer counts (`accountOnly`): the Codex CLI's cache is not
+    // keyed by account, so it never proves this account's entitlement. Before 5d, so
     // both code-mode shapes are built from a payload that already carries it.
     // A non-explicit tier (Claude Code's `/fast`) is recoverable: a 400 naming
     // `service_tier` resends without it, like a borrowed field.
@@ -2080,7 +2082,9 @@ export class ComposedHandler implements ModelHandler {
       const modelInfo = !subscription
         ? ("unsigned" as const)
         : binding && accountKey
-          ? await getCodexModelInfo(String(requestPayload?.model ?? ""), binding, accountKey)
+          ? await getCodexModelInfo(String(requestPayload?.model ?? ""), binding, accountKey, {
+              accountOnly: true,
+            })
           : undefined;
       const outcome = decideCodexSpeed(codexSpeed, modelInfo);
       const where = this.wireWhere();
