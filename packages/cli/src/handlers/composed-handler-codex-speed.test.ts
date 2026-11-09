@@ -17,6 +17,11 @@ import type { ProviderTransport } from "../providers/transport/types.js";
 import { wireMarkerContext } from "../providers/wire-markers.js";
 import { redactSigningValues } from "../redact.js";
 import { ComposedHandler, _resetFastIgnoredNotices } from "./composed-handler.js";
+import {
+  SIGNING_SECRETS_KEY,
+  createSigningSecrets,
+  releaseWhenBodyEnds,
+} from "./shared/call-context.js";
 import type { ModelHandler } from "./types.js";
 
 const cachePath = new URL(
@@ -188,6 +193,28 @@ function send(h: ModelHandler, extra: Record<string, unknown> = {}) {
   return app.request("/", { method: "POST" });
 }
 
+/**
+ * `send` with the session app's lease lifecycle: a lease installed for the
+ * request and released once its body has been read, so a value it signed
+ * with is no longer redacted afterwards.
+ */
+function sendLeased(h: ModelHandler, extra: Record<string, unknown> = {}) {
+  const app = new Hono();
+  app.post("/", async (c) => {
+    const secrets = createSigningSecrets();
+    c.set(SIGNING_SECRETS_KEY as never, secrets as never);
+    const response = await h.handle(c, {
+      model: "x",
+      stream: true,
+      max_tokens: 1000,
+      messages: [{ role: "user", content: "hello" }],
+      ...extra,
+    });
+    return releaseWhenBodyEnds(response, () => secrets.lease.release());
+  });
+  return app.request("/", { method: "POST" });
+}
+
 describe("step 5s on cx@ with catalog speed unknown", () => {
   test("Claude Code /fast sends the account's priority tier", async () => {
     const calls = upstream("some other failure");
@@ -310,6 +337,52 @@ describe("step 5s on cx@ with catalog speed unknown", () => {
     } finally {
       logSpy.mockRestore();
     }
+  });
+
+  test("a tier id that was the signing token when /models answered is never sent after a refresh", async () => {
+    const tokenA = accessToken;
+    const calls: any[] = [];
+    globalThis.fetch = (async (input: any, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/codex/models")) {
+        return Response.json({
+          models: modelsBody.models.map((m: any) => ({
+            ...m,
+            service_tiers: [{ id: tokenA, name: "Fast" }],
+          })),
+        });
+      }
+      const body = JSON.parse(String(init?.body));
+      calls.push(body);
+      const message = `Invalid service_tier: ${body.service_tier ?? "none"}`;
+      return new Response(JSON.stringify({ error: { message } }), { status: 400 });
+    }) as typeof fetch;
+    const lines: string[] = [];
+    const logSpy = spyOn(logger, "log").mockImplementation((message: string) => {
+      lines.push(redactSigningValues(message));
+    });
+    const bodies: string[] = [];
+    let tokenB = "";
+    try {
+      const h = handler("gpt-6.1-sol");
+      bodies.push(await (await sendLeased(h, { speed: "fast" })).text());
+      tokenB = `tok_${crypto.randomUUID().replaceAll("-", "").slice(0, 22)}`;
+      accessToken = tokenB;
+      const explicit = await wireMarkerContext.run({ spec: "cx@gpt-6.1-sol", speed: "fast" }, () =>
+        sendLeased(h)
+      );
+      bodies.push(await explicit.text());
+      bodies.push(await (await sendLeased(h, { speed: "fast" })).text());
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(tokenB).not.toBe(tokenA);
+    for (const text of [...bodies, ...lines]) {
+      expect(text).not.toContain(tokenA);
+      expect(text).not.toContain(tokenB);
+    }
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) expect(call.service_tier).not.toBe(tokenA);
   });
 
   test("an applied tier is sent upstream but named in no log line", async () => {

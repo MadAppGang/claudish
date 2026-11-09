@@ -14,6 +14,8 @@
  *    (`code-mode/ids.ts`), 1 h TTL, single-flight per account;
  *  - never persisted;
  *  - stale-while-error: a failed refetch keeps the last good value (logged).
+ *  - a service tier carrying the credential that signed the fetch is dropped
+ *    before the answer is memoised (`dropCredentialTiers`).
  *
  * Discovery is NOT an auth site. It never decides a status and never throws:
  * every failure, timeout or unrecognised body resolves to `undefined`
@@ -28,7 +30,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { credentialValuesFromRequest } from "../handlers/shared/call-context.js";
 import { log } from "../logger.js";
+import { containsExactValue } from "../redact.js";
 import type { AuthBinding } from "./transport/types.js";
 
 /** One model's dispatch flags, as `/models` publishes them. */
@@ -199,6 +203,40 @@ function toModelTable(body: unknown): ModelTable | undefined {
   return table;
 }
 
+/**
+ * Remove from `table` every service tier whose id or name contains one of
+ * `credentialValues`, and every default tier that does; returns how many.
+ *
+ * A tier id is memoised for an hour across token refreshes and sent upstream
+ * at `service_tier` by later requests. Those requests' signing leases hold
+ * only the credential that signs THEM, so a tier carrying the credential that
+ * signed this fetch would, once echoed in an upstream error, reach the log and
+ * Claude Code unredacted. Such a tier is never a real one, so it is dropped
+ * here, while the values are still known, instead of being retained.
+ */
+function dropCredentialTiers(table: ModelTable, credentialValues: string[]): number {
+  let dropped = 0;
+  for (const info of table.values()) {
+    if (info.serviceTiers) {
+      const kept = info.serviceTiers.filter(
+        (tier) =>
+          !containsExactValue(tier.id, credentialValues) &&
+          !containsExactValue(tier.name, credentialValues)
+      );
+      dropped += info.serviceTiers.length - kept.length;
+      info.serviceTiers = kept;
+    }
+    if (
+      info.defaultServiceTier !== undefined &&
+      containsExactValue(info.defaultServiceTier, credentialValues)
+    ) {
+      delete info.defaultServiceTier;
+      dropped++;
+    }
+  }
+  return dropped;
+}
+
 /** The binding's headers with `accept: application/json` (any other-case Accept dropped). */
 function discoveryHeaders(binding: AuthBinding): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -235,6 +273,13 @@ async function fetchModelTable(
     if (!table) {
       log("[CodexDiscovery] GET /models body has no models array");
       return undefined;
+    }
+    const dropped = dropCredentialTiers(
+      table,
+      credentialValuesFromRequest(binding.auth?.headers, binding.auth?.endpoint)
+    );
+    if (dropped > 0) {
+      log(`[CodexDiscovery] dropped ${dropped} service tier(s) that contain a credential value`);
     }
     log(`[CodexDiscovery] GET /models: ${table.size} model(s)`);
     return table;

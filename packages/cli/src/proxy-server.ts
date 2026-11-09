@@ -26,6 +26,7 @@ import { createHandlerSet } from "./handlers/handler-set.js";
 import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
+import { recordInboundBody } from "./handlers/shared/anthropic-forward.js";
 import {
   SIGNING_SECRETS_KEY,
   addSigningSecrets,
@@ -1148,7 +1149,12 @@ export async function createProxyServer(
     // that 500 is marked `UNHANDLED_ERROR_HEADER`, like `app.onError`'s.
     let handlerThrew = false;
     try {
-      const body = await c.req.json();
+      // The body text is recorded with its parse before anything reads or
+      // changes the parsed object, so the native passthrough can send Claude
+      // Code's own bytes while the payload is still what they parse to.
+      const raw = await c.req.text();
+      const body = JSON.parse(raw);
+      recordInboundBody(c, raw, body);
       // Request-metadata trace (debug log only — the [RequestMeta] prefix is
       // NOT structural-log-worthy, so it never reaches the always-on redacted
       // log). Captures the three fields claudish otherwise never reads, to

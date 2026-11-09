@@ -104,3 +104,95 @@ describe.skipIf(process.platform === "win32")("claudish sent SIGTERM on its own"
     }
   }, 30_000);
 });
+
+/** Whether `pid` names a live process. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function killStandIn(pidFile: string): void {
+  try {
+    process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+  } catch {
+    // Stopped, as it should have been.
+  }
+}
+
+describe.skipIf(process.platform === "win32")("claudish's shutdown on a signal", () => {
+  // A stand-in whose TERM trap takes a second to finish, then marks that it did.
+  const slowTrap = [
+    'echo "$$" > "$TMPDIR/claude.pid"',
+    'trap \'echo TERM >> "$TMPDIR/claude.log"; sleep 1; touch "$TMPDIR/claude.finished"; exit 0\' TERM',
+    "while :; do sleep 1; done",
+  ].join("\n");
+
+  test("exits only after Claude Code has finished exiting, with 143", async () => {
+    const run = runOver(slowTrap);
+    const pidFile = join(run.dir, "claude.pid");
+    const finished = join(run.dir, "claude.finished");
+    const atExit: { finished?: boolean } = {};
+    run.proc.on("exit", () => {
+      atExit.finished = existsSync(finished);
+    });
+    await waitFor("Claude Code to start", () => existsSync(pidFile));
+    try {
+      run.proc.kill("SIGTERM");
+      expect(await run.exit).toBe(143);
+      expect(atExit.finished).toBe(true);
+    } finally {
+      killStandIn(pidFile);
+    }
+  }, 30_000);
+
+  test("SIGKILLs a Claude Code that ignores SIGTERM after the bound, and still exits 143", async () => {
+    const { SIGNAL_CHILD_EXIT_GRACE_MS } = await import("./claude-runner.js");
+    const run = runOver(
+      ['echo "$$" > "$TMPDIR/claude.pid"', "trap '' TERM", "while :; do sleep 1; done"].join("\n")
+    );
+    const pidFile = join(run.dir, "claude.pid");
+    await waitFor("Claude Code to start", () => existsSync(pidFile));
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    try {
+      const sentAt = Date.now();
+      run.proc.kill("SIGTERM");
+      expect(await run.exit).toBe(143);
+      const elapsed = Date.now() - sentAt;
+      expect(elapsed).toBeGreaterThanOrEqual(SIGNAL_CHILD_EXIT_GRACE_MS - 100);
+      expect(elapsed).toBeLessThan(SIGNAL_CHILD_EXIT_GRACE_MS + 1_500);
+      expect(alive(pid)).toBe(false);
+    } finally {
+      killStandIn(pidFile);
+    }
+  }, 30_000);
+
+  test("a second signal during shutdown neither signals Claude Code again nor exits early", async () => {
+    const run = runOver(slowTrap);
+    const pidFile = join(run.dir, "claude.pid");
+    const log = join(run.dir, "claude.log");
+    const finished = join(run.dir, "claude.finished");
+    const atExit: { finished?: boolean } = {};
+    run.proc.on("exit", () => {
+      atExit.finished = existsSync(finished);
+    });
+    await waitFor("Claude Code to start", () => existsSync(pidFile));
+    try {
+      run.proc.kill("SIGTERM");
+      await waitFor("Claude Code to receive the SIGTERM", () => existsSync(log));
+      run.proc.kill("SIGINT");
+      expect(await run.exit).toBe(143);
+      expect(atExit.finished).toBe(true);
+      expect(readFileSync(log, "utf8")).toBe("TERM\n");
+      const settings = readdirSync(join(run.home, ".claudish")).filter((name) =>
+        name.startsWith("settings-")
+      );
+      expect(settings).toEqual([]);
+    } finally {
+      killStandIn(pidFile);
+    }
+  }, 30_000);
+});
