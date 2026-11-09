@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.18.3] - 2026-11-09
+
+### Bug Fixes
+
+- check pid and start time before killing descendants *(runner)* ([`34ea614`](https://github.com/MadAppGang/claudish/commit/34ea6141f73b0944bcbd8e76ba4698194c68fd81))
+- require a version after sk-ant-oat in the login bearer *(native)* ([`eb52924`](https://github.com/MadAppGang/claudish/commit/eb52924df6e3be0d805306f972cd96f4320c722d))
+- SIGKILL Claude Code's descendants on a signal shutdown *(runner)* ([`c31ad23`](https://github.com/MadAppGang/claudish/commit/c31ad238dfdf994637948b6b46bcd16d636c563c))
+- keep sessionEnd inside the signal shutdown deadline *(runner)* ([`c1eb9d1`](https://github.com/MadAppGang/claudish/commit/c1eb9d1d2d817035ca4120a26c630fa979f887b1))
+- drop x-api-key when a Claude login bearer arrives *(native)* ([`baf5c62`](https://github.com/MadAppGang/claudish/commit/baf5c6255d9395950326f535d4c3ade08b84ff34))
+- run proxy shutdown and session summary on a signal *(runner)* ([`477aa1e`](https://github.com/MadAppGang/claudish/commit/477aa1e312e729359331280f486b882001274e8a))
+- forward ?beta=true and raw body on count_tokens *(native)* ([`0647d79`](https://github.com/MadAppGang/claudish/commit/0647d798a3364a84c38c610d9c122fc8063ed162))
+
+### Documentation
+
+- update CHANGELOG.md for v14.18.2([`3d7fe93`](https://github.com/MadAppGang/claudish/commit/3d7fe93b66891827c2552f6645e4c0a631b91258))
+
 ## [14.18.2] - 2026-11-09
 
 ### Bug Fixes
