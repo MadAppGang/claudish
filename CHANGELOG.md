@@ -2,6 +2,44 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.17.0] - 2026-11-09
+
+### Bug Fixes
+
+- name no upstream tier id in /fast notes *(openai-codex)* ([`6cbd7a3`](https://github.com/MadAppGang/claudish/commit/6cbd7a34d5e9d9f405522709d99b3f273328bcb2))
+- skip model discovery for endpoints with a modelPrefix *(discovery)* ([`abea059`](https://github.com/MadAppGang/claudish/commit/abea059875a698187bc81aae077ddda9131166af))
+- report a modelPrefix that matches no discovered id *(discovery)* ([`ad99acc`](https://github.com/MadAppGang/claudish/commit/ad99accdd979ff3a4a125cb605ea656c63a18936))
+- keep a discovered id whole for the chat filter *(picker)* ([`3bc11e1`](https://github.com/MadAppGang/claudish/commit/3bc11e1a0d8a4676f6bdec261b243bcf712fed88))
+- register signing values before the /fast decision *(openai-codex)* ([`6e2bf97`](https://github.com/MadAppGang/claudish/commit/6e2bf97216fd0d16db32e3b49f02d0625a6acca5))
+- list models for Responses-API custom endpoints *(discovery)* ([`a9a60ea`](https://github.com/MadAppGang/claudish/commit/a9a60ead560f40eb42af882c5fd2a1faf2121e0b))
+- strip a custom endpoint's modelPrefix from discovered ids *(picker)* ([`efad34f`](https://github.com/MadAppGang/claudish/commit/efad34fa38e35b1a9024d499b5ce700cbc31d422))
+- keep upstream tier ids out of the /fast refusal *(openai-codex)* ([`6a10a88`](https://github.com/MadAppGang/claudish/commit/6a10a88fbb634a73487220ba644b2345ce3bb560))
+- stop the metered /fast notice advising #fast *(openai-codex)* ([`b348cc6`](https://github.com/MadAppGang/claudish/commit/b348cc61c653746a48c3be70bc20be04dfe37872))
+- decide /fast only from the signing account's models *(openai-codex)* ([`c9303e2`](https://github.com/MadAppGang/claudish/commit/c9303e21ddc4e13361a6fe2df15fc649ecb27a58))
+- apply Claude Code /fast only to subscription-signed requests *(effort)* ([`ef7d5c7`](https://github.com/MadAppGang/claudish/commit/ef7d5c7e9743de4f66f60351380bd05651ec79ae))
+- match the Codex Fast service tier by id or name only *(effort)* ([`0238162`](https://github.com/MadAppGang/claudish/commit/02381628a7cd6c0871281be786e75495e7552dbc))
+- report CLAUDE_CODE_MODEL_CAPABILITIES removed only when stripped *(gates)* ([`9c0e0f4`](https://github.com/MadAppGang/claudish/commit/9c0e0f46367a47e186aae456a80a4e092c5c480e))
+- honour the catalog URL setting on every models-index endpoint *(catalog)* ([`fd85cc3`](https://github.com/MadAppGang/claudish/commit/fd85cc335fb511e9e8385bbed29c89829120898c))
+- stop reporting no-credentials for authScheme "none" *(discovery)* ([`2e2352d`](https://github.com/MadAppGang/claudish/commit/2e2352dc48f7c1b2488c21d0b7f712508566e8d3))
+- remove inherited host-routing vars on native launches *(runner)* ([`0df9362`](https://github.com/MadAppGang/claudish/commit/0df93620a991d128c77add81795ab3437d987278))
+- keep a user's settings env off the sessions claudish routes *(runner)* ([`4c120da`](https://github.com/MadAppGang/claudish/commit/4c120da6be48576dddcd6ba19e4b0cbe0aaee5df))
+
+### Documentation
+
+- document /fast, its launch gates and the Codex service tier *(wire)* ([`d4c529d`](https://github.com/MadAppGang/claudish/commit/d4c529db699e07527df8f4203f5fc47a0f83fb65))
+- update CHANGELOG.md for v14.16.2([`f9c7bc2`](https://github.com/MadAppGang/claudish/commit/f9c7bc230ceda736ef47bd0cfafb576f9ef4af03))
+- call the probe endpoint's models probe picks, not a roster *(catalog)* ([`01889c1`](https://github.com/MadAppGang/claudish/commit/01889c168bb556d6265722dfd6a79bf7e8b4b6c7))
+- document CLAUDISH_PROBE_MODELS_URL beside CLAUDISH_CATALOG_URL *(catalog)* ([`b14b890`](https://github.com/MadAppGang/claudish/commit/b14b8901706415365f6d5c4faf0056273eabfc3b))
+- correct what a custom endpoint's models field does *(endpoints)* ([`6318ff3`](https://github.com/MadAppGang/claudish/commit/6318ff368e8358b4d33d28832f9a4ee8f5cb7fb8))
+
+### New Features
+
+- open Claude Code's fast mode gates in pure proxy mode *(launch)* ([`dcdcd20`](https://github.com/MadAppGang/claudish/commit/dcdcd20240c034867fecd6759db89e4d64ce0233))
+- send the /models service tier for #fast and /fast *(openai-codex)* ([`b4c56e4`](https://github.com/MadAppGang/claudish/commit/b4c56e4e71837b0140892a2f3309a50b89153cab))
+- read Claude Code's speed field as a non-explicit speed choice *(wire)* ([`c26bacd`](https://github.com/MadAppGang/claudish/commit/c26bacde86e4d6e9ea906aecb7c71a10906f1109))
+- keep service tiers from the Codex models endpoint *(discovery)* ([`24049b1`](https://github.com/MadAppGang/claudish/commit/24049b14ae5ab52302b756279eb4fbeda96a3ce1))
+- list a custom endpoint's own models in the picker *(discovery)* ([`13e3730`](https://github.com/MadAppGang/claudish/commit/13e37308ad3e2f050956d0def31a5080d6a00684))
+
 ## [14.16.2] - 2026-11-09
 
 ### Bug Fixes
