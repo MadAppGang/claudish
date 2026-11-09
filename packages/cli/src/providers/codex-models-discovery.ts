@@ -112,6 +112,13 @@ export interface CodexDiscoveryOptions {
   now?: () => number;
   /** Test seam: the Codex CLI home holding `models_cache.json`. Default `~/.codex`. */
   codexHome?: string;
+  /**
+   * Answer only from this account's own `/models` (live or memoised), never
+   * from `~/.codex/models_cache.json`: that cache is keyed by model slug, not
+   * by account, so it can hold another account's answer. For fields that
+   * decide entitlement, such as `serviceTiers`.
+   */
+  accountOnly?: boolean;
 }
 
 /** Drop every memoised answer (tests; a changed login keys a new entry anyway). */
@@ -278,7 +285,7 @@ async function waitAtMost<T>(p: Promise<T>, ms: number): Promise<T | "timeout"> 
 /**
  * The empty-memo path: start (or join) the fetch and wait at most `waitMs`,
  * unless a recent failure is still backing off. Without a live answer in time,
- * the Codex CLI's cache.
+ * the Codex CLI's cache (unless `accountOnly`).
  */
 async function firstAnswer(
   entry: MemoEntry,
@@ -299,7 +306,7 @@ async function firstAnswer(
       log(`[CodexDiscovery] ${slug}: /models not answered within ${waitMs} ms`);
     }
   }
-  return slug ? fromModelsCache(slug, opts.codexHome) : undefined;
+  return slug && !opts.accountOnly ? fromModelsCache(slug, opts.codexHome) : undefined;
 }
 
 /** The Codex CLI's cached answer for `slug`, when this process has no live one. */
@@ -333,7 +340,8 @@ export function prefetchCodexModels(
  *  - empty memo → the fetch is started (or joined) and awaited at most
  *    `waitMs` (default 2 s); past that, `undefined` now and the memo fills
  *    for the next request.
- * With no good live answer, `~/.codex/models_cache.json` is consulted.
+ * With no good live answer, `~/.codex/models_cache.json` is consulted, unless
+ * `opts.accountOnly`.
  * `undefined` = unknown. Never throws.
  */
 export async function getCodexModelInfo(

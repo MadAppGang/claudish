@@ -782,13 +782,20 @@ export class ComposedHandler implements ModelHandler {
   /**
    * Tell the user, once per model per process, that Claude Code's `/fast` was
    * not sent because the request is metered. Only stderr can say it: the
-   * request itself succeeds at standard speed.
+   * request itself succeeds at standard speed. `"catalog"`: the connection
+   * offers the speed, so `#fast` sends it at the metered price. `"codex"`: the
+   * speed comes from a subscription account's dynamic models catalog, so
+   * `#fast` would be refused; only a subscription-signed request gets it.
    */
-  private noticeFastIgnored(): void {
+  private noticeFastIgnored(source: "catalog" | "codex"): void {
     if (fastIgnoredNoticed.has(this.targetModel)) return;
     fastIgnoredNoticed.add(this.targetModel);
+    const advice =
+      source === "catalog"
+        ? "the fast tier is billed at a higher per-token price. Add #fast to the model spec to send it anyway."
+        : "the Codex fast tier is sent only on a request signed by a Codex subscription account.";
     logStderr(
-      `${this.targetModel}: Claude Code /fast ignored, the request is metered and the fast tier is billed at a higher per-token price. Add #fast to the model spec to send it anyway.`
+      `${this.targetModel}: Claude Code /fast ignored, the request is metered and ${advice}`
     );
   }
 
@@ -2011,7 +2018,7 @@ export class ComposedHandler implements ModelHandler {
         log(
           `[Wire] ${this.wireWhere()}: speed ${fastSpeed.value} (Claude Code /fast) not sent: the request is metered`
         );
-        if (wireSpeedOffered(wire.speed, fastSpeed.value)) this.noticeFastIgnored();
+        if (wireSpeedOffered(wire.speed, fastSpeed.value)) this.noticeFastIgnored("catalog");
       } else {
         const applied = applyWireSpeed(requestPayload, wire, fastSpeed);
         for (const note of applied.notes) log(`[Wire] ${this.wireWhere()}: ${note}`);
@@ -2068,31 +2075,43 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 5s. Codex speed (deferred at 5w): the tier the account's dynamic models
-    // catalog lists for this model, written at `service_tier`. Before 5d, so
+    // catalog lists for this model, written at `service_tier`. Only the signing
+    // account's own answer counts (`accountOnly`): the Codex CLI's cache is not
+    // keyed by account, so it never proves this account's entitlement. Before 5d, so
     // both code-mode shapes are built from a payload that already carries it.
     // A non-explicit tier (Claude Code's `/fast`) is recoverable: a 400 naming
     // `service_tier` resends without it, like a borrowed field.
     // On the api-key arm no account can be asked, and a `/fast` the user did
     // not name for this model is never billed per token (see 5f).
     if (codexSpeed) {
+      // The account's `/models` answer is upstream text that reaches the log and
+      // a 400 below, before `fetchHeaders` registers this request's signing
+      // values; register the binding's own credential values first, so an echo
+      // of them is redacted in both.
+      addSigningSecrets(
+        c,
+        credentialValuesFromRequest(binding?.auth?.headers, this.signedEndpoint(binding))
+      );
       const accountKey = accountKeyFromBinding(binding);
       const subscription = this.signedBilling(binding).subscription;
       const modelInfo = !subscription
         ? ("unsigned" as const)
         : binding && accountKey
-          ? await getCodexModelInfo(String(requestPayload?.model ?? ""), binding, accountKey)
+          ? await getCodexModelInfo(String(requestPayload?.model ?? ""), binding, accountKey, {
+              accountOnly: true,
+            })
           : undefined;
       const outcome = decideCodexSpeed(codexSpeed, modelInfo);
       const where = this.wireWhere();
       log(`[Wire] ${where}: ${outcome.note}`);
       if (!subscription && !codexSpeed.explicit && codexSpeed.value !== "standard") {
-        this.noticeFastIgnored();
+        this.noticeFastIgnored("codex");
       }
       if (outcome.refusal) {
         return c.json(
           wrapAnthropicError(
             400,
-            `claudish: ${outcome.refusal} (${where})`,
+            redactForClient(`claudish: ${outcome.refusal} (${where})`),
             "invalid_request_error"
           ),
           400 as any

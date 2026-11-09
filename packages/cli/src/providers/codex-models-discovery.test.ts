@@ -305,6 +305,21 @@ describe("T5 Codex /models discovery", () => {
     expect(readdirSync(home)).toEqual(before);
   });
 
+  test("accountOnly never answers from the CLI cache, which is not keyed by account", async () => {
+    writeFileSync(
+      join(home, "models_cache.json"),
+      JSON.stringify({ client_version: "0.161.0", models: captured.models })
+    );
+    const opts = options((async () => {
+      throw new TypeError("offline");
+    }) as unknown as typeof fetch);
+
+    expect(
+      await getCodexModelInfo(sol.slug, binding(), "key-a", { ...opts, accountOnly: true })
+    ).toBeUndefined();
+    expect(await getCodexModelInfo(sol.slug, binding(), "key-a", opts)).toEqual(expected);
+  });
+
   test("REQ-15 TEST-22 successful discovery never persists models to the injected home", async () => {
     expect(
       await getCodexModelInfo(

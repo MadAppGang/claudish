@@ -46,6 +46,11 @@ export function findCodexServiceTier(
  * Decide one request's `service_tier` from the account's `/models` entry.
  * `"unsigned"`: no subscription account signed the request (the api-key arm),
  * so there is no account whose dynamic models catalog could be asked.
+ *
+ * `note` and `refusal` name no tier id. An id is upstream text from a `/models`
+ * answer that may be memoised across a token refresh, so it can echo a value
+ * no current signing lease would redact; the id goes only into the request
+ * body, back to the host that listed it.
  */
 export function decideCodexSpeed(
   speed: { value: WireSpeed; explicit: boolean },
@@ -62,12 +67,12 @@ export function decideCodexSpeed(
   if (tier) {
     return {
       tier: tier.id,
-      note: `speed ${speed.value}: ${CODEX_SERVICE_TIER_POINTER} = "${tier.id}" (from the account's dynamic models catalog)`,
+      note: `speed ${speed.value}: ${CODEX_SERVICE_TIER_POINTER} set to the account's ${speed.value} tier (from the account's dynamic models catalog)`,
     };
   }
-  const offered = modelInfo?.serviceTiers?.map((t) => t.id).join(", ");
+  const listed = modelInfo?.serviceTiers?.length ?? 0;
   const message = modelInfo
-    ? `speed "${speed.value}" is not offered on this connection (offered: ${offered || "none"})`
+    ? `speed "${speed.value}" is not offered on this connection (the account lists ${listed} service tier${listed === 1 ? "" : "s"})`
     : `speed "${speed.value}" is not available on this connection (the account's dynamic models catalog did not answer; retry)`;
   return speed.explicit ? { note: message, refusal: message } : { note: message };
 }

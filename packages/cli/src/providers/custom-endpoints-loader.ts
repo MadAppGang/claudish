@@ -266,9 +266,9 @@ export const CUSTOM_ENDPOINT_TIER: RouteTier = "gateway";
  * DERIVED FROM THE DECLARED WIRE FORMAT, never configured. `format: "openai"`
  * (or `transport: "openai"`) is already the user's statement that this host
  * speaks the OpenAI API, and `GET /models` is part of that API — published as a
- * sibling of `/chat/completions`. So the path is one RULE applied to the path
- * the endpoint already declares (`/v1/chat/completions` → `/v1/models`,
- * `/chat/completions` → `/models`, `/api/v2/chat/completions` →
+ * sibling of `/chat/completions` and of `/responses`. So the path is one RULE
+ * applied to the path the endpoint already declares (`/v1/chat/completions` →
+ * `/v1/models`, `/v1/responses` → `/v1/models`, `/api/v2/chat/completions` →
  * `/api/v2/models`), not a pinned URL the way a hardcoded model list would be.
  * All 27 bundled rows in `predefined-catalog.ts` travel this same function and
  * land on the path their vendor serves.
@@ -288,11 +288,19 @@ export const CUSTOM_ENDPOINT_TIER: RouteTier = "gateway";
  */
 function openaiModelsDiscovery(
   wireFormat: string,
-  apiPath: string
+  apiPath: string,
+  modelPrefix: string | undefined
 ): ModelDiscoveryDescriptor | undefined {
-  const chat = "/chat/completions";
-  if (wireFormat !== "openai" || !apiPath.endsWith(chat)) return undefined;
-  return { path: `${apiPath.slice(0, -chat.length)}/models`, format: "openai-models-list" };
+  // A discovered id is a wire id, and every reader of the list (picker,
+  // availability, context window, probe pick) uses it as the name after
+  // `endpoint@`. With a `modelPrefix` the handler sends `modelPrefix + name`,
+  // so a listed id is not a callable name and those readers would disagree
+  // with the handler. Such an endpoint gets no discovery: its names are typed.
+  if (modelPrefix) return undefined;
+  // The Chat Completions and the Responses API sit beside the same `/models`.
+  const api = ["/chat/completions", "/responses"].find((suffix) => apiPath.endsWith(suffix));
+  if (wireFormat !== "openai" || !api) return undefined;
+  return { path: `${apiPath.slice(0, -api.length)}/models`, format: "openai-models-list" };
 }
 
 /**
@@ -337,7 +345,7 @@ function buildProviderDefinition(
       // and then demanded a key anyway. Bearer stays the DEFAULT (that is what
       // every simple endpoint got before), but a declared scheme now survives.
       authScheme: ep.authScheme ?? "bearer",
-      modelDiscovery: openaiModelsDiscovery(ep.format, "/chat/completions"),
+      modelDiscovery: openaiModelsDiscovery(ep.format, "/chat/completions", ep.modelPrefix),
     };
   }
 
@@ -362,7 +370,7 @@ function buildProviderDefinition(
     description: ovr?.description ?? `Custom endpoint: ${ep.displayName}`,
     headers: ep.headers,
     authScheme: ep.authScheme ?? "bearer",
-    modelDiscovery: openaiModelsDiscovery(ep.transport, apiPath),
+    modelDiscovery: openaiModelsDiscovery(ep.transport, apiPath, ep.modelPrefix),
   };
 }
 
