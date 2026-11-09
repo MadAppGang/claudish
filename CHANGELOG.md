@@ -2,6 +2,37 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.18.0] - 2026-11-09
+
+### Bug Fixes
+
+- refuse a bare member at once when no catalog file exists *(advisor)* ([`3deda65`](https://github.com/MadAppGang/claudish/commit/3deda65d901b08792cc2dc3f6e960f8aee7b2f01))
+- read the current account before reusing a stored list key *(discovery)* ([`a6c048a`](https://github.com/MadAppGang/claudish/commit/a6c048a6d5475ac52d91fc0a0b0ed748f75b6572))
+- bound availability by the missing-list deadline *(routing)* ([`7e9415f`](https://github.com/MadAppGang/claudish/commit/7e9415f90b327c18676034828b926e2b92bdcb7f))
+- stop sharing a model list refresh across accounts *(discovery)* ([`168683e`](https://github.com/MadAppGang/claudish/commit/168683e20c5cf4932cf80742b37bd666c350fa42))
+- keep a newer routes sidecar over an older routes repair *(catalog)* ([`f3043a3`](https://github.com/MadAppGang/claudish/commit/f3043a3c4d8e5ab58a4a8ae6733656e19857abe2))
+- wait up to 2 s for a launch window the catalog lacks *(discovery)* ([`08536b5`](https://github.com/MadAppGang/claudish/commit/08536b5aabe46ada86c515e6974b57094cb49f5f))
+- keep a newer generation on disk over an older refresh *(catalog)* ([`d7d2d32`](https://github.com/MadAppGang/claudish/commit/d7d2d3284845ae80584342cc839d7cec9fb5ff4e))
+- stop waiting on discovery for the launch context window *(discovery)* ([`d9289ef`](https://github.com/MadAppGang/claudish/commit/d9289ef11359f5097c5990bbb64aac0d736c05c2))
+- stop waiting for the model catalog at advisor startup *(advisor)* ([`4f10b94`](https://github.com/MadAppGang/claudish/commit/4f10b94706f49d41b1a4712d156ece1c8be1ce1e))
+- keep a generation when one connection's wire is invalid *(catalog)* ([`540b4ea`](https://github.com/MadAppGang/claudish/commit/540b4ea7285077c14b3b9a8bb26363d62edcf1a9))
+- stop blocking launch on a model catalog refresh *(catalog)* ([`70c4c69`](https://github.com/MadAppGang/claudish/commit/70c4c69862bf299826afa176ae629cbd7d91dcec))
+
+### Documentation
+
+- update CHANGELOG.md for v14.17.0([`a54c38c`](https://github.com/MadAppGang/claudish/commit/a54c38c135d551ee318a8cb1ab1984be48849c84))
+- describe the persisted dynamic models catalog and its candidates *(routing)* ([`267bc2d`](https://github.com/MadAppGang/claudish/commit/267bc2d43b224a50566c954792b177238b33a145))
+
+### New Features
+
+- gather route candidates from each account's model list *(routing)* ([`453d603`](https://github.com/MadAppGang/claudish/commit/453d603caac7391e397fb74fe6543f2646f5db09))
+- show the stored dynamic models catalog before discovery *(picker)* ([`a4e59a7`](https://github.com/MadAppGang/claudish/commit/a4e59a7512a3f53833541e07593580d8f3a71aa0))
+- persist each account's dynamic models catalog *(discovery)* ([`e5bb99b`](https://github.com/MadAppGang/claudish/commit/e5bb99ba794288a39712d48a1e29645960fcc6de))
+
+### Other Changes
+
+- merge origin/main into the catalog launch branch([`1b7a9c5`](https://github.com/MadAppGang/claudish/commit/1b7a9c5df2dce062d0fb60bc829ed9a21b7365ac))
+
 ## [14.17.0] - 2026-11-09
 
 ### Bug Fixes
