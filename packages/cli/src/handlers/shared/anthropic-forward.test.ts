@@ -50,33 +50,63 @@ describe("requestHeadersToForward", () => {
     });
   });
 
-  it("drops every header a Connection header names, whatever its case", () => {
+  it("drops every header a Connection header names, an allowed one included, whatever its case", () => {
     const out = requestHeadersToForward(
       new Headers({
-        connection: "close, X-Per-Hop ,x-other-hop",
-        "x-per-hop": "1",
-        "x-other-hop": "2",
-        "x-kept": "3",
+        connection: "close, X-App ,x-stainless-os",
+        "x-app": "cli",
+        "x-stainless-os": "MacOS",
+        "x-stainless-lang": "js",
       })
     );
-    expect(out).toEqual({ "x-kept": "3" });
+    expect(out).toEqual({ "x-stainless-lang": "js" });
   });
 });
 
-describe("requestHeadersToForward and claudish's internal headers", () => {
-  it("drops every x-claudish- header, whatever its case, and keeps Claude Code's own", () => {
+describe("requestHeadersToForward allows only what Claude Code sends to Anthropic", () => {
+  it("drops cookies and headers meant for another destination, and keeps Claude Code's own", () => {
+    const out = requestHeadersToForward(
+      new Headers({
+        cookie: "session=abc",
+        "X-Gateway-Token": "gw-secret",
+        "x-request-tag": "team-a",
+        authorization: "Bearer t",
+        "x-api-key": "sk-k",
+        "x-claude-code-session-id": "s1",
+        "x-app": "cli",
+        "anthropic-beta": "claude-code-20250219",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "x-stainless-lang": "js",
+        "x-stainless-retry-count": "0",
+        accept: "application/json",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        "content-type": "application/json",
+      })
+    );
+    expect(out).toEqual({
+      authorization: "Bearer t",
+      "x-api-key": "sk-k",
+      "x-claude-code-session-id": "s1",
+      "x-app": "cli",
+      "anthropic-beta": "claude-code-20250219",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "x-stainless-lang": "js",
+      "x-stainless-retry-count": "0",
+      accept: "application/json",
+      "accept-encoding": "gzip, deflate, br, zstd",
+      "content-type": "application/json",
+    });
+  });
+
+  it("drops every x-claudish- header, whatever its case", () => {
     const out = requestHeadersToForward(
       new Headers({
         "x-claudish-no-recovery": "advisor",
         "X-Claudish-Future-Signal": "1",
         "x-claude-code-session-id": "s1",
-        "x-claudish": "not-a-prefix-match",
       })
     );
-    expect(out).toEqual({
-      "x-claude-code-session-id": "s1",
-      "x-claudish": "not-a-prefix-match",
-    });
+    expect(out).toEqual({ "x-claude-code-session-id": "s1" });
   });
 });
 

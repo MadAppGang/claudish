@@ -130,6 +130,24 @@ describe("NativeHandler forwards the request as Claude Code sent it", () => {
     expect(calls[0]!.body).toBe(RAW);
   });
 
+  it("never carries a cookie or another destination's header upstream", async () => {
+    const calls = captureFetch();
+    const { c, payload } = inboundContext({
+      ...CLAUDE_CODE_HEADERS,
+      Cookie: "corp_session=abc123",
+      "X-Gateway-Token": "gw-token-forward-test",
+    });
+    await new NativeHandler().handle(c, payload);
+
+    expect(calls).toHaveLength(1);
+    const sent = Object.keys(calls[0]!.headers).map((name) => name.toLowerCase());
+    expect(sent).not.toContain("cookie");
+    expect(sent).not.toContain("x-gateway-token");
+    expect(JSON.stringify(calls[0]!.headers)).not.toContain("gw-token-forward-test");
+    expect(calls[0]!.headers["x-claude-code-session-id"]).toBe("session-forward-1");
+    expect(calls[0]!.headers.authorization).toBe("Bearer sk-ant-oat-forward-test");
+  });
+
   it("falls back to its own key and default version when the request carries neither", async () => {
     const calls = captureFetch();
     const { c, payload } = inboundContext(

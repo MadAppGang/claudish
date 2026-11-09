@@ -1,14 +1,41 @@
 /**
  * The request side of forwarding a Claude Code request to api.anthropic.com
- * as Claude Code sent it: its headers, its query string and its body bytes.
+ * as Claude Code sent it: its own headers, its query string and its body bytes.
+ *
+ * Headers are an ALLOWLIST of what Claude Code itself sends to Anthropic. The
+ * native path's upstream is fixed, whatever base URL Claude Code was configured
+ * for, so a header Claude Code was told to send to another destination (a
+ * gateway token from `ANTHROPIC_CUSTOM_HEADERS`, a cookie) must never be
+ * carried there. Every other inbound header is dropped.
  *
  * Hop-by-hop fields, and any field a `Connection` header names, describe one
- * connection rather than the message and are not forwarded
+ * connection rather than the message and are not forwarded even when allowed
  * (RFC 9110 section 7.6.1). `host` names this proxy, and `content-length` is
  * set again by fetch for whatever body goes out.
  */
 
 import type { Context } from "hono";
+
+/**
+ * Exact names Claude Code sends on `POST /v1/messages`, besides the prefixed
+ * families below (measured from Claude Code 2.1.319, API-key and OAuth runs).
+ */
+const ALLOWED_NAMES = new Set([
+  "authorization",
+  "x-api-key",
+  "content-type",
+  "accept",
+  "accept-encoding",
+  "user-agent",
+  "x-app",
+]);
+
+/** Header families Claude Code sends (`anthropic-beta`, `x-stainless-lang`, `x-claude-code-session-id`). */
+const ALLOWED_PREFIXES = ["anthropic-", "x-stainless-", "x-claude-code-"] as const;
+
+function isAllowed(name: string): boolean {
+  return ALLOWED_NAMES.has(name) || ALLOWED_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
 
 const HOP_BY_HOP = new Set([
   "connection",
@@ -38,14 +65,16 @@ function connectionNamed(headers: Headers): Set<string> {
 }
 
 /**
- * The inbound request headers to send on, keyed by lowercase name. `Headers`
- * already lowercases its names, so a header can appear under one key only.
+ * The inbound request headers to send on, keyed by lowercase name: the allowed
+ * ones, less any that describe the connection. `Headers` already lowercases
+ * its names, so a header can appear under one key only.
  */
 export function requestHeadersToForward(incoming: Headers): Record<string, string> {
   const named = connectionNamed(incoming);
   const out: Record<string, string> = {};
   incoming.forEach((value, name) => {
     const key = name.toLowerCase();
+    if (!isAllowed(key)) return;
     if (HOP_BY_HOP.has(key) || named.has(key) || key.startsWith(INTERNAL_PREFIX)) return;
     out[key] = value;
   });
