@@ -329,7 +329,8 @@ describe.skipIf(!MAGMUX)("review amendments on controlled connections", () => {
       const prompt = await sendAt(fake, 0);
       prompt.reply(await original.request(prompt.message, prompt.timeout));
       await delivery;
-      await gateUntil(r, (s) => s.state === "RUNNING");
+      // send() acknowledges queueing; public RUNNING also covers the ADMITTING phase.
+      await gateUntil(r, (s) => s.phase === "RUNNING");
       expect(readFileSync(r.transcript, "utf8")).toBe("");
       expect((await scroll(r, fake, { by: -2 })).message.text).toBe(UP.repeat(3));
 
