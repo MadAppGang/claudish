@@ -692,6 +692,7 @@ async function runCli() {
   const {
     checkClaudeInstalled,
     runClaudeWithProxy,
+    signalShutdownExitCode,
     isAdvisorNativeSession,
     resolveAdvisorToolEnv,
   } = await import("./claude-runner.js");
@@ -1365,12 +1366,20 @@ async function runCli() {
 
     // Run Claude Code with proxy
     let exitCode = 0;
+    // The launcher's early exit, a signal shutdown's deadline and the `finally`
+    // below can all reach this; the diag file is closed once.
+    let diagCleaned = false;
+    const cleanupDiag = () => {
+      if (diagCleaned) return;
+      diagCleaned = true;
+      diag.cleanup();
+    };
     try {
-      exitCode = await runClaudeWithProxy(cliConfig, proxy.url, () => diag.cleanup());
+      exitCode = await runClaudeWithProxy(cliConfig, proxy.url, cleanupDiag);
     } finally {
       // Clear diagOutput BEFORE cleanup to prevent write-after-end
       setDiagOutput(null);
-      diag.cleanup();
+      cleanupDiag();
       // Always cleanup proxy. Route claudish's own chatter to stderr in
       // single-shot mode — stdout there carries Claude Code's machine-readable
       // output (e.g. --output-format stream-json) that consumers parse line-by-line.
@@ -1443,6 +1452,10 @@ async function runCli() {
       }
     }
 
+    // A signal that arrived during the teardown above stopped this run too, and
+    // outranks the code Claude Code had already returned.
+    exitCode = signalShutdownExitCode() ?? exitCode;
+
     // Suggest reviewing the log when the session actually FAILED.
     //
     // 130 and 143 are `128 + SIGINT` and `128 + SIGTERM`: the user pressed
@@ -1452,7 +1465,7 @@ async function runCli() {
     // apart once its exit handler bound `signal` — before that every Ctrl-C
     // arrived here as a bare 1, indistinguishable from a crash.
     const sessionLogPath = getAlwaysOnLogPath();
-    const quitBySignal = exitCode === 130 || exitCode === 143;
+    const quitBySignal = exitCode === 130 || exitCode === 143 || signalShutdownExitCode() !== null;
     if (exitCode !== 0 && !quitBySignal && sessionLogPath && !cliConfig.quiet) {
       console.error(`\n[claudish] Session ended with errors (exit code ${exitCode}).`);
       // A run that never reached the proxy failed inside Claude Code, before any
@@ -1473,6 +1486,6 @@ async function runCli() {
   } catch (error) {
     console.error("[claudish] Fatal error:", error);
     console.error("[claudish] Stack:", error instanceof Error ? error.stack : "no stack");
-    process.exit(1);
+    process.exit(signalShutdownExitCode() ?? 1);
   }
 }
