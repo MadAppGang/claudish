@@ -522,7 +522,7 @@ describe("capability and MCP tool surface (REQ-1)", () => {
       expect(names).not.toContain("replay_session");
       expect(names).not.toContain("close_replay");
     }
-  });
+  }, T_TEST);
 });
 
 // ============================================================================
