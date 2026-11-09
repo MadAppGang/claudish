@@ -29,7 +29,7 @@ describe.skipIf(process.platform !== "darwin")("Antigravity default shared-store
     }).toEqual({ value: null, securityCalls: 0 });
   });
 
-  test("the security value read has a finite positive subprocess timeout", () => {
+  test("the security value read has no timeout or kill signal", () => {
     // The subprocess spy is installed before enabling this path.
     delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
 
@@ -38,9 +38,9 @@ describe.skipIf(process.platform !== "darwin")("Antigravity default shared-store
     const [command, args, options] = execSpy.mock.calls[0]!;
     expect(command).toBe("security");
     expect(args).toEqual(["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"]);
-    const timeout = (options as childProcess.ExecFileSyncOptions | undefined)?.timeout;
-    expect(timeout).toBeDefined();
-    expect(Number.isFinite(timeout)).toBe(true);
-    expect(timeout).toBeGreaterThan(0);
+    // Killing security mid-transaction can restart securityd.
+    const readOptions = options as childProcess.ExecFileSyncOptions | undefined;
+    expect(readOptions?.timeout).toBeUndefined();
+    expect(readOptions?.killSignal).toBeUndefined();
   });
 });
