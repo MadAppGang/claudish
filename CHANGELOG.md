@@ -2,6 +2,26 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.18.2] - 2026-11-09
+
+### Bug Fixes
+
+- drop a discovery answer that outlives a credential invalidation *(discovery)* ([`2c2c2cf`](https://github.com/MadAppGang/claudish/commit/2c2c2cf9a6bdb75fde4e5270529d4460984d21b1))
+- keep token ownership records across a forced refresh *(antigravity)* ([`6e68388`](https://github.com/MadAppGang/claudish/commit/6e6838882f8798ec3a9c5e0fcbd902c5fa4f1fe3))
+- read account identity only for providers with stored lists *(discovery)* ([`f00770d`](https://github.com/MadAppGang/claudish/commit/f00770d7feea25e98f29c85c14f8e6a8ac656ebc))
+- cache served models under the lineage of the request's token *(antigravity)* ([`f48fbcc`](https://github.com/MadAppGang/claudish/commit/f48fbcccf556a3c586600491f69b23577db209af))
+- refetch a provider's served models after its account changes *(discovery)* ([`f3ffa6c`](https://github.com/MadAppGang/claudish/commit/f3ffa6c87a99cd8fe64a4deea71eb01773b10b59))
+- follow the shared token read when reusing account caches *(antigravity)* ([`4c60011`](https://github.com/MadAppGang/claudish/commit/4c600115dd9311e5386da87e204cc10d9625295c))
+- bind Devin and Antigravity served-model caches to the account *(discovery)* ([`5d567b8`](https://github.com/MadAppGang/claudish/commit/5d567b8cbb9722f54b1d8c93c24e042a6a1ea7af))
+
+### Documentation
+
+- update CHANGELOG.md for v14.18.1([`8413257`](https://github.com/MadAppGang/claudish/commit/8413257efb1dcb1a0428a5123af05ad36a482ba1))
+
+### Other Changes
+
+- merge origin/main into the account cache branch([`0cd9cd0`](https://github.com/MadAppGang/claudish/commit/0cd9cd079e65b5df17032013bddceef5913c8602))
+
 ## [14.18.1] - 2026-11-09
 
 ### Bug Fixes
