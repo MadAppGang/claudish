@@ -17,6 +17,7 @@
 
 import { type DiskCacheV3, readAllModelsCache } from "../providers/all-models-cache.js";
 import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
+import { nativeRouteFor } from "../providers/native-route.js";
 import type { ClaudishConfig } from "../types.js";
 import { VERSION } from "../version.js";
 
@@ -77,18 +78,36 @@ const LOCAL_MODEL_PREFIXES = [
  * Returns `false` (skip warm) when:
  *   - The user passed `--models-skip-update` (hard skip, regardless of model).
  *   - The user passed a local-only model prefix (case-insensitive).
+ *   - The launch is native-only: the model is one Claude Code serves on its own
+ *     auth (`nativeRouteFor`), with no `--models-refresh`, no `--advisor`, no
+ *     routing chain and no role override (`modelOpus`, `modelSonnet`,
+ *     `modelHaiku`, `modelSubagent`). Each of those may route a foreign model
+ *     and so still needs the cloud models catalog.
  *
  * Returns `true` (warm) when:
  *   - No model is specified (auto-route path needs the catalog to pick).
- *   - The model is an aggregator/native prefix (`or@`, `g@`, ...) or bare ID.
+ *   - The model is an aggregator/native prefix (`or@`, `g@`, ...) or a bare
+ *     name that is not Claude Code's own.
  *
  * New aggregator/native prefixes added in the future automatically warm —
  * the default branch is the safer one.
  */
-export function shouldWarmCatalog(args: {
-  model?: string;
-  skipModelsUpdate?: boolean;
-}): boolean {
+export function shouldWarmCatalog(
+  args: Partial<
+    Pick<
+      ClaudishConfig,
+      | "model"
+      | "skipModelsUpdate"
+      | "forceUpdate"
+      | "advisor"
+      | "modelChain"
+      | "modelOpus"
+      | "modelSonnet"
+      | "modelHaiku"
+      | "modelSubagent"
+    >
+  >
+): boolean {
   if (args.skipModelsUpdate) return false;
   if (args.model === undefined) return true;
 
@@ -96,6 +115,17 @@ export function shouldWarmCatalog(args: {
   for (const prefix of LOCAL_MODEL_PREFIXES) {
     if (m.startsWith(prefix)) return false;
   }
+
+  const routesOnlyNative =
+    !args.forceUpdate &&
+    !args.advisor &&
+    !args.modelChain?.length &&
+    !args.modelOpus &&
+    !args.modelSonnet &&
+    !args.modelHaiku &&
+    !args.modelSubagent;
+  if (args.model && routesOnlyNative && nativeRouteFor(args.model)) return false;
+
   return true;
 }
 
@@ -212,7 +242,8 @@ function startSpinner(label: string, quiet = false): Spinner {
  *
  * Drives the FR-4 state machine end-to-end:
  *
- *   1. Trigger gate — if local model or `--models-skip-update`, return "skipped".
+ *   1. Trigger gate — if local model, native-only launch or
+ *      `--models-skip-update`, return "skipped".
  *   2. Print the "preparing model catalog..." header (suppressed by `--quiet`).
  *   3. Classify on-disk cache state.
  *   4. Decide:
@@ -244,12 +275,7 @@ export async function warmCatalogIfNeeded(
   config: ClaudishConfig,
   opts?: { now?: Date; ttlHours?: number }
 ): Promise<WarmOutcome> {
-  if (
-    !shouldWarmCatalog({
-      model: config.model,
-      skipModelsUpdate: config.skipModelsUpdate,
-    })
-  ) {
+  if (!shouldWarmCatalog(config)) {
     return "skipped";
   }
 
