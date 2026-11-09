@@ -176,13 +176,15 @@ export function bodyToForward(c: Context, payload: unknown): string {
 }
 
 /**
- * A Claude login's bearer, recognised by its token class (`sk-ant-oat`, the
- * class of the bearer Claude Code sends for its keychain login). The
- * `oauth-2025-04-20` beta cannot say this: any client can declare it on any
- * bearer. Everything else in `authorization` is not matched: a gateway token,
- * or an api key helper's value, which Claude Code sends in both headers.
+ * A Claude login's bearer, recognised by its token class: `sk-ant-oat`, a
+ * version number and a hyphen (`sk-ant-oat01-…`), the class of the bearer
+ * Claude Code sends for its keychain login. The `oauth-2025-04-20` beta cannot
+ * say this: any client can declare it on any bearer. Everything else in
+ * `authorization` is not matched: a gateway token, even one that begins with
+ * the same letters, or an api key helper's value, which Claude Code sends in
+ * both headers.
  */
-const CLAUDE_LOGIN_BEARER = /^Bearer\s+sk-ant-oat/i;
+const CLAUDE_LOGIN_BEARER = /^Bearer\s+sk-ant-oat\d+-/i;
 
 /** One request to send to Anthropic, ready for `fetch`. */
 export interface ForwardRequest {

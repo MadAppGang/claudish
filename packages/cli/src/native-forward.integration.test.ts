@@ -244,7 +244,7 @@ describe("native count_tokens request (HTTP)", () => {
 
 for (const route of ["/v1/messages", "/v1/messages/count_tokens"]) {
   describe(`native credential pair on ${route} (HTTP)`, () => {
-    const OAUTH_BEARER = "Bearer sk-ant-oat-forward-test";
+    const OAUTH_BEARER = "Bearer sk-ant-oat01-forward-test";
     const API_KEY = "sk-ant-inbound-key";
     let proxy: Awaited<ReturnType<typeof createProxyServer>> | null = null;
 
@@ -291,6 +291,24 @@ for (const route of ["/v1/messages", "/v1/messages/count_tokens"]) {
       const call = await send({ authorization: "Bearer gateway-token", "x-api-key": API_KEY });
       expect(call.headers.authorization).toBe("Bearer gateway-token");
       expect(call.headers["x-api-key"]).toBe(API_KEY);
+    });
+
+    test("sends both when a bearer only starts with the OAuth token class letters", async () => {
+      const call = await send({
+        authorization: "Bearer sk-ant-oatmeal-gateway",
+        "x-api-key": API_KEY,
+      });
+      expect(call.headers.authorization).toBe("Bearer sk-ant-oatmeal-gateway");
+      expect(call.headers["x-api-key"]).toBe(API_KEY);
+    });
+
+    test("sends only the bearer for a later OAuth token version", async () => {
+      const call = await send({
+        authorization: "Bearer sk-ant-oat12-forward-test",
+        "x-api-key": API_KEY,
+      });
+      expect(call.headers.authorization).toBe("Bearer sk-ant-oat12-forward-test");
+      expect(call.headers).not.toHaveProperty("x-api-key");
     });
 
     test("sends both when an api key helper's value fills both headers", async () => {
