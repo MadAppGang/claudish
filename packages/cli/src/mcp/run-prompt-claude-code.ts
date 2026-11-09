@@ -24,6 +24,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ENV } from "../config.js";
+import { scrubInheritedFastModeGates } from "../fast-mode-gates.js";
 import { scrubInheritedHostRouting } from "../host-routing-env.js";
 import { PANE_LAUNCH_VARS } from "../pane/child-env.js";
 import { isStrippedFromChildEnv, resolveClaudishLaunch } from "../pane/pane-launch.js";
@@ -117,6 +118,9 @@ export function claudeCodePrintEnv(
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
   delete env.ANTHROPIC_BASE_URL;
+  // A server started inside a proxied session inherits the fast-mode gates that
+  // session opened; this child runs on the real Claude Code login.
+  scrubInheritedFastModeGates(env);
   // A server started inside a routed session inherits the host-routing pair, under
   // which Claude Code ignores the login this child runs on.
   scrubInheritedHostRouting(env);

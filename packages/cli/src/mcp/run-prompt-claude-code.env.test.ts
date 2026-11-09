@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { applyProxyFastModeGates } from "../fast-mode-gates.js";
 import { STRIPPED_CHILD_VARS } from "../launcher/magmux-wrapper.js";
 import { nestedLaunchRefusal } from "../pane/child-env.js";
 import {
@@ -36,6 +37,18 @@ describe("claudeCodePrintEnv", () => {
       }
     }
   );
+
+  test("closes the fast-mode gates a parent proxied session opened, keeps the user's", () => {
+    const proxied: Record<string, string | undefined> = {
+      FOO: "bar",
+      CLAUDE_CODE_MODEL_CAPABILITIES: "a=b",
+    };
+    applyProxyFastModeGates(proxied);
+    expect(claudeCodePrintEnv(proxied)).toEqual({
+      FOO: "bar",
+      CLAUDE_CODE_MODEL_CAPABILITIES: "a=b",
+    });
+  });
 
   test("strips every shared child-env key and terminal-identity prefix", () => {
     const strippedKeys = [

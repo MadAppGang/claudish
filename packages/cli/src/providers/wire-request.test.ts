@@ -139,6 +139,13 @@ test.each([
   expect(result.effort).toBe(effort);
   expect(result.reasoningOff).toBe(budget === 0);
 });
+test.each([
+  ["fast", { value: "fast", explicit: false }],
+  ["standard", undefined],
+  [undefined, undefined],
+] as const)("Claude Code speed %s maps to a non-explicit choice %j", (speed, expected) =>
+  expect(wireChoicesFromClaudeRequest({ speed }).speed).toEqual(expected)
+);
 test.each([{ thinking: { type: "disabled" } }, { output_config: { effort: "none" } }])(
   "off intent %j",
   (request) =>
