@@ -267,19 +267,45 @@ describe.skipIf(process.platform === "win32")("claudish's shutdown on a signal",
  * never exits. `keepAlive` stands for whatever still holds the event loop open
  * when the shutdown stalls; without it nothing does.
  */
-function runHandlersOverStuckChild(opts: { keepAlive: boolean }) {
+function runHandlersOverStuckChild(opts: {
+  keepAlive: boolean;
+  ps?: "fails" | "hangs" | "childExitsDuringRead";
+}) {
   const dir = mkdtempSync(join(root, "stuck-"));
   const settings = join(dir, "settings.json");
   const cleanupLog = join(dir, "cleanup.log");
+  const killLog = join(dir, "kill.log");
   const ready = join(dir, "ready");
   const script = join(dir, "handlers.ts");
   writeFileSync(settings, "{}");
+  const psBody = {
+    fails: 'throw new Error("EPERM");',
+    hangs: "",
+    childExitsDuringRead: `appendFileSync(${JSON.stringify(killLog)}, "PS " + Date.now() + "\\n");
+  stuck.exitCode = 0;
+  cb(new Error("exit 1"), "");`,
+  };
+  const replacePs = opts.ps
+    ? `import { setPsSpawnForTest } from ${JSON.stringify(join(import.meta.dir, "pane/process-identity.ts"))};
+setPsSpawnForTest({ execFileSync: () => "", execFile: (_f: string, _a: string[], _o: unknown, cb: (e: Error, s: string) => void) => {
+  ${psBody[opts.ps]}
+} } as never);
+`
+    : "";
   writeFileSync(
     script,
     `import { EventEmitter } from "node:events";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { setupSignalHandlers } from ${JSON.stringify(join(import.meta.dir, "claude-runner.ts"))};
-const stuck = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null, kill: () => true });
+${replacePs}const stuck = Object.assign(new EventEmitter(), {
+  pid: 99999999,
+  exitCode: null,
+  signalCode: null,
+  kill: (signal: string) => {
+    appendFileSync(${JSON.stringify(killLog)}, signal + " " + Date.now() + "\\n");
+    return true;
+  },
+});
 setupSignalHandlers(stuck as never, ${JSON.stringify(settings)}, true, () => appendFileSync(${JSON.stringify(cleanupLog)}, "cleanup\\n"));
 writeFileSync(${JSON.stringify(ready)}, "");
 ${opts.keepAlive ? "setInterval(() => {}, 1000);" : "await Bun.sleep(1500);"}
@@ -290,7 +316,7 @@ ${opts.keepAlive ? "setInterval(() => {}, 1000);" : "await Bun.sleep(1500);"}
     stdio: "ignore",
   });
   const exit = new Promise<number | null>((resolve) => proc.on("close", (code) => resolve(code)));
-  return { proc, exit, settings, cleanupLog, ready };
+  return { proc, exit, settings, cleanupLog, killLog, ready };
 }
 
 describe.skipIf(process.platform === "win32")("claudish's signal shutdown deadline", () => {
@@ -316,6 +342,132 @@ describe.skipIf(process.platform === "win32")("claudish's signal shutdown deadli
     run.proc.kill("SIGTERM");
     expect(await run.exit).toBe(143);
     expect(Date.now() - sentAt).toBeLessThan(SIGNAL_SHUTDOWN_BUDGET_MS - 1_000);
+  }, 30_000);
+});
+
+describe.skipIf(process.platform === "win32")("Claude Code's descendants on a signal", () => {
+  /** SIGKILLs whatever the run recorded and did not stop, so no stand-in outlives the test. */
+  function killRecorded(dir: string, names: string[]): void {
+    for (const name of names) {
+      const file = join(dir, name);
+      if (existsSync(file)) killStandIn(file);
+    }
+  }
+
+  /** Waits for `file` to hold a pid and returns it. */
+  async function recordedPid(file: string): Promise<number> {
+    await waitFor(`${file} to hold a pid`, () => {
+      return existsSync(file) && readFileSync(file, "utf8").trim() !== "";
+    });
+    return Number(readFileSync(file, "utf8"));
+  }
+
+  test("SIGKILLs the whole tree when Claude Code has to be SIGKILLed", async () => {
+    const run = runOver(
+      [
+        "trap '' TERM",
+        'case "$ROLE" in',
+        '  "") echo "$$" > "$TMPDIR/claude.pid"; ROLE=child "$0" & ;;',
+        '  child) echo "$$" > "$TMPDIR/child.pid"; ROLE=grandchild "$0" & ;;',
+        '  grandchild) echo "$$" > "$TMPDIR/grandchild.pid" ;;',
+        "esac",
+        "while :; do sleep 0.05; done",
+      ].join("\n")
+    );
+    const names = ["claude.pid", "child.pid", "grandchild.pid"];
+    try {
+      const child = await recordedPid(join(run.dir, "child.pid"));
+      const grandchild = await recordedPid(join(run.dir, "grandchild.pid"));
+      expect(alive(child)).toBe(true);
+      expect(alive(grandchild)).toBe(true);
+      run.proc.kill("SIGTERM");
+      expect(await run.exit).toBe(143);
+      // A killed orphan stays listed until init reaps it, a moment later.
+      const deadline = Date.now() + 2_000;
+      while ((alive(child) || alive(grandchild)) && Date.now() < deadline) await Bun.sleep(25);
+      expect({ child: alive(child), grandchild: alive(grandchild) }).toEqual({
+        child: false,
+        grandchild: false,
+      });
+    } finally {
+      killRecorded(run.dir, names);
+    }
+  }, 30_000);
+
+  for (const ps of ["fails", "hangs"] as const) {
+    test(`still SIGKILLs Claude Code in time when ps ${ps}`, async () => {
+      const { SIGNAL_CHILD_EXIT_GRACE_MS, SIGNAL_DESCENDANT_SNAPSHOT_MS } = await import(
+        "./claude-runner.js"
+      );
+      const run = runHandlersOverStuckChild({ keepAlive: true, ps });
+      try {
+        await waitFor("the handlers to install", () => existsSync(run.ready));
+        run.proc.kill("SIGTERM");
+        await waitFor("the SIGKILL", () => {
+          return existsSync(run.killLog) && readFileSync(run.killLog, "utf8").includes("SIGKILL");
+        });
+        const sent = readFileSync(run.killLog, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.split(" "));
+        expect(sent.map(([signal]) => signal)).toEqual(["SIGTERM", "SIGKILL"]);
+        const gap = Number(sent[1]?.[1]) - Number(sent[0]?.[1]);
+        expect(gap).toBeGreaterThanOrEqual(SIGNAL_CHILD_EXIT_GRACE_MS - 100);
+        expect(gap).toBeLessThan(SIGNAL_CHILD_EXIT_GRACE_MS + SIGNAL_DESCENDANT_SNAPSHOT_MS + 300);
+      } finally {
+        run.proc.kill("SIGKILL");
+        await run.exit;
+      }
+    }, 30_000);
+  }
+
+  test("sends no SIGKILL when Claude Code exits while the table is read", async () => {
+    const run = runHandlersOverStuckChild({ keepAlive: true, ps: "childExitsDuringRead" });
+    try {
+      await waitFor("the handlers to install", () => existsSync(run.ready));
+      run.proc.kill("SIGTERM");
+      await waitFor("the table read", () => {
+        return existsSync(run.killLog) && readFileSync(run.killLog, "utf8").includes("PS");
+      });
+      await Bun.sleep(150);
+      const sent = readFileSync(run.killLog, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.split(" ")[0]);
+      expect(sent).toEqual(["SIGTERM", "PS"]);
+    } finally {
+      run.proc.kill("SIGKILL");
+      await run.exit;
+    }
+  }, 30_000);
+
+  test("sends no SIGKILL to anything when Claude Code exits inside the grace", async () => {
+    const run = runOver(
+      [
+        'if [ "$ROLE" = child ]; then',
+        "  trap '' TERM",
+        '  echo "$$" > "$TMPDIR/child.pid"',
+        "  while :; do sleep 0.05; done",
+        "fi",
+        'echo "$$" > "$TMPDIR/claude.pid"',
+        'ROLE=child "$0" &',
+        // Slower than a process-table read, so the tree is still whole during one.
+        "trap 'sleep 0.5; touch \"$TMPDIR/claude.finished\"; exit 0' TERM",
+        "while :; do sleep 0.05; done",
+      ].join("\n")
+    );
+    const names = ["claude.pid", "child.pid"];
+    try {
+      const child = await recordedPid(join(run.dir, "child.pid"));
+      await recordedPid(join(run.dir, "claude.pid"));
+      run.proc.kill("SIGTERM");
+      expect(await run.exit).toBe(143);
+      expect(existsSync(join(run.dir, "claude.finished"))).toBe(true);
+      await Bun.sleep(300);
+      expect(alive(child)).toBe(true);
+    } finally {
+      killRecorded(run.dir, names);
+    }
   }, 30_000);
 });
 
@@ -363,8 +515,12 @@ describe.skipIf(process.platform === "win32")("sessionEnd during a signal shutdo
   }, 30_000);
 
   test("the deadline covers every part and stays below the supervisor's SIGKILL", async () => {
-    const { SIGNAL_CHILD_EXIT_GRACE_MS, SIGNAL_CHILD_KILL_WAIT_MS, SIGNAL_SHUTDOWN_BUDGET_MS } =
-      await import("./claude-runner.js");
+    const {
+      SIGNAL_CHILD_EXIT_GRACE_MS,
+      SIGNAL_CHILD_KILL_WAIT_MS,
+      SIGNAL_DESCENDANT_SNAPSHOT_MS,
+      SIGNAL_SHUTDOWN_BUDGET_MS,
+    } = await import("./claude-runner.js");
     const { TERMINATE_GRACE_MS } = await import("./process-tree.js");
     const { EVENT_BUDGETS } = await import("./hooks/engine.js");
     const sessionEndBudget = EVENT_BUDGETS.sessionEnd as number;
@@ -372,6 +528,8 @@ describe.skipIf(process.platform === "win32")("sessionEnd during a signal shutdo
       SIGNAL_SHUTDOWN_BUDGET_MS
     );
     expect(SIGNAL_SHUTDOWN_BUDGET_MS).toBeLessThan(TERMINATE_GRACE_MS);
+    // The descendant read comes out of the SIGKILL step, and leaves it time to wait.
+    expect(SIGNAL_DESCENDANT_SNAPSHOT_MS).toBeLessThan(SIGNAL_CHILD_KILL_WAIT_MS);
   });
 });
 

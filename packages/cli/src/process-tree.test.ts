@@ -3,9 +3,12 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type PsSpawn, setPsSpawnForTest } from "./pane/process-identity.js";
 import {
   KILL_PROCESS_GROUP,
+  descendantsOf,
   signalProcessTree,
+  snapshotDescendants,
   terminateChildTree,
   waitForExit,
 } from "./process-tree.js";
@@ -89,6 +92,93 @@ afterEach(async () => {
 
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs.clear();
+});
+
+describe("descendantsOf", () => {
+  test("walks every level below the root and nothing beside it", () => {
+    const table = [
+      { pid: 200, ppid: 100 },
+      { pid: 300, ppid: 200 },
+      { pid: 201, ppid: 100 },
+      { pid: 900, ppid: 800 },
+    ];
+    expect(descendantsOf(table, 100)).toEqual([200, 201, 300]);
+  });
+
+  test("never lists the root, init or this process", () => {
+    const table = [
+      { pid: 100, ppid: 100 },
+      { pid: 1, ppid: 100 },
+      { pid: process.pid, ppid: 100 },
+      { pid: 200, ppid: 100 },
+    ];
+    expect(descendantsOf(table, 100)).toEqual([200]);
+  });
+
+  test("ends on a parent cycle in a table read mid-change", () => {
+    const table = [
+      { pid: 200, ppid: 300 },
+      { pid: 300, ppid: 200 },
+      { pid: 201, ppid: 200 },
+    ];
+    expect(descendantsOf(table, 200).sort()).toEqual([201, 300]);
+  });
+});
+
+describe("snapshotDescendants", () => {
+  const row = (pid: number, ppid: number) =>
+    `${pid} ${ppid} ${ppid} 00:01 Mon Oct  6 12:34:56 2026 cmd`;
+
+  async function withPs<T>(execFile: PsSpawn["execFile"], run: () => Promise<T>): Promise<T> {
+    const previous = setPsSpawnForTest({
+      execFile,
+      execFileSync: () => {
+        throw new Error("not used");
+      },
+    });
+    try {
+      return await run();
+    } finally {
+      setPsSpawnForTest(previous);
+    }
+  }
+
+  test("reads the tree from the process table", async () => {
+    const table = [row(process.pid, 1), row(200, 100), row(300, 200), row(900, 800)].join("\n");
+    const pids = await withPs(
+      (_file, _args, _opts, cb) => cb(null, table),
+      () => snapshotDescendants(100, 1_000)
+    );
+    expect(pids).toEqual([200, 300]);
+  });
+
+  test("is empty when ps cannot start", async () => {
+    const pids = await withPs(
+      () => {
+        throw new Error("EPERM");
+      },
+      () => snapshotDescendants(100, 1_000)
+    );
+    expect(pids).toEqual([]);
+  });
+
+  test("is empty when ps fails", async () => {
+    const pids = await withPs(
+      (_file, _args, _opts, cb) => cb(new Error("exit 1"), ""),
+      () => snapshotDescendants(100, 1_000)
+    );
+    expect(pids).toEqual([]);
+  });
+
+  test("gives up on a ps that never answers, at its budget", async () => {
+    const startedAt = Date.now();
+    const pids = await withPs(
+      () => undefined,
+      () => snapshotDescendants(100, 100)
+    );
+    expect(pids).toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(600);
+  });
 });
 
 describe("process tree termination", () => {

@@ -32,6 +32,7 @@
  */
 
 import type { ChildProcess } from "node:child_process";
+import { readProcessTableAsync } from "./pane/process-identity.js";
 
 /**
  * Whether to spawn children `detached` (own process group) and signal the group.
@@ -88,6 +89,66 @@ export function waitForExit(proc: ChildProcess, ms: number): Promise<boolean> {
     const t = setTimeout(() => done(false), ms);
     t.unref?.();
   });
+}
+
+/**
+ * Every pid below `rootPid` in `table`, nearest first. Excludes `rootPid`, init and
+ * this process, and stops at a repeated pid, so a table read mid-change cannot loop.
+ */
+export function descendantsOf(
+  table: ReadonlyArray<{ pid: number; ppid: number }>,
+  rootPid: number
+): number[] {
+  const childrenOf = new Map<number, number[]>();
+  for (const { pid, ppid } of table) {
+    const siblings = childrenOf.get(ppid);
+    if (siblings) siblings.push(pid);
+    else childrenOf.set(ppid, [pid]);
+  }
+  const seen = new Set<number>([rootPid, process.pid]);
+  const out: number[] = [];
+  const queue = [rootPid];
+  for (let parent = queue.shift(); parent !== undefined; parent = queue.shift()) {
+    for (const child of childrenOf.get(parent) ?? []) {
+      if (child <= 1 || seen.has(child)) continue;
+      seen.add(child);
+      out.push(child);
+      queue.push(child);
+    }
+  }
+  return out;
+}
+
+/**
+ * The descendants of `rootPid` now, for a kill that cannot be aimed at a process group:
+ * a child that is not detached shares its parent's group, and the tree has to be read
+ * before the kill, because a dead parent's children reparent to init.
+ *
+ * Empty when the process table cannot be read within `budgetMs`, so a failed or hung
+ * `ps` costs the descendants and never the kill that follows.
+ */
+export async function snapshotDescendants(rootPid: number, budgetMs: number): Promise<number[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const table = await Promise.race([
+    readProcessTableAsync(),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), budgetMs);
+      timer.unref?.();
+    }),
+  ]);
+  clearTimeout(timer);
+  return table ? descendantsOf(table, rootPid) : [];
+}
+
+/** SIGKILLs each pid. Never throws: a pid already gone is the outcome wanted. */
+export function killPids(pids: readonly number[]): void {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone, or not this user's to signal.
+    }
+  }
 }
 
 /** Default pause between SIGTERM and the SIGKILL that follows it. */
