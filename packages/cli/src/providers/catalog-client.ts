@@ -664,6 +664,10 @@ export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> 
     if (result.ok) {
       const routeRegistry = { generationId: cache.catalogGenerationId, registry: result.registry };
       if (reconcileWires(cache.entries, routeRegistry, cache.catalogGenerationId)) {
+        // A refresh may have written another generation while the routes were
+        // fetched; its models file and routes sidecar are newer, so keep them.
+        const onDisk = readAllModelsCache();
+        if (onDisk && onDisk.catalogGenerationId !== cache.catalogGenerationId) return;
         writeRouteRegistry(routeRegistry);
         return;
       }
