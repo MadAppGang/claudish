@@ -564,10 +564,10 @@ describe.skipIf(process.platform === "win32")("Claude Code's descendants on a si
         '  echo "$$" > "$TMPDIR/child.pid"',
         "  while :; do sleep 0.05; done",
         "fi",
-        'echo "$$" > "$TMPDIR/claude.pid"',
-        'ROLE=child "$0" &',
         // Slower than a process-table read, so the tree is still whole during one.
         "trap 'sleep 0.5; touch \"$TMPDIR/claude.finished\"; exit 0' TERM",
+        'echo "$$" > "$TMPDIR/claude.pid"',
+        'ROLE=child "$0" &',
         "while :; do sleep 0.05; done",
       ].join("\n")
     );
@@ -614,8 +614,8 @@ describe.skipIf(process.platform === "win32")("sessionEnd during a signal shutdo
   test("finishes when Claude Code exits about 1.9 s after SIGTERM", async () => {
     await expectSessionEndFinishes(
       [
-        'echo "$$" > "$TMPDIR/claude.pid"',
         "trap 'sleep 1.9; exit 0' TERM",
+        'echo "$$" > "$TMPDIR/claude.pid"',
         "while :; do sleep 0.05; done",
       ].join("\n")
     );
@@ -623,7 +623,7 @@ describe.skipIf(process.platform === "win32")("sessionEnd during a signal shutdo
 
   test("finishes when Claude Code ignores SIGTERM and has to be SIGKILLed", async () => {
     await expectSessionEndFinishes(
-      ['echo "$$" > "$TMPDIR/claude.pid"', "trap '' TERM", "while :; do sleep 0.05; done"].join(
+      ["trap '' TERM", 'echo "$$" > "$TMPDIR/claude.pid"', "while :; do sleep 0.05; done"].join(
         "\n"
       )
     );
@@ -668,9 +668,9 @@ describe.skipIf(process.platform === "win32")("claudish's teardown after a signa
   test("shuts the proxy down and prints Done, then exits 143", async () => {
     const run = runOver(
       [
+        "trap 'exit 0' TERM",
         'echo "$$" > "$TMPDIR/claude.pid"',
         'echo "$ANTHROPIC_BASE_URL" > "$TMPDIR/claude.url"',
-        "trap 'exit 0' TERM",
         "while :; do sleep 1; done",
       ].join("\n"),
       { verbose: true }
