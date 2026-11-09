@@ -442,7 +442,9 @@ export function describeDiscoveryFailure(failure: DiscoveryFailure): string {
     case "incomplete":
       return `the model list could not be read as a complete list${at}${because}`;
     case "empty-models-catalog":
-      return `the endpoint answered${at} but listed no models`;
+      return detail
+        ? `the endpoint answered${at}, but ${detail}`
+        : `the endpoint answered${at} but listed no models`;
   }
 }
 
@@ -621,7 +623,7 @@ function describeIncompleteness(body: unknown, parsed: ParsedModelsList): string
   const continuation = describeContinuation(body);
   if (continuation) return `the endpoint signalled more results (${continuation})`;
   if (parsed.dropped > 0) return `${parsed.dropped} of ${parsed.total} entries were unparseable`;
-  if (parsed.models.length === 0) return "the endpoint listed no models";
+  if (parsed.models.length === 0) return "it listed no models";
   return null;
 }
 
@@ -904,6 +906,16 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
     });
   }
   const models = withIdPrefix(providerName, parsed.models, descriptor.idPrefix);
+  if (models.length === 0) {
+    // Every listed id lacks the endpoint's `modelPrefix`: nothing it lists is
+    // reachable, and `served` is never empty. Recorded, not cached.
+    return recordFailure({
+      kind: "empty-models-catalog",
+      provider: providerName,
+      endpoint,
+      detail: `it listed ${parsed.models.length} models, none starting with modelPrefix "${descriptor.idPrefix}"`,
+    });
+  }
 
   _failures.delete(providerName);
   log(

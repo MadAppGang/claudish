@@ -19,7 +19,12 @@ import {
 } from "./custom-endpoints-loader.js";
 import { __resetEndpointDiagnosticsForTests } from "./endpoint-diagnostics.js";
 import { invalidateEndpointRegistration } from "./endpoint-registration.js";
-import { discoverProviderModels, invalidateModelDiscovery } from "./model-discovery.js";
+import {
+  describeDiscoveryFailure,
+  discoverProviderModels,
+  discoverProviderModelsCatalog,
+  invalidateModelDiscovery,
+} from "./model-discovery.js";
 import type { PredefinedEndpoint } from "./predefined-endpoint-schema.js";
 import { __resetPredefinedStateForTests, loadPredefinedEndpoints } from "./predefined-endpoints.js";
 import { getProviderByName } from "./provider-definitions.js";
@@ -1067,6 +1072,35 @@ describe("custom endpoint modelPrefix and discovered ids", () => {
     clearRuntimeRegistry();
     invalidateModelDiscovery();
     invalidateEndpointRegistration();
+  });
+
+  test("no listed id with the modelPrefix is a reported failure, never a cached empty list", async () => {
+    let listed = 0;
+    globalThis.fetch = (async () => {
+      listed++;
+      return Response.json({ data: [{ id: "o3-mini" }, { id: "o4" }] });
+    }) as unknown as typeof fetch;
+    loadCustomEndpoints(
+      makeConfig({
+        "prefixed-ep": {
+          kind: "simple",
+          url: "https://prefixed.example.invalid/v1",
+          format: "openai",
+          authScheme: "none",
+          modelPrefix: "gpt-",
+        },
+      })
+    );
+
+    const outcome = await discoverProviderModelsCatalog("prefixed-ep");
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind !== "failed") throw new Error("unreachable");
+    expect(outcome.failure.kind).toBe("empty-models-catalog");
+    expect(describeDiscoveryFailure(outcome.failure)).toContain(
+      'listed 2 models, none starting with modelPrefix "gpt-"'
+    );
+    await discoverProviderModelsCatalog("prefixed-ep");
+    expect(listed).toBe(2);
   });
 
   test("a discovered id round-trips through the picker spec to the same upstream id", async () => {
