@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
+import { type ModelInfo, resolveProviderExternalId } from "../model-selector.js";
 import type { ClaudishProfileConfig } from "../profile-config.js";
 import { type DiskCacheV3, writeAllModelsCache } from "./all-models-cache.js";
 import {
@@ -1090,16 +1091,18 @@ describe("custom endpoint modelPrefix and discovered ids", () => {
       })
     );
 
-    const ids = (await discoverProviderModels("prefixed-ep")).map((m) => m.id);
-    expect(ids).toEqual(["6.1-sol"]);
+    const discovered = await discoverProviderModels("prefixed-ep");
+    expect(discovered.map((m) => m.id)).toEqual(["gpt-6.1-sol"]);
+    const name = resolveProviderExternalId("prefixed-ep", discovered[0] as unknown as ModelInfo);
+    expect(name).toBe("6.1-sol");
 
     const def = getProviderByName("prefixed-ep")!;
     const handler = getRuntimeProfiles()
       .get("prefixed-ep")!
       .createHandler({
         provider: { ...def, prefixes: ["prefixed-ep"] } as unknown as ProfileContext["provider"],
-        modelName: ids[0]!,
-        targetModel: `prefixed-ep@${ids[0]}`,
+        modelName: name,
+        targetModel: `prefixed-ep@${name}`,
         port: 3000,
         apiKey: "",
         sharedOpts: {},
