@@ -164,6 +164,28 @@ describe("discoverProviderModelsCatalog — the GET half", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  test('authScheme "none" has no auth header BY DECLARATION, so the request is made', async () => {
+    // What the authority really answers for the scheme: static headers, no auth
+    // (`api-key-credential.ts:362`). Under the blank-credential gate above that
+    // is indistinguishable from an unset key, so a keyless endpoint was told it
+    // had no credential — a variable to go and find that it correctly lacks.
+    credentials.getRequestAuth = mock(async () => ({ headers: {} }));
+    stubResponse(JSON.stringify({ data: [{ id: "local-model" }] }));
+    registerRuntimeProvider(
+      defineProvider("models-catalog-keyless-test", {
+        authScheme: "none",
+        modelDiscovery: { path: "/models", format: "openai-models-list" },
+      })
+    );
+
+    const outcome = await discoverProviderModelsCatalog("models-catalog-keyless-test");
+
+    expect(outcome.kind).toBe("served");
+    if (outcome.kind !== "served") throw new Error("unreachable");
+    expect(outcome.models.map((m) => m.id)).toEqual(["local-model"]);
+    expect(getDiscoveryFailure("models-catalog-keyless-test")).toBeUndefined();
+  });
 });
 
 describe("discoverProviderModelsCatalog — `unsupported` is not a failure", () => {
