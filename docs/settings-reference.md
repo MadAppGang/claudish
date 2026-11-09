@@ -512,6 +512,17 @@ the list it does offer, never silently dropped or guessed. A faster tier can bil
 rate. The markers need a catalog connection (or a custom endpoint); they are refused elsewhere.
 `-pro`/`-fast` are NOT markers: `gpt-6-sol-pro` and `kimi-k3-fast` are separate models.
 
+**Claude Code's `/fast`.** In a claudish session, `/fast on` asks the main model's connection for
+its fast tier, exactly like `#fast` but without refusing: a connection that does not offer one
+answers at standard speed (logged with `--debug`). `/fast` is applied only to a request billed
+as a subscription; on a metered connection (an API key, or `cx@` signed with one) it is ignored,
+and claudish says so once per model on stderr. Add `#fast` to the model spec to pay for the
+faster tier on a metered connection. On the Codex subscription (`cx@`) the tier
+comes from your account's own model list, so `cx@gpt-5.6-sol` with `/fast` sends
+`service_tier=priority` when your plan offers it (`--probe` still prints the catalog's
+speed, `unknown`, for these connections). Fast tiers can use more of your plan's
+allowance or bill at a higher rate. `CLAUDE_CODE_DISABLE_FAST_MODE=1` turns `/fast` off.
+
 ### 5.2 Provider Shortcuts
 
 #### Remote Providers
@@ -757,10 +768,17 @@ For OpenAI- or Anthropic-compatible servers:
 | `apiKey` | string | yes, unless `authScheme: "none"` | API key; supports `${VAR}` env expansion. Must be **omitted** under `authScheme: "none"` |
 | `authScheme` | `"bearer"`, `"x-api-key"` or `"none"` | no | Auth header scheme (default: `bearer`) |
 | `modelPrefix` | string | no | Prepended to model name before sending to API |
-| `models` | string[] | no | Restrict to listed models; omit to allow any |
+| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models`, which is what the nested Claude Code's `/model` command lists. Not an allowlist — an unlisted name still reaches the endpoint — and not the model picker's list, which comes from the endpoint itself (see below) |
 | `wire` | object | no | How requests are built — see **Declaring the wire** below |
 
 Usage: `claudish --model my-vllm@llama3.1-70b "task"`
+
+**The picker lists what an `openai` endpoint serves.** `format: "openai"` means the host speaks
+the OpenAI API, so claudish asks it — `GET /models` beside the `/chat/completions` it already
+uses — when you scope to that provider in the interactive picker. Nothing is fetched at startup.
+A host that does not serve the path reports the URL and the status instead of showing an empty
+list. `format: "anthropic"` endpoints are not asked; enter the model name directly, or launch
+with `--model my-endpoint@some-model`.
 
 **No-credential endpoints**: for a local router or a server on a trusted network, set
 `authScheme: "none"` and omit `apiKey`. claudish then sends no auth header at all:
@@ -809,7 +827,7 @@ Full control over transport, auth, headers, and stream format:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `kind` | `"complex"` | yes | Discriminator |
-| `displayName` | string | no | Human-readable name (shown in logs) |
+| `displayName` | string | yes | Human-readable name (shown in logs). Without it the entry fails validation and is skipped with a warning |
 | `transport` | string | yes | Transport type (e.g., `"openai"`, `"anthropic"`) |
 | `baseUrl` | string | yes | Server base URL |
 | `apiPath` | string | no | Custom API path (overrides default for transport) |
@@ -818,7 +836,7 @@ Full control over transport, auth, headers, and stream format:
 | `headers` | object | no | Additional HTTP headers |
 | `streamFormat` | string | no | Stream parser override (e.g., `"openai-sse"`, `"anthropic-sse"`) |
 | `modelPrefix` | string | no | Prepended to model name |
-| `models` | string[] | no | Restrict to listed models |
+| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models` (see the simple table above) |
 | `wire` | object | no | How requests are built — see **Declaring the wire** below |
 
 ### Declaring the wire (v10.5.0+)
@@ -851,6 +869,9 @@ clamped to the nearest one it does. Example for a vLLM server running a Qwen thi
 Before v10.5.0 claudish picked these from the model name (a Qwen name got `enable_thinking`,
 a `gpt-5` name got `max_completion_tokens`); such an endpoint now needs the block above, or
 `--model-params`, to keep that behaviour.
+
+With `transport: "openai"`, the picker asks this endpoint for its models at the `/models` path
+beside the `apiPath` it declares — `/api/v2/chat/completions` above is asked at `/api/v2/models`.
 
 ### Environment variable expansion
 

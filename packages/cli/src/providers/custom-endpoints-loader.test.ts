@@ -17,7 +17,8 @@ import {
 } from "./custom-endpoints-loader.js";
 import { __resetEndpointDiagnosticsForTests } from "./endpoint-diagnostics.js";
 import { invalidateEndpointRegistration } from "./endpoint-registration.js";
-import { __resetPredefinedStateForTests } from "./predefined-endpoints.js";
+import type { PredefinedEndpoint } from "./predefined-endpoint-schema.js";
+import { __resetPredefinedStateForTests, loadPredefinedEndpoints } from "./predefined-endpoints.js";
 import { getProviderByName } from "./provider-definitions.js";
 import type { ProfileContext } from "./provider-profiles.js";
 import {
@@ -219,6 +220,201 @@ describe("custom-endpoints-loader", () => {
     expect(def?.transport).toBe("litellm");
     expect(def?.baseUrl).toBe("https://litellm.corp.example.com");
     expect(def?.apiPath).toBe("/v1/chat/completions");
+  });
+
+  /**
+   * The descriptor is what `PickerDataSource.providerList()` reads as
+   * `hasDiscovery` (`picker/PickerDataSource.ts:191`), and with it absent the
+   * picker never asked a custom endpoint what it serves: the provider row read
+   * `0 models` and `⏎` opened an empty list. Asserted on the definition rather
+   * than through the picker so the test stays hermetic and never loads OpenTUI.
+   */
+  describe("derived openai models discovery", () => {
+    test("simple openai endpoint: /models beside its /chat/completions", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "my-vllm": {
+            kind: "simple",
+            url: "https://api.example.invalid/v1",
+            format: "openai",
+            apiKey: "sk-fake-key",
+          },
+        })
+      );
+
+      expect(getRuntimeProviders().get("my-vllm")?.modelDiscovery).toEqual({
+        path: "/models",
+        format: "openai-models-list",
+      });
+      // The endpoint's own URL carries the version segment, so the resolved
+      // request is the one the vendor documents.
+      expect(getProviderByName("my-vllm")?.baseUrl).toBe("https://api.example.invalid/v1");
+    });
+
+    test("complex openai endpoint: the sibling of its DECLARED apiPath", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "corp-proxy": {
+            kind: "complex",
+            displayName: "Corporate LLM Proxy",
+            transport: "openai",
+            baseUrl: "https://llm.corp.invalid",
+            apiPath: "/api/v2/chat/completions",
+            apiKey: "sk-fake-key",
+          },
+        })
+      );
+
+      expect(getRuntimeProviders().get("corp-proxy")?.modelDiscovery).toEqual({
+        path: "/api/v2/models",
+        format: "openai-models-list",
+      });
+    });
+
+    test.each([
+      ["/v1/responses", "/v1/models"],
+      ["/v1/chat/completions", "/v1/models"],
+    ])("complex openai endpoint on %s: discovery at %s", (apiPath, modelsPath) => {
+      loadCustomEndpoints(
+        makeConfig({
+          "responses-proxy": {
+            kind: "complex",
+            displayName: "Responses Proxy",
+            transport: "openai",
+            baseUrl: "https://llm.corp.invalid",
+            apiPath,
+            apiKey: "sk-fake-key",
+            ...(apiPath.endsWith("/responses") && { wire: { api: "responses" } }),
+          },
+        })
+      );
+
+      expect(getRuntimeProviders().get("responses-proxy")?.modelDiscovery).toEqual({
+        path: modelsPath,
+        format: "openai-models-list",
+      });
+    });
+
+    test.each([
+      ["simple", { kind: "simple", url: "https://p.invalid/v1", format: "openai" }],
+      [
+        "complex chat",
+        {
+          kind: "complex",
+          displayName: "P",
+          transport: "openai",
+          baseUrl: "https://p.invalid",
+          apiPath: "/v1/chat/completions",
+        },
+      ],
+      [
+        "complex responses",
+        {
+          kind: "complex",
+          displayName: "P",
+          transport: "openai",
+          baseUrl: "https://p.invalid",
+          apiPath: "/v1/responses",
+          wire: { api: "responses" },
+        },
+      ],
+    ])(
+      "a %s endpoint with a modelPrefix declares no discovery; without one it does",
+      (_label, entry) => {
+        loadCustomEndpoints(
+          makeConfig({
+            prefixed: { ...entry, apiKey: "sk-fake-key", modelPrefix: "gpt-" },
+            plain: { ...entry, apiKey: "sk-fake-key" },
+          })
+        );
+
+        expect(getRuntimeProviders().get("prefixed")).toBeDefined();
+        expect(getRuntimeProviders().get("prefixed")?.modelDiscovery).toBeUndefined();
+        expect(getRuntimeProviders().get("plain")?.modelDiscovery?.format).toBe(
+          "openai-models-list"
+        );
+      }
+    );
+
+    test("complex openai endpoint with no apiPath: the default path's sibling", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "default-path": {
+            kind: "complex",
+            displayName: "Default Path",
+            transport: "openai",
+            baseUrl: "https://llm.corp.invalid",
+            apiKey: "sk-fake-key",
+          },
+        })
+      );
+
+      const def = getRuntimeProviders().get("default-path");
+      expect(def?.apiPath).toBe("/v1/chat/completions");
+      expect(def?.modelDiscovery).toEqual({ path: "/v1/models", format: "openai-models-list" });
+    });
+
+    /**
+     * A bundled predefined row compiles to the same complex definition, so it
+     * asks its own `/models` too. The picker shows catalog rows when that
+     * request fails: `discoverProviderModelsCatalog`'s `failed` outcome carries
+     * them as `fallbackRows` (model-selector-discovery.test.ts, STATE D).
+     */
+    test("predefined catalog row: the sibling of the row's apiPath", () => {
+      const envVar = "PREDEF_DISCOVERY_TEST_KEY";
+      const saved = process.env[envVar];
+      process.env[envVar] = "sk-fake-key";
+      try {
+        const row: PredefinedEndpoint = {
+          name: "predef-discovery-vendor",
+          displayName: "Predef Discovery Vendor",
+          baseUrl: "https://api.predef-discovery.invalid",
+          apiPath: "/openai/v1/chat/completions",
+          format: "openai",
+          apiKeyEnvVar: envVar,
+          evidence: { tier: "probe", verdict: "auth-realm", measuredAt: "2026-08-14" },
+        };
+
+        const res = loadPredefinedEndpoints(makeConfig(), { catalog: [row] });
+
+        expect(res.registered).toEqual([row.name]);
+        expect(getRuntimeProviders().get(row.name)?.modelDiscovery).toEqual({
+          path: "/openai/v1/models",
+          format: "openai-models-list",
+        });
+      } finally {
+        if (saved === undefined) delete process.env[envVar];
+        else process.env[envVar] = saved;
+      }
+    });
+
+    test.each([
+      ["simple", { kind: "simple", url: "https://a.invalid", format: "anthropic" }],
+      [
+        "complex litellm",
+        {
+          kind: "complex",
+          displayName: "L",
+          transport: "litellm",
+          baseUrl: "https://b.invalid",
+        },
+      ],
+      [
+        "complex anthropic",
+        {
+          kind: "complex",
+          displayName: "A",
+          transport: "anthropic",
+          baseUrl: "https://c.invalid",
+          apiPath: "/v1/messages",
+        },
+      ],
+    ])("a %s endpoint declares nothing — its /models is a different shape", (_label, entry) => {
+      loadCustomEndpoints(makeConfig({ other: { ...entry, apiKey: "sk-fake-key" } }));
+
+      expect(getRuntimeProviders().get("other")).toBeDefined();
+      expect(getRuntimeProviders().get("other")?.modelDiscovery).toBeUndefined();
+    });
   });
 
   describe('authScheme "none" registration', () => {

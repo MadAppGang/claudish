@@ -809,7 +809,14 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
     // different fixes, and reporting the latter for the former sends the user
     // hunting for a typo in a variable they never defined. Checking here also
     // skips a round-trip that cannot succeed.
-    if (!hasAuthHeader(headers)) {
+    //
+    // `authScheme: "none"` is exempt, and that is the same distinction one layer
+    // out: it DECLARES that no credential was ever expected, so the absent auth
+    // header is the correct outcome rather than a missing key (config-schema.ts).
+    // Reporting `no-credentials` for it sends the user hunting for a variable
+    // they correctly do not have: a local router, or an inference server on a
+    // trusted network, reached through a custom endpoint's derived descriptor.
+    if (!hasAuthHeader(headers) && def.authScheme !== "none") {
       return recordFailure({ kind: "no-credentials", provider: providerName, endpoint });
     }
   }

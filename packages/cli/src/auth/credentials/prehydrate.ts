@@ -100,7 +100,7 @@ import { loadConfig } from "../../profile-config.js";
 import { PROVIDER_TO_PREFIX } from "../../providers/auto-route.js";
 import { ensureCatalogReady } from "../../providers/catalog-client.js";
 import { ensureEndpointsRegistered } from "../../providers/endpoint-registration.js";
-import { MODEL_CHAIN_SEPARATOR } from "../../providers/model-parser.js";
+import { MODEL_CHAIN_SEPARATOR, hasProviderPrefix } from "../../providers/model-parser.js";
 import { proxyRouteDecision } from "../../providers/native-route.js";
 import { getOpFailures } from "../../providers/onepassword.js";
 import { validateApiKeysForModels } from "../../providers/provider-resolver.js";
@@ -379,8 +379,9 @@ export function normalizePinnedSpec(r: Route): string | null {
   const spec = r.modelSpec?.trim();
   if (!spec) return null;
   // Already self-describing: a "provider@model" spec, or a custom URL (which
-  // parseModelSpec treats as explicit on its own).
-  if (spec.includes("@")) return spec;
+  // parseModelSpec treats as explicit on its own). A wire id that starts with
+  // "@" (`@preset/example`) names no provider and still needs the prefix.
+  if (hasProviderPrefix(spec)) return spec;
   if (spec.startsWith("http://") || spec.startsWith("https://")) return spec;
   const prefix = PROVIDER_TO_PREFIX[r.provider] ?? r.provider;
   if (!prefix || prefix.includes("@")) return null;

@@ -1146,7 +1146,8 @@ async function runCli() {
     // catalog in the background. Every outcome proceeds:
     //   "ok"      — nothing to report, or the requested refresh succeeded
     //   "warned"  — the requested refresh failed; one warning line on stderr
-    //   "skipped" — local model, explicit provider@model, --models-skip-update
+    //   "skipped" — local model, explicit provider@model, native-only launch,
+    //               --models-skip-update
     //
     // AHEAD OF THE --advisor CHECK, deliberately: a forced refresh lands before
     // `planAdvisorModel` reads route candidates for bare panel members.

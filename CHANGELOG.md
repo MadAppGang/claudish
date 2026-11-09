@@ -2,6 +2,75 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.17.0] - 2026-11-09
+
+### Bug Fixes
+
+- name no upstream tier id in /fast notes *(openai-codex)* ([`6cbd7a3`](https://github.com/MadAppGang/claudish/commit/6cbd7a34d5e9d9f405522709d99b3f273328bcb2))
+- skip model discovery for endpoints with a modelPrefix *(discovery)* ([`abea059`](https://github.com/MadAppGang/claudish/commit/abea059875a698187bc81aae077ddda9131166af))
+- report a modelPrefix that matches no discovered id *(discovery)* ([`ad99acc`](https://github.com/MadAppGang/claudish/commit/ad99accdd979ff3a4a125cb605ea656c63a18936))
+- keep a discovered id whole for the chat filter *(picker)* ([`3bc11e1`](https://github.com/MadAppGang/claudish/commit/3bc11e1a0d8a4676f6bdec261b243bcf712fed88))
+- register signing values before the /fast decision *(openai-codex)* ([`6e2bf97`](https://github.com/MadAppGang/claudish/commit/6e2bf97216fd0d16db32e3b49f02d0625a6acca5))
+- list models for Responses-API custom endpoints *(discovery)* ([`a9a60ea`](https://github.com/MadAppGang/claudish/commit/a9a60ead560f40eb42af882c5fd2a1faf2121e0b))
+- strip a custom endpoint's modelPrefix from discovered ids *(picker)* ([`efad34f`](https://github.com/MadAppGang/claudish/commit/efad34fa38e35b1a9024d499b5ce700cbc31d422))
+- keep upstream tier ids out of the /fast refusal *(openai-codex)* ([`6a10a88`](https://github.com/MadAppGang/claudish/commit/6a10a88fbb634a73487220ba644b2345ce3bb560))
+- stop the metered /fast notice advising #fast *(openai-codex)* ([`b348cc6`](https://github.com/MadAppGang/claudish/commit/b348cc61c653746a48c3be70bc20be04dfe37872))
+- decide /fast only from the signing account's models *(openai-codex)* ([`c9303e2`](https://github.com/MadAppGang/claudish/commit/c9303e21ddc4e13361a6fe2df15fc649ecb27a58))
+- apply Claude Code /fast only to subscription-signed requests *(effort)* ([`ef7d5c7`](https://github.com/MadAppGang/claudish/commit/ef7d5c7e9743de4f66f60351380bd05651ec79ae))
+- match the Codex Fast service tier by id or name only *(effort)* ([`0238162`](https://github.com/MadAppGang/claudish/commit/02381628a7cd6c0871281be786e75495e7552dbc))
+- report CLAUDE_CODE_MODEL_CAPABILITIES removed only when stripped *(gates)* ([`9c0e0f4`](https://github.com/MadAppGang/claudish/commit/9c0e0f46367a47e186aae456a80a4e092c5c480e))
+- honour the catalog URL setting on every models-index endpoint *(catalog)* ([`fd85cc3`](https://github.com/MadAppGang/claudish/commit/fd85cc335fb511e9e8385bbed29c89829120898c))
+- stop reporting no-credentials for authScheme "none" *(discovery)* ([`2e2352d`](https://github.com/MadAppGang/claudish/commit/2e2352dc48f7c1b2488c21d0b7f712508566e8d3))
+- remove inherited host-routing vars on native launches *(runner)* ([`0df9362`](https://github.com/MadAppGang/claudish/commit/0df93620a991d128c77add81795ab3437d987278))
+- keep a user's settings env off the sessions claudish routes *(runner)* ([`4c120da`](https://github.com/MadAppGang/claudish/commit/4c120da6be48576dddcd6ba19e4b0cbe0aaee5df))
+
+### Documentation
+
+- document /fast, its launch gates and the Codex service tier *(wire)* ([`d4c529d`](https://github.com/MadAppGang/claudish/commit/d4c529db699e07527df8f4203f5fc47a0f83fb65))
+- update CHANGELOG.md for v14.16.2([`f9c7bc2`](https://github.com/MadAppGang/claudish/commit/f9c7bc230ceda736ef47bd0cfafb576f9ef4af03))
+- call the probe endpoint's models probe picks, not a roster *(catalog)* ([`01889c1`](https://github.com/MadAppGang/claudish/commit/01889c168bb556d6265722dfd6a79bf7e8b4b6c7))
+- document CLAUDISH_PROBE_MODELS_URL beside CLAUDISH_CATALOG_URL *(catalog)* ([`b14b890`](https://github.com/MadAppGang/claudish/commit/b14b8901706415365f6d5c4faf0056273eabfc3b))
+- correct what a custom endpoint's models field does *(endpoints)* ([`6318ff3`](https://github.com/MadAppGang/claudish/commit/6318ff368e8358b4d33d28832f9a4ee8f5cb7fb8))
+
+### New Features
+
+- open Claude Code's fast mode gates in pure proxy mode *(launch)* ([`dcdcd20`](https://github.com/MadAppGang/claudish/commit/dcdcd20240c034867fecd6759db89e4d64ce0233))
+- send the /models service tier for #fast and /fast *(openai-codex)* ([`b4c56e4`](https://github.com/MadAppGang/claudish/commit/b4c56e4e71837b0140892a2f3309a50b89153cab))
+- read Claude Code's speed field as a non-explicit speed choice *(wire)* ([`c26bacd`](https://github.com/MadAppGang/claudish/commit/c26bacde86e4d6e9ea906aecb7c71a10906f1109))
+- keep service tiers from the Codex models endpoint *(discovery)* ([`24049b1`](https://github.com/MadAppGang/claudish/commit/24049b14ae5ab52302b756279eb4fbeda96a3ce1))
+- list a custom endpoint's own models in the picker *(discovery)* ([`13e3730`](https://github.com/MadAppGang/claudish/commit/13e37308ad3e2f050956d0def31a5080d6a00684))
+
+## [14.16.2] - 2026-11-09
+
+### Bug Fixes
+
+- keep the leading @ of a preset wire id in the model name *(status-line)* ([`4ec7104`](https://github.com/MadAppGang/claudish/commit/4ec710495ac3971ad002623e813f5123a33cef9b))
+- pin an @-leading wire id with its provider for spawned slots *(team)* ([`b90ffa5`](https://github.com/MadAppGang/claudish/commit/b90ffa524cd1f56b8cf99683b5ebb5926cc7b757))
+- skip warming for native-only launches ref:0 *(catalog)* ([`abac7eb`](https://github.com/MadAppGang/claudish/commit/abac7eb2af923b788e65e6300498a0f66b25caa1))
+- prefix an @-leading wire id with its provider in --probe *(probe)* ([`e8aae98`](https://github.com/MadAppGang/claudish/commit/e8aae98464337db73a24338035f5e059f4208996))
+- accept a leading @ in any wire id, not only openrouter's *(routing)* ([`5257a07`](https://github.com/MadAppGang/claudish/commit/5257a0740acfcdcda17e9f549eea901410d2eb9a))
+- support OpenRouter preset model IDs ref:0([`b814e71`](https://github.com/MadAppGang/claudish/commit/b814e7197e9c17df5df1c999e85ea7d80c42597a))
+- reuse the health check's /api/tags answer in the probe *(ollama)* ([`4a1bce7`](https://github.com/MadAppGang/claudish/commit/4a1bce75d561fb727020e1a313d9d6bbb8f69ef1))
+- detect Ollama backend by probe, not exact provider name *(local)* ([`0e6f78a`](https://github.com/MadAppGang/claudish/commit/0e6f78a7b4c0040f0b769fff5cdff18ae4bb5443))
+- replace source NUL bytes with escapes ref:0 *(effort)* ([`7a18556`](https://github.com/MadAppGang/claudish/commit/7a18556c1bc8734512135104bc8f9c66774e26d6))
+- pass plaintext reasoning back to DeepSeek and DashScope models so tool-calling subagents survive their second request([`98a60ef`](https://github.com/MadAppGang/claudish/commit/98a60ef3ef6865f9a9520a572b7807591f1b86c1))
+- report cached tokens on a cancelled anthropic stream *(adapters)* ([`d595b86`](https://github.com/MadAppGang/claudish/commit/d595b86e55fa4aed69fa8c58c88bf40e4d0277f9))
+- lift cache breakpoints to the request-level cache_control *(kimi)* ([`38871b3`](https://github.com/MadAppGang/claudish/commit/38871b39627d06a86da8a76ecf407ae088f377f2))
+- count cached tokens in the prompt a turn reports *(anthropic-sse)* ([`6e832c1`](https://github.com/MadAppGang/claudish/commit/6e832c1a59a128f09d4ec15deea8fc0f52086603))
+- stop Claude Code before exiting on SIGINT or SIGTERM *(runner)* ([`f783780`](https://github.com/MadAppGang/claudish/commit/f7837804506c251c1b2f6f251ca99788081a763a))
+- report 128 + the real number for any signal *(runner)* ([`0875ee9`](https://github.com/MadAppGang/claudish/commit/0875ee9b9bc6d9df19d636c17bddd31efedd5fcf))
+
+### Documentation
+
+- mark customEndpoints displayName as required *(settings)* ([`e065726`](https://github.com/MadAppGang/claudish/commit/e0657265f6de3c8fc76e5edf7344990a42a0baf3))
+- update CHANGELOG.md for v14.16.1([`a2a0b59`](https://github.com/MadAppGang/claudish/commit/a2a0b599e8afb49a97dd4685898ede6da444591e))
+
+### Refactoring
+
+- use hasProviderPrefix in probe-runner and ComposedHandler *(routing)* ([`92b2782`](https://github.com/MadAppGang/claudish/commit/92b278203c722a9498d985e20fce034b5d8a851d))
+- decide the native-only warm skip in shouldWarmCatalog *(catalog)* ([`f284ea3`](https://github.com/MadAppGang/claudish/commit/f284ea35a31bde117e6ac620a7c7e1a4fcdeb70f))
+- remove the top-level cache_control lift from kimi@ requests *(kimi)* ([`f1e4c9d`](https://github.com/MadAppGang/claudish/commit/f1e4c9dd899b8ed0bc501db7e8274af2471142a1))
+
 ## [14.16.1] - 2026-11-08
 
 ### Bug Fixes

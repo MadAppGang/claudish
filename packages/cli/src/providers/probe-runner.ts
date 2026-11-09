@@ -1,3 +1,4 @@
+import { hasProviderPrefix } from "./model-parser.js";
 import { type ProbeLinkInput, type ProbeResult, probeLink } from "./probe-live.js";
 import type { CandidateOutcome, ExplainedCandidate, RouteExplanation } from "./routing-rules.js";
 
@@ -14,7 +15,10 @@ export function pinProbeModelSpec(link: Pick<ProbeLinkInput, "provider" | "model
   // it would set hasExplicitProvider=true and route it AWAY from the passthrough
   // (→ "not a valid model ID"). So keep its model spec BARE.
   if (link.provider === "native-anthropic") return link.modelSpec;
-  return link.modelSpec.includes("@") ? link.modelSpec : `${link.provider}@${link.modelSpec}`;
+  // A spec names its provider only when text comes before its first "@". A wire
+  // id may itself start with "@" (OpenRouter presets: "@preset/x"), and that
+  // id still needs the provider in front of it.
+  return hasProviderPrefix(link.modelSpec) ? link.modelSpec : `${link.provider}@${link.modelSpec}`;
 }
 
 /** A candidate the routing chain did not keep. */

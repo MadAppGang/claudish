@@ -77,6 +77,8 @@ stale-while-error, `AbortSignal.timeout(10_000)` on every fetch, a 60 s back-off
 answer exists, and a tool-bearing request with an empty memo waits at most 2 s before going
 classic. Never persisted. Discovery is not an auth site: every throw resolves to
 `discovery-unknown`, never to a status.
+The same memo also answers step 5s (the account's `service_tiers` for `#fast` / Claude Code's
+`/fast`, `wire.md` § Speed), which runs just before 5d and may warm it first.
 
 ## Two shapes, one tool (`code-mode/request.ts`)
 

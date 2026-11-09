@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ import type { ProfileContext } from "../providers/provider-profiles.js";
 import { OpenAIProviderTransport } from "../providers/transport/openai.js";
 import { buildKnownWireHandler } from "../providers/wire-handler.js";
 import { wireMarkerContext } from "../providers/wire-markers.js";
-import { ComposedHandler } from "./composed-handler.js";
+import { ComposedHandler, _resetFastIgnoredNotices } from "./composed-handler.js";
 import type { ModelHandler } from "./types.js";
 const cachePath = new URL(
   "../test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json",
@@ -52,7 +52,7 @@ function resolved(provider: string, model: string, path = cachePath) {
   if (!r.ok || r.connection.wire.status !== "known") throw new Error("missing fixture");
   return { ...structuredClone(r.connection), wire: structuredClone(r.connection.wire) };
 }
-function request(handler: ModelHandler) {
+function request(handler: ModelHandler, extra: Record<string, unknown> = {}) {
   const app = new Hono();
   app.post("/", (c) =>
     handler.handle(c, {
@@ -61,6 +61,7 @@ function request(handler: ModelHandler) {
       max_tokens: 32000,
       messages: [{ role: "user", content: "hello" }],
       output_config: { effort: "high" },
+      ...extra,
     })
   );
   return app.request("/", { method: "POST" });
@@ -158,6 +159,45 @@ test("request marker context sends priority on OpenAI", async () => {
   expect(calls).toHaveLength(1);
   expect(calls[0]!.body.service_tier).toBe("priority");
   expect(wireMarkerContext.getStore()).toBeUndefined();
+});
+test("Claude Code /fast on metered OpenAI sends no tier and says so once on stderr", async () => {
+  _resetFastIgnoredNotices();
+  const c = resolved("openai", "gpt-6.1-sol");
+  expect(c.wire.status === "known" && c.wire.speed.status).toBe("supported");
+  const handler = buildKnownWireHandler(context("openai", "gpt-6.1-sol"), "openai", c, c.wire)!;
+  handlers.push(handler);
+  const calls = capture("invalid value");
+  const stderr: string[] = [];
+  const write = spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+    stderr.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write);
+  try {
+    await request(handler, { speed: "fast" });
+    await request(handler, { speed: "fast" });
+  } finally {
+    write.mockRestore();
+  }
+  expect(calls).toHaveLength(2);
+  for (const call of calls) {
+    expect(call.body).not.toHaveProperty("service_tier");
+    expect(call.body).not.toHaveProperty("speed");
+  }
+  const notices = stderr.filter((line) => line.includes("/fast ignored"));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toContain("gpt-6.1-sol");
+  expect(notices[0]).toContain("metered");
+});
+test("Claude Code /fast on a connection without the tier is sent at standard speed", async () => {
+  const c = resolved("x-ai", "grok-4.7");
+  const handler = buildKnownWireHandler(context("x-ai", "grok-4.7"), "x-ai", c, c.wire)!;
+  handlers.push(handler);
+  const calls = capture("invalid value");
+  await request(handler, { speed: "fast" });
+  // Reaching the upstream at all is the point: a non-explicit speed is never refused.
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.body).not.toHaveProperty("service_tier");
+  expect(calls[0]!.body).not.toHaveProperty("speed");
 });
 
 test.each(["google/gemini-3.8-flash", "opaque-model"])(

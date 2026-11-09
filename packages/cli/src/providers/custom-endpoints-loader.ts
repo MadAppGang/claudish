@@ -43,6 +43,9 @@ import type { WireApi } from "./connection-wire.js";
 import { declaredConnection, declaredWire } from "./declared-wire.js";
 import { clearEndpointUnavailable, recordEndpointUnavailable } from "./endpoint-diagnostics.js";
 import { customEndpointKeyEnvVar } from "./endpoint-key-env.js";
+// Type-only, as in provider-definitions.ts: erased at compile time, so no
+// runtime import cycle with model-discovery.ts.
+import type { ModelDiscoveryDescriptor } from "./model-discovery.js";
 import {
   type RouteTier,
   type TieredProviderDefinition,
@@ -257,6 +260,50 @@ export function loadCustomEndpoints(config: ClaudishProfileConfig): LoadResult {
 export const CUSTOM_ENDPOINT_TIER: RouteTier = "gateway";
 
 /**
+ * The models-list descriptor for an endpoint that speaks OpenAI, and
+ * `undefined` for one that does not.
+ *
+ * DERIVED FROM THE DECLARED WIRE FORMAT, never configured. `format: "openai"`
+ * (or `transport: "openai"`) is already the user's statement that this host
+ * speaks the OpenAI API, and `GET /models` is part of that API — published as a
+ * sibling of `/chat/completions` and of `/responses`. So the path is one RULE
+ * applied to the path the endpoint already declares (`/v1/chat/completions` →
+ * `/v1/models`, `/v1/responses` → `/v1/models`, `/api/v2/chat/completions` →
+ * `/api/v2/models`), not a pinned URL the way a hardcoded model list would be.
+ * All 27 bundled rows in `predefined-catalog.ts` travel this same function and
+ * land on the path their vendor serves.
+ *
+ * Without a descriptor `hasDiscovery` is false in the picker and nothing asks
+ * the host what it serves: the provider row reads `0 models` and `⏎` opens an
+ * empty list, the defect `picker.md` is built against. With one, the row reads
+ * `lists its own models` (`providerCountText` in `rows.tsx`).
+ *
+ * An endpoint that does not serve the path is a `failed` outcome naming the
+ * URL and the status, never a silent empty list.
+ *
+ * Only `openai`. The `anthropic` transport's own `/v1/models` wants an
+ * `anthropic-version` header and answers `created_at` where
+ * `openai-models-list` reads `created`; `litellm` and `gemini` are different
+ * shapes again. Each is its own change with its own live verification.
+ */
+function openaiModelsDiscovery(
+  wireFormat: string,
+  apiPath: string,
+  modelPrefix: string | undefined
+): ModelDiscoveryDescriptor | undefined {
+  // A discovered id is a wire id, and every reader of the list (picker,
+  // availability, context window, probe pick) uses it as the name after
+  // `endpoint@`. With a `modelPrefix` the handler sends `modelPrefix + name`,
+  // so a listed id is not a callable name and those readers would disagree
+  // with the handler. Such an endpoint gets no discovery: its names are typed.
+  if (modelPrefix) return undefined;
+  // The Chat Completions and the Responses API sit beside the same `/models`.
+  const api = ["/chat/completions", "/responses"].find((suffix) => apiPath.endsWith(suffix));
+  if (wireFormat !== "openai" || !api) return undefined;
+  return { path: `${apiPath.slice(0, -api.length)}/models`, format: "openai-models-list" };
+}
+
+/**
  * Build a ProviderDefinition for a custom endpoint so it appears in lookups
  * (getProviderByName, getAllProviders, etc.). The definition is minimal —
  * real handler construction happens in the profile.
@@ -298,9 +345,11 @@ function buildProviderDefinition(
       // and then demanded a key anyway. Bearer stays the DEFAULT (that is what
       // every simple endpoint got before), but a declared scheme now survives.
       authScheme: ep.authScheme ?? "bearer",
+      modelDiscovery: openaiModelsDiscovery(ep.format, "/chat/completions", ep.modelPrefix),
     };
   }
 
+  const apiPath = ep.apiPath ?? "/v1/chat/completions";
   return {
     createHandler: runtimeHandler(name),
     tier: CUSTOM_ENDPOINT_TIER,
@@ -309,7 +358,7 @@ function buildProviderDefinition(
     transport: ep.transport as TransportType,
     baseUrl: stripTrailingSlash(ep.baseUrl),
     baseUrlEnvVars,
-    apiPath: ep.apiPath ?? "/v1/chat/completions",
+    apiPath,
     apiKeyEnvVar,
     apiKeyAliases,
     apiKeyDescription: ovr?.apiKeyDescription ?? `${ep.displayName} (custom endpoint)`,
@@ -321,6 +370,7 @@ function buildProviderDefinition(
     description: ovr?.description ?? `Custom endpoint: ${ep.displayName}`,
     headers: ep.headers,
     authScheme: ep.authScheme ?? "bearer",
+    modelDiscovery: openaiModelsDiscovery(ep.transport, apiPath, ep.modelPrefix),
   };
 }
 

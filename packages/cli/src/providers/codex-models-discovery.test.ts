@@ -22,6 +22,8 @@ const captured: {
     default_reasoning_level?: string;
     default_verbosity?: string;
     truncation_policy?: { mode: string; limit: number };
+    service_tiers?: Array<{ id: string; name: string; description?: string }>;
+    default_service_tier?: string | null;
   }>;
 } = JSON.parse(capturedBytes);
 const sol = captured.models.find((model) => model.slug === "gpt-6.1-sol");
@@ -33,6 +35,7 @@ const expected = {
   defaultReasoningLevel: sol.default_reasoning_level,
   defaultVerbosity: sol.default_verbosity,
   truncationPolicy: sol.truncation_policy,
+  serviceTiers: sol.service_tiers?.map(({ id, name }) => ({ id, name })),
 };
 let home: string;
 const realFetch = globalThis.fetch;
@@ -91,7 +94,27 @@ describe("T5 Codex /models discovery", () => {
     expect(sol.tool_mode).toBe("code_mode_only");
     expect(sol.use_responses_lite).toBe(true);
     expect(sol.truncation_policy).toEqual({ mode: "tokens", limit: 10000 });
+    expect(sol.service_tiers?.map((tier) => tier.id)).toEqual(["priority"]);
+    expect(sol.default_service_tier).toBeNull();
     expect(info).toEqual(expected);
+  });
+
+  test("keeps well-formed service tiers and a string default tier, drops malformed entries", async () => {
+    const body = JSON.stringify({
+      models: [
+        {
+          slug: "m",
+          default_service_tier: "priority",
+          service_tiers: [{ id: "priority", name: "Fast" }, { id: 7 }, null, { name: "Flex" }],
+        },
+      ],
+    });
+    const opts = options((async () => new Response(body)) as unknown as typeof fetch);
+
+    const info = await getCodexModelInfo("m", binding(), "key-tiers", opts);
+
+    expect(info?.serviceTiers).toEqual([{ id: "priority", name: "Fast" }]);
+    expect(info?.defaultServiceTier).toBe("priority");
   });
 
   test("REQ-10 TEST-12 concurrent lookups share one outgoing fetch", async () => {
@@ -280,6 +303,21 @@ describe("T5 Codex /models discovery", () => {
     expect(await getCodexModelInfo(sol.slug, binding(), "key-a", opts)).toEqual(expected);
     expect(readFileSync(cacheFile, "utf8")).toBe(cacheBytes);
     expect(readdirSync(home)).toEqual(before);
+  });
+
+  test("accountOnly never answers from the CLI cache, which is not keyed by account", async () => {
+    writeFileSync(
+      join(home, "models_cache.json"),
+      JSON.stringify({ client_version: "0.161.0", models: captured.models })
+    );
+    const opts = options((async () => {
+      throw new TypeError("offline");
+    }) as unknown as typeof fetch);
+
+    expect(
+      await getCodexModelInfo(sol.slug, binding(), "key-a", { ...opts, accountOnly: true })
+    ).toBeUndefined();
+    expect(await getCodexModelInfo(sol.slug, binding(), "key-a", opts)).toEqual(expected);
   });
 
   test("REQ-15 TEST-22 successful discovery never persists models to the injected home", async () => {

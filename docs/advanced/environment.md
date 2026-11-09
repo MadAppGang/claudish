@@ -175,6 +175,28 @@ Full rationale — the measurements behind the deadline, and why the handoff sta
 
 ---
 
+## Catalog Endpoints
+
+### `CLAUDISH_CATALOG_URL`
+
+The cloud models catalog endpoint. Default: the published `queryModels` service.
+
+```bash
+export CLAUDISH_CATALOG_URL='https://staging.example.com/queryModels'
+```
+
+Every other models-index endpoint (plans, recommended, search, top100, probe models) is derived from this host, so one setting moves the whole service. A URL that does not end in `/queryModels` (a plain file) has no siblings to derive; set the variables below as well.
+
+### `CLAUDISH_PLANS_URL`
+
+The subscription plans endpoint. Default: `queryPlans` on the `CLAUDISH_CATALOG_URL` host.
+
+### `CLAUDISH_PROBE_MODELS_URL`
+
+The endpoint the Test All probe reads its probe picks from (one model per provider). Default: `probeModels` on the `CLAUDISH_CATALOG_URL` host.
+
+---
+
 ## Read-Only Variables
 
 ### `CLAUDISH_ACTIVE_MODEL_NAME`

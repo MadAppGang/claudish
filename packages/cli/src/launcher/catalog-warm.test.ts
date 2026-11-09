@@ -129,6 +129,25 @@ describe("shouldWarmCatalog", () => {
   test("mixed-case URL prefix HTTP://localhost → false (case-insensitive)", () => {
     expect(shouldWarmCatalog({ model: "HTTP://localhost:11434/foo" })).toBe(false);
   });
+
+  test.each(["sonnet", "opus", "sonnet[1m]", "claude-sonnet-4-5"])(
+    "native model %s alone → false",
+    (model) => {
+      expect(shouldWarmCatalog({ model })).toBe(false);
+    }
+  );
+
+  test("local model + forceUpdate → false", () => {
+    expect(shouldWarmCatalog({ model: "ollama@llama3.2", forceUpdate: true })).toBe(false);
+  });
+
+  test("explicit model + bare role override → true (the role is routed)", () => {
+    expect(shouldWarmCatalog({ model: "cx@gpt-6-astra", modelOpus: "gpt-4o" })).toBe(true);
+  });
+
+  test("explicit model + empty routing chain → false", () => {
+    expect(shouldWarmCatalog({ model: "cx@gpt-6-astra", modelChain: [] })).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -281,6 +300,58 @@ describe("warmCatalogIfNeeded", () => {
     expect(stderrChunks.join("")).toBe("");
   });
 
+  test.each(["sonnet", "opus", "sonnet[1m]", "claude-sonnet-4-5"])(
+    "native %s launches without a cached catalog or network",
+    async (model) => {
+      mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
+      expect(await warmCatalogIfNeeded(makeConfig({ model }), { now: NOW })).toBe("skipped");
+      expect(refreshSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  // A launch that routes more than its main model is not skipped. Without
+  // `--models-refresh` it still never fetches: "ok", and the proxy refreshes in
+  // the background.
+  const additionalRoutes: Partial<ClaudishConfig>[] = [
+    { advisor: true, advisorModels: ["gpt-4o"] },
+    { modelChain: ["sonnet", "or@vendor/model"] },
+    { modelOpus: "or@vendor/model" },
+    { modelSonnet: "or@vendor/model" },
+    { modelHaiku: "or@vendor/model" },
+    { modelSubagent: "or@vendor/model" },
+  ];
+  for (const model of ["sonnet", "cx@gpt-6-astra"]) {
+    test.each(additionalRoutes)(
+      `${model} with additional routes is not skipped and does not fetch: %j`,
+      async (overrides) => {
+        mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
+        const config = makeConfig({ model, quiet: false, ...overrides });
+        expect(shouldWarmCatalog(config)).toBe(true);
+        expect(await warmCatalogIfNeeded(config, { now: NOW })).toBe("ok");
+        expect(refreshSpy).not.toHaveBeenCalled();
+        expect(stderrChunks.join("")).toBe("");
+      }
+    );
+
+    test.each(additionalRoutes)(
+      `${model} with additional routes + forceUpdate=true refreshes once: %j`,
+      async (overrides) => {
+        mockRefreshOutcome = { kind: "refreshed", modelCount: 42 };
+        const config = makeConfig({ model, forceUpdate: true, ...overrides });
+        expect(await warmCatalogIfNeeded(config, { now: NOW })).toBe("ok");
+        expect(refreshSpy).toHaveBeenCalledTimes(1);
+      }
+    );
+  }
+
+  test("native sonnet + forceUpdate=true refreshes once", async () => {
+    mockRefreshOutcome = { kind: "refreshed", modelCount: 42 };
+    const config = makeConfig({ model: "sonnet", forceUpdate: true });
+    expect(shouldWarmCatalog(config)).toBe(true);
+    expect(await warmCatalogIfNeeded(config, { now: NOW })).toBe("ok");
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+  });
+
   test("fresh cache + !forceUpdate → 'ok' without calling refreshCatalog", async () => {
     mockReadResult = freshCache();
     const config = makeConfig({ model: "gpt-4o" });
@@ -306,7 +377,8 @@ describe("warmCatalogIfNeeded", () => {
         mockReadResult = state === "fresh" ? freshCache() : state === "stale" ? staleCache() : null;
         mockRefreshOutcome = { kind: "refreshed", modelCount: 42 };
         const config = makeConfig({ model, forceUpdate: true });
-        expect(shouldWarmCatalog(config)).toBe(false);
+        expect(shouldWarmCatalog({ model })).toBe(false);
+        expect(shouldWarmCatalog(config)).toBe(true);
 
         const result = await warmCatalogIfNeeded(config, { now: NOW });
         expect(refreshSpy).toHaveBeenCalledTimes(1);

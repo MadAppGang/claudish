@@ -58,7 +58,11 @@ export interface WireChoices {
   catalogMaxOutputTokens?: number;
   /** `+pro` on the model spec, or pro turned on by `proOnUltracode`. */
   mode?: { value: WireMode; explicit: boolean };
-  /** `#<speed>` on the model spec. */
+  /**
+   * `#<speed>` on the model spec (explicit), or Claude Code's `/fast` toggle,
+   * which arrives as `speed: "fast"` in the request body (not explicit: a
+   * connection without the tier answers at standard speed, with a note).
+   */
   speed?: { value: WireSpeed; explicit: boolean };
   /** The user accepted a `served_model_changes` warning for this connection. */
   acceptServedModelChange?: boolean;
@@ -106,6 +110,16 @@ export function setPointer(body: Record<string, unknown>, path: string, value: u
     node = node[token] as Record<string, unknown>;
   }
   node[tokens[tokens.length - 1]] = value;
+}
+
+/** The value at `path` in `body`, or `undefined` when nothing is there. */
+export function readPointer(body: Record<string, unknown>, path: string): unknown {
+  let node: unknown = body;
+  for (const token of pointerTokens(path)) {
+    if (node === null || typeof node !== "object" || Array.isArray(node)) return undefined;
+    node = (node as Record<string, unknown>)[token];
+  }
+  return node;
 }
 
 /** Remove the value at `path`, then any objects left empty above it. */
@@ -220,6 +234,31 @@ function applyControl(
   result.notes.push(
     `${label} ${requested}: ${control.path} = ${JSON.stringify(native)}${control.access !== "open" ? ` (access: ${control.access})` : ""}`
   );
+}
+
+/** True when `speed` would be written on this connection: its control is `supported` and offers it. */
+export function wireSpeedOffered(control: WireControl, speed: WireSpeed): boolean {
+  return control.status === "supported" && control.values[speed] !== undefined;
+}
+
+/**
+ * Apply one speed choice to a body `shapeRequestFromWire` already shaped
+ * without it: Claude Code's `/fast`, which waits until the request is signed,
+ * because only the signing credential says who pays for the faster tier. A
+ * value already at the speed pointer came from `--model-params` and is kept.
+ */
+export function applyWireSpeed(
+  body: Record<string, unknown>,
+  wire: KnownWire,
+  speed: { value: WireSpeed; explicit: boolean }
+): WireShapeResult {
+  const result: WireShapeResult = { headers: [], notes: [], borrowed: [] };
+  if (wire.speed.status === "supported" && readPointer(body, wire.speed.path) !== undefined) {
+    result.notes.push(`speed ${speed.value}: ${wire.speed.path} already set by --model-params`);
+    return result;
+  }
+  applyControl(body, wire.speed, speed.value, "speed", speed.explicit, result);
+  return result;
 }
 
 // ─── Reasoning ─────────────────────────────────────────────────────────────
@@ -337,11 +376,13 @@ function applyReasoning(
  * sends. A legacy `thinking.budget_tokens` is translated into a catalog effort
  * name — the only use a budget ladder may still have; it never picks a wire
  * field. `thinking.type: "disabled"` or effort `none` means reasoning off.
+ * `speed: "fast"` is Claude Code's `/fast` toggle; it is a request, never an
+ * explicit choice, so a `#<speed>` marker still overrides it.
  */
 export function wireChoicesFromClaudeRequest(
   claudeRequest: any,
   pinnedEffort?: string
-): Pick<WireChoices, "effort" | "reasoningOff" | "hasTools" | "maxTokens"> {
+): Pick<WireChoices, "effort" | "reasoningOff" | "hasTools" | "maxTokens" | "speed"> {
   let effort: string | undefined = pinnedEffort;
   if (!effort) {
     const level = claudeRequest?.output_config?.effort;
@@ -369,6 +410,7 @@ export function wireChoicesFromClaudeRequest(
     reasoningOff,
     hasTools: Array.isArray(claudeRequest?.tools) && claudeRequest.tools.length > 0,
     maxTokens: typeof claudeRequest?.max_tokens === "number" ? claudeRequest.max_tokens : undefined,
+    ...(claudeRequest?.speed === "fast" && { speed: { value: "fast", explicit: false } }),
   };
 }
 
@@ -471,8 +513,10 @@ export function shapeRequestFromWire(
 }
 
 /**
- * The resend for a 4xx when the request carried fields borrowed from the
- * owner's connection: without the borrowed fields the error names (by the
+ * The resend for a 4xx when the request carried fields this connection's
+ * catalog wire does not publish — borrowed from the owner's connection, or a
+ * Codex `service_tier` taken from the account's dynamic models catalog for a
+ * non-explicit `/fast` (step 5s): without the fields the error names (by the
  * pointer's last segment, e.g. `reasoning_effort`, `max_completion_tokens`),
  * or without all of them when a 400 rejects a parameter without naming which.
  * `null` when nothing was borrowed or the error is not about a parameter.
@@ -503,7 +547,7 @@ export function recoverBorrowedWireFields(
   for (const path of drop) deletePointer(next, path);
   return {
     payload: next,
-    note: `dropped ${drop.join(", ")} (borrowed from the owner's connection; this connection's value is unknown)`,
+    note: `dropped ${drop.join(", ")} (not published by this connection's catalog wire)`,
   };
 }
 

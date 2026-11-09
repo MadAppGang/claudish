@@ -18,14 +18,15 @@ import { type DiskCacheV3, readAllModelsCache } from "../providers/all-models-ca
 import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
 import { MODEL_CATALOG_NAME } from "../providers/catalog-name.js";
 import { parseModelSpec } from "../providers/model-parser.js";
+import { nativeRouteFor } from "../providers/native-route.js";
 import type { ClaudishConfig } from "../types.js";
 
 /**
  * Result returned by `warmCatalogIfNeeded`. The launcher proceeds on every value:
  *   - "ok"      → nothing to report (no refresh requested, or it succeeded)
  *   - "warned"  → a requested refresh failed; one warning line is on stderr
- *   - "skipped" → local model, explicit `provider@model`, `--models-skip-update`,
- *                 or the refresh is disabled
+ *   - "skipped" → local model, explicit `provider@model`, native-only launch,
+ *                 `--models-skip-update`, or the refresh is disabled
  */
 export type WarmOutcome = "ok" | "warned" | "skipped";
 
@@ -53,22 +54,53 @@ const LOCAL_MODEL_PREFIXES = [
  *
  * Returns `false` (skip warm) when:
  *   - The user passed `--models-skip-update` (hard skip, regardless of model).
- *   - The user passed a local-only model prefix (case-insensitive).
- *   - The user passed an explicit provider (`provider@model`): routing takes it
- *     as written, so nothing at launch depends on the catalog.
+ *   - The user passed a local-only model prefix (case-insensitive), even with
+ *     `--models-refresh`.
+ *   - The main model needs no catalog and nothing else on the launch routes:
+ *     no `--models-refresh`, no `--advisor`, no routing chain and no role
+ *     override (`modelOpus`, `modelSonnet`, `modelHaiku`, `modelSubagent`).
+ *     Each of those may route a bare name and so still reads the catalog. The
+ *     main model needs no catalog when it is
+ *       - an explicit provider (`provider@model`): routing takes it as written;
+ *       - one Claude Code serves on its own auth (`nativeRouteFor`).
  *
  * Returns `true` (warm) when:
  *   - No model is specified (auto-route path needs the catalog to pick).
  *   - The model is a bare name that routing resolves.
+ *   - `--models-refresh` was given for a non-local model: it refreshes whatever
+ *     provider was named.
  */
-export function shouldWarmCatalog(args: {
-  model?: string;
-  skipModelsUpdate?: boolean;
-}): boolean {
+export function shouldWarmCatalog(
+  args: Partial<
+    Pick<
+      ClaudishConfig,
+      | "model"
+      | "skipModelsUpdate"
+      | "forceUpdate"
+      | "advisor"
+      | "modelChain"
+      | "modelOpus"
+      | "modelSonnet"
+      | "modelHaiku"
+      | "modelSubagent"
+    >
+  >
+): boolean {
   if (args.skipModelsUpdate) return false;
   if (args.model === undefined) return true;
   if (isLocalModel(args.model)) return false;
+
+  const routesOnlyMainModel =
+    !args.forceUpdate &&
+    !args.advisor &&
+    !args.modelChain?.length &&
+    !args.modelOpus &&
+    !args.modelSonnet &&
+    !args.modelHaiku &&
+    !args.modelSubagent;
+  if (!routesOnlyMainModel || !args.model) return true;
   if (parseModelSpec(args.model).isExplicitProvider) return false;
+  if (nativeRouteFor(args.model)) return false;
   return true;
 }
 
@@ -134,14 +166,13 @@ function humanizeAge(ageMs: number): string {
 /**
  * Launcher catalog warm dispatcher.
  *
- *   1. Hard skips — `--models-skip-update` or a local model → "skipped",
- *      even with `--models-refresh`.
- *   2. `--models-refresh` outranks the explicit `provider@model` gate: it
- *      refreshes whatever provider was named. Without it, an explicit
- *      `provider@model` → "skipped" (`shouldWarmCatalog`).
- *   3. No `--models-refresh` → "ok", silently, whatever the cache state. The
+ *   1. `shouldWarmCatalog` false → "skipped". `--models-skip-update` and a local
+ *      model skip even with `--models-refresh`; `--models-refresh` outranks the
+ *      explicit `provider@model` and native-only skips, refreshing whatever
+ *      provider was named.
+ *   2. No `--models-refresh` → "ok", silently, whatever the cache state. The
  *      proxy's background refresh keeps the catalog current.
- *   4. `--models-refresh` → one `refreshCatalog` call, no spinner:
+ *   3. `--models-refresh` → one `refreshCatalog` call, no spinner:
  *      - refreshed    → indexed-count line (suppressed by `--quiet`), "ok".
  *      - disabled     → "skipped" (nobody attempted a fetch).
  *      - incompatible / any other failure → one warning line, "warned".
@@ -152,17 +183,7 @@ export async function warmCatalogIfNeeded(
   config: ClaudishConfig,
   opts?: { now?: Date; ttlHours?: number }
 ): Promise<WarmOutcome> {
-  if (config.skipModelsUpdate) return "skipped";
-  if (config.model !== undefined && isLocalModel(config.model)) return "skipped";
-  if (
-    !config.forceUpdate &&
-    !shouldWarmCatalog({
-      model: config.model,
-      skipModelsUpdate: config.skipModelsUpdate,
-    })
-  ) {
-    return "skipped";
-  }
+  if (!shouldWarmCatalog(config)) return "skipped";
 
   if (!config.forceUpdate) return "ok";
 
