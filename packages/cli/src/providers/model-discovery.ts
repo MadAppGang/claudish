@@ -34,7 +34,7 @@ import { resolveRouteProfile } from "./connection-resolver.js";
 import { isOptInWireId } from "./content-use.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
-import { getProviderByName } from "./provider-definitions.js";
+import { getProviderByName, isPersistedListProvider } from "./provider-definitions.js";
 import type { ReportedCapability } from "./transport/probe-discovery.js";
 
 /** A model as reported by the provider's own live endpoint. */
@@ -246,8 +246,9 @@ const FETCH_TIMEOUT_MS = 5000;
 
 /**
  * The last served list per claudish provider. `account` is the fingerprint of
- * the account identity it was fetched for (undefined when the credential
- * exposes none); a list fetched for another account is not an answer.
+ * the account identity it was fetched for (undefined when the provider keeps no
+ * per-account list or the credential exposes none); a list fetched for another
+ * account is not an answer.
  */
 const _cache = new Map<
   string,
@@ -444,7 +445,8 @@ const coldRefreshes = new Map<string, Promise<DiscoveredModel[]>>();
 
 /**
  * Drop cached discovery (after a credential change / TUI hydrate-on-add). The
- * memory half of `forgetAccountModelsLists`, which a login or logout runs.
+ * memory half of `forgetAccountModelsLists`, which a login or logout runs; a
+ * credential invalidation runs it too.
  */
 export function invalidateModelDiscovery(provider?: string): void {
   if (provider) {
@@ -764,25 +766,31 @@ export function peekDiscoveredModels(providerName: string): DiscoveredModel[] | 
 }
 
 /**
- * The full list the provider returned, cached unsplit for the account it was
- * fetched for: a list cached for another account is a miss. The account is
- * read before the fetch, so a list whose account changed while it was fetched
- * is recorded under the old one and misses next time. Never rejects.
+ * The full list the provider returned, cached unsplit. Only a provider with
+ * stored per-account lists reads its account here: for those, a list cached for
+ * another account is a miss, and a list whose account changed while it was
+ * fetched goes to its caller uncached. Every other provider's list lives until
+ * it expires or its credential is invalidated. Never rejects.
  */
 async function discoverEveryServedModel(providerName: string): Promise<ModelsCatalogOutcome> {
-  const account = await accountFingerprint(providerName);
+  if (!getProviderByName(providerName)?.modelDiscovery) {
+    return { kind: "unsupported", reason: "no-descriptor" };
+  }
+  const perAccount = isPersistedListProvider(providerName);
+  const accountBefore = perAccount ? await accountFingerprint(providerName) : undefined;
   const cached = _cache.get(providerName);
-  if (cached && cached.expiresAt > Date.now() && cached.account === account) {
+  if (cached && cached.expiresAt > Date.now() && cached.account === accountBefore) {
     return { kind: "served", models: cached.models };
   }
   const outcome = await fetchServedModels(providerName);
-  if (outcome.kind === "served") {
-    _cache.set(providerName, {
-      models: outcome.models,
-      expiresAt: Date.now() + CACHE_TTL_MS,
-      account,
-    });
-  }
+  if (outcome.kind !== "served") return outcome;
+  const accountAfter = perAccount ? await accountFingerprint(providerName) : undefined;
+  if (accountBefore && accountAfter && accountBefore !== accountAfter) return outcome;
+  _cache.set(providerName, {
+    models: outcome.models,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+    account: accountAfter ?? accountBefore,
+  });
   return outcome;
 }
 

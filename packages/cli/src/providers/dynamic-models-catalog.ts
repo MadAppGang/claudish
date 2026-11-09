@@ -53,21 +53,9 @@ import {
   fetchEveryServedModel,
   invalidateModelDiscovery,
 } from "./model-discovery.js";
-import { BUILTIN_PROVIDERS, getProviderByName } from "./provider-definitions.js";
+import { BUILTIN_PROVIDERS, isPersistedListProvider } from "./provider-definitions.js";
 
-/**
- * Whether `provider` keeps a stored list: it declares `modelDiscovery`, its tier
- * is `subscription` or `dynamic-subscription`, and it is not local. Pure.
- */
-export function isPersistedListProvider(provider: string): boolean {
-  const def = getProviderByName(provider);
-  return (
-    def !== undefined &&
-    def.modelDiscovery !== undefined &&
-    !def.isLocal &&
-    (def.tier === "subscription" || def.tier === "dynamic-subscription")
-  );
-}
+export { isPersistedListProvider };
 
 export interface AccountModelsList {
   provider: string;
@@ -131,6 +119,7 @@ const inFlight = new Map<string, { accountKey: string; outcome: Promise<ModelsCa
 const listeners = new Set<(provider: string, list: AccountModelsList | null) => void>();
 
 credentials.onInvalidate((name) => {
+  invalidateModelDiscovery(name);
   if (name) {
     identityMemo.delete(name);
     liveMemory.delete(name);
