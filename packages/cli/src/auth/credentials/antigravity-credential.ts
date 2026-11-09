@@ -24,6 +24,7 @@
 import { randomUUID } from "node:crypto";
 import { resolveAntigravityServedModel } from "../../providers/transport/antigravity.js";
 import {
+  antigravityTokenLineageMaterial,
   getValidAntigravityAccessToken,
   readSharedAntigravityToken,
 } from "../antigravity-token.js";
@@ -89,11 +90,7 @@ export class AntigravityCredentialProvider implements CredentialProvider {
   async accountIdentity(): Promise<string | undefined> {
     const token = readSharedAntigravityToken();
     if (!token) return undefined;
-    const lineage = token.refresh_token
-      ? `refresh:${token.refresh_token}`
-      : token.access_token
-        ? `access:${token.access_token}`
-        : undefined;
+    const lineage = antigravityTokenLineageMaterial(token);
     return lineage ? `${lineage}\n${antigravityHost()}` : undefined;
   }
 

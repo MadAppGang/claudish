@@ -469,12 +469,18 @@ function encodeRecord(rec: SharedStoreRecord): string {
 // Public: read / write
 // ---------------------------------------------------------------------------
 
-/** Read the current shared Antigravity token, or null if absent/unsupported. */
+/**
+ * Read the current shared Antigravity token, or null if absent/unsupported.
+ * The read also moves the token lineage, so a sign-in or logout made by another
+ * process is seen by the per-account caches as soon as anything reads the store.
+ */
 export function readSharedAntigravityToken(
   deps: AntigravityTokenDeps = defaultDeps
 ): AntigravityToken | null {
   const rec = parseRecord(deps.readStore());
-  return rec ? rec.token : null;
+  const token = rec ? rec.token : null;
+  observeLineage(token);
+  return token;
 }
 
 /**
@@ -576,25 +582,38 @@ function captureAgyClientVersion(accessToken: string, deps: AntigravityTokenDeps
 let inFlight: Promise<string> | null = null;
 
 /**
- * SHA-256 of the refresh token behind the access token this module last
- * returned; null before the first one. The refresh token is the login's
- * lineage: it stays the same across access-token re-mints of one account and
- * changes when another account signs in, so caches of per-account answers
- * (project, tier, dynamic models catalog) compare against it. The token itself
- * is not kept.
+ * The login a token belongs to: `refresh:<refresh token>`, or
+ * `access:<access token>` for a record that holds no refresh token; undefined
+ * when it holds neither. The refresh token stays the same across access-token
+ * re-mints of one account and changes when another account signs in.
  */
-let issuedLineage: string | null = null;
+export function antigravityTokenLineageMaterial(token: AntigravityToken): string | undefined {
+  if (token.refresh_token) return `refresh:${token.refresh_token}`;
+  if (token.access_token) return `access:${token.access_token}`;
+  return undefined;
+}
+
+/**
+ * SHA-256 of the lineage material of the token this module last read from the
+ * shared store or returned; null before the first, after a reset, and when the
+ * store held no token. Caches of per-account answers (project, tier, dynamic
+ * models catalog) compare against it. The token itself is not kept.
+ */
+let observedLineage: string | null = null;
+
+function observeLineage(token: AntigravityToken | null): void {
+  const material = token ? antigravityTokenLineageMaterial(token) : undefined;
+  observedLineage = material ? createHash("sha256").update(material).digest("hex") : null;
+}
 
 function issue(token: AntigravityToken): string {
-  issuedLineage = createHash("sha256")
-    .update(token.refresh_token ?? "")
-    .digest("hex");
+  observeLineage(token);
   return token.access_token;
 }
 
-/** The lineage of the access token most recently returned; null before the first. */
+/** The lineage of the token most recently read or returned; null when none is known. */
 export function currentAntigravityTokenLineage(): string | null {
-  return issuedLineage;
+  return observedLineage;
 }
 
 async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
@@ -793,8 +812,10 @@ export async function forceRefreshAntigravityToken(
 // ---------------------------------------------------------------------------
 
 /**
- * Clear the in-flight promise, the memoized presence flag, and the raw read memo
- * (between tests, and after any out-of-band change to the shared store).
+ * Clear the in-flight promise, the memoized presence flag, the token lineage and
+ * the raw read memo (between tests, and after any out-of-band change to the
+ * shared store). With no lineage, no per-account cache answers until a token is
+ * read again.
  *
  * The read memo is included so callers that already documented themselves as
  * "reset, then read FRESH" — antigravity-oauth's `readToken` — keep that
@@ -803,5 +824,6 @@ export async function forceRefreshAntigravityToken(
 export function _resetAntigravityTokenState(): void {
   inFlight = null;
   cachedHasToken = null;
+  observedLineage = null;
   invalidateReadStoreMemo();
 }

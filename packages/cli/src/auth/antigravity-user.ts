@@ -187,6 +187,18 @@ function syncAccountCaches(): void {
   cachedAgLineage = lineage;
 }
 
+/**
+ * Whether an answer fetched under `lineage` may be cached: true only when the
+ * token lineage is still that one, after the caches are aligned with it. An
+ * answer that arrives after another account signed in goes to its caller and
+ * is never cached.
+ */
+function mayPublishFor(lineage: string | null): boolean {
+  if (currentAntigravityTokenLineage() !== lineage) return false;
+  syncAccountCaches();
+  return true;
+}
+
 /** loadCodeAssist with the Antigravity identity (minimal `{ ideType }` metadata). */
 async function callLoadCodeAssistAntigravity(accessToken: string): Promise<LoadCodeAssistResponse> {
   const res = await fetch(`${apiBase()}:loadCodeAssist`, {
@@ -228,6 +240,7 @@ export async function setupAntigravityUser(
     return { projectId: cachedAgProjectId, tierId: cachedAgTierId };
   }
 
+  const lineage = cachedAgLineage;
   const loadRes = await callLoadCodeAssistAntigravity(accessToken);
   log(`[Antigravity] loadCodeAssist response: ${JSON.stringify(loadRes)}`);
 
@@ -245,15 +258,20 @@ export async function setupAntigravityUser(
     );
   }
 
-  cachedAgProjectId = projectId;
-  cachedAgTierId = resolvedTier;
-  cachedAgTierName = loadRes.paidTier?.name || null;
+  if (mayPublishFor(lineage)) {
+    cachedAgProjectId = projectId;
+    cachedAgTierId = resolvedTier;
+    cachedAgTierName = loadRes.paidTier?.name || null;
+  } else {
+    log("[Antigravity] Token lineage changed during setup; the result is not cached.");
+  }
   log(`[Antigravity] User set up, project: ${projectId}, tier: ${resolvedTier}`);
   return { projectId, tierId: resolvedTier };
 }
 
 /** Short display name for the Antigravity tier (status line). */
 export function getAntigravityTierDisplayName(): string {
+  syncAccountCaches();
   if (!cachedAgTierName && !cachedAgTierId) return "Antigravity";
   const id = cachedAgTierId || "";
   if (id.includes("ultra")) return "Antigravity Ultra";
@@ -264,6 +282,7 @@ export function getAntigravityTierDisplayName(): string {
 
 /** Full tier name for the quota header — falls back to the short name. */
 export function getAntigravityTierFullName(): string {
+  syncAccountCaches();
   return cachedAgTierName || getAntigravityTierDisplayName();
 }
 
@@ -581,6 +600,11 @@ export async function getServedAntigravityModels(
   if (!opts?.force && agServedCache && now - agServedCacheAt < SERVED_MODELS_TTL_MS) {
     return agServedCache;
   }
+  // The account this fetch asks for: its answer is cached only if that is
+  // still the signed-in account when it arrives, and a failed fetch falls back
+  // only to this account's earlier list.
+  const lineage = cachedAgLineage;
+  const prior = agServedCache;
   try {
     const raw = await fetchAntigravityAvailableModelsRaw(accessToken, projectId);
     if (raw.kind === "unreachable") {
@@ -649,7 +673,7 @@ export async function getServedAntigravityModels(
         }
 
         const agentModelIds = flattenAgentModelSorts(data.agentModelSorts);
-        agServedCache = {
+        const served: AntigravityServedModels = {
           servedIds,
           defaultId,
           meta,
@@ -657,17 +681,22 @@ export async function getServedAntigravityModels(
           deprecatedReplacements,
           ...(agentModelIds ? { agentModelIds } : {}),
         };
+        if (!mayPublishFor(lineage)) {
+          log("[Antigravity] Token lineage changed during discovery; the result is not cached.");
+          return served;
+        }
+        agServedCache = served;
         agServedCacheAt = now;
         // The version the request actually presented, read in the same
         // synchronous step as its User-Agent (it equals `version` above).
         agServedCacheVersion = raw.clientVersion;
-        return agServedCache;
+        return served;
       }
     }
   } catch (err) {
     log(`[Antigravity] fetchAvailableModels error: ${err}`);
   }
-  if (agServedCache) return agServedCache;
+  if (prior) return prior;
   // The degraded path knows NOTHING about exclusions — it never saw a response.
   // Returning empty collections would assert "there are none", which is a claim
   // we cannot make; the fields are optional and consumers default them.
