@@ -121,6 +121,20 @@ describe("process tree termination", () => {
     expect(await terminateChildTree(child, 300)).toBe(true);
   });
 
+  test("terminateChildTree sends SIGKILL to a non-detached child that ignores SIGTERM", async () => {
+    if (process.platform === "win32") return;
+
+    const child = spawn("sh", ["-c", "trap '' TERM; echo ready; while :; do sleep 0.1; done"], {
+      env: { ...process.env },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.add(child);
+    await waitForOutput(child, "ready");
+
+    expect(await terminateChildTree(child, 300)).toBe(true);
+    expect(child.signalCode).toBe("SIGKILL");
+  });
+
   test("signalProcessTree does not throw for an already-exited child", async () => {
     const child = spawnChild("process.exit(0);");
     expect(await waitForExit(child, 400)).toBe(true);

@@ -228,6 +228,22 @@ export function redactExactValues(text: string, values: Iterable<string>): strin
 }
 
 /**
+ * Whether `text` contains any form of any value in `values`: the same forms
+ * and the same minimum length as `redactExactValues`, for a holder that must
+ * discard upstream text carrying a credential rather than mask it.
+ */
+export function containsExactValue(text: string, values: Iterable<string>): boolean {
+  if (!text) return false;
+  for (const value of values) {
+    if (typeof value !== "string" || value.length < SIGNING_VALUE_MIN_LENGTH) continue;
+    for (const form of signingValueForms(value)) {
+      if (text.includes(form)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * The registry pass for text sent back to Claude Code (an error body, an SSE
  * error frame). A response body is not a log line, so it never passes through
  * `log`; every site that puts upstream text into one calls this instead.
