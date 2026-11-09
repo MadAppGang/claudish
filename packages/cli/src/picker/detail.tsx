@@ -132,7 +132,7 @@ export function providerFactsText(facts: ProviderFacts): {
     facts.billing === "sub"
       ? "flat-rate subscription — no per-token charge"
       : facts.billing === "local"
-        ? "runs on this machine — no charge, no network"
+        ? "self-hosted — no per-token charge"
         : "metered — billed per token";
   const billingShort =
     facts.billing === "sub" ? "flat-rate plan" : facts.billing === "local" ? "local" : "metered";
