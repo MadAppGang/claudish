@@ -11,4 +11,19 @@ describe("interactive provider probes", () => {
       "grok-subscription@grok-4.5"
     );
   });
+
+  test("pins a wire id that starts with @, such as an OpenRouter preset", () => {
+    expect(pinProbeModelSpec({ provider: "openrouter", modelSpec: "@preset/example" })).toBe(
+      "openrouter@@preset/example"
+    );
+  });
+
+  test("leaves a model spec that already names its provider unchanged", () => {
+    expect(
+      pinProbeModelSpec({ provider: "openrouter", modelSpec: "openrouter@@preset/example" })
+    ).toBe("openrouter@@preset/example");
+    expect(
+      pinProbeModelSpec({ provider: "openrouter", modelSpec: "or@deepseek/deepseek-v4" })
+    ).toBe("or@deepseek/deepseek-v4");
+  });
 });
