@@ -430,7 +430,7 @@ describe("warmCatalogIfNeeded", () => {
     const result = await warmCatalogIfNeeded(config, { now: NOW });
     expect(refreshSpy).not.toHaveBeenCalled();
     expect(stderrChunks.join("")).toBe("");
-    expect(result).not.toBe("hard_fail");
+    expect(result).toBe("ok");
   });
 
   test("missing cache + !forceUpdate → no refresh or stderr and no hard fail", async () => {
@@ -440,7 +440,7 @@ describe("warmCatalogIfNeeded", () => {
     const result = await warmCatalogIfNeeded(config, { now: NOW });
     expect(refreshSpy).not.toHaveBeenCalled();
     expect(stderrChunks.join("")).toBe("");
-    expect(result).not.toBe("hard_fail");
+    expect(result).toBe("ok");
   });
 
   test.each(["fresh", "stale", "missing"] as const)(
@@ -452,7 +452,7 @@ describe("warmCatalogIfNeeded", () => {
       const result = await warmCatalogIfNeeded(config, { now: NOW });
       expect(refreshSpy).not.toHaveBeenCalled();
       expect(stderrChunks.join("")).toBe("");
-      expect(result).not.toBe("hard_fail");
+      expect(result).toBe("skipped");
     }
   );
 
@@ -507,7 +507,7 @@ describe("warmCatalogIfNeeded", () => {
     mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
     const config = makeConfig({ model: "gpt-4o", forceUpdate: true, quiet: false });
     const result = await warmCatalogIfNeeded(config, { now: NOW });
-    expect(result).not.toBe("hard_fail");
+    expect(result).toBe("warned");
     expect(refreshSpy).toHaveBeenCalledTimes(1);
 
     const stderrText = stderrChunks.join("");
@@ -531,6 +531,6 @@ describe("warmCatalogIfNeeded", () => {
     const result = await warmCatalogIfNeeded(config, { now: NOW });
     expect(refreshSpy).not.toHaveBeenCalled();
     expect(stderrChunks.join("")).toBe("");
-    expect(result).not.toBe("hard_fail");
+    expect(result).toBe("ok");
   });
 });
