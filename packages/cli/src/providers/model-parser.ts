@@ -89,6 +89,19 @@ import type { WireMode, WireSpeed } from "./wire-request.js";
 
 export const PROVIDER_SHORTCUTS: Record<string, string> = _getShortcuts();
 
+const PROVIDER_PREFIX = /^[^@]+@/;
+
+/**
+ * Whether a model spec names its provider: text before its first "@".
+ *
+ * A bare `includes("@")` is wrong because a wire id may itself start with "@"
+ * (OpenRouter presets: `@preset/example`). That id names no provider, while
+ * `or@@preset/example` does.
+ */
+export function hasProviderPrefix(spec: string): boolean {
+  return PROVIDER_PREFIX.test(spec);
+}
+
 /**
  * Local providers (no API key needed) — derived from BUILTIN_PROVIDERS.
  */

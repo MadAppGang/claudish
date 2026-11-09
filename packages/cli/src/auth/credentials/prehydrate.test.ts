@@ -124,6 +124,19 @@ describe("normalizePinnedSpec", () => {
     expect(normalizePinnedSpec(candidate("ollama", "ollama@llama3.2:3"))).toBe("ollama@llama3.2:3");
   });
 
+  it("prefixes an @-leading wire id with its provider", () => {
+    const normalized = normalizePinnedSpec(candidate("openrouter", "@preset/example"));
+    expect(normalized).toBe("or@@preset/example");
+
+    const parsed = parseModelSpec(normalized!);
+    expect(parsed.provider).toBe("openrouter");
+    expect(parsed.isExplicitProvider).toBe(true);
+  });
+
+  it("passes through an already-explicit spec whose wire id starts with @", () => {
+    expect(normalizePinnedSpec(candidate("openrouter", "or@@preset/x"))).toBe("or@@preset/x");
+  });
+
   it("passes through http(s) model URLs unchanged", () => {
     for (const url of ["http://localhost:11434/model", "https://models.example.test/v1"]) {
       expect(normalizePinnedSpec(candidate("custom-url", url))).toBe(url);
