@@ -35,7 +35,8 @@ interface Run {
  * the stand-in never calls it. `holdProxyStop` makes the proxy's `server.stop`, the
  * first step of `proxy.shutdown()`, touch `proxy-stop.held` and wait for `proxy-stop.release`
  * in the run's directory, with the event loop free to run a signal handler meanwhile.
- * `endpointUrl` launches through a custom endpoint at that URL.
+ * `endpointUrl` launches through a custom endpoint at that URL. `extraArgs` go on claudish's
+ * command line before the prompt.
  */
 function runOver(
   body: string,
@@ -44,6 +45,7 @@ function runOver(
     sessionEndMs?: number;
     holdProxyStop?: boolean;
     endpointUrl?: string;
+    extraArgs?: string[];
   } = {}
 ): Run {
   const dir = mkdtempSync(join(root, "case-"));
@@ -123,6 +125,7 @@ export default {
       ...(usesEndpoint ? ["--model", "stub@fake-model"] : ["--monitor"]),
       "-y",
       ...(opts.verbose ? ["--verbose"] : []),
+      ...(opts.extraArgs ?? []),
       "hi",
     ],
     {
@@ -612,53 +615,79 @@ describe.skipIf(process.platform === "win32")("Claude Code's descendants on a si
 });
 
 describe.skipIf(process.platform === "win32")("a signal before Claude Code is spawned", () => {
+  /**
+   * Sends `signal` while the launch waits up to LIVE_DISCOVERY_BOUND_MS on a stalled model
+   * list, with the settings file already written and Claude Code not spawned yet, and
+   * asserts the whole teardown ran. Returns the milliseconds from the signal to the exit.
+   */
+  async function expectStoppedBeforeSpawn(
+    signal: "SIGTERM" | "SIGHUP",
+    code: number,
+    extraArgs: string[] = []
+  ): Promise<number> {
+    let modelsRequested = false;
+    const stalledEndpoint = Bun.serve({
+      port: 0,
+      fetch(request) {
+        if (new URL(request.url).pathname.endsWith("/models")) modelsRequested = true;
+        return new Promise<Response>(() => {});
+      },
+    });
+    const run = runOver('touch "$TMPDIR/claude.spawned"', {
+      verbose: true,
+      endpointUrl: `http://127.0.0.1:${stalledEndpoint.port}`,
+      extraArgs,
+    });
+    const settingsFiles = () =>
+      readdirSync(join(run.home, ".claudish")).filter((name) => name.startsWith("settings-"));
+    const received = `[claudish] Received ${signal}`;
+    const shuttingDown = "[claudish] Shutting down proxy server...";
+    try {
+      await waitFor(
+        "the launch to hold with its settings file written",
+        () => modelsRequested && settingsFiles().length > 0,
+        15_000,
+        5
+      );
+      const signalledAt = Date.now();
+      run.proc.kill(signal);
+      expect(await run.exit).toBe(code);
+      const elapsedMs = Date.now() - signalledAt;
+      expect(existsSync(join(run.dir, "claude.spawned"))).toBe(false);
+      expect(settingsFiles()).toEqual([]);
+      const output = run.output();
+      expect(output).toContain(received);
+      expect(output).toContain(shuttingDown);
+      expect(output).toContain("[claudish] Done");
+      expect(output.indexOf(received)).toBeLessThan(output.indexOf(shuttingDown));
+      expect(output.indexOf(shuttingDown)).toBeLessThan(output.indexOf("[claudish] Done"));
+      return elapsedMs;
+    } finally {
+      run.proc.kill("SIGKILL");
+      await run.exit;
+      stalledEndpoint.stop(true);
+    }
+  }
+
   for (const [signal, code] of [
     ["SIGTERM", 143],
     ["SIGHUP", 129],
   ] as const) {
     test(`${signal} runs the teardown, exits ${code} and never spawns Claude Code`, async () => {
-      // The launch waits up to LIVE_DISCOVERY_BOUND_MS on this model list, with the
-      // settings file already written and Claude Code not spawned yet.
-      let modelsRequested = false;
-      const stalledEndpoint = Bun.serve({
-        port: 0,
-        fetch(request) {
-          if (new URL(request.url).pathname.endsWith("/models")) modelsRequested = true;
-          return new Promise<Response>(() => {});
-        },
-      });
-      const run = runOver('touch "$TMPDIR/claude.spawned"', {
-        verbose: true,
-        endpointUrl: `http://127.0.0.1:${stalledEndpoint.port}`,
-      });
-      const settingsFiles = () =>
-        readdirSync(join(run.home, ".claudish")).filter((name) => name.startsWith("settings-"));
-      const received = `[claudish] Received ${signal}`;
-      const shuttingDown = "[claudish] Shutting down proxy server...";
-      try {
-        await waitFor(
-          "the launch to hold with its settings file written",
-          () => modelsRequested && settingsFiles().length > 0,
-          15_000,
-          5
-        );
-        run.proc.kill(signal);
-        expect(await run.exit).toBe(code);
-        expect(existsSync(join(run.dir, "claude.spawned"))).toBe(false);
-        expect(settingsFiles()).toEqual([]);
-        const output = run.output();
-        expect(output).toContain(received);
-        expect(output).toContain(shuttingDown);
-        expect(output).toContain("[claudish] Done");
-        expect(output.indexOf(received)).toBeLessThan(output.indexOf(shuttingDown));
-        expect(output.indexOf(shuttingDown)).toBeLessThan(output.indexOf("[claudish] Done"));
-      } finally {
-        run.proc.kill("SIGKILL");
-        await run.exit;
-        stalledEndpoint.stop(true);
-      }
+      await expectStoppedBeforeSpawn(signal, code);
     }, 30_000);
   }
+
+  test("SIGTERM during the first of three model lookups ends well inside the deadline", async () => {
+    const elapsedMs = await expectStoppedBeforeSpawn("SIGTERM", 143, [
+      "--model-opus",
+      "stub@fake-opus",
+      "--model-sonnet",
+      "stub@fake-sonnet",
+    ]);
+    // One 2 s lookup plus the teardown. Two lookups take about 4 s, the deadline 4.5 s.
+    expect(elapsedMs).toBeLessThan(3_500);
+  }, 30_000);
 });
 
 describe.skipIf(process.platform === "win32")("sessionEnd during a signal shutdown", () => {

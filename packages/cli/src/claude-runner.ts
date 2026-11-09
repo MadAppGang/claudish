@@ -1641,6 +1641,9 @@ export async function computeMainThreadContextWindow(
   // used to mean a 1M-token model got compacted at Claude Code's hardcoded 200K.
   const unresolved: string[] = [];
   for (const spec of specs) {
+    // A signal ends the launch before Claude Code starts, so nothing reads this result,
+    // and each further lookup can wait out time the caller's teardown needs.
+    if (signalShutdownExitCode() !== null) break;
     try {
       const resolved = await resolveLocalContextWindow(spec, cachePath);
       if (!resolved) continue;
