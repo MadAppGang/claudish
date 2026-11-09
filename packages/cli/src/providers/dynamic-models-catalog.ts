@@ -120,7 +120,8 @@ const liveMemory = new Map<
   string,
   { accountKey: string; fetchedAt: number; models: DiscoveredModel[] }
 >();
-const inFlight = new Map<string, Promise<ModelsCatalogOutcome>>();
+/** A refresh running now, with the account key it was started for. */
+const inFlight = new Map<string, { accountKey: string; outcome: Promise<ModelsCatalogOutcome> }>();
 const listeners = new Set<(provider: string, list: AccountModelsList | null) => void>();
 
 credentials.onInvalidate((name) => {
@@ -259,7 +260,9 @@ export async function loadAccountModelsLists(
 /**
  * One fetch and its write-through. The list is stored only when the account
  * derived after the fetch is the account derived before it: a login that
- * landed mid-fetch must not file the old account's answer under the new key.
+ * landed mid-fetch must not file the old account's answer under the new key,
+ * and must not hand it to a caller as the answer either: that outcome is
+ * `failed{unreachable}`, the same "no answer" a thrown fetch reports.
  */
 async function fetchAndStore(
   provider: string,
@@ -274,7 +277,14 @@ async function fetchAndStore(
       log(
         `[dynamic-models-catalog:${provider}] ${trigger}: credential changed during the fetch; not stored`
       );
-      return outcome;
+      return {
+        kind: "failed",
+        failure: {
+          kind: "unreachable",
+          provider,
+          detail: "credential changed during the fetch",
+        },
+      };
     }
     const fetchedAt = nowOf(opts);
     liveMemory.set(provider, { accountKey: before.accountKey, fetchedAt, models: outcome.models });
@@ -306,7 +316,8 @@ async function fetchAndStore(
 
 /**
  * Fetch now unless the current account's stored list is younger than `minAgeMs`
- * (default LIVE_MS). Single-flight per provider. On success writes through to disk
+ * (default LIVE_MS). Single-flight per provider and account key: a caller bound
+ * to another account starts its own fetch rather than joining. On success writes through to disk
  * under the account key derived BEFORE the fetch, and only if the key derived after
  * it is the same. On `unauthorized` deletes that account's entry. Never rejects.
  */
@@ -327,15 +338,18 @@ export async function refreshAccountModelsList(
       return { kind: "skipped", reason: "too-recent" };
     }
     let flight = inFlight.get(provider);
-    if (!flight) {
-      const started = fetchAndStore(provider, before, trigger, opts);
+    if (!flight || flight.accountKey !== before.accountKey) {
+      const started = {
+        accountKey: before.accountKey,
+        outcome: fetchAndStore(provider, before, trigger, opts),
+      };
       flight = started;
       inFlight.set(provider, started);
-      void started.finally(() => {
+      void started.outcome.finally(() => {
         if (inFlight.get(provider) === started) inFlight.delete(provider);
       });
     }
-    return { kind: "refreshed", outcome: await flight };
+    return { kind: "refreshed", outcome: await flight.outcome };
   } catch (err) {
     return {
       kind: "refreshed",
