@@ -157,6 +157,11 @@ async function listServes(
  * decides; a launch (`background`) never waits and reads `unknown`, with the
  * refresh started for the next reader.
  *
+ * `deadline` bounds that one ask: once it has resolved, the verdict is `unknown`
+ * and the refresh keeps running for the next reader. It is the routing
+ * decision's missing-list deadline, so a list the chain stopped waiting for is
+ * not then awaited without a bound here.
+ *
  * `null` means this account has no binding to read under (no identity material,
  * so nothing is stored for it): the caller falls back to plain discovery, which
  * is what every provider did before lists were stored.
@@ -164,7 +169,8 @@ async function listServes(
 async function storedListVerdict(
   provider: string,
   wireId: string,
-  network: AvailabilityNetwork
+  network: AvailabilityNetwork,
+  deadline?: Promise<"deadline">
 ): Promise<ModelAvailability | null> {
   const list = await readAccountModelsList(provider);
   if (list) {
@@ -176,7 +182,9 @@ async function storedListVerdict(
     void refreshAccountModelsList(provider, "availability");
     return "unknown";
   }
-  const refreshed = await refreshAccountModelsList(provider, "availability", { minAgeMs: 0 });
+  const refreshing = refreshAccountModelsList(provider, "availability", { minAgeMs: 0 });
+  const refreshed = deadline ? await Promise.race([refreshing, deadline]) : await refreshing;
+  if (refreshed === "deadline") return "unknown";
   if (refreshed.kind === "skipped") return list ? "unknown" : null;
   const { outcome } = refreshed;
   if (outcome.kind !== "served") return "unknown";
@@ -191,12 +199,13 @@ async function storedListVerdict(
  *
  * Never throws and never blocks meaningfully: discovery is TTL-cached and
  * fail-soft, and any failure degrades to `unknown`. With `network: "background"`
- * it never waits on discovery at all.
+ * it never waits on discovery at all. With a `deadline`, a stored-list refresh
+ * still running when it resolves reads `unknown`.
  */
 export async function providerServesModel(
   provider: string,
   wireId: string,
-  opts: { network?: AvailabilityNetwork } = {}
+  opts: { network?: AvailabilityNetwork; deadline?: Promise<"deadline"> } = {}
 ): Promise<ModelAvailability> {
   const network = opts.network ?? "await";
   // 1. ENTITLEMENT — the provider's own answer about this key. Authoritative
@@ -205,7 +214,7 @@ export async function providerServesModel(
   const def = getProviderByName(provider);
   if (def?.modelDiscovery) {
     if (isPersistedListProvider(provider)) {
-      const verdict = await storedListVerdict(provider, wireId, network);
+      const verdict = await storedListVerdict(provider, wireId, network, opts.deadline);
       if (verdict !== null) return verdict;
     }
     if (network === "background") {

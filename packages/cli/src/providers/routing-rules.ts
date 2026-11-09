@@ -1105,6 +1105,11 @@ function ruleProblemWarnings(problems: RoutingRuleProblem[] | undefined): RouteW
  *   5. availability filter   → {@link applyCandidateFilters}.
  *   6. primary + fallbacks   → {@link toRoutePlan}.
  *
+ * Steps 2 and 5 share ONE deadline, {@link MISSING_LIST_WAIT_MS} from the start
+ * of step 2: a candidate that survives gathering without its account's list
+ * (a catalog connection or a vendor claim) reads `unknown` once it has passed,
+ * rather than joining the same unfinished discovery with no bound.
+ *
  * Steps 4 and 5 are deliberately NOT duplicated by step 2 — see the header of
  * `route-candidates.ts`. A gathered candidate is a claim about what the catalog
  * publishes, never a claim that this user can call it.
@@ -1114,6 +1119,32 @@ async function explainBareName(
   model: string,
   nativeProvider: string,
   routing: BareRouting,
+  cachePath?: string,
+  network: RouteNetwork = "await"
+): Promise<RouteExplanation> {
+  const deadline = startListDeadline();
+  try {
+    return await explainBareNameWithin(
+      requestedModel,
+      model,
+      nativeProvider,
+      routing,
+      deadline.reached,
+      cachePath,
+      network
+    );
+  } finally {
+    deadline.cancel();
+  }
+}
+
+/** {@link explainBareName}, under the routing decision's missing-list deadline. */
+async function explainBareNameWithin(
+  requestedModel: string,
+  model: string,
+  nativeProvider: string,
+  routing: BareRouting,
+  deadline: Promise<"deadline">,
   cachePath?: string,
   network: RouteNetwork = "await"
 ): Promise<RouteExplanation> {
@@ -1138,7 +1169,7 @@ async function explainBareName(
       warnings: ruleProblemWarnings(routing.ruleProblems),
     };
   } else {
-    const accounts = await loadChainAccountLists(network);
+    const accounts = await loadChainAccountLists(network, deadline);
     const chain = explainCatalogChain(model, routing.defaultProvider, cachePath, accounts.lists);
     refreshChainCandidateLists(chain.candidates, accounts);
     explanation = {
@@ -1187,7 +1218,14 @@ async function explainBareName(
     return explanation;
   }
 
-  await applyCandidateFilters(explanation, remaining, network);
+  // Only the catalog chain waited for missing lists, so only it inherits the
+  // bound; a user rule's candidates are filtered exactly as before.
+  await applyCandidateFilters(
+    explanation,
+    remaining,
+    network,
+    explanation.source === "catalog" ? deadline : undefined
+  );
   return explanation;
 }
 
@@ -1196,6 +1234,22 @@ async function explainBareName(
  * chain is built. All providers are asked in parallel under this one bound.
  */
 export const MISSING_LIST_WAIT_MS = 5_000;
+
+/** One routing decision's missing-list deadline: resolves once, then stays resolved. */
+interface ListDeadline {
+  reached: Promise<"deadline">;
+  /** Clears the timer when the decision ends before the deadline. */
+  cancel(): void;
+}
+
+function startListDeadline(): ListDeadline {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const reached = new Promise<"deadline">((resolve) => {
+    timer = setTimeout(() => resolve("deadline"), MISSING_LIST_WAIT_MS);
+    timer.unref?.();
+  });
+  return { reached, cancel: () => clearTimeout(timer) };
+}
 
 /** The accounts' dynamic models catalogs one routing decision gathers from. */
 interface ChainAccountLists {
@@ -1220,16 +1274,14 @@ interface ChainAccountLists {
  * A stored list older than a day is refreshed for the next decision, not awaited:
  * it may still add and confirm candidates now.
  */
-async function loadChainAccountLists(network: RouteNetwork): Promise<ChainAccountLists> {
+async function loadChainAccountLists(
+  network: RouteNetwork,
+  deadline: Promise<"deadline">
+): Promise<ChainAccountLists> {
   const providers = getAllProviders()
     .map((def) => def.name)
     .filter(isPersistedListProvider);
   const refreshed = new Set<string>();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<"deadline">((resolve) => {
-    timer = setTimeout(() => resolve("deadline"), MISSING_LIST_WAIT_MS);
-    timer.unref?.();
-  });
 
   const listFor = async (provider: string): Promise<AccountModelsList | null> => {
     try {
@@ -1252,17 +1304,13 @@ async function loadChainAccountLists(network: RouteNetwork): Promise<ChainAccoun
     }
   };
 
-  try {
-    const found = await Promise.all(providers.map(listFor));
-    const lists = new Map<string, AccountModelsList>();
-    providers.forEach((provider, i) => {
-      const list = found[i];
-      if (list) lists.set(provider, list);
-    });
-    return { lists, refreshed };
-  } finally {
-    clearTimeout(timer);
-  }
+  const found = await Promise.all(providers.map(listFor));
+  const lists = new Map<string, AccountModelsList>();
+  providers.forEach((provider, i) => {
+    const list = found[i];
+    if (list) lists.set(provider, list);
+  });
+  return { lists, refreshed };
 }
 
 /**
@@ -1330,7 +1378,8 @@ function refreshChainCandidateLists(
 async function applyCandidateFilters(
   explanation: RouteExplanation,
   candidates: ExplainedCandidate[],
-  network: RouteNetwork = "await"
+  network: RouteNetwork = "await",
+  deadline?: Promise<"deadline">
 ): Promise<void> {
   const model = explanation.routedModel;
   const credentialed: ExplainedCandidate[] = [];
@@ -1416,7 +1465,7 @@ async function applyCandidateFilters(
     credentialed.map((candidate) =>
       isCodexAccountsFailure(candidate.provider, candidate.credentialReadiness)
         ? "unknown"
-        : providerServesModel(candidate.provider, candidate.wireId, { network })
+        : providerServesModel(candidate.provider, candidate.wireId, { network, deadline })
     )
   );
   const serving: ExplainedCandidate[] = [];
