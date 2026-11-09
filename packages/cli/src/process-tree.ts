@@ -32,7 +32,13 @@
  */
 
 import type { ChildProcess } from "node:child_process";
-import { readProcessTableAsync } from "./pane/process-identity.js";
+import {
+  type GroupMember,
+  type ProcessTable,
+  type PsRow,
+  liveMembers,
+  readProcessTableAsync,
+} from "./pane/process-identity.js";
 
 /**
  * Whether to spawn children `detached` (own process group) and signal the group.
@@ -92,31 +98,48 @@ export function waitForExit(proc: ChildProcess, ms: number): Promise<boolean> {
 }
 
 /**
- * Every pid below `rootPid` in `table`, nearest first. Excludes `rootPid`, init and
+ * Every process below `rootPid` in `table`, nearest first. Excludes `rootPid`, init and
  * this process, and stops at a repeated pid, so a table read mid-change cannot loop.
  */
 export function descendantsOf(
-  table: ReadonlyArray<{ pid: number; ppid: number }>,
+  table: ReadonlyArray<Pick<PsRow, "pid" | "ppid" | "lstart">>,
   rootPid: number
-): number[] {
-  const childrenOf = new Map<number, number[]>();
-  for (const { pid, ppid } of table) {
+): GroupMember[] {
+  const childrenOf = new Map<number, Pick<PsRow, "pid" | "lstart">[]>();
+  for (const { pid, ppid, lstart } of table) {
     const siblings = childrenOf.get(ppid);
-    if (siblings) siblings.push(pid);
-    else childrenOf.set(ppid, [pid]);
+    if (siblings) siblings.push({ pid, lstart });
+    else childrenOf.set(ppid, [{ pid, lstart }]);
   }
   const seen = new Set<number>([rootPid, process.pid]);
-  const out: number[] = [];
+  const out: GroupMember[] = [];
   const queue = [rootPid];
   for (let parent = queue.shift(); parent !== undefined; parent = queue.shift()) {
     for (const child of childrenOf.get(parent) ?? []) {
-      if (child <= 1 || seen.has(child)) continue;
-      seen.add(child);
+      if (child.pid <= 1 || seen.has(child.pid)) continue;
+      seen.add(child.pid);
       out.push(child);
-      queue.push(child);
+      queue.push(child.pid);
     }
   }
   return out;
+}
+
+/**
+ * The process table, or null when it cannot be read within `budgetMs`. The `ps` is
+ * cancelled at that point; the timer holds the bound even if the cancel has no effect.
+ */
+async function readTableWithin(budgetMs: number): Promise<ProcessTable> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const table = await Promise.race([
+    readProcessTableAsync(budgetMs),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), budgetMs);
+      timer.unref?.();
+    }),
+  ]);
+  clearTimeout(timer);
+  return table;
 }
 
 /**
@@ -127,21 +150,28 @@ export function descendantsOf(
  * Empty when the process table cannot be read within `budgetMs`, so a failed or hung
  * `ps` costs the descendants and never the kill that follows.
  */
-export async function snapshotDescendants(rootPid: number, budgetMs: number): Promise<number[]> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const table = await Promise.race([
-    readProcessTableAsync(),
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), budgetMs);
-      timer.unref?.();
-    }),
-  ]);
-  clearTimeout(timer);
+export async function snapshotDescendants(
+  rootPid: number,
+  budgetMs: number
+): Promise<GroupMember[]> {
+  const table = await readTableWithin(budgetMs);
   return table ? descendantsOf(table, rootPid) : [];
 }
 
-/** SIGKILLs each pid. Never throws: a pid already gone is the outcome wanted. */
-export function killPids(pids: readonly number[]): void {
+/**
+ * SIGKILLs the `members` that a fresh table read shows are still the same processes,
+ * and returns how many. A pid can be reused once its process exits, and reparenting
+ * changes neither pid nor start time, so the match survives the parent's death. With no
+ * table within `budgetMs` nothing is signalled: a wrong kill is worse than a missed one.
+ */
+export async function killStillLiveMembers(
+  members: readonly GroupMember[],
+  budgetMs: number
+): Promise<number> {
+  if (members.length === 0) return 0;
+  const table = await readTableWithin(budgetMs);
+  if (!table) return 0;
+  const pids = liveMembers(table, members);
   for (const pid of pids) {
     try {
       process.kill(pid, "SIGKILL");
@@ -149,6 +179,7 @@ export function killPids(pids: readonly number[]): void {
       // Already gone, or not this user's to signal.
     }
   }
+  return pids.length;
 }
 
 /** Default pause between SIGTERM and the SIGKILL that follows it. */

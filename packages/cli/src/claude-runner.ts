@@ -45,7 +45,7 @@ import {
 import { log as debugLog, logStderr } from "./logger.js";
 import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
 import { flagsRemoveRead } from "./pane/pane-launch.js";
-import { killPids, snapshotDescendants, waitForExit } from "./process-tree.js";
+import { killStillLiveMembers, snapshotDescendants, waitForExit } from "./process-tree.js";
 import { loadConfig } from "./profile-config.js";
 import { LIVE_DISCOVERY_BOUND_MS, discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
@@ -2744,6 +2744,7 @@ export async function runClaudeWithProxy(
 
   // Clean up temporary settings file
   signalShutdown.removeSettingsFile();
+  await signalShutdown.claudeCodeStopped();
 
   // A signal outranks Claude Code's own code, which is 0 from a TERM trap that
   // exits cleanly: the run was stopped, and the caller exits with what is returned.
@@ -2777,11 +2778,12 @@ export const SIGNAL_CHILD_EXIT_GRACE_MS = 2_000;
 export const SIGNAL_CHILD_KILL_WAIT_MS = 500;
 
 /**
- * How long the SIGKILL step may spend reading Claude Code's descendants. Measured at
- * 95 ms median and 111 ms worst over 40 reads of a 1,900-process table. It comes out
- * of `SIGNAL_CHILD_KILL_WAIT_MS`, so it adds nothing to the shutdown.
+ * How long each of the SIGKILL step's two process-table reads may take: the snapshot
+ * of Claude Code's descendants, and the re-read that checks they are the same processes.
+ * Measured at 95 ms median and 111 ms worst over 40 reads of a 1,900-process table.
+ * Both come out of `SIGNAL_CHILD_KILL_WAIT_MS`, so they add nothing to the shutdown.
  */
-export const SIGNAL_DESCENDANT_SNAPSHOT_MS = 250;
+export const SIGNAL_DESCENDANT_READ_MS = 200;
 
 /**
  * The hard deadline of a signal shutdown, from the signal to `process.exit`: the
@@ -2810,6 +2812,12 @@ export function signalShutdownExitCode(): number | null {
 interface SignalShutdown {
   /** Removes the settings file, once however many paths reach it. */
   removeSettingsFile(): void;
+  /**
+   * Settles when the handlers have finished stopping Claude Code, at once if no signal
+   * has arrived. Its descendants are signalled after it dies, so returning sooner would
+   * let the caller exit first and leave them running.
+   */
+  claudeCodeStopped(): Promise<void>;
 }
 
 /**
@@ -2840,6 +2848,7 @@ export function setupSignalHandlers(
     : ["SIGINT", "SIGTERM", "SIGHUP"];
 
   let shuttingDown: NodeJS.Signals | null = null;
+  let claudeCodeStopped: Promise<void> = Promise.resolve();
   let settingsFileRemoved = false;
   const removeSettingsFile = (): void => {
     if (settingsFileRemoved) return;
@@ -2862,17 +2871,20 @@ export function setupSignalHandlers(
       // A SIGKILL leaves Claude Code no chance to stop its MCP servers and Bash tool
       // children, and it shares claudish's process group, so they are found by pid.
       const descendants = proc.pid
-        ? await snapshotDescendants(proc.pid, SIGNAL_DESCENDANT_SNAPSHOT_MS)
+        ? await snapshotDescendants(proc.pid, SIGNAL_DESCENDANT_READ_MS)
         : [];
       // It exited on its own while the table was read: nothing needs killing.
       if (proc.exitCode !== null || proc.signalCode !== null) return;
       // Claude Code first, so that it cannot start another child in between.
+      let killed = 0;
       try {
         proc.kill("SIGKILL");
       } finally {
-        killPids(descendants);
+        killed = await killStillLiveMembers(descendants, SIGNAL_DESCENDANT_READ_MS);
       }
-      debugLog(`[claudish] Sent SIGKILL to Claude Code and ${descendants.length} descendants`);
+      debugLog(
+        `[claudish] Sent SIGKILL to Claude Code and ${killed} of ${descendants.length} descendants`
+      );
       await waitForExit(proc, SIGNAL_CHILD_KILL_WAIT_MS - (Date.now() - killStepStartedAt));
     } catch (err) {
       debugLog(`[claudish] Signal shutdown error: ${err}`);
@@ -2933,11 +2945,11 @@ export function setupSignalHandlers(
         // on stdout, which may carry Claude Code's machine-readable output.
         console.error(`\n[claudish] Received ${signal}, shutting down...`);
       }
-      void stopClaudeCode();
+      claudeCodeStopped = stopClaudeCode();
     });
   }
 
-  return { removeSettingsFile };
+  return { removeSettingsFile, claudeCodeStopped: () => claudeCodeStopped };
 }
 
 /**

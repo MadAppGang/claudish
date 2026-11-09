@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type PsSpawn, setPsSpawnForTest } from "./pane/process-identity.js";
+import { type PsSpawn, readProcessTableAsync, setPsSpawnForTest } from "./pane/process-identity.js";
 import {
   KILL_PROCESS_GROUP,
   descendantsOf,
@@ -15,6 +15,15 @@ import {
 
 const children = new Set<ChildProcess>();
 const tempDirs = new Set<string>();
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function spawnChild(body: string): ChildProcess {
   const child = spawn(process.execPath, ["-e", body], {
@@ -95,33 +104,26 @@ afterEach(async () => {
 });
 
 describe("descendantsOf", () => {
+  const entry = (pid: number, ppid: number) => ({ pid, ppid, lstart: `started ${pid}` });
+  const pidsOf = (members: { pid: number }[]) => members.map((m) => m.pid);
+
   test("walks every level below the root and nothing beside it", () => {
-    const table = [
-      { pid: 200, ppid: 100 },
-      { pid: 300, ppid: 200 },
-      { pid: 201, ppid: 100 },
-      { pid: 900, ppid: 800 },
-    ];
-    expect(descendantsOf(table, 100)).toEqual([200, 201, 300]);
+    const table = [entry(200, 100), entry(300, 200), entry(201, 100), entry(900, 800)];
+    expect(pidsOf(descendantsOf(table, 100))).toEqual([200, 201, 300]);
+  });
+
+  test("keeps each descendant's start time", () => {
+    expect(descendantsOf([entry(200, 100)], 100)).toEqual([{ pid: 200, lstart: "started 200" }]);
   });
 
   test("never lists the root, init or this process", () => {
-    const table = [
-      { pid: 100, ppid: 100 },
-      { pid: 1, ppid: 100 },
-      { pid: process.pid, ppid: 100 },
-      { pid: 200, ppid: 100 },
-    ];
-    expect(descendantsOf(table, 100)).toEqual([200]);
+    const table = [entry(100, 100), entry(1, 100), entry(process.pid, 100), entry(200, 100)];
+    expect(pidsOf(descendantsOf(table, 100))).toEqual([200]);
   });
 
   test("ends on a parent cycle in a table read mid-change", () => {
-    const table = [
-      { pid: 200, ppid: 300 },
-      { pid: 300, ppid: 200 },
-      { pid: 201, ppid: 200 },
-    ];
-    expect(descendantsOf(table, 200).sort()).toEqual([201, 300]);
+    const table = [entry(200, 300), entry(300, 200), entry(201, 200)];
+    expect(pidsOf(descendantsOf(table, 200)).sort()).toEqual([201, 300]);
   });
 });
 
@@ -149,7 +151,20 @@ describe("snapshotDescendants", () => {
       (_file, _args, _opts, cb) => cb(null, table),
       () => snapshotDescendants(100, 1_000)
     );
-    expect(pids).toEqual([200, 300]);
+    expect(pids.map((m) => m.pid)).toEqual([200, 300]);
+  });
+
+  test("a plain table read, as the other callers make it, sets no cancel", async () => {
+    let seen: { timeout?: number; killSignal?: string } | undefined;
+    await withPs(
+      (_file, _args, opts, cb) => {
+        seen = opts;
+        cb(null, row(process.pid, 1));
+      },
+      () => readProcessTableAsync()
+    );
+    expect(seen?.timeout).toBeUndefined();
+    expect(seen?.killSignal).toBeUndefined();
   });
 
   test("is empty when ps cannot start", async () => {
@@ -168,6 +183,36 @@ describe("snapshotDescendants", () => {
       () => snapshotDescendants(100, 1_000)
     );
     expect(pids).toEqual([]);
+  });
+
+  test("cancels a ps that never answers, so it cannot outlive the read", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudish-ps-cancel-"));
+    tempDirs.add(dir);
+    const pidFile = join(dir, "pid");
+    const neverAnswers: PsSpawn["execFile"] = (_file, _args, opts, cb) =>
+      execFile(
+        "/bin/sh",
+        ["-c", `echo $$ > "${pidFile}"; exec sleep 30`],
+        { ...opts, env: opts.env },
+        (err, stdout) => cb(err, String(stdout))
+      );
+    let pid = 0;
+    try {
+      await withPs(neverAnswers, () => snapshotDescendants(100, 200));
+      expect(existsSync(pidFile)).toBe(true);
+      pid = Number(readFileSync(pidFile, "utf8"));
+      const deadline = Date.now() + 2_000;
+      while (isRunning(pid) && Date.now() < deadline) await Bun.sleep(25);
+      expect(isRunning(pid)).toBe(false);
+    } finally {
+      if (pid) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Cancelled, as it should have been.
+        }
+      }
+    }
   });
 
   test("gives up on a ps that never answers, at its budget", async () => {
