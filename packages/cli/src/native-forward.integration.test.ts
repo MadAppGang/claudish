@@ -30,6 +30,12 @@ function stubFetch(): CapturedCall[] {
         headers: { ...((init?.headers ?? {}) as Record<string, string>) },
         body: String(init?.body),
       });
+      if (url.includes("/v1/messages/count_tokens")) {
+        return new Response(JSON.stringify({ input_tokens: 7 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       return new Response(
         JSON.stringify({
           id: "msg_test",
@@ -130,5 +136,108 @@ describe("native passthrough request (HTTP)", () => {
     const sent = JSON.parse(calls[0]!.body);
     expect(sent.model).toBe("claude-sonnet-5");
     expect(calls[0]!.body).toBe(JSON.stringify(sent));
+  });
+});
+
+describe("native count_tokens request (HTTP)", () => {
+  let proxy: Awaited<ReturnType<typeof createProxyServer>> | null = null;
+
+  afterEach(async () => {
+    globalThis.fetch = realFetch;
+    if (proxy) await proxy.shutdown();
+    proxy = null;
+  });
+
+  test("forwards Claude Code's allowed headers, the beta parameter and the body bytes", async () => {
+    const calls = stubFetch();
+    proxy = await createProxyServer(0, undefined, undefined, false, undefined, undefined, {
+      quiet: true,
+    });
+
+    const res = await realFetch(`${proxy.url}/v1/messages/count_tokens?beta=true&access_token=x`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test-oauth-token",
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+        "anthropic-version": "2023-06-01",
+        "x-claude-code-session-id": "session-count-1",
+        "x-app": "cli",
+        Cookie: "session=gateway-cookie",
+        "X-Gateway-Token": "gateway-secret",
+      },
+      body: RAW,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ input_tokens: 7 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://api.anthropic.com/v1/messages/count_tokens?beta=true");
+    expect(calls[0]!.body).toBe(RAW);
+    expect(calls[0]!.headers["x-claude-code-session-id"]).toBe("session-count-1");
+    expect(calls[0]!.headers["x-app"]).toBe("cli");
+    expect(calls[0]!.headers.authorization).toBe("Bearer test-oauth-token");
+    expect(calls[0]!.headers["anthropic-beta"]).toBe("claude-code-20250219,oauth-2025-04-20");
+    expect(calls[0]!.headers["anthropic-version"]).toBe("2023-06-01");
+    expect(calls[0]!.headers["content-type"]).toBe("application/json");
+    const names = Object.keys(calls[0]!.headers).map((name) => name.toLowerCase());
+    expect(names).not.toContain("cookie");
+    expect(names).not.toContain("x-gateway-token");
+    expect(names).not.toContain("host");
+    expect(names).not.toContain("content-length");
+  });
+
+  test("sends an inbound bearer named by Connection, not the fallback key", async () => {
+    const calls = stubFetch();
+    proxy = await createProxyServer(
+      0,
+      undefined,
+      undefined,
+      false,
+      "sk-ant-fallback-key",
+      undefined,
+      { quiet: true }
+    );
+
+    const res = await realFetch(`${proxy.url}/v1/messages/count_tokens?beta=true`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test-oauth-token",
+        Connection: "authorization",
+      },
+      body: RAW,
+    });
+
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.headers.authorization).toBe("Bearer test-oauth-token");
+    expect(calls[0]!.headers).not.toHaveProperty("x-api-key");
+    expect(calls[0]!.headers).not.toHaveProperty("connection");
+  });
+
+  test("sends the fallback key when the request arrived with no auth", async () => {
+    const calls = stubFetch();
+    proxy = await createProxyServer(
+      0,
+      undefined,
+      undefined,
+      false,
+      "sk-ant-fallback-key",
+      undefined,
+      { quiet: true }
+    );
+
+    const res = await realFetch(`${proxy.url}/v1/messages/count_tokens`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: RAW,
+    });
+
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://api.anthropic.com/v1/messages/count_tokens");
+    expect(calls[0]!.headers["x-api-key"]).toBe("sk-ant-fallback-key");
+    expect(calls[0]!.headers).not.toHaveProperty("authorization");
   });
 });

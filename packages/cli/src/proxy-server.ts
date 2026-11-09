@@ -26,12 +26,10 @@ import { createHandlerSet } from "./handlers/handler-set.js";
 import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
-import { recordInboundBody } from "./handlers/shared/anthropic-forward.js";
+import { buildForwardRequest, recordInboundBody } from "./handlers/shared/anthropic-forward.js";
 import {
   SIGNING_SECRETS_KEY,
-  addSigningSecrets,
   createSigningSecrets,
-  credentialValuesFromRequest,
   releaseWhenBodyEnds,
 } from "./handlers/shared/call-context.js";
 import { UNHANDLED_ERROR_HEADER } from "./handlers/shared/hop-decision.js";
@@ -1045,7 +1043,11 @@ export async function createProxyServer(
   // Token counting
   app.post("/v1/messages/count_tokens", async (c) => {
     try {
-      const body = await c.req.json();
+      // Recorded with its parse, as on `/v1/messages`, so the native branch can
+      // send Claude Code's own bytes.
+      const rawBody = await c.req.text();
+      const body = JSON.parse(rawBody);
+      recordInboundBody(c, rawBody, body);
       if (typeof body?.model !== "string" || body.model.length === 0) {
         return c.json(wrapAnthropicError(400, "missing required field: model"), 400);
       }
@@ -1053,54 +1055,38 @@ export async function createProxyServer(
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
-        // Signed the SAME WAY `/v1/messages` is, and for the same reason.
+        // Forwarded the SAME WAY `/v1/messages` is: Claude Code's own headers,
+        // its `?beta=true` and its body bytes, signed with the caller's own
+        // credentials first (Claude Code injects them), then this process's key,
+        // and only then the credential authority. Every credential sent goes on
+        // the request's signing lease, so a log line or an echoed upstream body
+        // that quotes it is redacted by value.
         //
-        // This used to send `x-api-key` and nothing else, so a user on a
-        // claude.ai subscription — who has no API key at all — sent an UNSIGNED
-        // count_tokens to api.anthropic.com and got a 401 that was then
-        // published to the client as a 200 with `{"type":"error",…}` in the
-        // body, because the upstream status was discarded by `c.json(await
-        // res.json())`. Claude Code read that as a token count of undefined.
-        //
-        // Precedence mirrors NativeHandler.handle: the caller's own credentials
-        // first (Claude Code injects them), then this process's key, and only
-        // then the credential authority.
-        const inbound = c.req.header();
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-          "anthropic-version": inbound["anthropic-version"] || "2023-06-01",
-        };
-        if (inbound.authorization) headers.authorization = inbound.authorization;
-        if (inbound["x-api-key"]) headers["x-api-key"] = inbound["x-api-key"];
-        if (inbound["anthropic-beta"]) headers["anthropic-beta"] = inbound["anthropic-beta"];
-        if (!inbound.authorization && !inbound["x-api-key"]) {
-          let fallbackKey = anthropicApiKey;
-          if (!fallbackKey) {
+        // A subscription user has no API key at all, so a count signed only by
+        // key would reach api.anthropic.com unsigned and answer 401.
+        const forward = await buildForwardRequest(
+          c,
+          body,
+          resolveUpstreamUrl("https://api.anthropic.com/v1/messages/count_tokens"),
+          async () => {
+            if (anthropicApiKey) return anthropicApiKey;
             try {
               const auth = await credentials.getRequestAuth("native-anthropic", {
                 model: body.model,
               });
-              fallbackKey = auth.headers["x-api-key"];
+              return auth.headers["x-api-key"];
             } catch (err) {
               log(`[CountTokens] no resolvable Anthropic credential: ${err}`);
+              return undefined;
             }
           }
-          if (fallbackKey) headers["x-api-key"] = fallbackKey;
-        }
-        // Every credential this count sends — the inbound bearer or key, or the
-        // resolved fallback key — goes on the request's signing lease, as
-        // `NativeHandler` does, so a log line or an echoed upstream body that
-        // quotes it is redacted by value.
-        addSigningSecrets(c, credentialValuesFromRequest(headers));
-
-        const res = await fetch(
-          resolveUpstreamUrl("https://api.anthropic.com/v1/messages/count_tokens"),
-          {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-          }
         );
+
+        const res = await fetch(forward.url, {
+          method: "POST",
+          headers: forward.headers,
+          body: forward.body,
+        });
 
         // An auth failure is NOT a token count. Fall back to the local estimate
         // rather than handing the client an error object shaped like a success:

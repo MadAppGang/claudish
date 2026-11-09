@@ -15,6 +15,7 @@
  */
 
 import type { Context } from "hono";
+import { addSigningSecrets, credentialValuesFromRequest } from "./call-context.js";
 
 /**
  * Every name Claude Code sends on `POST /v1/messages`, matched exactly
@@ -172,4 +173,48 @@ export function bodyToForward(c: Context, payload: unknown): string {
   const serialized = JSON.stringify(payload);
   const inbound = c.get(INBOUND_BODY_KEY) as InboundBody | undefined;
   return inbound !== undefined && inbound.canonical === serialized ? inbound.raw : serialized;
+}
+
+/** One request to send to Anthropic, ready for `fetch`. */
+export interface ForwardRequest {
+  /** Keyed by lowercase name, so an override replaces a header rather than adding a spelling. */
+  headers: Record<string, string>;
+  url: string;
+  body: string;
+}
+
+/**
+ * The request to send to `endpoint` (an absolute URL with no query) for the
+ * inbound request on `c`: Claude Code's own headers, its credentials as they
+ * arrived, its allowed query parameters and its body bytes while `payload` is
+ * unchanged.
+ *
+ * The credential pair is read from the headers AS THEY ARRIVED: a `Connection`
+ * header naming one must not make an authenticated request look
+ * unauthenticated, or the fallback would swap the user's own login for a
+ * metered key. `fallbackKey` is called only when the request arrived with
+ * neither `authorization` nor `x-api-key`.
+ *
+ * Every credential value the request sends, in its headers or its URL, is
+ * registered on the request's signing lease before this returns.
+ */
+export async function buildForwardRequest(
+  c: Context,
+  payload: unknown,
+  endpoint: string,
+  fallbackKey: () => Promise<string | undefined>
+): Promise<ForwardRequest> {
+  const headers: Record<string, string> = {
+    ...requestHeadersToForward(c.req.raw.headers),
+    ...inboundAuthHeaders(c.req.raw.headers),
+  };
+  headers["content-type"] = "application/json";
+  if (!headers["anthropic-version"]) headers["anthropic-version"] = "2023-06-01";
+  if (!headers.authorization && !headers["x-api-key"]) {
+    const key = await fallbackKey();
+    if (key) headers["x-api-key"] = key;
+  }
+  const url = `${endpoint}${forwardedSearch(c)}`;
+  addSigningSecrets(c, credentialValuesFromRequest(headers, url));
+  return { headers, url, body: bodyToForward(c, payload) };
 }

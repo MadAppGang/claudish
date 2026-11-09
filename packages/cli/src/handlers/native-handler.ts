@@ -12,13 +12,7 @@ import {
   stripAdvisorBeta,
 } from "./native-handler-advisor.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
-import {
-  bodyToForward,
-  forwardedSearch,
-  inboundAuthHeaders,
-  requestHeadersToForward,
-} from "./shared/anthropic-forward.js";
-import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
+import { buildForwardRequest, inboundAuthHeaders } from "./shared/anthropic-forward.js";
 import {
   type UpstreamReaderSlot,
   cancelEndsUpstreamWork,
@@ -128,16 +122,6 @@ export class NativeHandler implements ModelHandler {
     // on the view, never mutated in place. With no conversion there is one tool
     // representation, so stage B applies to it alone.
     const payload = await this.applyRequestHooks(c, incoming);
-    // Claude Code's own headers, less the per-connection ones, keyed by
-    // lowercase name; this is what goes upstream. The credential pair is taken
-    // from the headers AS THEY ARRIVED and sent exactly as received: a
-    // `Connection` header naming one must not make an authenticated request
-    // look unauthenticated, or the fallback below would swap the user's own
-    // login for a metered key.
-    const headers: Record<string, string> = {
-      ...requestHeadersToForward(c.req.raw.headers),
-      ...inboundAuthHeaders(c.req.raw.headers),
-    };
     const target = payload.model;
 
     // Drop thinking blocks Anthropic cannot have signed, before anything else
@@ -168,38 +152,42 @@ export class NativeHandler implements ModelHandler {
     // -------------------------------------------------------------------
     const advisorSwapped = c.get(ADVISOR_SWAPPED_CONTEXT_KEY) === true;
 
+    const inboundAuth = inboundAuthHeaders(c.req.raw.headers);
     log("\n=== [NATIVE] Claude Code → Anthropic API Request ===");
     log(
-      `[Native] x-api-key: ${headers["x-api-key"] ? maskCredential(headers["x-api-key"]) : "(not set)"}`
+      `[Native] x-api-key: ${inboundAuth["x-api-key"] ? maskCredential(inboundAuth["x-api-key"]) : "(not set)"}`
     );
     log(
-      `[Native] authorization: ${headers.authorization ? maskCredential(headers.authorization) : "(not set)"}`
+      `[Native] authorization: ${inboundAuth.authorization ? maskCredential(inboundAuth.authorization) : "(not set)"}`
     );
     log(`Request body (Model: ${target}):`);
     log("=== End Request ===\n");
 
-    // The keys are lowercase, so these overrides replace a header rather than
-    // add a second spelling.
-    headers["content-type"] = "application/json";
-    if (!headers["anthropic-version"]) headers["anthropic-version"] = "2023-06-01";
-
-    // If the incoming request arrived with NO auth (e.g. the --probe client, which
-    // doesn't replicate Claude Code's injected key) fall back to the api key
-    // this handler was constructed with, so the native passthrough can still
-    // authenticate against api.anthropic.com.
-    if (!headers.authorization && !headers["x-api-key"]) {
-      // No inbound auth → fall back to the construction-time key, else resolve
-      // ANTHROPIC_API_KEY through the credential authority (env → config → op://),
-      // so even the native fallback is sourced from the single layer.
-      let fallbackKey = this.apiKey;
-      if (!fallbackKey) {
+    // Claude Code's own headers, query parameter (`?beta=true`) and body bytes,
+    // with every credential the request sends registered on its signing lease
+    // for the lease's whole life (`releaseWhenBodyEnds`), so each log line and
+    // each echoed error below is redacted against them.
+    //
+    // The body is decided and serialized ONCE here and reused byte-for-byte: a
+    // retry that differs by a byte is a different request to the prompt cache
+    // and to any signature the vendor computes over it. It is taken after the
+    // thinking strip above, so a payload that strip, a hook stage or the
+    // advisor decorator changed goes out in its new serialization.
+    //
+    // A request that arrived with NO auth (e.g. the --probe client, which
+    // doesn't replicate Claude Code's injected key) falls back to the api key
+    // this handler was constructed with, else ANTHROPIC_API_KEY resolved through
+    // the credential authority (env → config → op://).
+    const { headers, url, body } = await buildForwardRequest(
+      c,
+      payload,
+      `${this.baseUrl}/v1/messages`,
+      async () => {
+        if (this.apiKey) return this.apiKey;
         const auth = await credentials.getRequestAuth("native-anthropic", { model: target });
-        fallbackKey = auth.headers["x-api-key"];
+        return auth.headers["x-api-key"];
       }
-      if (fallbackKey) {
-        headers["x-api-key"] = fallbackKey;
-      }
-    }
+    );
     const incomingBeta = headers["anthropic-beta"];
     if (incomingBeta && advisorSwapped) {
       // When we swap the advisor tool we must also strip the matching beta
@@ -219,32 +207,6 @@ export class NativeHandler implements ModelHandler {
       if (stripped) headers["anthropic-beta"] = stripped;
       else delete headers["anthropic-beta"];
     }
-
-    // Claude Code's own query parameter (`?beta=true`) goes on with the
-    // request; every other parameter is dropped.
-    const url = `${this.baseUrl}/v1/messages${forwardedSearch(c)}`;
-
-    // Register every credential value this request sends (the inbound Claude
-    // bearer or key passed through, the fallback key, and any credential-named
-    // parameter in the URL as sent) on the request's signing lease, for EVERY native
-    // request: the lease lives until the body has been delivered or cancelled
-    // (`releaseWhenBodyEnds`), so each log line and each echoed error below is
-    // redacted against them. The advisor decorator registers the inbound values
-    // only on a turn with pending advisor results; an ordinary native turn had
-    // an empty lease.
-    addSigningSecrets(c, credentialValuesFromRequest(headers, url));
-
-    // The body is decided and serialized ONCE and reused byte-for-byte: the
-    // bytes Claude Code sent while the payload is still what they parse to,
-    // else the payload's new serialization (a hook stage, the advisor
-    // decorator or the thinking strip above changed it).
-    //
-    // Inline `JSON.stringify(payload)` at the fetch made a second attempt a
-    // second serialization, and two stringifies of one object are byte-identical
-    // only as long as nothing in the payload pipeline becomes non-idempotent. A
-    // retry that differs by a byte is a different request to the prompt cache
-    // and a different request to any signature the vendor computes over it.
-    const body = bodyToForward(c, payload);
 
     // Execute fetch
     try {
