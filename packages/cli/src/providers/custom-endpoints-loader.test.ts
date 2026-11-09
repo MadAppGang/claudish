@@ -273,6 +273,30 @@ describe("custom-endpoints-loader", () => {
       });
     });
 
+    test.each([
+      ["/v1/responses", "/v1/models"],
+      ["/v1/chat/completions", "/v1/models"],
+    ])("complex openai endpoint on %s: discovery at %s", (apiPath, modelsPath) => {
+      loadCustomEndpoints(
+        makeConfig({
+          "responses-proxy": {
+            kind: "complex",
+            displayName: "Responses Proxy",
+            transport: "openai",
+            baseUrl: "https://llm.corp.invalid",
+            apiPath,
+            apiKey: "sk-fake-key",
+            ...(apiPath.endsWith("/responses") && { wire: { api: "responses" } }),
+          },
+        })
+      );
+
+      expect(getRuntimeProviders().get("responses-proxy")?.modelDiscovery).toEqual({
+        path: modelsPath,
+        format: "openai-models-list",
+      });
+    });
+
     test("complex openai endpoint with no apiPath: the default path's sibling", () => {
       loadCustomEndpoints(
         makeConfig({

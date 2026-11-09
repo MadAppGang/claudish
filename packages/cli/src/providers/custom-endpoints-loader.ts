@@ -266,9 +266,9 @@ export const CUSTOM_ENDPOINT_TIER: RouteTier = "gateway";
  * DERIVED FROM THE DECLARED WIRE FORMAT, never configured. `format: "openai"`
  * (or `transport: "openai"`) is already the user's statement that this host
  * speaks the OpenAI API, and `GET /models` is part of that API — published as a
- * sibling of `/chat/completions`. So the path is one RULE applied to the path
- * the endpoint already declares (`/v1/chat/completions` → `/v1/models`,
- * `/chat/completions` → `/models`, `/api/v2/chat/completions` →
+ * sibling of `/chat/completions` and of `/responses`. So the path is one RULE
+ * applied to the path the endpoint already declares (`/v1/chat/completions` →
+ * `/v1/models`, `/v1/responses` → `/v1/models`, `/api/v2/chat/completions` →
  * `/api/v2/models`), not a pinned URL the way a hardcoded model list would be.
  * All 27 bundled rows in `predefined-catalog.ts` travel this same function and
  * land on the path their vendor serves.
@@ -291,10 +291,11 @@ function openaiModelsDiscovery(
   apiPath: string,
   modelPrefix: string | undefined
 ): ModelDiscoveryDescriptor | undefined {
-  const chat = "/chat/completions";
-  if (wireFormat !== "openai" || !apiPath.endsWith(chat)) return undefined;
+  // The Chat Completions and the Responses API sit beside the same `/models`.
+  const api = ["/chat/completions", "/responses"].find((suffix) => apiPath.endsWith(suffix));
+  if (wireFormat !== "openai" || !api) return undefined;
   return {
-    path: `${apiPath.slice(0, -chat.length)}/models`,
+    path: `${apiPath.slice(0, -api.length)}/models`,
     format: "openai-models-list",
     ...(modelPrefix && { idPrefix: modelPrefix }),
   };
