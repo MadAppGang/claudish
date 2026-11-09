@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as logger from "../logger.js";
 import {
   type CodexDiscoveryOptions,
   clearCodexModelsMemo,
@@ -318,6 +319,48 @@ describe("T5 Codex /models discovery", () => {
       await getCodexModelInfo(sol.slug, binding(), "key-a", { ...opts, accountOnly: true })
     ).toBeUndefined();
     expect(await getCodexModelInfo(sol.slug, binding(), "key-a", opts)).toEqual(expected);
+  });
+
+  test("drops every service tier and default tier that carries the fetching credential", async () => {
+    const token = `tok_${crypto.randomUUID().replaceAll("-", "").slice(0, 22)}`;
+    const signed: AuthBinding = {
+      auth: {
+        arm: "oauth",
+        endpoint: "https://chatgpt.com/backend-api/codex/responses",
+        headers: { Authorization: `Bearer ${token}`, "chatgpt-account-id": "account-echo" },
+      },
+    };
+    const body = JSON.stringify({
+      models: [
+        {
+          slug: "m",
+          default_service_tier: token,
+          service_tiers: [
+            { id: token, name: "Fast" },
+            { id: `pre-${token}-post`, name: "Turbo" },
+            { id: "flexid", name: `Flex ${token}` },
+            { id: "priority", name: "Fast" },
+          ],
+        },
+      ],
+    });
+    const lines: string[] = [];
+    const logSpy = spyOn(logger, "log").mockImplementation((message: string) => {
+      lines.push(message);
+    });
+    let info: Awaited<ReturnType<typeof getCodexModelInfo>>;
+    try {
+      const opts = options((async () => new Response(body)) as unknown as typeof fetch);
+      info = await getCodexModelInfo("m", signed, "key-echo", { ...opts, accountOnly: true });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(info?.serviceTiers).toEqual([{ id: "priority", name: "Fast" }]);
+    expect(info?.defaultServiceTier).toBeUndefined();
+    expect(JSON.stringify(info)).not.toContain(token);
+    expect(lines.some((line) => line.includes("dropped 4 service tier(s)"))).toBe(true);
+    for (const line of lines) expect(line).not.toContain(token);
   });
 
   test("REQ-15 TEST-22 successful discovery never persists models to the injected home", async () => {
