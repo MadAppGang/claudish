@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import {
   bodyToForward,
   forwardedSearch,
+  inboundAuthHeaders,
   recordInboundBody,
   requestHeadersToForward,
 } from "./anthropic-forward.js";
@@ -98,6 +99,43 @@ describe("requestHeadersToForward allows only what Claude Code sends to Anthropi
     });
   });
 
+  it("keeps every header measured from Claude Code, by exact name", () => {
+    const measured: Record<string, string> = {
+      authorization: "Bearer t",
+      "x-api-key": "sk-k",
+      "content-type": "application/json",
+      accept: "application/json",
+      "accept-encoding": "gzip, deflate, br, zstd",
+      "user-agent": "claude-cli/2.1.319 (external, sdk-cli)",
+      "x-app": "cli",
+      "anthropic-beta": "claude-code-20250219",
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "x-claude-code-session-id": "s1",
+      "x-stainless-arch": "arm64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "MacOS",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+    };
+    expect(requestHeadersToForward(new Headers(measured))).toEqual(measured);
+  });
+
+  it("drops an unknown name in each family Claude Code's own headers belong to", () => {
+    const out = requestHeadersToForward(
+      new Headers({
+        "Anthropic-Gateway-Token": "a",
+        "X-Stainless-Gateway-Key": "b",
+        "X-Claude-Code-Gateway-Secret": "c",
+        "x-claude-code-session-id": "s1",
+      })
+    );
+    expect(out).toEqual({ "x-claude-code-session-id": "s1" });
+  });
+
   it("drops every x-claudish- header, whatever its case", () => {
     const out = requestHeadersToForward(
       new Headers({
@@ -110,11 +148,48 @@ describe("requestHeadersToForward allows only what Claude Code sends to Anthropi
   });
 });
 
+describe("inboundAuthHeaders", () => {
+  it("returns the credential pair as it arrived, even when Connection names it", () => {
+    const incoming = new Headers({
+      Authorization: "Bearer oauth",
+      "x-api-key": "sk-k",
+      connection: "authorization, x-api-key",
+      cookie: "c=1",
+    });
+    expect(inboundAuthHeaders(incoming)).toEqual({
+      authorization: "Bearer oauth",
+      "x-api-key": "sk-k",
+    });
+    expect(requestHeadersToForward(incoming)).toEqual({});
+  });
+
+  it("returns nothing for a request with neither", () => {
+    expect(inboundAuthHeaders(new Headers({ "x-app": "cli" }))).toEqual({});
+  });
+});
+
 describe("forwardedSearch", () => {
   it("returns the inbound query string with its leading ?", () => {
     expect(forwardedSearch(fakeContext("http://127.0.0.1:7856/v1/messages?beta=true"))).toBe(
       "?beta=true"
     );
+  });
+
+  it("keeps only the beta parameter, as sent, and drops every other one", () => {
+    expect(
+      forwardedSearch(
+        fakeContext("http://127.0.0.1:7856/v1/messages?beta=true&access_token=x&key=y")
+      )
+    ).toBe("?beta=true");
+    expect(
+      forwardedSearch(fakeContext("http://127.0.0.1:7856/v1/messages?access_token=x&beta=false"))
+    ).toBe("?beta=false");
+  });
+
+  it("returns an empty string when no allowed parameter is left", () => {
+    expect(
+      forwardedSearch(fakeContext("http://127.0.0.1:7856/v1/messages?access_token=x&key=y"))
+    ).toBe("");
   });
 
   it("returns an empty string when the request has no query", () => {

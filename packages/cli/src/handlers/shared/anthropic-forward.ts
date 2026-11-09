@@ -17,8 +17,10 @@
 import type { Context } from "hono";
 
 /**
- * Exact names Claude Code sends on `POST /v1/messages`, besides the prefixed
- * families below (measured from Claude Code 2.1.319, API-key and OAuth runs).
+ * Every name Claude Code sends on `POST /v1/messages`, matched exactly
+ * (measured from Claude Code 2.1.319, API-key and OAuth runs). No prefix is
+ * matched: a custom header can carry any name, `anthropic-` or `x-stainless-`
+ * ones included.
  */
 const ALLOWED_NAMES = new Set([
   "authorization",
@@ -28,13 +30,31 @@ const ALLOWED_NAMES = new Set([
   "accept-encoding",
   "user-agent",
   "x-app",
+  "anthropic-beta",
+  "anthropic-version",
+  "anthropic-dangerous-direct-browser-access",
+  "x-claude-code-session-id",
+  "x-stainless-arch",
+  "x-stainless-lang",
+  "x-stainless-os",
+  "x-stainless-package-version",
+  "x-stainless-retry-count",
+  "x-stainless-runtime",
+  "x-stainless-runtime-version",
+  "x-stainless-timeout",
 ]);
 
-/** Header families Claude Code sends (`anthropic-beta`, `x-stainless-lang`, `x-claude-code-session-id`). */
-const ALLOWED_PREFIXES = ["anthropic-", "x-stainless-", "x-claude-code-"] as const;
-
-function isAllowed(name: string): boolean {
-  return ALLOWED_NAMES.has(name) || ALLOWED_PREFIXES.some((prefix) => name.startsWith(prefix));
+/** The inbound request's credential headers, exactly as they arrived. */
+export function inboundAuthHeaders(incoming: Headers): {
+  authorization?: string;
+  "x-api-key"?: string;
+} {
+  const out: { authorization?: string; "x-api-key"?: string } = {};
+  const authorization = incoming.get("authorization");
+  const apiKey = incoming.get("x-api-key");
+  if (authorization) out.authorization = authorization;
+  if (apiKey) out["x-api-key"] = apiKey;
+  return out;
 }
 
 const HOP_BY_HOP = new Set([
@@ -74,22 +94,54 @@ export function requestHeadersToForward(incoming: Headers): Record<string, strin
   const out: Record<string, string> = {};
   incoming.forEach((value, name) => {
     const key = name.toLowerCase();
-    if (!isAllowed(key)) return;
+    if (!ALLOWED_NAMES.has(key)) return;
     if (HOP_BY_HOP.has(key) || named.has(key) || key.startsWith(INTERNAL_PREFIX)) return;
     out[key] = value;
   });
   return out;
 }
 
-/** The inbound query string with its leading `?` (`?beta=true`), or "" when there is none. */
+/**
+ * The query parameters Claude Code sends on `POST /v1/messages` (measured from
+ * Claude Code 2.1.319). Like the headers, the query is an allowlist: a
+ * parameter meant for another destination (an `access_token` for a gateway)
+ * must never be carried to the fixed upstream.
+ */
+const ALLOWED_QUERY_NAMES = new Set(["beta"]);
+
+/** The name of one raw `name=value` query segment, decoded; null when it is malformed. */
+function querySegmentName(segment: string): string | null {
+  const eq = segment.indexOf("=");
+  const rawName = eq < 0 ? segment : segment.slice(0, eq);
+  try {
+    return decodeURIComponent(rawName.replace(/\+/g, " "));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The inbound query string reduced to its allowed parameters, each segment
+ * byte for byte as sent, with its leading `?` (`?beta=true`); "" when none is
+ * left.
+ */
 export function forwardedSearch(c: Context): string {
   const url = c.req.url;
   if (typeof url !== "string" || url.length === 0) return "";
+  let search: string;
   try {
-    return new URL(url).search;
+    search = new URL(url).search;
   } catch {
     return "";
   }
+  const kept = search
+    .slice(1)
+    .split("&")
+    .filter((segment) => {
+      const name = querySegmentName(segment);
+      return name !== null && ALLOWED_QUERY_NAMES.has(name);
+    });
+  return kept.length > 0 ? `?${kept.join("&")}` : "";
 }
 
 /** The Context key the inbound body is recorded under. */

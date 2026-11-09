@@ -148,6 +148,49 @@ describe("NativeHandler forwards the request as Claude Code sent it", () => {
     expect(calls[0]!.headers.authorization).toBe("Bearer sk-ant-oat-forward-test");
   });
 
+  it("never carries an unknown header that only looks like one of Claude Code's own", async () => {
+    const calls = captureFetch();
+    const { c, payload } = inboundContext({
+      ...CLAUDE_CODE_HEADERS,
+      "Anthropic-Gateway-Token": "gw-anthropic-family",
+      "X-Stainless-Gateway-Key": "gw-stainless-family",
+      "X-Claude-Code-Gateway-Secret": "gw-claude-code-family",
+    });
+    await new NativeHandler().handle(c, payload);
+
+    const sent = JSON.stringify(calls[0]!.headers);
+    expect(sent).not.toContain("gw-anthropic-family");
+    expect(sent).not.toContain("gw-stainless-family");
+    expect(sent).not.toContain("gw-claude-code-family");
+    expect(calls[0]!.headers["x-claude-code-session-id"]).toBe("session-forward-1");
+  });
+
+  it("sends the inbound bearer as received when Connection names it, and no fallback key", async () => {
+    const calls = captureFetch();
+    const { c, payload } = inboundContext({
+      authorization: "Bearer sk-ant-oat-connection-named",
+      connection: "authorization",
+      "anthropic-version": "2023-06-01",
+    });
+    await new NativeHandler("sk-metered-fallback").handle(c, payload);
+
+    expect(calls[0]!.headers.authorization).toBe("Bearer sk-ant-oat-connection-named");
+    expect(calls[0]!.headers).not.toHaveProperty("x-api-key");
+    expect(JSON.stringify(calls[0]!.headers)).not.toContain("sk-metered-fallback");
+  });
+
+  it("sends the inbound key as received when Connection names it, and no fallback key", async () => {
+    const calls = captureFetch();
+    const { c, payload } = inboundContext({
+      "x-api-key": "sk-ant-inbound-key",
+      connection: "x-api-key",
+    });
+    await new NativeHandler("sk-metered-fallback").handle(c, payload);
+
+    expect(calls[0]!.headers["x-api-key"]).toBe("sk-ant-inbound-key");
+    expect(calls[0]!.headers).not.toHaveProperty("authorization");
+  });
+
   it("falls back to its own key and default version when the request carries neither", async () => {
     const calls = captureFetch();
     const { c, payload } = inboundContext(

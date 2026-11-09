@@ -15,6 +15,7 @@ import { wrapAnthropicError } from "./shared/anthropic-error.js";
 import {
   bodyToForward,
   forwardedSearch,
+  inboundAuthHeaders,
   requestHeadersToForward,
 } from "./shared/anthropic-forward.js";
 import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
@@ -127,9 +128,16 @@ export class NativeHandler implements ModelHandler {
     // on the view, never mutated in place. With no conversion there is one tool
     // representation, so stage B applies to it alone.
     const payload = await this.applyRequestHooks(c, incoming);
-    // Every header Claude Code sent, less the per-connection ones, keyed by
-    // lowercase name; this is what goes upstream.
-    const headers = requestHeadersToForward(c.req.raw.headers);
+    // Claude Code's own headers, less the per-connection ones, keyed by
+    // lowercase name; this is what goes upstream. The credential pair is taken
+    // from the headers AS THEY ARRIVED and sent exactly as received: a
+    // `Connection` header naming one must not make an authenticated request
+    // look unauthenticated, or the fallback below would swap the user's own
+    // login for a metered key.
+    const headers: Record<string, string> = {
+      ...requestHeadersToForward(c.req.raw.headers),
+      ...inboundAuthHeaders(c.req.raw.headers),
+    };
     const target = payload.model;
 
     // Drop thinking blocks Anthropic cannot have signed, before anything else
@@ -170,12 +178,12 @@ export class NativeHandler implements ModelHandler {
     log(`Request body (Model: ${target}):`);
     log("=== End Request ===\n");
 
-    // Auth goes on exactly as received. The keys are lowercase, so these
-    // overrides replace a header rather than add a second spelling.
+    // The keys are lowercase, so these overrides replace a header rather than
+    // add a second spelling.
     headers["content-type"] = "application/json";
     if (!headers["anthropic-version"]) headers["anthropic-version"] = "2023-06-01";
 
-    // If the incoming request carries NO auth (e.g. the --probe client, which
+    // If the incoming request arrived with NO auth (e.g. the --probe client, which
     // doesn't replicate Claude Code's injected key) fall back to the api key
     // this handler was constructed with, so the native passthrough can still
     // authenticate against api.anthropic.com.
@@ -212,12 +220,13 @@ export class NativeHandler implements ModelHandler {
       else delete headers["anthropic-beta"];
     }
 
-    // Claude Code's query string (`?beta=true`) goes on with the request.
+    // Claude Code's own query parameter (`?beta=true`) goes on with the
+    // request; every other parameter is dropped.
     const url = `${this.baseUrl}/v1/messages${forwardedSearch(c)}`;
 
     // Register every credential value this request sends (the inbound Claude
-    // bearer or key passed through, the fallback key, or a credential-named
-    // query parameter) on the request's signing lease, for EVERY native
+    // bearer or key passed through, the fallback key, and any credential-named
+    // parameter in the URL as sent) on the request's signing lease, for EVERY native
     // request: the lease lives until the body has been delivered or cancelled
     // (`releaseWhenBodyEnds`), so each log line and each echoed error below is
     // redacted against them. The advisor decorator registers the inbound values

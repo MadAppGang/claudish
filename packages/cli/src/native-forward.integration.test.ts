@@ -93,6 +93,23 @@ describe("native passthrough request (HTTP)", () => {
     expect(calls[0]!.headers).not.toHaveProperty("content-length");
   });
 
+  test("forwards only the beta query parameter, never a credential in the query", async () => {
+    const calls = stubFetch();
+    proxy = await createProxyServer(0, undefined, undefined, false, undefined, undefined, {
+      quiet: true,
+    });
+
+    const res = await realFetch(`${proxy.url}/v1/messages?beta=true&access_token=x&key=y`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer test-oauth-token" },
+      body: RAW,
+    });
+
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
+  });
+
   test("sends the new serialisation when the proxy rewrote the payload", async () => {
     const calls = stubFetch();
     proxy = await createProxyServer(0, undefined, undefined, false, undefined, undefined, {
