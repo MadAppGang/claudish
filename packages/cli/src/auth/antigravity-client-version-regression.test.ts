@@ -4,6 +4,7 @@ import { _resetAgyClientVersion } from "./antigravity-client-version.js";
 import {
   type AntigravityTokenDeps,
   _resetAntigravityTokenState,
+  currentAntigravityTokenLineage,
   forceRefreshAntigravityToken,
   getValidAntigravityAccessToken,
 } from "./antigravity-token.js";
@@ -175,15 +176,23 @@ describe("Antigravity captured client version", () => {
       throw new Error(`Unexpected User-Agent: ${ua}`);
     });
     globalThis.fetch = fetchStub as unknown as typeof fetch;
-    const oldResult = await getServedAntigravityModels("offline-first", "offline-project");
+    let version = "1.1.9";
+    const session = fakeSession(() => version);
+    const firstToken = await getValidAntigravityAccessToken(session.deps);
+    const lineage = currentAntigravityTokenLineage();
+    expect(lineage).not.toBeNull();
+    const oldResult = await getServedAntigravityModels(firstToken, "offline-project");
     expect(oldResult.servedIds).not.toContain("gemini-4-argon-medium");
-    expect(await getServedAntigravityModels("offline-first", "offline-project")).toBe(oldResult);
+    expect(await getServedAntigravityModels(firstToken, "offline-project")).toBe(oldResult);
     expect(fetchStub).toHaveBeenCalledTimes(1);
-    await getValidAntigravityAccessToken(fakeSession(() => "1.3.5").deps);
-    const newResult = await getServedAntigravityModels("offline-first", "offline-project");
+    version = "1.3.5";
+    session.changeToken("offline-second");
+    const secondToken = await getValidAntigravityAccessToken(session.deps);
+    expect(currentAntigravityTokenLineage()).toBe(lineage);
+    const newResult = await getServedAntigravityModels(secondToken, "offline-project");
     expect(fetchStub).toHaveBeenCalledTimes(2);
     expect(newResult.servedIds).toContain("gemini-4-argon-medium");
-    expect(await getServedAntigravityModels("offline-first", "offline-project")).toBe(newResult);
+    expect(await getServedAntigravityModels(secondToken, "offline-project")).toBe(newResult);
     expect(fetchStub).toHaveBeenCalledTimes(2);
   });
 

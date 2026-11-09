@@ -23,8 +23,10 @@ import { credentials } from "./credentials/authority.js";
 import "../providers/model-discovery-builtins.js";
 import { _resetAgyClientVersion } from "./antigravity-client-version.js";
 import {
+  type AntigravityToken,
   type AntigravityTokenDeps,
   _resetAntigravityTokenState,
+  antigravityTokenLineageMaterial,
   currentAntigravityTokenLineage,
   deleteSharedAntigravityToken,
   getValidAntigravityAccessToken,
@@ -32,6 +34,7 @@ import {
 } from "./antigravity-token.js";
 import {
   _resetAntigravityServedModelsCache,
+  antigravityHost,
   getAntigravityTierDisplayName,
   getAntigravityTierFullName,
   getServedAntigravityModels,
@@ -57,7 +60,11 @@ let deps: AntigravityTokenDeps;
 let calls: Array<{ account: string; action: string; project?: string }>;
 let modelIds: Record<string, string>;
 
-function encodedAccount(account: string, withRefreshToken = true): string {
+function encodedAccount(
+  account: string,
+  withRefreshToken = true,
+  overrides: Partial<AntigravityToken> = {}
+): string {
   return (
     "go-keyring-base64:" +
     Buffer.from(
@@ -67,6 +74,7 @@ function encodedAccount(account: string, withRefreshToken = true): string {
           ...(withRefreshToken ? { refresh_token: `offline-lineage-${account}` } : {}),
           token_type: "Bearer",
           expiry: new Date(NOW + 3_600_000).toISOString(),
+          ...overrides,
         },
       })
     ).toString("base64")
@@ -111,7 +119,8 @@ beforeEach(() => {
     catalogName: "antigravity",
     accountIdentity: async () => {
       const token = readSharedAntigravityToken(deps);
-      return token?.refresh_token ?? token?.access_token;
+      const lineage = token ? antigravityTokenLineageMaterial(token) : undefined;
+      return lineage ? `${lineage}\n${antigravityHost()}` : undefined;
     },
     isAvailable: async () => store !== null,
     getRequestAuth: async () => {
@@ -381,6 +390,119 @@ describe("Antigravity dynamic models catalog account switching", () => {
       deferred.release();
       await pendingA;
     }
+  });
+
+  test("a delayed setup followed by discovery cannot cache the old token's models for the new account", async () => {
+    const accessA = await getValidAntigravityAccessToken(deps);
+    const deferred = holdAccountAResponse("loadCodeAssist");
+    const pendingA = (async () => {
+      const setupA = await setupAntigravityUser(accessA);
+      return getServedAntigravityModels(accessA, setupA.projectId);
+    })();
+    try {
+      await deferred.started;
+      store = encodedAccount("b");
+      expect(readSharedAntigravityToken(deps)?.access_token).toBe("offline-access-b");
+      const lineageB = currentAntigravityTokenLineage();
+      const accessB = await getValidAntigravityAccessToken(deps);
+      expect(await setupAntigravityUser(accessB)).toEqual({
+        projectId: "project-b",
+        tierId: "tier-b",
+      });
+      deferred.release();
+      await pendingA;
+
+      const peekAfterA = peekServedAntigravityModels();
+      const setupB = await setupAntigravityUser(accessB);
+      const laterB = await getServedAntigravityModels(accessB, setupB.projectId);
+      expect({
+        ...setupB,
+        servedIds: laterB.servedIds,
+        defaultId: laterB.defaultId,
+        peekContainsA: peekAfterA?.servedIds.includes("m-a") ?? false,
+        peek: peekServedAntigravityModels()?.servedIds,
+        sameLineage: currentAntigravityTokenLineage() === lineageB,
+        discoveryProjectsB: calls
+          .filter((call) => call.account === "b" && call.action === "fetchAvailableModels")
+          .map((call) => call.project),
+      }).toEqual({
+        projectId: "project-b",
+        tierId: "tier-b",
+        servedIds: ["m-b"],
+        defaultId: "m-b",
+        peekContainsA: false,
+        peek: ["m-b"],
+        sameLineage: true,
+        discoveryProjectsB: ["project-b"],
+      });
+    } finally {
+      deferred.release();
+      await pendingA;
+    }
+  });
+
+  test("an empty shared-store read during token resolution clears the previous account's cached models", async () => {
+    await warmAccountA();
+    store = null;
+
+    await expect(getValidAntigravityAccessToken(deps)).rejects.toThrow(
+      "No Antigravity session found"
+    );
+
+    expect({
+      lineage: currentAntigravityTokenLineage(),
+      peek: peekServedAntigravityModels(),
+    }).toEqual({ lineage: null, peek: null });
+  });
+
+  test("an unusable token left by refresh moves the observed lineage away from the previous account", async () => {
+    await warmAccountA();
+    const lineageA = currentAntigravityTokenLineage();
+    store = encodedAccount("a", true, { expiry: new Date(NOW - 60_000).toISOString() });
+    let refreshes = 0;
+    deps.runAgyRefresh = () => {
+      refreshes++;
+      store = encodedAccount("b", true, { expiry: new Date(NOW - 60_000).toISOString() });
+      return { kind: "ran" };
+    };
+
+    await expect(getValidAntigravityAccessToken(deps)).rejects.toThrow(
+      "without producing a valid token"
+    );
+
+    expect({
+      refreshes,
+      sameLineage: currentAntigravityTokenLineage() === lineageA,
+      peek: peekServedAntigravityModels(),
+    }).toEqual({ refreshes: 1, sameLineage: false, peek: null });
+  });
+
+  test("same-refresh-token renewal reuses setup and discovery caches without extra calls", async () => {
+    let fetcherCalls = 0;
+    registerModelDiscoveryFetcher("antigravity", async () => {
+      fetcherCalls++;
+      const accessToken = await getValidAntigravityAccessToken(deps);
+      const { projectId } = await setupAntigravityUser(accessToken);
+      const models = await getServedAntigravityModels(accessToken, projectId);
+      return { kind: "models", models: models.servedIds.map((id) => ({ id })) };
+    });
+    const initial = await discoverProviderModelsCatalog("antigravity");
+    expect(initial.kind).toBe("served");
+    expect(calls.map((call) => call.action)).toEqual(["loadCodeAssist", "fetchAvailableModels"]);
+    const lineage = currentAntigravityTokenLineage();
+    const identity = await credentials.accountIdentity("antigravity");
+    store = encodedAccount("a", true, { access_token: "offline-access-a-renewed" });
+
+    const renewed = await getValidAntigravityAccessToken(deps);
+    expect(renewed).toBe("offline-access-a-renewed");
+    expect(currentAntigravityTokenLineage()).toBe(lineage);
+    expect(await credentials.accountIdentity("antigravity")).toBe(identity);
+    const setup = await setupAntigravityUser(renewed);
+    expect(setup).toEqual({ projectId: "project-a", tierId: "tier-a" });
+    expect((await getServedAntigravityModels(renewed, setup.projectId)).servedIds).toEqual(["m-a"]);
+    expect(await discoverProviderModelsCatalog("antigravity")).toEqual(initial);
+    expect(fetcherCalls).toBe(1);
+    expect(calls.map((call) => call.action)).toEqual(["loadCodeAssist", "fetchAvailableModels"]);
   });
 
   for (const [label, readTier] of [
