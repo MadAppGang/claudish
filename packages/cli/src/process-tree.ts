@@ -51,6 +51,11 @@ export const KILL_PROCESS_GROUP = process.platform !== "win32";
  * `detached: KILL_PROCESS_GROUP`. Sending `-pid` for a NON-detached child would
  * address our own process group, i.e. signal the orchestrator itself, so the
  * two must always be changed together.
+ *
+ * The pid itself is signalled whenever the child has not exited. `proc.killed`
+ * is no guard: Node sets it once ANY signal was delivered, so gating on it
+ * would drop the SIGKILL that follows a SIGTERM the child ignored — and for a
+ * non-detached child, or on Windows, nothing else would deliver it.
  */
 export function signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): void {
   if (KILL_PROCESS_GROUP && proc.pid) {
@@ -61,7 +66,7 @@ export function signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): v
     }
   }
   try {
-    if (!proc.killed) proc.kill(signal);
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill(signal);
   } catch {
     // Already dead.
   }
