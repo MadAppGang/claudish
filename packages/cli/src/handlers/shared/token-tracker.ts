@@ -15,6 +15,7 @@ import { dirname } from "node:path";
 import { TOOL_NAME_SHAPE } from "../../adapters/tool-name-utils.js";
 import { type PlanUsage, isPlanStale } from "../../auth/quota/types.js";
 import { log } from "../../logger.js";
+import { hasProviderPrefix } from "../../providers/model-parser.js";
 import { resolveTokenFilePath } from "../../session/token-file.js";
 import {
   type ModelPricing,
@@ -80,10 +81,13 @@ export interface UsageCacheDetail {
  * under the "Alibaba Token Plan" label reads as "Alibaba Token Plan qtoken@qwen3.7-plus".
  * ComposedHandler already enforces a bare `modelName`, but a fallback override
  * comes from a transport and this is cheap insurance.
+ *
+ * A wire id that starts with "@" (`@preset/example`) carries no provider and is
+ * kept whole; `openrouter@@preset/example` loses only `openrouter@`.
  */
 export function stripProviderPrefix(name: string): string {
-  const at = name.indexOf("@");
-  return at === -1 ? name : name.slice(at + 1);
+  if (!hasProviderPrefix(name)) return name;
+  return name.slice(name.indexOf("@") + 1);
 }
 
 /**
