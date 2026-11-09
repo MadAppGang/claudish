@@ -32,12 +32,41 @@ interface Run {
  * by default) and captures them. `sessionEndMs` installs a `sessionEnd` hook that
  * takes that long, touching `hook.started` and `hook.finished` in the run's directory.
  * Monitor mode runs no hooks, so that launch goes through a custom endpoint instead;
- * the stand-in never calls it.
+ * the stand-in never calls it. `holdProxyStop` makes the proxy's `server.stop`, the
+ * first step of `proxy.shutdown()`, touch `proxy-stop.held` and wait for `proxy-stop.release`
+ * in the run's directory, with the event loop free to run a signal handler meanwhile.
  */
-function runOver(body: string, opts: { verbose?: boolean; sessionEndMs?: number } = {}): Run {
+function runOver(
+  body: string,
+  opts: { verbose?: boolean; sessionEndMs?: number; holdProxyStop?: boolean } = {}
+): Run {
   const dir = mkdtempSync(join(root, "case-"));
   const home = join(dir, "home");
   mkdirSync(home);
+  const preload = join(dir, "hold-proxy-stop.ts");
+  if (opts.holdProxyStop) {
+    writeFileSync(
+      preload,
+      `import { existsSync, writeFileSync } from "node:fs";
+const serve = Bun.serve.bind(Bun);
+Bun.serve = ((options: never) => {
+  const server = serve(options);
+  const stop = async (force?: boolean) => {
+    writeFileSync(${JSON.stringify(join(dir, "proxy-stop.held"))}, "");
+    while (!existsSync(${JSON.stringify(join(dir, "proxy-stop.release"))})) await Bun.sleep(10);
+    return server.stop(force);
+  };
+  return new Proxy(server, {
+    get(target, key) {
+      if (key === "stop") return stop;
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}) as typeof Bun.serve;
+`
+    );
+  }
   if (opts.sessionEndMs !== undefined) {
     const claudishDir = join(home, ".claudish");
     mkdirSync(claudishDir);
@@ -80,6 +109,7 @@ export default {
     process.execPath,
     [
       "run",
+      ...(opts.holdProxyStop ? ["--preload", preload] : []),
       join(import.meta.dir, "index.ts"),
       ...(opts.sessionEndMs !== undefined ? ["--model", "stub@fake-model"] : ["--monitor"]),
       "-y",
@@ -687,20 +717,29 @@ describe.skipIf(process.platform === "win32")("claudish's teardown after a signa
   }, 30_000);
 
   test("a signal during the caller's teardown exits 128 + signum, not Claude Code's 0", async () => {
-    const run = runOver("exit 0", { verbose: true });
-    // The caller prints this after the launcher returned Claude Code's 0, just
-    // before `proxy.shutdown()`.
-    await waitFor(
-      "the caller's teardown to start",
-      () => run.output().includes("[claudish] Shutting down proxy server..."),
-      15_000,
-      1
-    );
-    run.proc.kill("SIGINT");
-    const code = await run.exit;
-    // A signal that lands after the process has exited is never handled, and that
-    // run proves nothing. The handler's own line says which case this was.
-    if (run.output().includes("[claudish] Received SIGINT")) expect(code).toBe(130);
-    else expect(code).toBe(0);
+    const run = runOver("exit 0", { verbose: true, holdProxyStop: true });
+    const shuttingDown = "[claudish] Shutting down proxy server...";
+    const received = "[claudish] Received SIGINT";
+    const release = join(run.dir, "proxy-stop.release");
+    try {
+      // The launcher has returned Claude Code's 0 by now: the caller prints this line
+      // after it, then holds in `proxy.shutdown()` until the test releases it.
+      await waitFor("proxy.shutdown to be held", () => {
+        return existsSync(join(run.dir, "proxy-stop.held"));
+      });
+      await waitFor("the teardown line", () => run.output().includes(shuttingDown));
+      run.proc.kill("SIGINT");
+      await waitFor("the handler to report the signal", () => run.output().includes(received));
+      writeFileSync(release, "");
+      expect(await run.exit).toBe(130);
+      const output = run.output();
+      expect(output).toContain("[claudish] Done");
+      expect(output.indexOf(shuttingDown)).toBeLessThan(output.indexOf(received));
+      expect(output.indexOf(received)).toBeLessThan(output.indexOf("[claudish] Done"));
+    } finally {
+      writeFileSync(release, "");
+      run.proc.kill("SIGKILL");
+      await run.exit;
+    }
   }, 30_000);
 });
