@@ -627,6 +627,10 @@ describe.skipIf(process.platform === "win32")("a signal before Claude Code is sp
   ): Promise<number> {
     let modelsRequested = false;
     const stalledEndpoint = Bun.serve({
+      // The address in the URL claudish is given. With no hostname the server listens on every
+      // address and can be handed a port that another process holds on 127.0.0.1; that process
+      // then answers the request and the launch does not wait.
+      hostname: "127.0.0.1",
       port: 0,
       fetch(request) {
         if (new URL(request.url).pathname.endsWith("/models")) modelsRequested = true;
@@ -648,7 +652,18 @@ describe.skipIf(process.platform === "win32")("a signal before Claude Code is sp
         () => modelsRequested && settingsFiles().length > 0,
         15_000,
         5
-      );
+      ).catch((error: Error) => {
+        throw new Error(
+          [
+            error.message,
+            `/models reached the test's server: ${modelsRequested}`,
+            `settings files: ${JSON.stringify(settingsFiles())}`,
+            `claudish exit code: ${run.proc.exitCode}, signal: ${run.proc.signalCode}`,
+            `Claude Code spawned: ${existsSync(join(run.dir, "claude.spawned"))}`,
+            `claudish output:\n${run.output()}`,
+          ].join("\n")
+        );
+      });
       const signalledAt = Date.now();
       run.proc.kill(signal);
       expect(await run.exit).toBe(code);
