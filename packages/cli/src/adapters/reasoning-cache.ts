@@ -17,8 +17,10 @@
  * truncates a tool call mid-argument.
  *
  * Why a cache instead of round-tripping through the client: the reasoning payload
- * is an opaque `encrypted_content` blob that has no home in the Anthropic wire
- * format. The obvious carrier — a thinking block's `signature` — does not work,
+ * has no home in the Anthropic wire format. OpenAI returns it as an opaque
+ * `encrypted_content` blob; DeepSeek and DashScope return it as plaintext
+ * `content` parts (`reasoning_text`) with no `encrypted_content`, and refuse a
+ * tool-call continuation that does not pass it back, so both shapes are kept. The obvious carrier — a thinking block's `signature` — does not work,
  * because reasoning items arrive with `summary: []` far more often than not (the
  * summary is intermittent), so most turns produce no thinking block at all to
  * attach a signature to. The proxy process outlives the whole session, so we key
@@ -37,8 +39,11 @@ export interface CachedReasoningItem {
 }
 
 /**
- * Bound the cache so a long session cannot grow unbounded. Entries are a few KB
- * each (encrypted_content ~1-3KB), so this caps us in the low megabytes. Insert
+ * Bound the cache so a long session cannot grow unbounded. The cap counts
+ * entries, not bytes. An encrypted_content entry is ~1-3KB, so 500 of them stay
+ * in the low megabytes; a plaintext reasoning entry is the model's whole
+ * chain of thought for that step and can be tens of KB, so a session of long
+ * plaintext reasoning can hold tens of megabytes before eviction starts. Insert
  * order is eviction order — the oldest tool call is the least likely to still be
  * in the client's replayed history.
  */
