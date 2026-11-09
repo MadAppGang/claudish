@@ -13,12 +13,13 @@ import type { Context } from "hono";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { log } from "../../../logger.js";
 import { redactForClient } from "../../../redact.js";
+import type { UsageCacheDetail } from "../token-tracker.js";
 import { sseDataPayload } from "./sse-line.js";
 import { type UpstreamReaderSlot, cancelEndsUpstreamWork } from "./upstream-cancel.js";
 
 interface AnthropicPassthroughOpts {
   modelName: string;
-  onTokenUpdate?: (input: number, output: number) => void;
+  onTokenUpdate?: (input: number, output: number, detail?: UsageCacheDetail) => void;
   /** Optional adapter — used to check shouldFilterThinking(). */
   adapter?: BaseAPIFormat;
   /**
@@ -81,6 +82,8 @@ export function createAnthropicPassthroughStream(
   // createAnthropicPassthroughStream is called per request.
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let stopReason: string | null = null;
   /** Upstream opened the message. If not, a synthetic close needs its own message_start. */
   let sawMessageStart = false;
@@ -88,6 +91,20 @@ export function createAnthropicPassthroughStream(
   let sawMessageStop = false;
   /** EMITTED index (post thinking-block renumbering) of an open content block, else null. */
   let openBlockIndex: number | null = null;
+
+  /**
+   * Hand the turn's usage to the tracker. Anthropic's `input_tokens` counts only
+   * what missed the cache, but the tracker's input number is the context occupancy
+   * the status line renders and the delta strategy's billing baseline, so it is the
+   * three input counters summed. The cached part goes in the third argument, where
+   * only the cost arithmetic sees it: the split openai-sse reports for its providers.
+   */
+  const reportUsage = (): void => {
+    opts.onTokenUpdate?.(inputTokens + cacheReadTokens + cacheCreationTokens, outputTokens, {
+      cacheReadTokens,
+      cacheCreationTokens,
+    });
+  };
 
   /**
    * Record just enough of the message lifecycle to close the turn honestly.
@@ -198,11 +215,12 @@ export function createAnthropicPassthroughStream(
    * some (message_start carries input_tokens, so a started turn usually has it).
    */
   const endCancelled = (): void => {
-    const sawUsage = inputTokens > 0 || outputTokens > 0;
+    const sawUsage =
+      inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0;
     log(
       `[AnthropicSSE] Client cancelled the stream for ${opts.modelName}; usage ${sawUsage ? "reported" : "not received, not recorded"}`
     );
-    if (sawUsage) opts.onTokenUpdate?.(inputTokens, outputTokens);
+    if (sawUsage) reportUsage();
     if (pingInterval) {
       clearInterval(pingInterval);
       pingInterval = null;
@@ -453,10 +471,17 @@ export function createAnthropicPassthroughStream(
                         if (data.message?.usage) {
                           inputTokens = data.message.usage.input_tokens || inputTokens;
                           outputTokens = data.message.usage.output_tokens || outputTokens;
+                          cacheReadTokens =
+                            data.message.usage.cache_read_input_tokens || cacheReadTokens;
+                          cacheCreationTokens =
+                            data.message.usage.cache_creation_input_tokens || cacheCreationTokens;
                         }
                         if (data.usage) {
                           inputTokens = data.usage.input_tokens || inputTokens;
                           outputTokens = data.usage.output_tokens || outputTokens;
+                          cacheReadTokens = data.usage.cache_read_input_tokens || cacheReadTokens;
+                          cacheCreationTokens =
+                            data.usage.cache_creation_input_tokens || cacheCreationTokens;
                         }
                         if (
                           data.type === "content_block_delta" &&
@@ -525,10 +550,17 @@ export function createAnthropicPassthroughStream(
                     if (data.message?.usage) {
                       inputTokens = data.message.usage.input_tokens || inputTokens;
                       outputTokens = data.message.usage.output_tokens || outputTokens;
+                      cacheReadTokens =
+                        data.message.usage.cache_read_input_tokens || cacheReadTokens;
+                      cacheCreationTokens =
+                        data.message.usage.cache_creation_input_tokens || cacheCreationTokens;
                     }
                     if (data.usage) {
                       inputTokens = data.usage.input_tokens || inputTokens;
                       outputTokens = data.usage.output_tokens || outputTokens;
+                      cacheReadTokens = data.usage.cache_read_input_tokens || cacheReadTokens;
+                      cacheCreationTokens =
+                        data.usage.cache_creation_input_tokens || cacheCreationTokens;
                     }
                     if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
                       textChunks++;
@@ -558,9 +590,7 @@ export function createAnthropicPassthroughStream(
               `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}${filterThinking ? `, filtered ${thinkingBlocksSuppressed} thinking blocks` : ""}`
             );
 
-            if (opts.onTokenUpdate) {
-              opts.onTokenUpdate(inputTokens, outputTokens);
-            }
+            reportUsage();
 
             if (!isClosed) {
               isClosed = true;
@@ -583,7 +613,7 @@ export function createAnthropicPassthroughStream(
             // the token file sees a completed turn rather than nothing.
             finalizeAbandonedStream(controller);
             try {
-              opts.onTokenUpdate?.(inputTokens, outputTokens);
+              reportUsage();
             } catch {}
             if (!isClosed) {
               isClosed = true;
