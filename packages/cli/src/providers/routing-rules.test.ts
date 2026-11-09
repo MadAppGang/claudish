@@ -2252,6 +2252,17 @@ describe("explainRoute", () => {
     ]);
   });
 
+  test("keeps the leading '@' of an OpenRouter preset in the wire id", async () => {
+    const explanation = await explainRoute("openrouter@@preset/example", {
+      rules: {},
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+
+    expect(explanation.candidates.map(({ provider, wireId }) => [provider, wireId])).toEqual([
+      ["openrouter", "@preset/example"],
+    ]);
+  });
+
   test("records all fallback withholding values and catalog states", async () => {
     const alreadyGathered = await explainRoute("cat-found", {
       rules: {},
