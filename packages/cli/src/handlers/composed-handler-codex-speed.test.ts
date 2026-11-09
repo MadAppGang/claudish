@@ -301,6 +301,8 @@ describe("Claude Code /fast is sent only on a subscription-signed Codex request"
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain("gpt-6.1-sol");
     expect(notices[0]).toContain("metered");
+    expect(notices[0]).toContain("subscription");
+    expect(notices[0]).not.toContain("#fast");
   });
 
   test("api-key arm: #fast is refused naming the missing subscription account", async () => {
@@ -346,6 +348,7 @@ describe("Claude Code /fast is sent only on a subscription-signed Codex request"
     expect(calls).toHaveLength(1);
     expect(calls[0].service_tier).toBe(tier);
     expect(notices).toHaveLength(arm === "oauth" ? 0 : 1);
+    if (arm === "api-key") expect(notices[0]).toContain("Add #fast");
   });
 
   test("catalog speed supported, api-key arm: an explicit #fast still applies", async () => {

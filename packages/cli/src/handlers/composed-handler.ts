@@ -782,13 +782,20 @@ export class ComposedHandler implements ModelHandler {
   /**
    * Tell the user, once per model per process, that Claude Code's `/fast` was
    * not sent because the request is metered. Only stderr can say it: the
-   * request itself succeeds at standard speed.
+   * request itself succeeds at standard speed. `"catalog"`: the connection
+   * offers the speed, so `#fast` sends it at the metered price. `"codex"`: the
+   * speed comes from a subscription account's dynamic models catalog, so
+   * `#fast` would be refused; only a subscription-signed request gets it.
    */
-  private noticeFastIgnored(): void {
+  private noticeFastIgnored(source: "catalog" | "codex"): void {
     if (fastIgnoredNoticed.has(this.targetModel)) return;
     fastIgnoredNoticed.add(this.targetModel);
+    const advice =
+      source === "catalog"
+        ? "the fast tier is billed at a higher per-token price. Add #fast to the model spec to send it anyway."
+        : "the Codex fast tier is sent only on a request signed by a Codex subscription account.";
     logStderr(
-      `${this.targetModel}: Claude Code /fast ignored, the request is metered and the fast tier is billed at a higher per-token price. Add #fast to the model spec to send it anyway.`
+      `${this.targetModel}: Claude Code /fast ignored, the request is metered and ${advice}`
     );
   }
 
@@ -2011,7 +2018,7 @@ export class ComposedHandler implements ModelHandler {
         log(
           `[Wire] ${this.wireWhere()}: speed ${fastSpeed.value} (Claude Code /fast) not sent: the request is metered`
         );
-        if (wireSpeedOffered(wire.speed, fastSpeed.value)) this.noticeFastIgnored();
+        if (wireSpeedOffered(wire.speed, fastSpeed.value)) this.noticeFastIgnored("catalog");
       } else {
         const applied = applyWireSpeed(requestPayload, wire, fastSpeed);
         for (const note of applied.notes) log(`[Wire] ${this.wireWhere()}: ${note}`);
@@ -2090,7 +2097,7 @@ export class ComposedHandler implements ModelHandler {
       const where = this.wireWhere();
       log(`[Wire] ${where}: ${outcome.note}`);
       if (!subscription && !codexSpeed.explicit && codexSpeed.value !== "standard") {
-        this.noticeFastIgnored();
+        this.noticeFastIgnored("codex");
       }
       if (outcome.refusal) {
         return c.json(
