@@ -200,6 +200,17 @@ export interface CredentialProvider {
   describeReadiness?(opts?: { allowOpPrompt?: boolean }): Promise<ReadinessResult>;
   /** ASYNC: the rich artifact for an outgoing request. Refreshes OAuth / pulls op:// internally. */
   getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth>;
+  /**
+   * Stable identity material for the credential that WOULD sign now, plus every
+   * endpoint override this provider honours. Never sent, never logged, never
+   * persisted; only hashed by the dynamic models catalog store. No network.
+   * undefined when nothing would sign.
+   *
+   * A provider that does not implement it never has its dynamic models catalog
+   * persisted, which is the fail-closed answer: without identity, a stored list
+   * could be read back for a different account.
+   */
+  accountIdentity?(opts?: { allowOpPrompt?: boolean }): Promise<string | undefined>;
   /** Drop any memoized resolution so the next read re-resolves (TUI hydrate-on-add). */
   invalidate?(): void;
   login?(): Promise<void>;

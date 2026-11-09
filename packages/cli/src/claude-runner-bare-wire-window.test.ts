@@ -233,7 +233,9 @@ test("bare Kimi uses its routed wire id for context discovery", async () => {
     { model: model.modelId } as ClaudishConfig,
     cachePath
   );
-  expect(windowSpy).toHaveBeenCalledWith(selectedProvider, connection.externalModelId);
+  expect(windowSpy).toHaveBeenCalledWith(selectedProvider, connection.externalModelId, {
+    network: "cached-first",
+  });
   expect(window).toBe(model.contextWindow);
 });
 

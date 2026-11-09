@@ -46,7 +46,7 @@ import { log as debugLog, logStderr } from "./logger.js";
 import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
 import { flagsRemoveRead } from "./pane/pane-launch.js";
 import { loadConfig } from "./profile-config.js";
-import { discoverContextWindow } from "./providers/model-discovery.js";
+import { LIVE_DISCOVERY_BOUND_MS, discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
@@ -1519,24 +1519,6 @@ export function mergeUserSettingsIfPresent(
  * Run Claude Code CLI with the proxy server
  */
 /**
- * Real context window (tokens) for the model serving Claude Code's MAIN
- * conversation thread — the value for `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
- *
- * Auto-compaction guards the main thread, which runs on ONE model: the `--model`
- * default, or an explicit `--opus`/`--sonnet` role mapping. We take the MIN real
- * per-provider window across those main-thread-eligible models so the thread
- * never overflows whichever backend serves it. The `haiku` (small/fast) and
- * `subagent` slots are EXCLUDED — they carry short, isolated contexts, so a tiny
- * window there must not drag the main thread's compaction point down.
- *
- * The window comes from the cloud catalog (never hardcoded), resolved against the
- * SAME provider the proxy routes to (`route().primary.provider`) — so bare
- * `gpt-*` resolves to `openai-codex`'s reduced window, not `openai`'s full one.
- * Explicit `provider@model` specs skip `route()` (parseModelSpec already has the
- * provider) — that path touches no credentials / 1Password. Returns 0 when no
- * window is known (not in the catalog cache) → caller leaves the env unset.
- */
-/**
  * Below this, setting `CLAUDE_CODE_AUTO_COMPACT_WINDOW` DISABLES auto-compaction
  * instead of tightening it.
  *
@@ -1575,20 +1557,16 @@ export const MIN_AUTO_COMPACT_WINDOW = 200_000;
 export const MAX_AUTO_COMPACT_WINDOW = 1_000_000;
 
 /**
- * How long `computeMainThreadContextWindow` will wait on the cloud catalog before
- * giving up and launching with today's behaviour (window unknown → env unset).
+ * Resolve ONE model spec's launch context window on its routed provider, plus
+ * the bare model id. Returns null when the spec is unroutable. In order:
  *
- * This runs on the launch path, between the user pressing Enter and Claude Code
- * appearing, so it is a hard budget rather than a best-effort one. A slow or
- * unreachable catalog costs at most this much; the session still starts, just
- * with Claude Code's hardcoded 200K assumption, exactly as before this fallback
- * existed. 1.5s is comfortably above a warm `queryModels` round-trip and well
- * under the point where a launch feels stalled.
- */
-export /**
- * Resolve ONE model spec's window from the local sources only (live provider
- * discovery, then the slim catalog cache), plus the bare model id so a miss can
- * be retried against the cloud catalog. Returns null when the spec is unroutable.
+ * 1. A stored dynamic models catalog for the routed provider answers, with no fetch.
+ * 2. With no stored list, the cloud models catalog's window (the routed
+ *    connection's, else the model's default) answers at once, while one
+ *    background refresh of the list starts.
+ * 3. With no window in either, live discovery is awaited for at most
+ *    {@link LIVE_DISCOVERY_BOUND_MS}. Its window answers if it arrives in time;
+ *    otherwise the window is unknown (null).
  */
 async function resolveLocalContextWindow(
   spec: string,
@@ -1600,26 +1578,52 @@ async function resolveLocalContextWindow(
   if (!parsed.isExplicitProvider) {
     // Bare name: resolve the backend the proxy will actually pick — the same
     // (memoized, process-shared) routing the proxy runs on the first request.
-    const plan = await route(spec);
+    // `background`: a launch never waits on a provider's discovery endpoint; it
+    // reads the account's stored model lists and starts their refreshes.
+    const plan = await route(spec, undefined, undefined, undefined, { network: "background" });
     if (plan.kind !== "ok") return null;
     provider = plan.primary.provider;
     wireId = parseModelSpec(plan.primary.modelSpec).model;
   }
-  // Live discovery wins over the catalog: for subscription endpoints the
-  // real window depends on the caller's tier (Kimi's k3 is 1M only on
-  // Allegretto+), and the authenticated /models call answers for THIS user.
-  // Providers without a modelDiscovery descriptor short-circuit to
-  // undefined without a network call, so this stays free for everyone else.
+  // A served list wins over the catalog: for subscription endpoints the real
+  // window depends on the caller's tier (Kimi's k3 is 1M only on Allegretto+).
+  // Providers without a modelDiscovery descriptor answer undefined with no
+  // network call, so steps 1 and 3 stay free for everyone else.
   const win =
-    (await discoverContextWindow(provider, wireId)) ??
+    (await discoverContextWindow(provider, wireId, { network: "cached-first" })) ??
     lookupModelForProvider(parsed.model, provider, cachePath) ??
-    (wireId !== parsed.model ? lookupModelForProvider(wireId, provider, cachePath) : null);
+    (wireId !== parsed.model ? lookupModelForProvider(wireId, provider, cachePath) : undefined) ??
+    (await discoverContextWindow(provider, wireId, { network: "bounded" }));
   return {
     modelId: parsed.model,
     window: typeof win === "number" && win > 0 ? win : null,
   };
 }
 
+/**
+ * Real context window (tokens) for the model serving Claude Code's MAIN
+ * conversation thread — the value for `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
+ *
+ * Auto-compaction guards the main thread, which runs on ONE model: the `--model`
+ * default, or an explicit `--opus`/`--sonnet` role mapping. We take the MIN
+ * window across those models so the thread never overflows whichever backend
+ * serves it. The `haiku` and `subagent` slots are EXCLUDED: they carry short,
+ * isolated contexts, so a tiny window there must not drag the main thread's
+ * compaction point down.
+ *
+ * Each window is resolved on the provider the proxy routes to (a bare name goes
+ * through `route()`), never hardcoded:
+ *
+ * 1. A stored dynamic models catalog for that provider answers, with no fetch.
+ * 2. With no stored list, the cloud models catalog's window (the routed
+ *    connection's, else the model's default) answers at once, while one
+ *    background refresh of the list starts.
+ * 3. With no window in either, live discovery is awaited for at most
+ *    {@link LIVE_DISCOVERY_BOUND_MS}; its window answers if it arrives in time.
+ *
+ * Returns 0 when no window is known, which `resolveContextWindowEnv` turns into
+ * no variables, so Claude Code keeps its default 200K.
+ */
 export async function computeMainThreadContextWindow(
   config: ClaudishConfig,
   cachePath?: string

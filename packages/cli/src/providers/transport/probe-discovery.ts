@@ -13,7 +13,7 @@
  */
 
 import { log } from "../../logger.js";
-import { readAllModelsCache } from "../all-models-cache.js";
+import { type SlimModelEntry, readAllModelsCache } from "../all-models-cache.js";
 import { isOptInWireId } from "../content-use.js";
 
 /**
@@ -193,12 +193,8 @@ function indexInputModality(
   for (const k of keys) index.nonTextInput.add(k);
 }
 
-function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
-  const key = cachePath ?? "";
-  const hit = _catalogChatIndex.get(key);
-  if (hit && hit.expiresAt > Date.now()) return hit.index;
-
-  const index: CatalogCapabilityIndex = {
+function emptyCapabilityIndex(): CatalogCapabilityIndex {
+  return {
     chat: new Set(),
     textOutput: new Set(),
     nonTextOutput: new Set(),
@@ -207,44 +203,55 @@ function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
     videoOutputKnown: new Set(),
     known: new Set(),
   };
-  for (const entry of readAllModelsCache(cachePath)?.entries ?? []) {
-    const keys = [catalogKey(entry.modelId), ...(entry.aliases ?? []).map(catalogKey)];
-    for (const k of keys) index.known.add(k);
-    // Filed BEFORE the `videoOutput: true` `continue` below, so a video generator
-    // still contributes its published output modality — and where the two disagree
-    // the modality list wins, being the more specific statement.
-    indexOutputModality(index, keys, entry.outputModalities);
-    indexInputModality(index, keys, entry.inputModalities);
-    // `videoOutput` is read in both directions; `videoInput` is never read as a
-    // denial, because a model that reads video is still a chat model.
-    if (entry.videoOutput !== undefined) {
-      for (const k of keys) index.videoOutputKnown.add(k);
-    }
-    if (entry.videoOutput === true) {
-      for (const k of keys) index.videoOutput.add(k);
-      continue;
-    }
-    // Positive flags only: `undefined` means no opinion and must stay `unknown`.
-    //
-    // `supportsVision` is NOT among them, and used to be. Vision is an INPUT
-    // capability, and reading it as evidence of TEXT OUTPUT is the same kind of
-    // guess as the deleted name regexes — it just wore a catalog field. Measured
-    // on generation `g-20260922053223487-99e80e4b`: 19 rows had no published
-    // output modality and `supportsVision` as their only chat signal, and 17 of
-    // them were image, video, audio or moderation models — `sora-2`,
-    // `gpt-image-2.5-*`, `chatgpt-image-latest`, `seedream-4.5`, `lyria-3.5`,
-    // `omni-moderation-latest`, `hailuo-02`. `sora-2-pro` publishes
-    // `outputModalities: ["video"]` and was excluded correctly; `sora-2` is the
-    // same model family with the field missing, so the flag was all that spoke.
-    //
-    // `supportsTools` and `supportsThinking` stay: tool calling and reasoning are
-    // behaviours of a model that emits text, so they are evidence ABOUT output.
-    // 207 rows rely on `supportsTools` alone, and none on `supportsThinking`.
-    const chatShaped = entry.supportsTools === true || entry.supportsThinking === true;
-    if (chatShaped) for (const k of keys) index.chat.add(k);
-  }
+}
+
+function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
+  const key = cachePath ?? "";
+  const hit = _catalogChatIndex.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.index;
+
+  const index = emptyCapabilityIndex();
+  for (const entry of readAllModelsCache(cachePath)?.entries ?? []) fileCatalogEntry(index, entry);
   _catalogChatIndex.set(key, { index, expiresAt: Date.now() + CATALOG_CHAT_INDEX_TTL_MS });
   return index;
+}
+
+/** File one catalog record's keys under everything it publishes about what it reads and writes. */
+function fileCatalogEntry(index: CatalogCapabilityIndex, entry: SlimModelEntry): void {
+  const keys = [catalogKey(entry.modelId), ...(entry.aliases ?? []).map(catalogKey)];
+  for (const k of keys) index.known.add(k);
+  // Filed BEFORE the `videoOutput: true` return below, so a video generator
+  // still contributes its published output modality — and where the two disagree
+  // the modality list wins, being the more specific statement.
+  indexOutputModality(index, keys, entry.outputModalities);
+  indexInputModality(index, keys, entry.inputModalities);
+  // `videoOutput` is read in both directions; `videoInput` is never read as a
+  // denial, because a model that reads video is still a chat model.
+  if (entry.videoOutput !== undefined) {
+    for (const k of keys) index.videoOutputKnown.add(k);
+  }
+  if (entry.videoOutput === true) {
+    for (const k of keys) index.videoOutput.add(k);
+    return;
+  }
+  // Positive flags only: `undefined` means no opinion and must stay `unknown`.
+  //
+  // `supportsVision` is NOT among them, and used to be. Vision is an INPUT
+  // capability, and reading it as evidence of TEXT OUTPUT is the same kind of
+  // guess as the deleted name regexes — it just wore a catalog field. Measured
+  // on generation `g-20260922053223487-99e80e4b`: 19 rows had no published
+  // output modality and `supportsVision` as their only chat signal, and 17 of
+  // them were image, video, audio or moderation models — `sora-2`,
+  // `gpt-image-2.5-*`, `chatgpt-image-latest`, `seedream-4.5`, `lyria-3.5`,
+  // `omni-moderation-latest`, `hailuo-02`. `sora-2-pro` publishes
+  // `outputModalities: ["video"]` and was excluded correctly; `sora-2` is the
+  // same model family with the field missing, so the flag was all that spoke.
+  //
+  // `supportsTools` and `supportsThinking` stay: tool calling and reasoning are
+  // behaviours of a model that emits text, so they are evidence ABOUT output.
+  // 207 rows rely on `supportsTools` alone, and none on `supportsThinking`.
+  const chatShaped = entry.supportsTools === true || entry.supportsThinking === true;
+  if (chatShaped) for (const k of keys) index.chat.add(k);
 }
 
 /**
@@ -284,9 +291,14 @@ export function classifyChatCapability(
 
   if (reported) return reported;
 
-  const index = catalogCapabilityIndex(cachePath ?? _defaultChatCapabilityCachePath);
-  const key = catalogKey(name);
+  return classifyIndexed(
+    catalogCapabilityIndex(cachePath ?? _defaultChatCapabilityCachePath),
+    catalogKey(name)
+  );
+}
 
+/** {@link classifyChatCapability}'s order after the wildcard and `reported` steps, read from an index. */
+function classifyIndexed(index: CatalogCapabilityIndex, key: string): ChatCapability {
   if (index.nonTextOutput.has(key)) return "not-chat";
   if (index.nonTextInput.has(key)) return "not-chat";
   if (index.textOutput.has(key)) return "chat";
@@ -312,6 +324,19 @@ export function classifyChatCapability(
  */
 export function isChatCapable(name: string): boolean {
   return classifyChatCapability(name) === "chat";
+}
+
+/**
+ * Whether one catalog record is a chat model, by the rule
+ * {@link classifyChatCapability} applies to the whole catalog: only a known
+ * `"chat"`. For a caller that already holds the record, so the answer cannot
+ * come from a different catalog file than the record did.
+ */
+export function isChatModelEntry(entry: SlimModelEntry): boolean {
+  if (entry.modelId.includes("*")) return false;
+  const index = emptyCapabilityIndex();
+  fileCatalogEntry(index, entry);
+  return classifyIndexed(index, catalogKey(entry.modelId)) === "chat";
 }
 
 /**

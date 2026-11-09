@@ -37,7 +37,15 @@ list of providers by default and only when we go inside we load"*.
 
 So startup does ONE thing — probe credentials, streaming each answer into the provider list as
 it settles. `⏎` on a provider fetches that provider's models. `a` opens the cross-provider list
-from one cached catalog fetch. Measured when the prefetch was removed: time to first screen
+from one cached catalog fetch.
+
+Opening the picker also reads the stored dynamic models catalogs from disk, with no network
+call. As each credential probe settles present for a provider that keeps a stored list, the
+picker starts a background refresh of that list (`refreshAccountModelsList`, trigger
+`picker-open`, skipped for a list under 5 minutes old). No render waits for one: a list that
+lands is shown through `onModelsListsChanged`, and the provider list stays the default screen.
+
+Measured when the prefetch was removed: time to first screen
 3915 ms → 1436 ms (commit `ff00f56`).
 
 Only providers with a credential are listed. `k` reveals the rest, each saying why it is hidden

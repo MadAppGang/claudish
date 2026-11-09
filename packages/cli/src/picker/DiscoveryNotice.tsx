@@ -104,7 +104,13 @@ function provenance(displayName: string, rows: number): string {
  */
 export function discoveryNoticeContent(
   outcome: PickerDiscoveryOutcome,
-  displayName: string
+  displayName: string,
+  /**
+   * The account's stored list is what the rows below show, because the live
+   * answer could not be had. Its closing sentence then describes those rows,
+   * not a catalog fallback.
+   */
+  stored?: StoredRows
 ): NoticeContent | null {
   switch (outcome.kind) {
     case "rows":
@@ -112,9 +118,9 @@ export function discoveryNoticeContent(
       // Nothing to say, and saying nothing is the decision — see the file header.
       return null;
     case "failed":
-      return failedContent(outcome, displayName);
+      return failedContent(outcome, displayName, stored);
     case "empty-models-catalog":
-      return emptyModelsCatalogContent(outcome, displayName);
+      return emptyModelsCatalogContent(outcome, displayName, stored);
     case "all-filtered":
       return allFilteredContent(outcome, displayName);
     case "collapsed-empty":
@@ -122,8 +128,20 @@ export function discoveryNoticeContent(
   }
 }
 
+/** The rows a stored dynamic models catalog put on screen, and how old they are. */
+export interface StoredRows {
+  rows: number;
+  /** `as of 3 h ago`, or `null` for a list recent enough to need no age. */
+  caption: string | null;
+}
+
 /** What to say when nothing supplied a fallback list either. */
-function nextStep(rows: number, displayName: string): string {
+function nextStep(rows: number, displayName: string, stored?: StoredRows): string {
+  if (stored !== undefined && stored.rows > 0) {
+    const n = stored.rows === 1 ? "row" : "rows";
+    const when = stored.caption === null ? "" : ` (${stored.caption})`;
+    return `The ${stored.rows} ${n} below are ${displayName}'s last model list for this account${when}.`;
+  }
   return rows > 0 ? provenance(displayName, rows) : "Press c to type a model id directly.";
 }
 
@@ -138,7 +156,11 @@ type Collapsed = Extract<PickerDiscoveryOutcome, { kind: "collapsed-empty" }>;
  * and the scrollback line cannot drift apart. All that happens here is one row per
  * line, and the HTTP status moved into a chip.
  */
-function failedContent({ failure, notice, fallbackRows }: Failed, name: string): NoticeContent {
+function failedContent(
+  { failure, notice, fallbackRows }: Failed,
+  name: string,
+  stored?: StoredRows
+): NoticeContent {
   const badge = failure.status === undefined ? undefined : `HTTP ${failure.status}`;
   const lines: string[] = [];
   for (const raw of notice) {
@@ -157,7 +179,7 @@ function failedContent({ failure, notice, fallbackRows }: Failed, name: string):
     // 78-column headline saying it twice costs the end of the sentence.
     lines.push(badge === undefined ? line : line.replace(` (${badge})`, ""));
   }
-  lines.push(nextStep(fallbackRows.length, name));
+  lines.push(nextStep(fallbackRows.length, name, stored));
   return {
     severity: "error",
     lines,
@@ -177,14 +199,15 @@ function failedContent({ failure, notice, fallbackRows }: Failed, name: string):
  */
 function emptyModelsCatalogContent(
   { failure, fallbackRows }: EmptyModelsCatalog,
-  name: string
+  name: string,
+  stored?: StoredRows
 ): NoticeContent {
   const at = failure.endpoint ? ` — the endpoint answered at ${failure.endpoint}` : "";
   return {
     severity: "notice",
     lines: [
       `${name}'s model list is empty${at} and listed nothing.`,
-      nextStep(fallbackRows.length, name),
+      nextStep(fallbackRows.length, name, stored),
     ],
     title: "empty model list",
   };
@@ -313,6 +336,8 @@ export interface DiscoveryNoticeProps {
   width: number;
   /** Hard cap on content rows — the banner's half of the dialog's row budget. */
   maxRows: number;
+  /** The stored list the rows below show instead of the live answer. */
+  stored?: StoredRows;
 }
 
 /**
@@ -329,8 +354,9 @@ export function DiscoveryNotice({
   displayName,
   width,
   maxRows,
+  stored,
 }: DiscoveryNoticeProps): ReactNode {
-  const content = discoveryNoticeContent(outcome, displayName);
+  const content = discoveryNoticeContent(outcome, displayName, stored);
   if (content === null) return null;
   const rows = noticeRows(content, width, maxRows);
   return (

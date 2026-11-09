@@ -421,14 +421,22 @@ export function describeDiscoveryFailure(failure: DiscoveryFailure): string {
   }
 }
 
-/** Drop cached discovery (after a credential change / TUI hydrate-on-add). */
+/** The launch's cold-account refresh in flight per provider (see `coldRefresh`). */
+const coldRefreshes = new Map<string, Promise<DiscoveredModel[]>>();
+
+/**
+ * Drop cached discovery (after a credential change / TUI hydrate-on-add). The
+ * memory half of `forgetAccountModelsLists`, which a login or logout runs.
+ */
 export function invalidateModelDiscovery(provider?: string): void {
   if (provider) {
     _cache.delete(provider);
     _failures.delete(provider);
+    coldRefreshes.delete(provider);
   } else {
     _cache.clear();
     _failures.clear();
+    coldRefreshes.clear();
   }
 }
 
@@ -681,12 +689,20 @@ export async function discoverProviderModelsCatalog(
 ): Promise<ModelsCatalogOutcome> {
   const outcome = await discoverEveryServedModel(providerName);
   if (outcome.kind !== "served") return outcome;
-  // The single discovery entry, so this is the choke point for dynamic models
-  // catalogs: everything that offers or picks a model reads `models`, and a
-  // content-use opt-in id is never one of them (`content-use.ts`).
-  const models = outcome.models.filter((model) => !isOptInWireId(model.id));
-  if (models.length === outcome.models.length) return outcome;
-  const optInIds = outcome.models.filter((model) => isOptInWireId(model.id)).map((m) => m.id);
+  return servedOutcomeOf(outcome.models);
+}
+
+/**
+ * An unsplit served list as the outcome every offering reader sees. The one
+ * place the content-use split happens, whether the list came from the
+ * endpoint or from a stored dynamic models catalog: everything that offers or
+ * picks a model reads `models`, and a content-use opt-in id is never one of
+ * them (`content-use.ts`). Pure.
+ */
+export function servedOutcomeOf(unsplit: DiscoveredModel[]): ModelsCatalogOutcome {
+  const models = unsplit.filter((model) => !isOptInWireId(model.id));
+  if (models.length === unsplit.length) return { kind: "served", models: unsplit };
+  const optInIds = unsplit.filter((model) => isOptInWireId(model.id)).map((m) => m.id);
   return { kind: "served", models, optInIds };
 }
 
@@ -706,6 +722,28 @@ export async function discoverProviderServedIds(
     served: outcome.models.filter((model) => !isOptInWireId(model.id)),
     optIn: outcome.models.filter((model) => isOptInWireId(model.id)),
   };
+}
+
+/**
+ * Ask the provider's endpoint NOW, past the in-memory list, and return the full
+ * unsplit answer (opt-in ids included). The dynamic models catalog's refresh
+ * calls this once it has decided a list is old enough to ask again; the answer
+ * still lands in the in-memory list, so every other reader shares it. Never
+ * rejects.
+ */
+export async function fetchEveryServedModel(providerName: string): Promise<ModelsCatalogOutcome> {
+  _cache.delete(providerName);
+  return discoverEveryServedModel(providerName);
+}
+
+/**
+ * The in-memory list, unsplit, when one is held and unexpired; no network.
+ * For a caller that must not wait on discovery (a launch) but may use an answer
+ * this process already has.
+ */
+export function peekDiscoveredModels(providerName: string): DiscoveredModel[] | undefined {
+  const cached = _cache.get(providerName);
+  return cached && cached.expiresAt > Date.now() ? cached.models : undefined;
 }
 
 /** The discovery itself: the full list the provider returned, cached unsplit. Never rejects. */
@@ -909,19 +947,90 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
   return outcome.kind === "served" ? outcome.models : [];
 }
 
+/** The window of the row whose id is `modelId`, case-insensitively. */
+function windowOf(models: DiscoveredModel[], modelId: string): number | undefined {
+  const needle = modelId.toLowerCase();
+  return models.find((m) => m.id.toLowerCase() === needle)?.contextWindow;
+}
+
+/**
+ * How long a launch waits on live discovery for a context window. Used only
+ * when neither a stored dynamic models catalog nor the cloud models catalog has
+ * one; past it the window is unknown and Claude Code keeps its own default.
+ */
+export const LIVE_DISCOVERY_BOUND_MS = 2_000;
+
 /**
  * Real context window for one model on one provider, from live discovery.
  * Returns undefined when discovery is unavailable or the model isn't listed —
- * callers fall back to the cloud catalog.
+ * callers fall back to the cloud models catalog.
+ *
+ * The two launch modes, in the order a launch uses them:
+ * - `"cached-first"` never waits. A stored dynamic models catalog (any age up
+ *   to its cap) answers from its row, a missing row included. With no stored
+ *   list it answers undefined at once and starts one background refresh.
+ * - `"bounded"` is for a model the cloud models catalog has no window for. It
+ *   waits on that same refresh (starting one if none is running) for at most
+ *   {@link LIVE_DISCOVERY_BOUND_MS}, and answers undefined past it.
+ *
+ * `"await"` (the default) waits on discovery with no bound. The stored-list
+ * module is loaded lazily, because it imports this one.
  */
 export async function discoverContextWindow(
   providerName: string,
-  modelId: string
+  modelId: string,
+  opts: { network?: "await" | "cached-first" | "bounded" } = {}
 ): Promise<number | undefined> {
+  if (opts.network === "cached-first") {
+    const { readAccountModelsList } = await import("./dynamic-models-catalog.js");
+    const stored = await readAccountModelsList(providerName);
+    if (stored) return windowOf(stored.models, modelId);
+    void coldRefresh(providerName);
+    return undefined;
+  }
+  if (opts.network === "bounded") {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<DiscoveredModel[]>((resolve) => {
+      timer = setTimeout(() => resolve([]), LIVE_DISCOVERY_BOUND_MS);
+    });
+    try {
+      return windowOf(await Promise.race([coldRefresh(providerName), bound]), modelId);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   // Exact-id lookup: an opt-in id the user typed still gets its served window.
   const { served, optIn } = await discoverProviderServedIds(providerName);
-  const match = [...served, ...optIn].find((m) => m.id.toLowerCase() === modelId.toLowerCase());
-  return match?.contextWindow;
+  return windowOf([...served, ...optIn], modelId);
+}
+
+/**
+ * One refresh of the account's list per provider, resolving to the models it
+ * served (opt-in ids included). A provider whose list is not persisted, or
+ * whose account cannot be bound, asks discovery directly. Never rejects.
+ */
+function coldRefresh(providerName: string): Promise<DiscoveredModel[]> {
+  const running = coldRefreshes.get(providerName);
+  if (running) return running;
+  const started = (async (): Promise<DiscoveredModel[]> => {
+    const { readAccountModelsList, refreshAccountModelsList } = await import(
+      "./dynamic-models-catalog.js"
+    );
+    const result = await refreshAccountModelsList(providerName, "cold-account");
+    if (result.kind === "refreshed") {
+      return result.outcome.kind === "served" ? result.outcome.models : [];
+    }
+    if (result.reason === "too-recent") {
+      return (await readAccountModelsList(providerName))?.models ?? [];
+    }
+    const { served, optIn } = await discoverProviderServedIds(providerName);
+    return [...served, ...optIn];
+  })().catch(() => []);
+  coldRefreshes.set(providerName, started);
+  void started.finally(() => {
+    if (coldRefreshes.get(providerName) === started) coldRefreshes.delete(providerName);
+  });
+  return started;
 }
 
 /**

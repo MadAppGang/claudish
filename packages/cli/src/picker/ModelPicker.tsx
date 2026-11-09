@@ -70,8 +70,10 @@
  */
 
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
-import type { ModelInfo } from "../model-selector.js";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
+import { LIVE_MS } from "../providers/dynamic-models-catalog-store.js";
+import { sweepAccountModelsLists } from "../providers/dynamic-models-catalog.js";
 import { EmptyState } from "../tui/components/EmptyState.js";
 import { useAnimationFrame } from "../tui/hooks/useAnimationFrame.js";
 import { truncate } from "../tui/viz/text.js";
@@ -228,6 +230,30 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   const liveRows = useMemo(() => rowsFromOutcomes(discovery.seen), [discovery.seen]);
 
   /**
+   * STORED DYNAMIC MODELS CATALOGS ARRIVE AFTER THE FIRST FRAME. The source reads
+   * them from disk at open and refreshes them in the background; each landing
+   * bumps this number, and every view that reads them re-derives from it.
+   */
+  const [listsRevision, setListsRevision] = useState(0);
+  useEffect(() => {
+    const subscribe = source.onModelsListsChanged?.bind(source);
+    if (subscribe === undefined) return;
+    return subscribe(() => setListsRevision((n) => n + 1));
+  }, [source]);
+  /**
+   * The opened provider's stored list, shown while its live answer is in flight
+   * and kept when that answer fails. Sync: reading it is a memo lookup.
+   */
+  const cached = useMemo((): PickerDiscoveryOutcome | null => {
+    // `listsRevision` is the re-read signal; the value itself is not used.
+    void listsRevision;
+    if (view !== "models" || scope === null || !hasDiscovery) return null;
+    return source.cachedModelsCatalog?.(scope) ?? null;
+  }, [source, view, scope, hasDiscovery, listsRevision]);
+  /** A search across every provider asks for fresh lists ONCE per open. */
+  const swept = useRef(false);
+
+  /**
    * THE CATALOG IS FETCHED FOR THE VIEWS THAT READ IT, AND FOR NO OTHER.
    *
    * The cross-provider list is built from it, and so is a provider that does not
@@ -243,7 +269,8 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     providers.providerList,
     providers.readySet,
     liveRows,
-    wantCatalog
+    wantCatalog,
+    listsRevision
   );
   const descriptions = useModelDescriptions(source, view === "models");
 
@@ -316,7 +343,20 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   // and `usePickerModels` applies it; every scoped branch below goes through
   // `dedupeByModelId`, so a dynamic models catalog overlapping the catalog for the SAME
   // provider cannot show the same model twice.
-  const list = useMemo((): { rows: RowView[]; fallback: boolean; loading: boolean } => {
+  //
+  // A STORED LIST STANDS IN UNTIL THE LIVE ANSWER LANDS, and the live answer
+  // replaces it. A live answer that could not be had (`keepsStoredList`) leaves
+  // the stored rows on screen under its banner: they are this account's own last
+  // answer, which is better than the catalog's guess and is captioned with its age.
+  const storedShown =
+    cached?.kind === "rows" && (discovery.outcome === null || keepsStoredList(discovery.outcome))
+      ? cached
+      : null;
+  const list = useMemo((): {
+    rows: RowView[];
+    fallback: boolean;
+    loading: boolean;
+  } => {
     if (scope === null) {
       return { rows: catalog.rows, fallback: false, loading: catalog.phase !== "ready" };
     }
@@ -328,12 +368,28 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       scopedChoice === null ? [] : dedupeByModelId(rows.map((m) => toPickerRow(scopedChoice, m)));
     const scoped = dedupeByModelId(catalog.rows.filter((r) => r.provider === scope));
     if (!hasDiscovery) return { rows: scoped, fallback: false, loading: catalog.phase !== "ready" };
+    if (storedShown !== null) {
+      return { rows: project(storedShown.rows), fallback: false, loading: false };
+    }
     const o = discovery.outcome;
     if (o === null) return { rows: [], fallback: false, loading: true };
     if (o.kind === "rows") return { rows: project(o.rows), fallback: false, loading: false };
     if (o.kind === "unsupported") return { rows: scoped, fallback: false, loading: false };
     return { rows: project(o.fallbackRows), fallback: true, loading: false };
-  }, [scope, scopedChoice, hasDiscovery, discovery.outcome, catalog.rows, catalog.phase]);
+  }, [
+    scope,
+    scopedChoice,
+    hasDiscovery,
+    discovery.outcome,
+    storedShown,
+    catalog.rows,
+    catalog.phase,
+  ]);
+  /** `as of 5 h ago` on a stored list old enough to say so; read at render time. */
+  const storedCaption =
+    storedShown?.listFetchedAt === undefined
+      ? null
+      : listAgeCaption(storedShown.listFetchedAt, Date.now());
 
   /**
    * The provider cell for every provider on screen — collision-proof by
@@ -402,9 +458,11 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   const phase: "loading" | "list" = tasks.length > 0 && list.rows.length === 0 ? "loading" : "list";
 
   // ── layout ──────────────────────────────────────────────────────────────────
+  const storedRows =
+    storedShown === null ? undefined : { rows: list.rows.length, caption: storedCaption };
   const notice =
     scope !== null && discovery.outcome !== null
-      ? discoveryNoticeContent(discovery.outcome, scopedName)
+      ? discoveryNoticeContent(discovery.outcome, scopedName, storedRows)
       : null;
   const base = deriveDialogLayout(width, height);
   const bannerRows =
@@ -643,6 +701,13 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     if (printable(key.raw)) {
       setFilter((v) => v + key.raw);
       setCursor(0);
+      // A search across every provider is the moment a stale list costs a miss,
+      // so the stored lists are refreshed then: started, never awaited, and
+      // once per open however much is typed.
+      if (scope === null && !swept.current) {
+        swept.current = true;
+        sweepAccountModelsLists("search-all", { minAgeMs: LIVE_MS });
+      }
     }
   });
 
@@ -899,10 +964,13 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   // amount the list is useful. Both numbers are printed: the models are what the
   // reader is choosing between, the routes are why the same name appears twice. A
   // provider view has one route in scope, so its rows ARE models and it says so.
+  const scopedStatus = notice?.title ?? `${list.rows.length} models`;
   const status =
     scope === null
       ? `${countModels(list.rows)} models · ${list.rows.length} routes · ${providers.ready.length}/${providers.total} providers`
-      : (notice?.title ?? `${list.rows.length} models`);
+      : storedCaption === null
+        ? scopedStatus
+        : `${scopedStatus} · ${storedCaption}`;
 
   // THE CROSS-PROVIDER LIST IS LABELLED AS WHAT IT IS. It used to be the screen the
   // picker opened on, so `choose a model` was the whole dialog's purpose; it is now
@@ -926,6 +994,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
             displayName={scopedName}
             width={Math.max(8, layout.inner - 2)}
             maxRows={MAX_BANNER_ROWS}
+            {...(storedRows === undefined ? {} : { stored: storedRows })}
           />
         )}
 
@@ -937,9 +1006,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
           matches={shown.length}
           total={list.rows.length}
           width={layout.inner}
-          idle={
-            discovery.outcome?.kind === "rows" && discovery.outcome.providerOrdered ? "" : undefined
-          }
+          idle={orderedByProvider(storedShown ?? discovery.outcome) ? "" : undefined}
         />
         <ColumnHeader layout={rowLayout} />
 
@@ -1144,6 +1211,41 @@ function factsOf(choice: PickerProviderChoice): ProviderFacts {
 
 /** The banner's half of the inline row budget. */
 const MAX_BANNER_ROWS = 5;
+
+/**
+ * Does a live outcome leave the stored list on screen?
+ *
+ * Only when the account could not be ASKED: the endpoint was unreachable, broke,
+ * or answered nothing (Devin reports a failed rpc as an empty list). A rejected
+ * or missing credential is different: the stored list belongs to an account that
+ * no longer signs, so it goes. Every answer that did arrive replaces it.
+ */
+export function keepsStoredList(outcome: PickerDiscoveryOutcome): boolean {
+  if (outcome.kind === "empty-models-catalog") return true;
+  if (outcome.kind !== "failed") return false;
+  return outcome.failure.kind !== "unauthorized" && outcome.failure.kind !== "no-credentials";
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * `as of 5 h ago` for a stored list older than an hour, else `null`.
+ *
+ * Within the hour the age changes nothing a reader would do. Hours up to two
+ * days, so a list from last night does not read as `1 d`; days past that. Pure,
+ * so the caller passes the clock read at render time.
+ */
+export function listAgeCaption(fetchedAt: number, now: number): string | null {
+  const age = now - fetchedAt;
+  if (age <= HOUR_MS) return null;
+  const hours = Math.floor(age / HOUR_MS);
+  return hours < 48 ? `as of ${hours} h ago` : `as of ${Math.floor(hours / 24)} d ago`;
+}
+
+/** Rows in the provider's own order carry no `newest first` caption. */
+function orderedByProvider(outcome: PickerDiscoveryOutcome | null): boolean {
+  return outcome?.kind === "rows" && outcome.providerOrdered === true;
+}
 
 /**
  * The one status row's text, in priority order: where the cursor is in a list

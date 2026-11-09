@@ -28,15 +28,16 @@ handler is never built and the model **silently falls through to OpenRouter**. A
 quietly succeeding is worse than a crash. Same pattern as Antigravity: empty env var + a dedicated
 `CredentialProvider` + transport-side `credentials.getRequestAuth()`.
 
-**Access to a RE-SERVED model is always EXPLICIT — no colliding bare name ever routes to Devin.**
-Its uids collide head-on with other providers' namespaces (`claude-opus-5-medium` matches
-native-anthropic's `/^claude-/i`, `gpt-5-6-luna-medium` matches OpenAI's, `glm-5-2` GLM's,
-`kimi-k3-high` Kimi's). The definition therefore declares exactly ONE `nativeModelPatterns`
-entry, `/^swe-/i` — Cognition's own line, which collides with nothing — and that claim is the
-only way a bare name reaches Devin. Nothing else can: Devin is a dynamic subscription, so it
-publishes no catalog connection for `route-candidates.ts` to gather, and the
-`DEFAULT_ROUTING_RULES` table that once held a `"swe-*": ["devin"]` entry is deleted. Same
-reasoning as Alibaba Token Plan, which also re-serves other vendors' models.
+**A bare name reaches Devin only through the account's own dynamic models catalog.** The
+definition declares no `nativeModelPatterns`, and no regex claim sends a name to Devin. Devin is
+a dynamic subscription that publishes no catalog connection, and its vendor (`cognition`) has no
+catalog entries, so it gets no vendor claim either. Its candidate is an account-listed one
+(`route-candidates.ts`): the stored or live list carries the name in Devin's own spelling
+(`swe-1.7` resolves to `swe-1-7-medium`), and the catalog publishes no Devin connection for the
+model. That holds for Cognition's `swe-*` line, which the catalog lacks, and for a re-served
+catalog model such as `kimi-k3` (sent as `kimi-k3-high`). A re-served Claude uid
+(`claude-opus-5-medium`) adds nothing: a bare `claude-*` name never reaches `route()`. The
+`DEFAULT_ROUTING_RULES` table that once held a `"swe-*": ["devin"]` entry is deleted.
 
 **The reasoning tier is IN the model id — there is no effort parameter.** `dv@claude-opus-5` at
 effort `high` resolves to the uid `claude-opus-5-high` via `resolveDevinModelUid` against the LIVE

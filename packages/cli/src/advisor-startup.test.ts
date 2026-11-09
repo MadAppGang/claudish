@@ -268,7 +268,7 @@ describe("decideAdvisorStartup", () => {
         const plan = await planAdvisorModel("haiku", "collector", {
           childAuth: { controlled: false, reason: "proxy-auth", where: "--model" },
           anthropicKeyPresent: async () => keyPresent,
-          ensureCatalog: async () => {},
+          warmCatalog: async () => {},
           explain: async () => {
             throw new Error("A native Claude alias must not reach explainRoute");
           },

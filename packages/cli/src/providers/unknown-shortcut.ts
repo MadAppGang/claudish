@@ -58,7 +58,7 @@ export interface ShortcutSuggestion {
 
 /**
  * Providers that serve `model`, in routing-chain order: the catalog's connections and
- * the namespace claims (`gatherRouteCandidates`). No credential filter: the question is
+ * the vendor claims (`gatherRouteCandidates`). No credential filter: the question is
  * what the user meant, not what they can pay for. Every gathered provider, no cap.
  */
 export function suggestProviderShortcuts(model: string, cachePath?: string): ShortcutSuggestion[] {

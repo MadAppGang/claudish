@@ -1141,34 +1141,27 @@ async function runCli() {
       }
     }
 
-    // Launcher catalog warm step. Runs BEFORE port resolution / proxy startup
-    // so we can exit cleanly without a half-spawned server when the catalog
-    // is missing AND the network is unreachable. See architecture.md §2.4.
+    // Launcher catalog warm step. It fetches only under `--models-refresh`; every
+    // other launch goes on at once, and the proxy refreshes the cloud models
+    // catalog in the background. Every outcome proceeds:
+    //   "ok"      — nothing to report, or the requested refresh succeeded
+    //   "warned"  — the requested refresh failed; one warning line on stderr
+    //   "skipped" — local model, explicit provider@model, native-only launch,
+    //               --models-skip-update
     //
-    // Returns one of:
-    //   "ok"        — catalog ready (fresh or freshly refreshed)
-    //   "warned"    — proceed with stale cache, warning already on stderr
-    //   "skipped"   — local model, native-only launch or --models-skip-update
-    //   "hard_fail" — missing cache + network failure → exit 1
-    //
-    // AHEAD OF THE --advisor CHECK, deliberately. That check plans every panel
-    // member through `explainRoute` (`planAdvisorModel`), which reads its route
-    // candidates from the catalog. With a cold catalog a bare member has no
-    // candidates and is refused (`catalog-unreadable`), and an explicit one is
-    // taken as written; warming first is what lets startup plan, and refuse,
-    // from real data.
+    // AHEAD OF THE --advisor CHECK, deliberately: a forced refresh lands before
+    // `planAdvisorModel` reads route candidates for bare panel members.
     const warmOutcome = await traceSpan("startup:catalog-warm", () =>
       warmCatalogIfNeeded(cliConfig)
     );
-    if (warmOutcome === "hard_fail") {
-      process.exit(1);
-    }
 
     // === Muse Code login, before Claude Code starts ===
     // In every launch role: the served context window is read before spawn and
     // needs a signed key; an interactive launch puts any Keychain dialog here,
-    // in front of the user. Needs the warm catalog to see bare names that
-    // gather `meta-muse-code` (`providers/meta-muse/muse-launch.ts`).
+    // in front of the user. An explicit `muse@` spec is seen from argv alone; a
+    // bare name is seen only when the cached catalog gathers `meta-muse-code`
+    // for it (`providers/meta-muse/muse-launch.ts`). On a cold cache a bare name
+    // is not seen here, and its login happens on the first request instead.
     if (!cliConfig.monitor) {
       const { prepareMuseLoginForLaunch } = await import("./providers/meta-muse/muse-launch.js");
       const museModels =
@@ -1222,9 +1215,10 @@ async function runCli() {
         // createProxyServer reads advisorCollector, so no doomed call is made.
         cliConfig.advisorCollector = decision.effectiveCollector;
         advisorRuntime = decision.runtime;
-        // The warm step above ran first and hard-fails out, so the catalog is
-        // normally populated by now. It can still be COLD — `--models-skip-update`,
-        // a local main model (both "skipped"), or a cache claudish could not read.
+        // The warm step above never waits unless `--models-refresh` was given, so
+        // the catalog is whatever the disk holds. It can be COLD — no cache yet,
+        // `--models-skip-update`, a local or explicit main model, or a cache
+        // claudish could not read.
         // A BARE member is then refused above (routing answers `catalog-unreadable`),
         // so only an explicit `provider@model` member can have passed without the
         // catalog: its provider was taken as written. Say which ones.

@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { DiskCacheV3 } from "./all-models-cache.js";
+import * as connectionWire from "./connection-wire.js";
 import {
+  type RouteRegistry,
+  WIRE_APIS,
   WIRE_REGISTRY_VERSION,
   type WireApi,
   isConnectionWire,
@@ -39,13 +42,59 @@ describe("isConnectionWire", () => {
   ])("rejects %s", (_name, value) => expect(isConnectionWire(value)).toBe(false));
 });
 
+function mixedApiRegistry(): RouteRegistry {
+  const result: RouteRegistry = {
+    registryVersion: "3.7.0",
+    routes: {
+      google: {
+        routeId: "google",
+        profiles: {
+          "antigravity-subscription": {
+            kind: "subscription",
+            admission: "entitlement",
+            nativeModelProviders: ["google"],
+            apis: {},
+          },
+          "direct-api": {
+            kind: "direct",
+            apis: { gemini: { baseUrl: "https://generativelanguage.googleapis.com/v1beta" } },
+          },
+        },
+      },
+    },
+  };
+  Object.assign(result.routes.google!.profiles["antigravity-subscription"]!.apis, {
+    "cloudcode-v1internal": { baseUrl: "https://daily-cloudcode-pa.googleapis.com/v1internal" },
+  });
+  return result;
+}
+
+describe("sanitizeRouteRegistry", () => {
+  test("removes every unknown API key without changing other data or mutating the input", () => {
+    const input = mixedApiRegistry();
+    Object.assign(input.routes.google!.profiles["direct-api"]!.apis, {
+      future: { baseUrl: "https://future.test/v1" },
+    });
+    const before = structuredClone(input);
+    const expected = structuredClone(input);
+    Reflect.deleteProperty(
+      expected.routes.google!.profiles["antigravity-subscription"]!.apis,
+      "cloudcode-v1internal"
+    );
+    Reflect.deleteProperty(expected.routes.google!.profiles["direct-api"]!.apis, "future");
+    expect(connectionWire.sanitizeRouteRegistry).toBeFunction();
+    const sanitized = connectionWire.sanitizeRouteRegistry(input);
+    expect(sanitized).not.toBe(input);
+    expect(sanitized).toEqual(expected);
+    expect(input).toEqual(before);
+  });
+});
+
 describe("isRouteRegistry", () => {
   test("accepts the production registry", () => expect(isRouteRegistry(registry)).toBe(true));
-  test("rejects an unknown API key", () => {
-    const copy = structuredClone(registry);
-    const apis = copy.routes.openai!.profiles["direct-api"]!.apis;
-    Object.assign(apis, { realtime: { baseUrl: "https://example.test" } });
-    expect(isRouteRegistry(copy)).toBe(false);
+  test("accepts an unknown API beside a known Gemini profile", () => {
+    expect(WIRE_APIS).not.toContain("cloudcode-v1internal");
+    expect(isRouteRegistry(mixedApiRegistry())).toBe(true);
   });
   test("rejects a missing baseUrl", () => {
     const copy = structuredClone(registry);

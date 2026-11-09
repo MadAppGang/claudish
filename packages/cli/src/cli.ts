@@ -59,6 +59,7 @@ import {
 import { usableProfileModels } from "./project-models.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
+import { MODEL_CATALOG_NAME } from "./providers/catalog-name.js";
 import { normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { describeMuseSigningSource } from "./providers/meta-muse/muse-credentials.js";
@@ -909,7 +910,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         if (hasJsonFlag) {
           console.log(JSON.stringify({ providers, total: providers.length }, null, 2));
         } else {
-          console.log("\nProviders in Firebase catalog:\n");
+          console.log(`\nProviders in the ${MODEL_CATALOG_NAME}:\n`);
           console.log("  Slug                 Active models");
           console.log(`  ${"─".repeat(40)}`);
           for (const { slug, count } of providers) {
@@ -1215,11 +1216,11 @@ function formatModelDocCaps(caps?: ModelDoc["capabilities"]): string {
 async function searchAndPrintModels(query: string, jsonOutput: boolean): Promise<void> {
   let results: ModelDoc[];
   try {
-    console.error(`🔄 Searching Firebase catalog for "${query}"...`);
+    console.error(`🔄 Searching the ${MODEL_CATALOG_NAME} for "${query}"...`);
     results = await searchModels(query, 50);
   } catch (error) {
     console.error(
-      `❌ Failed to reach Firebase model catalog: ${
+      `❌ Failed to reach the ${MODEL_CATALOG_NAME}: ${
         error instanceof Error ? error.message : String(error)
       }`
     );
@@ -1336,7 +1337,7 @@ async function printTop100(jsonOutput: boolean): Promise<void> {
     response = await getTop100Models();
   } catch (error) {
     console.error(
-      `❌ Failed to load top-100 models from Firebase: ${
+      `❌ Failed to load top-100 models from the ${MODEL_CATALOG_NAME}: ${
         error instanceof Error ? error.message : String(error)
       }`
     );
@@ -1350,7 +1351,7 @@ async function printTop100(jsonOutput: boolean): Promise<void> {
   }
 
   console.log(
-    `\nTop ${response.total} models from Firebase (pool: ${response.poolSize} eligible)\n`
+    `\nTop ${response.total} models from the ${MODEL_CATALOG_NAME} (pool: ${response.poolSize} eligible)\n`
   );
 
   if (response.models.length === 0) {
@@ -1458,7 +1459,7 @@ async function printByProvider(typedSlug: string, jsonOutput: boolean): Promise<
     models = await getModelsByProvider(providerSlug);
   } catch (error) {
     console.error(
-      `❌ Failed to load provider catalog from Firebase: ${
+      `❌ Failed to load the provider list from the ${MODEL_CATALOG_NAME}: ${
         error instanceof Error ? error.message : String(error)
       }`
     );
@@ -2318,7 +2319,7 @@ ${h("OPTIONS")}
   ${green("--")}                       Separator: everything after passes directly to Claude Code
 
 ${h("MODEL DISCOVERY")}
-  ${green("--models")}                              Top 100 ranked (Firebase + local providers)
+  ${green("--models")}                              Top 100 ranked (${MODEL_CATALOG_NAME} + local providers)
   ${green("--models --provider")} ${yellow("<slug>")}                Filter the catalog to one provider
                                           ${dim("e.g. --provider opencode-zen, anthropic, openai")}
   ${green("--providers")}                           Every provider + active-model count
@@ -2329,7 +2330,7 @@ ${h("MODEL DISCOVERY")}
                                           ${dim("a real 1-token request (may incur tiny cost)")}
   ${green("--no-probe")}                            Show the routing chain without the 1-token requests
   ${green("--probe-timeout")} ${yellow("<secs>")}                 Per-link timeout for live probes (default: 40)
-  ${green("--models-refresh")}                      Force refresh the slim model catalog from Firebase
+  ${green("--models-refresh")}                      Force refresh the ${MODEL_CATALOG_NAME}
   ${green("--models-skip-update")}                  Skip the launcher catalog warm step (offline)
   ${green("--json")}                                JSON output (with --models / --models-top / --probe)
 

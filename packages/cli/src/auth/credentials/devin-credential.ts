@@ -24,7 +24,11 @@
  * `forceRefreshAuth`.
  */
 
-import { hasDevinCredentials, readDevinApiKey } from "../../providers/devin/devin-credentials.js";
+import {
+  hasDevinCredentials,
+  readDevinApiKey,
+  readDevinServerUrl,
+} from "../../providers/devin/devin-credentials.js";
 import type { CredentialProvider, ReadinessResult, RequestAuth } from "./types.js";
 import { readinessDetail } from "./types.js";
 
@@ -73,6 +77,15 @@ export class DevinCredentialProvider implements CredentialProvider {
   /** Unchanged contract: the `=== "present"` projection of the above. */
   async isAvailable(): Promise<boolean> {
     return (await this.describeReadiness()).readiness === "present";
+  }
+
+  /**
+   * The session token itself, which a re-login replaces, bound to the server it
+   * is sent to (env, then the CLI file's `api_server_url`, then the default).
+   */
+  async accountIdentity(): Promise<string | undefined> {
+    const apiKey = readDevinApiKey();
+    return apiKey ? `${apiKey}\n${readDevinServerUrl()}` : undefined;
   }
 
   async getRequestAuth(): Promise<RequestAuth> {

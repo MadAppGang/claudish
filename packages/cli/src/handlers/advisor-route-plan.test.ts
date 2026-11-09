@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,7 +58,7 @@ function planningDeps(explain: PlanAdvisorDeps["explain"]): PlanAdvisorDeps {
   return {
     childAuth: { controlled: true },
     anthropicKeyPresent: async () => false,
-    ensureCatalog: async () => {},
+    warmCatalog: async () => {},
     explain,
     isSubscription: (provider) => provider === "openai-codex",
   };
@@ -126,6 +126,32 @@ const launchConfig: ClaudishConfig = {
   noLogs: true,
   diagMode: "off",
 };
+
+describe("advisor background cloud models catalog refresh", () => {
+  for (const role of ["panel", "collector"] as const) {
+    test(`explicit Codex ${role} planning never starts a background refresh`, async () => {
+      const warmCatalog = mock(async () => {});
+      const deps = planningDeps(async (spec) =>
+        explanation(spec, [candidate("openai-codex", "OpenAI Codex", "cx@gpt-6-astra")])
+      );
+      deps.warmCatalog = warmCatalog;
+      const plan = await planAdvisorModel("cx@gpt-6-astra", role, deps);
+      expect(plan.kind).toBe("routed");
+      expect(warmCatalog).not.toHaveBeenCalled();
+    });
+
+    test(`bare Codex ${role} planning starts one background refresh without waiting`, async () => {
+      const warmCatalog = mock(() => new Promise<void>(() => {}));
+      const deps = planningDeps(async (spec) =>
+        explanation(spec, [candidate("openai-codex", "OpenAI Codex", "cx@gpt-6-astra")])
+      );
+      deps.warmCatalog = warmCatalog;
+      const plan = await planAdvisorModel("gpt-6-astra", role, deps);
+      expect(plan.kind).toBe("routed");
+      expect(warmCatalog).toHaveBeenCalledTimes(1);
+    });
+  }
+});
 
 describe("G1 — one startup and runtime advisor plan", () => {
   test(
@@ -415,7 +441,7 @@ async function selectorPlans(selectors: string[]) {
     for (const spec of selectors) {
       const plan = await planAdvisorModel(spec, "panel", {
         childAuth: { controlled: true }, anthropicKeyPresent: async () => { throw new Error("native login must not resolve a key"); },
-        ensureCatalog: async () => { throw new Error("native selectors must bypass routed catalog waits"); },
+        warmCatalog: async () => {},
         explain: async () => { throw new Error("native selectors must not enter route()"); }
       });
       const decision = decideAdvisorStartup({

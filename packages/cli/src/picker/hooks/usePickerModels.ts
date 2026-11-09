@@ -113,10 +113,17 @@ export function usePickerModels(
    * runs the first time a list of MODELS is asked for, which is one cached fetch
    * for the view that needs it rather than eleven that nobody asked for.
    */
-  enabled = true
+  enabled = true,
+  /**
+   * Bumped whenever a stored dynamic models catalog lands or changes. Each
+   * value re-reads `servedModels` once per provider; the per-provider cache
+   * holds only within one value.
+   */
+  listsRevision = 0
 ): PickerModelsState {
   const [phase, setPhase] = useState<LoadPhase>("idle");
   const cache = useRef(new Map<string, PickerRow[]>());
+  const cachedRevision = useRef(listsRevision);
   /** The warm is asked for ONCE per picker open, however often `enabled` flips. */
   const warmed = useRef(false);
   const mounted = useMounted();
@@ -156,6 +163,7 @@ export function usePickerModels(
 
   return useMemo(() => {
     if (phase !== "ready") return { rows: [], counts: new Map(), phase };
+    dropOnNewRevision(cache.current, cachedRevision, listsRevision);
     const counts = new Map<string, number>();
     const rows: PickerRow[] = [];
     for (const choice of providerList) {
@@ -190,7 +198,18 @@ export function usePickerModels(
     // uses, so two lists of the same models cannot disagree about their order.
     rows.sort((a, b) => compareByReleaseDateDesc(a.model, b.model));
     return { rows, counts, phase };
-  }, [source, providerList, phase, stableReady, liveRows]);
+  }, [source, providerList, phase, stableReady, liveRows, listsRevision]);
+}
+
+/** Empty the per-provider row cache when the stored lists have changed since it was filled. */
+function dropOnNewRevision(
+  cache: Map<string, PickerRow[]>,
+  seen: { current: number },
+  revision: number
+): void {
+  if (seen.current === revision) return;
+  seen.current = revision;
+  cache.clear();
 }
 
 /** No dynamic models catalogs yet — a shared empty map, so the memo's identity is stable. */

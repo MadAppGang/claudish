@@ -48,7 +48,7 @@ claudish --model ollama@<model>:3 "task"   # 3 concurrent requests
 - `ollama@` → Ollama (local)
 - `lmstudio@` → LM Studio (local)
 - Custom endpoint names also work as provider prefixes (e.g., `my-vllm@model-name`) — see `ai-docs/architecture/custom-endpoints.md`
-- **An unknown shortcut is named as unknown** (`providers/unknown-shortcut.ts`). `parseModelSpec` passes an unknown shortcut through as the provider name, so `go@gemini-3.8-flash` (`go@` was removed in v7.36.0) used to reach the credential filter and answer `No credentials configured for "go"` (D9). `explainExplicitSpec` now asks `isKnownProviderName` FIRST, before any credential read (no authority lookup, readiness probe or 1Password attempt for a name that cannot exist), and answers no-route with cause `explicit-unknown-shortcut` and candidate outcome `unknown-provider`. Known means a builtin or runtime-registered provider, a bundled endpoint (even with no key, so `groq@` keeps its credential message), a `customEndpoints` key, or `custom-url`. The one wording, printed by routing, the proxy's step 6b, preflight and `--probe`: `Unknown provider shortcut "go" in "go@gemini-3.8-flash".` plus `Providers that serve gemini-3.8-flash: ag@… (Antigravity, subscription · account decides models) · g@… (Gemini, native API) · … Every shortcut: claudish --help.` The suggestions are the providers `gatherRouteCandidates` returns for the model (catalog connections and namespace claims, chain order, no credential filter, no cap), spelled with `getShortestPrefix`; a model that gathers nothing lists the shortcuts one edit from the typed one. No model list is written anywhere, and a removed shortcut gets no alias. Whoever adds a credential read to `explainExplicitSpec` keeps it BELOW this check
+- **An unknown shortcut is named as unknown** (`providers/unknown-shortcut.ts`). `parseModelSpec` passes an unknown shortcut through as the provider name, so `go@gemini-3.8-flash` (`go@` was removed in v7.36.0) used to reach the credential filter and answer `No credentials configured for "go"` (D9). `explainExplicitSpec` now asks `isKnownProviderName` FIRST, before any credential read (no authority lookup, readiness probe or 1Password attempt for a name that cannot exist), and answers no-route with cause `explicit-unknown-shortcut` and candidate outcome `unknown-provider`. Known means a builtin or runtime-registered provider, a bundled endpoint (even with no key, so `groq@` keeps its credential message), a `customEndpoints` key, or `custom-url`. The one wording, printed by routing, the proxy's step 6b, preflight and `--probe`: `Unknown provider shortcut "go" in "go@gemini-3.8-flash".` plus `Providers that serve gemini-3.8-flash: ag@… (Antigravity, subscription · account decides models) · g@… (Gemini, native API) · … Every shortcut: claudish --help.` The suggestions are the providers `gatherRouteCandidates` returns for the model (catalog connections and vendor claims, chain order, no credential filter, no cap; no account's dynamic models catalog is read), spelled with `getShortestPrefix`; a model that gathers nothing lists the shortcuts one edit from the typed one. No model list is written anywhere, and a removed shortcut gets no alias. Whoever adds a credential read to `explainExplicitSpec` keeps it BELOW this check
 - **Bundled catalog vendors** each use their own name as their only prefix, and appear only when their key is locally present: `groq@`, `cerebras@`, `together@`, `fireworks@`, `deepinfra@`, `nebius@`, `hyperbolic@`, `sambanova@`, `novita@`, `baseten@`, `perplexity@`, `venice@`, `chutes@`, `featherless@`, `parasail@`, `inference-net@`, `aimlapi@`, `requesty@`, `nanogpt@`, `cohere@`, `scaleway@`, `upstage@`, `writer@`, `moonshot-cn@`, `tuningengines@` — see `ai-docs/architecture/predefined-endpoints.md`. `moonshot-cn@` is the China-region Moonshot product, a DIFFERENT service from the builtin Kimi provider reached by `moonshot@`
 
 ## Local models
@@ -98,16 +98,17 @@ that is not in the recommended list (`modelChoiceProblems`, `mcp-server.ts`):
 | Name | Answer |
 |---|---|
 | in the cloud models catalog (id or alias) | `not_recommended`: re-evaluate against the recommended list |
-| not in the catalog, no namespace claim | `unknown_model`: pick the best recommended model |
+| not in the catalog, and no stored dynamic models catalog carries it | `unknown_model`: pick the best recommended model |
 
 The answer carries the recommended ids of the same family (the first run of letters, `gpt` for
 `gpt-6.1-sol`) or vendor, newest first, plus the whole recommended list with tiers and release
 dates. The calling agent knows the task and what the user asked, so IT picks; claudish never
 substitutes a model. `user_required_model` (`team`: the entries; the others: `true`) runs a model
 the user named exactly. Never checked: an explicit `provider@` (after the removal above), a chain,
-a native Claude name, a name a user routing rule matches (the user's own routing), a namespace
-claim on a name the catalog lacks (`swe-1.7` on Devin: the account decides; a catalog model such as
-`grok-4.20` is checked even with a SuperGrok seat), a name the catalog resolves to a recommended id
+a native Claude name, a name a user routing rule matches (the user's own routing), a name the
+catalog lacks that an account's stored dynamic models catalog carries (`swe-1.7` on Devin: the
+account decides; read from disk, no network; a catalog model such as `grok-4.20` is checked even
+with a SuperGrok seat), a name the catalog resolves to a recommended id
 (`MiniMax-M3`, the alias `k3`, the route variant `gemini-4-argon-high`), a catalog miss when the user's
 `defaultProvider` is not `openrouter` (LiteLLM, a custom endpoint may serve it) or when `create_session`'s
 `work_dir` holds project rules this server cannot read, and everything when no recommended list or no
@@ -192,7 +193,8 @@ Three consequences to know before reading its output:
   credential from the one a session uses.
 - **`--no-probe` still asks providers.** The availability filter is part of `route()`, so an
   account's dynamic models catalog is read for each credentialed candidate that declares
-  discovery (in memory, five minutes). `--no-probe` skips the model requests only.
+  discovery (the account's stored list; only a list at most five minutes old may deny).
+  `--no-probe` skips the model requests only.
 - **The parser's provider is not a routing decision.** For a bare non-Claude name it is
   `auto-route`. It stays in `--probe --json` as `nativeProvider` and is never rendered: card
   headings and leaderboards name the first kept hop, or the explanation line when there is
@@ -202,16 +204,34 @@ Three consequences to know before reading its output:
 `claudish --models-refresh`. It is never guessed at `openrouter@<name>`: that sends an id
 nobody published to a metered gateway, and a RENAMED id looks identical.
 
-**A dynamic subscription is invisible to the catalog, so it claims a namespace instead.**
-`antigravity`, `grok-subscription`, `sakana-subscription` and `devin` sit in the probe map as
-`client_model_selection_required` and publish zero connections — the ACCOUNT decides what the
-seat serves. Each therefore declares a `nativeModelPatterns` claim (`/^gemini-/i`, `/^grok-/i`,
-`/^fugu/i`, `/^swe-/i`) that `gatherFromNamespaceClaims` turns into a candidate. The claim is
-not evidence of service; the availability filter asks the account's own dynamic models catalog.
-Each claim's namespace is ALSO owned by a metered sibling defined EARLIER in
-`BUILTIN_PROVIDERS` (`google`, `x-ai`, `sakana`), which keeps `parseModelSpec`'s first-wins
-auto-detection unchanged — two claimants on one namespace is now fine, because the function
-that picked a single winner (`getProviderForModel`) no longer exists.
+**A dynamic subscription is invisible to the catalog, so its candidates come from its vendor
+and its account.** `antigravity`, `grok-subscription`, `sakana-subscription` and `devin` sit in
+the probe map as `client_model_selection_required`. The catalog publishes few or no
+connections for them, because the ACCOUNT decides what the seat serves. Two sources in
+`route-candidates.ts` add their candidates after the catalog's connections, and neither matches
+a model name against a pattern:
+
+- **Vendor claim** (`gatherVendorClaims`). A dynamic subscription becomes a candidate for a
+  catalog chat model whose vendor (the entry's `provider`) is the subscription's own route
+  vendor, when the catalog publishes no connection of that subscription for the model. `gk@`
+  claims `x-ai` models, `ag@` claims `google` models, `sc@` claims `sakana` models. Devin's
+  vendor, `cognition`, has no catalog entries, so Devin gets no vendor claim. A claim is not
+  evidence of service; the availability filter asks the account.
+- **Account-listed candidate** (`gatherAccountListed`). The account's dynamic models catalog
+  carries the name in the provider's own spelling (`swe-1.7` resolves to `swe-1-7-medium`
+  through `expandSelection`), and the catalog publishes no connection of that provider for the
+  model. That covers a name the catalog lacks (Devin's `swe-*`), a machine with no readable
+  catalog, and a catalog model that only other providers connect (Devin re-serving `kimi-k3` as
+  `kimi-k3-high`). The candidate carries the listed row's context window. Published plan
+  membership still excludes: a subscription whose catalog membership lacks the model is set
+  aside as `excluded-by-membership`. Any subscription provider that declares `modelDiscovery`
+  keeps a list (`isPersistedListProvider`), not only the four above.
+
+A catalog connection wins over both for the same provider and wire id, because it carries the
+price and window the other two cannot know. The old regex claims (`/^gemini-/i`, `/^grok-/i`,
+`/^fugu/i`, `/^swe-/i`) and the four providers' `nativeModelPatterns` are removed. The metered
+siblings keep theirs (`google`, `x-ai`, `sakana`): those decide what `parseModelSpec`
+attributes a bare name to, and that attribution is never a routing chain.
 
 **The availability filter must ask in the provider's OWN spelling.** A provider that encodes
 knobs into its model ids never lists a bare canonical id: Devin's dynamic models catalog holds
@@ -407,8 +427,8 @@ reader, so a reader added later inherits it:
 
 The rows are moved, never deleted. Only EXACT-id readers consult `allConnections()`:
 `resolveExternalId`'s first step (`publishesWireIdFor`), `findConnection`'s exact step, the
-availability reverse lookup, `allExternalIds`, and `wiresMatchRegistry`, which still validates
-every row. A reader that CHOOSES a wire id reads `aggregators[]` and cannot see an opt-in one.
+availability reverse lookup, and `allExternalIds`. `reconcileWires` still checks every row: it
+walks `aggregators[]` and `optInConnections` both. A reader that CHOOSES a wire id reads `aggregators[]` and cannot see an opt-in one.
 
 A provider whose only connection for a model is a contributor one is not gathered. `--probe`
 shows it as `excluded-by-content-use`. A provider that maps both ids keeps its plain candidate
@@ -497,14 +517,48 @@ Name them apart, because they are different KINDS of fact:
 |---|---|---|
 | what it is | the hosted models-index metadata, keyed by canonical model id | the list one provider's discovery endpoint returns for ONE credential |
 | scope | the same for everybody | per account, per key, per seat |
-| lifetime | cached on disk in `~/.claudish/all-models.json` | in memory only, per process |
+| lifetime | cached on disk in `~/.claudish/all-models.json` | on disk per account (at most 72 h); only a list at most 5 min old may deny |
 | owns | model IDENTITY and published plan membership | ENTITLEMENT — which models this key may call |
 
-**A dynamic models catalog is never persisted.** `providers/model-discovery.ts` keeps the
-list in an in-memory `Map` for `CACHE_TTL_MS` (five minutes) and writes nothing to disk;
-Antigravity's dynamic models catalog is likewise in memory (`auth/antigravity-user.ts`). Every disk
-writer holds hosted or credential-free data. A stored per-account list would outlive the
-key or seat that earned it and answer with something no longer true.
+**A dynamic models catalog is persisted per account, and only a live one may deny.** After a
+successful, complete answer, `providers/dynamic-models-catalog.ts` writes the list to
+`~/.claudish/dynamic-models-catalog/<provider>.json` (0600, directory 0700) through
+`dynamic-models-catalog-store.ts`. The entry is keyed by an HMAC-SHA256 of the credential
+identity that would sign, under a local secret in `~/.claudish/dynamic-models-catalog.key`
+(0600). The secret sits outside the directory, so a copied directory cannot be tested against a
+guessed key. A file holds no credential and no URL, and at most 4 accounts per provider.
+
+The ages (`classifyListAge`): `live` up to 5 min, `fresh` up to 24 h, `stale` up to 72 h; an
+older entry is ignored. A stored list of any of those ages may ADD a candidate (an
+account-listed candidate, above) and CONFIRM one (`serves`). Only a `live` list may answer
+`not-served`, whichever process wrote it, for the same account key. When an older list would
+deny, the request path asks the account once and the live answer decides; a launch reads
+`unknown`. The in-memory five-minute list in `providers/model-discovery.ts` stays as the live
+layer. An account whose credential yields no identity material gets plain discovery held in
+memory only, and nothing is written for it.
+
+**The request path waits for missing lists; a launch never does.** `loadChainAccountLists`
+(`routing-rules.ts`) runs before the chain is gathered, for every provider that keeps a list
+and whose credential reads present (no 1Password prompt). A list that is missing or expired is
+fetched for all such providers in parallel, under one bound of `MISSING_LIST_WAIT_MS` (5 s). A
+list that fails or runs out of time is left out, and the chain is built without it. The chain
+is built once from what that returns, and the proxy caches it for the session
+(`fallbackHandlerCache`): a list that lands later changes the next process's chain, never the
+running one. Launch callers (`claude-runner.ts`, `advisor-route-plan.ts`, `team-grid.ts`) route
+with `network: "background"`, which starts those fetches and waits for none. The launch's
+context-window lookup does not wait either: `discoverContextWindow` with `cached-first` answers
+from a stored list, and with none it returns at once and starts one background refresh
+(`cold-account`). `computeMainThreadContextWindow` then takes the cloud models catalog's window.
+
+**What empties or refreshes a list.** A new credential derives a new key and misses. A login or
+logout through the credential authority or `auth-commands.ts` deletes the provider's file
+(`forgetAccountModelsLists`). An `unauthorized` answer deletes that account's entry; any other
+failure leaves disk untouched. Refreshes start, without being awaited, on bare-name routing (a
+list older than 24 h, and the chain's own providers past 5 min), on an explicit spec, on
+opening the picker or one of its providers, and on a cross-provider search (the picker's
+all-models scope, MCP `search_models`). A stored list is the account's own answer, bound to its
+credential, not a remembered routing outcome: a spent subscription limit is still never
+remembered.
 
 For a bare name, `route()` asks three questions of each routing-chain candidate, in this
 order, and each may remove it (an explicit `provider@model` skips the first):
@@ -518,8 +572,9 @@ order, and each may remove it (an explicit `provider@model` skips the first):
 2. **Credential** (`hasCredentialsForProvider`). No key, no candidate.
 3. **Availability** (`providerServesModel`, `providers/model-availability.ts`). For a
    provider that declares `modelDiscovery`, a non-empty dynamic models catalog decides:
-   listed is `serves`, unlisted is `not-served`. The cloud models catalog may only
-   confirm, never deny.
+   listed is `serves`, unlisted is `not-served` when the list is live (a stored list older
+   than 5 min is asked again first, or reads `unknown` at launch). The cloud models catalog
+   may only confirm, never deny.
 
 **Only a successful, complete account answer may deny, and a failed refresh denies
 nothing.** Every failure path of `discoverProviderModels` (no credential, 401/403, other

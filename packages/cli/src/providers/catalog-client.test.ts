@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AggregatorEntry } from "../model-loader.js";
 import {
   type DiskCacheV3,
   type SlimModelEntry,
   _clearAllModelsCacheMemo,
   readAllModelsCache,
+  routeRegistryPathFor,
   writeAllModelsCache,
 } from "./all-models-cache.js";
+import type { CachedSubscriptionPlan } from "./all-models-cache.js";
 import {
   _resetCatalogClient,
   buildRoutesUrl,
@@ -18,7 +21,218 @@ import {
   resolveTargetForCatalog,
 } from "./catalog-client.js";
 import { CATALOG_V3_ACCEPT } from "./catalog-v3.js";
+import type {
+  CachedRouteRegistry,
+  ConnectionWire,
+  RouteProfile,
+  RouteRegistry,
+} from "./connection-wire.js";
 import { parseModelSpec } from "./model-parser.js";
+
+// the reader of the previous release, kept verbatim as an oracle.
+const previousReleaseReader = (() => {
+  type WireApi = "chat-completions" | "responses" | "anthropic-messages" | "gemini";
+
+  const WIRE_APIS: readonly WireApi[] = [
+    "chat-completions",
+    "responses",
+    "anthropic-messages",
+    "gemini",
+  ];
+
+  function isObject(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function isWireApi(value: unknown): value is WireApi {
+    return typeof value === "string" && (WIRE_APIS as readonly string[]).includes(value);
+  }
+
+  /**
+   * Structural check of one connection's `wire`: the discriminator and the fields
+   * a request reads. Sub-objects are checked only as far as `status` tells how to
+   * read them; the request builder re-checks each value it uses.
+   */
+  function isConnectionWire(value: unknown): value is ConnectionWire {
+    if (!isObject(value)) return false;
+    switch (value.status) {
+      case "unknown":
+        return true;
+      case "unsupported":
+        return typeof value.protocol === "string";
+      case "known":
+        return (
+          isWireApi(value.api) &&
+          (typeof value.tokenParam === "string" || isObject(value.tokenParam)) &&
+          isObject(value.reasoning) &&
+          typeof value.reasoning.status === "string" &&
+          isObject(value.speed) &&
+          typeof value.speed.status === "string"
+        );
+      default:
+        return false;
+    }
+  }
+
+  function isRouteRegistry(value: unknown): value is RouteRegistry {
+    if (!isObject(value) || typeof value.registryVersion !== "string" || !isObject(value.routes)) {
+      return false;
+    }
+    return Object.values(value.routes).every(
+      (route) =>
+        isObject(route) &&
+        isObject(route.profiles) &&
+        Object.values(route.profiles).every(
+          (profile) =>
+            isObject(profile) &&
+            typeof profile.kind === "string" &&
+            isObject(profile.apis) &&
+            Object.entries(profile.apis).every(
+              ([api, entry]) =>
+                isWireApi(api) && isObject(entry) && typeof entry.baseUrl === "string"
+            )
+        )
+    );
+  }
+
+  /** `"3.7.0"` ≥ `"3.6.2"`, compared numerically per part. */
+  function registryVersionAtLeast(version: string, minimum: string): boolean {
+    const a = version.split(".").map((part) => Number.parseInt(part, 10) || 0);
+    const b = minimum.split(".").map((part) => Number.parseInt(part, 10) || 0);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const diff = (a[i] ?? 0) - (b[i] ?? 0);
+      if (diff !== 0) return diff > 0;
+    }
+    return true;
+  }
+
+  /** The first registry version whose connections all carry `wire`. */
+  const WIRE_REGISTRY_VERSION = "3.7.0";
+
+  function routeProfile(
+    registry: RouteRegistry,
+    route: { routeId: string; routeProfileId: string }
+  ): RouteProfile | undefined {
+    return registry.routes[route.routeId]?.profiles?.[route.routeProfileId];
+  }
+
+  function allConnections(entry: {
+    aggregators?: AggregatorEntry[] | null;
+    optInConnections?: AggregatorEntry[];
+  }): AggregatorEntry[] {
+    return [...(entry.aggregators ?? []), ...(entry.optInConnections ?? [])];
+  }
+
+  function hasRoute(value: unknown): value is { routeId: string; routeProfileId: string } {
+    if (!value || typeof value !== "object") return false;
+    const route = value as Record<string, unknown>;
+    return typeof route.routeId === "string" && typeof route.routeProfileId === "string";
+  }
+
+  function isSlimModelEntry(value: unknown): value is SlimModelEntry {
+    if (!value || typeof value !== "object") return false;
+    const entry = value as Record<string, unknown>;
+    if (
+      typeof entry.modelId !== "string" ||
+      !Array.isArray(entry.aliases) ||
+      !entry.aliases.every((alias) => typeof alias === "string")
+    )
+      return false;
+    if (
+      entry.subscriptionPlanIds !== undefined &&
+      (!Array.isArray(entry.subscriptionPlanIds) ||
+        !entry.subscriptionPlanIds.every((id) => typeof id === "string"))
+    )
+      return false;
+    if (entry.aggregators === undefined) return true;
+    if (!Array.isArray(entry.aggregators)) return false;
+    return entry.aggregators.every((candidate: unknown) => {
+      if (!candidate || typeof candidate !== "object") return false;
+      const connection = candidate as Record<string, unknown>;
+      return connection.routeStatus === "mapped"
+        ? hasRoute(connection.route) &&
+            typeof connection.externalModelId === "string" &&
+            connection.externalModelId.length > 0
+        : connection.routeStatus === "unknown" || connection.routeStatus === "unsupported";
+    });
+  }
+
+  function isCachedSubscriptionPlan(value: unknown): value is CachedSubscriptionPlan {
+    if (!value || typeof value !== "object") return false;
+    const plan = value as Record<string, unknown>;
+    return (
+      typeof plan.id === "string" &&
+      plan.id.length > 0 &&
+      (plan.routeStatus === "supported"
+        ? hasRoute(plan.route)
+        : plan.routeStatus === "unsupported" || plan.routeStatus === "unknown") &&
+      (plan.modelDiscovery === undefined ||
+        ["catalog", "client", "hybrid"].includes(String(plan.modelDiscovery)))
+    );
+  }
+
+  function wiresMatchRegistry(
+    entries: SlimModelEntry[],
+    routeRegistry: CachedRouteRegistry,
+    catalogGenerationId: string
+  ): boolean {
+    if (routeRegistry.generationId !== catalogGenerationId) return false;
+    const { registry } = routeRegistry;
+    if (!registryVersionAtLeast(registry.registryVersion, WIRE_REGISTRY_VERSION)) return true;
+    // Every row, opt-in included: an explicit contributor request builds from its
+    // own connection's wire, so that wire is validated like any other.
+    return entries.every((entry) =>
+      allConnections(entry).every((connection) => {
+        if (connection.routeStatus !== "mapped") return true;
+        if (!connection.route || !isConnectionWire(connection.wire)) return false;
+        const profile = routeProfile(registry, connection.route);
+        if (!profile) return false;
+        return connection.wire.status !== "known" || !!profile.apis[connection.wire.api]?.baseUrl;
+      })
+    );
+  }
+
+  function parseAllModelsCache(raw: unknown): DiskCacheV3 | null {
+    if (!raw || typeof raw !== "object") return null;
+    const data = raw as Record<string, unknown>;
+    if (
+      data.version !== 3 ||
+      typeof data.lastUpdated !== "string" ||
+      typeof data.catalogGenerationId !== "string" ||
+      data.catalogGenerationId.length === 0 ||
+      !Array.isArray(data.entries) ||
+      !data.entries.every(isSlimModelEntry) ||
+      !Array.isArray(data.models) ||
+      !Array.isArray(data.plans) ||
+      !data.plans.every(isCachedSubscriptionPlan)
+    ) {
+      return null;
+    }
+    if (data.routeRegistry !== undefined) {
+      const cached = data.routeRegistry as Record<string, unknown> | null;
+      if (
+        !cached ||
+        typeof cached.generationId !== "string" ||
+        !isRouteRegistry(cached.registry) ||
+        !wiresMatchRegistry(
+          data.entries as SlimModelEntry[],
+          cached as unknown as CachedRouteRegistry,
+          data.catalogGenerationId
+        )
+      ) {
+        return null;
+      }
+    }
+    return data as unknown as DiskCacheV3;
+  }
+
+  const accepts = (raw: unknown): boolean => parseAllModelsCache(raw) !== null;
+  return { accepts, isRouteRegistry };
+})();
+
+function previousReleaseAccepts(raw: unknown): boolean {
+  return previousReleaseReader.accepts(raw);
+}
 
 const realFetch = globalThis.fetch;
 const originalEnv = {
@@ -437,6 +651,83 @@ describe("route registry refresh", () => {
     ]);
   }
 
+  test("writes a mixed-wire generation that the previous release can read", async () => {
+    const cachePath = tempCachePath();
+    const source = wireFixture.entries
+      .flatMap((entry) => entry.aggregators ?? [])
+      .find(
+        (connection) =>
+          connection.route?.routeId === "google" &&
+          connection.route.routeProfileId === "direct-api" &&
+          connection.wire?.status === "known" &&
+          connection.wire.api === "gemini"
+      )!;
+    const model = (modelId: string, routeProfileId: string): SlimModelEntry => ({
+      modelId,
+      aliases: [],
+      aggregators: [
+        {
+          ...structuredClone(source),
+          externalModelId: modelId,
+          route: { routeId: "google", routeProfileId },
+        },
+      ],
+    });
+    const models = [
+      model("model-no-api", "empty-api"),
+      model("model-missing-profile", "missing"),
+      model("model-unknown-api", "antigravity-subscription"),
+    ];
+    Object.assign(models[2]!.aggregators![0]!.wire!, { api: "cloudcode-v1internal" });
+    const registry = {
+      registryVersion: "3.7.0",
+      routes: {
+        google: {
+          routeId: "google",
+          profiles: {
+            "empty-api": { kind: "subscription", apis: {} },
+            "antigravity-subscription": {
+              kind: "subscription",
+              apis: {
+                "cloudcode-v1internal": {
+                  baseUrl: "https://daily-cloudcode-pa.googleapis.com/v1internal",
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.searchParams.get("catalog") === "routes") {
+        return envelope({ mode: "routes", registry });
+      }
+      if (url.pathname === "/queryPlans")
+        return envelope({
+          plans: [
+            {
+              id: "plan",
+              routeStatus: "supported",
+              route: { routeId: "qwen", routeProfileId: "modelstudio-coding-plan" },
+            },
+          ],
+          total: 1,
+        });
+      return envelope({ mode: "slim", models, total: models.length });
+    }) as unknown as typeof fetch;
+
+    const outcome = await refreshCatalog(1000, { cachePath });
+    expect(outcome.kind).toBe("refreshed");
+    const raw: unknown = JSON.parse(readFileSync(cachePath, "utf8"));
+    expect(previousReleaseAccepts(raw)).toBe(true);
+    const sidecarPath = routeRegistryPathFor(cachePath);
+    if (existsSync(sidecarPath)) {
+      const sidecar = JSON.parse(readFileSync(sidecarPath, "utf8"));
+      expect(previousReleaseReader.isRouteRegistry(sidecar.registry)).toBe(true);
+    }
+  });
+
   test("pins the routes URL to the model generation and writes its registry", async () => {
     const cachePath = tempCachePath();
     const requests = serveFixture();
@@ -499,22 +790,50 @@ describe("route registry refresh", () => {
     expect(readFileSync(cachePath, "utf8")).toBe(bytes);
   });
 
-  test("wires missing from a 3.7.0 connection fail incomplete without replacing the file", async () => {
+  test("refreshes a generation with a known Gemini wire on a profile with no APIs", async () => {
     const cachePath = tempCachePath();
-    writeAllModelsCache(wireFixture, cachePath);
-    const bytes = readFileSync(cachePath, "utf8");
     const cache = structuredClone(wireFixture);
-    const connection = cache.entries
-      .flatMap((entry) => entry.aggregators ?? [])
-      .find((connection) => connection.routeStatus === "mapped")!;
-    delete connection.wire;
+    const model = cache.entries.find((entry) =>
+      entry.aggregators?.some(
+        (connection) =>
+          connection.route?.routeId === "google" &&
+          connection.route.routeProfileId === "direct-api" &&
+          connection.wire?.status === "known" &&
+          connection.wire.api === "gemini"
+      )
+    )!;
+    const connection = model.aggregators!.find(
+      (connection) =>
+        connection.route?.routeId === "google" && connection.route.routeProfileId === "direct-api"
+    )!;
+    connection.route!.routeProfileId = "antigravity-subscription";
+    cache.routeRegistry!.registry.registryVersion = "3.7.0";
+    cache.routeRegistry!.registry.routes.google!.profiles["antigravity-subscription"]!.apis = {};
+    const unchangedModel = cache.entries.find((entry) => entry.modelId !== model.modelId)!;
     const requests = serveFixture({ cache });
     expect(await refreshCatalog(1000, { cachePath })).toEqual({
-      kind: "fetch_failed",
-      reason: "incomplete",
+      kind: "refreshed",
+      modelCount: cache.entries.length,
+      catalogGenerationId: cache.catalogGenerationId,
+      pages: 2,
     });
     expect(requests).toHaveLength(4);
-    expect(readFileSync(cachePath, "utf8")).toBe(bytes);
+    const loaded = readAllModelsCache(cachePath);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.entries).toHaveLength(cache.entries.length);
+    const demotedConnection = (entries: SlimModelEntry[]) =>
+      entries
+        .find((entry) => entry.modelId === model.modelId)
+        ?.aggregators?.find(
+          (connection) =>
+            connection.route?.routeId === "google" &&
+            connection.route.routeProfileId === "antigravity-subscription"
+        );
+    expect(demotedConnection(loaded!.entries)?.wire?.status).toBe("unknown");
+    expect(demotedConnection(getCatalogEntries() ?? [])?.wire?.status).toBe("unknown");
+    expect(loaded!.entries.find((entry) => entry.modelId === unchangedModel.modelId)).toEqual(
+      unchangedModel
+    );
   });
 
   test("buildRoutesUrl discards slim filters, pagination and stale generation", () => {

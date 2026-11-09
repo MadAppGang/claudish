@@ -28,6 +28,7 @@ import {
   readSharedAntigravityToken,
 } from "../antigravity-token.js";
 import {
+  antigravityHost,
   buildAntigravityUserAgent,
   getServedAntigravityModels,
   setupAntigravityUser,
@@ -78,6 +79,22 @@ export class AntigravityCredentialProvider implements CredentialProvider {
   /** Unchanged contract: the `=== "present"` projection of the above. */
   async isAvailable(): Promise<boolean> {
     return (await this.describeReadiness()).readiness === "present";
+  }
+
+  /**
+   * The shared login's refresh-token lineage (the access token when the store
+   * holds no refresh token), bound to the backend host. A refresh that keeps the
+   * refresh token keeps the identity; a new sign-in moves it.
+   */
+  async accountIdentity(): Promise<string | undefined> {
+    const token = readSharedAntigravityToken();
+    if (!token) return undefined;
+    const lineage = token.refresh_token
+      ? `refresh:${token.refresh_token}`
+      : token.access_token
+        ? `access:${token.access_token}`
+        : undefined;
+    return lineage ? `${lineage}\n${antigravityHost()}` : undefined;
   }
 
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {

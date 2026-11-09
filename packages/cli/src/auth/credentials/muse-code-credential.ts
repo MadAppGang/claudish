@@ -18,6 +18,7 @@ import {
   ensureMuseCredentialReady,
   isMuseCredentialConfigured,
   museCredentialStatusFromFiles,
+  museLoginTokenForIdentity,
   museSignerLabel,
   refreshMuseCredentialStatus,
   requestPathMayPrompt,
@@ -66,6 +67,17 @@ export class MuseCodeCredentialProvider implements CredentialProvider {
 
   async isAvailable(): Promise<boolean> {
     return (await this.describeReadiness()).readiness === "present";
+  }
+
+  /**
+   * The Meta login the mint consumes, never the minted key: the key is per
+   * process, so keying on it would give every process a new account. A login
+   * held only in the Muse Code CLI's Keychain item, with nothing installed in
+   * this process, has no identity here and its list is not persisted.
+   */
+  async accountIdentity(): Promise<string | undefined> {
+    const token = museLoginTokenForIdentity();
+    return token ? `login:${token}` : undefined;
   }
 
   /** A confirmed key; the request path may use the Keychain only in an interactive launch. */

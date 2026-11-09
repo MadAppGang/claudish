@@ -38,6 +38,11 @@ export class KimiOAuthHalf implements CredentialProvider {
     return hasOAuthCredentials("kimi");
   }
 
+  /** The Kimi login's lineage, shared by `kimi` and `kimi-coding`; the provider name keys them apart. */
+  async accountIdentity(): Promise<string | undefined> {
+    return this.oauth.credentialLineage();
+  }
+
   async getRequestAuth(_ctx: RequestAuthContext): Promise<RequestAuth> {
     // May throw "OAuth_FALLBACK_TO_API_KEY" — the composite catches it.
     const token = await this.oauth.getAccessToken();

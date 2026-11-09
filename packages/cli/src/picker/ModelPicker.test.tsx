@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 /** @jsxImportSource @opentui/react */
 /**
  * Tier 2 — `testRender` over the real component tree, with the loaders injected.
@@ -31,11 +34,23 @@ import { describe, expect, test } from "bun:test";
 import type { CapturedFrame } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import type { ReactNode } from "react";
+import { credentials } from "../auth/credentials/authority.js";
 import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
+import { _resetCatalogClient, _setCatalogEntriesForTest } from "../providers/catalog-client.js";
+import {
+  LIVE_MS,
+  deriveAccountKey,
+  writeStoredModelsList,
+} from "../providers/dynamic-models-catalog-store.js";
+import * as accountModels from "../providers/dynamic-models-catalog.js";
 import type { DescriptionIndex } from "../providers/model-descriptions.js";
 import { C } from "../tui/theme.js";
 import { ModelPicker } from "./ModelPicker.js";
-import type { PickerDataSource, PickerProviderChoice } from "./PickerDataSource.js";
+import {
+  type PickerDataSource,
+  type PickerProviderChoice,
+  createPickerDataSource,
+} from "./PickerDataSource.js";
 import { type Hint, hintsWidth } from "./chrome.js";
 import { MAX_DIALOG_ROWS, deriveDialogLayout } from "./layout.js";
 import { CHIP_FILL_CELLS } from "./rows.js";
@@ -197,16 +212,6 @@ const bgs = (f: CapturedFrame): Set<string> =>
   new Set(f.lines.flatMap((l) => l.spans.map((s) => s.bg.toInts().slice(0, 3).join())));
 const rgb = (hex: string): string =>
   [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16)).join();
-/**
- * HAS A MODEL LIST FINISHED PAINTING? The filter row's `newest first` is drawn by
- * the list phase and by nothing else — not by the loading dialog, not by the
- * provider list — so it is the one string that separates "the view flipped" from
- * "the view flipped and the rows are there".
- *
- * `▶` would not do: every list in this picker draws a cursor, including the one the
- * keystroke just left, so a predicate on it is satisfied before anything has
- * happened and waits for nothing.
- */
 /** Every span in the frame, flattened — chips are spans, not rows. */
 const spansOf = (f: CapturedFrame): CapturedFrame["lines"][number]["spans"] =>
   f.lines.flatMap((l) => l.spans);
@@ -215,7 +220,11 @@ const labelled = (f: CapturedFrame, label: string): CapturedFrame["lines"][numbe
   spansOf(f).filter((sp) => sp.text.trim() === label);
 const bgOf = (sp: CapturedFrame["lines"][number]["spans"][number]): string =>
   sp.bg.toInts().slice(0, 3).join();
-const listPainted = (t: string[]): boolean => t.join("").includes("newest first");
+/** Wait for a padded model id cell, not a header that also appears while loading. */
+const modelRowPainted =
+  (id: string) =>
+  (text: string[]): boolean =>
+    text.some((line) => line.includes(`${id}  `));
 const providerListPainted = (t: string[]): boolean => t.join("").includes("choose a provider");
 /** Rows that carry painted content — the dialog's actual footprint. */
 const painted = (text: string[]): string[] => text.filter((l) => l.trim() !== "");
@@ -231,6 +240,14 @@ const flat = (text: string[]): string =>
     .join(" ")
     .replace(/[│┃▌╭╮╰╯─]/g, " ")
     .replace(/\s+/g, " ");
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 // ── the shape of the thing ───────────────────────────────────────────────────────
 
@@ -264,7 +281,7 @@ describe("the dialog", () => {
     try {
       expect(joined(d.text).split("▶").length - 1).toBe(1);
       await d.press(["a"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("a"));
       expect(joined(d.recapture().text).split("▶").length - 1).toBe(1);
     } finally {
       d.destroy();
@@ -289,7 +306,7 @@ describe("the dialog", () => {
     );
     try {
       await d.press(["a"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("a"));
       const rows = d.recapture().text.filter((l) => /\ba\b|\bb\b/.test(l));
       expect(rows.length).toBeGreaterThan(0);
       for (const row of rows) expect(row).not.toMatch(/[█▓▒░╌]/);
@@ -310,7 +327,7 @@ describe("the dialog", () => {
           over: [],
         });
         await d.press(["a"]);
-        await d.until(listPainted);
+        await d.until(modelRowPainted("kimi-k3"));
         expect({
           width,
           over: d.recapture().text.filter((l) => l.length > width),
@@ -341,7 +358,7 @@ describe("the dialog", () => {
       }
       expect(footer()).not.toContain("move");
       await d.press(["a"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("kimi-k3"));
       for (const hint of ["move", "select", "filter", "custom", "back"]) {
         expect(footer()).toContain(hint);
       }
@@ -370,7 +387,7 @@ describe("the dialog", () => {
     try {
       await d.until(providerListPainted);
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("kimi-k3"));
       const footer = painted(d.recapture().text).at(-2) ?? "";
       // `r retry` proves this really is the six-pill row and not the five-pill one.
       for (const hint of ["move", "select", "filter", "retry", "custom", "back"]) {
@@ -638,7 +655,7 @@ describe("the billing and prefix CHIPS", () => {
     );
     try {
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("m-7"));
       const shot = d.recapture();
       // Every row says SUB in words…
       expect(shot.text.filter((l) => /\bm-\d\b/.test(l) && l.includes("SUB")).length).toBe(8);
@@ -667,7 +684,7 @@ describe("the billing and prefix CHIPS", () => {
     );
     try {
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("gpt-6-astra"));
       const scoped = d.recapture().text;
       const header = scoped.find((l) => l.includes("ctx") && l.includes("$/1M")) ?? "";
       expect(header).not.toContain("provider");
@@ -678,7 +695,7 @@ describe("the billing and prefix CHIPS", () => {
       await d.press(["ESCAPE"]);
       await d.until(providerListPainted);
       await d.press(["a"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("kimi-k3"));
       const flat = d.recapture().text;
       expect(flat.find((l) => l.includes("ctx") && l.includes("$/1M")) ?? "").toContain("provider");
     } finally {
@@ -1032,7 +1049,7 @@ describe("the PROVIDER list filters as you type", () => {
       await d.until(providerListPainted);
       await d.press(["i", "m"]);
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("kimi-k3"));
       const after = joined(d.recapture().text);
       expect(after).toContain("kimi-k3");
       expect(after).not.toContain("no model matches");
@@ -1065,7 +1082,7 @@ describe("entering a provider loads THAT provider, on demand", () => {
     try {
       await d.press(["ARROW_DOWN"]);
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("devin-1"));
       expect(source.calls.discover).toEqual(["devin"]);
       const all = joined(d.recapture().text);
       expect(all).toContain("Devin");
@@ -1095,7 +1112,7 @@ describe("entering a provider loads THAT provider, on demand", () => {
     );
     try {
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("gpt-6-astra"));
       // ONE LIST ROW. The provider column is no longer drawn inside a provider — it
       // said `OpenRouter` 49 times under a dialog titled `OpenRouter` — so the row is
       // identified by its padded id cell instead: the id followed by the gap before
@@ -1120,7 +1137,7 @@ describe("entering a provider loads THAT provider, on demand", () => {
     );
     try {
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("kimi-k3"));
       await d.press(["ESCAPE"]);
       // A LONE `\x1B` IS AMBIGUOUS UNTIL THE NEXT BYTE OR A TIMEOUT: the parser has
       // to wait to see whether it is the head of `\x1B[B`. One more render pass
@@ -1154,7 +1171,7 @@ describe("entering a provider loads THAT provider, on demand", () => {
     );
     try {
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("gpt-6"));
       await d.press(["RETURN"]);
       // `openrouter@`, not the column's `or@`: `buildExplicitModelSpec` applies the
       // readability OVERRIDES because this is the string the user copies off their
@@ -1182,7 +1199,7 @@ describe("entering a provider loads THAT provider, on demand", () => {
     );
     try {
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("glm-5.3-flash"));
       await d.press(["g", "l", "m"]);
       const all = joined(d.recapture().text);
       expect(all).toContain("glm-5.3-flash");
@@ -1205,7 +1222,7 @@ describe("entering a provider loads THAT provider, on demand", () => {
     const d = await draw(<ModelPicker source={source()} onDone={() => {}} />);
     try {
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("codex-2"));
       // Bare `c` NAVIGATES — that is the collision, asserted so the escape hatch has
       // something to be an escape from.
       await d.press(["c"]);
@@ -1217,7 +1234,7 @@ describe("entering a provider loads THAT provider, on demand", () => {
     const e = await draw(<ModelPicker source={source()} onDone={() => {}} />);
     try {
       await e.press(["RETURN"]);
-      await e.until(listPainted);
+      await e.until(modelRowPainted("codex-2"));
       await e.press(["/"]);
       await e.press(["c"]);
       await e.press(["o"]);
@@ -1249,7 +1266,7 @@ describe("`a` opens the cross-provider list", () => {
     const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
     try {
       await d.press(["a"]);
-      await d.until(listPainted);
+      await d.until((t) => modelRowPainted("glm-5.3-flash")(t) && modelRowPainted("kimi-k3")(t));
       const all = joined(d.recapture().text);
       expect(all).toContain("all models");
       expect(all).toContain("glm-5.3-flash");
@@ -1282,7 +1299,7 @@ describe("`a` opens the cross-provider list", () => {
     );
     try {
       await d.press(["a"]);
-      await d.until(listPainted);
+      await d.until((t) => t.filter((line) => line.includes("gpt-6-astra  ")).length === 2);
       const all = joined(d.recapture().text);
       expect(all).toContain("1 models · 2 routes");
       expect(all).toContain("OpenRouter");
@@ -1308,7 +1325,7 @@ describe("`a` opens the cross-provider list", () => {
     );
     try {
       await d.press(["a"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("glm-5.3-flash"));
       const all = joined(d.recapture().text);
       expect(all).toContain("glm-5.3-flash");
       expect(all).not.toContain("kimi-k3");
@@ -1358,14 +1375,17 @@ describe("`a` opens the cross-provider list", () => {
       // Open Antigravity, look at it, come back out, then ask for all models.
       await d.press(["ARROW_DOWN"]);
       await d.press(["RETURN"]);
-      await d.until(listPainted);
+      await d.until(modelRowPainted("gemini-3.8-flash-tiered"));
       await d.press(["ESCAPE"]);
       // The bare-Escape flush — see the `esc comes back` test. Without it the
       // NEXT key is read as `\x1B` + `a`, which is alt-a and not two keystrokes.
       await d.press([]);
       await d.until(providerListPainted);
       await d.press(["a"]);
-      await d.until(listPainted);
+      await d.until(
+        (t) =>
+          modelRowPainted("gemini-3.8-flash")(t) && modelRowPainted("gemini-3.8-flash-tiered")(t)
+      );
       await d.press(["g", "e", "m", "i", "n", "i"]);
       const all = joined(d.recapture().text);
       // BOTH routes, from two different sources, in one filtered list.
@@ -1416,7 +1436,7 @@ describe("a fallback list says it is a fallback — and that it may not work", (
       height
     );
     await d.press(["RETURN"]);
-    await d.until(listPainted);
+    await d.until(modelRowPainted("kimi-k3"));
     return { ...d, ...d.recapture() };
   }
 
@@ -1538,7 +1558,7 @@ describe("the loading states", () => {
       await d.press(["ESCAPE"]);
       await new Promise((resolve) => setTimeout(resolve, 600));
       await d.press(["a"]);
-      await d.until(listPainted);
+      await d.until((t) => flat(t).includes("A sentence about model a."));
       const frame = d.recapture().text;
       expect(joined(frame)).not.toContain("fetching");
       expect(source.calls.catalog).toBe(1);
@@ -1590,5 +1610,260 @@ describe("the loading states", () => {
     } finally {
       d.destroy();
     }
+  });
+});
+
+describe("stored dynamic models catalogs", () => {
+  const devin = provider({
+    value: "devin",
+    label: "Devin",
+    shortcut: "dv@",
+    billing: "sub",
+    envVar: "",
+    discoveryShape: "elapsed",
+  });
+  const grok = provider({
+    value: "grok-subscription",
+    label: "SuperGrok",
+    shortcut: "gk@",
+    billing: "sub",
+    envVar: "",
+    discoveryShape: "deadline",
+  });
+  const cachedRow = model({
+    id: "swe-1-7-medium",
+    name: "swe-1-7-medium",
+    provider: "Devin",
+    contextLength: 200000,
+    context: "200K",
+  });
+  const cached: PickerDiscoveryOutcome = {
+    kind: "rows",
+    rows: [cachedRow],
+    servedCount: 1,
+    chatCount: 1,
+  };
+  let home: string;
+  let previous: { dir?: string; key?: string };
+  const restores: Array<() => void> = [];
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "claudish-picker-lists-"));
+    previous = {
+      dir: process.env.CLAUDISH_DYNAMIC_CATALOG_DIR,
+      key: process.env.CLAUDISH_DYNAMIC_CATALOG_KEY,
+    };
+    process.env.CLAUDISH_DYNAMIC_CATALOG_DIR = join(home, "lists");
+    process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = join(home, "secret");
+    _setCatalogEntriesForTest([]);
+    accountModels._resetAccountModelsListsForTest();
+    const identity = spyOn(credentials, "accountIdentity").mockImplementation(async (p) =>
+      p === "devin" ? "picker-account" : undefined
+    );
+    const available = spyOn(credentials, "isAvailable").mockImplementation(
+      async (p) => p === "devin" || p === "grok-subscription"
+    );
+    const readiness = spyOn(credentials, "describeReadiness").mockImplementation(async (p) => ({
+      readiness: p === "devin" || p === "grok-subscription" ? "present" : "absent",
+    }));
+    const network = spyOn(globalThis, "fetch").mockRejectedValue(new Error("Network forbidden"));
+    restores.push(
+      () => identity.mockRestore(),
+      () => available.mockRestore(),
+      () => readiness.mockRestore(),
+      () => network.mockRestore()
+    );
+  });
+
+  afterEach(() => {
+    for (const restore of restores.splice(0).reverse()) restore();
+    accountModels._resetAccountModelsListsForTest();
+    _resetCatalogClient();
+    for (const [name, value] of [
+      ["CLAUDISH_DYNAMIC_CATALOG_DIR", previous.dir],
+      ["CLAUDISH_DYNAMIC_CATALOG_KEY", previous.key],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function storedSource(choices: PickerProviderChoice[]): PickerDataSource {
+    const source = createPickerDataSource();
+    return {
+      ...source,
+      providerList: () => choices,
+      notEnabledLocalProviders: () => [],
+      ensureCatalog: async () => {},
+      descriptions: async () => ({ get: () => undefined, size: 0 }),
+    };
+  }
+
+  function holdRefreshes() {
+    const pending = deferred<accountModels.RefreshResult>();
+    const refresh = spyOn(accountModels, "refreshAccountModelsList").mockImplementation(
+      () => pending.promise
+    );
+    restores.push(() => {
+      pending.resolve({ kind: "skipped", reason: "no-credential" });
+      refresh.mockRestore();
+    });
+    return { pending, refresh };
+  }
+
+  test("53. cached first, then live", async () => {
+    const live = deferred<PickerDiscoveryOutcome>();
+    const source = {
+      ...fakeSource({ providerList: [devin] }),
+      cachedModelsCatalog: (p: string) => (p === "devin" ? cached : null),
+      discoverModelsCatalog: () => live.promise,
+    };
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+    try {
+      await d.press(["RETURN"]);
+      expect(joined(d.recapture().text)).toContain("swe-1-7-medium");
+      expect(joined(d.recapture().text)).not.toContain("swe-live");
+      live.resolve({
+        kind: "rows",
+        rows: [model({ id: "swe-live", name: "swe-live", provider: "Devin" })],
+        servedCount: 1,
+        chatCount: 1,
+      });
+      await d.until((t) => joined(t).includes("swe-live"));
+      expect(joined(d.recapture().text)).toContain("swe-live");
+      expect(joined(d.recapture().text)).not.toContain("swe-1-7-medium");
+    } finally {
+      live.resolve(cached);
+      d.destroy();
+    }
+  });
+
+  test("54. a live failure keeps the cached rows", async () => {
+    const live = deferred<PickerDiscoveryOutcome>();
+    const source = {
+      ...fakeSource({ providerList: [devin] }),
+      cachedModelsCatalog: (p: string) => (p === "devin" ? cached : null),
+      discoverModelsCatalog: () => live.promise,
+    };
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+    try {
+      await d.press(["RETURN"]);
+      live.resolve({
+        kind: "failed",
+        failure: { kind: "unreachable", provider: "devin", detail: "offline" },
+        notice: ["Devin could not list its models: unreachable (offline)"],
+        fallbackRows: [],
+      });
+      await d.until((t) => joined(t).includes("unreachable"));
+      const frame = joined(d.recapture().text);
+      expect(frame).toContain("unreachable");
+      expect(frame).toContain("swe-1-7-medium");
+    } finally {
+      live.resolve(cached);
+      d.destroy();
+    }
+  });
+
+  test("55. all models include stored lists", async () => {
+    const key = deriveAccountKey("devin", "picker-account");
+    expect(key.ok).toBe(true);
+    if (!key.ok) throw new Error(key.reason);
+    expect(
+      writeStoredModelsList("devin", key.accountKey, [
+        {
+          id: "swe-1-7-medium",
+          displayName: "SWE-1.7",
+          contextWindow: 200000,
+          reported: "chat",
+        },
+      ])
+    ).toBe(true);
+    const lists = await accountModels.loadAccountModelsLists();
+    expect(lists.get("devin")?.models[0]?.id).toBe("swe-1-7-medium");
+    holdRefreshes();
+    const source = storedSource([devin]);
+    let selected: string | null | undefined;
+    const d = await draw(
+      <ModelPicker
+        source={source}
+        onDone={(spec) => {
+          selected = spec;
+        }}
+      />
+    );
+    try {
+      await d.press(["a"]);
+      await d.until(modelRowPainted("swe-1-7-medium"));
+      const frame = joined(d.recapture().text);
+      expect(frame).toContain("swe-1-7-medium");
+      expect(frame).toContain("dv@");
+      await d.press(["RETURN"]);
+      expect(selected).toBe("dv@swe-1-7-medium");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("56. open triggers background refreshes, never blocking", async () => {
+    const { pending, refresh } = holdRefreshes();
+    const source = storedSource([devin, grok, provider()]);
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+    try {
+      expect(joined(d.text)).toContain("choose a provider");
+      expect(joined(d.text)).toContain("Devin");
+      expect(joined(d.text)).toContain("SuperGrok");
+      const opened = () => refresh.mock.calls.filter(([, trigger]) => trigger === "picker-open");
+      expect(
+        opened()
+          .map(([p]) => p)
+          .sort()
+      ).toEqual(["devin", "grok-subscription"]);
+      for (const [, , opts] of opened()) expect(opts).toMatchObject({ minAgeMs: LIVE_MS });
+      await d.press(["k"]);
+      await d.press(["k"]);
+      expect(opened()).toHaveLength(2);
+    } finally {
+      pending.resolve({ kind: "skipped", reason: "no-credential" });
+      d.destroy();
+    }
+  });
+
+  test("all-models typing sweeps once per picker open without waiting", async () => {
+    const pending = deferred<void>();
+    // Returning the held promise also detects a caller that incorrectly awaits this void API.
+    const sweep = spyOn(accountModels, "sweepAccountModelsLists").mockImplementation(
+      () => pending.promise
+    );
+    restores.push(() => {
+      pending.resolve();
+      sweep.mockRestore();
+    });
+    for (let open = 1; open <= 2; open++) {
+      const source = fakeSource({
+        providerList: [devin],
+        served: [cachedRow, model({ id: "other-model", name: "other-model" })],
+      });
+      const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+      try {
+        expect(joined(d.text)).toContain("choose a provider");
+        expect(sweep).toHaveBeenCalledTimes(open - 1);
+        await d.press(["a"]);
+        await d.until(modelRowPainted("swe-1-7-medium"));
+        expect(joined(d.recapture().text)).toContain("swe-1-7-medium");
+        await d.press(["s"]);
+        expect(joined(d.recapture().text)).toContain("swe-1-7-medium");
+        expect(joined(d.recapture().text)).not.toContain("other-model");
+        expect(sweep).toHaveBeenCalledTimes(open);
+        expect(sweep).toHaveBeenLastCalledWith("search-all", { minAgeMs: LIVE_MS });
+        await d.press(["w", "e"]);
+        await d.press(["ESCAPE"]);
+        await d.press(["s"]);
+        expect(sweep).toHaveBeenCalledTimes(open);
+      } finally {
+        d.destroy();
+      }
+    }
+    pending.resolve();
   });
 });

@@ -350,6 +350,17 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     this.resolving = undefined;
   }
 
+  /**
+   * The resolved key, by the same chain and memo `getRequestAuth` signs with.
+   * The authority appends the definition's base-URL overrides. A provider that
+   * takes no credential has no account to bind a list to.
+   */
+  async accountIdentity(opts?: { allowOpPrompt?: boolean }): Promise<string | undefined> {
+    if (this.authScheme === "none") return undefined;
+    const key = await this.resolveKey({ allowOpPrompt: opts?.allowOpPrompt ?? false });
+    return key ? `key:${key}` : undefined;
+  }
+
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {
     // No credential expected → send the static headers and nothing else. Returns
     // before any resolution for the same reason isAvailable does.

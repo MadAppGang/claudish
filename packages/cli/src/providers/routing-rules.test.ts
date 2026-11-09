@@ -29,14 +29,22 @@ import { clearProviderCredentialEnv } from "../test-helpers/provider-credential-
 import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
+import {
+  MAX_AGE_MS,
+  deriveAccountKey,
+  writeStoredModelsList,
+} from "./dynamic-models-catalog-store.js";
+import * as accountCatalog from "./dynamic-models-catalog.js";
 import { ensureEndpointsRegistered } from "./endpoint-registration.js";
 import {
+  type DiscoveredModel,
+  type FetcherResult,
   getModelDiscoveryFetcher,
   invalidateModelDiscovery,
   registerModelDiscoveryFetcher,
 } from "./model-discovery.js";
 import "./model-discovery-builtins.js";
-import type { ProviderDefinition } from "./provider-definitions.js";
+import { type ProviderDefinition, getAllProviders } from "./provider-definitions.js";
 import {
   type ExplainRouteOptions,
   type RouteExplanation,
@@ -2142,6 +2150,402 @@ function stage5RuntimeProvider(name: string): ProviderDefinition {
     isDirectApi: true,
   };
 }
+
+describe("routing from account-bound dynamic models catalogs", () => {
+  const real = {
+    identity: credentials.accountIdentity,
+    readiness: credentials.describeReadiness,
+    available: credentials.isAvailable,
+    auth: credentials.getRequestAuth,
+    fetch: globalThis.fetch,
+    devin: getModelDiscoveryFetcher("devin-connect")!,
+    antigravity: getModelDiscoveryFetcher("antigravity")!,
+  };
+  const swe: DiscoveredModel = {
+    id: "swe-1-7-medium",
+    family: "swe-1.7",
+    isFamilyDefault: true,
+    contextWindow: 200000,
+    reported: "chat",
+  };
+  let dir: string;
+  let path: string;
+  let oldEnv: { dir?: string; key?: string };
+  let ready: Set<string>;
+  let calls: string[];
+  let answer: (provider: string) => Promise<FetcherResult>;
+  let releases: Array<() => void>;
+  let work: Promise<unknown>[];
+  let networkCalls: number;
+
+  function seedCatalog(model?: string): void {
+    const entries: SlimModelEntry[] = model
+      ? [
+          {
+            modelId: model,
+            provider: "openai",
+            aliases: [],
+            inputModalities: ["text"],
+            outputModalities: ["text"],
+            aggregators: [
+              {
+                sourceProviderId: "openai",
+                sourceCollectorId: "test-data",
+                confidence: "api_official",
+                routeStatus: "mapped",
+                route: catalogRouteForProvider("openai"),
+                externalModelId: model,
+              },
+            ],
+          },
+        ]
+      : [];
+    _setCatalogEntriesForTest(entries);
+    writeAllModelsCache(
+      {
+        version: 3,
+        catalogGenerationId: "account-routing-test-data",
+        lastUpdated: new Date().toISOString(),
+        entries,
+        models: [],
+        plans: [],
+      },
+      path
+    );
+  }
+  function store(provider: string, models: DiscoveredModel[], age: number): void {
+    const key = deriveAccountKey(provider, `test-account:${provider}`);
+    expect(key.ok).toBe(true);
+    if (!key.ok) throw new Error(key.reason);
+    expect(
+      writeStoredModelsList(provider, key.accountKey, models, {
+        now: () => Date.now() - age,
+      })
+    ).toBe(true);
+  }
+  function track<T>(promise: Promise<T>): Promise<T> {
+    work.push(promise);
+    return promise;
+  }
+  function hang(): Promise<FetcherResult> {
+    return new Promise((resolve) => {
+      releases.push(() =>
+        resolve({
+          kind: "failed",
+          failure: { kind: "unreachable" },
+        })
+      );
+    });
+  }
+  async function within<T>(promise: Promise<T>, ms: number): Promise<T | "deadline"> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<"deadline">((resolve) => {
+          timer = setTimeout(() => resolve("deadline"), ms);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  function expectDevin(plan: RoutePlan | "deadline"): void {
+    expect(plan).toMatchObject({ kind: "ok", primary: { provider: "devin" } });
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudish-account-routing-"));
+    path = join(dir, "cloud-models-catalog-v3.json");
+    oldEnv = {
+      dir: process.env.CLAUDISH_DYNAMIC_CATALOG_DIR,
+      key: process.env.CLAUDISH_DYNAMIC_CATALOG_KEY,
+    };
+    process.env.CLAUDISH_DYNAMIC_CATALOG_DIR = join(dir, "dynamic-models-catalog");
+    process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = join(dir, "dynamic-models-catalog.key");
+    ready = new Set(["devin"]);
+    calls = [];
+    releases = [];
+    work = [];
+    networkCalls = 0;
+    seedCatalog();
+    accountCatalog._resetAccountModelsListsForTest();
+    invalidateModelDiscovery();
+    credentials.accountIdentity = async (provider) =>
+      ready.has(provider) ? `test-account:${provider}` : undefined;
+    credentials.describeReadiness = async (provider) => ({
+      readiness: ready.has(provider) ? "present" : "absent",
+    });
+    credentials.isAvailable = async (provider) => ready.has(provider);
+    credentials.getRequestAuth = async () => ({
+      headers: { Authorization: "Bearer offline-test-data" },
+    });
+    answer = async () => ({ kind: "models", models: [swe] });
+    const fetcher = (provider: string) => {
+      calls.push(provider);
+      return track(answer(provider));
+    };
+    registerModelDiscoveryFetcher("devin-connect", fetcher);
+    registerModelDiscoveryFetcher("antigravity", fetcher);
+    globalThis.fetch = (async () => {
+      networkCalls++;
+      throw new Error("Network forbidden");
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(async () => {
+    for (const release of releases) release();
+    await Promise.allSettled(work);
+    await tick();
+    await tick();
+    expect(networkCalls).toBe(0);
+    credentials.accountIdentity = real.identity;
+    credentials.describeReadiness = real.readiness;
+    credentials.isAvailable = real.available;
+    credentials.getRequestAuth = real.auth;
+    globalThis.fetch = real.fetch;
+    registerModelDiscoveryFetcher("devin-connect", real.devin);
+    registerModelDiscoveryFetcher("antigravity", real.antigravity);
+    accountCatalog._resetAccountModelsListsForTest();
+    invalidateModelDiscovery();
+    _resetCatalogClient();
+    if (oldEnv.dir === undefined) delete process.env.CLAUDISH_DYNAMIC_CATALOG_DIR;
+    else process.env.CLAUDISH_DYNAMIC_CATALOG_DIR = oldEnv.dir;
+    if (oldEnv.key === undefined) delete process.env.CLAUDISH_DYNAMIC_CATALOG_KEY;
+    else process.env.CLAUDISH_DYNAMIC_CATALOG_KEY = oldEnv.key;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("waits for a missing account list before building a catalog-absent chain", async () => {
+    answer = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { kind: "models", models: [swe] };
+    };
+    const started = performance.now();
+    expectDevin(await route("swe-1.7", {}, "", path));
+    expect(performance.now() - started).toBeGreaterThanOrEqual(40);
+    expect(calls).toEqual(["devin"]);
+  });
+
+  test("waits for Devin's missing list even when the cloud models catalog knows the name", async () => {
+    seedCatalog("test-known-model");
+    ready.add("openai");
+    answer = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { kind: "models", models: [{ id: "test-known-model", reported: "chat" }] };
+    };
+    const started = performance.now();
+    expectDevin(await route("test-known-model", {}, "", path));
+    expect(performance.now() - started).toBeGreaterThanOrEqual(40);
+    expect(calls).toEqual(["devin"]);
+  });
+
+  test("uses stored candidates without awaiting an unfinished refresh", async () => {
+    store("devin", [swe], 2 * 60 * 60 * 1000);
+    answer = hang;
+    expectDevin(await within(track(route("swe-1.7", {}, "", path)), 250));
+    await tick();
+    expect(calls).toEqual(["devin"]);
+  });
+
+  test("an expired account list is missing and must be fetched before gathering", async () => {
+    seedCatalog("test-expired-model");
+    ready.add("openai");
+    store("devin", [{ id: "old-model", reported: "chat" }], MAX_AGE_MS + 1000);
+    answer = async () => ({
+      kind: "models",
+      models: [{ id: "test-expired-model", reported: "chat" }],
+    });
+    expectDevin(await route("test-expired-model", {}, "", path));
+    expect(calls).toEqual(["devin"]);
+  });
+
+  test.each(["swe-1.7", "test-known-model"])(
+    "bounds all missing-list waits to five seconds for %s",
+    async (model) => {
+      seedCatalog(model === "swe-1.7" ? undefined : model);
+      ready.add("openai");
+      answer = hang;
+      const started = performance.now();
+      const plan = await within(track(route(model, {}, "", path)), 5900);
+      expect(plan).not.toBe("deadline");
+      expect(performance.now() - started).toBeGreaterThanOrEqual(4500);
+      expect(performance.now() - started).toBeLessThan(6000);
+      expect(calls).toEqual(["devin"]);
+      if (plan !== "deadline" && plan.kind === "ok") {
+        expect([plan.primary, ...plan.fallbacks].map(({ provider }) => provider)).not.toContain(
+          "devin"
+        );
+      }
+    },
+    8000
+  );
+
+  test("starts missing-list discovery in parallel rather than serially", async () => {
+    seedCatalog("test-parallel-model");
+    ready.add("antigravity");
+    ready.add("openai");
+    answer = hang;
+    const pending = track(route("test-parallel-model", {}, "", path));
+    for (let i = 0; i < 20 && calls.length < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect([...calls].sort()).toEqual(["antigravity", "devin"]);
+    for (const release of releases) release();
+    expect(await within(pending, 250)).not.toBe("deadline");
+  });
+
+  test("does not gather Devin from a swe-* spelling after discovery fails", async () => {
+    answer = async () => ({
+      kind: "failed",
+      failure: { kind: "unreachable", provider: "devin" },
+    });
+    const plan = await route("swe-1.7", {}, "", path);
+    expect(plan.kind).toBe("no-route");
+    expect(calls).toEqual(["devin"]);
+  });
+
+  test("does not ask a missing account whose credential is absent", async () => {
+    seedCatalog("test-known-model");
+    ready = new Set(["openai"]);
+    const explanation = await explainRoute("test-known-model", {
+      rules: {},
+      defaultProvider: "",
+      cachePath: path,
+    });
+    expect(explanation.outcome.kind).toBe("ok");
+    expect(explanation.candidates.map(({ provider }) => provider)).not.toContain("devin");
+    expect(calls).toEqual([]);
+  });
+
+  test.each(["swe-1.7", "test-known-model"])(
+    "background routing of %s starts discovery without awaiting or adding an unlisted hop",
+    async (model) => {
+      seedCatalog(model === "swe-1.7" ? undefined : model);
+      ready.add("openai");
+      answer = hang;
+      const plan = await within(track(route(model, {}, "", path, { network: "background" })), 250);
+      expect(plan).not.toBe("deadline");
+      if (plan !== "deadline" && plan.kind === "ok") {
+        expect([plan.primary, ...plan.fallbacks].map(({ provider }) => provider)).not.toContain(
+          "devin"
+        );
+      }
+      await tick();
+      expect(calls).toEqual(["devin"]);
+    }
+  );
+
+  test("sweeps a 30-hour list but not a one-hour list when routing another bare name", async () => {
+    seedCatalog("test-sweep-model");
+    ready.add("openai");
+    ready.add("antigravity");
+    store("devin", [swe], 30 * 60 * 60 * 1000);
+    store("antigravity", [{ id: "test-unrelated", reported: "chat" }], 60 * 60 * 1000);
+    expect((await route("test-sweep-model", {}, "", path)).kind).toBe("ok");
+    await tick();
+    expect(calls).toEqual(["devin"]);
+  });
+
+  test.each([true, false])(
+    "an explicit spec refreshes a non-live list and follows the live answer (served=%s)",
+    async (served) => {
+      store("devin", [swe], 2 * 60 * 60 * 1000);
+      answer = async () => ({
+        kind: "models",
+        models: served ? [{ id: "swe-9", reported: "chat" }] : [swe],
+      });
+      const explanation = await explainRoute("dv@swe-9", {
+        rules: {},
+        defaultProvider: "",
+        cachePath: path,
+      });
+      expect(explanation.outcome).toMatchObject(
+        served ? { kind: "ok" } : { kind: "no-route", cause: "explicit-not-served" }
+      );
+      expect(calls).toEqual(["devin"]);
+    }
+  );
+
+  test("keeps native Claude names outside gathering even if Devin lists one", async () => {
+    store("devin", [{ id: "claude-opus-5-medium", reported: "chat" }], 0);
+    const explanation = await explainRoute("claude-opus-5-medium", {
+      rules: {},
+      defaultProvider: "",
+      cachePath: path,
+    });
+    expect(explanation).toMatchObject({ source: "native", candidates: [] });
+    expect(calls).toEqual([]);
+  });
+
+  test("a matching user rule reads no account lists and starts no discovery", async () => {
+    ready.add("openrouter");
+    const read = spyOn(accountCatalog, "readAccountModelsList");
+    const load = spyOn(accountCatalog, "loadAccountModelsLists");
+    try {
+      const plan = await route("swe-1.7", { "swe-*": ["openrouter"] }, "", path);
+      expect(plan).toMatchObject({ kind: "ok", primary: { provider: "openrouter" } });
+      expect(read).not.toHaveBeenCalled();
+      expect(load).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+    } finally {
+      read.mockRestore();
+      load.mockRestore();
+    }
+  });
+
+  test("does not rebuild a completed background chain when a list arrives", async () => {
+    seedCatalog("test-stable-chain");
+    ready.add("openai");
+    let deliver: (result: FetcherResult) => void = () => {};
+    answer = () =>
+      new Promise((resolve) => {
+        deliver = resolve;
+        releases.push(() =>
+          resolve({ kind: "models", models: [{ id: "test-stable-chain", reported: "chat" }] })
+        );
+      });
+    const plan = await route("test-stable-chain", {}, "", path, { network: "background" });
+    await tick();
+    expect(calls).toEqual(["devin"]);
+    const before = structuredClone(plan);
+    let unsubscribe = () => {};
+    const listStored = new Promise<void>((resolve) => {
+      unsubscribe = accountCatalog.onAccountModelsListChanged((provider, list) => {
+        if (provider === "devin" && list !== null) resolve();
+      });
+    });
+    try {
+      deliver({ kind: "models", models: [{ id: "test-stable-chain", reported: "chat" }] });
+      expect(await within(listStored, 1000)).not.toBe("deadline");
+      expect(await accountCatalog.readAccountModelsList("devin")).not.toBeNull();
+      expect(plan).toEqual(before);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  test("every discovery-capable non-local subscription is eligible for a missing-list wait", async () => {
+    const providers = getAllProviders().filter(
+      (def) =>
+        Boolean(def.modelDiscovery) &&
+        !def.isLocal &&
+        (def.tier === "subscription" || def.tier === "dynamic-subscription")
+    );
+    // Readiness checks must cover all eligible providers even without a file on disk.
+    const checked: string[] = [];
+    ready = new Set();
+    credentials.describeReadiness = async (provider) => {
+      checked.push(provider);
+      return { readiness: "absent" };
+    };
+    await route("test-first-ever-model", {}, "", path);
+    expect(providers.length).toBeGreaterThan(0);
+    for (const provider of providers) expect(checked).toContain(provider.name);
+    expect(calls).toEqual([]);
+  });
+});
 
 describe("explainRoute", () => {
   const realFetch = globalThis.fetch;

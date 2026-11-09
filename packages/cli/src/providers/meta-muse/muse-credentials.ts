@@ -161,6 +161,23 @@ export function currentMuseState(): MuseState | undefined {
   return state;
 }
 
+/**
+ * The long-lived Meta login token the next request would mint from, for the
+ * dynamic models catalog's account key: the installed state's login (any
+ * source), else claudish's own login file, else the borrowed copy. NEVER the
+ * minted `LLM|` key, which is per process. Reads files only, asks the Keychain
+ * nothing, and makes no network call.
+ */
+export function museLoginTokenForIdentity(): string | undefined {
+  if (state?.accessToken) return state.accessToken;
+  const dir = deps.dir();
+  return (
+    deps.readStore("own-login", dir)?.access_token ??
+    deps.readStore("borrowed-copy", dir)?.access_token ??
+    undefined
+  );
+}
+
 function install(
   source: MuseSource,
   accessToken: string,

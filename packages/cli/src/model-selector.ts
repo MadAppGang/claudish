@@ -1666,6 +1666,12 @@ export type PickerDiscoveryOutcome =
        * sorted, so the picker must not caption them `newest first`.
        */
       providerOrdered?: true;
+      /**
+       * Set only on rows read from a stored dynamic models catalog: when the
+       * account's endpoint gave that answer (ms since epoch). The picker
+       * captions an old list with its age; a live answer carries none.
+       */
+      listFetchedAt?: number;
     }
   | { kind: "all-filtered"; servedCount: number; sampleIds: string[]; fallbackRows: ModelInfo[] }
   | { kind: "collapsed-empty"; servedCount: number; chatCount: number; fallbackRows: ModelInfo[] }
@@ -1685,10 +1691,16 @@ export type PickerDiscoveryOutcome =
 export async function buildDiscoveredModelOutcome(
   provider: string,
   displayName: string,
-  catalog: CatalogClient
+  catalog: CatalogClient,
+  /**
+   * How the dynamic models catalog is asked. Defaults to the shared discovery
+   * entry; the picker passes the account-bound refresh for a provider that
+   * keeps a stored list, so the answer is written through.
+   */
+  discover: (provider: string) => Promise<ModelsCatalogOutcome> = discoverProviderModelsCatalog
 ): Promise<PickerDiscoveryOutcome> {
   const [modelsCatalogResult, fallbackResult] = await Promise.allSettled([
-    discoverProviderModelsCatalog(provider),
+    discover(provider),
     loadModelsForPickerProvider(provider, catalog),
   ]);
 
@@ -1709,7 +1721,24 @@ export async function buildDiscoveredModelOutcome(
             ),
           },
         };
+  return outcomeFromModelsCatalog(provider, displayName, modelsCatalog, fallbackRows);
+}
 
+/**
+ * A settled dynamic models catalog as the picker's outcome. Pure and synchronous,
+ * so a stored list and a live answer go through the SAME row builder: a stored
+ * list cannot be told apart from a live one by a different price string or spec
+ * spelling, only by the caption that says how old it is.
+ *
+ * `fallbackRows` are the catalog's rows for the provider; they price a metered
+ * provider's rows and ride along on the recoverable variants.
+ */
+export function outcomeFromModelsCatalog(
+  provider: string,
+  displayName: string,
+  modelsCatalog: ModelsCatalogOutcome,
+  fallbackRows: ModelInfo[]
+): PickerDiscoveryOutcome {
   if (modelsCatalog.kind === "unsupported")
     return { kind: "unsupported", reason: modelsCatalog.reason };
 

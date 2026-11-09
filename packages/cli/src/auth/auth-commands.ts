@@ -71,6 +71,20 @@ const AUTH_PROVIDERS: OAuthProvider[] = [
   },
 ];
 
+/**
+ * A login or logout replaces the account behind these claudish providers, so
+ * their stored dynamic models catalogs go with it. Best effort: a new login
+ * derives a new account key, so a list that survives is never read for it.
+ */
+async function forgetStoredModelLists(provider: OAuthProvider): Promise<void> {
+  try {
+    const { forgetAccountModelsLists } = await import("../providers/dynamic-models-catalog.js");
+    for (const key of provider.registryKeys) forgetAccountModelsLists(key);
+  } catch {
+    // The login itself succeeded; nothing here may turn it into a failure.
+  }
+}
+
 function getAuthStatus(provider: OAuthProvider): string {
   // Muse Code's login is claudish's own file or its borrowed copy of the Muse
   // Code CLI's login; the status reads both files and asks the Keychain nothing.
@@ -135,6 +149,7 @@ export async function loginCommand(providerArg?: string): Promise<void> {
   try {
     const oauth = provider.getInstance();
     await oauth.login();
+    await forgetStoredModelLists(provider);
     console.log(`\n✅ ${provider.displayName} OAuth login successful!`);
     console.log(`You can now use: claudish --model ${provider.prefix.split(",")[0].trim()}<model>`);
     process.exit(0);
@@ -159,6 +174,7 @@ export async function logoutCommand(providerArg?: string): Promise<void> {
   try {
     const oauth = provider.getInstance();
     await oauth.logout();
+    await forgetStoredModelLists(provider);
     console.log(`✅ ${provider.displayName} OAuth credentials cleared.`);
     process.exit(0);
   } catch (error) {

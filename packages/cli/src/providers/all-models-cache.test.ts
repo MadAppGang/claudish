@@ -2,16 +2,20 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AggregatorEntry } from "../model-loader.js";
 import {
   type DiskCacheV3,
+  type DroppedConnection,
   type SlimModelEntry,
   _clearAllModelsCacheMemo,
   readAllModelsCache,
   reasoningStatusOf,
+  reconcileWires,
   routeRegistryPathFor,
   writeAllModelsCache,
   writeRouteRegistry,
 } from "./all-models-cache.js";
+import type { CachedRouteRegistry } from "./connection-wire.js";
 
 const dirs: string[] = [];
 function cachePath(): string {
@@ -115,13 +119,194 @@ function knownConnection(cache: DiskCacheV3) {
     )!;
 }
 
+function mixedWireCache(): DiskCacheV3 {
+  const generationId = "generation-google-wires";
+  const routeRegistry: CachedRouteRegistry = {
+    generationId,
+    registry: {
+      registryVersion: "3.7.0",
+      routes: {
+        google: {
+          routeId: "google",
+          profiles: {
+            "direct-api": {
+              kind: "direct",
+              apis: {
+                gemini: { baseUrl: "https://generativelanguage.googleapis.com/v1beta" },
+              },
+            },
+            "antigravity-subscription": { kind: "subscription", apis: {} },
+          },
+        },
+      },
+    },
+  };
+  const source = wireFixture.entries
+    .flatMap((entry) => entry.aggregators ?? [])
+    .find(
+      (connection) =>
+        connection.route?.routeId === "google" &&
+        connection.route.routeProfileId === "direct-api" &&
+        connection.wire?.status === "known" &&
+        connection.wire.api === "gemini"
+    );
+  if (!source) throw new Error("Expected a known Google Gemini connection in the test data");
+  const connection = (modelId: string, routeProfileId: string): AggregatorEntry => ({
+    ...structuredClone(source),
+    route: { routeId: "google", routeProfileId },
+    externalModelId: modelId,
+  });
+  return {
+    ...snapshot(
+      [
+        {
+          modelId: "model-a",
+          aliases: [],
+          aggregators: [connection("model-a", "antigravity-subscription")],
+        },
+        {
+          modelId: "model-b",
+          aliases: [],
+          aggregators: [connection("model-b", "direct-api")],
+        },
+      ],
+      generationId
+    ),
+    routeRegistry,
+  };
+}
+
+function missingProfileCache(): DiskCacheV3 {
+  const cache = mixedWireCache();
+  delete cache.routeRegistry!.registry.routes.google!.profiles["antigravity-subscription"];
+  return cache;
+}
+
+function unknownApiCache(): DiskCacheV3 {
+  const cache = mixedWireCache();
+  Object.assign(
+    cache.routeRegistry!.registry.routes.google!.profiles["antigravity-subscription"]!.apis,
+    { "cloudcode-v1internal": { baseUrl: "https://daily-cloudcode-pa.googleapis.com/v1internal" } }
+  );
+  Object.assign(cache.entries[0]!.aggregators![0]!.wire!, { api: "cloudcode-v1internal" });
+  return cache;
+}
+
+describe("reconcileWires", () => {
+  test("drops a mapped connection on a missing profile without dropping its model", () => {
+    const cache = missingProfileCache();
+    const result = reconcileWires(cache.entries, cache.routeRegistry!, cache.catalogGenerationId);
+    expect(result).not.toBeNull();
+    expect(result!.entries.find((entry) => entry.modelId === "model-a")).toEqual({
+      ...cache.entries[0]!,
+      aggregators: [],
+    });
+    expect(result!.dropped).toEqual([
+      {
+        modelId: "model-a",
+        routeId: "google",
+        routeProfileId: "antigravity-subscription",
+        reason: "missing-profile",
+      },
+    ] satisfies DroppedConnection[]);
+    expect(result!.demoted).toEqual([]);
+    expect(result!.entries.find((entry) => entry.modelId === "model-b")).toEqual(cache.entries[1]);
+  });
+
+  test("reports an unknown API demotion and preserves the valid Gemini model", () => {
+    const cache = unknownApiCache();
+    const original = structuredClone(cache.entries);
+    const result = reconcileWires(cache.entries, cache.routeRegistry!, cache.catalogGenerationId);
+    expect(result).not.toBeNull();
+    expect(result!.entries[0]!.aggregators).toHaveLength(1);
+    expect(result!.entries[0]!.aggregators![0]!.wire?.status).toBe("unknown");
+    expect(result!.demoted).toEqual([
+      {
+        modelId: "model-a",
+        routeId: "google",
+        routeProfileId: "antigravity-subscription",
+        reason: "unknown-api",
+      },
+    ]);
+    expect(result!.entries[1]).toEqual(original[1]);
+    expect(cache.entries).toEqual(original);
+  });
+
+  test("demotes a known Gemini wire whose subscription profile has no API", () => {
+    expect(reconcileWires).toBeFunction();
+    const cache = mixedWireCache();
+    const result = reconcileWires(cache.entries, cache.routeRegistry!, cache.catalogGenerationId);
+    expect(result).not.toBeNull();
+    expect(result!.entries).toHaveLength(2);
+    expect(
+      result!.entries.find((entry) => entry.modelId === "model-a")?.aggregators?.[0]?.wire?.status
+    ).toBe("unknown");
+    expect(result!.demoted).toHaveLength(1);
+  });
+
+  test("preserves the valid direct-api model unchanged beside a demoted connection", () => {
+    expect(reconcileWires).toBeFunction();
+    const cache = mixedWireCache();
+    const unchangedModel = structuredClone(cache.entries[1]);
+    const result = reconcileWires(cache.entries, cache.routeRegistry!, cache.catalogGenerationId);
+    expect(result).not.toBeNull();
+    expect(result!.entries.find((entry) => entry.modelId === "model-b")).toEqual(unchangedModel);
+  });
+
+  test("returns null for a different registry generation", () => {
+    expect(reconcileWires).toBeFunction();
+    const cache = mixedWireCache();
+    cache.routeRegistry!.generationId = "different-generation";
+    expect(
+      reconcileWires(cache.entries, cache.routeRegistry!, cache.catalogGenerationId)
+    ).toBeNull();
+  });
+});
+
 describe("wire registry cache validation", () => {
+  test("reads a cache with a missing profile and removes only its connection", () => {
+    const path = cachePath();
+    const cache = missingProfileCache();
+    writeAllModelsCache(cache, path);
+    const loaded = readAllModelsCache(path);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.entries.find((entry) => entry.modelId === "model-a")).toEqual({
+      ...cache.entries[0]!,
+      aggregators: [],
+    });
+    expect(loaded!.entries[1]).toEqual(cache.entries[1]);
+  });
+
+  test("reads a generation containing an unknown API beside a valid Gemini wire", () => {
+    const path = cachePath();
+    const cache = unknownApiCache();
+    writeAllModelsCache(cache, path);
+    const loaded = readAllModelsCache(path);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.entries[0]!.aggregators).toHaveLength(1);
+    expect(loaded!.entries[0]!.aggregators![0]!.wire?.status).toBe("unknown");
+    expect(loaded!.entries[1]).toEqual(cache.entries[1]);
+  });
+
+  test("loads both models from an inline registry and demotes only the unusable wire", () => {
+    const path = cachePath();
+    const cache = mixedWireCache();
+    writeAllModelsCache(cache, path);
+    rmSync(routeRegistryPathFor(path));
+    const loaded = readAllModelsCache(path);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.entries).toHaveLength(2);
+    expect(
+      loaded!.entries.find((entry) => entry.modelId === "model-a")?.aggregators?.[0]?.wire?.status
+    ).toBe("unknown");
+    expect(loaded!.entries.find((entry) => entry.modelId === "model-b")).toEqual(cache.entries[1]);
+  });
   test("loads the whole production fixture", () => {
     const path = cachePath();
     writeAllModelsCache(wireFixture, path);
     expect(readAllModelsCache(path)).toEqual(wireFixture);
   });
-  const invalidCases: Array<[string, (cache: DiskCacheV3) => void]> = [
+  const demotedCases: Array<[string, (cache: DiskCacheV3) => void]> = [
     [
       "mapped connection without wire",
       (cache) => {
@@ -144,13 +329,28 @@ describe("wire registry cache validation", () => {
         ]!.apis[connection.wire.api];
       },
     ],
-    [
-      "missing route profile",
-      (cache) => {
-        const route = knownConnection(cache).route!;
-        delete cache.routeRegistry!.registry.routes[route.routeId]!.profiles[route.routeProfileId];
-      },
-    ],
+  ];
+  for (const [name, mutate] of demotedCases) {
+    test(`demotes ${name} without rejecting the cache`, () => {
+      const path = cachePath();
+      const cache = structuredClone(wireFixture);
+      const connection = knownConnection(cache);
+      const entryIndex = cache.entries.findIndex((entry) =>
+        entry.aggregators?.includes(connection)
+      );
+      const connectionIndex = cache.entries[entryIndex]!.aggregators!.indexOf(connection);
+      mutate(cache);
+      writeAllModelsCache(cache, path);
+      const loaded = readAllModelsCache(path);
+      expect(loaded).not.toBeNull();
+      expect(loaded!.entries).toHaveLength(cache.entries.length);
+      expect(loaded!.entries[entryIndex]!.aggregators![connectionIndex]!.wire?.status).toBe(
+        "unknown"
+      );
+    });
+  }
+
+  const invalidCases: Array<[string, (cache: DiskCacheV3) => void]> = [
     [
       "different registry generation",
       (cache) => {
@@ -228,18 +428,31 @@ describe("route registry sidecar", () => {
     expect(readAllModelsCache(path)?.routeRegistry).toEqual(wireFixture.routeRegistry);
     expect(JSON.parse(readFileSync(path, "utf8")).routeRegistry).toBeUndefined();
   });
-  test.each(["generation", "profile"])("ignores a sidecar with mismatched %s", (mismatch) => {
+  test("ignores a sidecar with a mismatched generation", () => {
     const path = cachePath();
     const cache = withoutRegistry();
     const registry = structuredClone(wireFixture.routeRegistry!);
-    if (mismatch === "generation") registry.generationId = "different-generation";
-    else {
-      const route = knownConnection(cache).route!;
-      delete registry.registry.routes[route.routeId]!.profiles[route.routeProfileId];
-    }
+    registry.generationId = "different-generation";
     writeAllModelsCache(cache, path);
     writeRouteRegistry(registry, path);
     expect(readAllModelsCache(path)).toEqual(cache);
+  });
+  test("attaches a sidecar with a missing profile and drops its connection", () => {
+    const path = cachePath();
+    const cache = withoutRegistry();
+    const registry = structuredClone(wireFixture.routeRegistry!);
+    const connection = knownConnection(cache);
+    const entryIndex = cache.entries.findIndex((entry) => entry.aggregators?.includes(connection));
+    const route = connection.route!;
+    delete registry.registry.routes[route.routeId]!.profiles[route.routeProfileId];
+    writeAllModelsCache(cache, path);
+    writeRouteRegistry(registry, path);
+    const loaded = readAllModelsCache(path);
+    expect(loaded?.routeRegistry).toBeDefined();
+    expect(loaded!.routeRegistry).toEqual(registry);
+    expect(loaded!.entries[entryIndex]!.aggregators).not.toContainEqual(
+      expect.objectContaining({ route })
+    );
   });
   test("both writers persist the sidecar and the registry writer invalidates a memoized read", () => {
     const path = cachePath();

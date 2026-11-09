@@ -16,9 +16,16 @@
  *     the account's own dynamic models catalog may DENY, and absence of evidence
  *     never denies.
  *
- * So a candidate returned from here is a claim about what the CATALOG publishes,
- * not a claim that this user can call it. Re-asking either question here would
- * create a second oracle, and the pair would disagree the first time one changed.
+ * So a candidate returned from here is a claim about what the CATALOG (or an
+ * account's stored list) publishes, not a claim that this user can call it.
+ * Re-asking either question here would create a second oracle, and the pair
+ * would disagree the first time one changed.
+ *
+ * Three sources, in dedupe order: the catalog's connections; a VENDOR CLAIM (a
+ * dynamic subscription of the model's own vendor, for a catalog chat model); and
+ * an ACCOUNT-LISTED candidate (an account's dynamic models catalog carries the
+ * name and the catalog publishes no connection of that provider for it). No
+ * source matches a model name against a pattern.
  *
  * ── Why the catalog can be the only source ─────────────────────────────────
  *
@@ -73,6 +80,7 @@
 import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import type { AggregatorEntry } from "../model-loader.js";
 import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
+import { resolveAntigravityServedModel } from "./antigravity-model-id.js";
 import { externalIdFor, getCatalogEntries, isMovingPointer } from "./catalog-client.js";
 import {
   CATALOG_ROUTE_BINDINGS,
@@ -86,8 +94,13 @@ import {
   compareByConnectionPrice,
   connectionPrice,
 } from "./connection-price.js";
+import { allConnections, isOptInWireId } from "./content-use.js";
+import type { AccountModelsListSnapshot } from "./dynamic-models-catalog.js";
+import type { DiscoveredModel } from "./model-discovery.js";
+import { expandSelection } from "./model-resolvers/registry.js";
 import { readProbeModelsCache } from "./probe-catalog.js";
 import { type RouteTier, getAllProviders, getProviderByName } from "./provider-definitions.js";
+import { isChatModelEntry } from "./transport/probe-discovery.js";
 
 export type { RouteTier };
 
@@ -103,7 +116,14 @@ export interface RouteCandidate {
   price: ConnectionPrice;
   /** Per-connection context window, when the catalog publishes one. */
   contextWindow?: number;
-  source: "catalog-connection" | "namespace-claim";
+  /**
+   * - `catalog-connection`: a mapped connection the cloud models catalog publishes;
+   * - `vendor-claim`: a dynamic subscription of the model's own vendor, for a
+   *   catalog chat model it publishes no connection for;
+   * - `account-listed`: the account's dynamic models catalog carries the name,
+   *   and the cloud models catalog publishes no connection for that provider.
+   */
+  source: "catalog-connection" | "vendor-claim" | "account-listed";
 }
 
 /**
@@ -398,54 +418,50 @@ export function nativeProviderForVendor(vendorSlug: string): string | undefined 
 }
 
 /**
- * Candidates from a provider's NAMESPACE CLAIM — dynamic subscriptions only.
- *
- * A dynamic subscription publishes no connection at all, because the ACCOUNT
- * selects what it serves: `antigravity`, `grok-subscription`, `devin` and
- * `sakana-subscription` sit in the probe map as
- * `client_model_selection_required`. The catalog cannot say what a seat was
- * given, so without this source a user's flat-rate plan would be invisible to
- * every gathered chain and the request would land on a metered hop — the one
- * ordering error that costs money rather than a better option.
- *
- * A claim is NOT evidence of service, and that asymmetry is the whole design:
- * the candidate exists so the AVAILABILITY filter can ask the account's own
- * dynamic models catalog, which is the only thing that can answer. Extending
- * this to any other tier would invent routes — a gateway's `nativeModelPatterns`
- * would claim every model in a namespace it may not carry, and nothing
- * downstream would contradict it, because a gateway answers a model it does not
- * have with a 4xx that reads as a credential problem.
- *
- * All four dynamic subscriptions now declare one: `devin` (`/^swe-/i`),
- * `antigravity` (`/^gemini-/i`), `grok-subscription` (`/^grok-/i`) and
- * `sakana-subscription` (`/^fugu/i`). The last three were added when the
- * hand-written table was deleted — without them the 15 models measured on
- * generation `g-20260921062451697-f490edba` as CLAIM-GAP would have moved off a
- * flat-rate plan onto a metered hop.
- *
- * A SECOND CLAIMANT ON A NAMESPACE IS FINE HERE, and that is a change from the
- * rule the old note stated. `getProviderForModel` — the function that picked one
- * winner per pattern — no longer exists. The two surviving consumers of
- * `nativeModelPatterns` both tolerate the overlap:
- *
- *   - `getNativeModelPatterns()` → `parseModelSpec` is FIRST-WINS on
- *     `BUILTIN_PROVIDERS` order, and each new claimant is defined BELOW the
- *     metered sibling that already owned the pattern (`google` < `antigravity`,
- *     `x-ai` < `grok-subscription`, `sakana` < `sakana-subscription`), so bare-name
- *     auto-detection is byte-identical to before;
- *   - this function, which iterates ALL providers and pushes every match — it
- *     wants the overlap, because that is how a flat-rate plan and the metered
- *     vendor both reach the ordering in {@link compareRouteCandidates}, where the
- *     tier puts the subscription first.
+ * Whether the catalog publishes any mapped connection of `provider` for the
+ * entry, content-use opt-in rows included. Where it does, the catalog speaks for
+ * that pair, and neither the vendor claim nor an account list adds a second
+ * candidate beside it: a connection carries the wire id, the price and the
+ * window, and its plan membership was already asked.
  */
-function gatherFromNamespaceClaims(
+function catalogConnects(entry: SlimModelEntry, provider: string): boolean {
+  return allConnections(entry).some(
+    (connection) =>
+      connection.routeStatus === "mapped" && catalogRouteMatchesProvider(connection.route, provider)
+  );
+}
+
+/**
+ * Candidates from a VENDOR CLAIM: a dynamic subscription of the model's own
+ * vendor, for a catalog chat model the catalog publishes no connection of it for.
+ *
+ * A dynamic subscription's ACCOUNT selects what it serves (`antigravity`,
+ * `grok-subscription`, `devin` and `sakana-subscription` sit in the probe map as
+ * `client_model_selection_required`), so the catalog publishes few or no
+ * connections for it. Without this source a flat-rate plan would be invisible to
+ * every gathered chain for its own vendor's models, and the request would land on
+ * the metered hop: the one ordering error that costs money.
+ *
+ * Every input is catalog data, and no model name is matched against a pattern:
+ * the entry's vendor (`provider`) is the subscription's own route vendor
+ * ({@link isVendorOwnRoute} over `catalogRouteForProvider`), and the entry is a
+ * chat model by its published modalities ({@link isChatModelEntry}). A claim is
+ * NOT evidence of service: the candidate exists so the availability filter can
+ * ask the account's own dynamic models catalog, which alone can answer.
+ *
+ * Dynamic subscriptions only. Any other tier publishes its connections, so a
+ * claim for it would invent a route nothing downstream contradicts.
+ */
+function gatherVendorClaims(
   model: string,
   entry: SlimModelEntry | undefined,
   candidates: RouteCandidate[]
 ): void {
+  if (!entry || !isChatModelEntry(entry)) return;
   for (const def of getAllProviders()) {
     if (def.tier !== "dynamic-subscription") continue;
-    if (!def.nativeModelPatterns?.some(({ pattern }) => pattern.test(model))) continue;
+    if (!isVendorOwnRoute(catalogRouteForProvider(def.name), entry)) continue;
+    if (catalogConnects(entry, def.name)) continue;
 
     candidates.push({
       provider: def.name,
@@ -453,17 +469,97 @@ function gatherFromNamespaceClaims(
       // wire id from, and the transport resolves the account's own id itself.
       wireId: model,
       tier: def.tier,
-      // Same rule as a connection's, asked of the provider's own binding: the
-      // claim has no route of its own to compare.
-      isVendorOwn: isVendorOwnRoute(catalogRouteForProvider(def.name), entry),
+      isVendorOwn: true,
       // Unknown, and unknowable here: a flat-rate plan publishes no per-token
       // rate, and `connectionPrice` is the only thing allowed to say what a
       // missing price is.
       price: connectionPrice(undefined),
       // No context window either: a plan's window varies by tier and comes from
       // the account's own discovery (see `modelDiscovery`).
-      source: "namespace-claim",
+      source: "vendor-claim",
     });
+  }
+}
+
+/**
+ * The row of an account's dynamic models catalog that a request for `model`
+ * would be sent as, found by the resolver the provider's transport uses (Devin's
+ * `swe-1.7` is sent as `swe-1-7-medium`; Antigravity's `gemini-3.8-flash` as a
+ * served variant), or `undefined` when the list does not carry it.
+ *
+ * Never a content-use opt-in row: those are sent only when typed with their
+ * provider, never chosen by routing (`content-use.ts`).
+ */
+function listedRow(
+  provider: string,
+  model: string,
+  models: readonly DiscoveredModel[]
+): DiscoveredModel | undefined {
+  const sent =
+    provider === "antigravity"
+      ? resolveAntigravityServedModel(model, {
+          servedIds: models.map((row) => row.id),
+          defaultId: null,
+        })
+      : expandSelection(
+          provider,
+          model,
+          models.map(({ id, ...rest }) => ({ wireId: id, ...rest }))
+        );
+  const needle = sent.trim().toLowerCase();
+  const row = models.find((candidate) => candidate.id.trim().toLowerCase() === needle);
+  return row && !isOptInWireId(row.id) ? row : undefined;
+}
+
+/**
+ * Candidates from the ACCOUNT's own dynamic models catalog: a provider whose
+ * stored or live list carries the name, in the provider's own spelling.
+ *
+ * Added whenever the catalog publishes no connection of that provider for the
+ * model: when the catalog has no entry for the name at all (Devin's `swe-*`
+ * models, absent from the catalog), when no catalog is readable, and when the
+ * entry exists but lists other providers only (Devin re-serving another vendor's
+ * model). A published connection always wins, because it carries the wire id,
+ * price and window of the pair.
+ *
+ * Plan membership still applies: a subscription whose catalog-published
+ * membership excludes the model is set aside as `excluded-by-membership`, as its
+ * connection would have been. A list proves what the account may call; it never
+ * overrides what the catalog says a plan includes.
+ */
+function gatherAccountListed(
+  model: string,
+  entry: SlimModelEntry | undefined,
+  lists: AccountModelsListSnapshot,
+  candidates: RouteCandidate[],
+  excluded: ExcludedCandidate[],
+  cachePath: string | undefined
+): void {
+  for (const [provider, list] of lists) {
+    const tier = getProviderByName(provider)?.tier;
+    if (!tier) continue;
+    if (entry && catalogConnects(entry, provider)) continue;
+    const row = listedRow(provider, model, list.models);
+    if (!row) continue;
+
+    const candidate: RouteCandidate = {
+      provider,
+      // The requested name: the transport resolves the account's own id itself.
+      wireId: model,
+      tier,
+      isVendorOwn: isVendorOwnRoute(catalogRouteForProvider(provider), entry),
+      price: connectionPrice(undefined),
+      ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
+      source: "account-listed",
+    };
+    if (
+      entry &&
+      resolveSubscriptionRouting(entry.modelId, provider, cachePath).kind === "not-served"
+    ) {
+      excluded.push({ candidate, outcome: "excluded-by-membership" });
+      continue;
+    }
+    candidates.push(candidate);
   }
 }
 
@@ -489,7 +585,7 @@ export function compareRouteCandidates(a: RouteCandidate, b: RouteCandidate): nu
   if (a.isVendorOwn !== b.isVendorOwn) return a.isVendorOwn ? -1 : 1;
 
   // Inside the subscription band, a catalog-published plan before a dynamic
-  // one: its membership is evidence, where a namespace claim is only a question
+  // one: its membership is evidence, where a vendor claim is only a question
   // the availability filter asks the account.
   const byTier = TIER_RANK[a.tier] - TIER_RANK[b.tier];
   if (byTier !== 0) return byTier;
@@ -514,13 +610,22 @@ export function compareRouteCandidates(a: RouteCandidate, b: RouteCandidate): nu
  * snapshot — the seam every routing function already offers so a test can pin a
  * generation rather than depend on whatever the machine last refreshed.
  *
- * With no readable catalog and no namespace claim the answer is an EMPTY list and
- * `catalogMiss: true`. Not a guessed id, and not an invented gateway: the project
- * owner's rule is that with no catalog claudish serves local providers and
- * explicit `provider@model` specs only. Inventing `openrouter@<name>` here would
- * send a name nobody published to a metered gateway and bill for the 404.
+ * `lists` is the accounts' dynamic models catalogs, read beforehand (no network
+ * here): `explainBareName` loads them for the providers whose credential reads
+ * present. Absent, no account-listed candidate is gathered.
+ *
+ * With no readable catalog and no account list carrying the name the answer is
+ * an EMPTY list and `catalogMiss: true`. Not a guessed id, and not an invented
+ * gateway: the project owner's rule is that with no catalog claudish serves local
+ * providers and explicit `provider@model` specs only. Inventing
+ * `openrouter@<name>` here would send a name nobody published to a metered
+ * gateway and bill for the 404.
  */
-export function gatherRouteCandidates(model: string, cachePath?: string): CandidateGathering {
+export function gatherRouteCandidates(
+  model: string,
+  cachePath?: string,
+  lists: AccountModelsListSnapshot = new Map()
+): CandidateGathering {
   const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
   const entry = entries ? findCatalogEntry(entries, model) : undefined;
 
@@ -528,11 +633,12 @@ export function gatherRouteCandidates(model: string, cachePath?: string): Candid
   const setAside: ExcludedCandidate[] = [];
   const unmappedRoutes = new Set<string>();
 
-  // Source order is the dedupe rule: a real catalog connection beats a namespace
-  // claim for the same (provider, wireId), because it carries a price and a
-  // window the claim cannot know.
+  // Source order is the dedupe rule: a real catalog connection beats a vendor
+  // claim or an account list for the same (provider, wireId), because it
+  // carries a price and a window they cannot know.
   if (entry) gatherFromConnections(entry, gathered, setAside, unmappedRoutes, cachePath);
-  gatherFromNamespaceClaims(model, entry, gathered);
+  gatherVendorClaims(model, entry, gathered);
+  gatherAccountListed(model, entry, lists, gathered, setAside, cachePath);
 
   // JSON, not a delimiter: an injective key is the whole requirement, and any
   // literal separator is a guess about what a wire id cannot contain. This line

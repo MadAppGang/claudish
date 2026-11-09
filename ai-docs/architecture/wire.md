@@ -23,10 +23,27 @@ lists, effort ladders by `gpt-5.x`) being falsified by each new model release.
 
 1. **Data** (`all-models-cache.ts`, `catalog-client.ts`). The refresh reads the slim model pages,
    the plans, and `queryModels?catalog=routes&generationId=<same>`; a different generationId
-   restarts the whole refresh once. A 3.7.0 cache is rejected whole if any mapped connection lacks
-   a wire, names a missing route profile, or has a known API without a base URL — a partial wire
-   table would send some requests from data and the rest from nothing. Reads are memoized by mtime
-   and size: the request path reads the 2.7 MB file per request.
+   restarts the whole refresh once. `reconcileWires` then judges each mapped connection of a
+   3.7.0 generation on its own, opt-in connections included, and the rest of the generation loads.
+   One connection must not keep the whole catalog stale: rejecting the generation for it left every
+   model on the previous one, or on none. The outcome, by reason:
+   - **Missing route profile** (`missing-profile`): the connection is DROPPED from its entry. Its
+     route binding names no endpoint and no credential silo, so nothing could be sent. The entry
+     itself stays, with its other connections.
+   - **Missing or malformed wire** (`missing-wire`), **no base URL** for a known wire's `api` on its
+     profile (`no-base-url`), or a known wire whose `api` claudish does not implement
+     (`unknown-api`): the wire is DEMOTED to `{ status: "unknown", evidence }`, evidence kept, and
+     the request takes the `unknown` path: try-in-turn (`TryInTurnHandler`).
+   - **Registry of another generation**: the whole registry is refused (`null`); it describes other
+     connections.
+
+   One debug-log line counts the dropped and the demoted and names the first few model/route
+   binding pairs with their reasons. A profile `apis` key outside `WIRE_APIS` does not fail
+   `isRouteRegistry`; no request reads it. What claudish writes to disk is readable by older
+   builds, whose readers reject the whole file for any of the cases above: the refresh writes the
+   reconciled rows, and every registry it writes (the inline `routeRegistry` and the `.routes.json`
+   sidecar) goes through `sanitizeRouteRegistry`, which removes the unknown API keys. Reads are
+   memoized by mtime and size: the request path reads the 2.7 MB file per request.
 2. **Connection** (`connection-resolver.ts`). The provider's exact route binding plus the exact
    wire id; never a family or sibling. It carries the wire, the registry profile, the model's
    VENDOR (catalog `provider`) and the owner's direct-connection wire.

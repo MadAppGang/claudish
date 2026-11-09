@@ -1,57 +1,34 @@
 /**
  * Launcher catalog warm step.
  *
- * Owns the decision tree that runs once at CLI startup, before the proxy
- * server boots:
+ * Runs once at CLI startup, before the proxy server boots:
  *
- *   1. Decide whether the catalog needs warming at all (`shouldWarmCatalog`).
+ *   1. Decide whether the launch may touch the catalog at all (`shouldWarmCatalog`).
  *   2. Classify the on-disk cache state (`classifyCatalogState`).
- *   3. Drive the FR-4 hybrid-fallback state machine (`warmCatalogIfNeeded`).
+ *   3. Refresh only when the user asked for it (`warmCatalogIfNeeded`).
  *
- * Architecture: ai-docs/sessions/dev-feature-catalog-warm-hardcoded-cleanup-XXX/architecture.md sections 2-5
- *
- * The launcher gate is "belt + suspenders" alongside the proxy-server's
- * background warm at `proxy-server.ts:535` (see Appendix B). The bg warm
- * is harmless if the launcher already populated the cache.
+ * A launch never waits for the catalog. The proxy refreshes the cloud models
+ * catalog in the background as soon as it starts (`warmCatalog` in
+ * `proxy-server.ts`), and a request that needs it waits there, per request.
+ * Only `--models-refresh` fetches here, and a failed fetch is one warning line,
+ * never an exit.
  */
 
 import { type DiskCacheV3, readAllModelsCache } from "../providers/all-models-cache.js";
 import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
+import { MODEL_CATALOG_NAME } from "../providers/catalog-name.js";
+import { parseModelSpec } from "../providers/model-parser.js";
 import { nativeRouteFor } from "../providers/native-route.js";
 import type { ClaudishConfig } from "../types.js";
-import { VERSION } from "../version.js";
 
 /**
- * Result returned by `warmCatalogIfNeeded`. The launcher reacts to this:
- *   - "ok"        → proceed to createProxyServer
- *   - "warned"    → proceed (warning already printed to stderr)
- *   - "skipped"   → proceed silently (local model or --models-skip-update)
- *   - "hard_fail" → exit 1 (error already printed to stderr)
+ * Result returned by `warmCatalogIfNeeded`. The launcher proceeds on every value:
+ *   - "ok"      → nothing to report (no refresh requested, or it succeeded)
+ *   - "warned"  → a requested refresh failed; one warning line is on stderr
+ *   - "skipped" → local model, explicit `provider@model`, native-only launch,
+ *                 `--models-skip-update`, or the refresh is disabled
  */
-export type WarmOutcome = "ok" | "warned" | "skipped" | "hard_fail";
-
-/**
- * Verbatim hard-fail copy from FR-4. Printed when the catalog is missing AND
- * the network refresh failed — claudish cannot route cloud models without it.
- *
- * "No cached copy found" is a claim about the disk, so this must never be the
- * message for a contract mismatch: there a copy exists and is merely unreadable,
- * the network is fine, and every line below sends the user to debug the wrong
- * thing. `warmCatalogIfNeeded` checks the sentinel before it can reach here for
- * exactly that reason — see the guard above `reportFetchFailure`.
- *
- * Trailing newline included so the message reads as one paragraph terminated
- * cleanly when written to stderr.
- */
-const HARD_FAIL_MESSAGE =
-  "Error: cannot reach model catalog and no cached copy found.\n" +
-  "\n" +
-  "To proceed:\n" +
-  "  - Check network connection\n" +
-  "  - Use a local model: claudish --model ollama@llama3.2 'task'\n" +
-  "  - Skip catalog (advanced): claudish --models-skip-update 'task'\n" +
-  "\n" +
-  "Claudish will not launch without catalog data when using cloud models.\n";
+export type WarmOutcome = "ok" | "warned" | "skipped";
 
 /**
  * Local-only model prefixes. When the user asks for one of these, the launcher
@@ -77,20 +54,21 @@ const LOCAL_MODEL_PREFIXES = [
  *
  * Returns `false` (skip warm) when:
  *   - The user passed `--models-skip-update` (hard skip, regardless of model).
- *   - The user passed a local-only model prefix (case-insensitive).
- *   - The launch is native-only: the model is one Claude Code serves on its own
- *     auth (`nativeRouteFor`), with no `--models-refresh`, no `--advisor`, no
- *     routing chain and no role override (`modelOpus`, `modelSonnet`,
- *     `modelHaiku`, `modelSubagent`). Each of those may route a foreign model
- *     and so still needs the cloud models catalog.
+ *   - The user passed a local-only model prefix (case-insensitive), even with
+ *     `--models-refresh`.
+ *   - The main model needs no catalog and nothing else on the launch routes:
+ *     no `--models-refresh`, no `--advisor`, no routing chain and no role
+ *     override (`modelOpus`, `modelSonnet`, `modelHaiku`, `modelSubagent`).
+ *     Each of those may route a bare name and so still reads the catalog. The
+ *     main model needs no catalog when it is
+ *       - an explicit provider (`provider@model`): routing takes it as written;
+ *       - one Claude Code serves on its own auth (`nativeRouteFor`).
  *
  * Returns `true` (warm) when:
  *   - No model is specified (auto-route path needs the catalog to pick).
- *   - The model is an aggregator/native prefix (`or@`, `g@`, ...) or a bare
- *     name that is not Claude Code's own.
- *
- * New aggregator/native prefixes added in the future automatically warm —
- * the default branch is the safer one.
+ *   - The model is a bare name that routing resolves.
+ *   - `--models-refresh` was given for a non-local model: it refreshes whatever
+ *     provider was named.
  */
 export function shouldWarmCatalog(
   args: Partial<
@@ -110,13 +88,9 @@ export function shouldWarmCatalog(
 ): boolean {
   if (args.skipModelsUpdate) return false;
   if (args.model === undefined) return true;
+  if (isLocalModel(args.model)) return false;
 
-  const m = args.model.toLowerCase();
-  for (const prefix of LOCAL_MODEL_PREFIXES) {
-    if (m.startsWith(prefix)) return false;
-  }
-
-  const routesOnlyNative =
+  const routesOnlyMainModel =
     !args.forceUpdate &&
     !args.advisor &&
     !args.modelChain?.length &&
@@ -124,9 +98,16 @@ export function shouldWarmCatalog(
     !args.modelSonnet &&
     !args.modelHaiku &&
     !args.modelSubagent;
-  if (args.model && routesOnlyNative && nativeRouteFor(args.model)) return false;
-
+  if (!routesOnlyMainModel || !args.model) return true;
+  if (parseModelSpec(args.model).isExplicitProvider) return false;
+  if (nativeRouteFor(args.model)) return false;
   return true;
+}
+
+/** True when the model spec starts with a local-only prefix (case-insensitive). */
+function isLocalModel(model: string): boolean {
+  const m = model.toLowerCase();
+  return LOCAL_MODEL_PREFIXES.some((prefix) => m.startsWith(prefix));
 }
 
 /**
@@ -183,105 +164,28 @@ function humanizeAge(ageMs: number): string {
 }
 
 /**
- * Minimal stderr spinner. Animates only when `process.stderr.isTTY` is true
- * (R6 in architecture.md — non-TTY contexts get one initial line, no `\r`
- * frames). Update interval capped at 250ms per FR-2.
- *
- * `quiet` short-circuits to a no-op stopper so the spinner respects the
- * documented `--quiet` semantic (Q2 in architecture.md §10) — no stderr
- * frames are emitted at all in quiet mode.
- *
- * Returns a `stop()` to clear the active frame and silence further updates.
- */
-interface Spinner {
-  stop(): void;
-}
-
-function startSpinner(label: string, quiet = false): Spinner {
-  if (quiet) {
-    // --quiet suppresses spinner frames entirely. The dispatcher already
-    // skips the "preparing..." header in quiet mode; the spinner is the
-    // last source of stderr noise during a successful refresh.
-    return { stop: () => {} };
-  }
-
-  const isTty = Boolean(process.stderr.isTTY);
-  if (!isTty) {
-    // Non-TTY: print one line and return a no-op stopper. The caller has
-    // already printed the "preparing model catalog..." header line above us;
-    // we only want to add an extra line if we have something distinct to say.
-    return { stop: () => {} };
-  }
-
-  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-  let i = 0;
-  let stopped = false;
-  const render = (): void => {
-    if (stopped) return;
-    process.stderr.write(`\r  ${frames[i]} ${label}`);
-    i = (i + 1) % frames.length;
-  };
-  render();
-  const handle = setInterval(render, 250);
-
-  return {
-    stop(): void {
-      if (stopped) return;
-      stopped = true;
-      clearInterval(handle);
-      // Erase the spinner line: write CR + spaces wide enough to cover the
-      // longest frame + label, then CR back to column 0.
-      const wipe = " ".repeat(Math.max(0, label.length + 6));
-      process.stderr.write(`\r${wipe}\r`);
-    },
-  };
-}
-
-/**
  * Launcher catalog warm dispatcher.
  *
- * Drives the FR-4 state machine end-to-end:
+ *   1. `shouldWarmCatalog` false → "skipped". `--models-skip-update` and a local
+ *      model skip even with `--models-refresh`; `--models-refresh` outranks the
+ *      explicit `provider@model` and native-only skips, refreshing whatever
+ *      provider was named.
+ *   2. No `--models-refresh` → "ok", silently, whatever the cache state. The
+ *      proxy's background refresh keeps the catalog current.
+ *   3. `--models-refresh` → one `refreshCatalog` call, no spinner:
+ *      - refreshed    → indexed-count line (suppressed by `--quiet`), "ok".
+ *      - disabled     → "skipped" (nobody attempted a fetch).
+ *      - incompatible / any other failure → one warning line, "warned".
  *
- *   1. Trigger gate — if local model, native-only launch or
- *      `--models-skip-update`, return "skipped".
- *   2. Print the "preparing model catalog..." header (suppressed by `--quiet`).
- *   3. Classify on-disk cache state.
- *   4. Decide:
- *      - fresh && !forceUpdate → "ok" without fetching (lazy disk load happens
- *        later via _getEntries when the proxy first calls resolveSync).
- *      - else (stale, missing, or forceUpdate=true on fresh) → call
- *        `OpenRouterCatalogResolver.refreshCatalog(8000)`:
- *          - refreshed → print indexed-count line, return "ok".
- *          - incompatible → contract-mismatch message + return "warned".
- *          - fetch_failed:
- *              - a sentinel is already recorded → contract-mismatch message +
- *                return "warned" (the cache state is not what it looks like;
- *                see the guard at the call to `reportFetchFailure`).
- *              - prior state was "stale"   → WARN + return "warned".
- *              - prior state was "missing" → hard-fail message + return "hard_fail".
- *              - prior state was "fresh"   → treat as "warned" (we still have
- *                the fresh cache; the user explicitly asked to refresh it).
- *
- * Only ONE branch here ever returns "hard_fail", and it means one thing: there
- * is no catalog data on this machine at all and none can be fetched. An
- * unreadable catalog is a different failure with a different remedy, and it
- * never exits — routing decides that one per model name, where the explicit
- * `provider@model` carve-out lives.
- *
- * `--quiet` suppresses the preparing/indexed lines but never WARNINGs or
- * the hard-fail error (Q2 in architecture.md §10).
+ * Warnings are printed even under `--quiet`.
  */
 export async function warmCatalogIfNeeded(
   config: ClaudishConfig,
   opts?: { now?: Date; ttlHours?: number }
 ): Promise<WarmOutcome> {
-  if (!shouldWarmCatalog(config)) {
-    return "skipped";
-  }
+  if (!shouldWarmCatalog(config)) return "skipped";
 
-  if (!config.quiet) {
-    process.stderr.write(`claudish v${VERSION} — preparing model catalog...\n`);
-  }
+  if (!config.forceUpdate) return "ok";
 
   const ttlHoursRaw =
     opts?.ttlHours ?? Number.parseFloat(process.env.CLAUDISH_CATALOG_TTL_HOURS ?? "24");
@@ -290,21 +194,7 @@ export async function warmCatalogIfNeeded(
   const cache = readAllModelsCache();
   const state = classifyCatalogState(cache, ttlHours, now);
 
-  // Fresh && !forceUpdate: don't fetch. _memCache lazy-loads on first
-  // resolveSync call via _getEntries (see openrouter.ts). Do NOT call
-  // ensureReady(0) here — timeout=0 races against fetch start before the
-  // disk-backed entries populate.
-  if (state === "fresh" && !config.forceUpdate) {
-    return "ok";
-  }
-
-  const spinner = startSpinner("Fetching model catalog from Firebase...", config.quiet);
-  let outcome: RefreshOutcome;
-  try {
-    outcome = await refreshCatalog(8000);
-  } finally {
-    spinner.stop();
-  }
+  const outcome: RefreshOutcome = await refreshCatalog(8000);
 
   if (outcome.kind === "refreshed") {
     if (!config.quiet) {
@@ -319,13 +209,8 @@ export async function warmCatalogIfNeeded(
 }
 
 /**
- * The refresh came back with no usable catalog. Decide which failure it was.
- *
- * Extracted from `warmCatalogIfNeeded` purely to hold that function at its
- * pre-existing complexity budget; the branch ORDER is the argument, and it is
- * "unreadable before unreachable" throughout — an unreadable catalog is the
- * finding that survives on disk, so it outranks whatever this one refresh did or
- * did not manage to fetch.
+ * A requested refresh came back with no usable catalog. Print one line saying
+ * which failure it was; the launch continues on whatever is cached.
  */
 function reportUnusableCatalog(
   outcome: Exclude<RefreshOutcome, { kind: "refreshed" }>,
@@ -336,27 +221,16 @@ function reportUnusableCatalog(
 ): WarmOutcome {
   if (outcome.kind === "incompatible") {
     process.stderr.write(
-      `Model catalog contract v${outcome.serverContractVersion ?? "unknown"} is not supported by this build.\n`
+      `WARNING: The ${MODEL_CATALOG_NAME} contract v${outcome.serverContractVersion ?? "unknown"} is not supported by this build.\n`
     );
-    return cache === null ? "hard_fail" : "warned";
+    return "warned";
   }
 
-  // `disabled` is not a failure and must never reach the branches below. Nobody
-  // attempted a fetch, so the cache state is irrelevant: with no cache at all
-  // the `missing` branch would print HARD_FAIL_MESSAGE — "cannot reach model
-  // catalog… Check network connection" — and `index.ts` turns `hard_fail` into
-  // `process.exit(1)`. That sends a reader to debug a working connection over a
-  // condition their own harness created, which is the entire reason this reason
-  // exists as a distinct value rather than reusing `network`.
-  //
-  // It reaches here through `CLAUDISH_DISABLE_CATALOG_WARM=1`, which
-  // `scripts/guard-real-config.ts` sets on the whole test run — and the e2e
-  // suites spawn `src/index.ts` as a child, which inherits it. So on a machine
-  // with no `~/.claudish/cloud-models-catalog-v3.json`, the untreated path fails those tests
-  // with a network diagnosis.
-  //
-  // "skipped" is the accurate answer, and it is the same one
-  // `--models-skip-update` already produces: a refresh nobody attempted.
+  // `disabled` is not a failure: nobody attempted a fetch, so a network
+  // diagnosis would send the reader to debug a working connection. It reaches
+  // here through `CLAUDISH_DISABLE_CATALOG_WARM=1`, which
+  // `scripts/guard-real-config.ts` sets on the whole test run. "skipped" is the
+  // same answer `--models-skip-update` produces.
   if (outcome.reason === "disabled") {
     if (!quiet) {
       process.stderr.write("  Catalog refresh disabled (CLAUDISH_DISABLE_CATALOG_WARM=1).\n");
@@ -382,9 +256,6 @@ function reportFetchFailure(
   }
 
   if (state === "fresh") {
-    // forceUpdate path: refresh requested but failed. The fresh cache is
-    // still usable — warn but proceed. Use the same human-readable copy as
-    // the stale branch so the user sees a single, consistent error format.
     const ageMs = now.getTime() - Date.parse(cache!.lastUpdated);
     const ageStr = humanizeAge(ageMs);
     process.stderr.write(
@@ -393,7 +264,8 @@ function reportFetchFailure(
     return "warned";
   }
 
-  // state === "missing" + fetch failed → hard fail.
-  process.stderr.write(HARD_FAIL_MESSAGE);
-  return "hard_fail";
+  process.stderr.write(
+    `WARNING: Could not refresh the ${MODEL_CATALOG_NAME} and no cached copy exists; the proxy retries in the background.\n`
+  );
+  return "warned";
 }

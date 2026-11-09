@@ -1,11 +1,20 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+/**
+ * Assumed extension:
+ * gatherRouteCandidates(model: string, cachePath?: string,
+ *   lists?: AccountModelsListSnapshot): CandidateGathering.
+ * The typed call below lets the current implementation ignore the extra argument,
+ * so missing list behaviour fails assertions rather than module loading.
+ */
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { credentials } from "../auth/credentials/authority.js";
 import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
-import { routingProvidersForRoute } from "./catalog-route-bindings.js";
+import { catalogRouteForProvider, routingProvidersForRoute } from "./catalog-route-bindings.js";
+import type { AccountModelsListSnapshot } from "./dynamic-models-catalog.js";
+import type { DiscoveredModel } from "./model-discovery.js";
 import {
   getModelDiscoveryFetcher,
   invalidateModelDiscovery,
@@ -13,6 +22,7 @@ import {
 } from "./model-discovery.js";
 import "./model-discovery-builtins.js";
 import {
+  type CandidateGathering,
   type RouteCandidate,
   catalogDeniesProvider,
   compareRouteCandidates,
@@ -178,10 +188,12 @@ const REAL_ENTRIES: SlimModelEntry[] = [
       },
     ],
   },
-  // gemini-3.8-flash: metered connections plus Antigravity's namespace claim.
+  // gemini-3.8-flash: metered connections plus Antigravity's vendor claim.
   {
     modelId: "gemini-3.8-flash",
     provider: "google",
+    inputModalities: ["text"],
+    outputModalities: ["text"],
     aliases: ["google/gemini-3.8-flash"],
     contextWindow: 1_048_576,
     aggregators: [
@@ -443,14 +455,14 @@ describe("the subscription band", () => {
   });
 });
 
-describe("namespace claims and availability", () => {
-  test("a namespace claim is gathered but the dynamic models catalog may remove it", async () => {
+describe("vendor claims and availability", () => {
+  test("a vendor claim is gathered but the dynamic models catalog may remove it", async () => {
     const gathered = gatherRouteCandidates("gemini-3.8-flash", cachePath);
     expect(gathered.candidates).toContainEqual(
       expect.objectContaining({
         provider: "antigravity",
         tier: "dynamic-subscription",
-        source: "namespace-claim",
+        source: "vendor-claim",
       })
     );
 
@@ -484,6 +496,228 @@ describe("namespace claims and availability", () => {
   });
 });
 
+const gatherWithLists = gatherRouteCandidates as (
+  model: string,
+  cachePath?: string,
+  lists?: AccountModelsListSnapshot
+) => CandidateGathering;
+
+describe("account-listed route candidates", () => {
+  const path = join(tempDir, "account-listed-catalog.json");
+  const swe: DiscoveredModel = {
+    id: "swe-1-7-medium",
+    family: "swe-1.7",
+    isFamilyDefault: true,
+    contextWindow: 200000,
+    reported: "chat",
+  };
+  function snapshot(provider: string, models: DiscoveredModel[]): AccountModelsListSnapshot {
+    return new Map([
+      [provider, { provider, models, fetchedAt: Date.now(), age: "live", mayDeny: true }],
+    ]);
+  }
+  function seed(entries: SlimModelEntry[], plans: DiskCacheV3["plans"] = []): void {
+    _setCatalogEntriesForTest(entries);
+    writeAllModelsCache(
+      {
+        version: 3,
+        catalogGenerationId: "account-listed-test-data",
+        lastUpdated: new Date().toISOString(),
+        entries,
+        models: [],
+        plans,
+      },
+      path
+    );
+  }
+  function connection(provider: string, wireId: string) {
+    return {
+      sourceProviderId: provider,
+      sourceCollectorId: "test-data",
+      confidence: "api_official" as const,
+      routeStatus: "mapped" as const,
+      route: catalogRouteForProvider(provider),
+      externalModelId: wireId,
+    };
+  }
+  afterEach(_resetCatalogClient);
+
+  test("adds Devin for a catalog-absent name in the account's own spelling", () => {
+    seed([]);
+    const gathered = gatherWithLists("swe-1.7", path, snapshot("devin", [swe]));
+    expect(gathered.catalogMiss).toBe(true);
+    expect(gathered.candidates).toContainEqual(
+      expect.objectContaining({
+        provider: "devin",
+        wireId: "swe-1.7",
+        tier: "dynamic-subscription",
+        source: "account-listed",
+        isVendorOwn: false,
+      })
+    );
+  });
+
+  test.each(["swe-1.7", "gemini-test-missing", "grok-test-missing", "fugu-test-missing"])(
+    "does not infer a subscription candidate from the spelling %s",
+    (model) => {
+      seed([]);
+      expect(gatherWithLists(model, path, new Map()).candidates).toEqual([]);
+    }
+  );
+
+  test("adds Devin when the cloud models catalog has no Devin connection", () => {
+    seed([
+      {
+        modelId: "kimi-k3",
+        provider: "moonshotai",
+        aliases: [],
+        inputModalities: ["text"],
+        outputModalities: ["text"],
+        aggregators: [
+          connection("kimi", "kimi-k3"),
+          connection("openrouter", "moonshotai/kimi-k3"),
+        ],
+      },
+    ]);
+    const gathered = gatherWithLists(
+      "kimi-k3",
+      path,
+      snapshot("devin", [
+        { id: "kimi-k3-high", family: "kimi-k3", isFamilyDefault: true, reported: "chat" },
+      ])
+    );
+    expect(gathered.catalogMiss).toBe(false);
+    expect(gathered.candidates.map(({ provider }) => provider)).toEqual([
+      "devin",
+      "kimi",
+      "openrouter",
+    ]);
+    expect(gathered.candidates[0]).toMatchObject({ source: "account-listed" });
+  });
+
+  test("orders an own-vendor claim before another subscription and the native API", () => {
+    seed([
+      {
+        modelId: "grok-4.7",
+        provider: "x-ai",
+        aliases: [],
+        inputModalities: ["text"],
+        outputModalities: ["text"],
+        subscriptionPlanIds: ["test-go-plan"],
+        aggregators: [connection("opencode-zen-go", "grok-4.7"), connection("x-ai", "grok-4.7")],
+      },
+    ]);
+    const candidates = gatherWithLists("grok-4.7", path, new Map()).candidates;
+    expect(candidates.map(({ provider }) => provider)).toEqual([
+      "grok-subscription",
+      "opencode-zen-go",
+      "x-ai",
+    ]);
+    expect(candidates[0]).toMatchObject({ source: "vendor-claim", isVendorOwn: true });
+  });
+
+  test.each([
+    { model: "gemini-test-image", input: ["text"], output: ["image"], claims: false },
+    { model: "gemma-4-31b-it", input: ["file", "image", "text"], output: ["text"], claims: true },
+    { model: "gemini-test-audio-input", input: ["audio"], output: ["text"], claims: false },
+    { model: "gemini-test-unknown", input: undefined, output: undefined, claims: false },
+  ])("requires published chat modalities for a vendor claim on $model", (row) => {
+    seed([
+      {
+        modelId: row.model,
+        provider: "google",
+        aliases: [],
+        inputModalities: row.input ? [...row.input] : undefined,
+        outputModalities: row.output ? [...row.output] : undefined,
+      },
+    ]);
+    const candidates = gatherWithLists(row.model, path, new Map()).candidates;
+    if (row.claims) {
+      expect(candidates).toContainEqual(
+        expect.objectContaining({ provider: "antigravity", source: "vendor-claim" })
+      );
+    } else {
+      expect(candidates.map(({ provider }) => provider)).not.toContain("antigravity");
+    }
+  });
+
+  test("uses the account list even when no cloud models catalog is readable", () => {
+    _setCatalogEntriesForTest(null);
+    const gathered = gatherWithLists("swe-1.7", missingCachePath, snapshot("devin", [swe]));
+    expect(gathered).toMatchObject({ catalogReadable: false, catalogMiss: true });
+    expect(gathered.candidates.map(({ provider }) => provider)).toEqual(["devin"]);
+    expect(gathered.candidates[0]).toMatchObject({ source: "account-listed" });
+  });
+
+  test("carries the account-listed row's context window", () => {
+    seed([]);
+    expect(
+      gatherWithLists("swe-1.7", path, snapshot("devin", [swe])).candidates.find(
+        ({ provider }) => provider === "devin"
+      )?.contextWindow
+    ).toBe(200000);
+  });
+
+  test("keeps the catalog connection's metadata when an account list serves the same pair", () => {
+    seed([
+      {
+        modelId: "test-dedupe",
+        provider: "test-vendor",
+        aliases: [],
+        contextWindow: 64000,
+        aggregators: [connection("devin", "test-dedupe")],
+      },
+    ]);
+    const candidates = gatherWithLists(
+      "test-dedupe",
+      path,
+      snapshot("devin", [{ id: "test-dedupe", contextWindow: 200000, reported: "chat" }])
+    ).candidates.filter(({ provider }) => provider === "devin");
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      wireId: "test-dedupe",
+      source: "catalog-connection",
+      contextWindow: 64000,
+    });
+  });
+
+  test("an account list cannot override published subscription membership", () => {
+    seed(
+      [
+        {
+          modelId: "test-muse-member",
+          aliases: [],
+          subscriptionPlanIds: ["test-muse-plan"],
+        },
+        {
+          modelId: "test-muse-excluded",
+          provider: "meta",
+          aliases: [],
+          subscriptionPlanIds: [],
+        },
+      ],
+      [
+        {
+          id: "test-muse-plan",
+          modelDiscovery: "catalog",
+          routeStatus: "supported",
+          route: catalogRouteForProvider("meta-muse-code"),
+        },
+      ]
+    );
+    const gathered = gatherWithLists(
+      "test-muse-excluded",
+      path,
+      snapshot("meta-muse-code", [{ id: "test-muse-excluded", reported: "chat" }])
+    );
+    expect(gathered.candidates.map(({ provider }) => provider)).not.toContain("meta-muse-code");
+    expect(gathered.excluded).toContainEqual({
+      candidate: expect.objectContaining({ provider: "meta-muse-code" }),
+      outcome: "excluded-by-membership",
+    });
+  });
+});
+
 describe("fallback placement and no-catalog behavior", () => {
   test("does not display the qwen steering placeholder as a dashscope hop", () => {
     const providers = buildCatalogChain("qwen3.8-max", "", cachePath).routes.map(
@@ -496,7 +730,7 @@ describe("fallback placement and no-catalog behavior", () => {
 
   test("appends the fallback last and does not duplicate an existing candidate", () => {
     const missingModel = buildCatalogChain("swe-1.7", undefined, cachePath);
-    expect(missingModel.routes.map(({ provider }) => provider)).toEqual(["devin", "openrouter"]);
+    expect(missingModel.routes.map(({ provider }) => provider)).toEqual(["openrouter"]);
 
     const alreadyGathered = buildCatalogChain("gpt-6-astra", "openrouter", cachePath);
     expect(alreadyGathered.routes.at(-1)?.provider).toBe("openrouter");
@@ -508,7 +742,7 @@ describe("fallback placement and no-catalog behavior", () => {
   test("does not append a fallback when defaultProvider is explicitly empty", () => {
     expect(
       buildCatalogChain("swe-1.7", "", cachePath).routes.map(({ provider }) => provider)
-    ).toEqual(["devin"]);
+    ).toEqual([]);
   });
 
   test.skipIf(routeOwnership("openrouter") !== "backend-owned")(

@@ -515,7 +515,11 @@ export async function createHandlerForProvider(ctx: ProfileContext): Promise<Mod
 
   // A catalog connection is built from its wire and the route registry; the
   // provider's own profile only for providers the catalog does not route.
-  const wired = await buildWireHandler(ctx, definitionName);
+  // The advisor's handlers are built at startup, before any request: they must
+  // not hold the launch for a catalog refresh. Their first request waits.
+  const wired = await buildWireHandler(ctx, definitionName, {
+    waitForCatalog: ctx.sharedOpts.requestRole !== "advisor",
+  });
   switch (wired.kind) {
     case "handler":
       return wired.handler;

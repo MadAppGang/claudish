@@ -24,7 +24,8 @@
 import type { Context } from "hono";
 import type { ChildAuthControl, ChildAuthSource } from "../child-auth-types.js";
 import { log } from "../logger.js";
-import { ensureCatalogReady } from "../providers/catalog-client.js";
+import { warmCatalog } from "../providers/catalog-client.js";
+import { parseModelSpec } from "../providers/model-parser.js";
 import { nativeRouteFor } from "../providers/native-route.js";
 import type { RouteTier } from "../providers/provider-definitions.js";
 import {
@@ -118,8 +119,10 @@ export interface PlanAdvisorDeps {
   anthropicKeyPresent: () => Promise<boolean>;
   /** Default `explainRoute`. */
   explain?: (target: string) => Promise<RouteExplanation>;
-  /** Default `ensureCatalogReady`. */
+  /** Not consulted: planning never waits for the cloud models catalog. */
   ensureCatalog?: (timeoutMs: number) => Promise<void>;
+  /** Default `warmCatalog`; started in the background, never awaited. */
+  warmCatalog?: () => Promise<void>;
   /** Default `isSubscriptionProvider`. */
   isSubscription?: (provider: string) => boolean;
 }
@@ -147,16 +150,13 @@ function sendsInboundApiKey(childAuth: Extract<ChildAuthControl, { controlled: f
   return INBOUND_KEY_SOURCES.has(childAuth.reason);
 }
 
-/** The catalog wait main routing applies before it routes (`proxy-server.ts` step 2c). */
-const CATALOG_WAIT_MS = 5000;
-
 /**
  * Plan one advisor spec. Never writes to stderr; `explanation.warnings` are
  * returned for the notice to print.
  *
- * Decision order: wire markers; a Claude name (native recognition first); the
- * catalog wait; `explainRoute`. Each step exists in main routing; only the
- * composition is new.
+ * Decision order: wire markers; a Claude name (native recognition first); a
+ * background catalog refresh (bare names only); `explainRoute`. Each step
+ * exists in main routing; only the composition is new.
  */
 export async function planAdvisorModel(
   spec: string,
@@ -176,8 +176,18 @@ export async function planAdvisorModel(
 
   if (nativeRouteFor(model)) return planClaudeMember(spec, role, model, deps);
 
-  await (deps.ensureCatalog ?? ensureCatalogReady)(CATALOG_WAIT_MS);
-  const explanation = await (deps.explain ?? ((target: string) => explainRoute(target)))(model);
+  // Advisor startup never waits for the cloud models catalog. A bare name is
+  // planned from the catalog file as it is now: with none on disk,
+  // `explainRoute` refuses it at once (`catalog-unreadable`), and a refresh
+  // started here, never awaited, writes the file for the next launch. An
+  // explicit `provider@model` is taken as written and needs no catalog.
+  if (!parseModelSpec(model).isExplicitProvider) {
+    void (deps.warmCatalog ?? warmCatalog)().catch(() => {});
+  }
+  // `background`: planning runs at launch and never waits on discovery.
+  const explanation = await (
+    deps.explain ?? ((target: string) => explainRoute(target, { network: "background" }))
+  )(model);
   const { outcome } = explanation;
   if (outcome.kind === "no-route") {
     return {
@@ -393,6 +403,11 @@ export function describeAdvisorRefusal(
     case "unresolved-alias":
     case "claude-no-credential":
       return refusal.reason;
+    case "catalog-unreadable":
+      return (
+        `${refusal.spec}: no model catalog is on disk yet, so a bare name cannot be ` +
+        "routed. Use provider@model, or launch again once the catalog has been fetched."
+      );
     default:
       return `${refusal.spec}: ${refusal.reason}${refusal.hint ? ` ${refusal.hint}` : ""}`;
   }

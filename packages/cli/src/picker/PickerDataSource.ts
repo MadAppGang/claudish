@@ -43,13 +43,28 @@ import {
   type PickerDiscoveryOutcome,
   buildDiscoveredModelOutcome,
   buildProviderChoices,
+  outcomeFromModelsCatalog,
   providerShortcut,
   servedModelsForProvider,
 } from "../model-selector.js";
 import { isLocalProviderEnabled } from "../profile-config.js";
 import { ensureCatalogReady } from "../providers/catalog-client.js";
-import { createCatalogClient } from "../providers/model-catalog.js";
+import { LIVE_MS } from "../providers/dynamic-models-catalog-store.js";
+import {
+  type AccountModelsList,
+  isPersistedListProvider,
+  loadAccountModelsLists,
+  onAccountModelsListChanged,
+  readAccountModelsList,
+  refreshAccountModelsList,
+} from "../providers/dynamic-models-catalog.js";
+import { type CatalogClient, createCatalogClient } from "../providers/model-catalog.js";
 import { type DescriptionIndex, loadModelDescriptions } from "../providers/model-descriptions.js";
+import {
+  type ModelsCatalogOutcome,
+  discoverProviderModelsCatalog,
+  servedOutcomeOf,
+} from "../providers/model-discovery.js";
 import { getAllProviders, getProviderByName } from "../providers/provider-definitions.js";
 
 /** How a provider bills — the row's tag, and the reason a price may be absent. */
@@ -100,10 +115,26 @@ export interface PickerDataSource {
   probeCredentials(names: string[]): AsyncIterable<[string, boolean]>;
   /** Make the cross-vendor catalog usable. Bounded, and never throws. */
   ensureCatalog(): Promise<void>;
-  /** What this provider SERVES, from the local served-by index. Sync. */
+  /**
+   * What this provider SERVES, from the local served-by index, plus the
+   * account's stored dynamic models catalog for a provider that keeps one. Sync.
+   */
   servedModels(provider: string): ModelInfo[];
   /** One settled outcome per discovery provider, `fallbackRows` included. */
   discoverModelsCatalog(provider: string): Promise<PickerDiscoveryOutcome>;
+  /**
+   * The account's STORED dynamic models catalog as rows, or `null` when there is
+   * none. Sync and disk-only, so a provider opens on its last answer while
+   * `discoverModelsCatalog` asks live. Optional: a source without stored lists
+   * opens on the live answer alone.
+   */
+  cachedModelsCatalog?(provider: string): PickerDiscoveryOutcome | null;
+  /**
+   * Called whenever a stored list lands, changes or is removed, so the views
+   * that read `servedModels` and `cachedModelsCatalog` re-derive. Returns an
+   * unsubscribe.
+   */
+  onModelsListsChanged?(listener: () => void): () => void;
   /**
    * One editorial sentence per model, for the detail pane. Resolves late and is
    * never awaited before a first paint; the slim catalog carries no description.
@@ -164,8 +195,57 @@ async function* inCompletionOrder<T>(promises: Array<Promise<T>>): AsyncGenerato
 }
 
 /**
+ * A stored list as rows, through the same builder a live answer uses. `null`
+ * when the list yields no rows (nothing chat-capable): a stored list that shows
+ * nothing is not worth opening on, and the live answer explains it.
+ */
+function storedOutcome(
+  provider: string,
+  displayName: string,
+  list: AccountModelsList,
+  catalog: CatalogClient
+): PickerDiscoveryOutcome | null {
+  const outcome = outcomeFromModelsCatalog(
+    provider,
+    displayName,
+    servedOutcomeOf(list.models),
+    servedModelsForProvider(provider, catalog)
+  );
+  return outcome.kind === "rows" ? { ...outcome, listFetchedAt: list.fetchedAt } : null;
+}
+
+/**
+ * The live leg for a provider that keeps a stored list: the account-bound
+ * refresh, so the answer is written through for the next process. A list
+ * younger than `LIVE_MS` is already the live answer and is read, not fetched.
+ * With no credential the plain discovery runs, because its failure is the
+ * notice that names the missing credential.
+ */
+async function liveAccountModelsCatalog(provider: string): Promise<ModelsCatalogOutcome> {
+  const result = await refreshAccountModelsList(provider, "picker-provider", {
+    minAgeMs: LIVE_MS,
+  });
+  if (result.kind === "refreshed") {
+    return result.outcome.kind === "served"
+      ? servedOutcomeOf(result.outcome.models)
+      : result.outcome;
+  }
+  if (result.reason === "too-recent") {
+    const list = await readAccountModelsList(provider);
+    if (list) return servedOutcomeOf(list.models);
+  }
+  return discoverProviderModelsCatalog(provider);
+}
+
+/**
  * The production data source. Every method wraps an existing function verbatim —
  * no new fetch, no new field, no new plumbing.
+ *
+ * STORED DYNAMIC MODELS CATALOGS ARE READ FROM DISK AT OPEN, never fetched for a
+ * frame. `loadAccountModelsLists` reads disk only; a provider whose credential
+ * probe answers ready gets ONE background refresh per open, gated by the stored
+ * list's age, and no render waits for it. A list that lands later reaches the
+ * views through `onModelsListsChanged`.
  *
  * ONE `CatalogClient` PER PICKER OPEN, captured here rather than per call, so the
  * 24 h slim-cache read and the per-vendor memo are shared by every list the picker
@@ -178,6 +258,57 @@ export function createPickerDataSource(): PickerDataSource {
   // would also let the dynamic models catalog and the notices disagree about ordering.
   const choices = buildProviderChoices().filter((c) => c.value !== "skip" && c.value !== "custom");
   const names = new Map(choices.map((c) => [c.value, c.name]));
+
+  // The stored dynamic models catalogs for the current accounts, from disk.
+  let lists = new Map<string, AccountModelsList>();
+  let loaded = false;
+  /** Changes heard before the disk read finished: they are newer than it. */
+  const heard = new Map<string, AccountModelsList | null>();
+  /** `cachedModelsCatalog` per provider, until its list changes. */
+  const outcomes = new Map<string, PickerDiscoveryOutcome | null>();
+  const viewers = new Set<() => void>();
+  let stopListening: (() => void) | null = null;
+  /** Providers already refreshed this open: one background refresh each. */
+  const refreshed = new Set<string>();
+
+  const notify = (): void => {
+    for (const viewer of viewers) {
+      try {
+        viewer();
+      } catch {
+        // A viewer's fault must not keep the others from re-deriving.
+      }
+    }
+  };
+
+  void loadAccountModelsLists().then(
+    (snapshot) => {
+      const next = new Map(snapshot);
+      for (const [provider, list] of heard) {
+        if (list) next.set(provider, list);
+        else next.delete(provider);
+      }
+      heard.clear();
+      lists = next;
+      loaded = true;
+      outcomes.clear();
+      notify();
+    },
+    () => {
+      loaded = true;
+    }
+  );
+
+  const cachedOutcome = (provider: string): PickerDiscoveryOutcome | null => {
+    if (!outcomes.has(provider)) {
+      const list = lists.get(provider);
+      outcomes.set(
+        provider,
+        list ? storedOutcome(provider, names.get(provider) ?? provider, list, catalog) : null
+      );
+    }
+    return outcomes.get(provider) ?? null;
+  };
 
   return {
     providerList(): PickerProviderChoice[] {
@@ -208,14 +339,20 @@ export function createPickerDataSource(): PickerDataSource {
 
     probeCredentials(providers: string[]): AsyncIterable<[string, boolean]> {
       return inCompletionOrder(
-        providers.map(
-          async (name): Promise<[string, boolean]> => [
-            name,
-            // Documented never to throw (`authority.ts:110-117`), guarded anyway:
-            // behind a live renderer an unhandled rejection has nowhere to surface.
-            await credentials.isAvailable(name).catch(() => false),
-          ]
-        )
+        providers.map(async (name): Promise<[string, boolean]> => {
+          // Documented never to throw (`authority.ts:110-117`), guarded anyway:
+          // behind a live renderer an unhandled rejection has nowhere to surface.
+          const ready = await credentials.isAvailable(name).catch(() => false);
+          if (ready && isPersistedListProvider(name) && !refreshed.has(name)) {
+            refreshed.add(name);
+            // Started, never awaited: the stored list is already on screen, and
+            // a fresh one arrives through `onModelsListsChanged`.
+            void refreshAccountModelsList(name, "picker-open", { minAgeMs: LIVE_MS }).catch(
+              () => undefined
+            );
+          }
+          return [name, ready];
+        })
       );
     },
 
@@ -225,11 +362,45 @@ export function createPickerDataSource(): PickerDataSource {
     },
 
     servedModels(provider: string): ModelInfo[] {
-      return servedModelsForProvider(provider, catalog);
+      const fromCatalog = servedModelsForProvider(provider, catalog);
+      const stored = isPersistedListProvider(provider) ? cachedOutcome(provider) : null;
+      if (stored?.kind !== "rows") return fromCatalog;
+      // The account's own answer first; a catalog row for the same id adds nothing.
+      const listed = new Set(stored.rows.map((m) => m.id));
+      return [...stored.rows, ...fromCatalog.filter((m) => !listed.has(m.id))];
     },
 
     discoverModelsCatalog(provider: string): Promise<PickerDiscoveryOutcome> {
-      return buildDiscoveredModelOutcome(provider, names.get(provider) ?? provider, catalog);
+      return buildDiscoveredModelOutcome(
+        provider,
+        names.get(provider) ?? provider,
+        catalog,
+        isPersistedListProvider(provider) ? liveAccountModelsCatalog : undefined
+      );
+    },
+
+    cachedModelsCatalog(provider: string): PickerDiscoveryOutcome | null {
+      return cachedOutcome(provider);
+    },
+
+    onModelsListsChanged(listener: () => void): () => void {
+      viewers.add(listener);
+      if (stopListening === null) {
+        stopListening = onAccountModelsListChanged((provider, list) => {
+          if (list) lists.set(provider, list);
+          else lists.delete(provider);
+          if (!loaded) heard.set(provider, list);
+          outcomes.delete(provider);
+          notify();
+        });
+      }
+      return () => {
+        viewers.delete(listener);
+        if (viewers.size === 0 && stopListening !== null) {
+          stopListening();
+          stopListening = null;
+        }
+      };
     },
 
     descriptions(): Promise<DescriptionIndex> {

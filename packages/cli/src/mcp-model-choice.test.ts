@@ -1,3 +1,9 @@
+/**
+ * Assumed ModelChoiceFacts member:
+ * accountListed: (model: string) => boolean, replacing namespaceClaim.
+ * Keep a false legacy callback in the test-data builder until the reader changes,
+ * so an ignored accountListed fact fails behaviour, not with a missing callback.
+ */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -19,13 +25,20 @@ const captured = JSON.parse(
 const recommended = captured.models;
 const gptIds = ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"];
 const pairs = (specs: readonly string[]) => specs.map((spec) => ({ given: spec, spec }));
-const facts = (overrides: Partial<ModelChoiceFacts> = {}): ModelChoiceFacts => ({
-  recommended,
-  userRule: () => false,
-  inCatalog: () => false,
-  namespaceClaim: () => false,
-  ...overrides,
-});
+type AccountListedFacts = Partial<ModelChoiceFacts> & {
+  accountListed?: (model: string) => boolean;
+};
+const facts = (overrides: AccountListedFacts = {}): ModelChoiceFacts =>
+  Object.assign(
+    {
+      recommended,
+      userRule: () => false,
+      inCatalog: () => false,
+      namespaceClaim: () => false,
+      accountListed: () => false,
+    },
+    overrides
+  );
 
 describe("modelChoiceProblems with captured recommended rows", () => {
   test("the capture has duplicate tiers and release dates in a different order from ids", () => {
@@ -129,12 +142,12 @@ describe("modelChoiceProblems with captured recommended rows", () => {
     ).toEqual([{ spec: "gpt-5", kind: "not_recommended", matching: gptIds }]);
   });
 
-  test("a catalog hit wins over a namespace claim", () => {
+  test("a catalog hit still needs recommendation when an account list carries it", () => {
     expect(
       modelChoiceProblems(
         pairs(["gpt-5"]),
         new Set(),
-        facts({ inCatalog: () => true, namespaceClaim: () => true })
+        facts({ inCatalog: () => true, accountListed: () => true })
       )
     ).toEqual([{ spec: "gpt-5", kind: "not_recommended", matching: gptIds }]);
   });
@@ -175,14 +188,14 @@ describe("modelChoiceProblems with captured recommended rows", () => {
     ).toEqual([]);
   });
 
-  test("a namespace claim exempts a name absent from the catalog", () => {
+  test("an account list exempts only the catalog-absent name it carries", () => {
     expect(
       modelChoiceProblems(
-        pairs(["swe-1.7"]),
+        pairs(["swe-1.7", "swe-9"]),
         new Set(),
-        facts({ namespaceClaim: (id) => id === "swe-1.7" })
+        facts({ inCatalog: () => false, accountListed: (id) => id === "swe-1.7" })
       )
-    ).toEqual([]);
+    ).toEqual([{ spec: "swe-9", kind: "unknown_model", matching: [] }]);
   });
 
   test("required specs bypass only the entries the user named", () => {
@@ -226,7 +239,7 @@ describe("modelChoiceProblems with captured recommended rows", () => {
           recommended: null,
           userRule: unexpected,
           inCatalog: unexpected,
-          namespaceClaim: unexpected,
+          accountListed: unexpected,
         })
       )
     ).toEqual([]);

@@ -6,7 +6,7 @@ import {
   isCachedSubscriptionPlan,
   isSlimModelEntry,
   readAllModelsCache,
-  wiresMatchRegistry,
+  reconcileWires,
   writeAllModelsCache,
   writeRouteRegistry,
 } from "./all-models-cache.js";
@@ -451,13 +451,16 @@ async function refreshCatalogOnce(
     return { kind: "fetch_failed", reason: registryResult.reason };
   }
   const routeRegistry: CachedRouteRegistry = { generationId, registry: registryResult.registry };
-  if (!wiresMatchRegistry(entries, routeRegistry, generationId)) {
+  const reconciled = reconcileWires(entries, routeRegistry, generationId);
+  if (!reconciled) {
     return { kind: "fetch_failed", reason: "incomplete" };
   }
 
-  // The disk keeps the RAW rows (validated above, and what older builds read);
-  // memory gets them split, exactly as `readAllModelsCache` hands them out.
-  const normalised = entries.map(splitOptInConnections);
+  // The disk keeps the RAW rows, reconciled, so an older build that rejects a
+  // cache with one unusable wire still reads it; memory gets them split,
+  // exactly as `readAllModelsCache` hands them out.
+  const rawEntries = reconciled.entries;
+  const normalised = rawEntries.map(splitOptInConnections);
   const models = normalised.flatMap((entry) => {
     const id = externalIdFor(entry, "openrouter");
     return id ? [{ id }] : [];
@@ -465,12 +468,36 @@ async function refreshCatalogOnce(
   const cache: DiskCacheV3 = {
     version: 3,
     lastUpdated: generatedAt,
-    entries,
+    entries: rawEntries,
     models,
     plans: planResult.plans,
     catalogGenerationId: generationId,
     routeRegistry,
   };
+
+  // Another process may have published a newer generation while this refresh
+  // was paging through an older one. Generation ids are opaque, so publish
+  // times decide: a different disk generation published later is kept, models
+  // file and routes sidecar both, and becomes the in-process copy. The same id
+  // is the same generation and is written as usual.
+  const onDisk = readAllModelsCache(options.cachePath);
+  if (
+    onDisk &&
+    onDisk.catalogGenerationId !== generationId &&
+    isPublishedLater(onDisk.lastUpdated, generatedAt)
+  ) {
+    log(
+      `[catalog] refresh skipped: disk holds newer generation ${onDisk.catalogGenerationId}, downloaded ${generationId}`
+    );
+    _clearChatCapabilityIndex();
+    _memCache = onDisk.entries;
+    _warmPromise = Promise.resolve();
+    return {
+      kind: "refreshed",
+      modelCount: onDisk.entries.length,
+      catalogGenerationId: onDisk.catalogGenerationId,
+    };
+  }
 
   writeAllModelsCache(cache, options.cachePath);
   // The chat-capability projection is memoized for 60s and keyed by cache path,
@@ -488,6 +515,13 @@ async function refreshCatalogOnce(
     catalogGenerationId: generationId,
     pages,
   };
+}
+
+/** True when `candidate` is a valid timestamp strictly later than `reference`. */
+function isPublishedLater(candidate: string, reference: string): boolean {
+  const candidateMs = Date.parse(candidate);
+  const referenceMs = Date.parse(reference);
+  return Number.isFinite(candidateMs) && Number.isFinite(referenceMs) && candidateMs > referenceMs;
 }
 
 async function fetchSubscriptionPlans(
@@ -617,7 +651,11 @@ export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> 
     const result = await fetchRouteRegistry(timeoutMs, cache.catalogGenerationId, catalogUrl());
     if (result.ok) {
       const routeRegistry = { generationId: cache.catalogGenerationId, registry: result.registry };
-      if (wiresMatchRegistry(cache.entries, routeRegistry, cache.catalogGenerationId)) {
+      if (reconcileWires(cache.entries, routeRegistry, cache.catalogGenerationId)) {
+        // A refresh may have written another generation while the routes were
+        // fetched; its models file and routes sidecar are newer, so keep them.
+        const onDisk = readAllModelsCache();
+        if (onDisk && onDisk.catalogGenerationId !== cache.catalogGenerationId) return;
         writeRouteRegistry(routeRegistry);
         return;
       }
