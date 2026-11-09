@@ -41,7 +41,7 @@ function oneLine(text: string, max = 200): string {
  * promo and the vendor's own default flag to do it.
  *
  * **Honest limit on the classification.** `getServedDevinModels` catches its own
- * rpc errors and returns `modelsCatalogCache ?? []` (devin-models.ts), and
+ * rpc errors and returns the same key's last list or `[]` (devin-models.ts), and
  * `postUnary` answers `null` rather than throwing, so a failed rpc still arrives
  * here as an empty list and is reported as `empty-models-catalog`. What this DOES
  * distinguish is the two states that are knowable without touching that module:

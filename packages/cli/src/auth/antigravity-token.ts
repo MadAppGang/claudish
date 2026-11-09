@@ -30,6 +30,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -574,6 +575,28 @@ function captureAgyClientVersion(accessToken: string, deps: AntigravityTokenDeps
 /** In-flight resolve promise — collapses concurrent callers onto one refresh. */
 let inFlight: Promise<string> | null = null;
 
+/**
+ * SHA-256 of the refresh token behind the access token this module last
+ * returned; null before the first one. The refresh token is the login's
+ * lineage: it stays the same across access-token re-mints of one account and
+ * changes when another account signs in, so caches of per-account answers
+ * (project, tier, dynamic models catalog) compare against it. The token itself
+ * is not kept.
+ */
+let issuedLineage: string | null = null;
+
+function issue(token: AntigravityToken): string {
+  issuedLineage = createHash("sha256")
+    .update(token.refresh_token ?? "")
+    .digest("hex");
+  return token.access_token;
+}
+
+/** The lineage of the access token most recently returned; null before the first. */
+export function currentAntigravityTokenLineage(): string | null {
+  return issuedLineage;
+}
+
 async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   if (process.platform !== "darwin") {
     throw terminalCredentialError(
@@ -593,7 +616,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
 
   if (!needsRefresh(rec.token, deps.now())) {
     captureAgyClientVersion(rec.token.access_token, deps);
-    return rec.token.access_token;
+    return issue(rec.token);
   }
 
   // Expired/near-expiry → ask agy to refresh (it owns the secret). Running `agy
@@ -605,7 +628,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   if (refreshedRec && !needsRefresh(refreshedRec.token, deps.now())) {
     log("[Antigravity] Shared token refreshed by the Antigravity CLI.");
     captureAgyClientVersion(refreshedRec.token.access_token, deps);
-    return refreshedRec.token.access_token;
+    return issue(refreshedRec.token);
   }
 
   // Still stale. WHY decides what the user should actually do — and only one of
@@ -733,7 +756,7 @@ export async function forceRefreshAntigravityToken(
   if (token && token.access_token !== original.access_token && !needsRefresh(token, deps.now())) {
     log("[Antigravity] Shared token re-minted by the Antigravity CLI.");
     captureAgyClientVersion(token.access_token, deps);
-    return token.access_token;
+    return issue(token);
   }
 
   // Restore ONLY when agy never wrote (the store still holds our own expiry
