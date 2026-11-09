@@ -26,6 +26,7 @@
  *   the picker, the launcher, and the status line all read the same result.
  */
 
+import { createHash } from "node:crypto";
 import { credentials } from "../auth/credentials/authority.js";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
@@ -243,7 +244,24 @@ export function getModelDiscoveryFetcher(format: string): ModelDiscoveryFetcher 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5000;
 
-const _cache = new Map<string, { models: DiscoveredModel[]; expiresAt: number }>();
+/**
+ * The last served list per claudish provider. `account` is the fingerprint of
+ * the account identity it was fetched for (undefined when the credential
+ * exposes none); a list fetched for another account is not an answer.
+ */
+const _cache = new Map<
+  string,
+  { models: DiscoveredModel[]; expiresAt: number; account: string | undefined }
+>();
+
+/**
+ * SHA-256 of the identity of the account `providerName`'s credential would
+ * sign with now, or undefined when it exposes none. Only the hash is kept.
+ */
+async function accountFingerprint(providerName: string): Promise<string | undefined> {
+  const identity = await credentials.accountIdentity(providerName, { allowOpPrompt: false });
+  return identity ? createHash("sha256").update(identity).digest("hex") : undefined;
+}
 
 /**
  * Why a discovery attempt produced nothing.
@@ -667,7 +685,6 @@ async function discoverViaFetcher(
   }
   _failures.delete(providerName);
   log(`[model-discovery:${providerName}] discovered ${models.length} models`);
-  _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
   return { kind: "served", models };
 }
 
@@ -746,11 +763,31 @@ export function peekDiscoveredModels(providerName: string): DiscoveredModel[] | 
   return cached && cached.expiresAt > Date.now() ? cached.models : undefined;
 }
 
-/** The discovery itself: the full list the provider returned, cached unsplit. Never rejects. */
+/**
+ * The full list the provider returned, cached unsplit for the account it was
+ * fetched for: a list cached for another account is a miss. The account is
+ * read before the fetch, so a list whose account changed while it was fetched
+ * is recorded under the old one and misses next time. Never rejects.
+ */
 async function discoverEveryServedModel(providerName: string): Promise<ModelsCatalogOutcome> {
+  const account = await accountFingerprint(providerName);
   const cached = _cache.get(providerName);
-  if (cached && cached.expiresAt > Date.now()) return { kind: "served", models: cached.models };
+  if (cached && cached.expiresAt > Date.now() && cached.account === account) {
+    return { kind: "served", models: cached.models };
+  }
+  const outcome = await fetchServedModels(providerName);
+  if (outcome.kind === "served") {
+    _cache.set(providerName, {
+      models: outcome.models,
+      expiresAt: Date.now() + CACHE_TTL_MS,
+      account,
+    });
+  }
+  return outcome;
+}
 
+/** One discovery request, uncached. Never rejects. */
+async function fetchServedModels(providerName: string): Promise<ModelsCatalogOutcome> {
   const def = getProviderByName(providerName);
   const descriptor = def?.modelDiscovery;
   if (!def || !descriptor) return { kind: "unsupported", reason: "no-descriptor" };
@@ -923,7 +960,6 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
     `[model-discovery:${providerName}] discovered ${models.length} models from ${endpoint}: ` +
       models.map((m) => `${m.id}(${m.contextWindow ?? "?"})`).join(", ")
   );
-  _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
   return { kind: "served", models };
 }
 
