@@ -8,12 +8,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
+import * as logger from "../logger.js";
 import * as discovery from "../providers/codex-models-discovery.js";
 import { clearCodexModelsMemo } from "../providers/codex-models-discovery.js";
 import { decideCodexSpeed, findCodexServiceTier } from "../providers/codex-service-tier.js";
 import { resolveConnection } from "../providers/connection-resolver.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import { wireMarkerContext } from "../providers/wire-markers.js";
+import { redactSigningValues } from "../redact.js";
 import { ComposedHandler, _resetFastIgnoredNotices } from "./composed-handler.js";
 import type { ModelHandler } from "./types.js";
 
@@ -28,10 +30,17 @@ const modelsBody = JSON.parse(
   )
 );
 const ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
+/**
+ * A short opaque access token: 26 characters, the shape of a plain id. New for
+ * every test: these requests run without the session middleware that releases
+ * a request's signing lease, so a value one test signed with stays registered.
+ */
+let accessToken = "";
 const realFetch = globalThis.fetch;
 const handlers: ModelHandler[] = [];
 
 beforeEach(() => {
+  accessToken = `tok_${crypto.randomUUID().replaceAll("-", "").slice(0, 22)}`;
   clearCodexModelsMemo();
   _resetFastIgnoredNotices();
 });
@@ -123,7 +132,10 @@ function transport(arm: "oauth" | "api-key" = "oauth"): ProviderTransport {
             auth: {
               arm: "oauth",
               endpoint: ENDPOINT,
-              headers: { Authorization: "Bearer TOKEN", "chatgpt-account-id": "account-speed" },
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "chatgpt-account-id": "account-speed",
+              },
             },
           }
         : { auth: { arm: "api-key", headers: { Authorization: "Bearer sk-metered" } } },
@@ -235,6 +247,37 @@ describe("step 5s on cx@ with catalog speed unknown", () => {
     expect(body).toContain("is not offered");
     expect(body).not.toContain(secret);
     expect(calls).toHaveLength(0);
+  });
+
+  test("a tier id equal to the signing token reaches neither the 400 body nor the log", async () => {
+    expect(accessToken).toHaveLength(26);
+    const echoed = {
+      models: modelsBody.models.map((m: any) => ({
+        ...m,
+        service_tiers: [{ id: accessToken, name: "Turbo" }],
+      })),
+    };
+    const calls = upstream("some other failure", echoed);
+    const lines: string[] = [];
+    const logSpy = spyOn(logger, "log").mockImplementation((message: string) => {
+      lines.push(redactSigningValues(message));
+    });
+    try {
+      const h = handler("gpt-6.1-sol");
+      const refused = await wireMarkerContext.run({ spec: "cx@gpt-6.1-sol", speed: "fast" }, () =>
+        send(h)
+      );
+      expect(refused.status).toBe(400);
+      const body = await refused.text();
+      expect(body).toContain("is not offered");
+      expect(body).not.toContain(accessToken);
+      const speedLines = lines.filter((line) => line.includes("is not offered"));
+      expect(speedLines.length).toBeGreaterThan(0);
+      for (const line of speedLines) expect(line).not.toContain(accessToken);
+      expect(calls).toHaveLength(0);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   test("a catalog answer wins: speed rejected is never overlaid", async () => {

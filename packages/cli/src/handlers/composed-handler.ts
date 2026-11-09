@@ -2084,6 +2084,14 @@ export class ComposedHandler implements ModelHandler {
     // On the api-key arm no account can be asked, and a `/fast` the user did
     // not name for this model is never billed per token (see 5f).
     if (codexSpeed) {
+      // The account's `/models` answer is upstream text that reaches the log and
+      // a 400 below, before `fetchHeaders` registers this request's signing
+      // values; register the binding's own credential values first, so an echo
+      // of them is redacted in both.
+      addSigningSecrets(
+        c,
+        credentialValuesFromRequest(binding?.auth?.headers, this.signedEndpoint(binding))
+      );
       const accountKey = accountKeyFromBinding(binding);
       const subscription = this.signedBilling(binding).subscription;
       const modelInfo = !subscription
