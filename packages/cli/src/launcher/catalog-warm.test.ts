@@ -478,6 +478,21 @@ describe("warmCatalogIfNeeded", () => {
     expect(stderrText).not.toContain("Firebase");
   });
 
+  test.each(["stale", "fresh"] as const)(
+    "%s cache refresh failure warning names the model catalog",
+    async (state) => {
+      mockReadResult = state === "stale" ? staleCache() : freshCache();
+      mockRefreshOutcome = { kind: "fetch_failed", reason: "network" };
+      const config = makeConfig({ model: "gpt-4o", forceUpdate: true, quiet: false });
+
+      expect(await warmCatalogIfNeeded(config, { now: NOW })).toBe("warned");
+      expect(refreshSpy).toHaveBeenCalledTimes(1);
+      const stderrText = stderrChunks.join("");
+      expect(stderrText).toContain("model catalog");
+      expect(stderrText).not.toMatch(/^WARNING: Catalog\\b/);
+    }
+  );
+
   test("missing cache + forceUpdate + refreshed → 'ok'", async () => {
     mockReadResult = null;
     mockRefreshOutcome = { kind: "refreshed", modelCount: 7 };
