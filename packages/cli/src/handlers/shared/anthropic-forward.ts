@@ -175,6 +175,15 @@ export function bodyToForward(c: Context, payload: unknown): string {
   return inbound !== undefined && inbound.canonical === serialized ? inbound.raw : serialized;
 }
 
+/**
+ * A Claude login's bearer, recognised by its token class (`sk-ant-oat`, the
+ * class of the bearer Claude Code sends for its keychain login). The
+ * `oauth-2025-04-20` beta cannot say this: any client can declare it on any
+ * bearer. Everything else in `authorization` is not matched: a gateway token,
+ * or an api key helper's value, which Claude Code sends in both headers.
+ */
+const CLAUDE_LOGIN_BEARER = /^Bearer\s+sk-ant-oat/i;
+
 /** One request to send to Anthropic, ready for `fetch`. */
 export interface ForwardRequest {
   /** Keyed by lowercase name, so an override replaces a header rather than adding a spelling. */
@@ -193,7 +202,8 @@ export interface ForwardRequest {
  * header naming one must not make an authenticated request look
  * unauthenticated, or the fallback would swap the user's own login for a
  * metered key. `fallbackKey` is called only when the request arrived with
- * neither `authorization` nor `x-api-key`.
+ * neither `authorization` nor `x-api-key`. An `x-api-key` beside a Claude login
+ * bearer is not sent: the login signs the request alone.
  *
  * Every credential value the request sends, in its headers or its URL, is
  * registered on the request's signing lease before this returns.
@@ -208,6 +218,9 @@ export async function buildForwardRequest(
     ...requestHeadersToForward(c.req.raw.headers),
     ...inboundAuthHeaders(c.req.raw.headers),
   };
+  if (headers.authorization && CLAUDE_LOGIN_BEARER.test(headers.authorization)) {
+    delete headers["x-api-key"];
+  }
   headers["content-type"] = "application/json";
   if (!headers["anthropic-version"]) headers["anthropic-version"] = "2023-06-01";
   if (!headers.authorization && !headers["x-api-key"]) {

@@ -241,3 +241,62 @@ describe("native count_tokens request (HTTP)", () => {
     expect(calls[0]!.headers).not.toHaveProperty("authorization");
   });
 });
+
+for (const route of ["/v1/messages", "/v1/messages/count_tokens"]) {
+  describe(`native credential pair on ${route} (HTTP)`, () => {
+    const OAUTH_BEARER = "Bearer sk-ant-oat-forward-test";
+    const API_KEY = "sk-ant-inbound-key";
+    let proxy: Awaited<ReturnType<typeof createProxyServer>> | null = null;
+
+    afterEach(async () => {
+      globalThis.fetch = realFetch;
+      if (proxy) await proxy.shutdown();
+      proxy = null;
+    });
+
+    async function send(auth: Record<string, string>): Promise<CapturedCall> {
+      const calls = stubFetch();
+      proxy = await createProxyServer(0, undefined, undefined, false, undefined, undefined, {
+        quiet: true,
+      });
+      const res = await realFetch(`${proxy.url}${route}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...auth },
+        body: RAW,
+      });
+      expect(res.status).toBe(200);
+      expect(calls).toHaveLength(1);
+      return calls[0]!;
+    }
+
+    test("sends only the bearer when an OAuth bearer arrives with an x-api-key", async () => {
+      const call = await send({ authorization: OAUTH_BEARER, "x-api-key": API_KEY });
+      expect(call.headers.authorization).toBe(OAUTH_BEARER);
+      expect(call.headers).not.toHaveProperty("x-api-key");
+    });
+
+    test("sends an x-api-key that arrives alone", async () => {
+      const call = await send({ "x-api-key": API_KEY });
+      expect(call.headers["x-api-key"]).toBe(API_KEY);
+      expect(call.headers).not.toHaveProperty("authorization");
+    });
+
+    test("sends an OAuth bearer that arrives alone", async () => {
+      const call = await send({ authorization: OAUTH_BEARER });
+      expect(call.headers.authorization).toBe(OAUTH_BEARER);
+      expect(call.headers).not.toHaveProperty("x-api-key");
+    });
+
+    test("sends both when the bearer is not an OAuth token", async () => {
+      const call = await send({ authorization: "Bearer gateway-token", "x-api-key": API_KEY });
+      expect(call.headers.authorization).toBe("Bearer gateway-token");
+      expect(call.headers["x-api-key"]).toBe(API_KEY);
+    });
+
+    test("sends both when an api key helper's value fills both headers", async () => {
+      const call = await send({ authorization: `Bearer ${API_KEY}`, "x-api-key": API_KEY });
+      expect(call.headers.authorization).toBe(`Bearer ${API_KEY}`);
+      expect(call.headers["x-api-key"]).toBe(API_KEY);
+    });
+  });
+}
