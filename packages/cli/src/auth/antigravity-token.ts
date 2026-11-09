@@ -182,6 +182,7 @@ function invalidateReadStoreMemo(): void {
 
 /** Read the shared token via macOS `security`. Non-darwin → null (with a warning). */
 function defaultReadStore(): string | null {
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return null;
   if (process.platform !== "darwin") {
     logStderr(
       "[Antigravity] Shared token store is macOS-only for now (other keyring backends are a follow-up)."
@@ -210,6 +211,10 @@ function defaultReadStore(): string | null {
     // stdout stays PIPED because it carries the token; ignoring it the way the
     // write/delete siblings do would make every read return null. stdin is
     // ignored so this can never interact with a parent terminal in raw mode.
+    //
+    // No `timeout`: it would kill `security`, and a `security` killed
+    // mid-transaction can make macOS restart `securityd`, which drops every
+    // application's keychain session (keychain.md).
     const out = execFileSync(
       "security",
       ["find-generic-password", "-s", KC_SERVICE, "-a", KC_ACCOUNT, "-w"],
@@ -477,10 +482,8 @@ function encodeRecord(rec: SharedStoreRecord): string {
 export function readSharedAntigravityToken(
   deps: AntigravityTokenDeps = defaultDeps
 ): AntigravityToken | null {
-  const rec = parseRecord(deps.readStore());
-  const token = rec ? rec.token : null;
-  observeLineage(token);
-  return token;
+  const rec = readObservedRecord(deps);
+  return rec ? rec.token : null;
 }
 
 /**
@@ -601,19 +604,42 @@ export function antigravityTokenLineageMaterial(token: AntigravityToken): string
  */
 let observedLineage: string | null = null;
 
-function observeLineage(token: AntigravityToken | null): void {
-  const material = token ? antigravityTokenLineageMaterial(token) : undefined;
-  observedLineage = material ? createHash("sha256").update(material).digest("hex") : null;
+/** How many recent access tokens keep their lineage; older ones read as unknown. */
+const MAX_TRACKED_ACCESS_TOKENS = 8;
+/** Lineage by SHA-256 of the access token, oldest entry first. */
+const lineageByAccessToken = new Map<string, string>();
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
-function issue(token: AntigravityToken): string {
-  observeLineage(token);
-  return token.access_token;
+function observeLineage(token: AntigravityToken | null): void {
+  const material = token ? antigravityTokenLineageMaterial(token) : undefined;
+  observedLineage = material ? sha256(material) : null;
+  if (!observedLineage || !token?.access_token) return;
+  const key = sha256(token.access_token);
+  lineageByAccessToken.delete(key);
+  lineageByAccessToken.set(key, observedLineage);
+  if (lineageByAccessToken.size > MAX_TRACKED_ACCESS_TOKENS) {
+    lineageByAccessToken.delete(lineageByAccessToken.keys().next().value as string);
+  }
+}
+
+/** Decode one read of the shared store and observe what it held, an empty store included. */
+function readObservedRecord(deps: AntigravityTokenDeps): SharedStoreRecord | null {
+  const rec = parseRecord(deps.readStore());
+  observeLineage(rec ? rec.token : null);
+  return rec;
 }
 
 /** The lineage of the token most recently read or returned; null when none is known. */
 export function currentAntigravityTokenLineage(): string | null {
   return observedLineage;
+}
+
+/** The lineage `accessToken` was read or returned under; null for a token not seen recently. */
+export function lineageForAntigravityAccessToken(accessToken: string): string | null {
+  return lineageByAccessToken.get(sha256(accessToken)) ?? null;
 }
 
 async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
@@ -624,7 +650,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
     );
   }
 
-  const rec = parseRecord(deps.readStore());
+  const rec = readObservedRecord(deps);
   if (!rec) {
     throw terminalCredentialError(
       "[Antigravity] No Antigravity session found. Sign in with `claudish login antigravity`, " +
@@ -635,7 +661,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
 
   if (!needsRefresh(rec.token, deps.now())) {
     captureAgyClientVersion(rec.token.access_token, deps);
-    return issue(rec.token);
+    return rec.token.access_token;
   }
 
   // Expired/near-expiry → ask agy to refresh (it owns the secret). Running `agy
@@ -643,11 +669,11 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   log("[Antigravity] Access token expired/near-expiry — asking the Antigravity CLI to refresh.");
   const outcome = deps.runAgyRefresh();
 
-  const refreshedRec = parseRecord(deps.readStore());
+  const refreshedRec = readObservedRecord(deps);
   if (refreshedRec && !needsRefresh(refreshedRec.token, deps.now())) {
     log("[Antigravity] Shared token refreshed by the Antigravity CLI.");
     captureAgyClientVersion(refreshedRec.token.access_token, deps);
-    return issue(refreshedRec.token);
+    return refreshedRec.token.access_token;
   }
 
   // Still stale. WHY decides what the user should actually do — and only one of
@@ -753,7 +779,7 @@ export async function forceRefreshAntigravityToken(
   // be handed back the very token the backend just rejected.
   _resetAntigravityTokenState();
 
-  const rec = parseRecord(deps.readStore());
+  const rec = readObservedRecord(deps);
   if (!rec) {
     throw terminalCredentialError(
       "[Antigravity] No Antigravity session found. Sign in with `claudish login antigravity`, " +
@@ -770,12 +796,12 @@ export async function forceRefreshAntigravityToken(
   );
   const outcome = deps.runAgyRefresh();
 
-  const refreshed = parseRecord(deps.readStore());
+  const refreshed = readObservedRecord(deps);
   const token = refreshed?.token;
   if (token && token.access_token !== original.access_token && !needsRefresh(token, deps.now())) {
     log("[Antigravity] Shared token re-minted by the Antigravity CLI.");
     captureAgyClientVersion(token.access_token, deps);
-    return issue(token);
+    return token.access_token;
   }
 
   // Restore ONLY when agy never wrote (the store still holds our own expiry
@@ -825,5 +851,6 @@ export function _resetAntigravityTokenState(): void {
   inFlight = null;
   cachedHasToken = null;
   observedLineage = null;
+  lineageByAccessToken.clear();
   invalidateReadStoreMemo();
 }

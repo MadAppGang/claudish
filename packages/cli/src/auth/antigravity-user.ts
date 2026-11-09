@@ -15,7 +15,10 @@
 
 import { log } from "../logger.js";
 import { getAgyClientVersion } from "./antigravity-client-version.js";
-import { currentAntigravityTokenLineage } from "./antigravity-token.js";
+import {
+  currentAntigravityTokenLineage,
+  lineageForAntigravityAccessToken,
+} from "./antigravity-token.js";
 import { credentialHttpError } from "./credentials/credential-error.js";
 
 /**
@@ -187,6 +190,11 @@ function syncAccountCaches(): void {
   cachedAgLineage = lineage;
 }
 
+/** The lineage `accessToken` belongs to; the current one for a token not seen recently. */
+function lineageOfToken(accessToken: string): string | null {
+  return lineageForAntigravityAccessToken(accessToken) ?? currentAntigravityTokenLineage();
+}
+
 /**
  * Whether an answer fetched under `lineage` may be cached: true only when the
  * token lineage is still that one, after the caches are aligned with it. An
@@ -236,11 +244,11 @@ export async function setupAntigravityUser(
   accessToken: string
 ): Promise<{ projectId: string; tierId: string }> {
   syncAccountCaches();
-  if (cachedAgProjectId && cachedAgTierId) {
+  const lineage = lineageOfToken(accessToken);
+  if (lineage === cachedAgLineage && cachedAgProjectId && cachedAgTierId) {
     return { projectId: cachedAgProjectId, tierId: cachedAgTierId };
   }
 
-  const lineage = cachedAgLineage;
   const loadRes = await callLoadCodeAssistAntigravity(accessToken);
   log(`[Antigravity] loadCodeAssist response: ${JSON.stringify(loadRes)}`);
 
@@ -584,6 +592,11 @@ export async function getServedAntigravityModels(
   opts?: { force?: boolean }
 ): Promise<AntigravityServedModels> {
   syncAccountCaches();
+  // The account this call asks for. Only that account's list may answer it,
+  // and its answer is cached only if that is still the signed-in account when
+  // it arrives.
+  const lineage = lineageOfToken(accessToken);
+  const ownList = lineage === cachedAgLineage;
   const now = Date.now();
   const version = antigravityClientVersion();
   if (agServedCache && agServedCacheVersion !== version) {
@@ -597,14 +610,10 @@ export async function getServedAntigravityModels(
     agServedCache = null;
     agServedCacheAt = 0;
   }
-  if (!opts?.force && agServedCache && now - agServedCacheAt < SERVED_MODELS_TTL_MS) {
+  if (!opts?.force && ownList && agServedCache && now - agServedCacheAt < SERVED_MODELS_TTL_MS) {
     return agServedCache;
   }
-  // The account this fetch asks for: its answer is cached only if that is
-  // still the signed-in account when it arrives, and a failed fetch falls back
-  // only to this account's earlier list.
-  const lineage = cachedAgLineage;
-  const prior = agServedCache;
+  const prior = ownList ? agServedCache : null;
   try {
     const raw = await fetchAntigravityAvailableModelsRaw(accessToken, projectId);
     if (raw.kind === "unreachable") {
