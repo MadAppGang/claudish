@@ -79,7 +79,7 @@ const RECOMMENDATION_TIER_INDEX: ReadonlyMap<string, number> = new Map(
   RECOMMENDATION_SECTIONS.map((section, index) => [section.recommendationTier, index])
 );
 
-function isRecommendationTier(value: unknown): value is RecommendationTier {
+export function isRecommendationTier(value: unknown): value is RecommendationTier {
   return typeof value === "string" && RECOMMENDATION_TIER_INDEX.has(value);
 }
 

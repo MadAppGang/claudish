@@ -385,7 +385,7 @@ function connectionCandidate(
  * both are an absence of evidence, and this flag's only job is to promote a
  * candidate, so an absence must never promote one.
  */
-function isVendorOwnRoute(
+export function isVendorOwnRoute(
   route: CatalogRouteBinding | undefined,
   entry: SlimModelEntry | undefined
 ): boolean {
