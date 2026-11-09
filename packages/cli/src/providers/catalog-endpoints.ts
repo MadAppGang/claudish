@@ -7,7 +7,7 @@
  * The models-index service publishes several endpoints under one host, and
  * three modules reach for them: the slim catalog and the plans
  * (`catalog-client.ts`), the recommended/search/top100 views
- * (`model-loader.ts`), and the probe roster (`probe-catalog.ts`).
+ * (`model-loader.ts`), and the probe picks (`probe-catalog.ts`).
  *
  * They live here together because `CLAUDISH_CATALOG_URL` is documented as the
  * way to point claudish at a different catalog, and a module holding its own
@@ -78,7 +78,7 @@ export function plansUrl(): string {
   );
 }
 
-/** The probe-roster endpoint, derived from the catalog URL unless set. */
+/** The endpoint that serves the probe picks, derived from the catalog URL unless set. */
 export function probeModelsUrl(): string {
   return (
     process.env.CLAUDISH_PROBE_MODELS_URL ??
