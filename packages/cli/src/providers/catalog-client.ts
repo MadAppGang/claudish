@@ -295,11 +295,11 @@ interface PlansPageData {
   nextCursor?: string;
 }
 
-type FetchFailure =
+export type FetchFailure =
   | { ok: false; reason: "timeout" | "network" | "http_error" }
   | { ok: false; reason: "incompatible"; serverContractVersion: number | null };
 
-async function fetchEnvelope<T>(
+export async function fetchEnvelope<T>(
   url: string,
   timeoutMs: number
 ): Promise<{ ok: true; envelope: CatalogV3Envelope<T> } | FetchFailure> {
@@ -343,6 +343,94 @@ async function fetchEnvelope<T>(
   return { ok: true, envelope };
 }
 
+export type ModelPagesResult =
+  | {
+      ok: true;
+      entries: SlimModelEntry[];
+      generationId: string;
+      generatedAt: string;
+      pages: number;
+    }
+  | Extract<FetchFailure, { reason: "incompatible" }>
+  | {
+      ok: false;
+      reason: "timeout" | "network" | "http_error" | "empty" | "generation_mismatch" | "incomplete";
+    };
+
+/**
+ * Every slim model page of one generation. Pass `pinnedGenerationId` to require
+ * that generation; otherwise the first page's generation pins the rest. The
+ * total must hold across pages and match the row count, with no repeated model
+ * id or cursor.
+ */
+export async function fetchAllModelPages(
+  base: string,
+  pageLimit: number,
+  timeoutMs: number,
+  pinnedGenerationId?: string
+): Promise<ModelPagesResult> {
+  const entries: SlimModelEntry[] = [];
+  let generationId = pinnedGenerationId;
+  let generatedAt: string | undefined;
+  let cursor: string | undefined;
+  let pages = 0;
+  const seenCursors = new Set<string>();
+  let expectedTotal: number | undefined;
+
+  for (;;) {
+    const result = await fetchEnvelope<ModelsPageData>(
+      buildCatalogPageUrl(base, cursor, pageLimit, generationId),
+      timeoutMs
+    );
+    if (!result.ok) {
+      if (result.reason === "incompatible") return result;
+      return { ok: false, reason: pages === 0 ? result.reason : "incomplete" };
+    }
+
+    const { envelope } = result;
+    if (generationId !== undefined && envelope.generationId !== generationId) {
+      return { ok: false, reason: "generation_mismatch" };
+    }
+    generationId = envelope.generationId;
+    generatedAt ??= envelope.generatedAt;
+    if (
+      envelope.data.mode !== "slim" ||
+      !Array.isArray(envelope.data.models) ||
+      !envelope.data.models.every(isSlimModelEntry)
+    ) {
+      return { ok: false, reason: pages === 0 ? "empty" : "incomplete" };
+    }
+    if (!Number.isSafeInteger(envelope.data.total) || envelope.data.total < 0) {
+      return { ok: false, reason: "incomplete" };
+    }
+    if (expectedTotal === undefined) expectedTotal = envelope.data.total;
+    else if (envelope.data.total !== expectedTotal) {
+      return { ok: false, reason: "incomplete" };
+    }
+
+    entries.push(...envelope.data.models);
+    pages++;
+    const nextCursor = envelope.data.nextCursor;
+    if (!nextCursor) break;
+    if (seenCursors.has(nextCursor) || pages >= MAX_CATALOG_PAGES) {
+      return { ok: false, reason: "incomplete" };
+    }
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+
+  if (!generationId || !generatedAt || entries.length === 0) {
+    return { ok: false, reason: "empty" };
+  }
+  if (
+    entries.length !== expectedTotal ||
+    new Set(entries.map((entry) => entry.modelId)).size !== entries.length
+  ) {
+    return { ok: false, reason: "incomplete" };
+  }
+  return { ok: true, entries, generationId, generatedAt, pages };
+}
+
 export interface RefreshCatalogOptions {
   cachePath?: string;
 }
@@ -365,14 +453,6 @@ async function refreshCatalogOnce(
   timeoutMs: number,
   options: RefreshCatalogOptions
 ): Promise<RefreshOutcome> {
-  const entries: SlimModelEntry[] = [];
-  let generationId: string | undefined;
-  let generatedAt: string | undefined;
-  let cursor: string | undefined;
-  let pages = 0;
-  const seenCursors = new Set<string>();
-  let expectedTotal: number | undefined;
-
   // Resolved once for the whole refresh, for the same reason `generationId` is
   // pinned across pages: every page, and the route registry fetched after them,
   // has to describe one catalog. Reading the setting again lets a change
@@ -380,60 +460,14 @@ async function refreshCatalogOnce(
   // indistinguishable from one service that served all of it.
   const base = catalogUrl();
 
-  for (;;) {
-    const result = await fetchEnvelope<ModelsPageData>(
-      buildCatalogPageUrl(base, cursor, CATALOG_PAGE_LIMIT, generationId),
-      timeoutMs
-    );
-    if (!result.ok) {
-      if (result.reason === "incompatible") {
-        return { kind: "incompatible", serverContractVersion: result.serverContractVersion };
-      }
-      return { kind: "fetch_failed", reason: pages === 0 ? result.reason : "incomplete" };
+  const modelPages = await fetchAllModelPages(base, CATALOG_PAGE_LIMIT, timeoutMs);
+  if (!modelPages.ok) {
+    if (modelPages.reason === "incompatible") {
+      return { kind: "incompatible", serverContractVersion: modelPages.serverContractVersion };
     }
-
-    const { envelope } = result;
-    if (generationId === undefined) {
-      generationId = envelope.generationId;
-      generatedAt = envelope.generatedAt;
-    } else if (envelope.generationId !== generationId) {
-      return { kind: "fetch_failed", reason: "generation_mismatch" };
-    }
-    if (
-      envelope.data.mode !== "slim" ||
-      !Array.isArray(envelope.data.models) ||
-      !envelope.data.models.every(isSlimModelEntry)
-    ) {
-      return { kind: "fetch_failed", reason: pages === 0 ? "empty" : "incomplete" };
-    }
-    if (!Number.isSafeInteger(envelope.data.total) || envelope.data.total < 0) {
-      return { kind: "fetch_failed", reason: "incomplete" };
-    }
-    if (expectedTotal === undefined) expectedTotal = envelope.data.total;
-    else if (envelope.data.total !== expectedTotal) {
-      return { kind: "fetch_failed", reason: "incomplete" };
-    }
-
-    entries.push(...envelope.data.models);
-    pages++;
-    const nextCursor = envelope.data.nextCursor;
-    if (!nextCursor) break;
-    if (seenCursors.has(nextCursor) || pages >= MAX_CATALOG_PAGES) {
-      return { kind: "fetch_failed", reason: "incomplete" };
-    }
-    seenCursors.add(nextCursor);
-    cursor = nextCursor;
+    return { kind: "fetch_failed", reason: modelPages.reason };
   }
-
-  if (!generationId || !generatedAt || entries.length === 0) {
-    return { kind: "fetch_failed", reason: "empty" };
-  }
-  if (
-    entries.length !== expectedTotal ||
-    new Set(entries.map((entry) => entry.modelId)).size !== entries.length
-  ) {
-    return { kind: "fetch_failed", reason: "incomplete" };
-  }
+  const { entries, generationId, generatedAt, pages } = modelPages;
 
   const planResult = await fetchSubscriptionPlans(timeoutMs, generationId);
   if (!planResult.ok) {
@@ -524,9 +558,10 @@ function isPublishedLater(candidate: string, reference: string): boolean {
   return Number.isFinite(candidateMs) && Number.isFinite(referenceMs) && candidateMs > referenceMs;
 }
 
-async function fetchSubscriptionPlans(
+export async function fetchSubscriptionPlans(
   timeoutMs: number,
-  generationId: string
+  generationId: string,
+  url: string = plansUrl()
 ): Promise<
   | { ok: true; plans: CachedSubscriptionPlan[] }
   | FetchFailure
@@ -540,7 +575,7 @@ async function fetchSubscriptionPlans(
 
   for (;;) {
     const result = await fetchEnvelope<PlansPageData>(
-      buildCatalogPageUrl(plansUrl(), cursor, 100, generationId),
+      buildCatalogPageUrl(url, cursor, 100, generationId),
       timeoutMs
     );
     if (!result.ok) return result;
@@ -581,7 +616,7 @@ async function fetchSubscriptionPlans(
   return { ok: true, plans };
 }
 
-async function fetchRouteRegistry(
+export async function fetchRouteRegistry(
   timeoutMs: number,
   generationId: string,
   modelsUrl: string

@@ -31,7 +31,7 @@
  */
 
 /** The published models-index host. */
-const DEFAULT_HOST = "https://us-central1-claudish-6da10.cloudfunctions.net";
+export const DEFAULT_HOST = "https://us-central1-claudish-6da10.cloudfunctions.net";
 
 /**
  * The slim catalog endpoint, query string included.
