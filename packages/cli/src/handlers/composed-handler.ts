@@ -97,6 +97,7 @@ import {
 import { deepMergeParams } from "../model-params.js";
 import type { ResolvedConnection } from "../providers/connection-resolver.js";
 import type { WireHeader } from "../providers/connection-wire.js";
+import { hasProviderPrefix } from "../providers/model-parser.js";
 import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
 import { wireMarkerContext } from "../providers/wire-markers.js";
@@ -222,9 +223,6 @@ import { captureUpstreamError } from "./shared/upstream-error-capture.js";
  * lasted minutes, so the useful attempts are the late ones.
  */
 const STREAM_RETRY_DELAYS_MS = [3_000, 15_000, 30_000];
-
-/** A `provider@` routing prefix: one or more non-'@' characters, then '@'. */
-const PROVIDER_PREFIX = /^[^@]+@/;
 
 /**
  * A retry leg's binding: the request's `AuthBinding` plus the account it names
@@ -475,7 +473,7 @@ export class ComposedHandler implements ModelHandler {
     // (e.g. "zai@glm-4.7" falsely matching GLMModelDialect via the "@glm" substring).
     // A leading '@' has no provider before it and is part of the id itself
     // (OpenRouter presets such as "@preset/name").
-    if (PROVIDER_PREFIX.test(modelName)) {
+    if (hasProviderPrefix(modelName)) {
       throw new Error(
         `ComposedHandler: modelName must not contain a provider prefix (got "${modelName}"). Strip the provider routing prefix before passing modelName. If you need the full routed form, pass it as targetModel.`
       );

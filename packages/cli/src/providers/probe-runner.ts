@@ -1,3 +1,4 @@
+import { hasProviderPrefix } from "./model-parser.js";
 import { type ProbeLinkInput, type ProbeResult, probeLink } from "./probe-live.js";
 import type { CandidateOutcome, ExplainedCandidate, RouteExplanation } from "./routing-rules.js";
 
@@ -17,12 +18,8 @@ export function pinProbeModelSpec(link: Pick<ProbeLinkInput, "provider" | "model
   // A spec names its provider only when text comes before its first "@". A wire
   // id may itself start with "@" (OpenRouter presets: "@preset/x"), and that
   // id still needs the provider in front of it.
-  return HAS_PROVIDER_PREFIX.test(link.modelSpec)
-    ? link.modelSpec
-    : `${link.provider}@${link.modelSpec}`;
+  return hasProviderPrefix(link.modelSpec) ? link.modelSpec : `${link.provider}@${link.modelSpec}`;
 }
-
-const HAS_PROVIDER_PREFIX = /^[^@]+@/;
 
 /** A candidate the routing chain did not keep. */
 export type DroppedOutcome = Exclude<CandidateOutcome, "kept">;
