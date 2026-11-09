@@ -1177,9 +1177,11 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
       { prefix: "mlstudio:", stripPrefix: true },
     ],
     isLocal: true,
-    // LM Studio serves an OpenAI-compatible list of the models it has loaded.
-    // Previously unlisted, so the picker made users type a name from memory.
-    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
+    // LM Studio's native list: every model it can serve, each row with a `type`
+    // that states whether it is a chat model, so a local build the cloud models
+    // catalog does not know is still listed. Its OpenAI-compatible `/v1/models`
+    // carries only ids; it is read instead when an older server answers 404.
+    modelDiscovery: { path: "/api/v0/models", format: "lmstudio-models" },
     description: "Local LM Studio (lms@)",
   },
 

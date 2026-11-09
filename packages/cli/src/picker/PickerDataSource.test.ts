@@ -13,7 +13,7 @@ import {
   _resetAccountModelsListsForTest,
   loadAccountModelsLists,
 } from "../providers/dynamic-models-catalog.js";
-import { createPickerDataSource } from "./PickerDataSource.js";
+import { createPickerDataSource, discoveryShapeOf } from "./PickerDataSource.js";
 
 let home: string;
 let previous: { dir?: string; key?: string };
@@ -80,4 +80,14 @@ test("52. the cached outcome is synchronous", async () => {
   expect(cached.rows.map((row) => row.id)).toEqual(["swe-1-7-medium"]);
   expect(source.cachedModelsCatalog("grok-subscription")).toBeNull();
   expect(network).not.toHaveBeenCalled();
+});
+
+// REGRESSION: LM Studio picker hides models the cloud models catalog does not list
+test("LM Studio's discovery runs through the GET half, so it earns the deadline indicator", () => {
+  // The native /api/v0/models list is fetched by the same GET half as an
+  // OpenAI-style list, under the same FETCH_TIMEOUT_MS, so the panel draws the
+  // same determinate deadline for both.
+  expect(discoveryShapeOf("lmstudio")).toBe("deadline");
+  expect(discoveryShapeOf("kimi-coding")).toBe("deadline");
+  expect(discoveryShapeOf("ollama")).toBe("elapsed");
 });

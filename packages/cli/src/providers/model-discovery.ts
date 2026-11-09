@@ -35,7 +35,7 @@ import { isOptInWireId } from "./content-use.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
 import { getProviderByName, isPersistedListProvider } from "./provider-definitions.js";
-import type { ReportedCapability } from "./transport/probe-discovery.js";
+import { type ReportedCapability, lmStudioReported } from "./transport/probe-discovery.js";
 
 /** A model as reported by the provider's own live endpoint. */
 export interface DiscoveredModel {
@@ -157,6 +157,14 @@ export interface ModelDiscoveryDescriptor {
    *   created? }] }`. Also accepts `context_window` / `max_context_length`
    *   spellings, since OpenAI-compatible endpoints disagree on the field name.
    *   `created` is unix seconds and feeds `DiscoveredModel.releaseDate`.
+   * - `lmstudio-models`: LM Studio's native `/api/v0/models`, the same
+   *   `{ data: [...] }` container, whose rows also carry `type` (`llm`, `vlm`,
+   *   `embeddings`, …), `max_context_length` and, for a loaded model,
+   *   `loaded_context_length`. `type` feeds `DiscoveredModel.reported`; the
+   *   window is the loaded one when present, else the maximum. Read by the same
+   *   GET half as `openai-models-list`; a server without the native list (404)
+   *   is asked for `/v1/models` once, and that answer is read as
+   *   `openai-models-list`.
    * - `devin-connect`: not an HTTP GET at all — two protobuf rpcs whose
    *   intersection is capability ∩ entitlement. Owned by
    *   `providers/devin/devin-models.ts`; `path` is ignored.
@@ -173,6 +181,7 @@ export interface ModelDiscoveryDescriptor {
    */
   format:
     | "openai-models-list"
+    | "lmstudio-models"
     | "devin-connect"
     | "ollama-tags"
     | "antigravity"
@@ -560,8 +569,31 @@ interface ParsedModelsList {
   total: number | null;
 }
 
-/** Parse an OpenAI-style `{ data: [...] }` model list. */
-function parseOpenAIModelsList(body: unknown): ParsedModelsList {
+/**
+ * The window a loaded LM Studio instance accepts, else the model's maximum.
+ * A loaded instance may run with less context than the model supports, and
+ * planning for the maximum would overrun what the server accepts.
+ */
+function readLMStudioContextWindow(row: Record<string, unknown>): number | undefined {
+  for (const field of ["loaded_context_length", "max_context_length"]) {
+    const v = row[field];
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+  }
+  return undefined;
+}
+
+/**
+ * Parse an OpenAI-style `{ data: [...] }` model list.
+ *
+ * `lmstudio-models` rows are read the same way, plus their `type` as the
+ * provider's own chat statement. Every other format leaves `reported` unset:
+ * a `type` field elsewhere has another vocabulary and is not read.
+ */
+function parseOpenAIModelsList(
+  body: unknown,
+  format: ModelDiscoveryDescriptor["format"]
+): ParsedModelsList {
+  const isLMStudio = format === "lmstudio-models";
   const data = (body as { data?: unknown })?.data;
   // A missing `data` is NOT an empty plan. Answering it with `[]` made the two
   // indistinguishable, which is the collapse this whole contract exists to stop.
@@ -585,8 +617,9 @@ function parseOpenAIModelsList(body: unknown): ParsedModelsList {
     models.push({
       id,
       displayName,
-      contextWindow: readContextWindow(row),
+      contextWindow: isLMStudio ? readLMStudioContextWindow(row) : readContextWindow(row),
       releaseDate: readCreatedDate(row),
+      ...(isLMStudio ? { reported: lmStudioReported(row) } : {}),
     });
   }
   return { models, dropped, total: data.length };
@@ -815,9 +848,10 @@ async function fetchServedModels(providerName: string): Promise<ModelsCatalogOut
   const descriptor = def?.modelDiscovery;
   if (!def || !descriptor) return { kind: "unsupported", reason: "no-descriptor" };
 
-  if (descriptor.format !== "openai-models-list") {
+  if (descriptor.format !== "openai-models-list" && descriptor.format !== "lmstudio-models") {
     return await discoverViaFetcher(providerName, descriptor.format);
   }
+  const isLMStudio = descriptor.format === "lmstudio-models";
 
   const baseUrl = resolveBaseUrl(providerName);
   if (!baseUrl) {
@@ -833,7 +867,14 @@ async function fetchServedModels(providerName: string): Promise<ModelsCatalogOut
     });
   }
   const definitionEndpoint = `${baseUrl}${descriptor.path}`;
-  let endpoint = registryModelsEndpoint(providerName, def) ?? definitionEndpoint;
+  // LM Studio's native list is the one that states each row's type, so no
+  // registry endpoint may stand in for it.
+  let endpoint = isLMStudio
+    ? definitionEndpoint
+    : (registryModelsEndpoint(providerName, def) ?? definitionEndpoint);
+  // Which reader the body gets: an older LM Studio's `/v1/models` answer has no
+  // `type` and no window fields, so it is read as a plain OpenAI list.
+  let bodyFormat: ModelDiscoveryDescriptor["format"] = descriptor.format;
 
   // Auth via the credential authority — it owns OAuth-vs-API-key precedence
   // (Kimi Coding prefers an OAuth token over a stale KIMI_CODING_API_KEY) and
@@ -917,6 +958,14 @@ async function fetchServedModels(providerName: string): Promise<ModelsCatalogOut
       endpoint = definitionEndpoint;
       response = await fetchList(endpoint);
     }
+    // An LM Studio without `/api/v0` answers 404 there and still serves its
+    // OpenAI-compatible list. A throw or a 401/403 is not retried: the host is
+    // the same, so the answer would be too.
+    if (response.status === 404 && isLMStudio) {
+      endpoint = `${baseUrl}/v1/models`;
+      bodyFormat = "openai-models-list";
+      response = await fetchList(endpoint);
+    }
   } catch (e: unknown) {
     return recordFailure({
       kind: "unreachable",
@@ -956,7 +1005,7 @@ async function fetchServedModels(providerName: string): Promise<ModelsCatalogOut
     return recordFailure({ kind: "malformed", provider: providerName, endpoint });
   }
 
-  const parsed = parseOpenAIModelsList(body);
+  const parsed = parseOpenAIModelsList(body, bodyFormat);
   const incomplete = describeIncompleteness(body, parsed);
   if (incomplete) {
     // Not cached, and nothing returned. A list that fails the completeness
