@@ -6,10 +6,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Hono } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
-import { type ModelInfo, resolveProviderExternalId } from "../model-selector.js";
 import type { ClaudishProfileConfig } from "../profile-config.js";
 import { type DiskCacheV3, writeAllModelsCache } from "./all-models-cache.js";
 import {
@@ -19,12 +17,6 @@ import {
 } from "./custom-endpoints-loader.js";
 import { __resetEndpointDiagnosticsForTests } from "./endpoint-diagnostics.js";
 import { invalidateEndpointRegistration } from "./endpoint-registration.js";
-import {
-  describeDiscoveryFailure,
-  discoverProviderModels,
-  discoverProviderModelsCatalog,
-  invalidateModelDiscovery,
-} from "./model-discovery.js";
 import type { PredefinedEndpoint } from "./predefined-endpoint-schema.js";
 import { __resetPredefinedStateForTests, loadPredefinedEndpoints } from "./predefined-endpoints.js";
 import { getProviderByName } from "./provider-definitions.js";
@@ -1052,106 +1044,5 @@ describe("custom-endpoints-loader", () => {
         .createHandler(makeCtx("qwen3.8-max"))!;
       expect(handlerTestSeams(defaultHandler).resolveStreamFormat?.()).toBe("openai-sse");
     });
-  });
-});
-
-/**
- * A discovered id is offered as the name a user types after `endpoint@`; the
- * handler prepends `modelPrefix` to that name, so the id it offers must not
- * already carry it.
- */
-describe("custom endpoint modelPrefix and discovered ids", () => {
-  const realFetch = globalThis.fetch;
-  beforeEach(() => {
-    clearRuntimeRegistry();
-    invalidateModelDiscovery();
-    invalidateEndpointRegistration();
-  });
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-    clearRuntimeRegistry();
-    invalidateModelDiscovery();
-    invalidateEndpointRegistration();
-  });
-
-  test("no listed id with the modelPrefix is a reported failure, never a cached empty list", async () => {
-    let listed = 0;
-    globalThis.fetch = (async () => {
-      listed++;
-      return Response.json({ data: [{ id: "o3-mini" }, { id: "o4" }] });
-    }) as unknown as typeof fetch;
-    loadCustomEndpoints(
-      makeConfig({
-        "prefixed-ep": {
-          kind: "simple",
-          url: "https://prefixed.example.invalid/v1",
-          format: "openai",
-          authScheme: "none",
-          modelPrefix: "gpt-",
-        },
-      })
-    );
-
-    const outcome = await discoverProviderModelsCatalog("prefixed-ep");
-    expect(outcome.kind).toBe("failed");
-    if (outcome.kind !== "failed") throw new Error("unreachable");
-    expect(outcome.failure.kind).toBe("empty-models-catalog");
-    expect(describeDiscoveryFailure(outcome.failure)).toContain(
-      'listed 2 models, none starting with modelPrefix "gpt-"'
-    );
-    await discoverProviderModelsCatalog("prefixed-ep");
-    expect(listed).toBe(2);
-  });
-
-  test("a discovered id round-trips through the picker spec to the same upstream id", async () => {
-    const sent: string[] = [];
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input instanceof Request ? input.url : input);
-      if (url.endsWith("/models")) {
-        return Response.json({ data: [{ id: "gpt-6.1-sol" }, { id: "o3-mini" }] });
-      }
-      sent.push(JSON.parse(String(init?.body)).model);
-      return new Response(JSON.stringify({ error: { message: "stop" } }), { status: 400 });
-    }) as typeof fetch;
-    loadCustomEndpoints(
-      makeConfig({
-        "prefixed-ep": {
-          kind: "simple",
-          url: "https://prefixed.example.invalid/v1",
-          format: "openai",
-          authScheme: "none",
-          modelPrefix: "gpt-",
-        },
-      })
-    );
-
-    const discovered = await discoverProviderModels("prefixed-ep");
-    expect(discovered.map((m) => m.id)).toEqual(["gpt-6.1-sol"]);
-    const name = resolveProviderExternalId("prefixed-ep", discovered[0] as unknown as ModelInfo);
-    expect(name).toBe("6.1-sol");
-
-    const def = getProviderByName("prefixed-ep")!;
-    const handler = getRuntimeProfiles()
-      .get("prefixed-ep")!
-      .createHandler({
-        provider: { ...def, prefixes: ["prefixed-ep"] } as unknown as ProfileContext["provider"],
-        modelName: name,
-        targetModel: `prefixed-ep@${name}`,
-        port: 3000,
-        apiKey: "",
-        sharedOpts: {},
-      })!;
-    const app = new Hono();
-    app.post("/", (c) =>
-      handler.handle(c, {
-        model: "x",
-        stream: true,
-        max_tokens: 100,
-        messages: [{ role: "user", content: "hi" }],
-      })
-    );
-    await app.request("/", { method: "POST" });
-    await handler.shutdown();
-    expect(sent[0]).toBe("gpt-6.1-sol");
   });
 });

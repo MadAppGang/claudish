@@ -1291,12 +1291,6 @@ export function buildExplicitModelSpec(provider: string, modelId: string): strin
 export function resolveProviderExternalId(provider: string, model: ModelInfo): string {
   const match = resolveProviderAggregatorEntry(provider, model);
   if (match?.externalModelId) return match.externalModelId;
-  // A custom endpoint's handler prepends its `modelPrefix` to the name after
-  // `endpoint@`, so a listed wire id that carries it is named without it.
-  const idPrefix = getProviderByName(provider)?.modelDiscovery?.idPrefix;
-  if (idPrefix && model.id.startsWith(idPrefix) && model.id.length > idPrefix.length) {
-    return model.id.slice(idPrefix.length);
-  }
   return model.id;
 }
 

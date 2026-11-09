@@ -288,17 +288,12 @@ export const CUSTOM_ENDPOINT_TIER: RouteTier = "gateway";
  */
 function openaiModelsDiscovery(
   wireFormat: string,
-  apiPath: string,
-  modelPrefix: string | undefined
+  apiPath: string
 ): ModelDiscoveryDescriptor | undefined {
   // The Chat Completions and the Responses API sit beside the same `/models`.
   const api = ["/chat/completions", "/responses"].find((suffix) => apiPath.endsWith(suffix));
   if (wireFormat !== "openai" || !api) return undefined;
-  return {
-    path: `${apiPath.slice(0, -api.length)}/models`,
-    format: "openai-models-list",
-    ...(modelPrefix && { idPrefix: modelPrefix }),
-  };
+  return { path: `${apiPath.slice(0, -api.length)}/models`, format: "openai-models-list" };
 }
 
 /**
@@ -343,7 +338,7 @@ function buildProviderDefinition(
       // and then demanded a key anyway. Bearer stays the DEFAULT (that is what
       // every simple endpoint got before), but a declared scheme now survives.
       authScheme: ep.authScheme ?? "bearer",
-      modelDiscovery: openaiModelsDiscovery(ep.format, "/chat/completions", ep.modelPrefix),
+      modelDiscovery: openaiModelsDiscovery(ep.format, "/chat/completions"),
     };
   }
 
@@ -368,7 +363,7 @@ function buildProviderDefinition(
     description: ovr?.description ?? `Custom endpoint: ${ep.displayName}`,
     headers: ep.headers,
     authScheme: ep.authScheme ?? "bearer",
-    modelDiscovery: openaiModelsDiscovery(ep.transport, apiPath, ep.modelPrefix),
+    modelDiscovery: openaiModelsDiscovery(ep.transport, apiPath),
   };
 }
 

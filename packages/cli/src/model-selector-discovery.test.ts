@@ -75,9 +75,7 @@ import {
   _modelsCatalogCollapse,
   buildDiscoveredModelOutcome,
   buildDiscoveredModelRows,
-  buildExplicitModelSpec,
   formatDiscoveryFailureNotice,
-  resolveProviderExternalId,
   toPickerRows,
   warnDiscoveryFailure,
 } from "./model-selector.js";
@@ -623,37 +621,5 @@ describe("toPickerRows — one chat-capability chokepoint for both doors", () =>
     expect(
       toPickerRows([row("claude-opus-5"), row("claude-opus-5"), row("whisper-1")]).map((r) => r.id)
     ).toEqual(["claude-opus-5"]);
-  });
-});
-
-describe("a custom endpoint's modelPrefix on its discovered ids", () => {
-  const PREFIXED = "picker-prefixed-endpoint";
-
-  function prefixedEndpoint(ids: string[]): void {
-    registerRuntimeProvider(
-      defineProvider({
-        name: PREFIXED,
-        shortcuts: ["pfx"],
-        shortestPrefix: "pfx",
-        modelDiscovery: { path: "/v1/models", format: "openai-models-list", idPrefix: "gpt-" },
-      })
-    );
-    globalThis.fetch = mock(async () =>
-      Response.json({ data: ids.map((id) => ({ id })) })
-    ) as unknown as typeof fetch;
-  }
-
-  test("the chat filter judges the whole wire id; the spec carries the name after endpoint@", async () => {
-    prefixedEndpoint(["gpt-5.2-codex"]);
-
-    const outcome = await buildDiscoveredModelOutcome(PREFIXED, "Prefixed", stubCatalog([]));
-
-    expect(outcome.kind).toBe("rows");
-    if (outcome.kind !== "rows") throw new Error("unreachable");
-    expect(outcome.rows.map((r) => r.id)).toEqual(["gpt-5.2-codex"]);
-    const row = outcome.rows[0]!;
-    expect(buildExplicitModelSpec(PREFIXED, resolveProviderExternalId(PREFIXED, row))).toBe(
-      "pfx@5.2-codex"
-    );
   });
 });

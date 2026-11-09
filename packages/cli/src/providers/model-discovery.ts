@@ -176,31 +176,6 @@ export interface ModelDiscoveryDescriptor {
     | "ollama-tags"
     | "antigravity"
     | "muse-code-models";
-  /**
-   * `openai-models-list` only: a custom endpoint's `modelPrefix`. Its handler
-   * sends `modelPrefix + <name after endpoint@>`. Discovery keeps each listed
-   * id whole (the wire id, which capability and metadata lookups need); the
-   * picker removes the prefix only when it builds the `endpoint@<name>` spec
-   * (`resolveProviderExternalId`). A listed id that does not start with the
-   * prefix is dropped: no name typed after `endpoint@` can send it.
-   */
-  idPrefix?: string;
-}
-
-/** The listed models a name after `endpoint@` can reach; see `idPrefix`. */
-function withIdPrefix(
-  providerName: string,
-  models: DiscoveredModel[],
-  prefix: string | undefined
-): DiscoveredModel[] {
-  if (!prefix) return models;
-  const kept = models.filter((m) => m.id.startsWith(prefix) && m.id.length > prefix.length);
-  if (kept.length < models.length) {
-    log(
-      `[model-discovery:${providerName}] dropped ${models.length - kept.length} id(s) without modelPrefix "${prefix}"`
-    );
-  }
-  return kept;
 }
 
 /**
@@ -442,9 +417,7 @@ export function describeDiscoveryFailure(failure: DiscoveryFailure): string {
     case "incomplete":
       return `the model list could not be read as a complete list${at}${because}`;
     case "empty-models-catalog":
-      return detail
-        ? `the endpoint answered${at}, but ${detail}`
-        : `the endpoint answered${at} but listed no models`;
+      return `the endpoint answered${at} but listed no models`;
   }
 }
 
@@ -623,7 +596,7 @@ function describeIncompleteness(body: unknown, parsed: ParsedModelsList): string
   const continuation = describeContinuation(body);
   if (continuation) return `the endpoint signalled more results (${continuation})`;
   if (parsed.dropped > 0) return `${parsed.dropped} of ${parsed.total} entries were unparseable`;
-  if (parsed.models.length === 0) return "it listed no models";
+  if (parsed.models.length === 0) return "the endpoint listed no models";
   return null;
 }
 
@@ -905,17 +878,7 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
       detail: incomplete,
     });
   }
-  const models = withIdPrefix(providerName, parsed.models, descriptor.idPrefix);
-  if (models.length === 0) {
-    // Every listed id lacks the endpoint's `modelPrefix`: nothing it lists is
-    // reachable, and `served` is never empty. Recorded, not cached.
-    return recordFailure({
-      kind: "empty-models-catalog",
-      provider: providerName,
-      endpoint,
-      detail: `it listed ${parsed.models.length} models, none starting with modelPrefix "${descriptor.idPrefix}"`,
-    });
-  }
+  const models = parsed.models;
 
   _failures.delete(providerName);
   log(
