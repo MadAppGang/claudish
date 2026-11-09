@@ -28,12 +28,50 @@ interface Run {
 /**
  * Runs claudish over a stand-in `claude` whose whole behaviour is `body`.
  * `verbose` turns claudish's own `[claudish]` lines on (single-shot mode is quiet
- * by default) and captures them.
+ * by default) and captures them. `sessionEndMs` installs a `sessionEnd` hook that
+ * takes that long, touching `hook.started` and `hook.finished` in the run's directory.
+ * Monitor mode runs no hooks, so that launch goes through a custom endpoint instead;
+ * the stand-in never calls it.
  */
-function runOver(body: string, opts: { verbose?: boolean } = {}): Run {
+function runOver(body: string, opts: { verbose?: boolean; sessionEndMs?: number } = {}): Run {
   const dir = mkdtempSync(join(root, "case-"));
   const home = join(dir, "home");
   mkdirSync(home);
+  if (opts.sessionEndMs !== undefined) {
+    const claudishDir = join(home, ".claudish");
+    mkdirSync(claudishDir);
+    const hook = join(dir, "slow-session-end.ts");
+    writeFileSync(
+      hook,
+      `import { writeFileSync } from "node:fs";
+export default {
+  apiVersion: 1,
+  id: "slow-session-end",
+  on: {
+    async sessionEnd() {
+      writeFileSync(${JSON.stringify(join(dir, "hook.started"))}, "");
+      await Bun.sleep(${opts.sessionEndMs});
+      writeFileSync(${JSON.stringify(join(dir, "hook.finished"))}, "");
+    },
+  },
+};
+`
+    );
+    writeFileSync(
+      join(claudishDir, "config.json"),
+      JSON.stringify({
+        customEndpoints: {
+          stub: {
+            kind: "simple",
+            url: "http://127.0.0.1:9/v1",
+            format: "openai",
+            authScheme: "none",
+          },
+        },
+        hooks: { modules: [hook] },
+      })
+    );
+  }
   const standIn = join(dir, "claude");
   writeFileSync(standIn, `#!/bin/sh\n${body}\n`);
   chmodSync(standIn, 0o755);
@@ -42,7 +80,7 @@ function runOver(body: string, opts: { verbose?: boolean } = {}): Run {
     [
       "run",
       join(import.meta.dir, "index.ts"),
-      "--monitor",
+      ...(opts.sessionEndMs !== undefined ? ["--model", "stub@fake-model"] : ["--monitor"]),
       "-y",
       ...(opts.verbose ? ["--verbose"] : []),
       "hi",
@@ -150,10 +188,12 @@ function killStandIn(pidFile: string): void {
 
 describe.skipIf(process.platform === "win32")("claudish's shutdown on a signal", () => {
   // A stand-in whose TERM trap takes a second to finish, then marks that it did.
+  // The shell runs a trap only once its foreground `sleep` returns, so the loop's
+  // sleep is short: the trap has to start promptly to finish inside the grace.
   const slowTrap = [
     'trap \'echo TERM >> "$TMPDIR/claude.log"; sleep 1; touch "$TMPDIR/claude.finished"; exit 0\' TERM',
     'echo "$$" > "$TMPDIR/claude.pid"',
-    "while :; do sleep 1; done",
+    "while :; do sleep 0.05; done",
   ].join("\n");
 
   test("exits only after Claude Code has finished exiting, with 143", async () => {
@@ -277,6 +317,62 @@ describe.skipIf(process.platform === "win32")("claudish's signal shutdown deadli
     expect(await run.exit).toBe(143);
     expect(Date.now() - sentAt).toBeLessThan(SIGNAL_SHUTDOWN_BUDGET_MS - 1_000);
   }, 30_000);
+});
+
+describe.skipIf(process.platform === "win32")("sessionEnd during a signal shutdown", () => {
+  const hookMs = 1_400;
+
+  /** SIGTERMs claudish over `body` and asserts the hook finished before claudish exited. */
+  async function expectSessionEndFinishes(body: string): Promise<void> {
+    const run = runOver(body, { verbose: true, sessionEndMs: hookMs });
+    const pidFile = join(run.dir, "claude.pid");
+    const hookFinished = join(run.dir, "hook.finished");
+    const atExit: { finished?: boolean } = {};
+    run.proc.on("exit", () => {
+      atExit.finished = existsSync(hookFinished);
+    });
+    await waitFor("Claude Code to start", () => existsSync(pidFile));
+    try {
+      run.proc.kill("SIGTERM");
+      expect(await run.exit).toBe(143);
+      expect(existsSync(join(run.dir, "hook.started"))).toBe(true);
+      expect(atExit.finished).toBe(true);
+      // Printed by the caller's teardown, which the deadline would have cut short.
+      expect(run.output()).toContain("[claudish] Done");
+    } finally {
+      killStandIn(pidFile);
+    }
+  }
+
+  test("finishes when Claude Code exits about 1.9 s after SIGTERM", async () => {
+    await expectSessionEndFinishes(
+      [
+        'echo "$$" > "$TMPDIR/claude.pid"',
+        "trap 'sleep 1.9; exit 0' TERM",
+        "while :; do sleep 0.05; done",
+      ].join("\n")
+    );
+  }, 30_000);
+
+  test("finishes when Claude Code ignores SIGTERM and has to be SIGKILLed", async () => {
+    await expectSessionEndFinishes(
+      ['echo "$$" > "$TMPDIR/claude.pid"', "trap '' TERM", "while :; do sleep 0.05; done"].join(
+        "\n"
+      )
+    );
+  }, 30_000);
+
+  test("the deadline covers every part and stays below the supervisor's SIGKILL", async () => {
+    const { SIGNAL_CHILD_EXIT_GRACE_MS, SIGNAL_CHILD_KILL_WAIT_MS, SIGNAL_SHUTDOWN_BUDGET_MS } =
+      await import("./claude-runner.js");
+    const { TERMINATE_GRACE_MS } = await import("./process-tree.js");
+    const { EVENT_BUDGETS } = await import("./hooks/engine.js");
+    const sessionEndBudget = EVENT_BUDGETS.sessionEnd as number;
+    expect(SIGNAL_CHILD_EXIT_GRACE_MS + SIGNAL_CHILD_KILL_WAIT_MS + sessionEndBudget).toBeLessThan(
+      SIGNAL_SHUTDOWN_BUDGET_MS
+    );
+    expect(SIGNAL_SHUTDOWN_BUDGET_MS).toBeLessThan(TERMINATE_GRACE_MS);
+  });
 });
 
 /** Whether a TCP connection to `url`'s port is refused. */

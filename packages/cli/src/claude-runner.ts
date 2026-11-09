@@ -2765,9 +2765,10 @@ function sessionOutcomeOf(exitCode: number | null): {
  * How long a signal shutdown waits for Claude Code to exit after SIGTERM before
  * it sends SIGKILL. A supervisor allows claudish `TERMINATE_GRACE_MS` (5 s)
  * between its own SIGTERM and SIGKILL, so this stays well below that: claudish
- * must still have time to kill Claude Code, finish its cleanup and exit.
+ * must still have time to kill Claude Code, give `sessionEnd` its full budget
+ * (`EVENT_BUDGETS.sessionEnd`) and exit.
  */
-export const SIGNAL_CHILD_EXIT_GRACE_MS = 3_000;
+export const SIGNAL_CHILD_EXIT_GRACE_MS = 2_000;
 
 /** How long a signal shutdown waits for Claude Code to exit after SIGKILL. */
 export const SIGNAL_CHILD_KILL_WAIT_MS = 500;
@@ -2776,10 +2777,12 @@ export const SIGNAL_CHILD_KILL_WAIT_MS = 500;
  * The hard deadline of a signal shutdown, from the signal to `process.exit`: the
  * launcher's post-exit cleanup (`sessionEnd`, the wrapper, the turn dir) and the
  * caller's teardown (the proxy, the diag file, the session summary) normally
- * finish inside it. Below the supervisor's `TERMINATE_GRACE_MS`, so its SIGKILL
- * never lands mid-cleanup.
+ * finish inside it. Above the child grace, the kill wait and `sessionEnd`'s budget
+ * together, so a Claude Code that has to be killed still leaves `sessionEnd` all
+ * of its time. Below the supervisor's `TERMINATE_GRACE_MS`, so its SIGKILL never
+ * lands mid-cleanup.
  */
-export const SIGNAL_SHUTDOWN_BUDGET_MS = 4_000;
+export const SIGNAL_SHUTDOWN_BUDGET_MS = 4_500;
 
 /** `128 + signum` of the signal that started the shutdown; null until one does. */
 let signalShutdownCode: number | null = null;
