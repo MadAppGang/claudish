@@ -99,6 +99,7 @@ import { getCodexModelInfo } from "../providers/codex-models-discovery.js";
 import { CODEX_SERVICE_TIER_POINTER, decideCodexSpeed } from "../providers/codex-service-tier.js";
 import type { ResolvedConnection } from "../providers/connection-resolver.js";
 import type { WireHeader } from "../providers/connection-wire.js";
+import { hasProviderPrefix } from "../providers/model-parser.js";
 import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
 import { wireMarkerContext } from "../providers/wire-markers.js";
@@ -456,8 +457,9 @@ export class ComposedHandler implements ModelHandler {
   private targetModel: string;
   /**
    * Bare model name (e.g. "glm-4.7"), provider prefix stripped. Used for model identity:
-   * dialect selection, catalog lookup, raw-hook routing, context tracking. Never contains '@'.
-   * @invariant !bareModelName.includes("@")
+   * dialect selection, catalog lookup, raw-hook routing, context tracking. Never carries a
+   * `provider@` prefix; a leading '@' is part of the id (OpenRouter presets: "@preset/name").
+   * @invariant !/^[^@]+@/.test(bareModelName)
    */
   private readonly bareModelName: string;
   private options: ComposedHandlerOptions;
@@ -478,13 +480,14 @@ export class ComposedHandler implements ModelHandler {
     port: number,
     options: ComposedHandlerOptions = {}
   ) {
-    // Enforce the bare-name invariant — modelName must not contain provider routing
-    // syntax. This prevents #102-class bugs where a routed string leaks into dialect
-    // selection (e.g. "zai@glm-4.7" falsely matching GLMModelDialect via the "@glm"
-    // substring). Callers must strip the provider prefix before passing modelName.
-    if (modelName.includes("@")) {
+    // Enforce the bare-name invariant — modelName must not carry a `provider@` prefix.
+    // This prevents #102-class bugs where a routed string leaks into dialect selection
+    // (e.g. "zai@glm-4.7" falsely matching GLMModelDialect via the "@glm" substring).
+    // A leading '@' has no provider before it and is part of the id itself
+    // (OpenRouter presets such as "@preset/name").
+    if (hasProviderPrefix(modelName)) {
       throw new Error(
-        `ComposedHandler: modelName must not contain '@' (got "${modelName}"). Strip the provider routing prefix before passing modelName. If you need the full routed form, pass it as targetModel.`
+        `ComposedHandler: modelName must not contain a provider prefix (got "${modelName}"). Strip the provider routing prefix before passing modelName. If you need the full routed form, pass it as targetModel.`
       );
     }
 
@@ -1706,7 +1709,7 @@ export class ComposedHandler implements ModelHandler {
     let requestPayload = adapter.buildPayload(claudeRequest, messages, tools);
 
     // Merge provider-specific extra fields
-    const extraFields = this.provider.getExtraPayloadFields?.();
+    const extraFields = await this.provider.getExtraPayloadFields?.();
     if (extraFields) {
       Object.assign(requestPayload, extraFields);
     }

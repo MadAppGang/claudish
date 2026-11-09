@@ -1148,7 +1148,7 @@ async function runCli() {
     // Returns one of:
     //   "ok"        — catalog ready (fresh or freshly refreshed)
     //   "warned"    — proceed with stale cache, warning already on stderr
-    //   "skipped"   — local model or --models-skip-update
+    //   "skipped"   — local model, native-only launch or --models-skip-update
     //   "hard_fail" — missing cache + network failure → exit 1
     //
     // AHEAD OF THE --advisor CHECK, deliberately. That check plans every panel

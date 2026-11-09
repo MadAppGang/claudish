@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { readSessionStats } from "../../session/session-stats.js";
 import { resolveTokenFilePath } from "../../session/token-file.js";
-import { TokenTracker, computeCacheReadDiscount } from "./token-tracker.js";
+import { TokenTracker, computeCacheReadDiscount, stripProviderPrefix } from "./token-tracker.js";
 
 interface TokenFile {
   input_tokens: number;
@@ -326,5 +326,23 @@ describe("TokenTracker cache-read discount", () => {
     tracker.updateWithDelta(CAPTURE_PROMPT_TOKENS, 100, detail);
     tracker.updateWithDelta(CAPTURE_PROMPT_TOKENS + CAPTURE_GROWTH, 5, detail);
     expect(tracker.getTotalCost()).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("stripProviderPrefix", () => {
+  test("removes a provider@ routing prefix", () => {
+    expect(stripProviderPrefix("qtoken@qwen3.7-plus")).toBe("qwen3.7-plus");
+  });
+
+  test("leaves a bare name unchanged", () => {
+    expect(stripProviderPrefix("gpt-5")).toBe("gpt-5");
+  });
+
+  test("keeps the leading @ of a preset wire id", () => {
+    expect(stripProviderPrefix("@preset/example")).toBe("@preset/example");
+  });
+
+  test("removes only the provider from a preset spec", () => {
+    expect(stripProviderPrefix("openrouter@@preset/example")).toBe("@preset/example");
   });
 });

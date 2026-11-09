@@ -22,6 +22,7 @@ lives in `ROADMAP.md`.
   harness-conformance supervisor with its plan-mode measurement. Read before editing `hooks/`, a stream
   parser's raw tap, or the settle path. User guide: `docs/advanced/hooks.md`
 - `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10 and the record fields, Claude Code's gates; panel routing through `planAdvisorModel` + `buildAdvisorChains` before the port (no lazy path), the advisor handler set, the never-served panel gateway, stickiness, and the Claude rule (login only where `childAuthControl` says claudish controls the child's auth, S0 request shape, the 429 "Error" shape refusal); read before editing advisor, decorator, panel gateway, `planAdvisorModel`/`buildAdvisorChains`, monitor-launch or native-auth code
+- `settings-env.md` — a settings `env` block overwrites the environment claudish gives Claude Code; why a proxy-auth launch is marked host-managed and withholds first-party trust, and why a launch that keeps the user's login is not; read before changing the child's environment
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `providers/meta-muse-code.md`: `muse@` on a Muse Code subscription and its metered sibling `meta@`: the mint
   as entitlement evidence (per process, on 401, 30-min TTL), the Muse Keychain item read only by an
