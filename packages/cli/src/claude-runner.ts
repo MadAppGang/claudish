@@ -45,7 +45,7 @@ import {
 import { log as debugLog, logStderr } from "./logger.js";
 import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
 import { flagsRemoveRead } from "./pane/pane-launch.js";
-import { waitForExit } from "./process-tree.js";
+import { killStillLiveMembers, snapshotDescendants, waitForExit } from "./process-tree.js";
 import { loadConfig } from "./profile-config.js";
 import { LIVE_DISCOVERY_BOUND_MS, discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
@@ -2743,19 +2743,12 @@ export async function runClaudeWithProxy(
   releaseTerminalIsolation();
 
   // Clean up temporary settings file
-  try {
-    unlinkSync(tempSettingsPath);
-  } catch {
-    // Ignore cleanup errors
-  }
+  signalShutdown.removeSettingsFile();
+  await signalShutdown.claudeCodeStopped();
 
-  signalShutdown.launcherCleanupDone();
-  // A signal is shutting claudish down and exits with `128 + signum` itself.
-  // Returning would hand Claude Code's own code (0 from a TERM trap that exits
-  // cleanly) to the caller, which could exit with it first.
-  if (signalShutdown.started()) return new Promise<never>(() => {});
-
-  return exitCode;
+  // A signal outranks Claude Code's own code, which is 0 from a TERM trap that
+  // exits cleanly: the run was stopped, and the caller exits with what is returned.
+  return signalShutdownExitCode() ?? exitCode;
 }
 
 /** `sessionEnd`'s outcome for the interactive launcher: Claude Code's exit. */
@@ -2773,51 +2766,76 @@ function sessionOutcomeOf(exitCode: number | null): {
  * How long a signal shutdown waits for Claude Code to exit after SIGTERM before
  * it sends SIGKILL. A supervisor allows claudish `TERMINATE_GRACE_MS` (5 s)
  * between its own SIGTERM and SIGKILL, so this stays well below that: claudish
- * must still have time to kill Claude Code, finish its cleanup and exit.
+ * must still have time to kill Claude Code, give `sessionEnd` its full budget
+ * (`EVENT_BUDGETS.sessionEnd`) and exit.
  */
-export const SIGNAL_CHILD_EXIT_GRACE_MS = 3_000;
+export const SIGNAL_CHILD_EXIT_GRACE_MS = 2_000;
 
-/** How long a signal shutdown waits for Claude Code to exit after SIGKILL. */
+/**
+ * The SIGKILL step of a signal shutdown, from the end of the child grace: reading
+ * Claude Code's descendants, sending the SIGKILLs and waiting for Claude Code to exit.
+ */
 export const SIGNAL_CHILD_KILL_WAIT_MS = 500;
 
 /**
- * The whole signal shutdown, from the signal to `process.exit`, including the
- * launcher's own post-exit cleanup (`sessionEnd`, the wrapper, the turn dir).
- * Below the supervisor's `TERMINATE_GRACE_MS`, so its SIGKILL never lands
- * mid-cleanup.
+ * How long each of the SIGKILL step's two process-table reads may take: the snapshot
+ * of Claude Code's descendants, and the re-read that checks they are the same processes.
+ * Measured at 95 ms median and 111 ms worst over 40 reads of a 1,900-process table.
+ * Both come out of `SIGNAL_CHILD_KILL_WAIT_MS`, so they add nothing to the shutdown.
  */
-export const SIGNAL_SHUTDOWN_BUDGET_MS = 4_000;
+export const SIGNAL_DESCENDANT_READ_MS = 200;
+
+/**
+ * The hard deadline of a signal shutdown, from the signal to `process.exit`: the
+ * launcher's post-exit cleanup (`sessionEnd`, the wrapper, the turn dir) and the
+ * caller's teardown (the proxy, the diag file, the session summary) normally
+ * finish inside it. Above the child grace, the kill wait and `sessionEnd`'s budget
+ * together, so a Claude Code that has to be killed still leaves `sessionEnd` all
+ * of its time. Below the supervisor's `TERMINATE_GRACE_MS`, so its SIGKILL never
+ * lands mid-cleanup.
+ */
+export const SIGNAL_SHUTDOWN_BUDGET_MS = 4_500;
+
+/** `128 + signum` of the signal that started the shutdown; null until one does. */
+let signalShutdownCode: number | null = null;
+
+/**
+ * The code claudish must exit with because a signal stopped it, or null when none
+ * has. The launcher returns Claude Code's code before the caller's teardown runs,
+ * and a signal can arrive during that teardown; the caller's last exit reads this.
+ */
+export function signalShutdownExitCode(): number | null {
+  return signalShutdownCode;
+}
 
 /** A signal shutdown, shared between the signal handlers and the launcher's exit path. */
 interface SignalShutdown {
-  /** True once a signal has started the shutdown. */
-  started(): boolean;
-  /** The launcher calls this once its own post-exit cleanup has finished. */
-  launcherCleanupDone(): void;
-}
-
-/** Resolves after `ms`, without keeping the event loop alive. */
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, Math.max(0, ms));
-    t.unref?.();
-  });
+  /** Removes the settings file, once however many paths reach it. */
+  removeSettingsFile(): void;
+  /**
+   * Settles when the handlers have finished stopping Claude Code, at once if no signal
+   * has arrived. Its descendants are signalled after it dies, so returning sooner would
+   * let the caller exit first and leave them running.
+   */
+  claudeCodeStopped(): Promise<void>;
 }
 
 /**
- * Installs the SIGINT / SIGTERM / SIGHUP handlers that stop Claude Code and
- * exit claudish.
+ * Installs the SIGINT / SIGTERM / SIGHUP handlers that stop Claude Code.
  *
- * The order is: signal Claude Code, wait (bounded) for it to exit, SIGKILL it
- * if it did not, wait (bounded) for the launcher's post-exit cleanup, which
- * runs from Claude Code's `exit` event, then `onCleanup`, the settings file, and
- * `process.exit`. Exiting before Claude Code does leaves it running against a
- * proxy port that is gone and a settings file that is deleted.
+ * The handlers signal Claude Code, wait (bounded) for it to exit, and SIGKILL it
+ * if it did not. They do not exit: Claude Code's `exit` event lets the launcher
+ * finish its cleanup and return `128 + signum`, and the caller's teardown then
+ * runs and exits with that code. Exiting before Claude Code does leaves it
+ * running against a proxy port that is gone and a settings file that is deleted.
+ *
+ * A deadline armed at the signal ends a shutdown that stalls anywhere on that
+ * path: `onCleanup`, the settings file, and `process.exit(128 + signum)`.
  *
  * Only the first signal shuts down; a later one during the shutdown is logged
  * and changes nothing.
  */
-function setupSignalHandlers(
+export function setupSignalHandlers(
   proc: ChildProcess,
   tempSettingsPath: string,
   quiet: boolean,
@@ -2830,63 +2848,66 @@ function setupSignalHandlers(
     : ["SIGINT", "SIGTERM", "SIGHUP"];
 
   let shuttingDown: NodeJS.Signals | null = null;
-  let markLauncherCleanupDone: () => void = () => {};
-  const launcherCleanup = new Promise<void>((resolve) => {
-    markLauncherCleanupDone = resolve;
-  });
+  let claudeCodeStopped: Promise<void> = Promise.resolve();
+  let settingsFileRemoved = false;
+  const removeSettingsFile = (): void => {
+    if (settingsFileRemoved) return;
+    settingsFileRemoved = true;
+    try {
+      unlinkSync(tempSettingsPath);
+    } catch {
+      // Ignore cleanup errors
+    }
+  };
 
-  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
-    const startedAt = Date.now();
+  const stopClaudeCode = async (): Promise<void> => {
     try {
       proc.kill("SIGTERM");
-      if (!(await waitForExit(proc, SIGNAL_CHILD_EXIT_GRACE_MS))) {
-        debugLog(
-          `[claudish] Claude Code did not exit within ${SIGNAL_CHILD_EXIT_GRACE_MS} ms of SIGTERM; sending SIGKILL`
-        );
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          // Already gone.
-        }
-        await waitForExit(proc, SIGNAL_CHILD_KILL_WAIT_MS);
+      if (await waitForExit(proc, SIGNAL_CHILD_EXIT_GRACE_MS)) return;
+      debugLog(
+        `[claudish] Claude Code did not exit within ${SIGNAL_CHILD_EXIT_GRACE_MS} ms of SIGTERM; sending SIGKILL`
+      );
+      const killStepStartedAt = Date.now();
+      // A SIGKILL leaves Claude Code no chance to stop its MCP servers and Bash tool
+      // children, and it shares claudish's process group, so they are found by pid.
+      const descendants = proc.pid
+        ? await snapshotDescendants(proc.pid, SIGNAL_DESCENDANT_READ_MS)
+        : [];
+      // It exited on its own while the table was read: nothing needs killing.
+      if (proc.exitCode !== null || proc.signalCode !== null) return;
+      // Claude Code first, so that it cannot start another child in between.
+      let killed = 0;
+      try {
+        proc.kill("SIGKILL");
+      } finally {
+        killed = await killStillLiveMembers(descendants, SIGNAL_DESCENDANT_READ_MS);
       }
-      // The launcher's cleanup starts at Claude Code's `exit` event; give it
-      // what is left of the budget. If Claude Code never exited, that cleanup
-      // never starts and the wait simply runs out.
-      await Promise.race([
-        launcherCleanup,
-        delay(SIGNAL_SHUTDOWN_BUDGET_MS - (Date.now() - startedAt)),
-      ]);
+      debugLog(
+        `[claudish] Sent SIGKILL to Claude Code and ${killed} of ${descendants.length} descendants`
+      );
+      await waitForExit(proc, SIGNAL_CHILD_KILL_WAIT_MS - (Date.now() - killStepStartedAt));
     } catch (err) {
       debugLog(`[claudish] Signal shutdown error: ${err}`);
-    } finally {
-      // Run optional cleanup before exit
-      if (onCleanup) {
-        try {
-          onCleanup();
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
-      // Clean up temp settings file
+    }
+  };
+
+  /**
+   * Ends a shutdown that did not finish inside its budget. Unref'd, so it never
+   * holds a finished process open; `process.exitCode` carries the code for an
+   * event loop that drains before it fires.
+   */
+  const armDeadline = (code: number): void => {
+    const deadline = setTimeout(() => {
+      debugLog(`[claudish] Signal shutdown passed ${SIGNAL_SHUTDOWN_BUDGET_MS} ms; exiting`);
       try {
-        unlinkSync(tempSettingsPath);
+        onCleanup?.();
       } catch {
         // Ignore cleanup errors
       }
-      // `128 + signum`, the shell convention for "died from signal N" — NOT 0.
-      //
-      // This one line manufactured the 900-second silent success. A supervisor
-      // (the MCP session manager's timeout, `team`'s deadline, a CI runner)
-      // would SIGTERM the process group, this handler would run its cleanup and
-      // exit 0, and every layer above read that 0 as "the run succeeded". The
-      // session manager then let the exit UPGRADE a state its timeout handler
-      // had already recorded as failed, and wrote `status: "completed"` to
-      // meta.json for a session that had been killed. A graceful shutdown is
-      // still a shutdown: the process did not finish its work, and its exit
-      // code is the only place that can say so.
-      process.exit(signalExitCode(signal));
-    }
+      removeSettingsFile();
+      process.exit(code);
+    }, SIGNAL_SHUTDOWN_BUDGET_MS);
+    deadline.unref?.();
   };
 
   // stats-buffer's SIGINT and SIGTERM handlers run before any added later and exit
@@ -2901,6 +2922,21 @@ function setupSignalHandlers(
         return;
       }
       shuttingDown = signal;
+      // `128 + signum`, the shell convention for "died from signal N" — NOT 0.
+      //
+      // Exiting 0 here manufactured the 900-second silent success. A supervisor
+      // (the MCP session manager's timeout, `team`'s deadline, a CI runner)
+      // would SIGTERM the process group, claudish would run its cleanup and
+      // exit 0, and every layer above read that 0 as "the run succeeded". The
+      // session manager then let the exit UPGRADE a state its timeout handler
+      // had already recorded as failed, and wrote `status: "completed"` to
+      // meta.json for a session that had been killed. A graceful shutdown is
+      // still a shutdown: the process did not finish its work, and its exit
+      // code is the only place that can say so.
+      const code = signalExitCode(signal);
+      signalShutdownCode = code;
+      process.exitCode = code;
+      armDeadline(code);
       // Lift the firewall first — the child is going away, and the shutdown
       // notice below must reach the user rather than the diag log.
       releaseTerminalIsolation();
@@ -2909,14 +2945,11 @@ function setupSignalHandlers(
         // on stdout, which may carry Claude Code's machine-readable output.
         console.error(`\n[claudish] Received ${signal}, shutting down...`);
       }
-      void shutdown(signal);
+      claudeCodeStopped = stopClaudeCode();
     });
   }
 
-  return {
-    started: () => shuttingDown !== null,
-    launcherCleanupDone: () => markLauncherCleanupDone(),
-  };
+  return { removeSettingsFile, claudeCodeStopped: () => claudeCodeStopped };
 }
 
 /**

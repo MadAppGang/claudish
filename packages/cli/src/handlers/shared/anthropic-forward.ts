@@ -15,6 +15,7 @@
  */
 
 import type { Context } from "hono";
+import { addSigningSecrets, credentialValuesFromRequest } from "./call-context.js";
 
 /**
  * Every name Claude Code sends on `POST /v1/messages`, matched exactly
@@ -172,4 +173,63 @@ export function bodyToForward(c: Context, payload: unknown): string {
   const serialized = JSON.stringify(payload);
   const inbound = c.get(INBOUND_BODY_KEY) as InboundBody | undefined;
   return inbound !== undefined && inbound.canonical === serialized ? inbound.raw : serialized;
+}
+
+/**
+ * A Claude login's bearer, recognised by its token class: `sk-ant-oat`, a
+ * version number and a hyphen (`sk-ant-oat01-…`), the class of the bearer
+ * Claude Code sends for its keychain login. The `oauth-2025-04-20` beta cannot
+ * say this: any client can declare it on any bearer. Everything else in
+ * `authorization` is not matched: a gateway token, even one that begins with
+ * the same letters, or an api key helper's value, which Claude Code sends in
+ * both headers.
+ */
+const CLAUDE_LOGIN_BEARER = /^Bearer\s+sk-ant-oat\d+-/i;
+
+/** One request to send to Anthropic, ready for `fetch`. */
+export interface ForwardRequest {
+  /** Keyed by lowercase name, so an override replaces a header rather than adding a spelling. */
+  headers: Record<string, string>;
+  url: string;
+  body: string;
+}
+
+/**
+ * The request to send to `endpoint` (an absolute URL with no query) for the
+ * inbound request on `c`: Claude Code's own headers, its credentials as they
+ * arrived, its allowed query parameters and its body bytes while `payload` is
+ * unchanged.
+ *
+ * The credential pair is read from the headers AS THEY ARRIVED: a `Connection`
+ * header naming one must not make an authenticated request look
+ * unauthenticated, or the fallback would swap the user's own login for a
+ * metered key. `fallbackKey` is called only when the request arrived with
+ * neither `authorization` nor `x-api-key`. An `x-api-key` beside a Claude login
+ * bearer is not sent: the login signs the request alone.
+ *
+ * Every credential value the request sends, in its headers or its URL, is
+ * registered on the request's signing lease before this returns.
+ */
+export async function buildForwardRequest(
+  c: Context,
+  payload: unknown,
+  endpoint: string,
+  fallbackKey: () => Promise<string | undefined>
+): Promise<ForwardRequest> {
+  const headers: Record<string, string> = {
+    ...requestHeadersToForward(c.req.raw.headers),
+    ...inboundAuthHeaders(c.req.raw.headers),
+  };
+  if (headers.authorization && CLAUDE_LOGIN_BEARER.test(headers.authorization)) {
+    delete headers["x-api-key"];
+  }
+  headers["content-type"] = "application/json";
+  if (!headers["anthropic-version"]) headers["anthropic-version"] = "2023-06-01";
+  if (!headers.authorization && !headers["x-api-key"]) {
+    const key = await fallbackKey();
+    if (key) headers["x-api-key"] = key;
+  }
+  const url = `${endpoint}${forwardedSearch(c)}`;
+  addSigningSecrets(c, credentialValuesFromRequest(headers, url));
+  return { headers, url, body: bodyToForward(c, payload) };
 }

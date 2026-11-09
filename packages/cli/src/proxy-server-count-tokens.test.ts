@@ -8,9 +8,8 @@ import { redactSecrets } from "./redact.js";
 import type { ProxyServer } from "./types.js";
 
 /**
- * PROVISIONAL: this repo has no captured native count_tokens success/error
- * bodies yet. Replace the constructed upstream responses below with a real
- * api.anthropic.com count_tokens capture from Phase V.
+ * The upstream responses below are constructed, not captured from
+ * api.anthropic.com: they fix the shape this code reads, not the vendor's.
  */
 interface CapturedUpstream {
   url: string;
@@ -64,9 +63,29 @@ async function countTokensAgainst(
     if (mutation) {
       const originalPath = join(import.meta.dir, "proxy-server.ts");
       const original = readFileSync(originalPath, "utf8");
+      const absoluteImports = (source: string, fromPath: string) =>
+        source.replace(/(from\s+|import\s*\(\s*)(["'])([^"']+)\2/g, (all, lead, quote, spec) => {
+          try {
+            return lead + quote + Bun.resolveSync(spec, dirname(fromPath)) + quote;
+          } catch {
+            return all;
+          } // Leave prose mentioning 'from "..."' unchanged.
+        });
+      let forwardCopy = "";
+      if (mutation === "no-lease") {
+        const forwardPath = join(import.meta.dir, "handlers/shared/anthropic-forward.ts");
+        const forward = readFileSync(forwardPath, "utf8");
+        const noLease = forward.replace(
+          "addSigningSecrets(c, credentialValuesFromRequest(headers, url));",
+          ""
+        );
+        expect(noLease, "mutation reached the forward helper").not.toBe(forward);
+        forwardCopy = join(tempDir, "anthropic-forward.ts");
+        writeFileSync(forwardCopy, absoluteImports(noLease, forwardPath));
+      }
       const mutated =
         mutation === "no-lease"
-          ? original.replace("addSigningSecrets(c, credentialValuesFromRequest(headers));", "")
+          ? original.replace('"./handlers/shared/anthropic-forward.js"', `"${forwardCopy}"`)
           : mutation === "raw-error"
             ? original.replace("JSON.parse(res.ok ? raw : redactForClient(raw))", "JSON.parse(raw)")
             : mutation === "redact-success"
@@ -77,16 +96,7 @@ async function countTokensAgainst(
               : original.replace("res.status === 401 || res.status === 403", "false");
       expect(mutated, "mutation reached count_tokens seam").not.toBe(original);
       const copy = join(tempDir, "proxy-server.ts");
-      writeFileSync(
-        copy,
-        mutated.replace(/(from\s+|import\s*\(\s*)(["'])([^"']+)\2/g, (all, lead, quote, spec) => {
-          try {
-            return lead + quote + Bun.resolveSync(spec, dirname(originalPath)) + quote;
-          } catch {
-            return all;
-          } // Leave prose mentioning 'from "..."' unchanged.
-        })
-      );
+      writeFileSync(copy, absoluteImports(mutated, originalPath));
       create = (await import(copy)).createProxyServer;
     }
     proxy = await create(0, undefined, undefined, false, constructionKey, undefined, {
@@ -175,7 +185,7 @@ describe("POST /v1/messages/count_tokens native forwarding", () => {
   for (const status of [400, 429]) {
     for (const source of ["bearer", "x-api-key", "construction-key"] as const) {
       test(`M1 ${status} redacts the ${source} from the upstream error and active signing sinks`, async () => {
-        // implementation-log.md § v14 merge fixes / M1. Scripted echo, not a vendor capture.
+        // A scripted echo, not a vendor capture.
         const secret = "COUNT_TOKEN_CREDENTIAL_" + source + "_ONLY_THIS_REQUEST";
         let sink = "";
         const result = await countTokensAgainst(

@@ -50,7 +50,7 @@ const RAW =
   '{ "model" : "claude-opus-4-8", "max_tokens":16, "messages": [ {"role": "user", "content": "hi"} ] }';
 
 const CLAUDE_CODE_HEADERS: Record<string, string> = {
-  authorization: "Bearer sk-ant-oat-forward-test",
+  authorization: "Bearer sk-ant-oat01-forward-test",
   "anthropic-version": "2023-06-01",
   "anthropic-beta": "claude-code-20250219,advisor-tool-2026-03-01",
   "x-app": "cli",
@@ -119,7 +119,7 @@ describe("NativeHandler forwards the request as Claude Code sent it", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toEndWith("/v1/messages?beta=true");
     expect(calls[0]!.headers).toEqual({
-      authorization: "Bearer sk-ant-oat-forward-test",
+      authorization: "Bearer sk-ant-oat01-forward-test",
       "anthropic-version": "2023-06-01",
       "anthropic-beta": "claude-code-20250219,advisor-tool-2026-03-01",
       "x-app": "cli",
@@ -145,7 +145,7 @@ describe("NativeHandler forwards the request as Claude Code sent it", () => {
     expect(sent).not.toContain("x-gateway-token");
     expect(JSON.stringify(calls[0]!.headers)).not.toContain("gw-token-forward-test");
     expect(calls[0]!.headers["x-claude-code-session-id"]).toBe("session-forward-1");
-    expect(calls[0]!.headers.authorization).toBe("Bearer sk-ant-oat-forward-test");
+    expect(calls[0]!.headers.authorization).toBe("Bearer sk-ant-oat01-forward-test");
   });
 
   it("never carries an unknown header that only looks like one of Claude Code's own", async () => {
@@ -168,13 +168,13 @@ describe("NativeHandler forwards the request as Claude Code sent it", () => {
   it("sends the inbound bearer as received when Connection names it, and no fallback key", async () => {
     const calls = captureFetch();
     const { c, payload } = inboundContext({
-      authorization: "Bearer sk-ant-oat-connection-named",
+      authorization: "Bearer sk-ant-oat01-connection-named",
       connection: "authorization",
       "anthropic-version": "2023-06-01",
     });
     await new NativeHandler("sk-metered-fallback").handle(c, payload);
 
-    expect(calls[0]!.headers.authorization).toBe("Bearer sk-ant-oat-connection-named");
+    expect(calls[0]!.headers.authorization).toBe("Bearer sk-ant-oat01-connection-named");
     expect(calls[0]!.headers).not.toHaveProperty("x-api-key");
     expect(JSON.stringify(calls[0]!.headers)).not.toContain("sk-metered-fallback");
   });
