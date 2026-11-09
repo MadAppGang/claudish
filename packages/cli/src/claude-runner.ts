@@ -33,6 +33,7 @@ import {
   sessionFlagsOf,
 } from "./hooks/session/interactive-launch.js";
 import { type NoSurfaceSession, startNoSurfaceSession } from "./hooks/session/no-surface.js";
+import { applyHostRouting, scrubInheritedHostRouting } from "./host-routing-env.js";
 import {
   STRIPPED_CHILD_VARS,
   magmuxPaneCapability,
@@ -279,6 +280,18 @@ export function scrubInheritedClaudishPlaceholders(env: NodeJS.ProcessEnv): { re
     }
   }
   return { removed };
+}
+
+/**
+ * A launch on the user's own login removes the host-routing pair a parent proxy-auth
+ * session set: under the host marker Claude Code ignores the stored claude.ai login.
+ * A pair the user set (no claudish marker) stays.
+ */
+function removeInheritedHostRouting(env: NodeJS.ProcessEnv): void {
+  const { removed } = scrubInheritedHostRouting(env);
+  if (removed.length > 0) {
+    debugLog(`[claude-runner] Removed inherited host-routing variables: ${removed.join(", ")}`);
+  }
 }
 
 /**
@@ -2216,6 +2229,7 @@ export async function runClaudeWithProxy(
     // Delete any placeholder keys from environment
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
+    removeInheritedHostRouting(env);
     // Don't override ANTHROPIC_MODEL - let Claude Code use its default
     // (unless user explicitly specified a model)
     if (modelId) {
@@ -2262,6 +2276,7 @@ export async function runClaudeWithProxy(
           `[claude-runner] Removed inherited claudish placeholder credentials: ${scrubbed.removed.join(", ")}`
         );
       }
+      removeInheritedHostRouting(env);
       if (shouldHideIncidentalAnthropicKey(config, env)) {
         delete env.ANTHROPIC_API_KEY;
         hidAnthropicApiKey = true;
@@ -2288,6 +2303,19 @@ export async function runClaudeWithProxy(
       // key alone still redirected to the payment page, hence the token). A pane
       // child gets the token only; see applyProxyPlaceholderAuth.
       applyProxyPlaceholderAuth(env);
+      // claudish owns this session's provider and credential, which is what Claude
+      // Code's host marker says: an `env` block in the user's settings, which
+      // otherwise overwrites the environment given here, then sets neither the
+      // base URL nor a credential for it (https://code.claude.com/docs/en/env-vars).
+      // The trust flag tells Claude Code its base URL is Anthropic's own API, and
+      // here it is a provider claudish routes to, so the flag is cleared: the
+      // marker drops it from a settings file, but not from the environment this
+      // process inherited, as a claudish started from a shell inside a trusted
+      // session inherits it. ai-docs/architecture/settings-env.md has the
+      // measurements.
+      // The marker set beside them lets a later launch on the user's login remove
+      // them (scrubInheritedHostRouting).
+      applyHostRouting(env);
 
       // Drive Claude Code's NATIVE auto-compaction to fire before a backend whose
       // real context window is smaller than the model's advertised spec rejects

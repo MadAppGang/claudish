@@ -104,4 +104,23 @@ describe("claudeCodePrintEnv", () => {
     expect(child).toEqual({ PATH: parent.PATH, HOME: parent.HOME, FOO: "bar" });
     expect(parent.CLAUDISH_PANE_CHILD).toBe("1");
   });
+
+  test("drops the host-routing pair a routed session set, with its marker", () => {
+    const parent = Object.freeze({
+      CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "1",
+      _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "",
+      CLAUDISH_SET_HOST_ROUTING_VARS: "1",
+      FOO: "bar",
+    });
+    expect(claudeCodePrintEnv(parent)).toEqual({ FOO: "bar" });
+  });
+
+  test("keeps a host-routing pair the user set, with no claudish marker", () => {
+    const parent = Object.freeze({
+      CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "1",
+      _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "",
+      FOO: "bar",
+    });
+    expect(claudeCodePrintEnv(parent)).toEqual(parent);
+  });
 });
