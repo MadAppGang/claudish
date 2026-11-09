@@ -71,6 +71,29 @@ describe("decideCodexSpeed", () => {
     expect(implicit.note).toContain(text);
   });
 
+  test("an upstream tier id that is not a plain short id never reaches the note or refusal", () => {
+    const secret = "sk-".concat("a".repeat(61));
+    const odd = {
+      slug: "m",
+      serviceTiers: [
+        { id: secret, name: "Turbo" },
+        { id: "flex", name: "Flex" },
+      ],
+    };
+    const refused = decideCodexSpeed({ value: "fast", explicit: true }, odd);
+    expect(refused.refusal).toBeDefined();
+    expect(refused.refusal).not.toContain(secret);
+    expect(refused.note).not.toContain(secret);
+    expect(refused.refusal).toContain("flex");
+
+    const matched = decideCodexSpeed(
+      { value: "fast", explicit: false },
+      { slug: "m", serviceTiers: [{ id: secret, name: "Fast" }] }
+    );
+    expect(matched.tier).toBe(secret);
+    expect(matched.note).not.toContain(secret);
+  });
+
   test("api-key arm: the reason is that no subscription account signed", () => {
     const explicit = decideCodexSpeed({ value: "fast", explicit: true }, "unsigned");
     expect(explicit.refusal).toContain("no subscription account signed the request");
@@ -192,6 +215,26 @@ describe("step 5s on cx@ with catalog speed unknown", () => {
     expect(refused.status).toBe(400);
     expect(await refused.text()).toContain('speed \\"fast\\" is not offered');
     expect(calls).toHaveLength(1);
+  });
+
+  test("#fast refusal body never carries an upstream tier id shaped like a secret", async () => {
+    const secret = "sk-".concat("b".repeat(61));
+    const oddTiers = {
+      models: modelsBody.models.map((m: any) => ({
+        ...m,
+        service_tiers: [{ id: secret, name: "Turbo" }],
+      })),
+    };
+    const calls = upstream("some other failure", oddTiers);
+    const h = handler("gpt-6.1-sol");
+    const refused = await wireMarkerContext.run({ spec: "cx@gpt-6.1-sol", speed: "fast" }, () =>
+      send(h)
+    );
+    expect(refused.status).toBe(400);
+    const body = await refused.text();
+    expect(body).toContain("is not offered");
+    expect(body).not.toContain(secret);
+    expect(calls).toHaveLength(0);
   });
 
   test("a catalog answer wins: speed rejected is never overlaid", async () => {

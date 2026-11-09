@@ -28,6 +28,27 @@ export interface CodexSpeedOutcome {
 }
 
 /**
+ * A tier id is upstream text. It is named in a log line or a refusal only when
+ * it has the shape of a short identifier; anything else (a long opaque value
+ * could be a credential echoed back) is never printed. It may still be sent:
+ * the request goes back to the host that listed it.
+ */
+const PRINTABLE_TIER_ID = /^[A-Za-z0-9_-]{1,32}$/;
+
+function printableTierId(id: string): string {
+  return PRINTABLE_TIER_ID.test(id) ? `"${id}"` : "(unprintable id)";
+}
+
+/** The offered tiers for a refusal: printable ids, and a count of the rest. */
+function describeOffered(tiers: CodexServiceTier[] | undefined): string {
+  const ids = (tiers ?? []).map((t) => t.id);
+  const printable = ids.filter((id) => PRINTABLE_TIER_ID.test(id));
+  const hidden = ids.length - printable.length;
+  const parts = hidden > 0 ? [...printable, `${hidden} unprintable id(s)`] : printable;
+  return parts.join(", ") || "none";
+}
+
+/**
  * The tier for `speed` among the account's `service_tiers`, matched by id or
  * by name. claudish's `fast` (Claude Code's `/fast`, `#fast`) is the tier the
  * account's dynamic models catalog itself names "Fast".
@@ -62,12 +83,11 @@ export function decideCodexSpeed(
   if (tier) {
     return {
       tier: tier.id,
-      note: `speed ${speed.value}: ${CODEX_SERVICE_TIER_POINTER} = "${tier.id}" (from the account's dynamic models catalog)`,
+      note: `speed ${speed.value}: ${CODEX_SERVICE_TIER_POINTER} = ${printableTierId(tier.id)} (from the account's dynamic models catalog)`,
     };
   }
-  const offered = modelInfo?.serviceTiers?.map((t) => t.id).join(", ");
   const message = modelInfo
-    ? `speed "${speed.value}" is not offered on this connection (offered: ${offered || "none"})`
+    ? `speed "${speed.value}" is not offered on this connection (offered: ${describeOffered(modelInfo.serviceTiers)})`
     : `speed "${speed.value}" is not available on this connection (the account's dynamic models catalog did not answer; retry)`;
   return speed.explicit ? { note: message, refusal: message } : { note: message };
 }

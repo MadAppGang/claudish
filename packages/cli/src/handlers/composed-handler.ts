@@ -2103,7 +2103,7 @@ export class ComposedHandler implements ModelHandler {
         return c.json(
           wrapAnthropicError(
             400,
-            `claudish: ${outcome.refusal} (${where})`,
+            redactForClient(`claudish: ${outcome.refusal} (${where})`),
             "invalid_request_error"
           ),
           400 as any
