@@ -77,8 +77,8 @@ describe.skipIf(process.platform === "win32")("claudish sent SIGTERM on its own"
   test("stops Claude Code, removes its settings file, and exits 143", async () => {
     const run = runOver(
       [
-        'echo "$$" > "$TMPDIR/claude.pid"',
         "trap 'echo TERM >> \"$TMPDIR/claude.log\"; exit 0' TERM",
+        'echo "$$" > "$TMPDIR/claude.pid"',
         "while :; do sleep 1; done",
       ].join("\n")
     );
@@ -126,8 +126,8 @@ function killStandIn(pidFile: string): void {
 describe.skipIf(process.platform === "win32")("claudish's shutdown on a signal", () => {
   // A stand-in whose TERM trap takes a second to finish, then marks that it did.
   const slowTrap = [
-    'echo "$$" > "$TMPDIR/claude.pid"',
     'trap \'echo TERM >> "$TMPDIR/claude.log"; sleep 1; touch "$TMPDIR/claude.finished"; exit 0\' TERM',
+    'echo "$$" > "$TMPDIR/claude.pid"',
     "while :; do sleep 1; done",
   ].join("\n");
 
@@ -152,7 +152,7 @@ describe.skipIf(process.platform === "win32")("claudish's shutdown on a signal",
   test("SIGKILLs a Claude Code that ignores SIGTERM after the bound, and still exits 143", async () => {
     const { SIGNAL_CHILD_EXIT_GRACE_MS } = await import("./claude-runner.js");
     const run = runOver(
-      ['echo "$$" > "$TMPDIR/claude.pid"', "trap '' TERM", "while :; do sleep 1; done"].join("\n")
+      ["trap '' TERM", 'echo "$$" > "$TMPDIR/claude.pid"', "while :; do sleep 1; done"].join("\n")
     );
     const pidFile = join(run.dir, "claude.pid");
     await waitFor("Claude Code to start", () => existsSync(pidFile));

@@ -1661,6 +1661,20 @@ export function getProviderByName(name: string): ProviderDefinition | undefined 
 }
 
 /**
+ * Whether `provider` keeps a stored list: it declares `modelDiscovery`, its tier
+ * is `subscription` or `dynamic-subscription`, and it is not local. Pure.
+ */
+export function isPersistedListProvider(provider: string): boolean {
+  const def = getProviderByName(provider);
+  return (
+    def !== undefined &&
+    def.modelDiscovery !== undefined &&
+    !def.isLocal &&
+    (def.tier === "subscription" || def.tier === "dynamic-subscription")
+  );
+}
+
+/**
  * Get API key info for a provider.
  * Replaces API_KEY_INFO in provider-resolver.ts.
  */

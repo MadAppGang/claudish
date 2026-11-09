@@ -15,6 +15,10 @@
 
 import { log } from "../logger.js";
 import { getAgyClientVersion } from "./antigravity-client-version.js";
+import {
+  currentAntigravityTokenLineage,
+  lineageForAntigravityAccessToken,
+} from "./antigravity-token.js";
 import { credentialHttpError } from "./credentials/credential-error.js";
 
 /**
@@ -156,6 +160,13 @@ export function buildAntigravityUserAgent(): string {
 let cachedAgProjectId: string | null = null;
 let cachedAgTierId: string | null = null;
 let cachedAgTierName: string | null = null;
+/**
+ * The token lineage (`currentAntigravityTokenLineage`) the project, tier and
+ * dynamic models catalog are cached under. All three are answers about one
+ * account, so a different lineage (another account signed in to the shared
+ * store) drops them together.
+ */
+let cachedAgLineage: string | null = null;
 
 /** Clear the cached Antigravity project/tier (e.g. on account switch). */
 export function resetAntigravityUserCache(): void {
@@ -165,6 +176,35 @@ export function resetAntigravityUserCache(): void {
   agServedCache = null;
   agServedCacheAt = 0;
   agServedCacheVersion = null;
+  cachedAgLineage = null;
+}
+
+/** Drop every per-account cache when the current token lineage is not the one it was cached under. */
+function syncAccountCaches(): void {
+  const lineage = currentAntigravityTokenLineage();
+  if (lineage === cachedAgLineage) return;
+  if (cachedAgProjectId || agServedCache) {
+    log("[Antigravity] Token lineage changed; dropping the cached project, tier and models.");
+  }
+  resetAntigravityUserCache();
+  cachedAgLineage = lineage;
+}
+
+/** The lineage `accessToken` belongs to; the current one for a token not seen recently. */
+function lineageOfToken(accessToken: string): string | null {
+  return lineageForAntigravityAccessToken(accessToken) ?? currentAntigravityTokenLineage();
+}
+
+/**
+ * Whether an answer fetched under `lineage` may be cached: true only when the
+ * token lineage is still that one, after the caches are aligned with it. An
+ * answer that arrives after another account signed in goes to its caller and
+ * is never cached.
+ */
+function mayPublishFor(lineage: string | null): boolean {
+  if (currentAntigravityTokenLineage() !== lineage) return false;
+  syncAccountCaches();
+  return true;
 }
 
 /** loadCodeAssist with the Antigravity identity (minimal `{ ideType }` metadata). */
@@ -198,12 +238,14 @@ async function callLoadCodeAssistAntigravity(accessToken: string): Promise<LoadC
  * loadCodeAssist auto-provisions `cloudaicompanionProject` inline for the
  * individuals/Ultra tier, so there is NO onboardUser poll and NO
  * GOOGLE_CLOUD_PROJECT requirement. `paidTier.id` wins over `currentTier`.
- * Cached for the life of the process (env/account do not change mid-run).
+ * Cached until the token lineage changes (another account signed in).
  */
 export async function setupAntigravityUser(
   accessToken: string
 ): Promise<{ projectId: string; tierId: string }> {
-  if (cachedAgProjectId && cachedAgTierId) {
+  syncAccountCaches();
+  const lineage = lineageOfToken(accessToken);
+  if (lineage === cachedAgLineage && cachedAgProjectId && cachedAgTierId) {
     return { projectId: cachedAgProjectId, tierId: cachedAgTierId };
   }
 
@@ -224,15 +266,20 @@ export async function setupAntigravityUser(
     );
   }
 
-  cachedAgProjectId = projectId;
-  cachedAgTierId = resolvedTier;
-  cachedAgTierName = loadRes.paidTier?.name || null;
+  if (mayPublishFor(lineage)) {
+    cachedAgProjectId = projectId;
+    cachedAgTierId = resolvedTier;
+    cachedAgTierName = loadRes.paidTier?.name || null;
+  } else {
+    log("[Antigravity] Token lineage changed during setup; the result is not cached.");
+  }
   log(`[Antigravity] User set up, project: ${projectId}, tier: ${resolvedTier}`);
   return { projectId, tierId: resolvedTier };
 }
 
 /** Short display name for the Antigravity tier (status line). */
 export function getAntigravityTierDisplayName(): string {
+  syncAccountCaches();
   if (!cachedAgTierName && !cachedAgTierId) return "Antigravity";
   const id = cachedAgTierId || "";
   if (id.includes("ultra")) return "Antigravity Ultra";
@@ -243,6 +290,7 @@ export function getAntigravityTierDisplayName(): string {
 
 /** Full tier name for the quota header — falls back to the short name. */
 export function getAntigravityTierFullName(): string {
+  syncAccountCaches();
   return cachedAgTierName || getAntigravityTierDisplayName();
 }
 
@@ -543,6 +591,12 @@ export async function getServedAntigravityModels(
   projectId: string,
   opts?: { force?: boolean }
 ): Promise<AntigravityServedModels> {
+  syncAccountCaches();
+  // The account this call asks for. Only that account's list may answer it,
+  // and its answer is cached only if that is still the signed-in account when
+  // it arrives.
+  const lineage = lineageOfToken(accessToken);
+  const ownList = lineage === cachedAgLineage;
   const now = Date.now();
   const version = antigravityClientVersion();
   if (agServedCache && agServedCacheVersion !== version) {
@@ -556,9 +610,10 @@ export async function getServedAntigravityModels(
     agServedCache = null;
     agServedCacheAt = 0;
   }
-  if (!opts?.force && agServedCache && now - agServedCacheAt < SERVED_MODELS_TTL_MS) {
+  if (!opts?.force && ownList && agServedCache && now - agServedCacheAt < SERVED_MODELS_TTL_MS) {
     return agServedCache;
   }
+  const prior = ownList ? agServedCache : null;
   try {
     const raw = await fetchAntigravityAvailableModelsRaw(accessToken, projectId);
     if (raw.kind === "unreachable") {
@@ -627,7 +682,7 @@ export async function getServedAntigravityModels(
         }
 
         const agentModelIds = flattenAgentModelSorts(data.agentModelSorts);
-        agServedCache = {
+        const served: AntigravityServedModels = {
           servedIds,
           defaultId,
           meta,
@@ -635,17 +690,22 @@ export async function getServedAntigravityModels(
           deprecatedReplacements,
           ...(agentModelIds ? { agentModelIds } : {}),
         };
+        if (!mayPublishFor(lineage)) {
+          log("[Antigravity] Token lineage changed during discovery; the result is not cached.");
+          return served;
+        }
+        agServedCache = served;
         agServedCacheAt = now;
         // The version the request actually presented, read in the same
         // synchronous step as its User-Agent (it equals `version` above).
         agServedCacheVersion = raw.clientVersion;
-        return agServedCache;
+        return served;
       }
     }
   } catch (err) {
     log(`[Antigravity] fetchAvailableModels error: ${err}`);
   }
-  if (agServedCache) return agServedCache;
+  if (prior) return prior;
   // The degraded path knows NOTHING about exclusions — it never saw a response.
   // Returning empty collections would assert "there are none", which is a claim
   // we cannot make; the fields are optional and consumers default them.
@@ -653,8 +713,8 @@ export async function getServedAntigravityModels(
 }
 
 /**
- * The `servedIds` and `defaultId` the last fetch cached under this process's client version,
- * without fetching; null when there is none. For the routing availability
+ * The `servedIds` and `defaultId` the last fetch cached under this process's client version
+ * and the current token lineage, without fetching; null when there is none. For the routing availability
  * check (`providerServesModel`), which runs right after discovery fetched this
  * set and must resolve against the same `servedIds` and `defaultId` the
  * transport resolves against (`resolveAntigravityServedModel`). The discovery
@@ -663,6 +723,7 @@ export async function getServedAntigravityModels(
  */
 export function peekServedAntigravityModels(): AntigravityServedModels | null {
   if (!agServedCache || agServedCacheVersion !== antigravityClientVersion()) return null;
+  if (cachedAgLineage !== currentAntigravityTokenLineage()) return null;
   return agServedCache;
 }
 

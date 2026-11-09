@@ -46,6 +46,7 @@
  * Discovery failing must degrade the picker, never break a turn.
  */
 
+import { createHash } from "node:crypto";
 import { log } from "../../logger.js";
 import { readDevinApiKey, readDevinServerUrl } from "./devin-credentials.js";
 import { DEVIN_CLI_VERSION } from "./devin-request.js";
@@ -426,6 +427,12 @@ export function decodeAllowedUids(body: Uint8Array): string[] {
 
 let modelsCatalogCache: DevinModelConfig[] | null = null;
 let modelsCatalogCacheAt = 0;
+/** SHA-256 of the API key the cached list was fetched with; the key itself is not kept. */
+let modelsCatalogCacheKeyHash: string | null = null;
+
+function hashApiKey(apiKey: string): string {
+  return createHash("sha256").update(apiKey).digest("hex");
+}
 
 /**
  * The models this subscription can actually run: configs ∩ allowed uids, minus
@@ -434,7 +441,10 @@ let modelsCatalogCacheAt = 0;
  * That last filter drops `adaptive` (ctx 0), a server-side router pseudo-model
  * that is not a routable uid — it must never reach the picker or a probe.
  *
- * Cached for {@link MODELS_CATALOG_TTL_MS}. Never throws: a stale cache beats an empty
+ * Cached for {@link MODELS_CATALOG_TTL_MS}, bound to the API key it was fetched
+ * with: a different key (another login written to the credential file) always
+ * fetches, and a failed fetch for it returns `[]` (unknown), never the list of
+ * the previous key. Never throws: a stale cache of the same key beats an empty
  * one, and an empty one beats a failed turn.
  */
 export async function getServedDevinModels(opts?: {
@@ -444,18 +454,20 @@ export async function getServedDevinModels(opts?: {
   apiKey?: string;
 }): Promise<DevinModelConfig[]> {
   const now = Date.now();
-  if (!opts?.force && modelsCatalogCache && now - modelsCatalogCacheAt < MODELS_CATALOG_TTL_MS)
-    return modelsCatalogCache;
-
   const apiKey = opts?.apiKey ?? readDevinApiKey();
-  if (!apiKey) return modelsCatalogCache ?? [];
+  if (!apiKey) return [];
+
+  const keyHash = hashApiKey(apiKey);
+  const sameKeyCache = modelsCatalogCacheKeyHash === keyHash ? modelsCatalogCache : null;
+  if (!opts?.force && sameKeyCache && now - modelsCatalogCacheAt < MODELS_CATALOG_TTL_MS)
+    return sameKeyCache;
 
   try {
     const [configs, allowed] = await Promise.all([
       fetchDevinModelConfigs(apiKey),
       fetchDevinAllowedUids(apiKey),
     ]);
-    if (configs.length === 0) return modelsCatalogCache ?? [];
+    if (configs.length === 0) return sameKeyCache ?? [];
 
     const entitled = new Set(allowed);
     const served = configs.filter(
@@ -467,10 +479,11 @@ export async function getServedDevinModels(opts?: {
 
     modelsCatalogCache = served;
     modelsCatalogCacheAt = now;
+    modelsCatalogCacheKeyHash = keyHash;
     return served;
   } catch (err) {
     log(`[Devin] served-model discovery error: ${err}`);
-    return modelsCatalogCache ?? [];
+    return sameKeyCache ?? [];
   }
 }
 
@@ -478,4 +491,5 @@ export async function getServedDevinModels(opts?: {
 export function _resetDevinModelCache(): void {
   modelsCatalogCache = null;
   modelsCatalogCacheAt = 0;
+  modelsCatalogCacheKeyHash = null;
 }

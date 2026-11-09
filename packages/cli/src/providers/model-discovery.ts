@@ -26,6 +26,7 @@
  *   the picker, the launcher, and the status line all read the same result.
  */
 
+import { createHash } from "node:crypto";
 import { credentials } from "../auth/credentials/authority.js";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
@@ -33,7 +34,7 @@ import { resolveRouteProfile } from "./connection-resolver.js";
 import { isOptInWireId } from "./content-use.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
-import { getProviderByName } from "./provider-definitions.js";
+import { getProviderByName, isPersistedListProvider } from "./provider-definitions.js";
 import type { ReportedCapability } from "./transport/probe-discovery.js";
 
 /** A model as reported by the provider's own live endpoint. */
@@ -243,7 +244,25 @@ export function getModelDiscoveryFetcher(format: string): ModelDiscoveryFetcher 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5000;
 
-const _cache = new Map<string, { models: DiscoveredModel[]; expiresAt: number }>();
+/**
+ * The last served list per claudish provider. `account` is the fingerprint of
+ * the account identity it was fetched for (undefined when the provider keeps no
+ * per-account list or the credential exposes none); a list fetched for another
+ * account is not an answer.
+ */
+const _cache = new Map<
+  string,
+  { models: DiscoveredModel[]; expiresAt: number; account: string | undefined }
+>();
+
+/**
+ * SHA-256 of the identity of the account `providerName`'s credential would
+ * sign with now, or undefined when it exposes none. Only the hash is kept.
+ */
+async function accountFingerprint(providerName: string): Promise<string | undefined> {
+  const identity = await credentials.accountIdentity(providerName, { allowOpPrompt: false });
+  return identity ? createHash("sha256").update(identity).digest("hex") : undefined;
+}
 
 /**
  * Why a discovery attempt produced nothing.
@@ -424,19 +443,32 @@ export function describeDiscoveryFailure(failure: DiscoveryFailure): string {
 /** The launch's cold-account refresh in flight per provider (see `coldRefresh`). */
 const coldRefreshes = new Map<string, Promise<DiscoveredModel[]>>();
 
+/** How many times each provider's discovery was invalidated by name. */
+const invalidationsByProvider = new Map<string, number>();
+/** How many times every provider's discovery was invalidated at once. */
+let invalidationsOfAll = 0;
+
+/** Changes whenever `providerName`'s discovery is invalidated, by name or with all others. */
+function invalidationCount(providerName: string): number {
+  return invalidationsOfAll + (invalidationsByProvider.get(providerName) ?? 0);
+}
+
 /**
  * Drop cached discovery (after a credential change / TUI hydrate-on-add). The
- * memory half of `forgetAccountModelsLists`, which a login or logout runs.
+ * memory half of `forgetAccountModelsLists`, which a login or logout runs; a
+ * credential invalidation runs it too.
  */
 export function invalidateModelDiscovery(provider?: string): void {
   if (provider) {
     _cache.delete(provider);
     _failures.delete(provider);
     coldRefreshes.delete(provider);
+    invalidationsByProvider.set(provider, (invalidationsByProvider.get(provider) ?? 0) + 1);
   } else {
     _cache.clear();
     _failures.clear();
     coldRefreshes.clear();
+    invalidationsOfAll++;
   }
 }
 
@@ -667,7 +699,6 @@ async function discoverViaFetcher(
   }
   _failures.delete(providerName);
   log(`[model-discovery:${providerName}] discovered ${models.length} models`);
-  _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
   return { kind: "served", models };
 }
 
@@ -746,11 +777,40 @@ export function peekDiscoveredModels(providerName: string): DiscoveredModel[] | 
   return cached && cached.expiresAt > Date.now() ? cached.models : undefined;
 }
 
-/** The discovery itself: the full list the provider returned, cached unsplit. Never rejects. */
+/**
+ * The full list the provider returned, cached unsplit. Only a provider with
+ * stored per-account lists reads its account here: for those, a list cached for
+ * another account is a miss, and a list whose account changed while it was
+ * fetched goes to its caller uncached. Every other provider's list lives until
+ * it expires or its credential is invalidated, and a list whose provider was
+ * invalidated while it was fetched goes to its caller uncached. Never rejects.
+ */
 async function discoverEveryServedModel(providerName: string): Promise<ModelsCatalogOutcome> {
+  if (!getProviderByName(providerName)?.modelDiscovery) {
+    return { kind: "unsupported", reason: "no-descriptor" };
+  }
+  const invalidationsBefore = invalidationCount(providerName);
+  const perAccount = isPersistedListProvider(providerName);
+  const accountBefore = perAccount ? await accountFingerprint(providerName) : undefined;
   const cached = _cache.get(providerName);
-  if (cached && cached.expiresAt > Date.now()) return { kind: "served", models: cached.models };
+  if (cached && cached.expiresAt > Date.now() && cached.account === accountBefore) {
+    return { kind: "served", models: cached.models };
+  }
+  const outcome = await fetchServedModels(providerName);
+  if (outcome.kind !== "served") return outcome;
+  const accountAfter = perAccount ? await accountFingerprint(providerName) : undefined;
+  if (accountBefore && accountAfter && accountBefore !== accountAfter) return outcome;
+  if (invalidationCount(providerName) !== invalidationsBefore) return outcome;
+  _cache.set(providerName, {
+    models: outcome.models,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+    account: accountAfter ?? accountBefore,
+  });
+  return outcome;
+}
 
+/** One discovery request, uncached. Never rejects. */
+async function fetchServedModels(providerName: string): Promise<ModelsCatalogOutcome> {
   const def = getProviderByName(providerName);
   const descriptor = def?.modelDiscovery;
   if (!def || !descriptor) return { kind: "unsupported", reason: "no-descriptor" };
@@ -923,7 +983,6 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
     `[model-discovery:${providerName}] discovered ${models.length} models from ${endpoint}: ` +
       models.map((m) => `${m.id}(${m.contextWindow ?? "?"})`).join(", ")
   );
-  _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
   return { kind: "served", models };
 }
 

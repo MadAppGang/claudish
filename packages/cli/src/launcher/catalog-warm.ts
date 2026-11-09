@@ -250,7 +250,7 @@ function reportFetchFailure(
     const ageMs = now.getTime() - Date.parse(cache!.lastUpdated);
     const ageStr = humanizeAge(ageMs);
     process.stderr.write(
-      `WARNING: Catalog stale (${ageStr}). Using cached version. Run \`claudish --models-refresh\` to retry.\n`
+      `WARNING: The ${MODEL_CATALOG_NAME} is stale (${ageStr}). Using cached version. Run \`claudish --models-refresh\` to retry.\n`
     );
     return "warned";
   }
@@ -259,7 +259,7 @@ function reportFetchFailure(
     const ageMs = now.getTime() - Date.parse(cache!.lastUpdated);
     const ageStr = humanizeAge(ageMs);
     process.stderr.write(
-      `WARNING: Catalog refresh failed (cache age ${ageStr}). Using cached version.\n`
+      `WARNING: Could not refresh the ${MODEL_CATALOG_NAME} (cache age ${ageStr}). Using cached version.\n`
     );
     return "warned";
   }
