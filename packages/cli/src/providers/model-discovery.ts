@@ -443,6 +443,16 @@ export function describeDiscoveryFailure(failure: DiscoveryFailure): string {
 /** The launch's cold-account refresh in flight per provider (see `coldRefresh`). */
 const coldRefreshes = new Map<string, Promise<DiscoveredModel[]>>();
 
+/** How many times each provider's discovery was invalidated by name. */
+const invalidationsByProvider = new Map<string, number>();
+/** How many times every provider's discovery was invalidated at once. */
+let invalidationsOfAll = 0;
+
+/** Changes whenever `providerName`'s discovery is invalidated, by name or with all others. */
+function invalidationCount(providerName: string): number {
+  return invalidationsOfAll + (invalidationsByProvider.get(providerName) ?? 0);
+}
+
 /**
  * Drop cached discovery (after a credential change / TUI hydrate-on-add). The
  * memory half of `forgetAccountModelsLists`, which a login or logout runs; a
@@ -453,10 +463,12 @@ export function invalidateModelDiscovery(provider?: string): void {
     _cache.delete(provider);
     _failures.delete(provider);
     coldRefreshes.delete(provider);
+    invalidationsByProvider.set(provider, (invalidationsByProvider.get(provider) ?? 0) + 1);
   } else {
     _cache.clear();
     _failures.clear();
     coldRefreshes.clear();
+    invalidationsOfAll++;
   }
 }
 
@@ -770,12 +782,14 @@ export function peekDiscoveredModels(providerName: string): DiscoveredModel[] | 
  * stored per-account lists reads its account here: for those, a list cached for
  * another account is a miss, and a list whose account changed while it was
  * fetched goes to its caller uncached. Every other provider's list lives until
- * it expires or its credential is invalidated. Never rejects.
+ * it expires or its credential is invalidated, and a list whose provider was
+ * invalidated while it was fetched goes to its caller uncached. Never rejects.
  */
 async function discoverEveryServedModel(providerName: string): Promise<ModelsCatalogOutcome> {
   if (!getProviderByName(providerName)?.modelDiscovery) {
     return { kind: "unsupported", reason: "no-descriptor" };
   }
+  const invalidationsBefore = invalidationCount(providerName);
   const perAccount = isPersistedListProvider(providerName);
   const accountBefore = perAccount ? await accountFingerprint(providerName) : undefined;
   const cached = _cache.get(providerName);
@@ -786,6 +800,7 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
   if (outcome.kind !== "served") return outcome;
   const accountAfter = perAccount ? await accountFingerprint(providerName) : undefined;
   if (accountBefore && accountAfter && accountBefore !== accountAfter) return outcome;
+  if (invalidationCount(providerName) !== invalidationsBefore) return outcome;
   _cache.set(providerName, {
     models: outcome.models,
     expiresAt: Date.now() + CACHE_TTL_MS,
