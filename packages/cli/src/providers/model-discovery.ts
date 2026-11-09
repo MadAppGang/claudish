@@ -176,6 +176,32 @@ export interface ModelDiscoveryDescriptor {
     | "ollama-tags"
     | "antigravity"
     | "muse-code-models";
+  /**
+   * `openai-models-list` only: a custom endpoint's `modelPrefix`. Its handler
+   * sends `modelPrefix + <name after endpoint@>`, so a listed id is offered
+   * without the prefix, and the spec built from it reaches the same wire id.
+   * A listed id that does not start with the prefix is dropped: no name typed
+   * after `endpoint@` can send it.
+   */
+  idPrefix?: string;
+}
+
+/** The listed models as names to type after `endpoint@`; see `idPrefix`. */
+function withoutIdPrefix(
+  providerName: string,
+  models: DiscoveredModel[],
+  prefix: string | undefined
+): DiscoveredModel[] {
+  if (!prefix) return models;
+  const kept = models
+    .filter((m) => m.id.startsWith(prefix) && m.id.length > prefix.length)
+    .map((m) => ({ ...m, id: m.id.slice(prefix.length) }));
+  if (kept.length < models.length) {
+    log(
+      `[model-discovery:${providerName}] dropped ${models.length - kept.length} id(s) without modelPrefix "${prefix}"`
+    );
+  }
+  return kept;
 }
 
 /**
@@ -878,7 +904,7 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
       detail: incomplete,
     });
   }
-  const models = parsed.models;
+  const models = withoutIdPrefix(providerName, parsed.models, descriptor.idPrefix);
 
   _failures.delete(providerName);
   log(

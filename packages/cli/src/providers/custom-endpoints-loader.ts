@@ -288,11 +288,16 @@ export const CUSTOM_ENDPOINT_TIER: RouteTier = "gateway";
  */
 function openaiModelsDiscovery(
   wireFormat: string,
-  apiPath: string
+  apiPath: string,
+  modelPrefix: string | undefined
 ): ModelDiscoveryDescriptor | undefined {
   const chat = "/chat/completions";
   if (wireFormat !== "openai" || !apiPath.endsWith(chat)) return undefined;
-  return { path: `${apiPath.slice(0, -chat.length)}/models`, format: "openai-models-list" };
+  return {
+    path: `${apiPath.slice(0, -chat.length)}/models`,
+    format: "openai-models-list",
+    ...(modelPrefix && { idPrefix: modelPrefix }),
+  };
 }
 
 /**
@@ -337,7 +342,7 @@ function buildProviderDefinition(
       // and then demanded a key anyway. Bearer stays the DEFAULT (that is what
       // every simple endpoint got before), but a declared scheme now survives.
       authScheme: ep.authScheme ?? "bearer",
-      modelDiscovery: openaiModelsDiscovery(ep.format, "/chat/completions"),
+      modelDiscovery: openaiModelsDiscovery(ep.format, "/chat/completions", ep.modelPrefix),
     };
   }
 
@@ -362,7 +367,7 @@ function buildProviderDefinition(
     description: ovr?.description ?? `Custom endpoint: ${ep.displayName}`,
     headers: ep.headers,
     authScheme: ep.authScheme ?? "bearer",
-    modelDiscovery: openaiModelsDiscovery(ep.transport, apiPath),
+    modelDiscovery: openaiModelsDiscovery(ep.transport, apiPath, ep.modelPrefix),
   };
 }
 
