@@ -105,7 +105,13 @@ type ReadOptions = StoreOptions & { allowOpPrompt?: boolean };
  */
 type AccountBinding = { accountKey: string; persist: boolean };
 
-/** How long a derived identity is reused before the credential is asked again. */
+/**
+ * How long a derived account key is reused for unchanged identity material.
+ * The credential itself is asked on every read: each provider's
+ * `accountIdentity` follows its own source (a file by stat, a Keychain item
+ * through a short burst memo), so a login made by another process is seen
+ * at once. The memo only spares the disk secret and the HMAC.
+ */
 const IDENTITY_MEMO_MS = 30_000;
 
 /** Secret for the memory-only binding; never written anywhere. */
@@ -113,7 +119,7 @@ const processSecret = randomBytes(32);
 
 const identityMemo = new Map<
   string,
-  { keyPath: string; binding: AccountBinding | null; checkedAt: number }
+  { keyPath: string; fingerprint: string; binding: AccountBinding | null; checkedAt: number }
 >();
 /** Lists this process fetched, bound to the account key they were fetched under. */
 const liveMemory = new Map<
@@ -153,8 +159,10 @@ function bindingFrom(
 }
 
 /**
- * The current account's binding. `fresh` skips the memo, which a refresh needs
- * on both sides of its fetch: the credential may change while the fetch runs.
+ * The current account's binding. The identity material is read every time; the
+ * derived key is reused only for the same material (compared by a process-local
+ * fingerprint, never kept). `fresh` skips the memo, which a refresh needs on
+ * both sides of its fetch: the credential may change while the fetch runs.
  */
 async function accountBinding(
   provider: string,
@@ -163,10 +171,6 @@ async function accountBinding(
 ): Promise<AccountBinding | null> {
   const keyPath = dynamicCatalogKeyPath(opts);
   const now = Date.now();
-  const memo = identityMemo.get(provider);
-  if (!fresh && memo && memo.keyPath === keyPath && now - memo.checkedAt < IDENTITY_MEMO_MS) {
-    return memo.binding;
-  }
   let material: string | undefined;
   try {
     material = await credentials.accountIdentity(provider, {
@@ -175,8 +179,23 @@ async function accountBinding(
   } catch {
     material = undefined;
   }
+  const fingerprint = material
+    ? createHmac("sha256", processSecret)
+        .update(`claudish-dmc-fingerprint\n${provider}\n${material}`)
+        .digest("hex")
+    : "";
+  const memo = identityMemo.get(provider);
+  if (
+    !fresh &&
+    memo &&
+    memo.keyPath === keyPath &&
+    memo.fingerprint === fingerprint &&
+    now - memo.checkedAt < IDENTITY_MEMO_MS
+  ) {
+    return memo.binding;
+  }
   const binding = bindingFrom(provider, material, opts);
-  identityMemo.set(provider, { keyPath, binding, checkedAt: now });
+  identityMemo.set(provider, { keyPath, fingerprint, binding, checkedAt: now });
   return binding;
 }
 
