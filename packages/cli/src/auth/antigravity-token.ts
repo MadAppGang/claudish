@@ -777,7 +777,7 @@ export async function forceRefreshAntigravityToken(
 
   // Drop the single-flight promise AND the read memo first, so nothing below can
   // be handed back the very token the backend just rejected.
-  _resetAntigravityTokenState();
+  resetObservedTokenState();
 
   const rec = readObservedRecord(deps);
   if (!rec) {
@@ -812,7 +812,7 @@ export async function forceRefreshAntigravityToken(
   if (!refreshed || refreshed.token.access_token === original.access_token) {
     writeSharedAntigravityToken(original, deps);
   }
-  _resetAntigravityTokenState();
+  resetObservedTokenState();
   // The same distinctions as the expiry path: a slow or failing `agy` (mid
   // self-update, most often) says nothing about the session, so it is
   // retryable; only a CLI that ran and still produced nothing, or is missing,
@@ -848,9 +848,18 @@ export async function forceRefreshAntigravityToken(
  * guarantee now that the default read is memoized at all.
  */
 export function _resetAntigravityTokenState(): void {
+  resetObservedTokenState();
+  lineageByAccessToken.clear();
+}
+
+/**
+ * Everything `_resetAntigravityTokenState` clears except the lineage of tokens
+ * already issued: a request still in flight with one of them goes on proving
+ * which account it belongs to across a forced refresh.
+ */
+function resetObservedTokenState(): void {
   inFlight = null;
   cachedHasToken = null;
   observedLineage = null;
-  lineageByAccessToken.clear();
   invalidateReadStoreMemo();
 }
