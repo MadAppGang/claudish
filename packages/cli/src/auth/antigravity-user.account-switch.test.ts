@@ -29,7 +29,9 @@ import {
   antigravityTokenLineageMaterial,
   currentAntigravityTokenLineage,
   deleteSharedAntigravityToken,
+  forceRefreshAntigravityToken,
   getValidAntigravityAccessToken,
+  lineageForAntigravityAccessToken,
   readSharedAntigravityToken,
 } from "./antigravity-token.js";
 import {
@@ -191,7 +193,10 @@ async function storeAccountBModels(): Promise<void> {
   expect(list?.mayDeny).toBe(true);
 }
 
-function holdAccountAResponse(action: string): { started: Promise<void>; release: () => void } {
+function holdAccountResponse(
+  action: string,
+  account = "a"
+): { started: Promise<void>; release: () => void } {
   const fetchResponse = globalThis.fetch;
   let announce!: () => void;
   let release!: () => void;
@@ -206,7 +211,7 @@ function holdAccountAResponse(action: string): { started: Promise<void>; release
     const response = await fetchResponse(input, init);
     if (
       !held &&
-      new Headers(init?.headers).get("Authorization") === "Bearer offline-access-a" &&
+      new Headers(init?.headers).get("Authorization") === `Bearer offline-access-${account}` &&
       new URL(String(input)).pathname.endsWith(`:${action}`)
     ) {
       held = true;
@@ -331,7 +336,7 @@ describe("Antigravity dynamic models catalog account switching", () => {
   test("a late served-model response from the old account cannot replace the new account's cache", async () => {
     const accessA = await getValidAntigravityAccessToken(deps);
     const setupA = await setupAntigravityUser(accessA);
-    const deferred = holdAccountAResponse("fetchAvailableModels");
+    const deferred = holdAccountResponse("fetchAvailableModels");
     const pendingA = getServedAntigravityModels(accessA, setupA.projectId);
     try {
       await deferred.started;
@@ -358,7 +363,7 @@ describe("Antigravity dynamic models catalog account switching", () => {
 
   test("a late setup response from the old account cannot replace the new account's project or tier", async () => {
     const accessA = await getValidAntigravityAccessToken(deps);
-    const deferred = holdAccountAResponse("loadCodeAssist");
+    const deferred = holdAccountResponse("loadCodeAssist");
     const pendingA = setupAntigravityUser(accessA);
     try {
       await deferred.started;
@@ -394,7 +399,7 @@ describe("Antigravity dynamic models catalog account switching", () => {
 
   test("a delayed setup followed by discovery cannot cache the old token's models for the new account", async () => {
     const accessA = await getValidAntigravityAccessToken(deps);
-    const deferred = holdAccountAResponse("loadCodeAssist");
+    const deferred = holdAccountResponse("loadCodeAssist");
     const pendingA = (async () => {
       const setupA = await setupAntigravityUser(accessA);
       return getServedAntigravityModels(accessA, setupA.projectId);
@@ -439,6 +444,79 @@ describe("Antigravity dynamic models catalog account switching", () => {
       deferred.release();
       await pendingA;
     }
+  });
+
+  test("a forced refresh preserves in-flight token ownership through setup and discovery", async () => {
+    const accessA = await getValidAntigravityAccessToken(deps);
+    const deferredA = holdAccountResponse("loadCodeAssist", "a");
+    const deferredB = holdAccountResponse("loadCodeAssist", "b");
+    const pendingA = (async () => {
+      const setupA = await setupAntigravityUser(accessA);
+      return getServedAntigravityModels(accessA, setupA.projectId);
+    })();
+    const pending: Promise<unknown>[] = [pendingA];
+    try {
+      await deferredA.started;
+      store = encodedAccount("b", true, { access_token: "offline-access-b-rejected" });
+      let refreshes = 0;
+      deps.writeStore = (value) => {
+        store = value;
+      };
+      deps.runAgyRefresh = () => {
+        refreshes++;
+        store = encodedAccount("b");
+        return { kind: "ran" };
+      };
+      const accessB = await forceRefreshAntigravityToken(deps);
+      expect(accessB).toBe("offline-access-b");
+      const pendingB = (async () => {
+        const setupB = await setupAntigravityUser(accessB);
+        return getServedAntigravityModels(accessB, setupB.projectId);
+      })();
+      pending.push(pendingB);
+      await deferredB.started;
+
+      deferredA.release();
+      expect((await pendingA).servedIds).toEqual(["m-a"]);
+      const peekAfterA = peekServedAntigravityModels();
+      deferredB.release();
+      const modelsB = await pendingB;
+
+      expect({
+        refreshes,
+        servedIds: modelsB.servedIds,
+        defaultId: modelsB.defaultId,
+        peekContainsA: peekAfterA?.servedIds.includes("m-a") ?? false,
+        peek: peekServedAntigravityModels()?.servedIds,
+        discoveryAccounts: calls
+          .filter((call) => call.action === "fetchAvailableModels")
+          .map((call) => call.account),
+      }).toEqual({
+        refreshes: 1,
+        servedIds: ["m-b"],
+        defaultId: "m-b",
+        peekContainsA: false,
+        peek: ["m-b"],
+        discoveryAccounts: ["a", "b"],
+      });
+    } finally {
+      deferredA.release();
+      deferredB.release();
+      await Promise.allSettled(pending);
+    }
+  });
+
+  test("shared-token logout clears the ownership of a previously issued access token", async () => {
+    const accessToken = await getValidAntigravityAccessToken(deps);
+    expect(lineageForAntigravityAccessToken(accessToken)).not.toBeNull();
+
+    deleteSharedAntigravityToken(deps);
+
+    expect({
+      store,
+      lineage: lineageForAntigravityAccessToken(accessToken),
+      currentLineage: currentAntigravityTokenLineage(),
+    }).toEqual({ store: null, lineage: null, currentLineage: null });
   });
 
   test("an empty shared-store read during token resolution clears the previous account's cached models", async () => {

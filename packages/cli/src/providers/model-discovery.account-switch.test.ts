@@ -114,6 +114,89 @@ describe("model discovery account cache boundaries", () => {
     }
   });
 
+  for (const invalidateDuringFetch of [true, false]) {
+    const name = invalidateDuringFetch
+      ? "a late discovery response cannot repopulate an invalidated API-key cache"
+      : "an uninterrupted API-key discovery is cached without refetching";
+    test(name, async () => {
+      const def = getProviderByName("mistralai")!;
+      credentials.register(
+        new ApiKeyCredentialProvider({
+          catalogName: def.name,
+          envVar: def.apiKeyEnvVar,
+          aliases: def.apiKeyAliases,
+        })
+      );
+      process.env.MISTRAL_API_KEY = "offline-account-a";
+      expect(isPersistedListProvider("mistralai")).toBe(false);
+      let announce!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        announce = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const requests: string[] = [];
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const authorization = new Headers(init?.headers).get("Authorization");
+        if (
+          authorization !== "Bearer offline-account-a" &&
+          authorization !== "Bearer offline-account-b"
+        ) {
+          throw new Error("Unexpected discovery credential");
+        }
+        requests.push(authorization);
+        if (authorization === "Bearer offline-account-a") {
+          announce();
+          await gate;
+        }
+        return Response.json({
+          data: [{ id: authorization === "Bearer offline-account-a" ? "m-a" : "m-b" }],
+        });
+      }) as typeof fetch;
+
+      const pending = discoverProviderModelsCatalog("mistralai");
+      try {
+        await started;
+        if (invalidateDuringFetch) {
+          process.env.MISTRAL_API_KEY = "offline-account-b";
+          credentials.invalidate("mistralai");
+          expect(peekDiscoveredModels("mistralai")).toBeUndefined();
+        }
+        release();
+        const first = await pending;
+        expect(first.kind === "served" ? first.models.map((model) => model.id) : []).toEqual([
+          "m-a",
+        ]);
+        const heldAfterFirst = peekDiscoveredModels("mistralai")?.map((model) => model.id);
+
+        const next = await discoverProviderModelsCatalog("mistralai");
+
+        expect({
+          heldAfterFirst,
+          requests,
+          nextIds: next.kind === "served" ? next.models.map((model) => model.id) : [],
+        }).toEqual(
+          invalidateDuringFetch
+            ? {
+                heldAfterFirst: undefined,
+                requests: ["Bearer offline-account-a", "Bearer offline-account-b"],
+                nextIds: ["m-b"],
+              }
+            : {
+                heldAfterFirst: ["m-a"],
+                requests: ["Bearer offline-account-a"],
+                nextIds: ["m-a"],
+              }
+        );
+      } finally {
+        release();
+        await pending;
+      }
+    });
+  }
+
   test.each(["openrouter", "openai"])(
     "%s discovery without a descriptor never reads the account identity",
     async (provider) => {
