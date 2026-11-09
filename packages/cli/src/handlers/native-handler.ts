@@ -12,6 +12,11 @@ import {
   stripAdvisorBeta,
 } from "./native-handler-advisor.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
+import {
+  bodyToForward,
+  forwardedSearch,
+  requestHeadersToForward,
+} from "./shared/anthropic-forward.js";
 import { addSigningSecrets, credentialValuesFromRequest } from "./shared/call-context.js";
 import {
   type UpstreamReaderSlot,
@@ -122,7 +127,9 @@ export class NativeHandler implements ModelHandler {
     // on the view, never mutated in place. With no conversion there is one tool
     // representation, so stage B applies to it alone.
     const payload = await this.applyRequestHooks(c, incoming);
-    const originalHeaders = c.req.header();
+    // Every header Claude Code sent, less the per-connection ones, keyed by
+    // lowercase name; this is what goes upstream.
+    const headers = requestHeadersToForward(c.req.raw.headers);
     const target = payload.model;
 
     // Drop thinking blocks Anthropic cannot have signed, before anything else
@@ -155,31 +162,24 @@ export class NativeHandler implements ModelHandler {
 
     log("\n=== [NATIVE] Claude Code → Anthropic API Request ===");
     log(
-      `[Native] x-api-key: ${originalHeaders["x-api-key"] ? maskCredential(originalHeaders["x-api-key"]) : "(not set)"}`
+      `[Native] x-api-key: ${headers["x-api-key"] ? maskCredential(headers["x-api-key"]) : "(not set)"}`
     );
     log(
-      `[Native] authorization: ${originalHeaders.authorization ? maskCredential(originalHeaders.authorization) : "(not set)"}`
+      `[Native] authorization: ${headers.authorization ? maskCredential(headers.authorization) : "(not set)"}`
     );
     log(`Request body (Model: ${target}):`);
     log("=== End Request ===\n");
 
-    // Build headers - pass through auth headers exactly as received
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "anthropic-version": originalHeaders["anthropic-version"] || "2023-06-01",
-    };
+    // Auth goes on exactly as received. The keys are lowercase, so these
+    // overrides replace a header rather than add a second spelling.
+    headers["content-type"] = "application/json";
+    if (!headers["anthropic-version"]) headers["anthropic-version"] = "2023-06-01";
 
-    // Pass through auth headers as-is. If the incoming request carries NO auth
-    // (e.g. the --probe client, which doesn't replicate Claude Code's injected
-    // key) fall back to the api key this handler was constructed with, so the
-    // native passthrough can still authenticate against api.anthropic.com.
-    if (originalHeaders.authorization) {
-      headers.authorization = originalHeaders.authorization;
-    }
-    if (originalHeaders["x-api-key"]) {
-      headers["x-api-key"] = originalHeaders["x-api-key"];
-    }
-    if (!originalHeaders.authorization && !originalHeaders["x-api-key"]) {
+    // If the incoming request carries NO auth (e.g. the --probe client, which
+    // doesn't replicate Claude Code's injected key) fall back to the api key
+    // this handler was constructed with, so the native passthrough can still
+    // authenticate against api.anthropic.com.
+    if (!headers.authorization && !headers["x-api-key"]) {
       // No inbound auth → fall back to the construction-time key, else resolve
       // ANTHROPIC_API_KEY through the credential authority (env → config → op://),
       // so even the native fallback is sourced from the single layer.
@@ -192,50 +192,54 @@ export class NativeHandler implements ModelHandler {
         headers["x-api-key"] = fallbackKey;
       }
     }
-    if (originalHeaders["anthropic-beta"]) {
-      const incomingBeta = originalHeaders["anthropic-beta"];
-      if (advisorSwapped) {
-        // When we swap the advisor tool we must also strip the matching beta
-        // flag; otherwise Anthropic rejects the request (beta enabled but no
-        // matching server tool declared).
-        const { stripped, changed } = stripAdvisorBeta(incomingBeta);
-        if (changed) {
-          log(
-            `[Native][advisor-swap] stripped advisor-tool beta; before=${incomingBeta} after=${stripped ?? "(empty)"}`
-          );
-          logAdvisorEvent(loadAdvisorSwapConfig(this.advisorModels, this.advisorCollector), {
-            kind: "beta_stripped",
-            before: incomingBeta,
-            after: stripped ?? "",
-          });
-        }
-        if (stripped) headers["anthropic-beta"] = stripped;
-      } else {
-        headers["anthropic-beta"] = incomingBeta;
+    const incomingBeta = headers["anthropic-beta"];
+    if (incomingBeta && advisorSwapped) {
+      // When we swap the advisor tool we must also strip the matching beta
+      // flag; otherwise Anthropic rejects the request (beta enabled but no
+      // matching server tool declared).
+      const { stripped, changed } = stripAdvisorBeta(incomingBeta);
+      if (changed) {
+        log(
+          `[Native][advisor-swap] stripped advisor-tool beta; before=${incomingBeta} after=${stripped ?? "(empty)"}`
+        );
+        logAdvisorEvent(loadAdvisorSwapConfig(this.advisorModels, this.advisorCollector), {
+          kind: "beta_stripped",
+          before: incomingBeta,
+          after: stripped ?? "",
+        });
       }
+      if (stripped) headers["anthropic-beta"] = stripped;
+      else delete headers["anthropic-beta"];
     }
 
-    // Register every credential value this request sends (the inbound Claude
-    // bearer or key passed through, or the fallback key) on the request's
-    // signing lease, for EVERY native request: the lease lives until the body
-    // has been delivered or cancelled (`releaseWhenBodyEnds`), so each log line
-    // and each echoed error below is redacted against them. The advisor
-    // decorator registers the inbound values only on a turn with pending advisor
-    // results; an ordinary native turn had an empty lease.
-    addSigningSecrets(c, credentialValuesFromRequest(headers));
+    // Claude Code's query string (`?beta=true`) goes on with the request.
+    const url = `${this.baseUrl}/v1/messages${forwardedSearch(c)}`;
 
-    // The body is serialized ONCE and reused byte-for-byte.
+    // Register every credential value this request sends (the inbound Claude
+    // bearer or key passed through, the fallback key, or a credential-named
+    // query parameter) on the request's signing lease, for EVERY native
+    // request: the lease lives until the body has been delivered or cancelled
+    // (`releaseWhenBodyEnds`), so each log line and each echoed error below is
+    // redacted against them. The advisor decorator registers the inbound values
+    // only on a turn with pending advisor results; an ordinary native turn had
+    // an empty lease.
+    addSigningSecrets(c, credentialValuesFromRequest(headers, url));
+
+    // The body is decided and serialized ONCE and reused byte-for-byte: the
+    // bytes Claude Code sent while the payload is still what they parse to,
+    // else the payload's new serialization (a hook stage, the advisor
+    // decorator or the thinking strip above changed it).
     //
     // Inline `JSON.stringify(payload)` at the fetch made a second attempt a
     // second serialization, and two stringifies of one object are byte-identical
     // only as long as nothing in the payload pipeline becomes non-idempotent. A
     // retry that differs by a byte is a different request to the prompt cache
     // and a different request to any signature the vendor computes over it.
-    const body = JSON.stringify(payload);
+    const body = bodyToForward(c, payload);
 
     // Execute fetch
     try {
-      const anthropicResponse = await fetch(`${this.baseUrl}/v1/messages`, {
+      const anthropicResponse = await fetch(url, {
         method: "POST",
         headers,
         body,
