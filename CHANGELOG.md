@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.18.4] - 2026-11-09
+
+### Bug Fixes
+
+- stop context-window lookups once a signal has arrived *(runner)* ([`24df73e`](https://github.com/MadAppGang/claudish/commit/24df73e87fab6da3eb92b4310266069d4b98170a))
+- run teardown on a signal before Claude Code is spawned *(runner)* ([`8feac1c`](https://github.com/MadAppGang/claudish/commit/8feac1ce4c6074184325cafd4e8126f9bd452925))
+
+### Documentation
+
+- update CHANGELOG.md for v14.18.3([`d9229b6`](https://github.com/MadAppGang/claudish/commit/d9229b6f27b56ac88a6d332bc3ad5f3c0903080a))
+
 ## [14.18.3] - 2026-11-09
 
 ### Bug Fixes
