@@ -174,11 +174,9 @@ async function storeAccountBModels(): Promise<void> {
   store = encodedAccount("b");
   const binding = deriveAccountKey("antigravity", await credentials.accountIdentity("antigravity"));
   if (!binding.ok) throw new Error(binding.reason);
-  expect(
-    writeStoredModelsList("antigravity", binding.accountKey, [
-      { id: modelIds.b!, inputModalities: ["text"], outputModalities: ["text"] },
-    ])
-  ).toBe(true);
+  expect(writeStoredModelsList("antigravity", binding.accountKey, [{ id: modelIds.b! }])).toBe(
+    true
+  );
   const list = await readAccountModelsList("antigravity");
   expect(list?.models.map((model) => model.id)).toEqual([modelIds.b!]);
   expect(list?.mayDeny).toBe(true);
