@@ -157,5 +157,6 @@ test("G3: opt-in-only Meta connection is unavailable for an implicit plain reque
   expect(resolver.resolveConnection("meta", id, path)).toEqual({
     ok: false,
     reason: "no-connection",
+    detail: "connection-absent", // REQ-102: The model exists but has no implicit plain connection.
   });
 });

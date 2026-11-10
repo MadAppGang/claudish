@@ -1,3 +1,4 @@
+// REQ-101: Test fallbacks carry their source without consulting machine configuration.
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -435,7 +436,11 @@ describe("providerServesModel resolver-backed discovery", () => {
       readiness: provider === "devin" || provider === "openrouter" ? "present" : "absent",
     });
 
-    const plan = await route("swe-1.7", {}, "openrouter");
+    const plan = await route(
+      "swe-1.7",
+      {},
+      { provider: "openrouter", source: "config-file", legacyAutoPromoted: false }
+    );
 
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;

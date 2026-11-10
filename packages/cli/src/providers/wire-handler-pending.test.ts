@@ -157,6 +157,7 @@ async function runScenario(scenario: "immediate" | "pending" | "seam") {
         PATH: process.env.PATH ?? "",
         CLAUDISH_DISABLE_KEYCHAIN: "1",
         CLAUDISH_DISABLE_OP: "1",
+        CLAUDISH_DISABLE_BUNDLED_LIST: "1", // REQ-104: This child owns its environment.
         CLAUDISH_CATALOG_URL: `${server?.url ?? "http://127.0.0.1:1/"}queryModels?catalog=slim`,
         SCENARIO: scenario,
       },

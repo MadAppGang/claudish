@@ -251,12 +251,22 @@ describe("production connection resolution", () => {
       expect(connectionBaseUrl(result.connection, api)).toBe(base);
     });
   }
+  // REQ-102: A missing connection distinguishes model absence from connection absence.
   test.each([
-    ["grok-subscription", "grok-4.7", "no-connection"],
-    ["ollama", "llama3.2", "not-catalog-routed"],
-    ["openai", "no-such-model", "no-connection"],
-  ] as const)("%s@%s reports %s", (provider, model, reason) => {
-    expect(resolveConnection(provider, model, cachePath)).toEqual({ ok: false, reason });
+    ["grok-subscription", "grok-4.7", "connection-absent"],
+    ["openai", "no-such-model", "model-absent"],
+  ] as const)("%s@%s reports no-connection with %s", (provider, model, detail) => {
+    expect(resolveConnection(provider, model, cachePath)).toEqual({
+      ok: false,
+      reason: "no-connection",
+      detail,
+    });
+  });
+  test("ollama@llama3.2 reports not-catalog-routed", () => {
+    expect(resolveConnection("ollama", "llama3.2", cachePath)).toEqual({
+      ok: false,
+      reason: "not-catalog-routed",
+    });
   });
   test("missing cache reports no-catalog", () => {
     expect(resolveConnection("openai", "gpt-6.1-sol", join(dir, "missing.json"))).toEqual({

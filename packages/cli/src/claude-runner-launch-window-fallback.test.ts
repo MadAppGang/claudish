@@ -45,6 +45,7 @@ const PROVIDER = "meta-muse-code";
 const ACCOUNT = "launch-window-test-account";
 const CANONICAL_ID = "muse-wonder-full";
 const WIRE_ID = "muse-wonder-full-1.0";
+// REQ-101: Test fallbacks carry their source without consulting machine configuration.
 const realRoute = routing.route;
 const originalFetcher = discovery.getModelDiscoveryFetcher("muse-code-models");
 const originalFetch = globalThis.fetch;
@@ -145,7 +146,13 @@ beforeEach(() => {
   // Keep real routing, including its background network policy, but force all
   // cloud models catalog reads and routing rules into this test's own data.
   routeSpy = spyOn(routing, "route").mockImplementation((spec, _rules, _default, _cache, opts) =>
-    realRoute(spec, {}, "", cachePath, opts)
+    realRoute(
+      spec,
+      {},
+      { provider: "", source: "config-file", legacyAutoPromoted: false },
+      cachePath,
+      opts
+    )
   );
 });
 

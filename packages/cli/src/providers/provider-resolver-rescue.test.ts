@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   type ProviderResolution,
-  type RouteOracle,
+  type RescueOracle,
   getMissingKeyResolutions,
   rescueRoutableResolutions,
   resolveModelProvider,
@@ -23,19 +23,24 @@ function makeResolution(overrides: Partial<ProviderResolution> = {}): ProviderRe
   };
 }
 
-const routable: RouteOracle = async () => ({
-  kind: "ok",
-  primary: {
-    provider: "openrouter",
-    modelSpec: "openrouter@z-ai/glm-5-turbo",
-    displayName: "OpenRouter",
+// REQ-103: The launch rescue consumes a plan wrapped with optional explanation.
+const routable: RescueOracle = async () => ({
+  plan: {
+    kind: "ok",
+    primary: {
+      provider: "openrouter",
+      modelSpec: "openrouter@z-ai/glm-5-turbo",
+      displayName: "OpenRouter",
+    },
+    fallbacks: [],
   },
-  fallbacks: [],
 });
 
-const notRoutable: RouteOracle = async () => ({
-  kind: "no-route",
-  reason: "No credentialed provider in the routing chain",
+const notRoutable: RescueOracle = async () => ({
+  plan: {
+    kind: "no-route",
+    reason: "No credentialed provider in the routing chain",
+  },
 });
 
 describe("resolveModelProvider", () => {
@@ -72,9 +77,9 @@ describe("rescueRoutableResolutions", () => {
 
   test("never creates a failure for an already-available resolution", async () => {
     let calls = 0;
-    const router: RouteOracle = async () => {
+    const router: RescueOracle = async () => {
       calls++;
-      return { kind: "no-route", reason: "No route" };
+      return { plan: { kind: "no-route", reason: "No route" } };
     };
     const resolution = makeResolution({ apiKeyAvailable: true });
 
@@ -86,9 +91,9 @@ describe("rescueRoutableResolutions", () => {
 
   test("does not consult the router when no key is required", async () => {
     let calls = 0;
-    const router: RouteOracle = async () => {
+    const router: RescueOracle = async () => {
       calls++;
-      return { kind: "no-route", reason: "No route" };
+      return { plan: { kind: "no-route", reason: "No route" } };
     };
     const resolution = makeResolution({
       requiredApiKeyEnvVar: null,
@@ -102,7 +107,7 @@ describe("rescueRoutableResolutions", () => {
   });
 
   test("a throwing router preserves the original verdict", async () => {
-    const router: RouteOracle = async () => {
+    const router: RescueOracle = async () => {
       throw new Error("routing unavailable");
     };
     const resolution = makeResolution();
@@ -114,9 +119,9 @@ describe("rescueRoutableResolutions", () => {
 
   test("asks the router about fullModelId", async () => {
     const specs: string[] = [];
-    const router: RouteOracle = async (spec) => {
+    const router: RescueOracle = async (spec) => {
       specs.push(spec);
-      return { kind: "no-route", reason: "No route" };
+      return { plan: { kind: "no-route", reason: "No route" } };
     };
 
     await rescueRoutableResolutions([makeResolution()], router);
@@ -137,18 +142,20 @@ describe("rescueRoutableResolutions", () => {
       fullModelId: "google@gemini-2.5-pro",
       apiKeyAvailable: true,
     });
-    const router: RouteOracle = async (spec) =>
-      spec === "glm-5-turbo"
-        ? {
-            kind: "ok",
-            primary: {
-              provider: "openrouter",
-              modelSpec: "openrouter@z-ai/glm-5-turbo",
-              displayName: "OpenRouter",
-            },
-            fallbacks: [],
-          }
-        : { kind: "no-route", reason: "No route" };
+    const router: RescueOracle = async (spec) => ({
+      plan:
+        spec === "glm-5-turbo"
+          ? {
+              kind: "ok",
+              primary: {
+                provider: "openrouter",
+                modelSpec: "openrouter@z-ai/glm-5-turbo",
+                displayName: "OpenRouter",
+              },
+              fallbacks: [],
+            }
+          : { kind: "no-route", reason: "No route" },
+    });
 
     await rescueRoutableResolutions([rescuable, unavailable, alreadyAvailable], router);
 
@@ -161,9 +168,9 @@ describe("rescueRoutableResolutions", () => {
 
   test("empty input is a no-op", async () => {
     let calls = 0;
-    const router: RouteOracle = async () => {
+    const router: RescueOracle = async () => {
       calls++;
-      return { kind: "no-route", reason: "No route" };
+      return { plan: { kind: "no-route", reason: "No route" } };
     };
 
     await rescueRoutableResolutions([], router);

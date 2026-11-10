@@ -1,3 +1,4 @@
+// REQ-101: Test fallbacks carry their source without consulting machine configuration.
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as antigravityUser from "../auth/antigravity-user.js";
 import type { AntigravityServedModels } from "../auth/antigravity-user.js";
@@ -115,7 +116,11 @@ describe("T6 G1 — Antigravity serves a family through its tiered variant", () 
       installAccount([TIERED]);
 
       expect(await providerServesModel("antigravity", FAMILY)).toBe("serves");
-      const plan = await route(`ag@${FAMILY}`, {}, "openrouter");
+      const plan = await route(
+        `ag@${FAMILY}`,
+        {},
+        { provider: "openrouter", source: "config-file", legacyAutoPromoted: false }
+      );
 
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") throw new Error(plan.reason);
@@ -146,7 +151,11 @@ describe("T6 G1 — Antigravity serves a family through its tiered variant", () 
         },
       ]);
 
-      const plan = await route(FAMILY, {}, "openrouter");
+      const plan = await route(
+        FAMILY,
+        {},
+        { provider: "openrouter", source: "config-file", legacyAutoPromoted: false }
+      );
 
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") throw new Error(plan.reason);
@@ -287,9 +296,21 @@ describe("T6 G3 — an unserved id cannot keep an Antigravity hop", () => {
       installAccount([TIERED]);
       const rules = { "gemini-*": ["antigravity"] };
       // The positive control proves credentials and this rule can retain ag@.
-      expect((await route(FAMILY, rules, "openrouter")).kind).toBe("ok");
+      expect(
+        (
+          await route(FAMILY, rules, {
+            provider: "openrouter",
+            source: "config-file",
+            legacyAutoPromoted: false,
+          })
+        ).kind
+      ).toBe("ok");
 
-      const plan = await route(MISSING, rules, "openrouter");
+      const plan = await route(MISSING, rules, {
+        provider: "openrouter",
+        source: "config-file",
+        legacyAutoPromoted: false,
+      });
 
       expect(plan.kind).toBe("no-route");
     },
@@ -309,8 +330,24 @@ describe("T6 G4 — availability reuses the cache discovery filled", () => {
       expect(await providerServesModel("antigravity", FAMILY)).toBe("serves");
       expect(await providerServesModel("antigravity", TIERED)).toBe("serves");
       expect(await providerServesModel("antigravity", MISSING)).toBe("not-served");
-      expect((await route(`ag@${FAMILY}`, {}, "openrouter")).kind).toBe("ok");
-      expect((await route(FAMILY, { "gemini-*": ["antigravity"] }, "openrouter")).kind).toBe("ok");
+      expect(
+        (
+          await route(
+            `ag@${FAMILY}`,
+            {},
+            { provider: "openrouter", source: "config-file", legacyAutoPromoted: false }
+          )
+        ).kind
+      ).toBe("ok");
+      expect(
+        (
+          await route(
+            FAMILY,
+            { "gemini-*": ["antigravity"] },
+            { provider: "openrouter", source: "config-file", legacyAutoPromoted: false }
+          )
+        ).kind
+      ).toBe("ok");
 
       expect(discovery).toHaveBeenCalledTimes(1);
       expect(networkFetch).not.toHaveBeenCalled();

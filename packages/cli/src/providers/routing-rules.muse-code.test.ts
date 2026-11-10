@@ -1,3 +1,4 @@
+// REQ-101: Test fallbacks carry their source without consulting machine configuration.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -243,7 +244,7 @@ describe("R1/R3: catalog candidate boundaries", () => {
     expect(routes).toEqual([]);
     const explanation = await routing.explainRoute("gemini-4-argon", {
       rules: { "gemini-4-argon": ["zgo"] },
-      defaultProvider: "openrouter",
+      defaultProvider: { provider: "openrouter", source: "config-file", legacyAutoPromoted: false },
       cachePath,
     });
     expect(explanation.source).toBe("user-rule");
@@ -262,7 +263,11 @@ describe("R1/R3: catalog candidate boundaries", () => {
 
   test("R3: configured Go fallback cannot synthesize an opt-in wire id", () => {
     install(routingFixture("gemini-4-argon"));
-    const result = routing.buildCatalogChain("gemini-4-argon", "opencode-zen-go", cachePath);
+    const result = routing.buildCatalogChain(
+      "gemini-4-argon",
+      { provider: "opencode-zen-go", source: "config-file", legacyAutoPromoted: false },
+      cachePath
+    );
     expect(result.catalogReadable).toBe(true);
     expect(result.routes.length).toBeGreaterThan(0);
     expect(result.routes.some((route) => /-contributor(?:-free)?$/i.test(route.modelSpec))).toBe(
@@ -293,7 +298,11 @@ describe("R1/R3: catalog candidate boundaries", () => {
       fakeAvailability.set("meta", available);
       const explanation = await routing.explainRoute("muse-spark-1.3", {
         rules: {},
-        defaultProvider: "openrouter",
+        defaultProvider: {
+          provider: "openrouter",
+          source: "config-file",
+          legacyAutoPromoted: false,
+        },
         cachePath,
       });
       expect(explanation.outcome).toEqual({ kind: "ok" });
@@ -301,7 +310,12 @@ describe("R1/R3: catalog candidate boundaries", () => {
         available ? "kept" : "no-credential"
       );
       expect(explanation.candidates.some((row) => row.provider === "meta-muse-code")).toBe(false);
-      const plan = await routing.route("muse-spark-1.3", {}, "openrouter", cachePath);
+      const plan = await routing.route(
+        "muse-spark-1.3",
+        {},
+        { provider: "openrouter", source: "config-file", legacyAutoPromoted: false },
+        cachePath
+      );
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") throw new Error(plan.reason);
       expect(plan.primary.provider).toBe(available ? "meta" : "opencode-zen");
@@ -315,7 +329,12 @@ describe("R1/R3: catalog candidate boundaries", () => {
 
   test("R1: explicit muse@ passes credential filtering without a published subscription profile", async () => {
     installWithoutMuseProfile();
-    const plan = await routing.route("muse@muse-spark-1.3", {}, "openrouter", cachePath);
+    const plan = await routing.route(
+      "muse@muse-spark-1.3",
+      {},
+      { provider: "openrouter", source: "config-file", legacyAutoPromoted: false },
+      cachePath
+    );
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") throw new Error(plan.reason);
     expect(plan.primary).toEqual(
@@ -329,7 +348,11 @@ describe("R1/R3: catalog candidate boundaries", () => {
       install(routingFixture(modelId));
       const explanation = await routing.explainRoute(modelId, {
         rules: {},
-        defaultProvider: "opencode-zen-go",
+        defaultProvider: {
+          provider: "opencode-zen-go",
+          source: "config-file",
+          legacyAutoPromoted: false,
+        },
         cachePath,
       });
       expect(explanation.candidates).toContainEqual(
@@ -357,7 +380,7 @@ describe("R1/R3: catalog candidate boundaries", () => {
     const plan = await routing.route(
       `${shortcut}@${modelId}-contributor`,
       {},
-      "openrouter",
+      { provider: "openrouter", source: "config-file", legacyAutoPromoted: false },
       cachePath
     );
     expect(plan.kind).toBe("ok");
@@ -376,7 +399,12 @@ describe("R1/R3: catalog candidate boundaries", () => {
         wireId: "muse-wonder-full-1.0",
       })
     );
-    const plan = await routing.route("muse-wonder-full", {}, undefined, cachePath);
+    const plan = await routing.route(
+      "muse-wonder-full",
+      {},
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+      cachePath
+    );
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") throw new Error(plan.reason);
     expect(plan.primary.provider).toBe("meta-muse-code");
@@ -392,7 +420,12 @@ describe("R1/R3: catalog candidate boundaries", () => {
     installMuseCatalog();
     fakeAvailability.set("meta-muse-code", true);
     fakeAvailability.set("meta", true);
-    const plan = await routing.route("muse-spark-1.3", {}, undefined, cachePath);
+    const plan = await routing.route(
+      "muse-spark-1.3",
+      {},
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+      cachePath
+    );
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") throw new Error(plan.reason);
     const providers = [plan.primary, ...plan.fallbacks].map((hop) => hop.provider);
