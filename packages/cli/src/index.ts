@@ -713,7 +713,9 @@ async function runCli() {
   const { createProxyServer } = await import("./proxy-server.js");
   const { checkForUpdatesInteractive } = await import("./update-prompt.js");
   const { printLogo } = await import("./branding.js");
-  const { warmCatalogIfNeeded } = await import("./launcher/catalog-warm.js");
+  const { settleLaunchCatalogVerdict, warmCatalogIfNeeded } = await import(
+    "./launcher/catalog-warm.js"
+  );
   endImports();
 
   /**
@@ -1049,6 +1051,11 @@ async function runCli() {
       console.error("Try: claudish --models");
       process.exit(1);
     }
+
+    // No catalog file and a bare name to route: learn whether the backend can be
+    // reached before the first routing decision below, which needs the answer.
+    const endCatalogVerdict = beginSpan("startup:catalog-verdict");
+    endCatalogVerdict({ outcome: await settleLaunchCatalogVerdict(cliConfig) });
 
     // === API Key Validation ===
     // This happens AFTER model selection so we know exactly which provider(s) are being used

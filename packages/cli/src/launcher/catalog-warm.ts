@@ -7,18 +7,32 @@
  *   2. Classify the on-disk cache state (`classifyCatalogState`).
  *   3. Refresh only when the user asked for it (`warmCatalogIfNeeded`).
  *
- * A launch never waits for the catalog. The proxy refreshes the cloud models
- * catalog in the background as soon as it starts (`warmCatalog` in
- * `proxy-server.ts`), and a request that needs it waits there, per request.
+ * A launch with a catalog file never waits for the catalog. The proxy refreshes
+ * the cloud models catalog in the background as soon as it starts (`warmCatalog`
+ * in `proxy-server.ts`), and a request that needs it waits there, per request.
  * Only `--models-refresh` fetches here, and a failed fetch is one warning line,
  * never an exit.
+ *
+ * With no catalog file and a bare name to route, the launch first needs to know
+ * whether the backend can be reached at all: `settleLaunchCatalogVerdict`.
  */
 
 import { type DiskCacheV3, readDiskCatalog } from "../providers/all-models-cache.js";
-import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
+import {
+  type RefreshOutcome,
+  refreshCatalogJoined,
+  settleCatalogVerdict,
+} from "../providers/catalog-client.js";
 import { MODEL_CATALOG_NAME } from "../providers/catalog-name.js";
+import {
+  type Reachability,
+  bundledListEnabled,
+  catalogWarmDisabledFor,
+  noteCatalogSkipped,
+} from "../providers/catalog-reachability.js";
 import { parseModelSpec } from "../providers/model-parser.js";
-import { nativeRouteFor } from "../providers/native-route.js";
+import { nativeRouteFor, proxyRouteDecision } from "../providers/native-route.js";
+import { splitWireMarkers } from "../providers/wire-markers.js";
 import type { ClaudishConfig } from "../types.js";
 
 /**
@@ -104,6 +118,79 @@ export function shouldWarmCatalog(
   return true;
 }
 
+/** What `launchRoutesBareName` reads from the launch's configuration. */
+type LaunchModels = Partial<
+  Pick<
+    ClaudishConfig,
+    | "monitor"
+    | "model"
+    | "modelOpus"
+    | "modelSonnet"
+    | "modelHaiku"
+    | "modelSubagent"
+    | "modelChain"
+    | "advisor"
+    | "advisorModels"
+    | "advisorCollector"
+  >
+>;
+
+/** A spec routing would gather a chain for. An unparsable one is the advisor's to refuse. */
+function isBareRoute(spec: string | null | undefined): boolean {
+  if (!spec) return false;
+  try {
+    return proxyRouteDecision(splitWireMarkers(spec).spec).type === "bare";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether this launch will route a bare name, so its first routing decision needs a
+ * catalog. Native names, explicit specs, local specs, `poe:` and vendor-qualified ids
+ * do not: `proxyRouteDecision` is the proxy's own gate. A `+` chain element counts
+ * even though no chain is gathered for it, because its handler reads the same catalog.
+ */
+export function launchRoutesBareName(config: LaunchModels): boolean {
+  const specs: Array<string | null | undefined> = [];
+  if (!config.monitor) {
+    if (typeof config.model === "string") specs.push(config.model);
+    else specs.push(config.modelOpus, config.modelSonnet, config.modelHaiku, config.modelSubagent);
+    specs.push(...(config.modelChain ?? []));
+  }
+  if (config.advisor) specs.push(...(config.advisorModels ?? []), config.advisorCollector);
+  return specs.some(isBareRoute);
+}
+
+function describeVerdict(verdict: Reachability): string {
+  return verdict.state === "unreachable" ? `unreachable/${verdict.reason}` : verdict.state;
+}
+
+/**
+ * Before the launch's first routing decision: with no catalog file and a bare name,
+ * wait until the backend's first answer says whether it can be reached. The routing
+ * callers at launch cannot tell offline from online until then, and a guess either
+ * way is wrong: offline a user with a working subscription is refused, online the
+ * bundled list would replace the real catalog.
+ *
+ * Returns what happened, for the startup trace.
+ */
+export async function settleLaunchCatalogVerdict(
+  config: LaunchModels & Pick<ClaudishConfig, "skipModelsUpdate">
+): Promise<string> {
+  if (!launchRoutesBareName(config)) return "not-needed/no-bare-name";
+  if (readDiskCatalog() !== null) return "not-needed/catalog-file";
+  if (!bundledListEnabled()) return "not-needed/bundled-list-off";
+  if (catalogWarmDisabledFor(process.env.CLAUDISH_DISABLE_CATALOG_WARM)) {
+    return "unreachable/disabled";
+  }
+  if (config.skipModelsUpdate) {
+    noteCatalogSkipped("--models-skip-update");
+    return "unreachable/disabled";
+  }
+  return describeVerdict(await settleCatalogVerdict());
+}
+
 /** True when the model spec starts with a local-only prefix (case-insensitive). */
 function isLocalModel(model: string): boolean {
   const m = model.toLowerCase();
@@ -172,7 +259,8 @@ function humanizeAge(ageMs: number): string {
  *      provider was named.
  *   2. No `--models-refresh` → "ok", silently, whatever the cache state. The
  *      proxy's background refresh keeps the catalog current.
- *   3. `--models-refresh` → one `refreshCatalog` call, no spinner:
+ *   3. `--models-refresh` → one refresh, joining the one the launch already
+ *      started if there is one, no spinner:
  *      - refreshed    → indexed-count line (suppressed by `--quiet`), "ok".
  *      - disabled     → "skipped" (nobody attempted a fetch).
  *      - incompatible / any other failure → one warning line, "warned".
@@ -194,7 +282,7 @@ export async function warmCatalogIfNeeded(
   const cache = readDiskCatalog();
   const state = classifyCatalogState(cache, ttlHours, now);
 
-  const outcome: RefreshOutcome = await refreshCatalog(8000);
+  const outcome: RefreshOutcome = await refreshCatalogJoined(8000);
 
   if (outcome.kind === "refreshed") {
     if (!config.quiet) {

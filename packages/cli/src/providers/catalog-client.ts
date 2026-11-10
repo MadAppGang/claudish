@@ -13,7 +13,9 @@ import {
 } from "./all-models-cache.js";
 import { catalogUrl, plansUrl } from "./catalog-endpoints.js";
 import {
+  type Reachability,
   _resetCatalogReachabilityForTest,
+  awaitCatalogVerdict,
   bundledListEnabled,
   catalogReachability,
   catalogWarmDisabledFor,
@@ -75,6 +77,8 @@ export interface CatalogSnapshot {
 let _memCache: { entries: SlimModelEntry[]; generationId: string } | null = null;
 let _catalogSnapshotForTest: CatalogSnapshot | null | undefined;
 let _warmPromise: Promise<void> | null = null;
+/** The refresh `_warmPromise` waits on, running or finished, with its outcome. */
+let _warmRefresh: Promise<RefreshOutcome> | null = null;
 
 /**
  * The catalog of the default path, disk or bundled. Only a disk catalog is
@@ -148,6 +152,7 @@ export function _resetCatalogClient(): void {
   _catalogSnapshotForTest = undefined;
   _memCache = null;
   _warmPromise = null;
+  _warmRefresh = null;
   _resetCatalogReachabilityForTest();
 }
 
@@ -719,7 +724,9 @@ export async function fetchRouteRegistry(
 
 function startCatalogWarm(): Promise<void> {
   if (_warmPromise) return _warmPromise;
-  const promise = refreshCatalog(8000).then(
+  const refresh = refreshCatalog(8000);
+  _warmRefresh = refresh;
+  const promise = refresh.then(
     (result) => {
       if (result.kind === "refreshed") return;
       // Without this line the reason is lost: callers only see "no snapshot".
@@ -739,6 +746,24 @@ function startCatalogWarm(): Promise<void> {
 
 export async function warmCatalog(): Promise<void> {
   await startCatalogWarm();
+}
+
+/**
+ * Start the refresh if none is running and wait for its first answer, not for the
+ * catalog. Bounded by that request's own timeout: every path of a refresh writes a
+ * state, so this always resolves.
+ */
+export function settleCatalogVerdict(): Promise<Reachability> {
+  void startCatalogWarm();
+  return awaitCatalogVerdict();
+}
+
+/**
+ * A forced refresh that reuses the warm of this process when there is one, running
+ * or finished, so a launch that already started it does not run a second beside it.
+ */
+export async function refreshCatalogJoined(timeoutMs: number): Promise<RefreshOutcome> {
+  return _warmRefresh ?? refreshCatalog(timeoutMs);
 }
 
 export async function ensureCatalogReady(timeoutMs = 5000): Promise<void> {
