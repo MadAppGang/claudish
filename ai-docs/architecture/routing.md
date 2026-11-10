@@ -465,7 +465,7 @@ no credential silo gets no routing binding, whatever its spelling (CLAUDE.md's i
 
 Claudish refreshes the v3 slim model catalog and `queryPlans` together, pins
 each page to one generation, and stores the complete snapshot in
-`~/.claudish/all-models.json`. A model's `subscriptionPlanIds[]` contains
+`~/.claudish/cloud-models-catalog-v3.json`. A model's `subscriptionPlanIds[]` contains
 commercial plan IDs such as `kimi-code`. The client joins those IDs with a
 plan's exact `route.routeId` and `route.routeProfileId`, then sends the matched
 model connection's `externalModelId` to that transport.
@@ -517,7 +517,7 @@ Name them apart, because they are different KINDS of fact:
 |---|---|---|
 | what it is | the hosted models-index metadata, keyed by canonical model id | the list one provider's discovery endpoint returns for ONE credential |
 | scope | the same for everybody | per account, per key, per seat |
-| lifetime | cached on disk in `~/.claudish/all-models.json` | on disk per account (at most 72 h); only a list at most 5 min old may deny |
+| lifetime | cached on disk in `~/.claudish/cloud-models-catalog-v3.json` | on disk per account (at most 72 h); only a list at most 5 min old may deny |
 | owns | model IDENTITY and published plan membership | ENTITLEMENT — which models this key may call |
 
 **A dynamic models catalog is persisted per account, and only a live one may deny.** After a
