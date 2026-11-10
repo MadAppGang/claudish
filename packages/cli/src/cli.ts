@@ -2062,7 +2062,7 @@ async function probeModelRouting(
           modelSpec: entry.wireId,
           status: "not-probed",
           tone: "dropped",
-          note: `– ${describeDropped(entry.outcome, entry.credentialHint)}`,
+          note: `– ${describeDropped(entry.outcome, entry.credentialHint, entry.detail)}`,
         });
       });
     }

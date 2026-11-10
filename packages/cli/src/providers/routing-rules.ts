@@ -8,8 +8,9 @@ import { log, logStderr } from "../logger.js";
 import type { RecommendedModelsDoc } from "../model-loader.js";
 import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
+import { readAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
-import { resolveExternalId } from "./catalog-client.js";
+import { catalogOrigin, getCatalogEntries, resolveExternalId } from "./catalog-client.js";
 import type { ConnectionPrice } from "./connection-price.js";
 import { FRESH_MS, LIVE_MS } from "./dynamic-models-catalog-store.js";
 import {
@@ -20,6 +21,12 @@ import {
   refreshAccountModelsList,
 } from "./dynamic-models-catalog.js";
 import { ensureEndpointsRegistered } from "./endpoint-registration.js";
+import {
+  type GatewayWireLists,
+  gatewayWireIdFor,
+  isGatewayBound,
+  loadGatewayWireLists,
+} from "./gateway-wire-lists.js";
 import { type AvailabilityNetwork, providerServesModel } from "./model-availability.js";
 import { discoverProviderServedIds } from "./model-discovery.js";
 import { AUTO_ROUTE_PROVIDER, PROVIDER_SHORTCUTS } from "./model-parser.js";
@@ -31,7 +38,9 @@ import {
   type RouteCandidate,
   catalogDeniesProvider,
   catalogMapsOnlyOptIn,
+  catalogModelId,
   compareRouteCandidates,
+  findCatalogEntry,
   gatherRouteCandidates,
 } from "./route-candidates.js";
 import { buildCredentialHint } from "./routing-hints.js";
@@ -316,16 +325,29 @@ interface ResolvedEntry {
    *   membership that does not include the model.
    * - `excluded-by-content-use`: the provider maps the model only through a
    *   content-use opt-in wire id, which claudish never chooses (`content-use.ts`).
+   * - `gateway-id-unknown`: the bundled recommended list keeps no connection for
+   *   this gateway, and its models list has no exact id for the model.
    */
   exclusion?: PreFilterExclusion;
+  /** With `gateway-id-unknown`: the models list could not be read at all. */
+  gatewayListUnreadable?: true;
+  /** With `gateway-id-unknown`: claudish has no models list to ask this gateway for. */
+  gatewayHasNoList?: true;
 }
 
 /** The outcomes that remove a candidate before the credential filter runs. */
-type PreFilterExclusion = "excluded-by-membership" | "excluded-by-content-use";
+type PreFilterExclusion =
+  | "excluded-by-membership"
+  | "excluded-by-content-use"
+  | "gateway-id-unknown";
 
 /** Whether a candidate was removed before the credential filter, i.e. never reaches it. */
 function isPreFilterExclusion(outcome: CandidateOutcome): boolean {
-  return outcome === "excluded-by-membership" || outcome === "excluded-by-content-use";
+  return (
+    outcome === "excluded-by-membership" ||
+    outcome === "excluded-by-content-use" ||
+    outcome === "gateway-id-unknown"
+  );
 }
 
 /**
@@ -337,7 +359,8 @@ function isPreFilterExclusion(outcome: CandidateOutcome): boolean {
 function resolveRoutingEntries(
   entries: RoutingEntry[],
   originalModelName: string,
-  cachePath?: string
+  cachePath?: string,
+  opts: { gatewayLists?: GatewayWireLists } = {}
 ): ResolvedEntry[] {
   const resolved: ResolvedEntry[] = [];
 
@@ -398,13 +421,75 @@ function resolveRoutingEntries(
     // `together-ai@glm-5` reach `zai-org/GLM-5` without either provider
     // needing bespoke code. No match → the name passes through unchanged.
     if (!wireIdResolved) {
-      modelName = resolveExternalId(modelName, provider, cachePath) ?? modelName;
+      const externalId = resolveExternalId(modelName, provider, cachePath);
+      if (externalId === null && atIdx === -1 && readsGatewayList(provider, cachePath)) {
+        const answer = gatewayListAnswer(provider, modelName, opts.gatewayLists);
+        if (answer.wireId === undefined) {
+          resolved.push({
+            route: routeFor(provider, modelName),
+            exclusion: "gateway-id-unknown",
+            ...(answer.unreadable ? { gatewayListUnreadable: true as const } : {}),
+            ...(answer.noList ? { gatewayHasNoList: true as const } : {}),
+          });
+          continue;
+        }
+        modelName = answer.wireId;
+      } else {
+        modelName = externalId ?? modelName;
+      }
     }
 
     resolved.push({ route: routeFor(provider, modelName) });
   }
 
   return resolved;
+}
+
+/**
+ * A gateway-bound provider whose wire id can only come from its own models list:
+ * the bundled recommended list is the catalog source and keeps no gateway
+ * connections. A disk catalog publishes gateway connections, so a `cachePath`
+ * never reaches this.
+ */
+function readsGatewayList(provider: string, cachePath: string | undefined): boolean {
+  if (cachePath || catalogOrigin() !== "bundled") return false;
+  const registry = readAllModelsCache()?.routeRegistry?.registry;
+  return registry !== undefined && isGatewayBound(provider, registry);
+}
+
+/** The wire id `provider`'s list holds for the model, or why there is none. */
+function gatewayListAnswer(
+  provider: string,
+  model: string,
+  gatewayLists: GatewayWireLists | undefined
+): { wireId?: string; unreadable?: boolean; noList?: boolean } {
+  const list = gatewayLists?.get(provider);
+  if (list === "no-list") return { noList: true };
+  if (list === undefined || list === "unreadable") return { unreadable: true };
+  const entries = getCatalogEntries();
+  const entry = entries ? findCatalogEntry(entries, model) : undefined;
+  return { wireId: gatewayWireIdFor(entry?.modelId ?? model, entry?.provider, list) };
+}
+
+/**
+ * The gateways whose models list one decision must load: only gateway-bound
+ * entries that name no model and have no bundled connection, so a chain with no
+ * gateway hop asks nothing.
+ */
+function gatewayListsNeeded(
+  entries: RoutingEntry[],
+  model: string,
+  cachePath: string | undefined
+): string[] {
+  const providers = entries
+    .filter((entry) => !entry.includes("@"))
+    .map(ruleEntryProvider)
+    .filter(
+      (provider) =>
+        readsGatewayList(provider, cachePath) &&
+        resolveExternalId(model, provider, cachePath) === null
+    );
+  return [...new Set(providers)];
 }
 
 /**
@@ -522,7 +607,12 @@ export type CandidateOutcome =
    * An explicit spec's shortcut names no claudish provider (`isKnownProviderName`).
    * Decided before any credential is read.
    */
-  | "unknown-provider";
+  | "unknown-provider"
+  /**
+   * The bundled recommended list keeps no connection for this gateway, and its
+   * models list has no exact id for the model, or could not be read.
+   */
+  | "gateway-id-unknown";
 
 /** One route candidate, where the chain placed it, and what became of it. */
 export interface ExplainedCandidate {
@@ -551,6 +641,10 @@ export interface ExplainedCandidate {
   /** Catalog-gathered candidates only, when the catalog publishes one. */
   contextWindow?: number;
   outcome: CandidateOutcome;
+  /** With `gateway-id-unknown`: the models list could not be read at all. */
+  gatewayListUnreadable?: true;
+  /** With `gateway-id-unknown`: claudish has no models list to ask this gateway for. */
+  gatewayHasNoList?: true;
   /** Credential evidence, including typed account-list failures retained for signing. */
   credentialReadiness?: ReadinessResult;
   /**
@@ -568,6 +662,12 @@ export type NoRouteCause =
   | "catalog-unreadable"
   /** The catalog was read and gathered nothing, and no fallback hop survived. */
   | "catalog-empty"
+  /**
+   * Every candidate was removed before the credential filter, and at least one is a
+   * gateway hop with no exact id (`gateway-id-unknown`): its models list lacks the
+   * model, could not be read, or does not exist.
+   */
+  | "gateway-id-unknown"
   /** Every remaining candidate lacked a credential, or its credential could not be read. */
   | "no-credential"
   /** The account's dynamic models catalog denied every credentialed candidate. */
@@ -711,6 +811,17 @@ function explainCandidate(
 /** The outcome of a resolved routing entry before any credential is read. */
 function entryOutcome(resolved: ResolvedEntry): CandidateOutcome {
   return resolved.exclusion ?? "kept";
+}
+
+/** A resolved routing entry as an explained candidate, with why it was excluded. */
+function explainEntry(
+  resolved: ResolvedEntry,
+  position: ExplainedCandidate["position"]
+): ExplainedCandidate {
+  const candidate = explainCandidate(resolved.route, position, entryOutcome(resolved));
+  if (resolved.gatewayListUnreadable) candidate.gatewayListUnreadable = true;
+  if (resolved.gatewayHasNoList) candidate.gatewayHasNoList = true;
+  return candidate;
 }
 
 /** Unknown Codex account configuration must reach the handler's typed response. */
@@ -993,7 +1104,8 @@ function explainCatalogChain(
   model: string,
   defaultProvider: ResolvedDefaultProvider,
   cachePath: string | undefined,
-  lists?: AccountModelsListSnapshot
+  lists?: AccountModelsListSnapshot,
+  gatewayLists?: GatewayWireLists
 ): CatalogChainExplanation {
   // Bundled endpoints (`together`, `fireworks`) have no provider DEFINITION
   // until this has run, and `gatherFromConnections` drops a connection whose
@@ -1052,12 +1164,34 @@ function explainCatalogChain(
     // resolution (subscription plan ids, then the catalog's `aggregators[]`)
     // lives there. It legitimately yields nothing routable when a
     // subscription's plan does not include the model.
-    for (const resolved of resolveRoutingEntries([fallback], model, cachePath)) {
-      candidates.push(explainCandidate(resolved.route, "fallback", entryOutcome(resolved)));
+    for (const resolved of resolveRoutingEntries([fallback], model, cachePath, { gatewayLists })) {
+      candidates.push(explainEntry(resolved, "fallback"));
     }
   }
 
   return { candidates, catalog, ...(fallbackWithheld ? { fallbackWithheld } : {}) };
+}
+
+/**
+ * The no-route outcome for a bare name whose only remaining candidates were gateway
+ * hops with no exact id. The reason says which of the three list states held, so
+ * the user fixes the list or names an id, not a rule or a vendor key.
+ */
+function gatewayIdUnknownOutcome(model: string, withheld: ExplainedCandidate): RouteOutcome {
+  const gateway = withheld.displayName;
+  const reason = withheld.gatewayHasNoList
+    ? `claudish reads no models list for ${gateway}, so it has no exact id for "${model}".`
+    : withheld.gatewayListUnreadable
+      ? `${gateway}'s models list could not be read, so claudish has no exact id for "${model}".`
+      : `${gateway}'s models list has no exact id for "${model}".`;
+  return {
+    kind: "no-route",
+    cause: "gateway-id-unknown",
+    reason,
+    hint:
+      "Run `claudish --models-refresh` once online, or name the gateway's exact id " +
+      `(${withheld.provider}@<id>).`,
+  };
 }
 
 /** Why a bare name's chain is empty before any credential is read. */
@@ -1208,21 +1342,35 @@ async function explainBareNameWithin(
 
   let explanation: RouteExplanation;
   if (matchedKey !== null && matched !== null) {
+    const gatewayLists = await loadGatewayWireLists(
+      gatewayListsNeeded(matched, model, cachePath),
+      network,
+      deadline
+    );
     explanation = {
       requestedModel,
       routedModel: model,
       source: "user-rule",
       matchedPattern: matchedKey,
       ...(routing.scopeOf ? { ruleScope: routing.scopeOf(matchedKey) } : {}),
-      candidates: resolveRoutingEntries(matched, model, cachePath).map((resolved) =>
-        explainCandidate(resolved.route, "candidate", entryOutcome(resolved))
+      candidates: resolveRoutingEntries(matched, model, cachePath, { gatewayLists }).map(
+        (resolved) => explainEntry(resolved, "candidate")
       ),
       outcome: { kind: "ok" },
       warnings: ruleProblemWarnings(routing.ruleProblems),
     };
   } else {
-    const accounts = await loadChainAccountLists(network, deadline);
-    const chain = explainCatalogChain(model, routing.defaultProvider, cachePath, accounts.lists);
+    const [accounts, gatewayLists] = await Promise.all([
+      loadChainAccountLists(network, deadline),
+      loadGatewayWireLists(fallbackListsNeeded(model, routing, cachePath), network, deadline),
+    ]);
+    const chain = explainCatalogChain(
+      model,
+      routing.defaultProvider,
+      cachePath,
+      accounts.lists,
+      gatewayLists
+    );
     refreshChainCandidateLists(chain.candidates, accounts);
     explanation = {
       requestedModel,
@@ -1261,12 +1409,19 @@ async function explainBareNameWithin(
   }
 
   if (remaining.length === 0) {
-    explanation.outcome = emptyChainOutcome(
-      model,
-      nativeProvider,
-      explanation.source === "user-rule" ? "rule-empty" : "catalog-empty",
-      cachePath
+    // A gateway hop with no exact id was a candidate, so the chain is not empty
+    // by the rule or the catalog: the gateway's models list is why it has no hop.
+    const withheld = explanation.candidates.find(
+      (candidate) => candidate.outcome === "gateway-id-unknown"
     );
+    explanation.outcome = withheld
+      ? gatewayIdUnknownOutcome(model, withheld)
+      : emptyChainOutcome(
+          model,
+          nativeProvider,
+          explanation.source === "user-rule" ? "rule-empty" : "catalog-empty",
+          cachePath
+        );
     return explanation;
   }
 
@@ -1286,6 +1441,21 @@ async function explainBareNameWithin(
  * chain is built. All providers are asked in parallel under this one bound.
  */
 export const MISSING_LIST_WAIT_MS = 5_000;
+
+/**
+ * The gateway the catalog branch's fallback hop needs a list from. None for a
+ * bundled miss or a fallback that will be withheld, so neither pays for a fetch.
+ */
+function fallbackListsNeeded(
+  model: string,
+  routing: BareRouting,
+  cachePath: string | undefined
+): string[] {
+  const fallback = fallbackProviderFor(routing.defaultProvider);
+  if (!fallback || routing.defaultProvider.source === "hardcoded") return [];
+  if (catalogModelId(model, cachePath) === undefined) return [];
+  return gatewayListsNeeded([fallback], model, cachePath);
+}
 
 /** One routing decision's missing-list deadline: resolves once, then stays resolved. */
 interface ListDeadline {
@@ -1996,6 +2166,7 @@ const DROPPED_FALLBACK_PHRASE: Record<Exclude<CandidateOutcome, "kept">, string>
   "excluded-by-membership": "is outside its plan's membership",
   "excluded-by-content-use": "maps it only through a contributor (content-use opt-in) id",
   "unknown-provider": "is not a known provider shortcut",
+  "gateway-id-unknown": "has no exact id for it in its models list",
 };
 
 /**

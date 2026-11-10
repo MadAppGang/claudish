@@ -35,6 +35,7 @@ export const DROPPED_LABEL: Record<DroppedOutcome, string> = {
   "excluded-by-membership": "not in the plan's membership",
   "excluded-by-content-use": "contributor id: content-use opt-in, type it exactly to use it",
   "unknown-provider": "unknown provider shortcut",
+  "gateway-id-unknown": "withheld",
 };
 
 /**
@@ -47,10 +48,20 @@ export function droppedRemedy(credentialHint: string | undefined): string | unde
   return /^[A-Z][A-Z0-9_]*$/.test(credentialHint) ? `set ${credentialHint}` : credentialHint;
 }
 
+/** A dropped candidate's outcome, with the sentence that outcome carries when it has one. */
+export function droppedStatus(outcome: DroppedOutcome, detail?: string): string {
+  return detail ? `${DROPPED_LABEL[outcome]}: ${detail}` : DROPPED_LABEL[outcome];
+}
+
 /** One line for a dropped candidate: its outcome, then the remedy when one is known. */
-export function describeDropped(outcome: DroppedOutcome, credentialHint?: string): string {
+export function describeDropped(
+  outcome: DroppedOutcome,
+  credentialHint?: string,
+  detail?: string
+): string {
+  const status = droppedStatus(outcome, detail);
   const remedy = droppedRemedy(credentialHint);
-  return remedy ? `${DROPPED_LABEL[outcome]} · ${remedy}` : DROPPED_LABEL[outcome];
+  return remedy ? `${status} · ${remedy}` : status;
 }
 
 /** One hop a probe sends a request down: a kept candidate and the model spec to send. */

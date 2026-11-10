@@ -344,6 +344,7 @@ export const SKIPPED_PHRASE: Readonly<Record<Exclude<CandidateOutcome, "kept">, 
   "excluded-by-membership": "not in the plan's membership",
   "excluded-by-content-use": "content-use opt-in id only",
   "unknown-provider": "unknown provider shortcut",
+  "gateway-id-unknown": "no exact id in the gateway's models list",
 };
 
 /**

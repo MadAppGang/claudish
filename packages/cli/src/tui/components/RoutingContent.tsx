@@ -32,6 +32,7 @@ const DROPPED_TEXT: Record<DroppedOutcome, string> = {
   "excluded-by-membership": "not in the plan's membership",
   "excluded-by-content-use": "contributor id: content-use opt-in, type it exactly to use it",
   "unknown-provider": "unknown provider shortcut",
+  "gateway-id-unknown": "withheld: no exact id in the gateway's models list",
 };
 
 /**

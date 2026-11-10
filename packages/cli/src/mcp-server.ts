@@ -86,6 +86,7 @@ import {
 } from "./providers/dynamic-models-catalog.js";
 import { latestEffortRecommendations } from "./providers/effort-recommendations.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
+import { OPENROUTER_MODELS_URL, fetchGatewayModels } from "./providers/gateway-models-list.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { isLocalProviderName, parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { nativeRouteFor } from "./providers/native-route.js";
@@ -265,10 +266,7 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
   }
 
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/models");
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
-    const data = await response.json();
-    const models = data.data || [];
+    const models = await fetchGatewayModels(OPENROUTER_MODELS_URL);
     try {
       writeFileAtomic(
         OPENROUTER_MODELS_CACHE_PATH,

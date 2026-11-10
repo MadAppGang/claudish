@@ -231,7 +231,10 @@ function routeLabel(route: CatalogRouteBinding | undefined): string {
  * for the same reason. Exact always wins, so a case-folded collision can never
  * displace a real id.
  */
-function findCatalogEntry(entries: SlimModelEntry[], model: string): SlimModelEntry | undefined {
+export function findCatalogEntry(
+  entries: SlimModelEntry[],
+  model: string
+): SlimModelEntry | undefined {
   const exact = entries.find((entry) => entry.modelId === model);
   if (exact) return exact;
   const byAlias = entries.find((entry) => entry.aliases.includes(model));
