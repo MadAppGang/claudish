@@ -66,8 +66,13 @@ export function rankAntigravityModel(modelId: string): number {
  *     bridge a catalog id whose stem differs from the backend's — the served id
  *     `gemini-3.1-pro-high` does not extend `gemini-3.1-pro-preview-`, so the
  *     prefix rule below cannot see it, and the request 404s.
- *  3. Family variants — served ids that extend `requested-` (e.g.
- *     `gemini-3.6-flash-high` for `gemini-3.6-flash`). If any exist:
+ *  3. Family variants — served ids that are exactly `requested-<tier>`, where
+ *     the whole remainder is one reasoning tier of `REASONING_TIER_RANK` (e.g.
+ *     `gemini-3.6-flash-high` or `-extra-low` for `gemini-3.6-flash`). A longer
+ *     id that merely extends the name (`gemini-3.6-flash-tts`,
+ *     `gemini-3.6-flash-lite-tts`, `gemini-3.6-flash-5-high`) is a different
+ *     model and never a variant. The tier is matched as spelled, like the
+ *     requested id itself. If any exist:
  *       - if the backend `defaultId` is one of them → return `defaultId`;
  *       - else the strongest reasoning tier by suffix RANK.
  *  4. Otherwise — return `requested` unchanged and let the backend 404, which
@@ -90,7 +95,11 @@ export function resolveAntigravityModelId(
   if (catalogDefault && servedIds.includes(catalogDefault)) return catalogDefault;
 
   const familyPrefix = `${req}-`;
-  const variants = servedIds.filter((id) => id.startsWith(familyPrefix));
+  const variants = servedIds.filter(
+    (id) =>
+      id.startsWith(familyPrefix) &&
+      Object.hasOwn(REASONING_TIER_RANK, id.slice(familyPrefix.length))
+  );
   if (variants.length > 0) {
     if (defaultId && variants.includes(defaultId)) return defaultId;
     let best = variants[0];

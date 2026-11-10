@@ -504,6 +504,191 @@ describe("DevinModelResolver expand", () => {
   });
 });
 
+describe("DevinModelResolver expand: exact base ids", () => {
+  type SyntheticOptions = { cost?: number; isDefault?: boolean; fast?: boolean };
+
+  /**
+   * One synthetic dynamic models catalog entry. The family is dotted the way
+   * Devin spells it, so it never equals a dashed base request and the request
+   * reaches the base-id rule rather than the exact label/family rule.
+   */
+  function synthetic(
+    wireId: string,
+    groupLabel: string,
+    family: string,
+    effortLabel: string,
+    options: SyntheticOptions = {}
+  ): ModelsCatalogEntry {
+    return {
+      wireId,
+      displayName: wireId,
+      contextWindow: 200_000,
+      groupLabel,
+      family,
+      costFactor: options.cost ?? 1,
+      costTier: 1,
+      isFamilyDefault: options.isDefault ?? false,
+      axes: [
+        { key: "Reasoning Effort", label: effortLabel, enabled: true },
+        { key: "Fast Mode", enabled: options.fast ?? false },
+      ],
+    };
+  }
+
+  const opus55 = [
+    synthetic("claude-opus-5-5-high", "Claude Opus 5.5", "claude-opus-5.5", "High", { cost: 10 }),
+    synthetic("claude-opus-5-5-low", "Claude Opus 5.5", "claude-opus-5.5", "Low", { cost: 8 }),
+  ];
+
+  const opusBoth = [
+    synthetic("claude-opus-5-low", "Claude Opus 5", "claude-opus-5.0", "Low", { cost: 4 }),
+    synthetic("claude-opus-5-high", "Claude Opus 5", "claude-opus-5.0", "High", { cost: 6 }),
+    synthetic("claude-opus-5-max", "Claude Opus 5", "claude-opus-5.0", "Max", { cost: 9 }),
+    synthetic("claude-opus-5-5-high", "Claude Opus 5.5", "claude-opus-5.5", "High", {
+      cost: 1,
+      isDefault: true,
+    }),
+    synthetic("claude-opus-5-5-xhigh", "Claude Opus 5.5", "claude-opus-5.5", "XHigh", { cost: 2 }),
+  ];
+  const opus5Ids = ["claude-opus-5-low", "claude-opus-5-high", "claude-opus-5-max"];
+
+  const sonnetBoth = [
+    synthetic("claude-sonnet-5-low", "Claude Sonnet 5", "claude-sonnet-5.0", "Low", { cost: 2 }),
+    synthetic("claude-sonnet-5-high", "Claude Sonnet 5", "claude-sonnet-5.0", "High", { cost: 3 }),
+    synthetic("claude-sonnet-5-max", "Claude Sonnet 5", "claude-sonnet-5.0", "Max", { cost: 5 }),
+    synthetic("claude-sonnet-5-5-high", "Claude Sonnet 5.5", "claude-sonnet-5.5", "High", {
+      cost: 1,
+      isDefault: true,
+    }),
+    synthetic("claude-sonnet-5-5-xhigh", "Claude Sonnet 5.5", "claude-sonnet-5.5", "XHigh", {
+      cost: 1,
+    }),
+  ];
+  const sonnet5Ids = ["claude-sonnet-5-low", "claude-sonnet-5-high", "claude-sonnet-5-max"];
+
+  const gpt54 = [
+    synthetic("gpt-5-4-none", "GPT-5.4", "gpt-5.4", "None", { cost: 1 }),
+    synthetic("gpt-5-4-low", "GPT-5.4", "gpt-5.4", "Low", { cost: 2 }),
+    synthetic("gpt-5-4-high", "GPT-5.4", "gpt-5.4", "High", { cost: 3 }),
+    synthetic("gpt-5-4-mini-high", "GPT-5.4 Mini", "gpt-5.4-mini", "High", { cost: 1 }),
+  ];
+
+  test("never resolves claude-opus-5 to an Opus 5.5 id when only Opus 5.5 is listed", () => {
+    for (const ctx of [{}, { effort: "high" as const }, { effort: "low" as const }]) {
+      const resolved = resolver.expand("claude-opus-5", opus55, ctx);
+      expect(resolved.startsWith("claude-opus-5-5")).toBe(false);
+      expect(resolved).toBe("claude-opus-5");
+    }
+  });
+
+  test("resolves claude-opus-5 to its own effort ids when Opus 5.5 is listed beside it", () => {
+    expect(resolver.expand("claude-opus-5", opusBoth, { effort: "high" })).toBe(
+      "claude-opus-5-high"
+    );
+    // xhigh is not listed for Opus 5: high and max are equidistant, so it resolves upward.
+    expect(resolver.expand("claude-opus-5", opusBoth, { effort: "xhigh" })).toBe(
+      "claude-opus-5-max"
+    );
+    expect(opus5Ids).toContain(resolver.expand("claude-opus-5", opusBoth, {}));
+  });
+
+  test("picks the no-effort default of claude-opus-5 among its own effort ids only", () => {
+    // The Opus 5.5 vendor default and its lower cost must not pull the answer
+    // out of Opus 5; with no Opus 5 default the cheapest Opus 5 id wins.
+    expect(resolver.expand("claude-opus-5", opusBoth, {})).toBe("claude-opus-5-low");
+  });
+
+  test("resolves claude-sonnet-5 to its own effort ids when Sonnet 5.5 is listed beside it", () => {
+    expect(resolver.expand("claude-sonnet-5", sonnetBoth, { effort: "high" })).toBe(
+      "claude-sonnet-5-high"
+    );
+    expect(resolver.expand("claude-sonnet-5", sonnetBoth, { effort: "xhigh" })).toBe(
+      "claude-sonnet-5-max"
+    );
+    expect(sonnet5Ids).toContain(resolver.expand("claude-sonnet-5", sonnetBoth, {}));
+    const only55 = sonnetBoth.filter((entry) => entry.wireId.startsWith("claude-sonnet-5-5"));
+    expect(resolver.expand("claude-sonnet-5", only55, { effort: "high" })).toBe("claude-sonnet-5");
+    expect(resolver.expand("claude-sonnet-5", only55, {})).toBe("claude-sonnet-5");
+  });
+
+  test("resolves kimi-k3 to kimi-k3-high when kimi-k3-1-pro is listed beside it", () => {
+    const list = [
+      synthetic("kimi-k3-high", "Kimi K3", "kimi-k3.0", "High", { cost: 2 }),
+      synthetic("kimi-k3-low", "Kimi K3", "kimi-k3.0", "Low", { cost: 1 }),
+      synthetic("kimi-k3-1-pro-high", "Kimi K3.1 Pro", "kimi-k3.1-pro", "High", { cost: 3 }),
+    ];
+    expect(resolver.expand("kimi-k3", list, { effort: "high" })).toBe("kimi-k3-high");
+  });
+
+  test("resolves gpt-5-4 to its own effort ids when gpt-5-4-mini is listed beside it", () => {
+    expect(resolver.expand("gpt-5-4", gpt54, { effort: "high" })).toBe("gpt-5-4-high");
+    expect(resolver.expand("gpt-5-4", gpt54, { effort: "none" })).toBe("gpt-5-4-none");
+    // medium is not listed: low and high are equidistant, so it resolves upward.
+    expect(resolver.expand("gpt-5-4", gpt54, { effort: "medium" })).toBe("gpt-5-4-high");
+  });
+
+  test("picks across effort siblings that sit in different groups", () => {
+    // The vendor default and the cheaper id sit in the low sibling's group; the
+    // high sibling has its own label and context window.
+    const list = [
+      synthetic("nova-2-low", "Nova 2", "nova-2.0", "Low", { cost: 1, isDefault: true }),
+      {
+        ...synthetic("nova-2-high", "Nova 2 Long", "nova-2.0-long", "High", { cost: 5 }),
+        contextWindow: 1_000_000,
+      },
+    ];
+    expect(resolver.expand("nova-2", list, { effort: "high" })).toBe("nova-2-high");
+    expect(resolver.expand("nova-2", list, { effort: "low" })).toBe("nova-2-low");
+    expect(resolver.expand("nova-2", list, {})).toBe("nova-2-low");
+  });
+
+  test("picks the cheaper of two vendor defaults in different groups, in either order", () => {
+    const list = [
+      synthetic("vega-3-high", "Vega 3", "vega-3.0", "High", { cost: 5, isDefault: true }),
+      {
+        ...synthetic("vega-3-low", "Vega 3 Long", "vega-3.0-long", "Low", {
+          cost: 2,
+          isDefault: true,
+        }),
+        contextWindow: 1_000_000,
+      },
+    ];
+    expect(resolver.expand("vega-3", list, {})).toBe("vega-3-low");
+    expect(resolver.expand("vega-3", [...list].reverse(), {})).toBe("vega-3-low");
+  });
+
+  test("passes glm-5-3 through when only glm-5-3-flash ids are listed", () => {
+    const list = [synthetic("glm-5-3-flash-high", "GLM-5.3 Flash", "glm-5.3-flash", "High")];
+    expect(resolver.expand("glm-5-3", list, { effort: "high" })).toBe("glm-5-3");
+    expect(resolver.expand("glm-5-3", list, {})).toBe("glm-5-3");
+  });
+
+  test("never returns an id with more tokens between the base and the effort", () => {
+    const list = [
+      synthetic("gpt-5-4-high-priority", "GPT-5.4", "gpt-5.4", "High", { fast: true }),
+      synthetic("claude-opus-5-5-high", "Claude Opus 5.5", "claude-opus-5.5", "High"),
+      synthetic("kimi-k3-1-pro-high", "Kimi K3.1 Pro", "kimi-k3.1-pro", "High"),
+      synthetic("glm-5-3-flash-low", "GLM-5.3 Flash", "glm-5.3-flash", "Low"),
+    ];
+    const contexts: ExpandContext[] = [{}, ...EFFORT_LEVELS.map((effort) => ({ effort }))];
+    const offenders: string[] = [];
+    for (const base of ["gpt-5-4", "claude-opus-5", "kimi-k3", "glm-5-3"]) {
+      const allowed = new Set([base, ...EFFORT_LEVELS.map((level) => `${base}-${level}`)]);
+      for (const ctx of contexts) {
+        const resolved = resolver.expand(base, list, ctx);
+        if (!allowed.has(resolved)) offenders.push(`${base}@${ctx.effort ?? "-"} -> ${resolved}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("resolves the fixture's gpt-5-4 to its own effort ids beside gpt-5-4-mini", () => {
+    expect(resolver.expand("gpt-5-4", modelsCatalog, { effort: "high" })).toBe("gpt-5-4-high");
+    expect(resolver.expand("gpt-5-4", modelsCatalog, { effort: "none" })).toBe("gpt-5-4-none");
+    expect(resolver.expand("gpt-5-4", modelsCatalog, { effort: "max" })).toBe("gpt-5-4-xhigh");
+  });
+});
+
 describe("model resolver helpers", () => {
   test("nonEmpty treats empty and whitespace-only strings as absent", () => {
     expect(nonEmpty("")).toBeUndefined();
