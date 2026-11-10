@@ -63,6 +63,7 @@ import {
 } from "./handlers/advisor-route-plan.js";
 import { type HandlerSet, createHandlerSet } from "./handlers/handler-set.js";
 import { resolveAdvisorCredential } from "./handlers/native-handler-advisor.js";
+import { bundledProvenance } from "./providers/bundled-list.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { nativeRouteFor } from "./providers/native-route.js";
 import { type TransportType, getProviderByName } from "./providers/provider-definitions.js";
@@ -310,6 +311,15 @@ export function advisorMemberRefusal(
   return null;
 }
 
+/** What a notice says about a member planned from the bundled recommended list. */
+function describeBundledPlanNote(): string {
+  const provenance = bundledProvenance();
+  const source = provenance
+    ? ` (claudish ${provenance.version}, generation ${provenance.generationId})`
+    : "";
+  return `planned from the bundled recommended list${source}; no cloud models catalog is on disk`;
+}
+
 /**
  * The notice lines for one member: its plan described from its built chain,
  * then each routing warning (a subscription that does not serve the model, or
@@ -325,6 +335,9 @@ function memberNoticeLines(
     plan.kind === "routed" ? builds.get(advisorChainKey(plan.role, plan.spec)) : undefined;
   const lines = [describeAdvisorPlan(plan, build)];
   if (plan.kind === "routed") {
+    if (plan.explanation.catalogSource === "bundled") {
+      lines.push(`${indent}  note: ${describeBundledPlanNote()}`);
+    }
     for (const warning of plan.explanation.warnings) {
       if (warning.type === "rule-problem") continue;
       lines.push(`${indent}  note: ${warning.message}`);

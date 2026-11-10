@@ -1242,9 +1242,10 @@ async function runCli() {
         // the catalog is whatever the disk holds. It can be COLD — no cache yet,
         // `--models-skip-update`, a local or explicit main model, or a cache
         // claudish could not read.
-        // A BARE member is then refused above (routing answers `catalog-unreadable`),
-        // so only an explicit `provider@model` member can have passed without the
-        // catalog: its provider was taken as written. Say which ones.
+        // A BARE member is then planned from the bundled recommended list, and its
+        // notice line says so, or refused above (`catalog-unreadable`). An explicit
+        // `provider@model` member passed with no catalog read at all: its provider
+        // was taken as written. Say which ones.
         const { readDiskCatalog } = await import("./providers/all-models-cache.js");
         if (readDiskCatalog() === null) {
           const unverified = [...decision.runtime.plans.values()]
