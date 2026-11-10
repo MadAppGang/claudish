@@ -419,6 +419,8 @@ export async function ensureLMStudioInstance(
       }
       if (hasNamesake(identifier)) throw ambiguityError(identifier);
 
+      // The name the new copy answers to: the REST load reports it, and the CLI load sets it.
+      let expected = identifier;
       if (isThisMachine) {
         const lengthArgs = length === undefined ? [] : ["-c", String(length)];
         const loaded = await run(
@@ -427,24 +429,25 @@ export async function ensureLMStudioInstance(
         );
         if (loaded === null) throw new Error(`LM Studio could not load ${model} on this machine.`);
       } else {
-        await loadOnLinkedMachine(
+        const reported = await loadOnLinkedMachine(
           { baseUrl, model, device, headers, run, log },
           link,
           target,
           length
         );
+        expected = reported ?? identifier;
       }
 
       const after = await readLoaded(run);
       if (!after) throw listError();
-      const placed = after.find((row) => row.identifier === identifier && isOnTarget(row));
+      const placed = after.find((row) => row.identifier === expected && isOnTarget(row));
       if (!placed) {
         throw new Error(
           `LM Studio loaded ${model} on a different machine than ${device}. Another LM Link client may have changed the preferred device; retry.`
         );
       }
-      if (after.some((row) => row.identifier === identifier && !isOnTarget(row))) {
-        throw ambiguityError(identifier);
+      if (after.some((row) => row.identifier === expected && !isOnTarget(row))) {
+        throw ambiguityError(expected);
       }
       assertContextLength(placed.identifier, placed.contextLength, length);
       return { instanceId: placed.identifier, contextLength: placed.contextLength };
@@ -458,13 +461,16 @@ function listError(): Error {
   );
 }
 
-/** A REST load with `target` preferred for its duration. */
+/**
+ * A REST load with `target` preferred for its duration. Answers the `instance_id`
+ * LM Studio reports for the new copy, when the response carries one.
+ */
 async function loadOnLinkedMachine(
   options: Omit<EnsureLMStudioInstance, "contextLength"> & { run: LmsRunner },
   link: LinkStatus,
   target: string,
   contextLength: number | undefined
-): Promise<void> {
+): Promise<string | undefined> {
   const { baseUrl, model, device, headers, run, log } = options;
   const original = link.preferred;
   const mustSwitch = original !== target;
@@ -487,6 +493,10 @@ async function loadOnLinkedMachine(
         `LM Studio could not load ${model} on ${device}: ${response.status} ${await response.text()}`
       );
     }
+    const body = (await response.json().catch(() => null)) as { instance_id?: unknown } | null;
+    return typeof body?.instance_id === "string" && body.instance_id !== ""
+      ? body.instance_id
+      : undefined;
   } finally {
     if (mustSwitch && original) {
       const restored = await run(["link", "set-preferred-device", original], LIST_TIMEOUT_MS);

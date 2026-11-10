@@ -45,6 +45,8 @@ let loadsOn: string | undefined;
 let psFails: boolean;
 /** An instance another client loads while claudish's load runs. */
 let appearsDuringLoad: Row | undefined;
+/** The instance name LM Studio gives the loaded copy, when it is not the model key. */
+let loadedAs: string | undefined;
 let lockDir: string;
 
 const run: LmsRunner = async (args) => {
@@ -101,6 +103,7 @@ beforeEach(() => {
   loadsOn = undefined;
   psFails = false;
   appearsDuringLoad = undefined;
+  loadedAs = undefined;
   lockDir = mkdtempSync(join(tmpdir(), "claudish-lms-lock-"));
   globalThis.fetch = mock(async (_url: unknown, init?: RequestInit) => {
     if (loadStatus !== 200) return new Response("no memory", { status: loadStatus });
@@ -108,13 +111,13 @@ beforeEach(() => {
     const { model } = lastLoadBody as { model: string };
     const device = loadsOn ?? preferred;
     loaded.push({
-      identifier: model,
+      identifier: loadedAs ?? model,
       modelKey: model,
       deviceIdentifier: device === SELF ? null : device,
       contextLength: contextLengthAfterLoad,
     });
     if (appearsDuringLoad) loaded.push(appearsDuringLoad);
-    return Response.json({ instance_id: model, status: "loaded" });
+    return Response.json({ instance_id: loadedAs ?? model, status: "loaded" });
   }) as unknown as typeof fetch;
 });
 
@@ -396,6 +399,15 @@ describe("ensureLMStudioInstance", () => {
     lmsLoadFails = true;
 
     await expect(ensure("both", "local")).rejects.toThrow(/could not load both on this machine/);
+  });
+
+  test("a copy LM Studio names differently is found by the instance_id the load returned", async () => {
+    preferred = SELF;
+    loadedAs = "only-m1:2";
+
+    const instance = await ensure("only-m1", "m1");
+
+    expect(instance.instanceId).toBe("only-m1:2");
   });
 
   test("a load that lands on another machine is refused", async () => {
