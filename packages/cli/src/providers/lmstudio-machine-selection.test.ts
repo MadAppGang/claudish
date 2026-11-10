@@ -186,7 +186,7 @@ describe("LocalTransport with a machine suffix", () => {
     await transport.getExtraPayloadFields();
     await transport.refreshAuth();
 
-    expect(transport.getContextWindow()).toBe(65_000);
+    expect(transport.getContextWindow()).toBe(129_000);
   });
 
   test("the load asks for the provider's default context length", async () => {
@@ -194,7 +194,7 @@ describe("LocalTransport with a machine suffix", () => {
 
     await transport.getExtraPayloadFields().catch(() => undefined);
 
-    expect(loadBodies).toEqual([{ model: "shared-model", context_length: 64_000 }]);
+    expect(loadBodies).toEqual([{ model: "shared-model", context_length: 128_000 }]);
   });
 
   test("CLAUDISH_CONTEXT_WINDOW sets the size the model loads with", async () => {
@@ -206,6 +206,21 @@ describe("LocalTransport with a machine suffix", () => {
 
     expect(loadBodies).toEqual([{ model: "shared-model", context_length: 48_000 }]);
     expect(transport.getContextWindow()).toBe(48_000);
+  });
+
+  test("a limit above the model's maximum reports the size that really loaded", async () => {
+    process.env.CLAUDISH_CONTEXT_WINDOW = "256000";
+    writeFileSync(
+      join(dir, "ls.json"),
+      JSON.stringify([{ modelKey: "shared-model", deviceIdentifier: M1, maxContextLength: 32_768 }])
+    );
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
+
+    await transport.getExtraPayloadFields();
+    await transport.refreshAuth();
+
+    expect(loadBodies).toEqual([{ model: "shared-model", context_length: 32_768 }]);
+    expect(transport.getContextWindow()).toBe(33_768);
   });
 
   test("a model with no suffix loads nothing and adds no payload field", async () => {

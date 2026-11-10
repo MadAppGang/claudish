@@ -23,6 +23,7 @@ import {
 } from "../../providers/lmstudio-devices.js";
 import { getProviderByName } from "../../providers/provider-definitions.js";
 import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
+import { contextWindowLimit } from "../context-window-limit.js";
 import {
   discoverViaLMStudio,
   discoverViaOllama,
@@ -111,14 +112,10 @@ export class LocalTransport implements ProviderTransport {
     this.concurrency = options?.concurrency;
     this._contextWindow = getProviderByName(config.name)?.unknownContextWindow ?? 32768;
 
-    // Check for env var override of context window
-    const envContextWindow = process.env.CLAUDISH_CONTEXT_WINDOW;
-    if (envContextWindow) {
-      const parsed = Number.parseInt(envContextWindow, 10);
-      if (!Number.isNaN(parsed) && parsed > 0) {
-        this._contextWindow = parsed;
-        log(`[${this.displayName}] Context window from env: ${this._contextWindow}`);
-      }
+    const limit = contextWindowLimit();
+    if (limit !== undefined) {
+      this._contextWindow = limit;
+      log(`[${this.displayName}] Context window limit: ${limit}`);
     }
 
     if (this.concurrency !== undefined) {
@@ -266,8 +263,7 @@ export class LocalTransport implements ProviderTransport {
       model: this.modelName,
       device: this.lmStudioDevice as string,
       contextLength:
-        Number.parseInt(process.env.CLAUDISH_CONTEXT_WINDOW ?? "", 10) ||
-        getProviderByName(this.config.name)?.unknownContextWindow,
+        contextWindowLimit() ?? getProviderByName(this.config.name)?.unknownContextWindow,
       headers: process.env.LMSTUDIO_API_KEY
         ? { Authorization: `Bearer ${process.env.LMSTUDIO_API_KEY}` }
         : undefined,
@@ -291,8 +287,11 @@ export class LocalTransport implements ProviderTransport {
       this.lmStudioInstance = undefined;
       throw error;
     }
-    if (instance.contextLength && !process.env.CLAUDISH_CONTEXT_WINDOW) {
-      this._contextWindow = instance.contextLength;
+    if (instance.contextLength) {
+      this._contextWindow = Math.min(
+        instance.contextLength,
+        contextWindowLimit() ?? instance.contextLength
+      );
     }
   }
 
@@ -432,8 +431,7 @@ export class LocalTransport implements ProviderTransport {
   // ─── Context window auto-detection ──────────────────────────────────
 
   private async fetchContextWindow(): Promise<void> {
-    // Skip if env var already set
-    if (process.env.CLAUDISH_CONTEXT_WINDOW) return;
+    if (contextWindowLimit() !== undefined) return;
 
     log(`[${this.displayName}] Fetching context window...`);
     if (await this.isOllamaBackend()) {

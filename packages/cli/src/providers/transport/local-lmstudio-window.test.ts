@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { LocalProvider } from "../provider-registry.js";
 import { LocalTransport } from "./local.js";
 
-const LMSTUDIO_DEFAULT_WINDOW = 64_000;
+const LMSTUDIO_DEFAULT_WINDOW = 128_000;
 
 const ROWS = [
   {

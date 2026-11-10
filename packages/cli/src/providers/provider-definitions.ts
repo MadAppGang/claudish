@@ -13,6 +13,7 @@ import { VERTEX_SET_PROJECT_REMEDY } from "../auth/vertex-auth.js";
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { getEndpoint as getConfigEndpoint } from "../profile-config.js";
+import { DEFAULT_LOCAL_CONTEXT_WINDOW } from "./context-window-limit.js";
 // Type-only import — erased at compile time, so no runtime import cycle with
 // model-discovery.ts (which imports getProviderByName from here).
 import type { ModelDiscoveryDescriptor } from "./model-discovery.js";
@@ -1188,7 +1189,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // catalog does not know is still listed. Its OpenAI-compatible `/v1/models`
     // carries only ids; it is read instead when an older server answers 404.
     modelDiscovery: { path: "/api/v0/models", format: "lmstudio-models" },
-    unknownContextWindow: 64_000,
+    unknownContextWindow: DEFAULT_LOCAL_CONTEXT_WINDOW,
     description: "Local LM Studio (lms@)",
   },
 

@@ -183,7 +183,12 @@ export async function readLMStudioMachines(
  * `defaultWindow`: then its maximum is the most a load can give it.
  */
 export function expandModelsToMachines<
-  T extends { id: string; displayName?: string; contextWindow?: number },
+  T extends {
+    id: string;
+    displayName?: string;
+    contextWindow?: number;
+    maxContextWindow?: number;
+  },
 >(models: T[], machines: LMStudioMachines, defaultWindow?: number): T[] {
   return models.flatMap((model) => {
     const labels = machines.labelsByModel.get(model.id);
@@ -192,11 +197,13 @@ export function expandModelsToMachines<
       const id = `${model.id}${LMSTUDIO_DEVICE_SEPARATOR}${label}`;
       const max = machines.maxWindows.get(id);
       const ceiling = defaultWindow && max && max < defaultWindow ? max : undefined;
+      const loaded = machines.loadedWindows.get(id);
       return {
         ...model,
         id,
         displayName: `${model.displayName ?? model.id} (${label})`,
-        contextWindow: machines.loadedWindows.get(id) ?? ceiling,
+        contextWindow: loaded ?? ceiling,
+        maxContextWindow: loaded ?? max,
       };
     });
   });
@@ -265,7 +272,7 @@ function assertContextLength(
 ): void {
   if (wanted === undefined || actual === undefined || actual >= wanted) return;
   throw new Error(
-    `LM Studio runs ${identifier} with ${actual} tokens of context and claudish needs ${wanted}. Reload it with more context in LM Studio, or set CLAUDISH_CONTEXT_WINDOW=${actual} to accept this size.`
+    `LM Studio runs ${identifier} with ${actual} tokens of context and claudish needs ${wanted}. Reload it with more context in LM Studio, or pass --context-window ${actual} to accept this size.`
   );
 }
 

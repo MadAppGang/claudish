@@ -13,7 +13,7 @@ import { computeMainThreadContextWindow, resolveContextWindowEnv } from "./claud
 import { invalidateModelDiscovery } from "./providers/model-discovery.js";
 import type { ClaudishConfig } from "./types.js";
 
-const LMSTUDIO_DEFAULT_WINDOW = 64_000;
+const LMSTUDIO_DEFAULT_WINDOW = 128_000;
 const VENDOR_WINDOW = 1_000_000;
 const LOADED_WINDOW = 213_176;
 
@@ -30,6 +30,7 @@ const ROWS = [
 
 const realFetch = globalThis.fetch;
 let savedBaseUrl: string | undefined;
+let savedLimit: string | undefined;
 let catalogSpy: ReturnType<typeof spyOn<typeof modelCatalog, "lookupModelForProvider">>;
 
 function launchWindow(model: string): Promise<number> {
@@ -40,6 +41,8 @@ beforeEach(() => {
   invalidateModelDiscovery();
   savedBaseUrl = process.env.LMSTUDIO_BASE_URL;
   delete process.env.LMSTUDIO_BASE_URL;
+  savedLimit = process.env.CLAUDISH_CONTEXT_WINDOW;
+  delete process.env.CLAUDISH_CONTEXT_WINDOW;
   catalogSpy = spyOn(modelCatalog, "lookupModelForProvider").mockReturnValue(VENDOR_WINDOW);
   globalThis.fetch = mock(
     async () => new Response(JSON.stringify({ data: ROWS }), { status: 200 })
@@ -52,6 +55,8 @@ afterEach(() => {
   invalidateModelDiscovery();
   if (savedBaseUrl === undefined) delete process.env.LMSTUDIO_BASE_URL;
   else process.env.LMSTUDIO_BASE_URL = savedBaseUrl;
+  if (savedLimit === undefined) delete process.env.CLAUDISH_CONTEXT_WINDOW;
+  else process.env.CLAUDISH_CONTEXT_WINDOW = savedLimit;
 });
 
 describe("computeMainThreadContextWindow on lmstudio", () => {
@@ -78,6 +83,36 @@ describe("computeMainThreadContextWindow on lmstudio", () => {
   test("the default reaches Claude Code as its max-context cap", async () => {
     const { vars } = resolveContextWindowEnv(await launchWindow("lms@unloaded-build"), {});
 
-    expect(vars).toEqual({ CLAUDE_CODE_MAX_CONTEXT_TOKENS: "64000" });
+    expect(vars).toEqual({ CLAUDE_CODE_MAX_CONTEXT_TOKENS: "128000" });
+  });
+
+  test("the limit replaces the default for an unloaded model", async () => {
+    process.env.CLAUDISH_CONTEXT_WINDOW = "48000";
+
+    expect(await launchWindow("lms@unloaded-build")).toBe(48_000);
+  });
+
+  test("the limit caps a loaded model's window", async () => {
+    process.env.CLAUDISH_CONTEXT_WINDOW = "48000";
+
+    expect(await launchWindow("lms@loaded-build")).toBe(48_000);
+  });
+
+  test("a limit above a loaded model's window leaves the loaded window", async () => {
+    process.env.CLAUDISH_CONTEXT_WINDOW = "512000";
+
+    expect(await launchWindow("lms@loaded-build")).toBe(LOADED_WINDOW);
+  });
+
+  test("the limit caps another local provider", async () => {
+    process.env.CLAUDISH_CONTEXT_WINDOW = "48000";
+
+    expect(await launchWindow("ollama@some-model")).toBe(48_000);
+  });
+
+  test("the limit does not touch a cloud provider", async () => {
+    process.env.CLAUDISH_CONTEXT_WINDOW = "48000";
+
+    expect(await launchWindow("kimi@not-listed")).toBe(VENDOR_WINDOW);
   });
 });

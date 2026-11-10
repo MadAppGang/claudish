@@ -196,6 +196,33 @@ describe("rows per machine", () => {
     expect(rows.find((m) => m.id === "both~local")?.contextWindow).toBeUndefined();
   });
 
+  test("each row carries the most that copy can use", async () => {
+    stored = [
+      { modelKey: "both", deviceIdentifier: M1, maxContextLength: 32_768 },
+      { modelKey: "both", deviceIdentifier: null, maxContextLength: 262_144 },
+    ];
+    const machines = await readLMStudioMachines(run);
+    if (!machines) throw new Error("expected machines");
+    const models: { id: string; maxContextWindow?: number }[] = [{ id: "both" }];
+
+    const rows = expandModelsToMachines(models, machines, 64_000);
+
+    expect(rows.find((m) => m.id === "both~m1")?.maxContextWindow).toBe(32_768);
+    expect(rows.find((m) => m.id === "both~local")?.maxContextWindow).toBe(262_144);
+  });
+
+  test("a running copy can use only the size it was loaded with", async () => {
+    stored = [{ modelKey: "both", deviceIdentifier: M1, maxContextLength: 262_144 }];
+    loaded = [{ identifier: "both", modelKey: "both", deviceIdentifier: M1, contextLength: 8_192 }];
+    const machines = await readLMStudioMachines(run);
+    if (!machines) throw new Error("expected machines");
+    const models: { id: string; maxContextWindow?: number }[] = [{ id: "both" }];
+
+    const rows = expandModelsToMachines(models, machines, 64_000);
+
+    expect(rows.find((m) => m.id === "both~m1")?.maxContextWindow).toBe(8_192);
+  });
+
   test("no connected machine means no labels", async () => {
     const lonely: LmsRunner = async (args, timeout) => {
       if (args.join(" ") === "link status --json") {
@@ -292,6 +319,12 @@ describe("ensureLMStudioInstance", () => {
 
     await expect(ensure("both", "m1", 64_000)).rejects.toThrow(/8192.*64000/);
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test("the refusal names the flag that accepts the running size", async () => {
+    loaded = [{ identifier: "both", modelKey: "both", deviceIdentifier: M1, contextLength: 8_192 }];
+
+    await expect(ensure("both", "m1", 64_000)).rejects.toThrow("--context-window 8192");
   });
 
   test("a running instance at the model's maximum is accepted", async () => {

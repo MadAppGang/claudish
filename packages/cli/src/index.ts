@@ -1026,7 +1026,8 @@ async function runCli() {
       // Human wait (the interactive picker) + per-provider credential probes.
       cliConfig.model = (await traceSpan(
         "startup:model-select",
-        () => selectModel({ freeOnly: cliConfig.freeOnly }).catch(handlePromptExit),
+        () =>
+          selectModel({ freeOnly: cliConfig.freeOnly }).catch(handlePromptExit),
         { mayIncludeUserPrompt: true }
       )) as string;
       console.log(""); // Empty line after selection
@@ -1319,6 +1320,10 @@ async function runCli() {
           resumedSessionId = outcome.sessionId;
         }
       }
+    }
+
+    if (cliConfig.contextWindow !== undefined) {
+      process.env.CLAUDISH_CONTEXT_WINDOW = String(cliConfig.contextWindow);
     }
 
     const proxy = await traceSpan("startup:proxy-start", () =>

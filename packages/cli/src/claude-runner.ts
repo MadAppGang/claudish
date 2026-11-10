@@ -47,6 +47,7 @@ import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
 import { flagsRemoveRead } from "./pane/pane-launch.js";
 import { killStillLiveMembers, snapshotDescendants, waitForExit } from "./process-tree.js";
 import { loadConfig } from "./profile-config.js";
+import { contextWindowLimit } from "./providers/context-window-limit.js";
 import { LIVE_DISCOVERY_BOUND_MS, discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
@@ -1589,10 +1590,15 @@ async function resolveLocalContextWindow(
     provider = plan.primary.provider;
     wireId = parseModelSpec(plan.primary.modelSpec).model;
   }
-  const unknownWindow = getProviderByName(provider)?.unknownContextWindow;
-  if (unknownWindow !== undefined) {
+  const definition = getProviderByName(provider);
+  const limit = definition?.isLocal ? contextWindowLimit() : undefined;
+  const capped = (window: number): number => Math.min(window, limit ?? window);
+  if (definition?.unknownContextWindow !== undefined) {
     const served = await discoverContextWindow(provider, wireId, { network: "bounded" });
-    return { modelId: parsed.model, window: served ?? unknownWindow };
+    return {
+      modelId: parsed.model,
+      window: capped(served ?? limit ?? definition.unknownContextWindow),
+    };
   }
   // A served list wins over the catalog: for subscription endpoints the real
   // window depends on the caller's tier (Kimi's k3 is 1M only on Allegretto+).
@@ -1603,9 +1609,10 @@ async function resolveLocalContextWindow(
     lookupModelForProvider(parsed.model, provider, cachePath) ??
     (wireId !== parsed.model ? lookupModelForProvider(wireId, provider, cachePath) : undefined) ??
     (await discoverContextWindow(provider, wireId, { network: "bounded" }));
+  const known = typeof win === "number" && win > 0 ? win : undefined;
   return {
     modelId: parsed.model,
-    window: typeof win === "number" && win > 0 ? win : null,
+    window: known !== undefined ? capped(known) : (limit ?? null),
   };
 }
 

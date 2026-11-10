@@ -32,6 +32,7 @@ import { log } from "../logger.js";
 import { VERSION } from "../version.js";
 import { resolveRouteProfile } from "./connection-resolver.js";
 import { isOptInWireId } from "./content-use.js";
+import { contextWindowLimit } from "./context-window-limit.js";
 import { expandModelsToMachines, isLoopbackUrl, readLMStudioMachines } from "./lmstudio-devices.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
@@ -46,6 +47,8 @@ export interface DiscoveredModel {
   displayName?: string;
   /** Real context window for THIS subscription, if reported. */
   contextWindow?: number;
+  /** The most a load can give this model, when claudish sets the size it loads with. */
+  maxContextWindow?: number;
   /**
    * ISO date (`YYYY-MM-DD`) derived from the endpoint's `created` timestamp,
    * when it reports a plausible one.
@@ -593,7 +596,7 @@ async function withLMStudioMachines(
   return expandModelsToMachines(
     models,
     machines,
-    getProviderByName("lmstudio")?.unknownContextWindow
+    contextWindowLimit() ?? getProviderByName("lmstudio")?.unknownContextWindow
   );
 }
 
