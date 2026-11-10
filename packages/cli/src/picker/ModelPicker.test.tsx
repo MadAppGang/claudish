@@ -2030,6 +2030,20 @@ describe("LM Studio rows on several machines", () => {
     }
   });
 
+  test("the filter matches the machine name", async () => {
+    const d = await list();
+    try {
+      // `this`, not `mac`: in one batch, `c` reaches the picker before `ma` is drawn, as the custom-spec command.
+      await d.press(["t", "h", "i", "s"]);
+      await d.until((t) => !t.some((line) => /qwen-build .*\bm1\b/.test(line)));
+      const rows = d.recapture().text.filter((line) => line.includes("qwen-build "));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toContain("this Mac");
+    } finally {
+      d.destroy();
+    }
+  });
+
   test("the list hides the suffix and the spec line keeps it", async () => {
     const d = await list();
     try {

@@ -458,16 +458,18 @@ export function ModelPicker({
   const shown = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     if (!needle) return list.rows;
-    // THREE THINGS MATCH, and the readable NAME is one of them — the column now
+    // FOUR THINGS MATCH, and the readable NAME is one of them — the column now
     // prints `OpenRouter`, so typing `openr` must narrow to it or the filter
     // contradicts the screen. The shortcut still matches (`kc` reaches Kimi
     // Coding in three keystrokes, which is how provider scoping survived the
-    // rail's deletion) and so does the model id.
+    // rail's deletion), and so do the model id and the LM Link machine the row
+    // prints (`this Mac`, whose id ends in `~local`).
     return list.rows.filter(
       (r) =>
         r.model.id.toLowerCase().includes(needle) ||
         r.shortcut.toLowerCase().startsWith(needle) ||
-        (labels.get(r.provider) ?? "").toLowerCase().includes(needle)
+        (labels.get(r.provider) ?? "").toLowerCase().includes(needle) ||
+        (r.model.machine?.name ?? "").toLowerCase().includes(needle)
     );
   }, [list.rows, filter, labels]);
 
