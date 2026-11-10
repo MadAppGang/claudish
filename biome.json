@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "ignore": ["node_modules", "dist", ".git"]
+    "ignore": ["node_modules", "dist", ".git", "**/bundled-recommended-list.json"]
   },
   "formatter": {
     "enabled": true,
