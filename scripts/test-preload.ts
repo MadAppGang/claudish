@@ -22,13 +22,17 @@
  * Codex sign, and `codex-pool-legacy-2a.test.ts` set neither `HOME` nor
  * `CLAUDISH_DISABLE_KEYCHAIN`. So, before any test file loads:
  *
- * - The three prevention flags `test:safe` sets (`scripts/guard-real-config.ts`), each
+ * - The four prevention flags `test:safe` sets (`scripts/guard-real-config.ts`), each
  *   unless the environment already states a value: `CLAUDISH_DISABLE_KEYCHAIN=1` (a
  *   test that exercises the Keychain path deletes it and injects a fake `security`, as
- *   those tests already do), `CLAUDISH_DISABLE_OP=1` and
- *   `CLAUDISH_DISABLE_CATALOG_WARM=1`. The last one matters once `HOME` is empty: a
- *   proxy test that fired the hosted-catalog warm used to read the developer's cached
- *   catalog, and against an empty cache it live-fetches past its 5 s timeout.
+ *   those tests already do), `CLAUDISH_DISABLE_OP=1`,
+ *   `CLAUDISH_DISABLE_CATALOG_WARM=1` and `CLAUDISH_DISABLE_BUNDLED_LIST=1`.
+ *   `CLAUDISH_DISABLE_CATALOG_WARM=1` matters once `HOME` is empty: a proxy test that
+ *   fired the hosted-catalog warm used to read the developer's cached catalog, and
+ *   against an empty cache it live-fetches past its 5 s timeout. It also reads as an
+ *   unreachable backend, which is when the bundled list answers, so
+ *   `CLAUDISH_DISABLE_BUNDLED_LIST=1` keeps a test with no catalog meaning no catalog
+ *   at all. A test that exercises the bundled list deletes it and installs its own.
  * - `HOME` becomes a fresh temporary directory, unless the inherited `HOME` is already
  *   under a temporary directory (a parent test that spawned this `bun test` with its
  *   own throwaway home keeps it).
@@ -56,6 +60,7 @@ for (const flag of [
   "CLAUDISH_DISABLE_KEYCHAIN",
   "CLAUDISH_DISABLE_OP",
   "CLAUDISH_DISABLE_CATALOG_WARM",
+  "CLAUDISH_DISABLE_BUNDLED_LIST",
 ]) {
   if (process.env[flag] === undefined) process.env[flag] = "1";
 }

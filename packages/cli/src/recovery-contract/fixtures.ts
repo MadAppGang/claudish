@@ -450,8 +450,12 @@ export async function startProxy(
   const configPath = join(dir, "config.json");
   writeFileSync(configPath, JSON.stringify(config), "utf8");
   setConfigFileOverride(configPath);
-  const restoreCatalogWarm = envSnapshot(["CLAUDISH_DISABLE_CATALOG_WARM"]);
+  const restoreCatalogWarm = envSnapshot([
+    "CLAUDISH_DISABLE_CATALOG_WARM",
+    "CLAUDISH_DISABLE_BUNDLED_LIST",
+  ]);
   process.env.CLAUDISH_DISABLE_CATALOG_WARM = "1";
+  process.env.CLAUDISH_DISABLE_BUNDLED_LIST = "1";
 
   const captured: string[] = [];
   const realWrite = process.stderr.write.bind(process.stderr);

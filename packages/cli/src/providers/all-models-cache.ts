@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { writeFileAtomic } from "../fs-atomic.js";
 import { log } from "../logger.js";
 import type { AggregatorEntry } from "../model-loader.js";
+import { _setBundledListRawForTest, bundledListRaw } from "./bundled-list.js";
 import {
   bundledListEnabled,
   bundledListScopeActive,
@@ -454,25 +455,20 @@ export function readDiskCatalog(path: string = ALL_MODELS_CACHE_PATH): DiskCache
   return cache;
 }
 
-/**
- * The bundled list's raw JSON set by a test; `undefined` until one sets it.
- * `null` means "no bundled list".
- */
-let _bundledListRawForTest: unknown | null | undefined;
 /** The parsed bundled list. `undefined`: not read yet. */
 let _bundledListMemo: DiskCacheV3 | null | undefined;
 let _bundledListLogged = false;
 
-/** Install raw bundled-list JSON for the process; `undefined` restores the default. */
+/** Install raw bundled-list JSON for the process; `undefined` restores the shipped file. */
 export function _setBundledListForTest(raw: unknown | null | undefined): void {
-  _bundledListRawForTest = raw;
+  _setBundledListRawForTest(raw);
   _bundledListMemo = undefined;
   _bundledListLogged = false;
 }
 
 function readBundledList(): DiskCacheV3 | null {
   if (_bundledListMemo !== undefined) return _bundledListMemo;
-  const parsed = parseAllModelsCache(_bundledListRawForTest ?? null);
+  const parsed = parseAllModelsCache(bundledListRaw());
   _bundledListMemo = parsed
     ? { ...parsed, entries: parsed.entries.map(splitOptInConnections), origin: "bundled" }
     : null;

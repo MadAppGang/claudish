@@ -14,6 +14,8 @@ import {
 import { catalogUrl, plansUrl } from "./catalog-endpoints.js";
 import {
   _resetCatalogReachabilityForTest,
+  bundledListEnabled,
+  catalogReachability,
   catalogWarmDisabledFor,
   noteCatalogContact,
   noteRefreshSettled,
@@ -741,6 +743,12 @@ export async function warmCatalog(): Promise<void> {
 
 export async function ensureCatalogReady(timeoutMs = 5000): Promise<void> {
   if (isCatalogWarm() || (readDiskCatalog()?.entries.length ?? 0) > 0) return;
+  // The bundled list already answers, so nothing is gained by waiting here: the
+  // refresh runs behind it and the disk catalog takes over when one lands.
+  if (bundledListEnabled() && catalogReachability().state === "unreachable") {
+    void startCatalogWarm();
+    return;
+  }
   await waitForCatalogWarm(timeoutMs);
 }
 
@@ -752,6 +760,13 @@ export async function ensureCatalogReady(timeoutMs = 5000): Promise<void> {
 export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> {
   const cache = readDiskCatalog();
   if (cache?.routeRegistry) return;
+  // As in ensureCatalogReady: with no catalog file and the backend settled as
+  // unreachable, the bundled list answers and waiting gains nothing. Whether the
+  // bundled list answers is decided by the reader, not here.
+  if (!cache && bundledListEnabled() && catalogReachability().state === "unreachable") {
+    void startCatalogWarm();
+    return;
+  }
   // Models cached, registry missing or of another generation (an older claudish
   // rewrote the models): fetch only the routes of THIS generation — one small
   // request instead of the whole refresh.
