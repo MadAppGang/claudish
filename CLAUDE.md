@@ -227,6 +227,12 @@ a stale value fails the publish) — then run
 GENERATED from `packages/cli/package.json` and says so in its header; editing it by hand is
 silently overwritten by the next `build`.
 
+After `generate-version.ts`, run `bun run --cwd packages/cli generate:bundled-list` and commit
+`packages/cli/src/providers/bundled-recommended-list.json` in the bump PR. It reads the production
+backend, so it is a bump step: neither `build` nor `release.yml` makes that call. Any failure exits
+1 and writes nothing; stop the bump and read the error. Only the generator writes that file, never
+a hand edit.
+
 **Never `git push --tags`.** Local `v7.8.2` diverges from origin's, so `--tags` exits
 non-zero on every release — after the new tag has already landed. It reports failure over
 success, which is the one outcome an automated release cannot recover from. Push the
