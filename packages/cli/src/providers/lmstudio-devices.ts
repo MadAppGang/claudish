@@ -338,7 +338,17 @@ export function takeOverStaleLock(lockPath: string, identity: string): boolean {
     }
     return false;
   }
-  rmSync(lockPath, { recursive: true, force: true });
+  // Moved aside in one step, then deleted: a recursive delete in place empties the
+  // directory before it removes it, and a waiter that claims it in between keeps
+  // an empty, ownerless lock at the path. While this claim is held, no other
+  // waiter changes the path, so the move takes exactly the lock that was checked.
+  const aside = `${lockPath}.dead.${process.pid}.${Math.random().toString(36).slice(2)}`;
+  try {
+    renameSync(lockPath, aside);
+  } catch {
+    return false;
+  }
+  rmSync(aside, { recursive: true, force: true });
   return true;
 }
 
