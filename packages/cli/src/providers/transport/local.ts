@@ -356,6 +356,21 @@ export class LocalTransport implements ProviderTransport {
     }
   }
 
+  /**
+   * Refuses a payload whose placement failed. The payload is the one record that
+   * belongs to its own request: a successful placement replaces \`model~machine\`
+   * with the instance id, and one transport serves concurrent requests, so a
+   * transport field cannot say which request's placement failed.
+   */
+  transformPayload(payload: any): any {
+    if (this.lmStudioDevice && payload?.model === `${this.modelName}~${this.lmStudioDevice}`) {
+      throw new Error(
+        `${this.modelName} was not placed on ${this.lmStudioDevice} when this request was built, so it was not sent. Send the message again.`
+      );
+    }
+    return payload;
+  }
+
   getContextWindow(): number {
     return this._contextWindow;
   }

@@ -457,6 +457,34 @@ describe("LocalTransport with a machine suffix", () => {
     await transport.refreshAuth();
   });
 
+  test("a payload built without a placement is never sent, whatever a later request placed", async () => {
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
+    const place = spyOn(
+      transport as unknown as { placeOnDevice(): Promise<unknown> },
+      "placeOnDevice"
+    )
+      .mockRejectedValueOnce(new Error("Could not read LM Link status."))
+      .mockResolvedValue({ instanceId: "shared-model:2", contextLength: 64_000 });
+    try {
+      // The handler merges the extra fields into a payload that names the model spec.
+      const payloadA = { model: "shared-model~m1", ...(await transport.getExtraPayloadFields()) };
+      // A concurrent request on the same transport builds its payload and places the model.
+      const payloadB = { model: "shared-model~m1", ...(await transport.getExtraPayloadFields()) };
+
+      expect(() => transport.transformPayload?.(payloadA)).toThrow("shared-model");
+      let refused: unknown;
+      try {
+        transport.transformPayload?.(payloadA);
+      } catch (error) {
+        refused = error;
+      }
+      expect(classifyConnectionError(refused)).toBeNull();
+      expect(transport.transformPayload?.(payloadB)?.model).toBe("shared-model:2");
+    } finally {
+      place.mockRestore();
+    }
+  });
+
   test("a request whose placement was refused fails on every retry, never as an outage", async () => {
     const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
     const place = spyOn(
