@@ -601,7 +601,9 @@ export class Viewer {
     // the server released this connection's claim when it dropped; a held view is taken again
     const held = this.holding;
     this.claimId = null;
-    // the dropped connection's hold went with it; a replay that is gone ends through its remove
+    // the dropped connection's hold went with it. A replay that is gone ends through the new
+    // subscription's snapshot, which no longer lists it: a remove sent while the connection was
+    // down never reaches this one
     if (this.client) await this.joinReplay(this.client).catch(() => {});
     await this.subscribe().catch(() => {});
     if (held) await this.take();

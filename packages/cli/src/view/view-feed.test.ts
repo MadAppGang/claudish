@@ -55,4 +55,24 @@ describe("ViewFeed: the activity clock", () => {
       "2026-11-11T00:00:01.000Z",
     ]);
   });
+
+  test("a real change while the trailing activity flush waits still goes out within the debounce", async () => {
+    const feed = new ViewFeed({ debounceMs: 20, activityPublishMs: 1_000 });
+    let item = {
+      ...sessionItem("a"),
+      last_activity_at: "2026-11-11T00:00:00.000Z",
+    } as ViewItem;
+    feed.setBuilder(() => item);
+    const seen: ViewFeedEvent[] = [];
+    feed.subscribe((e) => seen.push(e));
+    feed.changed(item.target, true);
+    // activity only: the trailing flush is armed for the end of the window
+    item = { ...item, last_activity_at: "2026-11-11T00:00:01.000Z" } as ViewItem;
+    feed.changed(item.target, true);
+    expect(upserts(seen)).toHaveLength(1);
+    item = { ...item, tool_calls: 3 } as ViewItem;
+    feed.changed(item.target);
+    await Bun.sleep(200);
+    expect(upserts(seen).map((i) => (i as { tool_calls: number }).tool_calls)).toEqual([0, 3]);
+  });
 });

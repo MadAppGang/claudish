@@ -200,6 +200,29 @@ describe("HerdrPlacer: placing", () => {
     expect(h.fake.placedPanes()).toHaveLength(0);
   });
 
+  test("a pane the user closes while the event stream is down stays closed after the reconcile", async () => {
+    h = await startHarness();
+    h.upsert(sessionItem("a"));
+    await eventually(() => expect(claudishPanes(h as Harness)).toHaveLength(1));
+    await h.placer.whenIdle();
+    const pane = claudishPanes(h)[0] as string;
+    // the close happens with no subscriber connected: only the reconcile can see it
+    h.fake.dropConnections();
+    h.fake.exitPane(pane);
+    await eventually(
+      () => expect(h?.fake.callsOf("pane.get").some((c) => c.params.pane_id === pane)).toBe(true),
+      5_000
+    );
+    await Bun.sleep(100);
+    await h.placer.whenIdle();
+    h.upsert(sessionItem("a", { state: "AWAITING_INPUT" }));
+    h.upsert(sessionItem("a"));
+    await Bun.sleep(100);
+    await h.placer.whenIdle();
+    expect(h.fake.callsOf("layout.apply")).toHaveLength(1);
+    expect(h.fake.placedPanes()).toHaveLength(0);
+  });
+
   test("shutdown closes this placer's panes and nothing else", async () => {
     h = await startHarness();
     h.fake.addUserTab("w1", "claudish-like", 2);

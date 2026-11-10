@@ -786,11 +786,26 @@ function sweepFreeHerdrLocks(root: string, out: SweepResult): void {
   for (const n of names) if (removeIfFree(join(dir, n))) out.cleaned.push(`herdr/${n}`);
 }
 
-/** The feed file of a relay the table proves gone; a file with no readable stamp is not ours. */
-function sweepDeadFeed(root: string, table: NonNullable<ProcessTable>, out: SweepResult): void {
+/**
+ * The feed file of a relay the table proves gone; a file with no readable stamp is not ours. The
+ * stamp is read before the table is taken, so a relay that started before the read is in the
+ * table; and read again before the unlink, so a file another relay wrote meanwhile stays.
+ */
+function sweepDeadFeed(root: string, out: SweepResult): void {
   const path = defaultFeedPath(root);
   const stamp = readFeedStamp(path);
-  if (!stamp || stampAlive(stamp, table)) return;
+  if (!stamp) return;
+  // no trusted table: nothing can be judged dead, so the file stays
+  const table = readProcessTable();
+  if (!table || stampAlive(stamp, table)) return;
+  const now = readFeedStamp(path);
+  if (
+    !now ||
+    now.pid !== stamp.pid ||
+    now.start36 !== stamp.start36 ||
+    now.started_at !== stamp.started_at
+  )
+    return;
   rmSync(path, { force: true });
   out.cleaned.push("feed/feed.json");
 }
@@ -824,11 +839,9 @@ export async function sweepOrphanPanes(root: string = sockRootFor()): Promise<Sw
   }
   sweepRecordlessViewSockets(root, out);
   sweepFreeHerdrLocks(root, out);
-  // no trusted table: nothing can be judged dead, so every endpoint and the feed file stay
+  // no trusted table: nothing can be judged dead, so every endpoint stays
   const table = readProcessTable();
-  if (table) {
-    out.cleaned.push(...sweepEndpoints(root, table));
-    sweepDeadFeed(root, table, out);
-  }
+  if (table) out.cleaned.push(...sweepEndpoints(root, table));
+  sweepDeadFeed(root, out);
   return out;
 }

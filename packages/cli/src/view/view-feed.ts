@@ -43,7 +43,10 @@ function gateFields(item: ViewItem): { stable: string; lastActivityAt: string | 
 export class ViewFeed {
   private build: (target: string) => ViewItem | null = () => null;
   private readonly listeners = new Set<ViewFeedListener>();
-  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly timers = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; due: number }
+  >();
   private readonly published = new Map<string, Published>();
   private readonly debounceMs: number;
   private readonly activityPublishMs: number;
@@ -71,15 +74,23 @@ export class ViewFeed {
     this.arm(target, this.debounceMs);
   }
 
-  /** One pending flush per target; an armed one is kept. */
+  /**
+   * One pending flush per target, at the earliest deadline asked for: an armed one is kept unless
+   * this one is due sooner. A trailing activity flush waits for the window's end, and a real change
+   * behind it must still go out within the debounce.
+   */
   private arm(target: string, ms: number): void {
-    if (this.timers.has(target)) return;
+    // timers run on the real clock, whatever `now` the gate is given
+    const due = performance.now() + ms;
+    const armed = this.timers.get(target);
+    if (armed && armed.due <= due) return;
+    if (armed) clearTimeout(armed.timer);
     const timer = setTimeout(() => {
       this.timers.delete(target);
       this.flush(target);
     }, ms);
     timer.unref?.();
-    this.timers.set(target, timer);
+    this.timers.set(target, { timer, due });
   }
 
   removed(target: string, reason: ViewRemoveReason): void {
@@ -112,9 +123,9 @@ export class ViewFeed {
   }
 
   private cancelTimer(target: string): void {
-    const timer = this.timers.get(target);
-    if (!timer) return;
-    clearTimeout(timer);
+    const armed = this.timers.get(target);
+    if (!armed) return;
+    clearTimeout(armed.timer);
     this.timers.delete(target);
   }
 

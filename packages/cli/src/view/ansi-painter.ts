@@ -83,11 +83,6 @@ export function sgr(span: Span): string {
   return `${ESC}${parts.join(";")}m`;
 }
 
-/**
- * At most `avail` CELL columns of a span, never a code point more. A wide glyph that would be cut
- * in half at the right edge is dropped whole: half of it would either wrap, shifting every row
- * below, or push the rest of the row left. Widths come from the line's `wd` through `cells`.
- */
 /** C0, DEL and C1: a terminal acts on them, so each becomes one blank cell. */
 export function printable(text: string): string {
   let out = "";
@@ -98,6 +93,11 @@ export function printable(text: string): string {
   return out;
 }
 
+/**
+ * At most `avail` CELL columns of a span, never a code point more. A wide glyph that would be cut
+ * in half at the right edge is dropped whole: half of it would either wrap, shifting every row
+ * below, or push the rest of the row left. Widths come from the line's `wd` through `cells`.
+ */
 export function clipSpan(span: Span, avail: number, cells: CellCols): string {
   if (avail <= 0) return "";
   if (span.width <= avail) return printable(span.text);

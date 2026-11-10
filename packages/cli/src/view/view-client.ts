@@ -65,6 +65,14 @@ export class ViewClient {
     closed: new Set(),
   };
   private ended = false;
+  /**
+   * Set while a dial is being greeted or the reconnect loop runs. A drop then is that attempt's
+   * failure, never a second loop's start: a server at its connection cap ends every socket before
+   * its `hello` is answered.
+   */
+  private dialing = false;
+  /** every socket this client dialed and has not seen close; `close()` ends them all */
+  private readonly opened = new Set<Socket>();
   /** the server's answer to the most recent `hello` of this client */
   helloResult: ViewHelloResult | null = null;
 
@@ -78,11 +86,14 @@ export class ViewClient {
     const client = new ViewClient(path, options);
     client.adopt(await dial(path));
     if (options.hello) {
+      client.dialing = true;
       try {
         await client.greet(options.hello);
       } catch (e) {
         client.close();
         throw e;
+      } finally {
+        client.dialing = false;
       }
     }
     return client;
@@ -123,12 +134,17 @@ export class ViewClient {
   }
 
   private adopt(sock: Socket): void {
+    if (this.sock && this.sock !== sock) this.sock.destroy();
     this.sock = sock;
+    this.opened.add(sock);
     this.inbound = "";
     sock.setEncoding("utf8");
     sock.on("data", (chunk: string) => this.onData(chunk));
     sock.on("error", () => {});
-    sock.on("close", () => void this.onDropped(sock));
+    sock.on("close", () => {
+      this.opened.delete(sock);
+      void this.onDropped(sock);
+    });
   }
 
   private onData(chunk: string): void {
@@ -192,11 +208,22 @@ export class ViewClient {
   private async onDropped(sock: Socket): Promise<void> {
     if (this.sock !== sock || this.ended) return;
     this.sock = null;
+    // the attempt in flight sees its `hello` rejected here and goes on with its own loop
     this.failPending();
+    if (this.dialing) return;
     if (!this.options.reconnect) {
       this.end("server_gone");
       return;
     }
+    this.dialing = true;
+    try {
+      await this.redial();
+    } finally {
+      this.dialing = false;
+    }
+  }
+
+  private async redial(): Promise<void> {
     let wait = RECONNECT_FIRST_MS;
     const name = basename(this.path);
     while (!this.ended) {
@@ -227,6 +254,8 @@ export class ViewClient {
     if (this.ended) return;
     this.ended = true;
     this.failPending();
+    for (const sock of this.opened) sock.destroy();
+    this.opened.clear();
     this.sock?.destroy();
     this.sock = null;
     for (const fn of this.listeners.closed) fn(reason);

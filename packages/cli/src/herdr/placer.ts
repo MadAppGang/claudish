@@ -311,8 +311,9 @@ export class HerdrPlacer {
   }
 
   /**
-   * A pane of ours closed by someone else. Once placed, that is the user closing the view (or its
-   * viewer leaving on its own): the target is not placed again while its item runs.
+   * A pane of ours closed by someone else, told by its event or found missing by the reconcile.
+   * Once placed, that is the user closing the view (or its viewer leaving on its own): the target
+   * is not placed again while its item runs.
    */
   private goneUnderUs(r: PaneRecord): void {
     if (!r.closing && r.scratchTabId === null) {
@@ -744,7 +745,8 @@ export class HerdrPlacer {
       try {
         await this.call("pane.get", { pane_id: r.paneId });
       } catch (e) {
-        if (e instanceof HerdrApiError && e.code === "pane_not_found") this.forget(r);
+        // gone while no event could say so: judged as the event would have been
+        if (e instanceof HerdrApiError && e.code === "pane_not_found") this.goneUnderUs(r);
       }
     }
     await this.cleanOrphans();

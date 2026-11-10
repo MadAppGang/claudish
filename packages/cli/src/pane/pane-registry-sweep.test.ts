@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tryAcquire } from "../view/kernel-lock.js";
 import { OWNER_START36, ensureSockRoot } from "./pane-launch.js";
 import { sweepOrphanPanes } from "./pane-registry.js";
+import { type PsSpawn, setPsSpawnForTest } from "./process-identity.js";
 import { type PaneTestEnv, makePaneTestEnv } from "./test-helpers/hermetic-env.js";
 
 const envs: PaneTestEnv[] = [];
@@ -45,6 +46,33 @@ describe("startup sweep: the herdr placement locks and the relay's feed file", (
     const kept = writeFeed(live.sockRoot, process.pid, OWNER_START36);
     await sweepOrphanPanes(live.sockRoot);
     expect(existsSync(kept)).toBe(true);
+  });
+
+  test("a relay that starts and publishes while the sweep reads the process table keeps its feed", async () => {
+    const t = env();
+    let relay: ReturnType<typeof Bun.spawn> | null = null;
+    let path = "";
+    const prev: PsSpawn = setPsSpawnForTest({
+      execFileSync(file, args, opts) {
+        const out = prev.execFileSync(file, args, opts);
+        if (!relay) {
+          // the relay starts right after this snapshot, so the snapshot cannot list it
+          relay = Bun.spawn(["/bin/sleep", "30"]);
+          path = writeFeed(t.sockRoot, relay.pid, Date.now().toString(36));
+        }
+        return out;
+      },
+      execFile: (file, args, opts, cb) => prev.execFile(file, args, opts, cb),
+    });
+    try {
+      const out = await sweepOrphanPanes(t.sockRoot);
+      expect(relay).not.toBeNull();
+      expect(out.cleaned).not.toContain("feed/feed.json");
+      expect(existsSync(path)).toBe(true);
+    } finally {
+      setPsSpawnForTest(prev);
+      (relay as ReturnType<typeof Bun.spawn> | null)?.kill();
+    }
   });
 
   test("a free workspace lock is removed; a held one stays", async () => {
