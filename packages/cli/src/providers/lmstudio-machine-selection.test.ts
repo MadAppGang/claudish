@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { redactSigningValues } from "../redact.js";
 import {
   discoverContextWindow,
   discoverProviderModelsCatalog,
@@ -43,6 +44,8 @@ let duringLoad: (() => void) | undefined;
 let requiredKey: string | undefined;
 /** The rows `/api/v0/models` answers. */
 let nativeRows: Record<string, unknown>[];
+/** What a log line holding the probe's key reads as while `/api/v0/models` is answered. */
+let logDuringWindowProbe: string | undefined;
 let saved: Record<string, string | undefined>;
 
 const ENV_NAMES = [
@@ -110,6 +113,7 @@ esac
   duringLoad = undefined;
   requiredKey = undefined;
   nativeRows = NATIVE_ROWS;
+  logDuringWindowProbe = undefined;
   server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -117,7 +121,10 @@ esac
       if (requiredKey && req.headers.get("authorization") !== `Bearer ${requiredKey}`) {
         return new Response("unauthorized", { status: 401 });
       }
-      if (path === "/api/v0/models") return Response.json({ object: "list", data: nativeRows });
+      if (path === "/api/v0/models") {
+        logDuringWindowProbe = redactSigningValues("note lms-probe-key-0123456789");
+        return Response.json({ object: "list", data: nativeRows });
+      }
       if (path === "/v1/models") return Response.json({ object: "list", data: [] });
       if (path === "/api/v1/models/load") {
         const body = (await req.json()) as { model: string };
@@ -284,6 +291,22 @@ describe("LocalTransport with a machine suffix", () => {
     }
 
     expect(loadAuth).toEqual(["Bearer stored-key"]);
+  });
+
+  test("the probe's key is masked in log lines while the probes run, and only then", async () => {
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model");
+    const headers = spyOn(transport, "getHeaders").mockResolvedValue({
+      Authorization: "Bearer lms-probe-key-0123456789",
+    });
+    try {
+      await transport.refreshAuth();
+    } finally {
+      headers.mockRestore();
+    }
+
+    expect(logDuringWindowProbe).toBeDefined();
+    expect(logDuringWindowProbe).not.toContain("lms-probe-key-0123456789");
+    expect(redactSigningValues("lms-probe-key-0123456789")).toBe("lms-probe-key-0123456789");
   });
 
   test("a server that requires the key passes the health check with it", async () => {

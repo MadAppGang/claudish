@@ -13,6 +13,7 @@
 
 import { Agent } from "undici";
 import { credentials } from "../../auth/credentials/authority.js";
+import { credentialValuesFromRequest } from "../../handlers/shared/call-context.js";
 import { markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
@@ -23,6 +24,7 @@ import {
 } from "../../providers/lmstudio-devices.js";
 import { getProviderByName } from "../../providers/provider-definitions.js";
 import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
+import { acquireSigningLease } from "../../redact.js";
 import { contextWindowLimit } from "../context-window-limit.js";
 import {
   discoverViaLMStudio,
@@ -237,6 +239,18 @@ export class LocalTransport implements ProviderTransport {
    * Throws on failure so ComposedHandler can return an error response.
    */
   async refreshAuth(): Promise<void> {
+    // The probes and the placement sign with the key, and what they log is written
+    // before the request's own lease registers it. This lease covers that window.
+    const lease = acquireSigningLease();
+    lease.add(credentialValuesFromRequest(await this.probeHeaders()));
+    try {
+      await this.refreshAuthUnderLease();
+    } finally {
+      lease.release();
+    }
+  }
+
+  private async refreshAuthUnderLease(): Promise<void> {
     if (this.healthChecked) {
       await this.confirmPlacement();
       return;
