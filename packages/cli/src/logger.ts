@@ -165,6 +165,10 @@ function isStructuralLogWorthy(msg: string): boolean {
     msg.startsWith("[catalog]") ||
     msg.startsWith("[effort]") ||
     msg.startsWith("[team]") ||
+    // A parent's `--model-pinned` dropped outside a pane child changes how
+    // every element of `--model` is routed (explicit spec, not routed hop).
+    // The run that dropped it is rarely one started with `-d`.
+    msg.startsWith("[model-pin]") ||
     // Connection-recovery episodes: which target, which attempt, how long the
     // next gap is, and how the episode ended. Without this entry the ladder's
     // only trace is behind `-d`, and the one thing a user reports about an

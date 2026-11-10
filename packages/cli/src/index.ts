@@ -947,7 +947,7 @@ async function runCli() {
     initLogger(cliConfig.debug, cliConfig.logLevel, cliConfig.noLogs);
     for (const note of paneChildBootNotes()) log(note);
     if (cliConfig.modelPinned && !modelPinnedHonoured(cliConfig.modelPinned)) {
-      log("[claudish] --model-pinned ignored: honoured only in a pane child claudish started");
+      log("[model-pin] --model-pinned ignored: honoured only in a pane child claudish started");
       cliConfig.modelPinned = undefined;
     }
 
