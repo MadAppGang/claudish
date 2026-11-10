@@ -77,7 +77,14 @@ import {
   sockRootFor,
 } from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
-import { readAllModelsCache } from "./providers/all-models-cache.js";
+import { readAllModelsCache, readDiskCatalog } from "./providers/all-models-cache.js";
+import {
+  bundledListActive,
+  bundledListNote,
+  bundledRecommendedModelsDoc,
+} from "./providers/bundled-list.js";
+import { settleCatalogVerdict, warmCatalog } from "./providers/catalog-client.js";
+import { bundledListEnabled } from "./providers/catalog-reachability.js";
 import { LIVE_MS } from "./providers/dynamic-models-catalog-store.js";
 import {
   type AccountModelsListSnapshot,
@@ -1654,6 +1661,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     heartbeat: true,
     handler: async (args, ctx) => {
       try {
+        await settleCatalogVerdictWithNoFile();
         const { specs, stripped } = strippedProviders(
           [args.model as string],
           new Set(args.user_required_provider === true ? [args.model as string] : [])
@@ -1711,18 +1719,26 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     inputSchema: { type: "object" },
     group: "low-level",
     handler: async () => {
+      await settleCatalogVerdictWithNoFile();
       // A failed fetch falls back to the list last written to disk, of any
       // generation, and says so; the reason goes to the log, never to stdout.
       let doc: RecommendedModelsDoc | null = null;
       let note = "";
-      try {
-        doc = await getRecommendedModels();
-        if (!doc.models || doc.models.length === 0) {
-          log("[mcp] list_models: the recommended list is empty");
-          doc = null;
+      // With no catalog file and the backend settled as unreachable, a fetch would
+      // only wait out its own timeout: go straight to the stored and bundled lists.
+      const backendUnreachable = readDiskCatalog() === null && bundledListActive();
+      if (backendUnreachable) {
+        log("[mcp] list_models: backend unreachable, recommended list not fetched");
+      } else {
+        try {
+          doc = await getRecommendedModels();
+          if (!doc.models || doc.models.length === 0) {
+            log("[mcp] list_models: the recommended list is empty");
+            doc = null;
+          }
+        } catch (err) {
+          log(`[mcp] list_models: ${err instanceof Error ? err.message : String(err)}`);
         }
-      } catch (err) {
-        log(`[mcp] list_models: ${err instanceof Error ? err.message : String(err)}`);
       }
       if (!doc) {
         doc = readLastRecommendedModels();
@@ -1733,6 +1749,14 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           log(
             `[mcp] list_models: answered from stored generation ${doc.generationId ?? "unknown"}`
           );
+        }
+      }
+      if (!doc && bundledListActive()) {
+        const bundled = bundledRecommendedModelsDoc();
+        if (bundled.models.length > 0) {
+          doc = bundled;
+          note = `_${bundledListNote()}_`;
+          log("[mcp] list_models: answered from the bundled recommended list");
         }
       }
 
@@ -2338,6 +2362,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           throw new Error(`Unknown mode: ${mode}`);
         const path = args.path;
         if (typeof path !== "string" || !path) throw new Error(`'path' is required for '${mode}'`);
+        await settleCatalogVerdictWithNoFile();
         const givenModels = args.models as string[] | undefined;
         const givenJudges = args.judges as string[] | undefined;
         const requiredProviders = userRequiredProvidersArg(args.user_required_provider, [
@@ -2920,6 +2945,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         // reads project-local config relative to process.cwd(), so the parent
         // would decide with the wrong project's rules. process.chdir() is not
         // an option — it is process-global and races concurrent calls.
+        await settleCatalogVerdictWithNoFile();
         const { specs, stripped } = strippedProviders(
           [args.model as string],
           new Set(args.user_required_provider === true ? [args.model as string] : [])
@@ -3513,6 +3539,14 @@ export function mcpDebugLogEnabled(
   return fromEnv === "1" || fromEnv === "true";
 }
 
+/**
+ * With no catalog file, wait for the backend's first answer so a model check in
+ * the same call reads a settled source. At most that request's own 8 s timeout.
+ */
+async function settleCatalogVerdictWithNoFile(): Promise<void> {
+  if (readDiskCatalog() === null && bundledListEnabled()) await settleCatalogVerdict();
+}
+
 async function main() {
   // FIRST, before anything can start loadHooksOnce(): descriptor 1 belongs to
   // the JSON-RPC writer alone. Every other stdout route — Bun's native
@@ -3541,6 +3575,10 @@ async function main() {
   // background. The MCP server's own proxy (run_prompt, preflight) awaits the
   // same memoised promise before it builds a handler.
   void loadHooksOnce({ hostMode: "mcp" });
+
+  // No catalog file: start the one refresh now, so the first tool call does not
+  // pay for starting it.
+  if (readDiskCatalog() === null && bundledListEnabled()) void warmCatalog();
 
   const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
   // Inside a session a claudish owner started, one level of nesting is the limit:

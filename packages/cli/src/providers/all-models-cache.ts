@@ -466,7 +466,8 @@ export function _setBundledListForTest(raw: unknown | null | undefined): void {
   _bundledListLogged = false;
 }
 
-function readBundledList(): DiskCacheV3 | null {
+/** The bundled list parsed as a catalog, whatever the reachability. Parsed once. */
+export function readBundledList(): DiskCacheV3 | null {
   if (_bundledListMemo !== undefined) return _bundledListMemo;
   const parsed = parseAllModelsCache(bundledListRaw());
   _bundledListMemo = parsed
