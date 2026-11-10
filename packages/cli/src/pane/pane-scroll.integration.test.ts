@@ -206,10 +206,19 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
       await settled(id, 2);
       expect(input().slice(nextOffset)).not.toContain(END);
 
-      // Existing capture/resize answer types remain additive-free.
+      // Contract v1 adds view ownership without changing capture or resize semantics.
       const c = await capture(id);
-      expect(Object.keys(c).sort()).toEqual(["cols", "cursor", "final", "lines", "rows", "seq"]);
+      expect(Object.keys(c).sort()).toEqual([
+        "cols",
+        "cursor",
+        "final",
+        "lines",
+        "rows",
+        "seq",
+        "view",
+      ]);
       expect(c.lines).toHaveLength(c.rows);
+      expect(c.view).toBeNull();
       const resized = await call("resize_session", { session_id: id, cols: c.cols, rows: c.rows });
       expect(resized).toEqual({
         session_id: id,
@@ -217,11 +226,18 @@ describe.skipIf(!MAGMUX_AVAILABLE)("pane scroll through MCP", () => {
         rows: c.rows,
         changed: false,
         seq: c.seq,
+        view: {
+          holder: "claude_code",
+          label: "Claude Code",
+          since: expect.any(String),
+          claim_id: expect.any(String),
+        },
       });
       expect(await call("capture_session", { session_id: id, since_seq: c.seq })).toEqual({
         unchanged: true,
         seq: c.seq,
         final: false,
+        view: resized.view,
       });
     },
     T

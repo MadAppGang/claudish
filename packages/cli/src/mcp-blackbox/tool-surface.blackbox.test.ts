@@ -37,6 +37,7 @@ const CAPABILITIES = [
   "scroll",
   "transcript",
   "replay",
+  "view",
 ];
 
 // REQ-15: literal sorted sets from architecture-contracts.md, not from implementation.

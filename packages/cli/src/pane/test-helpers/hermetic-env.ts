@@ -16,6 +16,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -27,6 +28,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { findMagmuxBinaryOrNull } from "../../launcher/magmux-binary.js";
 import { projectDirNameFor } from "../../mcp-session/home-dir.js";
+import { flockAvailable, tryAcquire } from "../../view/kernel-lock.js";
 import {
   type PsRow,
   type PsSpawn,
@@ -219,9 +221,29 @@ export function orphanReport(o: {
     .map((r) => `${r.pid} ${r.pgid} ${r.command.slice(0, 200)}`);
   const files: string[] = [];
   if (existsSync(o.sockRoot)) {
-    for (const n of readdirSync(o.sockRoot)) if (n !== "panes") files.push(n);
-    if (existsSync(join(o.sockRoot, "panes")))
-      for (const n of readdirSync(join(o.sockRoot, "panes"))) files.push(`panes/${n}`);
+    const sharedDirs = new Set(["panes", "endpoints", "feed", "herdr", "replays"]);
+    const visit = (relative: string): void => {
+      const path = join(o.sockRoot, relative);
+      const stat = lstatSync(path);
+      // Discovery sockets are server resources, not session panes. A dead server's
+      // socket remains until startup sweep; all other files in endpoints still count.
+      if (/^endpoints\/c[0-9]+-[0-9a-z]+[.]sock$/.test(relative) && stat.isSocket()) return;
+      // A free lock file is inert; a held lock must still fail the orphan check.
+      if (/^(?:herdr|replays)\/[^/]+[.]lock$/.test(relative) && stat.isFile() && flockAvailable()) {
+        const lock = tryAcquire(path);
+        if (lock) {
+          lock.close();
+          return;
+        }
+      }
+      files.push(relative);
+    };
+    for (const name of readdirSync(o.sockRoot)) {
+      const path = join(o.sockRoot, name);
+      if (sharedDirs.has(name) && lstatSync(path).isDirectory()) {
+        for (const entry of readdirSync(path)) visit(`${name}/${entry}`);
+      } else files.push(name);
+    }
   }
   return { processes, files };
 }

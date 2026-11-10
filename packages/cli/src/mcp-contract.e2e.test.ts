@@ -49,6 +49,7 @@ const SLOT_ROW_KEYS = [
   "tokens_out",
   "tool_calls",
   "turns_completed",
+  "view",
 ].sort();
 const SESSION_ROW_KEYS = [
   ...SLOT_ROW_KEYS,
@@ -67,9 +68,9 @@ const TEAM_RUN_ROW_KEYS = [
   "started_at",
   "state",
 ].sort();
-const CAPTURE_KEYS = ["cols", "cursor", "final", "lines", "rows", "seq"].sort();
+const CAPTURE_KEYS = ["cols", "cursor", "final", "lines", "rows", "seq", "view"].sort();
 const CAPTURE_SPANS_KEYS = [...CAPTURE_KEYS, "spans"].sort();
-const UNCHANGED_KEYS = ["final", "seq", "unchanged"];
+const UNCHANGED_KEYS = ["final", "seq", "unchanged", "view"];
 const TEAM_CANCEL_KEYS = ["path", "results", "run_id"];
 const TEAM_CANCEL_ENTRY_KEYS = ["changed", "slot", "state"];
 const SESSION_CANCEL_KEYS = ["changed", "session_id", "state"];
@@ -112,8 +113,9 @@ function contractError(r: ToolResult, code: string): void {
 function expectContractMeta(body: Json): void {
   expect(body.contract_version).toBe(1);
   expect(body.capabilities).toEqual([...CAPABILITIES]);
-  // contract v1 only appends: the replay verbs (MTL-373) are the newest capability
-  expect(CAPABILITIES.at(-1)).toBe("replay");
+  // Contract v1 appends view ownership without changing the existing capabilities.
+  expect(CAPABILITIES.at(-2)).toBe("replay");
+  expect(CAPABILITIES.at(-1)).toBe("view");
 }
 
 function expectSlotRow(row: Json, extended: string[] = SLOT_ROW_KEYS): void {
@@ -234,7 +236,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("team verbs: exact shapes, idempotent cancel"
         await team({ mode: "capture", path, slot: "02", since_seq: final.seq as number })
       );
       expect(keys(same)).toEqual(UNCHANGED_KEYS);
-      expect(same).toEqual({ unchanged: true, seq: final.seq, final: true });
+      expect(same).toEqual({ unchanged: true, seq: final.seq, final: true, view: null });
     },
     T_TEST
   );
@@ -281,7 +283,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("channel verbs: exact shapes, idempotent canc
         await server.callTool("capture_session", { session_id: id, since_seq: stable.seq })
       );
       expect(keys(unchanged)).toEqual(UNCHANGED_KEYS);
-      expect(unchanged).toEqual({ unchanged: true, seq: stable.seq, final: false });
+      expect(unchanged).toEqual({ unchanged: true, seq: stable.seq, final: false, view: null });
       const lower = ok(
         await server.callTool("capture_session", {
           session_id: id,

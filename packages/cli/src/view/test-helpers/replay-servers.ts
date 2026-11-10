@@ -62,6 +62,7 @@ export class FakeReplayPane implements ReplayPaneLike {
     this.paneId = o.paneId ?? `c${process.pid}-x-rfake-${randomBytes(3).toString("hex")}`;
     const lockFd = ctl.handLock && o.holdLock ? o.holdLock.fd : "ignore";
     this.proc = spawn("/bin/sleep", ["600"], {
+      env: { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root },
       stdio: ["ignore", "ignore", "ignore", lockFd],
       detached: true,
     });

@@ -84,6 +84,7 @@ const EXPECTED_CAPABILITIES: Array<(typeof CAPABILITIES)[number]> = [
   "scroll",
   "transcript",
   "replay",
+  "view",
 ];
 let layout: TempLayout;
 let server: McpServer | undefined;
