@@ -149,7 +149,31 @@ describe("isPortablePattern", () => {
     { pattern: String.raw`^a\\pb$`, portable: true },
     { pattern: "(?<name>a)", portable: false },
     { pattern: "(?<=a)b", portable: true },
+    { pattern: String.raw`^[^\0]*$`, portable: false },
+    { pattern: String.raw`a\012`, portable: false },
+    { pattern: String.raw`^[^\x00]*$`, portable: true },
+    { pattern: String.raw`(a)\1`, portable: true },
+    { pattern: String.raw`a\\0`, portable: true },
   ])("returns $portable for $pattern", ({ pattern, portable }) => {
     expect(isPortablePattern(pattern)).toBe(portable);
+  });
+});
+
+describe("NUL escape in tool schema patterns", () => {
+  const sanitize = (pattern: string) =>
+    sanitizeSchemaForOpenAI({ type: "object", properties: { p: { type: "string", pattern } } })
+      .properties.p;
+
+  it("rewrites \\0 to \\x00 and keeps the constraint", () => {
+    expect(sanitize(String.raw`^[^\0]*$`).pattern).toBe(String.raw`^[^\x00]*$`);
+  });
+
+  it("drops an octal escape", () => {
+    expect(sanitize(String.raw`a\012`)).toEqual({ type: "string" });
+  });
+
+  it("leaves an escaped backslash before 0 and backreferences alone", () => {
+    expect(sanitize(String.raw`a\\0`).pattern).toBe(String.raw`a\\0`);
+    expect(sanitize(String.raw`(a)\1`).pattern).toBe(String.raw`(a)\1`);
   });
 });
