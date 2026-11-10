@@ -174,6 +174,10 @@ export interface CandidateGathering {
    * yet still has a last-resort fallback, because absence from a catalog that
    * IS readable is only denial for a route the catalog owns (see
    * `routing-rules.ts`, the fallback append).
+   *
+   * False too for a name the bundled recommended list lacks: that list is a
+   * trimmed subset, so its silence is no statement about the name, exactly as if
+   * no catalog could be read.
    */
   catalogReadable: boolean;
   /** Which catalog answered: a disk catalog, the bundled recommended list, or none. */
@@ -687,7 +691,7 @@ export function gatherRouteCandidates(
     excluded,
     unmappedRoutes: [...unmappedRoutes],
     catalogMiss: entry === undefined,
-    catalogReadable: entries !== null,
+    catalogReadable: entries !== null && !(origin === "bundled" && entry === undefined),
     catalogOrigin: origin,
   };
 }
@@ -712,7 +716,9 @@ export function gatherRouteCandidates(
  *     its silence says nothing;
  *   - no probe map cached → route ownership is unknown, so nothing is denied.
  *     The cost is one hop that may 404, which is exactly today's behaviour;
- *     the alternative is dropping a real route on missing evidence.
+ *     the alternative is dropping a real route on missing evidence;
+ *   - the bundled recommended list answered → its connections are trimmed to the
+ *     vendor's own, so absence from them proves nothing.
  *
  * This is NOT the availability filter and does not duplicate it.
  * `providerServesModel` may never conclude "not served" from the catalog alone
@@ -730,8 +736,8 @@ export function catalogDeniesProvider(
   if (!catalogRouteForProvider(provider)) return false;
   if (routeOwnership(provider) !== "backend-owned") return false;
 
-  const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
-  if (!entries) return false;
+  const { entries, origin } = catalogSourceFor(cachePath);
+  if (!entries || origin === "bundled") return false;
   const entry = findCatalogEntry(entries, model);
   if (!entry) return false;
 
