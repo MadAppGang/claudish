@@ -31,10 +31,13 @@ Claude names first in the proxy, `--probe`, the TUI probe, MCP `preflight` and `
 An explicit `provider@model` is a one-hop chain to that provider: no gathering, rules or fallback.
 Its outcomes are `explicit-unknown-shortcut`, `explicit-no-credential`, `explicit-unbuildable` and
 `explicit-not-served` only. Offline, a model outside the bundled recommended list, or a bundled
-model with no bundled connection for that provider, is refused as with no catalog.
+model with no bundled connection for that provider, is refused as with no catalog. A probe sends
+each hop of a bare name's routing chain as a spec marked `x-claudish-hop-origin: routed`; only a
+proxy started for probing (`probeProxy`) honours the mark and builds that hop as a routed hop, so a
+spec the user typed stays explicit, and a proxy serving Claude Code ignores the mark.
 
-- **Scope:** `providers/routing-rules.ts` (`explainExplicitSpec`), `providers/wire-handler.ts`, `handlers/handler-set.ts`.
-- **Check:** S8, S8b, S8c.
+- **Scope:** `providers/routing-rules.ts` (`explainExplicitSpec`), `providers/wire-handler.ts`, `handlers/handler-set.ts`, `providers/probe-hop-origin.ts`, `providers/probe-runner.ts`, `providers/probe-live.ts`.
+- **Check:** S8, S8b, S8c, `providers/probe-hop-origin.test.ts`.
 
 ### RB-3
 

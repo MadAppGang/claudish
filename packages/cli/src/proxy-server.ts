@@ -59,6 +59,7 @@ import {
 } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { proxyRouteDecision } from "./providers/native-route.js";
+import { PROBE_HOP_ORIGIN_HEADER, probeHopOriginOf } from "./providers/probe-hop-origin.js";
 import { describeMissingCredential, getProviderByName } from "./providers/provider-definitions.js";
 import {
   describeRoutingRuleProblem,
@@ -156,6 +157,15 @@ export interface ProxyServerOptions {
    * explicit spec stays explicit, whatever its provider.
    */
   modelChainPinned?: boolean;
+  /**
+   * True only for a proxy claudish starts to probe hops (`--probe`, the config
+   * TUI's probe, MCP `preflight`). Such a proxy honours `PROBE_HOP_ORIGIN_HEADER`:
+   * a request marked `routed` names a hop of a bare name's routing chain and is
+   * built as step 2c builds one (`hopOrigin: "routed"`). Every other proxy ignores
+   * the header, so a client of a proxy serving Claude Code cannot turn an explicit
+   * spec into a routed hop.
+   */
+  probeProxy?: boolean;
   /**
    * Classifier passthrough (opt-in). When `enabled`, Claude Code's auto-mode
    * permission classifier request (detected by content) is rewritten onto
@@ -465,18 +475,29 @@ export async function createProxyServer(
   // They are split off the resolved target once, here: everything below sees
   // the model alone, and the markers travel with the REQUEST
   // (`wireMarkerContext`), never with a cached handler or in a body.
-  const getHandlerForRequest = async (requestedModel: string): Promise<ModelHandler> => {
+  //
+  // `probeHopOrigin` is the probe's routed-hop mark, already filtered through
+  // `probeHopOriginOf`: always absent on a proxy that is not a probe proxy.
+  const getHandlerForRequest = async (
+    requestedModel: string,
+    probeHopOrigin?: "routed"
+  ): Promise<ModelHandler> => {
     const out: { markers?: WireMarkers; refusal?: string } = {};
-    const handler = await resolveHandlerForRequest(requestedModel, out);
+    const handler = await resolveHandlerForRequest(requestedModel, out, probeHopOrigin);
     if (out.refusal) return new RefusingHandler(out.refusal);
     return out.markers && (out.markers.mode || out.markers.speed)
       ? new WireMarkerHandler(handler, out.markers)
       : handler;
   };
 
+  /** The routed-hop mark of one request: honoured on a probe proxy, absent anywhere else. */
+  const requestProbeHopOrigin = (c: Context): "routed" | undefined =>
+    probeHopOriginOf(c.req.header(PROBE_HOP_ORIGIN_HEADER), options.probeProxy);
+
   const resolveHandlerForRequest = async (
     requestedModel: string,
-    out: { markers?: WireMarkers; refusal?: string }
+    out: { markers?: WireMarkers; refusal?: string },
+    probeHopOrigin?: "routed"
   ): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
     if (monitorMode) return nativeHandler;
@@ -529,6 +550,13 @@ export async function createProxyServer(
       // No role mappings at all - use default model
       target = model;
     }
+
+    // A probe's routed mark applies to the spec the probe sent, never to one a
+    // slot, role or default model put in its place.
+    const requestHopOrigin: "routed" | undefined =
+      probeHopOrigin && !slotMatched && !wasFromModelMap && target === requestedModel
+        ? probeHopOrigin
+        : undefined;
 
     try {
       const markers = splitWireMarkers(target);
@@ -779,10 +807,12 @@ export async function createProxyServer(
     }
 
     // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
+    // A routed origin (a parent's pin, or a probe proxy's routed mark) builds the
+    // hop as step 2c does; the handler set caches routed and explicit apart.
     const remoteHandler = await getRemoteProviderHandler(
       target,
       invocationMode,
-      isPinnedSingleSpec ? pinnedHopOrigin : undefined
+      isPinnedSingleSpec ? pinnedHopOrigin : requestHopOrigin
     );
     if (remoteHandler) return remoteHandler;
 
@@ -1077,7 +1107,7 @@ export async function createProxyServer(
       if (typeof body?.model !== "string" || body.model.length === 0) {
         return c.json(wrapAnthropicError(400, "missing required field: model"), 400);
       }
-      const handler = await getHandlerForRequest(body.model);
+      const handler = await getHandlerForRequest(body.model, requestProbeHopOrigin(c));
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
@@ -1216,7 +1246,7 @@ export async function createProxyServer(
       // included), once per request, around the hooks. See `withAdvisor` and
       // `withRequestHooks` above.
       const handler = withAdvisor(
-        withRequestHooks(await getHandlerForRequest(body.model)),
+        withRequestHooks(await getHandlerForRequest(body.model, requestProbeHopOrigin(c))),
         advisorPresence
       );
 

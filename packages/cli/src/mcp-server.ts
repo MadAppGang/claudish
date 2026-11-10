@@ -334,6 +334,32 @@ async function getProxy(): Promise<ProxyServer> {
   return proxyStarting;
 }
 
+// `preflight` probes on its own proxy, started for probing (`probeProxy`): only
+// such a proxy builds a hop the probe marks as routed the way real traffic builds
+// a routing chain's hop. The proxy above serves `run_prompt` and ignores the mark.
+let probeProxyStarting: Promise<ProxyServer> | null = null;
+
+function getProbeProxy(): Promise<ProxyServer> {
+  if (probeProxyStarting) return probeProxyStarting;
+  probeProxyStarting = (async () => {
+    const port = await findAvailablePort(10000, 19999);
+    return createProxyServer(
+      port,
+      process.env.OPENROUTER_API_KEY,
+      undefined,
+      false,
+      process.env.ANTHROPIC_API_KEY,
+      undefined,
+      { quiet: true, hooks: false, hostMode: "mcp", probeProxy: true }
+    );
+  })().catch((err) => {
+    // A later preflight may retry the start.
+    probeProxyStarting = null;
+    throw err;
+  });
+  return probeProxyStarting;
+}
+
 /** Parse Anthropic SSE stream and extract text content + usage */
 export function parseAnthropicSse(raw: string): {
   text: string;
@@ -2057,7 +2083,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       // never are (see the loop), so an all-native model list must neither wait on
       // proxy startup nor throw from it.
       const needsProxy = doProbe && models.some((m) => nativeRouteFor(m) === null);
-      const proxy = needsProxy ? await getProxy() : null;
+      const proxy = needsProxy ? await getProbeProxy() : null;
 
       // Register runtime providers before ANY `route()` call below.
       //
@@ -2084,7 +2110,12 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
               proxy.url,
               // A kept hop passed the credential filter, so a miss here would be a
               // routing bug, not a missing key.
-              { provider: target.provider, modelSpec: target.probeSpec, hasCredentials: true },
+              {
+                provider: target.provider,
+                modelSpec: target.probeSpec,
+                hasCredentials: true,
+                ...(target.hopOrigin ? { hopOrigin: target.hopOrigin } : {}),
+              },
               timeoutMs
             )
         : null;

@@ -50,8 +50,9 @@ export async function ensureProbeProxy(): Promise<string> {
       false,
       process.env.ANTHROPIC_API_KEY,
       undefined,
-      // Hooks never see --probe traffic.
-      { quiet: true, hooks: false }
+      // Hooks never see --probe traffic. A probe proxy builds a hop marked as
+      // routed the way real traffic builds a routing chain's hop.
+      { quiet: true, hooks: false, probeProxy: true }
     );
     probeProxy = proxy;
     return proxy.url;

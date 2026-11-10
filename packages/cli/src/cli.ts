@@ -1737,7 +1737,12 @@ async function probeModelRouting(
   function probeTarget(proxyUrl: string, target: ProbeTarget): Promise<ProbeResult> {
     return probeLink(
       proxyUrl,
-      { provider: target.provider, modelSpec: target.probeSpec, hasCredentials: true },
+      {
+        provider: target.provider,
+        modelSpec: target.probeSpec,
+        hasCredentials: true,
+        ...(target.hopOrigin ? { hopOrigin: target.hopOrigin } : {}),
+      },
       options.timeoutMs
     ).catch(
       (e): ProbeResult => ({
@@ -1891,8 +1896,9 @@ async function probeModelRouting(
           false,
           process.env.ANTHROPIC_API_KEY,
           undefined,
-          // Hooks never see --probe traffic.
-          { quiet: true, hooks: false }
+          // Hooks never see --probe traffic. A probe proxy builds a hop marked
+          // as routed the way real traffic builds a routing chain's hop.
+          { quiet: true, hooks: false, probeProxy: true }
         );
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -2003,8 +2009,9 @@ async function probeModelRouting(
           false,
           process.env.ANTHROPIC_API_KEY,
           undefined,
-          // Hooks never see --probe traffic.
-          { quiet: true, hooks: false }
+          // Hooks never see --probe traffic. A probe proxy builds a hop marked
+          // as routed the way real traffic builds a routing chain's hop.
+          { quiet: true, hooks: false, probeProxy: true }
         );
         updateStep("Starting probe proxy", "done");
       } catch {

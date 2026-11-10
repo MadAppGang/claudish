@@ -4,7 +4,11 @@ import { explainRouteSettled } from "../../providers/explain-route-settled.js";
 import { prepareMuseLoginForTuiAction } from "../../providers/meta-muse/muse-credentials.js";
 import { NATIVE_NOT_PROBED } from "../../providers/native-route.js";
 import { describeProbeState } from "../../providers/probe-live.js";
-import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../../providers/probe-runner.js";
+import {
+  INTERACTIVE_PROBE_TIMEOUT_MS,
+  probeHopOriginFor,
+  probeProviderRoute,
+} from "../../providers/probe-runner.js";
 import {
   type FallbackWithheld,
   type RouteExplanation,
@@ -83,6 +87,7 @@ export function probeRowsFrom(explanation: RouteExplanation): ProbeView {
     summary.noRoute = hint !== undefined ? { reason, hint } : { reason };
   }
 
+  const hopOrigin = probeHopOriginFor(explanation);
   const rows = explanation.candidates.map((candidate): ProbeEntry => {
     const row: ProbeEntry = {
       provider: candidate.provider,
@@ -90,6 +95,7 @@ export function probeRowsFrom(explanation: RouteExplanation): ProbeView {
       modelSpec: candidate.modelSpec,
       position: candidate.position,
       ...(candidate.tier !== undefined ? { tier: candidate.tier } : {}),
+      ...(hopOrigin ? { hopOrigin } : {}),
       status: "pending",
     };
     if (candidate.outcome !== "kept") {
@@ -295,6 +301,7 @@ export function useRouteProbe(): UseRouteProbeReturn {
 
         for (const link of queue) {
           const i = link.index;
+          const hopOrigin = rows[i]?.hopOrigin;
           // Mark current as testing
           setProbeResults((prev) =>
             prev.map((e, idx) => (idx === i ? { ...e, status: "testing" } : e))
@@ -308,6 +315,7 @@ export function useRouteProbe(): UseRouteProbeReturn {
               // A kept hop passed explainRoute's credential filter, the only
               // credential check; the proxy resolves the key itself.
               hasCredentials: true,
+              ...(hopOrigin ? { hopOrigin } : {}),
             },
             INTERACTIVE_PROBE_TIMEOUT_MS
           ).catch((e) => ({
