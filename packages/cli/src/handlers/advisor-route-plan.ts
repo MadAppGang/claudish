@@ -502,7 +502,10 @@ async function buildHop(plan: RoutedPlan, hop: AdvisorHop, set: HandlerSet): Pro
     } else if (hop.provider === "openrouter") {
       handler = set.openRouter(hop.modelSpec, mode);
     } else {
-      handler = await set.remote(hop.modelSpec, mode);
+      handler =
+        mode === "auto-route"
+          ? await set.remote(hop.modelSpec, mode, "routed")
+          : await set.remote(hop.modelSpec, mode);
       if (!handler && mode === "explicit-model" && plan.hops.length === 1) {
         handler = set.local(hop.modelSpec, mode);
       }

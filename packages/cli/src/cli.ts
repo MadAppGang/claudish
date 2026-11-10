@@ -238,6 +238,7 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--model-sonnet": "value",
   "--model-haiku": "value",
   "--model-subagent": "value",
+  "--model-pinned": "none",
   "--port": "value",
   "--auto-approve": "none",
   "-y": "none",
@@ -584,6 +585,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const chain = parseModelChain(modelArg).map(normalizeNativeModelSpec);
       config.model = chain[0]; // Accept any model ID
       if (chain.length > 1) config.modelChain = chain;
+    } else if (arg === "--model-pinned") {
+      // Written by a parent claudish on the pane child it spawns with a pinned
+      // `--model` (pane-launch.ts): the pin is a routing chain the parent gathered
+      // for a bare name, so its elements are routed hops. Parsed from any argv and
+      // left out of `--help`; index.ts honours it only in a pane child
+      // (`modelPinnedHonoured`) and drops it, with a debug line, anywhere else.
+      config.modelPinned = true;
     } else if (arg === "--model-opus") {
       // Model mapping flags
       const val = args[++i];

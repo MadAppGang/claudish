@@ -2961,6 +2961,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         const sessionId = await sessionManager.createSession({
           model: requestedModel,
           spawnModel: plan.pinned.get(requestedModel),
+          spawnPinned: plan.pinned.has(requestedModel),
           prompt: args.prompt as string | undefined,
           timeoutSeconds: args.timeout_seconds as number | undefined,
           claudishFlags,

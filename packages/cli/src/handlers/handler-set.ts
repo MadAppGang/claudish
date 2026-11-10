@@ -61,6 +61,13 @@ export interface HandlerSetOptions {
 
 type InvocationMode = ComposedHandlerOptions["invocationMode"];
 
+/**
+ * Prepended to the cache key of every routing-chain hop, so a hop and a named
+ * spec for one model never share a cached handler: with the bundled list the
+ * hop is tried in turn where the spec may be refused.
+ */
+export const ROUTED_HANDLER_KEY_PREFIX = "routed:";
+
 export interface HandlerSet {
   /** OpenRouter handler for a target model (a `RefusingHandler` when its wire is not chat). */
   openRouter(targetModel: string, invocationMode?: InvocationMode): ModelHandler;
@@ -68,8 +75,15 @@ export interface HandlerSet {
   poe(targetModel: string, invocationMode?: InvocationMode): Promise<ModelHandler | null>;
   /** Local handler (`ollama/`, `lmstudio@`, a URL); null when the spec is not local. */
   local(targetModel: string, invocationMode?: InvocationMode): ModelHandler | null;
-  /** Remote (direct API or profile) handler; null when none can be built. */
-  remote(targetModel: string, invocationMode?: InvocationMode): Promise<ModelHandler | null>;
+  /**
+   * Remote (direct API or profile) handler; null when none can be built.
+   * `hopOrigin` is `"routed"` for a hop of a routing chain, absent for a named spec.
+   */
+  remote(
+    targetModel: string,
+    invocationMode?: InvocationMode,
+    hopOrigin?: "routed"
+  ): Promise<ModelHandler | null>;
   readonly openRouterHandlers: Map<string, ModelHandler>;
   readonly localProviderHandlers: Map<string, ModelHandler>;
   readonly remoteProviderHandlers: Map<string, ModelHandler>;
@@ -285,11 +299,17 @@ export function createHandlerSet(opts: HandlerSetOptions): HandlerSet {
   // TODO: Consolidate src/ and packages/core/src/ - they're manually synced duplicates
   const getRemoteProviderHandler = async (
     targetModel: string,
-    invocationMode?: ComposedHandlerOptions["invocationMode"]
+    invocationMode?: ComposedHandlerOptions["invocationMode"],
+    hopOrigin?: "routed"
   ): Promise<ModelHandler | null> => {
-    const cached = remoteHandlerCache.get(targetModel);
-    if (cached) return cached;
     const originAtStart = catalogOrigin();
+    // Decided by the hop's origin alone, the same at lookup and at store. A key
+    // that read the catalog origin could change between the two while the build
+    // waits, and file a routed hop where a named spec would find it.
+    const cacheKey = (spec: string): string =>
+      hopOrigin ? `${ROUTED_HANDLER_KEY_PREFIX}${spec}` : spec;
+    const cached = remoteHandlerCache.get(cacheKey(targetModel));
+    if (cached) return cached;
 
     // Use centralized resolver with fallback logic
     const resolution = resolveModelProvider(targetModel);
@@ -402,6 +422,7 @@ export function createHandlerSet(opts: HandlerSetOptions): HandlerSet {
         apiKey,
         targetModel,
         port,
+        ...(hopOrigin ? { hopOrigin } : {}),
         sharedOpts: { isInteractive: options.isInteractive, invocationMode, ...requestShapingOpts },
       });
       if (!handler) {
@@ -410,9 +431,9 @@ export function createHandlerSet(opts: HandlerSetOptions): HandlerSet {
 
       // Cache under both the original targetModel and the resolveTarget (if different)
       // so subsequent lookups with either key are served from cache.
-      remoteHandlerCache.set(resolveTarget, handler, originAtStart);
+      remoteHandlerCache.set(cacheKey(resolveTarget), handler, originAtStart);
       if (resolveTarget !== targetModel) {
-        remoteHandlerCache.set(targetModel, handler, originAtStart);
+        remoteHandlerCache.set(cacheKey(targetModel), handler, originAtStart);
       }
       return handler;
     }

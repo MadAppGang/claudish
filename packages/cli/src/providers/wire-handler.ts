@@ -23,7 +23,7 @@ import { wrapAnthropicError } from "../handlers/shared/anthropic-error.js";
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { log } from "../logger.js";
-import { ensureRouteRegistryReady } from "./catalog-client.js";
+import { catalogOrigin, ensureRouteRegistryReady } from "./catalog-client.js";
 import {
   type ResolvedConnection,
   connectionBaseUrl,
@@ -311,6 +311,20 @@ export async function buildWireHandler(
       // not have finished: the proxy caches handlers per model, so a refusal
       // returned here would outlive the refresh for the whole session.
       if (ctx.catalogCachePath) return { kind: "refused", message };
+      return { kind: "handler", handler: new CatalogPendingHandler(ctx, definitionName, message) };
+    }
+    if (
+      resolution.reason === "no-connection" &&
+      !ctx.hopOrigin &&
+      !ctx.catalogCachePath &&
+      catalogOrigin() === "bundled"
+    ) {
+      // A trimmed list's silence is no evidence about the provider, so an unpublished
+      // name is not sent. Pending, because a catalog arriving later can answer it.
+      const message =
+        resolution.detail === "model-absent"
+          ? `no cloud models catalog; ${ctx.modelName} is not in the bundled recommended list`
+          : `no cloud models catalog; the bundled recommended list has no ${definitionName} connection for ${ctx.modelName}`;
       return { kind: "handler", handler: new CatalogPendingHandler(ctx, definitionName, message) };
     }
     // The catalog does not publish this model on this provider (a model newer

@@ -296,6 +296,8 @@ export interface PaneSessionOptions {
   /** already checked by checkChildFlags */
   callerFlags: string[];
   spawnModel: string;
+  /** `spawnModel` is the parent's pin for a bare name (`--model-pinned`); absent → named by the caller */
+  spawnPinned?: boolean;
   cwd: string;
   sessionUuid: string;
   /** transcriptPathFor(realpath cwd, sessionUuid, projectsDir(parentEnv)) — the caller derives it */
@@ -3862,7 +3864,13 @@ function preparePane(
     const cwd = realpathSync(o.cwd);
     const launch = o.claudishSpawn ?? resolveClaudishLaunch(parentEnv);
     dirs = createLaunchDirs(root);
-    const argv = buildClaudishPaneArgv(o.spawnModel, o.sessionUuid, dirs.turnDir, o.callerFlags);
+    const argv = buildClaudishPaneArgv(
+      o.spawnModel,
+      o.sessionUuid,
+      dirs.turnDir,
+      o.callerFlags,
+      o.spawnPinned === true
+    );
     writeLauncherFiles(dirs.ctlDir, launcherScript(cwd, launch, argv));
     const { magmuxEnv } = buildPaneEnv({
       parentEnv,

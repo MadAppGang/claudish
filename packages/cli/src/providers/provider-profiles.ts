@@ -86,6 +86,12 @@ export interface ProfileContext {
    */
   catalogCachePath?: string;
   /**
+   * Set for a hop of a routing chain; absent for a spec the user named. With only
+   * the bundled recommended list to read, a named spec it cannot serve is refused
+   * and a chain's hop is tried, so the chain is never stopped by a refusal.
+   */
+  hopOrigin?: "routed";
+  /**
    * Shared ComposedHandler options from the outer scope.
    *
    * Every profile spreads this verbatim, so widening this Pick is how a new

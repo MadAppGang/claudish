@@ -1096,6 +1096,7 @@ export class SessionManager {
       label: info.sessionId,
       callerFlags: p.flags,
       spawnModel: info.spawnModel ?? info.model,
+      spawnPinned: opts.spawnPinned === true,
       cwd: entry.cwd,
       sessionUuid: info.claudeSessionId,
       transcriptPath: info.transcriptPath,

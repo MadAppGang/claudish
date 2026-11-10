@@ -23,6 +23,12 @@ export interface ClaudishConfig {
    * Absent for a single-spec `--model`, which is the overwhelming majority.
    */
   modelChain?: string[];
+  /**
+   * `--model-pinned`: `--model` is a parent's pin (one spec or a chain), routed for
+   * a bare name in the parent. Only the proxy reads it, to treat each element as a
+   * routed hop. Cleared at startup outside a pane child (`modelPinnedHonoured`).
+   */
+  modelPinned?: boolean;
   port?: number;
   autoApprove: boolean;
   dangerous: boolean;

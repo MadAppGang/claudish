@@ -23,7 +23,7 @@ import { bundledTaggedCache } from "./handlers/bundled-tagged-cache.js";
 import type { ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
-import { createHandlerSet } from "./handlers/handler-set.js";
+import { ROUTED_HANDLER_KEY_PREFIX, createHandlerSet } from "./handlers/handler-set.js";
 import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
@@ -148,6 +148,13 @@ export interface ProxyServerOptions {
    * matched before catalog resolution.
    */
   modelChain?: string[];
+  /**
+   * True when a PARENT claudish pinned `--model` (`--model-pinned`): the chain, or
+   * the one spec, is the parent's routing chain for a bare name, so each element
+   * is a routed hop. Absent for a model the user typed, `+` chains included: an
+   * explicit spec stays explicit, whatever its provider.
+   */
+  modelChainPinned?: boolean;
   /**
    * Classifier passthrough (opt-in). When `enabled`, Claude Code's auto-mode
    * permission classifier request (detected by content) is rewritten onto
@@ -538,7 +545,14 @@ export async function createProxyServer(
 
     const invocationMode = detectInvocationMode(target, wasFromModelMap);
 
-    // 2a-chain. A PINNED CHAIN from a parent process.
+    // A parent's pin is a routed hop however many elements it has: the parent
+    // routed a bare name and handed the result down. Only the flag the parent
+    // sets says so; a spec the user typed, alone or in a `+` chain, is explicit.
+    const pinnedHopOrigin: "routed" | undefined = options.modelChainPinned ? "routed" : undefined;
+    const isPinnedSingleSpec =
+      pinnedHopOrigin !== undefined && !options.modelChain && target === model;
+
+    // 2a-chain. A `+` CHAIN, pinned by a parent process or typed by the user.
     //
     // `team` / `create_session` resolve the route in the parent and spawn
     // the child with explicit specs, because a bare name would make the child
@@ -564,6 +578,10 @@ export async function createProxyServer(
     //
     // Only the default `--model` carries a chain; a role-mapped target (opus /
     // sonnet / haiku) does not equal `modelChain[0]` and falls through untouched.
+    //
+    // Elements are routed hops only for a parent's pin (`modelChainPinned`). A
+    // chain the user typed is a list of explicit specs, each held to the explicit
+    // rule; a one-spec pin takes the ordinary path below with the same origin.
     if (options.modelChain && options.modelChain.length > 1 && target === options.modelChain[0]) {
       const cacheKey = `chain:${options.modelChain.join("+")}`;
       const cached = fallbackHandlerCache.get(cacheKey);
@@ -583,7 +601,7 @@ export async function createProxyServer(
         const handler =
           parsed.provider === "openrouter"
             ? getOpenRouterHandler(resolvedSpec, invocationMode)
-            : ((await getRemoteProviderHandler(resolvedSpec, invocationMode)) ??
+            : ((await getRemoteProviderHandler(resolvedSpec, invocationMode, pinnedHopOrigin)) ??
               getLocalProviderHandler(resolvedSpec, invocationMode));
         // A candidate that cannot be built is DROPPED, never fatal: the parent
         // credential-filtered this chain, so a miss here means the child's view
@@ -698,7 +716,11 @@ export async function createProxyServer(
             if (candidate.provider === "openrouter") {
               handler = getOpenRouterHandler(candidate.modelSpec, invocationMode);
             } else {
-              handler = await getRemoteProviderHandler(candidate.modelSpec, invocationMode);
+              handler = await getRemoteProviderHandler(
+                candidate.modelSpec,
+                invocationMode,
+                "routed"
+              );
             }
             if (handler) {
               candidates.push({
@@ -752,7 +774,11 @@ export async function createProxyServer(
     }
 
     // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
-    const remoteHandler = await getRemoteProviderHandler(target, invocationMode);
+    const remoteHandler = await getRemoteProviderHandler(
+      target,
+      invocationMode,
+      isPinnedSingleSpec ? pinnedHopOrigin : undefined
+    );
     if (remoteHandler) return remoteHandler;
 
     // 5. Check for Local Provider (ollama/, lmstudio/, vllm/, or URL)
@@ -1293,11 +1319,17 @@ export async function createProxyServer(
       // any whose left-of-@ matches the slug, plus any using the slug as
       // a legacy prefix (e.g. "ollama/llama3"). Both forms route to the
       // same transport so both need invalidation.
-      const matches = (k: string) =>
-        k === providerSlug ||
-        k.startsWith(`${providerSlug}@`) ||
-        k.startsWith(`${providerSlug}/`) ||
-        k.startsWith(`${providerSlug}:`);
+      const matches = (key: string) => {
+        const k = key.startsWith(ROUTED_HANDLER_KEY_PREFIX)
+          ? key.slice(ROUTED_HANDLER_KEY_PREFIX.length)
+          : key;
+        return (
+          k === providerSlug ||
+          k.startsWith(`${providerSlug}@`) ||
+          k.startsWith(`${providerSlug}/`) ||
+          k.startsWith(`${providerSlug}:`)
+        );
+      };
       for (const k of [...localProviderHandlers.keys()]) {
         if (matches(k)) localProviderHandlers.delete(k);
       }

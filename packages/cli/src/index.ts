@@ -17,6 +17,7 @@ import {
   assertNotNested,
   assertPaneChildInteractive,
   isPaneChild,
+  modelPinnedHonoured,
   paneChildBootNotes,
 } from "./pane/child-env.js";
 
@@ -942,6 +943,10 @@ async function runCli() {
     // Initialize logger: always-on structural logging + optional debug logging
     initLogger(cliConfig.debug, cliConfig.logLevel, cliConfig.noLogs);
     for (const note of paneChildBootNotes()) log(note);
+    if (cliConfig.modelPinned && !modelPinnedHonoured(cliConfig.modelPinned)) {
+      log("[claudish] --model-pinned ignored: honoured only in a pane child claudish started");
+      cliConfig.modelPinned = undefined;
+    }
 
     // Initialize telemetry (reads consent, generates session_id)
     // Must come after parseArgs() so cliConfig.interactive is known
@@ -1338,6 +1343,7 @@ async function runCli() {
           // Present only when `--model` was a pinned chain; `explicitModel` above
           // is its first element, so the proxy can match the two.
           modelChain: cliConfig.monitor ? undefined : cliConfig.modelChain,
+          modelChainPinned: cliConfig.monitor ? undefined : cliConfig.modelPinned,
           classifier: resolveClassifierConfig(cliConfig, process.env),
           effortOverride: cliConfig.effortOverride,
           modelParams: cliConfig.modelParams,
