@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { classifyConnectionError } from "../handlers/shared/connection-error.js";
 import { redactSigningValues } from "../redact.js";
 import {
   discoverContextWindow,
@@ -454,6 +455,31 @@ describe("LocalTransport with a machine suffix", () => {
 
     expect(await transport.getExtraPayloadFields()).toEqual({ model: "shared-model" });
     await transport.refreshAuth();
+  });
+
+  test("a request whose placement was refused fails on every retry, never as an outage", async () => {
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
+    const place = spyOn(
+      transport as unknown as { placeOnDevice(): Promise<unknown> },
+      "placeOnDevice"
+    )
+      .mockRejectedValueOnce(
+        Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1234"), { code: "ECONNREFUSED" })
+      )
+      .mockResolvedValue({ instanceId: "shared-model:2", contextLength: 64_000 });
+    try {
+      await transport.getExtraPayloadFields();
+      const first = await transport.refreshAuth().catch((error: unknown) => error);
+      // The handler's connection recovery signs again; the payload still names `model~m1`.
+      const retry = await transport.refreshAuth().catch((error: unknown) => error);
+
+      expect(first).toBeInstanceOf(Error);
+      expect(retry).toBeInstanceOf(Error);
+      expect(classifyConnectionError(first)).toBeNull();
+      expect(String((retry as Error).message)).toContain("shared-model");
+    } finally {
+      place.mockRestore();
+    }
   });
 
   test("a recovery retry of a request built while LM Studio was down says so", async () => {

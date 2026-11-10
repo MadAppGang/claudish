@@ -14,7 +14,7 @@
 import { Agent } from "undici";
 import { credentials } from "../../auth/credentials/authority.js";
 import { credentialValuesFromRequest } from "../../handlers/shared/call-context.js";
-import { markOwnTimeout } from "../../handlers/shared/connection-error.js";
+import { classifyConnectionError, markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
 import {
@@ -332,9 +332,14 @@ export class LocalTransport implements ProviderTransport {
   private async confirmPlacement(): Promise<void> {
     if (!this.lmStudioDevice) return;
     if (this.lmStudioPlacementError !== undefined) {
+      // Kept until the next payload is built: this one still names `model~machine`,
+      // and no retry of the signing step can send it. A connection failure is
+      // reported without its cause, so the connection hold does not wait to retry it.
       const error = this.lmStudioPlacementError;
-      this.lmStudioPlacementError = undefined;
-      throw error;
+      if (classifyConnectionError(error) === null) throw error;
+      throw new Error(
+        `LM Studio could not be reached while ${this.modelName} was placed on ${this.lmStudioDevice}. Send the message again.`
+      );
     }
     let instance: LMStudioInstance;
     try {
