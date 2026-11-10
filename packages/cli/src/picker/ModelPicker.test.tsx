@@ -1991,3 +1991,54 @@ describe("the context window dialog", () => {
     }
   });
 });
+
+describe("LM Studio rows on several machines", () => {
+  const onMachine = (id: string, name: string): ModelInfo =>
+    model({
+      id: `${id}~${name === "this Mac" ? "local" : name}`,
+      name: id,
+      machine: { name, modelId: id },
+    });
+
+  async function list(): Promise<Drawn> {
+    const rows: [ModelInfo, ...ModelInfo[]] = [
+      onMachine("qwen-build", "this Mac"),
+      onMachine("qwen-build", "m1"),
+    ];
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({ outcome: { kind: "rows", rows, servedCount: 2, chatCount: 2 } })}
+        onDone={() => {}}
+      />,
+      100
+    );
+    await d.press(["RETURN"]);
+    await d.until(modelRowPainted("qwen-build"));
+    return { ...d, ...d.recapture() };
+  }
+
+  test("the last column names the machine instead of the price", async () => {
+    const d = await list();
+    try {
+      const rows = d.text.filter((line) => line.includes("qwen-build "));
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toContain("this Mac");
+      expect(rows[1]).toMatch(/\bm1\b/);
+      expect(joined(d.text)).toContain("machine");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("the list hides the suffix and the spec line keeps it", async () => {
+    const d = await list();
+    try {
+      const rows = d.text.filter((line) => line.includes("qwen-build "));
+      expect(rows).toHaveLength(2);
+      for (const row of rows) expect(row).not.toContain("~");
+      expect(joined(d.text)).toContain("kimi@qwen-build~local");
+    } finally {
+      d.destroy();
+    }
+  });
+});

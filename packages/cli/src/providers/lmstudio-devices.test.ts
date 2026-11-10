@@ -141,7 +141,12 @@ describe("isLoopbackUrl", () => {
 });
 
 describe("rows per machine", () => {
-  const models = [
+  const models: {
+    id: string;
+    displayName?: string;
+    contextWindow?: number;
+    machine?: { name: string; modelId: string };
+  }[] = [
     { id: "both", displayName: "Both Model", contextWindow: 213_176 },
     { id: "only-m1" },
     { id: "only-here" },
@@ -169,7 +174,18 @@ describe("rows per machine", () => {
   test("the display name states the machine", async () => {
     const rows = await expanded();
     expect(rows.find((m) => m.id === "both~m1")?.displayName).toBe("Both Model (m1)");
+    expect(rows.find((m) => m.id === "both~local")?.displayName).toBe("Both Model (this Mac)");
     expect(rows.find((m) => m.id === "only-m1~m1")?.displayName).toBe("only-m1 (m1)");
+  });
+
+  test("each row names its machine and the model without the suffix", async () => {
+    const rows = await expanded();
+    expect(rows.find((m) => m.id === "both~m1")?.machine).toEqual({ name: "m1", modelId: "both" });
+    expect(rows.find((m) => m.id === "both~local")?.machine).toEqual({
+      name: "this Mac",
+      modelId: "both",
+    });
+    expect(rows.find((m) => m.id === "not-in-lms")?.machine).toBeUndefined();
   });
 
   test("a window comes from the instance on that machine only", async () => {

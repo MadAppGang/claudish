@@ -177,6 +177,15 @@ export async function readLMStudioMachines(
   return { labelsByModel, loadedWindows, maxWindows };
 }
 
+/** How the picker names the machine claudish runs on. */
+const THIS_MACHINE_NAME = "this Mac";
+
+/** The machine a picker row runs on, and the model id without its machine suffix. */
+export interface LMStudioMachine {
+  name: string;
+  modelId: string;
+}
+
 /**
  * One row per machine that holds the model. A model `lms` does not list stays
  * as it was. An unloaded copy reports no window, unless it cannot reach
@@ -188,6 +197,7 @@ export function expandModelsToMachines<
     displayName?: string;
     contextWindow?: number;
     maxContextWindow?: number;
+    machine?: LMStudioMachine;
   },
 >(models: T[], machines: LMStudioMachines, defaultWindow?: number): T[] {
   return models.flatMap((model) => {
@@ -198,10 +208,12 @@ export function expandModelsToMachines<
       const max = machines.maxWindows.get(id);
       const ceiling = defaultWindow && max && max < defaultWindow ? max : undefined;
       const loaded = machines.loadedWindows.get(id);
+      const name = label === LMSTUDIO_THIS_MACHINE ? THIS_MACHINE_NAME : label;
       return {
         ...model,
         id,
-        displayName: `${model.displayName ?? model.id} (${label})`,
+        displayName: `${model.displayName ?? model.id} (${name})`,
+        machine: { name, modelId: model.id },
         contextWindow: loaded ?? ceiling,
         maxContextWindow: loaded ?? max,
       };

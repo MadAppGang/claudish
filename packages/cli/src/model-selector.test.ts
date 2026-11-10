@@ -238,6 +238,20 @@ describe("provider-reported chat capability in discovered model callers", () => 
     expect(row?.maxContextLength).toBe(262_144);
   });
 
+  test("buildDiscoveredModelRows keeps the machine of a row", async () => {
+    discovered = [
+      {
+        id: "some-local-build~m1",
+        reported: "chat",
+        machine: { name: "m1", modelId: "some-local-build" },
+      },
+    ];
+
+    const [row] = await buildDiscoveredModelRows(provider, "Reported Capability Test", catalog);
+
+    expect(row?.machine).toEqual({ name: "m1", modelId: "some-local-build" });
+  });
+
   test("buildDiscoveredModelRows shows the loaded size over the maximum", async () => {
     discovered = [
       { id: "some-local-build", reported: "chat", contextWindow: 64_000, maxContextWindow: 64_000 },

@@ -49,6 +49,8 @@ export interface DiscoveredModel {
   contextWindow?: number;
   /** The most a load can give this model, when claudish sets the size it loads with. */
   maxContextWindow?: number;
+  /** The LM Link machine this row runs on. */
+  machine?: { name: string; modelId: string };
   /**
    * ISO date (`YYYY-MM-DD`) derived from the endpoint's `created` timestamp,
    * when it reports a plausible one.

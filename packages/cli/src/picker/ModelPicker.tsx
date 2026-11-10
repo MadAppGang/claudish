@@ -1097,7 +1097,10 @@ export function ModelPicker({
           width={layout.inner}
           idle={orderedByProvider(storedShown ?? discovery.outcome) ? "" : undefined}
         />
-        <ColumnHeader layout={rowLayout} />
+        <ColumnHeader
+          layout={rowLayout}
+          last={list.rows.some((r) => r.model.machine) ? "machine" : undefined}
+        />
 
         {/* CONTENT-SIZED, CAPPED — never `flexGrow`. A four-row Kimi fallback makes a
             short dialog; it does not make a tall dialog with fifteen rows of unpainted

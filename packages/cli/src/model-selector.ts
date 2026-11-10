@@ -82,6 +82,8 @@ export interface ModelInfo {
   contextLength?: number;
   /** The most a load can give this model, when claudish sets the size it loads with. */
   maxContextLength?: number;
+  /** The LM Link machine this row runs on; the list shows `modelId` and `name`. */
+  machine?: { name: string; modelId: string };
   supportsTools?: boolean;
   supportsReasoning?: boolean;
   supportsVision?: boolean;
@@ -1895,6 +1897,7 @@ function buildRowsFromDiscovered(
       context: formatContextLength(contextLength),
       contextLength,
       maxContextLength: source?.maxContextWindow,
+      machine: source?.machine,
       // Catalog-first, then whatever the endpoint reported, then `true`. The
       // endpoint step matters only for Ollama, whose locally-pulled models are
       // absent from the catalog and where tool support genuinely varies — an
