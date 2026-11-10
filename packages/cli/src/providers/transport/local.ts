@@ -33,6 +33,9 @@ import {
 } from "./probe-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
 
+/** Placement errors kept for payloads not yet sent; older ones are dropped. */
+const MAX_UNPLACED_ERRORS = 64;
+
 // Custom undici agent with long timeouts for local LLM inference
 // Default undici headersTimeout is 30s which is too short for prompt processing
 const localProviderAgent = new Agent({
@@ -82,6 +85,9 @@ export class LocalTransport implements ProviderTransport {
   private lmStudioPlacedAt: number | undefined;
   /** Why the payload step could not place the model; `refreshAuth` fails the request with it. */
   private lmStudioPlacementError?: unknown;
+  /** Errors of payloads whose placement failed, by the marker each payload names. */
+  private readonly unplacedErrors = new Map<string, unknown>();
+  private unplacedCount = 0;
   /** The signing leases of the `refreshAuth` calls now running; each probe adds its key. */
   private readonly probeLeases = new Set<SigningLease>();
   private concurrency?: number;
@@ -209,7 +215,7 @@ export class LocalTransport implements ProviderTransport {
       } catch (error) {
         this.lmStudioPlacementError = error;
         this.lmStudioInstance = undefined;
-        return {};
+        return { model: this.markUnplaced(error) };
       }
     }
     // Ollama defaults to 2048 context and silently truncates, so set it
@@ -357,18 +363,35 @@ export class LocalTransport implements ProviderTransport {
   }
 
   /**
-   * Refuses a payload whose placement failed. The payload is the one record that
-   * belongs to its own request: a successful placement replaces \`model~machine\`
-   * with the instance id, and one transport serves concurrent requests, so a
-   * transport field cannot say which request's placement failed.
+   * The model a payload names when its placement failed: a value no LM Studio
+   * identifier takes (it holds a space), under which this request's own error is
+   * kept. The payload is the one record that belongs to its own request; one
+   * transport serves concurrent requests, so a transport field cannot say which
+   * request's placement failed.
    */
-  transformPayload(payload: any): any {
-    if (this.lmStudioDevice && payload?.model === `${this.modelName}~${this.lmStudioDevice}`) {
-      throw new Error(
-        `${this.modelName} was not placed on ${this.lmStudioDevice} when this request was built, so it was not sent. Send the message again.`
-      );
+  private markUnplaced(error: unknown): string {
+    const marker = `${this.modelName}~${this.lmStudioDevice} (not placed #${++this.unplacedCount})`;
+    this.unplacedErrors.set(marker, error);
+    while (this.unplacedErrors.size > MAX_UNPLACED_ERRORS) {
+      const oldest = this.unplacedErrors.keys().next().value;
+      if (oldest === undefined) break;
+      this.unplacedErrors.delete(oldest);
     }
-    return payload;
+    return marker;
+  }
+
+  /** Refuses a payload whose placement failed, with that request's own error. */
+  transformPayload(payload: any): any {
+    const model = payload?.model;
+    if (typeof model !== "string" || !model.endsWith(")") || !model.includes(" (not placed #")) {
+      return payload;
+    }
+    const error = this.unplacedErrors.get(model);
+    this.unplacedErrors.delete(model);
+    if (error !== undefined && classifyConnectionError(error) === null) throw error;
+    throw new Error(
+      `LM Studio could not be reached while ${this.modelName} was placed on ${this.lmStudioDevice}. Send the message again.`
+    );
   }
 
   getContextWindow(): number {

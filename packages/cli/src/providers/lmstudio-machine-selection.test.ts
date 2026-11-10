@@ -446,7 +446,9 @@ describe("LocalTransport with a machine suffix", () => {
       "checkHealth"
     ).mockResolvedValueOnce(false);
     try {
-      expect(await transport.getExtraPayloadFields()).toEqual({});
+      expect((await transport.getExtraPayloadFields()).model).toStartWith(
+        "shared-model~m1 (not placed #"
+      );
       await expect(transport.refreshAuth()).rejects.toThrow("Cannot connect");
     } finally {
       health.mockRestore();
@@ -455,6 +457,24 @@ describe("LocalTransport with a machine suffix", () => {
 
     expect(await transport.getExtraPayloadFields()).toEqual({ model: "shared-model" });
     await transport.refreshAuth();
+  });
+
+  test("a copy placed on this Mac is sent, though its identifier is the model spec", async () => {
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model~local");
+    const place = spyOn(
+      transport as unknown as { placeOnDevice(): Promise<unknown> },
+      "placeOnDevice"
+    ).mockResolvedValue({ instanceId: "shared-model~local", contextLength: 64_000 });
+    try {
+      const payload = {
+        model: "shared-model~local",
+        ...(await transport.getExtraPayloadFields()),
+      };
+
+      expect(transport.transformPayload?.(payload)?.model).toBe("shared-model~local");
+    } finally {
+      place.mockRestore();
+    }
   });
 
   test("a payload built without a placement is never sent, whatever a later request placed", async () => {
@@ -471,13 +491,14 @@ describe("LocalTransport with a machine suffix", () => {
       // A concurrent request on the same transport builds its payload and places the model.
       const payloadB = { model: "shared-model~m1", ...(await transport.getExtraPayloadFields()) };
 
-      expect(() => transport.transformPayload?.(payloadA)).toThrow("shared-model");
       let refused: unknown;
       try {
         transport.transformPayload?.(payloadA);
       } catch (error) {
         refused = error;
       }
+      // Request A's own error, not a generic one and not B's.
+      expect(String((refused as Error)?.message)).toBe("Could not read LM Link status.");
       expect(classifyConnectionError(refused)).toBeNull();
       expect(transport.transformPayload?.(payloadB)?.model).toBe("shared-model:2");
     } finally {
@@ -556,7 +577,9 @@ describe("LocalTransport with a machine suffix", () => {
   test("an unknown machine fails the request, then the next request tries again", async () => {
     const transport = new LocalTransport(lmStudioConfig(), "shared-model~other");
 
-    expect(await transport.getExtraPayloadFields()).toEqual({});
+    expect((await transport.getExtraPayloadFields()).model).toStartWith(
+      "shared-model~other (not placed #"
+    );
     await expect(transport.refreshAuth()).rejects.toThrow(/"other" is not connected/);
 
     writeFileSync(
