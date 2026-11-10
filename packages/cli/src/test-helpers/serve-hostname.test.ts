@@ -88,6 +88,9 @@ describe("Bun.serve hostname", () => {
       bindsHostname('Bun.serve({ port: 0, fetch: () => Response.json({ hostname: "x" }) })')
     ).toBe(false);
     expect(bindsHostname('Bun.serve({ tls: { hostname: "x" }, port: 0 })')).toBe(false);
+    expect(bindsHostname('Bun.serve({ port: 0, fetch: () => new Response("hostname: x") })')).toBe(
+      false
+    );
     expect(
       bindsHostname('Bun.serve({ port: 0, fetch: () => f("{"), hostname: "127.0.0.1" })')
     ).toBe(true);
