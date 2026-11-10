@@ -148,8 +148,19 @@ Verification.
   `latest` to the highest semver, so a publish that leaves `latest` behind is
   invisible to `npm i`. A 404 right after the job prints `+ claudish@X.Y.Z` is
   propagation, not a failed publish: for 10.3.0 each package appeared 1 to 6
-  minutes later. Poll for up to 15 minutes before treating a package as missing,
-  and read the job log's `+ <package>@<version>` lines to tell the two apart.
+  minutes later. Read the job log's `+ <package>@<version>` lines to tell the two
+  apart.
+- Poll two registry URLs directly, not `dist-tags.latest` and not `npm view`:
+  the per-version manifest `https://registry.npmjs.org/claudish/X.Y.Z` AND the
+  tarball `https://registry.npmjs.org/claudish/-/claudish-X.Y.Z.tgz`. The package
+  is served when both answer 200. `latest` can move before the tarball exists, and
+  `npm install claudish` then fails with E404. Wait up to 60 minutes after the
+  job's `+ claudish@X.Y.Z` line before treating the package as stuck.
+  Measured from that line to the manifest answering 200: 14.1.0 about 17 min,
+  14.10.1 17 min 43 s, 14.14.0 about 19 min, 14.15.0 about 18 min, 14.12.0 and
+  14.13.0 about 55 min (each cleared with no version bump), 14.18.5 25 min 45 s.
+  On 14.18.5 the tarball still answered 404 at 26 min 6 s, with `latest` already
+  at 14.18.5, and answered 200 by 30 min 34 s.
 - `npm view @claudish/magmux-darwin-arm64 versions` and its three siblings — this
   is the check the swallowed publish failure above makes necessary.
 - `gh release view vX.Y.Z` — exists, not a draft, assets attached.
