@@ -136,7 +136,7 @@ type LaunchModels = Partial<
 >;
 
 /** A spec routing would gather a chain for. An unparsable one is the advisor's to refuse. */
-function isBareRoute(spec: string | null | undefined): boolean {
+export function isBareRoute(spec: string | null | undefined): boolean {
   if (!spec) return false;
   try {
     return proxyRouteDecision(splitWireMarkers(spec).spec).type === "bare";

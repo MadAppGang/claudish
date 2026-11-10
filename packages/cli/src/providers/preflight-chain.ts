@@ -17,11 +17,12 @@
  */
 import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import { redactSecrets } from "../redact.js";
+import { explainRouteSettled } from "./explain-route-settled.js";
 import { isLocalProviderName } from "./model-parser.js";
 import { NATIVE_NOT_PROBED, nativeRouteFor } from "./native-route.js";
 import { type ProbeChainReason, type ProbeResult, describeProbeState } from "./probe-live.js";
 import { type ProbeTarget, probeTargets } from "./probe-runner.js";
-import { type NoRouteCause, type RouteExplanation, explainRoute } from "./routing-rules.js";
+import type { NoRouteCause, RouteExplanation } from "./routing-rules.js";
 
 /** How a hop bills. */
 export type HopBilling = "subscription" | "metered" | "local";
@@ -80,7 +81,7 @@ export type PreflightModelResult =
 export interface PreflightDeps {
   /** null = `probe: false`: plan only, send nothing. */
   probe: ((target: ProbeTarget) => Promise<ProbeResult>) | null;
-  /** Default `explainRoute`. */
+  /** Default {@link explainRouteSettled}. */
   explain?: (model: string) => Promise<RouteExplanation>;
   /** Called before each hop is probed (progress reporting). */
   onHop?: (hop: PreflightHop, total: number) => void;
@@ -121,7 +122,7 @@ export async function preflightModel(
 
   let explanation: RouteExplanation;
   try {
-    explanation = await (deps.explain ?? explainRoute)(model);
+    explanation = await (deps.explain ?? explainRouteSettled)(model);
   } catch (err) {
     return {
       kind: "route-error",

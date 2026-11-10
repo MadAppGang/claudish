@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { explainRouteSettled } from "../../providers/explain-route-settled.js";
 import { prepareMuseLoginForTuiAction } from "../../providers/meta-muse/muse-credentials.js";
 import { NATIVE_NOT_PROBED } from "../../providers/native-route.js";
 import { describeProbeState } from "../../providers/probe-live.js";
@@ -7,7 +8,6 @@ import {
   type FallbackWithheld,
   type RouteExplanation,
   describeRouteExplanation,
-  explainRoute,
 } from "../../providers/routing-rules.js";
 import { ensureProbeProxy } from "../probe-proxy.js";
 import type { ProbeEntry, ProbeMode, ProbeSummary } from "../types.js";
@@ -128,7 +128,7 @@ export function probeQueue(rows: ProbeEntry[]): ProbeQueueItem[] {
  */
 async function probeViewFor(model: string): Promise<ProbeView> {
   try {
-    return probeRowsFrom(await explainRoute(model));
+    return probeRowsFrom(await explainRouteSettled(model));
   } catch (err) {
     return {
       summary: {

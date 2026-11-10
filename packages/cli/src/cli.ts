@@ -62,6 +62,7 @@ import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api
 import { MODEL_CATALOG_NAME } from "./providers/catalog-name.js";
 import { normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
+import { explainRouteSettled } from "./providers/explain-route-settled.js";
 import { describeMuseSigningSource } from "./providers/meta-muse/muse-credentials.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { NATIVE_NOT_PROBED } from "./providers/native-route.js";
@@ -79,7 +80,6 @@ import {
   type RouteWarning,
   type RuleScope,
   TIER_LABEL,
-  explainRoute,
 } from "./providers/routing-rules.js";
 import { nativeShortcutForVendor, renderRecommendedText } from "./recommended-listing.js";
 import { setRecoveryFlagOverrides } from "./recovery/settings.js";
@@ -1724,7 +1724,7 @@ async function probeModelRouting(
 
   /** The routing decision for one model (shared by both paths). */
   async function explainForProbe(modelInput: string): Promise<ModelProbe> {
-    const explanation = await explainRoute(modelInput);
+    const explanation = await explainRouteSettled(modelInput);
     const { chain, dropped } = probeChainFrom(explanation, probeCredentials);
     // Both are the kept candidates in chain order, so the i-th target is the
     // i-th link. A native target has one link and no targets.
