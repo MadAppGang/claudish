@@ -543,6 +543,7 @@ describe("ensureLMStudioInstance", () => {
     writeFileSync(join(lock, "owner"), "999999999");
     const look = lookAtLock(lock);
     mkdirSync(join(lock, "takeover"));
+    writeFileSync(join(lock, "takeover", "pid"), String(process.ppid));
 
     takeOverStaleLock(lock, look?.identity ?? "");
 
@@ -555,14 +556,50 @@ describe("ensureLMStudioInstance", () => {
     writeFileSync(join(lock, "owner"), "999999999");
     const claim = join(lock, "takeover");
     mkdirSync(claim);
-    const old = new Date(Date.now() - 120_000);
-    utimesSync(claim, old, old);
+    writeFileSync(join(claim, "pid"), "999999999");
 
     takeOverStaleLock(lock, lookAtLock(lock)?.identity ?? "");
     expect(existsSync(claim)).toBe(false);
     takeOverStaleLock(lock, lookAtLock(lock)?.identity ?? "");
 
     expect(existsSync(lock)).toBe(false);
+  });
+
+  test("a takeover of a lock another waiter already removed does not make it again", () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "999999999");
+    const look = lookAtLock(lock);
+    rmSync(lock, { recursive: true, force: true });
+
+    expect(takeOverStaleLock(lock, look?.identity ?? "")).toBe(false);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("an empty claim directory is no claim: the dead lock is taken over", () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "999999999");
+    mkdirSync(join(lock, "takeover"));
+
+    expect(takeOverStaleLock(lock, lookAtLock(lock)?.identity ?? "")).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("an old claim of a waiter that still runs is left alone, however long it has paused", () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "999999999");
+    const claim = join(lock, "takeover");
+    mkdirSync(claim);
+    writeFileSync(join(claim, "pid"), String(process.ppid));
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(claim, old, old);
+
+    takeOverStaleLock(lock, lookAtLock(lock)?.identity ?? "");
+
+    expect(existsSync(claim)).toBe(true);
+    expect(existsSync(join(lock, "owner"))).toBe(true);
   });
 
   test("an empty owner file reads as a lock taken an instant ago", () => {

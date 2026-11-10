@@ -16,7 +16,15 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { credentialValuesFromRequest } from "../handlers/shared/call-context.js";
@@ -254,10 +262,8 @@ function defaultLockPath(): string {
   return join(homedir(), ".claudish", "lmstudio-machine.lock");
 }
 
-/** A claim on a dead lock: the one waiter whose `mkdir` makes it may remove that lock. */
+/** A claim on a dead lock: the one waiter whose pid file it holds may remove that lock. */
 const CLAIM = "takeover";
-/** A claim this old was left by a waiter that exited between its claim and its removal. */
-const CLAIM_STALE_MS = 30_000;
 
 /**
  * One look at the lock: whether its owner lives, and an identity that tells this
@@ -281,11 +287,15 @@ export function lookAtLock(lockPath: string): { alive: boolean; identity: string
       return undefined;
     }
   }
+  return { alive: pidAlive(pid), identity };
+}
+
+function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return { alive: true, identity };
+    return true;
   } catch (error) {
-    return { alive: (error as NodeJS.ErrnoException).code === "EPERM", identity };
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -309,16 +319,16 @@ function lockIdentity(path: string): string | undefined {
  * Removes the dead lock a waiter looked at, and nothing else; answers whether it
  * did. Two waiters can see the same dead owner, and the first may already hold a
  * new lock at the path when the second acts. The lock never leaves its path: a
- * waiter first claims it with `mkdir` inside it, which only one waiter can do
- * for one directory, and then removes it only if it is still the directory it
- * looked at. A claim inside a live lock is withdrawn.
+ * waiter first claims it by placing its pid file inside it, which only one
+ * waiter can do, and then removes it only if it is still the directory it
+ * looked at. A claim inside a live lock is withdrawn. A claim is cleared only
+ * once the process it names has exited, so a waiter that pauses between its
+ * check and its removal keeps its claim.
  */
 export function takeOverStaleLock(lockPath: string, identity: string): boolean {
   const claim = join(lockPath, CLAIM);
-  try {
-    mkdirSync(claim);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") clearStaleClaim(claim);
+  if (!makeClaim(claim)) {
+    clearStaleClaim(claim);
     return false;
   }
   if (lockIdentity(lockPath) !== identity) {
@@ -329,14 +339,46 @@ export function takeOverStaleLock(lockPath: string, identity: string): boolean {
   return true;
 }
 
-function clearStaleClaim(claim: string): void {
+/**
+ * Places this process's pid file in `claim`. The pid is written to a draft
+ * first and then linked into place, and a link to a name that exists fails: so
+ * one waiter makes the claim, and a claim is never seen without its pid. A
+ * claim directory with no pid file is no claim.
+ */
+function makeClaim(claim: string): boolean {
+  const draft = `${claim}.${process.pid}.${Math.random().toString(36).slice(2)}`;
   try {
-    if (Date.now() - statSync(claim).mtimeMs > CLAIM_STALE_MS) {
-      rmSync(claim, { recursive: true, force: true });
+    try {
+      // Never recursive: that would make again a lock another waiter removed.
+      mkdirSync(claim);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
     }
+    writeFileSync(draft, String(process.pid));
+    linkSync(draft, join(claim, "pid"));
+    return true;
   } catch {
-    // Gone already.
+    return false;
+  } finally {
+    rmSync(draft, { force: true });
   }
+}
+
+function claimPid(claim: string): number | undefined {
+  try {
+    const pid = Number.parseInt(readFileSync(join(claim, "pid"), "utf-8"), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Clears a claim whose waiter has exited; a claim of a running waiter stays. */
+function clearStaleClaim(claim: string): void {
+  const pid = claimPid(claim);
+  if (pid === undefined || pidAlive(pid)) return;
+  // Read again just before: another waiter may have cleared it and claimed anew.
+  if (claimPid(claim) === pid) rmSync(claim, { recursive: true, force: true });
 }
 
 /** Writes the owner whole: a reader sees no owner or this pid, never part of it. */
