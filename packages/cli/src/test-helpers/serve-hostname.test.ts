@@ -65,7 +65,7 @@ describe("Bun.serve hostname", () => {
 
   test("every Bun.serve call under src names a hostname", () => {
     const missing: string[] = [];
-    for (const rel of new Bun.Glob("**/*.{ts,tsx}").scanSync({ cwd: SRC })) {
+    for (const rel of new Bun.Glob("**/*.{ts,tsx,js,mjs,cjs}").scanSync({ cwd: SRC })) {
       if (rel.includes("node_modules/")) continue;
       const source = readFileSync(join(SRC, rel), "utf-8");
       if (!source.includes("Bun.serve(")) continue;
