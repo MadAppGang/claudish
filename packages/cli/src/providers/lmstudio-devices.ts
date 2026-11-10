@@ -19,6 +19,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { redactExactValues } from "../redact.js";
 
 export const LMSTUDIO_DEVICE_SEPARATOR = "~";
 /** The machine suffix for the machine claudish runs on. */
@@ -507,6 +508,17 @@ export async function ensureLMStudioInstance(
   );
 }
 
+/** Each header value, and the token of a `Bearer` value. */
+function signingValuesOf(headers: Record<string, string> | undefined): string[] {
+  const values: string[] = [];
+  for (const value of Object.values(headers ?? {})) {
+    values.push(value);
+    const token = /^Bearer\s+(.+)$/i.exec(value)?.[1];
+    if (token) values.push(token);
+  }
+  return values;
+}
+
 function listError(): Error {
   return new Error(
     "Could not list the running LM Studio instances: `lms ps --json` failed. Without that list claudish cannot tell which machine a model name reaches."
@@ -541,9 +553,10 @@ async function loadOnLinkedMachine(
       signal: AbortSignal.timeout(LOAD_TIMEOUT_MS),
     });
     if (!response.ok) {
-      throw new Error(
-        `LM Studio could not load ${model} on ${device}: ${response.status} ${await response.text()}`
-      );
+      // A server may quote the key it rejected, and this message is logged before
+      // any request lease knows the key, so the body is masked here.
+      const body = redactExactValues(await response.text(), signingValuesOf(headers));
+      throw new Error(`LM Studio could not load ${model} on ${device}: ${response.status} ${body}`);
     }
     const body = (await response.json().catch(() => null)) as { instance_id?: unknown } | null;
     return typeof body?.instance_id === "string" && body.instance_id !== ""

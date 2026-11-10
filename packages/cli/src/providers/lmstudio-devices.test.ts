@@ -57,6 +57,8 @@ let psFails: boolean;
 let appearsDuringLoad: Row | undefined;
 /** The instance name LM Studio gives the loaded copy, when it is not the model key. */
 let loadedAs: string | undefined;
+/** The body of a failed load. */
+let loadErrorBody: string;
 let lockDir: string;
 
 const run: LmsRunner = async (args) => {
@@ -114,9 +116,10 @@ beforeEach(() => {
   psFails = false;
   appearsDuringLoad = undefined;
   loadedAs = undefined;
+  loadErrorBody = "no memory";
   lockDir = mkdtempSync(join(tmpdir(), "claudish-lms-lock-"));
   globalThis.fetch = mock(async (_url: unknown, init?: RequestInit) => {
-    if (loadStatus !== 200) return new Response("no memory", { status: loadStatus });
+    if (loadStatus !== 200) return new Response(loadErrorBody, { status: loadStatus });
     lastLoadBody = JSON.parse(String(init?.body));
     const { model } = lastLoadBody as { model: string };
     const device = loadsOn ?? preferred;
@@ -536,6 +539,26 @@ describe("ensureLMStudioInstance", () => {
     takeOverStaleLock(lock, lookAtLock(lock)?.identity ?? "");
 
     expect(readdirSync(lockDir)).toEqual([]);
+  });
+
+  test("a failed load's error never quotes the key the load was signed with", async () => {
+    preferred = SELF;
+    loadStatus = 401;
+    loadErrorBody = '{"error":"invalid key Bearer lms-secret-0123456789"}';
+
+    const error = await ensureLMStudioInstance({
+      baseUrl: BASE,
+      model: "only-m1",
+      device: "m1",
+      headers: { Authorization: "Bearer lms-secret-0123456789" },
+      run,
+      lockPath: join(lockDir, "machine.lock"),
+      lockPollMs: 10,
+    }).catch((e: unknown) => e as Error);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("401");
+    expect((error as Error).message).not.toContain("lms-secret-0123456789");
   });
 
   test("the lock is released after a failed load", async () => {
