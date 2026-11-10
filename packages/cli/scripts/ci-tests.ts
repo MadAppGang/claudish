@@ -6,6 +6,10 @@
  *   bun scripts/ci-tests.ts --plan pane@6
  *   bun scripts/ci-tests.ts --run pane@1/6,pane@2/6,rest [-- <bun test args>]
  *   bun scripts/ci-tests.ts --update-times <junit.xml>…
+ *   bun scripts/ci-tests.ts --local <junit.xml> [-- <bun test args>]
+ *
+ * `--local` is the package's `test` script: a plain `bun test` that also writes a junit report
+ * and prints the slowest files from it, so a slow local run names its slow files.
  *
  * `--run` takes groups (`rest`) and slices (`pane@2/6`: the 2nd of 6 slices of `pane`). Several
  * run as concurrent `bun test` processes, each output line prefixed with its label. `{label}` in
@@ -22,8 +26,8 @@
  *
  * src/hooks/blind is not here: it runs under Bun 1.4.0 in its own job (test.yml).
  */
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve as resolvePath } from "node:path";
 
 const CLI = join(import.meta.dir, "..");
 const TIMES = join(import.meta.dir, "ci-test-times.json");
@@ -32,6 +36,7 @@ const TIMES = join(import.meta.dir, "ci-test-times.json");
 const TEST_FILE = /(\.test|_test_|\.spec|_spec_)[^/]*\.[cm]?[jt]sx?$/;
 const EXCLUDED = ["node_modules/", "src/hooks/blind/"];
 const UNMEASURED_SECONDS = 1;
+const LOCAL_REPORT_ROWS = 25;
 
 /**
  * Each file belongs to the first group whose prefix it starts with; `rest` takes the others.
@@ -167,6 +172,43 @@ function visitCase(w: JunitWalk, tag: string): void {
   w.longest.set(w.file, Math.max(w.longest.get(w.file) ?? 0, seconds(tag)));
 }
 
+/** The `n` slowest files of a junit timing table, slowest first, under a header with the total. */
+export function slowestReport(times: Record<string, number>, n: number): string[] {
+  const rows = Object.entries(times).sort(([, a], [, b]) => b - a);
+  if (rows.length === 0) return ["[ci-tests] no test file timings in the junit report"];
+  const total = rows.reduce((s, [, t]) => s + t, 0);
+  const top = rows.slice(0, n);
+  return [
+    `[ci-tests] slowest ${top.length} of ${rows.length} test files, ${total.toFixed(1)} s in all:`,
+    ...top.map(([file, t]) => `${t.toFixed(1).padStart(7)} s  ${file}`),
+  ];
+}
+
+/**
+ * A plain `bun test` in this package (Bun's own discovery and file order, every file), with a
+ * junit report written to `outfile` and the slowest files printed after it. The exit code is
+ * `bun test`'s, report or not.
+ */
+async function local(outfile: string, bunArgs: string[]): Promise<number> {
+  const out = resolvePath(process.cwd(), outfile);
+  // a report left by an earlier run must not stand in for one this run never wrote
+  rmSync(out, { force: true });
+  const proc = Bun.spawn(
+    [process.execPath, "test", "--reporter=junit", `--reporter-outfile=${out}`, ...bunArgs],
+    { cwd: CLI, stdout: "inherit", stderr: "inherit" }
+  );
+  const code = await proc.exited;
+  let times: Record<string, number> = {};
+  try {
+    times = junitSeconds(readFileSync(out, "utf8"));
+  } catch {
+    /* no report: bun test died before writing it; the empty table says so */
+  }
+  for (const line of slowestReport(times, LOCAL_REPORT_ROWS)) console.log(line);
+  console.log(`[ci-tests] per-file junit report: ${out}`);
+  return code;
+}
+
 function seconds(tag: string): number {
   return Number(xmlAttr(tag, "time") || 0);
 }
@@ -212,7 +254,7 @@ async function run(
 }
 
 const USAGE =
-  "usage: ci-tests.ts --list | --plan <group>@<n> | --run <group|group@i/n>[,…] [-- <bun test args>] | --update-times <junit.xml>…";
+  "usage: ci-tests.ts --list | --plan <group>@<n> | --run <group|group@i/n>[,…] [-- <bun test args>] | --update-times <junit.xml>… | --local <junit.xml> [-- <bun test args>]";
 
 if (import.meta.main) {
   const argv = process.argv.slice(2);
@@ -244,6 +286,9 @@ if (import.meta.main) {
     );
     writeFileSync(TIMES, `${JSON.stringify(sorted, null, 2)}\n`);
     console.log(`[ci-tests] ${Object.keys(sorted).length} files timed in ${TIMES}`);
+  } else if (command === "--local" && value) {
+    // `bun run test <file>` appends the file with no `--`, so it arrives as our own argument.
+    process.exit(await local(value, [...own.slice(2), ...bunArgs]));
   } else if (command === "--run" && value) {
     const wanted = value.split(",").filter(Boolean);
     const runs = wanted.map((spec) => resolve(spec, groups, times));

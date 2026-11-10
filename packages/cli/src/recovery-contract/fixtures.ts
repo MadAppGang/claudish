@@ -255,6 +255,7 @@ export function startHealthyFixture(text = "HEALTHY-FIXTURE-ANSWER", port = 0): 
   const requests: HealthyFixture["requests"] = [];
   const t0 = Date.now();
   const server = Bun.serve({
+    hostname: "127.0.0.1",
     port,
     async fetch(req) {
       requests.push({
@@ -285,6 +286,7 @@ export function startHealthyFixture(text = "HEALTHY-FIXTURE-ANSWER", port = 0): 
 export function startStatusFixture(status: number, port = 0) {
   let hits = 0;
   const server = Bun.serve({
+    hostname: "127.0.0.1",
     port,
     fetch() {
       hits += 1;
@@ -318,7 +320,7 @@ export function startStatusFixture(status: number, port = 0) {
  */
 export function reservePorts(count: number): number[] {
   const servers = Array.from({ length: count }, () =>
-    Bun.serve({ port: 0, fetch: () => new Response("reserved") })
+    Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserved") })
   );
   const ports = servers.map((s) => s.port as number);
   for (const s of servers) s.stop(true);

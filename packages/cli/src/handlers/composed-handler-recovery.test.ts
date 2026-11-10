@@ -36,7 +36,7 @@ import { classifyConnectionError, markOwnTimeout } from "./shared/connection-err
 
 /** A port nothing is listening on, taken and released so it is VERIFIED free. */
 function freePort(): number {
-  const s = Bun.serve({ port: 0, fetch: () => new Response("x") });
+  const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("x") });
   const port = s.port as number;
   s.stop(true);
   return port;
@@ -210,6 +210,7 @@ describe("C-11 — probes still fail fast against a dead endpoint", () => {
       {}
     );
     const proxy = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       async fetch(req) {
         const payload = await req.json();
@@ -405,6 +406,7 @@ describe("a transport's own request timeout is NOT a connection failure", () => 
     // shape a slow model presents, and the one a network classifier must not
     // confuse with an unreachable host.
     const hung = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch: () => new Promise<Response>(() => {}),
     });
@@ -466,7 +468,11 @@ describe("a transport's own request timeout is NOT a connection failure", () => 
     });
     // Provoked, not hand-written: this is what a real `AbortSignal.timeout`
     // rejection looks like, and it must NOT classify.
-    const hung = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) });
+    const hung = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Promise<Response>(() => {}),
+    });
     try {
       let raised: unknown;
       try {

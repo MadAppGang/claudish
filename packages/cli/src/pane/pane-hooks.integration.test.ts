@@ -43,6 +43,7 @@ import {
   MAGMUX,
   NO_MAGMUX_MESSAGE,
   type PaneTestEnv,
+  REAP_DEADLINE_MS,
   killLeftovers,
   makePaneTestEnv,
   newSessionUuid,
@@ -50,7 +51,8 @@ import {
 } from "./test-helpers/hermetic-env.js";
 import type { PaneSnapshot, SettledTurn } from "./types.js";
 
-const T = 60_000;
+/** A test's own work plus a full REAP_DEADLINE_MS, so a real leak fails with its list. */
+const T = 120_000;
 
 /* ───────────────────────────── the test double binding ───────────────────────────── */
 
@@ -245,7 +247,7 @@ async function channel(o: {
 /** Cancel whatever is live, wait for the reap, and prove nothing is left. */
 async function done(c: Chan): Promise<void> {
   await c.manager.shutdownAll();
-  const left = await waitNoOrphans({ sockRoot: c.t.sockRoot }, 10_000);
+  const left = await waitNoOrphans({ sockRoot: c.t.sockRoot }, REAP_DEADLINE_MS);
   killLeftovers({ sockRoot: c.t.sockRoot });
   openEnvs.delete(c.t);
   c.t.cleanup();
@@ -321,7 +323,7 @@ async function team(o: {
 async function teamDone(x: Team): Promise<void> {
   await cancelTeamRun(x.handle.sessionPath, undefined, x.handle.runId).catch(() => undefined);
   await x.handle.done;
-  const left = await waitNoOrphans({ sockRoot: x.t.sockRoot }, 10_000);
+  const left = await waitNoOrphans({ sockRoot: x.t.sockRoot }, REAP_DEADLINE_MS);
   killLeftovers({ sockRoot: x.t.sockRoot });
   openEnvs.delete(x.t);
   x.t.cleanup();
@@ -1511,7 +1513,10 @@ wait $child
       async function directDone(d: Direct): Promise<PaneSnapshot> {
         d.s.cancel();
         await d.s.reaped();
-        const left = await waitNoOrphans({ sockRoot: d.t.sockRoot, ids: [d.uuid] });
+        const left = await waitNoOrphans(
+          { sockRoot: d.t.sockRoot, ids: [d.uuid] },
+          REAP_DEADLINE_MS
+        );
         killLeftovers({ sockRoot: d.t.sockRoot, ids: [d.uuid] });
         openEnvs.delete(d.t);
         d.t.cleanup();

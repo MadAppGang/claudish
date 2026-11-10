@@ -13,6 +13,16 @@
 
 **Adding regression tests**: After extracting fixtures from a debug log, add a `describe("Regression: <model>")` block. Template is at the bottom of the test file.
 
+## Which files make a local run slow
+
+`packages/cli`'s `test` script is `scripts/ci-tests.ts --local junit-local.xml`: a plain
+`bun test` (Bun's own discovery and file order) that also writes a junit report to
+`packages/cli/junit-local.xml` (gitignored) and prints the 25 slowest files with their seconds
+after the run. `bun run test` and `bun run test:safe` both go through it, so a slow run names its
+slow files in its own log. The exit code is `bun test`'s. A file given as `bun run test <file>`
+still runs alone. CI does not use this script; its jobs write their own junit through
+`ci-tests.ts --run`.
+
 ## Three shared resources a test must never reach, and why prevention beats restore
 
 `scripts/guard-real-config.ts` — the thing `bun run test:safe` runs the suite

@@ -29,8 +29,8 @@ async function captureProbeBody(provider: string): Promise<CapturedProbeBody> {
   let proxyUrl = "http://proxy.test";
   const realFetch = globalThis.fetch;
   try {
-    server = Bun.serve({ port: 0, fetch: handleRequest });
-    proxyUrl = `http://localhost:${server.port}`;
+    server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handleRequest });
+    proxyUrl = `http://127.0.0.1:${server.port}`;
   } catch (error) {
     // The Codex filesystem sandbox used for local validation denies every bind
     // as EADDRINUSE. Normal runs use Bun.serve; this preserves the same Request
