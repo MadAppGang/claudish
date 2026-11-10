@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { log } from "../logger.js";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { redactSecrets } from "../redact.js";
+import type { KernelLock } from "../view/kernel-lock.js";
 import { locateBox } from "./box-locate.js";
 import { type CaptureResult, type CaptureUnchanged, ContractErrorException } from "./contract.js";
 import { MagmuxClient, type MagmuxConnectError } from "./magmux-client.js";
@@ -128,6 +129,15 @@ export interface ReplayPaneOptions {
   refused?: () => boolean;
   /** called when the published view socket appears or goes */
   onViewSocket?: () => void;
+  /**
+   * The replay lock, already held. magmux gets it as fd 3, and `start` closes this copy on
+   * the line after the spawn returns or throws, so from then on only magmux holds it.
+   */
+  holdLock?: KernelLock;
+  /** the pane id the opener minted (it is in the registry entry before the boot) */
+  paneId?: string;
+  /** called once, at the end of the reap, verified or not */
+  onReaped?: (verified: boolean) => void;
 }
 
 export type ReplayReady =
@@ -270,10 +280,13 @@ export class ReplayPane implements RegisteredPane {
         ctlDir: this.ctlDir,
         cwd: input.cwd,
         env: input.env,
+        ...(this.o.holdLock ? { holdFd: this.o.holdLock.fd } : {}),
       });
     } catch (e) {
+      this.o.holdLock?.close();
       return failed(e);
     }
+    this.o.holdLock?.close();
     if (!proc.pid) return failed(new Error("magmux did not start"));
     this.magmuxProc = proc;
     try {
@@ -734,6 +747,11 @@ export class ReplayPane implements RegisteredPane {
     if (this.listTicker) clearInterval(this.listTicker);
     this.listTicker = null;
     await reapPaneProcesses(this.reapSubject);
+    try {
+      this.o.onReaped?.(!this.reapFailed);
+    } catch {
+      // an owner's callback must not break the reap's promise
+    }
   }
 
   private get reapSubject(): PaneReapSubject {
@@ -798,7 +816,7 @@ export async function startReplayPane(o: ReplayPaneOptions): Promise<ReplayPane>
   let sockPath: string;
   let env: Record<string, string>;
   try {
-    paneId = mintPaneId("r", o.label);
+    paneId = o.paneId ?? mintPaneId("r", o.label);
     sockPath = sockPathOf(root, paneId);
     dirs = createLaunchDirs(root);
     const argv = buildReplayArgv(

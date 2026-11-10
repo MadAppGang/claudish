@@ -21,7 +21,12 @@ import {
   parseViewTarget,
 } from "../pane/view-contract.js";
 import { AnsiPainter, STATUS_ROWS, type StatusTone, type TermSize } from "./ansi-painter.js";
-import { endpointOwnerAlive, endpointPathOf, listEndpoints } from "./endpoints.js";
+import {
+  endpointOwnerAlive,
+  endpointPathOf,
+  listEndpoints,
+  ownerOfEndpointName,
+} from "./endpoints.js";
 import { type Screen, cellCols } from "./magmux-frame.js";
 import {
   DEFAULT_FPS,
@@ -84,6 +89,8 @@ export interface ViewerOptions {
   termProgram?: string;
   /** dial only this endpoint (its path), as a placed viewer does */
   endpoint?: string;
+  /** whether an endpoint's server may run; default the process table (tests replace it) */
+  endpointAlive?: (endpoint: string) => boolean;
   /** a herdr viewer's `<socket hash>/<workspace_id>` */
   workspaceKey?: string;
   /** a placed herdr viewer's `<txn>.<attempt>` */
@@ -124,12 +131,10 @@ export interface LocatedTarget {
 export async function locateTarget(
   root: string,
   target: string,
-  only?: string
+  only?: string,
+  alive?: (endpoint: string) => boolean
 ): Promise<{ found: LocatedTarget | null; servers: number }> {
-  const table = await readProcessTableAsync();
-  const names = listEndpoints(root).filter(
-    (n) => endpointOwnerAlive(n, table) && (!only || endpointPathOf(root, n) === only)
-  );
+  const names = await liveEndpoints(root, only, alive);
   let servers = 0;
   let found: LocatedTarget | null = null;
   for (const name of names) {
@@ -149,6 +154,35 @@ export async function locateTarget(
     }
   }
   return { found, servers };
+}
+
+/** The boot wait of a replay plus the joiner's extra: a slow boot answers within it. */
+export const REPLAY_OPEN_MS = 25_000;
+
+/** The endpoints whose servers may run (`only`: just that path). */
+async function liveEndpoints(
+  root: string,
+  only?: string,
+  alive?: (endpoint: string) => boolean
+): Promise<string[]> {
+  const table = alive ? null : await readProcessTableAsync();
+  return listEndpoints(root).filter(
+    (n) =>
+      (alive ? alive(n) : endpointOwnerAlive(n, table)) &&
+      (!only || endpointPathOf(root, n) === only)
+  );
+}
+
+/** Where a finished target nobody lists is opened: the lowest-pid live server. */
+async function lowestLiveEndpoint(
+  root: string,
+  only?: string,
+  alive?: (endpoint: string) => boolean
+): Promise<string | null> {
+  const names = (await liveEndpoints(root, only, alive)).sort(
+    (a, b) => (ownerOfEndpointName(a)?.pid ?? 0) - (ownerOfEndpointName(b)?.pid ?? 0)
+  );
+  return names[0] ?? null;
 }
 
 function stateOf(item: ViewItem): string {
@@ -218,36 +252,63 @@ export class Viewer {
       return;
     }
     this.target = target;
-    const { found, servers } = await locateTarget(this.o.root, target, this.o.endpoint);
-    if (!found) {
-      const message =
-        servers === 0
-          ? "no claudish MCP server is running; open the session from Claude Code"
-          : parseViewTarget(target)?.kind === "replay"
-            ? `no such replay: ${target}`
-            : `no running claudish MCP server lists ${target}`;
-      this.done({ code: 1, message });
-      return;
-    }
-    if (isFinishedItem(found.item)) {
+    const { found, servers } = await locateTarget(
+      this.o.root,
+      target,
+      this.o.endpoint,
+      this.o.endpointAlive
+    );
+    const isReplay = parseViewTarget(target)?.kind === "replay";
+    if (servers === 0) {
       this.done({
         code: 1,
-        message: `${target} has finished; open the session from Claude Code to replay it`,
+        message: "no claudish MCP server is running; open the session from Claude Code",
       });
       return;
     }
-    this.item = found.item;
-    const client = await ViewClient.connect(endpointPathOf(this.o.root, found.endpoint), {
-      reconnect: true,
-      hello: {
-        name: "claudish view",
-        kind: "viewer",
-        front_end: this.frontEnd.name,
-        ...(this.o.termProgram ? { term_program: this.o.termProgram } : {}),
-        ...(this.o.workspaceKey ? { workspace_key: this.o.workspaceKey } : {}),
-        ...(this.o.placement ? { placement: this.o.placement } : {}),
-      },
-    });
+    if (isReplay && !found) {
+      this.done({ code: 1, message: `no such replay: ${target}` });
+      return;
+    }
+    const finished = !found || isFinishedItem(found.item);
+    if (finished && (isReplay || this.o.passive)) {
+      this.done({ code: 1, message: `${target} has finished` });
+      return;
+    }
+    const endpoint =
+      found?.endpoint ??
+      (await lowestLiveEndpoint(this.o.root, this.o.endpoint, this.o.endpointAlive));
+    if (!endpoint) {
+      this.done({ code: 1, message: `no running claudish MCP server lists ${target}` });
+      return;
+    }
+    let client = await this.connectTo(endpoint);
+    if (finished) {
+      // a finished session or slot: open its replay, or join the one some server already runs
+      let opened: { client: ViewClient; target: string };
+      try {
+        opened = await this.openReplay(client, target, found?.item ?? null);
+      } catch (e) {
+        // nobody lists it and no server knows it: it is not a session at all
+        const unknown =
+          e instanceof ViewError && (e.code === "unknown_session" || e.code === "unknown_op");
+        if (!found && unknown) {
+          this.done({ code: 1, message: `no running claudish MCP server lists ${target}` });
+          return;
+        }
+        throw e;
+      }
+      client = opened.client;
+      this.target = opened.target;
+      const { items } = await client.request<ViewListResult>("list", { include_finished: true });
+      const item = items.find((i) => i.target === this.target);
+      if (!item) {
+        client.close();
+        this.done({ code: 1, message: `${this.target} has finished` });
+        return;
+      }
+      this.item = item;
+    } else this.item = (found as LocatedTarget).item;
     this.client = client;
     client.on("event", (e) => this.onEvent(e));
     client.on("closed", (why) => {
@@ -260,6 +321,62 @@ export class Viewer {
     this.frontEnd.attach?.({ take: () => void this.takeIfNotHolding() });
     if (this.o.passive) this.render();
     else await this.take();
+  }
+
+  private connectTo(endpoint: string): Promise<ViewClient> {
+    return ViewClient.connect(endpointPathOf(this.o.root, endpoint), {
+      reconnect: true,
+      hello: {
+        name: "claudish view",
+        kind: "viewer",
+        front_end: this.frontEnd.name,
+        ...(this.o.termProgram ? { term_program: this.o.termProgram } : {}),
+        ...(this.o.workspaceKey ? { workspace_key: this.o.workspaceKey } : {}),
+        ...(this.o.placement ? { placement: this.o.placement } : {}),
+      },
+    });
+  }
+
+  /**
+   * `replay.open` on this connection, so the hold is this viewer's. A replay owned by another
+   * server answers `replay_elsewhere`: the viewer joins it on that server by its id.
+   */
+  private async openReplay(
+    client: ViewClient,
+    target: string,
+    item: ViewItem | null
+  ): Promise<{ client: ViewClient; target: string }> {
+    const t = parseViewTarget(target);
+    const args =
+      t?.kind === "team_slot"
+        ? {
+            run_id: t.runId,
+            slot: t.slot,
+            ...(item?.kind === "team_slot" ? { path: item.run_path } : {}),
+          }
+        : { session_id: t?.kind === "session" ? t.sessionId : target };
+    try {
+      const r = await client.request<{ target: string }>("replay.open", args, REPLAY_OPEN_MS);
+      return { client, target: r.target };
+    } catch (e) {
+      if (!(e instanceof ViewError) || e.code !== "replay_elsewhere" || !e.elsewhere) {
+        client.close();
+        throw e;
+      }
+      client.close();
+      const there = await this.connectTo(e.elsewhere.endpoint);
+      try {
+        const r = await there.request<{ target: string }>(
+          "replay.open",
+          { replay_id: e.elsewhere.replay_id },
+          REPLAY_OPEN_MS
+        );
+        return { client: there, target: r.target };
+      } catch (e2) {
+        there.close();
+        throw e2;
+      }
+    }
   }
 
   private async takeIfNotHolding(): Promise<void> {

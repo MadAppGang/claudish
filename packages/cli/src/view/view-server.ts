@@ -8,7 +8,13 @@
 
 import type { Socket } from "node:net";
 import { log } from "../logger.js";
-import { CAPABILITIES, CONTRACT_VERSION, ContractErrorException } from "../pane/contract.js";
+import {
+  CAPABILITIES,
+  CONTRACT_VERSION,
+  ContractErrorException,
+  type ReplayTarget,
+  type ScrollRequest,
+} from "../pane/index.js";
 import { readProcessTableAsync } from "../pane/process-identity.js";
 import {
   VIEW_PROTOCOL,
@@ -90,8 +96,36 @@ export interface HerdrViewerSink {
   connectionGone(connId: string): void;
 }
 
+/** The replay side of the transport: `ReplayManager`. */
+export interface ViewReplayOps {
+  openForViewer(target: ReplayTarget, connId: string): Promise<unknown>;
+  join(
+    replayId: string,
+    opener: { kind: "conn"; connId: string; role: "viewer" | "peer" },
+    place?: { workspace_key: string; txn: string }
+  ): Promise<unknown>;
+  release(replayId: string, connId: string): Promise<{ closed: boolean }>;
+  scroll(replayId: string, req: ScrollRequest, caller: ClaimCaller): Promise<unknown>;
+  closeBy(
+    replayId: string,
+    closer: { kind: "conn"; connId: string; role: "viewer" | "peer" }
+  ): Promise<unknown>;
+  placeDone(replayId: string, workspaceKey: string, connId: string): void;
+  connectionGone(connId: string): void;
+}
+
+/** What a viewer's `replay.open {session_id}` or `{run_id, slot, path}` opens. */
+export type ReplayTargetResolver = (
+  of: { session_id: string } | { run_id: string; slot: string; path?: string }
+) => ReplayTarget;
+
 export interface ViewServerOptions {
   root: string;
+  replays?: ViewReplayOps;
+  resolveReplayTarget?: ReplayTargetResolver;
+  /** tests run two servers in one process: the endpoint name, and the peer gate's liveness */
+  endpointName?: string;
+  peerAlive?: (endpoint: string) => boolean;
   directory: ViewDirectory;
   claims: ViewClaims;
   feed: ViewFeed;
@@ -105,6 +139,14 @@ export interface ViewServerOptions {
 
 const WORKSPACE_KEY = /^[0-9a-f]{8}\/[A-Za-z0-9:_-]{1,64}$/;
 const PLACEMENT = /^[A-Za-z0-9]{1,32}\.[A-Za-z0-9]{1,32}$/;
+const TXN = /^[A-Za-z0-9]{1,32}$/;
+const REPLAY_ID = /^replay-[0-9a-f]{16}$/;
+
+function replayIdArg(args: Record<string, unknown>): string {
+  const id = stringArg(args, "replay_id");
+  if (!REPLAY_ID.test(id)) throw new ViewError("invalid_args", "'replay_id' is not a replay id");
+  return id;
+}
 
 /** What a handler answers, and what to send once the reply is on its way. */
 interface Handled {
@@ -142,6 +184,7 @@ function errorBody(e: unknown): ViewErrorBody {
       code: e.code,
       message: redactSecrets(e.message),
       ...(e.reason ? { reason: e.reason } : {}),
+      ...(e.elsewhere ? e.elsewhere : {}),
     };
   if (e instanceof ContractErrorException)
     return {
@@ -169,7 +212,7 @@ export class ViewServer {
   /** Null when the transport is off for this process; sessions never depend on it. */
   static async start(o: ViewServerOptions): Promise<ViewServer | null> {
     const server = new ViewServer(o);
-    const bound = await bindEndpoint(o.root, (sock) => server.accept(sock));
+    const bound = await bindEndpoint(o.root, (sock) => server.accept(sock), o.endpointName);
     if (!bound) return null;
     server.endpoint = bound;
     return server;
@@ -246,6 +289,7 @@ export class ViewServer {
     conn.outboundBytes = 0;
     this.o.claims.releaseConnection(conn.id);
     this.o.herdrViewers?.connectionGone(conn.id);
+    this.o.replays?.connectionGone(conn.id);
     this.followFeed();
   }
 
@@ -320,11 +364,19 @@ export class ViewServer {
     args: Record<string, unknown>
   ): Handled | Promise<Handled> {
     if (MUTATORS.has(op)) throw new ViewError("forbidden", `'${op}' is not available here`);
-    if (PEER_ONLY_OPS.has(op)) {
-      if (conn.role !== "peer") throw new ViewError("forbidden", `'${op}' is for peer servers`);
-      throw new ViewError("unknown_op", `unknown op ${JSON.stringify(op)}`);
-    }
+    if (PEER_ONLY_OPS.has(op) && conn.role !== "peer")
+      throw new ViewError("forbidden", `'${op}' is for peer servers`);
     switch (op) {
+      case "replay.open":
+        return this.replayOpen(conn, args);
+      case "replay.release":
+        return this.replayRelease(conn, args);
+      case "replay.scroll":
+        return this.replayScroll(conn, args);
+      case "replay.close":
+        return this.replayClose(conn, args);
+      case "replay.place_done":
+        return this.replayPlaceDone(conn, args);
       case "hello":
         return this.hello(conn, args);
       case "list":
@@ -376,12 +428,12 @@ export class ViewServer {
     if (kind === "peer") {
       // a correctness gate: the boundary is the uid and the 0700 root
       const named = client.endpoint;
-      const table = await readProcessTableAsync();
-      if (
-        typeof named !== "string" ||
-        named === this.endpointName ||
-        !endpointOwnerAlive(named, table)
-      )
+      const alive =
+        typeof named === "string" &&
+        (this.o.peerAlive
+          ? this.o.peerAlive(named)
+          : endpointOwnerAlive(named, await readProcessTableAsync()));
+      if (typeof named !== "string" || named === this.endpointName || !alive)
         throw new ViewError("forbidden", "a peer must name another live server's endpoint");
     }
     conn.role = kind as ViewClientKind;
@@ -473,6 +525,96 @@ export class ViewServer {
         resize,
       },
     };
+  }
+
+  /* ───────────────────────────── replays ───────────────────────────── */
+
+  private replayOps(): ViewReplayOps {
+    if (!this.o.replays) throw new ViewError("unknown_op", "this server opens no replays");
+    return this.o.replays;
+  }
+
+  private replayOpener(conn: Connection): {
+    kind: "conn";
+    connId: string;
+    role: "viewer" | "peer";
+  } {
+    if (conn.role === "relay") throw new ViewError("forbidden", "a relay opens no replay");
+    return { kind: "conn", connId: conn.id, role: conn.role };
+  }
+
+  /**
+   * A join of a live replay by id (viewer or peer; `place` from a peer only), or a viewer's open
+   * of a finished session or slot. A replay owned elsewhere answers `replay_elsewhere`.
+   */
+  private async replayOpen(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
+    const ops = this.replayOps();
+    const opener = this.replayOpener(conn);
+    if (args.replay_id !== undefined) {
+      const id = replayIdArg(args);
+      let place: { workspace_key: string; txn: string } | undefined;
+      if (args.place !== undefined) {
+        if (opener.role !== "peer") throw new ViewError("forbidden", "'place' is for peer servers");
+        const p = asObject(args.place);
+        if (
+          typeof p.workspace_key !== "string" ||
+          !WORKSPACE_KEY.test(p.workspace_key) ||
+          typeof p.txn !== "string" ||
+          !TXN.test(p.txn)
+        )
+          throw new ViewError("invalid_args", "'place' needs a workspace_key and a txn");
+        place = { workspace_key: p.workspace_key, txn: p.txn };
+      }
+      return { result: await ops.join(id, opener, place) };
+    }
+    if (opener.role === "peer")
+      throw new ViewError("invalid_args", "a peer joins a replay by its replay_id");
+    const resolve = this.o.resolveReplayTarget;
+    if (!resolve) throw new ViewError("unknown_op", "this server opens no replays");
+    const of =
+      args.session_id !== undefined
+        ? { session_id: stringArg(args, "session_id") }
+        : {
+            run_id: stringArg(args, "run_id"),
+            slot: stringArg(args, "slot"),
+            ...(args.path === undefined ? {} : { path: stringArg(args, "path") }),
+          };
+    return { result: await ops.openForViewer(resolve(of), conn.id) };
+  }
+
+  private async replayRelease(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
+    const ops = this.replayOps();
+    this.replayOpener(conn);
+    return { result: await ops.release(replayIdArg(args), conn.id) };
+  }
+
+  /** `scroll` is input bytes to the child, so only a peer relaying its own Claude Code sends it. */
+  private async replayScroll(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
+    const ops = this.replayOps();
+    const id = replayIdArg(args);
+    let req: ScrollRequest;
+    if (args.by !== undefined) {
+      const by = integerArg(args, "by");
+      if (by === 0 || args.to !== undefined)
+        throw new ViewError("invalid_args", "give exactly one of 'by' (non-zero) and 'to'");
+      req = { by };
+    } else if (args.to === "bottom" || args.to === "end") req = { to: "end" };
+    else throw new ViewError("invalid_args", "one of 'by' and 'to' is required");
+    return { result: await ops.scroll(id, req, this.callerOf(conn)) };
+  }
+
+  /** A joined server's `close_replay`, answered only after the reap and the registry removal. */
+  private async replayClose(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
+    const ops = this.replayOps();
+    return { result: await ops.closeBy(replayIdArg(args), this.replayOpener(conn)) };
+  }
+
+  private replayPlaceDone(conn: Connection, args: Record<string, unknown>): Handled {
+    const ops = this.replayOps();
+    const key = stringArg(args, "workspace_key");
+    if (!WORKSPACE_KEY.test(key)) throw new ViewError("invalid_args", "not a workspace key");
+    ops.placeDone(replayIdArg(args), key, conn.id);
+    return { result: {} };
   }
 
   private renew(conn: Connection, args: Record<string, unknown>): Handled {

@@ -33,6 +33,12 @@ import { type HerdrApi, HerdrApiError, type HerdrEvent } from "./herdr-socket.js
 import { type PlacementGrants, placementToken } from "./placement-grants.js";
 import { shortModel } from "./state-map.js";
 
+/** What the placer asks of the grants: the owner's in-process ones, or a joined replay's. */
+export type PlacerGrants = Pick<
+  PlacementGrants,
+  "grant" | "attempt" | "placed" | "done" | "pending"
+>;
+
 export const CLAUDISH_TAB = "claudish";
 export const SCRATCH_PREFIX = "claudish-new-";
 export const PLACED_GRACE_MS = 4_000;
@@ -53,9 +59,11 @@ export interface PlacerOptions {
   feed: { subscribe(fn: (e: ViewFeedEvent) => void): () => void };
   /** the current row of a target, for the checks made inside the lock */
   item: (target: string) => ViewItem | null;
-  grants: PlacementGrants;
+  grants: PlacerGrants;
   /** this server's endpoint, once bound; a placed viewer dials it */
   endpoint: () => { name: string; path: string } | null;
+  /** the endpoint path a placed viewer of `target` dials instead (a joined replay's owner) */
+  endpointFor?: (target: string) => string | null;
   /** the argv of a placed viewer for `target` */
   command: (target: string) => string[];
   /** extra variables for the viewer: herdr panes inherit herdr's environment, not ours */
@@ -169,6 +177,23 @@ export class HerdrPlacer {
     const txn = `p${randomBytes(6).toString("hex")}`;
     if (!this.o.grants.grant(target, this.workspaceKey, "mcp", txn)) return;
     this.enqueue({ target, txn, lockMisses: 0 });
+  }
+
+  /**
+   * The owner of a joined replay granted this server a placement (`txn`) in this workspace. The
+   * grant is the owner's; a placement that will not become a viewer gives it back through `done`.
+   */
+  placeGranted(target: string, txn: string): void {
+    if (this.stopped || this.isKnown(target)) {
+      this.o.grants.done(txn);
+      return;
+    }
+    this.enqueue({ target, txn, lockMisses: 0 });
+  }
+
+  /** A target this server learns has ended outside its own feed (a joined replay). */
+  ended(target: string): void {
+    if (!this.stopped) this.targetEnded(target);
   }
 
   /** Resolves once nothing is queued or running. For tests and the shutdown path. */
@@ -419,11 +444,14 @@ export class HerdrPlacer {
     const orphan: Orphan = { tabId: null, awaiting: true };
     this.orphans.set(token, orphan);
     const endpoint = this.o.endpoint();
+    // a joined replay's viewer dials the replay's owner: its holds and claims live there
+    const ownerPath = this.o.endpointFor?.(p.target) ?? null;
     const env: Record<string, string> = {
       ...(this.o.env ?? {}),
       ...(endpoint
         ? { CLAUDISH_VIEW_PLACED: endpoint.name, CLAUDISH_VIEW_ENDPOINT: endpoint.path }
         : { CLAUDISH_VIEW_PLACED: "1" }),
+      ...(ownerPath ? { CLAUDISH_VIEW_ENDPOINT: ownerPath } : {}),
       ...(p.txn ? { CLAUDISH_VIEW_PLACEMENT: placementToken(p.txn, attempt) } : {}),
     };
     let result: Record<string, unknown>;

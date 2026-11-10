@@ -886,8 +886,10 @@ export function launcherScript(cwd: string, launch: ClaudishLaunch, argv: string
 }
 
 /**
- * A replay's launcher: the real `SHELL` back in place first, because magmux needed the shim
- * and a status line or a `!` command should see the user's own shell.
+ * A replay's launcher. Its first line closes descriptor 3, the replay lock magmux holds
+ * (`spawnReplayMagmux`): magmux's pane shell inherits it across `exec`, and a lock any child
+ * keeps would outlive the replay. Then the real `SHELL` goes back in place, because magmux
+ * needed the shim and a status line or a `!` command should see the user's own shell.
  */
 export function replayLauncherScript(
   realShell: string,
@@ -895,7 +897,7 @@ export function replayLauncherScript(
   launch: ClaudishLaunch,
   argv: string[]
 ): string {
-  return `export SHELL=${shq(realShell)}\n${launcherScript(cwd, launch, argv)}`;
+  return `exec 3>&-\nexport SHELL=${shq(realShell)}\n${launcherScript(cwd, launch, argv)}`;
 }
 
 export const SHELL_SHIM = '#!/bin/sh\n[ "$1" = -l ] && shift\nexec /bin/sh "$@"\n';
@@ -1013,7 +1015,13 @@ export function spawnPaneMagmux(input: MagmuxSpawnInput): ChildProcess {
   return proc;
 }
 
-export type ReplayMagmuxInput = Omit<MagmuxSpawnInput, "sessionUuid" | "transcriptPath">;
+export type ReplayMagmuxInput = Omit<MagmuxSpawnInput, "sessionUuid" | "transcriptPath"> & {
+  /**
+   * The replay lock's descriptor, handed to magmux as its fd 3 (no close-on-exec in the
+   * child), so the kernel holds the lock exactly as long as magmux lives.
+   */
+  holdFd?: number;
+};
 
 /**
  * A replay's magmux argv: no `--controller`, `--session-id` or `--transcript`, because nothing
@@ -1036,10 +1044,12 @@ export function replayMagmuxArgv(
 }
 
 export function spawnReplayMagmux(input: ReplayMagmuxInput): ChildProcess {
+  const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "ignore", "pipe"];
+  if (input.holdFd !== undefined) stdio.push(input.holdFd);
   const proc = spawn(input.binary, replayMagmuxArgv(input), {
     cwd: input.cwd,
     env: input.env,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio,
     detached: true,
   });
   proc.on("error", () => {});

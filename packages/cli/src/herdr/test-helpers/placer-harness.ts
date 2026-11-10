@@ -103,7 +103,7 @@ export async function startHarness(
   const { paneId: userPane, tabId: userTab } = fake.addWorkspace("w1");
   const feed = new HandFeed();
   const items = new Map<string, ViewItem>();
-  const grants = o.grants ?? new PlacementGrants();
+  const grants = (o.grants as PlacementGrants | undefined) ?? new PlacementGrants();
   const root = mkdtempSync(join(tmpdir(), "placer-root-"));
   const logs: string[] = [];
   const tokens: string[] = [];

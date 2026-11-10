@@ -94,9 +94,11 @@ function listenOn(server: Server, path: string): Promise<void> {
  */
 export async function bindEndpoint(
   root: string,
-  onConnection: (socket: Socket) => void
+  onConnection: (socket: Socket) => void,
+  /** tests bind two endpoints in one process; the name must still match the endpoint pattern */
+  given?: string
 ): Promise<BoundEndpoint | null> {
-  const name = endpointNameOf();
+  const name = given && ownerOfEndpointName(given) ? given : endpointNameOf();
   const path = endpointPathOf(root, name);
   if (Buffer.byteLength(path) >= MAX_SOCKET_PATH_BYTES) {
     log(`[view] transport off: endpoint path is ${Buffer.byteLength(path)} bytes`);

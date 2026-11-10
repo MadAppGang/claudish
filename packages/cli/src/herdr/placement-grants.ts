@@ -46,6 +46,52 @@ export function placementToken(txn: string, attempt: string): string {
   return `${txn}.${attempt}`;
 }
 
+/**
+ * The grants the placer of this server uses: its own (`local`, for the replays it owns), plus the
+ * transactions the owner of a joined replay granted it. A joined replay's reservation lives on its
+ * owner, so here it is only remembered, and `done` gives it back to the owner.
+ */
+export class ServerPlacementGrants {
+  private readonly remote = new Map<string, () => void>();
+
+  constructor(readonly local: PlacementGrants) {}
+
+  /** The owner granted `txn`; `giveBack` sends it `replay.place_done`. */
+  addRemote(txn: string, giveBack: () => void): void {
+    this.remote.set(txn, giveBack);
+  }
+
+  grant(target: string, workspaceKey: string, owner: GrantOwner, txn: string): boolean {
+    return this.local.grant(target, workspaceKey, owner, txn);
+  }
+
+  attempt(txn: string, attempt: string): void {
+    if (!this.remote.has(txn)) this.local.attempt(txn, attempt);
+  }
+
+  placed(txn: string): void {
+    if (!this.remote.has(txn)) this.local.placed(txn);
+  }
+
+  done(txn: string): void {
+    const giveBack = this.remote.get(txn);
+    if (!giveBack) {
+      this.local.done(txn);
+      return;
+    }
+    this.remote.delete(txn);
+    try {
+      giveBack();
+    } catch {
+      // the owner is gone, and its reservation with it
+    }
+  }
+
+  pending(txn: string): boolean {
+    return this.remote.has(txn) || this.local.pending(txn);
+  }
+}
+
 export class PlacementGrants {
   private readonly byTarget = new Map<string, TargetGrants>();
   /** txn → target and workspace, to find a reservation by its transaction */
@@ -126,6 +172,12 @@ export class PlacementGrants {
     const g = this.byTarget.get(at.target);
     if (g?.reservations.get(at.workspaceKey)?.txn === txn) g.reservations.delete(at.workspaceKey);
     this.changed(at.target);
+  }
+
+  /** A peer's `replay.place_done`: drops that workspace's reservation when `owner` holds it. */
+  doneFor(target: string, workspaceKey: string, owner: GrantOwner): void {
+    const r = this.byTarget.get(target)?.reservations.get(workspaceKey);
+    if (r && r.owner === owner) this.done(r.txn);
   }
 
   /** True while the transaction still holds its reservation. */

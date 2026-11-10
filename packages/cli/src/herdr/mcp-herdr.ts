@@ -7,8 +7,7 @@ import type { ViewItem } from "../pane/view-contract.js";
 import type { ViewFeedEvent } from "../view/view-feed.js";
 import { herdrPaneEnv } from "./front-end.js";
 import { HerdrSocket } from "./herdr-socket.js";
-import type { PlacementGrants } from "./placement-grants.js";
-import { HerdrPlacer } from "./placer.js";
+import { HerdrPlacer, type PlacerGrants } from "./placer.js";
 import { selfArgv } from "./self-argv.js";
 
 /** Variables a placed viewer needs from this server: a herdr pane inherits herdr's environment. */
@@ -25,8 +24,9 @@ export interface McpHerdrDeps {
   root: string;
   feed: { subscribe(fn: (e: ViewFeedEvent) => void): () => void };
   item: (target: string) => ViewItem | null;
-  grants: PlacementGrants;
+  grants: PlacerGrants;
   endpoint: () => { name: string; path: string } | null;
+  endpointFor?: (target: string) => string | null;
   cwd: string;
   log: (line: string) => void;
 }
@@ -49,6 +49,7 @@ export async function startMcpHerdrPlacer(deps: McpHerdrDeps): Promise<HerdrPlac
     item: deps.item,
     grants: deps.grants,
     endpoint: deps.endpoint,
+    ...(deps.endpointFor ? { endpointFor: deps.endpointFor } : {}),
     command: (target) => [...self, "view", target, "--passive", "--front-end", "herdr"],
     env,
     cwd: deps.cwd,

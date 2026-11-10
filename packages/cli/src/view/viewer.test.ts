@@ -326,7 +326,7 @@ describe("Viewer", () => {
   );
 
   test(
-    "a finished target is not watched: it is opened from Claude Code",
+    "a finished target is opened as a replay on the server that lists it; a passive viewer never opens one",
     async () => {
       const root = newRoot();
       const ep = await FakeViewEndpoint.start({
@@ -335,13 +335,12 @@ describe("Viewer", () => {
       });
       cleanups.push(() => ep.close());
       const io = fakeIo();
+      // this fake opens no replays: the viewer asked, on its own connection, and reports the answer
       const outcome = await new Viewer({ root, target: "s:sess-1", io }).run();
-      expect(outcome).toEqual({
-        code: 1,
-        message: "s:sess-1 has finished; open the session from Claude Code to replay it",
-      });
-      expect(ep.ops()).toEqual(["hello", "list"]);
-      expect(io.output).toBe("");
+      expect(outcome.code).toBe(1);
+      expect(ep.ops()).toEqual(["hello", "list", "hello", "replay.open"]);
+      const passive = await new Viewer({ root, target: "s:sess-1", io, passive: true }).run();
+      expect(passive).toEqual({ code: 1, message: "s:sess-1 has finished" });
     },
     T
   );

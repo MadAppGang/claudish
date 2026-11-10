@@ -28,7 +28,7 @@ import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { writeFileAtomic } from "./fs-atomic.js";
 import { detectFrontEnd } from "./herdr/front-end.js";
 import { startMcpHerdrPlacer } from "./herdr/mcp-herdr.js";
-import { PlacementGrants } from "./herdr/placement-grants.js";
+import { PlacementGrants, ServerPlacementGrants } from "./herdr/placement-grants.js";
 import type { HerdrPlacer } from "./herdr/placer.js";
 import { loadHooksOnce } from "./hooks/index.js";
 import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
@@ -143,6 +143,7 @@ import {
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
 import { VERSION } from "./version.js";
+import { endpointPathOf } from "./view/endpoints.js";
 import { ViewClaims } from "./view/view-claims.js";
 import { ViewDirectory } from "./view/view-directory.js";
 import { ViewFeed } from "./view/view-feed.js";
@@ -3248,7 +3249,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         const spans = optionalBoolean(args.spans, "spans");
         return contractAnswer(
           isReplayId(sessionId)
-            ? replays.capture(sessionId, since, spans)
+            ? await replays.captureMcp(sessionId, since, spans)
             : sessionManager.captureSession(sessionId, since, spans)
         );
       } catch (e) {
@@ -3583,8 +3584,9 @@ async function main() {
   const placementGrants = new PlacementGrants({
     notify: (target) => viewFeed.changed(target, true),
   });
+  const placerGrants = new ServerPlacementGrants(placementGrants);
   const sessionManager = new SessionManager({ feed: viewFeed, claims: viewClaims });
-  replays.setViewServices({ feed: viewFeed, claims: viewClaims });
+  replays.setViewServices({ feed: viewFeed, claims: viewClaims, grants: placementGrants });
   setViewServices({ feed: viewFeed, claims: viewClaims });
 
   // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
@@ -3685,9 +3687,12 @@ async function main() {
   // A nested server registers no session tools and never spawns a pane, so it has
   // nothing to sweep.
   if (!nested)
-    void ensureSwept(sockRootFor()).catch((err: unknown) =>
-      log(`[mcp] stale pane sweep failed: ${err instanceof Error ? err.message : String(err)}`)
-    );
+    void ensureSwept(sockRootFor())
+      .catch((err: unknown) =>
+        log(`[mcp] stale pane sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+      )
+      // after the pane sweep: a reaped orphan replay's magmux has freed its lock by then
+      .then(() => replays.sweep());
   // A nested server holds no sessions a local client could be shown. `claims` still answers
   // `view` on its own verbs.
   if (!nested) {
@@ -3707,6 +3712,7 @@ async function main() {
       herdrWorkspaces: (target) => placementGrants.workspaces(target),
     });
     viewFeed.setBuilder((target) => directory.item(target));
+    replays.setEndpoint(() => viewTransport.server?.endpointName || null);
     void ViewServer.start({
       root: sockRootFor(),
       directory,
@@ -3716,6 +3722,11 @@ async function main() {
       frontEnd: detectFrontEnd(process.env),
       workspaceId: () => viewTransport.placer?.workspace,
       herdrViewers: placementGrants,
+      replays,
+      resolveReplayTarget: (of) =>
+        "session_id" in of
+          ? sessionManager.replayTarget(of.session_id)
+          : replayTargetOfTeamSlot(of.path, of.slot, of.run_id),
     })
       .then((started) => {
         viewTransport.server = started;
@@ -3730,12 +3741,20 @@ async function main() {
           env: process.env,
           root: sockRootFor(),
           feed: viewFeed,
-          item: (target) => directory.item(target),
-          grants: placementGrants,
+          // a joined replay is never listed here, so the placer reads it from the replays
+          item: (target) => {
+            const joined = directory.item(target) ? null : replays.remoteItem(target);
+            return joined ? { ...joined, view: null } : directory.item(target);
+          },
+          grants: placerGrants,
           endpoint: () =>
             viewTransport.server
               ? { name: viewTransport.server.endpointName, path: viewTransport.server.endpointPath }
               : null,
+          endpointFor: (target) => {
+            const owner = replays.ownerEndpointOf(target);
+            return owner ? endpointPathOf(sockRootFor(), owner) : null;
+          },
           cwd: process.cwd(),
           log,
         })
@@ -3747,7 +3766,15 @@ async function main() {
           return;
         }
         viewTransport.placer = placer;
-        replays.onOpened((target) => placer.replayOpened(target));
+        replays.setPlacer({
+          workspaceKey: () => placer.key || null,
+          owned: (target) => placer.replayOpened(target),
+          remote: (target, txn) => {
+            placerGrants.addRemote(txn, () => replays.givePlacementBack(target));
+            placer.placeGranted(target, txn);
+          },
+          ended: (target) => placer.ended(target),
+        });
       })
       .catch((err: unknown) =>
         log(`[herdr] placer off: ${err instanceof Error ? err.message : String(err)}`)
@@ -3782,6 +3809,8 @@ function installMcpShutdown(sessionManager: SessionManager, viewTransport: ViewT
     // their process groups here, or they outlive the server.
     stopAllClaudeCodePrintChildren();
     await Promise.allSettled([shutdownAllTeamRuns(), sessionManager.shutdownAll()]);
+    // the owners of joined replays drop this server's holds and claims
+    replays.closePeerLinks();
   };
   // The stdio transport closes when stdin does, so stdin's `end`/`close` is the
   // transport-close hook too.

@@ -150,7 +150,14 @@ export class ViewClient {
     else {
       const body = m.error as ViewErrorBody | undefined;
       p.reject(
-        new ViewError(body?.code ?? "invalid_args", body?.message ?? "request failed", body?.reason)
+        new ViewError(
+          body?.code ?? "invalid_args",
+          body?.message ?? "request failed",
+          body?.reason,
+          body?.endpoint && body.replay_id
+            ? { endpoint: body.endpoint, replay_id: body.replay_id }
+            : undefined
+        )
       );
     }
   }

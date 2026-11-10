@@ -199,6 +199,16 @@ export interface ViewErrorBody {
   code: ViewErrorCode;
   message: string;
   reason?: string;
+  /** `replay_elsewhere`: the owner's endpoint file name, to dial with a `replay.open {replay_id}` */
+  endpoint?: string;
+  /** `replay_elsewhere`: the replay to join there */
+  replay_id?: string;
+}
+
+/** Where `replay_elsewhere` sends the opener. */
+export interface ViewElsewhere {
+  endpoint: string;
+  replay_id: string;
 }
 
 /** An error of the local transport. Never one of contract v1's own errors. */
@@ -206,7 +216,8 @@ export class ViewError extends Error {
   constructor(
     readonly code: ViewErrorCode,
     message: string,
-    readonly reason?: string
+    readonly reason?: string,
+    readonly elsewhere?: ViewElsewhere
   ) {
     super(message);
   }
