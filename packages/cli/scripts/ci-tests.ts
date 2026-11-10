@@ -26,7 +26,7 @@
  *
  * src/hooks/blind is not here: it runs under Bun 1.4.0 in its own job (test.yml).
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 
 const CLI = join(import.meta.dir, "..");
@@ -191,6 +191,8 @@ export function slowestReport(times: Record<string, number>, n: number): string[
  */
 async function local(outfile: string, bunArgs: string[]): Promise<number> {
   const out = resolvePath(process.cwd(), outfile);
+  // a report left by an earlier run must not stand in for one this run never wrote
+  rmSync(out, { force: true });
   const proc = Bun.spawn(
     [process.execPath, "test", "--reporter=junit", `--reporter-outfile=${out}`, ...bunArgs],
     { cwd: CLI, stdout: "inherit", stderr: "inherit" }

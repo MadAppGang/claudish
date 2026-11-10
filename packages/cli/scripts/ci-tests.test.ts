@@ -62,6 +62,26 @@ describe.skipIf(process.env[NESTED] === "1")("--local", () => {
     expect(r.text).toContain("red.test.ts");
   }, 60_000);
 
+  test("a run that writes no report never prints the previous run's report", async () => {
+    const out = join(dir, "stale.xml");
+    writeFileSync(
+      out,
+      '<testsuites><testsuite name="old-run.test.ts" file="old-run.test.ts"><testcase name="t" time="9"/></testsuite></testsuites>'
+    );
+    const proc = Bun.spawn(
+      [process.execPath, SCRIPT, "--local", out, "--", join(dir, "missing.test.ts")],
+      { env: { ...process.env, [NESTED]: "1" }, stdout: "pipe", stderr: "pipe" }
+    );
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(code).toBe(1);
+    expect(stdout + stderr).not.toContain("old-run.test.ts");
+    expect(stdout + stderr).toContain("[ci-tests] no test file timings in the junit report");
+  }, 60_000);
+
   test("passes a file given without `--` to bun test, as `bun run test <file>` does", async () => {
     const r = await local('test("ok", () => {});', "nodash", false);
     expect(r.code).toBe(0);
