@@ -24,6 +24,7 @@
 import type { Context } from "hono";
 import type { ChildAuthControl, ChildAuthSource } from "../child-auth-types.js";
 import { log } from "../logger.js";
+import { bundledProvenance } from "../providers/bundled-list-data.js";
 import { warmCatalog } from "../providers/catalog-client.js";
 import { withBundledListScope } from "../providers/catalog-reachability.js";
 import { parseModelSpec } from "../providers/model-parser.js";
@@ -709,6 +710,24 @@ function laterHopParts(
 export function describeAdvisorPlan(plan: AdvisorModelPlan, build?: AdvisorChainBuild): string {
   if (plan.kind === "claude-native") return describeClaudeAdvisorPlan(plan);
   if (plan.kind === "refused") return describeAdvisorRefusal(plan);
+  return describeRoutedPlan(plan, build) + catalogSourcePart(plan);
+}
+
+/**
+ * The source a routed plan was planned from, when that is the bundled
+ * recommended list: its claudish version and generation. A plan from a disk
+ * catalog says nothing more.
+ */
+function catalogSourcePart(plan: RoutedPlan): string {
+  if (plan.explanation.catalogSource !== "bundled") return "";
+  const provenance = bundledProvenance();
+  const source = provenance
+    ? ` of claudish ${provenance.version}, generation ${provenance.generationId}`
+    : "";
+  return ` (planned from the bundled recommended list${source}; no cloud models catalog is on disk)`;
+}
+
+function describeRoutedPlan(plan: RoutedPlan, build?: AdvisorChainBuild): string {
   if (!build || build.firstCallableHop === null) {
     return build ? describeAdvisorRefusal({ plan, build }) : `${plan.spec} -> (not built)`;
   }
