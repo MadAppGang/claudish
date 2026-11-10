@@ -19,6 +19,8 @@ import type { ProbeEntry, ProbeMode, ProbeSummary } from "../types.js";
 const FALLBACK_WITHHELD_NOTE: Record<FallbackWithheld, string> = {
   disabled: 'No fallback hop: the default provider is set to "".',
   "catalog-unreadable": "No fallback hop: there is no cloud models catalog to check it against.",
+  "bundled-no-default-provider":
+    "No fallback hop: the bundled recommended list is in use and no default provider or OpenRouter key is set up.",
   "already-gathered": "No separate fallback hop: that provider is already a catalog candidate.",
   "catalog-denies": "No fallback hop: the catalog maps that provider no connection to this model.",
 };

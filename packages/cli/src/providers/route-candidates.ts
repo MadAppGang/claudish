@@ -81,7 +81,12 @@ import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import type { AggregatorEntry } from "../model-loader.js";
 import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
 import { resolveAntigravityServedModel } from "./antigravity-model-id.js";
-import { externalIdFor, getCatalogEntries, isMovingPointer } from "./catalog-client.js";
+import {
+  externalIdFor,
+  getCatalogEntries,
+  getCatalogSnapshot,
+  isMovingPointer,
+} from "./catalog-client.js";
 import {
   CATALOG_ROUTE_BINDINGS,
   type CatalogRouteBinding,
@@ -171,6 +176,20 @@ export interface CandidateGathering {
    * `routing-rules.ts`, the fallback append).
    */
   catalogReadable: boolean;
+  /** Which catalog answered: a disk catalog, the bundled recommended list, or none. */
+  catalogOrigin: "disk" | "bundled" | "none";
+}
+
+/** The catalog one routing decision reads: `cachePath`'s file, else the default path's. */
+function catalogSourceFor(cachePath: string | undefined): {
+  entries: SlimModelEntry[] | null;
+  origin: CandidateGathering["catalogOrigin"];
+} {
+  if (cachePath) {
+    const cache = readAllModelsCache(cachePath);
+    return cache ? { entries: cache.entries, origin: "disk" } : { entries: null, origin: "none" };
+  }
+  return getCatalogSnapshot() ?? { entries: null, origin: "none" };
 }
 
 /**
@@ -626,7 +645,7 @@ export function gatherRouteCandidates(
   cachePath?: string,
   lists: AccountModelsListSnapshot = new Map()
 ): CandidateGathering {
-  const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
+  const { entries, origin } = catalogSourceFor(cachePath);
   const entry = entries ? findCatalogEntry(entries, model) : undefined;
 
   const gathered: RouteCandidate[] = [];
@@ -668,7 +687,8 @@ export function gatherRouteCandidates(
     excluded,
     unmappedRoutes: [...unmappedRoutes],
     catalogMiss: entry === undefined,
-    catalogReadable: entries !== null && entries !== undefined,
+    catalogReadable: entries !== null,
+    catalogOrigin: origin,
   };
 }
 

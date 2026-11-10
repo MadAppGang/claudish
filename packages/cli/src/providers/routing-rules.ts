@@ -599,6 +599,8 @@ export type FallbackWithheld =
   | "disabled"
   /** No cloud models catalog: claudish never invents a hop without one. */
   | "catalog-unreadable"
+  /** The bundled recommended list answered and no one set up a default provider. */
+  | "bundled-no-default-provider"
   /** The catalog already gathered that provider. */
   | "already-gathered"
   /** The fallback's route is backend-owned and the catalog maps it no connection to this model. */
@@ -1032,6 +1034,10 @@ function explainCatalogChain(
     // published is a metered request billed for its own 404, and a name the
     // backend has since RENAMED looks identical.
     fallbackWithheld = "catalog-unreadable";
+  } else if (gathering.catalogOrigin === "bundled" && defaultProvider.source === "hardcoded") {
+    // The bundled list keeps no gateway connections, so a hop here would be
+    // billed without the user having chosen that provider.
+    fallbackWithheld = "bundled-no-default-provider";
   } else if (
     candidates.some((candidate) => candidate.provider === fallback && candidate.outcome === "kept")
   ) {

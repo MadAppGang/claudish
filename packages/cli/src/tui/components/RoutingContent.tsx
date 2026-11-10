@@ -159,7 +159,9 @@ const FALLBACK_SOURCE_LABEL: Record<DefaultProviderSource, string> = {
   "cli-flag": "--default-provider",
   "env-var": "CLAUDISH_DEFAULT_PROVIDER",
   "config-file": "config",
-  // Both route identically: "no preference" takes openrouter.
+  // With a catalog file both route alike: "no preference" takes openrouter. On the
+  // bundled recommended list they differ: an OpenRouter key sets the fallback hop
+  // up and is appended, the hardcoded default is withheld.
   "openrouter-key": "default",
   hardcoded: "default",
 };
