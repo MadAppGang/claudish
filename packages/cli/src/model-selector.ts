@@ -80,6 +80,10 @@ export interface ModelInfo {
   };
   context?: string;
   contextLength?: number;
+  /** The most a load can give this model, when claudish sets the size it loads with. */
+  maxContextLength?: number;
+  /** The LM Link machine this row runs on; the list shows `modelId` and `name`. */
+  machine?: { name: string; modelId: string };
   supportsTools?: boolean;
   supportsReasoning?: boolean;
   supportsVision?: boolean;
@@ -270,7 +274,7 @@ interface PickerProvider {
   count: number;
 }
 
-function formatContextLength(ctx?: number): string {
+export function formatContextLength(ctx?: number): string {
   if (!ctx || ctx <= 0) return "N/A";
   if (ctx >= 1_000_000) return `${Math.round(ctx / 1_000_000)}M`;
   return `${Math.round(ctx / 1000)}K`;
@@ -701,6 +705,8 @@ export interface ModelSelectorOptions {
   recommended?: boolean;
   message?: string;
   forceUpdate?: boolean;
+  /** Asks for a context window when the model reports its maximum; receives the choice. */
+  onContextWindow?: (size: number) => void;
 }
 
 /**
@@ -781,12 +787,14 @@ export async function loadPickerCatalog(
 export async function selectModel(options: ModelSelectorOptions = {}): Promise<string> {
   const outcome = await selectModelInteractive(options);
   if (outcome.model === null) throw new PickerCancelled();
+  if (outcome.contextWindow !== undefined) options.onContextWindow?.(outcome.contextWindow);
   return outcome.model;
 }
 
 /** What the picker resolves to. `null` ⟺ the user declined to choose. */
 export interface PickerOutcome {
   model: string | null;
+  contextWindow?: number;
 }
 
 /**
@@ -1861,7 +1869,9 @@ function buildRowsFromDiscovered(
   // keeps the gap visible as a models-index issue rather than hiding it.
   const rows = choices.map((c) => {
     const source = discoveredById.get(c.id);
-    const contextLength = source ? resolveDiscoveredContextLength(source) : (c.contextWindow ?? 0);
+    const contextLength =
+      (source ? resolveDiscoveredContextLength(source) : (c.contextWindow ?? 0)) ||
+      (source?.maxContextWindow ?? 0);
 
     // Order: what it is · how big · what it costs · whether it is on offer.
     const parts = [c.displayName];
@@ -1886,6 +1896,8 @@ function buildRowsFromDiscovered(
       pricing: subscription ? SUBSCRIPTION_PRICING : pricingById.get(c.id.toLowerCase()),
       context: formatContextLength(contextLength),
       contextLength,
+      maxContextLength: source?.maxContextWindow,
+      machine: source?.machine,
       // Catalog-first, then whatever the endpoint reported, then `true`. The
       // endpoint step matters only for Ollama, whose locally-pulled models are
       // absent from the catalog and where tool support genuinely varies — an

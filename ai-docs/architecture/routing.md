@@ -725,3 +725,26 @@ layer (`auth/credentials/billing-probe.ts`, installed only as a side effect of i
 not alias the PAYG `SAKANA_API_KEY`) have no such ambiguity, which is why they sit in the
 plain name set. Adding `openai-codex` to that set as well would short-circuit the probe and
 report `SUB` to every API-key user — do not.
+
+## LM Studio machines through LM Link
+
+With LM Link connected and LM Studio on this machine, the picker lists one row per machine that holds a model: `lms@qwen/qwen3.8-27b~local`, `lms@qwen/qwen3.8-27b~m1`. The `~<machine>` suffix is claudish's and never reaches LM Studio. A server on another host keeps one row per model, because `lms` describes only the machine it runs on.
+
+LM Studio has no per-request device (measured: a `<device>:<model>` name answers 400, a `device` field on the REST load answers 400). `LocalTransport` places the model before the first request (`lmstudio-devices.ts`):
+
+- This machine: `lms load --identifier <model>~local`. `lms load` stays local even with another machine preferred.
+- A linked machine: a REST load with that machine preferred for the duration of the load. A REST load follows the preferred device.
+
+The identifier matters because LM Studio gives two REST-loaded copies the same identifier, and a request names only the identifier. With both copies loaded under that one name, a chat request is served by the preferred device (measured on two Macs through `lastUsedTime`). Nothing in a request can choose otherwise: `lms ps` does tell the copies apart by `deviceIdentifier` and `indexedModelIdentifier`, but a chat request naming either form answers 400 `Invalid model identifier`, and a REST load with an `identifier` field answers 400 `Unrecognized key(s) in object: 'identifier'`. Two instances sharing a name on different machines are refused rather than guessed at. After every load, `lms ps` must show the instance on the requested machine, or the request fails.
+
+A load asks for `unknownContextWindow` (128,000), or the copy's `maxContextLength` when that is lower. `--context-window` and the picker's size dialog replace the request; both end up in `CLAUDISH_CONTEXT_WINDOW`, so the launch window, the load and the status line read one value. The value is a limit: the window Claude Code gets is the lesser of it and the size that loaded. The dialog appears only for a row that reports `maxContextWindow`, which means a load claudish starts itself, and a copy already running offers only the size it runs with. After a load, and for an instance already running, `lms ps` must report at least that size or the request fails with both numbers (measured: `m1` loads with 8,192 when no size is given). An unloaded copy whose maximum is below the default reports that maximum, so Claude Code compacts before the model overflows. A row's `contextCeiling` is its own `max_context_length`; a machine row's is that machine's loaded size, else its stored maximum. A copy loaded on one machine never caps the copy on another.
+
+The preferred device is a setting of the whole Mac, so a linked-machine load runs under one lock directory, `~/.claudish/lmstudio-machine.lock`, shared by every claudish process (`withMachineLock`). `mkdir` takes it, and the owner's pid is written to a draft and renamed into place, so no reader sees a partial owner. Every race in this design was in the takeover of a lock whose owner exited. The rules that settled it:
+
+- A waiter claims a dead lock by linking its pid file inside it: `takeover/pid`, or `after-<pid>` behind a claimant that exited. A link to an existing name fails, so one waiter makes each entry, and no waiter ever deletes another's entry. An expiry by age was wrong: a paused waiter lost its claim and then deleted a later live lock.
+- The claimant checks that the lock is still the one it judged dead (inode, birth time, owner), renames it aside, then deletes the copy. A recursive delete in place empties the directory before it removes it, and a waiter that claims it in between leaves an empty, ownerless lock that every waiter reads as freshly taken.
+- The claim directory is made without recursive `mkdir`, which would make again a lock another waiter removed. A copy left aside by a claimant that exited is removed by the next waiter.
+
+Measured: eight processes placing a model five times each from a dead lock, 15 of 15 runs with never more than one process inside and no lock left; the same code deleting in place stalled 2 of 15.
+
+A request whose placement failed must not be sent, because its payload still names `model~machine`, which LM Studio does not serve. One transport serves concurrent requests, so the failure is recorded in the payload, not on the transport: `model` becomes `<model>~<machine> (not placed #<n>)`, and `transformPayload` refuses that payload with its own request's error. The model spec cannot serve as the mark, because a copy on this Mac is placed under exactly `<model>~local`. The probes and the placement sign with the API key before the request's own signing lease exists, so `refreshAuth` holds a lease of its own, and each probe adds the key it signs with.

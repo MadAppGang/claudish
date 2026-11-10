@@ -151,14 +151,14 @@ export function billingModeOf(provider: string): BillingMode {
 /**
  * Which indicator shape a provider's discovery earns.
  *
- * `openai-models-list` is the one format that runs through the GET half, which is
- * the only place `FETCH_TIMEOUT_MS` is referenced. Everything else is a registered
- * fetcher with its own, unpublished deadline.
+ * `openai-models-list` and `lmstudio-models` are the formats that run through the
+ * GET half, which is the only place `FETCH_TIMEOUT_MS` is referenced. Everything
+ * else is a registered fetcher with its own, unpublished deadline.
  */
 export function discoveryShapeOf(provider: string): DiscoveryShape {
   const format = getProviderByName(provider)?.modelDiscovery?.format;
   if (!format) return "none";
-  return format === "openai-models-list" ? "deadline" : "elapsed";
+  return format === "openai-models-list" || format === "lmstudio-models" ? "deadline" : "elapsed";
 }
 
 /** The deadline the `deadline` shape is drawn against. Mirrors `FETCH_TIMEOUT_MS`. */

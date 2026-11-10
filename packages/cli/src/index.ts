@@ -1023,10 +1023,18 @@ async function runCli() {
     });
 
     if (shouldOpenPicker(pickerGate(), pickerCanDraw)) {
+      const sizeIsGiven =
+        cliConfig.contextWindow !== undefined || process.env.CLAUDISH_CONTEXT_WINDOW !== undefined;
+      const onContextWindow = sizeIsGiven
+        ? undefined
+        : (size: number) => {
+            cliConfig.contextWindow = size;
+          };
       // Human wait (the interactive picker) + per-provider credential probes.
       cliConfig.model = (await traceSpan(
         "startup:model-select",
-        () => selectModel({ freeOnly: cliConfig.freeOnly }).catch(handlePromptExit),
+        () =>
+          selectModel({ freeOnly: cliConfig.freeOnly, onContextWindow }).catch(handlePromptExit),
         { mayIncludeUserPrompt: true }
       )) as string;
       console.log(""); // Empty line after selection
@@ -1319,6 +1327,10 @@ async function runCli() {
           resumedSessionId = outcome.sessionId;
         }
       }
+    }
+
+    if (cliConfig.contextWindow !== undefined) {
+      process.env.CLAUDISH_CONTEXT_WINDOW = String(cliConfig.contextWindow);
     }
 
     const proxy = await traceSpan("startup:proxy-start", () =>

@@ -32,10 +32,11 @@ import { log } from "../logger.js";
 import { VERSION } from "../version.js";
 import { resolveRouteProfile } from "./connection-resolver.js";
 import { isOptInWireId } from "./content-use.js";
+import { expandModelsToMachines, isLoopbackUrl, readLMStudioMachines } from "./lmstudio-devices.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
 import { getProviderByName, isPersistedListProvider } from "./provider-definitions.js";
-import type { ReportedCapability } from "./transport/probe-discovery.js";
+import { type ReportedCapability, lmStudioReported } from "./transport/probe-discovery.js";
 
 /** A model as reported by the provider's own live endpoint. */
 export interface DiscoveredModel {
@@ -45,6 +46,16 @@ export interface DiscoveredModel {
   displayName?: string;
   /** Real context window for THIS subscription, if reported. */
   contextWindow?: number;
+  /** The most a load can give this model, when claudish sets the size it loads with. */
+  maxContextWindow?: number;
+  /**
+   * The most a load can give the model: its maximum, or on an LM Link machine
+   * row the size that copy runs with. A requested window above it is cut to it
+   * at launch.
+   */
+  contextCeiling?: number;
+  /** The LM Link machine this row runs on. */
+  machine?: { name: string; modelId: string };
   /**
    * ISO date (`YYYY-MM-DD`) derived from the endpoint's `created` timestamp,
    * when it reports a plausible one.
@@ -157,6 +168,14 @@ export interface ModelDiscoveryDescriptor {
    *   created? }] }`. Also accepts `context_window` / `max_context_length`
    *   spellings, since OpenAI-compatible endpoints disagree on the field name.
    *   `created` is unix seconds and feeds `DiscoveredModel.releaseDate`.
+   * - `lmstudio-models`: LM Studio's native `/api/v0/models`, the same
+   *   `{ data: [...] }` container, whose rows also carry `type` (`llm`, `vlm`,
+   *   `embeddings`, …), `max_context_length` and, for a loaded model,
+   *   `loaded_context_length`. `type` feeds `DiscoveredModel.reported`; only
+   *   the loaded window feeds `contextWindow`. Read by the same
+   *   GET half as `openai-models-list`; a server without the native list (404)
+   *   is asked for `/v1/models` once, and that answer is read as
+   *   `openai-models-list`.
    * - `devin-connect`: not an HTTP GET at all — two protobuf rpcs whose
    *   intersection is capability ∩ entitlement. Owned by
    *   `providers/devin/devin-models.ts`; `path` is ignored.
@@ -173,6 +192,7 @@ export interface ModelDiscoveryDescriptor {
    */
   format:
     | "openai-models-list"
+    | "lmstudio-models"
     | "devin-connect"
     | "ollama-tags"
     | "antigravity"
@@ -560,8 +580,61 @@ interface ParsedModelsList {
   total: number | null;
 }
 
-/** Parse an OpenAI-style `{ data: [...] }` model list. */
-function parseOpenAIModelsList(body: unknown): ParsedModelsList {
+/**
+ * The window a loaded LM Studio instance accepts. An unloaded model has none
+ * yet: `max_context_length` is the most it supports, and a load can use less.
+ */
+function readLMStudioContextWindow(row: Record<string, unknown>): number | undefined {
+  const loaded = positive(row.loaded_context_length);
+  if (loaded !== undefined) return loaded;
+  // A load cannot give more than the maximum, so a maximum below the default is the window.
+  const max = positive(row.max_context_length);
+  // The default, never the launch limit: this answer is cached before the picker sets the limit.
+  const wanted = getProviderByName("lmstudio")?.unknownContextWindow;
+  return max !== undefined && wanted !== undefined && max < wanted ? max : undefined;
+}
+
+function ceilingOf(row: Record<string, unknown>): { contextCeiling?: number } {
+  // The maximum only: a loaded size belongs to one copy, and under LM Link that copy may run on
+  // another machine. A loaded row answers its loaded window before any ceiling is read.
+  const ceiling = positive(row.max_context_length);
+  return ceiling === undefined ? {} : { contextCeiling: ceiling };
+}
+
+function positive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * One row per LM Link machine holding each model. `lms` describes the machine it
+ * runs on, so a server on another host keeps its rows as listed.
+ */
+async function withLMStudioMachines(
+  models: DiscoveredModel[],
+  baseUrl: string
+): Promise<DiscoveredModel[]> {
+  if (!isLoopbackUrl(baseUrl)) return models;
+  const machines = await readLMStudioMachines();
+  if (!machines) return models;
+  return expandModelsToMachines(
+    models,
+    machines,
+    getProviderByName("lmstudio")?.unknownContextWindow
+  );
+}
+
+/**
+ * Parse an OpenAI-style `{ data: [...] }` model list.
+ *
+ * `lmstudio-models` rows are read the same way, plus their `type` as the
+ * provider's own chat statement. Every other format leaves `reported` unset:
+ * a `type` field elsewhere has another vocabulary and is not read.
+ */
+function parseOpenAIModelsList(
+  body: unknown,
+  format: ModelDiscoveryDescriptor["format"]
+): ParsedModelsList {
+  const isLMStudio = format === "lmstudio-models";
   const data = (body as { data?: unknown })?.data;
   // A missing `data` is NOT an empty plan. Answering it with `[]` made the two
   // indistinguishable, which is the collapse this whole contract exists to stop.
@@ -585,8 +658,10 @@ function parseOpenAIModelsList(body: unknown): ParsedModelsList {
     models.push({
       id,
       displayName,
-      contextWindow: readContextWindow(row),
+      contextWindow: isLMStudio ? readLMStudioContextWindow(row) : readContextWindow(row),
       releaseDate: readCreatedDate(row),
+      ...(isLMStudio ? { reported: lmStudioReported(row) } : {}),
+      ...(isLMStudio ? ceilingOf(row) : {}),
     });
   }
   return { models, dropped, total: data.length };
@@ -815,9 +890,10 @@ async function fetchServedModels(providerName: string): Promise<ModelsCatalogOut
   const descriptor = def?.modelDiscovery;
   if (!def || !descriptor) return { kind: "unsupported", reason: "no-descriptor" };
 
-  if (descriptor.format !== "openai-models-list") {
+  if (descriptor.format !== "openai-models-list" && descriptor.format !== "lmstudio-models") {
     return await discoverViaFetcher(providerName, descriptor.format);
   }
+  const isLMStudio = descriptor.format === "lmstudio-models";
 
   const baseUrl = resolveBaseUrl(providerName);
   if (!baseUrl) {
@@ -833,7 +909,14 @@ async function fetchServedModels(providerName: string): Promise<ModelsCatalogOut
     });
   }
   const definitionEndpoint = `${baseUrl}${descriptor.path}`;
-  let endpoint = registryModelsEndpoint(providerName, def) ?? definitionEndpoint;
+  // LM Studio's native list is the one that states each row's type, so no
+  // registry endpoint may stand in for it.
+  let endpoint = isLMStudio
+    ? definitionEndpoint
+    : (registryModelsEndpoint(providerName, def) ?? definitionEndpoint);
+  // Which reader the body gets: an older LM Studio's `/v1/models` answer has no
+  // `type` and no window fields, so it is read as a plain OpenAI list.
+  let bodyFormat: ModelDiscoveryDescriptor["format"] = descriptor.format;
 
   // Auth via the credential authority — it owns OAuth-vs-API-key precedence
   // (Kimi Coding prefers an OAuth token over a stale KIMI_CODING_API_KEY) and
@@ -917,6 +1000,14 @@ async function fetchServedModels(providerName: string): Promise<ModelsCatalogOut
       endpoint = definitionEndpoint;
       response = await fetchList(endpoint);
     }
+    // An LM Studio without `/api/v0` answers 404 there and still serves its
+    // OpenAI-compatible list. A throw or a 401/403 is not retried: the host is
+    // the same, so the answer would be too.
+    if (response.status === 404 && isLMStudio) {
+      endpoint = `${baseUrl}/v1/models`;
+      bodyFormat = "openai-models-list";
+      response = await fetchList(endpoint);
+    }
   } catch (e: unknown) {
     return recordFailure({
       kind: "unreachable",
@@ -956,7 +1047,7 @@ async function fetchServedModels(providerName: string): Promise<ModelsCatalogOut
     return recordFailure({ kind: "malformed", provider: providerName, endpoint });
   }
 
-  const parsed = parseOpenAIModelsList(body);
+  const parsed = parseOpenAIModelsList(body, bodyFormat);
   const incomplete = describeIncompleteness(body, parsed);
   if (incomplete) {
     // Not cached, and nothing returned. A list that fails the completeness
@@ -976,7 +1067,7 @@ async function fetchServedModels(providerName: string): Promise<ModelsCatalogOut
       detail: incomplete,
     });
   }
-  const models = parsed.models;
+  const models = isLMStudio ? await withLMStudioMachines(parsed.models, baseUrl) : parsed.models;
 
   _failures.delete(providerName);
   log(
@@ -1006,10 +1097,27 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
   return outcome.kind === "served" ? outcome.models : [];
 }
 
-/** The window of the row whose id is `modelId`, case-insensitively. */
-function windowOf(models: DiscoveredModel[], modelId: string): number | undefined {
+/**
+ * The window of the row whose id is `modelId`, case-insensitively. An id without
+ * its machine suffix reaches whichever machine LM Studio picks, so it takes the
+ * smallest window among that model's machine rows.
+ */
+function windowOf(models: DiscoveredModel[], modelId: string, upTo?: number): number | undefined {
   const needle = modelId.toLowerCase();
-  return models.find((m) => m.id.toLowerCase() === needle)?.contextWindow;
+  const exact = models.find((m) => m.id.toLowerCase() === needle);
+  if (exact) return rowWindow(exact, upTo);
+  const windows = models
+    .filter((m) => m.machine?.modelId.toLowerCase() === needle)
+    .map((m) => rowWindow(m, upTo))
+    .filter((w): w is number => w !== undefined);
+  return windows.length > 0 ? Math.min(...windows) : undefined;
+}
+
+/** A row's window; with `upTo`, its ceiling when the caller would ask for more. */
+function rowWindow(model: DiscoveredModel, upTo: number | undefined): number | undefined {
+  if (model.contextWindow !== undefined) return model.contextWindow;
+  const ceiling = model.contextCeiling;
+  return upTo !== undefined && ceiling !== undefined && ceiling < upTo ? ceiling : undefined;
 }
 
 /**
@@ -1038,12 +1146,17 @@ export const LIVE_DISCOVERY_BOUND_MS = 2_000;
 export async function discoverContextWindow(
   providerName: string,
   modelId: string,
-  opts: { network?: "await" | "cached-first" | "bounded" } = {}
+  opts: {
+    network?: "await" | "cached-first" | "bounded";
+    /** The window the caller will ask for; a row whose ceiling is lower answers its ceiling. */
+    upTo?: number;
+  } = {}
 ): Promise<number | undefined> {
+  const { upTo } = opts;
   if (opts.network === "cached-first") {
     const { readAccountModelsList } = await import("./dynamic-models-catalog.js");
     const stored = await readAccountModelsList(providerName);
-    if (stored) return windowOf(stored.models, modelId);
+    if (stored) return windowOf(stored.models, modelId, upTo);
     void coldRefresh(providerName);
     return undefined;
   }
@@ -1053,14 +1166,14 @@ export async function discoverContextWindow(
       timer = setTimeout(() => resolve([]), LIVE_DISCOVERY_BOUND_MS);
     });
     try {
-      return windowOf(await Promise.race([coldRefresh(providerName), bound]), modelId);
+      return windowOf(await Promise.race([coldRefresh(providerName), bound]), modelId, upTo);
     } finally {
       clearTimeout(timer);
     }
   }
   // Exact-id lookup: an opt-in id the user typed still gets its served window.
   const { served, optIn } = await discoverProviderServedIds(providerName);
-  return windowOf([...served, ...optIn], modelId);
+  return windowOf([...served, ...optIn], modelId, upTo);
 }
 
 /**

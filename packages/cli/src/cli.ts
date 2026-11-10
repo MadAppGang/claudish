@@ -61,6 +61,7 @@ import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
 import { MODEL_CATALOG_NAME } from "./providers/catalog-name.js";
 import { normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
+import { parseContextWindow } from "./providers/context-window-limit.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { describeMuseSigningSource } from "./providers/meta-muse/muse-credentials.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
@@ -272,6 +273,7 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--classifier-provider": "value",
   "--model-params": "value",
   "--effort-override": "value",
+  "--context-window": "value",
   "--pro-on-ultracode": "none",
   "--no-pro-on-ultracode": "none",
   "--code-mode": "value",
@@ -773,6 +775,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       config.effortOverride = effArg;
+    } else if (arg === "--context-window") {
+      const size = parseContextWindow(args[++i] ?? "");
+      if (size === undefined) {
+        console.error("--context-window requires a size in tokens (128000, 128k or 1m)");
+        process.exit(1);
+      }
+      config.contextWindow = size;
     } else if (arg === "--pro-on-ultracode") {
       config.proOnUltracode = true;
     } else if (arg === "--no-pro-on-ultracode") {
@@ -2302,6 +2311,7 @@ ${h("OPTIONS")}
   ${green("--advisor")} ${yellow('"m1,m2[:collector]"')}  Multi-model advisor replacement (works with any --model)
   ${green("--model-params")} ${yellow('"k=v,..."')}  Extra request params merged into the payload (e.g. reasoning.mode=pro)
   ${green("--effort-override")} ${yellow("<level>")}  Pin reasoning effort verbatim, skipping the per-model clamp
+  ${green("--context-window")} ${yellow("<size>")}  Largest context window (128000, 128k, 1m), for local models
   ${green("--pro-on-ultracode")}       Apply the model's catalog preset while in ultracode (opt-in)
   ${green("--no-pro-on-ultracode")}    Force that off for this run (when enabled in config/env)
   ${green("--code-mode")} ${yellow("<auto|on|off>")}  cx@ tools as one exec script tool (default auto; env CLAUDISH_CODE_MODE)

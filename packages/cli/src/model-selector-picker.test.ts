@@ -92,7 +92,9 @@ describe("PickerCancelled", () => {
 describe("the two call sites still look the way the contract says", () => {
   test("index.ts calls selectModel through handlePromptExit, which handles PickerCancelled", () => {
     const src = read("index.ts");
-    expect(src).toContain("selectModel({ freeOnly: cliConfig.freeOnly }).catch(handlePromptExit)");
+    expect(src).toContain(
+      "selectModel({ freeOnly: cliConfig.freeOnly, onContextWindow }).catch(handlePromptExit)"
+    );
     expect(src).toContain("if (err instanceof PickerCancelled)");
     // And NOT `NoTtyError` — that one must surface and exit non-zero.
     expect(src).not.toContain("instanceof NoTtyError");

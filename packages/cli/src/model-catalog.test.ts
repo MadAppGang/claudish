@@ -253,6 +253,18 @@ describe("Group 1: Model Catalog — lookupModel()", () => {
 });
 
 describe("Group 1: Model Catalog — lookupModelForProvider()", () => {
+  test("an id whose @ follows a provider shortcut is still refused", () => {
+    expect(() => lookupModelForProvider("or@gpt-5.6-sol", "openrouter", mockCachePath)).toThrow(
+      /provider-routed/
+    );
+  });
+
+  test("an id whose @ follows anything else is not in the catalog", () => {
+    expect(
+      lookupModelForProvider("local-build-mlx@4bit", "lmstudio", mockCachePath)
+    ).toBeUndefined();
+  });
+
   test("openai-codex provider → provider-specific contextWindow 372000", () => {
     expect(lookupModelForProvider("gpt-5.6-sol", "openai-codex", mockCachePath)).toBe(372_000);
   });

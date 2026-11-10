@@ -1895,3 +1895,164 @@ describe("stored dynamic models catalogs", () => {
     pending.resolve();
   });
 });
+
+describe("the context window dialog", () => {
+  const sized = model({ maxContextLength: 262_144 });
+
+  async function open(
+    row: ModelInfo,
+    ask = true
+  ): Promise<{ d: Drawn; picks: Array<[string | null, number | undefined]> }> {
+    const picks: Array<[string | null, number | undefined]> = [];
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          outcome: { kind: "rows", rows: [row], servedCount: 1, chatCount: 1 },
+        })}
+        askContextWindow={ask}
+        onDone={(spec, size) => picks.push([spec, size])}
+      />
+    );
+    await d.press(["RETURN"]);
+    await d.until(modelRowPainted("kimi-k3"));
+    return { d, picks };
+  }
+
+  test("a model with a known maximum asks for the size and shows the maximum", async () => {
+    const { d, picks } = await open(sized);
+    try {
+      await d.press(["RETURN"]);
+      await d.until((text) => joined(text).includes("context window"));
+      const all = joined(d.recapture().text);
+      expect(all).toContain("262K (model maximum)");
+      expect(all).toContain("128K");
+      expect(picks).toEqual([]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("enter launches with the default size", async () => {
+    const { d, picks } = await open(sized);
+    try {
+      await d.press(["RETURN"]);
+      await d.until((text) => joined(text).includes("context window"));
+      await d.press(["RETURN"]);
+      expect(picks).toEqual([["kimi@kimi-k3", 128_000]]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("the arrow keys choose another size", async () => {
+    const { d, picks } = await open(sized);
+    try {
+      await d.press(["RETURN"]);
+      await d.until((text) => joined(text).includes("context window"));
+      await d.press(["ARROW_DOWN"]);
+      await d.press(["RETURN"]);
+      expect(picks).toEqual([["kimi@kimi-k3", 262_144]]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("escape goes back to the model list", async () => {
+    const { d, picks } = await open(sized);
+    try {
+      await d.press(["RETURN"]);
+      await d.until((text) => joined(text).includes("context window"));
+      await d.press(["ESCAPE"]);
+      await d.until(modelRowPainted("kimi-k3"));
+      expect(joined(d.recapture().text)).not.toContain("model maximum");
+      expect(picks).toEqual([]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("a model with no known maximum launches at once", async () => {
+    const { d, picks } = await open(model());
+    try {
+      await d.press(["RETURN"]);
+      expect(picks).toEqual([["kimi@kimi-k3", undefined]]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("a caller that does not ask gets no dialog", async () => {
+    const { d, picks } = await open(sized, false);
+    try {
+      await d.press(["RETURN"]);
+      expect(picks).toEqual([["kimi@kimi-k3", undefined]]);
+    } finally {
+      d.destroy();
+    }
+  });
+});
+
+describe("LM Studio rows on several machines", () => {
+  const onMachine = (id: string, name: string): ModelInfo =>
+    model({
+      id: `${id}~${name === "this Mac" ? "local" : name}`,
+      name: id,
+      machine: { name, modelId: id },
+    });
+
+  async function list(): Promise<Drawn> {
+    const rows: [ModelInfo, ...ModelInfo[]] = [
+      onMachine("qwen-build", "this Mac"),
+      onMachine("qwen-build", "m1"),
+    ];
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({ outcome: { kind: "rows", rows, servedCount: 2, chatCount: 2 } })}
+        onDone={() => {}}
+      />,
+      100
+    );
+    await d.press(["RETURN"]);
+    await d.until(modelRowPainted("qwen-build"));
+    return { ...d, ...d.recapture() };
+  }
+
+  test("the last column names the machine instead of the price", async () => {
+    const d = await list();
+    try {
+      const rows = d.text.filter((line) => line.includes("qwen-build "));
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toContain("this Mac");
+      expect(rows[1]).toMatch(/\bm1\b/);
+      expect(joined(d.text)).toContain("machine");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("the filter matches the machine name", async () => {
+    const d = await list();
+    try {
+      // `this`, not `mac`: in one batch, `c` reaches the picker before `ma` is drawn, as the custom-spec command.
+      await d.press(["t", "h", "i", "s"]);
+      await d.until((t) => !t.some((line) => /qwen-build .*\bm1\b/.test(line)));
+      const rows = d.recapture().text.filter((line) => line.includes("qwen-build "));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toContain("this Mac");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("the list hides the suffix and the spec line keeps it", async () => {
+    const d = await list();
+    try {
+      const rows = d.text.filter((line) => line.includes("qwen-build "));
+      expect(rows).toHaveLength(2);
+      for (const row of rows) expect(row).not.toContain("~");
+      expect(joined(d.text)).toContain("kimi@qwen-build~local");
+    } finally {
+      d.destroy();
+    }
+  });
+});
