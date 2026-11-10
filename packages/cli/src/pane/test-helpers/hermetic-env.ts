@@ -189,10 +189,18 @@ export function orphanReport(o: {
   return { processes, files };
 }
 
+/**
+ * How long a leftover check waits for a pane's reap. The reap is complete, not fast: on a
+ * machine with about 1,500 processes and a load average of 15 to 35, 360 reaps of the
+ * pane-hooks suite all ended with nothing left, taking 3.5 to 6.4 s at the median and up
+ * to 26.3 s. A shorter wait fails a test whose reap would have finished.
+ */
+export const REAP_DEADLINE_MS = 60_000;
+
 /** Wait up to `ms` for nothing of the test to remain; returns the last report. */
 export async function waitNoOrphans(
   o: { sockRoot: string; ids?: string[]; pgids?: number[] },
-  ms = 8000
+  ms = REAP_DEADLINE_MS
 ): Promise<OrphanReport> {
   const end = Date.now() + ms;
   let r = orphanReport(o);

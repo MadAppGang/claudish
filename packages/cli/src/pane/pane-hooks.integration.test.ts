@@ -50,7 +50,8 @@ import {
 } from "./test-helpers/hermetic-env.js";
 import type { PaneSnapshot, SettledTurn } from "./types.js";
 
-const T = 60_000;
+/** A test's own work plus a full REAP_DEADLINE_MS, so a real leak fails with its list. */
+const T = 120_000;
 
 /* ───────────────────────────── the test double binding ───────────────────────────── */
 
@@ -245,7 +246,7 @@ async function channel(o: {
 /** Cancel whatever is live, wait for the reap, and prove nothing is left. */
 async function done(c: Chan): Promise<void> {
   await c.manager.shutdownAll();
-  const left = await waitNoOrphans({ sockRoot: c.t.sockRoot }, 10_000);
+  const left = await waitNoOrphans({ sockRoot: c.t.sockRoot });
   killLeftovers({ sockRoot: c.t.sockRoot });
   openEnvs.delete(c.t);
   c.t.cleanup();
@@ -321,7 +322,7 @@ async function team(o: {
 async function teamDone(x: Team): Promise<void> {
   await cancelTeamRun(x.handle.sessionPath, undefined, x.handle.runId).catch(() => undefined);
   await x.handle.done;
-  const left = await waitNoOrphans({ sockRoot: x.t.sockRoot }, 10_000);
+  const left = await waitNoOrphans({ sockRoot: x.t.sockRoot });
   killLeftovers({ sockRoot: x.t.sockRoot });
   openEnvs.delete(x.t);
   x.t.cleanup();
