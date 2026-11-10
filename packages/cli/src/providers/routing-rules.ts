@@ -750,6 +750,11 @@ export interface RouteExplanation {
   ruleScope?: RuleScope;
   /** Catalog only: whether the cloud models catalog could be read and had the name. */
   catalog?: "found" | "absent" | "unreadable";
+  /**
+   * The catalog this decision read: a disk catalog or the bundled recommended
+   * list. Absent when neither exists, or on a path that reads no catalog.
+   */
+  catalogSource?: "disk" | "bundled";
   /** Chain order. A dropped candidate stays where the chain placed it. `[]` for native. */
   candidates: ExplainedCandidate[];
   /** Catalog only, when the fallback hop was not appended. */
@@ -786,6 +791,14 @@ export interface ExplainRouteOptions {
  * and never waits for one.
  */
 export type RouteNetwork = AvailabilityNetwork;
+
+/** The `catalogSource` of a decision that reads `cachePath`'s file, else the default path's. */
+function explanationCatalogSource(
+  cachePath: string | undefined
+): Pick<RouteExplanation, "catalogSource"> {
+  const origin = cachePath ? (readAllModelsCache(cachePath) ? "disk" : "none") : catalogOrigin();
+  return origin === "none" ? {} : { catalogSource: origin };
+}
 
 /** A route as an explained candidate. `gathered` is the catalog candidate it came from, if any. */
 function explainCandidate(
@@ -871,6 +884,7 @@ async function explainExplicitSpec(
     routedModel: model,
     source: "explicit",
     via: "model-spec",
+    ...explanationCatalogSource(cachePath),
     candidates: [candidate],
     outcome: { kind: "ok" },
     warnings: [],
@@ -1353,6 +1367,7 @@ async function explainBareNameWithin(
       source: "user-rule",
       matchedPattern: matchedKey,
       ...(routing.scopeOf ? { ruleScope: routing.scopeOf(matchedKey) } : {}),
+      ...explanationCatalogSource(cachePath),
       candidates: resolveRoutingEntries(matched, model, cachePath, { gatewayLists }).map(
         (resolved) => explainEntry(resolved, "candidate")
       ),
@@ -1377,6 +1392,7 @@ async function explainBareNameWithin(
       routedModel: model,
       source: "catalog",
       catalog: chain.catalog,
+      ...explanationCatalogSource(cachePath),
       candidates: chain.candidates,
       ...(chain.fallbackWithheld ? { fallbackWithheld: chain.fallbackWithheld } : {}),
       outcome: { kind: "ok" },
@@ -1830,13 +1846,21 @@ export function normalizeGlmSlug(model: string): string {
  * `explainRoute` runs the same function, so a display cannot show a chain this
  * does not use.
  */
-export async function route(
+export async function route(...args: Parameters<typeof routeExplained>): Promise<RoutePlan> {
+  return (await routeExplained(...args)).plan;
+}
+
+/**
+ * {@link route}, with the explanation its plan was derived from, for a caller
+ * that has to say why a name did not route.
+ */
+export async function routeExplained(
   modelSpec: string,
   rulesOverride?: RoutingRules,
   defaultProviderOverride?: DefaultProviderArg,
   cachePath?: string,
   opts: { network?: RouteNetwork } = {}
-): Promise<RoutePlan> {
+): Promise<{ plan: RoutePlan; explanation: RouteExplanation }> {
   const explanation = await explainRoutePlan(
     modelSpec,
     () => ({
@@ -1848,7 +1872,7 @@ export async function route(
     opts.network
   );
   emitRouteNotices(explanation);
-  return toRoutePlan(explanation);
+  return { plan: toRoutePlan(explanation), explanation };
 }
 
 /**
