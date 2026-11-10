@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { SESSION_ENV_VARS } from "./session-env-vars.ts";
 import { scanSource } from "./spawn-env-scan.ts";
 
@@ -170,12 +170,20 @@ describe("R5 session environment isolation", () => {
     }, 10_000);
   }
 
+  // Run HOME, session identity and path-override isolation at the OS boundary.
   test("5.4 guard strips all six identities from its spawned non-test process", () => {
     withHome((home) => {
       const env = isolatedEnv(home);
+      const overrides = {
+        CLAUDISH_ACCOUNTS_DIR: resolve(home, "override-accounts"),
+        CLAUDISH_CONFIG: resolve(home, "override-config.json"),
+        CLAUDISH_DYNAMIC_CATALOG_DIR: resolve(home, "override-dynamic-models-catalog"),
+        CLAUDISH_DYNAMIC_CATALOG_KEY: resolve(home, "override-dynamic-models-catalog.key"),
+      };
       const child = Bun.spawnSync([process.execPath, "run", guardPath, "--", "/usr/bin/env"], {
         cwd: repoRoot,
-        env: { ...env, HOME: home },
+        // Match the parent assertions without relying on inherited temp settings.
+        env: { ...env, ...overrides, HOME: home, TMPDIR: tmpdir() },
         stdout: "pipe",
         stderr: "pipe",
         timeout: 8_000,
@@ -193,7 +201,15 @@ describe("R5 session environment isolation", () => {
           return [line.slice(0, separator), line.slice(separator + 1)];
         });
       const actual = Object.fromEntries(entries);
-      expect(actual.HOME).toBe(home);
+      expect(actual.HOME).not.toBe(home);
+      expect(actual.HOME).toBe(actual.CLAUDISH_GUARD_RUN_HOME);
+      expect(dirname(actual.HOME)).toBe(resolve(tmpdir()));
+      expect(basename(actual.HOME)).toStartWith("claudish-guard-home-");
+      expect(existsSync(actual.HOME)).toBe(false);
+      for (const name of Object.keys(overrides)) expect(actual[name]).toBeUndefined();
+      expect(actual.CLAUDISH_DISABLE_KEYCHAIN).toBe("1");
+      expect(actual.CLAUDISH_DISABLE_OP).toBe("1");
+      expect(actual.CLAUDISH_DISABLE_CATALOG_WARM).toBe("1");
       expect(actual.W3_KEEP_UNRELATED).toBe("keep");
       for (const name of SESSION_ENV_VARS) expect(actual[name]).toBeUndefined();
       expect(existsSync(env.CLAUDISH_UPSTREAM_ERROR_LOG)).toBe(false);
