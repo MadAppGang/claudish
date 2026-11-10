@@ -309,6 +309,21 @@ describe("LocalTransport with a machine suffix", () => {
     expect(redactSigningValues("lms-probe-key-0123456789")).toBe("lms-probe-key-0123456789");
   });
 
+  test("a key that a probe signs with after a failed first lookup is masked too", async () => {
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model");
+    const headers = spyOn(transport, "getHeaders")
+      .mockRejectedValueOnce(new Error("vault locked"))
+      .mockResolvedValue({ Authorization: "Bearer lms-probe-key-0123456789" });
+    try {
+      await transport.refreshAuth();
+    } finally {
+      headers.mockRestore();
+    }
+
+    expect(logDuringWindowProbe).toBeDefined();
+    expect(logDuringWindowProbe).not.toContain("lms-probe-key-0123456789");
+  });
+
   test("a server that requires the key passes the health check with it", async () => {
     requiredKey = "stored-key";
     const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");

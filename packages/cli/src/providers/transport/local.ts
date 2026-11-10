@@ -24,7 +24,7 @@ import {
 } from "../../providers/lmstudio-devices.js";
 import { getProviderByName } from "../../providers/provider-definitions.js";
 import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
-import { acquireSigningLease } from "../../redact.js";
+import { type SigningLease, acquireSigningLease } from "../../redact.js";
 import { contextWindowLimit } from "../context-window-limit.js";
 import {
   discoverViaLMStudio,
@@ -82,6 +82,8 @@ export class LocalTransport implements ProviderTransport {
   private lmStudioPlacedAt: number | undefined;
   /** Why the payload step could not place the model; `refreshAuth` fails the request with it. */
   private lmStudioPlacementError?: unknown;
+  /** The signing leases of the `refreshAuth` calls now running; each probe adds its key. */
+  private readonly probeLeases = new Set<SigningLease>();
   private concurrency?: number;
   /**
    * SUCCESS-ONLY latch: true once a probe has actually reached the server.
@@ -239,13 +241,15 @@ export class LocalTransport implements ProviderTransport {
    * Throws on failure so ComposedHandler can return an error response.
    */
   async refreshAuth(): Promise<void> {
-    // The probes and the placement sign with the key, and what they log is written
-    // before the request's own lease registers it. This lease covers that window.
+    // The probes sign with the key, and what they log is written before the
+    // request's own lease registers it. Each probe adds the key it signs with to
+    // this lease (see `probeHeaders`), so every line it logs is masked.
     const lease = acquireSigningLease();
-    lease.add(credentialValuesFromRequest(await this.probeHeaders()));
+    this.probeLeases.add(lease);
     try {
       await this.refreshAuthUnderLease();
     } finally {
+      this.probeLeases.delete(lease);
       lease.release();
     }
   }
@@ -400,8 +404,13 @@ export class LocalTransport implements ProviderTransport {
    * unsigned probe 401, which reads as "not running". A key that cannot be read
    * leaves the probe unsigned, so the health check still reports the outage.
    */
-  private probeHeaders(): Promise<Record<string, string>> {
-    return this.getHeaders().catch(() => ({}));
+  private async probeHeaders(): Promise<Record<string, string>> {
+    const headers = await this.getHeaders().catch(() => ({}));
+    // Registered before the probe sends them: a lookup can fail once and succeed
+    // later, so each probe's own key is what must be masked.
+    const values = credentialValuesFromRequest(headers);
+    for (const lease of this.probeLeases) lease.add(values);
+    return headers;
   }
 
   private async checkHealth(): Promise<boolean> {
