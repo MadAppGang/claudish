@@ -183,6 +183,23 @@ describe("HerdrPlacer: placing", () => {
     expect(h.fake.callsOf("pane.close")).toHaveLength(0);
   });
 
+  test("a pane the user closes while its item runs stays closed: later upserts place nothing", async () => {
+    h = await startHarness();
+    h.upsert(sessionItem("a"));
+    await eventually(() => expect(claudishPanes(h as Harness)).toHaveLength(1));
+    await h.placer.whenIdle();
+    const pane = claudishPanes(h)[0] as string;
+    h.fake.exitPane(pane);
+    // herdr's event reaches the placer over its socket before the next row change
+    await Bun.sleep(100);
+    h.upsert(sessionItem("a", { state: "AWAITING_INPUT" }));
+    h.upsert(sessionItem("a"));
+    await Bun.sleep(100);
+    await h.placer.whenIdle();
+    expect(h.fake.callsOf("layout.apply")).toHaveLength(1);
+    expect(h.fake.placedPanes()).toHaveLength(0);
+  });
+
   test("shutdown closes this placer's panes and nothing else", async () => {
     h = await startHarness();
     h.fake.addUserTab("w1", "claudish-like", 2);

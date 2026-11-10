@@ -23,6 +23,7 @@ import {
   defaultFeedPath,
 } from "./feed-relay.js";
 import { FakeViewEndpoint, makeViewRoot } from "./test-helpers/fake-view-endpoint.js";
+import { ViewClient } from "./view-client.js";
 
 const FAKE_ENDPOINT_SCRIPT = join(import.meta.dir, "test-helpers", "fake-view-endpoint.ts");
 const T = 20_000;
@@ -290,6 +291,31 @@ describe("feed relay", () => {
     await until(() => readFeed(root)?.relay.pid === FAKE_STAMP.pid, "the new relay's stamp");
     expect(relay.writes).toBeGreaterThanOrEqual(1);
   });
+
+  test(
+    "a server whose first connection failed is tried again on the backstop, with no directory change",
+    async () => {
+      const root = newRoot();
+      await endpoint(root, epName("eeee1"), [item("one")]);
+      let attempts = 0;
+      const relay = new FeedRelay({
+        root,
+        stamp: FAKE_STAMP,
+        endpointsAlive: async (names) => new Set(names),
+        backstopMs: 30,
+        connect: async (path) => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("refused once");
+          return ViewClient.connect(path, { hello: { name: "relay", kind: "relay" } });
+        },
+      });
+      cleanups.push(() => relay.stop());
+      await relay.start();
+      await until(() => (readFeed(root)?.items.length ?? 0) === 1, "the item after a retry", 2_000);
+      expect(attempts).toBe(2);
+    },
+    T
+  );
 });
 
 describe("checkFeed (--feed-check)", () => {

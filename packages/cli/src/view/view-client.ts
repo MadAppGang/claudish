@@ -18,6 +18,8 @@ import { endpointOwnerAlive } from "./endpoints.js";
 export const REQUEST_TIMEOUT_MS = 2_000;
 const RECONNECT_FIRST_MS = 200;
 const RECONNECT_MAX_MS = 5_000;
+/** an answer line still unterminated past this is not a server of ours: the connection drops */
+export const MAX_INBOUND_LINE_BYTES = 16 * 1024 * 1024;
 
 export type ViewClientListener = {
   event: (event: ViewEvent) => void;
@@ -75,7 +77,14 @@ export class ViewClient {
   static async connect(path: string, options: ViewClientOptions = {}): Promise<ViewClient> {
     const client = new ViewClient(path, options);
     client.adopt(await dial(path));
-    if (options.hello) await client.greet(options.hello);
+    if (options.hello) {
+      try {
+        await client.greet(options.hello);
+      } catch (e) {
+        client.close();
+        throw e;
+      }
+    }
     return client;
   }
 
@@ -98,6 +107,8 @@ export class ViewClient {
         this.pending.delete(id);
         reject(new ViewError("server_gone", `no answer to '${op}' in ${timeoutMs} ms`));
       }, timeoutMs);
+      // a request in flight never keeps a process alive that is otherwise done
+      timer.unref?.();
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
       sock.write(`${JSON.stringify({ id, op, args })}\n`);
     });
@@ -128,6 +139,14 @@ export class ViewClient {
       this.inbound = this.inbound.slice(nl + 1);
       nl = this.inbound.indexOf("\n");
       if (line.trim()) this.onLine(line);
+    }
+    // a string's length is at most its UTF-8 byte count, so only a long one is measured
+    if (
+      this.inbound.length > MAX_INBOUND_LINE_BYTES / 3 &&
+      Buffer.byteLength(this.inbound) > MAX_INBOUND_LINE_BYTES
+    ) {
+      this.inbound = "";
+      this.sock?.destroy();
     }
   }
 
@@ -188,13 +207,18 @@ export class ViewClient {
       await Bun.sleep(wait);
       wait = Math.min(wait * 2, RECONNECT_MAX_MS);
       if (this.ended) return;
+      let dialed: Socket | null = null;
       try {
-        this.adopt(await dial(this.path));
+        dialed = await dial(this.path);
+        this.adopt(dialed);
         if (this.options.hello) await this.greet(this.options.hello);
         for (const fn of this.listeners.reconnected) fn();
         return;
       } catch {
-        // the owner may be between restarts of its listener: judged again on the next pass
+        // the owner may be between restarts of its listener: judged again on the next pass. A
+        // socket dialed for a refused hello is closed; its close event is not a new drop
+        if (dialed && this.sock === dialed) this.sock = null;
+        dialed?.destroy();
       }
     }
   }

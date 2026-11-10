@@ -177,9 +177,16 @@ export class ReplayRegistry {
       }
       if (removeIfFree(this.lockPathOf(uuid))) swept.push(uuid);
     }
-    // a writer killed between its write and its rename; under the lock, so no live write is cut
+    // a writer killed between its write and its rename; listed and removed under the lock, so no
+    // live write is cut and none that died while the loop above waited is missed
     await this.withLock(() => {
-      for (const name of names)
+      let now: string[];
+      try {
+        now = readdirSync(this.dir);
+      } catch {
+        return;
+      }
+      for (const name of now)
         if (name.endsWith(".tmp")) rmSync(join(this.dir, name), { force: true });
     });
     return swept;

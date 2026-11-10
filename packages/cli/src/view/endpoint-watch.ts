@@ -33,18 +33,22 @@ export class EndpointWatch {
 
   start(): void {
     this.arm();
-    this.backstop = setInterval(() => this.rescan(), this.o.backstopMs ?? ENDPOINT_BACKSTOP_MS);
+    // the backstop reports even an unchanged set: a server whose first dial failed is tried again
+    this.backstop = setInterval(() => this.rescan(true), this.o.backstopMs ?? ENDPOINT_BACKSTOP_MS);
     this.backstop.unref?.();
     this.rescan();
   }
 
-  /** Read the directory now; `onChange` fires when the set of names differs from the last read. */
-  rescan(): void {
+  /**
+   * Read the directory now; `onChange` fires when the set of names differs from the last read, or
+   * on every call with `always`.
+   */
+  rescan(always = false): void {
     if (this.closed) return;
     if (this.watchedIno === null || this.dirIno() !== this.watchedIno) this.arm();
     const names = listEndpoints(this.o.root).sort();
     const key = names.join("\n");
-    if (key === this.last) return;
+    if (key === this.last && !always) return;
     this.last = key;
     this.o.onChange(names);
   }

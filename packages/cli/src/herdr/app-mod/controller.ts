@@ -12,7 +12,8 @@
  *
  * Selecting a session starts `claudish view <target> --front-end herdr-core` in a hidden hc
  * terminal and shows it in a keyed window; selecting another kills the previous viewer, which
- * releases its claim. Closing the mod kills the viewers and leaves the relay running.
+ * releases its claim. Selecting a row whose viewer still runs presses Enter in it, which takes the
+ * view back. Closing the mod kills the viewers and leaves the relay running.
  */
 
 import type { ViewItem } from "../../pane/view-contract.js";
@@ -167,7 +168,10 @@ export class PanelController {
       this.view = null;
     }
     let address = liveTerminal(this.host.terminals(), name)?.address ?? null;
-    if (!address) address = await this.startViewer(target, name);
+    if (address) {
+      // a running viewer claimed only at its start; Enter takes the view back from wherever it went
+      await this.host.hc(["keys", address, "enter"]).catch(() => null);
+    } else address = await this.startViewer(target, name);
     if (!address) return;
     this.view = { target, name, address };
     this.selected = target;

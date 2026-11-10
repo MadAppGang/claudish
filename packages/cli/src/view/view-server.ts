@@ -548,6 +548,19 @@ export class ViewServer {
    * of a finished session or slot. A replay owned elsewhere answers `replay_elsewhere`.
    */
   private async replayOpen(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
+    try {
+      return await this.replayOpenOn(conn, args);
+    } finally {
+      // the connection closed while the open waited for the boot: what the open added on its
+      // behalf (a hold, a peer's placement grant) is released now, as the close would have
+      if (conn.closed) {
+        this.o.herdrViewers?.connectionGone(conn.id);
+        this.o.replays?.connectionGone(conn.id);
+      }
+    }
+  }
+
+  private async replayOpenOn(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
     const ops = this.replayOps();
     const opener = this.replayOpener(conn);
     if (args.replay_id !== undefined) {

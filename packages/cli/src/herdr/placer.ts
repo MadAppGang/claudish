@@ -95,6 +95,8 @@ interface PaneRecord {
   txn: string | null;
   /** set when closing it failed for want of a reply; the next reconcile closes it */
   stray: boolean;
+  /** this placer asked herdr to close it: its close event is not the user's */
+  closing: boolean;
 }
 
 /** A creation whose result is not known from a reply. Kept until its tab is verified absent. */
@@ -128,6 +130,8 @@ export class HerdrPlacer {
   private readonly queue: Placement[] = [];
   private readonly queued = new Set<string>();
   private readonly parked = new Map<string, Placement>();
+  /** targets whose placed pane the user closed while the item ran; never placed again */
+  private readonly dismissed = new Set<string>();
   private parkedOn: string | null = null;
   private readonly orphans = new Map<string, Orphan>();
   private readonly graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -265,7 +269,7 @@ export class HerdrPlacer {
       case "pane_closed":
       case "pane_exited": {
         const r = this.records.get(str(d.pane_id));
-        if (r) this.forget(r);
+        if (r) this.goneUnderUs(r);
         return;
       }
       case "tab_created": {
@@ -281,7 +285,7 @@ export class HerdrPlacer {
       }
       case "tab_closed": {
         const tabId = str(d.tab_id);
-        for (const r of [...this.records.values()]) if (r.tabId === tabId) this.forget(r);
+        for (const r of [...this.records.values()]) if (r.tabId === tabId) this.goneUnderUs(r);
         if (this.parkedOn === tabId) this.unpark();
         if ([...this.orphans.values()].some((o) => o.tabId === tabId)) void this.cleanOrphans();
         return;
@@ -298,7 +302,24 @@ export class HerdrPlacer {
   /* ───────────────────────────── the queue ───────────────────────────── */
 
   private isKnown(target: string): boolean {
-    return this.byTarget.has(target) || this.queued.has(target) || this.parked.has(target);
+    return (
+      this.byTarget.has(target) ||
+      this.queued.has(target) ||
+      this.parked.has(target) ||
+      this.dismissed.has(target)
+    );
+  }
+
+  /**
+   * A pane of ours closed by someone else. Once placed, that is the user closing the view (or its
+   * viewer leaving on its own): the target is not placed again while its item runs.
+   */
+  private goneUnderUs(r: PaneRecord): void {
+    if (!r.closing && r.scratchTabId === null) {
+      const item = this.o.item(r.target);
+      if (item && !isFinishedItem(item)) this.dismissed.add(r.target);
+    }
+    this.forget(r);
   }
 
   private enqueue(p: Placement): void {
@@ -383,6 +404,7 @@ export class HerdrPlacer {
   }
 
   private targetEnded(target: string): void {
+    this.dismissed.delete(target);
     const parked = this.parked.get(target);
     if (parked) {
       this.parked.delete(target);
@@ -497,6 +519,7 @@ export class HerdrPlacer {
       scratchTabId: tabId,
       txn: p.txn,
       stray: false,
+      closing: false,
     };
     this.records.set(paneId, r);
     this.byTarget.set(p.target, paneId);
@@ -628,6 +651,7 @@ export class HerdrPlacer {
 
   /** Close one of our panes; a scratch tab it was alone in closes with it. */
   private async closePane(r: PaneRecord): Promise<void> {
+    r.closing = true;
     try {
       await this.call("pane.close", { pane_id: r.paneId });
       this.forget(r);

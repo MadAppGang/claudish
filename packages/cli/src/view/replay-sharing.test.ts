@@ -405,6 +405,87 @@ describe.if(flockAvailable())("replays shared across servers", () => {
     await eventually(() => expect(w.alive()).toHaveLength(0));
   });
 
+  test("claudish view r:<replay_id> holds the replay: the first viewer leaving does not reap it under the second", async () => {
+    const w = newWorld();
+    const a = await w.server();
+    const first = new Viewer({
+      root: w.root,
+      target: "s1",
+      io: viewerIo(),
+      endpointAlive: (n) => w.endpointAlive(n),
+    });
+    const firstRun = first.run();
+    await eventually(() => expect(w.alive()).toHaveLength(1));
+    const [listed] = a.replays.list();
+    const target = listed?.target ?? "";
+    await eventually(() => expect(a.claims.holder(target)?.holder).toBe("terminal"));
+    let secondDone = false;
+    const second = new Viewer({
+      root: w.root,
+      target,
+      io: viewerIo(),
+      endpointAlive: (n) => w.endpointAlive(n),
+    });
+    const secondRun = second.run().then((o) => {
+      secondDone = true;
+      return o;
+    });
+    await eventually(() => expect(a.claims.holder(target)?.holder).toBe("terminal"));
+    await Bun.sleep(100);
+    first.quit();
+    expect((await firstRun).code).toBe(0);
+    await Bun.sleep(300);
+    expect(w.alive()).toHaveLength(1);
+    expect(secondDone).toBe(false);
+    second.quit();
+    expect((await secondRun).code).toBe(0);
+    await eventually(() => expect(w.alive()).toHaveLength(0));
+  });
+
+  test("a viewer that disconnects while the replay boots leaves no hold: open by session, join by id, and the spawning open", async () => {
+    const w = newWorld();
+    w.ctl.readyDelayMs = 400;
+    const a = await w.server();
+    // the spawning open's connection stays; two more connect during the boot and leave before it ends
+    const owner = await viewer(w, a.name);
+    const opening = owner.request<{ replay_id: string }>(
+      "replay.open",
+      { session_id: "s1" },
+      5_000
+    );
+    await eventually(() => expect(a.replays.list()).toHaveLength(1));
+    const replayId = a.replays.list()[0]?.replay_id as string;
+    const bySession = await viewer(w, a.name);
+    const byId = await viewer(w, a.name);
+    void bySession.request("replay.open", { session_id: "s1" }, 5_000).catch(() => {});
+    void byId.request("replay.open", { replay_id: replayId }, 5_000).catch(() => {});
+    await Bun.sleep(100);
+    bySession.close();
+    byId.close();
+    expect((await opening).replay_id).toBe(replayId);
+    await Bun.sleep(200);
+    // the only live holder leaves: the replay goes
+    expect(
+      await owner.request<{ closed: boolean }>("replay.release", { replay_id: replayId })
+    ).toEqual({
+      closed: true,
+    });
+    await eventually(() => expect(w.alive()).toHaveLength(0));
+    owner.close();
+  });
+
+  test("a viewer whose spawning open loses its connection during the boot leaves no replay behind", async () => {
+    const w = newWorld();
+    w.ctl.readyDelayMs = 400;
+    const a = await w.server();
+    const v = await viewer(w, a.name);
+    void v.request("replay.open", { session_id: "s1" }, 5_000).catch(() => {});
+    await eventually(() => expect(w.spawns.panes).toHaveLength(1));
+    v.close();
+    await Bun.sleep(700);
+    await eventually(() => expect(w.alive()).toHaveLength(0));
+  });
+
   test("a peer may place once per workspace: the owner's grant, then place_done gives it back", async () => {
     const w = newWorld();
     const a = await w.server();

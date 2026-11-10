@@ -36,7 +36,7 @@ export function clipText(s: string, max: number = HERDR_TEXT_MAX): string {
   let out = "";
   for (const ch of s) {
     const code = ch.codePointAt(0) ?? 0;
-    out += code < 0x20 || code === 0x7f ? " " : ch;
+    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : ch;
   }
   out = out.replace(/\s+/g, " ").trim();
   if ([...out].length <= max) return out;

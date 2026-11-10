@@ -273,12 +273,13 @@ describe("PanelController", () => {
 
     // the same target again: its live viewer is shown, no second one starts
     await ctl.select("s:a");
-    expect(host.hcRuns()).toHaveLength(1);
+    const starts = (): string[][] => host.hcRuns().filter((a) => a[0] === "run");
+    expect(starts()).toHaveLength(1);
     expect(host.overlays).toHaveLength(2);
 
     await ctl.select("s:b");
     expect(host.killed).toEqual(["t10"]);
-    expect(host.hcRuns()).toHaveLength(2);
+    expect(starts()).toHaveLength(2);
     expect(ctl.view).toEqual({
       target: "s:b",
       name: viewTerminalName("s:b", sha256),
@@ -290,6 +291,22 @@ describe("PanelController", () => {
     ctl.closeViews();
     expect(host.killed).toEqual(["t10", "t11"]);
     expect(host.live.map((t) => t.name)).toEqual([FEED_TERMINAL]);
+  });
+
+  test("reselecting a row whose viewer runs takes the view back: Enter is pressed in that viewer", async () => {
+    const host = new FakeHost();
+    host.relayAlive = { alive: true, relay: { pid: 7, start36: "b" } };
+    host.writeFeed({ pid: 7, start36: "b" }, [sessionItem("a")]);
+    const ctl = await ready(host);
+    ctl.setVisible(true);
+    await ctl.tick();
+    await ctl.select("s:a");
+    // a fresh viewer claims at its own start: no key is needed
+    expect(host.hcRuns().filter((a) => a[0] === "keys")).toEqual([]);
+    // the view went elsewhere meanwhile; the user selects the row again
+    await ctl.select("s:a");
+    expect(host.hcRuns().filter((a) => a[0] !== "run")).toEqual([["keys", "t10", "enter"]]);
+    expect(host.overlays).toHaveLength(2);
   });
 
   test("a viewer name another copy just took is followed to its terminal", async () => {

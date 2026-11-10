@@ -3729,6 +3729,11 @@ async function main() {
           : replayTargetOfTeamSlot(of.path, of.slot, of.run_id),
     })
       .then((started) => {
+        // bound after shutdown began: nothing will close it later, so it closes now
+        if (viewTransport.closing) {
+          started?.close();
+          return;
+        }
         viewTransport.server = started;
       })
       .catch((err: unknown) =>

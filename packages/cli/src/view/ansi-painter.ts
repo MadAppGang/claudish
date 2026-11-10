@@ -88,9 +88,19 @@ export function sgr(span: Span): string {
  * in half at the right edge is dropped whole: half of it would either wrap, shifting every row
  * below, or push the rest of the row left. Widths come from the line's `wd` through `cells`.
  */
+/** C0, DEL and C1: a terminal acts on them, so each becomes one blank cell. */
+export function printable(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    out += code < 0x20 || (code >= 0x7f && code <= 0x9f) ? " " : ch;
+  }
+  return out;
+}
+
 export function clipSpan(span: Span, avail: number, cells: CellCols): string {
   if (avail <= 0) return "";
-  if (span.width <= avail) return span.text;
+  if (span.width <= avail) return printable(span.text);
   let out = "";
   let used = 0;
   let cp = span.col < cells.cpAt.length ? cells.cpAt[span.col] : -1;
@@ -98,7 +108,7 @@ export function clipSpan(span: Span, avail: number, cells: CellCols): string {
     const wide = cp >= 0 && cp < cells.cps.length && cells.colOf[cp + 1] - cells.colOf[cp] === 2;
     const w = wide ? 2 : 1;
     if (used + w > avail) break;
-    out += ch;
+    out += printable(ch);
     used += w;
     if (cp >= 0 && ++cp >= cells.cps.length) cp = -1;
   }
@@ -260,6 +270,7 @@ export class AnsiPainter {
 
 /** Exactly `cols` cells of plain text: cut, or padded with blanks. Status text is narrow. */
 function fit(text: string, cols: number): string {
-  const cps = Array.from(text);
-  return cps.length >= cols ? cps.slice(0, Math.max(0, cols)).join("") : text.padEnd(cols);
+  const safe = printable(text);
+  const cps = Array.from(safe);
+  return cps.length >= cols ? cps.slice(0, Math.max(0, cols)).join("") : safe.padEnd(cols);
 }

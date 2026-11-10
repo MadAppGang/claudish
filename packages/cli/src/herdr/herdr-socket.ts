@@ -70,16 +70,18 @@ function asRecord(v: unknown): Record<string, unknown> {
     : {};
 }
 
-/** Splits a stream into JSON objects, one per line; a malformed line is skipped. */
-function lineReader(onObject: (o: Record<string, unknown>) => void, onOverflow: () => void) {
+/**
+ * Splits a stream into JSON objects, one per line; a malformed line is skipped. Only a line still
+ * unterminated after the chunk counts against the cap, in bytes: a chunk of many short lines is fine.
+ */
+export function lineReader(
+  onObject: (o: Record<string, unknown>) => void,
+  onOverflow: () => void,
+  maxLineBytes = MAX_LINE_BYTES
+) {
   let buf = "";
   return (chunk: string): void => {
     buf += chunk;
-    if (buf.length > MAX_LINE_BYTES) {
-      buf = "";
-      onOverflow();
-      return;
-    }
     let nl = buf.indexOf("\n");
     while (nl >= 0) {
       const line = buf.slice(0, nl).trim();
@@ -91,6 +93,11 @@ function lineReader(onObject: (o: Record<string, unknown>) => void, onOverflow: 
       } catch {
         // not JSON: herdr never sends one, and one bad line must not end the stream
       }
+    }
+    // a string's length is at most its UTF-8 byte count, so only a long one is measured
+    if (buf.length > maxLineBytes / 3 && Buffer.byteLength(buf) > maxLineBytes) {
+      buf = "";
+      onOverflow();
     }
   };
 }

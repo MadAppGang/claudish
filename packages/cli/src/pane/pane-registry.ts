@@ -31,6 +31,8 @@ import {
 import { dirname, join } from "node:path";
 import { claimSignalExit } from "../signal-owner.js";
 import { sweepEndpoints } from "../view/endpoints.js";
+import { defaultFeedPath, readFeedStamp, stampAlive } from "../view/feed-relay.js";
+import { removeIfFree } from "../view/kernel-lock.js";
 import { MagmuxClient } from "./magmux-client.js";
 import { ensureSockRoot, sockRootFor } from "./pane-launch.js";
 import {
@@ -769,6 +771,30 @@ function sweepRecordlessViewSockets(root: string, out: SweepResult): void {
   }
 }
 
+/**
+ * The herdr workspace locks nobody holds. A lock never reads the process table: free means no
+ * placement is running, and `removeIfFree` unlinks it while holding it, so a waiter re-opens.
+ */
+function sweepFreeHerdrLocks(root: string, out: SweepResult): void {
+  const dir = join(root, "herdr");
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".lock"));
+  } catch {
+    return;
+  }
+  for (const n of names) if (removeIfFree(join(dir, n))) out.cleaned.push(`herdr/${n}`);
+}
+
+/** The feed file of a relay the table proves gone; a file with no readable stamp is not ours. */
+function sweepDeadFeed(root: string, table: NonNullable<ProcessTable>, out: SweepResult): void {
+  const path = defaultFeedPath(root);
+  const stamp = readFeedStamp(path);
+  if (!stamp || stampAlive(stamp, table)) return;
+  rmSync(path, { force: true });
+  out.cleaned.push("feed/feed.json");
+}
+
 const sweptRoots = new Set<string>();
 
 /** The sweep, at most once per root per process (before the first spawn). */
@@ -797,8 +823,12 @@ export async function sweepOrphanPanes(root: string = sockRootFor()): Promise<Sw
     if (!known.has(id) && !live.has(id)) await sweepRecordlessSocket(root, n, out);
   }
   sweepRecordlessViewSockets(root, out);
-  // no trusted table: nothing can be judged dead, so every endpoint stays
+  sweepFreeHerdrLocks(root, out);
+  // no trusted table: nothing can be judged dead, so every endpoint and the feed file stay
   const table = readProcessTable();
-  if (table) out.cleaned.push(...sweepEndpoints(root, table));
+  if (table) {
+    out.cleaned.push(...sweepEndpoints(root, table));
+    sweepDeadFeed(root, table, out);
+  }
   return out;
 }

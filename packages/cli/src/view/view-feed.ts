@@ -3,8 +3,8 @@
  *
  * Stage two of the change gate lives here. A flush builds the target's row once and compares it,
  * without the three clock-derived fields, against the last row published. An equal row publishes
- * nothing; a row that differs only in `last_activity_at` publishes at most once per 5 s. Nothing
- * runs while nothing changes: the only timer is a debounce armed by a change.
+ * nothing; a row that differs only in `last_activity_at` publishes at most once per 5 s, the last
+ * one when that window ends. Nothing runs while nothing changes: every timer is armed by a change.
  */
 
 import { log } from "../logger.js";
@@ -68,11 +68,16 @@ export class ViewFeed {
       this.flush(target);
       return;
     }
+    this.arm(target, this.debounceMs);
+  }
+
+  /** One pending flush per target; an armed one is kept. */
+  private arm(target: string, ms: number): void {
     if (this.timers.has(target)) return;
     const timer = setTimeout(() => {
       this.timers.delete(target);
       this.flush(target);
-    }, this.debounceMs);
+    }, ms);
     timer.unref?.();
     this.timers.set(target, timer);
   }
@@ -96,11 +101,12 @@ export class ViewFeed {
 
   /**
    * A snapshot has just shown these rows to a subscriber, so an identical row need not follow it.
-   * A row the gate already holds stays: another subscriber may not have seen this one.
+   * A row the gate already holds stays: another subscriber may not have seen this one. Neither is a
+   * row with a change pending: the subscribers already listening have not been sent it yet.
    */
   noteDelivered(items: readonly ViewItem[]): void {
     for (const item of items) {
-      if (this.published.has(item.target)) continue;
+      if (this.published.has(item.target) || this.timers.has(item.target)) continue;
       this.published.set(item.target, { ...gateFields(item), at: this.now() });
     }
   }
@@ -127,7 +133,11 @@ export class ViewFeed {
     const now = this.now();
     if (last && last.stable === stable) {
       if (last.lastActivityAt === lastActivityAt) return;
-      if (now - last.at < this.activityPublishMs) return;
+      if (now - last.at < this.activityPublishMs) {
+        // once the window ends, the newest activity time goes out even if nothing else changes
+        this.arm(target, this.activityPublishMs - (now - last.at));
+        return;
+      }
     }
     this.published.set(target, { stable, lastActivityAt, at: now });
     this.emit({ event: "upsert", item });

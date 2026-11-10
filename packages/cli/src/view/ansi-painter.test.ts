@@ -75,6 +75,37 @@ describe("clipSpan", () => {
   });
 });
 
+describe("control code points in cell and status text", () => {
+  // CSI as one C1 code point, DEL, and an ESC: none may reach the terminal as a control
+  const hostile = "\u009b31mX\u007fY\u001b]52;c;Zm9v\u0007";
+  const controlIn = (s: string): string | null => {
+    for (const ch of s) {
+      const code = ch.codePointAt(0) ?? 0;
+      if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return ch;
+    }
+    return null;
+  };
+
+  test("a row's span text is written with every control replaced, one cell each", () => {
+    const line: Line = { y: 0, t: hostile };
+    const cells = cellCols(line);
+    const [span] = rowSpans(line, cells, 40);
+    const text = clipSpan(span!, 40, cells);
+    expect(controlIn(text)).toBeNull();
+    expect(text.trimEnd()).toBe(" 31mX Y ]52;c;Zm9v");
+  });
+
+  test("band and status text are written with no control code point", () => {
+    const { painter, out } = painterOn({ cols: 60, rows: 25 });
+    painter.band(hostile);
+    painter.status(hostile, "live");
+    // the painter's own sequences start with ESC; nothing else may
+    const esc = String.fromCharCode(0x1b);
+    const written = out().replace(new RegExp(`${esc}\\[[0-9;?]*[A-Za-z]`, "g"), "");
+    expect(controlIn(written)).toBeNull();
+  });
+});
+
 describe("AnsiPainter", () => {
   const [frame] = capturedFrames("sgr-runs");
   const screen = newScreen(24, 80);

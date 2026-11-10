@@ -30,6 +30,8 @@ export interface PaneControl {
   closeDelayMs: number;
   /** false: the fake frees the lock at spawn instead of handing it on (the negative control) */
   handLock: boolean;
+  /** ms the fake's boot takes before it reports ready (a slow replay start) */
+  readyDelayMs?: number;
 }
 
 /** Every fake replay process any server started, in spawn order. */
@@ -90,8 +92,9 @@ export class FakeReplayPane implements ReplayPaneLike {
     return this.fin;
   }
 
-  ready(_ms: number): Promise<ReplayReady> {
-    return Promise.resolve({ kind: "box" });
+  async ready(_ms: number): Promise<ReplayReady> {
+    if (this.ctl.readyDelayMs) await Bun.sleep(this.ctl.readyDelayMs);
+    return { kind: "box" };
   }
 
   capture(sinceSeq?: number, opts: { spans?: boolean } = {}): CaptureResult | CaptureUnchanged {

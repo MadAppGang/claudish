@@ -308,7 +308,22 @@ export class Viewer {
         return;
       }
       this.item = item;
-    } else this.item = (found as LocatedTarget).item;
+    } else {
+      this.item = (found as LocatedTarget).item;
+      if (isReplay) {
+        // a running replay is joined on this connection, so it is not reaped while this viewer looks
+        try {
+          await this.joinReplay(client);
+        } catch (e) {
+          client.close();
+          if (e instanceof ViewError && e.code === "unknown_session") {
+            this.done({ code: 1, message: `${target} has finished` });
+            return;
+          }
+          throw e;
+        }
+      }
+    }
     this.client = client;
     client.on("event", (e) => this.onEvent(e));
     client.on("closed", (why) => {
@@ -377,6 +392,13 @@ export class Viewer {
         throw e2;
       }
     }
+  }
+
+  /** `replay.open {replay_id}`: this connection's hold on a replay that is already running. */
+  private async joinReplay(client: ViewClient): Promise<void> {
+    const t = parseViewTarget(this.target);
+    if (t?.kind !== "replay") return;
+    await client.request("replay.open", { replay_id: t.replayId }, REPLAY_OPEN_MS);
   }
 
   private async takeIfNotHolding(): Promise<void> {
@@ -579,6 +601,8 @@ export class Viewer {
     // the server released this connection's claim when it dropped; a held view is taken again
     const held = this.holding;
     this.claimId = null;
+    // the dropped connection's hold went with it; a replay that is gone ends through its remove
+    if (this.client) await this.joinReplay(this.client).catch(() => {});
     await this.subscribe().catch(() => {});
     if (held) await this.take();
     else this.holdingChanged();
