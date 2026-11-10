@@ -20,6 +20,7 @@ import {
   linkSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   rmdirSync,
@@ -27,7 +28,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { credentialValuesFromRequest } from "../handlers/shared/call-context.js";
 import { redactExactValues } from "../redact.js";
 
@@ -406,6 +407,27 @@ function entryPid(entry: string): number | undefined {
   }
 }
 
+/**
+ * Removes the copies of dead locks that a takeover moved aside and did not
+ * delete because its process exited in between. A copy's name carries the pid
+ * of the process that moved it; a copy whose process still runs is left to it.
+ */
+function removeAbandonedCopies(lockPath: string): void {
+  const prefix = `${basename(lockPath)}.dead.`;
+  let names: string[];
+  try {
+    names = readdirSync(dirname(lockPath));
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const pid = Number.parseInt(name.slice(prefix.length), 10);
+    if (!Number.isInteger(pid) || pid <= 0 || pidAlive(pid)) continue;
+    rmSync(join(dirname(lockPath), name), { recursive: true, force: true });
+  }
+}
+
 /** Writes the owner whole: a reader sees no owner or this pid, never part of it. */
 function signLock(lockPath: string): void {
   const draft = join(lockPath, `owner.${process.pid}`);
@@ -424,6 +446,7 @@ async function withMachineLock<T>(
   work: () => Promise<T>
 ): Promise<T> {
   mkdirSync(dirname(lockPath), { recursive: true });
+  removeAbandonedCopies(lockPath);
   const deadline = Date.now() + LOAD_TIMEOUT_MS + LIST_TIMEOUT_MS;
   for (;;) {
     try {

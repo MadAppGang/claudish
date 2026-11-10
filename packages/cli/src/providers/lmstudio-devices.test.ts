@@ -625,6 +625,20 @@ describe("ensureLMStudioInstance", () => {
     expect(lookAtLock(lock)?.alive).toBe(true);
   });
 
+  test("a copy a takeover left aside is removed once its process has exited", async () => {
+    preferred = SELF;
+    const exited = join(lockDir, "machine.lock.dead.999999999.abc");
+    mkdirSync(join(exited, "takeover"), { recursive: true });
+    writeFileSync(join(exited, "owner"), "999999999");
+    const running = join(lockDir, `machine.lock.dead.${process.ppid}.def`);
+    mkdirSync(running);
+
+    await ensure("only-m1", "m1");
+
+    expect(existsSync(exited)).toBe(false);
+    expect(existsSync(running)).toBe(true);
+  });
+
   test("a release leaves alone a lock that is no longer its own", async () => {
     preferred = SELF;
     const lock = join(lockDir, "machine.lock");
