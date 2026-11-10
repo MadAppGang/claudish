@@ -6,6 +6,7 @@
  */
 
 import { detectFrontEnd, herdrPaneEnv, workspaceKeyOf } from "../herdr/front-end.js";
+import { HcStatusReporter } from "../herdr/hc-reporter.js";
 import { HerdrSocket } from "../herdr/herdr-socket.js";
 import { HerdrReporter } from "../herdr/reporter.js";
 import { setStderrQuiet } from "../logger.js";
@@ -14,18 +15,27 @@ import { readProcessTableAsync } from "../pane/process-identity.js";
 import type { ViewItem, ViewListResult } from "../pane/view-contract.js";
 import { detectAndSetThemeModeSync } from "../theme/theme-mode.js";
 import { endpointOwnerAlive, endpointPathOf, listEndpoints } from "./endpoints.js";
+import { checkFeed, defaultFeedPath, runFeedRelay } from "./feed-relay.js";
 import { DEFAULT_FPS } from "./magmux-view-client.js";
 import { ViewClient } from "./view-client.js";
 import { type FrontEnd, PLAIN_TERMINAL, Viewer, type ViewerIo } from "./viewer.js";
 
 const USAGE = [
-  "usage: claudish view <target> [--passive] [--fps N] [--front-end auto|herdr|none]",
+  "usage: claudish view <target> [--passive] [--fps N] [--front-end auto|herdr|herdr-core|none]",
   "       claudish view --list [--json]",
+  "       claudish view --feed [file]",
+  "       claudish view --feed-check [file]",
+  "       claudish view --print-root",
   "",
   "  <target>   s:<session_id>, t:<run_id>/<slot>, r:<replay_id>, or the same without the prefix",
   "  --passive  do not take the view at start; Enter takes it",
   "  --fps N    frames per second to ask the pane for, 1..30 (default 15)",
-  "  --front-end  auto (default) reports to herdr when run in a herdr pane; none reports nothing",
+  "  --front-end  auto (default) reports to herdr in a herdr pane and to herdr-core (OSC 7501) in",
+  "             an hc terminal; none reports nothing",
+  "  --feed     keep a file listing every server's sessions up to date (default",
+  "             <root>/feed/feed.json); the file is removed when the relay exits",
+  "  --feed-check  exit 0 when the relay stamped in the feed file still runs, 1 otherwise",
+  "  --print-root  the socket root this claudish uses",
   "",
   "  Keys: Enter shows the session here, q quits. Nothing typed here reaches the session.",
   "",
@@ -98,7 +108,7 @@ export interface ViewArgs {
   target: string;
   passive: boolean;
   fps: number;
-  frontEnd: "auto" | "herdr" | "none";
+  frontEnd: "auto" | "herdr" | "herdr-core" | "none";
 }
 
 /** The `<target>` form's argv, or the reason it is refused. */
@@ -126,7 +136,7 @@ function applyOption(out: ViewArgs, option: string, value: string | undefined): 
     return null;
   }
   if (option === "--front-end") {
-    if (value === "auto" || value === "herdr" || value === "none") {
+    if (value === "auto" || value === "herdr" || value === "herdr-core" || value === "none") {
       out.frontEnd = value;
       return null;
     }
@@ -191,16 +201,26 @@ interface FrontEndChoice {
 }
 
 /**
- * The herdr reporter when this runs in a herdr pane, or when `--front-end herdr` says so; the
- * plain terminal otherwise. No herdr call is made outside a herdr pane.
+ * The herdr reporter when this runs in a herdr pane, the OSC 7501 reporter in an hc terminal, or
+ * what `--front-end` names; the plain terminal otherwise. No herdr call is made outside a herdr
+ * pane, and no OSC 7501 line is written outside an hc terminal.
  */
 export async function chooseFrontEnd(
   wanted: ViewArgs["frontEnd"],
   env: NodeJS.ProcessEnv,
-  placed: PlacedPane
+  placed: PlacedPane,
+  write: (bytes: string) => void = (s) => {
+    process.stdout.write(s);
+  }
 ): Promise<FrontEndChoice | { error: string }> {
-  if (wanted === "none" || (wanted === "auto" && detectFrontEnd(env) !== "herdr"))
-    return { frontEnd: PLAIN_TERMINAL };
+  const frontEnd = wanted === "auto" ? detectFrontEnd(env) : wanted;
+  if (frontEnd === "none") return { frontEnd: PLAIN_TERMINAL };
+  const titleMode = env.CLAUDISH_HERDR_TITLE === "model" ? "model" : "summary";
+  if (frontEnd === "herdr-core") {
+    if (!env.HC_TERMINAL_ID?.trim())
+      return { error: "--front-end herdr-core needs an hc terminal (HC_TERMINAL_ID)" };
+    return { frontEnd: new HcStatusReporter({ write, titleMode }) };
+  }
   const pane = herdrPaneEnv(env);
   if (!pane)
     return { error: "--front-end herdr needs a herdr pane (HERDR_PANE_ID, HERDR_SOCKET_PATH)" };
@@ -216,7 +236,7 @@ export async function chooseFrontEnd(
       herdr,
       paneId: pane.paneId,
       placed: placed.placed,
-      titleMode: env.CLAUDISH_HERDR_TITLE === "model" ? "model" : "summary",
+      titleMode,
       focusClaim: env.CLAUDISH_VIEW_FOCUS_CLAIM !== "0",
     }),
     ...(workspaceId ? { workspaceKey: workspaceKeyOf(pane.socketPath, workspaceId) } : {}),
@@ -265,11 +285,35 @@ async function viewTarget(parsed: ViewArgs): Promise<number> {
   }
 }
 
+/** `--feed`, `--feed-check` and `--print-root`: one optional file operand, nothing else. */
+async function feedCommand(args: string[]): Promise<number | null> {
+  const [mode, file, ...rest] = args;
+  if (mode !== "--feed" && mode !== "--feed-check" && mode !== "--print-root") return null;
+  if (rest.length > 0 || (file?.startsWith("-") ?? false) || (mode === "--print-root" && file)) {
+    process.stderr.write(USAGE);
+    return 2;
+  }
+  const root = sockRootFor();
+  if (mode === "--print-root") {
+    process.stdout.write(`${root}\n`);
+    return 0;
+  }
+  const path = file ?? defaultFeedPath(root);
+  if (mode === "--feed-check") {
+    const check = await checkFeed(path);
+    process.stdout.write(`${JSON.stringify(check)}\n`);
+    return check.alive ? 0 : 1;
+  }
+  return runFeedRelay({ root, path });
+}
+
 export async function viewCommand(args: string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     process.stdout.write(USAGE);
     return 0;
   }
+  const feed = await feedCommand(args);
+  if (feed !== null) return feed;
   if (!args.includes("--list")) {
     const parsed = parseViewArgs(args);
     if ("error" in parsed) {

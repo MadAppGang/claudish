@@ -129,5 +129,49 @@ export function herdrMetadata(
   };
 }
 
+/**
+ * herdr-core's status words. Unlike herdr terminal, hc takes `done` and `error` from the program
+ * itself, so a finished session says so instead of reading idle.
+ */
+export type HcState = "idle" | "working" | "done" | "blocked" | "error";
+
+export interface HcStatus {
+  state: HcState;
+  kind?: "permission" | "question";
+  /** the prompt summary, or the model (`titleMode: "model"`) */
+  title: string;
+  /** the label of the current state: the tool in use, what it waits for, how it ended */
+  msg: string;
+}
+
+const HC_ERROR_STATES: ReadonlySet<string> = new Set(["FAILED", "TIMEOUT"]);
+
+function hcState(item: ViewItem): Pick<HcStatus, "state" | "kind"> {
+  if (item.kind === "replay") return { state: "idle" };
+  if (HC_ERROR_STATES.has(item.state)) return { state: "error" };
+  if (TERMINAL_STATES.has(item.state)) return { state: "done" };
+  const herdr = herdrAgentState(item);
+  if (herdr === "blocked")
+    return {
+      state: "blocked",
+      kind: item.state === "AWAITING_PERMISSION" ? "permission" : "question",
+    };
+  if (herdr === "working") return { state: "working" };
+  return { state: "idle" };
+}
+
+/** A `ViewItem` as an hc status report (OSC 7501) and as the Herdr.app mod's row status. */
+export function hcStatus(
+  item: ViewItem,
+  options: { titleMode?: "summary" | "model" } = {}
+): HcStatus {
+  const meta = herdrMetadata(item, options);
+  const { state, kind } = hcState(item);
+  // a terminal state's label sits under `done` (and `idle`) in herdr's labels
+  const labelKey = state === "error" ? "done" : state;
+  const msg = meta.state_labels[labelKey] ?? "";
+  return { state, ...(kind ? { kind } : {}), title: meta.title, msg };
+}
+
 /** The tokens `claudish herdr rows` puts into the sidebar rows; each is a `$name` above. */
 export const SIDEBAR_TOKENS = ["model", "activity", "tokens"] as const;

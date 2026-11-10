@@ -54,6 +54,10 @@ export interface FakeEndpointOptions {
   item: ViewItem;
   /** the label the server would derive from the viewer's term_program */
   label?: string;
+  /** endpoint file name; default this process's own, so two fakes in one root need one each */
+  name?: string;
+  /** what `hello` answers as the server's version */
+  version?: string;
 }
 
 export class FakeViewEndpoint {
@@ -69,7 +73,7 @@ export class FakeViewEndpoint {
 
   private constructor(private readonly o: FakeEndpointOptions) {
     this.item = o.item;
-    this.path = endpointPathOf(o.root, endpointNameOf());
+    this.path = endpointPathOf(o.root, o.name ?? endpointNameOf());
     this.server = createServer((sock) => this.accept(sock));
   }
 
@@ -139,9 +143,9 @@ export class FakeViewEndpoint {
           protocol: "claudish.view.v1",
           server: {
             pid: process.pid,
-            version: "test",
+            version: this.o.version ?? "test",
             started_at: new Date().toISOString(),
-            endpoint: endpointNameOf(),
+            endpoint: this.o.name ?? endpointNameOf(),
             front_end: "none",
           },
           contract_version: 1,

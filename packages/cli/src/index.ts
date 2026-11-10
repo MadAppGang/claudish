@@ -422,9 +422,11 @@ const isHooksCommand = firstPositional === "hooks";
 const isAccountCommand = firstPositional === "account";
 // Team subcommand: claudish team run|run-and-judge (multi-model orchestration)
 const isTeamCommand = firstPositional === "team";
-// View subcommand: claudish view --list [--json] (read-only, every local MCP server's sessions)
+// View subcommand: claudish view <target> | --list [--json] | --feed | --feed-check | --print-root
+// (read-only, every local MCP server's sessions)
 const isViewCommand = firstPositional === "view";
-// herdr subcommand: claudish herdr rows (prints sidebar rows; writes nothing)
+// herdr subcommand: claudish herdr rows (prints sidebar rows) | install-app-mod (copies the
+// Herdr.app mod into Herdr.app's mods folder)
 const isHerdrCommand = firstPositional === "herdr";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
 const isLoginCommand = firstPositional === "login";
@@ -509,7 +511,7 @@ if (isMcpMode) {
       process.exit(1);
     });
 } else if (isHerdrCommand) {
-  // Prints herdr config for the user to paste. It runs no model and never wraps itself in magmux.
+  // herdr config to paste, or the Herdr.app mod. It runs no model and never wraps itself in magmux.
   const herdrArgIndex = args.indexOf("herdr");
   import("./herdr/herdr-cli.js")
     .then((m) => process.exit(m.herdrCommand(args.slice(herdrArgIndex + 1))))
