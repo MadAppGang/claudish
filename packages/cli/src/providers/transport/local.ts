@@ -76,7 +76,8 @@ export class LocalTransport implements ProviderTransport {
   /** The LM Link machine named by the model id's suffix. */
   private lmStudioDevice?: string;
   private lmStudioInstance?: Promise<LMStudioInstance>;
-  private lmStudioPlacedAt = 0;
+  /** When the current placement answered; undefined while it is still loading. */
+  private lmStudioPlacedAt: number | undefined;
   /** Why the payload step could not place the model; `refreshAuth` fails the request with it. */
   private lmStudioPlacementError?: unknown;
   private concurrency?: number;
@@ -266,24 +267,37 @@ export class LocalTransport implements ProviderTransport {
    * serve the same name from another machine.
    */
   private placeOnDevice(): Promise<LMStudioInstance> {
-    if (this.lmStudioInstance && Date.now() - this.lmStudioPlacedAt > PLACEMENT_RECHECK_MS) {
+    // The age counts from the answer, never from the start: a cold load can take minutes,
+    // and a placement still loading is never dropped.
+    const placedAt = this.lmStudioPlacedAt;
+    if (
+      this.lmStudioInstance &&
+      placedAt !== undefined &&
+      Date.now() - placedAt > PLACEMENT_RECHECK_MS
+    ) {
       this.lmStudioInstance = undefined;
     }
     if (this.lmStudioInstance) return this.lmStudioInstance;
-    this.lmStudioPlacedAt = Date.now();
+    this.lmStudioPlacedAt = undefined;
     // The load signs like a chat request: the key may live in the config or 1Password.
-    this.lmStudioInstance = this.getHeaders().then((headers) =>
-      ensureLMStudioInstance({
-        baseUrl: this.config.baseUrl,
-        model: this.modelName,
-        device: this.lmStudioDevice as string,
-        contextLength:
-          contextWindowLimit() ?? getProviderByName(this.config.name)?.unknownContextWindow,
-        headers: Object.keys(headers).length > 0 ? headers : undefined,
-        log,
-      })
-    );
-    return this.lmStudioInstance;
+    const pending: Promise<LMStudioInstance> = this.getHeaders()
+      .then((headers) =>
+        ensureLMStudioInstance({
+          baseUrl: this.config.baseUrl,
+          model: this.modelName,
+          device: this.lmStudioDevice as string,
+          contextLength:
+            contextWindowLimit() ?? getProviderByName(this.config.name)?.unknownContextWindow,
+          headers: Object.keys(headers).length > 0 ? headers : undefined,
+          log,
+        })
+      )
+      .then((instance) => {
+        if (this.lmStudioInstance === pending) this.lmStudioPlacedAt = Date.now();
+        return instance;
+      });
+    this.lmStudioInstance = pending;
+    return pending;
   }
 
   /** Fails the request when the model could not be placed; the next request tries again. */

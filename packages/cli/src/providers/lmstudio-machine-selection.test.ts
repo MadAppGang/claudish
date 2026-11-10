@@ -37,6 +37,8 @@ let baseUrl: string;
 let loadRequests: string[];
 let loadBodies: unknown[];
 let loadAuth: (string | null)[];
+/** Runs while the server answers a load, as a slow load would. */
+let duringLoad: (() => void) | undefined;
 let saved: Record<string, string | undefined>;
 
 const ENV_NAMES = [
@@ -101,6 +103,7 @@ esac
   loadRequests = [];
   loadBodies = [];
   loadAuth = [];
+  duringLoad = undefined;
   server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -113,6 +116,7 @@ esac
         loadRequests.push(model);
         loadBodies.push(body);
         loadAuth.push(req.headers.get("authorization"));
+        duringLoad?.();
         writeInstances([
           {
             identifier: model,
@@ -303,6 +307,38 @@ describe("LocalTransport with a machine suffix", () => {
     try {
       await transport.getExtraPayloadFields();
       await expect(transport.refreshAuth()).rejects.toThrow("more than one machine");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test("a load slower than the recheck interval is not checked again in the same request", async () => {
+    const realNow = Date.now.bind(Date);
+    let offset = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => realNow() + offset);
+    duringLoad = () => {
+      offset += 60_000;
+    };
+    try {
+      const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
+      await transport.getExtraPayloadFields();
+      // A check now would see this namesake and refuse the request.
+      writeInstances([
+        {
+          identifier: "shared-model",
+          modelKey: "shared-model",
+          deviceIdentifier: M1,
+          contextLength: 129_000,
+        },
+        {
+          identifier: "shared-model",
+          modelKey: "shared-model",
+          deviceIdentifier: null,
+          contextLength: 129_000,
+        },
+      ]);
+
+      await transport.refreshAuth();
     } finally {
       clock.mockRestore();
     }
