@@ -11,6 +11,12 @@ import {
   writeRouteRegistry,
 } from "./all-models-cache.js";
 import { catalogUrl, plansUrl } from "./catalog-endpoints.js";
+import {
+  _resetCatalogReachabilityForTest,
+  catalogWarmDisabledFor,
+  noteCatalogContact,
+  noteRefreshSettled,
+} from "./catalog-reachability.js";
 import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, type CatalogV3Envelope, parseCatalogV3Envelope } from "./catalog-v3.js";
 import {
@@ -105,6 +111,7 @@ export function _resetCatalogClient(): void {
   _catalogEntriesForTest = undefined;
   _memCache = null;
   _warmPromise = null;
+  _resetCatalogReachabilityForTest();
 }
 
 /** Every wire id the entry publishes, opt-in included: an exact reverse lookup. */
@@ -251,9 +258,7 @@ export function logResolution(
   }
 }
 
-export function catalogWarmDisabledFor(value: string | undefined): boolean {
-  return value === "1";
-}
+export { catalogWarmDisabledFor };
 
 function catalogWarmDisabled(): boolean {
   return catalogWarmDisabledFor(process.env.CLAUDISH_DISABLE_CATALOG_WARM);
@@ -299,6 +304,18 @@ export type FetchFailure =
   | { ok: false; reason: "timeout" | "network" | "http_error" }
   | { ok: false; reason: "incompatible"; serverContractVersion: number | null };
 
+function isTimeoutError(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name;
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+/** A network error's own code, else its message. Bun's codes read as `ConnectionRefused`. */
+function errorText(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && code.length > 0) return code;
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function fetchEnvelope<T>(
   url: string,
   timeoutMs: number
@@ -310,12 +327,17 @@ export async function fetchEnvelope<T>(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    const name = (error as { name?: string } | null)?.name;
-    return {
-      ok: false,
-      reason: name === "TimeoutError" || name === "AbortError" ? "timeout" : "network",
-    };
+    const timedOut = isTimeoutError(error);
+    noteCatalogContact(
+      "transport",
+      timedOut ? `no answer within ${timeoutMs} ms` : errorText(error)
+    );
+    return { ok: false, reason: timedOut ? "timeout" : "network" };
   }
+  noteCatalogContact(
+    response.ok ? "ok" : "http-status",
+    response.ok ? undefined : `HTTP ${response.status}`
+  );
 
   let body: unknown;
   try {
@@ -440,13 +462,31 @@ export async function refreshCatalog(
   options: RefreshCatalogOptions = {}
 ): Promise<RefreshOutcome> {
   if (catalogWarmDisabled()) return { kind: "fetch_failed", reason: "disabled" };
-  // A generation can activate between the model pages and the registry read.
-  // Never mix two: start over once, then report the mismatch.
-  const first = await refreshCatalogOnce(timeoutMs, options);
-  if (first.kind === "fetch_failed" && first.reason === "generation_mismatch") {
-    return refreshCatalogOnce(timeoutMs, options);
+  let outcome: RefreshOutcome;
+  try {
+    // A generation can activate between the model pages and the registry read.
+    // Never mix two: start over once, then report the mismatch.
+    outcome = await refreshCatalogOnce(timeoutMs, options);
+    if (outcome.kind === "fetch_failed" && outcome.reason === "generation_mismatch") {
+      outcome = await refreshCatalogOnce(timeoutMs, options);
+    }
+  } catch (err) {
+    noteRefreshSettled("failed", errorText(err));
+    throw err;
   }
-  return first;
+  noteRefreshSettled(
+    outcome.kind === "refreshed" ? "refreshed" : "failed",
+    describeRefreshOutcome(outcome)
+  );
+  return outcome;
+}
+
+/** Why a refresh failed, for the reachability record and the debug log. */
+function describeRefreshOutcome(outcome: RefreshOutcome): string | undefined {
+  if (outcome.kind === "refreshed") return undefined;
+  return outcome.kind === "fetch_failed"
+    ? outcome.reason
+    : `incompatible contract ${outcome.serverContractVersion ?? "unknown"}`;
 }
 
 async function refreshCatalogOnce(
@@ -646,9 +686,7 @@ function startCatalogWarm(): Promise<void> {
     (result) => {
       if (result.kind === "refreshed") return;
       // Without this line the reason is lost: callers only see "no snapshot".
-      log(
-        `[catalog] refresh failed: ${result.kind === "fetch_failed" ? result.reason : `incompatible contract ${result.serverContractVersion ?? "unknown"}`}`
-      );
+      log(`[catalog] refresh failed: ${describeRefreshOutcome(result)}`);
       if (_warmPromise === promise) _warmPromise = null;
     },
     (err: unknown) => {
