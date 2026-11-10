@@ -8,7 +8,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,8 +24,10 @@ import {
   ensureLMStudioInstance,
   expandModelsToMachines,
   isLoopbackUrl,
+  lookAtLock,
   readLMStudioMachines,
   splitLMStudioDevice,
+  takeOverStaleLock,
 } from "./lmstudio-devices.js";
 
 const SELF = "self-id";
@@ -498,6 +508,34 @@ describe("ensureLMStudioInstance", () => {
 
     expect(preferredWrites).toEqual([]);
     expect(existsSync(lock)).toBe(false);
+  });
+
+  test("a takeover leaves alone a lock another waiter took after the look", () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "999999999");
+    const look = lookAtLock(lock);
+    expect(look?.alive).toBe(false);
+
+    // A second waiter takes the dead lock over and holds a new one.
+    rmSync(lock, { recursive: true, force: true });
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), String(process.pid));
+
+    takeOverStaleLock(lock, look?.identity ?? "");
+
+    expect(readFileSync(join(lock, "owner"), "utf-8")).toBe(String(process.pid));
+    expect(readdirSync(lockDir)).toEqual(["machine.lock"]);
+  });
+
+  test("a takeover removes the dead lock it looked at", () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "999999999");
+
+    takeOverStaleLock(lock, lookAtLock(lock)?.identity ?? "");
+
+    expect(readdirSync(lockDir)).toEqual([]);
   });
 
   test("the lock is released after a failed load", async () => {

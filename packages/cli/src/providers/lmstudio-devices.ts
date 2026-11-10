@@ -16,7 +16,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -251,24 +251,72 @@ function defaultLockPath(): string {
   return join(homedir(), ".claudish", "lmstudio-machine.lock");
 }
 
-function ownerIsAlive(lockPath: string): boolean {
-  let pid: number;
+/**
+ * One look at the lock: whether its owner lives, and an identity that tells this
+ * directory from a later one at the same path. Undefined when there is no lock.
+ */
+export function lookAtLock(lockPath: string): { alive: boolean; identity: string } | undefined {
+  const identity = lockIdentity(lockPath);
+  if (identity === undefined) return undefined;
+  let owner: string;
   try {
-    pid = Number.parseInt(readFileSync(join(lockPath, "owner"), "utf-8"), 10);
+    owner = readFileSync(join(lockPath, "owner"), "utf-8");
   } catch {
     // Taken an instant ago and not yet signed, unless it has sat unsigned for a whole load.
     try {
-      return Date.now() - statSync(lockPath).mtimeMs < LOAD_TIMEOUT_MS;
+      return { alive: Date.now() - statSync(lockPath).mtimeMs < LOAD_TIMEOUT_MS, identity };
     } catch {
-      return false;
+      return undefined;
     }
   }
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+  const pid = Number.parseInt(owner, 10);
+  if (!Number.isInteger(pid) || pid <= 0) return { alive: false, identity };
   try {
     process.kill(pid, 0);
-    return true;
+    return { alive: true, identity };
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    return { alive: (error as NodeJS.ErrnoException).code === "EPERM", identity };
+  }
+}
+
+function lockIdentity(path: string): string | undefined {
+  let stats: ReturnType<typeof statSync>;
+  try {
+    stats = statSync(path);
+  } catch {
+    return undefined;
+  }
+  let owner = "";
+  try {
+    owner = readFileSync(join(path, "owner"), "utf-8");
+  } catch {
+    // An unsigned lock has an empty owner.
+  }
+  return `${stats.ino}:${stats.birthtimeMs}:${owner}`;
+}
+
+/**
+ * Removes the dead lock a waiter looked at, and nothing else. Two waiters can see
+ * the same dead owner; the first takes the lock over and holds a new one before
+ * the second acts. So the lock is first moved aside, which only one waiter can
+ * do, and a moved lock that is not the one looked at is put back.
+ */
+export function takeOverStaleLock(lockPath: string, identity: string): void {
+  const aside = `${lockPath}.stale-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    renameSync(lockPath, aside);
+  } catch {
+    return;
+  }
+  if (lockIdentity(aside) === identity) {
+    rmSync(aside, { recursive: true, force: true });
+    return;
+  }
+  try {
+    renameSync(aside, lockPath);
+  } catch {
+    // A third waiter holds the path now; the moved lock's owner removes its own path when done.
+    rmSync(aside, { recursive: true, force: true });
   }
 }
 
@@ -291,8 +339,10 @@ async function withMachineLock<T>(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    if (!ownerIsAlive(lockPath)) {
-      rmSync(lockPath, { recursive: true, force: true });
+    const look = lookAtLock(lockPath);
+    if (look === undefined) continue;
+    if (!look.alive) {
+      takeOverStaleLock(lockPath, look.identity);
       continue;
     }
     if (Date.now() > deadline) {
