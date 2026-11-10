@@ -63,6 +63,9 @@ async function hasOllamaTagsShape(response: Response): Promise<boolean> {
   }
 }
 
+/** How long a placement is trusted before LM Studio is asked again (one `lms ps` costs about 250 ms). */
+const PLACEMENT_RECHECK_MS = 10_000;
+
 export class LocalTransport implements ProviderTransport {
   readonly name: string;
   readonly displayName: string;
@@ -73,6 +76,7 @@ export class LocalTransport implements ProviderTransport {
   /** The LM Link machine named by the model id's suffix. */
   private lmStudioDevice?: string;
   private lmStudioInstance?: Promise<LMStudioInstance>;
+  private lmStudioPlacedAt = 0;
   /** Why the payload step could not place the model; `refreshAuth` fails the request with it. */
   private lmStudioPlacementError?: unknown;
   private concurrency?: number;
@@ -256,9 +260,18 @@ export class LocalTransport implements ProviderTransport {
     await this.confirmPlacement();
   }
 
-  /** The instance on the machine the model id names, loaded there once per transport. */
+  /**
+   * The instance on the machine the model id names. The answer is checked again
+   * once it is `PLACEMENT_RECHECK_MS` old, because LM Studio may unload it and
+   * serve the same name from another machine.
+   */
   private placeOnDevice(): Promise<LMStudioInstance> {
-    this.lmStudioInstance ??= ensureLMStudioInstance({
+    if (this.lmStudioInstance && Date.now() - this.lmStudioPlacedAt > PLACEMENT_RECHECK_MS) {
+      this.lmStudioInstance = undefined;
+    }
+    if (this.lmStudioInstance) return this.lmStudioInstance;
+    this.lmStudioPlacedAt = Date.now();
+    this.lmStudioInstance = ensureLMStudioInstance({
       baseUrl: this.config.baseUrl,
       model: this.modelName,
       device: this.lmStudioDevice as string,
@@ -508,6 +521,12 @@ export class LocalTransport implements ProviderTransport {
         if (typeof ctxLength === "number" && ctxLength > 0) {
           this._contextWindow = ctxLength;
           log(`[${this.displayName}] Context window from model: ${this._contextWindow}`);
+          return;
+        }
+        const maxLength = targetModel?.max_context_length;
+        if (typeof maxLength === "number" && maxLength > 0 && maxLength < this._contextWindow) {
+          this._contextWindow = maxLength;
+          log(`[${this.displayName}] Context window from model maximum: ${maxLength}`);
           return;
         }
 

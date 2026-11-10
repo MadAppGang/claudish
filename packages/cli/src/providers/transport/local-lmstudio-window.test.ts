@@ -84,6 +84,12 @@ describe("LocalTransport context window on lmstudio", () => {
     );
   });
 
+  test("an unloaded model whose maximum is below the default reports its maximum", async () => {
+    const rows = [{ id: "small", type: "llm", state: "not-loaded", max_context_length: 32_768 }];
+
+    expect(await windowOf("small", () => Response.json({ data: rows }))).toBe(32_768);
+  });
+
   test("a server without the native list keeps the provider default", async () => {
     expect(
       await windowOf("publisher/loaded-build", () => new Response(null, { status: 404 }))

@@ -6,11 +6,15 @@
  * then reports, so the two sides agree as they do on a real install.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverProviderModelsCatalog, invalidateModelDiscovery } from "./model-discovery.js";
+import {
+  discoverContextWindow,
+  discoverProviderModelsCatalog,
+  invalidateModelDiscovery,
+} from "./model-discovery.js";
 import type { LocalProvider } from "./provider-registry.js";
 import { LocalTransport } from "./transport/local.js";
 
@@ -170,6 +174,21 @@ describe("lmstudio discovery with LM Link", () => {
   });
 });
 
+describe("the window of a spec without a machine suffix", () => {
+  test("comes from the instance running on a linked machine", async () => {
+    writeInstances([
+      {
+        identifier: "shared-model",
+        modelKey: "shared-model",
+        deviceIdentifier: M1,
+        contextLength: 32_768,
+      },
+    ]);
+
+    expect(await discoverContextWindow("lmstudio", "shared-model")).toBe(32_768);
+  });
+});
+
 describe("LocalTransport with a machine suffix", () => {
   test("the first request's payload names the instance on that machine", async () => {
     const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
@@ -221,6 +240,40 @@ describe("LocalTransport with a machine suffix", () => {
 
     expect(loadBodies).toEqual([{ model: "shared-model", context_length: 32_768 }]);
     expect(transport.getContextWindow()).toBe(33_768);
+  });
+
+  test("a placement is checked again once it is old, and a moved instance fails the request", async () => {
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
+    await transport.getExtraPayloadFields();
+    await transport.refreshAuth();
+
+    writeInstances([
+      {
+        identifier: "shared-model",
+        modelKey: "shared-model",
+        deviceIdentifier: null,
+        contextLength: 129_000,
+      },
+    ]);
+    const now = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(now + 60_000);
+    try {
+      await transport.getExtraPayloadFields();
+      await expect(transport.refreshAuth()).rejects.toThrow("more than one machine");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test("a recent placement is used without asking lms again", async () => {
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
+    await transport.getExtraPayloadFields();
+    await transport.refreshAuth();
+
+    writeInstances([]);
+
+    expect(await transport.getExtraPayloadFields()).toEqual({ model: "shared-model" });
+    await transport.refreshAuth();
   });
 
   test("a model with no suffix loads nothing and adds no payload field", async () => {

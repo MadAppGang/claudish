@@ -32,7 +32,6 @@ import { log } from "../logger.js";
 import { VERSION } from "../version.js";
 import { resolveRouteProfile } from "./connection-resolver.js";
 import { isOptInWireId } from "./content-use.js";
-import { contextWindowLimit } from "./context-window-limit.js";
 import { expandModelsToMachines, isLoopbackUrl, readLMStudioMachines } from "./lmstudio-devices.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
@@ -580,8 +579,17 @@ interface ParsedModelsList {
  * yet: `max_context_length` is the most it supports, and a load can use less.
  */
 function readLMStudioContextWindow(row: Record<string, unknown>): number | undefined {
-  const v = row.loaded_context_length;
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+  const loaded = positive(row.loaded_context_length);
+  if (loaded !== undefined) return loaded;
+  // A load cannot give more than the maximum, so a maximum below the default is the window.
+  const max = positive(row.max_context_length);
+  // The default, never the launch limit: this answer is cached before the picker sets the limit.
+  const wanted = getProviderByName("lmstudio")?.unknownContextWindow;
+  return max !== undefined && wanted !== undefined && max < wanted ? max : undefined;
+}
+
+function positive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 /**
@@ -598,7 +606,7 @@ async function withLMStudioMachines(
   return expandModelsToMachines(
     models,
     machines,
-    contextWindowLimit() ?? getProviderByName("lmstudio")?.unknownContextWindow
+    getProviderByName("lmstudio")?.unknownContextWindow
   );
 }
 
@@ -1075,10 +1083,19 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
   return outcome.kind === "served" ? outcome.models : [];
 }
 
-/** The window of the row whose id is `modelId`, case-insensitively. */
+/**
+ * The window of the row whose id is `modelId`, case-insensitively. An id without
+ * its machine suffix reaches whichever machine LM Studio picks, so it takes the
+ * smallest window among that model's machine rows.
+ */
 function windowOf(models: DiscoveredModel[], modelId: string): number | undefined {
   const needle = modelId.toLowerCase();
-  return models.find((m) => m.id.toLowerCase() === needle)?.contextWindow;
+  const exact = models.find((m) => m.id.toLowerCase() === needle);
+  if (exact) return exact.contextWindow;
+  const windows = models
+    .filter((m) => m.machine?.modelId.toLowerCase() === needle && m.contextWindow !== undefined)
+    .map((m) => m.contextWindow as number);
+  return windows.length > 0 ? Math.min(...windows) : undefined;
 }
 
 /**

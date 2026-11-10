@@ -26,6 +26,7 @@ const ROWS = [
     loaded_context_length: LOADED_WINDOW,
   },
   { id: "unloaded-build", type: "llm", state: "not-loaded", max_context_length: 262_144 },
+  { id: "small-unloaded", type: "llm", state: "not-loaded", max_context_length: 32_768 },
 ];
 
 const realFetch = globalThis.fetch;
@@ -66,6 +67,10 @@ describe("computeMainThreadContextWindow on lmstudio", () => {
 
   test("an unloaded model uses the provider default, not the vendor window", async () => {
     expect(await launchWindow("lms@unloaded-build")).toBe(LMSTUDIO_DEFAULT_WINDOW);
+  });
+
+  test("an unloaded model whose maximum is below the default uses its maximum", async () => {
+    expect(await launchWindow("lms@small-unloaded")).toBe(32_768);
   });
 
   test("a model the server does not list uses the provider default", async () => {
