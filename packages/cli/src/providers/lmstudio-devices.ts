@@ -19,6 +19,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { credentialValuesFromRequest } from "../handlers/shared/call-context.js";
 import { redactExactValues } from "../redact.js";
 
 export const LMSTUDIO_DEVICE_SEPARATOR = "~";
@@ -534,17 +535,6 @@ export async function ensureLMStudioInstance(
   );
 }
 
-/** Each header value, and the token of a `Bearer` value. */
-function signingValuesOf(headers: Record<string, string> | undefined): string[] {
-  const values: string[] = [];
-  for (const value of Object.values(headers ?? {})) {
-    values.push(value);
-    const token = /^Bearer\s+(.+)$/i.exec(value)?.[1];
-    if (token) values.push(token);
-  }
-  return values;
-}
-
 function listError(): Error {
   return new Error(
     "Could not list the running LM Studio instances: `lms ps --json` failed. Without that list claudish cannot tell which machine a model name reaches."
@@ -581,7 +571,7 @@ async function loadOnLinkedMachine(
     if (!response.ok) {
       // A server may quote the key it rejected, and this message is logged before
       // any request lease knows the key, so the body is masked here.
-      const body = redactExactValues(await response.text(), signingValuesOf(headers));
+      const body = redactExactValues(await response.text(), credentialValuesFromRequest(headers));
       throw new Error(`LM Studio could not load ${model} on ${device}: ${response.status} ${body}`);
     }
     const body = (await response.json().catch(() => null)) as { instance_id?: unknown } | null;
