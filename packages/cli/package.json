@@ -26,7 +26,7 @@
     "typecheck": "tsc --noEmit && bun run scripts/typecheck-blind.ts",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "test": "bun test",
+    "test": "bun scripts/ci-tests.ts --local junit-local.xml",
     "smoke": "bun run scripts/smoke-test.ts"
   },
   "dependencies": {
