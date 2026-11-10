@@ -39,24 +39,37 @@ function serveCalls(source: string): { line: number; text: string }[] {
 /**
  * The call's options object names `hostname` as one of ITS keys: `hostname:`, or the
  * shorthand `hostname,` / `hostname }`. A `hostname` in a nested object or in a string
- * does not count. In `Bun.serve({ … })` the `(` is depth 1 and the options' `{` depth 2.
+ * does not count, nor does one in a comment or in a value position (`id: hostname`).
+ * In `Bun.serve({ … })` the `(` is depth 1 and the options' `{` depth 2.
  */
 function bindsHostname(call: string): boolean {
   let depth = 0;
+  // the last character outside strings, comments and whitespace
+  let last = "";
   for (let i = 0; i < call.length; i++) {
     const ch = call[i] as string;
     if (ch === '"' || ch === "'" || ch === "`") {
       for (i++; i < call.length && call[i] !== ch; i++) if (call[i] === "\\") i++;
+      last = ch;
       continue;
     }
+    if (ch === "/" && call[i + 1] === "/") {
+      const end = call.indexOf("\n", i);
+      i = end < 0 ? call.length : end;
+      continue;
+    }
+    if (ch === "/" && call[i + 1] === "*") {
+      const end = call.indexOf("*/", i + 2);
+      i = end < 0 ? call.length : end + 1;
+      continue;
+    }
+    if (/\s/.test(ch)) continue;
+    // a key follows the object's `{` or a `,`; after `:` it would be a value
+    if (depth === 2 && (last === "{" || last === ",") && /^hostname\s*[:,}]/.test(call.slice(i)))
+      return true;
     if ("({[".includes(ch)) depth++;
     else if (")}]".includes(ch)) depth--;
-    else if (
-      depth === 2 &&
-      /^hostname\s*[:,}]/.test(call.slice(i)) &&
-      !/\w/.test(call[i - 1] ?? "")
-    )
-      return true;
+    last = ch;
   }
   return false;
 }
@@ -88,6 +101,12 @@ describe("Bun.serve hostname", () => {
       bindsHostname('Bun.serve({ port: 0, fetch: () => Response.json({ hostname: "x" }) })')
     ).toBe(false);
     expect(bindsHostname('Bun.serve({ tls: { hostname: "x" }, port: 0 })')).toBe(false);
+    expect(bindsHostname("Bun.serve({ id: hostname, port: 0 })")).toBe(false);
+    expect(
+      bindsHostname('Bun.serve({\n  // why: hostname, see below\n  hostname: "127.0.0.1" })')
+    ).toBe(true);
+    expect(bindsHostname("Bun.serve({ /* hostname, */ port: 0 })")).toBe(false);
+    expect(bindsHostname("Bun.serve({ port: 0, id: hostname })")).toBe(false);
     expect(bindsHostname('Bun.serve({ port: 0, fetch: () => new Response("hostname: x") })')).toBe(
       false
     );
