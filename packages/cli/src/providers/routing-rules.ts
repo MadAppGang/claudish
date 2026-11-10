@@ -1,7 +1,8 @@
 import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
+import { openRouterKeyPresent } from "../auth/credentials/openrouter-key-presence.js";
 import type { ReadinessResult } from "../auth/credentials/types.js";
-import { resolveDefaultProvider } from "../default-provider.js";
+import { type ResolvedDefaultProvider, resolveDefaultProvider } from "../default-provider.js";
 import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import { log, logStderr } from "../logger.js";
 import type { RecommendedModelsDoc } from "../model-loader.js";
@@ -884,16 +885,25 @@ export const DEFAULT_FALLBACK_PROVIDER = "openrouter";
 
 /**
  * The `defaultProvider` this process routes with when no caller named one:
- * `CLAUDISH_DEFAULT_PROVIDER`, then `defaultProvider` in the config file, then
- * `openrouter` (`resolveDefaultProvider`). May be `""`, which disables the
- * fallback hop.
+ * `CLAUDISH_DEFAULT_PROVIDER`, then `defaultProvider` in the config file, then an
+ * OpenRouter key in any store, then `openrouter` (`resolveDefaultProvider`). May
+ * be `""`, which disables the fallback hop.
  *
  * Read per call, like the rules. `route()` without overrides and `--probe`'s
  * chain both read it here, so the two cannot name different fallback hops. The
  * `--default-provider` flag arrives through the env variable (index.ts exports it).
  */
+export function effectiveDefaultProviderResolution(): ResolvedDefaultProvider {
+  return resolveDefaultProvider({
+    config: loadConfig(),
+    env: process.env,
+    hasOpenRouterKey: openRouterKeyPresent,
+  });
+}
+
+/** The provider {@link effectiveDefaultProviderResolution} names. May be `""`. */
 export function effectiveDefaultProvider(): string {
-  return resolveDefaultProvider({ config: loadConfig(), env: process.env }).provider;
+  return effectiveDefaultProviderResolution().provider;
 }
 
 /** A chain assembled from the catalog, plus whether a catalog could be read. */

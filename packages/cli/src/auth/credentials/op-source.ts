@@ -55,7 +55,12 @@ import {
   readOnepasswordAccount,
   saveOnepasswordAccount as saveOpConfigAccount,
 } from "../../providers/onepassword-config.js";
-import type { AccountInfo, SdkAuth, SdkClientFactory } from "../../providers/onepassword.js";
+import {
+  type AccountInfo,
+  type SdkAuth,
+  type SdkClientFactory,
+  collectConfigImports,
+} from "../../providers/onepassword.js";
 import {
   type OpSourceEntry,
   groupEntriesByAccount,
@@ -509,6 +514,29 @@ function computeHasOpSources(): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Whether the config names a single `op://` reference that resolves into `envVar`
+ * (an `apiKeys` entry or a `onepassword[]` ref). A scan of the config only: no SDK,
+ * no session. A glob import or a 1Password Environment cannot be known by name
+ * without reading it, so neither counts here.
+ */
+export function configHasOpReferenceFor(envVar: string): boolean {
+  if (!hasOpSources()) return false;
+  try {
+    const cfg = readConfigRaw();
+    const { opRefs } = collectConfigImports(
+      {
+        apiKeys: cfg.apiKeys,
+        onepassword: parseOpSourceEntries(cfg.onepassword ?? [], "ref").map((e) => e.value),
+      },
+      process.env
+    );
+    return Object.hasOwn(opRefs, envVar);
+  } catch {
+    return false;
+  }
 }
 
 /** Test-only: reset the sniff cache (config can change between tests). */

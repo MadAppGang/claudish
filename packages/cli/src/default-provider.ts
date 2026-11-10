@@ -38,6 +38,11 @@ export interface ResolveOptions {
   cliFlag?: string;
   config: ClaudishProfileConfig;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Whether an OpenRouter key exists in a store other than `env`. Injected so this
+   * module stays pure; absent, only `env.OPENROUTER_API_KEY` counts.
+   */
+  hasOpenRouterKey?: () => boolean;
 }
 
 /**
@@ -45,7 +50,7 @@ export interface ResolveOptions {
  *   1. --default-provider CLI flag
  *   2. CLAUDISH_DEFAULT_PROVIDER env var
  *   3. config.json defaultProvider
- *   4. OPENROUTER_API_KEY present → "openrouter"
+ *   4. an OpenRouter key present (in `env`, or `hasOpenRouterKey()`) → "openrouter"
  *   5. hardcoded "openrouter"
  *
  * An explicit `""` from the env var or the config file is an ANSWER, not a gap:
@@ -78,7 +83,7 @@ export function resolveDefaultProvider(opts: ResolveOptions): ResolvedDefaultPro
     return { provider: configured, source: "config-file", legacyAutoPromoted: false };
   }
 
-  if (env.OPENROUTER_API_KEY) {
+  if (env.OPENROUTER_API_KEY || opts.hasOpenRouterKey?.()) {
     return { provider: "openrouter", source: "openrouter-key", legacyAutoPromoted: false };
   }
 
