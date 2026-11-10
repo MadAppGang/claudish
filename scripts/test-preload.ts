@@ -31,7 +31,8 @@
  *   catalog, and against an empty cache it live-fetches past its 5 s timeout.
  * - `HOME` becomes a fresh temporary directory, unless the inherited `HOME` is already
  *   under a temporary directory (a parent test that spawned this `bun test` with its
- *   own throwaway home keeps it).
+ *   own throwaway home keeps it). The guard's run home (`CLAUDISH_GUARD_RUN_HOME`) is
+ *   always replaced: it is shared by every `bun test` process of a `test:safe` run.
  * - `os.homedir()` follows `process.env.HOME`. Bun (measured on 1.4.0) reads the
  *   environment the process STARTED with, so assigning `process.env.HOME` alone leaves
  *   every `import { homedir } from "node:os"` at the real home; `profile-config.ts`
@@ -78,8 +79,20 @@ function isTemporaryHome(home: string): boolean {
   });
 }
 
+/**
+ * The run home `scripts/guard-real-config.ts` gives a whole `test:safe` run. It is
+ * under the temp dir, but it is shared by every `bun test` process of the run, so
+ * keeping it would let one process read another's files. A process left on it is
+ * one that skipped this preload, which is what the guard's tripwire detects.
+ */
+function isGuardRunHome(home: string): boolean {
+  const runHome = process.env.CLAUDISH_GUARD_RUN_HOME;
+  if (!runHome) return false;
+  return home === runHome || canonical(home) === canonical(runHome);
+}
+
 const inherited = process.env.HOME;
-if (!inherited || !isTemporaryHome(inherited)) {
+if (!inherited || !isTemporaryHome(inherited) || isGuardRunHome(inherited)) {
   const home = mkdtempSync(join(nodeOs.tmpdir(), "claudish-test-home-"));
   process.env.HOME = home;
   process.on("exit", () => {

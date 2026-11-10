@@ -18,38 +18,84 @@
 `scripts/guard-real-config.ts` — the thing `bun run test:safe` runs the suite
 under — does two separate jobs, and conflating them is how each keeps decaying.
 
+**Live sessions write these files during a run, so the guard repairs only damage.** A full
+`test:safe` takes 31-43 minutes, and on a working machine about 40 live claudish sessions write
+the guarded files in that window: `config.json` on every stats or telemetry save, the TUI and
+account management; the catalog caches on refresh; `accounts/allowance-alerts.json`. The guard
+used to write the pre-run bytes back over every changed file and fail the run, which threw those
+writes away and turned a green suite red. Now a test write cannot reach the real files at all
+(the run home, below), so a change that leaves a file VALID is kept, reported as a warning, and
+the exit code is the tests' own.
+
 **It SNAPSHOTS files.** `GUARDED` lists the config, the catalog caches and sentinel, and
-the credential stores below. Each is read before the run and compared after.
-Present and changed → restored from the snapshot. Absent before and present
-after → DELETED, because on a clean machine a test fixture that survives becomes
-the machine's first real catalog, and a cold cache is indistinguishable from a
-poisoned one to every caller. Present but unreadable → it refuses and says so,
-which is why `snapshot()` establishes presence with `existsSync` separately from
-reading the bytes: folding "unreadable" into "absent" would make the delete
-branch destroy the file.
+the credential stores below. Each is read before the run and compared after, and each carries one
+closed `validity` kind that says what "valid" means for it:
 
-**Credential files are SECRET entries, and their rule is different.** `codex-oauth.json`,
-`grok-oauth.json`, `gemini-oauth.json`, `kimi-oauth.json`, the Muse stores and
-`accounts/state.json` get no `.guard-backup` sidecar (a second plaintext copy of a real login
-that `claudish logout` never removes); the in-memory snapshot is the only restore path. A secret
-is restored only when the run left it DELETED, unreadable, unparseable or without a non-empty
-`refresh_token`, through a same-directory temp file created 0600 and renamed over it. A secret
-the run left VALID but different is KEPT with a warning, because Codex and Grok rotate refresh
-tokens: a concurrent claudish process may have refreshed during the run, and writing the old
-document back reinstates a consumed refresh token (`refresh_token_reused`, which can revoke the
-grant). Only a mode change the run made is reported; a login that was already 0644 before the run
-is the developer's state. SIGINT and SIGTERM are forwarded to the child so Ctrl-C still restores.
-Added 2026-10-21 after a full run deleted the real `codex-oauth.json`: a test-only singleton reset
-replaced `CodexOAuth`'s instance, the credential authority kept the old one, and a test's
-`credentials.logout()` reached it. Reset singletons IN PLACE.
+| `validity` | Entries | Valid when |
+|---|---|---|
+| `json-object` | every non-secret file | parses to a non-null, non-array object |
+| `refresh-token` | the login stores | a non-empty string `refresh_token` |
+| `parseable` | `accounts/state.json` | any parseable JSON, `null` included |
+| `hex-key` | `dynamic-models-catalog.key` | 64 hex characters (surrounding whitespace ignored, as the store's reader does) |
 
-**It PREVENTS three things outright,** via env vars set on the child:
+| Post-run state | Action | Exit |
+|---|---|---|
+| unchanged | none, silent | child |
+| valid, changed or created | kept: `WARNING — kept <path>`, the key delta, the `.guard-backup` path; a secret is forced to 0600 | child |
+| `config.json` valid but lost top-level keys | kept, and the pre-run bytes written to `config.json.guard-kept-<UTC stamp>` (created exclusively, 0600) | child |
+| existed, now deleted, empty, unparseable, the wrong shape or unreadable | `MUTATED`, restored from the snapshot through a same-directory temp file renamed over it; a non-secret file gets its pre-run mode, a secret 0600 | 1 |
+| created and invalid, non-secret | `MUTATED`, RENAMED to `<path>.guard-created`, never deleted | 1 |
+| created and invalid, secret | `MUTATED`, deleted (test data, not a login) | 1 |
+| unreadable before, invalid or absent after | `CANNOT RESTORE`, left alone | 1 |
+| a restore threw | `RESTORE FAILED`, left alone | 1 |
+
+`.guard-backup` is rewritten at the start of every run, so the run after a bad one would copy test
+data over the only good copy; that is why a kept `config.json` that lost keys gets its own
+timestamped `.guard-kept-*` copy. The original incident removed `onepasswordAccount`, which is
+exactly that signature. Present but unreadable → it refuses and says so, which is why `snapshot()`
+establishes presence with `statSync` and an explicit `ENOENT` test, separately from reading the
+bytes: `existsSync` answers `false` on every stat error, and folding "unreadable" into "absent"
+would send the file down the created-file branch.
+
+**The real directories (`GUARDED_DIRS`) are reported, never restored, never failed on.** The usage
+ledger and the stored dynamic models catalogs are compared by file set and sizes;
+a delta prints `<label> changed during the run` and `Not restored`. Truncating a ledger segment
+would delete rows a live session appended, and live sessions append to both all the time.
+
+**Credential files are SECRET entries.** `codex-oauth.json`, `grok-oauth.json`,
+`gemini-oauth.json`, `kimi-oauth.json`, the Muse stores, `accounts/state.json` and the dynamic
+models catalog key get no `.guard-backup` sidecar (a second plaintext copy of a real login that
+`claudish logout` never removes); the in-memory snapshot is the only restore path, and a restored
+or kept secret is always 0600. A secret the run left VALID but different is KEPT, because Codex
+and Grok rotate refresh tokens: a concurrent claudish process may have refreshed during the run,
+and writing the old document back reinstates a consumed refresh token (`refresh_token_reused`,
+which can revoke the grant). A valid login created during the run is kept at 0600 too. Identical
+bytes with a new mode are only chmodded back to 0600 (`Repaired secret file permissions to
+0600.`). Only a mode change the run made counts; a login that was already 0644 before the run is
+the developer's state. SIGINT and SIGTERM are forwarded to the child so Ctrl-C still repairs.
+Credential files were added 2026-10-21 after a full run deleted the real `codex-oauth.json`: a
+test-only singleton reset replaced `CodexOAuth`'s instance, the credential authority kept the old
+one, and a test's `credentials.logout()` reached it. Reset singletons IN PLACE.
+
+**Exit rule:** damage, a run-home tripwire hit or a termination signal → 1; otherwise the
+child's exit code.
+
+**It PREVENTS things outright,** via the child's environment:
 
 | Variable | Stops | Why prevention, not restore |
 |---|---|---|
 | `CLAUDISH_DISABLE_KEYCHAIN=1` | `security` against the login keychain | A keychain mutation cannot be snapshotted the way JSON bytes can |
 | `CLAUDISH_DISABLE_OP=1` | 1Password handshakes | Denials suppress authorization machine-wide for 15s, for every process |
 | `CLAUDISH_DISABLE_CATALOG_WARM=1` | the live hosted-catalog fetch | The restore returns the bytes; it cannot return the hermeticity |
+| `HOME` = the run home (`claudish-guard-home-*` under the temp dir, also named in `CLAUDISH_GUARD_RUN_HOME`); `CLAUDISH_ACCOUNTS_DIR`, `CLAUDISH_CONFIG`, `CLAUDISH_DYNAMIC_CATALOG_DIR`, `CLAUDISH_DYNAMIC_CATALOG_KEY` removed | any write to the real `~/.claudish`, including by production code a test spawns with no `env` option | A live session's write and a test's write look the same in a real file; only keeping tests out of it tells them apart |
+
+**The run home and its tripwire.** The bun test preload replaces a `HOME` equal to
+`CLAUDISH_GUARD_RUN_HOME` with a fresh `claudish-test-home-*` per `bun test` process, so the three
+sequential processes of `bun run test` do not share one. A process still on the run home after
+that is one that skipped the preload, and no live session knows the path. After the run the guard
+maps every `GUARDED` and `GUARDED_DIRS` path onto the run home; a name present there is reported
+as `<label> WRITTEN IN THE RUN HOME`, naming a child spawned with no `env` option as the likely
+cause, and the run exits 1. The run home is removed afterwards.
 
 **`CLAUDISH_DISABLE_KEYCHAIN=1` also keeps the legacy Codex file move off** (MTL-372) for the
 whole suite. The move copies `~/.claudish/codex-oauth.json` into the Keychain and deletes the
@@ -294,7 +340,9 @@ which `test:safe` sets and a plain `bun test` did not.
   reading the developer's cached catalog, the class described above.
 - `HOME` becomes a fresh `claudish-test-home-*` directory under the system temp dir, removed at
   exit, unless the inherited `HOME` is already under a temp directory (a parent test that spawned
-  this `bun test` with its own throwaway home keeps it).
+  this `bun test` with its own throwaway home keeps it). The one temp `HOME` that is always
+  replaced is the guard's run home, the value of `CLAUDISH_GUARD_RUN_HOME`: every `bun test`
+  process of a `test:safe` run inherits it, so keeping it would let them read each other's files.
 - `os.homedir()` follows `process.env.HOME`. **Assigning `HOME` is not enough under Bun.** Measured
   on 1.4.0: `os.homedir()` and `os.userInfo().homedir` return the HOME the process STARTED with,
   whatever `process.env.HOME` says later, and a named `import { homedir } from "node:os"` is not
@@ -320,8 +368,12 @@ find-generic-password` (existence only, no `-w`) through `claude-runner.ts`'s Cl
 a read of the login keychain, not the move. Under the new preload the same harness records zero due
 moves.
 
-**Not covered:** a child spawned with no `env` option gets the original environment, real `HOME`
-included (the trap above); `spawn-env.test.ts` is what forbids that in test code.
+**Not covered by the preload:** a child spawned with no `env` option gets the original
+environment, real `HOME` included (the trap above); `spawn-env.test.ts` forbids that in test
+code, but production code a test calls (`claude-runner.ts` spawning `security`) is outside its
+reach. Under `test:safe` that gap is closed: the original environment is the guard's, whose `HOME`
+is the run home, so such a child writes there, never to the real `~/.claudish`, and the guard's
+tripwire fails the run naming the file. A hand-run `bun test` still has the gap.
 
 ## Clearing provider keys: derive the list, never hand-write it
 
