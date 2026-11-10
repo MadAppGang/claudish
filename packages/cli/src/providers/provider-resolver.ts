@@ -26,7 +26,7 @@
  */
 
 import { credentials } from "../auth/credentials/authority.js";
-import { bundledProvenance } from "./bundled-list.js";
+import { bundledProvenance } from "./bundled-list-data.js";
 import { type Reachability, catalogReachability } from "./catalog-reachability.js";
 import {
   AUTO_ROUTE_PROVIDER,

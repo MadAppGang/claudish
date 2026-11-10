@@ -63,7 +63,7 @@ import {
 } from "./handlers/advisor-route-plan.js";
 import { type HandlerSet, createHandlerSet } from "./handlers/handler-set.js";
 import { resolveAdvisorCredential } from "./handlers/native-handler-advisor.js";
-import { bundledProvenance } from "./providers/bundled-list.js";
+import { bundledProvenance } from "./providers/bundled-list-data.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { nativeRouteFor } from "./providers/native-route.js";
 import { type TransportType, getProviderByName } from "./providers/provider-definitions.js";

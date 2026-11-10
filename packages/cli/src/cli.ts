@@ -1612,6 +1612,7 @@ async function probeModelRouting(
     matchedPattern?: string;
     ruleScope?: RuleScope;
     catalog?: RouteExplanation["catalog"];
+    catalogSource?: RouteExplanation["catalogSource"];
     fallbackWithheld?: RouteExplanation["fallbackWithheld"];
     outcome: RouteExplanation["outcome"];
     warnings: RouteWarning[];
@@ -1761,6 +1762,7 @@ async function probeModelRouting(
       ...(exp.matchedPattern !== undefined ? { matchedPattern: exp.matchedPattern } : {}),
       ...(exp.ruleScope ? { ruleScope: exp.ruleScope } : {}),
       ...(exp.catalog ? { catalog: exp.catalog } : {}),
+      ...(exp.catalogSource ? { catalogSource: exp.catalogSource } : {}),
       ...(exp.fallbackWithheld ? { fallbackWithheld: exp.fallbackWithheld } : {}),
       outcome: exp.outcome,
       warnings: exp.warnings,

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { writeFileAtomic } from "../fs-atomic.js";
 import { log } from "../logger.js";
 import type { AggregatorEntry } from "../model-loader.js";
-import { _setBundledListRawForTest, bundledListRaw } from "./bundled-list.js";
+import { _setBundledListRawForTest, bundledListRaw } from "./bundled-list-data.js";
 import {
   bundledListEnabled,
   bundledListScopeActive,

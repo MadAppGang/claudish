@@ -10,6 +10,7 @@ import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { readAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
+import { bundledListLabel } from "./bundled-list-data.js";
 import { catalogOrigin, getCatalogEntries, resolveExternalId } from "./catalog-client.js";
 import type { ConnectionPrice } from "./connection-price.js";
 import { FRESH_MS, LIVE_MS } from "./dynamic-models-catalog-store.js";
@@ -1413,14 +1414,22 @@ async function explainBareNameWithin(
   // Local providers and explicit `provider@model` specs are unaffected: neither
   // comes through here.
   if (explanation.catalog === "unreadable" && remaining.length === 0) {
-    explanation.outcome = {
-      kind: "no-route",
-      cause: "catalog-unreadable",
-      reason: `No model catalog available, so "${model}" cannot be routed by name.`,
-      hint:
-        "Run `claudish --models-refresh` to fetch the catalog, or name the provider " +
-        `explicitly (e.g. \`openrouter@${model}\`).`,
-    };
+    explanation.outcome =
+      explanation.catalogSource === "bundled"
+        ? {
+            kind: "no-route",
+            cause: "catalog-unreadable",
+            reason: `No cloud models catalog could be read, and "${model}" is not in the ${bundledListLabel()}.`,
+            hint: "Run `claudish --models-refresh` once online, or name the provider explicitly (provider@model).",
+          }
+        : {
+            kind: "no-route",
+            cause: "catalog-unreadable",
+            reason: `No model catalog available, so "${model}" cannot be routed by name.`,
+            hint:
+              "Run `claudish --models-refresh` to fetch the catalog, or name the provider " +
+              `explicitly (e.g. \`openrouter@${model}\`).`,
+          };
     return explanation;
   }
 
@@ -2138,7 +2147,13 @@ export function hopLabel(candidate: {
  * TUI both show it, so the same decision is never worded two ways.
  */
 export function describeRouteExplanation(explanation: RouteExplanation): string {
-  const line = describeOrigin(explanation);
+  // The catalog branch names the bundled list itself; the other two read it for
+  // wire data, and the line must still say which catalog that was.
+  const source =
+    explanation.source !== "catalog" && explanation.catalogSource === "bundled"
+      ? ` · ${bundledListLabel()}`
+      : "";
+  const line = `${describeOrigin(explanation)}${source}`;
   // Only where routing chose the provider: an explicit spec names the model
   // part of what the user typed, which is no news.
   const routed = explanation.source === "user-rule" || explanation.source === "catalog";
@@ -2169,13 +2184,20 @@ function describeOrigin(explanation: RouteExplanation): string {
 function describeCatalogOrigin(explanation: RouteExplanation): string {
   if (explanation.catalog === "unreadable") {
     const refresh = "run claudish --models-refresh";
+    const head =
+      explanation.catalogSource === "bundled"
+        ? "no cloud models catalog · not in the bundled recommended list"
+        : "no cloud models catalog";
     // An account's own list gathers with no catalog: say what became of its
     // candidate rather than implying nothing routes.
     return explanation.candidates.length > 0
-      ? `no cloud models catalog · ${firstHopPhrase(explanation)} · ${refresh}`
-      : `no cloud models catalog · ${refresh}`;
+      ? `${head} · ${firstHopPhrase(explanation)} · ${refresh}`
+      : `${head} · ${refresh}`;
   }
   if (explanation.catalog === "absent") return describeAbsentEntry(explanation);
+  if (explanation.catalogSource === "bundled") {
+    return `${bundledListLabel()} · ${firstHopPhrase(explanation)}`;
+  }
   return `catalog · ${firstHopPhrase(explanation)}`;
 }
 

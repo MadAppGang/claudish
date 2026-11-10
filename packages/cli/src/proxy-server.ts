@@ -44,6 +44,7 @@ import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
 import { DISPLAY_NAMES } from "./providers/auto-route.js";
+import { bundledProvenance } from "./providers/bundled-list-data.js";
 import {
   catalogOrigin,
   ensureCatalogReady,
@@ -737,7 +738,11 @@ export async function createProxyServer(
 
             fallbackHandlerCache.set(cacheKey, resultHandler, originAtStart);
 
-            const routeLine = `[Route] ${candidates.length} ${candidates.length === 1 ? "provider" : "providers"} for ${decision.model}: ${candidates.map((c) => c.name).join(" → ")}`;
+            const routeSource =
+              originAtStart === "bundled"
+                ? ` (bundled recommended list, ${bundledProvenance()?.generationId ?? "unknown"})`
+                : "";
+            const routeLine = `[Route] ${candidates.length} ${candidates.length === 1 ? "provider" : "providers"} for ${decision.model}: ${candidates.map((c) => c.name).join(" → ")}${routeSource}`;
             if (!options.quiet && candidates.length > 1) {
               logStderr(routeLine);
             } else {

@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { bundledListLabel } from "../../providers/bundled-list-data.js";
 import { explainRouteSettled } from "../../providers/explain-route-settled.js";
 import { prepareMuseLoginForTuiAction } from "../../providers/meta-muse/muse-credentials.js";
 import { NATIVE_NOT_PROBED } from "../../providers/native-route.js";
@@ -69,6 +70,11 @@ export function probeRowsFrom(explanation: RouteExplanation): ProbeView {
     return { summary, rows };
   }
 
+  if (explanation.catalogSource === "bundled") {
+    summary.notes.push(
+      `No cloud models catalog could be read: routed from the ${bundledListLabel()}.`
+    );
+  }
   if (explanation.catalog === "found" && explanation.fallbackWithheld) {
     summary.notes.push(FALLBACK_WITHHELD_NOTE[explanation.fallbackWithheld]);
   }
