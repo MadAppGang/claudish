@@ -174,11 +174,19 @@ export class DevinAPIFormat extends BaseAPIFormat {
    * Role enum (VERIFIED, and public prior art is wrong): 1 = USER,
    * 2 = ASSISTANT, 4 = TOOL_RESULT. Never 3 — see `devin-request.ts`.
    *
-   * An assistant turn carrying BOTH text and N tool calls becomes **N+1**
-   * messages: one `{assistant, text}` (omitted when there is no text) followed
-   * by one `{assistant, toolCall}` per call, in order. Field 6 is not
-   * documented as repeated and every captured pure-tool-call message carries no
-   * field 3, so this is the conservative encoding consistent with all captures.
+   * An assistant turn carrying text and N tool calls becomes one
+   * `{assistant, text}` (omitted when there is no text) followed by one
+   * `{assistant, toolCall}` per call, in order. Field 6 is not documented as
+   * repeated and every captured pure-tool-call message carries no field 3, so
+   * each message carries one call.
+   *
+   * With two or more calls, each call is immediately followed by its own
+   * `{tool_result}`, taken by `tool_call_id` from the run of tool messages after
+   * the turn: text, call0, result0, call1, result1. Devin answers
+   * `invalid_argument` when the calls are grouped ahead of their results
+   * (call0, call1, result0, result1), and accepts the interleaved order. A
+   * result that matches no call keeps its original order after the last pair; a
+   * call with no result stays in place. A single call is unchanged.
    *
    * `claudeRequest` is unused: the system prompt already arrives inside
    * `messages` (convertMessagesToOpenAI hoists it to a `role: "system"` entry),
@@ -290,7 +298,25 @@ export class DevinAPIFormat extends BaseAPIFormat {
     const systemParts: string[] = [];
     const devinMessages: DevinMessage[] = [];
 
-    for (const message of messages) {
+    const toolResultMessage = (message: any): DevinMessage => ({
+      role: "tool_result",
+      text: contentToText(message.content),
+      toolCallId: message.tool_call_id,
+    });
+    const toolCallMessage = (call: any): DevinMessage => ({
+      role: "assistant",
+      toolCall: {
+        id: call?.id ?? "",
+        name: call?.function?.name ?? "",
+        // The wire carries argument TEXT, not a struct. An absent arguments
+        // field is an empty object, not an empty string — the backend rejects
+        // a non-JSON body here.
+        argumentsJson: call?.function?.arguments || "{}",
+      },
+    });
+
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i];
       const role = message?.role;
 
       if (role === "system") {
@@ -300,30 +326,37 @@ export class DevinAPIFormat extends BaseAPIFormat {
       }
 
       if (role === "tool") {
-        devinMessages.push({
-          role: "tool_result",
-          text: contentToText(message.content),
-          toolCallId: message.tool_call_id,
-        });
+        devinMessages.push(toolResultMessage(message));
         continue;
       }
 
       if (role === "assistant") {
         const text = contentToText(message.content);
         if (text) devinMessages.push({ role: "assistant", text });
-        for (const call of message.tool_calls ?? []) {
-          devinMessages.push({
-            role: "assistant",
-            toolCall: {
-              id: call?.id ?? "",
-              name: call?.function?.name ?? "",
-              // The wire carries argument TEXT, not a struct. An absent
-              // arguments field is an empty object, not an empty string —
-              // the backend rejects a non-JSON body here.
-              argumentsJson: call?.function?.arguments || "{}",
-            },
-          });
+        const calls: any[] = message.tool_calls ?? [];
+        if (calls.length < 2) {
+          for (const call of calls) devinMessages.push(toolCallMessage(call));
+          continue;
         }
+
+        // Parallel calls: pair each call with its result (see the doc comment).
+        let runEnd = i + 1;
+        while (runEnd < messages.length && messages[runEnd]?.role === "tool") runEnd++;
+        const run = messages.slice(i + 1, runEnd);
+        const used = new Set<number>();
+        for (const call of calls) {
+          devinMessages.push(toolCallMessage(call));
+          const match = run.findIndex(
+            (result, index) => !used.has(index) && result?.tool_call_id === call?.id
+          );
+          if (match === -1) continue;
+          used.add(match);
+          devinMessages.push(toolResultMessage(run[match]));
+        }
+        run.forEach((result, index) => {
+          if (!used.has(index)) devinMessages.push(toolResultMessage(result));
+        });
+        i = runEnd - 1;
         continue;
       }
 

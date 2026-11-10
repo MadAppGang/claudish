@@ -61,6 +61,14 @@ versus `"devin-cli"` on `GetChatMessage`, `GetCliTeamSettings` lives on `SeatMan
   the reason. An **unserved uid comes back as `permission_denied`, not `not_found`** — the transport's
   rewrite checks the dynamic models catalog, names the uid and lists available families, but keeps
   the upstream text, because `permission_denied` was also the symptom of the wrong role enum.
+  Devin opens EVERY stream, failing ones too, with content-free header frames (`flags=0`, fields
+  `[1,2,7,12,17]` then `[1,2,28]`), so the sniffer buffers those and decides on the first frame
+  that carries content: a non-empty field 3 (text), 6 (tool call) or 9 (reasoning). Deciding on a
+  header frame let an `invalid_argument` that followed it reach Claude Code as a retried 500. An
+  error frame that arrives after content (the parser's path, headers already flushed) is
+  classified by the same `classifyDevinStreamError`: terminal → SSE `invalid_request_error` (400
+  on the non-streamed form), retryable → `overloaded_error` (529); a read failure with no error
+  frame stays `api_error`.
 - **Field 28 usage is float32 LITTLE-endian** at `28→2→4→2`, selected by the STRING key at `28→2→5`.
   Field 28 is repeated with the groups in unspecified order, so select by key, never by index; an
   absent value means zero. LE reads 16185 tokens where BE reads 2.09e-38.
@@ -83,8 +91,30 @@ Claude Code sends `max_tokens` on essentially every request, encoding the origin
 (`opencode-windsurf-auth`, documenting Windsurf's `LanguageServerService`) says 3, and a 3 here
 produces FAMILY-SPECIFIC failures that look transient: `permission_denied` on Claude, "third-party
 model provider is experiencing issues" on GLM, while `gpt-5.6-luna` silently tolerates it. An
-assistant turn with text *and* N tool calls is encoded as **N+1** messages (one text, then one per
-call); a pure tool call carries field 6 and no field 3.
+assistant turn with text *and* N tool calls is encoded as one text message, then one message per
+call; a pure tool call carries field 6 and no field 3.
+
+**Parallel tool calls are interleaved: call0, result0, call1, result1.** Devin answers
+`invalid_argument` (inside the 200) when two or more calls are grouped ahead of their results,
+so `buildPayload` pairs each call with its `tool_result` by `tool_call_id`; an unmatched result
+keeps its order after the last pair, a call with no result stays in place, a single call is
+unchanged. Measured on `kimi-k3-1-pro-max` (free plan, benign `echo stepN` calls):
+
+| Run | Request | Answer |
+|---|---|---|
+| R1 | 3 parallel calls, Devin ids (`Bash_N_…#…`), grouped | 200, `invalid_argument`, `content: []` |
+| R2 | 1 call, Devin id with `#` | 200, `tool_use` answer |
+| R3 | 2 parallel calls, ids `call_0`/`call_1`, grouped | 200, `invalid_argument`, `content: []` |
+| R4 | the same 2 calls interleaved with their results | 200, `tool_use` answer |
+| R5 | both calls as repeated field 6 in ONE message | 200, clean `{}` end |
+| R6 | R3 with a frame dump | `[1,2,7,12,17]` ×2, `[1,2,28]`, then the `invalid_argument` frame |
+
+The `#` id format is not the cause (R2 passes with it, R3 fails without it), and neither is dropped
+thinking. R5 is accepted, but whether the model sees both calls or a merged one is unproven, so
+the encoder sends single-call messages only (the R4 shape). The interleaved order was also
+measured live with 2 parallel calls on `claude-haiku-5-5-low`, `gpt-6-1-sol-high`,
+`gemini-4-argon-high` and `glm-5-3-flash-max`: each answered 200 with a `tool_use`. The grouped
+order was measured only on `kimi-k3-1-pro-max`.
 
 **The supervisor hooks stay on for Devin.** The devin profile sets `forceForeignModel: true`, because
 Devin serves uids like `claude-sonnet-5-medium` that match the `^claude-` "native Anthropic" test in
