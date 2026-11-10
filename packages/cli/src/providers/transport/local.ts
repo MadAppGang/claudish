@@ -271,17 +271,18 @@ export class LocalTransport implements ProviderTransport {
     }
     if (this.lmStudioInstance) return this.lmStudioInstance;
     this.lmStudioPlacedAt = Date.now();
-    this.lmStudioInstance = ensureLMStudioInstance({
-      baseUrl: this.config.baseUrl,
-      model: this.modelName,
-      device: this.lmStudioDevice as string,
-      contextLength:
-        contextWindowLimit() ?? getProviderByName(this.config.name)?.unknownContextWindow,
-      headers: process.env.LMSTUDIO_API_KEY
-        ? { Authorization: `Bearer ${process.env.LMSTUDIO_API_KEY}` }
-        : undefined,
-      log,
-    });
+    // The load signs like a chat request: the key may live in the config or 1Password.
+    this.lmStudioInstance = this.getHeaders().then((headers) =>
+      ensureLMStudioInstance({
+        baseUrl: this.config.baseUrl,
+        model: this.modelName,
+        device: this.lmStudioDevice as string,
+        contextLength:
+          contextWindowLimit() ?? getProviderByName(this.config.name)?.unknownContextWindow,
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
+        log,
+      })
+    );
     return this.lmStudioInstance;
   }
 

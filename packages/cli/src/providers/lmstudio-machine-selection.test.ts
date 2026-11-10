@@ -36,9 +36,15 @@ let server: ReturnType<typeof Bun.serve>;
 let baseUrl: string;
 let loadRequests: string[];
 let loadBodies: unknown[];
+let loadAuth: (string | null)[];
 let saved: Record<string, string | undefined>;
 
-const ENV_NAMES = ["CLAUDISH_LMS_BIN", "LMSTUDIO_BASE_URL", "CLAUDISH_CONTEXT_WINDOW"] as const;
+const ENV_NAMES = [
+  "CLAUDISH_LMS_BIN",
+  "LMSTUDIO_BASE_URL",
+  "CLAUDISH_CONTEXT_WINDOW",
+  "LMSTUDIO_API_KEY",
+] as const;
 
 function writeInstances(rows: unknown[]): void {
   writeFileSync(join(dir, "ps.json"), JSON.stringify(rows));
@@ -94,6 +100,7 @@ esac
 
   loadRequests = [];
   loadBodies = [];
+  loadAuth = [];
   server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -105,6 +112,7 @@ esac
         const { model } = body;
         loadRequests.push(model);
         loadBodies.push(body);
+        loadAuth.push(req.headers.get("authorization"));
         writeInstances([
           {
             identifier: model,
@@ -197,6 +205,21 @@ describe("LocalTransport with a machine suffix", () => {
     expect(loadRequests).toEqual(["shared-model"]);
     await transport.refreshAuth();
     expect(loadRequests).toEqual(["shared-model"]);
+  });
+
+  test("the load sends the key the credential authority resolves, not only the environment's", async () => {
+    delete process.env.LMSTUDIO_API_KEY;
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
+    const headers = spyOn(transport, "getHeaders").mockResolvedValue({
+      Authorization: "Bearer stored-key",
+    });
+    try {
+      await transport.getExtraPayloadFields();
+    } finally {
+      headers.mockRestore();
+    }
+
+    expect(loadAuth).toEqual(["Bearer stored-key"]);
   });
 
   test("the context window is the one of that instance", async () => {
