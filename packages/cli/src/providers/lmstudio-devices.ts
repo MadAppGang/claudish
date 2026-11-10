@@ -219,6 +219,7 @@ export function expandModelsToMachines<
         machine: { name, modelId: model.id },
         contextWindow: loaded ?? ceiling,
         maxContextWindow: loaded ?? max,
+        // The original row's ceiling is the model's maximum, the same on every machine.
         contextCeiling: loaded ?? max ?? model.contextCeiling,
       };
     });

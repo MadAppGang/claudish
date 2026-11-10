@@ -41,6 +41,8 @@ let loadAuth: (string | null)[];
 let duringLoad: (() => void) | undefined;
 /** The key the server requires, as LM Studio does with authentication on. */
 let requiredKey: string | undefined;
+/** The rows `/api/v0/models` answers. */
+let nativeRows: Record<string, unknown>[];
 let saved: Record<string, string | undefined>;
 
 const ENV_NAMES = [
@@ -107,6 +109,7 @@ esac
   loadAuth = [];
   duringLoad = undefined;
   requiredKey = undefined;
+  nativeRows = NATIVE_ROWS;
   server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -114,7 +117,7 @@ esac
       if (requiredKey && req.headers.get("authorization") !== `Bearer ${requiredKey}`) {
         return new Response("unauthorized", { status: 401 });
       }
-      if (path === "/api/v0/models") return Response.json({ object: "list", data: NATIVE_ROWS });
+      if (path === "/api/v0/models") return Response.json({ object: "list", data: nativeRows });
       if (path === "/v1/models") return Response.json({ object: "list", data: [] });
       if (path === "/api/v1/models/load") {
         const body = (await req.json()) as { model: string };
@@ -208,6 +211,37 @@ describe("the window of a machine row under a requested limit", () => {
     );
     expect(await discoverContextWindow("lmstudio", "shared-model~m1", { upTo: 64_000 })).toBe(
       undefined
+    );
+  });
+});
+
+describe("the ceiling of an unloaded machine copy", () => {
+  test("is not the size another machine's copy is loaded with", async () => {
+    nativeRows = [
+      {
+        id: "shared-model",
+        type: "llm",
+        state: "loaded",
+        max_context_length: 262_144,
+        loaded_context_length: 64_000,
+      },
+    ];
+    writeInstances([
+      {
+        identifier: "shared-model",
+        modelKey: "shared-model",
+        deviceIdentifier: null,
+        contextLength: 64_000,
+      },
+    ]);
+
+    expect(await discoverContextWindow("lmstudio", "shared-model~m1", { upTo: 128_000 })).toBe(
+      undefined
+    );
+    invalidateModelDiscovery();
+    // The model's maximum is the same on every machine.
+    expect(await discoverContextWindow("lmstudio", "shared-model~m1", { upTo: 300_000 })).toBe(
+      262_144
     );
   });
 });

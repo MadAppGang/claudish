@@ -49,8 +49,9 @@ export interface DiscoveredModel {
   /** The most a load can give this model, when claudish sets the size it loads with. */
   maxContextWindow?: number;
   /**
-   * The most this server can run the model with: the loaded size, else the
-   * model's maximum. A requested window above it is cut to it at launch.
+   * The most a load can give the model: its maximum, or on an LM Link machine
+   * row the size that copy runs with. A requested window above it is cut to it
+   * at launch.
    */
   contextCeiling?: number;
   /** The LM Link machine this row runs on. */
@@ -594,7 +595,9 @@ function readLMStudioContextWindow(row: Record<string, unknown>): number | undef
 }
 
 function ceilingOf(row: Record<string, unknown>): { contextCeiling?: number } {
-  const ceiling = positive(row.loaded_context_length) ?? positive(row.max_context_length);
+  // The maximum only: a loaded size belongs to one copy, and under LM Link that copy may run on
+  // another machine. A loaded row answers its loaded window before any ceiling is read.
+  const ceiling = positive(row.max_context_length);
   return ceiling === undefined ? {} : { contextCeiling: ceiling };
 }
 
