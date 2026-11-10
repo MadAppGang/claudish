@@ -28,6 +28,7 @@ import {
   CHIP_COLUMN_LABELS,
   CHIP_FILL_CELLS,
   billingLabel,
+  lastColumnLabel,
   priceChipBg,
   priceFg,
   priceLabel,
@@ -399,6 +400,17 @@ describe("providerFactsText", () => {
     expect(
       providerFactsText({ label: "", shortcut: "", billing: "metered", envVar: "" }).billing
     ).toContain("per token");
+  });
+
+  test("the last column is named machine only when every row is on a machine", () => {
+    const onM1 = model({ id: "q~m1", machine: { name: "m1", modelId: "q" } });
+    const cloud = model({ id: "gpt" });
+
+    expect(lastColumnLabel([onM1, onM1])).toBe("machine");
+    // The all-models list takes in a local provider's rows once it was opened.
+    expect(lastColumnLabel([cloud, onM1])).toBe("$/1M");
+    expect(lastColumnLabel([cloud])).toBe("$/1M");
+    expect(lastColumnLabel([])).toBe("$/1M");
   });
 
   // REGRESSION: LM Studio picker hides models the cloud models catalog does not list

@@ -105,7 +105,14 @@ import {
   providerColumn,
   scrollWindow,
 } from "./layout.js";
-import { ColumnHeader, HintRow, ModelRow, ProviderRow, priceVaries } from "./rows.js";
+import {
+  ColumnHeader,
+  HintRow,
+  ModelRow,
+  ProviderRow,
+  lastColumnLabel,
+  priceVaries,
+} from "./rows.js";
 
 /**
  * WHICH AFFORDANCE EACH IN-FLIGHT TASK EARNS — the honesty contract, as one pure
@@ -1097,10 +1104,7 @@ export function ModelPicker({
           width={layout.inner}
           idle={orderedByProvider(storedShown ?? discovery.outcome) ? "" : undefined}
         />
-        <ColumnHeader
-          layout={rowLayout}
-          last={list.rows.some((r) => r.model.machine) ? "machine" : undefined}
-        />
+        <ColumnHeader layout={rowLayout} last={lastColumnLabel(list.rows.map((r) => r.model))} />
 
         {/* CONTENT-SIZED, CAPPED — never `flexGrow`. A four-row Kimi fallback makes a
             short dialog; it does not make a tall dialog with fifteen rows of unpainted

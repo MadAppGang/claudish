@@ -396,6 +396,15 @@ function ChipCell({
  * guessed at, which is the cheapest possible answer to "what is happening here":
  * the previous build printed `262K` and `$30.00/1M` beside two unlabelled bars.
  */
+/**
+ * The header of the last column. LM Studio rows on LM Link machines print the
+ * machine there; a list that also holds priced rows (all models, once a local
+ * provider was opened) keeps the price header, which most of its rows answer.
+ */
+export function lastColumnLabel(models: readonly ModelInfo[]): string {
+  return models.length > 0 && models.every((m) => m.machine) ? "machine" : "$/1M";
+}
+
 export function ColumnHeader({
   layout,
   last = "$/1M",
