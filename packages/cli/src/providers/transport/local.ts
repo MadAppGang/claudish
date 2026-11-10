@@ -196,7 +196,10 @@ export class LocalTransport implements ProviderTransport {
     if (this.lmStudioDevice) {
       // The payload is built before `refreshAuth`, so the instance is resolved
       // here. A failure must not throw from payload building: `refreshAuth`
-      // reports it after the health check has classified an outage.
+      // reports it after the health check has classified an outage. An error kept
+      // from an earlier request belongs to that request: a failed health check
+      // ends it before `confirmPlacement` reads the error.
+      this.lmStudioPlacementError = undefined;
       try {
         return { model: (await this.placeOnDevice()).instanceId };
       } catch (error) {

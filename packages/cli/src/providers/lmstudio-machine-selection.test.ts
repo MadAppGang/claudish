@@ -344,6 +344,26 @@ describe("LocalTransport with a machine suffix", () => {
     }
   });
 
+  test("a placement error from a request that failed its health check does not fail the next one", async () => {
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
+    const lms = process.env.CLAUDISH_LMS_BIN;
+    process.env.CLAUDISH_LMS_BIN = join(dir, "no-such-binary");
+    const health = spyOn(
+      transport as unknown as { checkHealth(): Promise<boolean> },
+      "checkHealth"
+    ).mockResolvedValueOnce(false);
+    try {
+      expect(await transport.getExtraPayloadFields()).toEqual({});
+      await expect(transport.refreshAuth()).rejects.toThrow("Cannot connect");
+    } finally {
+      health.mockRestore();
+      process.env.CLAUDISH_LMS_BIN = lms;
+    }
+
+    expect(await transport.getExtraPayloadFields()).toEqual({ model: "shared-model" });
+    await transport.refreshAuth();
+  });
+
   test("a recent placement is used without asking lms again", async () => {
     const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
     await transport.getExtraPayloadFields();
