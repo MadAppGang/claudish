@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "ignore": ["node_modules", "dist", ".git"]
+    "ignore": ["node_modules", "dist", ".git", "**/src/view/magmux-frame.ts"]
   },
   "formatter": {
     "enabled": true,
