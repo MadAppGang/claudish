@@ -39,6 +39,8 @@ let loadBodies: unknown[];
 let loadAuth: (string | null)[];
 /** Runs while the server answers a load, as a slow load would. */
 let duringLoad: (() => void) | undefined;
+/** The key the server requires, as LM Studio does with authentication on. */
+let requiredKey: string | undefined;
 let saved: Record<string, string | undefined>;
 
 const ENV_NAMES = [
@@ -104,10 +106,14 @@ esac
   loadBodies = [];
   loadAuth = [];
   duringLoad = undefined;
+  requiredKey = undefined;
   server = Bun.serve({
     port: 0,
     async fetch(req) {
       const path = new URL(req.url).pathname;
+      if (requiredKey && req.headers.get("authorization") !== `Bearer ${requiredKey}`) {
+        return new Response("unauthorized", { status: 401 });
+      }
       if (path === "/api/v0/models") return Response.json({ object: "list", data: NATIVE_ROWS });
       if (path === "/v1/models") return Response.json({ object: "list", data: [] });
       if (path === "/api/v1/models/load") {
@@ -244,6 +250,20 @@ describe("LocalTransport with a machine suffix", () => {
     }
 
     expect(loadAuth).toEqual(["Bearer stored-key"]);
+  });
+
+  test("a server that requires the key passes the health check with it", async () => {
+    requiredKey = "stored-key";
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
+    const headers = spyOn(transport, "getHeaders").mockResolvedValue({
+      Authorization: "Bearer stored-key",
+    });
+    try {
+      expect(await transport.getExtraPayloadFields()).toEqual({ model: "shared-model" });
+      await transport.refreshAuth();
+    } finally {
+      headers.mockRestore();
+    }
   });
 
   test("the context window is the one of that instance", async () => {

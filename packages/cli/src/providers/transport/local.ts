@@ -361,6 +361,7 @@ export class LocalTransport implements ProviderTransport {
     try {
       const response = await fetch(`${this.config.baseUrl}/api/tags`, {
         method: "GET",
+        headers: await this.probeHeaders(),
         signal: AbortSignal.timeout(5000),
       });
       this._isOllamaBackend = await hasOllamaTagsShape(response);
@@ -371,6 +372,15 @@ export class LocalTransport implements ProviderTransport {
       `[${this.displayName}] Ollama backend probe (${this.config.baseUrl}): ${this._isOllamaBackend}`
     );
     return this._isOllamaBackend;
+  }
+
+  /**
+   * The key for the server's own probes. A server that requires it answers an
+   * unsigned probe 401, which reads as "not running". A key that cannot be read
+   * leaves the probe unsigned, so the health check still reports the outage.
+   */
+  private probeHeaders(): Promise<Record<string, string>> {
+    return this.getHeaders().catch(() => ({}));
   }
 
   private async checkHealth(): Promise<boolean> {
@@ -387,6 +397,7 @@ export class LocalTransport implements ProviderTransport {
       log(`[${this.displayName}] Trying health check: ${healthUrl}`);
       const response = await fetch(healthUrl, {
         method: "GET",
+        headers: await this.probeHeaders(),
         signal: AbortSignal.timeout(5000),
       });
 
@@ -420,6 +431,7 @@ export class LocalTransport implements ProviderTransport {
       log(`[${this.displayName}] Trying health check: ${modelsUrl}`);
       const response = await fetch(modelsUrl, {
         method: "GET",
+        headers: await this.probeHeaders(),
         signal: AbortSignal.timeout(5000),
       });
       if (response.ok) {
@@ -482,7 +494,7 @@ export class LocalTransport implements ProviderTransport {
     try {
       const response = await fetch(`${this.config.baseUrl}/api/show`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await this.probeHeaders()) },
         body: JSON.stringify({ name: this.modelName }),
         signal: AbortSignal.timeout(3000),
       });
@@ -522,6 +534,7 @@ export class LocalTransport implements ProviderTransport {
     try {
       const response = await fetch(`${this.config.baseUrl}/api/v0/models`, {
         method: "GET",
+        headers: await this.probeHeaders(),
         signal: AbortSignal.timeout(3000),
       });
 
