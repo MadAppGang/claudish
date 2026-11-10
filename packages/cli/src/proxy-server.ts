@@ -59,7 +59,6 @@ import { proxyRouteDecision } from "./providers/native-route.js";
 import { describeMissingCredential, getProviderByName } from "./providers/provider-definitions.js";
 import {
   describeRoutingRuleProblem,
-  effectiveDefaultProvider,
   loadRoutingRuleSources,
   loadRoutingRules,
   route,
@@ -427,13 +426,6 @@ export async function createProxyServer(
   for (const problem of routingRuleProblems(routingRuleSources)) {
     logStderr(`Warning: ${describeRoutingRuleProblem(problem)}`);
   }
-  // The fallback hop, resolved once beside the rules and passed to route() with
-  // them. Passing rules alone makes route() read NO default provider (its guard
-  // keeps this machine's setting out of tests), so before this every bare name the
-  // proxy routed fell back to `openrouter`, whatever `defaultProvider` said —
-  // `""` included. `--default-provider` reaches this through the env variable.
-  const effectiveFallbackProvider = effectiveDefaultProvider();
-
   // Cache fallback handlers by target model string.
   // No TTL/invalidation: claudish is ephemeral per session, so env changes
   // (new API keys) take effect on next session start.
@@ -691,7 +683,10 @@ export async function createProxyServer(
         // Ensure catalog is warm before route() builds OpenRouter modelSpecs.
         await ensureCatalogReady(5000);
 
-        const plan = await route(decision.model, effectiveRoutingRules, effectiveFallbackProvider);
+        // "resolve": rules alone make route() read no default provider, and this
+        // decision needs the machine's setting. Asked per decision, so a key added
+        // mid-session counts for a name not yet in the handler cache.
+        const plan = await route(decision.model, effectiveRoutingRules, "resolve");
         if (plan.kind === "ok") {
           const chain = [plan.primary, ...plan.fallbacks];
           const candidates: FallbackCandidate[] = [];

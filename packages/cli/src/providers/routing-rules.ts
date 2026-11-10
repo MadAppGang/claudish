@@ -665,10 +665,12 @@ export interface ExplainRouteOptions {
    */
   rules?: RoutingRules;
   /**
-   * Absent: `route()`'s rule. With `rules` passed none is read, so the fallback
-   * hop takes `openrouter`; otherwise `effectiveDefaultProvider()`.
+   * Absent: `route()`'s rule. With `rules` passed nothing is read
+   * ({@link NO_READ_DEFAULT_PROVIDER}); otherwise
+   * {@link effectiveDefaultProviderResolution}. `"resolve"` reads it even with
+   * `rules` passed.
    */
-  defaultProvider?: string;
+  defaultProvider?: DefaultProviderArg;
   cachePath?: string;
   /** Absent: `"await"`. See {@link RouteNetwork}. */
   network?: RouteNetwork;
@@ -860,17 +862,17 @@ function explainUnknownShortcut(
  * Two ways to empty that position, and BOTH are preserved from the design this
  * replaced:
  *
- *   - `defaultProvider: ""` — an explicitly empty string. `undefined` is not the
- *     same thing: unset means "no preference", which takes `openrouter`, and
- *     that is what the deleted `"*": ["openrouter"]` catch-all used to supply
- *     for 1,109 models. Only a deliberate empty string disables.
+ *   - `defaultProvider: ""` — an explicitly empty string. "No preference" is not
+ *     the same thing: it resolves to `openrouter`, which is what the deleted
+ *     `"*": ["openrouter"]` catch-all used to supply for 1,109 models. Only a
+ *     deliberate empty string disables.
  *   - a user rule that matches — `routing["*"] = []` most explicitly. That
  *     never reaches here at all: a matched rule is used verbatim and this
  *     function is only consulted on the gathered path.
  */
-function fallbackProviderFor(defaultProvider: string | undefined): string | null {
-  if (defaultProvider !== undefined && defaultProvider.length === 0) return null;
-  const named = defaultProvider ?? DEFAULT_FALLBACK_PROVIDER;
+function fallbackProviderFor(defaultProvider: ResolvedDefaultProvider): string | null {
+  const named = defaultProvider.provider;
+  if (named.length === 0) return null;
   return PROVIDER_SHORTCUTS[named.toLowerCase()] ?? named.toLowerCase();
 }
 
@@ -906,6 +908,40 @@ export function effectiveDefaultProvider(): string {
   return effectiveDefaultProviderResolution().provider;
 }
 
+/**
+ * The fallback argument of `route()` and `explainRoute`. A resolution says which
+ * provider holds the last position and where that came from; `"resolve"` asks
+ * for {@link effectiveDefaultProviderResolution}. A bare string is not accepted:
+ * what a fallback may do depends on its source, and a string has none.
+ */
+export type DefaultProviderArg = ResolvedDefaultProvider | "resolve";
+
+/**
+ * The fallback of a caller that passed rules and no fallback. Nothing is read
+ * from the machine, which is what keeps this machine's setting out of a call that
+ * states its own rules.
+ */
+export const NO_READ_DEFAULT_PROVIDER: ResolvedDefaultProvider = {
+  provider: DEFAULT_FALLBACK_PROVIDER,
+  source: "hardcoded",
+  legacyAutoPromoted: false,
+};
+
+/**
+ * The one rule for what a `route()` or `explainRoute` call falls back to.
+ * Resolved per decision and only for a bare name: an explicit spec never gets
+ * here. Rules passed with no fallback read nothing; passing `"resolve"` is how a
+ * caller with rules asks for the machine's setting.
+ */
+function resolveFallbackArg(
+  arg: DefaultProviderArg | undefined,
+  rulesPassed: boolean
+): ResolvedDefaultProvider {
+  if (arg === "resolve") return effectiveDefaultProviderResolution();
+  if (arg !== undefined) return arg;
+  return rulesPassed ? NO_READ_DEFAULT_PROVIDER : effectiveDefaultProviderResolution();
+}
+
 /** A chain assembled from the catalog, plus whether a catalog could be read. */
 export interface CatalogChain {
   routes: Route[];
@@ -931,7 +967,7 @@ export interface CatalogChain {
  */
 export function buildCatalogChain(
   model: string,
-  defaultProvider?: string,
+  defaultProvider: ResolvedDefaultProvider,
   cachePath?: string
 ): CatalogChain {
   const chain = explainCatalogChain(model, defaultProvider, cachePath);
@@ -953,7 +989,7 @@ interface CatalogChainExplanation {
 
 function explainCatalogChain(
   model: string,
-  defaultProvider: string | undefined,
+  defaultProvider: ResolvedDefaultProvider,
   cachePath: string | undefined,
   lists?: AccountModelsListSnapshot
 ): CatalogChainExplanation {
@@ -1079,7 +1115,7 @@ function emptyChainHint(
 /** `route()`'s inputs for a bare name, resolved only once a name is known to be bare. */
 interface BareRouting {
   rules: RoutingRules;
-  defaultProvider: string | undefined;
+  defaultProvider: ResolvedDefaultProvider;
   /** Where a matched rule key came from, when the caller read the two rule files itself. */
   scopeOf?: (ruleKey: string) => RuleScope;
   /** Problems in those two files, when the caller read them itself. */
@@ -1609,9 +1645,9 @@ export function normalizeGlmSlug(model: string): string {
  *      → no-route with hints. See `explainBareName`.
  *
  * Rules and the default provider are loaded fresh each call (via `loadRoutingRules()`
- * and `effectiveDefaultProvider()`, which reads CLAUDISH_DEFAULT_PROVIDER and then
- * the config) unless overrides are supplied. Tests should pass overrides to avoid
- * disk and environment lookups.
+ * and `effectiveDefaultProviderResolution()`) unless overrides are supplied; see
+ * `resolveFallbackArg` for what each combination reads. Tests should pass overrides
+ * to avoid disk and environment lookups.
  *
  * DERIVED from the explanation. `explainRoutePlan` makes the decision; this
  * prints the notices a request's user must see and returns the kept candidates.
@@ -1621,28 +1657,16 @@ export function normalizeGlmSlug(model: string): string {
 export async function route(
   modelSpec: string,
   rulesOverride?: RoutingRules,
-  defaultProviderOverride?: string,
+  defaultProviderOverride?: DefaultProviderArg,
   cachePath?: string,
   opts: { network?: RouteNetwork } = {}
 ): Promise<RoutePlan> {
   const explanation = await explainRoutePlan(
     modelSpec,
-    () => {
-      const rules = rulesOverride ?? loadRoutingRules();
-      // When tests pass an explicit `rulesOverride`, treat the rule set as the
-      // authoritative source of truth and read the default provider from neither the
-      // environment nor the config file — either would leak this machine's setting
-      // into unit tests. A caller that passes rules and wants a fallback
-      // passes it as the third argument. Callers with no overrides
-      // get `effectiveDefaultProvider()`: the env variable, then the config.
-      const defaultProvider =
-        defaultProviderOverride !== undefined
-          ? defaultProviderOverride
-          : rulesOverride !== undefined
-            ? undefined
-            : effectiveDefaultProvider();
-      return { rules, defaultProvider };
-    },
+    () => ({
+      rules: rulesOverride ?? loadRoutingRules(),
+      defaultProvider: resolveFallbackArg(defaultProviderOverride, rulesOverride !== undefined),
+    }),
     cachePath,
     modelSpec,
     opts.network
@@ -1798,14 +1822,15 @@ async function explainUnroutedExplicit(
  */
 function bareRoutingFor(opts: ExplainRouteOptions): BareRouting {
   if (opts.rules !== undefined) {
-    // route()'s guard: rules passed and no default provider named reads none.
-    return { rules: opts.rules, defaultProvider: opts.defaultProvider };
+    return {
+      rules: opts.rules,
+      defaultProvider: resolveFallbackArg(opts.defaultProvider, true),
+    };
   }
   const sources = loadRoutingRuleSources();
   return {
     rules: loadRoutingRules(sources),
-    defaultProvider:
-      opts.defaultProvider !== undefined ? opts.defaultProvider : effectiveDefaultProvider(),
+    defaultProvider: resolveFallbackArg(opts.defaultProvider, false),
     // The project file overwrites the global one key by key, so a key the project
     // file holds is the project's rule.
     scopeOf: (ruleKey) => (Object.hasOwn(sources.localRules, ruleKey) ? "project" : "global"),
