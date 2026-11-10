@@ -1895,3 +1895,99 @@ describe("stored dynamic models catalogs", () => {
     pending.resolve();
   });
 });
+
+describe("the context window dialog", () => {
+  const sized = model({ maxContextLength: 262_144 });
+
+  async function open(
+    row: ModelInfo,
+    ask = true
+  ): Promise<{ d: Drawn; picks: Array<[string | null, number | undefined]> }> {
+    const picks: Array<[string | null, number | undefined]> = [];
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          outcome: { kind: "rows", rows: [row], servedCount: 1, chatCount: 1 },
+        })}
+        askContextWindow={ask}
+        onDone={(spec, size) => picks.push([spec, size])}
+      />
+    );
+    await d.press(["RETURN"]);
+    await d.until(modelRowPainted("kimi-k3"));
+    return { d, picks };
+  }
+
+  test("a model with a known maximum asks for the size and shows the maximum", async () => {
+    const { d, picks } = await open(sized);
+    try {
+      await d.press(["RETURN"]);
+      await d.until((text) => joined(text).includes("context window"));
+      const all = joined(d.recapture().text);
+      expect(all).toContain("262K (model maximum)");
+      expect(all).toContain("128K");
+      expect(picks).toEqual([]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("enter launches with the default size", async () => {
+    const { d, picks } = await open(sized);
+    try {
+      await d.press(["RETURN"]);
+      await d.until((text) => joined(text).includes("context window"));
+      await d.press(["RETURN"]);
+      expect(picks).toEqual([["kimi@kimi-k3", 128_000]]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("the arrow keys choose another size", async () => {
+    const { d, picks } = await open(sized);
+    try {
+      await d.press(["RETURN"]);
+      await d.until((text) => joined(text).includes("context window"));
+      await d.press(["ARROW_DOWN"]);
+      await d.press(["RETURN"]);
+      expect(picks).toEqual([["kimi@kimi-k3", 262_144]]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("escape goes back to the model list", async () => {
+    const { d, picks } = await open(sized);
+    try {
+      await d.press(["RETURN"]);
+      await d.until((text) => joined(text).includes("context window"));
+      await d.press(["ESCAPE"]);
+      await d.until(modelRowPainted("kimi-k3"));
+      expect(joined(d.recapture().text)).not.toContain("model maximum");
+      expect(picks).toEqual([]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("a model with no known maximum launches at once", async () => {
+    const { d, picks } = await open(model());
+    try {
+      await d.press(["RETURN"]);
+      expect(picks).toEqual([["kimi@kimi-k3", undefined]]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("a caller that does not ask gets no dialog", async () => {
+    const { d, picks } = await open(sized, false);
+    try {
+      await d.press(["RETURN"]);
+      expect(picks).toEqual([["kimi@kimi-k3", undefined]]);
+    } finally {
+      d.destroy();
+    }
+  });
+});

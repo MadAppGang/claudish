@@ -72,6 +72,7 @@
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
+import { DEFAULT_LOCAL_CONTEXT_WINDOW } from "../providers/context-window-limit.js";
 import { LIVE_MS } from "../providers/dynamic-models-catalog-store.js";
 import { sweepAccountModelsLists } from "../providers/dynamic-models-catalog.js";
 import { EmptyState } from "../tui/components/EmptyState.js";
@@ -86,6 +87,7 @@ import {
   type PickerProviderChoice,
 } from "./PickerDataSource.js";
 import { Dialog, FilterRow, Hints, type LoadTask, LoadTasks, Rule } from "./chrome.js";
+import { type ContextWindowChoice, contextWindowChoices } from "./context-window-choices.js";
 import { DescriptionBlock, type ProviderFacts, ProviderLine, SelectionLine } from "./detail.js";
 import { useModelDescriptions } from "./hooks/useModelDescriptions.js";
 import {
@@ -160,8 +162,10 @@ export function buildLoadTasks(input: {
 
 export interface ModelPickerProps {
   source: PickerDataSource;
-  /** A model spec, or `null` for cancelled. Called exactly once. */
-  onDone: (spec: string | null) => void;
+  /** A model spec, or `null` for cancelled, with the chosen size. Called exactly once. */
+  onDone: (spec: string | null, contextWindow?: number) => void;
+  /** Ask for a context window after a model that reports its maximum. */
+  askContextWindow?: boolean;
   /** Buffers a failed provider's diagnostic for the ONE write after teardown. */
   onDiscoveryFailure?: (provider: string, notice: readonly string[]) => void;
 }
@@ -174,9 +178,14 @@ export interface ModelPickerProps {
  * (`scope` set) or by asking for the cross-provider list (`scope` null); `esc`
  * from either comes back here, and `esc` HERE is what cancels the picker.
  */
-type View = "models" | "providers" | "custom";
+type View = "models" | "providers" | "custom" | "context";
 
-export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerProps): ReactNode {
+export function ModelPicker({
+  source,
+  onDone,
+  askContextWindow = false,
+  onDiscoveryFailure,
+}: ModelPickerProps): ReactNode {
   const { width, height } = useTerminalDimensions();
   // THE ONLY WORK STARTUP DOES. Every other loader below is gated on a view the
   // user has actually opened.
@@ -215,6 +224,10 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     setTypingState(next);
   };
   const [custom, setCustom] = useState("");
+  const [sizing, setSizing] = useState<{ spec: string; choices: ContextWindowChoice[] } | null>(
+    null
+  );
+  const [sizeCursor, setSizeCursor] = useState(0);
   const [cursor, setCursor] = useState(0);
   const [providerCursor, setProviderCursor] = useState(0);
   /**
@@ -559,6 +572,22 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       return;
     }
 
+    if (view === "context") {
+      if (name === "escape") {
+        setView("models");
+        return;
+      }
+      if (name === "up" || name === "down") {
+        const last = (sizing?.choices.length ?? 1) - 1;
+        setSizeCursor((c) => Math.max(0, Math.min(last, c + (name === "up" ? -1 : 1))));
+        return;
+      }
+      if ((name === "return" || name === "enter") && sizing) {
+        onDone(sizing.spec, sizing.choices[sizeCursor]?.size);
+      }
+      return;
+    }
+
     if (view === "custom") {
       if (name === "escape") {
         setView("models");
@@ -695,7 +724,16 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       return;
     }
     if (name === "return" || name === "enter") {
-      if (selected) onDone(selected.spec);
+      if (!selected) return;
+      const max = askContextWindow ? selected.model.maxContextLength : undefined;
+      if (max === undefined) {
+        onDone(selected.spec);
+        return;
+      }
+      const { choices, defaultIndex } = contextWindowChoices(max, DEFAULT_LOCAL_CONTEXT_WINDOW);
+      setSizing({ spec: selected.spec, choices });
+      setSizeCursor(defaultIndex);
+      setView("context");
       return;
     }
     if (name === "backspace") {
@@ -738,6 +776,37 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   // reconciliation tore the panel when the chrome below a banner changed shape
   // (`probe-tui-app.tsx:1455-1462` records the same failure and the same cure). A
   // loading dialog flipping to a list dialog is exactly that transition.
+
+  if (view === "context" && sizing) {
+    return (
+      <Centred width={width} height={height}>
+        <Dialog
+          key="context"
+          title="context window"
+          status={sizing.spec}
+          width={layout.width}
+          marginLeft={0}
+        >
+          {sizing.choices.map((choice, index) => (
+            <box key={choice.size} height={1} flexShrink={0}>
+              <text>
+                <span fg={tokens.accent}>{index === sizeCursor ? "▶ " : "  "}</span>
+                <span fg={tokens.text}>{choice.label}</span>
+              </text>
+            </box>
+          ))}
+          <Rule />
+          <Hints
+            hints={[
+              { key: "↑↓", label: "move" },
+              { key: "⏎", label: "launch it" },
+              { key: "esc", label: "back" },
+            ]}
+          />
+        </Dialog>
+      </Centred>
+    );
+  }
 
   if (view === "custom") {
     return (
