@@ -21,7 +21,8 @@ export const CONTRACT_VERSION = 1;
  * transcript view (MTL-369). `transcript` is additive: the `transcript_session` tool and
  * `team(mode="transcript")` read the child's conversation as text lines (MTL-373).
  * `replay` is additive: the `replay_session` tool and `team(mode="replay")` open a finished
- * session's real interface read only, and `close_replay` ends it.
+ * session's real interface read only, and `close_replay` ends it. `view` is additive: rows
+ * and the capture, resize and replay answers carry `view`, the holder of the active view.
  * Appended, never inserted: the mod's goldens replay the order.
  */
 export const CAPABILITIES = [
@@ -36,12 +37,30 @@ export const CAPABILITIES = [
   "scroll",
   "transcript",
   "replay",
+  "view",
 ] as const;
 
 export interface ContractMeta {
   contract_version: 1;
   /** v1: exactly CAPABILITIES (fields and capabilities are only ever added) */
   capabilities: string[];
+}
+
+/** Who holds the active view of a session, slot or replay. null means nobody does. */
+export interface ViewHolder {
+  /**
+   * Closed set; a reader treats an unknown value as "viewed elsewhere". In an MCP answer
+   * the value is relative to the answering server: "claude_code" is a claim owned by THIS
+   * server's Claude Code, and another server's Claude Code reads "claude_code_other". On
+   * the local transport "claude_code" means any Claude Code.
+   */
+  holder: "claude_code" | "claude_code_other" | "herdr" | "herdr_app" | "terminal";
+  /** set by the server, never by the client; at most 40 characters */
+  label: string;
+  /** ISO 8601: when this holder took the view */
+  since: string;
+  /** opaque; new each time the view changes hands, stable across renewals */
+  claim_id: string;
 }
 
 /** Closed set. The mod colours by it. */
@@ -184,6 +203,9 @@ export interface SlotRow {
    * child's own transcript. null when the transcript has none: no agent, a rejected agent
    * (`reason: "agent_rejected"`), or not written yet. Kept on rows built from disk. */
   agent: string | null;
+  /** [additive] who holds the active view; null when nobody does, and on rows built from disk.
+   * Every row claudish builds carries it; the type leaves it optional so an older row still reads. */
+  view?: ViewHolder | null;
 }
 
 /** One step of a slot's turn: an assistant text, thinking or tool_use block. */
@@ -278,11 +300,15 @@ export interface CaptureResult {
   final: boolean;
   /** only when spans:true was asked */
   spans?: SpanRun[][];
+  /** [additive] who holds the active view; present whenever `capabilities` has "view" */
+  view?: ViewHolder | null;
 }
 export interface CaptureUnchanged {
   unchanged: true;
   seq: number;
   final: boolean;
+  /** [additive] who holds the active view; present whenever `capabilities` has "view" */
+  view?: ViewHolder | null;
 }
 
 /**
@@ -299,6 +325,8 @@ export interface ResizeResult {
   changed: boolean;
   seq: number;
   pending?: true;
+  /** [additive] who holds the active view after this resize */
+  view?: ViewHolder | null;
 }
 /** F — `team(mode="resize")`: the same answer, addressed by run and slot. */
 export interface TeamResizeResult {
@@ -310,6 +338,8 @@ export interface TeamResizeResult {
   changed: boolean;
   seq: number;
   pending?: true;
+  /** [additive] who holds the active view after this resize */
+  view?: ViewHolder | null;
 }
 
 /**
@@ -402,6 +432,8 @@ export const TRANSCRIPT_ANSWER_MAX_BYTES = 32_000;
 export interface ReplayOpenResult {
   replay_id: string;
   seq: number;
+  /** [additive] who holds the active view; present whenever `capabilities` has "view" */
+  view?: ViewHolder | null;
 }
 
 /**

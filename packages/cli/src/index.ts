@@ -105,15 +105,20 @@ function classifyStartupKind(): string {
     "quota",
     "usage",
   ]);
-  if ((first && management.has(first)) || argv.includes("--mcp") || first === "serve") {
+  if (
+    (first && management.has(first)) ||
+    argv.includes("--mcp") ||
+    first === "serve" ||
+    first === "view"
+  ) {
     return "other";
   }
   return "run";
 }
 process.on("exit", () => {
   const argv = process.argv.slice(2);
-  const longRunningServer =
-    argv.includes("--mcp") || argv.find((a) => !a.startsWith("-")) === "serve";
+  const first = argv.find((a) => !a.startsWith("-"));
+  const longRunningServer = argv.includes("--mcp") || first === "serve" || first === "view";
   if (longRunningServer) return;
   finalizeStartupTrace(classifyStartupKind(), { quiet: true });
 });
@@ -416,6 +421,8 @@ const isHooksCommand = firstPositional === "hooks";
 const isAccountCommand = firstPositional === "account";
 // Team subcommand: claudish team run|run-and-judge (multi-model orchestration)
 const isTeamCommand = firstPositional === "team";
+// View subcommand: claudish view --list [--json] (read-only, every local MCP server's sessions)
+const isViewCommand = firstPositional === "view";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
 const isLoginCommand = firstPositional === "login";
 const isLogoutCommand = firstPositional === "logout";
@@ -488,6 +495,16 @@ if (isMcpMode) {
       process.exit(1);
     })
   );
+} else if (isViewCommand) {
+  // Reads the local view endpoints. It runs no model and never wraps itself in magmux.
+  const viewArgIndex = args.indexOf("view");
+  import("./view/view-cli.js")
+    .then((m) => m.viewCommand(args.slice(viewArgIndex + 1)))
+    .then((code) => process.exit(code))
+    .catch((e) => {
+      console.error(`[claudish view] ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    });
 } else if (isProvidersCommand) {
   // Provider credential presence (no key material): claudish providers --json
   const json = args.includes("--json");

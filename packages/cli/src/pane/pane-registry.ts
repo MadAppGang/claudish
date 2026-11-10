@@ -30,6 +30,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { claimSignalExit } from "../signal-owner.js";
+import { sweepEndpoints } from "../view/endpoints.js";
 import { MagmuxClient } from "./magmux-client.js";
 import { ensureSockRoot, sockRootFor } from "./pane-launch.js";
 import {
@@ -47,6 +48,7 @@ import {
   isPaneMagmuxCommand,
   isPaneRecordPath,
   isPaneSockPath,
+  isPaneViewSockPath,
   isPaneWatcherCommand,
   isValidPaneId,
   liveEscaped,
@@ -60,6 +62,7 @@ import {
   sockPathOf,
   startedAt,
   verifiedGroupSnapshot,
+  viewSockPathOf,
 } from "./process-identity.js";
 
 export const MAX_LIVE_PANES = 48;
@@ -264,6 +267,8 @@ export interface PaneFiles {
 export function removePaneFiles(root: string, f: PaneFiles): void {
   if (f.fork && f.sessionUuid) removeForkRecord(f.fork, f.sessionUuid);
   if (isPaneSockPath(root, f.sockPath, f.paneId)) rmSync(f.sockPath, { force: true });
+  const view = viewSockPathOf(root, f.paneId);
+  if (isPaneViewSockPath(root, view, f.paneId)) rmSync(view, { force: true });
   for (const d of [f.launcherDir, f.turnDir])
     if (d && isLaunchDirPath(root, d)) rmSync(d, { recursive: true, force: true });
   const rec = recordPathOf(root, f.paneId);
@@ -396,6 +401,8 @@ export interface ShutdownHookOptions {
   exitAfter?: boolean;
   /** runs before the reap (the MCP server settles its records here) */
   before?: () => Promise<void>;
+  /** runs after the reap, before the exit; a throw is ignored */
+  after?: () => void;
   /** MCP server: stdin EOF/close also shuts down, then exits 0 */
   stdin?: boolean;
 }
@@ -428,6 +435,11 @@ async function shutdown(reason: "stdin_closed" | "signal", code: number): Promis
     await reapAllPanes(reason);
   } finally {
     clearInterval(hold);
+  }
+  try {
+    hookOpts.after?.();
+  } catch {
+    // the exit below still has to happen
   }
   if (reason === "stdin_closed" || hookOpts.exitAfter !== false) process.exit(code);
   shuttingDown = false;
@@ -731,6 +743,32 @@ async function sweepRecordlessSocket(root: string, name: string, out: SweepResul
   (mag ? out.reaped : out.kept).push(id);
 }
 
+/**
+ * A view socket with no record and a dead owner. One whose control socket survived the sweep above
+ * belongs to a magmux that may still be serving it, so it stays with that socket.
+ */
+function sweepRecordlessViewSockets(root: string, out: SweepResult): void {
+  let names: string[] = [];
+  try {
+    names = readdirSync(root).filter((n) => /^magmux-c\d+-[A-Za-z0-9_-]+\.view$/.test(n));
+  } catch {
+    return;
+  }
+  if (names.length === 0) return;
+  const known = new Set(readRecords(root).map((r) => r.paneId));
+  const table = readProcessTable();
+  for (const n of names) {
+    const id = n.slice("magmux-".length, -".view".length);
+    if (known.has(id) || live.has(id) || existsSync(sockPathOf(root, id))) continue;
+    const owner = ownerOfSocketId(id);
+    if (!owner || ownerAlive(owner, table)) continue;
+    const view = viewSockPathOf(root, id);
+    if (!isPaneViewSockPath(root, view, id)) continue;
+    rmSync(view, { force: true });
+    out.cleaned.push(id);
+  }
+}
+
 const sweptRoots = new Set<string>();
 
 /** The sweep, at most once per root per process (before the first spawn). */
@@ -758,5 +796,9 @@ export async function sweepOrphanPanes(root: string = sockRootFor()): Promise<Sw
     const id = n.slice("magmux-".length, -".sock".length);
     if (!known.has(id) && !live.has(id)) await sweepRecordlessSocket(root, n, out);
   }
+  sweepRecordlessViewSockets(root, out);
+  // no trusted table: nothing can be judged dead, so every endpoint stays
+  const table = readProcessTable();
+  if (table) out.cleaned.push(...sweepEndpoints(root, table));
   return out;
 }

@@ -4,7 +4,7 @@
  */
 
 import type { Accounting } from "./accounting.js";
-import { type SlotRow, isTerminalState } from "./contract.js";
+import { type SlotRow, type ViewHolder, isTerminalState } from "./contract.js";
 import { reasonDetail } from "./reason-detail.js";
 import type { PaneSnapshot } from "./types.js";
 
@@ -20,7 +20,9 @@ export function toSlotRow(
   acct: Accounting,
   now: number = Date.now(),
   /** the slot's upstream-error records (`upstreamRecordsFor`); [] = none read */
-  upstreamRecords: readonly string[] = []
+  upstreamRecords: readonly string[] = [],
+  /** SlotRow.view: who holds this slot's active view; null = nobody */
+  view: ViewHolder | null = null
 ): SlotRow {
   const terminal = isTerminalState(snap.state);
   let idle: number | null = null;
@@ -58,5 +60,6 @@ export function toSlotRow(
     recent: snap.recent,
     agent_requested: id.agentRequested ?? null,
     agent: snap.agent ?? null,
+    view,
   };
 }

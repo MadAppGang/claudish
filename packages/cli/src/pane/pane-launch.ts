@@ -82,6 +82,18 @@ function assertPrivateDir(p: string): void {
     );
 }
 
+/** Create (0700) and verify one directory directly under a verified socket root. Returns its path. */
+export function ensurePrivateSubdir(root: string, name: string): string {
+  const dir = join(root, name);
+  try {
+    mkdirSync(dir, { mode: 0o700 });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  }
+  assertPrivateDir(dir);
+  return dir;
+}
+
 /** Create (0700) and verify the socket root and its `panes/` record dir. Returns `root`. */
 export function ensureSockRoot(given: string = sockRootFor()): string {
   const root = resolve(given);
@@ -493,6 +505,7 @@ export const SUBCOMMAND_WORDS = [
   "logout",
   "quota",
   "usage",
+  "view",
 ];
 
 export type FlagCheck = { ok: true } | { ok: false; message: string };

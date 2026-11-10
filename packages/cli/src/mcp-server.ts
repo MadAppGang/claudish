@@ -118,12 +118,14 @@ import {
   isSupersededRun,
   judgeResponses,
   listTeamRuns,
+  listTeamViewSlots,
   preflightTeamRun,
   readTeamInputFile,
   readTeamStatus,
   replayTargetOfTeamSlot,
   resizeTeamSlot,
   scrollTeamSlot,
+  setViewServices,
   setupSession,
   shutdownAllTeamRuns,
   startModels,
@@ -131,11 +133,16 @@ import {
   teamLiveMaps,
   teamRunRow,
   teamRunRowFromDisk,
+  teamViewSlot,
   transcriptTeamSlot,
   validateSessionPath,
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
 import { VERSION } from "./version.js";
+import { ViewClaims } from "./view/view-claims.js";
+import { ViewDirectory } from "./view/view-directory.js";
+import { ViewFeed } from "./view/view-feed.js";
+import { ViewServer } from "./view/view-server.js";
 
 // No `.env` load here. `index.ts` loads the working directory's `.env` through the
 // allowlist (dotenv-allowlist.ts) before it imports this module, and that is the only
@@ -3567,7 +3574,11 @@ async function main() {
 
   // Sessions are observed by polling (`list_sessions`, `get_output`) and through
   // their records on disk; nothing is pushed to the host.
-  const sessionManager = new SessionManager();
+  const viewFeed = new ViewFeed();
+  const viewClaims = new ViewClaims({ notify: (target) => viewFeed.changed(target, true) });
+  const sessionManager = new SessionManager({ feed: viewFeed, claims: viewClaims });
+  replays.setViewServices({ feed: viewFeed, claims: viewClaims });
+  setViewServices({ feed: viewFeed, claims: viewClaims });
 
   // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
   // than per call, so a long-lived session cannot change its behaviour mid-flight.
@@ -3659,7 +3670,8 @@ async function main() {
   // stdout's private descriptor when isolation is active).
   const transport = new StdioServerTransport(process.stdin, iso.protocolOut);
   await server.connect(transport);
-  installMcpShutdown(sessionManager);
+  const viewTransport: { server: ViewServer | null } = { server: null };
+  installMcpShutdown(sessionManager, viewTransport);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
   // after an identity check. Asynchronous, and once per root per process — the first
   // pane's own sweep (ensureSwept in startPaneSession) is this one, not a second `ps`.
@@ -3669,6 +3681,38 @@ async function main() {
     void ensureSwept(sockRootFor()).catch((err: unknown) =>
       log(`[mcp] stale pane sweep failed: ${err instanceof Error ? err.message : String(err)}`)
     );
+  // A nested server holds no sessions a local client could be shown. `claims` still answers
+  // `view` on its own verbs.
+  if (!nested) {
+    const directory = new ViewDirectory({
+      sessions: sessionManager,
+      team: {
+        listSlots: listTeamViewSlots,
+        slot: teamViewSlot,
+        capture: (runId, slot, since, spans, caller) =>
+          captureTeamSlot(undefined, slot, since, spans, runId, caller),
+        transcript: (runId, slot, since) => transcriptTeamSlot(undefined, slot, since, runId),
+        resize: (runId, slot, cols, rows, caller) =>
+          resizeTeamSlot(undefined, slot, cols, rows, runId, caller),
+      },
+      replays,
+      claims: viewClaims,
+    });
+    viewFeed.setBuilder((target) => directory.item(target));
+    void ViewServer.start({
+      root: sockRootFor(),
+      directory,
+      claims: viewClaims,
+      feed: viewFeed,
+      version: VERSION,
+    })
+      .then((started) => {
+        viewTransport.server = started;
+      })
+      .catch((err: unknown) =>
+        log(`[view] transport off: ${err instanceof Error ? err.message : String(err)}`)
+      );
+  }
 }
 
 /**
@@ -3679,10 +3723,14 @@ async function main() {
  * replace these options. A SIGKILL of this process ends no record; the per-pane
  * watchers still remove the panes.
  */
-function installMcpShutdown(sessionManager: SessionManager): void {
+function installMcpShutdown(
+  sessionManager: SessionManager,
+  viewTransport: { server: ViewServer | null }
+): void {
   const before = async (): Promise<void> => {
     // A replay already registered is reaped with every other pane; this stops one that is not yet.
     replays.beginShutdown();
+    viewTransport.server?.announceClosing();
     // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
     // their process groups here, or they outlive the server.
     stopAllClaudeCodePrintChildren();
@@ -3690,7 +3738,7 @@ function installMcpShutdown(sessionManager: SessionManager): void {
   };
   // The stdio transport closes when stdin does, so stdin's `end`/`close` is the
   // transport-close hook too.
-  installPaneShutdownHooks({ stdin: true, before });
+  installPaneShutdownHooks({ stdin: true, before, after: () => viewTransport.server?.close() });
 }
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────

@@ -34,7 +34,10 @@ import {
   openContainedTranscript,
   startReplayPane,
 } from "../pane/index.js";
+import { type ReplayViewItem, targetOfReplay } from "../pane/view-contract.js";
 import { transcriptPathFor } from "../session/session-discovery.js";
+import { type ClaimCaller, MCP_CALLER, type ViewClaims } from "../view/view-claims.js";
+import type { ViewFeed } from "../view/view-feed.js";
 
 /** How long an open waits for the box before it answers with the current screen. */
 export const REPLAY_READY_MS = 15_000;
@@ -59,6 +62,8 @@ interface ReplayEntry {
   /** resolves once the open has an answer; rejects with its `replay_unavailable` */
   opening: Promise<void>;
   finishedAt: number | null;
+  of: ReplayViewItem["of"];
+  model: string | null;
 }
 
 function unavailable(reason: ReplayUnavailableReason, message: string): ContractErrorException {
@@ -110,10 +115,32 @@ export class ReplayManager {
   private readonly parentEnv: Record<string, string | undefined>;
   private readonly readyMs: number;
   private shuttingDown = false;
+  private feed: ViewFeed | null = null;
+  private claims: ViewClaims | null = null;
 
   constructor(private readonly options: ReplayManagerOptions = {}) {
     this.parentEnv = options.parentEnv ?? process.env;
     this.readyMs = options.readyMs ?? REPLAY_READY_MS;
+  }
+
+  /** Bound once at startup; `replay_session` and the local transport then share the holders. */
+  setViewServices(services: { feed: ViewFeed; claims: ViewClaims }): void {
+    this.feed = services.feed;
+    this.claims = services.claims;
+  }
+
+  /** Every replay this server holds, oldest first. */
+  list(): Array<Omit<ReplayViewItem, "view">> {
+    return [...this.byId.values()].map((e) => ({
+      kind: "replay" as const,
+      target: targetOfReplay(e.replayId),
+      replay_id: e.replayId,
+      of: e.of,
+      model: e.model,
+      final: e.finishedAt !== null,
+      magmux: e.pane ? { pane_id: e.pane.paneId, view_socket: e.pane.viewSockPath } : null,
+      herdr_workspaces: [],
+    }));
   }
 
   /** From now on an open refuses, also one between the awaits of its start. */
@@ -142,6 +169,8 @@ export class ReplayManager {
       pane: null,
       opening: Promise.resolve(),
       finishedAt: null,
+      of: target.of ?? { session_id: uuid },
+      model: target.model ?? null,
     };
     this.byId.set(entry.replayId, entry);
     this.openByTarget.set(uuid, entry);
@@ -161,12 +190,30 @@ export class ReplayManager {
   }
 
   /** The last screen of a finished replay stays readable until it is closed or evicted. */
-  capture(id: string, sinceSeq?: number, spans?: boolean): CaptureResult | CaptureUnchanged {
-    return this.paneOf(id).capture(sinceSeq, { spans: spans === true });
+  capture(
+    id: string,
+    sinceSeq?: number,
+    spans?: boolean,
+    caller: ClaimCaller = MCP_CALLER
+  ): CaptureResult | CaptureUnchanged {
+    const answer = this.paneOf(id).capture(sinceSeq, { spans: spans === true });
+    if (!this.claims) return answer;
+    const target = targetOfReplay(id);
+    this.claims.renewFromCapture(target, caller);
+    return this.claims.stamp(answer, target, caller);
   }
 
-  async resize(id: string, cols: number, rows: number): Promise<ResizeResult> {
-    return { session_id: id, ...(await this.paneOf(id).resize(cols, rows)) };
+  async resize(
+    id: string,
+    cols: number,
+    rows: number,
+    caller: ClaimCaller = MCP_CALLER
+  ): Promise<ResizeResult> {
+    const pane = this.paneOf(id);
+    const target = targetOfReplay(id);
+    if (!pane.finished()) this.claims?.claim(target, caller);
+    const answer: ResizeResult = { session_id: id, ...(await pane.resize(cols, rows)) };
+    return this.claims ? this.claims.stamp(answer, target, caller) : answer;
   }
 
   async scroll(id: string, req: ScrollRequest): Promise<ScrollResult> {
@@ -185,6 +232,8 @@ export class ReplayManager {
     }
     const verified = entry.pane ? await entry.pane.close() : true;
     this.forget(entry);
+    this.claims?.forget(targetOfReplay(id));
+    this.feed?.removed(targetOfReplay(id), "replay_closed");
     return verified ? { closed: true } : { closed: true, reap_unverified: true };
   }
 
@@ -204,7 +253,10 @@ export class ReplayManager {
 
   private async answerOf(entry: ReplayEntry): Promise<ReplayOpenResult> {
     await entry.opening;
-    return { replay_id: entry.replayId, seq: entry.pane?.seq() ?? 0 };
+    const answer: ReplayOpenResult = { replay_id: entry.replayId, seq: entry.pane?.seq() ?? 0 };
+    return this.claims
+      ? this.claims.stamp(answer, targetOfReplay(entry.replayId), MCP_CALLER)
+      : answer;
   }
 
   private paneOf(id: string): ReplayPane {
@@ -246,15 +298,19 @@ export class ReplayManager {
         label: a.claudeSessionId.slice(0, 8),
         onFinish: () => this.onFinished(entry),
         refused: () => this.shuttingDown,
+        onViewSocket: () => this.notify(entry),
       });
+      this.notify(entry);
     } catch (e) {
       this.forget(entry);
+      this.feed?.removed(targetOfReplay(entry.replayId), "replay_closed");
       throw unavailable("spawn_failed", e instanceof Error ? e.message : String(e));
     }
     const ready = await entry.pane.ready(this.readyMs);
     if (ready.kind === "box" || ready.kind === "slow") return;
     await entry.pane.close();
     this.forget(entry);
+    this.feed?.removed(targetOfReplay(entry.replayId), "replay_closed");
     if (ready.kind === "dialog")
       throw unavailable("boot_dialog", `a dialog replaced the input box: ${ready.name}`);
     throw unavailable("spawn_failed", ready.detail);
@@ -264,11 +320,19 @@ export class ReplayManager {
   private onFinished(entry: ReplayEntry): void {
     entry.finishedAt = Date.now();
     if (this.openByTarget.get(entry.targetKey) === entry) this.openByTarget.delete(entry.targetKey);
+    this.notify(entry);
     const finished = [...this.byId.values()]
       .filter((e) => e.finishedAt !== null)
       .sort((x, y) => (x.finishedAt as number) - (y.finishedAt as number));
-    for (const old of finished.slice(0, Math.max(0, finished.length - FINISHED_REPLAYS_MAX)))
+    for (const old of finished.slice(0, Math.max(0, finished.length - FINISHED_REPLAYS_MAX))) {
       this.byId.delete(old.replayId);
+      this.claims?.forget(targetOfReplay(old.replayId));
+      this.feed?.removed(targetOfReplay(old.replayId), "evicted");
+    }
+  }
+
+  private notify(entry: ReplayEntry): void {
+    this.feed?.changed(targetOfReplay(entry.replayId), true);
   }
 
   private forget(entry: ReplayEntry): void {

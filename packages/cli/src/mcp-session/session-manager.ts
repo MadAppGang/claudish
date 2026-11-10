@@ -85,6 +85,7 @@ import {
   type TranscriptCursor,
   type TranscriptResult,
   type TranscriptSource,
+  type ViewHolder,
   assertMagmuxAvailable,
   chainAnswerOf,
   checkChildFlags,
@@ -110,10 +111,16 @@ import {
   upstreamRecordsFor,
   writerLiveness,
 } from "../pane/index.js";
+import { type ViewDetail, targetOfSession } from "../pane/view-contract.js";
 import { redactSecrets } from "../redact.js";
 import { projectsDir, transcriptPathFor } from "../session/session-discovery.js";
 import { TRUNCATION_NOTE, type TeamRunOutcome, classifyRunOutput } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
+import { paneChangeKey } from "../view/change-key.js";
+import { promptSummaryOf } from "../view/prompt-summary.js";
+import { watchTokenFile } from "../view/token-watch.js";
+import { type ClaimCaller, MCP_CALLER, type ViewClaims } from "../view/view-claims.js";
+import type { ViewFeed } from "../view/view-feed.js";
 import { sessionsDirFrom } from "./home-dir.js";
 import { buildInheritedSettingsLayer } from "./inherited-settings.js";
 import { hostPidFrom } from "./parent-session.js";
@@ -293,6 +300,12 @@ interface SessionEntry {
   reapVerified: boolean;
   /** The child's Claude Code projects directory: a transcript path must lie under it. */
   projectsRoot: string;
+  /** First line of the first prompt, credentials masked; null until one arrives. */
+  promptSummary: string | null;
+  /** The last `paneChangeKey` the feed was told about. */
+  lastChangeKey: string | null;
+  /** Stops watching the token file; null when nothing watches it. */
+  stopTokenWatch: (() => void) | null;
 }
 
 const DEFAULT_MAX_SESSIONS = 20;
@@ -418,7 +431,9 @@ export function sessionEventFor(snap: { state: SlotState; activity: string | nul
 export function sessionRowOf(
   info: SessionInfo,
   /** the session's upstream-error records (`upstreamRecordsFor`); [] = none read */
-  upstreamRecords: readonly string[] = []
+  upstreamRecords: readonly string[] = [],
+  /** who holds the session's active view; null = nobody */
+  view: ViewHolder | null = null
 ): SessionRow {
   const terminal = isTerminalState(info.state);
   return {
@@ -440,6 +455,7 @@ export function sessionRowOf(
     recent: info.recent,
     agent_requested: info.agentRequested ?? null,
     agent: info.agent ?? null,
+    view,
     session_id: info.sessionId,
     started_at: info.startedAt,
     completed_at: info.completedAt,
@@ -727,6 +743,8 @@ export class SessionManager {
   private readonly hookEngineSource: () => Promise<HookEngine | null>;
   private readonly bindingOverride: SessionManagerOptions["hookBinding"];
   private readonly magmuxBinary: string | undefined;
+  private readonly feed: ViewFeed | undefined;
+  private readonly claims: ViewClaims | undefined;
 
   constructor(options?: SessionManagerOptions) {
     // Computed once: the Claude Code process that launched this MCP server
@@ -749,6 +767,8 @@ export class SessionManager {
     this.hookEngineSource = options?.hookEngine ?? (() => loadHooksOnce());
     this.bindingOverride = options?.hookBinding;
     this.magmuxBinary = options?.magmuxBinary;
+    this.feed = options?.feed;
+    this.claims = options?.claims;
   }
 
   /** The process's hook engine (§2.2), awaited before the first pane spawn. Never rejects. */
@@ -1076,6 +1096,9 @@ export class SessionManager {
       requestedSize: null,
       reapVerified: false,
       projectsRoot: projectsDir(parentEnv),
+      promptSummary: opts.prompt ? promptSummaryOf(opts.prompt) : null,
+      lastChangeKey: null,
+      stopTokenWatch: null,
     };
   }
 
@@ -1143,6 +1166,8 @@ export class SessionManager {
       throw err;
     }
     const session = entry.session;
+    this.watchTokens(entry);
+    this.feed?.changed(targetOfSession(info.sessionId), true);
     // a size asked for while the pane started (after its environment was built): apply it
     // now; the pane's own worker answers any later resize
     const asked = entry.requestedSize;
@@ -1208,6 +1233,19 @@ export class SessionManager {
     info.elapsedSeconds = elapsedSecondsBetween(info.startedAt, Date.parse(at));
     this.appendEvent(entry, { type: "state", from: "STARTING", to: "FAILED", at });
     this.endRecords(entry, null);
+    this.feed?.changed(targetOfSession(info.sessionId), true);
+  }
+
+  /** The proxy rewrites the token file on its own schedule, so cost needs its own signal. */
+  private watchTokens(entry: SessionEntry): void {
+    if (!this.feed || entry.ended || entry.stopTokenWatch) return;
+    const target = targetOfSession(entry.info.sessionId);
+    entry.stopTokenWatch = watchTokenFile(entry.tokenFile, () => this.feed?.changed(target));
+  }
+
+  private stopTokenWatch(entry: SessionEntry): void {
+    entry.stopTokenWatch?.();
+    entry.stopTokenWatch = null;
   }
 
   // ─── Pane policy (D8) ──────────────────────────────────────────────────
@@ -1270,7 +1308,11 @@ export class SessionManager {
     this.recordWaitTransition(entry, t.from, t.to, t.at, snap);
     this.appendEvent(entry, { type: "state", from: t.from, to: t.to, at: t.at });
     this.logPaneFacts(entry, snap);
-    if (isTerminalState(t.to)) this.onTerminal(entry, snap);
+    if (isTerminalState(t.to)) {
+      this.onTerminal(entry, snap);
+      this.stopTokenWatch(entry);
+    }
+    this.feed?.changed(targetOfSession(entry.info.sessionId), true);
   }
 
   /** `onChange` (coalesced): activity and accounting changes within a state. */
@@ -1278,6 +1320,11 @@ export class SessionManager {
     if (entry.ended) return;
     this.applySnapshot(entry, snap);
     this.logPaneFacts(entry, snap);
+    if (!this.feed) return;
+    const key = paneChangeKey(snap);
+    if (key === entry.lastChangeKey) return;
+    entry.lastChangeKey = key;
+    this.feed.changed(targetOfSession(entry.info.sessionId));
   }
 
   /** The terminal transition: answer, records and eviction, before the reap starts. */
@@ -1413,6 +1460,8 @@ export class SessionManager {
     if (!r.ok) return { success: false, reason: r.reason, state: entry.session.snapshot().state };
     entry.info.shape = "interactive";
     this.applySnapshot(entry, entry.session.snapshot());
+    entry.promptSummary ??= promptSummaryOf(text);
+    this.feed?.changed(targetOfSession(sessionId), true);
     return { success: true, queued: r.queued };
   }
 
@@ -1560,24 +1609,34 @@ export class SessionManager {
    * `ContractErrorException`: `unknown_session`, `resize_unsupported`,
    * `delivery_unavailable`.
    */
-  async resizeSession(sessionId: string, cols: number, rows: number): Promise<ResizeResult> {
+  async resizeSession(
+    sessionId: string,
+    cols: number,
+    rows: number,
+    caller: ClaimCaller = MCP_CALLER
+  ): Promise<ResizeResult> {
     const entry = this.liveEntry(sessionId);
     if (!entry) throw unknownSession(sessionId);
+    const target = targetOfSession(sessionId);
+    const stamp = (r: ResizeResult): ResizeResult =>
+      this.claims ? this.claims.stamp(r, target, caller) : r;
     if (!entry.session) {
       if (isTerminalState(entry.info.state))
-        return {
+        return stamp({
           session_id: sessionId,
           cols: DEFAULT_PANE_COLS,
           rows: DEFAULT_PANE_ROWS,
           changed: false,
           seq: 0,
-        };
+        });
+      this.claims?.claim(target, caller);
       const size = clampPaneSize(cols, rows);
       entry.requestedSize = size;
-      return { session_id: sessionId, ...size, changed: true, seq: 0, pending: true };
+      return stamp({ session_id: sessionId, ...size, changed: true, seq: 0, pending: true });
     }
+    if (!isTerminalState(entry.session.snapshot().state)) this.claims?.claim(target, caller);
     const r = await entry.session.resize(cols, rows);
-    return { session_id: sessionId, ...r };
+    return stamp({ session_id: sessionId, ...r });
   }
 
   /**
@@ -1610,13 +1669,20 @@ export class SessionManager {
   captureSession(
     sessionId: string,
     sinceSeq?: number,
-    spans?: boolean
+    spans?: boolean,
+    caller: ClaimCaller = MCP_CALLER
   ): CaptureResult | CaptureUnchanged {
     const entry = this.liveEntry(sessionId);
     if (!entry) throw unknownSession(sessionId);
-    if (!entry.session)
-      return sinceSeq === 0 ? { unchanged: true, seq: 0, final: true } : blankFinalCapture();
-    return entry.session.capture(sinceSeq, { spans: spans === true });
+    const answer: CaptureResult | CaptureUnchanged = !entry.session
+      ? sinceSeq === 0
+        ? { unchanged: true, seq: 0, final: true }
+        : blankFinalCapture()
+      : entry.session.capture(sinceSeq, { spans: spans === true });
+    if (!this.claims) return answer;
+    const target = targetOfSession(sessionId);
+    this.claims.renewFromCapture(target, caller);
+    return this.claims.stamp(answer, target, caller);
   }
 
   /**
@@ -1649,6 +1715,7 @@ export class SessionManager {
     if (!src) throw unknownSession(sessionId);
     const recorded = entry ? entry.cwd : (src as DiskTranscriptSource).cwd;
     const { transcriptPath, sessionUuid, writerGone, projectsRoot } = src;
+    const model = entry ? entry.info.model : (this.loadDiskRecord(sessionId)?.info.model ?? null);
     const head =
       !recorded && transcriptPath && isUuid(sessionUuid)
         ? transcriptHeadCwd(transcriptPath, sessionUuid, projectsRoot)
@@ -1658,6 +1725,8 @@ export class SessionManager {
       transcriptPath,
       writerGone,
       cwd: recorded || head,
+      of: { session_id: sessionId },
+      model,
       projectsRoot,
     };
   }
@@ -1763,9 +1832,42 @@ export class SessionManager {
       this.refresh(entry);
       if (!includeCompleted && isTerminalState(entry.info.state)) continue;
       const info = { ...entry.info };
-      rows.push(sessionRowOf(info, upstreamRecordsFor(info, entry.upstreamErrorLogPath)));
+      rows.push(
+        sessionRowOf(
+          info,
+          upstreamRecordsFor(info, entry.upstreamErrorLogPath),
+          this.claims?.holderForMcp(targetOfSession(info.sessionId)) ?? null
+        )
+      );
     }
     return rows;
+  }
+
+  /** One `list_sessions` row of a held session, with the holder's absolute name; null when not held. */
+  sessionRow(sessionId: string): SessionRow | null {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return null;
+    this.refresh(entry);
+    const info = { ...entry.info };
+    return sessionRowOf(
+      info,
+      upstreamRecordsFor(info, entry.upstreamErrorLogPath),
+      this.claims?.holder(targetOfSession(sessionId)) ?? null
+    );
+  }
+
+  /** What a local client reads beside the row; null when the session is not held. */
+  viewDetail(sessionId: string): ViewDetail | null {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return null;
+    const snap = entry.session?.snapshot() ?? null;
+    return {
+      prompt_summary: entry.promptSummary,
+      prompts_sent: snap?.promptsSent ?? (entry.promptSummary === null ? 0 : 1),
+      pending_inputs: snap?.pendingInputs ?? entry.info.pendingInputs,
+      subagents: snap?.subagents ?? [],
+      magmux: snap ? { pane_id: snap.paneId, view_socket: snap.viewSockPath ?? null } : null,
+    };
   }
 
   /** A single session's info; falls back to `<sessionsDir>/<id>/meta.json`. */
@@ -2115,9 +2217,7 @@ export class SessionManager {
   /** Drop a terminal session from the map after its retention window (memory only). */
   private scheduleEviction(entry: SessionEntry): void {
     if (entry.evictHandle) return;
-    entry.evictHandle = setTimeout(() => {
-      this.sessions.delete(entry.info.sessionId);
-    }, this.terminalRetentionMs);
+    entry.evictHandle = setTimeout(() => this.evict(entry), this.terminalRetentionMs);
     // Never a reason for the MCP server to stay alive.
     entry.evictHandle.unref?.();
     this.evictOldestTerminal();
@@ -2130,8 +2230,16 @@ export class SessionManager {
     terminal.sort((a, b) => (a.info.completedAt ?? "").localeCompare(b.info.completedAt ?? ""));
     for (const victim of terminal.slice(0, terminal.length - MAX_TERMINAL_SESSIONS)) {
       if (victim.evictHandle) clearTimeout(victim.evictHandle);
-      this.sessions.delete(victim.info.sessionId);
+      this.evict(victim);
     }
+  }
+
+  private evict(entry: SessionEntry): void {
+    this.sessions.delete(entry.info.sessionId);
+    this.stopTokenWatch(entry);
+    const target = targetOfSession(entry.info.sessionId);
+    this.claims?.forget(target);
+    this.feed?.removed(target, "evicted");
   }
 
   private get activeSessions(): number {
