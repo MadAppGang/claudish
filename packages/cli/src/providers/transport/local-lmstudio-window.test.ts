@@ -37,6 +37,7 @@ describe("LocalTransport context window on lmstudio", () => {
 
   function lmStudio(nativeList: () => Response): string {
     server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch(req) {
         const path = new URL(req.url).pathname;
