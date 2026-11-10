@@ -2,6 +2,18 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.19.1] - 2026-11-10
+
+### Bug Fixes
+
+- resolve a base id only to its listed <base>-<tier> ids *(antigravity)* ([`91f609b`](https://github.com/MadAppGang/claudish/commit/91f609b23960ea05a4a98f754a109d56e7052327))
+- resolve a base id only to its listed <base>-<effort> ids *(devin)* ([`b525177`](https://github.com/MadAppGang/claudish/commit/b52517756403cd1008f0c1c46c1f9089fc3865b4))
+
+### Documentation
+
+- stamp ai-docs/release.md as verified by v14.19.0 *(release)* ([`d65fef2`](https://github.com/MadAppGang/claudish/commit/d65fef262d67f9e677bab56459e2fe9b94edc399))
+- update CHANGELOG.md for v14.19.0([`d7b30ae`](https://github.com/MadAppGang/claudish/commit/d7b30ae0a95646cc81a926684ef987da93f6657e))
+
 ## [14.19.0] - 2026-11-10
 
 ### Bug Fixes
