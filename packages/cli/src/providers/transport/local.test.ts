@@ -40,8 +40,8 @@ describe("LocalTransport — Ollama backend detection", () => {
   });
 
   function serve(fetch: (req: Request) => Response): string {
-    server = Bun.serve({ port: 0, fetch });
-    return `http://localhost:${server.port}`;
+    server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch });
+    return `http://127.0.0.1:${server.port}`;
   }
 
   test("a URL model backed by Ollama gets num_ctx", async () => {
