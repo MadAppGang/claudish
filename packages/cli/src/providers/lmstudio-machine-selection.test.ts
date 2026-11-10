@@ -441,6 +441,28 @@ describe("LocalTransport with a machine suffix", () => {
     await transport.refreshAuth();
   });
 
+  test("a recovery retry of a request built while LM Studio was down says so", async () => {
+    const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
+    const lms = process.env.CLAUDISH_LMS_BIN;
+    process.env.CLAUDISH_LMS_BIN = join(dir, "no-such-binary");
+    const health = spyOn(
+      transport as unknown as { checkHealth(): Promise<boolean> },
+      "checkHealth"
+    ).mockResolvedValueOnce(false);
+    try {
+      await transport.getExtraPayloadFields();
+      await expect(transport.refreshAuth()).rejects.toThrow("Cannot connect");
+    } finally {
+      health.mockRestore();
+      process.env.CLAUDISH_LMS_BIN = lms;
+    }
+
+    // The handler's connection recovery signs again without building the payload again.
+    await expect(transport.refreshAuth()).rejects.toThrow(
+      "LM Studio was not reachable when this request was built"
+    );
+  });
+
   test("a recent placement is used without asking lms again", async () => {
     const transport = new LocalTransport(lmStudioConfig(), "shared-model~m1");
     await transport.getExtraPayloadFields();

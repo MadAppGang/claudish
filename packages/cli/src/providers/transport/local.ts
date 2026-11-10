@@ -258,6 +258,13 @@ export class LocalTransport implements ProviderTransport {
 
     const healthy = await this.checkHealth();
     if (!healthy) {
+      if (this.lmStudioPlacementError !== undefined) {
+        // The connection recovery signs again without building the payload again, and
+        // this payload still names `model~machine`. It cannot be sent; say why.
+        this.lmStudioPlacementError = new Error(
+          `LM Studio was not reachable when this request was built, so ${this.modelName} was not placed on ${this.lmStudioDevice}. Send the message again.`
+        );
+      }
       // `{ cause }` is the whole point. `classifyConnectionError` walks `.code`
       // and then the `.cause` chain to depth 8; the sentence below carries
       // neither a code nor any phrase the message fallback matches, so a bare
