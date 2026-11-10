@@ -72,6 +72,8 @@
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
+import { readDiskCatalog } from "../providers/all-models-cache.js";
+import { bundledListEnabled, catalogReachability } from "../providers/catalog-reachability.js";
 import { LIVE_MS } from "../providers/dynamic-models-catalog-store.js";
 import { sweepAccountModelsLists } from "../providers/dynamic-models-catalog.js";
 import { EmptyState } from "../tui/components/EmptyState.js";
@@ -1327,6 +1329,15 @@ function emptyLabel(
   if (providers.ready.length === 0 && !providers.probing) {
     return `no credential for any of the ${providers.total} providers — esc, then k, shows what each one needs`;
   }
-  if (total === 0) return `no catalog entries for ${scopedName || "these providers"}`;
+  if (total === 0) {
+    const empty = `no catalog entries for ${scopedName || "these providers"}`;
+    // The picker reads only a catalog file; a chain can still be routed without one.
+    // With a catalog file on disk, routing reads that file however the refresh went.
+    return bundledListEnabled() &&
+      catalogReachability().state === "unreachable" &&
+      readDiskCatalog() === null
+      ? `${empty} · routing uses the bundled recommended list`
+      : empty;
+  }
   return "nothing to show";
 }
