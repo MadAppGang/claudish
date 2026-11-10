@@ -35,4 +35,6 @@ routing:
   - 'ai-docs/architecture/routing.md'
   - '.github/routing-files.yml'
   - '.github/workflows/routing-rulebook.yml'
+  - '.github/workflows/routing-fork-guard.yml'
   - '.github/workflows/routing-review-release.yml'
+  - '.github/workflows/release.yml'

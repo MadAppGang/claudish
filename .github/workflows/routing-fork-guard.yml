@@ -1,0 +1,140 @@
+name: Routing fork guard
+
+# Fails a pull request from a fork that changes a routing file.
+#
+# `pull_request_target` runs this file as it is on the base branch, so a pull
+# request cannot edit the guard it is held to, which it can do to any
+# `pull_request` workflow, the routing rulebook review included. The job checks
+# out only the base commit, reads the routing filter from it, and asks the GitHub
+# API which files the pull request changes. No code from the pull request is
+# checked out or run, and no secret is used.
+#
+# A same-repository pull request passes here; the rulebook review judges it.
+#
+# The verdict is also posted as a commit status on the pull request's head commit,
+# context `routing-fork-guard/verdict`, and that context is the required item. A
+# fork can add a `pull_request` job with this job's check name, but its token is
+# read-only and cannot post a commit status; only this base-branch run can.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions: {}
+
+concurrency:
+  group: routing-fork-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: routing fork guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Check out the filter from the base commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/routing-files.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Refuse a fork pull request that changes a routing file
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${HEAD_REPO:-}" ] && [ "$HEAD_REPO" = "$GITHUB_REPOSITORY" ]; then
+            echo "Same-repository pull request: the routing rulebook review applies." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          refuse() {
+            echo "::error::$1"
+            {
+              echo "## Routing fork guard: refused"
+              echo
+              echo "$1"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          reopen="a maintainer re-opens it as a pull request from a branch in this repository"
+
+          filter=.github/routing-files.yml
+          [ -f "$filter" ] || refuse "the base commit has no $filter, so the routing files cannot be told apart: $reopen"
+
+          # The filter's patterns, one per line, from its single-quoted list items.
+          patterns=$(sed -n "s/^[[:space:]]*-[[:space:]]*'\(.*\)'[[:space:]]*$/\1/p" "$filter")
+          [ -n "$patterns" ] || refuse "no pattern could be read from $filter on the base commit: $reopen"
+
+          # The API lists at most 3000 files; a longer list could hide a routing file.
+          if [ "${CHANGED_FILES:-0}" -ge 3000 ]; then
+            refuse "the pull request changes $CHANGED_FILES files, more than the API lists: $reopen"
+          fi
+
+          # Both sides of a rename count: moving a routing file out is a change to it.
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)')
+
+          # `*` in a [[ ]] pattern also matches `/`, so `dir/**` covers the tree and a
+          # pattern can only match more files than paths-filter would, never fewer.
+          hits=()
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            while IFS= read -r pattern; do
+              # shellcheck disable=SC2053
+              if [[ "$file" == $pattern ]]; then
+                hits+=("$file")
+                break
+              fi
+            done <<< "$patterns"
+          done <<< "$files"
+
+          if [ "${#hits[@]}" -eq 0 ]; then
+            echo "Fork pull request with no routing file changed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "Routing files changed by this fork pull request:"
+            echo
+            # shellcheck disable=SC2016
+            printf -- '- `%s`\n' "${hits[@]}"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          refuse "a pull request from a fork changes routing files, which the rulebook review cannot check without secrets: $reopen"
+
+      # A cancelled run posts nothing: a newer run for the same pull request
+      # replaced it, and a missing status keeps the pull request blocked.
+      - name: Post the verdict as a commit status
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          OUTCOME: ${{ steps.check.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" = "success" ]; then
+            state=success
+            description="No routing file changed by a fork"
+          else
+            state=failure
+            description="A fork pull request changes routing files, or the guard failed"
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
+            -f state="$state" \
+            -f context="routing-fork-guard/verdict" \
+            -f description="$description" \
+            -f target_url="$RUN_URL" > /dev/null
