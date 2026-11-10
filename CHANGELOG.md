@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.18.6] - 2026-11-10
+
+### Bug Fixes
+
+- skip a test:safe repair when the file is back to pre-run *(test)* ([`7a3524e`](https://github.com/MadAppGang/claudish/commit/7a3524e8b480c3759de0c873305c50be4ac4ce31))
+- keep the test:safe exit code when a temp dir cannot be removed *(test)* ([`4d84c79`](https://github.com/MadAppGang/claudish/commit/4d84c794a6de877f7c8feb0cb011d4d1b17fbbf1))
+- re-read a guarded file before test:safe repairs it *(test)* ([`d062827`](https://github.com/MadAppGang/claudish/commit/d062827356e19fb35ccbb5389e3f640a6f2725a4))
+- keep valid ~/.claudish files that change during test:safe *(test)* ([`52be5f2`](https://github.com/MadAppGang/claudish/commit/52be5f2ba7f1372ae8c22f43ddafe4b26723ea2a))
+
+### Documentation
+
+- poll the npm manifest and tarball for up to 60 minutes *(release)* ([`f492369`](https://github.com/MadAppGang/claudish/commit/f492369da8be9932e5d28ebe3a5f14ef322f558e))
+- stamp ai-docs/release.md as verified by v14.18.5 *(release)* ([`99b5cb6`](https://github.com/MadAppGang/claudish/commit/99b5cb6d2454fec0fd8dd4ab63ab4ab1f28b2519))
+- update CHANGELOG.md for v14.18.5([`b4e8fae`](https://github.com/MadAppGang/claudish/commit/b4e8faefa01d635308680a7bec12c483c1a3cbf9))
+
 ## [14.18.5] - 2026-11-10
 
 ### Bug Fixes
