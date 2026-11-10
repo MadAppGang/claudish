@@ -19,6 +19,7 @@ import {
   createAdvisorPanelGateway,
 } from "./handlers/advisor-panel-gateway.js";
 import { shutdownAdvisorChains } from "./handlers/advisor-route-plan.js";
+import { bundledTaggedCache } from "./handlers/bundled-tagged-cache.js";
 import type { ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
@@ -44,6 +45,7 @@ import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
 import { DISPLAY_NAMES } from "./providers/auto-route.js";
 import {
+  catalogOrigin,
   ensureCatalogReady,
   logResolution,
   resolveTargetForCatalog,
@@ -426,10 +428,10 @@ export async function createProxyServer(
   for (const problem of routingRuleProblems(routingRuleSources)) {
     logStderr(`Warning: ${describeRoutingRuleProblem(problem)}`);
   }
-  // Cache fallback handlers by target model string.
-  // No TTL/invalidation: claudish is ephemeral per session, so env changes
-  // (new API keys) take effect on next session start.
-  const fallbackHandlerCache = new Map<string, ModelHandler>();
+  // Cache fallback handlers by target model string. No TTL: claudish is ephemeral
+  // per session, so env changes (new API keys) take effect on next session start.
+  // The one invalidation is a chain built from the bundled recommended list.
+  const fallbackHandlerCache = bundledTaggedCache(new Map<string, ModelHandler>());
 
   // Detect the invocation mode for a given target model string.
   // Used to populate stats: how did the user specify this model?
@@ -568,6 +570,7 @@ export async function createProxyServer(
       if (cached) return cached;
 
       await ensureCatalogReady(5000);
+      const originAtStart = catalogOrigin();
       const candidates: FallbackCandidate[] = [];
       for (const spec of options.modelChain) {
         const parsed = parseModelSpec(spec);
@@ -598,7 +601,7 @@ export async function createProxyServer(
       if (candidates.length > 0) {
         const resultHandler =
           candidates.length > 1 ? new FallbackHandler(candidates) : candidates[0].handler;
-        fallbackHandlerCache.set(cacheKey, resultHandler);
+        fallbackHandlerCache.set(cacheKey, resultHandler, originAtStart);
         if (!options.quiet && candidates.length > 1) {
           logStderr(
             `[Route] ${candidates.length} pinned providers for ${target}: ${candidates.map((c) => c.name).join(" → ")}`
@@ -676,12 +679,12 @@ export async function createProxyServer(
       const decision = proxyRouteDecision(target);
       if (decision.type === "bare") {
         const cacheKey = `fallback:${target}`;
-        if (fallbackHandlerCache.has(cacheKey)) {
-          return fallbackHandlerCache.get(cacheKey)!;
-        }
+        const cachedChain = fallbackHandlerCache.get(cacheKey);
+        if (cachedChain) return cachedChain;
 
         // Ensure catalog is warm before route() builds OpenRouter modelSpecs.
         await ensureCatalogReady(5000);
+        const originAtStart = catalogOrigin();
 
         // "resolve": rules alone make route() read no default provider, and this
         // decision needs the machine's setting. Asked per decision, so a key added
@@ -710,7 +713,7 @@ export async function createProxyServer(
             const resultHandler =
               candidates.length > 1 ? new FallbackHandler(candidates) : candidates[0].handler;
 
-            fallbackHandlerCache.set(cacheKey, resultHandler);
+            fallbackHandlerCache.set(cacheKey, resultHandler, originAtStart);
 
             const routeLine = `[Route] ${candidates.length} ${candidates.length === 1 ? "provider" : "providers"} for ${decision.model}: ${candidates.map((c) => c.name).join(" → ")}`;
             if (!options.quiet && candidates.length > 1) {
