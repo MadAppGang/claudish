@@ -36,9 +36,29 @@ function serveCalls(source: string): { line: number; text: string }[] {
   }
 }
 
-/** The call's options name `hostname` as a key: `hostname:`, or the shorthand `hostname,` / `hostname }`. */
+/**
+ * The call's options object names `hostname` as one of ITS keys: `hostname:`, or the
+ * shorthand `hostname,` / `hostname }`. A `hostname` in a nested object or in a string
+ * does not count. In `Bun.serve({ … })` the `(` is depth 1 and the options' `{` depth 2.
+ */
 function bindsHostname(call: string): boolean {
-  return /\bhostname\s*[:,}]/.test(call);
+  let depth = 0;
+  for (let i = 0; i < call.length; i++) {
+    const ch = call[i] as string;
+    if (ch === '"' || ch === "'" || ch === "`") {
+      for (i++; i < call.length && call[i] !== ch; i++) if (call[i] === "\\") i++;
+      continue;
+    }
+    if ("({[".includes(ch)) depth++;
+    else if (")}]".includes(ch)) depth--;
+    else if (
+      depth === 2 &&
+      /^hostname\s*[:,}]/.test(call.slice(i)) &&
+      !/\w/.test(call[i - 1] ?? "")
+    )
+      return true;
+  }
+  return false;
 }
 
 describe("Bun.serve hostname", () => {
@@ -63,10 +83,25 @@ describe("Bun.serve hostname", () => {
     ).toBe(false);
   });
 
+  test("bindsHostname reads only the top level of the options object", () => {
+    expect(
+      bindsHostname('Bun.serve({ port: 0, fetch: () => Response.json({ hostname: "x" }) })')
+    ).toBe(false);
+    expect(bindsHostname('Bun.serve({ tls: { hostname: "x" }, port: 0 })')).toBe(false);
+    expect(
+      bindsHostname('Bun.serve({ port: 0, fetch: () => f("{"), hostname: "127.0.0.1" })')
+    ).toBe(true);
+    expect(
+      bindsHostname('Bun.serve({ fetch(r) { return g({ a: 1 }); }, hostname: "127.0.0.1" })')
+    ).toBe(true);
+  });
+
   test("every Bun.serve call under src names a hostname", () => {
     const missing: string[] = [];
     for (const rel of new Bun.Glob("**/*.{ts,tsx,js,mjs,cjs}").scanSync({ cwd: SRC })) {
       if (rel.includes("node_modules/")) continue;
+      // this file's own unbound calls are test strings for bindsHostname
+      if (rel === "test-helpers/serve-hostname.test.ts") continue;
       const source = readFileSync(join(SRC, rel), "utf-8");
       if (!source.includes("Bun.serve(")) continue;
       for (const call of serveCalls(source)) {
