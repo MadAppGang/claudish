@@ -205,6 +205,31 @@ describe("lmstudio dynamic models catalog: the native list and its type", () => 
   });
 });
 
+describe("lmstudio picker rows", () => {
+  test("a model id containing @ becomes a row", async () => {
+    serve((url) =>
+      url.endsWith("/api/v0/models")
+        ? json({
+            object: "list",
+            data: [{ id: "my-local-build-mlx@4bit", object: "model", type: "llm" }],
+          })
+        : new Response("not found", { status: 404 })
+    );
+
+    const outcome = outcomeFromModelsCatalog(
+      "lmstudio",
+      "LM Studio",
+      await discoverProviderModelsCatalog("lmstudio"),
+      []
+    );
+
+    expect(outcome.kind).toBe("rows");
+    expect(outcome.kind === "rows" ? outcome.rows.map((row) => row.id) : []).toEqual([
+      "my-local-build-mlx@4bit",
+    ]);
+  });
+});
+
 describe("lmstudio dynamic models catalog: fallback and failure kinds", () => {
   // REGRESSION: LM Studio picker hides models the cloud models catalog does not list
 
