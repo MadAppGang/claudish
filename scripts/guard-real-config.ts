@@ -905,13 +905,19 @@ function finish(code: number | null, signal: NodeJS.Signals | null = null): void
   const damaged = settleGuardedFiles();
   reportGuardedDirs();
   const tripwireHit = checkRunHome();
-  rmSync(sentinelDir, { recursive: true, force: true });
-  try {
-    rmSync(runHome, { recursive: true, force: true });
-  } catch (err) {
-    process.stderr.write(
-      `[guard] could not remove the run home ${runHome}: ${err instanceof Error ? err.message : String(err)}\n`
-    );
+  // Both are temp directories holding only test data. A failed removal is
+  // reported and never changes the exit code, and neither may stop the other.
+  for (const [what, dir] of [
+    ["the sentinel directory", sentinelDir],
+    ["the run home", runHome],
+  ] as const) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      process.stderr.write(
+        `[guard] could not remove ${what} ${dir}: ${err instanceof Error ? err.message : String(err)}\n`
+      );
+    }
   }
 
   const terminationSignal = signal ?? forwardedSignal;

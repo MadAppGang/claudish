@@ -63,6 +63,11 @@ place, damage on a real file most likely comes from a live session (a logout, th
 that session's next write can land between the post-run snapshot and the repair. The file is read
 again once, so a file rewritten without pause still gets a decision. This narrows the window to
 the repair itself; it cannot close it, and no lock exists that every writer honours.
+
+The sentinel directory and the run home are both removed in `finish()`, each in its own `try`. A
+failed removal is reported (`could not remove ...`) and never changes the exit code: both hold
+only test data, and a leftover temp directory is not a reason to fail a green run.
+
 **The real directories (`GUARDED_DIRS`) are reported, never restored, never failed on.** The usage
 ledger and the stored dynamic models catalogs are compared by file set and sizes;
 a delta prints `<label> changed during the run` and `Not restored`. Truncating a ledger segment

@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const GUARD_SCRIPT = join(import.meta.dir, "guard-real-config.ts");
 const decoder = new TextDecoder();
@@ -495,6 +495,31 @@ describe("guard-real-config", () => {
       expect(stderrOf(result)).toContain("WARNING — kept");
       expect(stderrOf(result)).not.toContain("Restored it from");
       expectNoSecretCopies(path);
+    });
+  });
+
+  test("still removes the run home and keeps the child's exit code when the sentinel directory cannot be removed", () => {
+    withScratchHome((fixture) => {
+      const record = join(fixture.home, "paths.json");
+      const result = runGuard(
+        fixture,
+        `import { chmodSync, mkdirSync, writeFileSync } from "node:fs"; import { dirname, join } from "node:path";
+         const sentinel = dirname(process.env.CLAUDISH_CATALOG_INCOMPATIBLE_PATH);
+         const locked = join(sentinel, "locked");
+         mkdirSync(join(locked, "inner"), { recursive: true });
+         chmodSync(locked, 0o000);
+         writeFileSync(${JSON.stringify(record)}, JSON.stringify({ locked, runHome: process.env.CLAUDISH_GUARD_RUN_HOME }));
+         process.exit(7);`
+      );
+      const { locked, runHome } = JSON.parse(readFileSync(record, "utf8"));
+      try {
+        expect(result.exitCode).toBe(7);
+        expect(existsSync(runHome)).toBe(false);
+        expect(stderrOf(result)).toContain("could not remove the sentinel directory");
+      } finally {
+        chmodSync(locked, 0o755);
+        rmSync(dirname(locked), { recursive: true, force: true });
+      }
     });
   });
 
