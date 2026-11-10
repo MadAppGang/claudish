@@ -26,6 +26,10 @@ import {
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { writeFileAtomic } from "./fs-atomic.js";
+import { detectFrontEnd } from "./herdr/front-end.js";
+import { startMcpHerdrPlacer } from "./herdr/mcp-herdr.js";
+import { PlacementGrants } from "./herdr/placement-grants.js";
+import type { HerdrPlacer } from "./herdr/placer.js";
 import { loadHooksOnce } from "./hooks/index.js";
 import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
 import { initLogger, log } from "./logger.js";
@@ -3576,6 +3580,9 @@ async function main() {
   // their records on disk; nothing is pushed to the host.
   const viewFeed = new ViewFeed();
   const viewClaims = new ViewClaims({ notify: (target) => viewFeed.changed(target, true) });
+  const placementGrants = new PlacementGrants({
+    notify: (target) => viewFeed.changed(target, true),
+  });
   const sessionManager = new SessionManager({ feed: viewFeed, claims: viewClaims });
   replays.setViewServices({ feed: viewFeed, claims: viewClaims });
   setViewServices({ feed: viewFeed, claims: viewClaims });
@@ -3670,7 +3677,7 @@ async function main() {
   // stdout's private descriptor when isolation is active).
   const transport = new StdioServerTransport(process.stdin, iso.protocolOut);
   await server.connect(transport);
-  const viewTransport: { server: ViewServer | null } = { server: null };
+  const viewTransport: ViewTransport = { server: null, placer: null };
   installMcpShutdown(sessionManager, viewTransport);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
   // after an identity check. Asynchronous, and once per root per process — the first
@@ -3697,6 +3704,7 @@ async function main() {
       },
       replays,
       claims: viewClaims,
+      herdrWorkspaces: (target) => placementGrants.workspaces(target),
     });
     viewFeed.setBuilder((target) => directory.item(target));
     void ViewServer.start({
@@ -3705,14 +3713,53 @@ async function main() {
       claims: viewClaims,
       feed: viewFeed,
       version: VERSION,
+      frontEnd: detectFrontEnd(process.env),
+      workspaceId: () => viewTransport.placer?.workspace,
+      herdrViewers: placementGrants,
     })
       .then((started) => {
         viewTransport.server = started;
       })
       .catch((err: unknown) =>
         log(`[view] transport off: ${err instanceof Error ? err.message : String(err)}`)
+      )
+      // the placer starts once the endpoint exists: a placed viewer dials it. Outside a herdr
+      // pane it is never built, and nothing here dials herdr.
+      .then(() =>
+        startMcpHerdrPlacer({
+          env: process.env,
+          root: sockRootFor(),
+          feed: viewFeed,
+          item: (target) => directory.item(target),
+          grants: placementGrants,
+          endpoint: () =>
+            viewTransport.server
+              ? { name: viewTransport.server.endpointName, path: viewTransport.server.endpointPath }
+              : null,
+          cwd: process.cwd(),
+          log,
+        })
+      )
+      .then((placer) => {
+        if (!placer) return;
+        if (viewTransport.closing) {
+          void placer.shutdown();
+          return;
+        }
+        viewTransport.placer = placer;
+        replays.onOpened((target) => placer.replayOpened(target));
+      })
+      .catch((err: unknown) =>
+        log(`[herdr] placer off: ${err instanceof Error ? err.message : String(err)}`)
       );
   }
+}
+
+/** The local view transport and the herdr placer, both started after the MCP transport. */
+interface ViewTransport {
+  server: ViewServer | null;
+  placer: HerdrPlacer | null;
+  closing?: boolean;
 }
 
 /**
@@ -3723,13 +3770,13 @@ async function main() {
  * replace these options. A SIGKILL of this process ends no record; the per-pane
  * watchers still remove the panes.
  */
-function installMcpShutdown(
-  sessionManager: SessionManager,
-  viewTransport: { server: ViewServer | null }
-): void {
+function installMcpShutdown(sessionManager: SessionManager, viewTransport: ViewTransport): void {
   const before = async (): Promise<void> => {
     // A replay already registered is reaped with every other pane; this stops one that is not yet.
     replays.beginShutdown();
+    viewTransport.closing = true;
+    // the placed viewer panes go first (bounded): their sessions are about to end
+    await viewTransport.placer?.shutdown();
     viewTransport.server?.announceClosing();
     // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
     // their process groups here, or they outlive the server.

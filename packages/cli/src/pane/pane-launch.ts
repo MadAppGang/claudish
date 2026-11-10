@@ -507,6 +507,7 @@ export const SUBCOMMAND_WORDS = [
   "quota",
   "usage",
   "view",
+  "herdr",
 ];
 
 export type FlagCheck = { ok: true } | { ok: false; message: string };

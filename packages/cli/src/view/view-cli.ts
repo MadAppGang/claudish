@@ -5,6 +5,9 @@
  * Code started them.
  */
 
+import { detectFrontEnd, herdrPaneEnv, workspaceKeyOf } from "../herdr/front-end.js";
+import { HerdrSocket } from "../herdr/herdr-socket.js";
+import { HerdrReporter } from "../herdr/reporter.js";
 import { setStderrQuiet } from "../logger.js";
 import { sockRootFor } from "../pane/pane-launch.js";
 import { readProcessTableAsync } from "../pane/process-identity.js";
@@ -13,15 +16,16 @@ import { detectAndSetThemeModeSync } from "../theme/theme-mode.js";
 import { endpointOwnerAlive, endpointPathOf, listEndpoints } from "./endpoints.js";
 import { DEFAULT_FPS } from "./magmux-view-client.js";
 import { ViewClient } from "./view-client.js";
-import { Viewer, type ViewerIo } from "./viewer.js";
+import { type FrontEnd, PLAIN_TERMINAL, Viewer, type ViewerIo } from "./viewer.js";
 
 const USAGE = [
-  "usage: claudish view <target> [--passive] [--fps N] [--front-end auto|none]",
+  "usage: claudish view <target> [--passive] [--fps N] [--front-end auto|herdr|none]",
   "       claudish view --list [--json]",
   "",
   "  <target>   s:<session_id>, t:<run_id>/<slot>, r:<replay_id>, or the same without the prefix",
   "  --passive  do not take the view at start; Enter takes it",
   "  --fps N    frames per second to ask the pane for, 1..30 (default 15)",
+  "  --front-end  auto (default) reports to herdr when run in a herdr pane; none reports nothing",
   "",
   "  Keys: Enter shows the session here, q quits. Nothing typed here reaches the session.",
   "",
@@ -94,11 +98,12 @@ export interface ViewArgs {
   target: string;
   passive: boolean;
   fps: number;
+  frontEnd: "auto" | "herdr" | "none";
 }
 
 /** The `<target>` form's argv, or the reason it is refused. */
 export function parseViewArgs(args: string[]): ViewArgs | { error: string } {
-  const out: ViewArgs = { target: "", passive: false, fps: DEFAULT_FPS };
+  const out: ViewArgs = { target: "", passive: false, fps: DEFAULT_FPS, frontEnd: "auto" };
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string;
     const error = a.startsWith("-") ? applyOption(out, a, args[i + 1]) : applyTarget(out, a);
@@ -121,10 +126,11 @@ function applyOption(out: ViewArgs, option: string, value: string | undefined): 
     return null;
   }
   if (option === "--front-end") {
-    // auto resolves to the plain terminal: no other front end is built into this claudish
-    return value === "auto" || value === "none"
-      ? null
-      : `front end ${value ?? "(missing)"} is not supported`;
+    if (value === "auto" || value === "herdr" || value === "none") {
+      out.frontEnd = value;
+      return null;
+    }
+    return `front end ${value ?? "(missing)"} is not supported`;
   }
   return `unknown option ${option}`;
 }
@@ -161,9 +167,71 @@ function processIo(): ViewerIo {
   };
 }
 
+/** What a placer put in this pane's environment; read once and removed from ours. */
+export interface PlacedPane {
+  placed: boolean;
+  endpoint: string | undefined;
+  placement: string | undefined;
+}
+
+export function takePlacedEnv(env: NodeJS.ProcessEnv): PlacedPane {
+  const out: PlacedPane = {
+    placed: Boolean(env.CLAUDISH_VIEW_PLACED),
+    endpoint: env.CLAUDISH_VIEW_ENDPOINT || undefined,
+    placement: env.CLAUDISH_VIEW_PLACEMENT || undefined,
+  };
+  for (const k of ["CLAUDISH_VIEW_PLACED", "CLAUDISH_VIEW_ENDPOINT", "CLAUDISH_VIEW_PLACEMENT"])
+    delete env[k];
+  return out;
+}
+
+interface FrontEndChoice {
+  frontEnd: FrontEnd;
+  workspaceKey?: string;
+}
+
+/**
+ * The herdr reporter when this runs in a herdr pane, or when `--front-end herdr` says so; the
+ * plain terminal otherwise. No herdr call is made outside a herdr pane.
+ */
+export async function chooseFrontEnd(
+  wanted: ViewArgs["frontEnd"],
+  env: NodeJS.ProcessEnv,
+  placed: PlacedPane
+): Promise<FrontEndChoice | { error: string }> {
+  if (wanted === "none" || (wanted === "auto" && detectFrontEnd(env) !== "herdr"))
+    return { frontEnd: PLAIN_TERMINAL };
+  const pane = herdrPaneEnv(env);
+  if (!pane)
+    return { error: "--front-end herdr needs a herdr pane (HERDR_PANE_ID, HERDR_SOCKET_PATH)" };
+  const herdr = new HerdrSocket(pane.socketPath);
+  let workspaceId = pane.workspaceId;
+  if (!workspaceId) {
+    const got = await herdr.request("pane.get", { pane_id: pane.paneId }).catch(() => null);
+    const p = got?.pane as { workspace_id?: unknown } | undefined;
+    workspaceId = typeof p?.workspace_id === "string" ? p.workspace_id : null;
+  }
+  return {
+    frontEnd: new HerdrReporter({
+      herdr,
+      paneId: pane.paneId,
+      placed: placed.placed,
+      titleMode: env.CLAUDISH_HERDR_TITLE === "model" ? "model" : "summary",
+      focusClaim: env.CLAUDISH_VIEW_FOCUS_CLAIM !== "0",
+    }),
+    ...(workspaceId ? { workspaceKey: workspaceKeyOf(pane.socketPath, workspaceId) } : {}),
+  };
+}
+
 async function viewTarget(parsed: ViewArgs): Promise<number> {
+  const placed = takePlacedEnv(process.env);
   if (!process.stdout.isTTY || !process.stdin.isTTY) {
     process.stderr.write("claudish view <target> needs a terminal on stdin and stdout\n");
+    return 2;
+  }
+  const choice = await chooseFrontEnd(parsed.frontEnd, process.env, placed);
+  if ("error" in choice) {
+    process.stderr.write(`${choice.error}\n`);
     return 2;
   }
   detectAndSetThemeModeSync();
@@ -176,6 +244,10 @@ async function viewTarget(parsed: ViewArgs): Promise<number> {
     fps: parsed.fps,
     io: processIo(),
     termProgram: process.env.TERM_PROGRAM,
+    frontEnd: choice.frontEnd,
+    ...(placed.endpoint ? { endpoint: placed.endpoint } : {}),
+    ...(choice.workspaceKey ? { workspaceKey: choice.workspaceKey } : {}),
+    ...(placed.placement ? { placement: placed.placement } : {}),
   });
   const stop = (): void => viewer.quit();
   process.on("SIGTERM", stop);
@@ -185,6 +257,8 @@ async function viewTarget(parsed: ViewArgs): Promise<number> {
     if (outcome.message) process.stdout.write(`${outcome.message}\n`);
     return outcome.code;
   } finally {
+    // also when the viewer ended before following its target: a placed pane still closes
+    await choice.frontEnd.close();
     setStderrQuiet(false);
     process.off("SIGTERM", stop);
     process.off("SIGHUP", stop);

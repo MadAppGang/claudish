@@ -39,6 +39,11 @@ export const VERDICT_MS = 2_000;
 export const RESIZE_DEBOUNCE_MS = 100;
 const VIEW_RETRY_MS = 500;
 
+/** What a front end may ask of the viewer: user acts in the host, such as selecting its pane. */
+export interface FrontEndHooks {
+  take(): void;
+}
+
 /**
  * What this viewer tells the terminal it runs in, beyond painting. A plain terminal is told
  * nothing; other front ends report the item's state to their host.
@@ -46,7 +51,9 @@ const VIEW_RETRY_MS = 500;
 export interface FrontEnd {
   readonly name: ViewFrontEnd;
   report(state: { item: ViewItem | null; holding: boolean; ended: boolean }): void;
-  close(): void;
+  /** called once the viewer follows its target */
+  attach?(hooks: FrontEndHooks): void;
+  close(): void | Promise<void>;
 }
 
 export const PLAIN_TERMINAL: FrontEnd = {
@@ -75,6 +82,12 @@ export interface ViewerOptions {
   frontEnd?: FrontEnd;
   /** the hello's `term_program`; the server cuts and filters it into the holder label */
   termProgram?: string;
+  /** dial only this endpoint (its path), as a placed viewer does */
+  endpoint?: string;
+  /** a herdr viewer's `<socket hash>/<workspace_id>` */
+  workspaceKey?: string;
+  /** a placed herdr viewer's `<txn>.<attempt>` */
+  placement?: string;
   renewMs?: number;
   verdictMs?: number;
   resizeDebounceMs?: number;
@@ -110,10 +123,13 @@ export interface LocatedTarget {
 /** The live endpoint whose items contain `target`; `servers` counts the endpoints that answered. */
 export async function locateTarget(
   root: string,
-  target: string
+  target: string,
+  only?: string
 ): Promise<{ found: LocatedTarget | null; servers: number }> {
   const table = await readProcessTableAsync();
-  const names = listEndpoints(root).filter((n) => endpointOwnerAlive(n, table));
+  const names = listEndpoints(root).filter(
+    (n) => endpointOwnerAlive(n, table) && (!only || endpointPathOf(root, n) === only)
+  );
   let servers = 0;
   let found: LocatedTarget | null = null;
   for (const name of names) {
@@ -202,7 +218,7 @@ export class Viewer {
       return;
     }
     this.target = target;
-    const { found, servers } = await locateTarget(this.o.root, target);
+    const { found, servers } = await locateTarget(this.o.root, target, this.o.endpoint);
     if (!found) {
       const message =
         servers === 0
@@ -228,6 +244,8 @@ export class Viewer {
         kind: "viewer",
         front_end: this.frontEnd.name,
         ...(this.o.termProgram ? { term_program: this.o.termProgram } : {}),
+        ...(this.o.workspaceKey ? { workspace_key: this.o.workspaceKey } : {}),
+        ...(this.o.placement ? { placement: this.o.placement } : {}),
       },
     });
     this.client = client;
@@ -239,8 +257,13 @@ export class Viewer {
     this.stops.push(this.o.io.onKeys((chunk) => this.onKeys(chunk)));
     this.stops.push(this.o.io.onResize(() => this.onResize()));
     await this.subscribe();
+    this.frontEnd.attach?.({ take: () => void this.takeIfNotHolding() });
     if (this.o.passive) this.render();
     else await this.take();
+  }
+
+  private async takeIfNotHolding(): Promise<void> {
+    if (!this.holding) await this.take();
   }
 
   private async subscribe(): Promise<void> {
@@ -556,7 +579,7 @@ export class Viewer {
       view.close();
     }
     client?.close();
-    this.frontEnd.close();
+    await this.frontEnd.close();
     this.painter.end();
     this.done(outcome);
   }

@@ -104,6 +104,7 @@ function classifyStartupKind(): string {
     "logout",
     "quota",
     "usage",
+    "herdr",
   ]);
   if (
     (first && management.has(first)) ||
@@ -423,6 +424,8 @@ const isAccountCommand = firstPositional === "account";
 const isTeamCommand = firstPositional === "team";
 // View subcommand: claudish view --list [--json] (read-only, every local MCP server's sessions)
 const isViewCommand = firstPositional === "view";
+// herdr subcommand: claudish herdr rows (prints sidebar rows; writes nothing)
+const isHerdrCommand = firstPositional === "herdr";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
 const isLoginCommand = firstPositional === "login";
 const isLogoutCommand = firstPositional === "logout";
@@ -503,6 +506,15 @@ if (isMcpMode) {
     .then((code) => process.exit(code))
     .catch((e) => {
       console.error(`[claudish view] ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    });
+} else if (isHerdrCommand) {
+  // Prints herdr config for the user to paste. It runs no model and never wraps itself in magmux.
+  const herdrArgIndex = args.indexOf("herdr");
+  import("./herdr/herdr-cli.js")
+    .then((m) => process.exit(m.herdrCommand(args.slice(herdrArgIndex + 1))))
+    .catch((e) => {
+      console.error(`[claudish herdr] ${e instanceof Error ? e.message : String(e)}`);
       process.exit(1);
     });
 } else if (isProvidersCommand) {

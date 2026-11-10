@@ -18,6 +18,7 @@ import {
   type ViewFrontEnd,
   type ViewItem,
   type ViewRemoveReason,
+  parseViewTarget,
 } from "../pane/view-contract.js";
 import { redactSecrets } from "../redact.js";
 import { type BoundEndpoint, bindEndpoint, endpointOwnerAlive } from "./endpoints.js";
@@ -64,6 +65,10 @@ interface Connection {
   role: ViewClientKind;
   frontEnd: ViewFrontEnd | undefined;
   termProgram: string | undefined;
+  /** a herdr viewer's `<socket hash>/<workspace_id>` */
+  workspaceKey: string | undefined;
+  /** a placed herdr viewer's `<txn>.<attempt>` */
+  placement: string | undefined;
   greeted: boolean;
   subs: Map<number, Subscription>;
   inbound: string;
@@ -74,13 +79,32 @@ interface Connection {
   closed: boolean;
 }
 
+/** Told which herdr viewers are connected, for the replay placement grants. */
+export interface HerdrViewerSink {
+  viewerSubscribed(
+    target: string,
+    connId: string,
+    workspaceKey: string,
+    placement: string | null
+  ): void;
+  connectionGone(connId: string): void;
+}
+
 export interface ViewServerOptions {
   root: string;
   directory: ViewDirectory;
   claims: ViewClaims;
   feed: ViewFeed;
   version: string;
+  /** what `hello` answers as this server's front end */
+  frontEnd?: ViewFrontEnd;
+  /** this server's herdr workspace id, when its front end is herdr */
+  workspaceId?: () => string | undefined;
+  herdrViewers?: HerdrViewerSink;
 }
+
+const WORKSPACE_KEY = /^[0-9a-f]{8}\/[A-Za-z0-9:_-]{1,64}$/;
+const PLACEMENT = /^[A-Za-z0-9]{1,32}\.[A-Za-z0-9]{1,32}$/;
 
 /** What a handler answers, and what to send once the reply is on its way. */
 interface Handled {
@@ -193,6 +217,8 @@ export class ViewServer {
       role: "viewer",
       frontEnd: undefined,
       termProgram: undefined,
+      workspaceKey: undefined,
+      placement: undefined,
       greeted: false,
       subs: new Map(),
       inbound: "",
@@ -219,6 +245,7 @@ export class ViewServer {
     conn.outbound = [];
     conn.outboundBytes = 0;
     this.o.claims.releaseConnection(conn.id);
+    this.o.herdrViewers?.connectionGone(conn.id);
     this.followFeed();
   }
 
@@ -360,7 +387,13 @@ export class ViewServer {
     conn.role = kind as ViewClientKind;
     conn.frontEnd = frontEnd as ViewFrontEnd | undefined;
     conn.termProgram = typeof client.term_program === "string" ? client.term_program : undefined;
+    // only a well-formed key and token count; anything else is a viewer with no herdr workspace
+    if (typeof client.workspace_key === "string" && WORKSPACE_KEY.test(client.workspace_key))
+      conn.workspaceKey = client.workspace_key;
+    if (typeof client.placement === "string" && PLACEMENT.test(client.placement))
+      conn.placement = client.placement;
     conn.greeted = true;
+    const workspaceId = this.o.workspaceId?.();
     return {
       result: {
         protocol: VIEW_PROTOCOL,
@@ -369,7 +402,8 @@ export class ViewServer {
           version: this.o.version,
           started_at: this.startedAt,
           endpoint: this.endpointName,
-          front_end: "none" satisfies ViewFrontEnd,
+          front_end: this.o.frontEnd ?? "none",
+          ...(workspaceId ? { workspace_id: workspaceId } : {}),
         },
         contract_version: CONTRACT_VERSION,
         capabilities: [...CAPABILITIES],
@@ -389,6 +423,15 @@ export class ViewServer {
     };
     conn.subs.set(sub.id, sub);
     this.followFeed();
+    if (conn.frontEnd === "herdr" && conn.workspaceKey && targets)
+      for (const target of targets)
+        if (parseViewTarget(target)?.kind === "replay")
+          this.o.herdrViewers?.viewerSubscribed(
+            target,
+            conn.id,
+            conn.workspaceKey,
+            conn.placement ?? null
+          );
     return {
       result: { sub: sub.id },
       after: () => {

@@ -117,6 +117,7 @@ export class ReplayManager {
   private shuttingDown = false;
   private feed: ViewFeed | null = null;
   private claims: ViewClaims | null = null;
+  private opened: ((target: string) => void) | null = null;
 
   constructor(private readonly options: ReplayManagerOptions = {}) {
     this.parentEnv = options.parentEnv ?? process.env;
@@ -127,6 +128,11 @@ export class ReplayManager {
   setViewServices(services: { feed: ViewFeed; claims: ViewClaims }): void {
     this.feed = services.feed;
     this.claims = services.claims;
+  }
+
+  /** Told the target of every replay this server's MCP link opened or joined, once it answers. */
+  onOpened(fn: (target: string) => void): void {
+    this.opened = fn;
   }
 
   /** Every replay this server holds, oldest first. */
@@ -254,6 +260,7 @@ export class ReplayManager {
   private async answerOf(entry: ReplayEntry): Promise<ReplayOpenResult> {
     await entry.opening;
     const answer: ReplayOpenResult = { replay_id: entry.replayId, seq: entry.pane?.seq() ?? 0 };
+    if (entry.finishedAt === null) this.opened?.(targetOfReplay(entry.replayId));
     return this.claims
       ? this.claims.stamp(answer, targetOfReplay(entry.replayId), MCP_CALLER)
       : answer;

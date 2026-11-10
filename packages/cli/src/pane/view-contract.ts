@@ -127,6 +127,8 @@ export interface ViewClientHello {
   workspace_key?: string;
   /** the caller's own endpoint file name; required for `kind: "peer"` */
   endpoint?: string;
+  /** a placed herdr viewer's placement transaction and attempt, `<txn>.<attempt>` */
+  placement?: string;
 }
 
 export interface ViewHelloResult {
