@@ -15,6 +15,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,6 +60,8 @@ let appearsDuringLoad: Row | undefined;
 let loadedAs: string | undefined;
 /** The body of a failed load. */
 let loadErrorBody: string;
+/** Runs while the load request is answered. */
+let duringLoad: (() => void) | undefined;
 let lockDir: string;
 
 const run: LmsRunner = async (args) => {
@@ -117,6 +120,7 @@ beforeEach(() => {
   appearsDuringLoad = undefined;
   loadedAs = undefined;
   loadErrorBody = "no memory";
+  duringLoad = undefined;
   lockDir = mkdtempSync(join(tmpdir(), "claudish-lms-lock-"));
   globalThis.fetch = mock(async (_url: unknown, init?: RequestInit) => {
     if (loadStatus !== 200) return new Response(loadErrorBody, { status: loadStatus });
@@ -130,6 +134,7 @@ beforeEach(() => {
       contextLength: contextLengthAfterLoad,
     });
     if (appearsDuringLoad) loaded.push(appearsDuringLoad);
+    duringLoad?.();
     return Response.json({ instance_id: loadedAs ?? model, status: "loaded" });
   }) as unknown as typeof fetch;
 });
@@ -529,6 +534,58 @@ describe("ensureLMStudioInstance", () => {
 
     expect(readFileSync(join(lock, "owner"), "utf-8")).toBe(String(process.pid));
     expect(readdirSync(lockDir)).toEqual(["machine.lock"]);
+    expect(readdirSync(lock)).toEqual(["owner"]);
+  });
+
+  test("a waiter that finds another waiter's claim leaves the dead lock to it", () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "999999999");
+    const look = lookAtLock(lock);
+    mkdirSync(join(lock, "takeover"));
+
+    takeOverStaleLock(lock, look?.identity ?? "");
+
+    expect(existsSync(join(lock, "owner"))).toBe(true);
+  });
+
+  test("a claim left by a waiter that exited is cleared, then the dead lock is taken over", () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "999999999");
+    const claim = join(lock, "takeover");
+    mkdirSync(claim);
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(claim, old, old);
+
+    takeOverStaleLock(lock, lookAtLock(lock)?.identity ?? "");
+    expect(existsSync(claim)).toBe(false);
+    takeOverStaleLock(lock, lookAtLock(lock)?.identity ?? "");
+
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("an empty owner file reads as a lock taken an instant ago", () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "");
+
+    expect(lookAtLock(lock)?.alive).toBe(true);
+  });
+
+  test("a release leaves alone a lock that is no longer its own", async () => {
+    preferred = SELF;
+    const lock = join(lockDir, "machine.lock");
+    duringLoad = () => {
+      // Another process judged this one dead and holds a lock of its own now.
+      rmSync(lock, { recursive: true, force: true });
+      mkdirSync(lock);
+      writeFileSync(join(lock, "owner"), String(process.ppid));
+    };
+
+    await ensure("only-m1", "m1");
+
+    expect(readFileSync(join(lock, "owner"), "utf-8")).toBe(String(process.ppid));
   });
 
   test("a takeover removes the dead lock it looked at", () => {

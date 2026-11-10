@@ -253,6 +253,11 @@ function defaultLockPath(): string {
   return join(homedir(), ".claudish", "lmstudio-machine.lock");
 }
 
+/** A claim on a dead lock: the one waiter whose `mkdir` makes it may remove that lock. */
+const CLAIM = "takeover";
+/** A claim this old was left by a waiter that exited between its claim and its removal. */
+const CLAIM_STALE_MS = 30_000;
+
 /**
  * One look at the lock: whether its owner lives, and an identity that tells this
  * directory from a later one at the same path. Undefined when there is no lock.
@@ -260,10 +265,14 @@ function defaultLockPath(): string {
 export function lookAtLock(lockPath: string): { alive: boolean; identity: string } | undefined {
   const identity = lockIdentity(lockPath);
   if (identity === undefined) return undefined;
-  let owner: string;
+  let owner = "";
   try {
     owner = readFileSync(join(lockPath, "owner"), "utf-8");
   } catch {
+    // Not signed yet.
+  }
+  const pid = Number.parseInt(owner, 10);
+  if (!Number.isInteger(pid) || pid <= 0) {
     // Taken an instant ago and not yet signed, unless it has sat unsigned for a whole load.
     try {
       return { alive: Date.now() - statSync(lockPath).mtimeMs < LOAD_TIMEOUT_MS, identity };
@@ -271,8 +280,6 @@ export function lookAtLock(lockPath: string): { alive: boolean; identity: string
       return undefined;
     }
   }
-  const pid = Number.parseInt(owner, 10);
-  if (!Number.isInteger(pid) || pid <= 0) return { alive: false, identity };
   try {
     process.kill(pid, 0);
     return { alive: true, identity };
@@ -298,28 +305,44 @@ function lockIdentity(path: string): string | undefined {
 }
 
 /**
- * Removes the dead lock a waiter looked at, and nothing else. Two waiters can see
- * the same dead owner; the first takes the lock over and holds a new one before
- * the second acts. So the lock is first moved aside, which only one waiter can
- * do, and a moved lock that is not the one looked at is put back.
+ * Removes the dead lock a waiter looked at, and nothing else; answers whether it
+ * did. Two waiters can see the same dead owner, and the first may already hold a
+ * new lock at the path when the second acts. The lock never leaves its path: a
+ * waiter first claims it with `mkdir` inside it, which only one waiter can do
+ * for one directory, and then removes it only if it is still the directory it
+ * looked at. A claim inside a live lock is withdrawn.
  */
-export function takeOverStaleLock(lockPath: string, identity: string): void {
-  const aside = `${lockPath}.stale-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+export function takeOverStaleLock(lockPath: string, identity: string): boolean {
+  const claim = join(lockPath, CLAIM);
   try {
-    renameSync(lockPath, aside);
-  } catch {
-    return;
+    mkdirSync(claim);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") clearStaleClaim(claim);
+    return false;
   }
-  if (lockIdentity(aside) === identity) {
-    rmSync(aside, { recursive: true, force: true });
-    return;
+  if (lockIdentity(lockPath) !== identity) {
+    rmSync(claim, { recursive: true, force: true });
+    return false;
   }
+  rmSync(lockPath, { recursive: true, force: true });
+  return true;
+}
+
+function clearStaleClaim(claim: string): void {
   try {
-    renameSync(aside, lockPath);
+    if (Date.now() - statSync(claim).mtimeMs > CLAIM_STALE_MS) {
+      rmSync(claim, { recursive: true, force: true });
+    }
   } catch {
-    // A third waiter holds the path now; the moved lock's owner removes its own path when done.
-    rmSync(aside, { recursive: true, force: true });
+    // Gone already.
   }
+}
+
+/** Writes the owner whole: a reader sees no owner or this pid, never part of it. */
+function signLock(lockPath: string): void {
+  const draft = join(lockPath, `owner.${process.pid}`);
+  writeFileSync(draft, String(process.pid));
+  renameSync(draft, join(lockPath, "owner"));
 }
 
 /**
@@ -343,10 +366,7 @@ async function withMachineLock<T>(
     }
     const look = lookAtLock(lockPath);
     if (look === undefined) continue;
-    if (!look.alive) {
-      takeOverStaleLock(lockPath, look.identity);
-      continue;
-    }
+    if (!look.alive && takeOverStaleLock(lockPath, look.identity)) continue;
     if (Date.now() > deadline) {
       throw new Error(
         `Another claudish process is placing an LM Studio model (lock ${lockPath}). Retry when it finishes.`
@@ -354,11 +374,16 @@ async function withMachineLock<T>(
     }
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
+  let own: string | undefined;
   try {
-    writeFileSync(join(lockPath, "owner"), String(process.pid));
+    signLock(lockPath);
+    own = lockIdentity(lockPath);
     return await work();
   } finally {
-    rmSync(lockPath, { recursive: true, force: true });
+    // A lock another process took over after judging this one dead is that process's now.
+    if (own === undefined || lockIdentity(lockPath) === own) {
+      rmSync(lockPath, { recursive: true, force: true });
+    }
   }
 }
 
