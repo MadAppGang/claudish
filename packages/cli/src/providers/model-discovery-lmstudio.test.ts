@@ -194,13 +194,13 @@ describe("lmstudio dynamic models catalog: the native list and its type", () => 
     ]);
   });
 
-  test("context window: loaded_context_length when the row has it, else max_context_length", async () => {
+  test("context window: loaded_context_length only, an unloaded model reports none", async () => {
     serve(lmStudioServer);
 
     const models = servedModels(await discoverProviderModelsCatalog("lmstudio"));
 
     expect(byId(models, "ornith-1.0-35b")?.contextWindow).toBe(213176);
-    expect(byId(models, "my-local-build-xyz")?.contextWindow).toBe(131072);
+    expect(byId(models, "my-local-build-xyz")?.contextWindow).toBeUndefined();
     expect(byId(models, "my-local-av-xyz")?.contextWindow).toBeUndefined();
   });
 });

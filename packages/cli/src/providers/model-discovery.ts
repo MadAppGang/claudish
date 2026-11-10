@@ -160,8 +160,8 @@ export interface ModelDiscoveryDescriptor {
    * - `lmstudio-models`: LM Studio's native `/api/v0/models`, the same
    *   `{ data: [...] }` container, whose rows also carry `type` (`llm`, `vlm`,
    *   `embeddings`, …), `max_context_length` and, for a loaded model,
-   *   `loaded_context_length`. `type` feeds `DiscoveredModel.reported`; the
-   *   window is the loaded one when present, else the maximum. Read by the same
+   *   `loaded_context_length`. `type` feeds `DiscoveredModel.reported`; only
+   *   the loaded window feeds `contextWindow`. Read by the same
    *   GET half as `openai-models-list`; a server without the native list (404)
    *   is asked for `/v1/models` once, and that answer is read as
    *   `openai-models-list`.
@@ -570,16 +570,12 @@ interface ParsedModelsList {
 }
 
 /**
- * The window a loaded LM Studio instance accepts, else the model's maximum.
- * A loaded instance may run with less context than the model supports, and
- * planning for the maximum would overrun what the server accepts.
+ * The window a loaded LM Studio instance accepts. An unloaded model has none
+ * yet: `max_context_length` is the most it supports, and a load can use less.
  */
 function readLMStudioContextWindow(row: Record<string, unknown>): number | undefined {
-  for (const field of ["loaded_context_length", "max_context_length"]) {
-    const v = row[field];
-    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
-  }
-  return undefined;
+  const v = row.loaded_context_length;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
 }
 
 /**

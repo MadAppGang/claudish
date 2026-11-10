@@ -16,6 +16,7 @@ import { credentials } from "../../auth/credentials/authority.js";
 import { markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
+import { getProviderByName } from "../../providers/provider-definitions.js";
 import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
 import {
   discoverViaLMStudio,
@@ -92,6 +93,7 @@ export class LocalTransport implements ProviderTransport {
     this.name = config.name;
     this.displayName = DISPLAY_NAMES[config.name] || "Local";
     this.concurrency = options?.concurrency;
+    this._contextWindow = getProviderByName(config.name)?.unknownContextWindow ?? 32768;
 
     // Check for env var override of context window
     const envContextWindow = process.env.CLAUDISH_CONTEXT_WINDOW;
@@ -418,7 +420,7 @@ export class LocalTransport implements ProviderTransport {
 
   private async fetchLMStudioContextWindow(): Promise<void> {
     try {
-      const response = await fetch(`${this.config.baseUrl}/v1/models`, {
+      const response = await fetch(`${this.config.baseUrl}/api/v0/models`, {
         method: "GET",
         signal: AbortSignal.timeout(3000),
       });
@@ -433,24 +435,16 @@ export class LocalTransport implements ProviderTransport {
           models.find((m: any) => m.id?.endsWith(`/${this.modelName}`)) ||
           models.find((m: any) => this.modelName.includes(m.id));
 
-        if (targetModel) {
-          const ctxLength =
-            targetModel.context_length ||
-            targetModel.max_context_length ||
-            targetModel.context_window ||
-            targetModel.max_tokens;
-          if (ctxLength && typeof ctxLength === "number") {
-            this._contextWindow = ctxLength;
-            log(`[${this.displayName}] Context window from model: ${this._contextWindow}`);
-            return;
-          }
+        const ctxLength = targetModel?.loaded_context_length;
+        if (typeof ctxLength === "number" && ctxLength > 0) {
+          this._contextWindow = ctxLength;
+          log(`[${this.displayName}] Context window from model: ${this._contextWindow}`);
+          return;
         }
 
-        this._contextWindow = 32768;
         log(`[${this.displayName}] Using default context window: ${this._contextWindow}`);
       }
     } catch (e: any) {
-      this._contextWindow = 32768;
       log(
         `[${this.displayName}] Failed to fetch model info: ${e?.message || e}. Using default: ${this._contextWindow}`
       );

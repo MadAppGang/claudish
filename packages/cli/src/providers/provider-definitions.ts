@@ -299,6 +299,12 @@ export interface ProviderDefinition {
   oauthLoginSlug?: "codex" | "kimi" | "antigravity" | "grok" | "muse";
   /** Whether this is a local provider (no API key needed) */
   isLocal?: boolean;
+  /**
+   * The context window of a model whose server reports none. When set, the
+   * cloud models catalog is not asked: a local server runs a model with its own
+   * load settings, so the vendor's published window does not describe it.
+   */
+  unknownContextWindow?: number;
   /** Whether this provider supports direct API access (not just via OpenRouter) */
   isDirectApi?: boolean;
   /** Shortest @ prefix for handler creation (reverse of shortcuts) */
@@ -1182,6 +1188,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // catalog does not know is still listed. Its OpenAI-compatible `/v1/models`
     // carries only ids; it is read instead when an older server answers 404.
     modelDiscovery: { path: "/api/v0/models", format: "lmstudio-models" },
+    unknownContextWindow: 64_000,
     description: "Local LM Studio (lms@)",
   },
 

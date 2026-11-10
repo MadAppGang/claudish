@@ -1568,6 +1568,9 @@ export const MAX_AUTO_COMPACT_WINDOW = 1_000_000;
  * 3. With no window in either, live discovery is awaited for at most
  *    {@link LIVE_DISCOVERY_BOUND_MS}. Its window answers if it arrives in time;
  *    otherwise the window is unknown (null).
+ *
+ * A provider with `unknownContextWindow` skips the first two steps: live
+ * discovery answers, else that default.
  */
 async function resolveLocalContextWindow(
   spec: string,
@@ -1585,6 +1588,11 @@ async function resolveLocalContextWindow(
     if (plan.kind !== "ok") return null;
     provider = plan.primary.provider;
     wireId = parseModelSpec(plan.primary.modelSpec).model;
+  }
+  const unknownWindow = getProviderByName(provider)?.unknownContextWindow;
+  if (unknownWindow !== undefined) {
+    const served = await discoverContextWindow(provider, wireId, { network: "bounded" });
+    return { modelId: parsed.model, window: served ?? unknownWindow };
   }
   // A served list wins over the catalog: for subscription endpoints the real
   // window depends on the caller's tier (Kimi's k3 is 1M only on Allegretto+).
