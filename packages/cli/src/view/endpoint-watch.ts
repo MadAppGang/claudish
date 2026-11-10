@@ -1,6 +1,7 @@
 /**
  * Discovery of claudish MCP servers for a long-lived client: the names in `<root>/endpoints/`,
- * followed with `fs.watch`, read again on every event and once a minute as a backstop.
+ * followed with `fs.watch`, read again on every event, a few times while a new watch starts, and
+ * once a minute as a backstop.
  *
  * The last server to shut down removes the empty directory, which ends a watch on it; so the
  * directory is created again (0700) and the watch re-armed whenever it is missing or replaced.
@@ -13,12 +14,20 @@ import { ENDPOINTS_DIR, endpointsDirOf, listEndpoints } from "./endpoints.js";
 export const ENDPOINT_BACKSTOP_MS = 60_000;
 /** a burst of events (bind, then chmod) is read once */
 const SETTLE_MS = 50;
+/**
+ * The directory is read again this long after each arming. On macOS a watch only reports once its
+ * event stream is running, which happens after `watch()` returns: a server that binds in between,
+ * often seen when several processes start at once, raises no event and would wait for the backstop.
+ */
+const ARMED_RESCAN_MS = [250, 1_000, 4_000];
 
 export interface EndpointWatchOptions {
   root: string;
   /** every endpoint file name present now, called only when the set changed */
   onChange: (names: string[]) => void;
   backstopMs?: number;
+  /** how the directory is watched; tests replace it with a watcher that drops events */
+  watchDir?: (dir: string, onEvent: () => void) => FSWatcher;
 }
 
 export class EndpointWatch {
@@ -26,6 +35,7 @@ export class EndpointWatch {
   private watchedIno: number | null = null;
   private backstop: ReturnType<typeof setInterval> | null = null;
   private settle: ReturnType<typeof setTimeout> | null = null;
+  private armedRescans: Array<ReturnType<typeof setTimeout>> = [];
   private last = "";
   private closed = false;
 
@@ -59,6 +69,8 @@ export class EndpointWatch {
     this.watcher = null;
     if (this.backstop) clearInterval(this.backstop);
     if (this.settle) clearTimeout(this.settle);
+    for (const t of this.armedRescans) clearTimeout(t);
+    this.armedRescans = [];
   }
 
   private dirIno(): number | null {
@@ -74,14 +86,27 @@ export class EndpointWatch {
     this.watcher = null;
     try {
       ensurePrivateSubdir(this.o.root, ENDPOINTS_DIR);
-      const w = watch(endpointsDirOf(this.o.root), () => this.soon());
+      const w = (this.o.watchDir ?? ((dir, onEvent) => watch(dir, onEvent)))(
+        endpointsDirOf(this.o.root),
+        () => this.soon()
+      );
       w.on("error", () => this.soon());
       this.watcher = w;
       this.watchedIno = this.dirIno();
+      this.rescanAfterArming();
     } catch {
       // the root is unusable right now; the backstop tries again
       this.watchedIno = null;
     }
+  }
+
+  private rescanAfterArming(): void {
+    for (const t of this.armedRescans) clearTimeout(t);
+    this.armedRescans = ARMED_RESCAN_MS.map((ms) => {
+      const t = setTimeout(() => this.rescan(), ms);
+      t.unref?.();
+      return t;
+    });
   }
 
   private soon(): void {
