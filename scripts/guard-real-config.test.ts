@@ -498,6 +498,27 @@ describe("guard-real-config", () => {
     });
   });
 
+  test("does nothing when the re-read finds the file back in its pre-run state", () => {
+    withScratchHome((fixture) => {
+      const path = join(fixture.claudishDir, "all-models.json");
+      const script = patchedGuard(
+        fixture,
+        "    if (changed && settle(g, prior, after)) damaged = true;",
+        `    if (changed && g.path === ${JSON.stringify(path)}) rmSync(g.path);\n    if (changed && settle(g, prior, after)) damaged = true;`
+      );
+      const result = runGuard(
+        fixture,
+        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(path)}, "{"); process.exit(7);`,
+        script
+      );
+      expect(result.exitCode).toBe(7);
+      expect(existsSync(path)).toBe(false);
+      expect(existsSync(`${path}.guard-created`)).toBe(false);
+      expect(stderrOf(result)).not.toContain("MUTATED");
+      expect(stderrOf(result)).not.toContain("RESTORE FAILED");
+    });
+  });
+
   test("still removes the run home and keeps the child's exit code when the sentinel directory cannot be removed", () => {
     withScratchHome((fixture) => {
       const record = join(fixture.home, "paths.json");

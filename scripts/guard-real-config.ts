@@ -809,6 +809,8 @@ function settle(guarded: GuardedFile, prior: Snapshot, after: Snapshot, reread =
     default: {
       if (!reread) {
         const current = snapshot(guarded.path);
+        // Back in its pre-run state: nothing changed after all.
+        if (sameSnapshot(current, prior)) return false;
         if (!sameSnapshot(current, after)) return settle(guarded, prior, current, true);
       }
       repairDamage(guarded, prior, after, verdict);
