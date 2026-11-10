@@ -6,6 +6,7 @@ import {
   isCachedSubscriptionPlan,
   isSlimModelEntry,
   readAllModelsCache,
+  readDiskCatalog,
   reconcileWires,
   writeAllModelsCache,
   writeRouteRegistry,
@@ -62,18 +63,41 @@ export interface ModelResolutionResult {
   sourceLabel: string;
 }
 
-let _memCache: SlimModelEntry[] | null = null;
-let _catalogEntriesForTest: SlimModelEntry[] | null | undefined;
+/** The catalog routing reads right now, and where it came from. */
+export interface CatalogSnapshot {
+  entries: SlimModelEntry[];
+  origin: "disk" | "bundled";
+  generationId: string;
+}
+
+let _memCache: { entries: SlimModelEntry[]; generationId: string } | null = null;
+let _catalogSnapshotForTest: CatalogSnapshot | null | undefined;
 let _warmPromise: Promise<void> | null = null;
 
-export function getCatalogEntries(): SlimModelEntry[] | null {
-  if (_catalogEntriesForTest !== undefined) return _catalogEntriesForTest;
-  if (_memCache) return _memCache;
+/**
+ * The catalog of the default path, disk or bundled. Only a disk catalog is
+ * memoized: a bundled snapshot must stop answering the moment a catalog exists.
+ */
+export function getCatalogSnapshot(): CatalogSnapshot | null {
+  if (_catalogSnapshotForTest !== undefined) return _catalogSnapshotForTest;
+  if (_memCache) return { ..._memCache, origin: "disk" };
 
   const cache = readAllModelsCache();
   if (!cache || cache.entries.length === 0) return null;
-  _memCache = cache.entries;
-  return _memCache;
+  const generationId = cache.catalogGenerationId;
+  if (cache.origin === "bundled")
+    return { entries: cache.entries, origin: "bundled", generationId };
+  _memCache = { entries: cache.entries, generationId };
+  return { ..._memCache, origin: "disk" };
+}
+
+export function getCatalogEntries(): SlimModelEntry[] | null {
+  return getCatalogSnapshot()?.entries ?? null;
+}
+
+/** Where the default path's catalog comes from right now. */
+export function catalogOrigin(): "disk" | "bundled" | "none" {
+  return getCatalogSnapshot()?.origin ?? "none";
 }
 
 export function latestOpusModelId(): string | null {
@@ -81,8 +105,10 @@ export function latestOpusModelId(): string | null {
 }
 
 export function latestAnthropicTierModelId(tier: "opus" | "sonnet" | "haiku"): string | null {
-  const entries = getCatalogEntries();
-  if (!entries) return null;
+  // The disk catalog only: a recommended subset could name an older id as "latest".
+  const snapshot = getCatalogSnapshot();
+  if (snapshot?.origin !== "disk") return null;
+  const { entries } = snapshot;
   const family = new RegExp(`^claude-${tier}-`, "i");
   const matches = entries.filter((entry) => family.test(entry.modelId));
   if (matches.length === 0) return null;
@@ -98,17 +124,26 @@ export function latestAnthropicTierModelId(tier: "opus" | "sonnet" | "haiku"): s
 }
 
 export function isCatalogWarm(): boolean {
-  return _memCache !== null && _memCache.length > 0;
+  return _memCache !== null && _memCache.entries.length > 0;
 }
 
-export function _setCatalogEntriesForTest(entries: SlimModelEntry[] | null): void {
+export function _setCatalogEntriesForTest(
+  entries: SlimModelEntry[] | null,
+  opts: { origin?: CatalogSnapshot["origin"]; generationId?: string } = {}
+): void {
   // The same normalisation as every other way entries reach memory, so a test
   // seeds exactly what production reads (`content-use.ts`).
-  _catalogEntriesForTest = entries ? entries.map(splitOptInConnections) : entries;
+  _catalogSnapshotForTest = entries
+    ? {
+        entries: entries.map(splitOptInConnections),
+        origin: opts.origin ?? "disk",
+        generationId: opts.generationId ?? "test-generation",
+      }
+    : null;
 }
 
 export function _resetCatalogClient(): void {
-  _catalogEntriesForTest = undefined;
+  _catalogSnapshotForTest = undefined;
   _memCache = null;
   _warmPromise = null;
   _resetCatalogReachabilityForTest();
@@ -554,7 +589,7 @@ async function refreshCatalogOnce(
   // times decide: a different disk generation published later is kept, models
   // file and routes sidecar both, and becomes the in-process copy. The same id
   // is the same generation and is written as usual.
-  const onDisk = readAllModelsCache(options.cachePath);
+  const onDisk = readDiskCatalog(options.cachePath);
   if (
     onDisk &&
     onDisk.catalogGenerationId !== generationId &&
@@ -564,7 +599,7 @@ async function refreshCatalogOnce(
       `[catalog] refresh skipped: disk holds newer generation ${onDisk.catalogGenerationId}, downloaded ${generationId}`
     );
     _clearChatCapabilityIndex();
-    _memCache = onDisk.entries;
+    _memCache = { entries: onDisk.entries, generationId: onDisk.catalogGenerationId };
     _warmPromise = Promise.resolve();
     return {
       kind: "refreshed",
@@ -581,7 +616,7 @@ async function refreshCatalogOnce(
   // withholds models the refresh just described. Its doc comment already said
   // "after a catalog refresh" — nothing had ever called it.
   _clearChatCapabilityIndex();
-  _memCache = normalised;
+  _memCache = { entries: normalised, generationId };
   _warmPromise = Promise.resolve();
   return {
     kind: "refreshed",
@@ -705,7 +740,7 @@ export async function warmCatalog(): Promise<void> {
 }
 
 export async function ensureCatalogReady(timeoutMs = 5000): Promise<void> {
-  if (isCatalogWarm() || (readAllModelsCache()?.entries.length ?? 0) > 0) return;
+  if (isCatalogWarm() || (readDiskCatalog()?.entries.length ?? 0) > 0) return;
   await waitForCatalogWarm(timeoutMs);
 }
 
@@ -715,7 +750,7 @@ export async function ensureCatalogReady(timeoutMs = 5000): Promise<void> {
  * built from it. Such a cache is refreshed rather than accepted.
  */
 export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> {
-  const cache = readAllModelsCache();
+  const cache = readDiskCatalog();
   if (cache?.routeRegistry) return;
   // Models cached, registry missing or of another generation (an older claudish
   // rewrote the models): fetch only the routes of THIS generation — one small
@@ -727,7 +762,7 @@ export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> 
       if (reconcileWires(cache.entries, routeRegistry, cache.catalogGenerationId)) {
         // A refresh may have written another generation while the routes were
         // fetched; its models file and routes sidecar are newer, so keep them.
-        const onDisk = readAllModelsCache();
+        const onDisk = readDiskCatalog();
         if (onDisk && onDisk.catalogGenerationId !== cache.catalogGenerationId) return;
         writeRouteRegistry(routeRegistry);
         return;

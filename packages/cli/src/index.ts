@@ -1222,8 +1222,8 @@ async function runCli() {
         // A BARE member is then refused above (routing answers `catalog-unreadable`),
         // so only an explicit `provider@model` member can have passed without the
         // catalog: its provider was taken as written. Say which ones.
-        const { getCatalogEntries } = await import("./providers/catalog-client.js");
-        if (getCatalogEntries() === null) {
+        const { readDiskCatalog } = await import("./providers/all-models-cache.js");
+        if (readDiskCatalog() === null) {
           const unverified = [...decision.runtime.plans.values()]
             .filter((p) => p.kind === "routed" && p.invocationMode === "explicit-model")
             .map((p) => p.spec);

@@ -14,7 +14,7 @@
  * never an exit.
  */
 
-import { type DiskCacheV3, readAllModelsCache } from "../providers/all-models-cache.js";
+import { type DiskCacheV3, readDiskCatalog } from "../providers/all-models-cache.js";
 import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
 import { MODEL_CATALOG_NAME } from "../providers/catalog-name.js";
 import { parseModelSpec } from "../providers/model-parser.js";
@@ -115,7 +115,7 @@ function isLocalModel(model: string): boolean {
  * tests can drive the time axis deterministically.
  *
  * "missing" semantics cover three on-disk failure modes:
- *   1. The file doesn't exist (or readAllModelsCache returned null because
+ *   1. The file doesn't exist (or readDiskCatalog returned null because
  *      the JSON was unparseable — both bubble up here as null).
  *   2. The file is parseable but contains zero entries AND zero models
  *      (defense against an empty-but-valid blob).
@@ -191,7 +191,7 @@ export async function warmCatalogIfNeeded(
     opts?.ttlHours ?? Number.parseFloat(process.env.CLAUDISH_CATALOG_TTL_HOURS ?? "24");
   const ttlHours = Number.isFinite(ttlHoursRaw) && ttlHoursRaw > 0 ? ttlHoursRaw : 24;
   const now = opts?.now ?? new Date();
-  const cache = readAllModelsCache();
+  const cache = readDiskCatalog();
   const state = classifyCatalogState(cache, ttlHours, now);
 
   const outcome: RefreshOutcome = await refreshCatalog(8000);

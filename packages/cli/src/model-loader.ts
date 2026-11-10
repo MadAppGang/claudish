@@ -6,7 +6,7 @@ import { log } from "./logger.js";
 import {
   type CachedSubscriptionPlan,
   type SlimModelEntry,
-  readAllModelsCache,
+  readDiskCatalog,
 } from "./providers/all-models-cache.js";
 import { PROVIDER_TO_PREFIX } from "./providers/auto-route.js";
 import { FIREBASE_CACHE_TTL_HOURS } from "./providers/cache-ttl.js";
@@ -670,7 +670,7 @@ function recommendationProjection(
   recommendations: RecommendationsWire,
   richModels: ModelDoc[] = []
 ): RecommendedModelsDoc {
-  const cache = readAllModelsCache();
+  const cache = readDiskCatalog();
   return projectRecommendations(
     recommendations,
     cache
@@ -1183,11 +1183,7 @@ export async function getRecommendedModels(
   const cached = _cachedRecommendedModels;
 
   // Tier 1: in-memory cache
-  if (
-    !forceRefresh &&
-    cached &&
-    cached.generationId === readAllModelsCache()?.catalogGenerationId
-  ) {
+  if (!forceRefresh && cached && cached.generationId === readDiskCatalog()?.catalogGenerationId) {
     return cached;
   }
 
@@ -1199,7 +1195,7 @@ export async function getRecommendedModels(
     const cacheData = readRecommendedModelsCacheFile();
     if (
       cacheData &&
-      cacheData.generationId === readAllModelsCache()?.catalogGenerationId &&
+      cacheData.generationId === readDiskCatalog()?.catalogGenerationId &&
       isFreshEnough(cacheData)
     ) {
       _cachedRecommendedModels = cacheData;
@@ -1211,7 +1207,7 @@ export async function getRecommendedModels(
   let fetchFailure: unknown;
   try {
     await ensureCatalogReady(20000);
-    const generationId = readAllModelsCache()?.catalogGenerationId;
+    const generationId = readDiskCatalog()?.catalogGenerationId;
     if (!generationId) throw new Error("No complete v3 model and plan snapshot");
     // One service for the whole operation: the recommendations and the top100
     // they are projected onto have to describe the same catalog.
@@ -1278,7 +1274,7 @@ export async function getRecommendedModels(
  * flag help) handle empty data.
  */
 export function getRecommendedModelsSync(): RecommendedModelsDoc {
-  const generationId = readAllModelsCache()?.catalogGenerationId;
+  const generationId = readDiskCatalog()?.catalogGenerationId;
   const cached = _cachedRecommendedModels;
   if (cached && cached.generationId === generationId) return cached;
 
