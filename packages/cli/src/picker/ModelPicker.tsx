@@ -183,7 +183,21 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   const providers = usePickerProviders(source);
 
   const [view, setView] = useState<View>("providers");
-  const [filter, setFilter] = useState("");
+  const [filter, setFilterState] = useState("");
+  /**
+   * `filter` and `typing` as the NEXT keystroke must see them. Keys that arrive
+   * together (a paste, or fast typing on a loaded machine) run the handler several
+   * times before React renders again, so the state values in its closure are one
+   * key behind: `/c` would open the custom-spec dialog on the `c`. Every write
+   * goes through the setters below, which update the ref at once; every render
+   * copies the committed state back in.
+   */
+  const filterNow = useRef(filter);
+  filterNow.current = filter;
+  const setFilter = (next: string | ((v: string) => string)): void => {
+    filterNow.current = typeof next === "function" ? next(filterNow.current) : next;
+    setFilterState(filterNow.current);
+  };
   /**
    * `/` was pressed: every printable key types, INCLUDING `c` and `r`.
    *
@@ -193,7 +207,13 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
    * names, and it costs nothing when it is not needed: a filter with anything in
    * it already types every key.
    */
-  const [typing, setTyping] = useState(false);
+  const [typing, setTypingState] = useState(false);
+  const typingNow = useRef(typing);
+  typingNow.current = typing;
+  const setTyping = (next: boolean): void => {
+    typingNow.current = next;
+    setTypingState(next);
+  };
   const [custom, setCustom] = useState("");
   const [cursor, setCursor] = useState(0);
   const [providerCursor, setProviderCursor] = useState(0);
@@ -563,7 +583,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       // this picker; here the step back is the filter while there is one, and only
       // then does `esc` return `null`. Two screens, one meaning for the key.
       if (name === "escape") {
-        if (filter !== "" || typing) {
+        if (filterNow.current !== "" || typingNow.current) {
           setFilter("");
           setTyping(false);
           setProviderCursor(0);
@@ -612,7 +632,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       // the model list's rule and it is load-bearing here for the same reason: a user
       // narrowing to `claude` must get `claude` and not the custom-spec dialog on the
       // `c`. `/` is the escape hatch for a search that STARTS with one of them.
-      const providerCommands = filter === "" && !typing;
+      const providerCommands = filterNow.current === "" && !typingNow.current;
       if (providerCommands && key.raw === "a") {
         setScope(null);
         setFilter("");
@@ -643,7 +663,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     }
 
     if (name === "escape") {
-      if (filter !== "" || typing) {
+      if (filterNow.current !== "" || typingNow.current) {
         setFilter("");
         setTyping(false);
         setCursor(0);
@@ -683,7 +703,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       setCursor(0);
       return;
     }
-    const commandsLive = filter === "" && !typing;
+    const commandsLive = filterNow.current === "" && !typingNow.current;
     if (commandsLive && key.raw === "c") {
       setView("custom");
       return;

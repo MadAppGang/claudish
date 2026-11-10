@@ -1245,6 +1245,34 @@ describe("entering a provider loads THAT provider, on demand", () => {
       e.destroy();
     }
   });
+
+  test("`/` takes effect for the keys that arrive with it, before the next render", async () => {
+    // A paste, or fast typing on a loaded machine, delivers `/co` before React
+    // re-renders. The `c` must still filter, not open the custom-spec dialog.
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          providerList: [
+            provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false }),
+          ],
+          byProvider: { openrouter: [model({ id: "codex-2" }), model({ id: "kimi-k3" })] },
+        })}
+        onDone={() => {}}
+      />
+    );
+    try {
+      await d.press(["RETURN"]);
+      await d.until(modelRowPainted("codex-2"));
+      await d.press(["/", "c", "o"]);
+      await d.until((t) => !joined(t).includes("kimi-k3"));
+      const all = joined(d.recapture().text);
+      expect(all).not.toContain("type a model spec");
+      expect(all).toContain("codex-2");
+      expect(all).not.toContain("kimi-k3");
+    } finally {
+      d.destroy();
+    }
+  });
 });
 
 // ── the cross-provider list, which is no longer the default ──────────────────────
