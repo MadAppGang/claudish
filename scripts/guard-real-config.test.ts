@@ -473,6 +473,31 @@ describe("guard-real-config", () => {
     });
   }
 
+  // A repair reads the file again first: a valid write that lands after the
+  // post-run snapshot belongs to a live session and is kept.
+  test("keeps a valid login written after the post-run snapshot instead of restoring over it", () => {
+    withScratchHome((fixture) => {
+      const path = seedSecret(fixture);
+      const fresh = JSON.stringify({ refresh_token: "TEST_REFRESH_FRESH_LOGIN" });
+      const script = patchedGuard(
+        fixture,
+        "    if (changed && settle(g, prior, after)) damaged = true;",
+        `    if (changed && g.path === ${JSON.stringify(path)}) writeFileSync(g.path, ${JSON.stringify(fresh)}, { mode: 0o600 });\n    if (changed && settle(g, prior, after)) damaged = true;`
+      );
+      const result = runGuard(
+        fixture,
+        `import { rmSync } from "node:fs"; rmSync(${JSON.stringify(path)});`,
+        script
+      );
+      expect(result.exitCode).toBe(0);
+      expect(readFileSync(path, "utf8")).toBe(fresh);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(stderrOf(result)).toContain("WARNING — kept");
+      expect(stderrOf(result)).not.toContain("Restored it from");
+      expectNoSecretCopies(path);
+    });
+  });
+
   // Termination always overrides child success.
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     for (const damage of [true, false]) {

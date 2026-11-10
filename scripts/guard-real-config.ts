@@ -778,8 +778,25 @@ function repairDamage(
   );
 }
 
-/** Act on one changed file; true when the run damaged it (or a repair failed). */
-function settle(guarded: GuardedFile, prior: Snapshot, after: Snapshot): boolean {
+function sameSnapshot(a: Snapshot, b: Snapshot): boolean {
+  return (
+    a.existed === b.existed &&
+    a.unreadable === b.unreadable &&
+    a.content === b.content &&
+    a.mode === b.mode
+  );
+}
+
+/**
+ * Act on one changed file; true when the run damaged it (or a repair failed).
+ * Every repair overwrites, deletes or moves the file, so the file is read again
+ * just before one: a live session may have written it since the post-run
+ * snapshot (a logout and then a login), and that newer state is what gets
+ * classified. It is read again once, so a file rewritten without pause still
+ * gets a decision. The re-read narrows the window to the repair itself; it
+ * cannot close it.
+ */
+function settle(guarded: GuardedFile, prior: Snapshot, after: Snapshot, reread = false): boolean {
   const verdict = classify(guarded, prior, after);
   switch (verdict) {
     case "keep":
@@ -789,9 +806,14 @@ function settle(guarded: GuardedFile, prior: Snapshot, after: Snapshot): boolean
         `\n\x1b[33m! ${guarded.label}: mode changed during the run\x1b[0m — ${guarded.path}\n`
       );
       return !enforceSecretMode(guarded, after);
-    default:
+    default: {
+      if (!reread) {
+        const current = snapshot(guarded.path);
+        if (!sameSnapshot(current, after)) return settle(guarded, prior, current, true);
+      }
       repairDamage(guarded, prior, after, verdict);
       return true;
+    }
   }
 }
 
