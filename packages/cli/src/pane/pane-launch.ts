@@ -147,6 +147,21 @@ export const TERMINAL_IDENTITY_PREFIXES = [
   "VSCODE_",
 ] as const;
 
+/**
+ * A multiplexer's address for the pane that started this server. A Claude Code child that
+ * inherits it runs the user's session hooks against that address, so the child reports its
+ * own session into the caller's multiplexer pane.
+ */
+export const MULTIPLEXER_IDENTITY_PREFIXES = ["HERDR_"] as const;
+
+export const MULTIPLEXER_IDENTITY_VARS = [
+  "HC_TERMINAL_ID",
+  "HC_TERMINAL_SOCKET",
+  "HC_SCOPE",
+  "HC_SESSION",
+  "HC_SOCKET",
+] as const;
+
 /** The MCP server's HOST identity: describes the server's host, not the pane's fresh session. */
 export const HOST_IDENTITY_VARS = [
   "CLAUDISH_LAUNCHER_PID",
@@ -161,7 +176,8 @@ export const LINUX_ENV_STRING_LIMIT = 131_000;
  * Whether `key` is withheld from every claudish child this server starts: a pane child
  * (`buildPaneEnv`) and `run_prompt`'s print child (`mcp/run-prompt-claude-code.ts`).
  * One list for both spawners: `STRIPPED_CHILD_VARS` (a nested-session marker), every
- * `MAGMUX_*` key, the terminal-identity set and the server's host identity.
+ * `MAGMUX_*` key, the terminal-identity and multiplexer-identity sets and the server's
+ * host identity.
  */
 export function isStrippedFromChildEnv(key: string): boolean {
   return (
@@ -169,6 +185,8 @@ export function isStrippedFromChildEnv(key: string): boolean {
     key.startsWith("MAGMUX_") ||
     (TERMINAL_IDENTITY_VARS as readonly string[]).includes(key) ||
     TERMINAL_IDENTITY_PREFIXES.some((p) => key.startsWith(p)) ||
+    MULTIPLEXER_IDENTITY_PREFIXES.some((p) => key.startsWith(p)) ||
+    (MULTIPLEXER_IDENTITY_VARS as readonly string[]).includes(key) ||
     (HOST_IDENTITY_VARS as readonly string[]).includes(key)
   );
 }
