@@ -2,6 +2,68 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.19.0] - 2026-11-10
+
+### Bug Fixes
+
+- remove a dead lock copy left by a takeover that exited *(lmstudio)* ([`b0ce6c7`](https://github.com/MadAppGang/claudish/commit/b0ce6c7cca6cbf4fb00c5fb4297c7d75b7837d38))
+- send ~local requests refused by the unplaced-payload check *(lmstudio)* ([`0009339`](https://github.com/MadAppGang/claudish/commit/000933923d748ba440e2cd46a2b9ea09f19d7178))
+- move a dead machine lock aside before deleting it *(lmstudio)* ([`9a7b03c`](https://github.com/MadAppGang/claudish/commit/9a7b03c20169bb4b7c0267e61c51d9ed00ab5b82))
+- never delete another waiter's lock takeover claim *(lmstudio)* ([`21f180b`](https://github.com/MadAppGang/claudish/commit/21f180be1c66aa2bfacf7bbef5a4f51c705fb693))
+- refuse a payload sent without its LM Link placement *(lmstudio)* ([`ea3210b`](https://github.com/MadAppGang/claudish/commit/ea3210b7c307d4b660a4cb6b6bc1325624da97c7))
+- keep a placement error for every retry of its request *(lmstudio)* ([`275cadf`](https://github.com/MadAppGang/claudish/commit/275cadfb7ca6e34dd241f5dce06222fd565756df))
+- clear a lock takeover claim only when its waiter exited *(lmstudio)* ([`49b4919`](https://github.com/MadAppGang/claudish/commit/49b491930b155786bbdc865be3ba9878f1de3577))
+- register each probe's own API key on the probe lease *(lmstudio)* ([`ee31500`](https://github.com/MadAppGang/claudish/commit/ee315005cb0649c3963af3da7a100449162ab6d9))
+- name the cause when a recovered request had no placement *(lmstudio)* ([`9caa557`](https://github.com/MadAppGang/claudish/commit/9caa5570f3716c0f33907b51b2bc190465450b7b))
+- mask the API key in log lines of the signed local probes *(lmstudio)* ([`44efd23`](https://github.com/MadAppGang/claudish/commit/44efd237b37faed6f48569507498738fa9052bdd))
+- claim a dead machine lock in place instead of moving it *(lmstudio)* ([`0f98bad`](https://github.com/MadAppGang/claudish/commit/0f98bad2b1a549ef3a3b9c37c6ccec0bd6b0340d))
+- keep another machine's loaded size out of a copy's ceiling *(lmstudio)* ([`59f9eb3`](https://github.com/MadAppGang/claudish/commit/59f9eb36cb23acab6ab31c8fac477b3614410c51))
+- mask the API key in an LM Link load error body *(lmstudio)* ([`1476892`](https://github.com/MadAppGang/claudish/commit/147689270f055959f435d65f01904249e0620716))
+- sign the local health and window probes with the API key *(lmstudio)* ([`59b7c41`](https://github.com/MadAppGang/claudish/commit/59b7c417ca1de0c235e74dafba969c4c601d8b3c))
+- clear a placement error left by a failed health check *(lmstudio)* ([`05f767a`](https://github.com/MadAppGang/claudish/commit/05f767a549baeda3f3ca78d327c33a8347ff4a1c))
+- count a placement's age from its answer, not its start *(lmstudio)* ([`e9b8273`](https://github.com/MadAppGang/claudish/commit/e9b82738a3fe928ce846d2dae9d30aab44a47be0))
+- stop a stale-lock takeover from deleting a live lock *(lmstudio)* ([`63238ea`](https://github.com/MadAppGang/claudish/commit/63238ea5cb64f06f882ad0dd7e9500b74059da59))
+- cut --context-window to the model maximum at launch *(lmstudio)* ([`1159607`](https://github.com/MadAppGang/claudish/commit/11596072abea72ed207374a9c5e5951be09c2e34))
+- find the loaded LM Link copy by the load's instance_id *(lmstudio)* ([`9f6d613`](https://github.com/MadAppGang/claudish/commit/9f6d61372b7444682ffc66a6548323a1b4a7aae7))
+- match the LM Link machine name in the model filter *(picker)* ([`c552a93`](https://github.com/MadAppGang/claudish/commit/c552a93fa2b124b15800f89f1b2d6e573126c56e))
+- keep the $/1M header when the list mixes priced rows *(picker)* ([`45d5ef1`](https://github.com/MadAppGang/claudish/commit/45d5ef1fb28fb9b21a8e7912eb9e3d698dd6f584))
+- sign the LM Link model load with the stored API key *(lmstudio)* ([`2697e1d`](https://github.com/MadAppGang/claudish/commit/2697e1dfaccc039be5387d025a668ffafc88d777))
+- use the model maximum as the window below the 128k default *(lmstudio)* ([`4e39176`](https://github.com/MadAppGang/claudish/commit/4e391762b3137fb6de89b094924303d6761d67e9))
+- lock the LM Link preferred device across claudish processes *(lmstudio)* ([`1e69d8b`](https://github.com/MadAppGang/claudish/commit/1e69d8be166c01707fdca516d677882b7f83b741))
+- show the launch context window before the first reply *(status-line)* ([`32d3216`](https://github.com/MadAppGang/claudish/commit/32d32161c676e7e3b55348614851d53b75f2eb7f))
+- stop throwing on local model ids that contain @ *(catalog)* ([`abe2799`](https://github.com/MadAppGang/claudish/commit/abe27991231e4dafb315a9f60eb3528b16c0d9fe))
+- use the loaded context window, else a 64k default *(lmstudio)* ([`7f73243`](https://github.com/MadAppGang/claudish/commit/7f732439e2ebb9c6c71a7437e540532e172bfe0d))
+- remove the "this machine" claim from local billing text *(picker)* ([`9960cfc`](https://github.com/MadAppGang/claudish/commit/9960cfc8cfb86ef3ace5bdd3c7af529f3edd2885))
+- read /api/v0/models so the picker lists local builds *(lmstudio)* ([`512982e`](https://github.com/MadAppGang/claudish/commit/512982e1e14a89d629635008ef73668c882e8a41))
+- accept hostname only in a key position of Bun.serve options *(test)* ([`1940999`](https://github.com/MadAppGang/claudish/commit/1940999d0e1936d2102cabcb6e1ac5c90704f4bd))
+- accept only a top-level hostname key in Bun.serve options *(test)* ([`8b518c0`](https://github.com/MadAppGang/claudish/commit/8b518c0dc958c14d2b1383a22452bbd0e1a71e07))
+- check Bun.serve calls in JavaScript files for a hostname *(test)* ([`3b7de3b`](https://github.com/MadAppGang/claudish/commit/3b7de3b293daa67736ebf7812ce760a6d3f83818))
+- require a hostname option key in each Bun.serve call *(test)* ([`275cf8e`](https://github.com/MadAppGang/claudish/commit/275cf8e3d6779591bf0ae40f92b94fe5c2395eeb))
+- keep the 8 s waitNoOrphans default for other pane tests *(test)* ([`cc0eba6`](https://github.com/MadAppGang/claudish/commit/cc0eba680e29c186e6bae892a021acf43b322d2f))
+- remove the old junit-local.xml before bun run test starts *(test)* ([`497374f`](https://github.com/MadAppGang/claudish/commit/497374fa847545173d28e6744b969f1be69993b4))
+- check Bun.serve calls in .tsx files for a hostname *(test)* ([`add10b6`](https://github.com/MadAppGang/claudish/commit/add10b6120e403baa78729848bf525bb3b76e562))
+- wait up to 60 s for a pane's reap in the leftover check *(test)* ([`a2bab58`](https://github.com/MadAppGang/claudish/commit/a2bab5891d982c61591fe65c0fef4aa09ce4951d))
+- filter on c after / when both keys arrive before a render *(picker)* ([`d9990aa`](https://github.com/MadAppGang/claudish/commit/d9990aa983d4dcc079453493ee7a2a503cf7b625))
+- bind every Bun.serve test server to 127.0.0.1 *(test)* ([`6c200d6`](https://github.com/MadAppGang/claudish/commit/6c200d6e70cd6d5cc96e9140b980a41ce4a9b7dd))
+
+### Documentation
+
+- record the LM Link lock, unplaced payloads and copy ceilings *(routing)* ([`e15606c`](https://github.com/MadAppGang/claudish/commit/e15606c57c511ada1ac762eed4674aac62eaad64))
+- stamp ai-docs/release.md as verified by v14.18.6 *(release)* ([`b8a032e`](https://github.com/MadAppGang/claudish/commit/b8a032e96dc4d055a21d12687599556902555477))
+- update CHANGELOG.md for v14.18.6([`ae5f566`](https://github.com/MadAppGang/claudish/commit/ae5f56692f42c725c02e2d42b3d136267a83702c))
+
+### New Features
+
+- show the LM Link machine in its own column *(picker)* ([`3e451ea`](https://github.com/MadAppGang/claudish/commit/3e451eacd6e92fa664fc44a0a1a6313568635497))
+- ask for the context window of an LM Studio model *(picker)* ([`cb8d272`](https://github.com/MadAppGang/claudish/commit/cb8d272c5d1785143c43edac0f79824261e23492))
+- add --context-window to set the local model window *(cli)* ([`41fa75c`](https://github.com/MadAppGang/claudish/commit/41fa75c4f5b8bf1dd500441613c0ceb19769bd3a))
+- choose the LM Link machine per model in the picker *(lmstudio)* ([`fe1a93e`](https://github.com/MadAppGang/claudish/commit/fe1a93ec9d6bc63538bbb1401663eb30a51e2e33))
+- print the slowest test files after bun run test *(test)* ([`6372b07`](https://github.com/MadAppGang/claudish/commit/6372b07a0a149b1ae6ee27b65d1187f2a307f0e0))
+
+### Refactoring
+
+- mask load errors with credentialValuesFromRequest *(lmstudio)* ([`f6c5504`](https://github.com/MadAppGang/claudish/commit/f6c550467755fa706f16820e9af56dba3095ccdf))
+
 ## [14.18.6] - 2026-11-10
 
 ### Bug Fixes
