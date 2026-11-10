@@ -565,6 +565,21 @@ describe("ensureLMStudioInstance", () => {
     expect(existsSync(lock)).toBe(false);
   });
 
+  test("a takeover never removes the claim of a waiter that followed an exited one", () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "999999999");
+    const claim = join(lock, "takeover");
+    mkdirSync(claim);
+    writeFileSync(join(claim, "pid"), "999999999");
+    writeFileSync(join(claim, "after-999999999"), String(process.ppid));
+
+    expect(takeOverStaleLock(lock, lookAtLock(lock)?.identity ?? "")).toBe(false);
+
+    expect(readFileSync(join(claim, "after-999999999"), "utf-8")).toBe(String(process.ppid));
+    expect(existsSync(join(lock, "owner"))).toBe(true);
+  });
+
   test("a takeover of a lock another waiter already removed does not make it again", () => {
     const lock = join(lockDir, "machine.lock");
     mkdirSync(lock);
