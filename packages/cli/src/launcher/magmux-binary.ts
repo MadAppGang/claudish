@@ -14,14 +14,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Find the magmux binary, or null.
- *
- * Priority:
+ * Every magmux binary found, in priority order, each path once:
  *  1. Bundled (`native/magmux-<platform>-<arch>`)
  *  2. The platform-specific npm package (npm installs only the matching one)
  *  3. `magmux` in PATH (e.g. Homebrew)
+ *
+ * A caller that needs a minimum version walks this list, because the first entry can be a
+ * stale bundled copy while a newer one sits on PATH.
  */
-export function findMagmuxBinaryOrNull(): string | null {
+export function findMagmuxCandidates(): string[] {
   const thisFile = fileURLToPath(import.meta.url);
   const thisDir = dirname(thisFile);
   // `launcher/` is one level below `src/`, which is itself below the package
@@ -29,10 +30,14 @@ export function findMagmuxBinaryOrNull(): string | null {
   const pkgRoots = [join(thisDir, ".."), join(thisDir, "..", "..")];
   const platform = process.platform;
   const arch = process.arch;
+  const found: string[] = [];
+  const add = (path: string) => {
+    if (!found.includes(path)) found.push(path);
+  };
 
   for (const pkgRoot of pkgRoots) {
     const bundled = join(pkgRoot, "native", `magmux-${platform}-${arch}`);
-    if (existsSync(bundled)) return bundled;
+    if (existsSync(bundled)) add(bundled);
   }
 
   try {
@@ -40,7 +45,10 @@ export function findMagmuxBinaryOrNull(): string | null {
     let searchDir = pkgRoots[0] as string;
     for (let i = 0; i < 5; i++) {
       const candidate = join(searchDir, "node_modules", pkgName, "bin", "magmux");
-      if (existsSync(candidate)) return candidate;
+      if (existsSync(candidate)) {
+        add(candidate);
+        break;
+      }
       const parent = dirname(searchDir);
       if (parent === searchDir) break;
       searchDir = parent;
@@ -51,12 +59,17 @@ export function findMagmuxBinaryOrNull(): string | null {
 
   try {
     const result = execSync("which magmux", { encoding: "utf-8" }).trim();
-    if (result) return result;
+    if (result) add(result);
   } catch {
     /* not in PATH */
   }
 
-  return null;
+  return found;
+}
+
+/** The first magmux binary found (`findMagmuxCandidates` order), or null. */
+export function findMagmuxBinaryOrNull(): string | null {
+  return findMagmuxCandidates()[0] ?? null;
 }
 
 /**

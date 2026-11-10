@@ -80,11 +80,7 @@ import {
   UNKNOWN_POSITION,
   planScroll,
 } from "./scroll-input.js";
-import {
-  type ControlCapabilities,
-  PANES_SERVE_VIEW_SOCKET,
-  verifyViewSocket,
-} from "./view-socket.js";
+import { type ControlCapabilities, verifyViewSocket } from "./view-socket.js";
 
 /** While no box has been seen, the ready reading also runs this often: a static dialog sends no frame. */
 const READY_TICK_MS = 250;
@@ -465,7 +461,7 @@ export class ReplayPane implements RegisteredPane {
       this.viewSock = null;
       this.o.onViewSocket?.();
     }
-    if (PANES_SERVE_VIEW_SOCKET) void this.checkViewSocket(client, caps.ok ? caps.result : null);
+    void this.checkViewSocket(client, caps.ok ? caps.result : null);
     // a size set while disconnected, or one whose reply was lost, is applied now
     this.lastSentSize = null;
     if (this.supportsResize && !samePaneSize(this.appliedSize, this.desiredSize)) this.kickResize();

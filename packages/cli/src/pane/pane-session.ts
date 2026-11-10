@@ -173,11 +173,7 @@ import {
 } from "./slot-state.js";
 import { TranscriptFollower, type TranscriptView, type TurnView } from "./transcript-follower.js";
 import type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
-import {
-  type ControlCapabilities,
-  PANES_SERVE_VIEW_SOCKET,
-  verifyViewSocket,
-} from "./view-socket.js";
+import { type ControlCapabilities, verifyViewSocket } from "./view-socket.js";
 
 export type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 
@@ -912,7 +908,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     }
     // a path proven on the previous connection says nothing about this one
     this.viewSock = null;
-    if (PANES_SERVE_VIEW_SOCKET) void this.checkViewSocket(client, caps.ok ? caps.result : null);
+    void this.checkViewSocket(client, caps.ok ? caps.result : null);
     // a size set while disconnected, or one whose reply was lost, is applied now
     this.lastSentSize = null;
     if (this.supportsResize && !samePaneSize(this.appliedSize, this.desiredSize)) this.kickResize();

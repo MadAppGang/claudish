@@ -39,8 +39,9 @@ import {
   classifyPassthroughTokens,
 } from "../cli.js";
 import { ENV } from "../config.js";
-import { findMagmuxBinaryOrNull } from "../launcher/magmux-binary.js";
+import { findMagmuxCandidates } from "../launcher/magmux-binary.js";
 import { STRIPPED_CHILD_VARS } from "../launcher/magmux-wrapper.js";
+import { log } from "../logger.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { isPaneShellManagedKey } from "./child-env.js";
 import { DEFAULT_PANE_COLS, DEFAULT_PANE_ROWS } from "./pane-size.js";
@@ -675,12 +676,13 @@ export const KNOWN_CLAUDISH_FLAGS: readonly string[] = Object.keys(CLAUDISH_FLAG
 /* ───────────────────────────── magmux binary ───────────────────────────── */
 
 /**
- * The first magmux that binds and dials its socket at any path depth (0.18.0). It also carries
- * what 0.17.0 introduced: the Claude Code input gate with a declared transcript
- * (`--session-id`, `--transcript`, and `list`'s `bound`/`sessionId`/`transcriptPath`). A
- * pre-release such as `0.18.0-rc1` passes: `versionAtLeast` compares the numeric triple only.
+ * The first magmux that serves a read-only view socket beside the control socket (0.19.0,
+ * `--view-sock`). It also carries what 0.18.0 and 0.17.0 introduced: a socket at any path
+ * depth, and the Claude Code input gate with a declared transcript (`--session-id`,
+ * `--transcript`, and `list`'s `bound`/`sessionId`/`transcriptPath`). A pre-release such as
+ * `0.19.0-rc1` passes: `versionAtLeast` compares the numeric triple only.
  */
-export const MIN_MAGMUX_VERSION = "0.18.0";
+export const MIN_MAGMUX_VERSION = "0.19.0";
 
 export class MagmuxUnavailableError extends Error {
   readonly code = "magmux_unavailable";
@@ -726,21 +728,71 @@ export async function assertMagmuxAvailable(binary?: string): Promise<MagmuxBina
 }
 
 async function probeMagmux(binary?: string): Promise<MagmuxBinary> {
-  const found = binary ?? findMagmuxBinaryOrNull();
-  if (!found)
-    throw new MagmuxUnavailableError(
-      "magmux_unavailable: magmux not found (bundled package or PATH); install it: brew install MadAppGang/tap/magmux"
-    );
-  let version = await readMagmuxVersion(found);
+  if (binary !== undefined) return probeOneMagmux(binary);
+  return selectMagmux(findMagmuxCandidates());
+}
+
+/**
+ * A pane magmux is a 0.x release at or above `MIN_MAGMUX_VERSION`. A version off the 0.x line
+ * is not a newer magmux: a stale bundled build reported "3.4.2", which passes any 0.x floor.
+ */
+export function isUsableMagmuxVersion(version: string): boolean {
+  return /^0\./.test(version) && versionAtLeast(version, MIN_MAGMUX_VERSION);
+}
+
+/** What a pane magmux needs, named in every refusal. */
+const MAGMUX_NEEDS =
+  "a read-only view socket, a socket at any path depth, and the Claude Code input gate bound to a named transcript";
+
+/** The `X.Y.Z` of one binary, asked twice when the first run printed none. */
+async function versionOf(found: string): Promise<string> {
   // Under load a run has exited 0 with no version in its output, and six concurrent probes
   // refused a good 0.17.0 as "version unknown". Ask once more before refusing; a real version
   // below the floor is an answer and is not retried.
-  if (!version) version = await readMagmuxVersion(found);
-  if (!version || !versionAtLeast(version, MIN_MAGMUX_VERSION))
+  const version = await readMagmuxVersion(found);
+  return version || readMagmuxVersion(found);
+}
+
+/** An explicit binary is the only candidate: it is used, or the session is refused. */
+async function probeOneMagmux(found: string): Promise<MagmuxBinary> {
+  const version = await versionOf(found);
+  if (!version || !isUsableMagmuxVersion(version))
     throw new MagmuxUnavailableError(
-      `magmux_unavailable: ${found} is version ${version || "unknown"}; panes need >= ${MIN_MAGMUX_VERSION} (a socket at any path depth, and the Claude Code input gate bound to a named transcript); upgrade: brew upgrade MadAppGang/tap/magmux`
+      `magmux_unavailable: ${found} is version ${version || "unknown"}${version && !/^0\./.test(version) ? " (not a 0.x release)" : ""}; panes need >= ${MIN_MAGMUX_VERSION} (${MAGMUX_NEEDS}); upgrade: brew upgrade MadAppGang/tap/magmux`
     );
   return { binary: found, version };
+}
+
+/**
+ * The first candidate that passes `isUsableMagmuxVersion`, probed in order; the walk stops at the
+ * first pass. Only when none passes is the session refused, naming every candidate and what it
+ * reported, so a stale bundled copy never hides a good magmux on PATH.
+ */
+export async function selectMagmux(candidates: readonly string[]): Promise<MagmuxBinary> {
+  if (candidates.length === 0)
+    throw new MagmuxUnavailableError(
+      "magmux_unavailable: magmux not found (bundled package or PATH); install it: brew install MadAppGang/tap/magmux"
+    );
+  const refused: string[] = [];
+  for (const found of candidates) {
+    let version: string;
+    try {
+      version = await versionOf(found);
+    } catch (e) {
+      refused.push(`${found} --version failed (${e instanceof Error ? e.message : String(e)})`);
+      continue;
+    }
+    if (version && isUsableMagmuxVersion(version)) {
+      log(`[pane] magmux ${found} ${version}`);
+      return { binary: found, version };
+    }
+    if (!version) refused.push(`${found} reports no version`);
+    else if (!/^0\./.test(version)) refused.push(`${found} reports ${version} (not a 0.x release)`);
+    else refused.push(`${found} reports ${version}`);
+  }
+  throw new MagmuxUnavailableError(
+    `magmux_unavailable: no usable magmux; panes need a 0.x release >= ${MIN_MAGMUX_VERSION} (${MAGMUX_NEEDS}): ${refused.join(", ")}; upgrade: brew upgrade MadAppGang/tap/magmux`
+  );
 }
 
 /** How long one `magmux --version` run may take before it is killed and counted as no answer. */
@@ -898,10 +950,11 @@ export function spawnPaneWatcher(args: WatcherArgs): ChildProcess {
 
 /**
  * Fatal magmux stderr: an invalid `--id` (magmux ignores it and binds under its pid), an
- * unusable `--sock-dir` / `MAGMUX_SOCK_DIR` (magmux exits 1), or a failed socket bind.
+ * unusable `--sock-dir` / `MAGMUX_SOCK_DIR` (magmux exits 1), a failed control socket bind,
+ * or a failed view socket bind (`magmux: view socket <path>: <error>`, exit 1).
  */
 export const FATAL_MAGMUX_STDERR =
-  /ignoring --id|magmux: (?:--sock-dir|MAGMUX_SOCK_DIR) |magmux: socket/;
+  /ignoring --id|magmux: (?:--sock-dir|MAGMUX_SOCK_DIR) |magmux: socket|magmux: view socket /;
 
 export interface MagmuxSpawnInput {
   binary: string;
@@ -924,7 +977,9 @@ export interface MagmuxSpawnInput {
 /**
  * magmux's argv. The declaration comes before `-e`, which it binds; `--id <paneId>
  * --sock-dir` stays adjacent, because that pair is how the reap, the sweep and the pane
- * watcher recognise this pane's magmux (`magmuxNeedle`).
+ * watcher recognise this pane's magmux (`magmuxNeedle`). `--view-sock` (a flag with no value)
+ * comes before that pair, so it never splits it; `--view-op` is never passed, so a client on
+ * the view socket can call no plugin op.
  */
 export function paneMagmuxArgv(input: Omit<MagmuxSpawnInput, "binary" | "cwd" | "env">): string[] {
   return [
@@ -936,6 +991,7 @@ export function paneMagmuxArgv(input: Omit<MagmuxSpawnInput, "binary" | "cwd" | 
     input.sessionUuid,
     "--transcript",
     resolve(input.transcriptPath),
+    "--view-sock",
     "--id",
     input.paneId,
     "--sock-dir",
@@ -968,6 +1024,7 @@ export function replayMagmuxArgv(
   return [
     "--headless",
     "--no-status",
+    "--view-sock",
     "--id",
     input.paneId,
     "--sock-dir",

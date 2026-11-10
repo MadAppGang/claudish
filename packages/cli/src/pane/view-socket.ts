@@ -10,12 +10,6 @@
 import { MagmuxClient } from "./magmux-client.js";
 import { viewSockPathOf } from "./process-identity.js";
 
-/**
- * Whether claudish starts panes with a view socket. While false no pane has one, attach runs no
- * check, and every snapshot reports `viewSockPath: null`.
- */
-export const PANES_SERVE_VIEW_SOCKET: boolean = false;
-
 const VIEW_PROBE_MS = 2_000;
 
 export type ViewSocketCheck = { ok: true; path: string } | { ok: false; detail: string };

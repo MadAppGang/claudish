@@ -6,6 +6,8 @@ import {
   MIN_MAGMUX_VERSION,
   MagmuxUnavailableError,
   assertMagmuxAvailable,
+  isUsableMagmuxVersion,
+  selectMagmux,
 } from "./pane-launch.js";
 
 const tempDirs: string[] = [];
@@ -218,13 +220,67 @@ exit 7`);
   test(
     "B9: accepts a newer version",
     async () => {
-      const fake = fakeMagmux("printf '%s\\n' 'magmux 0.18.2'");
+      const fake = fakeMagmux("printf '%s\\n' 'magmux 0.19.2'");
 
       expect(await assertMagmuxAvailable(fake.binary)).toEqual({
         binary: fake.binary,
-        version: "0.18.2",
+        version: "0.19.2",
       });
       expect(fake.runs()).toBe(1);
+    },
+    testTimeout
+  );
+});
+
+describe("magmux selection among candidates", () => {
+  test("a version off the 0.x line is not usable, however high", () => {
+    expect(isUsableMagmuxVersion("3.4.2")).toBe(false);
+    expect(isUsableMagmuxVersion("1.0.0")).toBe(false);
+    expect(isUsableMagmuxVersion("0.18.1")).toBe(false);
+    expect(isUsableMagmuxVersion(MIN_MAGMUX_VERSION)).toBe(true);
+    expect(isUsableMagmuxVersion("0.20.0")).toBe(true);
+  });
+
+  test(
+    "a stale bundled v3.4.2 is skipped for the 0.19.0 behind it, and the walk stops there",
+    async () => {
+      const stale = fakeMagmux("printf '%s\\n' 'magmux v3.4.2'");
+      const good = fakeMagmux(`printf '%s\\n' 'magmux ${MIN_MAGMUX_VERSION}'`);
+      const later = fakeMagmux("printf '%s\\n' 'magmux 0.20.0'");
+      expect(await selectMagmux([stale.binary, good.binary, later.binary])).toEqual({
+        binary: good.binary,
+        version: MIN_MAGMUX_VERSION,
+      });
+      expect(later.runs()).toBe(0);
+    },
+    testTimeout
+  );
+
+  test(
+    "no usable candidate refuses, naming every candidate and what it reported",
+    async () => {
+      const stale = fakeMagmux("printf '%s\\n' 'magmux v3.4.2'");
+      const old = fakeMagmux("printf '%s\\n' 'magmux 0.18.1'");
+      const refusal = selectMagmux([stale.binary, old.binary]);
+      await expect(refusal).rejects.toBeInstanceOf(MagmuxUnavailableError);
+      await expect(refusal).rejects.toThrow(
+        `no usable magmux; panes need a 0.x release >= ${MIN_MAGMUX_VERSION} (a read-only view socket`
+      );
+      await expect(refusal).rejects.toThrow(`${stale.binary} reports 3.4.2 (not a 0.x release)`);
+      await expect(refusal).rejects.toThrow(`${old.binary} reports 0.18.1`);
+    },
+    testTimeout
+  );
+
+  test("no candidate at all is magmux not found", async () => {
+    await expect(selectMagmux([])).rejects.toThrow("magmux not found");
+  });
+
+  test(
+    "an explicit binary is the only candidate: off the 0.x line it is refused",
+    async () => {
+      const stale = fakeMagmux("printf '%s\\n' 'magmux v3.4.2'");
+      await expectUnavailable(stale.binary, "is version 3.4.2 (not a 0.x release)");
     },
     testTimeout
   );
