@@ -1,0 +1,381 @@
+/**
+ * Choosing the machine that runs an LM Studio model through LM Link.
+ *
+ * `lms` is replaced by an in-memory LM Studio that follows the behaviour
+ * measured live: a REST load lands on the preferred device and takes the model
+ * key as its identifier on every machine, `lms load` stays on this machine, and
+ * `lms ps` reports `deviceIdentifier: null` for this machine.
+ */
+
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  type LmsRunner,
+  ensureLMStudioInstance,
+  expandModelsToMachines,
+  isLoopbackUrl,
+  readLMStudioMachines,
+  splitLMStudioDevice,
+} from "./lmstudio-devices.js";
+
+const SELF = "self-id";
+const M1 = "m1-id";
+const BASE = "http://localhost:1234";
+
+interface Row {
+  identifier: string;
+  modelKey: string;
+  deviceIdentifier: string | null;
+  contextLength: number;
+}
+
+let preferred: string;
+let loaded: Row[];
+let stored: { modelKey: string; deviceIdentifier: string | null; maxContextLength?: number }[];
+let lmsLoads: string[][];
+let lmsLoadFails: boolean;
+let lastLoadBody: unknown;
+let contextLengthAfterLoad: number;
+let preferredWrites: string[];
+let loadStatus: number;
+/** Where the next load lands, when it must not follow the preferred device. */
+let loadsOn: string | undefined;
+
+const run: LmsRunner = async (args) => {
+  const command = args.join(" ");
+  if (command === "link status --json") {
+    return JSON.stringify({
+      deviceIdentifier: SELF,
+      preferredDeviceIdentifier: preferred,
+      peers: [
+        { deviceIdentifier: M1, deviceName: "m1", status: "connected" },
+        { deviceIdentifier: "gone-id", deviceName: "gone", status: "disconnected" },
+      ],
+    });
+  }
+  if (command === "ls --json") return JSON.stringify(stored);
+  if (command === "ps --json") return JSON.stringify(loaded);
+  if (args[0] === "load") {
+    if (lmsLoadFails) return null;
+    lmsLoads.push(args.slice(1));
+    loaded.push({
+      identifier: args[3] as string,
+      modelKey: args[1] as string,
+      deviceIdentifier: null,
+      contextLength: 64_000,
+    });
+    return "";
+  }
+  if (args[0] === "link" && args[1] === "set-preferred-device") {
+    preferred = args[2] as string;
+    preferredWrites.push(preferred);
+    return "";
+  }
+  throw new Error(`unexpected lms ${command}`);
+};
+
+const realFetch = globalThis.fetch;
+
+beforeEach(() => {
+  preferred = M1;
+  loaded = [];
+  stored = [
+    { modelKey: "both", deviceIdentifier: null },
+    { modelKey: "both", deviceIdentifier: M1 },
+    { modelKey: "only-m1", deviceIdentifier: M1 },
+    { modelKey: "only-here", deviceIdentifier: null },
+    { modelKey: "on-gone", deviceIdentifier: "gone-id" },
+  ];
+  preferredWrites = [];
+  lmsLoads = [];
+  lmsLoadFails = false;
+  lastLoadBody = undefined;
+  contextLengthAfterLoad = 64_000;
+  loadStatus = 200;
+  loadsOn = undefined;
+  globalThis.fetch = mock(async (_url: unknown, init?: RequestInit) => {
+    if (loadStatus !== 200) return new Response("no memory", { status: loadStatus });
+    lastLoadBody = JSON.parse(String(init?.body));
+    const { model } = lastLoadBody as { model: string };
+    const device = loadsOn ?? preferred;
+    loaded.push({
+      identifier: model,
+      modelKey: model,
+      deviceIdentifier: device === SELF ? null : device,
+      contextLength: contextLengthAfterLoad,
+    });
+    return Response.json({ instance_id: model, status: "loaded" });
+  }) as unknown as typeof fetch;
+});
+
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
+describe("splitLMStudioDevice", () => {
+  test("splits the machine off the model id", () => {
+    expect(splitLMStudioDevice("qwen/qwen3.8-27b~m1")).toEqual({
+      model: "qwen/qwen3.8-27b",
+      device: "m1",
+    });
+  });
+
+  test("leaves an id with no suffix alone", () => {
+    expect(splitLMStudioDevice("qwen/qwen3.8-27b")).toEqual({ model: "qwen/qwen3.8-27b" });
+  });
+
+  test("a leading ~ is a moving pointer", () => {
+    expect(splitLMStudioDevice("~vendor/latest")).toEqual({ model: "~vendor/latest" });
+  });
+});
+
+describe("isLoopbackUrl", () => {
+  test.each([
+    ["http://localhost:1234", true],
+    ["http://127.0.0.1:1234", true],
+    ["http://[::1]:1234", true],
+    ["http://192.168.1.20:1234", false],
+    ["not a url", false],
+  ])("%s -> %p", (url, expected) => {
+    expect(isLoopbackUrl(url)).toBe(expected);
+  });
+});
+
+describe("rows per machine", () => {
+  const models = [
+    { id: "both", displayName: "Both Model", contextWindow: 213_176 },
+    { id: "only-m1" },
+    { id: "only-here" },
+    { id: "on-gone" },
+    { id: "not-in-lms" },
+  ];
+
+  async function expanded() {
+    const machines = await readLMStudioMachines(run);
+    if (!machines) throw new Error("expected machines");
+    return expandModelsToMachines(models, machines);
+  }
+
+  test("a model on both machines gets one row each, this machine first", async () => {
+    expect((await expanded()).map((m) => m.id)).toEqual([
+      "both~local",
+      "both~m1",
+      "only-m1~m1",
+      "only-here~local",
+      "on-gone",
+      "not-in-lms",
+    ]);
+  });
+
+  test("the display name states the machine", async () => {
+    const rows = await expanded();
+    expect(rows.find((m) => m.id === "both~m1")?.displayName).toBe("Both Model (m1)");
+    expect(rows.find((m) => m.id === "only-m1~m1")?.displayName).toBe("only-m1 (m1)");
+  });
+
+  test("a window comes from the instance on that machine only", async () => {
+    loaded = [{ identifier: "both", modelKey: "both", deviceIdentifier: M1, contextLength: 8_192 }];
+
+    const rows = await expanded();
+
+    expect(rows.find((m) => m.id === "both~m1")?.contextWindow).toBe(8_192);
+    expect(rows.find((m) => m.id === "both~local")?.contextWindow).toBeUndefined();
+  });
+
+  test("an unloaded copy whose maximum is below the default reports that maximum", async () => {
+    stored = [
+      { modelKey: "both", deviceIdentifier: M1, maxContextLength: 32_768 },
+      { modelKey: "both", deviceIdentifier: null, maxContextLength: 262_144 },
+    ];
+    const machines = await readLMStudioMachines(run);
+    if (!machines) throw new Error("expected machines");
+
+    const models: { id: string; contextWindow?: number }[] = [{ id: "both" }];
+    const rows = expandModelsToMachines(models, machines, 64_000);
+
+    expect(rows.find((m) => m.id === "both~m1")?.contextWindow).toBe(32_768);
+    expect(rows.find((m) => m.id === "both~local")?.contextWindow).toBeUndefined();
+  });
+
+  test("no connected machine means no labels", async () => {
+    const lonely: LmsRunner = async (args, timeout) => {
+      if (args.join(" ") === "link status --json") {
+        return JSON.stringify({ deviceIdentifier: SELF, peers: [] });
+      }
+      return run(args, timeout);
+    };
+
+    expect(await readLMStudioMachines(lonely)).toBeNull();
+  });
+
+  test("a missing lms means no labels", async () => {
+    expect(await readLMStudioMachines(async () => null)).toBeNull();
+  });
+});
+
+describe("ensureLMStudioInstance", () => {
+  const ensure = (model: string, device: string, contextLength?: number) =>
+    ensureLMStudioInstance({ baseUrl: BASE, model, device, contextLength, run });
+
+  test("reuses an instance already running on the machine", async () => {
+    loaded = [{ identifier: "both", modelKey: "both", deviceIdentifier: M1, contextLength: 9_000 }];
+
+    expect(await ensure("both", "m1")).toEqual({ instanceId: "both", contextLength: 9_000 });
+    expect(preferredWrites).toEqual([]);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(lmsLoads).toEqual([]);
+  });
+
+  test("a load on this machine takes its own identifier and leaves the preference alone", async () => {
+    const instance = await ensure("both", "local");
+
+    expect(instance).toEqual({ instanceId: "both~local", contextLength: 64_000 });
+    expect(loaded[0]?.deviceIdentifier).toBeNull();
+    expect(preferredWrites).toEqual([]);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test("a copy on the other machine does not stop a load on this one", async () => {
+    loaded = [{ identifier: "both", modelKey: "both", deviceIdentifier: M1, contextLength: 9_000 }];
+
+    expect((await ensure("both", "local")).instanceId).toBe("both~local");
+  });
+
+  test("a load on a linked machine switches the preference and restores it", async () => {
+    preferred = SELF;
+
+    expect((await ensure("both", "m1")).instanceId).toBe("both");
+    expect(loaded[0]?.deviceIdentifier).toBe(M1);
+    expect(preferredWrites).toEqual([M1, SELF]);
+    expect(preferred).toBe(SELF);
+  });
+
+  test("does not touch the setting when the machine is already preferred", async () => {
+    await ensure("both", "m1");
+
+    expect(loaded[0]?.deviceIdentifier).toBe(M1);
+    expect(preferredWrites).toEqual([]);
+  });
+
+  test("the machine name matches in any case, and by device id", async () => {
+    await ensure("both", "M1");
+    loaded = [];
+    await ensure("both", M1);
+
+    expect(loaded[0]?.deviceIdentifier).toBe(M1);
+  });
+
+  test("the load asks for the default context length", async () => {
+    await ensure("both", "m1", 64_000);
+    await ensure("only-here", "local", 64_000);
+
+    expect(lastLoadBody).toEqual({ model: "both", context_length: 64_000 });
+    expect(lmsLoads[0]).toEqual([
+      "only-here",
+      "--identifier",
+      "only-here~local",
+      "-y",
+      "-c",
+      "64000",
+    ]);
+  });
+
+  test("the context length stays within what that copy supports", async () => {
+    stored = [{ modelKey: "both", deviceIdentifier: M1, maxContextLength: 8_192 }];
+
+    await ensure("both", "m1", 64_000);
+
+    expect(lastLoadBody).toEqual({ model: "both", context_length: 8_192 });
+  });
+
+  test("a running instance smaller than the request is refused with both sizes", async () => {
+    loaded = [{ identifier: "both", modelKey: "both", deviceIdentifier: M1, contextLength: 8_192 }];
+
+    await expect(ensure("both", "m1", 64_000)).rejects.toThrow(/8192.*64000/);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test("a running instance at the model's maximum is accepted", async () => {
+    stored = [{ modelKey: "both", deviceIdentifier: M1, maxContextLength: 8_192 }];
+    loaded = [{ identifier: "both", modelKey: "both", deviceIdentifier: M1, contextLength: 8_192 }];
+
+    expect((await ensure("both", "m1", 64_000)).contextLength).toBe(8_192);
+  });
+
+  test("a running instance larger than the request is accepted", async () => {
+    loaded = [
+      { identifier: "both", modelKey: "both", deviceIdentifier: M1, contextLength: 128_000 },
+    ];
+
+    expect((await ensure("both", "m1", 64_000)).contextLength).toBe(128_000);
+  });
+
+  test("a load that comes up smaller than requested is refused", async () => {
+    contextLengthAfterLoad = 8_192;
+
+    await expect(ensure("both", "m1", 64_000)).rejects.toThrow(/8192.*64000/);
+  });
+
+  test("a failed load on a linked machine restores the preference and names the status", async () => {
+    preferred = SELF;
+    loadStatus = 500;
+
+    await expect(ensure("both", "m1")).rejects.toThrow(/500 no memory/);
+    expect(preferred).toBe(SELF);
+  });
+
+  test("a failed load on this machine is reported", async () => {
+    lmsLoadFails = true;
+
+    await expect(ensure("both", "local")).rejects.toThrow(/could not load both on this machine/);
+  });
+
+  test("a load that lands on another machine is refused", async () => {
+    loadsOn = SELF;
+
+    await expect(ensure("both", "m1")).rejects.toThrow(/different machine/);
+  });
+
+  test("two instances sharing a name are refused before any request can pick the wrong one", async () => {
+    loaded = [
+      { identifier: "both", modelKey: "both", deviceIdentifier: null, contextLength: 1 },
+      { identifier: "both", modelKey: "both", deviceIdentifier: M1, contextLength: 1 },
+    ];
+
+    await expect(ensure("both", "m1")).rejects.toThrow(/more than one machine/);
+    await expect(ensure("both", "local")).rejects.toThrow(/more than one machine/);
+  });
+
+  test("a load that would create a second instance with that name is refused first", async () => {
+    loaded = [{ identifier: "both", modelKey: "other", deviceIdentifier: null, contextLength: 1 }];
+
+    await expect(ensure("both", "m1")).rejects.toThrow(/more than one machine/);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test("a machine that is not connected is refused and the connected ones are named", async () => {
+    await expect(ensure("both", "gone")).rejects.toThrow(/Connected: local, m1/);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test("a server on another host is refused without running lms", async () => {
+    const never = mock(async () => null);
+
+    await expect(
+      ensureLMStudioInstance({
+        baseUrl: "http://192.168.1.20:1234",
+        model: "both",
+        device: "m1",
+        run: never,
+      })
+    ).rejects.toThrow(/on another host/);
+    expect(never).not.toHaveBeenCalled();
+  });
+
+  test("concurrent loads change the preferred device one at a time", async () => {
+    preferred = SELF;
+
+    await Promise.all([ensure("only-m1", "m1"), ensure("both", "m1")]);
+
+    expect(preferredWrites).toEqual([M1, SELF, M1, SELF]);
+  });
+});

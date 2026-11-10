@@ -725,3 +725,16 @@ layer (`auth/credentials/billing-probe.ts`, installed only as a side effect of i
 not alias the PAYG `SAKANA_API_KEY`) have no such ambiguity, which is why they sit in the
 plain name set. Adding `openai-codex` to that set as well would short-circuit the probe and
 report `SUB` to every API-key user — do not.
+
+## LM Studio machines through LM Link
+
+With LM Link connected and LM Studio on this machine, the picker lists one row per machine that holds a model: `lms@qwen/qwen3.8-27b~local`, `lms@qwen/qwen3.8-27b~m1`. The `~<machine>` suffix is claudish's and never reaches LM Studio. A server on another host keeps one row per model, because `lms` describes only the machine it runs on.
+
+LM Studio has no per-request device (measured: a `<device>:<model>` name answers 400, a `device` field on the REST load answers 400). `LocalTransport` places the model before the first request (`lmstudio-devices.ts`):
+
+- This machine: `lms load --identifier <model>~local`. `lms load` stays local even with another machine preferred.
+- A linked machine: a REST load with that machine preferred for the duration of the load. A REST load follows the preferred device.
+
+The identifier matters because LM Studio gives two REST-loaded copies the same identifier, and a request names only the identifier. Two instances sharing a name on different machines are refused rather than guessed at. After every load, `lms ps` must show the instance on the requested machine, or the request fails.
+
+A load asks for `unknownContextWindow` (64,000), or the copy's `maxContextLength` when that is lower; `CLAUDISH_CONTEXT_WINDOW` replaces the request. After a load, and for an instance already running, `lms ps` must report at least that size or the request fails with both numbers (measured: `m1` loads with 8,192 when no size is given). An unloaded copy whose maximum is below the default reports that maximum, so Claude Code compacts before the model overflows.

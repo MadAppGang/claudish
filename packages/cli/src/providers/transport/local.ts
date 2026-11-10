@@ -16,6 +16,11 @@ import { credentials } from "../../auth/credentials/authority.js";
 import { markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
+import {
+  type LMStudioInstance,
+  ensureLMStudioInstance,
+  splitLMStudioDevice,
+} from "../../providers/lmstudio-devices.js";
 import { getProviderByName } from "../../providers/provider-definitions.js";
 import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
 import {
@@ -64,6 +69,11 @@ export class LocalTransport implements ProviderTransport {
 
   private config: LocalProviderConfig;
   private modelName: string;
+  /** The LM Link machine named by the model id's suffix. */
+  private lmStudioDevice?: string;
+  private lmStudioInstance?: Promise<LMStudioInstance>;
+  /** Why the payload step could not place the model; `refreshAuth` fails the request with it. */
+  private lmStudioPlacementError?: unknown;
   private concurrency?: number;
   /**
    * SUCCESS-ONLY latch: true once a probe has actually reached the server.
@@ -89,7 +99,13 @@ export class LocalTransport implements ProviderTransport {
 
   constructor(config: LocalProviderConfig, modelName: string, options?: { concurrency?: number }) {
     this.config = config;
-    this.modelName = modelName;
+    if (config.name === "lmstudio") {
+      const { model, device } = splitLMStudioDevice(modelName);
+      this.modelName = model;
+      this.lmStudioDevice = device;
+    } else {
+      this.modelName = modelName;
+    }
     this.name = config.name;
     this.displayName = DISPLAY_NAMES[config.name] || "Local";
     this.concurrency = options?.concurrency;
@@ -175,6 +191,18 @@ export class LocalTransport implements ProviderTransport {
   }
 
   async getExtraPayloadFields(): Promise<Record<string, any>> {
+    if (this.lmStudioDevice) {
+      // The payload is built before `refreshAuth`, so the instance is resolved
+      // here. A failure must not throw from payload building: `refreshAuth`
+      // reports it after the health check has classified an outage.
+      try {
+        return { model: (await this.placeOnDevice()).instanceId };
+      } catch (error) {
+        this.lmStudioPlacementError = error;
+        this.lmStudioInstance = undefined;
+        return {};
+      }
+    }
     // Ollama defaults to 2048 context and silently truncates, so set it
     // explicitly for any endpoint that is actually an Ollama server, not only
     // the one literally named "ollama".
@@ -204,7 +232,10 @@ export class LocalTransport implements ProviderTransport {
    * Throws on failure so ComposedHandler can return an error response.
    */
   async refreshAuth(): Promise<void> {
-    if (this.healthChecked) return;
+    if (this.healthChecked) {
+      await this.confirmPlacement();
+      return;
+    }
 
     const healthy = await this.checkHealth();
     if (!healthy) {
@@ -225,6 +256,44 @@ export class LocalTransport implements ProviderTransport {
     }
 
     await this.fetchContextWindow();
+    await this.confirmPlacement();
+  }
+
+  /** The instance on the machine the model id names, loaded there once per transport. */
+  private placeOnDevice(): Promise<LMStudioInstance> {
+    this.lmStudioInstance ??= ensureLMStudioInstance({
+      baseUrl: this.config.baseUrl,
+      model: this.modelName,
+      device: this.lmStudioDevice as string,
+      contextLength:
+        Number.parseInt(process.env.CLAUDISH_CONTEXT_WINDOW ?? "", 10) ||
+        getProviderByName(this.config.name)?.unknownContextWindow,
+      headers: process.env.LMSTUDIO_API_KEY
+        ? { Authorization: `Bearer ${process.env.LMSTUDIO_API_KEY}` }
+        : undefined,
+      log,
+    });
+    return this.lmStudioInstance;
+  }
+
+  /** Fails the request when the model could not be placed; the next request tries again. */
+  private async confirmPlacement(): Promise<void> {
+    if (!this.lmStudioDevice) return;
+    if (this.lmStudioPlacementError !== undefined) {
+      const error = this.lmStudioPlacementError;
+      this.lmStudioPlacementError = undefined;
+      throw error;
+    }
+    let instance: LMStudioInstance;
+    try {
+      instance = await this.placeOnDevice();
+    } catch (error) {
+      this.lmStudioInstance = undefined;
+      throw error;
+    }
+    if (instance.contextLength && !process.env.CLAUDISH_CONTEXT_WINDOW) {
+      this._contextWindow = instance.contextLength;
+    }
   }
 
   getContextWindow(): number {
@@ -369,6 +438,8 @@ export class LocalTransport implements ProviderTransport {
     log(`[${this.displayName}] Fetching context window...`);
     if (await this.isOllamaBackend()) {
       await this.fetchOllamaContextWindow();
+    } else if (this.lmStudioDevice) {
+      log(`[${this.displayName}] Context window comes from the instance on ${this.lmStudioDevice}`);
     } else if (this.config.name === "lmstudio") {
       await this.fetchLMStudioContextWindow();
     } else {

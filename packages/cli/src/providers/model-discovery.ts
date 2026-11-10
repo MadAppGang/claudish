@@ -32,6 +32,7 @@ import { log } from "../logger.js";
 import { VERSION } from "../version.js";
 import { resolveRouteProfile } from "./connection-resolver.js";
 import { isOptInWireId } from "./content-use.js";
+import { expandModelsToMachines, isLoopbackUrl, readLMStudioMachines } from "./lmstudio-devices.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
 import { getProviderByName, isPersistedListProvider } from "./provider-definitions.js";
@@ -579,6 +580,24 @@ function readLMStudioContextWindow(row: Record<string, unknown>): number | undef
 }
 
 /**
+ * One row per LM Link machine holding each model. `lms` describes the machine it
+ * runs on, so a server on another host keeps its rows as listed.
+ */
+async function withLMStudioMachines(
+  models: DiscoveredModel[],
+  baseUrl: string
+): Promise<DiscoveredModel[]> {
+  if (!isLoopbackUrl(baseUrl)) return models;
+  const machines = await readLMStudioMachines();
+  if (!machines) return models;
+  return expandModelsToMachines(
+    models,
+    machines,
+    getProviderByName("lmstudio")?.unknownContextWindow
+  );
+}
+
+/**
  * Parse an OpenAI-style `{ data: [...] }` model list.
  *
  * `lmstudio-models` rows are read the same way, plus their `type` as the
@@ -1021,7 +1040,7 @@ async function fetchServedModels(providerName: string): Promise<ModelsCatalogOut
       detail: incomplete,
     });
   }
-  const models = parsed.models;
+  const models = isLMStudio ? await withLMStudioMachines(parsed.models, baseUrl) : parsed.models;
 
   _failures.delete(providerName);
   log(

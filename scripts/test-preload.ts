@@ -61,6 +61,10 @@ for (const flag of [
   if (process.env[flag] === undefined) process.env[flag] = "1";
 }
 
+// A test must not read the developer's LM Link machines or change their preferred
+// device. A path that does not exist answers like an install without `lms`.
+process.env.CLAUDISH_LMS_BIN ??= "/nonexistent/claudish-test-lms";
+
 function canonical(path: string): string {
   try {
     return realpathSync(path);
