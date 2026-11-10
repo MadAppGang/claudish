@@ -36,6 +36,11 @@ function serveCalls(source: string): { line: number; text: string }[] {
   }
 }
 
+/** The call's options name `hostname` as a key: `hostname:`, or the shorthand `hostname,` / `hostname }`. */
+function bindsHostname(call: string): boolean {
+  return /\bhostname\s*[:,}]/.test(call);
+}
+
 describe("Bun.serve hostname", () => {
   test("serveCalls reads a call to its closing parenthesis", () => {
     const src =
@@ -46,6 +51,18 @@ describe("Bun.serve hostname", () => {
     expect(calls[1]?.text.includes("hostname")).toBe(true);
   });
 
+  test("bindsHostname wants the option key, not the word anywhere in the call", () => {
+    expect(bindsHostname('Bun.serve({ hostname: "127.0.0.1", port: 0 })')).toBe(true);
+    expect(bindsHostname("Bun.serve({ hostname, port: 0 })")).toBe(true);
+    expect(bindsHostname("Bun.serve({ port: 0, hostname })")).toBe(true);
+    expect(bindsHostname('Bun.serve({ port: 0, fetch: () => new Response("hostname") })')).toBe(
+      false
+    );
+    expect(
+      bindsHostname("Bun.serve({ port: 0, fetch: () => Response.json({ hostnames: [] }) })")
+    ).toBe(false);
+  });
+
   test("every Bun.serve call under src names a hostname", () => {
     const missing: string[] = [];
     for (const rel of new Bun.Glob("**/*.{ts,tsx}").scanSync({ cwd: SRC })) {
@@ -53,7 +70,7 @@ describe("Bun.serve hostname", () => {
       const source = readFileSync(join(SRC, rel), "utf-8");
       if (!source.includes("Bun.serve(")) continue;
       for (const call of serveCalls(source)) {
-        if (!/\bhostname\b/.test(call.text)) missing.push(`src/${rel}:${call.line}`);
+        if (!bindsHostname(call.text)) missing.push(`src/${rel}:${call.line}`);
       }
     }
     expect(missing).toEqual([]);
