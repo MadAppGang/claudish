@@ -8,6 +8,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type LmsRunner,
   ensureLMStudioInstance,
@@ -39,6 +42,10 @@ let preferredWrites: string[];
 let loadStatus: number;
 /** Where the next load lands, when it must not follow the preferred device. */
 let loadsOn: string | undefined;
+let psFails: boolean;
+/** An instance another client loads while claudish's load runs. */
+let appearsDuringLoad: Row | undefined;
+let lockDir: string;
 
 const run: LmsRunner = async (args) => {
   const command = args.join(" ");
@@ -53,7 +60,7 @@ const run: LmsRunner = async (args) => {
     });
   }
   if (command === "ls --json") return JSON.stringify(stored);
-  if (command === "ps --json") return JSON.stringify(loaded);
+  if (command === "ps --json") return psFails ? null : JSON.stringify(loaded);
   if (args[0] === "load") {
     if (lmsLoadFails) return null;
     lmsLoads.push(args.slice(1));
@@ -92,6 +99,9 @@ beforeEach(() => {
   contextLengthAfterLoad = 64_000;
   loadStatus = 200;
   loadsOn = undefined;
+  psFails = false;
+  appearsDuringLoad = undefined;
+  lockDir = mkdtempSync(join(tmpdir(), "claudish-lms-lock-"));
   globalThis.fetch = mock(async (_url: unknown, init?: RequestInit) => {
     if (loadStatus !== 200) return new Response("no memory", { status: loadStatus });
     lastLoadBody = JSON.parse(String(init?.body));
@@ -103,12 +113,14 @@ beforeEach(() => {
       deviceIdentifier: device === SELF ? null : device,
       contextLength: contextLengthAfterLoad,
     });
+    if (appearsDuringLoad) loaded.push(appearsDuringLoad);
     return Response.json({ instance_id: model, status: "loaded" });
   }) as unknown as typeof fetch;
 });
 
 afterEach(() => {
   globalThis.fetch = realFetch;
+  rmSync(lockDir, { recursive: true, force: true });
 });
 
 describe("splitLMStudioDevice", () => {
@@ -257,7 +269,15 @@ describe("rows per machine", () => {
 
 describe("ensureLMStudioInstance", () => {
   const ensure = (model: string, device: string, contextLength?: number) =>
-    ensureLMStudioInstance({ baseUrl: BASE, model, device, contextLength, run });
+    ensureLMStudioInstance({
+      baseUrl: BASE,
+      model,
+      device,
+      contextLength,
+      run,
+      lockPath: join(lockDir, "machine.lock"),
+      lockPollMs: 10,
+    });
 
   test("reuses an instance already running on the machine", async () => {
     loaded = [{ identifier: "both", modelKey: "both", deviceIdentifier: M1, contextLength: 9_000 }];
@@ -418,6 +438,63 @@ describe("ensureLMStudioInstance", () => {
       })
     ).rejects.toThrow(/on another host/);
     expect(never).not.toHaveBeenCalled();
+  });
+
+  test("an unreadable instance list stops the load", async () => {
+    psFails = true;
+
+    await expect(ensure("both", "m1")).rejects.toThrow("lms ps --json");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(preferredWrites).toEqual([]);
+  });
+
+  test("a namesake that appears on another machine during the load is refused", async () => {
+    appearsDuringLoad = {
+      identifier: "both",
+      modelKey: "both",
+      deviceIdentifier: null,
+      contextLength: 64_000,
+    };
+
+    await expect(ensure("both", "m1")).rejects.toThrow("more than one machine");
+  });
+
+  test("another process holding the machine lock makes the load wait", async () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), String(process.pid));
+    let settled = false;
+    const pending = ensure("only-m1", "m1").then(() => {
+      settled = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(settled).toBe(false);
+    expect(preferredWrites).toEqual([]);
+
+    rmSync(lock, { recursive: true, force: true });
+    await pending;
+    expect(settled).toBe(true);
+  });
+
+  test("a lock left by a process that has exited is taken over", async () => {
+    const lock = join(lockDir, "machine.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "owner"), "999999999");
+
+    await ensure("only-m1", "m1");
+
+    expect(preferredWrites).toEqual([]);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("the lock is released after a failed load", async () => {
+    preferred = SELF;
+    loadStatus = 500;
+
+    await expect(ensure("only-m1", "m1")).rejects.toThrow("500");
+
+    expect(existsSync(join(lockDir, "machine.lock"))).toBe(false);
   });
 
   test("concurrent loads change the preferred device one at a time", async () => {

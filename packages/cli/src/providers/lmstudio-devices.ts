@@ -16,8 +16,9 @@
  */
 
 import { execFile } from "node:child_process";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export const LMSTUDIO_DEVICE_SEPARATOR = "~";
 /** The machine suffix for the machine claudish runs on. */
@@ -237,6 +238,74 @@ export interface EnsureLMStudioInstance {
   headers?: Record<string, string>;
   run?: LmsRunner;
   log?: (message: string) => void;
+  /** The lock that keeps claudish processes from changing the preferred device at once. */
+  lockPath?: string;
+  lockPollMs?: number;
+}
+
+const LOCK_POLL_MS = 250;
+
+function defaultLockPath(): string {
+  return join(homedir(), ".claudish", "lmstudio-machine.lock");
+}
+
+function ownerIsAlive(lockPath: string): boolean {
+  let pid: number;
+  try {
+    pid = Number.parseInt(readFileSync(join(lockPath, "owner"), "utf-8"), 10);
+  } catch {
+    // Taken an instant ago and not yet signed, unless it has sat unsigned for a whole load.
+    try {
+      return Date.now() - statSync(lockPath).mtimeMs < LOAD_TIMEOUT_MS;
+    } catch {
+      return false;
+    }
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * The preferred device is a setting of the whole Mac, shared by every claudish
+ * process. A directory is the lock because `mkdir` either creates it or fails,
+ * with nothing in between; a lock whose owner has exited is taken over.
+ */
+async function withMachineLock<T>(
+  lockPath: string,
+  pollMs: number,
+  work: () => Promise<T>
+): Promise<T> {
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const deadline = Date.now() + LOAD_TIMEOUT_MS + LIST_TIMEOUT_MS;
+  for (;;) {
+    try {
+      mkdirSync(lockPath);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    if (!ownerIsAlive(lockPath)) {
+      rmSync(lockPath, { recursive: true, force: true });
+      continue;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `Another claudish process is placing an LM Studio model (lock ${lockPath}). Retry when it finishes.`
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  try {
+    writeFileSync(join(lockPath, "owner"), String(process.pid));
+    return await work();
+  } finally {
+    rmSync(lockPath, { recursive: true, force: true });
+  }
 }
 
 let machineQueue: Promise<unknown> = Promise.resolve();
@@ -309,62 +378,84 @@ function ambiguityError(identifier: string): Error {
 export async function ensureLMStudioInstance(
   options: EnsureLMStudioInstance
 ): Promise<LMStudioInstance> {
-  const { baseUrl, model, device, headers, contextLength, run = runLms, log } = options;
+  const {
+    baseUrl,
+    model,
+    device,
+    headers,
+    contextLength,
+    run = runLms,
+    log,
+    lockPath = defaultLockPath(),
+    lockPollMs = LOCK_POLL_MS,
+  } = options;
   if (!isLoopbackUrl(baseUrl)) {
     throw new Error(
       `LM Studio at ${baseUrl} is on another host, so claudish cannot choose the machine "${device}" there. Remove the ~${device} suffix.`
     );
   }
-  return serialized(async () => {
-    const link = await readLink(run);
-    if (!link) throw new Error("Could not read LM Link status: `lms link status --json` failed.");
-    const target = requireMachine(link, device);
-    const isOnTarget = (row: LoadedRow) => (row.deviceIdentifier ?? link.self) === target;
-    const isThisMachine = target === link.self;
-    const identifier = isThisMachine
-      ? `${model}${LMSTUDIO_DEVICE_SEPARATOR}${LMSTUDIO_THIS_MACHINE}`
-      : model;
+  return serialized(() =>
+    withMachineLock(lockPath, lockPollMs, async () => {
+      const link = await readLink(run);
+      if (!link) throw new Error("Could not read LM Link status: `lms link status --json` failed.");
+      const target = requireMachine(link, device);
+      const isOnTarget = (row: LoadedRow) => (row.deviceIdentifier ?? link.self) === target;
+      const isThisMachine = target === link.self;
+      const identifier = isThisMachine
+        ? `${model}${LMSTUDIO_DEVICE_SEPARATOR}${LMSTUDIO_THIS_MACHINE}`
+        : model;
 
-    const before = (await readLoaded(run)) ?? [];
-    const hasNamesake = (name: string) =>
-      before.some((row) => row.identifier === name && !isOnTarget(row));
-    const stored = parseJson<StoredCopy[]>(await run(["ls", "--json"], LIST_TIMEOUT_MS));
-    const length = loadContextLength(stored, model, target, link, contextLength);
-    const running = before.find((row) => row.modelKey === model && isOnTarget(row));
-    if (running) {
-      if (hasNamesake(running.identifier)) throw ambiguityError(running.identifier);
-      assertContextLength(running.identifier, running.contextLength, length);
-      return { instanceId: running.identifier, contextLength: running.contextLength };
-    }
-    if (hasNamesake(identifier)) throw ambiguityError(identifier);
+      const before = await readLoaded(run);
+      if (!before) throw listError();
+      const hasNamesake = (name: string) =>
+        before.some((row) => row.identifier === name && !isOnTarget(row));
+      const stored = parseJson<StoredCopy[]>(await run(["ls", "--json"], LIST_TIMEOUT_MS));
+      const length = loadContextLength(stored, model, target, link, contextLength);
+      const running = before.find((row) => row.modelKey === model && isOnTarget(row));
+      if (running) {
+        if (hasNamesake(running.identifier)) throw ambiguityError(running.identifier);
+        assertContextLength(running.identifier, running.contextLength, length);
+        return { instanceId: running.identifier, contextLength: running.contextLength };
+      }
+      if (hasNamesake(identifier)) throw ambiguityError(identifier);
 
-    if (isThisMachine) {
-      const lengthArgs = length === undefined ? [] : ["-c", String(length)];
-      const loaded = await run(
-        ["load", model, "--identifier", identifier, "-y", ...lengthArgs],
-        LOAD_TIMEOUT_MS
-      );
-      if (loaded === null) throw new Error(`LM Studio could not load ${model} on this machine.`);
-    } else {
-      await loadOnLinkedMachine(
-        { baseUrl, model, device, headers, run, log },
-        link,
-        target,
-        length
-      );
-    }
+      if (isThisMachine) {
+        const lengthArgs = length === undefined ? [] : ["-c", String(length)];
+        const loaded = await run(
+          ["load", model, "--identifier", identifier, "-y", ...lengthArgs],
+          LOAD_TIMEOUT_MS
+        );
+        if (loaded === null) throw new Error(`LM Studio could not load ${model} on this machine.`);
+      } else {
+        await loadOnLinkedMachine(
+          { baseUrl, model, device, headers, run, log },
+          link,
+          target,
+          length
+        );
+      }
 
-    const placed = (await readLoaded(run))?.find(
-      (row) => row.identifier === identifier && isOnTarget(row)
-    );
-    if (!placed) {
-      throw new Error(
-        `LM Studio loaded ${model} on a different machine than ${device}. Another LM Link client may have changed the preferred device; retry.`
-      );
-    }
-    assertContextLength(placed.identifier, placed.contextLength, length);
-    return { instanceId: placed.identifier, contextLength: placed.contextLength };
-  });
+      const after = await readLoaded(run);
+      if (!after) throw listError();
+      const placed = after.find((row) => row.identifier === identifier && isOnTarget(row));
+      if (!placed) {
+        throw new Error(
+          `LM Studio loaded ${model} on a different machine than ${device}. Another LM Link client may have changed the preferred device; retry.`
+        );
+      }
+      if (after.some((row) => row.identifier === identifier && !isOnTarget(row))) {
+        throw ambiguityError(identifier);
+      }
+      assertContextLength(placed.identifier, placed.contextLength, length);
+      return { instanceId: placed.identifier, contextLength: placed.contextLength };
+    })
+  );
+}
+
+function listError(): Error {
+  return new Error(
+    "Could not list the running LM Studio instances: `lms ps --json` failed. Without that list claudish cannot tell which machine a model name reaches."
+  );
 }
 
 /** A REST load with `target` preferred for its duration. */
