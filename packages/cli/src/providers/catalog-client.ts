@@ -759,6 +759,15 @@ export function settleCatalogVerdict(): Promise<Reachability> {
 }
 
 /**
+ * Wait for the running refresh to end, up to its own request timeouts, and report
+ * where that left the backend. Starts nothing once a refresh has already ended.
+ */
+export async function settleCatalogRefresh(): Promise<Reachability> {
+  if (catalogReachability().state === "contacted") await startCatalogWarm();
+  return catalogReachability();
+}
+
+/**
  * A forced refresh that reuses the warm of this process when there is one, running
  * or finished, so a launch that already started it does not run a second beside it.
  */

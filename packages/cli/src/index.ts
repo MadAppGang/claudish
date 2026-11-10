@@ -702,6 +702,7 @@ async function runCli() {
   const {
     resolveModelProvider,
     validateApiKeysForModels,
+    awaitsCatalogBody,
     getMissingKeyResolutions,
     getMissingKeysError,
   } = await import("./providers/provider-resolver.js");
@@ -1085,11 +1086,21 @@ async function runCli() {
       //   - a missing key an op:// source supplies → resolved + written to env
       // parseArgs has already exited terminal flags, so --version etc. never
       // reach here at all (laziness preserved without an ordering chokepoint).
-      const resolutions = await traceSpan(
+      let resolutions = await traceSpan(
         "startup:validate-api-keys",
         () => validateApiKeysForModels(modelsToValidate),
         { models: modelsToValidate.filter((m) => typeof m === "string").length }
       );
+      // Refused only because the catalog is still on its way: the backend answered,
+      // so wait for this refresh and decide again. A launch that is not refused
+      // never waits here.
+      if (getMissingKeyResolutions(resolutions).some(awaitsCatalogBody)) {
+        const { settleCatalogRefresh } = await import("./providers/catalog-client.js");
+        await traceSpan("startup:catalog-settle", () => settleCatalogRefresh());
+        resolutions = await traceSpan("startup:validate-api-keys-after-refresh", () =>
+          validateApiKeysForModels(modelsToValidate)
+        );
+      }
       const missingKeys = getMissingKeyResolutions(resolutions);
 
       if (missingKeys.length > 0) {

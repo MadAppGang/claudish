@@ -515,6 +515,14 @@ export async function rescueRoutableResolutions(
   );
 }
 
+/** Whether this refusal ends once the running catalog refresh lands or fails. */
+export function awaitsCatalogBody(resolution: ProviderResolution): boolean {
+  return (
+    resolution.routeRefusal?.cause === "catalog-unreadable" &&
+    resolution.routeRefusal.reachability.state === "contacted"
+  );
+}
+
 /**
  * Get models with missing API keys from a list of resolutions
  *
