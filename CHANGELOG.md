@@ -2,6 +2,18 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.18.5] - 2026-11-10
+
+### Bug Fixes
+
+- send parallel tool calls interleaved with their results *(devin)* ([`d2398a8`](https://github.com/MadAppGang/claudish/commit/d2398a84e136389fac66a92f15e09b2d2ad0dbc8))
+- answer 400 for invalid_argument after header frames *(devin)* ([`a81b3e5`](https://github.com/MadAppGang/claudish/commit/a81b3e5153d6173b01505b4e12861e6e82ae15e5))
+
+### Documentation
+
+- record the stream-head and parallel tool-call measurements *(devin)* ([`bdb7448`](https://github.com/MadAppGang/claudish/commit/bdb7448498faaf877044d13b12df5318294b870f))
+- update CHANGELOG.md for v14.18.4([`82e112c`](https://github.com/MadAppGang/claudish/commit/82e112c20419a0187c7370088d814b3d7a2bc1c9))
+
 ## [14.18.4] - 2026-11-09
 
 ### Bug Fixes
