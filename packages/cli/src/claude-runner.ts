@@ -1616,7 +1616,10 @@ async function resolveLocalContextWindow(
   const limit = definition?.isLocal ? contextWindowLimit() : undefined;
   const capped = (window: number): number => Math.min(window, limit ?? window);
   if (definition?.unknownContextWindow !== undefined) {
-    const served = await discoverContextWindow(provider, wireId, { network: "bounded" });
+    const served = await discoverContextWindow(provider, wireId, {
+      network: "bounded",
+      upTo: limit ?? definition.unknownContextWindow,
+    });
     return {
       modelId: parsed.model,
       window: capped(served ?? limit ?? definition.unknownContextWindow),

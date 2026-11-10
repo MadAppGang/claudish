@@ -182,6 +182,26 @@ describe("lmstudio discovery with LM Link", () => {
   });
 });
 
+describe("the window of a machine row under a requested limit", () => {
+  test("a limit above the copy's maximum reports that maximum", async () => {
+    writeFileSync(
+      join(dir, "ls.json"),
+      JSON.stringify([
+        { modelKey: "shared-model", deviceIdentifier: null },
+        { modelKey: "shared-model", deviceIdentifier: M1, maxContextLength: 196_608 },
+        { modelKey: "m1-model", deviceIdentifier: M1 },
+      ])
+    );
+
+    expect(await discoverContextWindow("lmstudio", "shared-model~m1", { upTo: 300_000 })).toBe(
+      196_608
+    );
+    expect(await discoverContextWindow("lmstudio", "shared-model~m1", { upTo: 64_000 })).toBe(
+      undefined
+    );
+  });
+});
+
 describe("the window of a spec without a machine suffix", () => {
   test("comes from the instance running on a linked machine", async () => {
     writeInstances([

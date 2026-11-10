@@ -103,6 +103,12 @@ describe("computeMainThreadContextWindow on lmstudio", () => {
     expect(await launchWindow("lms@loaded-build")).toBe(48_000);
   });
 
+  test("a limit above an unloaded model's maximum is cut to that maximum", async () => {
+    process.env.CLAUDISH_CONTEXT_WINDOW = "300000";
+
+    expect(await launchWindow("lms@unloaded-build")).toBe(262_144);
+  });
+
   test("a limit above a loaded model's window leaves the loaded window", async () => {
     process.env.CLAUDISH_CONTEXT_WINDOW = "512000";
 

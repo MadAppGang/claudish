@@ -48,6 +48,11 @@ export interface DiscoveredModel {
   contextWindow?: number;
   /** The most a load can give this model, when claudish sets the size it loads with. */
   maxContextWindow?: number;
+  /**
+   * The most this server can run the model with: the loaded size, else the
+   * model's maximum. A requested window above it is cut to it at launch.
+   */
+  contextCeiling?: number;
   /** The LM Link machine this row runs on. */
   machine?: { name: string; modelId: string };
   /**
@@ -588,6 +593,11 @@ function readLMStudioContextWindow(row: Record<string, unknown>): number | undef
   return max !== undefined && wanted !== undefined && max < wanted ? max : undefined;
 }
 
+function ceilingOf(row: Record<string, unknown>): { contextCeiling?: number } {
+  const ceiling = positive(row.loaded_context_length) ?? positive(row.max_context_length);
+  return ceiling === undefined ? {} : { contextCeiling: ceiling };
+}
+
 function positive(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
 }
@@ -648,6 +658,7 @@ function parseOpenAIModelsList(
       contextWindow: isLMStudio ? readLMStudioContextWindow(row) : readContextWindow(row),
       releaseDate: readCreatedDate(row),
       ...(isLMStudio ? { reported: lmStudioReported(row) } : {}),
+      ...(isLMStudio ? ceilingOf(row) : {}),
     });
   }
   return { models, dropped, total: data.length };
@@ -1088,14 +1099,22 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
  * its machine suffix reaches whichever machine LM Studio picks, so it takes the
  * smallest window among that model's machine rows.
  */
-function windowOf(models: DiscoveredModel[], modelId: string): number | undefined {
+function windowOf(models: DiscoveredModel[], modelId: string, upTo?: number): number | undefined {
   const needle = modelId.toLowerCase();
   const exact = models.find((m) => m.id.toLowerCase() === needle);
-  if (exact) return exact.contextWindow;
+  if (exact) return rowWindow(exact, upTo);
   const windows = models
-    .filter((m) => m.machine?.modelId.toLowerCase() === needle && m.contextWindow !== undefined)
-    .map((m) => m.contextWindow as number);
+    .filter((m) => m.machine?.modelId.toLowerCase() === needle)
+    .map((m) => rowWindow(m, upTo))
+    .filter((w): w is number => w !== undefined);
   return windows.length > 0 ? Math.min(...windows) : undefined;
+}
+
+/** A row's window; with `upTo`, its ceiling when the caller would ask for more. */
+function rowWindow(model: DiscoveredModel, upTo: number | undefined): number | undefined {
+  if (model.contextWindow !== undefined) return model.contextWindow;
+  const ceiling = model.contextCeiling;
+  return upTo !== undefined && ceiling !== undefined && ceiling < upTo ? ceiling : undefined;
 }
 
 /**
@@ -1124,12 +1143,17 @@ export const LIVE_DISCOVERY_BOUND_MS = 2_000;
 export async function discoverContextWindow(
   providerName: string,
   modelId: string,
-  opts: { network?: "await" | "cached-first" | "bounded" } = {}
+  opts: {
+    network?: "await" | "cached-first" | "bounded";
+    /** The window the caller will ask for; a row whose ceiling is lower answers its ceiling. */
+    upTo?: number;
+  } = {}
 ): Promise<number | undefined> {
+  const { upTo } = opts;
   if (opts.network === "cached-first") {
     const { readAccountModelsList } = await import("./dynamic-models-catalog.js");
     const stored = await readAccountModelsList(providerName);
-    if (stored) return windowOf(stored.models, modelId);
+    if (stored) return windowOf(stored.models, modelId, upTo);
     void coldRefresh(providerName);
     return undefined;
   }
@@ -1139,14 +1163,14 @@ export async function discoverContextWindow(
       timer = setTimeout(() => resolve([]), LIVE_DISCOVERY_BOUND_MS);
     });
     try {
-      return windowOf(await Promise.race([coldRefresh(providerName), bound]), modelId);
+      return windowOf(await Promise.race([coldRefresh(providerName), bound]), modelId, upTo);
     } finally {
       clearTimeout(timer);
     }
   }
   // Exact-id lookup: an opt-in id the user typed still gets its served window.
   const { served, optIn } = await discoverProviderServedIds(providerName);
-  return windowOf([...served, ...optIn], modelId);
+  return windowOf([...served, ...optIn], modelId, upTo);
 }
 
 /**

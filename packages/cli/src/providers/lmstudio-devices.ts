@@ -198,6 +198,7 @@ export function expandModelsToMachines<
     displayName?: string;
     contextWindow?: number;
     maxContextWindow?: number;
+    contextCeiling?: number;
     machine?: LMStudioMachine;
   },
 >(models: T[], machines: LMStudioMachines, defaultWindow?: number): T[] {
@@ -217,6 +218,7 @@ export function expandModelsToMachines<
         machine: { name, modelId: model.id },
         contextWindow: loaded ?? ceiling,
         maxContextWindow: loaded ?? max,
+        contextCeiling: loaded ?? max ?? model.contextCeiling,
       };
     });
   });
