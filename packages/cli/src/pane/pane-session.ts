@@ -3167,6 +3167,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   snapshot(): PaneSnapshot {
     const view = this.follower.view();
+    const subagents = this.follower.subagents();
     const terminal = isTerminalPhase(this.phase);
     // M4: a resize redraw is not activity, so it never resets idle_seconds
     const lastAct = Math.max(this.activityChangedAt, view.lastAppendAt ?? 0);
@@ -3212,8 +3213,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       agent: view.agentSetting,
       viewSockPath: terminal ? null : this.viewSock,
       promptsSent: this.q.callerAdmitted + callerCount(this.q),
-      subagents: [],
-      subagentsVersion: 0,
+      subagents: subagents.rows,
+      subagentsVersion: subagents.version,
     };
   }
 

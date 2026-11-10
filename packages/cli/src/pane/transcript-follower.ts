@@ -33,6 +33,7 @@ import {
   existsSync,
   fstatSync,
   openSync,
+  readFileSync,
   readSync,
   readdirSync,
   realpathSync,
@@ -41,6 +42,8 @@ import {
 import { join } from "node:path";
 import type { SlotStep } from "./contract.js";
 import { RECENT_STEP_LIMIT, stepOf } from "./slot-steps.js";
+import { type MetaFile, SubagentLedger } from "./subagent-ledger.js";
+import type { SubagentRow } from "./view-contract.js";
 
 export type Witness =
   | { kind: "text"; text: string } // typed plain line or the file-reference instruction (exact)
@@ -185,6 +188,8 @@ export interface FollowerState {
   agentSetting: string | null;
   records: number;
   resolvePath: (p: string) => string;
+  /** the session's subagents; lives across turns and survives `rewindTo` */
+  ledger: SubagentLedger;
 }
 
 export function initialFollowerState(
@@ -200,6 +205,7 @@ export function initialFollowerState(
     agentSetting: null,
     records: 0,
     resolvePath,
+    ledger: new SubagentLedger(),
   };
 }
 
@@ -593,6 +599,7 @@ export function applyRecord(
   const r = record as Rec;
   state.records++;
   recordUsage(state, r);
+  state.ledger.foldMain(r, isoOf(r));
   if (r.isSidechain) return state;
   noteMainAssistant(state, r);
   if (r.type === "agent-setting" && typeof r.agentSetting === "string" && r.agentSetting)
@@ -640,14 +647,23 @@ function applyTurnDuration(state: FollowerState, t: TurnState, r: Rec): void {
   if (proves && !state.session.stopHooksSeen) state.session.provenHookless = true;
 }
 
-/** Fold one subagent record: usage, tool calls, and a Read of the turn file delegated to a subagent. */
+function isoOf(r: Rec): string {
+  return typeof r.timestamp === "string" ? r.timestamp : new Date().toISOString();
+}
+
+/**
+ * Fold one subagent record: usage, tool calls, a Read of the turn file delegated to a subagent,
+ * and, given the file's agent id, the subagent's row.
+ */
 export function applySubagentRecord(
   state: FollowerState,
   record: Record<string, unknown>,
-  offsetKey: number
+  offsetKey: number,
+  agentId?: string
 ): FollowerState {
   const r = record as Rec;
   recordUsage(state, r);
+  if (agentId) state.ledger.foldSubRecord(agentId, r, isoOf(r));
   const t = state.turns[state.turns.length - 1];
   if (!t?.read || t.acceptedAt === null) return state;
   if (r.type === "assistant") for (const b of r.message?.content ?? []) applyReadUse(state, t, b);
@@ -810,6 +826,8 @@ export class TranscriptFollower {
   private state: FollowerState;
   private main: Tail;
   private subs = new Map<string, Tail>();
+  /** meta file name → mtime last read */
+  private metas = new Map<string, number>();
   private lastAppend: number | null = null;
   private settled = 0;
   private savingOff = false;
@@ -840,10 +858,10 @@ export class TranscriptFollower {
     return any;
   }
 
-  private subagentFiles(): string[] {
+  private subagentEntries(): string[] {
     if (!existsSync(this.subagentsDir)) return [];
     try {
-      return readdirSync(this.subagentsDir).filter((f) => f.endsWith(".jsonl"));
+      return readdirSync(this.subagentsDir);
     } catch {
       return [];
     }
@@ -851,19 +869,53 @@ export class TranscriptFollower {
 
   private pollSubagents(): boolean {
     let any = false;
-    for (const f of this.subagentFiles()) {
+    const names = this.subagentEntries();
+    for (const f of names) {
+      if (!f.endsWith(".jsonl")) continue;
       let tail = this.subs.get(f);
       if (!tail) {
         tail = new Tail(join(this.subagentsDir, f));
         this.subs.set(f, tail);
       }
+      const agentId = AGENT_FILE_RE.exec(f)?.[1];
       for (const { line } of tail.read()) {
         any = true;
         const rec = parseRecord(line);
-        if (rec) applySubagentRecord(this.state, rec, this.main.offset + 1);
+        if (rec) applySubagentRecord(this.state, rec, this.main.offset + 1, agentId);
       }
     }
+    for (const f of names) {
+      const agentId = AGENT_META_RE.exec(f)?.[1];
+      if (agentId && this.state.ledger.wantsMeta(agentId)) this.readMeta(f, agentId);
+    }
     return any;
+  }
+
+  /** Read a subagent's meta file when it is new or was replaced since the last read. */
+  private readMeta(name: string, agentId: string): void {
+    const path = join(this.subagentsDir, name);
+    let mtime: number;
+    try {
+      mtime = statSync(path).mtimeMs;
+    } catch {
+      return;
+    }
+    if (this.metas.get(name) === mtime) return;
+    let meta: MetaFile;
+    try {
+      const v = JSON.parse(readFileSync(path, "utf8"));
+      if (!v || typeof v !== "object") return;
+      meta = v as MetaFile;
+    } catch {
+      return; // replaced mid-read: the next poll reads it again
+    }
+    this.metas.set(name, mtime);
+    this.state.ledger.foldMeta(agentId, meta, new Date(this.clock()).toISOString());
+  }
+
+  /** The session's subagents, at most 20, oldest first; `version` moves whenever they change. */
+  subagents(): { rows: SubagentRow[]; version: number } {
+    return { rows: this.state.ledger.rows(), version: this.state.ledger.version };
   }
 
   /** Current byte offset of the main transcript (after a poll). The turn boundary. */
@@ -962,6 +1014,9 @@ function fileSize(p: string): number {
     return 0;
   }
 }
+
+const AGENT_FILE_RE = /^agent-([A-Za-z0-9_-]+)\.jsonl$/;
+const AGENT_META_RE = /^agent-([A-Za-z0-9_-]+)\.meta\.json$/;
 
 /** One JSONL line as an object, or null (blank, not JSON, or not an object). Never throws. */
 export function parseRecord(line: string): Record<string, unknown> | null {

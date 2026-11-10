@@ -148,6 +148,37 @@ The same reply's `pid` and `dead` back the `exit` event: pane 0 dead for 1 s wit
 view is computed with the typing query and refuses `box_not_empty` last, after every dialog and
 vim test (`controller_claude.go:411`, `controller_claude_input.go:360`).
 
+## Subagents: linked by evidence, never by order
+
+`pane/subagent-ledger.ts` turns `<uuid>/subagents/` into the `subagents` rows of a session's
+ViewItem (at most 20, the newest by `started_at`). Which file belongs to which `Agent`/`Task` call is
+read from what Claude Code writes, measured on 2.1.302 to 2.1.322 (520 transcripts, 4,736 subagent
+files, plus two live runs on 2.1.322):
+
+- **`agent-<id>.meta.json` names the call at launch.** It holds `toolUseId`, `description`,
+  `agentType` and `requestShape` (`foreground` / `background`), appears about 120 ms after the
+  parent's `tool_use` and 30 to 70 ms BEFORE `agent-<id>.jsonl`, for foreground and background calls
+  alike, and is replaced at the end with `finished: true`. Corpus: every meta whose call is in the
+  main chain (4,569) agrees with that call's description and type and with the result's `agentId`.
+  The others are nested subagents: their meta sits in the same directory and names a call made inside
+  another subagent file.
+- **The parent's `tool_result` carries `toolUseResult.agentId`**: at once for a background call
+  (`isAsync: true`, `status: "async_launched"`), at the end for a foreground one (`status:
+  "completed"`, no `isAsync`). Since 2.1.30x Claude Code backgrounds a call even when the model did
+  not ask it to (4,490 of 4,569 corpus results are `isAsync` with `run_in_background` unset).
+- **A `<task-notification>` carries `<task-id>`** (the agent id) **and `<tool-use-id>`** when a
+  background subagent ends.
+- **Parallel calls do not create their files in call order**: 17 of 446 corpus groups did not.
+
+These three are authoritative. Where none has arrived, a file whose first user record equals the
+prompt of exactly one unlinked call is linked provisionally (4,461 of 4,569 first records equal the
+prompt; 108 only contain it, and stay unlinked); an authoritative link replaces it and the row that
+lost its call goes back to unlinked. Two calls with the same prompt stay unlinked until the evidence.
+The ledger keeps a digest of each prompt, never the prompt. State only moves `running → done`, and
+counts come from the subagent file, whose offsets only grow, so the main chain re-folded by
+`rewindTo` leaves the rows as they were. `subagentsVersion` moves with every change and feeds the
+status stream's stage-1 key.
+
 ## The session registry: a second reader, telemetry only
 
 Every interactive Claude Code writes `<CLAUDE_CONFIG_DIR or $HOME/.claude>/sessions/<pid>.json` and
