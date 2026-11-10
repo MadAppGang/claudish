@@ -791,6 +791,17 @@ export interface ModelChoiceFacts {
 }
 
 /**
+ * The recommended list a model check reads: the one last stored, else the
+ * bundled recommended list while it is the catalog. Null when neither exists.
+ */
+function recommendedModelsForChoice(): RecommendedModelEntry[] | null {
+  return (
+    readLastRecommendedModels()?.models ??
+    (bundledListActive() ? bundledRecommendedModelsDoc().models : null)
+  );
+}
+
+/**
  * The facts for live calls. `lists` is the accounts' stored dynamic models
  * catalogs, loaded beforehand (`loadAccountModelsLists`, no network); absent, no
  * name is account-listed.
@@ -799,7 +810,7 @@ function liveModelChoiceFacts(
   opts: { projectRulesReadable?: boolean } = {},
   lists: AccountModelsListSnapshot = new Map()
 ): ModelChoiceFacts {
-  const recommended = readLastRecommendedModels()?.models ?? null;
+  const recommended = recommendedModelsForChoice();
   if (!recommended || recommended.length === 0) {
     log("[mcp] model check skipped: no recommended models list on disk");
   }
@@ -1835,10 +1846,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       const catalogMatches = searchCatalogModels(query, Math.max(maxResults, 5));
       // What to pass: only a recommended id. A listing or catalog id outside the
       // recommended list is refused by team / create_session / run_prompt.
-      const recommendedHits = recommendedSearchMatches(
-        query,
-        readLastRecommendedModels()?.models ?? []
-      );
+      const recommendedHits = recommendedSearchMatches(query, recommendedModelsForChoice() ?? []);
       const renderRecommendedSection = (): string => {
         if (recommendedHits.length === 0) return "";
         let s = "## Recommended models (pass one of these)\n\n";
