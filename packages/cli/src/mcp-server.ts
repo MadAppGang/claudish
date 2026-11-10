@@ -91,7 +91,7 @@ import {
   loadAccountModelsLists,
   sweepAccountModelsLists,
 } from "./providers/dynamic-models-catalog.js";
-import { latestEffortRecommendations } from "./providers/effort-recommendations.js";
+import { currentEffortRecommendations } from "./providers/effort-recommendations.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { OPENROUTER_MODELS_URL, fetchGatewayModels } from "./providers/gateway-models-list.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
@@ -602,7 +602,7 @@ export function effortClarification(
   specs: readonly string[],
   efforts:
     | Readonly<Record<string, Readonly<Record<string, { effort: string }>>>>
-    | undefined = latestEffortRecommendations()?.efforts
+    | undefined = currentEffortRecommendations()?.efforts
 ): Record<string, Record<string, string>> | undefined {
   if (!efforts) return undefined;
   const out: Record<string, Record<string, string>> = {};
@@ -1772,8 +1772,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       }
 
       // getRecommendedModels wrote the sidecar on a fetch; an older one still
-      // shows the last generation this machine read.
-      const efforts = latestEffortRecommendations();
+      // shows the last generation this machine read, unless the bundled
+      // recommended list is the catalog, which brings its own efforts.
+      const efforts = currentEffortRecommendations();
       const effortTable = efforts ? renderEffortTableMarkdown(efforts.efforts) : "";
       const listing = doc
         ? renderRecommendedMarkdown(doc)

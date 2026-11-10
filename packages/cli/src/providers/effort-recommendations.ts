@@ -36,6 +36,8 @@ import { readFileSync, statSync } from "node:fs";
 import { writeFileAtomic } from "../fs-atomic.js";
 import { log } from "../logger.js";
 import { ALL_MODELS_CACHE_PATH } from "./all-models-cache.js";
+import { bundledListRaw, bundledProvenance } from "./bundled-list-data.js";
+import { getCatalogSnapshot } from "./catalog-client.js";
 
 /**
  * One connection a recommendation may be sent on: its route binding, wire id,
@@ -55,7 +57,9 @@ export const SENDABLE_ENCODING = "request_parameter";
 
 /**
  * One recommendation: the catalog effort name, why (logged only), and the
- * connections it may be sent on (never empty).
+ * connections it may be sent on. Never empty in the efforts sidecar. A cell of
+ * the bundled recommended list may be empty, because the list drops the
+ * connections it does not keep; there it says nothing about the effort.
  */
 export interface EffortRecommendation {
   effort: string;
@@ -79,6 +83,12 @@ export interface CachedEffortRecommendations {
       }
     >
   >;
+}
+
+/** One generation's efforts, for display. */
+export interface EffortTable {
+  generationId: string;
+  efforts: Readonly<Record<string, ModelEffortRecommendations>>;
 }
 
 export type EffortLookup =
@@ -123,24 +133,49 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function parseEffortRecommendations(
   raw: unknown
 ): Record<string, ModelEffortRecommendations> {
+  return parseEfforts(raw, "require-connection");
+}
+
+/**
+ * Normalise the `efforts` of the bundled recommended list. The same rules as
+ * {@link parseEffortRecommendations}, except that a cell whose `sendableOn` is
+ * empty is kept: the list removes the connections it does not keep, so a cell
+ * can lose all of them, and that is no refusal to send the effort.
+ */
+export function parseBundledEffortRecommendations(
+  raw: unknown
+): Record<string, ModelEffortRecommendations> {
+  return parseEfforts(raw, "allow-no-connection");
+}
+
+/** What a cell whose `sendableOn` names no connection means. */
+type EmptySendableOn = "require-connection" | "allow-no-connection";
+
+function parseEfforts(
+  raw: unknown,
+  emptySendableOn: EmptySendableOn
+): Record<string, ModelEffortRecommendations> {
   const out: Record<string, ModelEffortRecommendations> = {};
   if (!isRecord(raw)) return out;
   for (const [modelId, byTask] of Object.entries(raw)) {
-    const entries = modelId ? parseModelEntries(byTask) : {};
+    const entries = modelId ? parseModelEntries(byTask, emptySendableOn) : {};
     if (Object.keys(entries).length > 0) out[modelId] = entries;
   }
   return out;
 }
 
 /** One model's task entries; malformed ones are skipped. */
-function parseModelEntries(byTask: unknown): Record<string, EffortRecommendation> {
+function parseModelEntries(
+  byTask: unknown,
+  emptySendableOn: EmptySendableOn
+): Record<string, EffortRecommendation> {
   const entries: Record<string, EffortRecommendation> = {};
   if (!isRecord(byTask)) return entries;
   for (const [taskType, entry] of Object.entries(byTask)) {
     if (!taskType || !isRecord(entry)) continue;
     if (typeof entry.effort !== "string" || entry.effort === "") continue;
     const sendableOn = parseSendableOn(entry.sendableOn);
-    if (sendableOn.length === 0) continue;
+    if (sendableOn.length === 0 && emptySendableOn === "require-connection") continue;
     entries[taskType] =
       typeof entry.basis === "string"
         ? { effort: entry.effort, basis: entry.basis, sendableOn }
@@ -352,14 +387,47 @@ export function lookupModelEfforts(
  * no sidecar or it holds none. For display: `list_models` shows the table the
  * last catalog refresh wrote.
  */
-export function latestEffortRecommendations(path: string = EFFORT_RECOMMENDATIONS_PATH): {
-  generationId: string;
-  efforts: Readonly<Record<string, ModelEffortRecommendations>>;
-} | null {
+export function latestEffortRecommendations(
+  path: string = EFFORT_RECOMMENDATIONS_PATH
+): EffortTable | null {
   const sidecar = readEffortRecommendations(path);
   if (!sidecar) return null;
   const newest = Object.entries(sidecar.generations).sort(
     ([, a], [, b]) => b.writtenAt - a.writtenAt
   )[0];
   return newest ? { generationId: newest[0], efforts: newest[1].efforts } : null;
+}
+
+/**
+ * The efforts the bundled recommended list was generated with, or null when no
+ * list is readable. A model that publishes no effort levels has no row here, as
+ * with a live catalog. Read from the data module, so this module and the bundled
+ * list's readers do not import each other.
+ */
+export function bundledEffortRecommendations(): EffortTable | null {
+  const provenance = bundledProvenance();
+  if (!provenance) return null;
+  const raw = bundledListRaw() as { bundle?: { efforts?: unknown } };
+  return {
+    generationId: provenance.generationId,
+    efforts: parseBundledEffortRecommendations(raw.bundle?.efforts),
+  };
+}
+
+/**
+ * The effort table that goes with the catalog this process reads: the sidecar's
+ * row for the active source's generation; else, on the bundled recommended list,
+ * the list's own efforts, so a stale sidecar is never shown beside it; else the
+ * newest the sidecar holds.
+ */
+export function currentEffortRecommendations(
+  path: string = EFFORT_RECOMMENDATIONS_PATH
+): EffortTable | null {
+  const snapshot = getCatalogSnapshot();
+  if (snapshot) {
+    const generation = readEffortRecommendations(path)?.generations[snapshot.generationId];
+    if (generation) return { generationId: snapshot.generationId, efforts: generation.efforts };
+    if (snapshot.origin === "bundled") return bundledEffortRecommendations();
+  }
+  return latestEffortRecommendations(path);
 }

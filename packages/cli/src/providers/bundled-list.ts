@@ -15,12 +15,14 @@ import { catalogOrigin } from "./catalog-client.js";
 
 export {
   type BundledProvenance,
-  _setBundledListRawForTest,
   bundledFetchDate,
   bundledListLabel,
   bundledListRaw,
   bundledProvenance,
 } from "./bundled-list-data.js";
+// The setter that also drops the parsed list, so routing and provenance read one list.
+export { _setBundledListForTest } from "./all-models-cache.js";
+export { bundledEffortRecommendations } from "./effort-recommendations.js";
 
 /** True when this process reads the bundled recommended list as its catalog. */
 export function bundledListActive(): boolean {
