@@ -189,7 +189,8 @@ function byCost(a: ModelsCatalogEntry, b: ModelsCatalogEntry): number {
  * The entry a group resolves to when no effort is requested — also the id the
  * picker shows for that row.
  *
- * Order: the vendor's own default -> cheapest **tier-less** non-premium ->
+ * Order: the vendor's own default (the cheapest, when a pool spanning several
+ * groups carries more than one) -> cheapest **tier-less** non-premium ->
  * cheapest non-premium -> cheapest anything.
  *
  * The tier-less preference is load-bearing, not cosmetic. A representative that
@@ -205,7 +206,7 @@ function byCost(a: ModelsCatalogEntry, b: ModelsCatalogEntry): number {
  * from the picker would be worse than an imperfect representative.
  */
 function defaultOf(group: ModelsCatalogEntry[]): ModelsCatalogEntry {
-  const declared = group.find((entry) => entry.isFamilyDefault);
+  const declared = group.filter((entry) => entry.isFamilyDefault).sort(byCost)[0];
   if (declared) return declared;
   const plain = group.filter((entry) => !devinHasSpeedPremium(asConfig(entry)));
   const pool = plain.length > 0 ? plain : group;
@@ -288,8 +289,10 @@ export class DevinModelResolver implements ProviderModelResolver {
    *    `glm-5-2-max-1m`; before this it was reachable by no request at all.
    * 2. **An exact vendor label or family id** resolves within the group it
    *    names — `claude-opus-5`, `glm-5.2`, `GLM-5.2`.
-   * 3. **A uid prefix** resolves only while every match sits in ONE group. When
-   *    it spans several it is under-specified, not unknown, and falls to rule 4.
+   * 3. **A base with effort siblings** — a name that is neither listed nor a
+   *    family/label resolves only to listed `<base>-<effort>` ids, where the
+   *    whole remainder is ONE effort name. `claude-opus-5` never reaches
+   *    `claude-opus-5-5-high`; anything else falls to rule 4.
    * 4. **No usable match** passes through unchanged so the backend can answer.
    *    The error rewrite checks the dynamic models catalog and turns that into a
    *    message naming what IS served; guessing here would hide it.
@@ -328,19 +331,18 @@ export class DevinModelResolver implements ProviderModelResolver {
       return label === lower || family === lower;
     });
 
-    // 3. Otherwise a uid PREFIX, which is only safe while it stays inside one
-    //    group. `claude-opus` prefixes four of them (Opus 5, 4.8, 4.7, 4.6) and
-    //    picking one would be a ×35-vs-×6 guess dressed up as a resolution, so
-    //    it falls through to rule 4 instead. This is rule 3 of the doc comment
-    //    applied to a request that is under-specified rather than unknown: the
-    //    backend's error, rewritten against the dynamic models catalog, names the
-    //    candidates, and we do not.
-    const pool =
-      named.length > 0
-        ? named
-        : modelsCatalog.filter((entry) => entry.wireId.toLowerCase().startsWith(`${lower}-`));
+    // 3. Otherwise only the base's effort siblings: listed ids that are exactly
+    //    `<base>-<effort>`. A uid prefix is not enough — `claude-opus-5-` also
+    //    prefixes `claude-opus-5-5-high`, a different model, and `claude-opus`
+    //    prefixes four of them. A request with no effort sibling falls to rule 4:
+    //    the backend's error, rewritten against the dynamic models catalog,
+    //    names what is served.
+    const pool = named.length > 0 ? named : effortSiblings(lower, modelsCatalog);
     if (pool.length === 0) return requested;
-    if (named.length === 0 && new Set(pool.map(keyOf)).size > 1) return requested;
+    // Effort siblings pick among themselves, across whatever groups they sit in
+    // and never among the other members of those groups: every sibling is the
+    // requested base, so the answer is always `<base>-<effort>`.
+    if (named.length === 0) return pickForEffort(pool, ctx.effort).wireId;
 
     // One label, possibly several context groups (GLM-5.2 is 200K and 1M): take
     // the group the vendor itself defaults to, else the cheapest. Sorted, not
@@ -350,6 +352,18 @@ export class DevinModelResolver implements ProviderModelResolver {
       pool.filter((entry) => entry.isFamilyDefault).sort(byCost)[0] ?? pool.slice().sort(byCost)[0];
     return pickForEffort(groups.get(keyOf(chosen!))!, ctx.effort).wireId;
   }
+}
+
+/**
+ * The listed entries whose uid is exactly `<base>-<effort>`: the whole
+ * remainder after `base-` is one effort name. `base` is lowercased.
+ */
+function effortSiblings(base: string, modelsCatalog: ModelsCatalogEntry[]): ModelsCatalogEntry[] {
+  const prefix = `${base}-`;
+  return modelsCatalog.filter((entry) => {
+    const wireId = entry.wireId.toLowerCase();
+    return wireId.startsWith(prefix) && isEffortLevel(wireId.slice(prefix.length));
+  });
 }
 
 /**
