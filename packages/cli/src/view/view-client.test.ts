@@ -71,12 +71,14 @@ describe("ViewClient", () => {
     client.on("closed", (reason) => {
       why = reason;
     });
-    await expect(client.request("list")).rejects.toThrow();
-    // a 17 MB write to a dropped socket can take seconds to fail on a loaded machine
+    // the request in flight is failed by the drop, not left to its timeout
+    await expect(client.request("list")).rejects.toThrow("closed before the answer");
+    // the client's own socket closing is the drop; whether the server's side of an in-process
+    // socket sees it promptly is the runtime's business, and on CI macOS it does not
     const deadline = Date.now() + 10_000;
-    while (s.closed() === 0 && Date.now() < deadline) await Bun.sleep(10);
-    expect(s.closed()).toBe(1);
+    while (why === "open" && Date.now() < deadline) await Bun.sleep(10);
     expect(why).toBe("server_gone");
+    await expect(client.request("list")).rejects.toThrow("the connection is closed");
   });
 
   test("a server at its connection cap gets one reconnect loop, and close() ends every socket", async () => {
