@@ -57,6 +57,11 @@ export type Phase = "booting" | "missing" | "ready";
 
 export const INSTALL_LINE = "claudish is not installed: bun install -g claudish";
 
+/** An installed claudish that runs but predates `claudish view`: say which one, and how to update. */
+export function updateLine(version: string): string {
+  return `${version} has no view command: bun install -g claudish@latest`;
+}
+
 interface ViewTerminal {
   target: string;
   name: string;
@@ -105,7 +110,7 @@ export class PanelController {
     const version = await this.run(partial, ["--version"], false);
     if (!version) return this.missing();
     const root = await this.run(partial, ["view", "--print-root"], false);
-    if (!root) return this.missing();
+    if (!root) return this.missing(updateLine(version.trim()));
     this.install = { path, pathEnv, root: root.trim(), version: version.trim() };
     this.phase = "ready";
     this.message = "starting";
@@ -193,9 +198,9 @@ export class PanelController {
     this.view = null;
   }
 
-  private missing(): void {
+  private missing(message: string = INSTALL_LINE): void {
     this.phase = "missing";
-    this.message = INSTALL_LINE;
+    this.message = message;
   }
 
   private wake(): void {

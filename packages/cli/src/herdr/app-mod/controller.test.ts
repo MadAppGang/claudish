@@ -38,6 +38,8 @@ class FakeHost implements ModHost {
   };
   listing: { servers: unknown[]; items: ViewItem[] } = { servers: [], items: [] };
   nextAddress = 10;
+  /** an installed claudish from before `claudish view` existed */
+  noView = false;
   hcAnswer: ((argv: string[]) => ExecResult) | null = null;
 
   async exec(command: string, args: string[]): Promise<ExecResult> {
@@ -50,7 +52,10 @@ class FakeHost implements ModHost {
     const at = argv.indexOf(CLAUDISH);
     const rest = argv.slice(at + 1).join(" ");
     if (rest === "--version") return { code: 0, stdout: "claudish version 14.16.1\n", stderr: "" };
-    if (rest === "view --print-root") return { code: 0, stdout: `${ROOT}\n`, stderr: "" };
+    if (rest === "view --print-root")
+      return this.noView
+        ? { code: 1, stdout: "", stderr: "unknown command: view\n" }
+        : { code: 0, stdout: `${ROOT}\n`, stderr: "" };
     if (rest === "view --feed-check")
       return {
         code: this.relayAlive.alive ? 0 : 1,
@@ -147,6 +152,22 @@ describe("PanelController", () => {
     expect(ctl.message).toBe(INSTALL_LINE);
     expect(host.hcRuns()).toEqual([]);
     expect(host.claudishRuns()).toEqual([]);
+  });
+
+  test("a claudish without the view command is named with its version and an update line, not as missing", async () => {
+    const host = new FakeHost();
+    host.noView = true;
+    const ctl = new PanelController(host);
+    await ctl.boot();
+    ctl.setVisible(true);
+    await ctl.tick();
+    expect(ctl.phase).toBe("missing");
+    expect(ctl.message).not.toBe(INSTALL_LINE);
+    expect(ctl.message).toBe(
+      "claudish version 14.16.1 has no view command: bun install -g claudish@latest"
+    );
+    expect(host.hcRuns()).toEqual([]);
+    expect(host.claudishRuns()).toEqual(["--version", "view --print-root"]);
   });
 
   test("at load it asks claudish for its version and socket root, through the PATH it found", async () => {
