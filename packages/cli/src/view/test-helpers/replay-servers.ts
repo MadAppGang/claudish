@@ -8,6 +8,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import type { Socket } from "node:net";
 import { join } from "node:path";
 import { PlacementGrants } from "../../herdr/placement-grants.js";
 import { ReplayManager, type ReplayPaneLike } from "../../mcp-session/replay-manager.js";
@@ -18,8 +19,10 @@ import type {
   ScrollRequest,
 } from "../../pane/index.js";
 import type { ReplayPaneOptions, ReplayReady } from "../../pane/replay-pane.js";
+import { endpointPathOf } from "../endpoints.js";
 import { PeerLinks } from "../peer-link.js";
 import { ViewClaims } from "../view-claims.js";
+import { ViewClient } from "../view-client.js";
 import { ViewDirectory } from "../view-directory.js";
 import { ViewFeed } from "../view-feed.js";
 import { ViewServer } from "../view-server.js";
@@ -237,6 +240,12 @@ export function makeReplayWorld(): ReplayWorld {
   const ctl: PaneControl = { closeDelayMs: 0, handLock: true };
   const servers: TestServer[] = [];
   const names = new Set<string>();
+  /**
+   * Peer clients by the endpoint path they dialed. A server dying ends its sockets in the kernel,
+   * so every peer reads EOF; an in-process server's `destroy()` does not always reach a client in
+   * the same process, so `kill()` also drops each peer's socket from the peer's side.
+   */
+  const dialedTo = new Map<string, Set<ViewClient>>();
   let n = 0;
 
   async function server(
@@ -256,7 +265,18 @@ export function makeReplayWorld(): ReplayWorld {
       joinExtraMs: opts.joinExtraMs ?? 2_000,
       unreachableCloseMs: opts.unreachableCloseMs ?? 1_000,
       shared: true,
-      peers: new PeerLinks({ root, self: () => endpointName }),
+      peers: new PeerLinks({
+        root,
+        self: () => endpointName,
+        connect: async (path, hello) => {
+          const client = await ViewClient.connect(path, { hello: hello as never });
+          const set = dialedTo.get(path) ?? new Set<ViewClient>();
+          dialedTo.set(path, set);
+          set.add(client);
+          client.on("closed", () => set.delete(client));
+          return client;
+        },
+      }),
       startPane: async (o) => {
         const pane = new FakeReplayPane(o, root, ctl, name);
         spawns.panes.push(pane);
@@ -306,6 +326,9 @@ export function makeReplayWorld(): ReplayWorld {
         names.delete(name);
         replays.closePeerLinks();
         view.close();
+        // the EOF a real death delivers: each peer's own socket closes, so its client sees the drop
+        for (const client of dialedTo.get(endpointPathOf(root, name)) ?? [])
+          (client as unknown as { sock: Socket | null }).sock?.destroy();
       },
     };
     servers.push(s);
