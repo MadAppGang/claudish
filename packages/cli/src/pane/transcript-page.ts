@@ -510,6 +510,10 @@ export interface ReplayTarget {
   /** the session's own working directory, when the record gives one */
   cwd: string | null;
   projectsRoot: string;
+  /** what the replay shows, for clients that list it; absent = its session is unnamed */
+  of?: { session_id: string } | { run_id: string; slot: string; path: string };
+  /** the model the session ran as requested; absent or null = unknown */
+  model?: string | null;
 }
 
 /** Claude Code writes `cwd` on each user and assistant record, so a first screenful holds one. */

@@ -220,6 +220,7 @@ describe("exported session seams (pure)", () => {
         "cost_usd",
         "tool_calls",
         "turns_completed",
+        "view",
         "last_activity_at",
         "idle_seconds",
         "activity",
@@ -233,6 +234,7 @@ describe("exported session seams (pure)", () => {
         "elapsed_seconds",
       ].sort()
     );
+    expect(row.view).toBeNull();
     expect(row.slot).toBe(row.session_id);
     expect(row.idle_seconds).toBeNull();
     expect(row.activity).toBeNull();

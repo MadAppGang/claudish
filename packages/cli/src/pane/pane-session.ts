@@ -46,6 +46,7 @@ import type {
   HoldResult,
   SessionHookBinding,
 } from "../hooks/session/binding.js";
+import { log } from "../logger.js";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { redactSecrets } from "../redact.js";
 import { locateBox, locatedBoxText } from "./box-locate.js";
@@ -172,6 +173,7 @@ import {
 } from "./slot-state.js";
 import { TranscriptFollower, type TranscriptView, type TurnView } from "./transcript-follower.js";
 import type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
+import { type ControlCapabilities, verifyViewSocket } from "./view-socket.js";
 
 export type { FinalVerdict, PaneSnapshot, SettledTurn } from "./types.js";
 
@@ -560,6 +562,11 @@ function screenTailOf(s: ScreenState, n = 12): string {
 }
 
 export class PaneSessionImpl implements PaneSession, RegisteredPane {
+  /** The verified read-only view socket of a live pane; null when there is none to publish. */
+  get viewSockPath(): string | null {
+    return isTerminalPhase(this.phase) ? null : this.viewSock;
+  }
+
   readonly paneId: string;
   readonly sockPath: string;
   readonly root: string;
@@ -628,6 +635,8 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   /** the size the viewer asked for last (clamped); the drain worker always sends THIS one */
   private desiredSize: PaneSize;
+  /** the view socket proven read-only on the current connection; null = none to publish */
+  private viewSock: string | null = null;
   /** the pane's size as magmux last confirmed it; null = unknown (a lost or timed-out reply) */
   private appliedSize: PaneSize | null;
   /** `capabilities.verbs` contains "resize", as of the latest attach */
@@ -867,7 +876,12 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       if (e?.pane === 0) this.paneClosed = true;
     });
     client.on("disconnected", () => this.onDisconnected(client));
-    const caps = await client.request<{ version?: string; protocol?: number; verbs?: unknown }>({
+    const caps = await client.request<{
+      version?: string;
+      protocol?: number;
+      verbs?: unknown;
+      viewSocket?: unknown;
+    }>({
       type: "capabilities",
     });
     // The resize flag is set BEFORE this.client: a resize arriving in between sees a
@@ -892,6 +906,9 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
         return;
       }
     }
+    // a path proven on the previous connection says nothing about this one
+    this.viewSock = null;
+    void this.checkViewSocket(client, caps.ok ? caps.result : null);
     // a size set while disconnected, or one whose reply was lost, is applied now
     this.lastSentSize = null;
     if (this.supportsResize && !samePaneSize(this.appliedSize, this.desiredSize)) this.kickResize();
@@ -909,6 +926,22 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
     if (!this.verifyGateBinding(client, list, magmuxVersion) || !list.ok) return;
     this.gateTrusted = true;
     this.onGateList(client, list.result);
+  }
+
+  /** The two-socket check for this connection; a failure leaves the session running unpublished. */
+  private async checkViewSocket(
+    client: MagmuxClient,
+    caps: ControlCapabilities | null
+  ): Promise<void> {
+    const check = await verifyViewSocket(caps, this.root, this.paneId);
+    if (this.client !== client || isTerminalPhase(this.phase)) return;
+    if (check.ok) {
+      this.viewSock = check.path;
+      this.scheduleChange();
+      return;
+    }
+    this.anomaly("view_socket_unverified");
+    log(`[pane] ${this.paneId} view socket unverified: ${check.detail}`);
   }
 
   /**
@@ -3134,6 +3167,7 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
 
   snapshot(): PaneSnapshot {
     const view = this.follower.view();
+    const subagents = this.follower.subagents();
     const terminal = isTerminalPhase(this.phase);
     // M4: a resize redraw is not activity, so it never resets idle_seconds
     const lastAct = Math.max(this.activityChangedAt, view.lastAppendAt ?? 0);
@@ -3177,6 +3211,10 @@ export class PaneSessionImpl implements PaneSession, RegisteredPane {
       agentCountMismatch: !terminal && this.phase === "RUNNING" && this.agentMismatch !== null,
       recent: cur && cur.recent.length > 0 ? cur.recent : null,
       agent: view.agentSetting,
+      viewSockPath: terminal ? null : this.viewSock,
+      promptsSent: this.q.callerAdmitted + callerCount(this.q),
+      subagents: subagents.rows,
+      subagentsVersion: subagents.version,
     };
   }
 

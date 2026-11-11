@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="55" assertions="0" failures="3" skipped="0" time="56.185318">
+  <testsuite name="src/pane/pane-hooks.integration.test.ts" file="src/pane/pane-hooks.integration.test.ts" tests="55" assertions="0" failures="3" skipped="0" time="56.179747" hostname="m5">
+    <testsuite name="the settle hold (§11.5) " file="src/pane/pane-hooks.integration.test.ts" line="335" tests="55" assertions="0" failures="3" skipped="0" time="0" hostname="m5">
+      <testsuite name="the latch and the terminal paths of a hold (channel, one-shot)" file="src/pane/pane-hooks.integration.test.ts" line="336" tests="1" assertions="0" failures="0" skipped="0" time="4.296" hostname="m5">
+        <testcase name="H-3 cancel during the hold: CANCELLED, A1 once; a late resolution is ignored" classname="the latch and the terminal paths of a hold (channel, one-shot) &gt; the settle hold (§11.5) " time="4.296481" file="src/pane/pane-hooks.integration.test.ts" line="397" assertions="0" />
+      </testsuite>
+      <testsuite name="team slots: chains, verdicts, terminal paths" file="src/pane/pane-hooks.integration.test.ts" line="540" tests="1" assertions="0" failures="0" skipped="0" time="6.465" hostname="m5">
+        <testcase name="H-32 team variant: the child exits 0 during an injected admission → slot COMPLETED, response A1" classname="team slots: chains, verdicts, terminal paths &gt; the settle hold (§11.5) " time="6.465125" file="src/pane/pane-hooks.integration.test.ts" line="722" assertions="0" />
+      </testsuite>
+      <testsuite name="injected turns never accepted, and caller input during a hold" file="src/pane/pane-hooks.integration.test.ts" line="743" tests="1" assertions="0" failures="0" skipped="0" time="6.555" hostname="m5">
+        <testcase name="H-17 a hold that never resolves (bound 30 s) does not delay the caller: CALLER admitted at once, no watchdog" classname="injected turns never accepted, and caller input during a hold &gt; the settle hold (§11.5) " time="6.555913" file="src/pane/pane-hooks.integration.test.ts" line="837" assertions="0" />
+      </testsuite>
+      <testsuite name="team slots: chains, verdicts, terminal paths" file="src/pane/pane-hooks.integration.test.ts" line="540" tests="1" assertions="0" failures="0" skipped="0" time="6.655" hostname="m5">
+        <testcase name="H-12 team blocked mid-chain: FAILED blocked; response is A1\n\nB2" classname="team slots: chains, verdicts, terminal paths &gt; the settle hold (§11.5) " time="6.655411" file="src/pane/pane-hooks.integration.test.ts" line="673" assertions="0" />
+      </testsuite>
+      <testsuite name="the latch and the terminal paths of a hold (channel, one-shot)" file="src/pane/pane-hooks.integration.test.ts" line="336" tests="1" assertions="0" failures="0" skipped="0" time="11.586" hostname="m5">
+        <testcase name="H-6 a fatal magmux stderr line during the hold: FAILED pane_lost; A1 once (published at record)" classname="the latch and the terminal paths of a hold (channel, one-shot) &gt; the settle hold (§11.5) " time="11.586346" file="src/pane/pane-hooks.integration.test.ts" line="442" assertions="0" />
+      </testsuite>
+      <testsuite name="team slots: chains, verdicts, terminal paths" file="src/pane/pane-hooks.integration.test.ts" line="540" tests="4" assertions="0" failures="0" skipped="0" time="49.317" hostname="m5">
+        <testcase name="MTL-229 team uses the head&apos;s written answer after a narration-only hook turn" classname="team slots: chains, verdicts, terminal paths &gt; the settle hold (§11.5) " time="11.680409" file="src/pane/pane-hooks.integration.test.ts" line="543" assertions="0" />
+        <testcase name="H-11 require_pattern ^NOPE on a chain: one verdict, response A1\n\nA2, EMPTY" classname="team slots: chains, verdicts, terminal paths &gt; the settle hold (§11.5) " time="11.769262" file="src/pane/pane-hooks.integration.test.ts" line="646" assertions="0" />
+        <testcase name="H-10 team cancelled in the second hold: response is A1\n\nA2" classname="team slots: chains, verdicts, terminal paths &gt; the settle hold (§11.5) " time="12.898611" file="src/pane/pane-hooks.integration.test.ts" line="618" assertions="0" />
+        <testcase name="H-11 require_pattern ^VOTE on a chain: one verdict, response A1\n\nA2, COMPLETED" classname="team slots: chains, verdicts, terminal paths &gt; the settle hold (§11.5) " time="12.970197" file="src/pane/pane-hooks.integration.test.ts" line="646" assertions="0" />
+      </testsuite>
+      <testsuite name="the latch and the terminal paths of a hold (channel, one-shot)" file="src/pane/pane-hooks.integration.test.ts" line="336" tests="1" assertions="0" failures="0" skipped="0" time="13.742" hostname="m5">
+        <testcase name="H-1 latch: settle() once over ≥ 4 ticks; A1 already in get_output; RUNNING, activity hook, phase SETTLING" classname="the latch and the terminal paths of a hold (channel, one-shot) &gt; the settle hold (§11.5) " time="13.742312" file="src/pane/pane-hooks.integration.test.ts" line="338" assertions="0" />
+      </testsuite>
+      <testsuite name="the chain head&apos;s prompt-read result" file="src/pane/pane-hooks.integration.test.ts" line="860" tests="1" assertions="0" failures="0" skipped="0" time="13.785" hostname="m5">
+        <testcase name="H-18 head delivered as a file and not read: FAILED prompt_not_read; get_output holds A1 and A2" classname="the chain head&apos;s prompt-read result &gt; the settle hold (§11.5) " time="13.785156" file="src/pane/pane-hooks.integration.test.ts" line="864" assertions="0" />
+      </testsuite>
+      <testsuite name="injected turns never accepted, and caller input during a hold" file="src/pane/pane-hooks.integration.test.ts" line="743" tests="1" assertions="0" failures="0" skipped="0" time="13.849" hostname="m5">
+        <testcase name="H-16 send_input during a hold: the hold ends in that step (caller), CALLER runs, a late HOOK never" classname="injected turns never accepted, and caller input during a hold &gt; the settle hold (§11.5) " time="13.84903" file="src/pane/pane-hooks.integration.test.ts" line="803" assertions="0" />
+      </testsuite>
+      <testsuite name="team slots: chains, verdicts, terminal paths" file="src/pane/pane-hooks.integration.test.ts" line="540" tests="1" assertions="0" failures="0" skipped="0" time="14.343" hostname="m5">
+        <testcase name="H-9 team cancelled while chain turn 3 runs: response is A1\n\nA2\n\nA3-part, outputSize its byte length" classname="team slots: chains, verdicts, terminal paths &gt; the settle hold (§11.5) " time="14.343866" file="src/pane/pane-hooks.integration.test.ts" line="584" assertions="0" />
+      </testsuite>
+      <testsuite name="the latch and the terminal paths of a hold (channel, one-shot)" file="src/pane/pane-hooks.integration.test.ts" line="336" tests="4" assertions="0" failures="0" skipped="0" time="61.137" hostname="m5">
+        <testcase name="H-4 the child exits 0 during the hold (one-shot): COMPLETED on A1 with the exit note, never child_exited" classname="the latch and the terminal paths of a hold (channel, one-shot) &gt; the settle hold (§11.5) " time="14.932313" file="src/pane/pane-hooks.integration.test.ts" line="418" assertions="0" />
+        <testcase name="H-2 timeout during the hold: TIMEOUT, A1 once; a late injection changes nothing" classname="the latch and the terminal paths of a hold (channel, one-shot) &gt; the settle hold (§11.5) " time="15.008184" file="src/pane/pane-hooks.integration.test.ts" line="370" assertions="0" />
+        <testcase name="H-7 timeout while a chain turn runs: TIMEOUT; get_output holds A1 then A2-part, each once" classname="the latch and the terminal paths of a hold (channel, one-shot) &gt; the settle hold (§11.5) " time="15.547207" file="src/pane/pane-hooks.integration.test.ts" line="487" assertions="0" />
+        <testcase name="H-8 timeout in the second hold: TIMEOUT; A1 and A2 each once, in order" classname="the latch and the terminal paths of a hold (channel, one-shot) &gt; the settle hold (§11.5) " time="15.650537" file="src/pane/pane-hooks.integration.test.ts" line="513" assertions="0" />
+      </testsuite>
+      <testsuite name="sessionStart and the hold bound (real binding)" file="src/pane/pane-hooks.integration.test.ts" line="941" tests="1" assertions="0" failures="0" skipped="0" time="11.616" hostname="m5">
+        <testcase name="H-21 control: the hook returns after its timeout → COMPLETED after turn 1, journal timeout, no turn 2" classname="sessionStart and the hold bound (real binding) &gt; the settle hold (§11.5) " time="11.616778" file="src/pane/pane-hooks.integration.test.ts" line="965" assertions="0" />
+      </testsuite>
+      <testsuite name="the chain head&apos;s prompt-read result" file="src/pane/pane-hooks.integration.test.ts" line="860" tests="2" assertions="0" failures="0" skipped="0" time="28.994" hostname="m5">
+        <testcase name="H-19 head read in full: COMPLETED" classname="the chain head&apos;s prompt-read result &gt; the settle hold (§11.5) " time="15.488488" file="src/pane/pane-hooks.integration.test.ts" line="890" assertions="0" />
+        <testcase name="H-20 a hook turn delivered as a file and not read: COMPLETED; anomaly hook_injection_not_read" classname="the chain head&apos;s prompt-read result &gt; the settle hold (§11.5) " time="13.506983" file="src/pane/pane-hooks.integration.test.ts" line="917" assertions="0" />
+      </testsuite>
+      <testsuite name="sessionStart and the hold bound (real binding)" file="src/pane/pane-hooks.integration.test.ts" line="941" tests="3" assertions="0" failures="0" skipped="0" time="49.486" hostname="m5">
+        <testcase name="H-21 a sessionStart injection still running at the first settle holds it: turn 2 runs LATE; one verdict" classname="sessionStart and the hold bound (real binding) &gt; the settle hold (§11.5) " time="13.597296" file="src/pane/pane-hooks.integration.test.ts" line="943" assertions="0" />
+        <testcase name="a sessionStart injection that returns before turn 1 settles is delivered after turn 1 (callerSeq survives)" classname="sessionStart and the hold bound (real binding) &gt; the settle hold (§11.5) " time="18.504169" file="src/pane/pane-hooks.integration.test.ts" line="1031" assertions="0" />
+        <testcase name="a hook item queued during a QUESTION waits, and no Esc is ever sent for it" classname="sessionStart and the hold bound (real binding) &gt; the settle hold (§11.5) " time="17.38571" file="src/pane/pane-hooks.integration.test.ts" line="1091" assertions="0" />
+      </testsuite>
+      <testsuite name="errors, the watchdog, re-wake" file="src/pane/pane-hooks.integration.test.ts" line="1117" tests="1" assertions="0" failures="0" skipped="0" time="18.061" hostname="m5">
+        <testcase name="H-22 settle() rejects: concluded with no injection; hook_hold_error; COMPLETED; A1 once" classname="errors, the watchdog, re-wake &gt; the settle hold (§11.5) " time="18.061641" file="src/pane/pane-hooks.integration.test.ts" line="1119" assertions="0" />
+      </testsuite>
+      <testsuite name="sessionStart and the hold bound (real binding)" file="src/pane/pane-hooks.integration.test.ts" line="941" tests="1" assertions="0" failures="0" skipped="0" time="20.22" hostname="m5">
+        <testcase name="H-21b sessionStart (timeout 4 s) returns at 4500 ms, inbox bound 200 ms: no watchdog; COMPLETED after turn 1" classname="sessionStart and the hold bound (real binding) &gt; the settle hold (§11.5) " time="20.220195" file="src/pane/pane-hooks.integration.test.ts" line="993" assertions="0" />
+      </testsuite>
+      <testsuite name="errors, the watchdog, re-wake" file="src/pane/pane-hooks.integration.test.ts" line="1117" tests="1" assertions="0" failures="1" skipped="0" time="18.214" hostname="m5">
+        <testcase name="H-23 settle() hangs, bound 300 ms: concluded at ~300 ms; hook_hold_watchdog; a later resolve changes nothing" classname="errors, the watchdog, re-wake &gt; the settle hold (§11.5) " time="18.214872" file="src/pane/pane-hooks.integration.test.ts" line="1138" assertions="0">
+          <failure type="Error" />
+        </testcase>
+      </testsuite>
+      <testsuite name="injected turns never accepted, and caller input during a hold" file="src/pane/pane-hooks.integration.test.ts" line="743" tests="1" assertions="0" failures="0" skipped="0" time="32.111" hostname="m5">
+        <testcase name="H-15 interactive: no witness → AWAITING_INPUT (today&apos;s admit_abandoned), the anomaly, A1 once" classname="injected turns never accepted, and caller input during a hold &gt; the settle hold (§11.5) " time="32.11166" file="src/pane/pane-hooks.integration.test.ts" line="773" assertions="0" />
+      </testsuite>
+      <testsuite name="the exit paths of a hold (M-1)" file="src/pane/pane-hooks.integration.test.ts" line="1234" tests="1" assertions="0" failures="0" skipped="0" time="19.415" hostname="m5">
+        <testcase name="H-29 magmux killed during the hold (one-shot): COMPLETED on A1, detail &apos;magmux exited&apos;, signal reason exit" classname="the exit paths of a hold (M-1) &gt; the settle hold (§11.5) " time="19.415222" file="src/pane/pane-hooks.integration.test.ts" line="1266" assertions="0" />
+      </testsuite>
+      <testsuite name="injected turns never accepted, and caller input during a hold" file="src/pane/pane-hooks.integration.test.ts" line="743" tests="1" assertions="0" failures="0" skipped="0" time="34.662" hostname="m5">
+        <testcase name="H-13 one-shot: no witness → hook_injection_dropped:send_not_accepted, COMPLETED on A1, never AWAITING_INPUT" classname="injected turns never accepted, and caller input during a hold &gt; the settle hold (§11.5) " time="34.66256" file="src/pane/pane-hooks.integration.test.ts" line="745" assertions="0" />
+      </testsuite>
+      <testsuite name="the exit paths of a hold (M-1)" file="src/pane/pane-hooks.integration.test.ts" line="1234" tests="1" assertions="0" failures="0" skipped="0" time="20.584" hostname="m5">
+        <testcase name="H-5 interactive, the child exits 0 during the hold: COMPLETED through exit_clean; A1 once" classname="the exit paths of a hold (M-1) &gt; the settle hold (§11.5) " time="20.584462" file="src/pane/pane-hooks.integration.test.ts" line="1237" assertions="0" />
+      </testsuite>
+      <testsuite name="team slots: chains, verdicts, terminal paths" file="src/pane/pane-hooks.integration.test.ts" line="540" tests="1" assertions="0" failures="0" skipped="0" time="35.18" hostname="m5">
+        <testcase name="H-14 team: an injected turn never accepted → slot COMPLETED, response A1, nothing left RUNNING" classname="team slots: chains, verdicts, terminal paths &gt; the settle hold (§11.5) " time="35.180716" file="src/pane/pane-hooks.integration.test.ts" line="695" assertions="0" />
+      </testsuite>
+      <testsuite name="errors, the watchdog, re-wake" file="src/pane/pane-hooks.integration.test.ts" line="1117" tests="1" assertions="0" failures="0" skipped="0" time="22.958" hostname="m5">
+        <testcase name="H-24 re-wake during a hold (real binding): S dropped, the drained proxy P is delivered next; A1 and A1b once" classname="errors, the watchdog, re-wake &gt; the settle hold (§11.5) " time="22.958566" file="src/pane/pane-hooks.integration.test.ts" line="1168" assertions="0" />
+      </testsuite>
+      <testsuite name="the exit paths of a hold (M-1)" file="src/pane/pane-hooks.integration.test.ts" line="1234" tests="1" assertions="0" failures="1" skipped="0" time="24.969" hostname="m5">
+        <testcase name="H-5 interactive, the child exits 1 during the hold: FAILED child_exited; A1 once" classname="the exit paths of a hold (M-1) &gt; the settle hold (§11.5) " time="24.969442" file="src/pane/pane-hooks.integration.test.ts" line="1237" assertions="0">
+          <failure type="Error" message="timed out waiting for settle()">Error: timed out waiting for settle()&#10;      at until (src/pane/pane-hooks.integration.test.ts:180:37)&#10;      at src/pane/pane-hooks.integration.test.ts:1248:19&#10;</failure>
+        </testcase>
+      </testsuite>
+      <testsuite name="sessionStart and the hold bound (real binding)" file="src/pane/pane-hooks.integration.test.ts" line="941" tests="2" assertions="0" failures="0" skipped="0" time="55.802" hostname="m5">
+        <testcase name="cap: an idle hook that always injects gets 3 hook-caused turns, then dropped capped; one verdict" classname="sessionStart and the hold bound (real binding) &gt; the settle hold (§11.5) " time="27.151913" file="src/pane/pane-hooks.integration.test.ts" line="1055" assertions="0" />
+        <testcase name="H-21b sessionStart (timeout 4 s) returns at 2500 ms, inbox bound 200 ms: no watchdog; turn 2 runs LATE" classname="sessionStart and the hold bound (real binding) &gt; the settle hold (§11.5) " time="28.651253" file="src/pane/pane-hooks.integration.test.ts" line="993" assertions="0" />
+      </testsuite>
+      <testsuite name="the exit paths of a hold (M-1)" file="src/pane/pane-hooks.integration.test.ts" line="1234" tests="5" assertions="0" failures="1" skipped="0" time="125.688" hostname="m5">
+        <testcase name="H-31 the hold ends inside the exit-capture window: dropped pane_exited, nothing typed, COMPLETED with the exit note" classname="the exit paths of a hold (M-1) &gt; the settle hold (§11.5) " time="26.036782" file="src/pane/pane-hooks.integration.test.ts" line="1312" assertions="0">
+          <failure type="Error" message="timed out waiting for settle()">Error: timed out waiting for settle()&#10;      at until (src/pane/pane-hooks.integration.test.ts:180:37)&#10;</failure>
+        </testcase>
+        <testcase name="H-30 magmux killed during the hold (interactive): FAILED pane_lost with today&apos;s &apos;magmux exited&apos; detail; A1 once" classname="the exit paths of a hold (M-1) &gt; the settle hold (§11.5) " time="26.140458" file="src/pane/pane-hooks.integration.test.ts" line="1286" assertions="0" />
+        <testcase name="H-32 one-shot: the child exits 0 during an injected admission → send_not_accepted; COMPLETED on A1 with the exit note" classname="the exit paths of a hold (M-1) &gt; the settle hold (§11.5) " time="25.460108" file="src/pane/pane-hooks.integration.test.ts" line="1340" assertions="0" />
+        <testcase name="H-33 interactive: the child exits 0 during an injected admission → the anomaly; COMPLETED (exit_clean)" classname="the exit paths of a hold (M-1) &gt; the settle hold (§11.5) " time="23.954658" file="src/pane/pane-hooks.integration.test.ts" line="1364" assertions="0" />
+        <testcase name="H-33 interactive: the child exits 1 during an injected admission → the anomaly; FAILED child_exited" classname="the exit paths of a hold (M-1) &gt; the settle hold (§11.5) " time="24.098545" file="src/pane/pane-hooks.integration.test.ts" line="1364" assertions="0" />
+      </testsuite>
+      <testsuite name="PaneSession: the snapshot during a hold, the no-hold paths, no binding" file="src/pane/pane-hooks.integration.test.ts" line="1461" tests="4" assertions="0" failures="0" skipped="0" time="65.872" hostname="m5">
+        <testcase name="H-26 hasIdleWork false: SETTLING never entered, settle() never called, the verdict in the settling step" classname="PaneSession: the snapshot during a hold, the no-hold paths, no binding &gt; the settle hold (§11.5) " time="17.134554" file="src/pane/pane-hooks.integration.test.ts" line="1648" assertions="0" />
+        <testcase name="H-25 snapshot during a hold: state RUNNING, activity hook, phase SETTLING, turnEndRecordMissing false" classname="PaneSession: the snapshot during a hold, the no-hold paths, no binding &gt; the settle hold (§11.5) " time="17.242356" file="src/pane/pane-hooks.integration.test.ts" line="1624" assertions="0" />
+        <testcase name="H-28 binding absent: today&apos;s events — no record callback, no SETTLING, chain fields at their no-hook values" classname="PaneSession: the snapshot during a hold, the no-hold paths, no binding &gt; the settle hold (§11.5) " time="14.473418" file="src/pane/pane-hooks.integration.test.ts" line="1727" assertions="0" />
+        <testcase name="H-27 end record and exit in the same tick: no hold, settle() never called, COMPLETED with the exit note" classname="PaneSession: the snapshot during a hold, the no-hold paths, no binding &gt; the settle hold (§11.5) " time="17.023955" file="src/pane/pane-hooks.integration.test.ts" line="1672" assertions="0" />
+      </testsuite>
+      <testsuite name="an interactive turn a hook follows gets its own verdict" file="src/pane/pane-hooks.integration.test.ts" line="1931" tests="1" assertions="0" failures="0" skipped="0" time="11.852" hostname="m5">
+        <testcase name="turn 1 ends in an API error: FAILED api_error before any injection; the injection is dropped session_ended" classname="an interactive turn a hook follows gets its own verdict &gt; the settle hold (§11.5) " time="11.852703" file="src/pane/pane-hooks.integration.test.ts" line="1933" assertions="0" />
+      </testsuite>
+      <testsuite name="hook text never reaches the command path" file="src/pane/pane-hooks.integration.test.ts" line="1900" tests="1" assertions="0" failures="0" skipped="0" time="12.006" hostname="m5">
+        <testcase name="an injection that starts with a slash is dropped delivery_unavailable and never typed" classname="hook text never reaches the command path &gt; the settle hold (§11.5) " time="12.006314" file="src/pane/pane-hooks.integration.test.ts" line="1902" assertions="0" />
+      </testsuite>
+      <testsuite name="the exit paths of a hold (M-1)" file="src/pane/pane-hooks.integration.test.ts" line="1234" tests="1" assertions="0" failures="0" skipped="0" time="22.356" hostname="m5">
+        <testcase name="H-34 control: a caller send_input delivered as a file and not read → prompt_not_read as today" classname="the exit paths of a hold (M-1) &gt; the settle hold (§11.5) " time="22.356756" file="src/pane/pane-hooks.integration.test.ts" line="1427" assertions="0" />
+      </testsuite>
+      <testsuite name="PaneSession: the snapshot during a hold, the no-hold paths, no binding" file="src/pane/pane-hooks.integration.test.ts" line="1461" tests="1" assertions="0" failures="0" skipped="0" time="19.361" hostname="m5">
+        <testcase name="H-27b the end record settles inside the exit-capture window: the exit note keeps its code" classname="PaneSession: the snapshot during a hold, the no-hold paths, no binding &gt; the settle hold (§11.5) " time="19.361634" file="src/pane/pane-hooks.integration.test.ts" line="1693" assertions="0" />
+      </testsuite>
+      <testsuite name="the exit paths of a hold (M-1)" file="src/pane/pane-hooks.integration.test.ts" line="1234" tests="1" assertions="0" failures="0" skipped="0" time="33.618" hostname="m5">
+        <testcase name="H-34 interactive: an unread hook-turn file is hook_injection_not_read, never prompt_not_read" classname="the exit paths of a hold (M-1) &gt; the settle hold (§11.5) " time="33.618748" file="src/pane/pane-hooks.integration.test.ts" line="1394" assertions="0" />
+      </testsuite>
+      <testsuite name="PaneSession: the snapshot during a hold, the no-hold paths, no binding" file="src/pane/pane-hooks.integration.test.ts" line="1461" tests="2" assertions="0" failures="0" skipped="0" time="47.902" hostname="m5">
+        <testcase name="MTL-229 settled chain de-duplicates Writes in head-first first-write order" classname="PaneSession: the snapshot during a hold, the no-hold paths, no binding &gt; the settle hold (§11.5) " time="23.235773" file="src/pane/pane-hooks.integration.test.ts" line="1569" assertions="0" />
+        <testcase name="MTL-229 settled chain retains the head&apos;s Write after a narration-only hook turn" classname="PaneSession: the snapshot during a hold, the no-hold paths, no binding &gt; the settle hold (§11.5) " time="24.667518" file="src/pane/pane-hooks.integration.test.ts" line="1529" assertions="0" />
+      </testsuite>
+      <testsuite name="the hold&apos;s result is applied only on current evidence" file="src/pane/pane-hooks.integration.test.ts" line="1753" tests="1" assertions="0" failures="0" skipped="0" time="19.84" hostname="m5">
+        <testcase name="a re-wake already in the transcript, with no frame since: the result arrives, the injection is never typed" classname="the hold&apos;s result is applied only on current evidence &gt; the settle hold (§11.5) " time="19.840689" file="src/pane/pane-hooks.integration.test.ts" line="1803" assertions="0" />
+      </testsuite>
+      <testsuite name="an interactive turn a hook follows gets its own verdict" file="src/pane/pane-hooks.integration.test.ts" line="1931" tests="1" assertions="0" failures="0" skipped="0" time="15.109" hostname="m5">
+        <testcase name="turn 1&apos;s task file was not read: prompt_not_read is recorded, then the injection is the next turn" classname="an interactive turn a hook follows gets its own verdict &gt; the settle hold (§11.5) " time="15.109656" file="src/pane/pane-hooks.integration.test.ts" line="1963" assertions="0" />
+      </testsuite>
+      <testsuite name="the hold&apos;s result is applied only on current evidence" file="src/pane/pane-hooks.integration.test.ts" line="1753" tests="2" assertions="0" failures="0" skipped="0" time="40.17" hostname="m5">
+        <testcase name="a re-wake whose working row shows before its records: the injection is never typed; its result is abandoned rewake" classname="the hold&apos;s result is applied only on current evidence &gt; the settle hold (§11.5) " time="20.927732" file="src/pane/pane-hooks.integration.test.ts" line="1760" assertions="0" />
+        <testcase name="a result that waited for a working row: a re-wake written as the row clears ends the hold; the injection is never typed" classname="the hold&apos;s result is applied only on current evidence &gt; the settle hold (§11.5) " time="19.243524" file="src/pane/pane-hooks.integration.test.ts" line="1850" assertions="0" />
+      </testsuite>
+    </testsuite>
+  </testsuite>
+</testsuites>

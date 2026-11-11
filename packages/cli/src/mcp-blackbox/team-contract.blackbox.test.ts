@@ -46,6 +46,7 @@ const CAPABILITIES = [
   "scroll",
   "transcript",
   "replay",
+  "view",
 ];
 const SLOT_STATES = [
   "STARTING",
@@ -95,6 +96,7 @@ const SLOT_ROW_KEYS = [
   "tokens_out",
   "tool_calls",
   "turns_completed",
+  "view",
 ].sort();
 const TEAM_RUN_ROW_KEYS = [
   "finished_at",
@@ -106,8 +108,8 @@ const TEAM_RUN_ROW_KEYS = [
   "started_at",
   "state",
 ].sort();
-const CAPTURE_KEYS = ["cols", "cursor", "final", "lines", "rows", "seq"].sort();
-const UNCHANGED_KEYS = ["final", "seq", "unchanged"];
+const CAPTURE_KEYS = ["cols", "cursor", "final", "lines", "rows", "seq", "view"].sort();
+const UNCHANGED_KEYS = ["final", "seq", "unchanged", "view"];
 const TEAM_CANCEL_KEYS = ["path", "results", "run_id"];
 /** §4.1 `run` row of the table: the start answer's keys. */
 const RUN_START_KEYS = [
@@ -351,7 +353,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)(
         const same = ok(
           await team({ mode: "capture", path, slot, since_seq: final.seq as number })
         );
-        expect(same).toEqual({ unchanged: true, seq: final.seq, final: true });
+        expect(same).toEqual({ unchanged: true, seq: final.seq, final: true, view: null });
       },
       T_TEST
     );
@@ -704,7 +706,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("capture (§8 D, NFR2)", () => {
       );
       if (same.unchanged === true) {
         expect(keys(same)).toEqual(UNCHANGED_KEYS);
-        expect(same).toEqual({ unchanged: true, seq: higher.seq, final: false });
+        expect(same).toEqual({ unchanged: true, seq: higher.seq, final: false, view: null });
       } else {
         expect(same.seq as number).toBeGreaterThan(higher.seq as number);
       }

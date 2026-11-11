@@ -1,0 +1,8 @@
+{
+  "agentType": "general-purpose",
+  "description": "alpha probe",
+  "toolUseId": "toolu_01NuNoRdHQqvHN9RuXc4vDv9",
+  "spawnDepth": 1,
+  "requestShape": "foreground",
+  "finished": true
+}

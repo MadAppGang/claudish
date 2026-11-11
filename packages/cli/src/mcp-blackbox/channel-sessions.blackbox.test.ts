@@ -43,6 +43,7 @@ const CAPABILITIES = [
   "scroll",
   "transcript",
   "replay",
+  "view",
 ];
 const SLOT_STATES = [
   "STARTING",
@@ -92,6 +93,7 @@ const SLOT_ROW_KEYS = [
   "tokens_out",
   "tool_calls",
   "turns_completed",
+  "view",
 ];
 const SESSION_ROW_KEYS = [
   ...SLOT_ROW_KEYS,
@@ -100,7 +102,7 @@ const SESSION_ROW_KEYS = [
   "session_id",
   "started_at",
 ].sort();
-const CAPTURE_KEYS = ["cols", "cursor", "final", "lines", "rows", "seq"].sort();
+const CAPTURE_KEYS = ["cols", "cursor", "final", "lines", "rows", "seq", "view"].sort();
 const SESSION_CANCEL_KEYS = ["changed", "session_id", "state"];
 
 const keys = (v: unknown): string[] => Object.keys(v as Json).sort();

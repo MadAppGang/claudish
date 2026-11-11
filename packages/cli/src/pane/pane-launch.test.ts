@@ -19,6 +19,8 @@ import {
   launcherScript,
   mintPaneId,
   paneCommand,
+  paneMagmuxArgv,
+  replayMagmuxArgv,
   requestedAgentOf,
   sockRootFor,
   versionAtLeast,
@@ -27,6 +29,7 @@ import {
   WATCHER_ARGV0,
   WATCHER_SCRIPT,
   isLaunchDirPath,
+  magmuxNeedle,
   sockPathOf,
   watcherArgv,
 } from "./process-identity.js";
@@ -436,15 +439,15 @@ describe("watcher argv and version gate", () => {
   });
 
   // REGRESSION: G-10 deep socket paths (>= 100 bytes) refused — Fixed in /dev:fix session dev-fix-20261017-g10-socket
-  test("panes need magmux 0.18.0, the first release that binds and dials a deep socket", async () => {
-    expect(MIN_MAGMUX_VERSION).toBe("0.18.0");
+  test("panes need magmux 0.19.0, the first release that serves a read-only view socket", async () => {
+    expect(MIN_MAGMUX_VERSION).toBe("0.19.0");
     const dir = tmp();
-    const old = join(dir, "magmux-0.17.0");
-    writeFileSync(old, "#!/bin/sh\necho 'magmux 0.17.0'\n");
+    const old = join(dir, "magmux-0.18.0");
+    writeFileSync(old, "#!/bin/sh\necho 'magmux 0.18.0'\n");
     chmodSync(old, 0o755);
-    await expect(assertMagmuxAvailable(old)).rejects.toThrow(
-      "is version 0.17.0; panes need >= 0.18.0"
-    );
+    const refusal = assertMagmuxAvailable(old);
+    await expect(refusal).rejects.toThrow("is version 0.18.0; panes need >= 0.19.0");
+    await expect(refusal).rejects.toThrow("a read-only view socket");
   });
 
   // REGRESSION: G-10 deep socket paths (>= 100 bytes) refused — Fixed in /dev:fix session dev-fix-20261017-g10-socket
@@ -459,4 +462,39 @@ describe("watcher argv and version gate", () => {
       FATAL_MAGMUX_STDERR.test("magmux: socket /x/magmux-a.sock: bind: permission denied")
     ).toBe(true);
   });
+
+  test("a failed view socket bind is fatal stderr", () => {
+    // measured with magmux 0.19.0, a directory occupying the .view path
+    expect(
+      FATAL_MAGMUX_STDERR.test(
+        "magmux: view socket /x/magmux-pa.view: unix socket /x/magmux-pa.view: listen unix magmux-pa.view: bind: address already in use"
+      )
+    ).toBe(true);
+  });
+});
+
+describe("magmux argv and the view socket", () => {
+  const pane = {
+    paneId: "p-abc123",
+    sockRoot: "/r",
+    ctlDir: "/c/launch-x",
+    sessionUuid: "00000000-0000-4000-8000-000000000000",
+    transcriptPath: "/t/s.jsonl",
+  };
+
+  for (const [name, argv] of [
+    ["session", paneMagmuxArgv(pane)],
+    ["replay", replayMagmuxArgv(pane)],
+  ] as const) {
+    test(`a ${name} pane's magmux binds --view-sock, before --id, and never --view-op`, () => {
+      const view = argv.indexOf("--view-sock");
+      expect(view).toBeGreaterThan(-1);
+      expect(view).toBeLessThan(argv.indexOf("--id"));
+      expect(view).toBeLessThan(argv.indexOf("-e"));
+      expect(argv.filter((a) => a === "--view-sock")).toHaveLength(1);
+      expect(argv.some((a) => a.startsWith("--view-op"))).toBe(false);
+      // the reap, sweep and watcher find this magmux by the adjacent `--id <id> --sock-dir`
+      expect(argv.join(" ")).toContain(magmuxNeedle(pane.paneId));
+    });
+  }
 });

@@ -1,0 +1,6 @@
+round 1 branch load=9.61 pass=55 fail=0 time=35.96s
+round 1 main load=13.06 pass=55 fail=0 time=45.76s
+round 2 branch load=14.16 pass=55 fail=0 time=42.12s
+round 2 main load=11.30 pass=55 fail=0 time=36.77s
+round 3 branch load=8.14 pass=55 fail=0 time=35.85s
+round 3 main load=6.14 pass=55 fail=0 time=33.97s

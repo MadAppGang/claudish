@@ -25,9 +25,10 @@ import {
   CONTRACT_VERSION,
   type ContractError,
   type ReplayUnavailableReason,
+  type TranscriptResult,
   isReplayId,
 } from "../pane/contract.js";
-import { requireProcessTable } from "../pane/test-helpers/hermetic-env.js";
+import { orphanReport, requireProcessTable } from "../pane/test-helpers/hermetic-env.js";
 import { useBlackboxEnv } from "../test-helpers/blackbox-env.js";
 import {
   MAGMUX_AVAILABLE,
@@ -69,6 +70,7 @@ const EXPECTED_CAPABILITIES: Array<(typeof CAPABILITIES)[number]> = [
   "scroll",
   "transcript",
   "replay",
+  "view",
 ];
 
 let layout: TempLayout;
@@ -443,11 +445,12 @@ function recordSpawnedPids(): void {
 // ============================================================================
 
 describe("capability and MCP tool surface (REQ-1)", () => {
-  test("TEST-1 REQ-1: CAPABILITIES ends with replay and is announced by list_sessions and team(mode:list)", async () => {
+  test("TEST-1 REQ-1: CAPABILITIES appends view after replay and is announced by list_sessions and team(mode:list)", async () => {
     expect(CONTRACT_VERSION).toBe(1);
     expect([...CAPABILITIES]).toEqual(EXPECTED_CAPABILITIES);
-    expect(CAPABILITIES.at(-2)).toBe("transcript");
-    expect(CAPABILITIES.at(-1)).toBe("replay");
+    expect(CAPABILITIES.at(-3)).toBe("transcript");
+    expect(CAPABILITIES.at(-2)).toBe("replay");
+    expect(CAPABILITIES.at(-1)).toBe("view");
     expect(isReplayId("replay-0123456789abcdef")).toBe(true);
     expect(isReplayId("replay-0123456789abcde")).toBe(false);
     expect(isReplayId("01234567")).toBe(false);
@@ -710,10 +713,23 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
   test(
     "TEST-3 TEST-4 REQ-4 REQ-5: live session/team slot answers session_live; settled team run checks run_id and slot",
     async () => {
-      // Live interactive session -> session_live
-      const created = await createSession(currentServer(), {});
+      // Open checks the record before liveness; establish a transcript while the child stays busy.
+      const created = await createSession(currentServer(), { prompt: "hold @@HANG@@" });
       ok(created.result);
       const liveSessionId = created.sessionId!;
+      await waitFor(
+        async () => {
+          const result = await call("transcript_session", { session_id: liveSessionId });
+          if (result.isError) return false;
+          const transcript = ok(result) as unknown as TranscriptResult;
+          return !transcript.final && transcript.lines.some((line) => line.kind === "user");
+        },
+        {
+          what: "live session transcript to contain its admitted prompt",
+          timeoutMs: 20_000,
+          intervalMs: 100,
+        }
+      );
       contractError(
         await call("replay_session", { session_id: liveSessionId }),
         "replay_unavailable",
@@ -840,7 +856,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
       standin.setScenario({ kind: "quoted_trust_then_box", endMarker: "QUOTED-TRUST-OK" });
       const opened = ok(await call("replay_session", { session_id: target.sessionId }));
       recordSpawnedPids();
-      expect(Object.keys(opened).sort()).toEqual(["replay_id", "seq"]);
+      expect(Object.keys(opened).sort()).toEqual(["replay_id", "seq", "view"]);
       expect(opened.replay_id).toMatch(REPLAY_ID_RE);
       expect(typeof opened.seq).toBe("number");
 
@@ -864,7 +880,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
       const sess = seedSession();
       const openedSess = ok(await call("replay_session", { session_id: sess.sessionId }));
       recordSpawnedPids();
-      expect(Object.keys(openedSess).sort()).toEqual(["replay_id", "seq"]);
+      expect(Object.keys(openedSess).sort()).toEqual(["replay_id", "seq", "view"]);
       const sessReplayId = openedSess.replay_id as string;
       expect(sessReplayId).toMatch(REPLAY_ID_RE);
       expect(Number.isInteger(openedSess.seq) && (openedSess.seq as number) >= 1).toBe(true);
@@ -888,7 +904,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
         })
       );
       recordSpawnedPids();
-      expect(Object.keys(openedTeam1).sort()).toEqual(["replay_id", "seq"]);
+      expect(Object.keys(openedTeam1).sort()).toEqual(["replay_id", "seq", "view"]);
       const teamReplayId1 = openedTeam1.replay_id as string;
       expect(teamReplayId1).toMatch(REPLAY_ID_RE);
       const capTeam1 = ok(await call("capture_session", { session_id: teamReplayId1 }));
@@ -907,7 +923,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
         })
       );
       recordSpawnedPids();
-      expect(Object.keys(openedTeam2).sort()).toEqual(["replay_id", "seq"]);
+      expect(Object.keys(openedTeam2).sort()).toEqual(["replay_id", "seq", "view"]);
       expect(openedTeam2.replay_id).toMatch(REPLAY_ID_RE);
       expect(ok(await call("close_replay", { replay_id: openedTeam2.replay_id }))).toEqual({
         closed: true,
@@ -1201,7 +1217,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
       const unchanged = ok(
         await call("capture_session", { session_id: replayId, since_seq: cap0.seq })
       );
-      expect(unchanged).toEqual({ unchanged: true, seq: cap0.seq, final: false });
+      expect(unchanged).toEqual({ unchanged: true, seq: cap0.seq, final: false, view: null });
 
       // Scroll up by -3 from live bottom -> 4 wheel-up events (`\x1b[<64;1;1M`: 1 dead first event + 3 moving), offset becomes 3
       const scrollUp = ok(await call("scroll_session", { session_id: replayId, by: -3 }));
@@ -1417,7 +1433,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
       const repeatCap = ok(
         await call("capture_session", { session_id: replayId, since_seq: finalCap.seq })
       );
-      expect(repeatCap).toEqual({ unchanged: true, seq: finalCap.seq, final: true });
+      expect(repeatCap).toEqual({ unchanged: true, seq: finalCap.seq, final: true, view: null });
 
       // resize_session on a finished replay answers its last size with changed:false and no pending
       const resizeFinished = ok(
@@ -1429,6 +1445,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
         rows: 32,
         changed: false,
         seq: finalCap.seq,
+        view: null,
       });
       expect(Object.hasOwn(resizeFinished, "pending")).toBe(false);
 
@@ -1481,10 +1498,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
       if (existsSync(join(paneRoot, "panes"))) {
         expect(readdirSync(join(paneRoot, "panes"))).toEqual([]);
       }
-      if (existsSync(paneRoot)) {
-        const extraFiles = readdirSync(paneRoot).filter((n) => n !== "panes");
-        expect(extraFiles).toEqual([]);
-      }
+      expect(orphanReport({ sockRoot: paneRoot }).files).toEqual([]);
     },
     T_TEST
   );
@@ -1535,6 +1549,29 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
       });
       expect(performance.now() - killedAt).toBeLessThanOrEqual(5_000);
       expect(pidAlive(liveSpawn.pid)).toBe(false);
+      const endpointDir = join(paneRootOf(layout), "endpoints");
+      const staleEndpoints = readdirSync(endpointDir).filter((name) =>
+        new RegExp(`^c${currentServer().proc.pid}-[0-9a-z]+[.]sock$`).test(name)
+      );
+      expect(staleEndpoints).toHaveLength(1);
+      server = await startServer();
+      // Endpoint removal is not a barrier for the watcher's independent pane cleanup.
+      // Wait for both outcomes without removing files or weakening the no-orphans assertion.
+      const report = await waitFor(
+        () => {
+          const report = orphanReport({ sockRoot: paneRootOf(layout) });
+          return staleEndpoints.every((name) => !existsSync(join(endpointDir, name))) &&
+            report.files.length === 0
+            ? report
+            : false;
+        },
+        {
+          what: "killed replay owner's endpoint, launch directories, pane records and held locks to be removed",
+          timeoutMs: 10_000,
+          intervalMs: 100,
+        }
+      );
+      expect(report.files).toEqual([]);
     },
     T_TEST
   );

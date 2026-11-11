@@ -156,6 +156,7 @@ const expectedCapabilities: Array<(typeof CAPABILITIES)[number]> = [
   "scroll",
   "transcript",
   "replay",
+  "view",
 ];
 const expectedTools = [
   "allowance_status",

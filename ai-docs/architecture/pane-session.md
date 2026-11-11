@@ -24,7 +24,7 @@ first for why print mode is not a faithful subset of the REPL.
 owner (MCP server or CLI team) ── spawn, detached, stdin = pipe ──▶ pane watcher  (/bin/sh, argv0 claudish-pane-watcher)
    │
    └── spawn, detached ──▶ magmux --headless --no-status --controller claude-code --session-id <uuid>
-                                  --transcript <transcript path> --id <paneId> --sock-dir <root> -e ". <ctl>/pane-launch.sh"
+                                  --transcript <transcript path> --view-sock --id <paneId> --sock-dir <root> -e ". <ctl>/pane-launch.sh"
                                COLUMNS=160 LINES=50 (launch size), SHELL=<ctl>/sh-shim
                                └─ pane 0: sh-shim -l -c ". pane-launch.sh"  =  /bin/sh -c …
                                     └─ cd -- '<realpath cwd>' || exit 97
@@ -47,6 +47,12 @@ owner (MCP server or CLI team) ── spawn, detached, stdin = pipe ──▶ pa
   `-e` it binds, with the same uuid claudish passes Claude Code and the same path its transcript
   follower derives ("The transcript binding" below). `--id <paneId> --sock-dir` stays adjacent:
   that pair is how the reap, the sweep and the watcher recognise the pane's magmux.
+- **Two sockets per pane.** `--view-sock` (magmux ≥ 0.19.0, a flag with no value, placed before
+  `--id` so it never splits that pair) makes magmux bind `<root>/magmux-<paneId>.view` beside the
+  control socket `<root>/magmux-<paneId>.sock`. The `.view` socket is read-only; `--view-op` is
+  never passed. Only the `.view` path is ever published to a client, and only after attach's
+  two-socket check (`pane/view-socket.ts`); the control socket stays internal. Both replay and
+  session panes get it. See [`view-transport.md`](view-transport.md).
 - **The pane command must still never name `claude`.** magmux attaches its controller to a direct
   `claude` command by itself (gate basis `direct`): by its mtime discovery, not by name, and with
   Claude Code's `--settings` rewritten. `paneCommand()` throws rather than produce such a command.
@@ -147,6 +153,37 @@ The same reply's `pid` and `dead` back the `exit` event: pane 0 dead for 1 s wit
 (`ready`, `reason`, `detail`); `ready: true` already means the box is EMPTY, because the published
 view is computed with the typing query and refuses `box_not_empty` last, after every dialog and
 vim test (`controller_claude.go:411`, `controller_claude_input.go:360`).
+
+## Subagents: linked by evidence, never by order
+
+`pane/subagent-ledger.ts` turns `<uuid>/subagents/` into the `subagents` rows of a session's
+ViewItem (at most 20, the newest by `started_at`). Which file belongs to which `Agent`/`Task` call is
+read from what Claude Code writes, measured on 2.1.302 to 2.1.322 (520 transcripts, 4,736 subagent
+files, plus two live runs on 2.1.322):
+
+- **`agent-<id>.meta.json` names the call at launch.** It holds `toolUseId`, `description`,
+  `agentType` and `requestShape` (`foreground` / `background`), appears about 120 ms after the
+  parent's `tool_use` and 30 to 70 ms BEFORE `agent-<id>.jsonl`, for foreground and background calls
+  alike, and is replaced at the end with `finished: true`. Corpus: every meta whose call is in the
+  main chain (4,569) agrees with that call's description and type and with the result's `agentId`.
+  The others are nested subagents: their meta sits in the same directory and names a call made inside
+  another subagent file.
+- **The parent's `tool_result` carries `toolUseResult.agentId`**: at once for a background call
+  (`isAsync: true`, `status: "async_launched"`), at the end for a foreground one (`status:
+  "completed"`, no `isAsync`). Since 2.1.30x Claude Code backgrounds a call even when the model did
+  not ask it to (4,490 of 4,569 corpus results are `isAsync` with `run_in_background` unset).
+- **A `<task-notification>` carries `<task-id>`** (the agent id) **and `<tool-use-id>`** when a
+  background subagent ends.
+- **Parallel calls do not create their files in call order**: 17 of 446 corpus groups did not.
+
+These three are authoritative. Where none has arrived, a file whose first user record equals the
+prompt of exactly one unlinked call is linked provisionally (4,461 of 4,569 first records equal the
+prompt; 108 only contain it, and stay unlinked); an authoritative link replaces it and the row that
+lost its call goes back to unlinked. Two calls with the same prompt stay unlinked until the evidence.
+The ledger keeps a digest of each prompt, never the prompt. State only moves `running → done`, and
+counts come from the subagent file, whose offsets only grow, so the main chain re-folded by
+`rewindTo` leaves the rows as they were. `subagentsVersion` moves with every change and feeds the
+status stream's stage-1 key.
 
 ## The session registry: a second reader, telemetry only
 
@@ -626,8 +663,13 @@ run the user's profile.
   transcript saving off — and the transcript is the oracle); every `MAGMUX_*` key (an inherited
   `MAGMUX_SOCK_DIR` silently moves the socket); terminal-identity variables (`TMUX`, `TERM_PROGRAM`,
   `COLORTERM`, `CLAUDE_CODE_SSE_PORT`, `ENABLE_IDE_INTEGRATION`, `ITERM_*`, `VSCODE_*`, …) that
-  steer a TUI's rendering and integrations; and the host identity (`CLAUDISH_LAUNCHER_PID`/`PPID`,
-  `CLAUDE_CODE_SESSION_ID`), which describes the MCP server's host, not the pane's new session.
+  steer a TUI's rendering and integrations; the multiplexer identity, every `HERDR_*` key and the
+  five `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, `HC_SCOPE`, `HC_SESSION`, `HC_SOCKET` (inherited,
+  Claude Code's herdr `SessionStart` hook reported the child's session into the CALLER's herdr pane;
+  [`view-transport.md`](view-transport.md) § FR9); and the host identity
+  (`CLAUDISH_LAUNCHER_PID`/`PPID`, `CLAUDE_CODE_SESSION_ID`), which describes the MCP server's host,
+  not the pane's new session. `run_prompt`'s print child uses the same predicate
+  (`isStrippedFromChildEnv`); `CLAUDISH_PANE_CHILD` is in none of these sets.
 - **Added:** `COLUMNS`/`LINES` at the launch size (160×50 unless a size was requested while the
   pane was starting; they are not updated by a later resize — "Terminal size" below), the slot's `CLAUDISH_TOKEN_FILE` and
   `CLAUDISH_UPSTREAM_ERROR_LOG`, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` when the owner left
@@ -985,7 +1027,8 @@ on its panes: without them a SIGKILLed MCP server would leave REPLs running and 
 
 1. **The pane watcher.** One detached `/bin/sh` per pane whose stdin is a pipe from the owner. EOF
    on that pipe — the owner ended by any means, SIGKILL included, because the kernel closes its end —
-   makes it verify and kill the pane group and magmux, then remove the files. A clean reap writes
+   makes it verify and kill the pane group and magmux, then remove the files (`magmux-<id>.sock`,
+   then `magmux-<id>.view` under the same path check, the record and both directories). A clean reap writes
    `done` and it exits without signalling anything. A pipe needs no polling and no owner pid that
    could be reused. The watcher is in its own session and never in the pane group, so a Ctrl-C, a
    group kill of the server or `close_pane` never reaches it. Values reach the script only as
@@ -999,7 +1042,11 @@ on its panes: without them a SIGKILLed MCP server would leave REPLs running and 
    pid and start time, the watcher, magmux and pane pids, the uuid and both directories. Before its
    first spawn on a root, a process sweeps it once (`ensureSwept`): records whose owner is dead and
    whose watcher is gone are killed after identity checks and removed; a recordless
-   `magmux-c<pid>-*.sock` whose owner is dead is probed and cleaned.
+   `magmux-c<pid>-*.sock` whose owner is dead is probed and cleaned. A recordless
+   `magmux-c<pid>-*.view` goes when its owner is dead and its control socket is gone
+   (`sweepRecordlessViewSockets`); one whose `.sock` survived stays with it. The same sweep removes
+   the view transport's leftovers (dead endpoints, free `herdr/*.lock`, a dead relay's feed file;
+   [`view-transport.md`](view-transport.md) § Failure modes and cleanup).
 
    **A process table without this process decides nothing.** Every table read maps a `ps` failure
    to `[]` (EPERM in a macOS sandbox that refuses the setuid `/bin/ps`, EAGAIN/EMFILE, `maxBuffer`),
@@ -1032,7 +1079,7 @@ then the **group backstop** — SIGTERM, then SIGKILL, `-pgid` while the group c
 is not enough on its own: magmux kills the group only while the pane leader is unreaped, so bun,
 claude and a Bash-tool grandchild survive it. Measured with a fake child that traps SIGTERM: magmux's
 forced close sends the pane SIGHUP and kills it before the backstop is needed. Only after the group
-and magmux are verified gone are the socket, record and directories removed and the watcher told
+and magmux are verified gone are the sockets (`.sock` and `.view`, `removePaneFiles`), record and directories removed and the watcher told
 `done`; otherwise the record keeps `reapFailed: true`, the watcher stays (it finishes the job when the
 owner ends), `reap_unverified` is recorded and the registry retries every 2 s. Worst case ≈ 12 s;
 `cancel` returns before the reap finishes. The shutdown reap is the same in parallel with short
@@ -1054,7 +1101,7 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   `sun_path` (104 bytes on darwin, 108 on linux), so `CLAUDISH_PANE_ROOT` can sit anywhere, such as
   inside a sandbox's home. `sockPathOf` (`process-identity.ts`) is the one place the path is built.
 - **`--id` sockets are never reaped after a SIGKILL** (seven stale ones were found during research).
-  claudish unlinks its own sockets, and the sweep cleans recordless ones.
+  claudish unlinks its own sockets, `.sock` and `.view` alike, and the sweep cleans recordless ones.
 - **EOF is not death.** magmux keeps its panes when a client leaves, and it closes slow subscribers
   on its own. A dropped connection is redialled with backoff while the magmux process lives
   (`socket_reconnected`), every attach re-subscribes (`capabilities`, `watch`, `list`), and while
@@ -1067,14 +1114,18 @@ reserves N panes before a run's spawn loop; each start consumes one, whether it 
   pane's life. `capture` and `capture_session` are memory reads. `aboveBoxChangedAt` moves only when a
   row ABOVE the input box (located by the cursor) changes, so the status line ticking under the box never holds a quiet window
   open. 4 fps (research recommended 2–4) halves boot, witness and settle latency at no idle cost.
-- `assertMagmuxAvailable` requires `magmux --version` ≥ `MIN_MAGMUX_VERSION` (0.18.0, the first
-  release that binds and dials a deep socket; cached per binary). It is also above the transcript
+- `assertMagmuxAvailable` requires `magmux --version` ≥ `MIN_MAGMUX_VERSION` (0.19.0, the first
+  release that serves the read-only `--view-sock` socket; 0.18.0 brought the deep socket) and on
+  the 0.x line; cached per binary. Without an explicit binary it walks every candidate (bundled
+  `native/`, `@claudish/magmux-*`, `PATH`) and takes the first that passes ([`view-transport.md`](view-transport.md)).
+  It is also above the transcript
   binding, which needs 0.17.0, not the gate alone: 0.16.0 had the gate but bound it by discovery.
   Every connect re-checks `capabilities` (`protocol: 1`, version ≥ `MIN_MAGMUX_VERSION`) and then
-  the binding (`list`). An older magmux is refused with `magmux_unavailable: <path> is version <v>;
-  panes need >= 0.18.0 (…); upgrade: brew upgrade MadAppGang/tap/magmux`; claudish never falls back
+  the binding (`list`). No usable magmux is refused with `magmux_unavailable: no usable magmux;
+  panes need a 0.x release >= 0.19.0 (…): <path> reports <v>, …; upgrade: brew upgrade
+  MadAppGang/tap/magmux`; claudish never falls back
   to the box-reading path or to print mode: one validator per fact. The release job bundles the
-  magmux pinned in `.github/magmux.env` (v0.18.0), test.yml runs the pane suites against that pin,
+  magmux pinned in `.github/magmux.env` (v0.19.0), test.yml runs the pane suites against that pin,
   and release.yml checks the pin against `MIN_MAGMUX_VERSION`.
 - **The `--version` probe must settle on its own deadline, never on the child's exit.**
   `assertMagmuxAvailable` shares ONE in-flight probe per binary with every caller, so a probe that
@@ -1263,7 +1314,8 @@ verb is unknown would send every mod into the unsupported state for nothing. Eve
 | `pane/pane-size.ts` | launch size, the resize clamp (magmux's limits), `RESIZE_QUIET_MS` |
 | `pane/prompt-delivery.ts` | delivery by kind, the turn file, line splitting |
 | `pane/pane-launch.ts` | root, ids, environment, launcher, shim, flag check, magmux check, spawns |
-| `pane/process-identity.ts` | the identity predicates and the generated watcher script |
+| `pane/process-identity.ts` | the identity predicates (`viewSockPathOf`, `isPaneViewSockPath` included) and the generated watcher script |
+| `pane/view-socket.ts` | the two-socket check before a `.view` path is published ([`view-transport.md`](view-transport.md)) |
 | `pane/pane-registry.ts` | records, the cross-process limit, shutdown hooks, the sweep |
 | `pane/pane-reap.ts` | the reap every pane shares: `reapPaneProcesses`, `retryPaneReap`, the identity checks before each signal |
 | `pane/replay-pane.ts` | `ReplayPane`, `startReplayPane`: a read-only pane on a finished session, box before dialog |

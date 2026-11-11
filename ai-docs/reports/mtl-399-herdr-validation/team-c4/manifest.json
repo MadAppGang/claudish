@@ -1,0 +1,17 @@
+{
+  "created": "2026-11-11T07:56:07.716Z",
+  "models": {
+    "01": {
+      "model": "gpt-6-luna",
+      "assignedAt": "2026-11-11T07:56:07.716Z"
+    },
+    "02": {
+      "model": "gpt-6-luna",
+      "assignedAt": "2026-11-11T07:56:07.716Z"
+    }
+  },
+  "shuffleOrder": [
+    "01",
+    "02"
+  ]
+}

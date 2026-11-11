@@ -1,0 +1,173 @@
+bun test v1.4.0 (34cbb9a40)
+
+src/pane/pane-hooks.integration.test.ts:
+247 |   await c.manager.shutdownAll();
+248 |   const left = await waitNoOrphans({ sockRoot: c.t.sockRoot }, 10_000);
+249 |   killLeftovers({ sockRoot: c.t.sockRoot });
+250 |   openEnvs.delete(c.t);
+251 |   c.t.cleanup();
+252 |   expect(left).toEqual({ processes: [], files: [] });
+                     ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "files": [],
+-   "processes": [],
++   "files": [
++     "launch-rx0zwW",
++     "panes/c13326-mwbtxzkt-sb4f6ee61-c925dc.json",
++     "launch-ZaZlRg",
++   ],
++   "processes": [
++     "13930 13930 /bin/sh -c \012set -f\012export LC_ALL=C\012PANE=$1 UUID=$2 CTL=$3 SOCKP=$4 REC=$5 TURN=$6 ROOT=$7 PROJ=$8 FORK=$9 FORKDIR=${10}\012pstable() { ps -ax -ww -o pid=,pgid=,lstart=,command=; }\012ps_ok() ",
++   ],
+  }
+
+- Expected  - 2
++ Received  + 8
+
+      at done (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:252:16)
+(fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-4 the child exits 0 during the hold (one-shot): COMPLETED on A1 with the exit note, never child_exited [19608.08ms]
+247 |   await c.manager.shutdownAll();
+248 |   const left = await waitNoOrphans({ sockRoot: c.t.sockRoot }, 10_000);
+249 |   killLeftovers({ sockRoot: c.t.sockRoot });
+250 |   openEnvs.delete(c.t);
+251 |   c.t.cleanup();
+252 |   expect(left).toEqual({ processes: [], files: [] });
+                     ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "files": [],
+-   "processes": [],
++   "files": [
++     "launch-lJWOk2",
++     "launch-W1JThH",
++     "panes/c13326-mwbtxzkt-s5c08ff27-1195e5.json",
++   ],
++   "processes": [
++     "13933 13933 /bin/sh -c \012set -f\012export LC_ALL=C\012PANE=$1 UUID=$2 CTL=$3 SOCKP=$4 REC=$5 TURN=$6 ROOT=$7 PROJ=$8 FORK=$9 FORKDIR=${10}\012pstable() { ps -ax -ww -o pid=,pgid=,lstart=,command=; }\012ps_ok() ",
++   ],
+  }
+
+- Expected  - 2
++ Received  + 8
+
+      at done (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:252:16)
+247 |   await c.manager.shutdownAll();
+248 |   const left = await waitNoOrphans({ sockRoot: c.t.sockRoot }, 10_000);
+249 |   killLeftovers({ sockRoot: c.t.sockRoot });
+250 |   openEnvs.delete(c.t);
+251 |   c.t.cleanup();
+252 |   expect(left).toEqual({ processes: [], files: [] });
+                     ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "files": [],
+-   "processes": [],
++   "files": [
++     "launch-GBqNKZ",
++     "panes/c13326-mwbtxzkt-s9fc1e71f-b21efc.json",
++     "launch-8oiiHM",
++   ],
++   "processes": [
++     "13936 13936 /bin/sh -c \012set -f\012export LC_ALL=C\012PANE=$1 UUID=$2 CTL=$3 SOCKP=$4 REC=$5 TURN=$6 ROOT=$7 PROJ=$8 FORK=$9 FORKDIR=${10}\012pstable() { ps -ax -ww -o pid=,pgid=,lstart=,command=; }\012ps_ok() ",
++   ],
+  }
+
+- Expected  - 2
++ Received  + 8
+
+      at done (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:252:16)
+(fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-7 timeout while a chain turn runs: TIMEOUT; get_output holds A1 then A2-part, each once [20899.31ms]
+(fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-8 timeout in the second hold: TIMEOUT; A1 and A2 each once, in order [21274.69ms]
+247 |   await c.manager.shutdownAll();
+248 |   const left = await waitNoOrphans({ sockRoot: c.t.sockRoot }, 10_000);
+249 |   killLeftovers({ sockRoot: c.t.sockRoot });
+250 |   openEnvs.delete(c.t);
+251 |   c.t.cleanup();
+252 |   expect(left).toEqual({ processes: [], files: [] });
+                     ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "files": [],
+-   "processes": [],
++   "files": [
++     "launch-pbGJO5",
++     "panes/c13326-mwbtxzkt-sae31b2f3-23fa74.json",
++     "launch-y6HzrJ",
++   ],
++   "processes": [
++     "15593 15593 /bin/sh -c \012set -f\012export LC_ALL=C\012PANE=$1 UUID=$2 CTL=$3 SOCKP=$4 REC=$5 TURN=$6 ROOT=$7 PROJ=$8 FORK=$9 FORKDIR=${10}\012pstable() { ps -ax -ww -o pid=,pgid=,lstart=,command=; }\012ps_ok() ",
++   ],
+  }
+
+- Expected  - 2
++ Received  + 8
+
+      at done (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:252:16)
+      at async <anonymous> (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:1021:19)
+(fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > H-21b sessionStart (timeout 4 s) returns at 2500 ms, inbox bound 200 ms: no watchdog; turn 2 runs LATE [25581.09ms]
+247 |   await c.manager.shutdownAll();
+248 |   const left = await waitNoOrphans({ sockRoot: c.t.sockRoot }, 10_000);
+249 |   killLeftovers({ sockRoot: c.t.sockRoot });
+250 |   openEnvs.delete(c.t);
+251 |   c.t.cleanup();
+252 |   expect(left).toEqual({ processes: [], files: [] });
+                     ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "files": [],
+-   "processes": [],
++   "files": [
++     "launch-kRnPcq",
++     "launch-LJIS2p",
++     "panes/c13326-mwbtxzkt-sd7219a68-c68af4.json",
++   ],
++   "processes": [
++     "16857 16857 /bin/sh -c \012set -f\012export LC_ALL=C\012PANE=$1 UUID=$2 CTL=$3 SOCKP=$4 REC=$5 TURN=$6 ROOT=$7 PROJ=$8 FORK=$9 FORKDIR=${10}\012pstable() { ps -ax -ww -o pid=,pgid=,lstart=,command=; }\012ps_ok() ",
++   ],
+  }
+
+- Expected  - 2
++ Received  + 8
+
+      at done (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:252:16)
+      at async <anonymous> (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:1256:19)
+247 |   await c.manager.shutdownAll();
+248 |   const left = await waitNoOrphans({ sockRoot: c.t.sockRoot }, 10_000);
+249 |   killLeftovers({ sockRoot: c.t.sockRoot });
+250 |   openEnvs.delete(c.t);
+251 |   c.t.cleanup();
+252 |   expect(left).toEqual({ processes: [], files: [] });
+                     ^
+error: expect(received).toEqual(expected)
+
+  {
+-   "files": [],
+-   "processes": [],
++   "files": [
++     "launch-hyUH4L",
++     "launch-w9usxS",
++     "panes/c13326-mwbtxzkt-s08f12d8d-d8597b.json",
++   ],
++   "processes": [
++     "16937 16937 /bin/sh -c \012set -f\012export LC_ALL=C\012PANE=$1 UUID=$2 CTL=$3 SOCKP=$4 REC=$5 TURN=$6 ROOT=$7 PROJ=$8 FORK=$9 FORKDIR=${10}\012pstable() { ps -ax -ww -o pid=,pgid=,lstart=,command=; }\012ps_ok() ",
++   ],
+  }
+
+- Expected  - 2
++ Received  + 8
+
+      at done (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:252:16)
+      at async <anonymous> (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:1256:19)
+(fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-5 interactive, the child exits 0 during the hold: COMPLETED through exit_clean; A1 once [21263.34ms]
+(fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-5 interactive, the child exits 1 during the hold: FAILED child_exited; A1 once [21245.81ms]
+
+ 49 pass
+ 6 fail
+ 300 expect() calls
+Ran 55 tests across 1 file. [52.37s]

@@ -262,11 +262,23 @@ describe.skipIf(!RESIZE_AVAILABLE)("pane resize through MCP (requires magmux res
         { what: "stable resized screen", timeoutMs: 10_000, intervalMs: 100 }
       );
       const r = await resize(id, 100, 40);
-      expect(r).toMatchObject({ cols: 100, rows: 40, changed: false, seq: stable.seq });
+      expect(r).toMatchObject({
+        cols: 100,
+        rows: 40,
+        changed: false,
+        seq: stable.seq,
+        view: {
+          holder: "claude_code",
+          label: "Claude Code",
+          since: expect.any(String),
+          claim_id: expect.any(String),
+        },
+      });
       expect(await call("capture_session", { session_id: id, since_seq: stable.seq })).toEqual({
         unchanged: true,
         seq: stable.seq,
         final: false,
+        view: r.view,
       });
     },
     T_TEST

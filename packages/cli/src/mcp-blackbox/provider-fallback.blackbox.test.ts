@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -330,7 +331,21 @@ function assertNothingStarted(teamPath?: string): void {
   expect(existsSync(requests)).toBe(false);
   expect(existsSync(join(layout.root, "native-argv.json"))).toBe(false);
   const paneRoot = paneRootOf(layout);
-  expect(existsSync(paneRoot) ? readdirSync(paneRoot, { recursive: true }) : []).toEqual([]);
+  const entries = existsSync(paneRoot) ? readdirSync(paneRoot) : [];
+  expect(entries.filter((name) => name !== "endpoints" && name !== "panes")).toEqual([]);
+  if (entries.includes("panes")) {
+    const panes = join(paneRoot, "panes");
+    expect(lstatSync(panes).isDirectory()).toBe(true);
+    expect(readdirSync(panes)).toEqual([]);
+  }
+  if (entries.includes("endpoints")) {
+    const endpoints = join(paneRoot, "endpoints");
+    expect(lstatSync(endpoints).isDirectory()).toBe(true);
+    for (const name of readdirSync(endpoints)) {
+      expect(name).toMatch(new RegExp(`^c${server?.child.pid}-[0-9a-z]+[.]sock$`));
+      expect(lstatSync(join(endpoints, name)).isSocket()).toBe(true);
+    }
+  }
 }
 
 function expectedEfforts(spec: string, id = model): Record<string, Record<string, string>> {
