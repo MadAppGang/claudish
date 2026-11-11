@@ -1,0 +1,5 @@
++0.0s [{"pane":"w1:p8","status":"working","labels":{"working":"Bash"},"tokens":{"activity":"Bash","cost":"$0.00","model":"gpt-6-luna","tokens":"in 9.9k / out 38","turns":"0"}}]
++1.5s [{"pane":"w1:p8","status":"working","labels":{"working":"thinking"},"tokens":{"activity":"thinking","cost":"$0.00","model":"gpt-6-luna","tokens":"in 9.9k / out 38","turns":"0"}}]
++4.6s [{"pane":"w1:p8","status":"working","labels":{"working":"thinking"},"tokens":{"activity":"thinking","cost":"$0.00","model":"gpt-6-luna","tokens":"in 10k / out 120","turns":"0"}}]
++10.2s [{"pane":"w1:p8","status":"working","labels":{"working":"finishing"},"tokens":{"activity":"finishing","cost":"$0.00","model":"gpt-6-luna","tokens":"in 10k / out 150","turns":"0"}}]
++10.7s [{"pane":"w1:p8","status":"done","labels":{"idle":"awaiting input"},"tokens":{"cost":"$0.00","model":"gpt-6-luna","tokens":"in 10k / out 150","turns":"1"}}]

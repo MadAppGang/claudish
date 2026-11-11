@@ -1,0 +1,1 @@
+39144.75ms	fail	the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-8 timeout in the second hold: TIMEOUT; A1 and A2 each once, in order

@@ -1,0 +1,3 @@
+team: 2 models, 2 done, 11s, 45.5k tok, free
+  01 gpt-6-luna         done      5B      22.7k/5    free
+  02 gpt-6-luna         done      5B      22.7k/5    free

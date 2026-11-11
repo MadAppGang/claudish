@@ -1,0 +1,1 @@
+20731.72ms	fail	the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-31 the hold ends inside the exit-capture window: dropped pane_exited, nothing typed, COMPLETED with the exit note

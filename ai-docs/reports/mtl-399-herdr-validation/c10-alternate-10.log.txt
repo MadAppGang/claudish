@@ -1,0 +1,113 @@
+round 1 branch load=31.61 pass=41 fail=14 time=55.18s
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-6 a fatal magmux stderr line during the hold: FAILED pa
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-12 team blocked mid-chain: FAILED blocked; response is A1
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > MTL-229 team uses the head's written answer after a narration-only hook tur
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-3 cancel during the hold: CANCELLED, A1 once; a late re
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-11 require_pattern ^VOTE on a chain: one verdict, response A1
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-4 the child exits 0 during the hold (one-shot): COMPLET
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-1 latch: settle() once over ≥ 4 ticks; A1 already in ge
+    (fail) the settle hold (§11.5)  > injected turns never accepted, and caller input during a hold > H-16 send_input during a hold: the hold ends in that step 
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-32 team variant: the child exits 0 during an injected admission → slot CO
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-9 team cancelled while chain turn 3 runs: response is A1
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-7 timeout while a chain turn runs: TIMEOUT; get_output 
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-8 timeout in the second hold: TIMEOUT; A1 and A2 each o
+    (fail) the settle hold (§11.5)  > the chain head's prompt-read result > H-19 head read in full: COMPLETED [21898.30ms]
+    (fail) the settle hold (§11.5)  > the chain head's prompt-read result > H-18 head delivered as a file and not read: FAILED prompt_not_read; get_output holds
+round 1 main load=34.42 pass=52 fail=3 time=86.12s
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-34 control: a caller send_input delivered as a file and not read → prompt_not_read as t
+    (fail) the settle hold (§11.5)  > PaneSession: the snapshot during a hold, the no-hold paths, no binding > MTL-229 settled chain retains the head's Write af
+    (fail) the settle hold (§11.5)  > PaneSession: the snapshot during a hold, the no-hold paths, no binding > H-27b the end record settles inside the exit-capt
+round 2 branch load=42.40 pass=16 fail=39 time=101.96s
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-6 a fatal magmux stderr line during the hold: FAILED pa
+    (fail) the settle hold (§11.5)  > injected turns never accepted, and caller input during a hold > H-17 a hold that never resolves (bound 30 s) does not dela
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-32 team variant: the child exits 0 during an injected admission → slot CO
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-11 require_pattern ^VOTE on a chain: one verdict, response A1
+    (fail) the settle hold (§11.5)  > injected turns never accepted, and caller input during a hold > H-16 send_input during a hold: the hold ends in that step 
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-1 latch: settle() once over ≥ 4 ticks; A1 already in ge
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-3 cancel during the hold: CANCELLED, A1 once; a late re
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-12 team blocked mid-chain: FAILED blocked; response is A1
+    (fail) the settle hold (§11.5)  > the chain head's prompt-read result > H-18 head delivered as a file and not read: FAILED prompt_not_read; get_output holds
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-11 require_pattern ^NOPE on a chain: one verdict, response A1
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-10 team cancelled in the second hold: response is A1
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-4 the child exits 0 during the hold (one-shot): COMPLET
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-7 timeout while a chain turn runs: TIMEOUT; get_output 
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-8 timeout in the second hold: TIMEOUT; A1 and A2 each o
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > MTL-229 team uses the head's written answer after a narration-only hook tur
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-2 timeout during the hold: TIMEOUT, A1 once; a late inj
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-14 team: an injected turn never accepted → slot COMPLETED, response A1, n
+    (fail) the settle hold (§11.5)  > injected turns never accepted, and caller input during a hold > H-13 one-shot: no witness → hook_injection_dropped:send_no
+    (fail) the settle hold (§11.5)  > injected turns never accepted, and caller input during a hold > H-15 interactive: no witness → AWAITING_INPUT (today's adm
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > H-21 control: the hook returns after its timeout → COMPLETED after turn 1
+    (fail) the settle hold (§11.5)  > errors, the watchdog, re-wake > H-22 settle() rejects: concluded with no injection; hook_hold_error; COMPLETED; A1 once [2
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-29 magmux killed during the hold (one-shot): COMPLETED on A1, detail 'magmux exited', s
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > a hook item queued during a QUESTION waits, and no Esc is ever sent for i
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > H-21b sessionStart (timeout 4 s) returns at 4500 ms, inbox bound 200 ms: 
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-5 interactive, the child exits 1 during the hold: FAILED child_exited; A1 once [29114.9
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-5 interactive, the child exits 0 during the hold: COMPLETED through exit_clean; A1 once
+    (fail) the settle hold (§11.5)  > errors, the watchdog, re-wake > H-23 settle() hangs, bound 300 ms: concluded at ~300 ms; hook_hold_watchdog; a later resol
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-30 magmux killed during the hold (interactive): FAILED pane_lost with today's 'magmux e
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-31 the hold ends inside the exit-capture window: dropped pane_exited, nothing typed, CO
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-32 one-shot: the child exits 0 during an injected admission → send_not_accepted; COMPLE
+    (fail) the settle hold (§11.5)  > the chain head's prompt-read result > H-20 a hook turn delivered as a file and not read: COMPLETED; anomaly hook_injection
+    (fail) the settle hold (§11.5)  > errors, the watchdog, re-wake > H-24 re-wake during a hold (real binding): S dropped, the drained proxy P is delivered nex
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-33 interactive: the child exits 0 during an injected admission → the anomaly; COMPLETED
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > H-21 a sessionStart injection still running at the first settle holds it:
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > H-21b sessionStart (timeout 4 s) returns at 2500 ms, inbox bound 200 ms: 
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > a sessionStart injection that returns before turn 1 settles is delivered 
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > cap: an idle hook that always injects gets 3 hook-caused turns, then drop
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-33 interactive: the child exits 1 during an injected admission → the anomaly; FAILED ch
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-34 interactive: an unread hook-turn file is hook_injection_not_read, never prompt_not_r
+round 2 main load=65.24 pass=53 fail=2 time=68.78s
+    (fail) the settle hold (§11.5)  > errors, the watchdog, re-wake > H-23 settle() hangs, bound 300 ms: concluded at ~300 ms; hook_hold_watchdog; a later resol
+    (fail) the settle hold (§11.5)  > errors, the watchdog, re-wake > H-24 re-wake during a hold (real binding): S dropped, the drained proxy P is delivered nex
+round 3 branch load=43.98 pass=48 fail=7 time=55.64s
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-6 a fatal magmux stderr line during the hold: FAILED pa
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-4 the child exits 0 during the hold (one-shot): COMPLET
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-7 timeout while a chain turn runs: TIMEOUT; get_output 
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-8 timeout in the second hold: TIMEOUT; A1 and A2 each o
+    (fail) the settle hold (§11.5)  > the chain head's prompt-read result > H-18 head delivered as a file and not read: FAILED prompt_not_read; get_output holds
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-31 the hold ends inside the exit-capture window: dropped pane_exited, nothing typed, CO
+    (fail) the settle hold (§11.5)  > errors, the watchdog, re-wake > H-24 re-wake during a hold (real binding): S dropped, the drained proxy P is delivered nex
+round 3 main load=23.48 pass=55 fail=0 time=55.74s
+round 4 branch load=22.64 pass=48 fail=7 time=52.71s
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-4 the child exits 0 during the hold (one-shot): COMPLET
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-5 interactive, the child exits 1 during the hold: FAILED child_exited; A1 once [18017.7
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > H-21b sessionStart (timeout 4 s) returns at 4500 ms, inbox bound 200 ms: 
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > a sessionStart injection that returns before turn 1 settles is delivered 
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > H-21b sessionStart (timeout 4 s) returns at 2500 ms, inbox bound 200 ms: 
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-5 interactive, the child exits 0 during the hold: COMPLETED through exit_clean; A1 once
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-31 the hold ends inside the exit-capture window: dropped pane_exited, nothing typed, CO
+round 4 main load=14.39 pass=53 fail=2 time=51.04s
+    (fail) the settle hold (§11.5)  > errors, the watchdog, re-wake > H-23 settle() hangs, bound 300 ms: concluded at ~300 ms; hook_hold_watchdog; a later resol
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-31 the hold ends inside the exit-capture window: dropped pane_exited, nothing typed, CO
+round 5 branch load=16.48 pass=45 fail=10 time=58.91s
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > a hook item queued during a QUESTION waits, and no Esc is ever sent for i
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > H-21b sessionStart (timeout 4 s) returns at 2500 ms, inbox bound 200 ms: 
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > H-21b sessionStart (timeout 4 s) returns at 4500 ms, inbox bound 200 ms: 
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-29 magmux killed during the hold (one-shot): COMPLETED on A1, detail 'magmux exited', s
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-5 interactive, the child exits 0 during the hold: COMPLETED through exit_clean; A1 once
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-5 interactive, the child exits 1 during the hold: FAILED child_exited; A1 once [23152.0
+    (fail) the settle hold (§11.5)  > sessionStart and the hold bound (real binding) > cap: an idle hook that always injects gets 3 hook-caused turns, then drop
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-30 magmux killed during the hold (interactive): FAILED pane_lost with today's 'magmux e
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-31 the hold ends inside the exit-capture window: dropped pane_exited, nothing typed, CO
+    (fail) the settle hold (§11.5)  > errors, the watchdog, re-wake > H-24 re-wake during a hold (real binding): S dropped, the drained proxy P is delivered nex
+round 5 main load=21.10 pass=54 fail=1 time=59.83s
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-31 the hold ends inside the exit-capture window: dropped pane_exited, nothing typed, CO
+round 6 branch load=17.61 pass=49 fail=6 time=48.76s
+    (fail) the settle hold (§11.5)  > injected turns never accepted, and caller input during a hold > H-16 send_input during a hold: the hold ends in that step 
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-4 the child exits 0 during the hold (one-shot): COMPLET
+    (fail) the settle hold (§11.5)  > team slots: chains, verdicts, terminal paths > H-9 team cancelled while chain turn 3 runs: response is A1
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-8 timeout in the second hold: TIMEOUT; A1 and A2 each o
+    (fail) the settle hold (§11.5)  > the chain head's prompt-read result > H-18 head delivered as a file and not read: FAILED prompt_not_read; get_output holds
+    (fail) the settle hold (§11.5)  > the latch and the terminal paths of a hold (channel, one-shot) > H-7 timeout while a chain turn runs: TIMEOUT; get_output 
+round 6 main load=14.28 pass=55 fail=0 time=35.80s
+round 7 branch load=10.77 pass=55 fail=0 time=39.95s
+round 7 main load=9.66 pass=55 fail=0 time=40.00s
+round 8 branch load=9.19 pass=55 fail=0 time=35.20s
+round 8 main load=7.07 pass=55 fail=0 time=36.89s
+round 9 branch load=9.09 pass=55 fail=0 time=37.69s
+round 9 main load=7.70 pass=55 fail=0 time=31.95s
+round 10 branch load=7.17 pass=53 fail=2 time=41.51s
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-33 interactive: the child exits 0 during an injected admission → the anomaly; COMPLETED
+    (fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-33 interactive: the child exits 1 during an injected admission → the anomaly; FAILED ch
+round 10 main load=9.04 pass=55 fail=0 time=39.98s

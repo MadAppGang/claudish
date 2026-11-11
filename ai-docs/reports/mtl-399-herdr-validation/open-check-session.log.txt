@@ -1,0 +1,10 @@
+Wed 11 Nov 2026 18:30:45 AEDT
+HERDR_ENV=1
+HERDR_BIN_PATH=/Users/jack/.local/bin/herdr
+HERDR_PANE_ID=w9:p4
+TERM_PROGRAM_VERSION=1.4.0
+HERDR_WORKSPACE_ID=w9
+HERDR_SOCKET_PATH=/Users/jack/.config/herdr/herdr.sock
+HERDR_TAB_ID=w9:t3
+TERM_PROGRAM=ghostty
+---
