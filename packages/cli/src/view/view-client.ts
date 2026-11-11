@@ -14,6 +14,7 @@ import {
   type ViewHelloResult,
 } from "../pane/view-contract.js";
 import { endpointOwnerAlive } from "./endpoints.js";
+import { LineBuffer } from "./line-buffer.js";
 
 export const REQUEST_TIMEOUT_MS = 2_000;
 const RECONNECT_FIRST_MS = 200;
@@ -32,6 +33,8 @@ export interface ViewClientOptions {
   reconnect?: boolean;
   /** repeated on every connection, so the server knows the role after a redial */
   hello?: ViewClientHello;
+  /** the cap on one unterminated answer line; `MAX_INBOUND_LINE_BYTES` when absent */
+  maxInboundLineBytes?: number;
 }
 
 interface Pending {
@@ -57,7 +60,7 @@ function dial(path: string): Promise<Socket> {
 export class ViewClient {
   private sock: Socket | null = null;
   private nextId = 1;
-  private inbound = "";
+  private readonly inbound: LineBuffer;
   private readonly pending = new Map<number, Pending>();
   private readonly listeners: { [K in keyof ViewClientListener]: Set<ViewClientListener[K]> } = {
     event: new Set(),
@@ -79,7 +82,9 @@ export class ViewClient {
   private constructor(
     private readonly path: string,
     private readonly options: ViewClientOptions
-  ) {}
+  ) {
+    this.inbound = new LineBuffer(options.maxInboundLineBytes ?? MAX_INBOUND_LINE_BYTES);
+  }
 
   /** Throws when the endpoint cannot be reached or refuses the `hello`. */
   static async connect(path: string, options: ViewClientOptions = {}): Promise<ViewClient> {
@@ -137,7 +142,7 @@ export class ViewClient {
     if (this.sock && this.sock !== sock) this.sock.destroy();
     this.sock = sock;
     this.opened.add(sock);
-    this.inbound = "";
+    this.inbound.reset();
     sock.setEncoding("utf8");
     sock.on("data", (chunk: string) => this.onData(chunk));
     sock.on("error", () => {});
@@ -148,22 +153,9 @@ export class ViewClient {
   }
 
   private onData(chunk: string): void {
-    this.inbound += chunk;
-    let nl = this.inbound.indexOf("\n");
-    while (nl >= 0) {
-      const line = this.inbound.slice(0, nl);
-      this.inbound = this.inbound.slice(nl + 1);
-      nl = this.inbound.indexOf("\n");
-      if (line.trim()) this.onLine(line);
-    }
-    // a string's length is at most its UTF-8 byte count, so only a long one is measured
-    if (
-      this.inbound.length > MAX_INBOUND_LINE_BYTES / 3 &&
-      Buffer.byteLength(this.inbound) > MAX_INBOUND_LINE_BYTES
-    ) {
-      this.inbound = "";
-      this.sock?.destroy();
-    }
+    const { lines, overflow } = this.inbound.push(chunk);
+    for (const line of lines) if (line.trim()) this.onLine(line);
+    if (overflow) this.sock?.destroy();
   }
 
   private onLine(line: string): void {

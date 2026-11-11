@@ -64,9 +64,9 @@ describe("ViewClient", () => {
 
   test("an unterminated line over the cap drops the connection instead of growing", async () => {
     const s = await rawServer((sock) => {
-      sock.write("x".repeat(17 * 1024 * 1024));
+      sock.write("x".repeat(100 * 1024));
     });
-    const client = await ViewClient.connect(s.path);
+    const client = await ViewClient.connect(s.path, { maxInboundLineBytes: 64 * 1024 });
     let why = "open";
     client.on("closed", (reason) => {
       why = reason;

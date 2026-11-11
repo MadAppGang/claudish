@@ -13,6 +13,7 @@
  */
 
 import { type Socket, connect } from "node:net";
+import { LineBuffer } from "../view/line-buffer.js";
 
 export const HERDR_REQUEST_TIMEOUT_MS = 2_000;
 /** a reply line longer than this ends the connection instead of growing memory */
@@ -73,14 +74,11 @@ export function lineReader(
   onOverflow: () => void,
   maxLineBytes = MAX_LINE_BYTES
 ) {
-  let buf = "";
+  const buf = new LineBuffer(maxLineBytes);
   return (chunk: string): void => {
-    buf += chunk;
-    let nl = buf.indexOf("\n");
-    while (nl >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      nl = buf.indexOf("\n");
+    const { lines, overflow } = buf.push(chunk);
+    for (const raw of lines) {
+      const line = raw.trim();
       if (!line) continue;
       try {
         onObject(asRecord(JSON.parse(line)));
@@ -88,11 +86,7 @@ export function lineReader(
         // not JSON: herdr never sends one, and one bad line must not end the stream
       }
     }
-    // a string's length is at most its UTF-8 byte count, so only a long one is measured
-    if (buf.length > maxLineBytes / 3 && Buffer.byteLength(buf) > maxLineBytes) {
-      buf = "";
-      onOverflow();
-    }
+    if (overflow) onOverflow();
   };
 }
 
