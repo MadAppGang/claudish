@@ -1,5 +1,38 @@
-import { describe, expect, test } from "bun:test";
-import { lineReader } from "./herdr-socket.js";
+import { afterEach, describe, expect, test } from "bun:test";
+import { FakeHerdr } from "../pane/test-helpers/fake-herdr.js";
+import { HerdrSocket, lineReader } from "./herdr-socket.js";
+
+describe("HerdrSocket against herdr's one-reply connections", () => {
+  let fake: FakeHerdr | null = null;
+  let client: HerdrSocket | null = null;
+  afterEach(async () => {
+    client?.close();
+    await fake?.stop();
+    fake = null;
+    client = null;
+  });
+
+  test("a request right after an answered one gets its own answer", async () => {
+    fake = await FakeHerdr.start();
+    fake.addWorkspace("w1");
+    client = new HerdrSocket(fake.path);
+    const first = await client.request<{ tabs: unknown[] }>("tab.list", { workspace_id: "w1" });
+    const second = await client.request<{ tabs: unknown[] }>("tab.list", { workspace_id: "w1" });
+    expect(first.tabs).toHaveLength(1);
+    expect(second.tabs).toHaveLength(1);
+  });
+
+  test("requests sent together are all answered", async () => {
+    fake = await FakeHerdr.start();
+    fake.addWorkspace("w1");
+    client = new HerdrSocket(fake.path);
+    const answers = await Promise.all(
+      [1, 2, 3].map(() => client?.request("tab.list", { workspace_id: "w1" }))
+    );
+    expect(answers).toHaveLength(3);
+    expect(fake.callsOf("tab.list")).toHaveLength(3);
+  });
+});
 
 function reader(max: number) {
   const objects: Record<string, unknown>[] = [];

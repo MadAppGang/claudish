@@ -204,10 +204,17 @@ export class FakeHerdr {
 
   /* ───────────── the socket ───────────── */
 
+  /**
+   * herdr 0.9.5 answers ONE request per connection and then closes it (measured: the reply, then
+   * `close` 1 ms later; a second request written on the same connection gets no answer). Only an
+   * `events.subscribe` connection stays open. The fake does the same, so a client that reuses a
+   * connection fails here as it fails against herdr.
+   */
   private accept(sock: Socket): void {
     sock.setEncoding("utf8");
     this.sockets.add(sock);
     let buf = "";
+    let taken = false;
     sock.on("data", (chunk: string) => {
       buf += chunk;
       let nl = buf.indexOf("\n");
@@ -215,7 +222,9 @@ export class FakeHerdr {
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         nl = buf.indexOf("\n");
-        if (line.trim()) void this.onLine(sock, line);
+        if (!line.trim() || taken) continue;
+        taken = true;
+        void this.onLine(sock, line);
       }
     });
     sock.on("error", () => {});
@@ -230,9 +239,7 @@ export class FakeHerdr {
     try {
       msg = obj(JSON.parse(line));
     } catch {
-      sock.write(
-        `${JSON.stringify({ id: "", error: { code: "invalid_json", message: "bad" } })}\n`
-      );
+      sock.end(`${JSON.stringify({ id: "", error: { code: "invalid_json", message: "bad" } })}\n`);
       return;
     }
     const id = typeof msg.id === "string" ? msg.id : "";
@@ -253,7 +260,7 @@ export class FakeHerdr {
     }
     if (fault && typeof fault === "object" && "error" in fault) {
       call.outcome = "error";
-      sock.write(`${JSON.stringify({ id, error: { code: fault.error, message: fault.error } })}\n`);
+      sock.end(`${JSON.stringify({ id, error: { code: fault.error, message: fault.error } })}\n`);
       return;
     }
     const events: Array<[string, Record<string, unknown>]> = [];
@@ -287,7 +294,7 @@ export class FakeHerdr {
       this.flushEvents(events);
       return;
     }
-    if (!sock.destroyed) sock.write(`${JSON.stringify(reply)}\n`);
+    if (!sock.destroyed) sock.end(`${JSON.stringify(reply)}\n`);
     this.flushEvents(events);
   }
 

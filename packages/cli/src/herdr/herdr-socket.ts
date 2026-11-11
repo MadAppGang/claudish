@@ -7,8 +7,9 @@
  * - `HerdrNoReply`: the reply never came (timeout, or the socket dropped). herdr may or may not have
  *   run the call, and a caller that created something must find out by reading.
  *
- * Requests share one connection, opened on first use and again after a drop. An event subscription
- * holds a connection of its own, because herdr keeps a subscribed connection for events.
+ * Each request opens its own connection: herdr 0.9.5 answers one request and then closes the
+ * connection, so a second request written on it is never answered. An event subscription holds a
+ * connection of its own, which herdr keeps open for events.
  */
 
 import { type Socket, connect } from "node:net";
@@ -57,13 +58,6 @@ export interface HerdrApi {
   close(): void;
 }
 
-interface Pending {
-  method: string;
-  resolve: (v: unknown) => void;
-  reject: (e: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
 function asRecord(v: unknown): Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -103,10 +97,10 @@ export function lineReader(
 }
 
 export class HerdrSocket implements HerdrApi {
-  private sock: Socket | null = null;
-  private readonly pending = new Map<string, Pending>();
   private nextId = 1;
   private closed = false;
+  /** request connections still waiting for their reply */
+  private readonly inFlight = new Set<Socket>();
   private readonly subscriptions = new Set<Socket>();
 
   constructor(
@@ -120,15 +114,50 @@ export class HerdrSocket implements HerdrApi {
     timeoutMs: number = this.timeoutMs
   ): Promise<T> {
     if (this.closed) return Promise.reject(new HerdrNoReply(method, "dropped"));
-    const sock = this.connection();
     const id = `c${this.nextId++}`;
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new HerdrNoReply(method, "timeout"));
-      }, timeoutMs);
+      const sock = connect(this.path);
+      sock.setEncoding("utf8");
+      this.inFlight.add(sock);
+      let settled = false;
+      const settle = (outcome: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.inFlight.delete(sock);
+        sock.destroy();
+        outcome();
+      };
+      const timer = setTimeout(
+        () => settle(() => reject(new HerdrNoReply(method, "timeout"))),
+        timeoutMs
+      );
       timer.unref?.();
-      this.pending.set(id, { method, resolve: resolve as (v: unknown) => void, reject, timer });
+      sock.on(
+        "data",
+        lineReader(
+          (o) => {
+            if (o.id !== id) return;
+            settle(() => {
+              if (!o.error) {
+                resolve(asRecord(o.result) as T);
+                return;
+              }
+              const e = asRecord(o.error);
+              reject(
+                new HerdrApiError(
+                  typeof e.code === "string" ? e.code : "unknown",
+                  typeof e.message === "string" ? e.message : "herdr error"
+                )
+              );
+            });
+          },
+          () => settle(() => reject(new HerdrNoReply(method, "dropped")))
+        )
+      );
+      sock.on("error", () => {});
+      // closed before the reply: herdr may or may not have run the call
+      sock.on("close", () => settle(() => reject(new HerdrNoReply(method, "dropped"))));
       sock.write(`${JSON.stringify({ id, method, params })}\n`);
     });
   }
@@ -177,53 +206,9 @@ export class HerdrSocket implements HerdrApi {
 
   close(): void {
     this.closed = true;
-    this.sock?.destroy();
-    this.sock = null;
+    for (const s of [...this.inFlight]) s.destroy();
+    this.inFlight.clear();
     for (const s of [...this.subscriptions]) s.destroy();
     this.subscriptions.clear();
-  }
-
-  private connection(): Socket {
-    if (this.sock) return this.sock;
-    const sock = connect(this.path);
-    sock.setEncoding("utf8");
-    this.sock = sock;
-    sock.on(
-      "data",
-      lineReader(
-        (o) => this.onReply(o),
-        () => sock.destroy()
-      )
-    );
-    sock.on("error", () => {});
-    sock.on("close", () => {
-      if (this.sock === sock) this.sock = null;
-      // every call still waiting on this connection has lost its reply
-      for (const [id, p] of [...this.pending]) {
-        this.pending.delete(id);
-        clearTimeout(p.timer);
-        p.reject(new HerdrNoReply(p.method, "dropped"));
-      }
-    });
-    return sock;
-  }
-
-  private onReply(o: Record<string, unknown>): void {
-    const id = typeof o.id === "string" ? o.id : "";
-    const p = this.pending.get(id);
-    if (!p) return;
-    this.pending.delete(id);
-    clearTimeout(p.timer);
-    if (o.error) {
-      const e = asRecord(o.error);
-      p.reject(
-        new HerdrApiError(
-          typeof e.code === "string" ? e.code : "unknown",
-          typeof e.message === "string" ? e.message : "herdr error"
-        )
-      );
-      return;
-    }
-    p.resolve(asRecord(o.result));
   }
 }
