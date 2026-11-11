@@ -82,6 +82,7 @@ describe("probeLink sends the routed-hop marker only for a routed link", () => {
   async function headerSent(hopOrigin: "routed" | undefined): Promise<string | null> {
     let seen: string | null | undefined;
     server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch(req) {
         seen = req.headers.get(PROBE_HOP_ORIGIN_HEADER);
