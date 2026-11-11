@@ -26,7 +26,7 @@
  */
 
 import { credentials } from "../auth/credentials/authority.js";
-import { bundledProvenance } from "./bundled-list-data.js";
+import { type BundledProvenance, bundledProvenance } from "./bundled-list-data.js";
 import { type Reachability, catalogReachability } from "./catalog-reachability.js";
 import {
   AUTO_ROUTE_PROVIDER,
@@ -647,6 +647,12 @@ function whyNoCatalog(reachability: Reachability): string {
 const REFUSAL_REMEDY =
   "  Run `claudish --models-refresh` once online, or name the provider explicitly (provider@model).";
 
+/** The bundled recommended list, with the release and generation it came from when known. */
+function bundledListNameFor(provenance: BundledProvenance | null): string {
+  if (!provenance) return "the bundled recommended list";
+  return `the bundled recommended list (claudish ${provenance.version}, generation ${provenance.generationId})`;
+}
+
 /**
  * The launch error for a bare name the catalog's state keeps from routing. A vendor
  * key is not the cause here, so the error does not ask for one.
@@ -655,10 +661,13 @@ function describeRouteRefusal(resolution: ProviderResolution, refusal: RouteRefu
   const name = resolution.fullModelId;
   const head = `Error: "${name}" cannot be routed: no cloud models catalog is on disk and ${whyNoCatalog(refusal.reachability)}`;
 
+  const provenance = refusal.catalogSource === "bundled" ? bundledProvenance() : null;
+  const listName = bundledListNameFor(provenance);
+
   if (refusal.catalogSource === "bundled" && refusal.cause !== "catalog-unreadable") {
     const lines = [
       `${head}, and`,
-      `  no configured provider can serve "${name}" from the bundled recommended list.`,
+      `  no configured provider can serve "${name}" from ${listName}.`,
       ...refusal.dropped.map(
         ({ displayName, outcome }) => `    ${displayName}: ${DROPPED_LABEL[outcome]}`
       ),
@@ -670,13 +679,8 @@ function describeRouteRefusal(resolution: ProviderResolution, refusal: RouteRefu
     return lines.join("\n");
   }
 
-  const provenance = refusal.catalogSource === "bundled" ? bundledProvenance() : null;
   if (provenance) {
-    return [
-      `${head}, and "${name}" is`,
-      `  not in the bundled recommended list (claudish ${provenance.version}, generation ${provenance.generationId}).`,
-      REFUSAL_REMEDY,
-    ].join("\n");
+    return [`${head}, and "${name}" is`, `  not in ${listName}.`, REFUSAL_REMEDY].join("\n");
   }
   return [`${head}.`, REFUSAL_REMEDY].join("\n");
 }
