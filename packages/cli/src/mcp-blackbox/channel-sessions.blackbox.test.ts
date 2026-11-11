@@ -203,7 +203,12 @@ async function waitState(id: string, states: string[], timeoutMs = 30_000): Prom
 async function create(args: Json): Promise<string> {
   const created = ok(await server.callTool("create_session", { model: FAKE_MODEL, ...args }));
   expect(keys(created)).toEqual(["session_id", "state"]);
-  expect(created.state).toBe("STARTING");
+  // a session that fails at once names its reason here, not only its state
+  const why =
+    created.state === "STARTING"
+      ? ""
+      : JSON.stringify(await sessionRow(created.session_id as string));
+  expect(created.state, why).toBe("STARTING");
   return created.session_id as string;
 }
 
