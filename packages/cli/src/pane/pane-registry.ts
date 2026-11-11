@@ -30,7 +30,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { claimSignalExit } from "../signal-owner.js";
-import { sweepEndpoints } from "../view/endpoints.js";
+import { listEndpoints, sweepEndpoints } from "../view/endpoints.js";
 import { defaultFeedPath, readFeedStamp, stampAlive } from "../view/feed-relay.js";
 import { removeIfFree } from "../view/kernel-lock.js";
 import { MagmuxClient } from "./magmux-client.js";
@@ -839,9 +839,13 @@ export async function sweepOrphanPanes(root: string = sockRootFor()): Promise<Sw
   }
   sweepRecordlessViewSockets(root, out);
   sweepFreeHerdrLocks(root, out);
-  // no trusted table: nothing can be judged dead, so every endpoint stays
-  const table = readProcessTable();
-  if (table) out.cleaned.push(...sweepEndpoints(root, table));
+  // read only when there is an endpoint to judge, and without blocking: a synchronous `ps` here
+  // stalls the loop while other startup work (the magmux probe's timer) waits on it.
+  // No trusted table: nothing can be judged dead, so every endpoint stays
+  if (listEndpoints(root).length > 0) {
+    const table = await readProcessTableAsync();
+    if (table) out.cleaned.push(...sweepEndpoints(root, table));
+  }
   sweepDeadFeed(root, out);
   return out;
 }

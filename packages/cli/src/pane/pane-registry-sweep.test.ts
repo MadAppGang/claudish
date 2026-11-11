@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { endpointNameOf, endpointPathOf, endpointsDirOf } from "../view/endpoints.js";
 import { tryAcquire } from "../view/kernel-lock.js";
 import { OWNER_START36, ensureSockRoot } from "./pane-launch.js";
 import { sweepOrphanPanes } from "./pane-registry.js";
@@ -35,6 +36,49 @@ function writeFeed(root: string, pid: number, start36: string): string {
   return path;
 }
 
+/** Counts `ps` runs by kind while `fn` runs; the real `ps` still answers. */
+async function countPs(fn: () => Promise<unknown>): Promise<{ sync: number; async: number }> {
+  const n = { sync: 0, async: 0 };
+  const prev: PsSpawn = setPsSpawnForTest({
+    execFileSync(file, args, opts) {
+      n.sync += 1;
+      return prev.execFileSync(file, args, opts);
+    },
+    execFile(file, args, opts, cb) {
+      n.async += 1;
+      return prev.execFile(file, args, opts, cb);
+    },
+  });
+  try {
+    await fn();
+  } finally {
+    setPsSpawnForTest(prev);
+  }
+  return n;
+}
+
+describe("startup sweep: the process table and the endpoint folder", () => {
+  // a synchronous `ps` blocks the event loop; on a loaded runner a 5 s probe timer then fires
+  // before the child's exit is read, and a magmux that answered is refused
+  test("a root with no records, endpoints, view sockets or feed reads no process table", async () => {
+    const t = env();
+    const n = await countPs(() => sweepOrphanPanes(t.sockRoot));
+    expect(n).toEqual({ sync: 0, async: 0 });
+  });
+
+  test("a dead owner's endpoint is removed, reading the table without blocking", async () => {
+    const t = env();
+    const dir = endpointsDirOf(t.sockRoot);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const stale = endpointPathOf(t.sockRoot, endpointNameOf(deadPid(), "zz"));
+    writeFileSync(stale, "");
+    const n = await countPs(() => sweepOrphanPanes(t.sockRoot));
+    expect(existsSync(stale)).toBe(false);
+    expect(n.sync).toBe(0);
+    expect(n.async).toBeGreaterThan(0);
+  });
+});
+
 describe("startup sweep: the herdr placement locks and the relay's feed file", () => {
   test("a feed file stamped by a dead relay is removed; a live relay's stays", async () => {
     const dead = env();
@@ -51,7 +95,8 @@ describe("startup sweep: the herdr placement locks and the relay's feed file", (
   test("a relay that starts and publishes while the sweep reads the process table keeps its feed", async () => {
     const t = env();
     let relay: ReturnType<typeof Bun.spawn> | null = null;
-    let path = "";
+    // a dead relay's feed is what the sweep reads first; the new relay replaces it mid-sweep
+    let path = writeFeed(t.sockRoot, deadPid(), "zz");
     const prev: PsSpawn = setPsSpawnForTest({
       execFileSync(file, args, opts) {
         const out = prev.execFileSync(file, args, opts);
