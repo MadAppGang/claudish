@@ -713,10 +713,16 @@ describe.skipIf(!MAGMUX_AVAILABLE)("live replay panes in headless magmux", () =>
   test(
     "TEST-3 TEST-4 REQ-4 REQ-5: live session/team slot answers session_live; settled team run checks run_id and slot",
     async () => {
-      // Open checks the record before liveness; establish a transcript while the child stays busy.
       const created = await createSession(currentServer(), { prompt: "hold @@HANG@@" });
       ok(created.result);
       const liveSessionId = created.sessionId!;
+      // a live session whose Claude Code record is not written yet is live, not missing a record
+      contractError(
+        await call("replay_session", { session_id: liveSessionId }),
+        "replay_unavailable",
+        "session_live"
+      );
+      // and once its record exists, the open still refuses it as live
       await waitFor(
         async () => {
           const result = await call("transcript_session", { session_id: liveSessionId });

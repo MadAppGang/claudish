@@ -1102,13 +1102,17 @@ export class ReplayManager {
     // shared: a held lock already proves the writer gone, so `writerGone` is read by the winner
     if (!this.shared && !target.writerGone)
       throw unavailable("session_live", "the session is still running");
+    // a live writer that has not written its record yet is still running, not missing one
+    const noRecord = (message: string) =>
+      target.writerGone
+        ? unavailable("no_record", message)
+        : unavailable("session_live", "the session is still running");
     const id = target.claudeSessionId;
     const path = target.transcriptPath;
-    if (!isUuid(id) || !path)
-      throw unavailable("no_record", "the session has no Claude Code record");
+    if (!isUuid(id) || !path) throw noRecord("the session has no Claude Code record");
     const uuid = id.toLowerCase();
     const fd = openContainedTranscript(path, uuid, target.projectsRoot);
-    if (fd === null) throw unavailable("no_record", "the session's Claude Code record is gone");
+    if (fd === null) throw noRecord("the session's Claude Code record is gone");
     closeSync(fd);
     return uuid;
   }
