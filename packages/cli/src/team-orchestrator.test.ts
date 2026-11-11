@@ -483,17 +483,19 @@ describe("team-orchestrator", () => {
       const { argv } = readJson<{ argv: string[] }>(
         probe.replace("{session}", slot?.sessionUuid as string)
       );
-      // -i --model <spawnModel> -y --quiet --session-id <uuid> --add-dir <turn dir>
-      expect(argv.slice(0, 6)).toEqual([
+      // REQ-105: A parent pin is marked explicitly, including a pin of one spec.
+      // -i --model <spawnModel> --model-pinned -y --quiet --session-id <uuid> --add-dir <turn dir>
+      expect(argv.slice(0, 7)).toEqual([
         "-i",
         "--model",
         "fake-env_probe",
+        "--model-pinned",
         "-y",
         "--quiet",
         "--session-id",
       ]);
-      expect(argv[6]).toBe(slot?.sessionUuid as string);
-      expect(argv[7]).toBe("--add-dir");
+      expect(argv[7]).toBe(slot?.sessionUuid as string);
+      expect(argv[8]).toBe("--add-dir");
       for (const banned of ["-p", "--print", "--stdin", "--output-format", "--verbose", "--json"])
         expect(argv).not.toContain(banned);
 

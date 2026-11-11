@@ -183,6 +183,21 @@ The **control variables** steer claudish itself: `CLAUDISH_CONFIG`, `CLAUDISH_PA
 | `CLAUDISH_LOCAL_QUEUE_ENABLED` | Enable/disable local model request queue (`false` or `0` to disable) | `true` |
 | `CLAUDISH_LOCAL_MAX_PARALLEL` | Max concurrent local model requests (integer 1–8; values above 8 are capped) | `1` |
 | `CLAUDISH_QWEN_NO_THINK` | Prepend `/no_think` to system prompt for Qwen local models (set to `"1"`) | none |
+| `CLAUDISH_DISABLE_BUNDLED_LIST` | Set to `1` to turn off the bundled recommended list, so a bare model name with no catalog file is refused instead. See [No catalog available](#no-catalog-available) | none |
+
+#### No catalog available
+
+claudish routes a bare model name from the cloud models catalog, cached on disk after the first successful refresh. With no catalog file and the backend unreachable, it uses the **bundled recommended list**: the recommended models and their efforts, as they were when this claudish release was built. It covers each model's vendor subscription and native API, plus any subscription whose account lists the model. `--probe` and the `[Route]` log line say so when it is in use, and name the generation and date. Any catalog file on disk, of any age, is used instead.
+
+A name outside the list stops the launch and tells you why, with no vendor-key demand:
+
+```
+Error: "<name>" cannot be routed: no cloud models catalog is on disk and the models-index backend is unreachable (<detail>), and "<name>" is
+  not in the bundled recommended list (claudish <version>, generation <id>).
+  Run `claudish --models-refresh` once online, or name the provider explicitly (provider@model).
+```
+
+No OpenRouter hop is added on the bundled list unless you set one up: `--default-provider`, `CLAUDISH_DEFAULT_PROVIDER`, `defaultProvider` in the config, or an OpenRouter key.
 
 ### 3.2 Claude Code Compatibility Variables
 

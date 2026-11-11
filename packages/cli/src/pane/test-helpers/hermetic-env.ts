@@ -76,6 +76,7 @@ export function makePaneTestEnv(extra: Record<string, string> = {}): PaneTestEnv
     CLAUDISH_DISABLE_KEYCHAIN: "1",
     CLAUDISH_DISABLE_OP: "1",
     CLAUDISH_DISABLE_CATALOG_WARM: "1",
+    CLAUDISH_DISABLE_BUNDLED_LIST: "1",
     CLAUDISH_NO_PREDEFINED_ENDPOINTS: "1",
     CLAUDISH_BIN: FAKE_CHILD,
     CLAUDISH_PANE_ROOT: sockRoot,

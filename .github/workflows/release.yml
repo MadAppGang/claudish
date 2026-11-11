@@ -111,8 +111,16 @@ jobs:
           name: magmux-${{ matrix.artifact }}
           path: packages/cli/native/magmux-*
 
+  # The publish waits on this job: a rulebook violation, an unreadable verdict or a
+  # bundled recommended list unchanged since the previous tag stops the release.
+  routing-review:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/routing-review-release.yml
+    secrets: inherit
+
   release:
-    needs: build
+    needs: [build, routing-review]
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

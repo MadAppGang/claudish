@@ -10,6 +10,7 @@ lives in `ROADMAP.md`.
 ## Where the rationale lives — all files below are in `ai-docs/architecture/`
 
 - `routing.md` — `provider@model` syntax, every provider prefix, why MCP tools remove an unrequested `provider@` (`user_required_provider`) and refuse a bare name outside the recommended list (`unknown_model` / `not_recommended`, `user_required_model`), catalog-gathered route candidates and their tier order, `defaultProvider` as the fallback position, the derived picker provider list, `SUBSCRIPTION_PROVIDERS`, local models
+- `routing-rulebook.md` — the numbered routing rules (RB-1 to RB-31), each with the files it polices and the test that tells its cases apart. The CI routing review reads it. Read before changing how any setup builds a chain
 - `wire.md` — every request built from the connection's catalog `wire` + route registry (no model-name rules anywhere); clamp / borrow-and-drop / try-in-turn; the first-run refusal trap; `+pro` vs the `+` chain separator; custom endpoints' declared wire; recommended effort (the efforts sidecar, shown by MCP `list_models`; a call with no effort answers `needs_effort`; the calling agent passes one effort per model); speed: `#<speed>`, Claude Code `/fast` and its two launch gates, the Codex `service_tier` from the account's `/models` (step 5s); read before touching `connection-*.ts`, `wire-*.ts`, step 5w, or any limit/reasoning field
 - `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array; Codex zero-delta tool calls, the `parallel` wrapper, the Responses leg/turn split with in-turn retry and the 150 s stall guard, and the non-streamed SSE-error contract (`x-claudish-stream-failure`); the signing-value registry (exact-value redaction of the credentials a request signed with, its leases and the sink table) and an internal call's abort signal and every reach point. Read before adding any log or client-body sink of upstream text
 - `code-mode.md` — `--code-mode` for `openai-codex`: one `exec` tool running JavaScript in a QuickJS sandbox, nested calls relayed as `tool_use` blocks; the decision order, lite/classic shapes and the lite → classic fallback, step 5r resume and tombstones, the input builder, store byte caps, and the sandbox limits (a 32 MiB heap limit does NOT bound wasm memory). Read before editing `code-mode/`, step 5d/5r, or the leg parser's exec handling
@@ -92,6 +93,7 @@ negative case: if you are about to type one of those words, stop and use the lef
 | Use | Never write | Means |
 |---|---|---|
 | cloud models catalog | "catalog" alone when the kind matters; "Firebase catalog" | the hosted models-index metadata, keyed by canonical model id, read with no credential |
+| bundled recommended list | offline catalog, fallback catalog, embedded list, bundled catalog | the release-generated subset of the cloud models catalog shipped inside claudish: the five recommendation tiers and their efforts, with only vendor-own connections. Read only when no catalog file exists and the backend is settled as unreachable; the one exception is the `--advisor` plan, which reads it inside `withBundledListScope` while the backend is still `contacted` |
 | dynamic models catalog | roster, account roster, live roster, served set | the models a provider's discovery endpoint returns for ONE credential, persisted and bound to it: one file per claudish provider under `~/.claudish/dynamic-models-catalog/`, keyed by an HMAC of the credential identity. A list up to 5 min old may deny; an older one, up to 72 h, may only add or confirm |
 | membership | roster, plan roster, included models | the models a subscription plan publishes (`subscriptionPlanIds`); coverage, not access |
 | entitlement | membership, coverage (when you mean access) | what one account may actually call; only its dynamic models catalog or a live request proves it |
@@ -153,7 +155,10 @@ negative case: if you are about to type one of those words, stop and use the lef
 
 - A new provider needs entries in BOTH `BUILTIN_PROVIDERS` and `PROVIDER_PROFILES`; a missing profile routes to OpenRouter with no error.
 - `apiKeyEnvVar` stays `""` for `devin`, `antigravity`, `grok-subscription` — non-empty means the handler is never built and the model falls through to OpenRouter.
-- Never hardcode a provider's models, a plan's membership, context windows, `maxOutputTokens`, or pricing. Discover live; a default is a rule, never a pinned id.
+- Never hardcode a provider's models, a plan's membership, context windows, `maxOutputTokens`, or pricing. Discover live; a default is a rule, never a pinned id. The one exception is the bundled recommended list: written only by `generate:bundled-list` at the version bump, never edited by hand, read as a catalog only through the default path of `readAllModelsCache`, and never outranking a catalog file of any age. Two readers take its recommendations and efforts directly, each only when that catalog is the bundled list: `bundledRecommendedModelsDoc` (MCP `list_models` and the model-choice check, behind `bundledListActive()`) and `bundledEffortRecommendations` (behind a bundled catalog snapshot).
+- A readiness or freshness reader uses `readDiskCatalog`, never `readAllModelsCache`: the bundled recommended list would make a readiness wait return at once and the catalog would never refresh.
+- Only the refresh writes catalog reachability (`catalog-reachability.ts`). A caller's wait that times out never marks it `unreachable`, or a slow backend routes new users from the bundled recommended list.
+- A cache holding a chain or handler built from the bundled recommended list tags the entry (`bundledTaggedCache`) and rebuilds it once a disk catalog exists. An untagged entry keeps the bundled chain for the life of the process after the backend has come back.
 - A catalog `wire.speed` answer (`supported`, `rejected`, `not_applicable`) always wins. Only `unknown` may be decided by live evidence, and only by the account's OWN dynamic models catalog (step 5s, Codex `service_tiers`) — never by a sibling or owner connection. `CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK` is set in pure proxy mode ONLY; under real Anthropic credentials it would skip the user's own org policy, so the native branches scrub what claudish set (`wire.md` § Speed).
 - Terminal errors are remapped to 400, so any `status ===` under `handlers/` is suspect — recover the real one with `extractUpstreamStatus`.
 - Read `C.*` / `tokens.*` at RENDER time; a module-level `const` snapshots the dark palette before detection runs.
@@ -236,6 +241,12 @@ a stale value fails the publish) — then run
 `bun run --cwd packages/cli scripts/generate-version.ts`. `packages/cli/src/version.ts` is
 GENERATED from `packages/cli/package.json` and says so in its header; editing it by hand is
 silently overwritten by the next `build`.
+
+After `generate-version.ts`, run `bun run --cwd packages/cli generate:bundled-list` and commit
+`packages/cli/src/providers/bundled-recommended-list.json` in the bump PR. It reads the production
+backend, so it is a bump step: neither `build` nor `release.yml` makes that call. Any failure exits
+1 and writes nothing; stop the bump and read the error. Only the generator writes that file, never
+a hand edit.
 
 **Never `git push --tags`.** Local `v7.8.2` diverges from origin's, so `--tags` exits
 non-zero on every release — after the new tag has already landed. It reports failure over

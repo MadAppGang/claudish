@@ -127,6 +127,7 @@ const qwenCollisionEntries = [
     ],
   },
 ];
+// REQ-101: Test fallbacks carry their source without consulting machine configuration.
 const realRoute = routing.route;
 const originalFetcher = discovery.getModelDiscoveryFetcher("muse-code-models");
 const originalFetch = globalThis.fetch;
@@ -174,7 +175,12 @@ beforeEach(() => {
   _resetCatalogClient();
   install(museCatalog as DiskCacheV3);
   routeSpy = spyOn(routing, "route").mockImplementation((spec) =>
-    realRoute(spec, {}, "", cachePath)
+    realRoute(
+      spec,
+      {},
+      { provider: "", source: "config-file", legacyAutoPromoted: false },
+      cachePath
+    )
   );
   windowSpy = spyOn(discovery, "discoverContextWindow");
 });

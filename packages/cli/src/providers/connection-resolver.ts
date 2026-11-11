@@ -67,9 +67,15 @@ export type ConnectionResolution =
        *   endpoint, LiteLLM); its requests are not built from catalog wires.
        * - `no-catalog`: no readable cache.
        * - `no-registry`: a cache written before wires were read; refresh it.
-       * - `no-connection`: the catalog does not map this model to this provider.
        */
-      reason: "not-catalog-routed" | "no-catalog" | "no-registry" | "no-connection";
+      reason: "not-catalog-routed" | "no-catalog" | "no-registry";
+    }
+  | {
+      ok: false;
+      /** The catalog does not map this model to this provider. */
+      reason: "no-connection";
+      /** Whether the catalog lacks the model, or has it with no connection of this provider. */
+      detail: "model-absent" | "connection-absent";
     };
 
 function lower(value: string): string {
@@ -90,6 +96,33 @@ function mappedOnRoute(
       connection.route?.routeId === route.routeId &&
       connection.route?.routeProfileId === route.routeProfileId &&
       typeof connection.externalModelId === "string"
+  );
+}
+
+/**
+ * Whether any record publishes the name: as its canonical id or alias, or as the
+ * wire id of any of its connections on any route (`MiniMax-M3`).
+ */
+function catalogKnowsName(entries: SlimModelEntry[], modelName: string): boolean {
+  if (findNamedEntry(entries, modelName)) return true;
+  const name = lower(modelName);
+  return entries.some((entry) =>
+    allConnections(entry).some(
+      (connection) =>
+        typeof connection.externalModelId === "string" && lower(connection.externalModelId) === name
+    )
+  );
+}
+
+/** The record whose canonical id or alias is the name, vendor prefix dropped. */
+function findNamedEntry(entries: SlimModelEntry[], modelName: string): SlimModelEntry | undefined {
+  const name = lower(modelName);
+  const bare = stripVendorPrefix(name);
+  return entries.find(
+    (candidate) =>
+      lower(candidate.modelId) === name ||
+      lower(candidate.modelId) === bare ||
+      candidate.aliases.some((alias) => lower(alias) === name || lower(alias) === bare)
   );
 }
 
@@ -117,14 +150,7 @@ function findConnection(
     if (connection) return { entry, connection };
   }
 
-  const name = lower(modelName);
-  const bare = stripVendorPrefix(name);
-  const entry = entries.find(
-    (candidate) =>
-      lower(candidate.modelId) === name ||
-      lower(candidate.modelId) === bare ||
-      candidate.aliases.some((alias) => lower(alias) === name || lower(alias) === bare)
-  );
+  const entry = findNamedEntry(entries, modelName);
   if (!entry) return undefined;
   const connections = mappedOnRoute(entry.aggregators ?? [], route);
   const connection = isMovingPointer(entry.modelId)
@@ -146,9 +172,13 @@ export function resolveConnection(
   if (!cache.routeRegistry) return { ok: false, reason: "no-registry" };
 
   const found = findConnection(cache.entries, route, modelName);
-  if (!found?.connection.wire) return { ok: false, reason: "no-connection" };
+  if (!found?.connection.wire) {
+    const detail =
+      found || catalogKnowsName(cache.entries, modelName) ? "connection-absent" : "model-absent";
+    return { ok: false, reason: "no-connection", detail };
+  }
   const profile = routeProfile(cache.routeRegistry.registry, route);
-  if (!profile) return { ok: false, reason: "no-connection" };
+  if (!profile) return { ok: false, reason: "no-connection", detail: "connection-absent" };
 
   const ownerWire = findOwnerWire(found.entry, cache.routeRegistry.registry, found.connection);
   return {

@@ -23,7 +23,7 @@ import {
   isFailureState,
   isReadyState,
 } from "../providers/probe-live.js";
-import { DROPPED_LABEL, type DroppedOutcome, droppedRemedy } from "../providers/probe-runner.js";
+import { type DroppedOutcome, droppedRemedy, droppedStatus } from "../providers/probe-runner.js";
 import type { RouteExplanation, RouteWarning, RuleScope } from "../providers/routing-rules.js";
 import { bgHex, cliAnsi } from "../theme/ansi.js";
 import { getThemeMode } from "../theme/theme-mode.js";
@@ -374,6 +374,8 @@ export interface DroppedEntry {
   label?: string;
   outcome: DroppedOutcome;
   credentialHint?: string;
+  /** Why a withheld gateway hop has no wire id. */
+  detail?: string;
   /** A no-credential candidate whose credential is not an env var (Muse Code). */
   provenance?: KeyProvenance;
 }
@@ -710,7 +712,7 @@ function buildDroppedRowData(result: ModelResult): RowData[] {
     provider: entry.displayName,
     label: entry.label ?? "",
     spec: entry.wireId,
-    status: `${pc.dim}– ${DROPPED_LABEL[entry.outcome]}${pc.reset}`,
+    status: `${pc.dim}– ${droppedStatus(entry.outcome, entry.detail)}${pc.reset}`,
     note: droppedRemedy(entry.credentialHint),
   }));
 }

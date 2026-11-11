@@ -398,16 +398,23 @@ export function readUserStatusLine(configDir: string): unknown | null {
 
 /* ───────────────────────────── child argv and flags ───────────────────────────── */
 
+/**
+ * `spawnPinned` is true when `spawnModel` is the parent's pin for a bare name
+ * (`SpawnPlan.pinned`): `--model-pinned` tells the child its elements are routed
+ * hops. A model the caller named is passed without it.
+ */
 export function buildClaudishPaneArgv(
   spawnModel: string,
   sessionUuid: string,
   turnDir: string,
-  callerFlags: string[]
+  callerFlags: string[],
+  spawnPinned = false
 ): string[] {
   return [
     "-i",
     "--model",
     spawnModel,
+    ...(spawnPinned ? ["--model-pinned"] : []),
     "-y",
     "--quiet",
     "--session-id",
@@ -424,6 +431,7 @@ const OWN_ARGV = [
   "--interactive",
   "--model",
   "-m",
+  "--model-pinned",
   "-y",
   "--auto-approve",
   "--no-auto-approve",

@@ -49,24 +49,24 @@
  * machine's credentials and default provider. Both snapshots must come from the
  * same machine with the same configuration, which is why each file records them.
  * The header's `defaultProvider` is `{ provider, source }` as `route()` resolves it
- * (CLAUDISH_DEFAULT_PROVIDER, then the config file, then `openrouter`), read before
+ * (CLAUDISH_DEFAULT_PROVIDER, then the config file, then an OpenRouter key in any
+ * store, then `openrouter`), read before
  * the first route is resolved. `--strict` fails when the two differ, source included.
  */
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-  type ResolvedDefaultProvider,
-  resolveDefaultProvider,
-} from "../packages/cli/src/default-provider.js";
-import { loadConfig } from "../packages/cli/src/profile-config.js";
+import type { ResolvedDefaultProvider } from "../packages/cli/src/default-provider.js";
 import { readAllModelsCache } from "../packages/cli/src/providers/all-models-cache.js";
 import {
   type ProxyRouteDecision,
   proxyRouteDecision,
 } from "../packages/cli/src/providers/native-route.js";
-import { route } from "../packages/cli/src/providers/routing-rules.js";
+import {
+  effectiveDefaultProviderResolution,
+  route,
+} from "../packages/cli/src/providers/routing-rules.js";
 
 /** One model's resolved chain, flattened to the strings a request would carry. */
 interface RouteRow {
@@ -100,13 +100,14 @@ interface Snapshot {
 }
 
 /**
- * Read the default provider the way `route()` does (`effectiveDefaultProvider`),
+ * Read the default provider the way `route()` does
+ * (`effectiveDefaultProviderResolution`, an OpenRouter key in any store counted),
  * keeping its source. Called BEFORE any route is resolved: resolving a credential
  * can write a key into `process.env`, and `OPENROUTER_API_KEY` appearing there
  * mid-capture would turn a `hardcoded` source into `openrouter-key`.
  */
 function captureDefaultProvider(): CapturedDefaultProvider {
-  const { provider, source } = resolveDefaultProvider({ config: loadConfig(), env: process.env });
+  const { provider, source } = effectiveDefaultProviderResolution();
   return { provider, source };
 }
 

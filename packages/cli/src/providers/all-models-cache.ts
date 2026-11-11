@@ -4,6 +4,12 @@ import { join } from "node:path";
 import { writeFileAtomic } from "../fs-atomic.js";
 import { log } from "../logger.js";
 import type { AggregatorEntry } from "../model-loader.js";
+import { _setBundledListRawForTest, bundledListRaw } from "./bundled-list-data.js";
+import {
+  bundledListEnabled,
+  bundledListScopeActive,
+  catalogReachability,
+} from "./catalog-reachability.js";
 import {
   type CachedRouteRegistry,
   type ConnectionWire,
@@ -119,6 +125,8 @@ export interface DiskCacheV3 {
    * refreshes the catalog instead of building a request without one.
    */
   routeRegistry?: CachedRouteRegistry;
+  /** Set on the bundled recommended list only; a catalog read from disk has none. */
+  origin?: "bundled";
 }
 
 /**
@@ -413,7 +421,12 @@ export function _clearAllModelsCacheMemo(): void {
   _readMemo.clear();
 }
 
-export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCacheV3 | null {
+/**
+ * The catalog on disk at `path`, and nothing else. For a reader asking whether a
+ * catalog exists or how fresh it is: readiness waits, refresh compare, the memo
+ * and the recommended generation checks. The bundled list must not answer those.
+ */
+export function readDiskCatalog(path: string = ALL_MODELS_CACHE_PATH): DiskCacheV3 | null {
   if (!existsSync(path)) return null;
   const main = statOrNull(path);
   if (!main) return null;
@@ -442,6 +455,49 @@ export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCa
   return cache;
 }
 
+/** The parsed bundled list. `undefined`: not read yet. */
+let _bundledListMemo: DiskCacheV3 | null | undefined;
+let _bundledListLogged = false;
+
+/** Install raw bundled-list JSON for the process; `undefined` restores the shipped file. */
+export function _setBundledListForTest(raw: unknown | null | undefined): void {
+  _setBundledListRawForTest(raw);
+  _bundledListMemo = undefined;
+  _bundledListLogged = false;
+}
+
+/** The bundled list parsed as a catalog, whatever the reachability. Parsed once. */
+export function readBundledList(): DiskCacheV3 | null {
+  if (_bundledListMemo !== undefined) return _bundledListMemo;
+  const parsed = parseAllModelsCache(bundledListRaw());
+  _bundledListMemo = parsed
+    ? { ...parsed, entries: parsed.entries.map(splitOptInConnections), origin: "bundled" }
+    : null;
+  return _bundledListMemo;
+}
+
+/**
+ * The catalog routing and request building read: the disk catalog of any age, and
+ * only when no readable one exists, the bundled recommended list.
+ *
+ * The bundled list answers the DEFAULT path only (a caller's `path` is its own
+ * file), and only once the backend is settled as unreachable, or inside
+ * `withBundledListScope`. `CLAUDISH_DISABLE_BUNDLED_LIST=1` turns it off in both.
+ * It is never memoized with a disk catalog: nothing outlives the condition.
+ */
+export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCacheV3 | null {
+  const disk = readDiskCatalog(path);
+  if (disk || path !== ALL_MODELS_CACHE_PATH) return disk;
+  if (!bundledListEnabled()) return null;
+  if (catalogReachability().state !== "unreachable" && !bundledListScopeActive()) return null;
+  const bundled = readBundledList();
+  if (bundled && !_bundledListLogged) {
+    _bundledListLogged = true;
+    log(`[catalog] reading the bundled recommended list (${bundled.catalogGenerationId})`);
+  }
+  return bundled;
+}
+
 /**
  * The registry as written to disk: without the API keys claudish does not
  * implement, which an older build's reader rejects outright.
@@ -460,6 +516,7 @@ export function writeRouteRegistry(
 }
 
 export function writeAllModelsCache(data: DiskCacheV3, path: string = ALL_MODELS_CACHE_PATH): void {
+  if (data.origin === "bundled") throw new Error("the bundled recommended list is never written");
   const routeRegistry = data.routeRegistry ? forDisk(data.routeRegistry) : undefined;
   writeFileAtomic(path, JSON.stringify(routeRegistry ? { ...data, routeRegistry } : data));
   if (routeRegistry) {

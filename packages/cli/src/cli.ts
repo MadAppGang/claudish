@@ -63,6 +63,7 @@ import { MODEL_CATALOG_NAME } from "./providers/catalog-name.js";
 import { normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
 import { parseContextWindow } from "./providers/context-window-limit.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
+import { explainRouteSettled } from "./providers/explain-route-settled.js";
 import { describeMuseSigningSource } from "./providers/meta-muse/muse-credentials.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { NATIVE_NOT_PROBED } from "./providers/native-route.js";
@@ -80,7 +81,6 @@ import {
   type RouteWarning,
   type RuleScope,
   TIER_LABEL,
-  explainRoute,
 } from "./providers/routing-rules.js";
 import { nativeShortcutForVendor, renderRecommendedText } from "./recommended-listing.js";
 import { setRecoveryFlagOverrides } from "./recovery/settings.js";
@@ -239,6 +239,7 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--model-sonnet": "value",
   "--model-haiku": "value",
   "--model-subagent": "value",
+  "--model-pinned": "none",
   "--port": "value",
   "--auto-approve": "none",
   "-y": "none",
@@ -586,6 +587,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const chain = parseModelChain(modelArg).map(normalizeNativeModelSpec);
       config.model = chain[0]; // Accept any model ID
       if (chain.length > 1) config.modelChain = chain;
+    } else if (arg === "--model-pinned") {
+      // Written by a parent claudish on the pane child it spawns with a pinned
+      // `--model` (pane-launch.ts): the pin is a routing chain the parent gathered
+      // for a bare name, so its elements are routed hops. Parsed from any argv and
+      // left out of `--help`; index.ts honours it only in a pane child
+      // (`modelPinnedHonoured`) and drops it, with a debug line, anywhere else.
+      config.modelPinned = true;
     } else if (arg === "--model-opus") {
       // Model mapping flags
       const val = args[++i];
@@ -1613,6 +1621,7 @@ async function probeModelRouting(
     matchedPattern?: string;
     ruleScope?: RuleScope;
     catalog?: RouteExplanation["catalog"];
+    catalogSource?: RouteExplanation["catalogSource"];
     fallbackWithheld?: RouteExplanation["fallbackWithheld"];
     outcome: RouteExplanation["outcome"];
     warnings: RouteWarning[];
@@ -1725,7 +1734,7 @@ async function probeModelRouting(
 
   /** The routing decision for one model (shared by both paths). */
   async function explainForProbe(modelInput: string): Promise<ModelProbe> {
-    const explanation = await explainRoute(modelInput);
+    const explanation = await explainRouteSettled(modelInput);
     const { chain, dropped } = probeChainFrom(explanation, probeCredentials);
     // Both are the kept candidates in chain order, so the i-th target is the
     // i-th link. A native target has one link and no targets.
@@ -1737,7 +1746,12 @@ async function probeModelRouting(
   function probeTarget(proxyUrl: string, target: ProbeTarget): Promise<ProbeResult> {
     return probeLink(
       proxyUrl,
-      { provider: target.provider, modelSpec: target.probeSpec, hasCredentials: true },
+      {
+        provider: target.provider,
+        modelSpec: target.probeSpec,
+        hasCredentials: true,
+        ...(target.hopOrigin ? { hopOrigin: target.hopOrigin } : {}),
+      },
       options.timeoutMs
     ).catch(
       (e): ProbeResult => ({
@@ -1762,6 +1776,7 @@ async function probeModelRouting(
       ...(exp.matchedPattern !== undefined ? { matchedPattern: exp.matchedPattern } : {}),
       ...(exp.ruleScope ? { ruleScope: exp.ruleScope } : {}),
       ...(exp.catalog ? { catalog: exp.catalog } : {}),
+      ...(exp.catalogSource ? { catalogSource: exp.catalogSource } : {}),
       ...(exp.fallbackWithheld ? { fallbackWithheld: exp.fallbackWithheld } : {}),
       outcome: exp.outcome,
       warnings: exp.warnings,
@@ -1890,8 +1905,9 @@ async function probeModelRouting(
           false,
           process.env.ANTHROPIC_API_KEY,
           undefined,
-          // Hooks never see --probe traffic.
-          { quiet: true, hooks: false }
+          // Hooks never see --probe traffic. A probe proxy builds a hop marked
+          // as routed the way real traffic builds a routing chain's hop.
+          { quiet: true, hooks: false, probeProxy: true }
         );
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -2002,8 +2018,9 @@ async function probeModelRouting(
           false,
           process.env.ANTHROPIC_API_KEY,
           undefined,
-          // Hooks never see --probe traffic.
-          { quiet: true, hooks: false }
+          // Hooks never see --probe traffic. A probe proxy builds a hop marked
+          // as routed the way real traffic builds a routing chain's hop.
+          { quiet: true, hooks: false, probeProxy: true }
         );
         updateStep("Starting probe proxy", "done");
       } catch {
@@ -2071,7 +2088,7 @@ async function probeModelRouting(
           modelSpec: entry.wireId,
           status: "not-probed",
           tone: "dropped",
-          note: `– ${describeDropped(entry.outcome, entry.credentialHint)}`,
+          note: `– ${describeDropped(entry.outcome, entry.credentialHint, entry.detail)}`,
         });
       });
     }

@@ -6,11 +6,22 @@ import {
   isCachedSubscriptionPlan,
   isSlimModelEntry,
   readAllModelsCache,
+  readDiskCatalog,
   reconcileWires,
   writeAllModelsCache,
   writeRouteRegistry,
 } from "./all-models-cache.js";
 import { catalogUrl, plansUrl } from "./catalog-endpoints.js";
+import {
+  type Reachability,
+  _resetCatalogReachabilityForTest,
+  awaitCatalogVerdict,
+  bundledListEnabled,
+  catalogReachability,
+  catalogWarmDisabledFor,
+  noteCatalogContact,
+  noteRefreshSettled,
+} from "./catalog-reachability.js";
 import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, type CatalogV3Envelope, parseCatalogV3Envelope } from "./catalog-v3.js";
 import {
@@ -56,18 +67,43 @@ export interface ModelResolutionResult {
   sourceLabel: string;
 }
 
-let _memCache: SlimModelEntry[] | null = null;
-let _catalogEntriesForTest: SlimModelEntry[] | null | undefined;
-let _warmPromise: Promise<void> | null = null;
+/** The catalog routing reads right now, and where it came from. */
+export interface CatalogSnapshot {
+  entries: SlimModelEntry[];
+  origin: "disk" | "bundled";
+  generationId: string;
+}
 
-export function getCatalogEntries(): SlimModelEntry[] | null {
-  if (_catalogEntriesForTest !== undefined) return _catalogEntriesForTest;
-  if (_memCache) return _memCache;
+let _memCache: { entries: SlimModelEntry[]; generationId: string } | null = null;
+let _catalogSnapshotForTest: CatalogSnapshot | null | undefined;
+let _warmPromise: Promise<void> | null = null;
+/** The refresh `_warmPromise` waits on, running or finished, with its outcome. */
+let _warmRefresh: Promise<RefreshOutcome> | null = null;
+
+/**
+ * The catalog of the default path, disk or bundled. Only a disk catalog is
+ * memoized: a bundled snapshot must stop answering the moment a catalog exists.
+ */
+export function getCatalogSnapshot(): CatalogSnapshot | null {
+  if (_catalogSnapshotForTest !== undefined) return _catalogSnapshotForTest;
+  if (_memCache) return { ..._memCache, origin: "disk" };
 
   const cache = readAllModelsCache();
   if (!cache || cache.entries.length === 0) return null;
-  _memCache = cache.entries;
-  return _memCache;
+  const generationId = cache.catalogGenerationId;
+  if (cache.origin === "bundled")
+    return { entries: cache.entries, origin: "bundled", generationId };
+  _memCache = { entries: cache.entries, generationId };
+  return { ..._memCache, origin: "disk" };
+}
+
+export function getCatalogEntries(): SlimModelEntry[] | null {
+  return getCatalogSnapshot()?.entries ?? null;
+}
+
+/** Where the default path's catalog comes from right now. */
+export function catalogOrigin(): "disk" | "bundled" | "none" {
+  return getCatalogSnapshot()?.origin ?? "none";
 }
 
 export function latestOpusModelId(): string | null {
@@ -75,8 +111,10 @@ export function latestOpusModelId(): string | null {
 }
 
 export function latestAnthropicTierModelId(tier: "opus" | "sonnet" | "haiku"): string | null {
-  const entries = getCatalogEntries();
-  if (!entries) return null;
+  // The disk catalog only: a recommended subset could name an older id as "latest".
+  const snapshot = getCatalogSnapshot();
+  if (snapshot?.origin !== "disk") return null;
+  const { entries } = snapshot;
   const family = new RegExp(`^claude-${tier}-`, "i");
   const matches = entries.filter((entry) => family.test(entry.modelId));
   if (matches.length === 0) return null;
@@ -92,19 +130,30 @@ export function latestAnthropicTierModelId(tier: "opus" | "sonnet" | "haiku"): s
 }
 
 export function isCatalogWarm(): boolean {
-  return _memCache !== null && _memCache.length > 0;
+  return _memCache !== null && _memCache.entries.length > 0;
 }
 
-export function _setCatalogEntriesForTest(entries: SlimModelEntry[] | null): void {
+export function _setCatalogEntriesForTest(
+  entries: SlimModelEntry[] | null,
+  opts: { origin?: CatalogSnapshot["origin"]; generationId?: string } = {}
+): void {
   // The same normalisation as every other way entries reach memory, so a test
   // seeds exactly what production reads (`content-use.ts`).
-  _catalogEntriesForTest = entries ? entries.map(splitOptInConnections) : entries;
+  _catalogSnapshotForTest = entries
+    ? {
+        entries: entries.map(splitOptInConnections),
+        origin: opts.origin ?? "disk",
+        generationId: opts.generationId ?? "test-generation",
+      }
+    : null;
 }
 
 export function _resetCatalogClient(): void {
-  _catalogEntriesForTest = undefined;
+  _catalogSnapshotForTest = undefined;
   _memCache = null;
   _warmPromise = null;
+  _warmRefresh = null;
+  _resetCatalogReachabilityForTest();
 }
 
 /** Every wire id the entry publishes, opt-in included: an exact reverse lookup. */
@@ -251,9 +300,7 @@ export function logResolution(
   }
 }
 
-export function catalogWarmDisabledFor(value: string | undefined): boolean {
-  return value === "1";
-}
+export { catalogWarmDisabledFor };
 
 function catalogWarmDisabled(): boolean {
   return catalogWarmDisabledFor(process.env.CLAUDISH_DISABLE_CATALOG_WARM);
@@ -295,11 +342,23 @@ interface PlansPageData {
   nextCursor?: string;
 }
 
-type FetchFailure =
+export type FetchFailure =
   | { ok: false; reason: "timeout" | "network" | "http_error" }
   | { ok: false; reason: "incompatible"; serverContractVersion: number | null };
 
-async function fetchEnvelope<T>(
+function isTimeoutError(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name;
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+/** A network error's own code, else its message. Bun's codes read as `ConnectionRefused`. */
+function errorText(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && code.length > 0) return code;
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function fetchEnvelope<T>(
   url: string,
   timeoutMs: number
 ): Promise<{ ok: true; envelope: CatalogV3Envelope<T> } | FetchFailure> {
@@ -310,12 +369,17 @@ async function fetchEnvelope<T>(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    const name = (error as { name?: string } | null)?.name;
-    return {
-      ok: false,
-      reason: name === "TimeoutError" || name === "AbortError" ? "timeout" : "network",
-    };
+    const timedOut = isTimeoutError(error);
+    noteCatalogContact(
+      "transport",
+      timedOut ? `no answer within ${timeoutMs} ms` : errorText(error)
+    );
+    return { ok: false, reason: timedOut ? "timeout" : "network" };
   }
+  noteCatalogContact(
+    response.ok ? "ok" : "http-status",
+    response.ok ? undefined : `HTTP ${response.status}`
+  );
 
   let body: unknown;
   try {
@@ -343,6 +407,94 @@ async function fetchEnvelope<T>(
   return { ok: true, envelope };
 }
 
+export type ModelPagesResult =
+  | {
+      ok: true;
+      entries: SlimModelEntry[];
+      generationId: string;
+      generatedAt: string;
+      pages: number;
+    }
+  | Extract<FetchFailure, { reason: "incompatible" }>
+  | {
+      ok: false;
+      reason: "timeout" | "network" | "http_error" | "empty" | "generation_mismatch" | "incomplete";
+    };
+
+/**
+ * Every slim model page of one generation. Pass `pinnedGenerationId` to require
+ * that generation; otherwise the first page's generation pins the rest. The
+ * total must hold across pages and match the row count, with no repeated model
+ * id or cursor.
+ */
+export async function fetchAllModelPages(
+  base: string,
+  pageLimit: number,
+  timeoutMs: number,
+  pinnedGenerationId?: string
+): Promise<ModelPagesResult> {
+  const entries: SlimModelEntry[] = [];
+  let generationId = pinnedGenerationId;
+  let generatedAt: string | undefined;
+  let cursor: string | undefined;
+  let pages = 0;
+  const seenCursors = new Set<string>();
+  let expectedTotal: number | undefined;
+
+  for (;;) {
+    const result = await fetchEnvelope<ModelsPageData>(
+      buildCatalogPageUrl(base, cursor, pageLimit, generationId),
+      timeoutMs
+    );
+    if (!result.ok) {
+      if (result.reason === "incompatible") return result;
+      return { ok: false, reason: pages === 0 ? result.reason : "incomplete" };
+    }
+
+    const { envelope } = result;
+    if (generationId !== undefined && envelope.generationId !== generationId) {
+      return { ok: false, reason: "generation_mismatch" };
+    }
+    generationId = envelope.generationId;
+    generatedAt ??= envelope.generatedAt;
+    if (
+      envelope.data.mode !== "slim" ||
+      !Array.isArray(envelope.data.models) ||
+      !envelope.data.models.every(isSlimModelEntry)
+    ) {
+      return { ok: false, reason: pages === 0 ? "empty" : "incomplete" };
+    }
+    if (!Number.isSafeInteger(envelope.data.total) || envelope.data.total < 0) {
+      return { ok: false, reason: "incomplete" };
+    }
+    if (expectedTotal === undefined) expectedTotal = envelope.data.total;
+    else if (envelope.data.total !== expectedTotal) {
+      return { ok: false, reason: "incomplete" };
+    }
+
+    entries.push(...envelope.data.models);
+    pages++;
+    const nextCursor = envelope.data.nextCursor;
+    if (!nextCursor) break;
+    if (seenCursors.has(nextCursor) || pages >= MAX_CATALOG_PAGES) {
+      return { ok: false, reason: "incomplete" };
+    }
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+
+  if (!generationId || !generatedAt || entries.length === 0) {
+    return { ok: false, reason: "empty" };
+  }
+  if (
+    entries.length !== expectedTotal ||
+    new Set(entries.map((entry) => entry.modelId)).size !== entries.length
+  ) {
+    return { ok: false, reason: "incomplete" };
+  }
+  return { ok: true, entries, generationId, generatedAt, pages };
+}
+
 export interface RefreshCatalogOptions {
   cachePath?: string;
 }
@@ -352,27 +504,37 @@ export async function refreshCatalog(
   options: RefreshCatalogOptions = {}
 ): Promise<RefreshOutcome> {
   if (catalogWarmDisabled()) return { kind: "fetch_failed", reason: "disabled" };
-  // A generation can activate between the model pages and the registry read.
-  // Never mix two: start over once, then report the mismatch.
-  const first = await refreshCatalogOnce(timeoutMs, options);
-  if (first.kind === "fetch_failed" && first.reason === "generation_mismatch") {
-    return refreshCatalogOnce(timeoutMs, options);
+  let outcome: RefreshOutcome;
+  try {
+    // A generation can activate between the model pages and the registry read.
+    // Never mix two: start over once, then report the mismatch.
+    outcome = await refreshCatalogOnce(timeoutMs, options);
+    if (outcome.kind === "fetch_failed" && outcome.reason === "generation_mismatch") {
+      outcome = await refreshCatalogOnce(timeoutMs, options);
+    }
+  } catch (err) {
+    noteRefreshSettled("failed", errorText(err));
+    throw err;
   }
-  return first;
+  noteRefreshSettled(
+    outcome.kind === "refreshed" ? "refreshed" : "failed",
+    describeRefreshOutcome(outcome)
+  );
+  return outcome;
+}
+
+/** Why a refresh failed, for the reachability record and the debug log. */
+function describeRefreshOutcome(outcome: RefreshOutcome): string | undefined {
+  if (outcome.kind === "refreshed") return undefined;
+  return outcome.kind === "fetch_failed"
+    ? outcome.reason
+    : `incompatible contract ${outcome.serverContractVersion ?? "unknown"}`;
 }
 
 async function refreshCatalogOnce(
   timeoutMs: number,
   options: RefreshCatalogOptions
 ): Promise<RefreshOutcome> {
-  const entries: SlimModelEntry[] = [];
-  let generationId: string | undefined;
-  let generatedAt: string | undefined;
-  let cursor: string | undefined;
-  let pages = 0;
-  const seenCursors = new Set<string>();
-  let expectedTotal: number | undefined;
-
   // Resolved once for the whole refresh, for the same reason `generationId` is
   // pinned across pages: every page, and the route registry fetched after them,
   // has to describe one catalog. Reading the setting again lets a change
@@ -380,60 +542,14 @@ async function refreshCatalogOnce(
   // indistinguishable from one service that served all of it.
   const base = catalogUrl();
 
-  for (;;) {
-    const result = await fetchEnvelope<ModelsPageData>(
-      buildCatalogPageUrl(base, cursor, CATALOG_PAGE_LIMIT, generationId),
-      timeoutMs
-    );
-    if (!result.ok) {
-      if (result.reason === "incompatible") {
-        return { kind: "incompatible", serverContractVersion: result.serverContractVersion };
-      }
-      return { kind: "fetch_failed", reason: pages === 0 ? result.reason : "incomplete" };
+  const modelPages = await fetchAllModelPages(base, CATALOG_PAGE_LIMIT, timeoutMs);
+  if (!modelPages.ok) {
+    if (modelPages.reason === "incompatible") {
+      return { kind: "incompatible", serverContractVersion: modelPages.serverContractVersion };
     }
-
-    const { envelope } = result;
-    if (generationId === undefined) {
-      generationId = envelope.generationId;
-      generatedAt = envelope.generatedAt;
-    } else if (envelope.generationId !== generationId) {
-      return { kind: "fetch_failed", reason: "generation_mismatch" };
-    }
-    if (
-      envelope.data.mode !== "slim" ||
-      !Array.isArray(envelope.data.models) ||
-      !envelope.data.models.every(isSlimModelEntry)
-    ) {
-      return { kind: "fetch_failed", reason: pages === 0 ? "empty" : "incomplete" };
-    }
-    if (!Number.isSafeInteger(envelope.data.total) || envelope.data.total < 0) {
-      return { kind: "fetch_failed", reason: "incomplete" };
-    }
-    if (expectedTotal === undefined) expectedTotal = envelope.data.total;
-    else if (envelope.data.total !== expectedTotal) {
-      return { kind: "fetch_failed", reason: "incomplete" };
-    }
-
-    entries.push(...envelope.data.models);
-    pages++;
-    const nextCursor = envelope.data.nextCursor;
-    if (!nextCursor) break;
-    if (seenCursors.has(nextCursor) || pages >= MAX_CATALOG_PAGES) {
-      return { kind: "fetch_failed", reason: "incomplete" };
-    }
-    seenCursors.add(nextCursor);
-    cursor = nextCursor;
+    return { kind: "fetch_failed", reason: modelPages.reason };
   }
-
-  if (!generationId || !generatedAt || entries.length === 0) {
-    return { kind: "fetch_failed", reason: "empty" };
-  }
-  if (
-    entries.length !== expectedTotal ||
-    new Set(entries.map((entry) => entry.modelId)).size !== entries.length
-  ) {
-    return { kind: "fetch_failed", reason: "incomplete" };
-  }
+  const { entries, generationId, generatedAt, pages } = modelPages;
 
   const planResult = await fetchSubscriptionPlans(timeoutMs, generationId);
   if (!planResult.ok) {
@@ -480,7 +596,7 @@ async function refreshCatalogOnce(
   // times decide: a different disk generation published later is kept, models
   // file and routes sidecar both, and becomes the in-process copy. The same id
   // is the same generation and is written as usual.
-  const onDisk = readAllModelsCache(options.cachePath);
+  const onDisk = readDiskCatalog(options.cachePath);
   if (
     onDisk &&
     onDisk.catalogGenerationId !== generationId &&
@@ -490,7 +606,7 @@ async function refreshCatalogOnce(
       `[catalog] refresh skipped: disk holds newer generation ${onDisk.catalogGenerationId}, downloaded ${generationId}`
     );
     _clearChatCapabilityIndex();
-    _memCache = onDisk.entries;
+    _memCache = { entries: onDisk.entries, generationId: onDisk.catalogGenerationId };
     _warmPromise = Promise.resolve();
     return {
       kind: "refreshed",
@@ -507,7 +623,7 @@ async function refreshCatalogOnce(
   // withholds models the refresh just described. Its doc comment already said
   // "after a catalog refresh" — nothing had ever called it.
   _clearChatCapabilityIndex();
-  _memCache = normalised;
+  _memCache = { entries: normalised, generationId };
   _warmPromise = Promise.resolve();
   return {
     kind: "refreshed",
@@ -524,9 +640,10 @@ function isPublishedLater(candidate: string, reference: string): boolean {
   return Number.isFinite(candidateMs) && Number.isFinite(referenceMs) && candidateMs > referenceMs;
 }
 
-async function fetchSubscriptionPlans(
+export async function fetchSubscriptionPlans(
   timeoutMs: number,
-  generationId: string
+  generationId: string,
+  url: string = plansUrl()
 ): Promise<
   | { ok: true; plans: CachedSubscriptionPlan[] }
   | FetchFailure
@@ -540,7 +657,7 @@ async function fetchSubscriptionPlans(
 
   for (;;) {
     const result = await fetchEnvelope<PlansPageData>(
-      buildCatalogPageUrl(plansUrl(), cursor, 100, generationId),
+      buildCatalogPageUrl(url, cursor, 100, generationId),
       timeoutMs
     );
     if (!result.ok) return result;
@@ -581,7 +698,7 @@ async function fetchSubscriptionPlans(
   return { ok: true, plans };
 }
 
-async function fetchRouteRegistry(
+export async function fetchRouteRegistry(
   timeoutMs: number,
   generationId: string,
   modelsUrl: string
@@ -607,13 +724,13 @@ async function fetchRouteRegistry(
 
 function startCatalogWarm(): Promise<void> {
   if (_warmPromise) return _warmPromise;
-  const promise = refreshCatalog(8000).then(
+  const refresh = refreshCatalog(8000);
+  _warmRefresh = refresh;
+  const promise = refresh.then(
     (result) => {
       if (result.kind === "refreshed") return;
       // Without this line the reason is lost: callers only see "no snapshot".
-      log(
-        `[catalog] refresh failed: ${result.kind === "fetch_failed" ? result.reason : `incompatible contract ${result.serverContractVersion ?? "unknown"}`}`
-      );
+      log(`[catalog] refresh failed: ${describeRefreshOutcome(result)}`);
       if (_warmPromise === promise) _warmPromise = null;
     },
     (err: unknown) => {
@@ -631,8 +748,41 @@ export async function warmCatalog(): Promise<void> {
   await startCatalogWarm();
 }
 
+/**
+ * Start the refresh if none is running and wait for its first answer, not for the
+ * catalog. Bounded by that request's own timeout: every path of a refresh writes a
+ * state, so this always resolves.
+ */
+export function settleCatalogVerdict(): Promise<Reachability> {
+  void startCatalogWarm();
+  return awaitCatalogVerdict();
+}
+
+/**
+ * Wait for the running refresh to end, up to its own request timeouts, and report
+ * where that left the backend. Starts nothing once a refresh has already ended.
+ */
+export async function settleCatalogRefresh(): Promise<Reachability> {
+  if (catalogReachability().state === "contacted") await startCatalogWarm();
+  return catalogReachability();
+}
+
+/**
+ * A forced refresh that reuses the warm of this process when there is one, running
+ * or finished, so a launch that already started it does not run a second beside it.
+ */
+export async function refreshCatalogJoined(timeoutMs: number): Promise<RefreshOutcome> {
+  return _warmRefresh ?? refreshCatalog(timeoutMs);
+}
+
 export async function ensureCatalogReady(timeoutMs = 5000): Promise<void> {
-  if (isCatalogWarm() || (readAllModelsCache()?.entries.length ?? 0) > 0) return;
+  if (isCatalogWarm() || (readDiskCatalog()?.entries.length ?? 0) > 0) return;
+  // The bundled list already answers, so nothing is gained by waiting here: the
+  // refresh runs behind it and the disk catalog takes over when one lands.
+  if (bundledListEnabled() && catalogReachability().state === "unreachable") {
+    void startCatalogWarm();
+    return;
+  }
   await waitForCatalogWarm(timeoutMs);
 }
 
@@ -642,8 +792,15 @@ export async function ensureCatalogReady(timeoutMs = 5000): Promise<void> {
  * built from it. Such a cache is refreshed rather than accepted.
  */
 export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> {
-  const cache = readAllModelsCache();
+  const cache = readDiskCatalog();
   if (cache?.routeRegistry) return;
+  // As in ensureCatalogReady: with no catalog file and the backend settled as
+  // unreachable, the bundled list answers and waiting gains nothing. Whether the
+  // bundled list answers is decided by the reader, not here.
+  if (!cache && bundledListEnabled() && catalogReachability().state === "unreachable") {
+    void startCatalogWarm();
+    return;
+  }
   // Models cached, registry missing or of another generation (an older claudish
   // rewrote the models): fetch only the routes of THIS generation — one small
   // request instead of the whole refresh.
@@ -654,7 +811,7 @@ export async function ensureRouteRegistryReady(timeoutMs = 5000): Promise<void> 
       if (reconcileWires(cache.entries, routeRegistry, cache.catalogGenerationId)) {
         // A refresh may have written another generation while the routes were
         // fetched; its models file and routes sidecar are newer, so keep them.
-        const onDisk = readAllModelsCache();
+        const onDisk = readDiskCatalog();
         if (onDisk && onDisk.catalogGenerationId !== cache.catalogGenerationId) return;
         writeRouteRegistry(routeRegistry);
         return;

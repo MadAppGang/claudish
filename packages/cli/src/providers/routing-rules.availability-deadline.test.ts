@@ -1,3 +1,4 @@
+// REQ-101: Test fallbacks carry their source without consulting machine configuration.
 import { expect, jest, mock, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -90,15 +91,19 @@ test("the missing-list deadline also bounds availability for a surviving vendor 
     jest.useFakeTimers();
     const began = Date.now();
     let elapsed = Number.POSITIVE_INFINITY;
-    const plan = route("test-google-chat", {}, "", cachePath, { network: "await" }).then(
-      (result) => {
-        elapsed = Date.now() - began;
-        return result;
-      }
-    );
+    const plan = route(
+      "test-google-chat",
+      {},
+      { provider: "", source: "config-file", legacyAutoPromoted: false },
+      cachePath,
+      { network: "await" }
+    ).then((result) => {
+      elapsed = Date.now() - began;
+      return result;
+    });
     const explanation = explainRoute("test-google-chat", {
       rules: {},
-      defaultProvider: "",
+      defaultProvider: { provider: "", source: "config-file", legacyAutoPromoted: false },
       cachePath,
       network: "await",
     });

@@ -23,7 +23,7 @@ import { wrapAnthropicError } from "../handlers/shared/anthropic-error.js";
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { log } from "../logger.js";
-import { ensureRouteRegistryReady } from "./catalog-client.js";
+import { catalogOrigin, ensureRouteRegistryReady } from "./catalog-client.js";
 import {
   type ResolvedConnection,
   connectionBaseUrl,
@@ -313,6 +313,20 @@ export async function buildWireHandler(
       if (ctx.catalogCachePath) return { kind: "refused", message };
       return { kind: "handler", handler: new CatalogPendingHandler(ctx, definitionName, message) };
     }
+    if (
+      resolution.reason === "no-connection" &&
+      !ctx.hopOrigin &&
+      !ctx.catalogCachePath &&
+      catalogOrigin() === "bundled"
+    ) {
+      // A trimmed list's silence is no evidence about the provider, so an unpublished
+      // name is not sent. Pending, because a catalog arriving later can answer it.
+      const message =
+        resolution.detail === "model-absent"
+          ? `no cloud models catalog; ${ctx.modelName} is not in the bundled recommended list`
+          : `no cloud models catalog; the bundled recommended list has no ${definitionName} connection for ${ctx.modelName}`;
+      return { kind: "handler", handler: new CatalogPendingHandler(ctx, definitionName, message) };
+    }
     // The catalog does not publish this model on this provider (a model newer
     // than the generation, or one only the account knows). The route profile
     // still says which APIs the host serves: try them in turn.
@@ -406,9 +420,12 @@ export function buildKnownWireHandler(
   if (overridden) log(`[Wire] ${definitionName}: base URL overridden by user config → ${baseUrl}`);
 
   const transport = transportFor(definitionName, wire.api, ctx, url);
+  // The body names the connection's wire id, as the URL does. A name that is
+  // itself a wire id resolves to its own connection, so it is sent unchanged;
+  // a canonical id is sent as the exact id the catalog maps it to.
   const adapter = adapterFor(
     wire.api,
-    ctx.modelName,
+    connection.externalModelId,
     ctx.provider.name,
     definitionName,
     connection.vendor

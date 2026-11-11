@@ -23,6 +23,7 @@ import {
   hasModelUnsupportedWording,
 } from "../handlers/shared/model-unsupported.js";
 import { hasPlanLimitWording } from "../handlers/shared/quota-exhaustion.js";
+import { PROBE_HOP_ORIGIN_HEADER } from "./probe-hop-origin.js";
 
 export type ProbeState =
   | "live"
@@ -132,6 +133,13 @@ export interface ProbeLinkInput {
   modelSpec: string;
   hasCredentials: boolean;
   credentialHint?: string;
+  /**
+   * `"routed"` when the link is a hop of the routing chain claudish built for a
+   * bare name; absent for a spec the user typed. A routed link is sent with
+   * `PROBE_HOP_ORIGIN_HEADER`, so a probe proxy builds it as real traffic builds
+   * a routed hop.
+   */
+  hopOrigin?: "routed";
 }
 
 /**
@@ -245,6 +253,7 @@ export async function probeLink(
         // diagnose — and multiplying a Test All run by that timeout per dead
         // link.
         "x-claudish-no-recovery": "1",
+        ...(link.hopOrigin === "routed" ? { [PROBE_HOP_ORIGIN_HEADER]: "routed" } : {}),
       },
       body: JSON.stringify({
         model: link.modelSpec,

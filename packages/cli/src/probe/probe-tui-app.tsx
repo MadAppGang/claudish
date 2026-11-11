@@ -84,6 +84,8 @@ export interface ProbeResultLink {
   label?: string;
   hasCredentials: boolean;
   credentialHint?: string;
+  /** Why a withheld gateway hop has no wire id. */
+  droppedDetail?: string;
   probe?: ProbeResult;
   /** A native link: served on Claude Code's own auth, so it is never probed. */
   notProbed?: "native-auth";
@@ -905,7 +907,11 @@ function shortFailureReason(probe: ProbeResult | undefined, hasCreds: boolean): 
 function notProbedRow(link: ProbeResultLink): { mark: string; text: string; fg: string } | null {
   if (link.notProbed) return { mark: "◐  ", text: `native — ${NATIVE_NOT_PROBED}`, fg: C.cyan };
   if (link.dropped) {
-    return { mark: "–  ", text: describeDropped(link.dropped, link.credentialHint), fg: C.dim };
+    return {
+      mark: "–  ",
+      text: describeDropped(link.dropped, link.credentialHint, link.droppedDetail),
+      fg: C.dim,
+    };
   }
   if (!link.probe && link.hasCredentials) return { mark: "○  ", text: "not probed", fg: C.dim };
   return null;

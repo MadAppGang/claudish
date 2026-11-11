@@ -62,7 +62,7 @@ lists, effort ladders by `gpt-5.x`) being falsified by each new model release.
 | Effort not in `effort.values` | refuse | clamp to the nearest published value, ties up |
 | `tokenParam` / `reasoning` `unknown` | send nothing | try the owner's direct-connection value when it is on the SAME API; drop exactly those borrowed fields on the 400 that names them (`recoverBorrowedWireFields`) |
 | `wire.status: unknown`, or model not published for the provider | APIs in fixed order | same (`TryInTurnHandler`): advance only on 404/405/protocol-400, remember the winner per generation |
-| No catalog | wait or fail | local providers only; catalog providers wait, then refuse per request (below) |
+| No catalog | wait or fail | local providers only; catalog providers wait, then refuse per request (below). On the bundled recommended list a hop is built from its bundled connection; an explicit spec with no bundled connection is refused, and a routed hop with none tries in turn. A handler built from the list is tagged and rebuilt once a catalog file exists |
 | Pro / speed | `--mode`, `--speed` suggested | `model+pro`, `model#fast`; Claude Code `/fast` is a non-explicit `fast` (below) |
 
 `not_applicable` is an ANSWER, never borrowed over (Codex found the shaper treating it like
