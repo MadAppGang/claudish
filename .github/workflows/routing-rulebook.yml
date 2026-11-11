@@ -255,7 +255,7 @@ jobs:
             explanation.
           claude_args: |
             --model claude-sonnet-5-5
-            --max-turns 25
+            --max-turns 60
             --max-budget-usd 3
             --tools "Read,Glob,Grep"
             --disallowedTools "mcp__*"
