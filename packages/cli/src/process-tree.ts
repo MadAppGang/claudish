@@ -32,6 +32,13 @@
  */
 
 import type { ChildProcess } from "node:child_process";
+import {
+  type GroupMember,
+  type ProcessTable,
+  type PsRow,
+  liveMembers,
+  readProcessTableAsync,
+} from "./pane/process-identity.js";
 
 /**
  * Whether to spawn children `detached` (own process group) and signal the group.
@@ -51,6 +58,11 @@ export const KILL_PROCESS_GROUP = process.platform !== "win32";
  * `detached: KILL_PROCESS_GROUP`. Sending `-pid` for a NON-detached child would
  * address our own process group, i.e. signal the orchestrator itself, so the
  * two must always be changed together.
+ *
+ * The pid itself is signalled whenever the child has not exited. `proc.killed`
+ * is no guard: Node sets it once ANY signal was delivered, so gating on it
+ * would drop the SIGKILL that follows a SIGTERM the child ignored — and for a
+ * non-detached child, or on Windows, nothing else would deliver it.
  */
 export function signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): void {
   if (KILL_PROCESS_GROUP && proc.pid) {
@@ -61,7 +73,7 @@ export function signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): v
     }
   }
   try {
-    if (!proc.killed) proc.kill(signal);
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill(signal);
   } catch {
     // Already dead.
   }
@@ -83,6 +95,91 @@ export function waitForExit(proc: ChildProcess, ms: number): Promise<boolean> {
     const t = setTimeout(() => done(false), ms);
     t.unref?.();
   });
+}
+
+/**
+ * Every process below `rootPid` in `table`, nearest first. Excludes `rootPid`, init and
+ * this process, and stops at a repeated pid, so a table read mid-change cannot loop.
+ */
+export function descendantsOf(
+  table: ReadonlyArray<Pick<PsRow, "pid" | "ppid" | "lstart">>,
+  rootPid: number
+): GroupMember[] {
+  const childrenOf = new Map<number, Pick<PsRow, "pid" | "lstart">[]>();
+  for (const { pid, ppid, lstart } of table) {
+    const siblings = childrenOf.get(ppid);
+    if (siblings) siblings.push({ pid, lstart });
+    else childrenOf.set(ppid, [{ pid, lstart }]);
+  }
+  const seen = new Set<number>([rootPid, process.pid]);
+  const out: GroupMember[] = [];
+  const queue = [rootPid];
+  for (let parent = queue.shift(); parent !== undefined; parent = queue.shift()) {
+    for (const child of childrenOf.get(parent) ?? []) {
+      if (child.pid <= 1 || seen.has(child.pid)) continue;
+      seen.add(child.pid);
+      out.push(child);
+      queue.push(child.pid);
+    }
+  }
+  return out;
+}
+
+/**
+ * The process table, or null when it cannot be read within `budgetMs`. The `ps` is
+ * cancelled at that point; the timer holds the bound even if the cancel has no effect.
+ */
+async function readTableWithin(budgetMs: number): Promise<ProcessTable> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const table = await Promise.race([
+    readProcessTableAsync(budgetMs),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), budgetMs);
+      timer.unref?.();
+    }),
+  ]);
+  clearTimeout(timer);
+  return table;
+}
+
+/**
+ * The descendants of `rootPid` now, for a kill that cannot be aimed at a process group:
+ * a child that is not detached shares its parent's group, and the tree has to be read
+ * before the kill, because a dead parent's children reparent to init.
+ *
+ * Empty when the process table cannot be read within `budgetMs`, so a failed or hung
+ * `ps` costs the descendants and never the kill that follows.
+ */
+export async function snapshotDescendants(
+  rootPid: number,
+  budgetMs: number
+): Promise<GroupMember[]> {
+  const table = await readTableWithin(budgetMs);
+  return table ? descendantsOf(table, rootPid) : [];
+}
+
+/**
+ * SIGKILLs the `members` that a fresh table read shows are still the same processes,
+ * and returns how many. A pid can be reused once its process exits, and reparenting
+ * changes neither pid nor start time, so the match survives the parent's death. With no
+ * table within `budgetMs` nothing is signalled: a wrong kill is worse than a missed one.
+ */
+export async function killStillLiveMembers(
+  members: readonly GroupMember[],
+  budgetMs: number
+): Promise<number> {
+  if (members.length === 0) return 0;
+  const table = await readTableWithin(budgetMs);
+  if (!table) return 0;
+  const pids = liveMembers(table, members);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone, or not this user's to signal.
+    }
+  }
+  return pids.length;
 }
 
 /** Default pause between SIGTERM and the SIGKILL that follows it. */

@@ -2,6 +2,169 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.19.1] - 2026-11-10
+
+### Bug Fixes
+
+- resolve a base id only to its listed <base>-<tier> ids *(antigravity)* ([`91f609b`](https://github.com/MadAppGang/claudish/commit/91f609b23960ea05a4a98f754a109d56e7052327))
+- resolve a base id only to its listed <base>-<effort> ids *(devin)* ([`b525177`](https://github.com/MadAppGang/claudish/commit/b52517756403cd1008f0c1c46c1f9089fc3865b4))
+
+### Documentation
+
+- stamp ai-docs/release.md as verified by v14.19.0 *(release)* ([`d65fef2`](https://github.com/MadAppGang/claudish/commit/d65fef262d67f9e677bab56459e2fe9b94edc399))
+- update CHANGELOG.md for v14.19.0([`d7b30ae`](https://github.com/MadAppGang/claudish/commit/d7b30ae0a95646cc81a926684ef987da93f6657e))
+
+## [14.19.0] - 2026-11-10
+
+### Bug Fixes
+
+- remove a dead lock copy left by a takeover that exited *(lmstudio)* ([`b0ce6c7`](https://github.com/MadAppGang/claudish/commit/b0ce6c7cca6cbf4fb00c5fb4297c7d75b7837d38))
+- send ~local requests refused by the unplaced-payload check *(lmstudio)* ([`0009339`](https://github.com/MadAppGang/claudish/commit/000933923d748ba440e2cd46a2b9ea09f19d7178))
+- move a dead machine lock aside before deleting it *(lmstudio)* ([`9a7b03c`](https://github.com/MadAppGang/claudish/commit/9a7b03c20169bb4b7c0267e61c51d9ed00ab5b82))
+- never delete another waiter's lock takeover claim *(lmstudio)* ([`21f180b`](https://github.com/MadAppGang/claudish/commit/21f180be1c66aa2bfacf7bbef5a4f51c705fb693))
+- refuse a payload sent without its LM Link placement *(lmstudio)* ([`ea3210b`](https://github.com/MadAppGang/claudish/commit/ea3210b7c307d4b660a4cb6b6bc1325624da97c7))
+- keep a placement error for every retry of its request *(lmstudio)* ([`275cadf`](https://github.com/MadAppGang/claudish/commit/275cadfb7ca6e34dd241f5dce06222fd565756df))
+- clear a lock takeover claim only when its waiter exited *(lmstudio)* ([`49b4919`](https://github.com/MadAppGang/claudish/commit/49b491930b155786bbdc865be3ba9878f1de3577))
+- register each probe's own API key on the probe lease *(lmstudio)* ([`ee31500`](https://github.com/MadAppGang/claudish/commit/ee315005cb0649c3963af3da7a100449162ab6d9))
+- name the cause when a recovered request had no placement *(lmstudio)* ([`9caa557`](https://github.com/MadAppGang/claudish/commit/9caa5570f3716c0f33907b51b2bc190465450b7b))
+- mask the API key in log lines of the signed local probes *(lmstudio)* ([`44efd23`](https://github.com/MadAppGang/claudish/commit/44efd237b37faed6f48569507498738fa9052bdd))
+- claim a dead machine lock in place instead of moving it *(lmstudio)* ([`0f98bad`](https://github.com/MadAppGang/claudish/commit/0f98bad2b1a549ef3a3b9c37c6ccec0bd6b0340d))
+- keep another machine's loaded size out of a copy's ceiling *(lmstudio)* ([`59f9eb3`](https://github.com/MadAppGang/claudish/commit/59f9eb36cb23acab6ab31c8fac477b3614410c51))
+- mask the API key in an LM Link load error body *(lmstudio)* ([`1476892`](https://github.com/MadAppGang/claudish/commit/147689270f055959f435d65f01904249e0620716))
+- sign the local health and window probes with the API key *(lmstudio)* ([`59b7c41`](https://github.com/MadAppGang/claudish/commit/59b7c417ca1de0c235e74dafba969c4c601d8b3c))
+- clear a placement error left by a failed health check *(lmstudio)* ([`05f767a`](https://github.com/MadAppGang/claudish/commit/05f767a549baeda3f3ca78d327c33a8347ff4a1c))
+- count a placement's age from its answer, not its start *(lmstudio)* ([`e9b8273`](https://github.com/MadAppGang/claudish/commit/e9b82738a3fe928ce846d2dae9d30aab44a47be0))
+- stop a stale-lock takeover from deleting a live lock *(lmstudio)* ([`63238ea`](https://github.com/MadAppGang/claudish/commit/63238ea5cb64f06f882ad0dd7e9500b74059da59))
+- cut --context-window to the model maximum at launch *(lmstudio)* ([`1159607`](https://github.com/MadAppGang/claudish/commit/11596072abea72ed207374a9c5e5951be09c2e34))
+- find the loaded LM Link copy by the load's instance_id *(lmstudio)* ([`9f6d613`](https://github.com/MadAppGang/claudish/commit/9f6d61372b7444682ffc66a6548323a1b4a7aae7))
+- match the LM Link machine name in the model filter *(picker)* ([`c552a93`](https://github.com/MadAppGang/claudish/commit/c552a93fa2b124b15800f89f1b2d6e573126c56e))
+- keep the $/1M header when the list mixes priced rows *(picker)* ([`45d5ef1`](https://github.com/MadAppGang/claudish/commit/45d5ef1fb28fb9b21a8e7912eb9e3d698dd6f584))
+- sign the LM Link model load with the stored API key *(lmstudio)* ([`2697e1d`](https://github.com/MadAppGang/claudish/commit/2697e1dfaccc039be5387d025a668ffafc88d777))
+- use the model maximum as the window below the 128k default *(lmstudio)* ([`4e39176`](https://github.com/MadAppGang/claudish/commit/4e391762b3137fb6de89b094924303d6761d67e9))
+- lock the LM Link preferred device across claudish processes *(lmstudio)* ([`1e69d8b`](https://github.com/MadAppGang/claudish/commit/1e69d8be166c01707fdca516d677882b7f83b741))
+- show the launch context window before the first reply *(status-line)* ([`32d3216`](https://github.com/MadAppGang/claudish/commit/32d32161c676e7e3b55348614851d53b75f2eb7f))
+- stop throwing on local model ids that contain @ *(catalog)* ([`abe2799`](https://github.com/MadAppGang/claudish/commit/abe27991231e4dafb315a9f60eb3528b16c0d9fe))
+- use the loaded context window, else a 64k default *(lmstudio)* ([`7f73243`](https://github.com/MadAppGang/claudish/commit/7f732439e2ebb9c6c71a7437e540532e172bfe0d))
+- remove the "this machine" claim from local billing text *(picker)* ([`9960cfc`](https://github.com/MadAppGang/claudish/commit/9960cfc8cfb86ef3ace5bdd3c7af529f3edd2885))
+- read /api/v0/models so the picker lists local builds *(lmstudio)* ([`512982e`](https://github.com/MadAppGang/claudish/commit/512982e1e14a89d629635008ef73668c882e8a41))
+- accept hostname only in a key position of Bun.serve options *(test)* ([`1940999`](https://github.com/MadAppGang/claudish/commit/1940999d0e1936d2102cabcb6e1ac5c90704f4bd))
+- accept only a top-level hostname key in Bun.serve options *(test)* ([`8b518c0`](https://github.com/MadAppGang/claudish/commit/8b518c0dc958c14d2b1383a22452bbd0e1a71e07))
+- check Bun.serve calls in JavaScript files for a hostname *(test)* ([`3b7de3b`](https://github.com/MadAppGang/claudish/commit/3b7de3b293daa67736ebf7812ce760a6d3f83818))
+- require a hostname option key in each Bun.serve call *(test)* ([`275cf8e`](https://github.com/MadAppGang/claudish/commit/275cf8e3d6779591bf0ae40f92b94fe5c2395eeb))
+- keep the 8 s waitNoOrphans default for other pane tests *(test)* ([`cc0eba6`](https://github.com/MadAppGang/claudish/commit/cc0eba680e29c186e6bae892a021acf43b322d2f))
+- remove the old junit-local.xml before bun run test starts *(test)* ([`497374f`](https://github.com/MadAppGang/claudish/commit/497374fa847545173d28e6744b969f1be69993b4))
+- check Bun.serve calls in .tsx files for a hostname *(test)* ([`add10b6`](https://github.com/MadAppGang/claudish/commit/add10b6120e403baa78729848bf525bb3b76e562))
+- wait up to 60 s for a pane's reap in the leftover check *(test)* ([`a2bab58`](https://github.com/MadAppGang/claudish/commit/a2bab5891d982c61591fe65c0fef4aa09ce4951d))
+- filter on c after / when both keys arrive before a render *(picker)* ([`d9990aa`](https://github.com/MadAppGang/claudish/commit/d9990aa983d4dcc079453493ee7a2a503cf7b625))
+- bind every Bun.serve test server to 127.0.0.1 *(test)* ([`6c200d6`](https://github.com/MadAppGang/claudish/commit/6c200d6e70cd6d5cc96e9140b980a41ce4a9b7dd))
+
+### Documentation
+
+- record the LM Link lock, unplaced payloads and copy ceilings *(routing)* ([`e15606c`](https://github.com/MadAppGang/claudish/commit/e15606c57c511ada1ac762eed4674aac62eaad64))
+- stamp ai-docs/release.md as verified by v14.18.6 *(release)* ([`b8a032e`](https://github.com/MadAppGang/claudish/commit/b8a032e96dc4d055a21d12687599556902555477))
+- update CHANGELOG.md for v14.18.6([`ae5f566`](https://github.com/MadAppGang/claudish/commit/ae5f56692f42c725c02e2d42b3d136267a83702c))
+
+### New Features
+
+- show the LM Link machine in its own column *(picker)* ([`3e451ea`](https://github.com/MadAppGang/claudish/commit/3e451eacd6e92fa664fc44a0a1a6313568635497))
+- ask for the context window of an LM Studio model *(picker)* ([`cb8d272`](https://github.com/MadAppGang/claudish/commit/cb8d272c5d1785143c43edac0f79824261e23492))
+- add --context-window to set the local model window *(cli)* ([`41fa75c`](https://github.com/MadAppGang/claudish/commit/41fa75c4f5b8bf1dd500441613c0ceb19769bd3a))
+- choose the LM Link machine per model in the picker *(lmstudio)* ([`fe1a93e`](https://github.com/MadAppGang/claudish/commit/fe1a93ec9d6bc63538bbb1401663eb30a51e2e33))
+- print the slowest test files after bun run test *(test)* ([`6372b07`](https://github.com/MadAppGang/claudish/commit/6372b07a0a149b1ae6ee27b65d1187f2a307f0e0))
+
+### Refactoring
+
+- mask load errors with credentialValuesFromRequest *(lmstudio)* ([`f6c5504`](https://github.com/MadAppGang/claudish/commit/f6c550467755fa706f16820e9af56dba3095ccdf))
+
+## [14.18.6] - 2026-11-10
+
+### Bug Fixes
+
+- skip a test:safe repair when the file is back to pre-run *(test)* ([`7a3524e`](https://github.com/MadAppGang/claudish/commit/7a3524e8b480c3759de0c873305c50be4ac4ce31))
+- keep the test:safe exit code when a temp dir cannot be removed *(test)* ([`4d84c79`](https://github.com/MadAppGang/claudish/commit/4d84c794a6de877f7c8feb0cb011d4d1b17fbbf1))
+- re-read a guarded file before test:safe repairs it *(test)* ([`d062827`](https://github.com/MadAppGang/claudish/commit/d062827356e19fb35ccbb5389e3f640a6f2725a4))
+- keep valid ~/.claudish files that change during test:safe *(test)* ([`52be5f2`](https://github.com/MadAppGang/claudish/commit/52be5f2ba7f1372ae8c22f43ddafe4b26723ea2a))
+
+### Documentation
+
+- poll the npm manifest and tarball for up to 60 minutes *(release)* ([`f492369`](https://github.com/MadAppGang/claudish/commit/f492369da8be9932e5d28ebe3a5f14ef322f558e))
+- stamp ai-docs/release.md as verified by v14.18.5 *(release)* ([`99b5cb6`](https://github.com/MadAppGang/claudish/commit/99b5cb6d2454fec0fd8dd4ab63ab4ab1f28b2519))
+- update CHANGELOG.md for v14.18.5([`b4e8fae`](https://github.com/MadAppGang/claudish/commit/b4e8faefa01d635308680a7bec12c483c1a3cbf9))
+
+## [14.18.5] - 2026-11-10
+
+### Bug Fixes
+
+- send parallel tool calls interleaved with their results *(devin)* ([`d2398a8`](https://github.com/MadAppGang/claudish/commit/d2398a84e136389fac66a92f15e09b2d2ad0dbc8))
+- answer 400 for invalid_argument after header frames *(devin)* ([`a81b3e5`](https://github.com/MadAppGang/claudish/commit/a81b3e5153d6173b01505b4e12861e6e82ae15e5))
+
+### Documentation
+
+- record the stream-head and parallel tool-call measurements *(devin)* ([`bdb7448`](https://github.com/MadAppGang/claudish/commit/bdb7448498faaf877044d13b12df5318294b870f))
+- update CHANGELOG.md for v14.18.4([`82e112c`](https://github.com/MadAppGang/claudish/commit/82e112c20419a0187c7370088d814b3d7a2bc1c9))
+
+## [14.18.4] - 2026-11-09
+
+### Bug Fixes
+
+- stop context-window lookups once a signal has arrived *(runner)* ([`24df73e`](https://github.com/MadAppGang/claudish/commit/24df73e87fab6da3eb92b4310266069d4b98170a))
+- run teardown on a signal before Claude Code is spawned *(runner)* ([`8feac1c`](https://github.com/MadAppGang/claudish/commit/8feac1ce4c6074184325cafd4e8126f9bd452925))
+
+### Documentation
+
+- update CHANGELOG.md for v14.18.3([`d9229b6`](https://github.com/MadAppGang/claudish/commit/d9229b6f27b56ac88a6d332bc3ad5f3c0903080a))
+
+## [14.18.3] - 2026-11-09
+
+### Bug Fixes
+
+- check pid and start time before killing descendants *(runner)* ([`34ea614`](https://github.com/MadAppGang/claudish/commit/34ea6141f73b0944bcbd8e76ba4698194c68fd81))
+- require a version after sk-ant-oat in the login bearer *(native)* ([`eb52924`](https://github.com/MadAppGang/claudish/commit/eb52924df6e3be0d805306f972cd96f4320c722d))
+- SIGKILL Claude Code's descendants on a signal shutdown *(runner)* ([`c31ad23`](https://github.com/MadAppGang/claudish/commit/c31ad238dfdf994637948b6b46bcd16d636c563c))
+- keep sessionEnd inside the signal shutdown deadline *(runner)* ([`c1eb9d1`](https://github.com/MadAppGang/claudish/commit/c1eb9d1d2d817035ca4120a26c630fa979f887b1))
+- drop x-api-key when a Claude login bearer arrives *(native)* ([`baf5c62`](https://github.com/MadAppGang/claudish/commit/baf5c6255d9395950326f535d4c3ade08b84ff34))
+- run proxy shutdown and session summary on a signal *(runner)* ([`477aa1e`](https://github.com/MadAppGang/claudish/commit/477aa1e312e729359331280f486b882001274e8a))
+- forward ?beta=true and raw body on count_tokens *(native)* ([`0647d79`](https://github.com/MadAppGang/claudish/commit/0647d798a3364a84c38c610d9c122fc8063ed162))
+
+### Documentation
+
+- update CHANGELOG.md for v14.18.2([`3d7fe93`](https://github.com/MadAppGang/claudish/commit/3d7fe93b66891827c2552f6645e4c0a631b91258))
+
+## [14.18.2] - 2026-11-09
+
+### Bug Fixes
+
+- drop a discovery answer that outlives a credential invalidation *(discovery)* ([`2c2c2cf`](https://github.com/MadAppGang/claudish/commit/2c2c2cf9a6bdb75fde4e5270529d4460984d21b1))
+- keep token ownership records across a forced refresh *(antigravity)* ([`6e68388`](https://github.com/MadAppGang/claudish/commit/6e6838882f8798ec3a9c5e0fcbd902c5fa4f1fe3))
+- read account identity only for providers with stored lists *(discovery)* ([`f00770d`](https://github.com/MadAppGang/claudish/commit/f00770d7feea25e98f29c85c14f8e6a8ac656ebc))
+- cache served models under the lineage of the request's token *(antigravity)* ([`f48fbcc`](https://github.com/MadAppGang/claudish/commit/f48fbcccf556a3c586600491f69b23577db209af))
+- refetch a provider's served models after its account changes *(discovery)* ([`f3ffa6c`](https://github.com/MadAppGang/claudish/commit/f3ffa6c87a99cd8fe64a4deea71eb01773b10b59))
+- follow the shared token read when reusing account caches *(antigravity)* ([`4c60011`](https://github.com/MadAppGang/claudish/commit/4c600115dd9311e5386da87e204cc10d9625295c))
+- bind Devin and Antigravity served-model caches to the account *(discovery)* ([`5d567b8`](https://github.com/MadAppGang/claudish/commit/5d567b8cbb9722f54b1d8c93c24e042a6a1ea7af))
+
+### Documentation
+
+- update CHANGELOG.md for v14.18.1([`8413257`](https://github.com/MadAppGang/claudish/commit/8413257efb1dcb1a0428a5123af05ad36a482ba1))
+
+### Other Changes
+
+- merge origin/main into the account cache branch([`0cd9cd0`](https://github.com/MadAppGang/claudish/commit/0cd9cd079e65b5df17032013bddceef5913c8602))
+
+## [14.18.1] - 2026-11-09
+
+### Bug Fixes
+
+- limit the forwarded request to Claude Code's measured fields *(native)* ([`8f5de57`](https://github.com/MadAppGang/claudish/commit/8f5de57fdbc41a081415080188f5475de1fe944f))
+- forward only Claude Code's own headers to api.anthropic.com *(native)* ([`59d9554`](https://github.com/MadAppGang/claudish/commit/59d9554d2bb5307dd0ddaf97fe3c9ab3b4e9a089))
+- send terminateChildTree's SIGKILL to a non-detached child *(runner)* ([`8304c29`](https://github.com/MadAppGang/claudish/commit/8304c29c6fc3adea96f26148a1fd57814ca704be))
+- forward Claude Code's headers, query and body bytes as sent *(native)* ([`a9910a3`](https://github.com/MadAppGang/claudish/commit/a9910a392fb107f60efb84607c05751dbddf0bc8))
+- wait for Claude Code to exit before exiting on a signal *(runner)* ([`7380b83`](https://github.com/MadAppGang/claudish/commit/7380b8377067c2fd661dc05b874a8222fe8a3252))
+- drop /models service tiers carrying the signing token *(openai-codex)* ([`5860a36`](https://github.com/MadAppGang/claudish/commit/5860a368f432a80206bbee4031149640ffabf50e))
+
+### Documentation
+
+- update CHANGELOG.md for v14.18.0([`90f56fd`](https://github.com/MadAppGang/claudish/commit/90f56fd0359e11f7461a4914f4e757cc17a600c8))
+
 ## [14.18.0] - 2026-11-09
 
 ### Bug Fixes

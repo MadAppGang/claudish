@@ -71,10 +71,42 @@ describe("resolveAntigravityModelId", () => {
     );
   });
 
-  test("returns the sole served variant even if its suffix is unrecognized", () => {
+  test("passes a base through when its only served variant has an unrecognized suffix", () => {
     const served = ["gemini-3.6-flash-experimental"];
+    expect(resolveAntigravityModelId("gemini-3.6-flash", served, null)).toBe("gemini-3.6-flash");
+  });
+
+  test("returns a served base even when longer ids extend it", () => {
+    const served = ["gemini-3.8-flash", "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"];
+    expect(resolveAntigravityModelId("gemini-3.8-flash", served, null)).toBe("gemini-3.8-flash");
+  });
+
+  test("passes an unserved base through when only other models extend it", () => {
+    const served = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"];
+    expect(resolveAntigravityModelId("gemini-3.8-flash", served, null)).toBe("gemini-3.8-flash");
+    expect(resolveAntigravityModelId("gemini-3.8-flash", served, "gemini-3.8-flash-tts")).toBe(
+      "gemini-3.8-flash"
+    );
+  });
+
+  test("takes only a single tier name after the base, never more tokens", () => {
+    const served = ["opus-route-high", "opus-route-low", "opus-route-5-high"];
+    expect(resolveAntigravityModelId("opus-route", served, null)).toBe("opus-route-high");
+    expect(resolveAntigravityModelId("opus-route", served, "opus-route-5-high")).toBe(
+      "opus-route-high"
+    );
+    expect(resolveAntigravityModelId("opus-route", ["opus-route-5-high"], null)).toBe("opus-route");
+  });
+
+  test("matches the tier after the base as spelled, like the base itself", () => {
+    const served = ["gemini-3.6-flash-HIGH"];
+    expect(resolveAntigravityModelId("gemini-3.6-flash", served, null)).toBe("gemini-3.6-flash");
+  });
+
+  test("still counts the two-token extra-low tier as an effort sibling", () => {
+    const served = ["gemini-3.6-flash-extra-low", "gemini-3.6-flash-tts"];
     expect(resolveAntigravityModelId("gemini-3.6-flash", served, null)).toBe(
-      "gemini-3.6-flash-experimental"
+      "gemini-3.6-flash-extra-low"
     );
   });
 

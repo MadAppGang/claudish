@@ -1,6 +1,6 @@
 {
   "name": "claudish",
-  "version": "14.18.0",
+  "version": "14.19.1",
   "description": "Run Claude Code with any model - OpenRouter, Ollama, LM Studio & local models",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,7 +26,7 @@
     "typecheck": "tsc --noEmit && bun run scripts/typecheck-blind.ts",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "test": "bun test",
+    "test": "bun scripts/ci-tests.ts --local junit-local.xml",
     "smoke": "bun run scripts/smoke-test.ts",
     "generate:bundled-list": "bun --no-env-file run scripts/generate-bundled-list.ts"
   },

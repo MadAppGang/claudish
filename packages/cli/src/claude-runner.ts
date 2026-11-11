@@ -45,7 +45,9 @@ import {
 import { log as debugLog, logStderr } from "./logger.js";
 import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
 import { flagsRemoveRead } from "./pane/pane-launch.js";
+import { killStillLiveMembers, snapshotDescendants, waitForExit } from "./process-tree.js";
 import { loadConfig } from "./profile-config.js";
+import { contextWindowLimit } from "./providers/context-window-limit.js";
 import { LIVE_DISCOVERY_BOUND_MS, discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
@@ -798,6 +800,8 @@ process.stdin.on('end', () => {
       // gap is the whole reason this line exists.
       const clamped = effWindow < contextWindow ? ' of ' + formatTokens(contextWindow) : '';
       ctxDisplay = '[' + bar + '] ' + formatTokens(inputTokens) + '/' + formatTokens(effWindow) + clamped;
+    } else if (effWindow > 0) {
+      ctxDisplay = '[' + '░'.repeat(15) + '] 0/' + formatTokens(effWindow);
     } else {
       ctxDisplay = ctx + '%';
     }
@@ -896,6 +900,26 @@ export function initializeTokenFile(tokenFilePath: string): void {
     );
   } catch (e) {
     debugLog(`[claude-runner] Could not initialize token file ${tokenFilePath}: ${e}`);
+  }
+}
+
+/**
+ * Write the launch window into a token file no response has written yet, so the
+ * status line shows the window from the first frame instead of `N/A`. A file the
+ * proxy already wrote, an unknown window or a missing file is left as it is.
+ */
+export function seedTokenFileWindow(tokenFilePath: string, window: number | null): void {
+  if (!window || window <= 0) return;
+  try {
+    const record = JSON.parse(readFileSync(tokenFilePath, "utf-8"));
+    if (record.input_tokens !== 0 || record.context_window !== "unknown") return;
+    writeFileSync(
+      tokenFilePath,
+      JSON.stringify({ ...record, context_window: window, context_left_percent: 100 }),
+      "utf-8"
+    );
+  } catch (e) {
+    debugLog(`[claude-runner] Could not seed token file ${tokenFilePath}: ${e}`);
   }
 }
 
@@ -1267,7 +1291,7 @@ export function createTempSettingsFile(
     // own line already shows it), and the result captured into a variable instead
     // of printed.
     const dirPrelude = `DIR=$(basename "$(pwd)"); [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true; `;
-    const readState = `CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; PLAN_DISPLAY=""; ALLOW_DISPLAY=""; ALLOW_COLOR=""; ${formatTokensBash}; ${effWinBash}; ${fmtAtBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; ${readPlanBash} ${readAllowanceBash} fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi`;
+    const readState = `CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; PLAN_DISPLAY=""; ALLOW_DISPLAY=""; ALLOW_COLOR=""; ${formatTokensBash}; ${effWinBash}; ${fmtAtBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; ${readPlanBash} ${readAllowanceBash} fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; elif [ "$EFF_WIN" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$CTX% (0/$(fmt_tok $EFF_WIN))"; else CTX_DISPLAY="$CTX%"; fi`;
     // Plan segment, appended only when there is a number to show. Built as a
     // separate printf so the no-plan case emits nothing at all — most providers
     // expose no usage surface, so absence is the common path, and a trailing
@@ -1567,6 +1591,9 @@ export const MAX_AUTO_COMPACT_WINDOW = 1_000_000;
  * 3. With no window in either, live discovery is awaited for at most
  *    {@link LIVE_DISCOVERY_BOUND_MS}. Its window answers if it arrives in time;
  *    otherwise the window is unknown (null).
+ *
+ * A provider with `unknownContextWindow` skips the first two steps: live
+ * discovery answers, else that default.
  */
 async function resolveLocalContextWindow(
   spec: string,
@@ -1585,6 +1612,19 @@ async function resolveLocalContextWindow(
     provider = plan.primary.provider;
     wireId = parseModelSpec(plan.primary.modelSpec).model;
   }
+  const definition = getProviderByName(provider);
+  const limit = definition?.isLocal ? contextWindowLimit() : undefined;
+  const capped = (window: number): number => Math.min(window, limit ?? window);
+  if (definition?.unknownContextWindow !== undefined) {
+    const served = await discoverContextWindow(provider, wireId, {
+      network: "bounded",
+      upTo: limit ?? definition.unknownContextWindow,
+    });
+    return {
+      modelId: parsed.model,
+      window: capped(served ?? limit ?? definition.unknownContextWindow),
+    };
+  }
   // A served list wins over the catalog: for subscription endpoints the real
   // window depends on the caller's tier (Kimi's k3 is 1M only on Allegretto+).
   // Providers without a modelDiscovery descriptor answer undefined with no
@@ -1594,9 +1634,10 @@ async function resolveLocalContextWindow(
     lookupModelForProvider(parsed.model, provider, cachePath) ??
     (wireId !== parsed.model ? lookupModelForProvider(wireId, provider, cachePath) : undefined) ??
     (await discoverContextWindow(provider, wireId, { network: "bounded" }));
+  const known = typeof win === "number" && win > 0 ? win : undefined;
   return {
     modelId: parsed.model,
-    window: typeof win === "number" && win > 0 ? win : null,
+    window: known !== undefined ? capped(known) : (limit ?? null),
   };
 }
 
@@ -1640,6 +1681,9 @@ export async function computeMainThreadContextWindow(
   // used to mean a 1M-token model got compacted at Claude Code's hardcoded 200K.
   const unresolved: string[] = [];
   for (const spec of specs) {
+    // A signal ends the launch before Claude Code starts, so nothing reads this result,
+    // and each further lookup can wait out time the caller's teardown needs.
+    if (signalShutdownExitCode() !== null) break;
     try {
       const resolved = await resolveLocalContextWindow(spec, cachePath);
       if (!resolved) continue;
@@ -2042,6 +2086,10 @@ export async function runClaudeWithProxy(
     tokenFilePath,
   } = createTempSettingsFile(modelId ?? "default", port, proxyAuthMode, userStatusLineCommand);
 
+  // From the moment the file exists: a signal before this line would leave it behind
+  // and end the process without the caller's teardown. Claude Code is attached below.
+  const signalShutdown = setupSignalHandlers(tempSettingsPath, config.quiet, onCleanup);
+
   // Merge user's --settings into our temp settings file if user provided one
   mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine, proxyAuthMode);
 
@@ -2346,6 +2394,7 @@ export async function runClaudeWithProxy(
       // per-provider window from the cloud catalog (never hardcoded).
       const realWindow = await computeMainThreadContextWindow(config);
       const contextEnv = resolveContextWindowEnv(realWindow, process.env);
+      seedTokenFileWindow(resolveTokenFilePath(port), realWindow);
       Object.assign(env, contextEnv.vars);
       // Layer 4 telemetry needs this denominator and cannot derive it: the vars
       // above go on the CHILD's env, while the proxy runs here in the parent and
@@ -2402,6 +2451,15 @@ export async function runClaudeWithProxy(
 
   // Find Claude binary (supports CLAUDE_PATH, local installation, and global PATH)
   const claudeBinary = await findClaudeBinary();
+
+  // The last `await` before Claude Code starts, on either spawn path below, so a signal
+  // handler can run only up to here. One that has run means nothing is to be started.
+  const stoppedBeforeSpawn = signalShutdownExitCode();
+  if (stoppedBeforeSpawn !== null) {
+    signalShutdown.removeSettingsFile();
+    return stoppedBeforeSpawn;
+  }
+
   if (!claudeBinary) {
     console.error("Error: Claude Code CLI not found");
     console.error("Install it from: https://claude.com/claude-code");
@@ -2561,6 +2619,7 @@ export async function runClaudeWithProxy(
         stdio,
         shell: needsShell,
       });
+  signalShutdown.attachClaudeCode(proc);
 
   if (wrap) {
     wrap.watch(proc);
@@ -2676,9 +2735,6 @@ export async function runClaudeWithProxy(
     });
   }
 
-  // Handle process termination signals (includes cleanup)
-  setupSignalHandlers(proc, tempSettingsPath, config.quiet, onCleanup);
-
   // Wait for claude to exit.
   //
   // Bind `signal`, not `code` alone. A child killed by a signal reports
@@ -2742,13 +2798,12 @@ export async function runClaudeWithProxy(
   releaseTerminalIsolation();
 
   // Clean up temporary settings file
-  try {
-    unlinkSync(tempSettingsPath);
-  } catch {
-    // Ignore cleanup errors
-  }
+  signalShutdown.removeSettingsFile();
+  await signalShutdown.claudeCodeStopped();
 
-  return exitCode;
+  // A signal outranks Claude Code's own code, which is 0 from a TERM trap that
+  // exits cleanly: the run was stopped, and the caller exits with what is returned.
+  return signalShutdownExitCode() ?? exitCode;
 }
 
 /** `sessionEnd`'s outcome for the interactive launcher: Claude Code's exit. */
@@ -2763,19 +2818,159 @@ function sessionOutcomeOf(exitCode: number | null): {
 }
 
 /**
- * Setup signal handlers to gracefully shutdown
+ * How long a signal shutdown waits for Claude Code to exit after SIGTERM before
+ * it sends SIGKILL. A supervisor allows claudish `TERMINATE_GRACE_MS` (5 s)
+ * between its own SIGTERM and SIGKILL, so this stays well below that: claudish
+ * must still have time to kill Claude Code, give `sessionEnd` its full budget
+ * (`EVENT_BUDGETS.sessionEnd`) and exit.
  */
-function setupSignalHandlers(
-  proc: ChildProcess,
+export const SIGNAL_CHILD_EXIT_GRACE_MS = 2_000;
+
+/**
+ * The SIGKILL step of a signal shutdown, from the end of the child grace: reading
+ * Claude Code's descendants, sending the SIGKILLs and waiting for Claude Code to exit.
+ */
+export const SIGNAL_CHILD_KILL_WAIT_MS = 500;
+
+/**
+ * How long each of the SIGKILL step's two process-table reads may take: the snapshot
+ * of Claude Code's descendants, and the re-read that checks they are the same processes.
+ * Measured at 95 ms median and 111 ms worst over 40 reads of a 1,900-process table.
+ * Both come out of `SIGNAL_CHILD_KILL_WAIT_MS`, so they add nothing to the shutdown.
+ */
+export const SIGNAL_DESCENDANT_READ_MS = 200;
+
+/**
+ * The hard deadline of a signal shutdown, from the signal to `process.exit`: the
+ * launcher's post-exit cleanup (`sessionEnd`, the wrapper, the turn dir) and the
+ * caller's teardown (the proxy, the diag file, the session summary) normally
+ * finish inside it. Above the child grace, the kill wait and `sessionEnd`'s budget
+ * together, so a Claude Code that has to be killed still leaves `sessionEnd` all
+ * of its time. Below the supervisor's `TERMINATE_GRACE_MS`, so its SIGKILL never
+ * lands mid-cleanup.
+ */
+export const SIGNAL_SHUTDOWN_BUDGET_MS = 4_500;
+
+/** `128 + signum` of the signal that started the shutdown; null until one does. */
+let signalShutdownCode: number | null = null;
+
+/**
+ * The code claudish must exit with because a signal stopped it, or null when none
+ * has. The launcher returns Claude Code's code before the caller's teardown runs,
+ * and a signal can arrive during that teardown; the caller's last exit reads this.
+ */
+export function signalShutdownExitCode(): number | null {
+  return signalShutdownCode;
+}
+
+/** A signal shutdown, shared between the signal handlers and the launcher's exit path. */
+interface SignalShutdown {
+  /**
+   * Hands the handlers the Claude Code process to stop. Call it right after `spawn`,
+   * with no `await` between them, so no signal can find a live child unattached.
+   */
+  attachClaudeCode(child: ChildProcess): void;
+  /** Removes the settings file, once however many paths reach it. */
+  removeSettingsFile(): void;
+  /**
+   * Settles when the handlers have finished stopping Claude Code, at once if no signal
+   * has arrived. Its descendants are signalled after it dies, so returning sooner would
+   * let the caller exit first and leave them running.
+   */
+  claudeCodeStopped(): Promise<void>;
+}
+
+/**
+ * Installs the SIGINT / SIGTERM / SIGHUP handlers that stop Claude Code. They are
+ * installed before it is spawned: a signal with no child attached records the exit
+ * code and arms the deadline, and the launcher then does not spawn.
+ *
+ * The handlers signal Claude Code, wait (bounded) for it to exit, and SIGKILL it
+ * if it did not. They do not exit: Claude Code's `exit` event lets the launcher
+ * finish its cleanup and return `128 + signum`, and the caller's teardown then
+ * runs and exits with that code. Exiting before Claude Code does leaves it
+ * running against a proxy port that is gone and a settings file that is deleted.
+ *
+ * A deadline armed at the signal ends a shutdown that stalls anywhere on that
+ * path: `onCleanup`, the settings file, and `process.exit(128 + signum)`.
+ *
+ * Only the first signal shuts down; a later one during the shutdown is logged
+ * and changes nothing.
+ */
+export function setupSignalHandlers(
   tempSettingsPath: string,
   quiet: boolean,
   onCleanup?: () => void
-): void {
+): SignalShutdown {
   // Windows only supports SIGINT and SIGTERM reliably
   // SIGHUP doesn't exist on Windows
   const signals: NodeJS.Signals[] = isWindows()
     ? ["SIGINT", "SIGTERM"]
     : ["SIGINT", "SIGTERM", "SIGHUP"];
+
+  let shuttingDown: NodeJS.Signals | null = null;
+  let claudeCode: ChildProcess | null = null;
+  let claudeCodeStopped: Promise<void> = Promise.resolve();
+  let settingsFileRemoved = false;
+  const removeSettingsFile = (): void => {
+    if (settingsFileRemoved) return;
+    settingsFileRemoved = true;
+    try {
+      unlinkSync(tempSettingsPath);
+    } catch {
+      // Ignore cleanup errors
+    }
+  };
+
+  const stopClaudeCode = async (proc: ChildProcess): Promise<void> => {
+    try {
+      proc.kill("SIGTERM");
+      if (await waitForExit(proc, SIGNAL_CHILD_EXIT_GRACE_MS)) return;
+      debugLog(
+        `[claudish] Claude Code did not exit within ${SIGNAL_CHILD_EXIT_GRACE_MS} ms of SIGTERM; sending SIGKILL`
+      );
+      const killStepStartedAt = Date.now();
+      // A SIGKILL leaves Claude Code no chance to stop its MCP servers and Bash tool
+      // children, and it shares claudish's process group, so they are found by pid.
+      const descendants = proc.pid
+        ? await snapshotDescendants(proc.pid, SIGNAL_DESCENDANT_READ_MS)
+        : [];
+      // It exited on its own while the table was read: nothing needs killing.
+      if (proc.exitCode !== null || proc.signalCode !== null) return;
+      // Claude Code first, so that it cannot start another child in between.
+      let killed = 0;
+      try {
+        proc.kill("SIGKILL");
+      } finally {
+        killed = await killStillLiveMembers(descendants, SIGNAL_DESCENDANT_READ_MS);
+      }
+      debugLog(
+        `[claudish] Sent SIGKILL to Claude Code and ${killed} of ${descendants.length} descendants`
+      );
+      await waitForExit(proc, SIGNAL_CHILD_KILL_WAIT_MS - (Date.now() - killStepStartedAt));
+    } catch (err) {
+      debugLog(`[claudish] Signal shutdown error: ${err}`);
+    }
+  };
+
+  /**
+   * Ends a shutdown that did not finish inside its budget. Unref'd, so it never
+   * holds a finished process open; `process.exitCode` carries the code for an
+   * event loop that drains before it fires.
+   */
+  const armDeadline = (code: number): void => {
+    const deadline = setTimeout(() => {
+      debugLog(`[claudish] Signal shutdown passed ${SIGNAL_SHUTDOWN_BUDGET_MS} ms; exiting`);
+      try {
+        onCleanup?.();
+      } catch {
+        // Ignore cleanup errors
+      }
+      removeSettingsFile();
+      process.exit(code);
+    }, SIGNAL_SHUTDOWN_BUDGET_MS);
+    deadline.unref?.();
+  };
 
   // stats-buffer's SIGINT and SIGTERM handlers run before any added later and exit
   // the process unless the exit is claimed, which would leave Claude Code running
@@ -2784,6 +2979,26 @@ function setupSignalHandlers(
   claimSignalExit();
   for (const signal of signals) {
     process.on(signal, () => {
+      if (shuttingDown) {
+        debugLog(`[claudish] Received ${signal} while shutting down from ${shuttingDown}; ignored`);
+        return;
+      }
+      shuttingDown = signal;
+      // `128 + signum`, the shell convention for "died from signal N" — NOT 0.
+      //
+      // Exiting 0 here manufactured the 900-second silent success. A supervisor
+      // (the MCP session manager's timeout, `team`'s deadline, a CI runner)
+      // would SIGTERM the process group, claudish would run its cleanup and
+      // exit 0, and every layer above read that 0 as "the run succeeded". The
+      // session manager then let the exit UPGRADE a state its timeout handler
+      // had already recorded as failed, and wrote `status: "completed"` to
+      // meta.json for a session that had been killed. A graceful shutdown is
+      // still a shutdown: the process did not finish its work, and its exit
+      // code is the only place that can say so.
+      const code = signalExitCode(signal);
+      signalShutdownCode = code;
+      process.exitCode = code;
+      armDeadline(code);
       // Lift the firewall first — the child is going away, and the shutdown
       // notice below must reach the user rather than the diag log.
       releaseTerminalIsolation();
@@ -2792,35 +3007,17 @@ function setupSignalHandlers(
         // on stdout, which may carry Claude Code's machine-readable output.
         console.error(`\n[claudish] Received ${signal}, shutting down...`);
       }
-      proc.kill();
-      // Run optional cleanup before exit
-      if (onCleanup) {
-        try {
-          onCleanup();
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
-      // Clean up temp settings file
-      try {
-        unlinkSync(tempSettingsPath);
-      } catch {
-        // Ignore cleanup errors
-      }
-      // `128 + signum`, the shell convention for "died from signal N" — NOT 0.
-      //
-      // This one line manufactured the 900-second silent success. A supervisor
-      // (the MCP session manager's timeout, `team`'s deadline, a CI runner)
-      // would SIGTERM the process group, this handler would run its cleanup and
-      // exit 0, and every layer above read that 0 as "the run succeeded". The
-      // session manager then let the exit UPGRADE a state its timeout handler
-      // had already recorded as failed, and wrote `status: "completed"` to
-      // meta.json for a session that had been killed. A graceful shutdown is
-      // still a shutdown: the process did not finish its work, and its exit
-      // code is the only place that can say so.
-      process.exit(signalExitCode(signal));
+      if (claudeCode) claudeCodeStopped = stopClaudeCode(claudeCode);
     });
   }
+
+  return {
+    attachClaudeCode: (child) => {
+      claudeCode = child;
+    },
+    removeSettingsFile,
+    claudeCodeStopped: () => claudeCodeStopped,
+  };
 }
 
 /**

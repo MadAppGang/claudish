@@ -130,3 +130,6 @@ gtd/sessions/
 # magus: generated profile config (source of truth: .claude/profiles.json)
 .claude/.magus-backups/
 .codegraph/
+
+# per-file test timing written by `bun run test` (scripts/ci-tests.ts --local)
+junit-*.xml

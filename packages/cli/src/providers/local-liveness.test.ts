@@ -63,8 +63,8 @@ describe("pingLocalProvider", () => {
   });
 
   function serveMlx(fetch: (req: Request) => Response): void {
-    server = Bun.serve({ port: 0, fetch });
-    process.env.MLX_BASE_URL = `http://localhost:${server.port}`;
+    server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch });
+    process.env.MLX_BASE_URL = `http://127.0.0.1:${server.port}`;
   }
 
   test("'down' for a 200 HTML page served by an unrelated web app", async () => {
@@ -102,12 +102,13 @@ describe("pingLocalProvider", () => {
 
   test("'down' when the configured MLX port refuses the connection", async () => {
     const stoppedServer = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch: () => new Response(null, { status: 204 }),
     });
     const stoppedPort = stoppedServer.port;
     stoppedServer.stop(true);
-    process.env.MLX_BASE_URL = `http://localhost:${stoppedPort}`;
+    process.env.MLX_BASE_URL = `http://127.0.0.1:${stoppedPort}`;
 
     expect(await pingLocalProvider("mlx", 300)).toBe("down");
   });

@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const ROOTS: Array<[string, string]> = [
@@ -70,7 +70,8 @@ function seenUnderPreload(cwd: string, env: Record<string, string>): Seen {
     );
     const child = Bun.spawnSync([process.execPath, "test", checkPath], {
       cwd,
-      env: { PATH: process.env.PATH ?? "", ...env },
+      // Match the parent assertions without relying on inherited temp settings.
+      env: { PATH: process.env.PATH ?? "", ...env, TMPDIR: tmpdir() },
       stdout: "pipe",
       stderr: "pipe",
       timeout: 15_000,
@@ -123,6 +124,58 @@ describe("R4-0 the test preload isolates HOME and the Keychain", () => {
       rmSync(parentHome, { recursive: true, force: true });
     }
   }, 20_000);
+
+  for (const [label, cwd] of ROOTS) {
+    test(`creates a fresh home when inherited HOME is unset (${label})`, () => {
+      const seen = seenUnderPreload(cwd, {});
+
+      expect(new Set(homesOf(seen)).size).toBe(1);
+      for (const home of homesOf(seen)) {
+        expect(dirname(home)).toBe(resolve(tmpdir()));
+        expect(basename(home)).toStartWith("claudish-test-home-");
+      }
+    }, 20_000);
+
+    test(`replaces the marked run HOME with a fresh home for every process (${label})`, () => {
+      const runHome = mkdtempSync(resolve(tmpdir(), "claudish-guard-home-"));
+      try {
+        const env = { HOME: runHome, CLAUDISH_GUARD_RUN_HOME: runHome };
+        const first = seenUnderPreload(cwd, env);
+        const second = seenUnderPreload(cwd, env);
+
+        for (const seen of [first, second]) {
+          expect(new Set(homesOf(seen)).size).toBe(1);
+          for (const home of homesOf(seen)) {
+            expect(home).not.toBe(runHome);
+            expect(dirname(home)).toBe(resolve(tmpdir()));
+            expect(basename(home)).toStartWith("claudish-test-home-");
+          }
+          expect(seen.disableKeychain).toBe("1");
+          expect(seen.disableOp).toBe("1");
+          expect(seen.disableCatalogWarm).toBe("1");
+        }
+        expect(first.envHome).not.toBe(second.envHome);
+      } finally {
+        rmSync(runHome, { recursive: true, force: true });
+      }
+    }, 40_000);
+
+    test(`preserves a different temporary HOME when the run-home marker is set (${label})`, () => {
+      const parentHome = mkdtempSync(resolve(tmpdir(), "preload-parent-home-"));
+      const runHome = mkdtempSync(resolve(tmpdir(), "claudish-guard-home-"));
+      try {
+        const seen = seenUnderPreload(cwd, {
+          HOME: parentHome,
+          CLAUDISH_GUARD_RUN_HOME: runHome,
+        });
+
+        for (const home of homesOf(seen)) expect(home).toBe(parentHome);
+      } finally {
+        rmSync(parentHome, { recursive: true, force: true });
+        rmSync(runHome, { recursive: true, force: true });
+      }
+    }, 20_000);
+  }
 
   test("an explicit prevention flag is left as the environment states it", () => {
     const seen = seenUnderPreload(repoRoot, {

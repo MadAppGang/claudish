@@ -28,6 +28,7 @@ import {
   CHIP_COLUMN_LABELS,
   CHIP_FILL_CELLS,
   billingLabel,
+  lastColumnLabel,
   priceChipBg,
   priceFg,
   priceLabel,
@@ -115,7 +116,7 @@ describe("priceFg / priceChipBg", () => {
   test("`N/A` is the ABSENCE of the fact, so it stays in the dim tier alone", () => {
     // `local` used to share this tier on the grounds that both mean "there is no
     // number here". They do not mean the same thing: `local` is a positive claim the
-    // reader acts on — this route costs nothing and needs no network — while `N/A`
+    // reader acts on — this route has no per-token charge — while `N/A`
     // is the catalog declining to answer. So `local` joined the positive family and
     // `N/A` kept the dim tier, which is where an unanswered question belongs.
     expect(priceFg("N/A")).toBe(tokens.dead);
@@ -399,9 +400,30 @@ describe("providerFactsText", () => {
     expect(
       providerFactsText({ label: "", shortcut: "", billing: "metered", envVar: "" }).billing
     ).toContain("per token");
-    expect(
-      providerFactsText({ label: "", shortcut: "", billing: "local", envVar: "" }).billing
-    ).toContain("this machine");
+  });
+
+  test("the last column is named machine only when every row is on a machine", () => {
+    const onM1 = model({ id: "q~m1", machine: { name: "m1", modelId: "q" } });
+    const cloud = model({ id: "gpt" });
+
+    expect(lastColumnLabel([onM1, onM1])).toBe("machine");
+    // The all-models list takes in a local provider's rows once it was opened.
+    expect(lastColumnLabel([cloud, onM1])).toBe("$/1M");
+    expect(lastColumnLabel([cloud])).toBe("$/1M");
+    expect(lastColumnLabel([])).toBe("$/1M");
+  });
+
+  // REGRESSION: LM Studio picker hides models the cloud models catalog does not list
+  test("local billing makes no claim about where the model runs", () => {
+    // `local` comes from the claudish provider (ollama, lmstudio, vllm, mlx), not
+    // from where its server is: LMSTUDIO_BASE_URL or OLLAMA_HOST may name another
+    // host, and LM Studio LM Link runs a model on a linked device. The one claim
+    // true in every case is the one that changes a decision.
+    const local = providerFactsText({ label: "", shortcut: "", billing: "local", envVar: "" });
+    expect(local.billing).toBe("self-hosted — no per-token charge");
+    expect(local.billing).not.toContain("this machine");
+    expect(local.billing).not.toContain("no network");
+    expect(local.billingShort).toBe("local");
   });
 
   test("the credential is NAMED, and a sign-in provider says so instead of naming nothing", () => {

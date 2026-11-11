@@ -150,6 +150,7 @@ describe("probeLink — OAuth login hints", () => {
     body: string
   ): Promise<ProbeResult> {
     const server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch() {
         return new Response(body, {
@@ -161,7 +162,7 @@ describe("probeLink — OAuth login hints", () => {
 
     try {
       return await probeLink(
-        `http://localhost:${server.port}`,
+        `http://127.0.0.1:${server.port}`,
         { provider, modelSpec: `${provider}@test-model`, hasCredentials },
         1000
       );
@@ -301,6 +302,7 @@ describe("probe budget", () => {
     ].join("\n\n");
 
     const server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch() {
         const upstream = new Response(
@@ -361,6 +363,7 @@ describe("probe budget", () => {
     ].join("\n\n");
 
     const server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch() {
         const upstream = new Response(
@@ -415,6 +418,7 @@ describe("probe budget", () => {
     // it (the adapter mapping is covered by the api-format tests).
     let capturedBody: any = null;
     const server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       async fetch(req) {
         capturedBody = await req.json();
@@ -442,6 +446,7 @@ describe("probe budget", () => {
   test("a genuinely dead contentless stream keeps the plain message", async () => {
     // No stop reason, no usage — nothing indicates budget truncation.
     const server = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch() {
         return new Response("data: [DONE]\n\n", {

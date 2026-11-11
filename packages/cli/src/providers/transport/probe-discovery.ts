@@ -67,7 +67,7 @@ export function ollamaReported(row: { capabilities?: unknown }): ReportedCapabil
 }
 
 /** LM Studio's `/api/v0/models` rows carry `type`: `llm`/`vlm` chat, `embeddings` not. */
-function lmStudioReported(row: { type?: unknown }): ReportedCapability {
+export function lmStudioReported(row: { type?: unknown }): ReportedCapability {
   if (row.type === "llm" || row.type === "vlm") return "chat";
   if (row.type === "embeddings" || row.type === "embedding") return "not-chat";
   return undefined;

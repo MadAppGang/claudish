@@ -21,6 +21,7 @@ import {
 } from "../providers/all-models-cache.js";
 import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 import { compareByReleaseDateDesc } from "../providers/model-ordering.js";
+import { getProviderByName, getShortcuts } from "../providers/provider-definitions.js";
 
 export type {
   ModelEndpoint,
@@ -363,6 +364,10 @@ function stripVendorPrefix(lowerId: string): string {
 function findCacheEntry(modelId: string, cachePath?: string): SlimModelEntry | undefined {
   if (modelId.startsWith("@")) return undefined;
   if (modelId.includes("@")) {
+    // A local build's id can hold "@" (`name@4bit`). Only a provider before it
+    // makes the id a routed spec, and no catalog entry has an "@" in its id.
+    const prefix = modelId.slice(0, modelId.indexOf("@")).toLowerCase();
+    if (getShortcuts()[prefix] === undefined && !getProviderByName(prefix)) return undefined;
     throw new Error(
       `model-catalog lookup received provider-routed ID "${modelId}" — callers must strip the "@" prefix before calling`
     );

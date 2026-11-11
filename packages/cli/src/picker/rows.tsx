@@ -396,7 +396,19 @@ function ChipCell({
  * guessed at, which is the cheapest possible answer to "what is happening here":
  * the previous build printed `262K` and `$30.00/1M` beside two unlabelled bars.
  */
-export function ColumnHeader({ layout }: { layout: RowLayout }): ReactNode {
+/**
+ * The header of the last column. LM Studio rows on LM Link machines print the
+ * machine there; a list that also holds priced rows (all models, once a local
+ * provider was opened) keeps the price header, which most of its rows answer.
+ */
+export function lastColumnLabel(models: readonly ModelInfo[]): string {
+  return models.length > 0 && models.every((m) => m.machine) ? "machine" : "$/1M";
+}
+
+export function ColumnHeader({
+  layout,
+  last = "$/1M",
+}: { layout: RowLayout; last?: string }): ReactNode {
   return (
     <box height={1} flexShrink={0}>
       <text>
@@ -415,7 +427,7 @@ export function ColumnHeader({ layout }: { layout: RowLayout }): ReactNode {
         <span>{gap(GAPS.afterId)}</span>
         <span fg={tokens.trace}>{padStartTo("ctx", layout.ctx)}</span>
         <span>{gap(GAPS.afterCtx)}</span>
-        <span fg={tokens.trace}>{padStartTo("$/1M", layout.price)}</span>
+        <span fg={tokens.trace}>{padStartTo(last, layout.price)}</span>
         {layout.mark > 0 ? <span fg={tokens.trace}>{padStartTo("", layout.mark)}</span> : null}
       </text>
     </box>
@@ -484,11 +496,15 @@ export function ModelRow({
             <span>{gap(GAPS.afterProvider)}</span>
           </>
         ) : null}
-        <span fg={idFg}>{padTo(model.id, layout.id)}</span>
+        <span fg={idFg}>{padTo(model.machine?.modelId ?? model.id, layout.id)}</span>
         <span>{gap(GAPS.afterId)}</span>
         <span fg={tokens.subtle}>{padStartTo(model.context || "N/A", layout.ctx)}</span>
         <span>{gap(GAPS.afterCtx)}</span>
-        {chipBg === null ? (
+        {model.machine ? (
+          <span fg={cursor ? C.strong : tokens.text}>
+            {padStartTo(truncate(model.machine.name, layout.price), layout.price)}
+          </span>
+        ) : chipBg === null ? (
           <span fg={priceFg(price)}>{padStartTo(price, layout.price)}</span>
         ) : (
           // `C.pillKeyFg` because `priceChipBg` only ever answers the SIGNAL fill — a

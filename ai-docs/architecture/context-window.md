@@ -25,3 +25,7 @@ the canonical model id, so canonical-keyed windows remain available.
 ## Context Tracking for Local Models
 
 Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conversation context** each request, not incremental tokens. The `writeTokenFile` function uses assignment (`=`) not accumulation (`+=`) for input tokens to handle this correctly.
+
+## LM Studio's window
+
+LM Studio's `/api/v0/models` gives a loaded instance a `loaded_context_length`, and that is the only window claudish reads. `max_context_length` is the most a model supports, and a load can use less (measured: 213,176 loaded of 262,144). A model with no loaded instance takes `unknownContextWindow` from its provider definition, 64,000. The launch path does not ask the cloud models catalog for this provider, because the vendor's published window does not describe a local load. `LocalTransport` applies the same rule, so the status line agrees with the launch.

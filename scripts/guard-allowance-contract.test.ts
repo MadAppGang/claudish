@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -31,8 +31,20 @@ for (const target of ["usage/raw/2026-10-23.jsonl", "allowance-alerts.json"]) {
         stdout: "pipe",
         stderr: "pipe",
       });
-      expect(child.exitCode).toBe(1);
-      expect(new TextDecoder().decode(child.stderr)).toContain("MUTATED");
+      // Directory deltas warn; invalid allowance memory is still damage.
+      const ledger = target.startsWith("usage/");
+      expect(child.exitCode).toBe(ledger ? 0 : 1);
+      const stderr = new TextDecoder().decode(child.stderr);
+      if (ledger) {
+        expect(stderr).toContain("REAL USAGE LEDGER");
+        expect(stderr).toContain("changed during the run");
+        expect(stderr).toContain(target.slice("usage/".length));
+        expect(stderr).toContain("Not restored");
+        expect(stderr).not.toContain("MUTATED");
+        expect(readFileSync(path, "utf8")).toBe("before\nafter\n");
+      } else {
+        expect(stderr).toContain("MUTATED");
+      }
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

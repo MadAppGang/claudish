@@ -13,6 +13,7 @@ import { VERTEX_SET_PROJECT_REMEDY } from "../auth/vertex-auth.js";
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { getEndpoint as getConfigEndpoint } from "../profile-config.js";
+import { DEFAULT_LOCAL_CONTEXT_WINDOW } from "./context-window-limit.js";
 // Type-only import — erased at compile time, so no runtime import cycle with
 // model-discovery.ts (which imports getProviderByName from here).
 import type { ModelDiscoveryDescriptor } from "./model-discovery.js";
@@ -299,6 +300,12 @@ export interface ProviderDefinition {
   oauthLoginSlug?: "codex" | "kimi" | "antigravity" | "grok" | "muse";
   /** Whether this is a local provider (no API key needed) */
   isLocal?: boolean;
+  /**
+   * The context window of a model whose server reports none. When set, the
+   * cloud models catalog is not asked: a local server runs a model with its own
+   * load settings, so the vendor's published window does not describe it.
+   */
+  unknownContextWindow?: number;
   /** Whether this provider supports direct API access (not just via OpenRouter) */
   isDirectApi?: boolean;
   /** Shortest @ prefix for handler creation (reverse of shortcuts) */
@@ -1177,9 +1184,12 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
       { prefix: "mlstudio:", stripPrefix: true },
     ],
     isLocal: true,
-    // LM Studio serves an OpenAI-compatible list of the models it has loaded.
-    // Previously unlisted, so the picker made users type a name from memory.
-    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
+    // LM Studio's native list: every model it can serve, each row with a `type`
+    // that states whether it is a chat model, so a local build the cloud models
+    // catalog does not know is still listed. Its OpenAI-compatible `/v1/models`
+    // carries only ids; it is read instead when an older server answers 404.
+    modelDiscovery: { path: "/api/v0/models", format: "lmstudio-models" },
+    unknownContextWindow: DEFAULT_LOCAL_CONTEXT_WINDOW,
     description: "Local LM Studio (lms@)",
   },
 
@@ -1658,6 +1668,20 @@ export function getProviderByName(name: string): ProviderDefinition | undefined 
   const builtin = ensureProviderByNameCache().get(name);
   if (builtin) return builtin;
   return getRuntimeProviders().get(name);
+}
+
+/**
+ * Whether `provider` keeps a stored list: it declares `modelDiscovery`, its tier
+ * is `subscription` or `dynamic-subscription`, and it is not local. Pure.
+ */
+export function isPersistedListProvider(provider: string): boolean {
+  const def = getProviderByName(provider);
+  return (
+    def !== undefined &&
+    def.modelDiscovery !== undefined &&
+    !def.isLocal &&
+    (def.tier === "subscription" || def.tier === "dynamic-subscription")
+  );
 }
 
 /**

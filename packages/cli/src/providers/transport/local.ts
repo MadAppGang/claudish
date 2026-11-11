@@ -13,16 +13,28 @@
 
 import { Agent } from "undici";
 import { credentials } from "../../auth/credentials/authority.js";
-import { markOwnTimeout } from "../../handlers/shared/connection-error.js";
+import { credentialValuesFromRequest } from "../../handlers/shared/call-context.js";
+import { classifyConnectionError, markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
+import {
+  type LMStudioInstance,
+  ensureLMStudioInstance,
+  splitLMStudioDevice,
+} from "../../providers/lmstudio-devices.js";
+import { getProviderByName } from "../../providers/provider-definitions.js";
 import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
+import { type SigningLease, acquireSigningLease } from "../../redact.js";
+import { contextWindowLimit } from "../context-window-limit.js";
 import {
   discoverViaLMStudio,
   discoverViaOllama,
   discoverViaOpenAIModels,
 } from "./probe-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
+
+/** Placement errors kept for payloads not yet sent; older ones are dropped. */
+const MAX_UNPLACED_ERRORS = 64;
 
 // Custom undici agent with long timeouts for local LLM inference
 // Default undici headersTimeout is 30s which is too short for prompt processing
@@ -56,6 +68,9 @@ async function hasOllamaTagsShape(response: Response): Promise<boolean> {
   }
 }
 
+/** How long a placement is trusted before LM Studio is asked again (one `lms ps` costs about 250 ms). */
+const PLACEMENT_RECHECK_MS = 10_000;
+
 export class LocalTransport implements ProviderTransport {
   readonly name: string;
   readonly displayName: string;
@@ -63,6 +78,18 @@ export class LocalTransport implements ProviderTransport {
 
   private config: LocalProviderConfig;
   private modelName: string;
+  /** The LM Link machine named by the model id's suffix. */
+  private lmStudioDevice?: string;
+  private lmStudioInstance?: Promise<LMStudioInstance>;
+  /** When the current placement answered; undefined while it is still loading. */
+  private lmStudioPlacedAt: number | undefined;
+  /** Why the payload step could not place the model; `refreshAuth` fails the request with it. */
+  private lmStudioPlacementError?: unknown;
+  /** Errors of payloads whose placement failed, by the marker each payload names. */
+  private readonly unplacedErrors = new Map<string, unknown>();
+  private unplacedCount = 0;
+  /** The signing leases of the `refreshAuth` calls now running; each probe adds its key. */
+  private readonly probeLeases = new Set<SigningLease>();
   private concurrency?: number;
   /**
    * SUCCESS-ONLY latch: true once a probe has actually reached the server.
@@ -88,19 +115,22 @@ export class LocalTransport implements ProviderTransport {
 
   constructor(config: LocalProviderConfig, modelName: string, options?: { concurrency?: number }) {
     this.config = config;
-    this.modelName = modelName;
+    if (config.name === "lmstudio") {
+      const { model, device } = splitLMStudioDevice(modelName);
+      this.modelName = model;
+      this.lmStudioDevice = device;
+    } else {
+      this.modelName = modelName;
+    }
     this.name = config.name;
     this.displayName = DISPLAY_NAMES[config.name] || "Local";
     this.concurrency = options?.concurrency;
+    this._contextWindow = getProviderByName(config.name)?.unknownContextWindow ?? 32768;
 
-    // Check for env var override of context window
-    const envContextWindow = process.env.CLAUDISH_CONTEXT_WINDOW;
-    if (envContextWindow) {
-      const parsed = Number.parseInt(envContextWindow, 10);
-      if (!Number.isNaN(parsed) && parsed > 0) {
-        this._contextWindow = parsed;
-        log(`[${this.displayName}] Context window from env: ${this._contextWindow}`);
-      }
+    const limit = contextWindowLimit();
+    if (limit !== undefined) {
+      this._contextWindow = limit;
+      log(`[${this.displayName}] Context window limit: ${limit}`);
     }
 
     if (this.concurrency !== undefined) {
@@ -173,6 +203,21 @@ export class LocalTransport implements ProviderTransport {
   }
 
   async getExtraPayloadFields(): Promise<Record<string, any>> {
+    if (this.lmStudioDevice) {
+      // The payload is built before `refreshAuth`, so the instance is resolved
+      // here. A failure must not throw from payload building: `refreshAuth`
+      // reports it after the health check has classified an outage. An error kept
+      // from an earlier request belongs to that request: a failed health check
+      // ends it before `confirmPlacement` reads the error.
+      this.lmStudioPlacementError = undefined;
+      try {
+        return { model: (await this.placeOnDevice()).instanceId };
+      } catch (error) {
+        this.lmStudioPlacementError = error;
+        this.lmStudioInstance = undefined;
+        return { model: this.markUnplaced(error) };
+      }
+    }
     // Ollama defaults to 2048 context and silently truncates, so set it
     // explicitly for any endpoint that is actually an Ollama server, not only
     // the one literally named "ollama".
@@ -202,10 +247,34 @@ export class LocalTransport implements ProviderTransport {
    * Throws on failure so ComposedHandler can return an error response.
    */
   async refreshAuth(): Promise<void> {
-    if (this.healthChecked) return;
+    // The probes sign with the key, and what they log is written before the
+    // request's own lease registers it. Each probe adds the key it signs with to
+    // this lease (see `probeHeaders`), so every line it logs is masked.
+    const lease = acquireSigningLease();
+    this.probeLeases.add(lease);
+    try {
+      await this.refreshAuthUnderLease();
+    } finally {
+      this.probeLeases.delete(lease);
+      lease.release();
+    }
+  }
+
+  private async refreshAuthUnderLease(): Promise<void> {
+    if (this.healthChecked) {
+      await this.confirmPlacement();
+      return;
+    }
 
     const healthy = await this.checkHealth();
     if (!healthy) {
+      if (this.lmStudioPlacementError !== undefined) {
+        // The connection recovery signs again without building the payload again, and
+        // this payload still names `model~machine`. It cannot be sent; say why.
+        this.lmStudioPlacementError = new Error(
+          `LM Studio was not reachable when this request was built, so ${this.modelName} was not placed on ${this.lmStudioDevice}. Send the message again.`
+        );
+      }
       // `{ cause }` is the whole point. `classifyConnectionError` walks `.code`
       // and then the `.cause` chain to depth 8; the sentence below carries
       // neither a code nor any phrase the message fallback matches, so a bare
@@ -223,6 +292,106 @@ export class LocalTransport implements ProviderTransport {
     }
 
     await this.fetchContextWindow();
+    await this.confirmPlacement();
+  }
+
+  /**
+   * The instance on the machine the model id names. The answer is checked again
+   * once it is `PLACEMENT_RECHECK_MS` old, because LM Studio may unload it and
+   * serve the same name from another machine.
+   */
+  private placeOnDevice(): Promise<LMStudioInstance> {
+    // The age counts from the answer, never from the start: a cold load can take minutes,
+    // and a placement still loading is never dropped.
+    const placedAt = this.lmStudioPlacedAt;
+    if (
+      this.lmStudioInstance &&
+      placedAt !== undefined &&
+      Date.now() - placedAt > PLACEMENT_RECHECK_MS
+    ) {
+      this.lmStudioInstance = undefined;
+    }
+    if (this.lmStudioInstance) return this.lmStudioInstance;
+    this.lmStudioPlacedAt = undefined;
+    // The load signs like a chat request: the key may live in the config or 1Password.
+    const pending: Promise<LMStudioInstance> = this.getHeaders()
+      .then((headers) =>
+        ensureLMStudioInstance({
+          baseUrl: this.config.baseUrl,
+          model: this.modelName,
+          device: this.lmStudioDevice as string,
+          contextLength:
+            contextWindowLimit() ?? getProviderByName(this.config.name)?.unknownContextWindow,
+          headers: Object.keys(headers).length > 0 ? headers : undefined,
+          log,
+        })
+      )
+      .then((instance) => {
+        if (this.lmStudioInstance === pending) this.lmStudioPlacedAt = Date.now();
+        return instance;
+      });
+    this.lmStudioInstance = pending;
+    return pending;
+  }
+
+  /** Fails the request when the model could not be placed; the next request tries again. */
+  private async confirmPlacement(): Promise<void> {
+    if (!this.lmStudioDevice) return;
+    if (this.lmStudioPlacementError !== undefined) {
+      // Kept until the next payload is built: this one still names `model~machine`,
+      // and no retry of the signing step can send it. A connection failure is
+      // reported without its cause, so the connection hold does not wait to retry it.
+      const error = this.lmStudioPlacementError;
+      if (classifyConnectionError(error) === null) throw error;
+      throw new Error(
+        `LM Studio could not be reached while ${this.modelName} was placed on ${this.lmStudioDevice}. Send the message again.`
+      );
+    }
+    let instance: LMStudioInstance;
+    try {
+      instance = await this.placeOnDevice();
+    } catch (error) {
+      this.lmStudioInstance = undefined;
+      throw error;
+    }
+    if (instance.contextLength) {
+      this._contextWindow = Math.min(
+        instance.contextLength,
+        contextWindowLimit() ?? instance.contextLength
+      );
+    }
+  }
+
+  /**
+   * The model a payload names when its placement failed: a value no LM Studio
+   * identifier takes (it holds a space), under which this request's own error is
+   * kept. The payload is the one record that belongs to its own request; one
+   * transport serves concurrent requests, so a transport field cannot say which
+   * request's placement failed.
+   */
+  private markUnplaced(error: unknown): string {
+    const marker = `${this.modelName}~${this.lmStudioDevice} (not placed #${++this.unplacedCount})`;
+    this.unplacedErrors.set(marker, error);
+    while (this.unplacedErrors.size > MAX_UNPLACED_ERRORS) {
+      const oldest = this.unplacedErrors.keys().next().value;
+      if (oldest === undefined) break;
+      this.unplacedErrors.delete(oldest);
+    }
+    return marker;
+  }
+
+  /** Refuses a payload whose placement failed, with that request's own error. */
+  transformPayload(payload: any): any {
+    const model = payload?.model;
+    if (typeof model !== "string" || !model.endsWith(")") || !model.includes(" (not placed #")) {
+      return payload;
+    }
+    const error = this.unplacedErrors.get(model);
+    this.unplacedErrors.delete(model);
+    if (error !== undefined && classifyConnectionError(error) === null) throw error;
+    throw new Error(
+      `LM Studio could not be reached while ${this.modelName} was placed on ${this.lmStudioDevice}. Send the message again.`
+    );
   }
 
   getContextWindow(): number {
@@ -260,6 +429,7 @@ export class LocalTransport implements ProviderTransport {
     try {
       const response = await fetch(`${this.config.baseUrl}/api/tags`, {
         method: "GET",
+        headers: await this.probeHeaders(),
         signal: AbortSignal.timeout(5000),
       });
       this._isOllamaBackend = await hasOllamaTagsShape(response);
@@ -270,6 +440,20 @@ export class LocalTransport implements ProviderTransport {
       `[${this.displayName}] Ollama backend probe (${this.config.baseUrl}): ${this._isOllamaBackend}`
     );
     return this._isOllamaBackend;
+  }
+
+  /**
+   * The key for the server's own probes. A server that requires it answers an
+   * unsigned probe 401, which reads as "not running". A key that cannot be read
+   * leaves the probe unsigned, so the health check still reports the outage.
+   */
+  private async probeHeaders(): Promise<Record<string, string>> {
+    const headers = await this.getHeaders().catch(() => ({}));
+    // Registered before the probe sends them: a lookup can fail once and succeed
+    // later, so each probe's own key is what must be masked.
+    const values = credentialValuesFromRequest(headers);
+    for (const lease of this.probeLeases) lease.add(values);
+    return headers;
   }
 
   private async checkHealth(): Promise<boolean> {
@@ -286,6 +470,7 @@ export class LocalTransport implements ProviderTransport {
       log(`[${this.displayName}] Trying health check: ${healthUrl}`);
       const response = await fetch(healthUrl, {
         method: "GET",
+        headers: await this.probeHeaders(),
         signal: AbortSignal.timeout(5000),
       });
 
@@ -319,6 +504,7 @@ export class LocalTransport implements ProviderTransport {
       log(`[${this.displayName}] Trying health check: ${modelsUrl}`);
       const response = await fetch(modelsUrl, {
         method: "GET",
+        headers: await this.probeHeaders(),
         signal: AbortSignal.timeout(5000),
       });
       if (response.ok) {
@@ -361,12 +547,13 @@ export class LocalTransport implements ProviderTransport {
   // ─── Context window auto-detection ──────────────────────────────────
 
   private async fetchContextWindow(): Promise<void> {
-    // Skip if env var already set
-    if (process.env.CLAUDISH_CONTEXT_WINDOW) return;
+    if (contextWindowLimit() !== undefined) return;
 
     log(`[${this.displayName}] Fetching context window...`);
     if (await this.isOllamaBackend()) {
       await this.fetchOllamaContextWindow();
+    } else if (this.lmStudioDevice) {
+      log(`[${this.displayName}] Context window comes from the instance on ${this.lmStudioDevice}`);
     } else if (this.config.name === "lmstudio") {
       await this.fetchLMStudioContextWindow();
     } else {
@@ -380,7 +567,7 @@ export class LocalTransport implements ProviderTransport {
     try {
       const response = await fetch(`${this.config.baseUrl}/api/show`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await this.probeHeaders()) },
         body: JSON.stringify({ name: this.modelName }),
         signal: AbortSignal.timeout(3000),
       });
@@ -418,8 +605,9 @@ export class LocalTransport implements ProviderTransport {
 
   private async fetchLMStudioContextWindow(): Promise<void> {
     try {
-      const response = await fetch(`${this.config.baseUrl}/v1/models`, {
+      const response = await fetch(`${this.config.baseUrl}/api/v0/models`, {
         method: "GET",
+        headers: await this.probeHeaders(),
         signal: AbortSignal.timeout(3000),
       });
 
@@ -433,24 +621,22 @@ export class LocalTransport implements ProviderTransport {
           models.find((m: any) => m.id?.endsWith(`/${this.modelName}`)) ||
           models.find((m: any) => this.modelName.includes(m.id));
 
-        if (targetModel) {
-          const ctxLength =
-            targetModel.context_length ||
-            targetModel.max_context_length ||
-            targetModel.context_window ||
-            targetModel.max_tokens;
-          if (ctxLength && typeof ctxLength === "number") {
-            this._contextWindow = ctxLength;
-            log(`[${this.displayName}] Context window from model: ${this._contextWindow}`);
-            return;
-          }
+        const ctxLength = targetModel?.loaded_context_length;
+        if (typeof ctxLength === "number" && ctxLength > 0) {
+          this._contextWindow = ctxLength;
+          log(`[${this.displayName}] Context window from model: ${this._contextWindow}`);
+          return;
+        }
+        const maxLength = targetModel?.max_context_length;
+        if (typeof maxLength === "number" && maxLength > 0 && maxLength < this._contextWindow) {
+          this._contextWindow = maxLength;
+          log(`[${this.displayName}] Context window from model maximum: ${maxLength}`);
+          return;
         }
 
-        this._contextWindow = 32768;
         log(`[${this.displayName}] Using default context window: ${this._contextWindow}`);
       }
     } catch (e: any) {
-      this._contextWindow = 32768;
       log(
         `[${this.displayName}] Failed to fetch model info: ${e?.message || e}. Using default: ${this._contextWindow}`
       );

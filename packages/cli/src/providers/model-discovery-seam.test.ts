@@ -42,4 +42,45 @@ describe("model discovery fetcher registration", () => {
       expect(typeof getModelDiscoveryFetcher(format)).toBe("function");
     }
   });
+
+  // REGRESSION: LM Studio picker hides models the cloud models catalog does not list
+  test("every declared format is a GET-half format or has a registered fetcher, never both", async () => {
+    await import("./model-discovery-builtins.js");
+    const { BUILTIN_PROVIDERS } = await import("./provider-definitions.js");
+
+    // The formats the GET half in model-discovery.ts speaks itself. Neither has
+    // a fetcher: a registered fetcher would bypass the GET half's base URL,
+    // local-key and failure-kind handling.
+    const getHalfFormats = ["openai-models-list", "lmstudio-models"];
+    const declared = [
+      ...new Set(
+        BUILTIN_PROVIDERS.flatMap((def) =>
+          def.modelDiscovery ? [def.modelDiscovery.format as string] : []
+        )
+      ),
+    ].sort();
+
+    expect(declared).toEqual([
+      "antigravity",
+      "devin-connect",
+      "lmstudio-models",
+      "muse-code-models",
+      "ollama-tags",
+      "openai-models-list",
+    ]);
+    for (const format of declared) {
+      const fetcher = getModelDiscoveryFetcher(format);
+      if (getHalfFormats.includes(format)) expect(fetcher).toBeUndefined();
+      else expect(typeof fetcher).toBe("function");
+    }
+  });
+
+  // REGRESSION: LM Studio picker hides models the cloud models catalog does not list
+  test("the claudish provider lmstudio declares the native /api/v0/models list", async () => {
+    const { getProviderByName } = await import("./provider-definitions.js");
+
+    const descriptor = getProviderByName("lmstudio")?.modelDiscovery;
+    expect(descriptor?.path).toBe("/api/v0/models");
+    expect(descriptor?.format as string | undefined).toBe("lmstudio-models");
+  });
 });

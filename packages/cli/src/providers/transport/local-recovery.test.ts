@@ -46,7 +46,7 @@ import { LocalTransport } from "./local.js";
 
 /** A port nothing is listening on, taken and released so it is VERIFIED free. */
 function freePort(): number {
-  const s = Bun.serve({ port: 0, fetch: () => new Response("x") });
+  const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("x") });
   const port = s.port as number;
   s.stop(true);
   return port;
@@ -236,6 +236,7 @@ describe("C-17 — a stopped local provider enters the ladder through refreshAut
       // The user starts Ollama between the second and third attempt.
       if (attempt === 3 && !server) {
         server = Bun.serve({
+          hostname: "127.0.0.1",
           port: deadPort,
           fetch(req) {
             const url = new URL(req.url);

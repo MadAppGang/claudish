@@ -75,6 +75,8 @@ const CASES: Array<{ name: string; argv: string[] }> = [
       "minimal",
       "--effort-override",
       "high",
+      "--context-window",
+      "128k",
     ],
   },
   {

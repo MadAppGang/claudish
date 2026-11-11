@@ -499,30 +499,34 @@ describe("capability and MCP tool surface (REQ-1)", () => {
     ]);
   });
 
-  test("TEST-1 REQ-1: session group exposes 12 tools and nested mode excludes replay_session and close_replay", async () => {
-    await restart({ CLAUDISH_MCP_TOOLS: "session" });
-    expect((await currentServer().listTools()).map((t) => t.name).sort()).toEqual([
-      "cancel_session",
-      "capture_session",
-      "close_replay",
-      "create_session",
-      "get_diagnostics",
-      "get_output",
-      "list_sessions",
-      "replay_session",
-      "resize_session",
-      "scroll_session",
-      "send_input",
-      "transcript_session",
-    ]);
+  test(
+    "TEST-1 REQ-1: session group exposes 12 tools and nested mode excludes replay_session and close_replay",
+    async () => {
+      await restart({ CLAUDISH_MCP_TOOLS: "session" });
+      expect((await currentServer().listTools()).map((t) => t.name).sort()).toEqual([
+        "cancel_session",
+        "capture_session",
+        "close_replay",
+        "create_session",
+        "get_diagnostics",
+        "get_output",
+        "list_sessions",
+        "replay_session",
+        "resize_session",
+        "scroll_session",
+        "send_input",
+        "transcript_session",
+      ]);
 
-    for (const group of [undefined, "all", "session", "agentic", "low-level", "debug"]) {
-      await restart({ CLAUDISH_PANE_CHILD: "1", CLAUDISH_MCP_TOOLS: group });
-      const names = (await currentServer().listTools()).map((t) => t.name);
-      expect(names).not.toContain("replay_session");
-      expect(names).not.toContain("close_replay");
-    }
-  });
+      for (const group of [undefined, "all", "session", "agentic", "low-level", "debug"]) {
+        await restart({ CLAUDISH_PANE_CHILD: "1", CLAUDISH_MCP_TOOLS: group });
+        const names = (await currentServer().listTools()).map((t) => t.name);
+        expect(names).not.toContain("replay_session");
+        expect(names).not.toContain("close_replay");
+      }
+    },
+    T_TEST
+  );
 });
 
 // ============================================================================

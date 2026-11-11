@@ -166,7 +166,7 @@ export interface PsSpawn {
   execFile(
     file: string,
     args: string[],
-    opts: PsOptions,
+    opts: PsOptions & { timeout?: number; killSignal?: NodeJS.Signals },
     cb: (err: Error | null, stdout: string) => void
   ): unknown;
 }
@@ -221,12 +221,17 @@ export function readProcessTable(): ProcessTable {
  * The whole process table without blocking the event loop (the registry tick); null when
  * unavailable. Never rejects: Bun throws a spawn failure (EPERM in a sandbox) from
  * `execFile` itself rather than passing it to the callback, so the call is guarded too.
+ * With `cancelAfterMs`, a `ps` still running then is SIGKILLed and the read is unavailable.
  */
-export function readProcessTableAsync(): Promise<ProcessTable> {
+export function readProcessTableAsync(cancelAfterMs?: number): Promise<ProcessTable> {
+  const options =
+    cancelAfterMs === undefined
+      ? PS_OPTIONS
+      : { ...PS_OPTIONS, timeout: cancelAfterMs, killSignal: "SIGKILL" as const };
   return new Promise((resolve) => {
     const spawnedAt = Date.now();
     try {
-      psSpawn.execFile("ps", PS_ARGS, PS_OPTIONS, (err, stdout) =>
+      psSpawn.execFile("ps", PS_ARGS, options, (err, stdout) =>
         resolve(tableOf(err ? null : String(stdout), spawnedAt))
       );
     } catch {
@@ -322,11 +327,16 @@ function escapedDescendants(table: PsRow[], pgid: number, inGroup: Set<number>):
   return out;
 }
 
+/** The pids of `members` that are still the same process: same pid AND same start time. */
+export function liveMembers(table: PsRow[], members: readonly GroupMember[]): number[] {
+  const keys = new Set(members.map((m) => `${m.pid} ${collapse(m.lstart)}`));
+  return table.filter((r) => keys.has(`${r.pid} ${r.lstart}`)).map((r) => r.pid);
+}
+
 /** The recorded escaped descendants still alive: same pid AND same start time. */
 export function liveEscaped(table: PsRow[], snap: GroupSnapshot | null): number[] {
   if (!snap?.escaped?.length) return [];
-  const keys = new Set(snap.escaped.map((m) => `${m.pid} ${collapse(m.lstart)}`));
-  return table.filter((r) => keys.has(`${r.pid} ${r.lstart}`)).map((r) => r.pid);
+  return liveMembers(table, snap.escaped);
 }
 
 /**

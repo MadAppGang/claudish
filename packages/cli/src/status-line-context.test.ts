@@ -84,6 +84,16 @@ const statusCases: StatusCase[] = [
     clamped: false,
   },
   {
+    name: "known window before the first reply",
+    inputTokens: 0,
+    contextWindow: 128_000,
+    contextLeftPercent: 100,
+    env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "128000" },
+    bashExpected: "100% (0/128k)",
+    nodeExpected: "[░░░░░░░░░░░░░░░] 0/128k",
+    clamped: false,
+  },
+  {
     name: "input beyond effective window",
     inputTokens: 250_000,
     contextWindow: 372_000,

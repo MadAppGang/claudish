@@ -30,6 +30,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -181,6 +182,7 @@ function invalidateReadStoreMemo(): void {
 
 /** Read the shared token via macOS `security`. Non-darwin → null (with a warning). */
 function defaultReadStore(): string | null {
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return null;
   if (process.platform !== "darwin") {
     logStderr(
       "[Antigravity] Shared token store is macOS-only for now (other keyring backends are a follow-up)."
@@ -209,6 +211,10 @@ function defaultReadStore(): string | null {
     // stdout stays PIPED because it carries the token; ignoring it the way the
     // write/delete siblings do would make every read return null. stdin is
     // ignored so this can never interact with a parent terminal in raw mode.
+    //
+    // No `timeout`: it would kill `security`, and a `security` killed
+    // mid-transaction can make macOS restart `securityd`, which drops every
+    // application's keychain session (keychain.md).
     const out = execFileSync(
       "security",
       ["find-generic-password", "-s", KC_SERVICE, "-a", KC_ACCOUNT, "-w"],
@@ -468,11 +474,15 @@ function encodeRecord(rec: SharedStoreRecord): string {
 // Public: read / write
 // ---------------------------------------------------------------------------
 
-/** Read the current shared Antigravity token, or null if absent/unsupported. */
+/**
+ * Read the current shared Antigravity token, or null if absent/unsupported.
+ * The read also moves the token lineage, so a sign-in or logout made by another
+ * process is seen by the per-account caches as soon as anything reads the store.
+ */
 export function readSharedAntigravityToken(
   deps: AntigravityTokenDeps = defaultDeps
 ): AntigravityToken | null {
-  const rec = parseRecord(deps.readStore());
+  const rec = readObservedRecord(deps);
   return rec ? rec.token : null;
 }
 
@@ -574,6 +584,64 @@ function captureAgyClientVersion(accessToken: string, deps: AntigravityTokenDeps
 /** In-flight resolve promise — collapses concurrent callers onto one refresh. */
 let inFlight: Promise<string> | null = null;
 
+/**
+ * The login a token belongs to: `refresh:<refresh token>`, or
+ * `access:<access token>` for a record that holds no refresh token; undefined
+ * when it holds neither. The refresh token stays the same across access-token
+ * re-mints of one account and changes when another account signs in.
+ */
+export function antigravityTokenLineageMaterial(token: AntigravityToken): string | undefined {
+  if (token.refresh_token) return `refresh:${token.refresh_token}`;
+  if (token.access_token) return `access:${token.access_token}`;
+  return undefined;
+}
+
+/**
+ * SHA-256 of the lineage material of the token this module last read from the
+ * shared store or returned; null before the first, after a reset, and when the
+ * store held no token. Caches of per-account answers (project, tier, dynamic
+ * models catalog) compare against it. The token itself is not kept.
+ */
+let observedLineage: string | null = null;
+
+/** How many recent access tokens keep their lineage; older ones read as unknown. */
+const MAX_TRACKED_ACCESS_TOKENS = 8;
+/** Lineage by SHA-256 of the access token, oldest entry first. */
+const lineageByAccessToken = new Map<string, string>();
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function observeLineage(token: AntigravityToken | null): void {
+  const material = token ? antigravityTokenLineageMaterial(token) : undefined;
+  observedLineage = material ? sha256(material) : null;
+  if (!observedLineage || !token?.access_token) return;
+  const key = sha256(token.access_token);
+  lineageByAccessToken.delete(key);
+  lineageByAccessToken.set(key, observedLineage);
+  if (lineageByAccessToken.size > MAX_TRACKED_ACCESS_TOKENS) {
+    lineageByAccessToken.delete(lineageByAccessToken.keys().next().value as string);
+  }
+}
+
+/** Decode one read of the shared store and observe what it held, an empty store included. */
+function readObservedRecord(deps: AntigravityTokenDeps): SharedStoreRecord | null {
+  const rec = parseRecord(deps.readStore());
+  observeLineage(rec ? rec.token : null);
+  return rec;
+}
+
+/** The lineage of the token most recently read or returned; null when none is known. */
+export function currentAntigravityTokenLineage(): string | null {
+  return observedLineage;
+}
+
+/** The lineage `accessToken` was read or returned under; null for a token not seen recently. */
+export function lineageForAntigravityAccessToken(accessToken: string): string | null {
+  return lineageByAccessToken.get(sha256(accessToken)) ?? null;
+}
+
 async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   if (process.platform !== "darwin") {
     throw terminalCredentialError(
@@ -582,7 +650,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
     );
   }
 
-  const rec = parseRecord(deps.readStore());
+  const rec = readObservedRecord(deps);
   if (!rec) {
     throw terminalCredentialError(
       "[Antigravity] No Antigravity session found. Sign in with `claudish login antigravity`, " +
@@ -601,7 +669,7 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   log("[Antigravity] Access token expired/near-expiry — asking the Antigravity CLI to refresh.");
   const outcome = deps.runAgyRefresh();
 
-  const refreshedRec = parseRecord(deps.readStore());
+  const refreshedRec = readObservedRecord(deps);
   if (refreshedRec && !needsRefresh(refreshedRec.token, deps.now())) {
     log("[Antigravity] Shared token refreshed by the Antigravity CLI.");
     captureAgyClientVersion(refreshedRec.token.access_token, deps);
@@ -709,9 +777,9 @@ export async function forceRefreshAntigravityToken(
 
   // Drop the single-flight promise AND the read memo first, so nothing below can
   // be handed back the very token the backend just rejected.
-  _resetAntigravityTokenState();
+  resetObservedTokenState();
 
-  const rec = parseRecord(deps.readStore());
+  const rec = readObservedRecord(deps);
   if (!rec) {
     throw terminalCredentialError(
       "[Antigravity] No Antigravity session found. Sign in with `claudish login antigravity`, " +
@@ -728,7 +796,7 @@ export async function forceRefreshAntigravityToken(
   );
   const outcome = deps.runAgyRefresh();
 
-  const refreshed = parseRecord(deps.readStore());
+  const refreshed = readObservedRecord(deps);
   const token = refreshed?.token;
   if (token && token.access_token !== original.access_token && !needsRefresh(token, deps.now())) {
     log("[Antigravity] Shared token re-minted by the Antigravity CLI.");
@@ -744,7 +812,7 @@ export async function forceRefreshAntigravityToken(
   if (!refreshed || refreshed.token.access_token === original.access_token) {
     writeSharedAntigravityToken(original, deps);
   }
-  _resetAntigravityTokenState();
+  resetObservedTokenState();
   // The same distinctions as the expiry path: a slow or failing `agy` (mid
   // self-update, most often) says nothing about the session, so it is
   // retryable; only a CLI that ran and still produced nothing, or is missing,
@@ -770,15 +838,28 @@ export async function forceRefreshAntigravityToken(
 // ---------------------------------------------------------------------------
 
 /**
- * Clear the in-flight promise, the memoized presence flag, and the raw read memo
- * (between tests, and after any out-of-band change to the shared store).
+ * Clear the in-flight promise, the memoized presence flag, the token lineage and
+ * the raw read memo (between tests, and after any out-of-band change to the
+ * shared store). With no lineage, no per-account cache answers until a token is
+ * read again.
  *
  * The read memo is included so callers that already documented themselves as
  * "reset, then read FRESH" — antigravity-oauth's `readToken` — keep that
  * guarantee now that the default read is memoized at all.
  */
 export function _resetAntigravityTokenState(): void {
+  resetObservedTokenState();
+  lineageByAccessToken.clear();
+}
+
+/**
+ * Everything `_resetAntigravityTokenState` clears except the lineage of tokens
+ * already issued: a request still in flight with one of them goes on proving
+ * which account it belongs to across a forced refresh.
+ */
+function resetObservedTokenState(): void {
   inFlight = null;
   cachedHasToken = null;
+  observedLineage = null;
   invalidateReadStoreMemo();
 }

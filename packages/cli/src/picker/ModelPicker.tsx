@@ -74,6 +74,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
 import { readDiskCatalog } from "../providers/all-models-cache.js";
 import { bundledListEnabled, catalogReachability } from "../providers/catalog-reachability.js";
+import { DEFAULT_LOCAL_CONTEXT_WINDOW } from "../providers/context-window-limit.js";
 import { LIVE_MS } from "../providers/dynamic-models-catalog-store.js";
 import { sweepAccountModelsLists } from "../providers/dynamic-models-catalog.js";
 import { EmptyState } from "../tui/components/EmptyState.js";
@@ -88,6 +89,7 @@ import {
   type PickerProviderChoice,
 } from "./PickerDataSource.js";
 import { Dialog, FilterRow, Hints, type LoadTask, LoadTasks, Rule } from "./chrome.js";
+import { type ContextWindowChoice, contextWindowChoices } from "./context-window-choices.js";
 import { DescriptionBlock, type ProviderFacts, ProviderLine, SelectionLine } from "./detail.js";
 import { useModelDescriptions } from "./hooks/useModelDescriptions.js";
 import {
@@ -105,7 +107,14 @@ import {
   providerColumn,
   scrollWindow,
 } from "./layout.js";
-import { ColumnHeader, HintRow, ModelRow, ProviderRow, priceVaries } from "./rows.js";
+import {
+  ColumnHeader,
+  HintRow,
+  ModelRow,
+  ProviderRow,
+  lastColumnLabel,
+  priceVaries,
+} from "./rows.js";
 
 /**
  * WHICH AFFORDANCE EACH IN-FLIGHT TASK EARNS — the honesty contract, as one pure
@@ -162,8 +171,10 @@ export function buildLoadTasks(input: {
 
 export interface ModelPickerProps {
   source: PickerDataSource;
-  /** A model spec, or `null` for cancelled. Called exactly once. */
-  onDone: (spec: string | null) => void;
+  /** A model spec, or `null` for cancelled, with the chosen size. Called exactly once. */
+  onDone: (spec: string | null, contextWindow?: number) => void;
+  /** Ask for a context window after a model that reports its maximum. */
+  askContextWindow?: boolean;
   /** Buffers a failed provider's diagnostic for the ONE write after teardown. */
   onDiscoveryFailure?: (provider: string, notice: readonly string[]) => void;
 }
@@ -176,16 +187,35 @@ export interface ModelPickerProps {
  * (`scope` set) or by asking for the cross-provider list (`scope` null); `esc`
  * from either comes back here, and `esc` HERE is what cancels the picker.
  */
-type View = "models" | "providers" | "custom";
+type View = "models" | "providers" | "custom" | "context";
 
-export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerProps): ReactNode {
+export function ModelPicker({
+  source,
+  onDone,
+  askContextWindow = false,
+  onDiscoveryFailure,
+}: ModelPickerProps): ReactNode {
   const { width, height } = useTerminalDimensions();
   // THE ONLY WORK STARTUP DOES. Every other loader below is gated on a view the
   // user has actually opened.
   const providers = usePickerProviders(source);
 
   const [view, setView] = useState<View>("providers");
-  const [filter, setFilter] = useState("");
+  const [filter, setFilterState] = useState("");
+  /**
+   * `filter` and `typing` as the NEXT keystroke must see them. Keys that arrive
+   * together (a paste, or fast typing on a loaded machine) run the handler several
+   * times before React renders again, so the state values in its closure are one
+   * key behind: `/c` would open the custom-spec dialog on the `c`. Every write
+   * goes through the setters below, which update the ref at once; every render
+   * copies the committed state back in.
+   */
+  const filterNow = useRef(filter);
+  filterNow.current = filter;
+  const setFilter = (next: string | ((v: string) => string)): void => {
+    filterNow.current = typeof next === "function" ? next(filterNow.current) : next;
+    setFilterState(filterNow.current);
+  };
   /**
    * `/` was pressed: every printable key types, INCLUDING `c` and `r`.
    *
@@ -195,8 +225,18 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
    * names, and it costs nothing when it is not needed: a filter with anything in
    * it already types every key.
    */
-  const [typing, setTyping] = useState(false);
+  const [typing, setTypingState] = useState(false);
+  const typingNow = useRef(typing);
+  typingNow.current = typing;
+  const setTyping = (next: boolean): void => {
+    typingNow.current = next;
+    setTypingState(next);
+  };
   const [custom, setCustom] = useState("");
+  const [sizing, setSizing] = useState<{ spec: string; choices: ContextWindowChoice[] } | null>(
+    null
+  );
+  const [sizeCursor, setSizeCursor] = useState(0);
   const [cursor, setCursor] = useState(0);
   const [providerCursor, setProviderCursor] = useState(0);
   /**
@@ -420,16 +460,18 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   const shown = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     if (!needle) return list.rows;
-    // THREE THINGS MATCH, and the readable NAME is one of them — the column now
+    // FOUR THINGS MATCH, and the readable NAME is one of them — the column now
     // prints `OpenRouter`, so typing `openr` must narrow to it or the filter
     // contradicts the screen. The shortcut still matches (`kc` reaches Kimi
     // Coding in three keystrokes, which is how provider scoping survived the
-    // rail's deletion) and so does the model id.
+    // rail's deletion), and so do the model id and the LM Link machine the row
+    // prints (`this Mac`, whose id ends in `~local`).
     return list.rows.filter(
       (r) =>
         r.model.id.toLowerCase().includes(needle) ||
         r.shortcut.toLowerCase().startsWith(needle) ||
-        (labels.get(r.provider) ?? "").toLowerCase().includes(needle)
+        (labels.get(r.provider) ?? "").toLowerCase().includes(needle) ||
+        (r.model.machine?.name ?? "").toLowerCase().includes(needle)
     );
   }, [list.rows, filter, labels]);
 
@@ -541,6 +583,22 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       return;
     }
 
+    if (view === "context") {
+      if (name === "escape") {
+        setView("models");
+        return;
+      }
+      if (name === "up" || name === "down") {
+        const last = (sizing?.choices.length ?? 1) - 1;
+        setSizeCursor((c) => Math.max(0, Math.min(last, c + (name === "up" ? -1 : 1))));
+        return;
+      }
+      if ((name === "return" || name === "enter") && sizing) {
+        onDone(sizing.spec, sizing.choices[sizeCursor]?.size);
+      }
+      return;
+    }
+
     if (view === "custom") {
       if (name === "escape") {
         setView("models");
@@ -565,7 +623,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       // this picker; here the step back is the filter while there is one, and only
       // then does `esc` return `null`. Two screens, one meaning for the key.
       if (name === "escape") {
-        if (filter !== "" || typing) {
+        if (filterNow.current !== "" || typingNow.current) {
           setFilter("");
           setTyping(false);
           setProviderCursor(0);
@@ -614,7 +672,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       // the model list's rule and it is load-bearing here for the same reason: a user
       // narrowing to `claude` must get `claude` and not the custom-spec dialog on the
       // `c`. `/` is the escape hatch for a search that STARTS with one of them.
-      const providerCommands = filter === "" && !typing;
+      const providerCommands = filterNow.current === "" && !typingNow.current;
       if (providerCommands && key.raw === "a") {
         setScope(null);
         setFilter("");
@@ -645,7 +703,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     }
 
     if (name === "escape") {
-      if (filter !== "" || typing) {
+      if (filterNow.current !== "" || typingNow.current) {
         setFilter("");
         setTyping(false);
         setCursor(0);
@@ -677,7 +735,16 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       return;
     }
     if (name === "return" || name === "enter") {
-      if (selected) onDone(selected.spec);
+      if (!selected) return;
+      const max = askContextWindow ? selected.model.maxContextLength : undefined;
+      if (max === undefined) {
+        onDone(selected.spec);
+        return;
+      }
+      const { choices, defaultIndex } = contextWindowChoices(max, DEFAULT_LOCAL_CONTEXT_WINDOW);
+      setSizing({ spec: selected.spec, choices });
+      setSizeCursor(defaultIndex);
+      setView("context");
       return;
     }
     if (name === "backspace") {
@@ -685,7 +752,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       setCursor(0);
       return;
     }
-    const commandsLive = filter === "" && !typing;
+    const commandsLive = filterNow.current === "" && !typingNow.current;
     if (commandsLive && key.raw === "c") {
       setView("custom");
       return;
@@ -720,6 +787,37 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   // reconciliation tore the panel when the chrome below a banner changed shape
   // (`probe-tui-app.tsx:1455-1462` records the same failure and the same cure). A
   // loading dialog flipping to a list dialog is exactly that transition.
+
+  if (view === "context" && sizing) {
+    return (
+      <Centred width={width} height={height}>
+        <Dialog
+          key="context"
+          title="context window"
+          status={sizing.spec}
+          width={layout.width}
+          marginLeft={0}
+        >
+          {sizing.choices.map((choice, index) => (
+            <box key={choice.size} height={1} flexShrink={0}>
+              <text>
+                <span fg={tokens.accent}>{index === sizeCursor ? "▶ " : "  "}</span>
+                <span fg={tokens.text}>{choice.label}</span>
+              </text>
+            </box>
+          ))}
+          <Rule />
+          <Hints
+            hints={[
+              { key: "↑↓", label: "move" },
+              { key: "⏎", label: "launch it" },
+              { key: "esc", label: "back" },
+            ]}
+          />
+        </Dialog>
+      </Centred>
+    );
+  }
 
   if (view === "custom") {
     return (
@@ -1010,7 +1108,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
           width={layout.inner}
           idle={orderedByProvider(storedShown ?? discovery.outcome) ? "" : undefined}
         />
-        <ColumnHeader layout={rowLayout} />
+        <ColumnHeader layout={rowLayout} last={lastColumnLabel(list.rows.map((r) => r.model))} />
 
         {/* CONTENT-SIZED, CAPPED — never `flexGrow`. A four-row Kimi fallback makes a
             short dialog; it does not make a tall dialog with fifteen rows of unpainted

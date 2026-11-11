@@ -90,6 +90,8 @@ export interface ClaudishConfig {
   // Request-shaping overrides
   /** --effort <level>: pin the reasoning effort verbatim, SKIPPING the per-model catalog clamp */
   effortOverride?: string;
+  /** --context-window <size>: the largest context window, for providers whose size claudish sets */
+  contextWindow?: number;
   /** --model-params k=v[,k=v...]: extra request params deep-merged into the outbound payload */
   modelParams?: Record<string, unknown>;
   /** --pro-on-ultracode: apply the model's catalog provider-preset while in ultracode (opt-in) */

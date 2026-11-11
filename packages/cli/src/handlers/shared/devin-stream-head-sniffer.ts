@@ -16,9 +16,15 @@
  * choose (once Hono flushes the 200, a 503 is no longer expressible), and stops
  * at the first DECISIVE frame:
  *
- * - a message frame (`flags = 0`)  → `clean`; real output has begun
- * - `flags = 2` with body `{}`     → `clean`; an empty but successful stream
- * - `flags = 2` with an error body → classified `retryable` or `terminal`
+ * - a message frame (`flags = 0`) with content → `clean`; real output has begun
+ * - `flags = 2` with body `{}`                 → `clean`; an empty but successful stream
+ * - `flags = 2` with an error body             → classified `retryable` or `terminal`
+ *
+ * Content means a non-empty top-level field 3 (text), 6 (tool call) or 9
+ * (reasoning). Devin opens every stream, failing ones included, with
+ * content-free header frames (meta, usage, and similar fields only), so a
+ * message frame without content is buffered and the read continues: deciding on
+ * a header frame would let an error frame that follows it slip past the head.
  *
  * The consumed bytes are replayed BYTE-IDENTICALLY on `clean`, so the real
  * parser sees an unchanged stream. Past the budget we flush and degrade to the
@@ -43,7 +49,21 @@
  * verbatim.
  */
 
-import { FRAME_FLAG_END_OF_STREAM, createFrameReader } from "../../providers/devin/proto-codec.js";
+import {
+  FRAME_FLAG_END_OF_STREAM,
+  createFrameReader,
+  parseTLV,
+} from "../../providers/devin/proto-codec.js";
+
+/** Top-level response fields that carry output: text, tool call, reasoning. */
+const CONTENT_FIELDS = new Set([3, 6, 9]);
+
+/** Whether a message frame carries output, as opposed to header or meta fields only. */
+function carriesContent(payload: Uint8Array): boolean {
+  return parseTLV(payload).some(
+    (field) => field.wire === 2 && CONTENT_FIELDS.has(field.no) && field.payload.length > 0
+  );
+}
 
 /**
  * Wall-clock ceiling on withholding response headers while sniffing.
@@ -143,15 +163,22 @@ export async function sniffDevinStreamHead(
   const decoder = new TextDecoder();
   const deadline = Date.now() + budgetMs;
 
+  // A read that loses the race against the budget stays pending and still takes
+  // the next chunk off the stream, so it is kept for the replay to finish;
+  // starting a fresh read instead would drop that chunk.
+  let pendingRead: ReturnType<typeof reader.read> | undefined;
+
   /** Rebuild a Response that replays `consumed`, then drains `reader`. */
   const replayResponse = (): Response => {
     const buffered = consumed.slice();
+    let inFlightRead = pendingRead;
     const body = new ReadableStream<Uint8Array>({
       start: async (controller) => {
         try {
           for (const chunk of buffered) controller.enqueue(chunk);
           while (true) {
-            const { done, value } = await reader.read();
+            const { done, value } = await (inFlightRead ?? reader.read());
+            inFlightRead = undefined;
             if (done) break;
             if (value) controller.enqueue(value);
           }
@@ -190,8 +217,9 @@ export async function sniffDevinStreamHead(
         timer = setTimeout(() => resolve("timeout"), remaining);
       });
       let result: Awaited<ReturnType<typeof reader.read>> | "timeout";
+      pendingRead = reader.read();
       try {
-        result = await Promise.race([reader.read(), timeout]);
+        result = await Promise.race([pendingRead, timeout]);
       } finally {
         if (timer) clearTimeout(timer);
       }
@@ -200,6 +228,7 @@ export async function sniffDevinStreamHead(
         logMsg(`[DevinSniff] budget ${budgetMs}ms elapsed mid-read — streaming through`);
         return { kind: "clean", response: replayResponse() };
       }
+      pendingRead = undefined;
       if (result.done) return { kind: "clean", response: replayResponse() };
       if (!result.value) continue;
 
@@ -207,8 +236,11 @@ export async function sniffDevinStreamHead(
 
       for (const frame of nextFrames(result.value)) {
         if (frame.flags !== FRAME_FLAG_END_OF_STREAM) {
-          // A message frame: real output has begun, retrying is neither safe
-          // nor useful.
+          // A header frame decides nothing: an error frame can still follow
+          // it. Its bytes are already in `consumed`, so keep reading.
+          if (!carriesContent(frame.payload)) continue;
+          // A message frame with content: real output has begun, retrying is
+          // neither safe nor useful.
           return { kind: "clean", response: replayResponse() };
         }
 

@@ -63,6 +63,7 @@ import { type PickerDataSource, createPickerDataSource } from "./PickerDataSourc
 /** What the picker hands back. `null` ⟺ the user declined to choose. */
 export interface ModelPickerOutcome {
   model: string | null;
+  contextWindow?: number;
 }
 
 /**
@@ -83,7 +84,7 @@ async function resolveDataSource(): Promise<PickerDataSource> {
 }
 
 export async function runModelPicker(
-  _options: ModelSelectorOptions = {}
+  options: ModelSelectorOptions = {}
 ): Promise<ModelPickerOutcome> {
   // Before the first render, exactly as `tui/index.tsx:38` does it: the rail is built
   // from `getAllProviders()`, so a custom or predefined endpoint must already be in the
@@ -121,20 +122,23 @@ export async function runModelPicker(
   const root = createRoot(renderer);
 
   let chosen: string | null = null;
+  let chosenContextWindow: number | undefined;
   try {
     await new Promise<void>((resolve) => {
       let settled = false;
-      const done = (spec: string | null): void => {
+      const done = (spec: string | null, contextWindow?: number): void => {
         // Enter and Ctrl+C can both land before the tree stops rendering, and resolving
         // twice would leave the second teardown racing the first.
         if (settled) return;
         settled = true;
         chosen = spec;
+        chosenContextWindow = contextWindow;
         resolve();
       };
       root.render(
         <ModelPicker
           source={source}
+          askContextWindow={options.onContextWindow !== undefined}
           onDone={done}
           onDiscoveryFailure={(provider, lines) => deferred.push({ provider, lines })}
         />
@@ -170,5 +174,5 @@ export async function runModelPicker(
     }
   }
 
-  return { model: chosen };
+  return { model: chosen, contextWindow: chosenContextWindow };
 }

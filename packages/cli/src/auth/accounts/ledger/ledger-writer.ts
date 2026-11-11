@@ -94,7 +94,9 @@ const DAY_FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
  * otherwise append test rows to the developer's real ledger, which no restore
  * can tell apart from real usage. Every test that writes a ledger pins the
  * directory (Bun ignores an in-process `HOME`), so this costs those tests
- * nothing. `guard-real-config.ts` is the backstop.
+ * nothing. `guard-real-config.ts` does not fail on a changed real ledger: live
+ * sessions append to it during a run, so it only reports the change. Under
+ * `test:safe` it fails instead when a ledger appears in its throwaway run home.
  */
 export function ledgerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.CLAUDISH_ALLOWANCE_LEDGER?.trim().toLowerCase() === "off") return false;

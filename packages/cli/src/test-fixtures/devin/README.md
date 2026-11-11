@@ -38,6 +38,10 @@ prompt and `output_config.effort: "low"`. Connect-enveloped protobuf, as the str
 Neither body contains a credential (checked byte for byte at capture time); the `bot-<uuid>`
 strings are Devin's per-response message id.
 
+### Parallel tool-call rejection
+
+`GetChatMessage-kimi-k3-1-pro-max-parallel-tools.res.bin`: a real, unmodified HTTP 200 response body (569 bytes), captured from `server.codeium.com` on 2026-11-09 at 13:01:50 UTC with one request through `buildDevinProbePayload`, `encodeDevinRequest` and `devinAuthHeaders`, using uid `kimi-k3-1-pro-max` on the FREE plan. The benign request had two parallel `Bash` calls (`echo step0`, `echo step1`) followed by their results. Three content-free header frames precede the `flags=2` `invalid_argument` error. Only the response body was saved; it was checked against the signing credential and for `Bearer`, `sk-`, `devin-session-token` and `auth` strings before writing. `stream-replay.test-helper.ts` retains real healthy frames through the first text delta and appends this captured error frame; its retryable case substitutes only the error code with `unavailable`.
+
 ## `GetCliTeamSettings` answer
 
 `GetCliTeamSettings.res.bin`: a **real, unmodified** answer, captured on 2026-11-07 against the
