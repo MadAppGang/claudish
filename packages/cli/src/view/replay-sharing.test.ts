@@ -3,7 +3,7 @@
  * directory, joins and redirects, and every relayed verb. Each server is in-process; each replay's
  * "magmux" is a real child process holding the real lock at fd 3 (`replay-servers.ts`).
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { ContractErrorException } from "../pane/index.js";
 import { ViewError } from "../pane/view-contract.js";
@@ -12,6 +12,10 @@ import { flockAvailable, tryAcquire } from "./kernel-lock.js";
 import { type ReplayWorld, makeReplayWorld } from "./test-helpers/replay-servers.js";
 import { ViewClient } from "./view-client.js";
 import { Viewer, type ViewerIo } from "./viewer.js";
+
+// A test that outlives its timeout has its replay processes killed by bun, and the server still
+// polling then truthfully reports them gone: the late assertion reads as a wrong answer.
+setDefaultTimeout(30_000);
 
 let world: ReplayWorld | null = null;
 afterEach(async () => {
@@ -24,11 +28,11 @@ function newWorld(): ReplayWorld {
   return world;
 }
 
-async function eventually(check: () => void, ms = 5_000): Promise<void> {
+async function eventually(check: () => void | Promise<void>, ms = 5_000): Promise<void> {
   const deadline = Date.now() + ms;
   for (;;) {
     try {
-      check();
+      await check();
       return;
     } catch (e) {
       if (Date.now() > deadline) throw e;
@@ -139,9 +143,11 @@ describe.if(flockAvailable())("replays shared across servers", () => {
     expect("lines" in live && live.lines[0]).toContain("on c");
     a.kill(); // the owner server dies; its replay process does not
     expect(w.alive()).toHaveLength(1);
-    await eventually(async () => {});
+    // the joined server learns of the owner's death from its link closing, which is asynchronous
+    await eventually(async () => {
+      expect((await b.replays.captureMcp(opened.replay_id)).final).toBe(true);
+    }, 10_000);
     const fin = await b.replays.captureMcp(opened.replay_id);
-    expect(fin.final).toBe(true);
     expect("lines" in fin && fin.lines[0]).toContain("replay ");
 
     const c = await w.server({ readyMs: 200, joinExtraMs: 800 });

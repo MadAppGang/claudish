@@ -1,10 +1,13 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { type Server, type Socket, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { endpointNameOf } from "./endpoints.js";
 import { ViewClient } from "./view-client.js";
+
+// the waits below are upper bounds; a loaded CI runner needs more than bun's 5 s per test
+setDefaultTimeout(30_000);
 
 let server: Server | null = null;
 let dir: string | null = null;
@@ -69,7 +72,8 @@ describe("ViewClient", () => {
       why = reason;
     });
     await expect(client.request("list")).rejects.toThrow();
-    const deadline = Date.now() + 2_000;
+    // a 17 MB write to a dropped socket can take seconds to fail on a loaded machine
+    const deadline = Date.now() + 10_000;
     while (s.closed() === 0 && Date.now() < deadline) await Bun.sleep(10);
     expect(s.closed()).toBe(1);
     expect(why).toBe("server_gone");
