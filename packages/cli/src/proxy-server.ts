@@ -19,10 +19,11 @@ import {
   createAdvisorPanelGateway,
 } from "./handlers/advisor-panel-gateway.js";
 import { shutdownAdvisorChains } from "./handlers/advisor-route-plan.js";
+import { bundledTaggedCache } from "./handlers/bundled-tagged-cache.js";
 import type { ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
-import { createHandlerSet } from "./handlers/handler-set.js";
+import { ROUTED_HANDLER_KEY_PREFIX, createHandlerSet } from "./handlers/handler-set.js";
 import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
@@ -42,7 +43,9 @@ import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
 import { DISPLAY_NAMES } from "./providers/auto-route.js";
+import { bundledProvenance } from "./providers/bundled-list-data.js";
 import {
+  catalogOrigin,
   ensureCatalogReady,
   logResolution,
   resolveTargetForCatalog,
@@ -55,10 +58,10 @@ import {
 } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { proxyRouteDecision } from "./providers/native-route.js";
+import { PROBE_HOP_ORIGIN_HEADER, probeHopOriginOf } from "./providers/probe-hop-origin.js";
 import { describeMissingCredential, getProviderByName } from "./providers/provider-definitions.js";
 import {
   describeRoutingRuleProblem,
-  effectiveDefaultProvider,
   loadRoutingRuleSources,
   loadRoutingRules,
   route,
@@ -146,6 +149,22 @@ export interface ProxyServerOptions {
    * matched before catalog resolution.
    */
   modelChain?: string[];
+  /**
+   * True when a PARENT claudish pinned `--model` (`--model-pinned`): the chain, or
+   * the one spec, is the parent's routing chain for a bare name, so each element
+   * is a routed hop. Absent for a model the user typed, `+` chains included: an
+   * explicit spec stays explicit, whatever its provider.
+   */
+  modelChainPinned?: boolean;
+  /**
+   * True only for a proxy claudish starts to probe hops (`--probe`, the config
+   * TUI's probe, MCP `preflight`). Such a proxy honours `PROBE_HOP_ORIGIN_HEADER`:
+   * a request marked `routed` names a hop of a bare name's routing chain and is
+   * built as step 2c builds one (`hopOrigin: "routed"`). Every other proxy ignores
+   * the header, so a client of a proxy serving Claude Code cannot turn an explicit
+   * spec into a routed hop.
+   */
+  probeProxy?: boolean;
   /**
    * Classifier passthrough (opt-in). When `enabled`, Claude Code's auto-mode
    * permission classifier request (detected by content) is rewritten onto
@@ -426,17 +445,10 @@ export async function createProxyServer(
   for (const problem of routingRuleProblems(routingRuleSources)) {
     logStderr(`Warning: ${describeRoutingRuleProblem(problem)}`);
   }
-  // The fallback hop, resolved once beside the rules and passed to route() with
-  // them. Passing rules alone makes route() read NO default provider (its guard
-  // keeps this machine's setting out of tests), so before this every bare name the
-  // proxy routed fell back to `openrouter`, whatever `defaultProvider` said —
-  // `""` included. `--default-provider` reaches this through the env variable.
-  const effectiveFallbackProvider = effectiveDefaultProvider();
-
-  // Cache fallback handlers by target model string.
-  // No TTL/invalidation: claudish is ephemeral per session, so env changes
-  // (new API keys) take effect on next session start.
-  const fallbackHandlerCache = new Map<string, ModelHandler>();
+  // Cache fallback handlers by target model string. No TTL: claudish is ephemeral
+  // per session, so env changes (new API keys) take effect on next session start.
+  // The one invalidation is a chain built from the bundled recommended list.
+  const fallbackHandlerCache = bundledTaggedCache(new Map<string, ModelHandler>());
 
   // Detect the invocation mode for a given target model string.
   // Used to populate stats: how did the user specify this model?
@@ -462,18 +474,29 @@ export async function createProxyServer(
   // They are split off the resolved target once, here: everything below sees
   // the model alone, and the markers travel with the REQUEST
   // (`wireMarkerContext`), never with a cached handler or in a body.
-  const getHandlerForRequest = async (requestedModel: string): Promise<ModelHandler> => {
+  //
+  // `probeHopOrigin` is the probe's routed-hop mark, already filtered through
+  // `probeHopOriginOf`: always absent on a proxy that is not a probe proxy.
+  const getHandlerForRequest = async (
+    requestedModel: string,
+    probeHopOrigin?: "routed"
+  ): Promise<ModelHandler> => {
     const out: { markers?: WireMarkers; refusal?: string } = {};
-    const handler = await resolveHandlerForRequest(requestedModel, out);
+    const handler = await resolveHandlerForRequest(requestedModel, out, probeHopOrigin);
     if (out.refusal) return new RefusingHandler(out.refusal);
     return out.markers && (out.markers.mode || out.markers.speed)
       ? new WireMarkerHandler(handler, out.markers)
       : handler;
   };
 
+  /** The routed-hop mark of one request: honoured on a probe proxy, absent anywhere else. */
+  const requestProbeHopOrigin = (c: Context): "routed" | undefined =>
+    probeHopOriginOf(c.req.header(PROBE_HOP_ORIGIN_HEADER), options.probeProxy);
+
   const resolveHandlerForRequest = async (
     requestedModel: string,
-    out: { markers?: WireMarkers; refusal?: string }
+    out: { markers?: WireMarkers; refusal?: string },
+    probeHopOrigin?: "routed"
   ): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
     if (monitorMode) return nativeHandler;
@@ -527,6 +550,13 @@ export async function createProxyServer(
       target = model;
     }
 
+    // A probe's routed mark applies to the spec the probe sent, never to one a
+    // slot, role or default model put in its place.
+    const requestHopOrigin: "routed" | undefined =
+      probeHopOrigin && !slotMatched && !wasFromModelMap && target === requestedModel
+        ? probeHopOrigin
+        : undefined;
+
     try {
       const markers = splitWireMarkers(target);
       if (markers.mode || markers.speed) {
@@ -543,7 +573,14 @@ export async function createProxyServer(
 
     const invocationMode = detectInvocationMode(target, wasFromModelMap);
 
-    // 2a-chain. A PINNED CHAIN from a parent process.
+    // A parent's pin is a routed hop however many elements it has: the parent
+    // routed a bare name and handed the result down. Only the flag the parent
+    // sets says so; a spec the user typed, alone or in a `+` chain, is explicit.
+    const pinnedHopOrigin: "routed" | undefined = options.modelChainPinned ? "routed" : undefined;
+    const isPinnedSingleSpec =
+      pinnedHopOrigin !== undefined && !options.modelChain && target === model;
+
+    // 2a-chain. A `+` CHAIN, pinned by a parent process or typed by the user.
     //
     // `team` / `create_session` resolve the route in the parent and spawn
     // the child with explicit specs, because a bare name would make the child
@@ -569,12 +606,17 @@ export async function createProxyServer(
     //
     // Only the default `--model` carries a chain; a role-mapped target (opus /
     // sonnet / haiku) does not equal `modelChain[0]` and falls through untouched.
+    //
+    // Elements are routed hops only for a parent's pin (`modelChainPinned`). A
+    // chain the user typed is a list of explicit specs, each held to the explicit
+    // rule; a one-spec pin takes the ordinary path below with the same origin.
     if (options.modelChain && options.modelChain.length > 1 && target === options.modelChain[0]) {
       const cacheKey = `chain:${options.modelChain.join("+")}`;
       const cached = fallbackHandlerCache.get(cacheKey);
       if (cached) return cached;
 
       await ensureCatalogReady(5000);
+      const originAtStart = catalogOrigin();
       const candidates: FallbackCandidate[] = [];
       for (const spec of options.modelChain) {
         const parsed = parseModelSpec(spec);
@@ -587,7 +629,7 @@ export async function createProxyServer(
         const handler =
           parsed.provider === "openrouter"
             ? getOpenRouterHandler(resolvedSpec, invocationMode)
-            : ((await getRemoteProviderHandler(resolvedSpec, invocationMode)) ??
+            : ((await getRemoteProviderHandler(resolvedSpec, invocationMode, pinnedHopOrigin)) ??
               getLocalProviderHandler(resolvedSpec, invocationMode));
         // A candidate that cannot be built is DROPPED, never fatal: the parent
         // credential-filtered this chain, so a miss here means the child's view
@@ -605,7 +647,7 @@ export async function createProxyServer(
       if (candidates.length > 0) {
         const resultHandler =
           candidates.length > 1 ? new FallbackHandler(candidates) : candidates[0].handler;
-        fallbackHandlerCache.set(cacheKey, resultHandler);
+        fallbackHandlerCache.set(cacheKey, resultHandler, originAtStart);
         if (!options.quiet && candidates.length > 1) {
           logStderr(
             `[Route] ${candidates.length} pinned providers for ${target}: ${candidates.map((c) => c.name).join(" → ")}`
@@ -683,14 +725,17 @@ export async function createProxyServer(
       const decision = proxyRouteDecision(target);
       if (decision.type === "bare") {
         const cacheKey = `fallback:${target}`;
-        if (fallbackHandlerCache.has(cacheKey)) {
-          return fallbackHandlerCache.get(cacheKey)!;
-        }
+        const cachedChain = fallbackHandlerCache.get(cacheKey);
+        if (cachedChain) return cachedChain;
 
         // Ensure catalog is warm before route() builds OpenRouter modelSpecs.
         await ensureCatalogReady(5000);
+        const originAtStart = catalogOrigin();
 
-        const plan = await route(decision.model, effectiveRoutingRules, effectiveFallbackProvider);
+        // "resolve": rules alone make route() read no default provider, and this
+        // decision needs the machine's setting. Asked per decision, so a key added
+        // mid-session counts for a name not yet in the handler cache.
+        const plan = await route(decision.model, effectiveRoutingRules, "resolve");
         if (plan.kind === "ok") {
           const chain = [plan.primary, ...plan.fallbacks];
           const candidates: FallbackCandidate[] = [];
@@ -699,7 +744,11 @@ export async function createProxyServer(
             if (candidate.provider === "openrouter") {
               handler = getOpenRouterHandler(candidate.modelSpec, invocationMode);
             } else {
-              handler = await getRemoteProviderHandler(candidate.modelSpec, invocationMode);
+              handler = await getRemoteProviderHandler(
+                candidate.modelSpec,
+                invocationMode,
+                "routed"
+              );
             }
             if (handler) {
               candidates.push({
@@ -714,9 +763,13 @@ export async function createProxyServer(
             const resultHandler =
               candidates.length > 1 ? new FallbackHandler(candidates) : candidates[0].handler;
 
-            fallbackHandlerCache.set(cacheKey, resultHandler);
+            fallbackHandlerCache.set(cacheKey, resultHandler, originAtStart);
 
-            const routeLine = `[Route] ${candidates.length} ${candidates.length === 1 ? "provider" : "providers"} for ${decision.model}: ${candidates.map((c) => c.name).join(" → ")}`;
+            const routeSource =
+              originAtStart === "bundled"
+                ? ` (bundled recommended list, ${bundledProvenance()?.generationId ?? "unknown"})`
+                : "";
+            const routeLine = `[Route] ${candidates.length} ${candidates.length === 1 ? "provider" : "providers"} for ${decision.model}: ${candidates.map((c) => c.name).join(" → ")}${routeSource}`;
             if (!options.quiet && candidates.length > 1) {
               logStderr(routeLine);
             } else {
@@ -753,7 +806,13 @@ export async function createProxyServer(
     }
 
     // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
-    const remoteHandler = await getRemoteProviderHandler(target, invocationMode);
+    // A routed origin (a parent's pin, or a probe proxy's routed mark) builds the
+    // hop as step 2c does; the handler set caches routed and explicit apart.
+    const remoteHandler = await getRemoteProviderHandler(
+      target,
+      invocationMode,
+      isPinnedSingleSpec ? pinnedHopOrigin : requestHopOrigin
+    );
     if (remoteHandler) return remoteHandler;
 
     // 5. Check for Local Provider (ollama/, lmstudio/, vllm/, or URL)
@@ -1051,7 +1110,7 @@ export async function createProxyServer(
       if (typeof body?.model !== "string" || body.model.length === 0) {
         return c.json(wrapAnthropicError(400, "missing required field: model"), 400);
       }
-      const handler = await getHandlerForRequest(body.model);
+      const handler = await getHandlerForRequest(body.model, requestProbeHopOrigin(c));
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
@@ -1179,7 +1238,7 @@ export async function createProxyServer(
       // included), once per request, around the hooks. See `withAdvisor` and
       // `withRequestHooks` above.
       const handler = withAdvisor(
-        withRequestHooks(await getHandlerForRequest(body.model)),
+        withRequestHooks(await getHandlerForRequest(body.model, requestProbeHopOrigin(c))),
         advisorPresence
       );
 
@@ -1287,11 +1346,17 @@ export async function createProxyServer(
       // any whose left-of-@ matches the slug, plus any using the slug as
       // a legacy prefix (e.g. "ollama/llama3"). Both forms route to the
       // same transport so both need invalidation.
-      const matches = (k: string) =>
-        k === providerSlug ||
-        k.startsWith(`${providerSlug}@`) ||
-        k.startsWith(`${providerSlug}/`) ||
-        k.startsWith(`${providerSlug}:`);
+      const matches = (key: string) => {
+        const k = key.startsWith(ROUTED_HANDLER_KEY_PREFIX)
+          ? key.slice(ROUTED_HANDLER_KEY_PREFIX.length)
+          : key;
+        return (
+          k === providerSlug ||
+          k.startsWith(`${providerSlug}@`) ||
+          k.startsWith(`${providerSlug}/`) ||
+          k.startsWith(`${providerSlug}:`)
+        );
+      };
       for (const k of [...localProviderHandlers.keys()]) {
         if (matches(k)) localProviderHandlers.delete(k);
       }

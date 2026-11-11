@@ -71,7 +71,11 @@ describe("G1: content-use opt-in is explicit", () => {
 function sources(root: string): string[] {
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
     const path = join(root, entry.name);
-    if (entry.isDirectory()) return sources(path);
+    if (entry.isDirectory()) {
+      // Setup data and child harnesses are tests, not production connection readers.
+      if (entry.name === "test-data" || entry.name === "test-helpers") return [];
+      return sources(path);
+    }
     return /\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name) ? [path] : [];
   });
 }
@@ -104,6 +108,7 @@ test("G1: aggregators readers require architecture review", () => {
     "providers/model-catalog.ts",
     "providers/catalog-query.ts",
     "providers/all-models-cache.ts",
+    "providers/bundled-list-build.ts", // RB-17: partitions opt-in connections at read time.
   ]);
   const unexpected = sources(root)
     .filter((path) => {

@@ -24,9 +24,11 @@
 import type { Context } from "hono";
 import type { ChildAuthControl, ChildAuthSource } from "../child-auth-types.js";
 import { log } from "../logger.js";
+import { bundledProvenance } from "../providers/bundled-list-data.js";
 import { warmCatalog } from "../providers/catalog-client.js";
+import { withBundledListScope } from "../providers/catalog-reachability.js";
 import { parseModelSpec } from "../providers/model-parser.js";
-import { nativeRouteFor } from "../providers/native-route.js";
+import { nativeRouteFor, proxyRouteDecision } from "../providers/native-route.js";
 import type { RouteTier } from "../providers/provider-definitions.js";
 import {
   type CandidateOutcome,
@@ -177,17 +179,20 @@ export async function planAdvisorModel(
   if (nativeRouteFor(model)) return planClaudeMember(spec, role, model, deps);
 
   // Advisor startup never waits for the cloud models catalog. A bare name is
-  // planned from the catalog file as it is now: with none on disk,
-  // `explainRoute` refuses it at once (`catalog-unreadable`), and a refresh
-  // started here, never awaited, writes the file for the next launch. An
-  // explicit `provider@model` is taken as written and needs no catalog.
+  // planned from the catalog file as it is now; with none on disk, from the
+  // bundled recommended list, or refused (`catalog-unreadable`) if the list is
+  // off or lacks it. A refresh started here, never awaited, writes the file for
+  // the next launch. An explicit `provider@model` is taken as written and needs
+  // no catalog.
   if (!parseModelSpec(model).isExplicitProvider) {
     void (deps.warmCatalog ?? warmCatalog)().catch(() => {});
   }
   // `background`: planning runs at launch and never waits on discovery.
-  const explanation = await (
-    deps.explain ?? ((target: string) => explainRoute(target, { network: "background" }))
-  )(model);
+  const explain =
+    deps.explain ?? ((target: string) => explainRoute(target, { network: "background" }));
+  const explanation = await (proxyRouteDecision(model).type === "bare"
+    ? withBundledListScope(() => explain(model))
+    : explain(model));
   const { outcome } = explanation;
   if (outcome.kind === "no-route") {
     return {
@@ -344,6 +349,7 @@ export const SKIPPED_PHRASE: Readonly<Record<Exclude<CandidateOutcome, "kept">, 
   "excluded-by-membership": "not in the plan's membership",
   "excluded-by-content-use": "content-use opt-in id only",
   "unknown-provider": "unknown provider shortcut",
+  "gateway-id-unknown": "no exact id in the gateway's models list",
 };
 
 /**
@@ -483,10 +489,19 @@ export async function buildAdvisorChains(
   for (const plan of plans) {
     const key = advisorChainKey(plan.role, plan.spec);
     if (out.has(key)) continue;
-    const builds: HopBuild[] = [];
-    for (const hop of plan.hops) {
-      builds.push(await buildHop(plan, hop, set));
-    }
+    const buildHops = async (): Promise<HopBuild[]> => {
+      const builds: HopBuild[] = [];
+      for (const hop of plan.hops) {
+        builds.push(await buildHop(plan, hop, set));
+      }
+      return builds;
+    };
+    // A plan made from the bundled list is built from it too, so the two see one
+    // catalog state whatever reachability has moved to since planning.
+    const builds =
+      plan.explanation.catalogSource === "bundled"
+        ? await withBundledListScope(buildHops)
+        : await buildHops();
     out.set(key, assembleChain(key, plan, builds));
   }
   return out;
@@ -501,7 +516,10 @@ async function buildHop(plan: RoutedPlan, hop: AdvisorHop, set: HandlerSet): Pro
     } else if (hop.provider === "openrouter") {
       handler = set.openRouter(hop.modelSpec, mode);
     } else {
-      handler = await set.remote(hop.modelSpec, mode);
+      handler =
+        mode === "auto-route"
+          ? await set.remote(hop.modelSpec, mode, "routed")
+          : await set.remote(hop.modelSpec, mode);
       if (!handler && mode === "explicit-model" && plan.hops.length === 1) {
         handler = set.local(hop.modelSpec, mode);
       }
@@ -692,6 +710,24 @@ function laterHopParts(
 export function describeAdvisorPlan(plan: AdvisorModelPlan, build?: AdvisorChainBuild): string {
   if (plan.kind === "claude-native") return describeClaudeAdvisorPlan(plan);
   if (plan.kind === "refused") return describeAdvisorRefusal(plan);
+  return describeRoutedPlan(plan, build) + catalogSourcePart(plan);
+}
+
+/**
+ * The source a routed plan was planned from, when that is the bundled
+ * recommended list: its claudish version and generation. A plan from a disk
+ * catalog says nothing more.
+ */
+function catalogSourcePart(plan: RoutedPlan): string {
+  if (plan.explanation.catalogSource !== "bundled") return "";
+  const provenance = bundledProvenance();
+  const source = provenance
+    ? ` of claudish ${provenance.version}, generation ${provenance.generationId}`
+    : "";
+  return ` (planned from the bundled recommended list${source}; no cloud models catalog is on disk)`;
+}
+
+function describeRoutedPlan(plan: RoutedPlan, build?: AdvisorChainBuild): string {
   if (!build || build.firstCallableHop === null) {
     return build ? describeAdvisorRefusal({ plan, build }) : `${plan.spec} -> (not built)`;
   }

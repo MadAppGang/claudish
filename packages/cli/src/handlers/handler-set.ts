@@ -18,6 +18,7 @@ import { LocalModelAdapter } from "../adapters/local-adapter.js";
 import { OpenRouterAPIFormat } from "../adapters/openrouter-api-format.js";
 import { credentials } from "../auth/credentials/authority.js";
 import { log, logStderr } from "../logger.js";
+import { catalogOrigin } from "../providers/catalog-client.js";
 import { type ResolvedConnection, resolveConnection } from "../providers/connection-resolver.js";
 import { declaredConnection, declaredWire } from "../providers/declared-wire.js";
 import { parseModelSpec } from "../providers/model-parser.js";
@@ -33,6 +34,7 @@ import { LocalTransport } from "../providers/transport/local.js";
 import { OpenRouterProviderTransport } from "../providers/transport/openrouter.js";
 import { PoeProvider } from "../providers/transport/poe.js";
 import { RefusingHandler } from "../providers/wire-handler.js";
+import { bundledTaggedCache } from "./bundled-tagged-cache.js";
 import { ComposedHandler, type ComposedHandlerOptions } from "./composed-handler.js";
 import type { ModelHandler } from "./types.js";
 
@@ -59,6 +61,13 @@ export interface HandlerSetOptions {
 
 type InvocationMode = ComposedHandlerOptions["invocationMode"];
 
+/**
+ * Prepended to the cache key of every routing-chain hop, so a hop and a named
+ * spec for one model never share a cached handler: with the bundled list the
+ * hop is tried in turn where the spec may be refused.
+ */
+export const ROUTED_HANDLER_KEY_PREFIX = "routed:";
+
 export interface HandlerSet {
   /** OpenRouter handler for a target model (a `RefusingHandler` when its wire is not chat). */
   openRouter(targetModel: string, invocationMode?: InvocationMode): ModelHandler;
@@ -66,8 +75,15 @@ export interface HandlerSet {
   poe(targetModel: string, invocationMode?: InvocationMode): Promise<ModelHandler | null>;
   /** Local handler (`ollama/`, `lmstudio@`, a URL); null when the spec is not local. */
   local(targetModel: string, invocationMode?: InvocationMode): ModelHandler | null;
-  /** Remote (direct API or profile) handler; null when none can be built. */
-  remote(targetModel: string, invocationMode?: InvocationMode): Promise<ModelHandler | null>;
+  /**
+   * Remote (direct API or profile) handler; null when none can be built.
+   * `hopOrigin` is `"routed"` for a hop of a routing chain, absent for a named spec.
+   */
+  remote(
+    targetModel: string,
+    invocationMode?: InvocationMode,
+    hopOrigin?: "routed"
+  ): Promise<ModelHandler | null>;
   readonly openRouterHandlers: Map<string, ModelHandler>;
   readonly localProviderHandlers: Map<string, ModelHandler>;
   readonly remoteProviderHandlers: Map<string, ModelHandler>;
@@ -95,6 +111,12 @@ export function createHandlerSet(opts: HandlerSetOptions): HandlerSet {
   const localProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Local Provider Handler
   const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler
   const poeHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Poe Handler
+  // Every cache whose handlers carry a catalog connection is tagged, so one built
+  // from the bundled list is rebuilt once a disk catalog answers. Local handlers
+  // take no connection from any catalog and need no tag.
+  const remoteHandlerCache = bundledTaggedCache(remoteProviderHandlers);
+  const openRouterHandlerCache = bundledTaggedCache(openRouterHandlers);
+  const poeHandlerCache = bundledTaggedCache(poeHandlers);
 
   // The catalog connection behind a gateway handler built here rather than by
   // a profile (OpenRouter, the legacy `poe:` prefix). Both speak Chat
@@ -135,40 +157,40 @@ export function createHandlerSet(opts: HandlerSetOptions): HandlerSet {
     const parsed = parseModelSpec(targetModel);
     const modelId = targetModel.includes("@") ? parsed.model : targetModel;
 
-    if (!openRouterHandlers.has(modelId)) {
-      const wired = chatWireConnection("openrouter", modelId);
-      if (wired.refusal) {
-        openRouterHandlers.set(modelId, new RefusingHandler(wired.refusal));
-        return openRouterHandlers.get(modelId)!;
-      }
-      // The OpenRouter key is resolved through the credential authority inside
-      // the transport's getHeaders() (single source of truth) — the legacy
-      // openrouterApiKey param is no longer the signing source.
-      const orProvider = new OpenRouterProviderTransport("", modelId);
-      // A model the catalog does not publish on OpenRouter still gets a wire:
-      // the documented default (chat, max_tokens, no reasoning field), never
-      // the name-picked dialect.
-      const connection =
-        wired.connection ??
-        declaredConnection(
-          "openrouter",
-          modelId,
-          "https://openrouter.ai/api/v1",
-          declaredWire("chat-completions", undefined)
-        );
-      const orAdapter = new OpenRouterAPIFormat(modelId, { vendor: connection.vendor ?? "" });
-      openRouterHandlers.set(
-        modelId,
-        new ComposedHandler(orProvider, modelId, modelId, port, {
-          adapter: orAdapter,
-          isInteractive: options.isInteractive,
-          invocationMode,
-          ...requestShapingOpts,
-          connection,
-        })
-      );
+    const cached = openRouterHandlerCache.get(modelId);
+    if (cached) return cached;
+    const originAtStart = catalogOrigin();
+    const wired = chatWireConnection("openrouter", modelId);
+    if (wired.refusal) {
+      const refusing = new RefusingHandler(wired.refusal);
+      openRouterHandlerCache.set(modelId, refusing, originAtStart);
+      return refusing;
     }
-    return openRouterHandlers.get(modelId)!;
+    // The OpenRouter key is resolved through the credential authority inside
+    // the transport's getHeaders() (single source of truth) — the legacy
+    // openrouterApiKey param is no longer the signing source.
+    const orProvider = new OpenRouterProviderTransport("", modelId);
+    // A model the catalog does not publish on OpenRouter still gets a wire:
+    // the documented default (chat, max_tokens, no reasoning field), never
+    // the name-picked dialect.
+    const connection =
+      wired.connection ??
+      declaredConnection(
+        "openrouter",
+        modelId,
+        "https://openrouter.ai/api/v1",
+        declaredWire("chat-completions", undefined)
+      );
+    const orAdapter = new OpenRouterAPIFormat(modelId, { vendor: connection.vendor ?? "" });
+    const handler = new ComposedHandler(orProvider, modelId, modelId, port, {
+      adapter: orAdapter,
+      isInteractive: options.isInteractive,
+      invocationMode,
+      ...requestShapingOpts,
+      connection,
+    });
+    openRouterHandlerCache.set(modelId, handler, originAtStart);
+    return handler;
   };
 
   // Helper to get or create Poe handler for a target model
@@ -183,33 +205,33 @@ export function createHandlerSet(opts: HandlerSetOptions): HandlerSet {
     }
     // Strip "poe:" prefix to get the actual model name for the API
     const modelId = targetModel.replace(/^poe:/, "");
-    if (!poeHandlers.has(modelId)) {
-      const wired = chatWireConnection("poe", modelId);
-      if (wired.refusal) {
-        poeHandlers.set(modelId, new RefusingHandler(wired.refusal));
-        return poeHandlers.get(modelId)!;
-      }
-      const connection =
-        wired.connection ??
-        declaredConnection(
-          "poe",
-          modelId,
-          "https://api.poe.com/v1",
-          declaredWire("chat-completions", undefined)
-        );
-      // The transport resolves its key through the authority in getHeaders().
-      const poeTransport = new PoeProvider();
-      poeHandlers.set(
-        modelId,
-        new ComposedHandler(poeTransport, modelId, modelId, port, {
-          isInteractive: options.isInteractive,
-          invocationMode,
-          ...requestShapingOpts,
-          connection,
-        })
-      );
+    const cached = poeHandlerCache.get(modelId);
+    if (cached) return cached;
+    const originAtStart = catalogOrigin();
+    const wired = chatWireConnection("poe", modelId);
+    if (wired.refusal) {
+      const refusing = new RefusingHandler(wired.refusal);
+      poeHandlerCache.set(modelId, refusing, originAtStart);
+      return refusing;
     }
-    return poeHandlers.get(modelId)!;
+    const connection =
+      wired.connection ??
+      declaredConnection(
+        "poe",
+        modelId,
+        "https://api.poe.com/v1",
+        declaredWire("chat-completions", undefined)
+      );
+    // The transport resolves its key through the authority in getHeaders().
+    const poeTransport = new PoeProvider();
+    const handler = new ComposedHandler(poeTransport, modelId, modelId, port, {
+      isInteractive: options.isInteractive,
+      invocationMode,
+      ...requestShapingOpts,
+      connection,
+    });
+    poeHandlerCache.set(modelId, handler, originAtStart);
+    return handler;
   };
 
   // Helper to get or create Local Provider handler for a target model
@@ -277,11 +299,17 @@ export function createHandlerSet(opts: HandlerSetOptions): HandlerSet {
   // TODO: Consolidate src/ and packages/core/src/ - they're manually synced duplicates
   const getRemoteProviderHandler = async (
     targetModel: string,
-    invocationMode?: ComposedHandlerOptions["invocationMode"]
+    invocationMode?: ComposedHandlerOptions["invocationMode"],
+    hopOrigin?: "routed"
   ): Promise<ModelHandler | null> => {
-    if (remoteProviderHandlers.has(targetModel)) {
-      return remoteProviderHandlers.get(targetModel)!;
-    }
+    const originAtStart = catalogOrigin();
+    // Decided by the hop's origin alone, the same at lookup and at store. A key
+    // that read the catalog origin could change between the two while the build
+    // waits, and file a routed hop where a named spec would find it.
+    const cacheKey = (spec: string): string =>
+      hopOrigin ? `${ROUTED_HANDLER_KEY_PREFIX}${spec}` : spec;
+    const cached = remoteHandlerCache.get(cacheKey(targetModel));
+    if (cached) return cached;
 
     // Use centralized resolver with fallback logic
     const resolution = resolveModelProvider(targetModel);
@@ -394,6 +422,7 @@ export function createHandlerSet(opts: HandlerSetOptions): HandlerSet {
         apiKey,
         targetModel,
         port,
+        ...(hopOrigin ? { hopOrigin } : {}),
         sharedOpts: { isInteractive: options.isInteractive, invocationMode, ...requestShapingOpts },
       });
       if (!handler) {
@@ -402,9 +431,9 @@ export function createHandlerSet(opts: HandlerSetOptions): HandlerSet {
 
       // Cache under both the original targetModel and the resolveTarget (if different)
       // so subsequent lookups with either key are served from cache.
-      remoteProviderHandlers.set(resolveTarget, handler);
+      remoteHandlerCache.set(cacheKey(resolveTarget), handler, originAtStart);
       if (resolveTarget !== targetModel) {
-        remoteProviderHandlers.set(targetModel, handler);
+        remoteHandlerCache.set(cacheKey(targetModel), handler, originAtStart);
       }
       return handler;
     }

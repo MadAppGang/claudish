@@ -1,3 +1,4 @@
+// REQ-101: Test fallbacks carry their source without consulting machine configuration.
 import { catalogRouteForProvider } from "./catalog-route-bindings.js";
 /**
  * Unit tests for providers/routing-rules.ts
@@ -659,7 +660,12 @@ async function routeOnCatalog(modelId: string, providers: string[]): Promise<Rou
     providers
   );
   try {
-    return await route(modelId, {}, undefined, path);
+    return await route(
+      modelId,
+      {},
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+      path
+    );
   } finally {
     cleanup();
   }
@@ -799,7 +805,12 @@ describe("route()", () => {
     const cachePath = join(dir, "all-models.json");
     try {
       process.env.OPENAI_CODEX_API_KEY = "sk-codex-test";
-      const plan = await route("gpt-5", {}, undefined, cachePath);
+      const plan = await route(
+        "gpt-5",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        cachePath
+      );
       expect(plan.kind).toBe("no-route");
       if (plan.kind !== "no-route") return;
       expect(plan.reason).toContain("No model catalog available");
@@ -823,7 +834,12 @@ describe("route()", () => {
       ["qwen-payg"]
     );
     try {
-      const plan = await route("qwen3.7-plus", {}, undefined, path);
+      const plan = await route(
+        "qwen3.7-plus",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        path
+      );
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("qwen-token-plan");
@@ -850,7 +866,12 @@ describe("route()", () => {
       ["qwen-payg"]
     );
     try {
-      const result = await route("qwen3.7-plus", {}, undefined, path);
+      const result = await route(
+        "qwen3.7-plus",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        path
+      );
       expect(result.kind).toBe("ok");
       if (result.kind !== "ok") return;
       expect(result.primary.modelSpec).toBe("qcode@qwen3.7-plus");
@@ -876,7 +897,12 @@ describe("route()", () => {
       ["qwen-payg"]
     );
     try {
-      const plan = await route("qwen3.7-plus", {}, undefined, path);
+      const plan = await route(
+        "qwen3.7-plus",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        path
+      );
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("qwen-payg");
@@ -898,7 +924,12 @@ describe("route()", () => {
       { "kimi-code": "kimi-coding" }
     );
     try {
-      const plan = await route("kimi-k3", {}, undefined, path);
+      const plan = await route(
+        "kimi-k3",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        path
+      );
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi-coding");
@@ -997,7 +1028,12 @@ describe("route()", () => {
       ["kimi-coding"]
     );
     try {
-      const plan = await route("k3", {}, undefined, path);
+      const plan = await route(
+        "k3",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        path
+      );
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi-coding");
@@ -1019,7 +1055,12 @@ describe("route()", () => {
       ["kimi-coding"]
     );
     try {
-      const plan = await route("k3-256k", {}, undefined, path);
+      const plan = await route(
+        "k3-256k",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        path
+      );
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi-coding");
@@ -1044,7 +1085,12 @@ describe("route()", () => {
       ["kimi"]
     );
     try {
-      const plan = await route("kimi-k2.5", {}, undefined, path);
+      const plan = await route(
+        "kimi-k2.5",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        path
+      );
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi");
@@ -1068,7 +1114,12 @@ describe("route()", () => {
       process.env.OPENAI_CODEX_API_KEY = "cx-test";
       process.env.OPENAI_API_KEY = "oai-test";
       process.env.OPENROUTER_API_KEY = "or-test";
-      const plan = await route("gpt-5", {}, undefined, cachePath);
+      const plan = await route(
+        "gpt-5",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        cachePath
+      );
       expect(plan.kind).toBe("no-route");
       if (plan.kind !== "no-route") return;
       expect(plan.reason).toContain("No model catalog available");
@@ -1113,7 +1164,11 @@ describe("route() with defaultProvider", () => {
   test("a matched user rule is honoured verbatim without appending defaultProvider", async () => {
     process.env.OPENAI_API_KEY = "oai-test";
     process.env.XAI_API_KEY = "xai-test";
-    const plan = await route("gpt-5", { "gpt-*": ["openai"] }, "x-ai");
+    const plan = await route(
+      "gpt-5",
+      { "gpt-*": ["openai"] },
+      { provider: "x-ai", source: "config-file", legacyAutoPromoted: false }
+    );
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openai");
@@ -1123,7 +1178,11 @@ describe("route() with defaultProvider", () => {
   test("defaultProvider deduped if already present in chain", async () => {
     process.env.OPENAI_API_KEY = "oai-test";
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("gpt-5", { "gpt-*": ["openai", "openrouter"] }, "openrouter");
+    const plan = await route(
+      "gpt-5",
+      { "gpt-*": ["openai", "openrouter"] },
+      { provider: "openrouter", source: "config-file", legacyAutoPromoted: false }
+    );
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openai");
@@ -1134,7 +1193,12 @@ describe("route() with defaultProvider", () => {
     process.env.OPENROUTER_API_KEY = "or-test";
     const { path, cleanup } = makeTempCatalog({ modelId: "catalog-readable-marker" });
     try {
-      const plan = await route("totally-unknown-xyz", {}, "openrouter", path);
+      const plan = await route(
+        "totally-unknown-xyz",
+        {},
+        { provider: "openrouter", source: "config-file", legacyAutoPromoted: false },
+        path
+      );
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("openrouter");
@@ -1145,20 +1209,32 @@ describe("route() with defaultProvider", () => {
 
   test("defaultProvider does not rescue a matched user chain with no credentials", async () => {
     process.env.XAI_API_KEY = "xai-test";
-    const plan = await route("deepseek-r1", { "deepseek-*": ["deepseek"] }, "x-ai");
+    const plan = await route(
+      "deepseek-r1",
+      { "deepseek-*": ["deepseek"] },
+      { provider: "x-ai", source: "config-file", legacyAutoPromoted: false }
+    );
     expect(plan.kind).toBe("no-route");
   });
 
-  test("defaultProvider undefined has the same effect as an omitted argument", async () => {
+  test("REQ-101: an explicit rules-only fallback has the same effect as an omitted argument", async () => {
     process.env.OPENAI_API_KEY = "oai-test";
-    const planA = await route("gpt-5", { "gpt-*": ["openai"] }, undefined);
+    const planA = await route(
+      "gpt-5",
+      { "gpt-*": ["openai"] },
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false }
+    );
     const planB = await route("gpt-5", { "gpt-*": ["openai"] });
     expect(planA).toEqual(planB);
   });
 
   test("defaultProvider not consulted for explicit provider@model spec", async () => {
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("openrouter@gpt-5", {}, "xai");
+    const plan = await route(
+      "openrouter@gpt-5",
+      {},
+      { provider: "xai", source: "config-file", legacyAutoPromoted: false }
+    );
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openrouter");
@@ -1168,14 +1244,22 @@ describe("route() with defaultProvider", () => {
   test("defaultProvider shortcut (e.g. 'or') resolves to canonical for dedup", async () => {
     process.env.OPENAI_API_KEY = "oai-test";
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("gpt-5", { "gpt-*": ["openai", "openrouter"] }, "or");
+    const plan = await route(
+      "gpt-5",
+      { "gpt-*": ["openai", "openrouter"] },
+      { provider: "or", source: "config-file", legacyAutoPromoted: false }
+    );
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.fallbacks.map((r) => r.provider)).toEqual(["openrouter"]);
   });
 
   test("defaultProvider with no credentials → still no-route if rest of chain also lacks creds", async () => {
-    const plan = await route("gpt-5", { "gpt-*": ["openai"] }, "xai");
+    const plan = await route(
+      "gpt-5",
+      { "gpt-*": ["openai"] },
+      { provider: "xai", source: "config-file", legacyAutoPromoted: false }
+    );
     expect(plan.kind).toBe("no-route");
   });
 });
@@ -1216,7 +1300,12 @@ describe("route() reads the resolved defaultProvider only without overrides", ()
     });
 
     try {
-      const plan = await route("no-such-model-xyz", {}, undefined, STAGE4_CATALOG_FIXTURE);
+      const plan = await route(
+        "no-such-model-xyz",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        STAGE4_CATALOG_FIXTURE
+      );
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("openrouter");
@@ -1366,7 +1455,7 @@ describe("route() model-availability filtering", () => {
     const plan = await route(
       AVAILABILITY_MODEL,
       { [AVAILABILITY_MODEL]: [denied, "openai", "openrouter"] },
-      undefined,
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
       cachePath
     );
 
@@ -1389,7 +1478,7 @@ describe("route() model-availability filtering", () => {
     const plan = await route(
       AVAILABILITY_MODEL,
       { [AVAILABILITY_MODEL]: ["openai-codex"] },
-      undefined,
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
       cachePath
     );
 
@@ -1405,7 +1494,7 @@ describe("route() model-availability filtering", () => {
     const plan = await route(
       AVAILABILITY_MODEL,
       { [AVAILABILITY_MODEL]: ["openai"] },
-      undefined,
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
       cachePath
     );
 
@@ -1424,7 +1513,7 @@ describe("route() model-availability filtering", () => {
     const plan = await route(
       AVAILABILITY_MODEL,
       { [AVAILABILITY_MODEL]: [first, second] },
-      undefined,
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
       cachePath
     );
 
@@ -1443,7 +1532,7 @@ describe("route() model-availability filtering", () => {
     const plan = await route(
       `${denied}@${AVAILABILITY_MODEL}`,
       { [AVAILABILITY_MODEL]: ["openai"] },
-      "openai",
+      { provider: "openai", source: "config-file", legacyAutoPromoted: false },
       cachePath
     );
 
@@ -1459,7 +1548,12 @@ describe("route() model-availability filtering", () => {
     registerModelsCatalog(serving, AVAILABILITY_MODEL);
     allowCredentials(serving);
 
-    const plan = await route(`${serving}@${AVAILABILITY_MODEL}`, {}, undefined, cachePath);
+    const plan = await route(
+      `${serving}@${AVAILABILITY_MODEL}`,
+      {},
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+      cachePath
+    );
 
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
@@ -1477,7 +1571,7 @@ describe("route() model-availability filtering", () => {
     const plan = await route(
       AVAILABILITY_MODEL,
       { [AVAILABILITY_MODEL]: [noCredential, credentialed] },
-      undefined,
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
       cachePath
     );
 
@@ -1544,7 +1638,14 @@ describe("route() no-route plan characterization", () => {
   test("pins a matched empty rule", async () => {
     const fixture = makeTempCatalog({ modelId: "catalog-marker" });
     try {
-      expect(await route("blocked-by-rule", { "blocked-by-rule": [] }, "", fixture.path)).toEqual({
+      expect(
+        await route(
+          "blocked-by-rule",
+          { "blocked-by-rule": [] },
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
+          fixture.path
+        )
+      ).toEqual({
         kind: "no-route",
         reason: 'A routing rule matched "blocked-by-rule" and named no provider.',
         hint:
@@ -1563,7 +1664,7 @@ describe("route() no-route plan characterization", () => {
         await route(
           "membership-excluded",
           { "membership-excluded": ["kimi-coding"] },
-          "",
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
           fixture.path
         )
       ).toEqual({
@@ -1582,7 +1683,14 @@ describe("route() no-route plan characterization", () => {
     const fixture = makeTempCatalog({ modelId: "catalog-marker" });
     const missingPath = join(fixture.path, "missing", "all-models.json");
     try {
-      expect(await route("catalog-unreadable", {}, "", missingPath)).toEqual({
+      expect(
+        await route(
+          "catalog-unreadable",
+          {},
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
+          missingPath
+        )
+      ).toEqual({
         kind: "no-route",
         reason: 'No model catalog available, so "catalog-unreadable" cannot be routed by name.',
         hint:
@@ -1611,7 +1719,14 @@ describe("route() no-route plan characterization", () => {
   ])("pins a readable catalog with no entry for a %s", async (model, _label, hint) => {
     const fixture = makeTempCatalog({ modelId: "catalog-marker" });
     try {
-      expect(await route(model, {}, "", fixture.path)).toEqual({
+      expect(
+        await route(
+          model,
+          {},
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
+          fixture.path
+        )
+      ).toEqual({
         kind: "no-route",
         reason: `No provider in the catalog serves "${model}".`,
         hint,
@@ -1642,7 +1757,7 @@ describe("route() no-route plan characterization", () => {
       const routingModuleUrl = new URL("./routing-rules.ts", import.meta.url).href;
       const script = `
         const { route } = await import(${JSON.stringify(routingModuleUrl)});
-        const plan = await route(${JSON.stringify(model)}, {}, "", ${JSON.stringify(fixture.path)});
+        const plan = await route(${JSON.stringify(model)}, {}, { provider: "", source: "config-file", legacyAutoPromoted: false }, ${JSON.stringify(fixture.path)});
         process.stdout.write(JSON.stringify(plan));
       `;
       const env: Record<string, string> = {
@@ -1680,7 +1795,7 @@ describe("route() no-route plan characterization", () => {
       const routingModuleUrl = new URL("./routing-rules.ts", import.meta.url).href;
       const script = `
         const { route } = await import(${JSON.stringify(routingModuleUrl)});
-        const plan = await route(${JSON.stringify(model)}, {}, "", ${JSON.stringify(fixture.path)});
+        const plan = await route(${JSON.stringify(model)}, {}, { provider: "", source: "config-file", legacyAutoPromoted: false }, ${JSON.stringify(fixture.path)});
         process.stdout.write(JSON.stringify(plan));
       `;
       const env: Record<string, string> = {
@@ -1718,7 +1833,7 @@ describe("route() no-route plan characterization", () => {
         await route(
           "no-credential-model",
           { "no-credential-model": ["openai", "openrouter"] },
-          "",
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
           fixture.path
         )
       ).toEqual({
@@ -1740,7 +1855,14 @@ describe("route() no-route plan characterization", () => {
     const fixture = makeTempCatalog({ modelId: model });
     readiness.set("antigravity", "present");
     try {
-      expect(await route(model, { [model]: [`antigravity@${model}`] }, "", fixture.path)).toEqual({
+      expect(
+        await route(
+          model,
+          { [model]: [`antigravity@${model}`] },
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
+          fixture.path
+        )
+      ).toEqual({
         kind: "no-route",
         reason: `No provider serves "${model}" (checked: antigravity).`,
         hint:
@@ -1756,7 +1878,14 @@ describe("route() no-route plan characterization", () => {
   test("pins an explicit spec with no credential", async () => {
     const fixture = makeTempCatalog({ modelId: "gpt-5" });
     try {
-      expect(await route("openai@gpt-5", {}, "", fixture.path)).toEqual({
+      expect(
+        await route(
+          "openai@gpt-5",
+          {},
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
+          fixture.path
+        )
+      ).toEqual({
         kind: "no-route",
         reason: 'No credentials configured for "openai".',
         hint:
@@ -1774,7 +1903,14 @@ describe("route() no-route plan characterization", () => {
     const fixture = makeTempCatalog({ modelId: model });
     readiness.set("antigravity", "present");
     try {
-      expect(await route(`antigravity@${model}`, {}, "", fixture.path)).toEqual({
+      expect(
+        await route(
+          `antigravity@${model}`,
+          {},
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
+          fixture.path
+        )
+      ).toEqual({
         kind: "no-route",
         reason: `Antigravity does not serve "${model}".`,
         hint:
@@ -1854,7 +1990,12 @@ describe("route() metered-billing notice characterization", () => {
     if (!logPath) throw new Error("debug logger did not expose its path");
     try {
       const captured = await captureDiag(() =>
-        route(model, { [model]: [`antigravity@${model}`, `openai@${model}`] }, "", fixture.path)
+        route(
+          model,
+          { [model]: [`antigravity@${model}`, `openai@${model}`] },
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
+          fixture.path
+        )
       );
       expect(captured.value).toEqual({
         kind: "ok",
@@ -1883,7 +2024,12 @@ describe("route() metered-billing notice characterization", () => {
     readiness.set("openai", "present");
     try {
       const captured = await captureDiag(() =>
-        route(model, { [model]: [`antigravity@${model}`, `openai@${model}`] }, "", fixture.path)
+        route(
+          model,
+          { [model]: [`antigravity@${model}`, `openai@${model}`] },
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
+          fixture.path
+        )
       );
       expect(captured.value).toEqual({
         kind: "ok",
@@ -1909,7 +2055,7 @@ describe("route() metered-billing notice characterization", () => {
         route(
           model,
           { [model]: [`antigravity@${model}`, `minimax-coding@${model}`] },
-          "",
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
           fixture.path
         )
       );
@@ -2066,7 +2212,7 @@ function stage5SandboxResult(): Stage5SandboxResult {
       });
       const membershipFallback = await rr.explainRoute("plan-less", {
         rules: {},
-        defaultProvider: "kimi-coding",
+        defaultProvider: { provider: "kimi-coding", source: "config-file", legacyAutoPromoted: false },
         cachePath: ${JSON.stringify(STAGE5_CATALOG_FIXTURE)},
       });
       output = {
@@ -2323,7 +2469,14 @@ describe("routing from account-bound dynamic models catalogs", () => {
       return { kind: "models", models: [swe] };
     };
     const started = performance.now();
-    expectDevin(await route("swe-1.7", {}, "", path));
+    expectDevin(
+      await route(
+        "swe-1.7",
+        {},
+        { provider: "", source: "config-file", legacyAutoPromoted: false },
+        path
+      )
+    );
     expect(performance.now() - started).toBeGreaterThanOrEqual(40);
     expect(calls).toEqual(["devin"]);
   });
@@ -2336,7 +2489,14 @@ describe("routing from account-bound dynamic models catalogs", () => {
       return { kind: "models", models: [{ id: "test-known-model", reported: "chat" }] };
     };
     const started = performance.now();
-    expectDevin(await route("test-known-model", {}, "", path));
+    expectDevin(
+      await route(
+        "test-known-model",
+        {},
+        { provider: "", source: "config-file", legacyAutoPromoted: false },
+        path
+      )
+    );
     expect(performance.now() - started).toBeGreaterThanOrEqual(40);
     expect(calls).toEqual(["devin"]);
   });
@@ -2344,7 +2504,19 @@ describe("routing from account-bound dynamic models catalogs", () => {
   test("uses stored candidates without awaiting an unfinished refresh", async () => {
     store("devin", [swe], 2 * 60 * 60 * 1000);
     answer = hang;
-    expectDevin(await within(track(route("swe-1.7", {}, "", path)), 250));
+    expectDevin(
+      await within(
+        track(
+          route(
+            "swe-1.7",
+            {},
+            { provider: "", source: "config-file", legacyAutoPromoted: false },
+            path
+          )
+        ),
+        250
+      )
+    );
     await tick();
     expect(calls).toEqual(["devin"]);
   });
@@ -2357,7 +2529,14 @@ describe("routing from account-bound dynamic models catalogs", () => {
       kind: "models",
       models: [{ id: "test-expired-model", reported: "chat" }],
     });
-    expectDevin(await route("test-expired-model", {}, "", path));
+    expectDevin(
+      await route(
+        "test-expired-model",
+        {},
+        { provider: "", source: "config-file", legacyAutoPromoted: false },
+        path
+      )
+    );
     expect(calls).toEqual(["devin"]);
   });
 
@@ -2368,7 +2547,12 @@ describe("routing from account-bound dynamic models catalogs", () => {
       ready.add("openai");
       answer = hang;
       const started = performance.now();
-      const plan = await within(track(route(model, {}, "", path)), 5900);
+      const plan = await within(
+        track(
+          route(model, {}, { provider: "", source: "config-file", legacyAutoPromoted: false }, path)
+        ),
+        5900
+      );
       expect(plan).not.toBe("deadline");
       expect(performance.now() - started).toBeGreaterThanOrEqual(4500);
       expect(performance.now() - started).toBeLessThan(6000);
@@ -2387,7 +2571,14 @@ describe("routing from account-bound dynamic models catalogs", () => {
     ready.add("antigravity");
     ready.add("openai");
     answer = hang;
-    const pending = track(route("test-parallel-model", {}, "", path));
+    const pending = track(
+      route(
+        "test-parallel-model",
+        {},
+        { provider: "", source: "config-file", legacyAutoPromoted: false },
+        path
+      )
+    );
     for (let i = 0; i < 20 && calls.length < 2; i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
@@ -2401,7 +2592,12 @@ describe("routing from account-bound dynamic models catalogs", () => {
       kind: "failed",
       failure: { kind: "unreachable", provider: "devin" },
     });
-    const plan = await route("swe-1.7", {}, "", path);
+    const plan = await route(
+      "swe-1.7",
+      {},
+      { provider: "", source: "config-file", legacyAutoPromoted: false },
+      path
+    );
     expect(plan.kind).toBe("no-route");
     expect(calls).toEqual(["devin"]);
   });
@@ -2411,7 +2607,7 @@ describe("routing from account-bound dynamic models catalogs", () => {
     ready = new Set(["openai"]);
     const explanation = await explainRoute("test-known-model", {
       rules: {},
-      defaultProvider: "",
+      defaultProvider: { provider: "", source: "config-file", legacyAutoPromoted: false },
       cachePath: path,
     });
     expect(explanation.outcome.kind).toBe("ok");
@@ -2425,7 +2621,18 @@ describe("routing from account-bound dynamic models catalogs", () => {
       seedCatalog(model === "swe-1.7" ? undefined : model);
       ready.add("openai");
       answer = hang;
-      const plan = await within(track(route(model, {}, "", path, { network: "background" })), 250);
+      const plan = await within(
+        track(
+          route(
+            model,
+            {},
+            { provider: "", source: "config-file", legacyAutoPromoted: false },
+            path,
+            { network: "background" }
+          )
+        ),
+        250
+      );
       expect(plan).not.toBe("deadline");
       if (plan !== "deadline" && plan.kind === "ok") {
         expect([plan.primary, ...plan.fallbacks].map(({ provider }) => provider)).not.toContain(
@@ -2443,7 +2650,16 @@ describe("routing from account-bound dynamic models catalogs", () => {
     ready.add("antigravity");
     store("devin", [swe], 30 * 60 * 60 * 1000);
     store("antigravity", [{ id: "test-unrelated", reported: "chat" }], 60 * 60 * 1000);
-    expect((await route("test-sweep-model", {}, "", path)).kind).toBe("ok");
+    expect(
+      (
+        await route(
+          "test-sweep-model",
+          {},
+          { provider: "", source: "config-file", legacyAutoPromoted: false },
+          path
+        )
+      ).kind
+    ).toBe("ok");
     await tick();
     expect(calls).toEqual(["devin"]);
   });
@@ -2458,7 +2674,7 @@ describe("routing from account-bound dynamic models catalogs", () => {
       });
       const explanation = await explainRoute("dv@swe-9", {
         rules: {},
-        defaultProvider: "",
+        defaultProvider: { provider: "", source: "config-file", legacyAutoPromoted: false },
         cachePath: path,
       });
       expect(explanation.outcome).toMatchObject(
@@ -2472,7 +2688,7 @@ describe("routing from account-bound dynamic models catalogs", () => {
     store("devin", [{ id: "claude-opus-5-medium", reported: "chat" }], 0);
     const explanation = await explainRoute("claude-opus-5-medium", {
       rules: {},
-      defaultProvider: "",
+      defaultProvider: { provider: "", source: "config-file", legacyAutoPromoted: false },
       cachePath: path,
     });
     expect(explanation).toMatchObject({ source: "native", candidates: [] });
@@ -2484,7 +2700,12 @@ describe("routing from account-bound dynamic models catalogs", () => {
     const read = spyOn(accountCatalog, "readAccountModelsList");
     const load = spyOn(accountCatalog, "loadAccountModelsLists");
     try {
-      const plan = await route("swe-1.7", { "swe-*": ["openrouter"] }, "", path);
+      const plan = await route(
+        "swe-1.7",
+        { "swe-*": ["openrouter"] },
+        { provider: "", source: "config-file", legacyAutoPromoted: false },
+        path
+      );
       expect(plan).toMatchObject({ kind: "ok", primary: { provider: "openrouter" } });
       expect(read).not.toHaveBeenCalled();
       expect(load).not.toHaveBeenCalled();
@@ -2506,7 +2727,13 @@ describe("routing from account-bound dynamic models catalogs", () => {
           resolve({ kind: "models", models: [{ id: "test-stable-chain", reported: "chat" }] })
         );
       });
-    const plan = await route("test-stable-chain", {}, "", path, { network: "background" });
+    const plan = await route(
+      "test-stable-chain",
+      {},
+      { provider: "", source: "config-file", legacyAutoPromoted: false },
+      path,
+      { network: "background" }
+    );
     await tick();
     expect(calls).toEqual(["devin"]);
     const before = structuredClone(plan);
@@ -2540,7 +2767,12 @@ describe("routing from account-bound dynamic models catalogs", () => {
       checked.push(provider);
       return { readiness: "absent" };
     };
-    await route("test-first-ever-model", {}, "", path);
+    await route(
+      "test-first-ever-model",
+      {},
+      { provider: "", source: "config-file", legacyAutoPromoted: false },
+      path
+    );
     expect(providers.length).toBeGreaterThan(0);
     for (const provider of providers) expect(checked).toContain(provider.name);
     expect(calls).toEqual([]);
@@ -2678,7 +2910,7 @@ describe("explainRoute", () => {
     });
     const disabled = await explainRoute("no-such-model-xyz", {
       rules: {},
-      defaultProvider: "",
+      defaultProvider: { provider: "", source: "config-file", legacyAutoPromoted: false },
       cachePath: STAGE5_CATALOG_FIXTURE,
     });
     const unreadable = await explainRoute("whatever-x", {
@@ -2795,14 +3027,18 @@ describe("explainRoute", () => {
     record(
       await explainRoute("no-such-model-xyz", {
         rules: {},
-        defaultProvider: "",
+        defaultProvider: { provider: "", source: "config-file", legacyAutoPromoted: false },
         cachePath: STAGE5_CATALOG_FIXTURE,
       })
     );
     record(
       await explainRoute("no-such-model-xyz", {
         rules: {},
-        defaultProvider: "fallback-no-cred",
+        defaultProvider: {
+          provider: "fallback-no-cred",
+          source: "config-file",
+          legacyAutoPromoted: false,
+        } as const,
         cachePath: STAGE5_CATALOG_FIXTURE,
       })
     );
@@ -2870,7 +3106,11 @@ describe("explainRoute", () => {
   test("drops an uncredentialed fallback and never returns it as a route", async () => {
     const opts: ExplainRouteOptions = {
       rules: {},
-      defaultProvider: "fallback-no-cred",
+      defaultProvider: {
+        provider: "fallback-no-cred",
+        source: "config-file",
+        legacyAutoPromoted: false,
+      } as const,
       cachePath: STAGE5_CATALOG_FIXTURE,
     };
     const explanation = await explainRoute("no-such-model-xyz", opts);
@@ -2892,7 +3132,11 @@ describe("explainRoute", () => {
     liveModels.set("api.openai.com", ["cat-denied"]);
     const opts: ExplainRouteOptions = {
       rules: {},
-      defaultProvider: "fallback-no-cred",
+      defaultProvider: {
+        provider: "fallback-no-cred",
+        source: "config-file",
+        legacyAutoPromoted: false,
+      } as const,
       cachePath: STAGE5_CATALOG_FIXTURE,
     };
     const explanation = await explainRoute("cat-denied", opts);
@@ -2936,7 +3180,11 @@ describe("explainRoute", () => {
         target: "no-such-model-xyz",
         opts: {
           rules: {},
-          defaultProvider: "fallback-no-cred",
+          defaultProvider: {
+            provider: "fallback-no-cred",
+            source: "config-file",
+            legacyAutoPromoted: false,
+          } as const,
           cachePath: STAGE5_CATALOG_FIXTURE,
         },
       },

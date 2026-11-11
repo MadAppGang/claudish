@@ -81,15 +81,23 @@ import {
   sockRootFor,
 } from "./pane/index.js";
 import { findAvailablePort } from "./port-manager.js";
-import { readAllModelsCache } from "./providers/all-models-cache.js";
+import { readAllModelsCache, readDiskCatalog } from "./providers/all-models-cache.js";
+import {
+  bundledListActive,
+  bundledListNote,
+  bundledRecommendedModelsDoc,
+} from "./providers/bundled-list.js";
+import { settleCatalogVerdict, warmCatalog } from "./providers/catalog-client.js";
+import { bundledListEnabled } from "./providers/catalog-reachability.js";
 import { LIVE_MS } from "./providers/dynamic-models-catalog-store.js";
 import {
   type AccountModelsListSnapshot,
   loadAccountModelsLists,
   sweepAccountModelsLists,
 } from "./providers/dynamic-models-catalog.js";
-import { latestEffortRecommendations } from "./providers/effort-recommendations.js";
+import { currentEffortRecommendations } from "./providers/effort-recommendations.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
+import { OPENROUTER_MODELS_URL, fetchGatewayModels } from "./providers/gateway-models-list.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { isLocalProviderName, parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { nativeRouteFor } from "./providers/native-route.js";
@@ -277,10 +285,7 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
   }
 
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/models");
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
-    const data = await response.json();
-    const models = data.data || [];
+    const models = await fetchGatewayModels(OPENROUTER_MODELS_URL);
     try {
       writeFileAtomic(
         OPENROUTER_MODELS_CACHE_PATH,
@@ -339,6 +344,32 @@ async function getProxy(): Promise<ProxyServer> {
   })();
 
   return proxyStarting;
+}
+
+// `preflight` probes on its own proxy, started for probing (`probeProxy`): only
+// such a proxy builds a hop the probe marks as routed the way real traffic builds
+// a routing chain's hop. The proxy above serves `run_prompt` and ignores the mark.
+let probeProxyStarting: Promise<ProxyServer> | null = null;
+
+function getProbeProxy(): Promise<ProxyServer> {
+  if (probeProxyStarting) return probeProxyStarting;
+  probeProxyStarting = (async () => {
+    const port = await findAvailablePort(10000, 19999);
+    return createProxyServer(
+      port,
+      process.env.OPENROUTER_API_KEY,
+      undefined,
+      false,
+      process.env.ANTHROPIC_API_KEY,
+      undefined,
+      { quiet: true, hooks: false, hostMode: "mcp", probeProxy: true }
+    );
+  })().catch((err) => {
+    // A later preflight may retry the start.
+    probeProxyStarting = null;
+    throw err;
+  });
+  return probeProxyStarting;
 }
 
 /** Parse Anthropic SSE stream and extract text content + usage */
@@ -609,7 +640,7 @@ export function effortClarification(
   specs: readonly string[],
   efforts:
     | Readonly<Record<string, Readonly<Record<string, { effort: string }>>>>
-    | undefined = latestEffortRecommendations()?.efforts
+    | undefined = currentEffortRecommendations()?.efforts
 ): Record<string, Record<string, string>> | undefined {
   if (!efforts) return undefined;
   const out: Record<string, Record<string, string>> = {};
@@ -798,6 +829,17 @@ export interface ModelChoiceFacts {
 }
 
 /**
+ * The recommended list a model check reads: the one last stored, else the
+ * bundled recommended list while it is the catalog. Null when neither exists.
+ */
+function recommendedModelsForChoice(): RecommendedModelEntry[] | null {
+  return (
+    readLastRecommendedModels()?.models ??
+    (bundledListActive() ? bundledRecommendedModelsDoc().models : null)
+  );
+}
+
+/**
  * The facts for live calls. `lists` is the accounts' stored dynamic models
  * catalogs, loaded beforehand (`loadAccountModelsLists`, no network); absent, no
  * name is account-listed.
@@ -806,7 +848,7 @@ function liveModelChoiceFacts(
   opts: { projectRulesReadable?: boolean } = {},
   lists: AccountModelsListSnapshot = new Map()
 ): ModelChoiceFacts {
-  const recommended = readLastRecommendedModels()?.models ?? null;
+  const recommended = recommendedModelsForChoice();
   if (!recommended || recommended.length === 0) {
     log("[mcp] model check skipped: no recommended models list on disk");
   }
@@ -1668,6 +1710,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     heartbeat: true,
     handler: async (args, ctx) => {
       try {
+        await settleCatalogVerdictWithNoFile();
         const { specs, stripped } = strippedProviders(
           [args.model as string],
           new Set(args.user_required_provider === true ? [args.model as string] : [])
@@ -1725,18 +1768,26 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     inputSchema: { type: "object" },
     group: "low-level",
     handler: async () => {
+      await settleCatalogVerdictWithNoFile();
       // A failed fetch falls back to the list last written to disk, of any
       // generation, and says so; the reason goes to the log, never to stdout.
       let doc: RecommendedModelsDoc | null = null;
       let note = "";
-      try {
-        doc = await getRecommendedModels();
-        if (!doc.models || doc.models.length === 0) {
-          log("[mcp] list_models: the recommended list is empty");
-          doc = null;
+      // With no catalog file and the backend settled as unreachable, a fetch would
+      // only wait out its own timeout: go straight to the stored and bundled lists.
+      const backendUnreachable = readDiskCatalog() === null && bundledListActive();
+      if (backendUnreachable) {
+        log("[mcp] list_models: backend unreachable, recommended list not fetched");
+      } else {
+        try {
+          doc = await getRecommendedModels();
+          if (!doc.models || doc.models.length === 0) {
+            log("[mcp] list_models: the recommended list is empty");
+            doc = null;
+          }
+        } catch (err) {
+          log(`[mcp] list_models: ${err instanceof Error ? err.message : String(err)}`);
         }
-      } catch (err) {
-        log(`[mcp] list_models: ${err instanceof Error ? err.message : String(err)}`);
       }
       if (!doc) {
         doc = readLastRecommendedModels();
@@ -1749,10 +1800,19 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           );
         }
       }
+      if (!doc && bundledListActive()) {
+        const bundled = bundledRecommendedModelsDoc();
+        if (bundled.models.length > 0) {
+          doc = bundled;
+          note = `_${bundledListNote()}_`;
+          log("[mcp] list_models: answered from the bundled recommended list");
+        }
+      }
 
       // getRecommendedModels wrote the sidecar on a fetch; an older one still
-      // shows the last generation this machine read.
-      const efforts = latestEffortRecommendations();
+      // shows the last generation this machine read, unless the bundled
+      // recommended list is the catalog, which brings its own efforts.
+      const efforts = currentEffortRecommendations();
       const effortTable = efforts ? renderEffortTableMarkdown(efforts.efforts) : "";
       const listing = doc
         ? renderRecommendedMarkdown(doc)
@@ -1825,10 +1885,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       const catalogMatches = searchCatalogModels(query, Math.max(maxResults, 5));
       // What to pass: only a recommended id. A listing or catalog id outside the
       // recommended list is refused by team / create_session / run_prompt.
-      const recommendedHits = recommendedSearchMatches(
-        query,
-        readLastRecommendedModels()?.models ?? []
-      );
+      const recommendedHits = recommendedSearchMatches(query, recommendedModelsForChoice() ?? []);
       const renderRecommendedSection = (): string => {
         if (recommendedHits.length === 0) return "";
         let s = "## Recommended models (pass one of these)\n\n";
@@ -2038,7 +2095,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       // never are (see the loop), so an all-native model list must neither wait on
       // proxy startup nor throw from it.
       const needsProxy = doProbe && models.some((m) => nativeRouteFor(m) === null);
-      const proxy = needsProxy ? await getProxy() : null;
+      const proxy = needsProxy ? await getProbeProxy() : null;
 
       // Register runtime providers before ANY `route()` call below.
       //
@@ -2065,7 +2122,12 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
               proxy.url,
               // A kept hop passed the credential filter, so a miss here would be a
               // routing bug, not a missing key.
-              { provider: target.provider, modelSpec: target.probeSpec, hasCredentials: true },
+              {
+                provider: target.provider,
+                modelSpec: target.probeSpec,
+                hasCredentials: true,
+                ...(target.hopOrigin ? { hopOrigin: target.hopOrigin } : {}),
+              },
               timeoutMs
             )
         : null;
@@ -2352,6 +2414,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           throw new Error(`Unknown mode: ${mode}`);
         const path = args.path;
         if (typeof path !== "string" || !path) throw new Error(`'path' is required for '${mode}'`);
+        await settleCatalogVerdictWithNoFile();
         const givenModels = args.models as string[] | undefined;
         const givenJudges = args.judges as string[] | undefined;
         const requiredProviders = userRequiredProvidersArg(args.user_required_provider, [
@@ -2934,6 +2997,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         // reads project-local config relative to process.cwd(), so the parent
         // would decide with the wrong project's rules. process.chdir() is not
         // an option — it is process-global and races concurrent calls.
+        await settleCatalogVerdictWithNoFile();
         const { specs, stripped } = strippedProviders(
           [args.model as string],
           new Set(args.user_required_provider === true ? [args.model as string] : [])
@@ -2975,6 +3039,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         const sessionId = await sessionManager.createSession({
           model: requestedModel,
           spawnModel: plan.pinned.get(requestedModel),
+          spawnPinned: plan.pinned.has(requestedModel),
           prompt: args.prompt as string | undefined,
           timeoutSeconds: args.timeout_seconds as number | undefined,
           claudishFlags,
@@ -3526,6 +3591,14 @@ export function mcpDebugLogEnabled(
   return fromEnv === "1" || fromEnv === "true";
 }
 
+/**
+ * With no catalog file, wait for the backend's first answer so a model check in
+ * the same call reads a settled source. At most that request's own 8 s timeout.
+ */
+async function settleCatalogVerdictWithNoFile(): Promise<void> {
+  if (readDiskCatalog() === null && bundledListEnabled()) await settleCatalogVerdict();
+}
+
 async function main() {
   // FIRST, before anything can start loadHooksOnce(): descriptor 1 belongs to
   // the JSON-RPC writer alone. Every other stdout route — Bun's native
@@ -3554,6 +3627,10 @@ async function main() {
   // background. The MCP server's own proxy (run_prompt, preflight) awaits the
   // same memoised promise before it builds a handler.
   void loadHooksOnce({ hostMode: "mcp" });
+
+  // No catalog file: start the one refresh now, so the first tool call does not
+  // pay for starting it.
+  if (readDiskCatalog() === null && bundledListEnabled()) void warmCatalog();
 
   const toolMode = (process.env.CLAUDISH_MCP_TOOLS || "all").toLowerCase();
   // Inside a session a claudish owner started, one level of nesting is the limit:

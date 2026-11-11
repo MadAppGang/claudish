@@ -137,6 +137,12 @@ export interface SessionCreateOptions {
    */
   spawnModel?: string;
   /**
+   * True when `spawnModel` is the parent's pin for a bare `model` (`SpawnPlan.pinned`):
+   * the child is launched with `--model-pinned` and treats each element as a routed
+   * hop. Absent or false → the spec is passed as named.
+   */
+  spawnPinned?: boolean;
+  /**
    * The first turn. Its presence also selects the session's SHAPE:
    *
    * - given  → one-shot. Delivered once the REPL is ready; the session's verdict is

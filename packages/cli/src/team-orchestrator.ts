@@ -384,6 +384,8 @@ interface SlotEntry {
   id: string;
   model: string;
   spawnModel: string | null;
+  /** `spawnModel` is the parent's pin for `model` (`--model-pinned`) */
+  spawnPinned?: boolean;
   /** SlotRow.agent_requested: the `--agent` in the slot's flags; null = none */
   agentRequested: string | null;
   tokenFile: string;
@@ -1778,9 +1780,16 @@ async function startModelsIn(
     return effort ? [...claudeFlags, "--effort-override", effort] : claudeFlags;
   };
   const commandOf = (e: SlotEntry) =>
-    ["claudish", "-i", "--model", e.spawnModel ?? e.model, "-y", "--quiet", ...flagsOf(e)].join(
-      " "
-    );
+    [
+      "claudish",
+      "-i",
+      "--model",
+      e.spawnModel ?? e.model,
+      ...(e.spawnPinned ? ["--model-pinned"] : []),
+      "-y",
+      "--quiet",
+      ...flagsOf(e),
+    ].join(" ");
 
   /** `response-<id>.md` in one write, byte-exact; remembered so it is written once. */
   /**
@@ -2064,6 +2073,7 @@ async function startModelsIn(
         label: e.id,
         callerFlags: flagsOf(e),
         spawnModel: e.spawnModel ?? e.model,
+        spawnPinned: e.spawnPinned === true,
         cwd,
         sessionUuid: uuid,
         transcriptPath,
@@ -2158,6 +2168,7 @@ async function startModelsIn(
         id,
         model: entry.model,
         spawnModel,
+        spawnPinned: spawnPlan.pinned.has(entry.model),
         agentRequested,
         tokenFile,
         session: null,

@@ -35,6 +35,7 @@ export const DROPPED_LABEL: Record<DroppedOutcome, string> = {
   "excluded-by-membership": "not in the plan's membership",
   "excluded-by-content-use": "contributor id: content-use opt-in, type it exactly to use it",
   "unknown-provider": "unknown provider shortcut",
+  "gateway-id-unknown": "withheld",
 };
 
 /**
@@ -47,17 +48,41 @@ export function droppedRemedy(credentialHint: string | undefined): string | unde
   return /^[A-Z][A-Z0-9_]*$/.test(credentialHint) ? `set ${credentialHint}` : credentialHint;
 }
 
+/** A dropped candidate's outcome, with the sentence that outcome carries when it has one. */
+export function droppedStatus(outcome: DroppedOutcome, detail?: string): string {
+  return detail ? `${DROPPED_LABEL[outcome]}: ${detail}` : DROPPED_LABEL[outcome];
+}
+
 /** One line for a dropped candidate: its outcome, then the remedy when one is known. */
-export function describeDropped(outcome: DroppedOutcome, credentialHint?: string): string {
+export function describeDropped(
+  outcome: DroppedOutcome,
+  credentialHint?: string,
+  detail?: string
+): string {
+  const status = droppedStatus(outcome, detail);
   const remedy = droppedRemedy(credentialHint);
-  return remedy ? `${DROPPED_LABEL[outcome]} · ${remedy}` : DROPPED_LABEL[outcome];
+  return remedy ? `${status} · ${remedy}` : status;
 }
 
 /** One hop a probe sends a request down: a kept candidate and the model spec to send. */
 export type ProbeTarget = ExplainedCandidate & {
   /** The model spec the probe request carries through the proxy. */
   probeSpec: string;
+  /** `"routed"` for a hop of a bare name's routing chain; absent for an explicit spec. */
+  hopOrigin?: "routed";
 };
+
+/**
+ * The hop origin of every hop in one explanation. A catalog-gathered chain and a
+ * user rule's chain are both built by the proxy's routing step, whose hops are
+ * routed (`hopOrigin: "routed"`); an explicit spec is a one-hop chain under RB-2;
+ * a native target has no hop to send.
+ */
+export function probeHopOriginFor(explanation: RouteExplanation): "routed" | undefined {
+  return explanation.source === "catalog" || explanation.source === "user-rule"
+    ? "routed"
+    : undefined;
+}
 
 /**
  * The hops a probe sends requests down: the KEPT candidates, in chain order.
@@ -72,10 +97,15 @@ export type ProbeTarget = ExplainedCandidate & {
  * proxy serves it past its gate without `route()`. Every other hop is pinned to
  * its own provider, so each hop of a routed chain is probed on its own.
  *
+ * Every hop of a bare name's routing chain carries `hopOrigin: "routed"`, which
+ * `probeLink` sends as a header, so the probe proxy builds the hop as real traffic
+ * does. Only the explicit target is held to RB-2.
+ *
  * `probeSpec` is final: send it with `probeLink`, not `probeProviderRoute`, whose
  * second pinning would turn `poe:x` into `poe@poe:x`.
  */
 export function probeTargets(explanation: RouteExplanation): ProbeTarget[] {
+  const hopOrigin = probeHopOriginFor(explanation);
   return explanation.candidates
     .filter((candidate) => candidate.outcome === "kept")
     .map((candidate) => ({
@@ -84,6 +114,7 @@ export function probeTargets(explanation: RouteExplanation): ProbeTarget[] {
         explanation.source === "explicit"
           ? explanation.requestedModel
           : pinProbeModelSpec(candidate),
+      ...(hopOrigin ? { hopOrigin } : {}),
     }));
 }
 

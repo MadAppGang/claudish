@@ -200,9 +200,10 @@ Three consequences to know before reading its output:
   headings and leaderboards name the first kept hop, or the explanation line when there is
   none.
 
-**No catalog means local only.** With no readable catalog a bare name returns a no-route naming
-`claudish --models-refresh`. It is never guessed at `openrouter@<name>`: that sends an id
-nobody published to a metered gateway, and a RENAMED id looks identical.
+**No catalog: see [the bundled recommended list](#no-catalog-the-bundled-recommended-list).** A
+name with no catalog entry and no account-listed candidate returns a no-route naming
+`claudish --models-refresh`. It is never guessed at `openrouter@<name>`: that sends an id nobody
+published to a metered gateway, and a RENAMED id looks identical.
 
 **A dynamic subscription is invisible to the catalog, so its candidates come from its vendor
 and its account.** `antigravity`, `grok-subscription`, `sakana-subscription` and `devin` sit in
@@ -246,6 +247,85 @@ refused outright, since the explicit path (`explainExplicitSpec`) runs the same 
 resolver gets its id back unchanged, so this costs every other provider nothing. A new
 knob-encoding provider needs a resolver entry, or the filter will deny it by spelling.
 
+## No catalog: the bundled recommended list
+
+The numbered rules are in [`routing-rulebook.md`](routing-rulebook.md); RB-16 to RB-21, RB-26 and
+RB-31 are the ones this section explains.
+
+Measured on 14.18.0: an isolated install with no catalog file and a backend that never answered
+(`CLAUDISH_CATALOG_URL=http://10.255.255.1/`), holding only a Codex login, ran
+`claudish --model gpt-6.1-sol -p …` and exited 1 after 0.2 s with
+`Error: OpenAI API Key is required for model "gpt-6.1-sol"`. With a catalog file the same command
+answered in 6.5 s. A new user had no route to anything.
+
+So each release ships a list generated from the backend at the version bump
+(`providers/bundled-recommended-list.json`, `generate:bundled-list`): the five recommendation tiers
+and their efforts, and only each vendor's own direct and subscription connections. It answers only
+when no catalog file can be read and the backend is settled as unreachable. Any catalog file of any
+age wins. `CLAUDISH_DISABLE_BUNDLED_LIST=1` turns it off.
+
+**Reachability** (`catalog-reachability.ts`). Only the refresh writes it, and a caller's wait that
+times out never marks anything:
+
+| State | Means |
+|---|---|
+| `unknown` | no catalog request has answered yet |
+| `contacted` | a catalog request got a 2xx; the refresh is still running |
+| `reached` | a refresh succeeded in this process |
+| `unreachable` | the backend could not deliver a catalog: `disabled`, `transport`, `http-status` or `refresh-failed` |
+
+A slow working backend is `contacted`, never `unreachable`, so an online cold launch does not read
+the list unless its refresh fails. Only `readAllModelsCache`'s default path answers from the list.
+Readiness, freshness, the refresh compare, the memo and recommended generation checks read
+`readDiskCatalog` (RB-16).
+
+**The launch verdict wait.** With no catalog file and a bare name to route, a launch cannot tell
+offline from online, and guessing is wrong either way. `startup:catalog-verdict` waits once, before
+`startup:validate-api-keys`, for the backend's first answer. Offline that takes milliseconds (DNS
+failure, `ECONNREFUSED`) or the first request's own 8 s timeout for a black-holed address.
+`--models-skip-update` says the launch is offline, so it counts as `unreachable/disabled` with no
+wait. `--probe`, the TUI probe and MCP `preflight` make the same wait
+(`explainRouteSettled`), and the MCP server settles it before its model checks.
+
+**The one refresh wait.** On a `contacted` launch the key check can refuse because the catalog body
+has not landed yet. Only then does the launch wait for the running refresh, up to its own time
+limit, and check again: a landed refresh routes from the real catalog, a failed one counts as
+unreachable and uses the list (RB-31). A launch with a working key never waits for the refresh.
+
+**Offline order.** A chain gathered from the list runs: the vendor's own catalog subscription, then
+its own dynamic subscription, then other subscriptions an account's dynamic models catalog lists
+(any vendor), then the vendor's native API, then the fallback (RB-18). A cross-vendor catalog
+connection is never a candidate, because the list keeps none. A name outside the list is treated
+as no catalog (RB-20), and account-listed candidates still count.
+
+**The fallback offline.** The list keeps no gateway connections, so a fallback hop was never
+published for the model. It is appended only when the `defaultProvider` was actually set up: a flag,
+the env var, the config, or an OpenRouter key in any store. With the hardcoded default the hop is
+withheld as `bundled-no-default-provider` (RB-19), so nobody is billed by a gateway they did not
+choose. With no entry for the name, no fallback is appended at all (RB-14).
+
+**Gateway wire ids offline.** The list has no gateway ids, so a gateway-bound hop asks that gateway's
+own models list for an exact match at runtime (`gateway-models-list.ts`); with no exact id the hop
+is excluded as `gateway-id-unknown` (RB-4). One deadline per routing decision bounds these fetches.
+On a launch (`network: "background"`) a gateway list is never waited for: only one already in memory
+counts, and a fetch starts for the next decision (RB-29). A failed list is not remembered, so while
+a gateway is down each decision that needs it waits up to the deadline again.
+
+**Bundled data denies nothing** (RB-21). `catalogDeniesProvider` answers false, and MCP never answers
+`unknown_model` from a name's absence from the list. A recommended list check still runs offline
+against the list (`not_recommended`, RB-30).
+
+**The advisor** reads the list on a `contacted` launch too, through `withBundledListScope` around the
+same `explainRoute` and handler getters (RB-26); the main chain does not.
+
+**Display.** Everywhere a chain was built from the list names it: `--probe` (text and `--json`
+`catalogSource`), the TUI probe, MCP `preflight`, MCP `list_models`, the `[Route]` log line, the launch
+error and the advisor notice. Each gives its generation, and the fetch date where a reader chooses
+from it. A chain or handler built from the list is tagged and rebuilt once a disk catalog exists; a
+request in flight finishes on its handler. Efforts follow the same source: on the bundled list, the
+sidecar's row only for the list's generation, else the list's own; on a disk catalog, the newest
+sidecar row when it has none for the active generation (RB-23).
+
 ## Changing anything that decides a chain: the route-table gate
 
 A passing suite does not show a routing change is safe. It asserts the routes someone thought to
@@ -287,10 +367,17 @@ Set it via:
 1. CLI flag `--default-provider`
 2. `CLAUDISH_DEFAULT_PROVIDER` env var
 3. `defaultProvider` in the config file
-4. `OPENROUTER_API_KEY` present → `"openrouter"`
+4. An OpenRouter key present → `"openrouter"`
 5. Hardcoded `"openrouter"`
 
-Steps 4 and 5 route identically. They differ only in the `source` the route-table gate records.
+An OpenRouter key counts from the environment, config `apiKeys`, the Keychain or a config `op://`
+reference, checked for presence without reading a value (`openRouterKeyPresent`). A key only in a
+1Password Environment or glob import that has not been fetched in this process does not count: a
+presence check never opens the 1Password SDK.
+
+With a catalog, steps 4 and 5 route identically and differ only in the `source` the route-table gate
+records. On the bundled recommended list they differ: step 5 is nobody's choice, so its fallback hop
+is withheld.
 
 **An empty value is an answer, not a gap.** `""` at step 1, 2 or 3 disables the fallback hop and
 stops the search there, so `CLAUDISH_DEFAULT_PROVIDER=` beats a config `x`, and a flag `x` beats
@@ -465,7 +552,7 @@ no credential silo gets no routing binding, whatever its spelling (CLAUDE.md's i
 
 Claudish refreshes the v3 slim model catalog and `queryPlans` together, pins
 each page to one generation, and stores the complete snapshot in
-`~/.claudish/all-models.json`. A model's `subscriptionPlanIds[]` contains
+`~/.claudish/cloud-models-catalog-v3.json`. A model's `subscriptionPlanIds[]` contains
 commercial plan IDs such as `kimi-code`. The client joins those IDs with a
 plan's exact `route.routeId` and `route.routeProfileId`, then sends the matched
 model connection's `externalModelId` to that transport.
@@ -517,7 +604,7 @@ Name them apart, because they are different KINDS of fact:
 |---|---|---|
 | what it is | the hosted models-index metadata, keyed by canonical model id | the list one provider's discovery endpoint returns for ONE credential |
 | scope | the same for everybody | per account, per key, per seat |
-| lifetime | cached on disk in `~/.claudish/all-models.json` | on disk per account (at most 72 h); only a list at most 5 min old may deny |
+| lifetime | cached on disk in `~/.claudish/cloud-models-catalog-v3.json` | on disk per account (at most 72 h); only a list at most 5 min old may deny |
 | owns | model IDENTITY and published plan membership | ENTITLEMENT — which models this key may call |
 
 **A dynamic models catalog is persisted per account, and only a live one may deny.** After a

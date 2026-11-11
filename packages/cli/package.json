@@ -28,7 +28,8 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "test": "bun scripts/ci-tests.ts --local junit-local.xml",
-    "smoke": "bun run scripts/smoke-test.ts"
+    "smoke": "bun run scripts/smoke-test.ts",
+    "generate:bundled-list": "bun --no-env-file run scripts/generate-bundled-list.ts"
   },
   "dependencies": {
     "@1password/sdk": "0.4.1-beta.1",

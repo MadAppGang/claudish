@@ -121,6 +121,18 @@ export function isPaneChild(env: Env = process.env): boolean {
   return inMcpSession(env) && Boolean(env[ENV.CLAUDISH_PANE_CWD]);
 }
 
+/**
+ * Whether this process honours `--model-pinned`: only the pane child
+ * (`isPaneChild()`), whose launcher (`buildClaudishPaneArgv`) is the one place the flag
+ * is written. MCP and `team` callers cannot pass it (`OWN_ARGV`). Anywhere else the
+ * flag is ignored, so a typed `--model ... --model-pinned` keeps the explicit-spec
+ * path. This reads the same plain markers as `isPaneChild()`, so a user who exports
+ * both pane variables by hand still passes it; it is not a containment boundary.
+ */
+export function modelPinnedHonoured(flag: boolean | undefined, env: Env = process.env): boolean {
+  return flag === true && isPaneChild(env);
+}
+
 /** The reason in the nested refusal line. */
 export const NESTED_SESSION_REFUSAL =
   "already inside a session started by the claudish MCP server; one level of nesting is the limit";

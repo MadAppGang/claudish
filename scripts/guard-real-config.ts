@@ -535,7 +535,11 @@ for (const g of GUARDED) {
 // hosted catalog said this morning is the failure that turned two DeepSeek
 // tests red mid-release.
 //
-// `CLAUDISH_CATALOG_INCOMPATIBLE_PATH` is the fourth, and it REDIRECTS rather
+// `CLAUDISH_DISABLE_BUNDLED_LIST=1` goes with it: with the refresh off the backend
+// reads as unreachable, which is when the bundled list answers, so without this a
+// test about having no catalog would quietly route from the shipped list.
+//
+// `CLAUDISH_CATALOG_INCOMPATIBLE_PATH` is the fifth, and it REDIRECTS rather
 // than disables. The contract sentinel is state a real build writes on every
 // launch against a newer catalog, so on a developer's machine it usually
 // EXISTS — and every default-path read in the suite then sees "this catalog is
@@ -566,6 +570,7 @@ const childEnv: Record<string, string | undefined> = {
   CLAUDISH_DISABLE_KEYCHAIN: "1",
   CLAUDISH_DISABLE_OP: "1",
   CLAUDISH_DISABLE_CATALOG_WARM: "1",
+  CLAUDISH_DISABLE_BUNDLED_LIST: "1",
   CLAUDISH_CATALOG_INCOMPATIBLE_PATH: join(sentinelDir, "catalog-incompatible.json"),
 };
 for (const name of HOME_BYPASS_OVERRIDES) delete childEnv[name];

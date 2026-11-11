@@ -5,6 +5,7 @@
  * The typed call below lets the current implementation ignore the extra argument,
  * so missing list behaviour fails assertions rather than module loading.
  */
+// REQ-101: Test fallbacks carry their source without consulting machine configuration.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -482,7 +483,12 @@ describe("vendor claims and availability", () => {
         readiness: provider === "antigravity" ? "present" : "absent",
       });
 
-      const plan = await route("gemini-3.8-flash", {}, "", cachePath);
+      const plan = await route(
+        "gemini-3.8-flash",
+        {},
+        { provider: "", source: "config-file", legacyAutoPromoted: false },
+        cachePath
+      );
       expect(plan.kind).toBe("no-route");
       if (plan.kind === "no-route") {
         expect(plan.reason).toBe('No provider serves "gemini-3.8-flash" (checked: antigravity).');
@@ -720,19 +726,29 @@ describe("account-listed route candidates", () => {
 
 describe("fallback placement and no-catalog behavior", () => {
   test("does not display the qwen steering placeholder as a dashscope hop", () => {
-    const providers = buildCatalogChain("qwen3.8-max", "", cachePath).routes.map(
-      ({ provider }) => provider
-    );
+    const providers = buildCatalogChain(
+      "qwen3.8-max",
+      { provider: "", source: "config-file", legacyAutoPromoted: false },
+      cachePath
+    ).routes.map(({ provider }) => provider);
 
     expect(providers).toContain("qwen-payg");
     expect(providers).not.toContain("qwen");
   });
 
   test("appends the fallback last and does not duplicate an existing candidate", () => {
-    const missingModel = buildCatalogChain("swe-1.7", undefined, cachePath);
+    const missingModel = buildCatalogChain(
+      "swe-1.7",
+      { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+      cachePath
+    );
     expect(missingModel.routes.map(({ provider }) => provider)).toEqual(["openrouter"]);
 
-    const alreadyGathered = buildCatalogChain("gpt-6-astra", "openrouter", cachePath);
+    const alreadyGathered = buildCatalogChain(
+      "gpt-6-astra",
+      { provider: "openrouter", source: "config-file", legacyAutoPromoted: false },
+      cachePath
+    );
     expect(alreadyGathered.routes.at(-1)?.provider).toBe("openrouter");
     expect(alreadyGathered.routes.filter(({ provider }) => provider === "openrouter")).toHaveLength(
       1
@@ -741,7 +757,11 @@ describe("fallback placement and no-catalog behavior", () => {
 
   test("does not append a fallback when defaultProvider is explicitly empty", () => {
     expect(
-      buildCatalogChain("swe-1.7", "", cachePath).routes.map(({ provider }) => provider)
+      buildCatalogChain(
+        "swe-1.7",
+        { provider: "", source: "config-file", legacyAutoPromoted: false },
+        cachePath
+      ).routes.map(({ provider }) => provider)
     ).toEqual([]);
   });
 
@@ -753,9 +773,11 @@ describe("fallback placement and no-catalog behavior", () => {
       // default probe-cache path because production exposes no injection seam.
       expect(catalogDeniesProvider("openrouter", "qwen3.8-max", cachePath)).toBe(true);
       expect(
-        buildCatalogChain("qwen3.8-max", "openrouter", cachePath).routes.map(
-          ({ provider }) => provider
-        )
+        buildCatalogChain(
+          "qwen3.8-max",
+          { provider: "openrouter", source: "config-file", legacyAutoPromoted: false },
+          cachePath
+        ).routes.map(({ provider }) => provider)
       ).not.toContain("openrouter");
     }
   );
@@ -764,7 +786,12 @@ describe("fallback placement and no-catalog behavior", () => {
     const originalIsAvailable = credentials.isAvailable;
     try {
       credentials.isAvailable = async () => true;
-      const plan = await route("gpt-6-astra", { "*": [] }, "openrouter", cachePath);
+      const plan = await route(
+        "gpt-6-astra",
+        { "*": [] },
+        { provider: "openrouter", source: "config-file", legacyAutoPromoted: false },
+        cachePath
+      );
       expect(plan).toEqual({
         kind: "no-route",
         reason: 'A routing rule matched "gpt-6-astra" and named no provider.',
@@ -780,14 +807,24 @@ describe("fallback placement and no-catalog behavior", () => {
     _setCatalogEntriesForTest([]);
     try {
       credentials.isAvailable = async (provider: string) => provider === "openai";
-      const bare = await route("gpt-5", {}, undefined, missingCachePath);
+      const bare = await route(
+        "gpt-5",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        missingCachePath
+      );
       expect(bare.kind).toBe("no-route");
       if (bare.kind === "no-route") {
         expect(bare.reason).toContain("No model catalog available");
         expect(bare.hint).toContain("claudish --models-refresh");
       }
 
-      const explicit = await route("openai@gpt-5", {}, undefined, missingCachePath);
+      const explicit = await route(
+        "openai@gpt-5",
+        {},
+        { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false },
+        missingCachePath
+      );
       expect(explicit.kind).toBe("ok");
       if (explicit.kind === "ok") expect(explicit.primary.modelSpec).toBe("oai@gpt-5");
     } finally {

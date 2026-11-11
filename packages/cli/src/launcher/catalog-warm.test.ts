@@ -39,20 +39,21 @@ const refreshSpy = mock(async (_timeoutMs: number): Promise<RefreshOutcome> => {
   return mockRefreshOutcome;
 });
 
+// catalog-warm.ts reads the catalog file through readDiskCatalog; both readers
+// return the test's cache so the stub does not depend on which one is called.
 mock.module("../providers/all-models-cache.js", () => ({
+  readDiskCatalog: () => mockReadResult,
   readAllModelsCache: () => mockReadResult,
-  // The dispatcher module only imports readAllModelsCache + the type. Other
-  // exports (writeAllModelsCache, ALL_MODELS_CACHE_PATH, SlimModelEntry) are
-  // intentionally omitted — bun's mock.module replaces the whole module so we
-  // re-export only what catalog-warm.ts touches.
   writeAllModelsCache: () => undefined,
   ALL_MODELS_CACHE_PATH: "/tmp/test-all-models.json",
 }));
 
-// catalog-warm.ts now calls the module-level refreshCatalog directly — there
-// is no resolver registry to stub, so the mock is one function.
+// warmCatalogIfNeeded refreshes through refreshCatalogJoined, which reuses a warm
+// another file in this process may have started. Stubbing only refreshCatalog
+// would let that real warm answer instead of the test's outcome.
 mock.module("../providers/catalog-client.js", () => ({
   refreshCatalog: refreshSpy,
+  refreshCatalogJoined: refreshSpy,
 }));
 
 // Restore the real modules after this file's tests so the process-global

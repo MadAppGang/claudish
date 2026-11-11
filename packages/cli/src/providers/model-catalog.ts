@@ -19,7 +19,7 @@ import {
   getModelsByProvider,
   searchModels as searchModelsFromFirebase,
 } from "../model-loader.js";
-import { type SlimModelEntry, readAllModelsCache, reasoningStatusOf } from "./all-models-cache.js";
+import { type SlimModelEntry, readDiskCatalog, reasoningStatusOf } from "./all-models-cache.js";
 import { FIREBASE_CACHE_TTL_MS } from "./cache-ttl.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
@@ -235,7 +235,7 @@ function modelDocToCatalogModel(doc: ModelDoc): CatalogModel {
 function filterToServedByProvider(
   models: CatalogModel[],
   slug: string,
-  reader: () => ReturnType<typeof readAllModelsCache>
+  reader: () => ReturnType<typeof readDiskCatalog>
 ): CatalogModel[] {
   const { entries } = readSlimCacheWithFreshness(reader);
   if (entries.length === 0) return models; // cold start — don't blank the picker
@@ -304,7 +304,7 @@ export function slimEntryToCatalogModel(entry: SlimModelEntry): CatalogModel {
  * Firebase-derived data — OK to cache locally per the catalog policy.
  * TTL shared with all other Firebase caches via FIREBASE_CACHE_TTL_HOURS.
  */
-function readSlimCacheWithFreshness(reader: () => ReturnType<typeof readAllModelsCache>): {
+function readSlimCacheWithFreshness(reader: () => ReturnType<typeof readDiskCatalog>): {
   entries: SlimModelEntry[];
   stale: boolean;
 } {
@@ -329,7 +329,7 @@ export interface CatalogClientDeps {
   getModelByIdFromFirebase?: typeof getModelByIdFromFirebase;
   searchModels?: typeof searchModelsFromFirebase;
   /** Returns the parsed slim cache or null. Default reads ~/.claudish/cloud-models-catalog-v3.json. */
-  readSlimCache?: () => ReturnType<typeof readAllModelsCache>;
+  readSlimCache?: () => ReturnType<typeof readDiskCatalog>;
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
@@ -342,7 +342,7 @@ export function createCatalogClient(deps: CatalogClientDeps = {}): CatalogClient
   const _getModelsByProvider = deps.getModelsByProvider ?? getModelsByProvider;
   const _getModelByIdFromFirebase = deps.getModelByIdFromFirebase ?? getModelByIdFromFirebase;
   const _searchModels = deps.searchModels ?? searchModelsFromFirebase;
-  const _readSlimCache = deps.readSlimCache ?? readAllModelsCache;
+  const _readSlimCache = deps.readSlimCache ?? readDiskCatalog;
 
   return {
     async modelsByVendor(vendorSlug: string): Promise<CatalogModel[]> {

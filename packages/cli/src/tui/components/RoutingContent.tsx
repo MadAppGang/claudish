@@ -32,6 +32,7 @@ const DROPPED_TEXT: Record<DroppedOutcome, string> = {
   "excluded-by-membership": "not in the plan's membership",
   "excluded-by-content-use": "contributor id: content-use opt-in, type it exactly to use it",
   "unknown-provider": "unknown provider shortcut",
+  "gateway-id-unknown": "withheld: no exact id in the gateway's models list",
 };
 
 /**
@@ -159,7 +160,9 @@ const FALLBACK_SOURCE_LABEL: Record<DefaultProviderSource, string> = {
   "cli-flag": "--default-provider",
   "env-var": "CLAUDISH_DEFAULT_PROVIDER",
   "config-file": "config",
-  // Both route identically: "no preference" takes openrouter.
+  // With a catalog file both route alike: "no preference" takes openrouter. On the
+  // bundled recommended list they differ: an OpenRouter key sets the fallback hop
+  // up and is appended, the hardcoded default is withheld.
   "openrouter-key": "default",
   hardcoded: "default",
 };

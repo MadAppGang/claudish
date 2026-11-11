@@ -761,6 +761,14 @@ classifier reads. `network-recovery.md` §7 accepts ~300 client attempts only wh
 the banner; a headless pane has no viewer. Tier 1's hold still runs; an exhausted episode answers an
 inline 400 and the slot is FAILED `api_error`.
 
+**A pinned slot keeps the hops its parent chose.** The parent pins its credential-filtered chain
+into the child as explicit specs (`pinSpecFor`, `joinPinnedChain`), so a bare child never opens its
+own 1Password client per slot. The child is launched with `--model-pinned` beside the pin, so its
+proxy treats each element, a one-spec pin included, as a routed hop and not as a spec the user
+typed (`routing-rulebook.md` RB-27). A slot spawned while the parent reads the bundled recommended list
+therefore keeps those hops for its life, even after the backend returns. Its handlers rebuild from
+the disk catalog once one exists; only the choice of hops is fixed.
+
 ## Terminal size
 
 **The size is the viewer's, not ours.** Every pane used to be born 160×50 and stay there, so a

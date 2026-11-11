@@ -81,7 +81,12 @@ import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import type { AggregatorEntry } from "../model-loader.js";
 import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
 import { resolveAntigravityServedModel } from "./antigravity-model-id.js";
-import { externalIdFor, getCatalogEntries, isMovingPointer } from "./catalog-client.js";
+import {
+  externalIdFor,
+  getCatalogEntries,
+  getCatalogSnapshot,
+  isMovingPointer,
+} from "./catalog-client.js";
 import {
   CATALOG_ROUTE_BINDINGS,
   type CatalogRouteBinding,
@@ -169,8 +174,26 @@ export interface CandidateGathering {
    * yet still has a last-resort fallback, because absence from a catalog that
    * IS readable is only denial for a route the catalog owns (see
    * `routing-rules.ts`, the fallback append).
+   *
+   * False too for a name the bundled recommended list lacks: that list is a
+   * trimmed subset, so its silence is no statement about the name, exactly as if
+   * no catalog could be read.
    */
   catalogReadable: boolean;
+  /** Which catalog answered: a disk catalog, the bundled recommended list, or none. */
+  catalogOrigin: "disk" | "bundled" | "none";
+}
+
+/** The catalog one routing decision reads: `cachePath`'s file, else the default path's. */
+function catalogSourceFor(cachePath: string | undefined): {
+  entries: SlimModelEntry[] | null;
+  origin: CandidateGathering["catalogOrigin"];
+} {
+  if (cachePath) {
+    const cache = readAllModelsCache(cachePath);
+    return cache ? { entries: cache.entries, origin: "disk" } : { entries: null, origin: "none" };
+  }
+  return getCatalogSnapshot() ?? { entries: null, origin: "none" };
 }
 
 /**
@@ -208,7 +231,10 @@ function routeLabel(route: CatalogRouteBinding | undefined): string {
  * for the same reason. Exact always wins, so a case-folded collision can never
  * displace a real id.
  */
-function findCatalogEntry(entries: SlimModelEntry[], model: string): SlimModelEntry | undefined {
+export function findCatalogEntry(
+  entries: SlimModelEntry[],
+  model: string
+): SlimModelEntry | undefined {
   const exact = entries.find((entry) => entry.modelId === model);
   if (exact) return exact;
   const byAlias = entries.find((entry) => entry.aliases.includes(model));
@@ -385,7 +411,7 @@ function connectionCandidate(
  * both are an absence of evidence, and this flag's only job is to promote a
  * candidate, so an absence must never promote one.
  */
-function isVendorOwnRoute(
+export function isVendorOwnRoute(
   route: CatalogRouteBinding | undefined,
   entry: SlimModelEntry | undefined
 ): boolean {
@@ -626,7 +652,7 @@ export function gatherRouteCandidates(
   cachePath?: string,
   lists: AccountModelsListSnapshot = new Map()
 ): CandidateGathering {
-  const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
+  const { entries, origin } = catalogSourceFor(cachePath);
   const entry = entries ? findCatalogEntry(entries, model) : undefined;
 
   const gathered: RouteCandidate[] = [];
@@ -668,7 +694,8 @@ export function gatherRouteCandidates(
     excluded,
     unmappedRoutes: [...unmappedRoutes],
     catalogMiss: entry === undefined,
-    catalogReadable: entries !== null && entries !== undefined,
+    catalogReadable: entries !== null && !(origin === "bundled" && entry === undefined),
+    catalogOrigin: origin,
   };
 }
 
@@ -692,7 +719,9 @@ export function gatherRouteCandidates(
  *     its silence says nothing;
  *   - no probe map cached → route ownership is unknown, so nothing is denied.
  *     The cost is one hop that may 404, which is exactly today's behaviour;
- *     the alternative is dropping a real route on missing evidence.
+ *     the alternative is dropping a real route on missing evidence;
+ *   - the bundled recommended list answered → its connections are trimmed to the
+ *     vendor's own, so absence from them proves nothing.
  *
  * This is NOT the availability filter and does not duplicate it.
  * `providerServesModel` may never conclude "not served" from the catalog alone
@@ -710,8 +739,8 @@ export function catalogDeniesProvider(
   if (!catalogRouteForProvider(provider)) return false;
   if (routeOwnership(provider) !== "backend-owned") return false;
 
-  const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
-  if (!entries) return false;
+  const { entries, origin } = catalogSourceFor(cachePath);
+  if (!entries || origin === "bundled") return false;
   const entry = findCatalogEntry(entries, model);
   if (!entry) return false;
 

@@ -1,13 +1,18 @@
 import { useCallback, useState } from "react";
+import { bundledListLabel } from "../../providers/bundled-list-data.js";
+import { explainRouteSettled } from "../../providers/explain-route-settled.js";
 import { prepareMuseLoginForTuiAction } from "../../providers/meta-muse/muse-credentials.js";
 import { NATIVE_NOT_PROBED } from "../../providers/native-route.js";
 import { describeProbeState } from "../../providers/probe-live.js";
-import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../../providers/probe-runner.js";
+import {
+  INTERACTIVE_PROBE_TIMEOUT_MS,
+  probeHopOriginFor,
+  probeProviderRoute,
+} from "../../providers/probe-runner.js";
 import {
   type FallbackWithheld,
   type RouteExplanation,
   describeRouteExplanation,
-  explainRoute,
 } from "../../providers/routing-rules.js";
 import { ensureProbeProxy } from "../probe-proxy.js";
 import type { ProbeEntry, ProbeMode, ProbeSummary } from "../types.js";
@@ -19,6 +24,8 @@ import type { ProbeEntry, ProbeMode, ProbeSummary } from "../types.js";
 const FALLBACK_WITHHELD_NOTE: Record<FallbackWithheld, string> = {
   disabled: 'No fallback hop: the default provider is set to "".',
   "catalog-unreadable": "No fallback hop: there is no cloud models catalog to check it against.",
+  "bundled-no-default-provider":
+    "No fallback hop: the bundled recommended list is in use and no default provider or OpenRouter key is set up.",
   "already-gathered": "No separate fallback hop: that provider is already a catalog candidate.",
   "catalog-denies": "No fallback hop: the catalog maps that provider no connection to this model.",
 };
@@ -67,6 +74,11 @@ export function probeRowsFrom(explanation: RouteExplanation): ProbeView {
     return { summary, rows };
   }
 
+  if (explanation.catalogSource === "bundled") {
+    summary.notes.push(
+      `No cloud models catalog could be read: routed from the ${bundledListLabel()}.`
+    );
+  }
   if (explanation.catalog === "found" && explanation.fallbackWithheld) {
     summary.notes.push(FALLBACK_WITHHELD_NOTE[explanation.fallbackWithheld]);
   }
@@ -75,6 +87,7 @@ export function probeRowsFrom(explanation: RouteExplanation): ProbeView {
     summary.noRoute = hint !== undefined ? { reason, hint } : { reason };
   }
 
+  const hopOrigin = probeHopOriginFor(explanation);
   const rows = explanation.candidates.map((candidate): ProbeEntry => {
     const row: ProbeEntry = {
       provider: candidate.provider,
@@ -82,6 +95,7 @@ export function probeRowsFrom(explanation: RouteExplanation): ProbeView {
       modelSpec: candidate.modelSpec,
       position: candidate.position,
       ...(candidate.tier !== undefined ? { tier: candidate.tier } : {}),
+      ...(hopOrigin ? { hopOrigin } : {}),
       status: "pending",
     };
     if (candidate.outcome !== "kept") {
@@ -126,7 +140,7 @@ export function probeQueue(rows: ProbeEntry[]): ProbeQueueItem[] {
  */
 async function probeViewFor(model: string): Promise<ProbeView> {
   try {
-    return probeRowsFrom(await explainRoute(model));
+    return probeRowsFrom(await explainRouteSettled(model));
   } catch (err) {
     return {
       summary: {
@@ -287,6 +301,7 @@ export function useRouteProbe(): UseRouteProbeReturn {
 
         for (const link of queue) {
           const i = link.index;
+          const hopOrigin = rows[i]?.hopOrigin;
           // Mark current as testing
           setProbeResults((prev) =>
             prev.map((e, idx) => (idx === i ? { ...e, status: "testing" } : e))
@@ -300,6 +315,7 @@ export function useRouteProbe(): UseRouteProbeReturn {
               // A kept hop passed explainRoute's credential filter, the only
               // credential check; the proxy resolves the key itself.
               hasCredentials: true,
+              ...(hopOrigin ? { hopOrigin } : {}),
             },
             INTERACTIVE_PROBE_TIMEOUT_MS
           ).catch((e) => ({

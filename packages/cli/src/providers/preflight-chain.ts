@@ -17,11 +17,13 @@
  */
 import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import { redactSecrets } from "../redact.js";
+import { bundledListLabel } from "./bundled-list-data.js";
+import { explainRouteSettled } from "./explain-route-settled.js";
 import { isLocalProviderName } from "./model-parser.js";
 import { NATIVE_NOT_PROBED, nativeRouteFor } from "./native-route.js";
 import { type ProbeChainReason, type ProbeResult, describeProbeState } from "./probe-live.js";
 import { type ProbeTarget, probeTargets } from "./probe-runner.js";
-import { type NoRouteCause, type RouteExplanation, explainRoute } from "./routing-rules.js";
+import type { NoRouteCause, RouteExplanation } from "./routing-rules.js";
 
 /** How a hop bills. */
 export type HopBilling = "subscription" | "metered" | "local";
@@ -52,7 +54,7 @@ export interface PreflightHop {
   reason?: WalkerReason;
 }
 
-export type PreflightModelResult =
+export type PreflightModelResult = (
   | { kind: "native"; model: string; displayName: string; modelSpec: string }
   | { kind: "no-route"; model: string; cause: NoRouteCause; reason: string; hint?: string }
   /** Routing itself threw. */
@@ -75,12 +77,16 @@ export type PreflightModelResult =
       heldAt?: PreflightHop;
       untried: number;
       total: number;
-    };
+    }
+) & {
+  /** Set when this decision read the bundled recommended list. */
+  catalogSource?: "bundled";
+};
 
 export interface PreflightDeps {
   /** null = `probe: false`: plan only, send nothing. */
   probe: ((target: ProbeTarget) => Promise<ProbeResult>) | null;
-  /** Default `explainRoute`. */
+  /** Default {@link explainRouteSettled}. */
   explain?: (model: string) => Promise<RouteExplanation>;
   /** Called before each hop is probed (progress reporting). */
   onHop?: (hop: PreflightHop, total: number) => void;
@@ -121,7 +127,7 @@ export async function preflightModel(
 
   let explanation: RouteExplanation;
   try {
-    explanation = await (deps.explain ?? explainRoute)(model);
+    explanation = await (deps.explain ?? explainRouteSettled)(model);
   } catch (err) {
     return {
       kind: "route-error",
@@ -129,6 +135,16 @@ export async function preflightModel(
       message: redactSecrets(err instanceof Error ? err.message : String(err)),
     };
   }
+  const result = await resultForExplanation(model, explanation, deps);
+  return explanation.catalogSource === "bundled" ? { ...result, catalogSource: "bundled" } : result;
+}
+
+/** A routed model's result: its no-route, or its kept hops walked in chain order. */
+async function resultForExplanation(
+  model: string,
+  explanation: RouteExplanation,
+  deps: PreflightDeps
+): Promise<PreflightModelResult> {
   const { outcome } = explanation;
   if (outcome.kind === "no-route") {
     return {
@@ -301,9 +317,14 @@ export function renderPreflightReport(
   const subCount = billings.filter((b) => b === "subscription").length;
   const meteredCount = billings.filter((b) => b === "metered").length;
 
+  const source = results.some((r) => r.catalogSource === "bundled")
+    ? [`No cloud models catalog could be read: routed from the ${bundledListLabel()}.`, ""]
+    : [];
+
   const lines = [
     `# Preflight — ${results.length} model${results.length === 1 ? "" : "s"}`,
     "",
+    ...source,
     `**Ready: ${ready}** · **Failed: ${dropped.length}** · ` +
       (native > 0 ? `native (not probed): ${native} · ` : "") +
       `subscription: ${subCount} · metered: ${meteredCount}`,

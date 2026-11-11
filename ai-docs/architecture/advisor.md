@@ -435,9 +435,13 @@ Deliberate deviations from main routing:
 - **Explicit specs get the availability check at startup**, stricter than a main request. Where
   the provider cannot answer (`openai-codex` has no discovery), the hop is kept, as on main; a
   model the Codex account lacks is then an S7 carrying Codex's own (redacted) message.
-- **A cold catalog refuses a bare member at launch** (`catalog-unreadable`), which is the
-  runtime's answer too. The cold-catalog WARNING (`index.ts`) names only explicit-spec members,
-  whose provider was taken as written.
+- **A cold catalog plans a bare member from the bundled recommended list** (RB-26), whatever the
+  reachability verdict, through `withBundledListScope` around the same `explainRoute` and handler
+  getters as the main chain; the main chain does not read the list on a `contacted` launch. The plan
+  is kept for the session like every advisor plan, and the notice names the list. A member outside
+  the list, or a launch with the list off, is still refused (`catalog-unreadable`), which is the
+  runtime's answer too. The cold-catalog WARNING (`index.ts`) names only explicit-spec members, whose
+  provider was taken as written.
 
 ### Stickiness is main routing's, and it is not silent
 

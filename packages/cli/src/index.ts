@@ -17,6 +17,7 @@ import {
   assertNotNested,
   assertPaneChildInteractive,
   isPaneChild,
+  modelPinnedHonoured,
   paneChildBootNotes,
 } from "./pane/child-env.js";
 
@@ -733,6 +734,7 @@ async function runCli() {
   const {
     resolveModelProvider,
     validateApiKeysForModels,
+    awaitsCatalogBody,
     getMissingKeyResolutions,
     getMissingKeysError,
   } = await import("./providers/provider-resolver.js");
@@ -744,7 +746,9 @@ async function runCli() {
   const { createProxyServer } = await import("./proxy-server.js");
   const { checkForUpdatesInteractive } = await import("./update-prompt.js");
   const { printLogo } = await import("./branding.js");
-  const { warmCatalogIfNeeded } = await import("./launcher/catalog-warm.js");
+  const { settleLaunchCatalogVerdict, warmCatalogIfNeeded } = await import(
+    "./launcher/catalog-warm.js"
+  );
   endImports();
 
   /**
@@ -974,6 +978,10 @@ async function runCli() {
     // Initialize logger: always-on structural logging + optional debug logging
     initLogger(cliConfig.debug, cliConfig.logLevel, cliConfig.noLogs);
     for (const note of paneChildBootNotes()) log(note);
+    if (cliConfig.modelPinned && !modelPinnedHonoured(cliConfig.modelPinned)) {
+      log("[model-pin] --model-pinned ignored: honoured only in a pane child claudish started");
+      cliConfig.modelPinned = undefined;
+    }
 
     // Initialize telemetry (reads consent, generates session_id)
     // Must come after parseArgs() so cliConfig.interactive is known
@@ -1085,6 +1093,11 @@ async function runCli() {
       process.exit(1);
     }
 
+    // No catalog file and a bare name to route: learn whether the backend can be
+    // reached before the first routing decision below, which needs the answer.
+    const endCatalogVerdict = beginSpan("startup:catalog-verdict");
+    endCatalogVerdict({ outcome: await settleLaunchCatalogVerdict(cliConfig) });
+
     // === API Key Validation ===
     // This happens AFTER model selection so we know exactly which provider(s) are being used
     // The centralized ProviderResolver handles all provider detection and key requirements
@@ -1113,11 +1126,21 @@ async function runCli() {
       //   - a missing key an op:// source supplies → resolved + written to env
       // parseArgs has already exited terminal flags, so --version etc. never
       // reach here at all (laziness preserved without an ordering chokepoint).
-      const resolutions = await traceSpan(
+      let resolutions = await traceSpan(
         "startup:validate-api-keys",
         () => validateApiKeysForModels(modelsToValidate),
         { models: modelsToValidate.filter((m) => typeof m === "string").length }
       );
+      // Refused only because the catalog is still on its way: the backend answered,
+      // so wait for this refresh and decide again. A launch that is not refused
+      // never waits here.
+      if (getMissingKeyResolutions(resolutions).some(awaitsCatalogBody)) {
+        const { settleCatalogRefresh } = await import("./providers/catalog-client.js");
+        await traceSpan("startup:catalog-settle", () => settleCatalogRefresh());
+        resolutions = await traceSpan("startup:validate-api-keys-after-refresh", () =>
+          validateApiKeysForModels(modelsToValidate)
+        );
+      }
       const missingKeys = getMissingKeyResolutions(resolutions);
 
       if (missingKeys.length > 0) {
@@ -1259,11 +1282,12 @@ async function runCli() {
         // the catalog is whatever the disk holds. It can be COLD — no cache yet,
         // `--models-skip-update`, a local or explicit main model, or a cache
         // claudish could not read.
-        // A BARE member is then refused above (routing answers `catalog-unreadable`),
-        // so only an explicit `provider@model` member can have passed without the
-        // catalog: its provider was taken as written. Say which ones.
-        const { getCatalogEntries } = await import("./providers/catalog-client.js");
-        if (getCatalogEntries() === null) {
+        // A BARE member is then planned from the bundled recommended list, and its
+        // notice line says so, or refused above (`catalog-unreadable`). An explicit
+        // `provider@model` member passed with no catalog read at all: its provider
+        // was taken as written. Say which ones.
+        const { readDiskCatalog } = await import("./providers/all-models-cache.js");
+        if (readDiskCatalog() === null) {
           const unverified = [...decision.runtime.plans.values()]
             .filter((p) => p.kind === "routed" && p.invocationMode === "explicit-model")
             .map((p) => p.spec);
@@ -1382,6 +1406,7 @@ async function runCli() {
           // Present only when `--model` was a pinned chain; `explicitModel` above
           // is its first element, so the proxy can match the two.
           modelChain: cliConfig.monitor ? undefined : cliConfig.modelChain,
+          modelChainPinned: cliConfig.monitor ? undefined : cliConfig.modelPinned,
           classifier: resolveClassifierConfig(cliConfig, process.env),
           effortOverride: cliConfig.effortOverride,
           modelParams: cliConfig.modelParams,

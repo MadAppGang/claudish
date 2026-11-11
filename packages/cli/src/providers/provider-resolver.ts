@@ -26,6 +26,8 @@
  */
 
 import { credentials } from "../auth/credentials/authority.js";
+import { type BundledProvenance, bundledProvenance } from "./bundled-list-data.js";
+import { type Reachability, catalogReachability } from "./catalog-reachability.js";
 import {
   AUTO_ROUTE_PROVIDER,
   type ParsedModel,
@@ -34,6 +36,7 @@ import {
   parseModelSpec,
 } from "./model-parser.js";
 import { renderOpFailureNotice } from "./onepassword.js";
+import { DROPPED_LABEL } from "./probe-runner.js";
 import {
   getApiKeyInfo as getApiKeyInfoFromDefs,
   getDisplayName as getDisplayNameFromDefs,
@@ -42,7 +45,14 @@ import { parseUrlModel, resolveProvider } from "./provider-registry.js";
 import { resolveRemoteProvider } from "./remote-provider-registry.js";
 import { buildCredentialHint } from "./routing-hints.js";
 // routing-rules does NOT import provider-resolver, so this stays acyclic.
-import { type RoutePlan, route } from "./routing-rules.js";
+import {
+  type CandidateOutcome,
+  type FallbackWithheld,
+  type NoRouteCause,
+  type RouteExplanation,
+  type RoutePlan,
+  routeExplained,
+} from "./routing-rules.js";
 
 /**
  * Provider category types
@@ -93,6 +103,20 @@ export interface ProviderResolution {
   wasAutoRouted?: boolean;
   /** Human-readable auto-routing decision message */
   autoRouteMessage?: string;
+  /** Set when the routing verdict, not a missing key, is why this model cannot start. */
+  routeRefusal?: RouteRefusal;
+}
+
+/** Why routing could not start a model, when the catalog's state is the reason to say so. */
+export interface RouteRefusal {
+  cause: NoRouteCause;
+  reason: string;
+  hint?: string;
+  catalogSource: "disk" | "bundled" | "none";
+  /** The verdict at the moment of the refusal. */
+  reachability: Reachability;
+  dropped: ReadonlyArray<{ displayName: string; outcome: Exclude<CandidateOutcome, "kept"> }>;
+  fallbackWithheld?: FallbackWithheld;
 }
 
 /**
@@ -415,6 +439,39 @@ export async function validateApiKeysForModels(
 /** The routing oracle `rescueRoutableResolutions` consults (test seam). */
 export type RouteOracle = (spec: string) => Promise<RoutePlan>;
 
+/** What `rescueRoutableResolutions` consults: a plan, and why it came out that way. */
+export type RescueOracle = (
+  spec: string
+) => Promise<{ plan: RoutePlan; explanation?: RouteExplanation }>;
+
+/**
+ * The refusal for a bare name routing could not place because of the catalog: none
+ * could be read, or the bundled list answered and left no hop. Only a chain the
+ * catalog gathered is one. An explicit spec names its provider, so a missing key
+ * is the true reason; a user rule's hops are the user's own, so the catalog's
+ * state is not why they failed.
+ */
+function routeRefusalFrom(explanation: RouteExplanation): RouteRefusal | undefined {
+  const { outcome } = explanation;
+  if (outcome.kind !== "no-route" || explanation.source !== "catalog") return undefined;
+  if (outcome.cause !== "catalog-unreadable" && explanation.catalogSource !== "bundled") {
+    return undefined;
+  }
+  return {
+    cause: outcome.cause,
+    reason: outcome.reason,
+    ...(outcome.hint !== undefined ? { hint: outcome.hint } : {}),
+    catalogSource: explanation.catalogSource ?? "none",
+    reachability: catalogReachability(),
+    dropped: explanation.candidates.flatMap(({ displayName, outcome: candidateOutcome }) =>
+      candidateOutcome === "kept" ? [] : [{ displayName, outcome: candidateOutcome }]
+    ),
+    ...(explanation.fallbackWithheld !== undefined
+      ? { fallbackWithheld: explanation.fallbackWithheld }
+      : {}),
+  };
+}
+
 /**
  * Let the routing chain overturn a "missing API key" verdict.
  *
@@ -441,19 +498,28 @@ export type RouteOracle = (spec: string) => Promise<RoutePlan>;
  */
 export async function rescueRoutableResolutions(
   resolutions: ProviderResolution[],
-  router: RouteOracle = route
+  router: RescueOracle = routeExplained
 ): Promise<void> {
   await Promise.all(
     resolutions.map(async (r) => {
       if (!r.requiredApiKeyEnvVar || r.apiKeyAvailable) return;
       try {
-        const plan = await router(r.fullModelId);
+        const { plan, explanation } = await router(r.fullModelId);
         if (plan.kind === "ok") r.apiKeyAvailable = true;
+        else if (explanation) r.routeRefusal = routeRefusalFrom(explanation);
       } catch {
         // Routing is best-effort here — a hiccup must not turn a servable model
         // into a hard startup failure, and must not mask a genuine missing key.
       }
     })
+  );
+}
+
+/** Whether this refusal ends once the running catalog refresh lands or fails. */
+export function awaitsCatalogBody(resolution: ProviderResolution): boolean {
+  return (
+    resolution.routeRefusal?.cause === "catalog-unreadable" &&
+    resolution.routeRefusal.reachability.state === "contacted"
   );
 }
 
@@ -474,6 +540,8 @@ export function getMissingKeyResolutions(resolutions: ProviderResolution[]): Pro
  * @returns Formatted error message
  */
 export function getMissingKeyError(resolution: ProviderResolution): string {
+  if (resolution.routeRefusal) return describeRouteRefusal(resolution, resolution.routeRefusal);
+
   // Handle unknown provider
   if (resolution.category === "unknown") {
     return [
@@ -567,6 +635,56 @@ export function getMissingKeyError(resolution: ProviderResolution): string {
   return lines.join("\n");
 }
 
+/** Why no catalog is available, for a sentence starting "no catalog is on disk and". */
+function whyNoCatalog(reachability: Reachability): string {
+  if (reachability.state !== "unreachable") return "no catalog could be read";
+  const detail = reachability.detail ? ` (${reachability.detail})` : "";
+  return reachability.reason === "disabled"
+    ? `catalog refresh is turned off${detail}`
+    : `the models-index backend is unreachable${detail}`;
+}
+
+const REFUSAL_REMEDY =
+  "  Run `claudish --models-refresh` once online, or name the provider explicitly (provider@model).";
+
+/** The bundled recommended list, with the release and generation it came from when known. */
+function bundledListNameFor(provenance: BundledProvenance | null): string {
+  if (!provenance) return "the bundled recommended list";
+  return `the bundled recommended list (claudish ${provenance.version}, generation ${provenance.generationId})`;
+}
+
+/**
+ * The launch error for a bare name the catalog's state keeps from routing. A vendor
+ * key is not the cause here, so the error does not ask for one.
+ */
+function describeRouteRefusal(resolution: ProviderResolution, refusal: RouteRefusal): string {
+  const name = resolution.fullModelId;
+  const head = `Error: "${name}" cannot be routed: no cloud models catalog is on disk and ${whyNoCatalog(refusal.reachability)}`;
+
+  const provenance = refusal.catalogSource === "bundled" ? bundledProvenance() : null;
+  const listName = bundledListNameFor(provenance);
+
+  if (refusal.catalogSource === "bundled" && refusal.cause !== "catalog-unreadable") {
+    const lines = [
+      `${head}, and`,
+      `  no configured provider can serve "${name}" from ${listName}.`,
+      ...refusal.dropped.map(
+        ({ displayName, outcome }) => `    ${displayName}: ${DROPPED_LABEL[outcome]}`
+      ),
+      REFUSAL_REMEDY,
+    ];
+    if (refusal.hint && refusal.fallbackWithheld !== "bundled-no-default-provider") {
+      lines.push("", refusal.hint);
+    }
+    return lines.join("\n");
+  }
+
+  if (provenance) {
+    return [`${head}, and "${name}" is`, `  not in ${listName}.`, REFUSAL_REMEDY].join("\n");
+  }
+  return [`${head}.`, REFUSAL_REMEDY].join("\n");
+}
+
 /**
  * Generate combined error message for multiple missing keys
  *
@@ -584,7 +702,21 @@ export function getMissingKeysError(resolutions: ProviderResolution[]): string {
     return getMissingKeyError(missing[0]);
   }
 
-  // Multiple missing keys
+  const refused = missing.filter((r) => r.routeRefusal);
+  if (refused.length > 0) {
+    const others = missing.filter((r) => !r.routeRefusal);
+    return [
+      ...refused.map(getMissingKeyError),
+      ...(others.length === 1 ? [getMissingKeyError(others[0])] : []),
+      ...(others.length > 1 ? [multipleMissingKeysText(others)] : []),
+    ].join("\n\n");
+  }
+
+  return multipleMissingKeysText(missing);
+}
+
+/** The "Multiple API keys" grouping, one block per environment variable. */
+function multipleMissingKeysText(missing: ProviderResolution[]): string {
   const lines: string[] = [];
   lines.push("Error: Multiple API keys are required for the configured models:");
   lines.push("");

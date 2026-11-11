@@ -107,6 +107,8 @@ export interface ProbeEntry {
   tier?: RouteTier;
   /** `fallback`: the fallback hop's position, whichever provider holds it. */
   position?: "candidate" | "fallback";
+  /** `"routed"` for a hop of a bare name's routing chain; absent for an explicit spec. */
+  hopOrigin?: "routed";
   error?: string;
   ms?: number;
 }

@@ -66,6 +66,8 @@ export interface ProbeDroppedLink {
   outcome: DroppedOutcome;
   /** The remedy, for a candidate the credential filter dropped. */
   credentialHint?: string;
+  /** Why a withheld gateway hop has no wire id. */
+  detail?: string;
   /** A no-credential candidate whose credential is not an env var (`effectiveLabel`). */
   provenance?: KeyProvenance;
 }
@@ -128,6 +130,16 @@ function keptLinkOf(candidate: ExplainedCandidate, credentials: CredentialLookup
   };
 }
 
+/** The sentence a withheld gateway hop shows after its `withheld` label. */
+function gatewayWithheldNote(candidate: ExplainedCandidate): string {
+  if (candidate.gatewayHasNoList) {
+    return `claudish reads no models list for this gateway, so it has no exact id for ${candidate.wireId}`;
+  }
+  return candidate.gatewayListUnreadable
+    ? "the gateway's models list could not be read"
+    : `the gateway's models list has no exact id for ${candidate.wireId}`;
+}
+
 function droppedLinkOf(
   candidate: ExplainedCandidate,
   outcome: DroppedOutcome,
@@ -148,6 +160,7 @@ function droppedLinkOf(
     label: hopLabel(candidate),
     outcome,
     ...(hint ? { credentialHint: hint } : {}),
+    ...(outcome === "gateway-id-unknown" ? { detail: gatewayWithheldNote(candidate) } : {}),
     ...(provenance?.effectiveLabel ? { provenance } : {}),
   };
 }
@@ -231,6 +244,7 @@ export function resultLinksFrom(
         // filter runs before the availability filter, and membership before both.
         hasCredentials: entry.outcome === "not-served",
         ...(entry.credentialHint ? { credentialHint: entry.credentialHint } : {}),
+        ...(entry.detail ? { droppedDetail: entry.detail } : {}),
         dropped: entry.outcome,
         ...withKeyLine(entry.provenance),
       })
