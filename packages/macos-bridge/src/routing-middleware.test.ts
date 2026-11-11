@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Import runtime code only after the child's HOME has been isolated.
+// catalog: "file" writes a catalog file; "none" has no catalog file and the bundled
+// recommended list off; "bundled" has no catalog file, the backend unreachable
+// (warm disabled) and the bundled recommended list on.
 test.each([
-  ["oai/gpt-6.1-sol", true, "https://api.openai.com/v1/responses", "max_output_tokens"],
-  ["openai/gpt-6.1-sol", true, "https://openrouter.ai/api/v1/chat/completions", "max_tokens"],
-  ["oai/gpt-6.1-sol", false, "https://api.openai.com/v1/chat/completions", "max_tokens"],
+  ["oai/gpt-6.1-sol", "file", "https://api.openai.com/v1/responses", "max_output_tokens"],
+  ["openai/gpt-6.1-sol", "file", "https://openrouter.ai/api/v1/chat/completions", "max_tokens"],
+  ["oai/gpt-6.1-sol", "none", "https://api.openai.com/v1/chat/completions", "max_tokens"],
+  ["oai/gpt-6.1-sol", "bundled", "https://api.openai.com/v1/responses", "max_output_tokens"],
 ] as const)(
   "bridge %s with catalog=%s uses the expected upstream wire",
   (model, catalog, endpoint, limit) => {
@@ -26,7 +30,7 @@ test.each([
       import { ALL_MODELS_CACHE_PATH, writeAllModelsCache } from ${source("../../cli/src/providers/all-models-cache.ts")};
       import { getRegisteredRemoteProviders } from ${source("../../cli/src/providers/remote-provider-registry.ts")};
       assert.ok(ALL_MODELS_CACHE_PATH.startsWith(process.env.HOME + "/"));
-      if (${catalog}) writeAllModelsCache(JSON.parse(readFileSync(${source("../../cli/src/test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json")}, "utf8")));
+      if (${JSON.stringify(catalog)} === "file") writeAllModelsCache(JSON.parse(readFileSync(${source("../../cli/src/test-fixtures/catalog-v3/wire-g-20261012101007285-7770c36e.json")}, "utf8")));
       const bridge = new RoutingMiddleware({}, {openai: "fake", openrouter: "fake"});
       // Bun eval strips TypeScript privacy; exercise the handler without a listener.
       const handler = bridge.createHandlerForModel(${JSON.stringify(model)});
@@ -46,7 +50,7 @@ test.each([
         for (const field of ["max_tokens", "max_output_tokens", "max_completion_tokens"]) {
           if (field !== ${JSON.stringify(limit)}) assert.equal(calls[0].body[field], undefined);
         }
-        if (!${catalog}) {
+        if (${JSON.stringify(catalog)} === "none") {
           const remote = getRegisteredRemoteProviders().find(p => p.name === "openai");
           assert.equal(calls[0].url, remote.baseUrl + remote.apiPath);
         }
@@ -60,6 +64,7 @@ test.each([
             CLAUDISH_DISABLE_CATALOG_WARM: "1",
             CLAUDISH_DISABLE_KEYCHAIN: "1",
             CLAUDISH_DISABLE_OP: "1",
+            ...(catalog === "none" ? { CLAUDISH_DISABLE_BUNDLED_LIST: "1" } : {}),
           },
           stdout: "pipe",
           stderr: "pipe",
