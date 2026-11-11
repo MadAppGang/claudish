@@ -322,8 +322,9 @@ same `explainRoute` and handler getters (RB-26); the main chain does not.
 `catalogSource`), the TUI probe, MCP `preflight`, MCP `list_models`, the `[Route]` log line, the launch
 error and the advisor notice. Each gives its generation, and the fetch date where a reader chooses
 from it. A chain or handler built from the list is tagged and rebuilt once a disk catalog exists; a
-request in flight finishes on its handler. Efforts follow the same source: the sidecar only for the
-active generation, else the list's own (RB-23).
+request in flight finishes on its handler. Efforts follow the same source: on the bundled list, the
+sidecar's row only for the list's generation, else the list's own; on a disk catalog, the newest
+sidecar row when it has none for the active generation (RB-23).
 
 ## Changing anything that decides a chain: the route-table gate
 

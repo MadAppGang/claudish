@@ -231,8 +231,10 @@ With a bundled origin these name the bundled source and its generation: `--probe
 
 ### RB-23
 
-Efforts: the sidecar only when its generation equals the active source's; else, with a bundled
-origin, the bundled efforts.
+Efforts: the sidecar's row for the active source's generation when it holds one. Else, with a
+bundled origin, the bundled list's own efforts, never a sidecar row of another generation. Else
+(a disk catalog whose generation the sidecar lacks, or no catalog at all) the newest row the
+sidecar holds, as `list_models` and the effort check read it before the bundled list existed.
 
 - **Scope:** `providers/effort-recommendations.ts`, `mcp-server.ts`.
 - **Check:** S13.
