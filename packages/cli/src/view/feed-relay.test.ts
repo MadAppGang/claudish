@@ -222,7 +222,7 @@ describe("feed relay", () => {
       const root = newRoot();
       const child = Bun.spawn(
         [process.execPath, FAKE_ENDPOINT_SCRIPT, root, JSON.stringify(item("doomed"))],
-        { stdout: "pipe", stderr: "inherit" }
+        { stdout: "pipe", stderr: "inherit", env: { ...process.env } }
       );
       cleanups.push(() => {
         child.kill("SIGKILL");

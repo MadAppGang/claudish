@@ -57,7 +57,7 @@ describe("startup sweep: the herdr placement locks and the relay's feed file", (
         const out = prev.execFileSync(file, args, opts);
         if (!relay) {
           // the relay starts right after this snapshot, so the snapshot cannot list it
-          relay = Bun.spawn(["/bin/sleep", "30"]);
+          relay = Bun.spawn(["/bin/sleep", "30"], { env: { ...process.env } });
           path = writeFeed(t.sockRoot, relay.pid, Date.now().toString(36));
         }
         return out;

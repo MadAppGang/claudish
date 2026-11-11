@@ -63,11 +63,10 @@ describe.if(flockAvailable())("kernel-lock", () => {
   test("the descriptor has close-on-exec: a child does not hold the lock", () => {
     const p = lockPath();
     const a = tryAcquire(p);
-    const child = Bun.spawnSync([
-      "/bin/sh",
-      "-c",
-      `ls /dev/fd/${a?.fd} 2>/dev/null && echo leaked || echo closed`,
-    ]);
+    const child = Bun.spawnSync(
+      ["/bin/sh", "-c", `ls /dev/fd/${a?.fd} 2>/dev/null && echo leaked || echo closed`],
+      { env: { ...process.env } }
+    );
     expect(child.stdout.toString().trim()).toBe("closed");
     a?.close();
   });
