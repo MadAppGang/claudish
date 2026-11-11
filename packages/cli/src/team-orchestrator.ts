@@ -83,9 +83,15 @@ import {
   transcriptQuiet,
   upstreamRecordsFor,
 } from "./pane/index.js";
+import { type ViewDetail, targetOfSlot } from "./pane/view-contract.js";
 import { redactSecrets } from "./redact.js";
 import { projectsDir, transcriptPathFor } from "./session/session-discovery.js";
 import { renderTeamStatsCompact, statsDir, tokenFileFor, writeStatusFile } from "./team-stats.js";
+import { paneChangeKey } from "./view/change-key.js";
+import { promptSummaryOf } from "./view/prompt-summary.js";
+import { watchTokenFile } from "./view/token-watch.js";
+import { type ClaimCaller, MCP_CALLER, type ViewClaims } from "./view/view-claims.js";
+import type { ViewFeed } from "./view/view-feed.js";
 
 /*
  * Every team slot is an INTERACTIVE Claude Code session launched through claudish, in its
@@ -396,6 +402,10 @@ interface SlotEntry {
   binding?: SessionHookBinding | null;
   /** the owner-created hook inbox; removed at reap */
   inboxPath?: string | null;
+  /** the last `paneChangeKey` the feed was told about */
+  lastChangeKey?: string | null;
+  /** stops watching the slot's token file; absent when nothing watches it */
+  stopTokenWatch?: (() => void) | null;
   /**
    * the pane's reap was VERIFIED (`PaneSession.reapVerified()`, first attempt or a
    * registry retry): nothing more can reach the transcript (§ 2.4). Not `reaped()`,
@@ -420,6 +430,8 @@ interface LiveTeamRun {
   projectsRoot: string;
   /** the slots' working directory */
   cwd: string;
+  /** first line of the run's input, credentials masked */
+  promptSummary: string | null;
 }
 
 /** A `startModels` still before its registry entry (credentials, the staggered spawn loop). */
@@ -438,6 +450,13 @@ const startsInFlight = new Map<StartFlight, Promise<unknown>>();
  * answers from `status.json` (newest run at a path only).
  */
 const teamRuns = new Map<string, LiveTeamRun>();
+/** Notified of slot changes and consulted for holders; null until a server binds them. */
+let viewServices: { feed: ViewFeed; claims: ViewClaims } | null = null;
+
+/** Bound once at startup; `team` verbs and the local transport then share the holders. */
+export function setViewServices(services: { feed: ViewFeed; claims: ViewClaims } | null): void {
+  viewServices = services;
+}
 /** resolved path → run_id of the newest run started there */
 const newestRunByPath = new Map<string, string>();
 export const SETTLED_RUN_RETENTION_MS = 30 * 60_000; // same as the MCP session manager's TERMINAL_RETENTION_MS
@@ -462,6 +481,12 @@ function markIfSettled(run: LiveTeamRun): void {
 function evictRun(run: LiveTeamRun): void {
   teamRuns.delete(run.runId);
   if (newestRunByPath.get(run.path) === run.runId) newestRunByPath.delete(run.path);
+  for (const e of run.slots.values()) {
+    e.stopTokenWatch?.();
+    const target = targetOfSlot(run.runId, e.id);
+    viewServices?.claims.forget(target);
+    viewServices?.feed.removed(target, "run_pruned");
+  }
 }
 
 /** Apply the retention policy. Called on every registry read and on every new run. */
@@ -563,6 +588,7 @@ function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
     recent: null,
     agent_requested: e.agentRequested,
     agent: null,
+    view: null,
   };
 }
 
@@ -574,8 +600,58 @@ function liveSlotRow(run: LiveTeamRun, e: SlotEntry): SlotRow {
     snap,
     refreshAccounting(e, snap),
     Date.now(),
-    upstreamRecordsFor(snap, upstreamLogPath(run.path, e.id))
+    upstreamRecordsFor(snap, upstreamLogPath(run.path, e.id)),
+    viewServices?.claims.holderForMcp(targetOfSlot(run.runId, e.id)) ?? null
   );
+}
+
+/** One slot as a local client reads it: its row with the absolute holder, and the view details. */
+export interface TeamViewSlot {
+  runId: string;
+  runPath: string;
+  runKind: "run" | "judge";
+  row: SlotRow;
+  detail: ViewDetail;
+}
+
+function teamViewSlotOf(run: LiveTeamRun, e: SlotEntry): TeamViewSlot {
+  const snap = e.session?.snapshot() ?? null;
+  return {
+    runId: run.runId,
+    runPath: run.path,
+    runKind: run.kind,
+    row: {
+      ...liveSlotRow(run, e),
+      view: viewServices?.claims.holder(targetOfSlot(run.runId, e.id)) ?? null,
+    },
+    detail: {
+      prompt_summary: run.promptSummary,
+      prompts_sent: snap?.promptsSent ?? 0,
+      pending_inputs: snap?.pendingInputs ?? 0,
+      subagents: snap?.subagents ?? [],
+      magmux: snap ? { pane_id: snap.paneId, view_socket: snap.viewSockPath ?? null } : null,
+    },
+  };
+}
+
+/** Every slot of every retained run, for a local client. */
+export function listTeamViewSlots(includeFinished: boolean): TeamViewSlot[] {
+  pruneRuns();
+  const out: TeamViewSlot[] = [];
+  for (const run of teamRuns.values())
+    for (const e of run.slots.values()) {
+      if (!includeFinished && slotTerminal(e)) continue;
+      out.push(teamViewSlotOf(run, e));
+    }
+  return out;
+}
+
+/** One retained slot, or null. */
+export function teamViewSlot(runId: string, slot: string): TeamViewSlot | null {
+  pruneRuns();
+  const run = teamRuns.get(runId);
+  const e = run?.slots.get(slot);
+  return run && e ? teamViewSlotOf(run, e) : null;
 }
 
 /** "ok" | "partial" | "all-failed" — the result card's words; CANCELLED counts as failed. */
@@ -655,6 +731,7 @@ export function teamRunRowFromDisk(path: string, status: TeamStatus): TeamRunRow
         recent: null,
         agent_requested: m?.agentRequested ?? null,
         agent: m?.agent ?? null,
+        view: null,
       };
     });
   const settled = slots.length > 0 && slots.every((s) => isTerminalState(s.state));
@@ -771,7 +848,8 @@ export function captureTeamSlot(
   slot: string,
   sinceSeq?: number,
   spans?: boolean,
-  runId?: string
+  runId?: string,
+  caller: ClaimCaller = MCP_CALLER
 ): CaptureResult | CaptureUnchanged {
   const run = addressRun(path, runId);
   if (!run) throw unknownRun(path, runId);
@@ -781,11 +859,17 @@ export function captureTeamSlot(
       "unknown_slot",
       `run ${run.runId} has no slot ${JSON.stringify(slot)}`
     );
+  let answer: CaptureResult | CaptureUnchanged;
   if (!e.session) {
     const c = neverSpawnedCapture();
-    return sinceSeq === 0 ? { unchanged: true, seq: 0, final: true } : c;
+    answer = sinceSeq === 0 ? { unchanged: true, seq: 0, final: true } : c;
+  } else {
+    answer = e.session.capture(sinceSeq, { spans: spans === true });
   }
-  return e.session.capture(sinceSeq, { spans: spans === true });
+  if (!viewServices) return answer;
+  const target = targetOfSlot(run.runId, e.id);
+  viewServices.claims.renewFromCapture(target, caller);
+  return viewServices.claims.stamp(answer, target, caller);
 }
 
 /**
@@ -799,7 +883,8 @@ export async function resizeTeamSlot(
   slot: string,
   cols: number,
   rows: number,
-  runId?: string
+  runId?: string,
+  caller: ClaimCaller = MCP_CALLER
 ): Promise<TeamResizeResult> {
   const run = addressRun(path, runId);
   if (!run) throw unknownRun(path, runId);
@@ -810,9 +895,19 @@ export async function resizeTeamSlot(
       `run ${run.runId} has no slot ${JSON.stringify(slot)}`
     );
   const where = { run_id: run.runId, path: run.path, slot };
+  const target = targetOfSlot(run.runId, e.id);
+  const stamp = (r: TeamResizeResult): TeamResizeResult =>
+    viewServices ? viewServices.claims.stamp(r, target, caller) : r;
   if (!e.session)
-    return { ...where, cols: DEFAULT_PANE_COLS, rows: DEFAULT_PANE_ROWS, changed: false, seq: 0 };
-  return { ...where, ...(await e.session.resize(cols, rows)) };
+    return stamp({
+      ...where,
+      cols: DEFAULT_PANE_COLS,
+      rows: DEFAULT_PANE_ROWS,
+      changed: false,
+      seq: 0,
+    });
+  if (!isTerminalState(e.session.snapshot().state)) viewServices?.claims.claim(target, caller);
+  return stamp({ ...where, ...(await e.session.resize(cols, rows)) });
 }
 
 /**
@@ -882,17 +977,20 @@ export function replayTargetOfTeamSlot(
   runId?: string,
   opts: TeamSlotSourceOptions = {}
 ): ReplayTarget {
-  const { src, cwd } = teamSlotTranscriptSource(path, slot, runId, opts);
+  const { src, cwd, address } = teamSlotTranscriptSource(path, slot, runId, opts);
   const head =
     !cwd && src.transcriptPath && isUuid(src.sessionUuid)
       ? transcriptHeadCwd(src.transcriptPath, src.sessionUuid, src.projectsRoot)
       : null;
+  const run = addressRun(path, runId);
   return {
     claudeSessionId: src.sessionUuid,
     transcriptPath: src.transcriptPath,
     writerGone: src.writerGone,
     cwd: cwd ?? head,
     projectsRoot: src.projectsRoot,
+    of: address,
+    model: run?.slots.get(slot)?.model ?? null,
   };
 }
 
@@ -1036,6 +1134,7 @@ export async function shutdownAllTeamRuns(): Promise<void> {
 
 /** @internal tests: forget every retained run. */
 export function resetTeamRegistryForTests(): void {
+  viewServices = null;
   teamRuns.clear();
   newestRunByPath.clear();
 }
@@ -1903,6 +2002,20 @@ async function startModelsIn(
     updateModelStatus(e.id, update);
     notifyStatus(e.id);
     if (run) markIfSettled(run);
+    if (isTerminalState(snap.state)) {
+      e.stopTokenWatch?.();
+      e.stopTokenWatch = null;
+    }
+    viewServices?.feed.changed(targetOfSlot(runId, e.id), true);
+  }
+
+  /** `onChange`: only a change the stage-one gate accepts reaches the feed. */
+  function onSlotChange(e: SlotEntry, snap: PaneSnapshot): void {
+    if (aborting || !viewServices) return;
+    const key = paneChangeKey(snap);
+    if (key === e.lastChangeKey) return;
+    e.lastChangeKey = key;
+    viewServices.feed.changed(targetOfSlot(runId, e.id));
   }
 
   /** A slot whose pane never spawned: FAILED `pane_lost` with the message; siblings continue. */
@@ -1926,6 +2039,7 @@ async function startModelsIn(
       },
     });
     notifyStatus(e.id);
+    viewServices?.feed.changed(targetOfSlot(runId, e.id), true);
   }
 
   const projects = projectsDir(parentEnv);
@@ -1988,6 +2102,7 @@ async function startModelsIn(
         decide: (turn) => teamDecide(e, turn),
         onBlocked: (b) => teamOnBlocked(e, b),
         onTransition: (t) => onSlotTransition(e, t.snap),
+        onChange: (snap) => onSlotChange(e, snap),
         parentEnv,
         ...(opts.bootTimeoutMs !== undefined ? { bootTimeoutMs: opts.bootTimeoutMs } : {}),
         ...(opts.paneTimings ? { timings: opts.paneTimings } : {}),
@@ -1999,6 +2114,10 @@ async function startModelsIn(
       return;
     }
     e.session = session;
+    if (viewServices) {
+      const target = targetOfSlot(runId, e.id);
+      e.stopTokenWatch = watchTokenFile(e.tokenFile, () => viewServices?.feed.changed(target));
+    }
     // At reap: an owner without a binding checks the inbox once, then the file goes.
     // `final` waits for a VERIFIED reap; a fake without the method never proves it
     void session.reapVerified?.().then(() => {
@@ -2196,11 +2315,13 @@ async function startModelsIn(
     settled,
     projectsRoot: projects,
     cwd,
+    promptSummary: promptSummaryOf(inputContent),
   };
   teamRuns.set(runId, run);
   newestRunByPath.set(path, runId);
   pruneRuns();
   markIfSettled(run);
+  for (const e of entries.values()) viewServices?.feed.changed(targetOfSlot(runId, e.id), true);
 
   emitProgress(); // one immediately, so status.txt exists from the start
   const progressHandle = setInterval(() => {

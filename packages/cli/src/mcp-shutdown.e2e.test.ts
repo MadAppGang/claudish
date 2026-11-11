@@ -9,19 +9,22 @@
  *     session CANCELLED, so both records end (`meta.json` status `cancelled`, no wait left
  *     open), reaps every pane and exits 0;
  *   - SIGTERM → the same, exit 143;
- *   - SIGKILL → no record ends, but the per-pane watchers remove every process and file.
+ *   - SIGKILL → no record ends; watchers reap panes, then the next server sweeps the endpoint.
  *
  * After each: no process whose argv names the pane root, and no socket, record or
  * launcher dir in it.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { waitNoOrphans } from "./pane/test-helpers/hermetic-env.js";
 import {
   MAGMUX_AVAILABLE,
   McpServer,
   NO_MAGMUX_MESSAGE,
   findField,
   paneOrphans,
+  paneRootOf,
   serverEnv,
 } from "./test-helpers/contract-mcp.js";
 import {
@@ -102,6 +105,11 @@ async function exitCode(ms: number): Promise<number | null> {
   return Promise.race([server.proc.exited, Bun.sleep(ms).then(() => null)]);
 }
 
+function endpointNames(): string[] {
+  const dir = join(paneRootOf(layout), "endpoints");
+  return existsSync(dir) ? readdirSync(dir) : [];
+}
+
 /** Both records ended `cancelled`, and the session's wait log (if any) is closed. */
 function expectRecordsEnded(live: Live): void {
   const sessionDir = join(layout.sessionsDir, live.sessionId);
@@ -132,6 +140,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("MCP server shutdown", () => {
 
       expect(code).toBe(0);
       expectRecordsEnded(live);
+      expect(endpointNames()).toEqual([]);
       const report = await paneOrphans(layout, 8_000);
       expect(report).toEqual({ processes: [], files: [] });
     },
@@ -148,6 +157,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("MCP server shutdown", () => {
 
       expect(code).toBe(143);
       expectRecordsEnded(live);
+      expect(endpointNames()).toEqual([]);
       const report = await paneOrphans(layout, 8_000);
       expect(report).toEqual({ processes: [], files: [] });
     },
@@ -155,18 +165,36 @@ describe.skipIf(!MAGMUX_AVAILABLE)("MCP server shutdown", () => {
   );
 
   test(
-    "SIGKILL: no record ends, but the pane watchers remove every process and file",
+    "SIGKILL: watchers reap panes, records stay unfinished, and next server sweeps the endpoint",
     async () => {
       const live = await startWork();
+
+      const oldEndpoints = endpointNames();
+      expect(oldEndpoints).toHaveLength(1);
+      expect(oldEndpoints[0]).toMatch(new RegExp(`^c${server.proc.pid}-[0-9a-z]+[.]sock$`));
 
       server.proc.kill("SIGKILL");
       await exitCode(5_000);
 
-      const report = await paneOrphans(layout, 10_000);
+      // Observe cleanup without deleting the root: the next server must sweep this same endpoint.
+      const report = await waitNoOrphans({ sockRoot: paneRootOf(layout) }, 10_000);
       expect(report).toEqual({ processes: [], files: [] });
       // the writer died: its records have no end (an observer reports from its liveness)
       expect(readJson(join(layout.sessionsDir, live.sessionId, "meta.json"))).toBeUndefined();
       expect(readJson(join(layout.sessionsDir, live.monitorRecord, "meta.json"))).toBeUndefined();
+      expect(endpointNames()).toEqual(oldEndpoints);
+
+      server = await McpServer.start({
+        env: serverEnv(layout, { CONTRACT_FAKE_MAX_MS: "60000" }),
+        cwd: layout.cwd,
+      });
+      await waitFor(() => oldEndpoints.every((name) => !endpointNames().includes(name)), {
+        what: "next server to sweep the killed server's endpoint",
+        timeoutMs: 10_000,
+        intervalMs: 100,
+      });
+      await server.close();
+      expect(endpointNames()).toEqual([]);
     },
     T_TEST
   );

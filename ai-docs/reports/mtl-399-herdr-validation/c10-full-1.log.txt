@@ -1,0 +1,41 @@
+bun test v1.4.0 (34cbb9a40)
+
+src/pane/pane-hooks.integration.test.ts:
+1211 |           await until(
+1212 |             () => keylog(c.t).includes("INJECTED-P"),
+1213 |             "P delivered as the next turn",
+1214 |             25_000
+1215 |           );
+1216 |           expect((firstSignal as AbortSignal | null)?.reason).toBe("rewake");
+                                                                     ^
+error: expect(received).toBe(expected)
+
+Expected: "rewake"
+Received: 626 |       };
+627 |       parent?.addEventListener("abort", onParentAbort, { once: true });
+628 | 
+629 |       // A late result is discarded: once the timer fired, `settled` is true.
+630 |       const timer = setTimeout(() => {
+631 |         controller.abort(new Error(`hook ${hook.id} timed out after ${timeoutMs} ms`));
+                                   ^
+error: hook hook:t/idle timed out after 5000 ms
+      at <anonymous> (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/hooks/engine.ts:631:30)
+
+
+      at <anonymous> (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:1216:63)
+(fail) the settle hold (§11.5)  > errors, the watchdog, re-wake > H-24 re-wake during a hold (real binding): S dropped, the drained proxy P is delivered next; A1 and A1b once [24127.30ms]
+175 | }
+176 | 
+177 | async function until(pred: () => boolean, what: string, ms = 20_000): Promise<void> {
+178 |   const end = Date.now() + ms;
+179 |   while (!pred()) {
+180 |     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+                                          ^
+error: timed out waiting for settle()
+      at until (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/pane/pane-hooks.integration.test.ts:180:37)
+(fail) the settle hold (§11.5)  > the exit paths of a hold (M-1) > H-31 the hold ends inside the exit-capture window: dropped pane_exited, nothing typed, COMPLETED with the exit note [23815.83ms]
+
+ 53 pass
+ 2 fail
+ 291 expect() calls
+Ran 55 tests across 1 file. [55.89s]

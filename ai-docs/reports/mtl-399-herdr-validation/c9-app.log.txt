@@ -1,0 +1,2 @@
+[2m2026-11-11T08:10:24.003999Z[0m [32m INFO[0m [2mherdr_app::update[0m[2m:[0m downloading Herdr 0.1.15
+[2m2026-11-11T08:30:45.448694Z[0m [31mERROR[0m [2mherdr_app::window[0m[2m:[0m layout on "m1" could not save before quit: m1 needs login; run hc machine login m1

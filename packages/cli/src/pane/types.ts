@@ -9,6 +9,7 @@ import type { Delivery } from "./prompt-delivery.js";
 import type { SettledBy } from "./settle-rule.js";
 import type { Phase } from "./slot-state.js";
 import type { TurnView } from "./transcript-follower.js";
+import type { SubagentRow } from "./view-contract.js";
 
 export interface SettledTurn {
   index: number;
@@ -101,4 +102,12 @@ export interface PaneSnapshot {
   recent: SlotStep[] | null;
   /** SlotRow.agent: the transcript's `agent-setting`; absent or null = none written */
   agent?: string | null;
+  /** the read-only view socket, verified on the live connection; absent or null = none to publish */
+  viewSockPath?: string | null;
+  /** caller prompts admitted or queued; hook-injected turns are not counted */
+  promptsSent?: number;
+  /** the child's subagents, newest kept; absent = none known */
+  subagents?: SubagentRow[];
+  /** moves whenever `subagents` changes, so a reader can compare one number */
+  subagentsVersion?: number;
 }

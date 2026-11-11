@@ -22,8 +22,10 @@
 import type { ChildProcess } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { log } from "../logger.js";
 import { claudeConfigDir } from "../mcp-session/parent-session.js";
 import { redactSecrets } from "../redact.js";
+import type { KernelLock } from "../view/kernel-lock.js";
 import { locateBox } from "./box-locate.js";
 import { type CaptureResult, type CaptureUnchanged, ContractErrorException } from "./contract.js";
 import { MagmuxClient, type MagmuxConnectError } from "./magmux-client.js";
@@ -79,6 +81,7 @@ import {
   UNKNOWN_POSITION,
   planScroll,
 } from "./scroll-input.js";
+import { type ControlCapabilities, verifyViewSocket } from "./view-socket.js";
 
 /** While no box has been seen, the ready reading also runs this often: a static dialog sends no frame. */
 const READY_TICK_MS = 250;
@@ -124,6 +127,17 @@ export interface ReplayPaneOptions {
   onFinish?: () => void;
   /** read just before the pane is counted: true refuses the start (a server shutting down) */
   refused?: () => boolean;
+  /** called when the published view socket appears or goes */
+  onViewSocket?: () => void;
+  /**
+   * The replay lock, already held. magmux gets it as fd 3, and `start` closes this copy on
+   * the line after the spawn returns or throws, so from then on only magmux holds it.
+   */
+  holdLock?: KernelLock;
+  /** the pane id the opener minted (it is in the registry entry before the boot) */
+  paneId?: string;
+  /** called once, at the end of the reap, verified or not */
+  onReaped?: (verified: boolean) => void;
 }
 
 export type ReplayReady =
@@ -190,6 +204,8 @@ export class ReplayPane implements RegisteredPane {
   /** the size of the worker's last send on this connection; null = none since the attach */
   private lastSentSize: PaneSize | null = null;
   private scrollPos: ScrollPosition = LIVE_BOTTOM;
+  /** the view socket proven read-only on the current connection; null = none to publish */
+  private viewSock: string | null = null;
 
   constructor(
     o: ReplayPaneOptions,
@@ -264,10 +280,13 @@ export class ReplayPane implements RegisteredPane {
         ctlDir: this.ctlDir,
         cwd: input.cwd,
         env: input.env,
+        ...(this.o.holdLock ? { holdFd: this.o.holdLock.fd } : {}),
       });
     } catch (e) {
+      this.o.holdLock?.close();
       return failed(e);
     }
+    this.o.holdLock?.close();
     if (!proc.pid) return failed(new Error("magmux did not start"));
     this.magmuxProc = proc;
     try {
@@ -326,6 +345,11 @@ export class ReplayPane implements RegisteredPane {
 
   seq(): number {
     return this.screen.seq;
+  }
+
+  /** The verified read-only view socket of a live replay; null when there is none to publish. */
+  get viewSockPath(): string | null {
+    return this.isFinal ? null : this.viewSock;
   }
 
   finished(): boolean {
@@ -422,7 +446,12 @@ export class ReplayPane implements RegisteredPane {
       if (this.reaping || this.isFinal || !alive(this.magmuxProc)) return;
       void this.reconnect();
     });
-    const caps = await client.request<{ version?: string; protocol?: number; verbs?: unknown }>({
+    const caps = await client.request<{
+      version?: string;
+      protocol?: number;
+      verbs?: unknown;
+      viewSocket?: unknown;
+    }>({
       type: "capabilities",
     });
     this.supportsResize =
@@ -440,6 +469,12 @@ export class ReplayPane implements RegisteredPane {
         return;
       }
     }
+    // a path proven on the previous connection says nothing about this one
+    if (this.viewSock !== null) {
+      this.viewSock = null;
+      this.o.onViewSocket?.();
+    }
+    void this.checkViewSocket(client, caps.ok ? caps.result : null);
     // a size set while disconnected, or one whose reply was lost, is applied now
     this.lastSentSize = null;
     if (this.supportsResize && !samePaneSize(this.appliedSize, this.desiredSize)) this.kickResize();
@@ -455,6 +490,21 @@ export class ReplayPane implements RegisteredPane {
       }
       void this.onPaneExit({ exitCode: p0.exitCode ?? null, lastLine: "" });
     }
+  }
+
+  /** The two-socket check for this connection; a failure leaves the replay running unpublished. */
+  private async checkViewSocket(
+    client: MagmuxClient,
+    caps: ControlCapabilities | null
+  ): Promise<void> {
+    const check = await verifyViewSocket(caps, this.root, this.paneId);
+    if (this.conn !== client || this.isFinal) return;
+    if (check.ok) {
+      this.viewSock = check.path;
+      this.o.onViewSocket?.();
+      return;
+    }
+    log(`[pane] ${this.paneId} view socket unverified: ${check.detail}`);
   }
 
   private onFrame(f: MagmuxFrame): void {
@@ -697,6 +747,11 @@ export class ReplayPane implements RegisteredPane {
     if (this.listTicker) clearInterval(this.listTicker);
     this.listTicker = null;
     await reapPaneProcesses(this.reapSubject);
+    try {
+      this.o.onReaped?.(!this.reapFailed);
+    } catch {
+      // an owner's callback must not break the reap's promise
+    }
   }
 
   private get reapSubject(): PaneReapSubject {
@@ -761,7 +816,7 @@ export async function startReplayPane(o: ReplayPaneOptions): Promise<ReplayPane>
   let sockPath: string;
   let env: Record<string, string>;
   try {
-    paneId = mintPaneId("r", o.label);
+    paneId = o.paneId ?? mintPaneId("r", o.label);
     sockPath = sockPathOf(root, paneId);
     dirs = createLaunchDirs(root);
     const argv = buildReplayArgv(

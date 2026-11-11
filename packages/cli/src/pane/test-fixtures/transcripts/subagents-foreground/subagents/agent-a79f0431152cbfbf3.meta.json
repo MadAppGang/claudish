@@ -1,0 +1,8 @@
+{
+  "agentType": "general-purpose",
+  "description": "beta probe",
+  "toolUseId": "toolu_016xoWP3kqSvDa9E7qqRA55D",
+  "spawnDepth": 1,
+  "requestShape": "foreground",
+  "finished": true
+}

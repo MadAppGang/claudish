@@ -26,6 +26,10 @@ import {
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { writeFileAtomic } from "./fs-atomic.js";
+import { detectFrontEnd } from "./herdr/front-end.js";
+import { startMcpHerdrPlacer } from "./herdr/mcp-herdr.js";
+import { PlacementGrants, ServerPlacementGrants } from "./herdr/placement-grants.js";
+import type { HerdrPlacer } from "./herdr/placer.js";
 import { loadHooksOnce } from "./hooks/index.js";
 import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
 import { initLogger, log } from "./logger.js";
@@ -126,12 +130,14 @@ import {
   isSupersededRun,
   judgeResponses,
   listTeamRuns,
+  listTeamViewSlots,
   preflightTeamRun,
   readTeamInputFile,
   readTeamStatus,
   replayTargetOfTeamSlot,
   resizeTeamSlot,
   scrollTeamSlot,
+  setViewServices,
   setupSession,
   shutdownAllTeamRuns,
   startModels,
@@ -139,11 +145,17 @@ import {
   teamLiveMaps,
   teamRunRow,
   teamRunRowFromDisk,
+  teamViewSlot,
   transcriptTeamSlot,
   validateSessionPath,
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
 import { VERSION } from "./version.js";
+import { endpointPathOf } from "./view/endpoints.js";
+import { ViewClaims } from "./view/view-claims.js";
+import { ViewDirectory } from "./view/view-directory.js";
+import { ViewFeed } from "./view/view-feed.js";
+import { ViewServer } from "./view/view-server.js";
 
 // No `.env` load here. `index.ts` loads the working directory's `.env` through the
 // allowlist (dotenv-allowlist.ts) before it imports this module, and that is the only
@@ -3302,7 +3314,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         const spans = optionalBoolean(args.spans, "spans");
         return contractAnswer(
           isReplayId(sessionId)
-            ? replays.capture(sessionId, since, spans)
+            ? await replays.captureMcp(sessionId, since, spans)
             : sessionManager.captureSession(sessionId, since, spans)
         );
       } catch (e) {
@@ -3644,7 +3656,15 @@ async function main() {
 
   // Sessions are observed by polling (`list_sessions`, `get_output`) and through
   // their records on disk; nothing is pushed to the host.
-  const sessionManager = new SessionManager();
+  const viewFeed = new ViewFeed();
+  const viewClaims = new ViewClaims({ notify: (target) => viewFeed.changed(target, true) });
+  const placementGrants = new PlacementGrants({
+    notify: (target) => viewFeed.changed(target, true),
+  });
+  const placerGrants = new ServerPlacementGrants(placementGrants);
+  const sessionManager = new SessionManager({ feed: viewFeed, claims: viewClaims });
+  replays.setViewServices({ feed: viewFeed, claims: viewClaims, grants: placementGrants });
+  setViewServices({ feed: viewFeed, claims: viewClaims });
 
   // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
   // than per call, so a long-lived session cannot change its behaviour mid-flight.
@@ -3736,16 +3756,119 @@ async function main() {
   // stdout's private descriptor when isolation is active).
   const transport = new StdioServerTransport(process.stdin, iso.protocolOut);
   await server.connect(transport);
-  installMcpShutdown(sessionManager);
+  const viewTransport: ViewTransport = { server: null, placer: null };
+  installMcpShutdown(sessionManager, viewTransport);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
   // after an identity check. Asynchronous, and once per root per process — the first
   // pane's own sweep (ensureSwept in startPaneSession) is this one, not a second `ps`.
   // A nested server registers no session tools and never spawns a pane, so it has
   // nothing to sweep.
   if (!nested)
-    void ensureSwept(sockRootFor()).catch((err: unknown) =>
-      log(`[mcp] stale pane sweep failed: ${err instanceof Error ? err.message : String(err)}`)
-    );
+    void ensureSwept(sockRootFor())
+      .catch((err: unknown) =>
+        log(`[mcp] stale pane sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+      )
+      // after the pane sweep: a reaped orphan replay's magmux has freed its lock by then
+      .then(() => replays.sweep());
+  // A nested server holds no sessions a local client could be shown. `claims` still answers
+  // `view` on its own verbs.
+  if (!nested) {
+    const directory = new ViewDirectory({
+      sessions: sessionManager,
+      team: {
+        listSlots: listTeamViewSlots,
+        slot: teamViewSlot,
+        capture: (runId, slot, since, spans, caller) =>
+          captureTeamSlot(undefined, slot, since, spans, runId, caller),
+        transcript: (runId, slot, since) => transcriptTeamSlot(undefined, slot, since, runId),
+        resize: (runId, slot, cols, rows, caller) =>
+          resizeTeamSlot(undefined, slot, cols, rows, runId, caller),
+      },
+      replays,
+      claims: viewClaims,
+      herdrWorkspaces: (target) => placementGrants.workspaces(target),
+    });
+    viewFeed.setBuilder((target) => directory.item(target));
+    replays.setEndpoint(() => viewTransport.server?.endpointName || null);
+    void ViewServer.start({
+      root: sockRootFor(),
+      directory,
+      claims: viewClaims,
+      feed: viewFeed,
+      version: VERSION,
+      frontEnd: detectFrontEnd(process.env),
+      workspaceId: () => viewTransport.placer?.workspace,
+      herdrViewers: placementGrants,
+      replays,
+      resolveReplayTarget: (of) =>
+        "session_id" in of
+          ? sessionManager.replayTarget(of.session_id)
+          : replayTargetOfTeamSlot(of.path, of.slot, of.run_id),
+    })
+      .then((started) => {
+        // bound after shutdown began: nothing will close it later, so it closes now
+        if (viewTransport.closing) {
+          started?.close();
+          return;
+        }
+        viewTransport.server = started;
+      })
+      .catch((err: unknown) =>
+        log(`[view] transport off: ${err instanceof Error ? err.message : String(err)}`)
+      )
+      // the placer starts once the endpoint exists: a placed viewer dials it. Outside a herdr
+      // pane it is never built, and nothing here dials herdr.
+      .then(() =>
+        startMcpHerdrPlacer({
+          env: process.env,
+          root: sockRootFor(),
+          feed: viewFeed,
+          // a joined replay is never listed here, so the placer reads it from the replays
+          item: (target) => {
+            const joined = directory.item(target) ? null : replays.remoteItem(target);
+            return joined ? { ...joined, view: null } : directory.item(target);
+          },
+          grants: placerGrants,
+          endpoint: () =>
+            viewTransport.server
+              ? { name: viewTransport.server.endpointName, path: viewTransport.server.endpointPath }
+              : null,
+          endpointFor: (target) => {
+            const owner = replays.ownerEndpointOf(target);
+            return owner ? endpointPathOf(sockRootFor(), owner) : null;
+          },
+          cwd: process.cwd(),
+          log,
+        })
+      )
+      .then((placer) => {
+        if (!placer) return;
+        if (viewTransport.closing) {
+          void placer.shutdown();
+          return;
+        }
+        viewTransport.placer = placer;
+        replays.setPlacer({
+          workspaceKey: () => placer.key || null,
+          owned: (target) => placer.replayOpened(target),
+          remote: (target, txn) => {
+            placerGrants.addRemote(txn, () => replays.givePlacementBack(target));
+            placer.placeGranted(target, txn);
+          },
+          ended: (target) => placer.ended(target),
+        });
+      })
+      .catch((err: unknown) =>
+        log(`[herdr] placer off: ${err instanceof Error ? err.message : String(err)}`)
+      );
+  }
+}
+
+/** The local view transport and the herdr placer, both started after the MCP transport. */
+interface ViewTransport {
+  server: ViewServer | null;
+  placer: HerdrPlacer | null;
+  closing?: boolean;
 }
 
 /**
@@ -3756,18 +3879,24 @@ async function main() {
  * replace these options. A SIGKILL of this process ends no record; the per-pane
  * watchers still remove the panes.
  */
-function installMcpShutdown(sessionManager: SessionManager): void {
+function installMcpShutdown(sessionManager: SessionManager, viewTransport: ViewTransport): void {
   const before = async (): Promise<void> => {
     // A replay already registered is reaped with every other pane; this stops one that is not yet.
     replays.beginShutdown();
+    viewTransport.closing = true;
+    // the placed viewer panes go first (bounded): their sessions are about to end
+    await viewTransport.placer?.shutdown();
+    viewTransport.server?.announceClosing();
     // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
     // their process groups here, or they outlive the server.
     stopAllClaudeCodePrintChildren();
     await Promise.allSettled([shutdownAllTeamRuns(), sessionManager.shutdownAll()]);
+    // the owners of joined replays drop this server's holds and claims
+    replays.closePeerLinks();
   };
   // The stdio transport closes when stdin does, so stdin's `end`/`close` is the
   // transport-close hook too.
-  installPaneShutdownHooks({ stdin: true, before });
+  installPaneShutdownHooks({ stdin: true, before, after: () => viewTransport.server?.close() });
 }
 
 // ─── Entry Point ─────────────────────────────────────────────────────────────

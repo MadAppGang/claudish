@@ -211,6 +211,7 @@ describe("toSlotRow (§8 B)", () => {
       recent: null,
       agent_requested: null,
       agent: null,
+      view: null,
     });
     expect(Object.keys(row).sort()).toEqual(
       [
@@ -232,6 +233,7 @@ describe("toSlotRow (§8 B)", () => {
         "tokens_out",
         "tool_calls",
         "turns_completed",
+        "view",
       ].sort()
     );
   });

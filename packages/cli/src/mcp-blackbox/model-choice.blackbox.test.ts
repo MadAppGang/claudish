@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -102,7 +103,21 @@ function assertNothingStarted(teamPath?: string): void {
   if (teamPath) expect(existsSync(teamPath)).toBe(false);
   expect(readdirSync(layout.sessionsDir)).toEqual([]);
   const paneRoot = paneRootOf(layout);
-  expect(existsSync(paneRoot) ? readdirSync(paneRoot, { recursive: true }) : []).toEqual([]);
+  const entries = existsSync(paneRoot) ? readdirSync(paneRoot) : [];
+  expect(entries.filter((name) => name !== "endpoints" && name !== "panes")).toEqual([]);
+  if (entries.includes("panes")) {
+    const panes = join(paneRoot, "panes");
+    expect(lstatSync(panes).isDirectory()).toBe(true);
+    expect(readdirSync(panes)).toEqual([]);
+  }
+  if (entries.includes("endpoints")) {
+    const endpoints = join(paneRoot, "endpoints");
+    expect(lstatSync(endpoints).isDirectory()).toBe(true);
+    for (const name of readdirSync(endpoints)) {
+      expect(name).toMatch(new RegExp(`^c${server?.proc.pid}-[0-9a-z]+[.]sock$`));
+      expect(lstatSync(join(endpoints, name)).isSocket()).toBe(true);
+    }
+  }
   expect(existsSync(fetches) ? readFileSync(fetches, "utf8").trim().split("\n") : []).toEqual([]);
 }
 

@@ -459,6 +459,11 @@ export function sockPathOf(root: string, paneId: string): string {
   return join(root, `magmux-${paneId}.sock`);
 }
 
+/** The read-only view socket magmux serves beside the control socket; the only pane socket a client is told. */
+export function viewSockPathOf(root: string, paneId: string): string {
+  return join(root, `magmux-${paneId}.view`);
+}
+
 export function recordPathOf(root: string, paneId: string): string {
   return join(root, "panes", `${paneId}.json`);
 }
@@ -470,6 +475,10 @@ export function recordPathOf(root: string, paneId: string): string {
  */
 export function isPaneSockPath(root: string, p: string, paneId: string): boolean {
   return isValidPaneId(paneId) && dirname(p) === root && basename(p) === `magmux-${paneId}.sock`;
+}
+
+export function isPaneViewSockPath(root: string, p: string, paneId: string): boolean {
+  return isValidPaneId(paneId) && dirname(p) === root && basename(p) === `magmux-${paneId}.view`;
 }
 
 export function isPaneRecordPath(root: string, p: string, paneId: string): boolean {
@@ -608,6 +617,7 @@ if fork_ok; then
   [ "$FORKDIR" = 1 ] && rmdir -- "\${FORK%/*}" 2>/dev/null
 fi
 [ "$SOCKP" = "$ROOT/magmux-$PANE.sock" ] && rm -f -- "$SOCKP"
+[ "$SOCKP" = "$ROOT/magmux-$PANE.sock" ] && rm -f -- "$ROOT/magmux-$PANE.view"
 [ "$REC" = "$ROOT/panes/$PANE.json" ] && rm -f -- "$REC"
 launch_dir_ok "$CTL" && rm -rf -- "$CTL"
 launch_dir_ok "$TURN" && rm -rf -- "$TURN"

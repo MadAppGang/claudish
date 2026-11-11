@@ -1,0 +1,4 @@
+ 6597  5488 /opt/homebrew/bin/magmux --headless --no-status --controller claude-code --session-id e56308d9-a95a-462f-a79c-70b9d80480e9 --transcript /Users/jack/.claude/projects/-private-tmp-claude-501--Users-jack-mag-claudish-333e429e-26e2-48f0-a63b-2ea2b4f1bc
+11015 21644 /Users/jack/.bun/install/global/node_modules/@claudish/magmux-darwin-arm64/bin/magmux --headless --no-status --controller claude-code --session-id 84165d91-8c9c-437d-a971-d719a8150344 --transcript /Users/jack/.claude/projects/-Users-jack-dev-circl-
+54814 54803 /Users/jack/.bun/install/global/node_modules/@claudish/magmux-darwin-arm64/bin/magmux --id claudish-54803 --no-idle-done -w --no-status -e . '/tmp/claudish-launch-ZdEQiK/claude-launch.sh'
+21967 21545 /Users/jack/.bun/install/global/node_modules/@claudish/magmux-darwin-arm64/bin/magmux --id claudish-21545 --no-idle-done -w --no-status -e . '/tmp/claudish-launch-rbU9M8/claude-launch.sh'

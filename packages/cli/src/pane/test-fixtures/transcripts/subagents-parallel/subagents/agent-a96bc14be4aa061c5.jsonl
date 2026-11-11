@@ -1,0 +1,2 @@
+{"type":"user","isSidechain":true,"agentId":"a96bc14be4aa061c5","timestamp":"2026-11-10T08:10:29.899Z","message":{"role":"user","content":"<prompt gamma>"}}
+{"type":"assistant","isSidechain":true,"agentId":"a96bc14be4aa061c5","timestamp":"2026-11-10T08:10:31.566Z","message":{"id":"msg_011CgtueBCY4BnPqFjciFv8r","role":"assistant","content":[{"type":"text","text":"<answer gamma>"}],"usage":{"output_tokens":7}}}

@@ -4,6 +4,8 @@ import type { HookEngine } from "../hooks/engine.js";
 import type { SessionInfo as HookSessionInfo } from "../hooks/public.js";
 import type { SessionHookBinding } from "../hooks/session/binding.js";
 import type { FailureReason, PaneSessionOptions, SlotState, SlotStep } from "../pane/index.js";
+import type { ViewClaims } from "../view/view-claims.js";
+import type { ViewFeed } from "../view/view-feed.js";
 
 /**
  * Every value a session row's `event` field may carry, as a runtime list so a
@@ -224,6 +226,10 @@ export interface SessionManagerOptions {
   hookEngine?: () => Promise<HookEngine | null>;
   /** @internal test seam: the magmux binary every pane is spawned with (H-6) */
   magmuxBinary?: string;
+  /** Told when a session's row may have changed. Absent: nothing is notified. */
+  feed?: ViewFeed;
+  /** Holders of the active view. Absent: no answer carries `view` and no resize claims. */
+  claims?: ViewClaims;
   /**
    * @internal test seam (§11.5): the binding for one session, instead of the real one.
    * Return null for no binding.

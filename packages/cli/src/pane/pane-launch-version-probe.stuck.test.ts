@@ -28,7 +28,7 @@ interface ProbeLayout {
 
 const layouts: ProbeLayout[] = [];
 const probeModule = new URL("./pane-launch.ts", import.meta.url).href;
-const version = "999.0.0";
+const version = "0.999.0";
 
 const runnerSource = `
 import { readFileSync, writeFileSync } from "node:fs";

@@ -4,6 +4,8 @@ node_modules/
 # Build output
 dist/
 build/
+# the Herdr.app mod bundle, built from packages/cli/src/herdr/app-mod by `bun run build`
+packages/cli/herdr-app-mod/
 
 # Environment files
 .env

@@ -1,0 +1,51 @@
+bun test v1.4.0 (34cbb9a40)
+[gate] owner SIGKILL → clean in 1263 ms; lsof: [[85905,[{"fd":"1u","addr":"0x5fba9d5b553486ef","peer":"0x101c1668f6f07f55"},{"fd":"4u","addr":"0x5fba9d5b553486ef","peer":"0x101c1668f6f07f55"},{"fd":"7u","addr":"0xf2ae9a84550ee1dd","peer":"0x8f3d9b6997f1d9ab"},{"fd":"8u","addr":"0xb9ae1961602f8255","peer":"0xbb3a5485057ccf7b"},{"fd":"9u","addr":"0xe5a2d728df2b0e05","peer":"0xeed0988fa73b721c"},{"fd":"10u","addr":"0xaac6a1b07a0521a2","peer":"0x6a85fe5bf93f7ad6"},{"fd":"11u","addr":"0x131d6eb514a57787","peer":"0xa762d90c8a15b421"},{"fd":"12u","addr":"0xdeb5b93fd98c3bbc","peer":"0x17ea1564457d1d02"}]],[88987,[{"fd":"0u","addr":"0xbb3a5485057ccf7b","peer":"0xb9ae1961602f8255"}]],[88990,[{"fd":"2u","addr":"0x8f3d9b6997f1d9ab","peer":"0xf2ae9a84550ee1dd"},{"fd":"3u","addr":"0x84c634de8a88408b","peer":""},{"fd":"5u","addr":"0x20212f77c0dafa95","peer":""},{"fd":"9u","addr":"0xa762d90c8a15b421","peer":""}]],[89234,[{"fd":"0u","addr":"0x6a85fe5bf93f7ad6","peer":"0xaac6a1b07a0521a2"}]],[89237,[{"fd":"2u","addr":"0xeed0988fa73b721c","peer":"0xe5a2d728df2b0e05"},{"fd":"3u","addr":"0x102b4c461315eb96","peer":""},{"fd":"5u","addr":"0xf2ecac8d1df0b598","peer":""},{"fd":"9u","addr":"0x17ea1564457d1d02","peer":""}]]]
+
+src/mcp-session/session-manager.test.ts:
+205 |       expect(toMetaRecord(sampleInfo({ state }), "/w").status).toBe(status);
+206 |   });
+207 | 
+208 |   test("sessionRowOf yields exactly the SessionRow keys; terminal rows drop idle and activity", () => {
+209 |     const row = sessionRowOf(sampleInfo({ idleSeconds: 5, activity: "Bash" }));
+210 |     expect(Object.keys(row).sort()).toEqual(
+                                          ^
+error: expect(received).toEqual(expected)
+
+@@ -23,2 +23,3 @@
+    "turns_completed",
++   "view",
+  ]
+
+- Expected  - 0
++ Received  + 1
+
+      at <anonymous> (/Users/jack/mag/claudish/.claude/worktrees/mtl-399-herdr-native-sessions/packages/cli/src/mcp-session/session-manager.test.ts:210:37)
+(fail) exported session seams (pure) > sessionRowOf yields exactly the SessionRow keys; terminal rows drop idle and activity [0.36ms]
+
+src/mcp-session/e2e-sessions.test.ts:
+[e2e-sessions] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated (needs ANTHROPIC_API_KEY or a headless-usable claude.ai login).
+
+ 459 pass
+ 4 skip
+ 1 fail
+ 1912 expect() calls
+Ran 464 tests across 40 files. [308.61s]
+
+[31m✗ REAL ACCOUNT POOL STATE MUTATED[0m — something in that command changed /Users/jack/.claudish/accounts/state.json
+  - changed  providers
+
+  WARNING — kept /Users/jack/.claudish/accounts/state.json: valid credentials or account state may have been
+  saved by another claudish process. Restoring old tokens could reuse a consumed refresh token.
+
+  Tests must point CLAUDISH_ACCOUNTS_DIR at a temp accounts directory or process.env.HOME at a temp home instead of writing the real account pool state.
+  See scripts/guard-real-config.ts for the history.
+
+
+[31m✗ REAL USAGE LEDGER MUTATED[0m — something in that command changed /Users/jack/.claudish/accounts/usage
+  - changed  raw/2026-11-10.jsonl (902411 -> 906453 bytes)
+
+  Not restored: a concurrent claudish may have appended real rows during the run.
+  Tests must pin CLAUDISH_ACCOUNTS_DIR to a temp accounts directory before any pooled request or exhausted pool runs (Bun ignores an in-process HOME).
+  See scripts/guard-real-config.ts for the history.
+
+exit=1
