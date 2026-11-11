@@ -42,6 +42,15 @@ lives in `ROADMAP.md`.
   before dialog), the frozen mod contract v1, the session registry read as telemetry (and why no
   in-child mod or argv prompt). Read before editing `pane/` (`pane/replay-pane.ts` and
   `pane/pane-reap.ts` included), team spawn or MCP session spawn
+- `view-transport.md` — sessions as native herdr items: one magmux per session and only its
+  read-only `.view` socket published (`--view-sock`, the two-socket check), the local view socket
+  `claudish.view.v1` (ops, roles, what a viewer may never do), the two-stage change gate (no timers
+  while idle), view claims (latest user act wins, 15 s / 10 s TTLs, claim on herdr focus), replays
+  shared across servers under a kernel `flock` handed to magmux at fd 3, the herdr placer (scratch
+  tab, `pane.move`, never `pane.zoom`), herdr 0.9.5 answering one request per connection, the
+  Herdr.app mod, and the `HERDR_*`/`HC_*` strip. Read before editing `view/`, `herdr/`,
+  `pane/view-contract.ts`, `pane/view-socket.ts`, the magmux argv or floor, or
+  `isStrippedFromChildEnv`
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
@@ -164,6 +173,8 @@ negative case: if you are about to type one of those words, stop and use the lef
 - A `route binding` names one endpoint AND one credential silo. A provider that owns neither does not belong in `CATALOG_ROUTE_BINDINGS`, even when its name matches the `routeId`: since `routingProvidersForRoute` returns every provider bound to a route, a placeholder listed there becomes a route candidate and `--probe` prints a hop no key can ever satisfy. A name that only READS catalog data through a route (a vendor slug such as `anthropic` for the savings-panel price, `moonshotai` for the Kimi picker list) goes in `LOOKUP_ONLY_ROUTE_BINDINGS`, which the lookups consult and routing never does; a test pins that table's members. Do NOT fix that by filtering `reason: "virtual"` out of the gatherer — `native-anthropic` is virtual and genuinely routable through the native passthrough, so that filter takes `claude-*` away from anyone holding an `ANTHROPIC_API_KEY`.
 - `CLAUDISH_PANE_CHILD` must never be scrubbed from Claude Code's env: `scrubChildEnv` deletes only `PANE_LAUNCH_VARS` (`CLAUDISH_PANE_ENV`, `CLAUDISH_PANE_CWD`). The flag is how a claudish or claudish MCP server started inside a session knows it is one level deep; scrubbing it silently re-enables `create_session` inside `create_session`, with no error. See `pane-session.md` § One level of nesting.
 - A file-backed OAuth credential held in memory goes through `CredentialFileState` (`auth/credential-file.ts`); a refresh writes back only through `saveRefreshed`; an unreadable file never signs a process out. A constructor that reads the file, or a refresh that writes it directly, brings back D1 (an old process keeps a revoked token after a new login) or walks a subscription user onto a metered hop on one torn read. See `credential-files.md`.
+- Only a pane's read-only `magmux-<id>.view` path is ever published to a client (a `ViewItem`, a local-transport reply or event, the feed file, a placed viewer's env), and only after the two-socket check in `pane/view-socket.ts` (control `capabilities.viewSocket` equals `viewSockPathOf`, and a dial answers `readOnly: true`). The control socket `magmux-<id>.sock` is never published: magmux's unix socket has no read-only mode, so any client holding that path can `send`, `input`, `resize` and `close_pane` the session, and nothing refuses it. Never pass `--view-op`. See `view-transport.md`.
+- `HERDR_*` (every key, a prefix) and the five `HC_TERMINAL_ID`, `HC_TERMINAL_SOCKET`, `HC_SCOPE`, `HC_SESSION`, `HC_SOCKET` must never reach a pane child or `run_prompt`'s print child: `isStrippedFromChildEnv` (`pane/pane-launch.ts`) withholds them through `MULTIPLEXER_IDENTITY_PREFIXES` / `MULTIPLEXER_IDENTITY_VARS`. Inherited, Claude Code inside runs the user's herdr hook against them and reports its own session into the CALLER's herdr pane, newer than the caller's own report; nothing errors. `CLAUDISH_PANE_CHILD` stays out of both sets. See `view-transport.md` § FR9.
 
 ## Commands
 
