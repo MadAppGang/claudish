@@ -187,6 +187,8 @@ describe("assertMagmuxAvailable with a SIGTERM-ignoring binary", () => {
     expect(report.outcomes[0].elapsedMs).toBeLessThan(8000);
     expect(report.outcomes[0]).toMatchObject({ status: "rejected", unavailable: true });
     expect(report.outcomes[0].message).toContain("no answer in");
+    // a binary that really hangs is told apart from a blocked event loop
+    expect(report.outcomes[0].message).toContain("; child still running)");
     expect(report.runs).toBe(1);
   }, 20_000);
 

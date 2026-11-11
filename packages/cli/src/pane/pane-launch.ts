@@ -817,8 +817,14 @@ function runMagmuxVersion(found: string, timeoutMs: number): Promise<string> {
   return new Promise((resolveRun, rejectRun) => {
     let settled = false;
     let child: ChildProcess | undefined;
+    const startedAt = performance.now();
     const timer = setTimeout(() => {
-      fail(`no answer in ${timeoutMs} ms`);
+      // a timer that ran late, or a child already reaped, points at a blocked event loop;
+      // a timer on time with the child still running points at magmux itself
+      const ranAt = Math.round(performance.now() - startedAt);
+      const code = child?.exitCode ?? child?.signalCode ?? null;
+      const childState = code === null ? "still running" : `already exited (${code})`;
+      fail(`no answer in ${timeoutMs} ms (timer ran at ${ranAt} ms; child ${childState})`);
       try {
         child?.kill("SIGKILL");
       } catch {
