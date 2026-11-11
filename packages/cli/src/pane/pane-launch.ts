@@ -20,7 +20,7 @@
  * discovery, and have its `--settings` rewritten.
  */
 
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -802,16 +802,17 @@ const MAGMUX_VERSION_TIMEOUT_MS = 5000;
 /** The `X.Y.Z` from one `<binary> --version` run, read from stdout and stderr together; "" when absent. */
 async function readMagmuxVersion(found: string): Promise<string> {
   const out = await runMagmuxVersion(found, MAGMUX_VERSION_TIMEOUT_MS);
-  return out.match(/(\d+\.\d+\.\d+)/)?.[1] ?? "";
+  return out.match(VERSION_PATTERN)?.[1] ?? "";
 }
 
 /**
- * One `<binary> --version` run, bounded by a deadline that does NOT depend on the child exiting.
- * execFile's own `timeout` only sends a signal and then waits for the child to close: a child that
- * ignores SIGTERM (or whose exit is never observed) kept the promise pending, and because
+ * One `<binary> --version` run. It answers as soon as the output holds a version, and otherwise
+ * shortly after the child exits; it never waits for the pipes to close, because another process
+ * can hold their write ends long after magmux exited. A deadline that depends on neither the exit
+ * nor the pipes bounds it: a child that ignores SIGTERM once kept the promise pending, and because
  * `assertMagmuxAvailable` hands one in-flight probe to every caller, every later pane start in the
  * process hung with it. On expiry the run rejects at once, the child is SIGKILLed, and its pipes
- * are released (a grandchild may still hold them open).
+ * are released.
  */
 function runMagmuxVersion(found: string, timeoutMs: number): Promise<string> {
   return new Promise((resolveRun, rejectRun) => {
@@ -845,18 +846,43 @@ function runMagmuxVersion(found: string, timeoutMs: number): Promise<string> {
         new MagmuxUnavailableError(`magmux_unavailable: ${found} --version failed: ${detail}`)
       );
     };
+    let out = "";
+    const done = (): void => {
+      if (!settle()) return;
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
+      resolveRun(out);
+    };
+    const read = (chunk: string): void => {
+      out += chunk;
+      // the answer is in: never wait for the pipes to close, since a process spawned at the same
+      // moment can inherit their write ends (macOS has no pipe2(O_CLOEXEC)) and hold them open
+      if (VERSION_PATTERN.test(out)) done();
+    };
     try {
       // async: the first create_session or team run must not stall the MCP server's event
       // loop for up to 5 s (every other session's frames and socket share it)
-      child = execFile(found, ["--version"], { encoding: "utf8" }, (error, stdout, stderr) => {
-        if (error) return fail(error.message);
-        if (settle()) resolveRun(`${stdout}\n${stderr}`);
+      child = spawn(found, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout?.setEncoding("utf8").on("data", read);
+      child.stderr?.setEncoding("utf8").on("data", read);
+      child.on("error", (e) => fail(e.message));
+      child.on("exit", (code, signal) => {
+        // output written just before the exit can still be in flight; a held pipe never closes
+        setTimeout(() => {
+          if (code === 0 || VERSION_PATTERN.test(out)) return done();
+          fail(`exited with ${code ?? signal}${out.trim() ? `: ${out.trim()}` : ""}`);
+        }, EXIT_DRAIN_MS);
       });
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e));
     }
   });
 }
+
+/** The version in `magmux --version` output. */
+const VERSION_PATTERN = /(\d+\.\d+\.\d+)/;
+/** After the child exits, how long its last output may take to arrive. */
+const EXIT_DRAIN_MS = 100;
 
 /* ───────────────────────────── launcher ───────────────────────────── */
 

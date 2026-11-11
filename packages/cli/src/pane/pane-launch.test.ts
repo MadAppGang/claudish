@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -430,6 +438,30 @@ describe("watcher argv and version gate", () => {
     chmodSync(old, 0o755);
     await expect(assertMagmuxAvailable(old)).rejects.toThrow(`panes need >= ${MIN_MAGMUX_VERSION}`);
   });
+
+  test("a magmux that answered and exited is accepted while another process still holds its stdout", async () => {
+    const dir = tmp();
+    const leaky = join(dir, "magmux-leaky");
+    const pidFile = join(dir, "holder.pid");
+    // the background sleep inherits stdout and keeps the pipe open after magmux exits, as a
+    // process spawned at the same moment can on macOS, which has no pipe2(O_CLOEXEC)
+    writeFileSync(
+      leaky,
+      `#!/bin/sh\nsleep 20 &\necho $! > '${pidFile}'\necho 'magmux ${MIN_MAGMUX_VERSION} (fake)'\nexit 0\n`
+    );
+    chmodSync(leaky, 0o755);
+    const started = Date.now();
+    try {
+      expect(await assertMagmuxAvailable(leaky)).toEqual({
+        binary: leaky,
+        version: MIN_MAGMUX_VERSION,
+      });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally {
+      const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+      if (pid > 0) process.kill(pid, "SIGKILL");
+    }
+  }, 15_000);
 
   test("versionAtLeast", () => {
     expect(versionAtLeast("0.17.0", "0.17.0")).toBe(true);
