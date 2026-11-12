@@ -668,3 +668,63 @@ describe("PanelController: earlier runs stay after their server lets them go", (
     ]);
   });
 });
+
+describe("PanelController: a relay an older build started is replaced", () => {
+  test("a live relay whose stamp names another version is killed and started again", async () => {
+    const host = new FakeHost();
+    host.relayVersion = undefined;
+    host.live = [{ address: "t3", name: FEED_TERMINAL, state: "live" }];
+    host.relayAlive = { alive: true, relay: { pid: 7, start36: "b" } };
+    host.writeFeed({ pid: 7, start36: "b" }, [sessionItem("a")]);
+    const ctl = await ready(host);
+    ctl.setVisible(true);
+    await ctl.tick();
+    expect(host.killed).toEqual(["t3"]);
+    const runs = host.hcRuns().filter((a) => a[0] === "run");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.slice(-2)).toEqual(["view", "--feed"]);
+    // the old relay's file is not trusted; the list polls until the new relay writes
+    expect(ctl.feedMode).toBe("poll");
+    expect(ctl.message).toBe("restarting the feed relay for claudish 14.16.1");
+
+    host.relayVersion = "14.16.1";
+    host.relayAlive = { alive: true, relay: { pid: 8, start36: "c" } };
+    host.writeFeed({ pid: 8, start36: "c" }, [sessionItem("a")]);
+    host.clock += LIVENESS_MS;
+    await ctl.tick();
+    expect(ctl.feedMode).toBe("relay");
+    expect(host.killed).toEqual(["t3"]);
+    expect(ctl.runs().map((r) => r.key)).toEqual(["s:a"]);
+  });
+
+  test("an older claudish whose --feed-check names no version never restarts its own relay", async () => {
+    const host = new FakeHost();
+    host.relayVersion = undefined;
+    host.checkerVersion = undefined;
+    host.live = [{ address: "t3", name: FEED_TERMINAL, state: "live" }];
+    host.relayAlive = { alive: true, relay: { pid: 7, start36: "b" } };
+    host.writeFeed({ pid: 7, start36: "b" }, [sessionItem("a")]);
+    const ctl = await ready(host);
+    ctl.setVisible(true);
+    for (let i = 0; i < 3; i++) {
+      await ctl.tick();
+      host.clock += LIVENESS_MS;
+    }
+    expect(host.killed).toEqual([]);
+    expect(host.hcRuns()).toEqual([]);
+    expect(ctl.feedMode).toBe("relay");
+  });
+
+  test("a relay with the same version is left alone", async () => {
+    const host = new FakeHost();
+    host.live = [{ address: "t3", name: FEED_TERMINAL, state: "live" }];
+    host.relayAlive = { alive: true, relay: { pid: 7, start36: "b", version: "14.16.1" } };
+    host.writeFeed({ pid: 7, start36: "b" }, [sessionItem("a")]);
+    const ctl = await ready(host);
+    ctl.setVisible(true);
+    await ctl.tick();
+    expect(host.killed).toEqual([]);
+    expect(host.hcRuns()).toEqual([]);
+    expect(ctl.feedMode).toBe("relay");
+  });
+});

@@ -8,7 +8,9 @@
  *
  * The relay is checked when the panel shows, whenever the feed file is missing, when its hc
  * terminal leaves `terminals()`, and every 15 s while visible. A dead relay empties the list at
- * once, is started again, and the polling path serves until a new relay's file appears.
+ * once, is started again, and the polling path serves until a new relay's file appears. A live
+ * relay whose stamp names another version than the checking claudish (an older build started it
+ * and still runs that build's code) is killed and started again the same way.
  *
  * Beside the servers' items the list carries their `history`: finished runs read from their
  * records that no server holds any more, so earlier runs stay after a server evicts them, exits
@@ -40,6 +42,7 @@ import {
   LIVENESS_MS,
   PATH_HEAD,
   POLL_MS,
+  type RelayStamp,
   type TerminalInfo,
   VIEW_TERMINAL_PREFIX,
   claudishArgv,
@@ -68,6 +71,8 @@ import {
 export const TRANSCRIPT_MS = 2_000;
 /** pages read in one go when an answer says `more` */
 const TRANSCRIPT_PAGES = 10;
+/** after a relay was replaced, the next check comes this soon */
+export const RELAY_RESTART_MS = 2_000;
 
 /**
  * Which copy of the mod is the panel. Herdr docks one copy from `mod.json` the first time it sees
@@ -160,6 +165,8 @@ export class PanelController {
   private transcripts = new Map<string, TranscriptState>();
   /** the shown run's items a refresh no longer lists, kept so the panel does not lose them */
   private kept: ViewItem[] = [];
+  /** why the list polls while a relay is being replaced; shown over the empty-list line */
+  private relayNotice: string | null = null;
 
   private livenessDueAt = 0;
   /** the relay whose death sent the list to the polling path */
@@ -445,20 +452,47 @@ export class PanelController {
     this.livenessDueAt = this.host.now() + LIVENESS_MS;
     const argv = claudishArgv(this.install, ["view", "--feed-check"]);
     const r = await this.host.exec(argv[0] as string, argv.slice(1)).catch(() => null);
-    let check: { alive?: unknown; relay?: unknown } = {};
+    let check: { alive?: unknown; relay?: unknown; version?: unknown } = {};
     try {
       check = JSON.parse(r?.stdout ?? "") as typeof check;
     } catch {
       check = {};
     }
-    if (check.alive === true) return;
+    const stamp = parseRelayStamp(check.relay);
+    if (check.alive === true) {
+      // a checker that names no version runs relays that stamp none: nothing to compare
+      const want = typeof check.version === "string" ? check.version : null;
+      if (want && stamp && stamp.version !== want) await this.replaceRelay(stamp, want);
+      return;
+    }
     if (this.feedMode === "relay") {
       this.items = [];
       this.servers = [];
       this.message = "reconnecting";
     }
-    this.deadRelay = parseRelayStamp(check.relay);
+    this.deadRelay = stamp;
     this.feedMode = "poll";
+    await this.startRelay();
+  }
+
+  /**
+   * A live relay an older build started: kill its hc terminal and start one from this claudish.
+   * Its file is not trusted from here on; the list polls until the new relay's file appears.
+   */
+  private async replaceRelay(stamp: RelayStamp, want: string): Promise<void> {
+    this.deadRelay = stamp;
+    this.feedMode = "poll";
+    const term = liveTerminal(this.host.terminals(), FEED_TERMINAL);
+    if (!term) {
+      // not ours to end (started by hand), or already ending: poll until it exits
+      this.relayNotice = `an older feed relay (pid ${stamp.pid}) still runs; polling until it exits`;
+      this.message = this.relayNotice;
+      return;
+    }
+    this.host.killTerminal(term.address);
+    this.relayNotice = `restarting the feed relay for claudish ${want}`;
+    this.message = this.relayNotice;
+    this.livenessDueAt = this.host.now() + RELAY_RESTART_MS;
     await this.startRelay();
   }
 
@@ -485,6 +519,7 @@ export class PanelController {
     if (!feed?.relay || sameRelay(feed.relay, this.deadRelay)) return false;
     this.feedMode = "relay";
     this.deadRelay = null;
+    this.relayNotice = null;
     this.apply(feed);
     return true;
   }
@@ -515,7 +550,7 @@ export class PanelController {
     this.history = feed.history;
     const listed = new Set([...this.items, ...this.history].map((i) => i.target));
     this.kept = before.filter((i) => !listed.has(i.target));
-    this.message = this.emptyMessage();
+    this.message = this.relayNotice ?? this.emptyMessage();
   }
 
   private emptyMessage(): string | null {
