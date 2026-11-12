@@ -220,10 +220,10 @@ check reads the same `excludedIds` from the `peekServedAntigravityModels` cache,
 it agrees with the transport. An exact id that is not a mapped base
 (`gemini-4-carbon-low`) is sent unchanged at any effort.
 
-The effort reaches the one decision on both paths. The credential takes it as
-`RequestAuthContext.effort`, and its envelope builder takes the request's effort as
-`transformPayload(payload, {effort})`, because one artifact serves turns with
-different levels. The transport reads the level in `transformPayload` and hands it
+The effort reaches the one decision on both paths. The credential's envelope
+builder takes the request's effort as `transformPayload(payload, {effort})`, because
+one artifact serves turns with different levels; `RequestAuthContext` carries no
+effort. The transport reads the level in `transformPayload` and hands it
 to the credential's builder, or resolves with the same function for its local
 builder. The level is the `--effort` pin when one is set (`ComposedHandler` pins it
 on the dialects and on the transport, `ProviderTransport.setEffortOverride`); else

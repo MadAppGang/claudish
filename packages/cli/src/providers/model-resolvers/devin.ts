@@ -198,9 +198,10 @@ function byCost(a: ModelsCatalogEntry, b: ModelsCatalogEntry): number {
  * effort map lists a member of the group (a mapped group shows its connection's
  * base instead, see `collapse`).
  *
- * Order: the vendor's own default (the cheapest, when a pool spanning several
- * groups carries more than one) -> cheapest **tier-less** non-premium ->
- * cheapest non-premium -> cheapest anything.
+ * Order: Devin's declared family default (`is_default_model_in_family`; the
+ * cheapest, when a pool spanning several groups carries more than one) ->
+ * cheapest **tier-less** non-premium -> cheapest non-premium -> cheapest
+ * anything.
  *
  * The tier-less preference is load-bearing, not cosmetic. A representative that
  * names a tier gets honoured verbatim by `expand` (that is the whole point of
@@ -302,10 +303,10 @@ export class DevinModelResolver implements ProviderModelResolver {
    *    selection: `values[effort]`, else the next higher listed level, else the
    *    highest; `off` for `none`; with no effort, the recommended-effort
    *    table's `default` level for this connection, else `medium`, then as an
-   *    effort level (`chooseConnectionModelId`). The vendor's family default
-   *    does not decide for a mapped base. Only an id the dynamic models catalog
-   *    lists and that carries no speed premium is sent; otherwise the rules
-   *    below decide. A listed base with no effort is sent as itself.
+   *    effort level (`chooseConnectionModelId`). Devin's declared family
+   *    default does not decide for a mapped base. Only an id the dynamic
+   *    models catalog lists and that carries no speed premium is sent;
+   *    otherwise the rules below decide. A listed base with no effort is sent as itself.
    * 1. **An exact uid** is honoured verbatim when the turn carries no effort, or
    *    when the uid NAMES a tier — `dv@claude-opus-5-xhigh` stays xhigh even at
    *    effort `low`, and so does a row's representative that names a tier

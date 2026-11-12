@@ -102,12 +102,11 @@ export class AntigravityCredentialProvider implements CredentialProvider {
     const token = await getValidAntigravityAccessToken();
     const { projectId, tierId } = await setupAntigravityUser(token);
     // Resolve the requested id against the account's dynamic models catalog
-    // (fetchAvailableModels), at the request's effort: the level can be carried
-    // in the model id. The same function the transport and the availability
-    // check use, so all three choose the same id.
+    // (fetchAvailableModels), at each request's effort, which the envelope
+    // builder receives: the level can be carried in the model id. The same
+    // function the transport and the availability check use, so all three
+    // choose the same id.
     const served = await getServedAntigravityModels(token, projectId);
-    const servedModelAt = (effort: EffortLevel | undefined) =>
-      resolveAntigravityServedModel(ctx.model, served, effort);
     return {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -115,7 +114,7 @@ export class AntigravityCredentialProvider implements CredentialProvider {
         "x-activity-request-id": createActivityRequestId(),
       },
       transformPayload: (inner: any, request?: { effort?: EffortLevel }) => {
-        const model = servedModelAt(request ? request.effort : ctx.effort);
+        const model = resolveAntigravityServedModel(ctx.model, served, request?.effort);
         const env: any = {
           model,
           project: projectId,

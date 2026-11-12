@@ -69,7 +69,8 @@ connection's base; a 1M group no map lists keeps its representative. A connectio
 only to a group it alone matches: one map listing both a 200K uid and a 1M uid of the same label
 would give the two rows one id, and launching the 1M row would then resolve to a 200K uid, so both
 groups keep their representatives. No two rows ever share an id. A group with no map keeps
-`defaultOf` (the vendor's family default, else the cheapest tier-less uid). The label, window and
+`defaultOf` (Devin's declared family default, `is_default_model_in_family`, else the cheapest
+tier-less uid). The label, window and
 cost still come from `defaultOf`. Note the two
 metadata rpcs are **unary and BARE** (`application/proto`, no envelope), field 1 is `"chisel"` there
 versus `"devin-cli"` on `GetChatMessage`, `GetCliTeamSettings` lives on `SeatManagementService` not

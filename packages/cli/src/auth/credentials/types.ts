@@ -114,12 +114,6 @@ import type { AccountRef, AccountSelectionContext } from "../accounts/types.js";
 
 export interface RequestAuthContext {
   model: string;
-  /**
-   * The request's reasoning level, for a credential that builds the request
-   * envelope and must choose a model id that carries the effort (Antigravity).
-   * Absent means the request carries no effort.
-   */
-  effort?: EffortLevel;
   exclude?: AccountRef[];
   pin?: AccountRef;
   rejected?: RequestAuth;

@@ -1854,8 +1854,10 @@ function buildRowsFromDiscovered(
   // Fold variant explosions into the rows a human actually picks. Identity for
   // every provider without a resolver, so this is a no-op except for Devin,
   // where 167 served uids are ~39 real choices multiplied out by reasoning tier
-  // and speed premium. The chosen id is always a real wire id, so it still
-  // round-trips through buildExplicitModelSpec and argv unchanged.
+  // and speed premium. A collapsed id is either a wire id the account lists or
+  // the base of a catalog connection with an effort map (resolved per request
+  // by effort); both round-trip through buildExplicitModelSpec and argv
+  // unchanged.
   const choices = _modelsCatalogCollapse.collapse(provider, discovered.map(toModelsCatalogEntry));
   const discoveredById = new Map(discovered.map((m) => [m.id, m]));
 
