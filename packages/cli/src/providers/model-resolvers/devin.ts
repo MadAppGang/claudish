@@ -261,8 +261,13 @@ export class DevinModelResolver implements ProviderModelResolver {
 
     // A group with a catalog effort map shows and launches its connection's
     // base, so the request's effort (or, with none, the no-effort rule) chooses
-    // the level; a suffixed representative would fix it.
-    const bases = soleConnectionBases(groups.values(), listModelIdEffortConnections("devin"));
+    // the level; a suffixed representative would fix it. The base is launched
+    // exactly as a picked row is, so a group takes it only when it lands there.
+    const bases = soleConnectionBases(
+      [...groups.values()],
+      listModelIdEffortConnections("devin"),
+      (base) => this.expand(base, modelsCatalog, {})
+    );
     const choices: ModelChoice[] = [];
     const emitted = new Set<string>();
     for (const group of groups.values()) {
@@ -432,15 +437,31 @@ function mappedConnectionOf(
 
 /**
  * The base each picker group shows and launches: the `externalModelId` of the
- * connection {@link mappedConnectionOf} finds, only when that connection matches
- * no other group. A map spanning a 200K and a 1M group would give both rows one
- * id, and launching the 1M row would then resolve to a 200K uid, so such groups
- * get no base and keep their representatives.
+ * connection {@link mappedConnectionOf} finds, only when
+ *  - that connection matches no other group: a map spanning a 200K and a 1M
+ *    group would give both rows one id;
+ *  - the base is no other group's uid: a served 1M base `glm-5-2` stays the 1M
+ *    row's own id, never also the id of the 200K group its map lists;
+ *  - `launch(base)`, the resolution a picked row goes through with no effort,
+ *    returns a uid of the group: a base whose map ids the account does not
+ *    serve may fall back to a sibling in another context group.
+ * Any other group gets no base and keeps its representative, so no two rows
+ * share an id whatever order discovery returned.
  */
 function soleConnectionBases(
-  groups: Iterable<ModelsCatalogEntry[]>,
-  connections: readonly ModelIdEffortConnection[]
+  groups: readonly ModelsCatalogEntry[][],
+  connections: readonly ModelIdEffortConnection[],
+  launch: (base: string) => string
 ): Map<ModelsCatalogEntry[], string> {
+  const groupOfUid = new Map<string, ModelsCatalogEntry[]>();
+  for (const group of groups) {
+    for (const entry of group) groupOfUid.set(entry.wireId.toLowerCase(), group);
+  }
+  const launchesInto = (base: string, group: ModelsCatalogEntry[]) => {
+    const owner = groupOfUid.get(base.toLowerCase());
+    if (owner && owner !== group) return false;
+    return groupOfUid.get(launch(base).toLowerCase()) === group;
+  };
   const owners = new Map<ModelsCatalogEntry[], ModelIdEffortConnection>();
   const groupsPerConnection = new Map<ModelIdEffortConnection, number>();
   for (const group of groups) {
@@ -452,7 +473,9 @@ function soleConnectionBases(
   const bases = new Map<ModelsCatalogEntry[], string>();
   for (const [group, owner] of owners) {
     const base = owner.connection.externalModelId;
-    if (base && groupsPerConnection.get(owner) === 1) bases.set(group, base);
+    if (base && groupsPerConnection.get(owner) === 1 && launchesInto(base, group)) {
+      bases.set(group, base);
+    }
   }
   return bases;
 }
