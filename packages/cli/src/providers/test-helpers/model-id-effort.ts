@@ -1,17 +1,44 @@
+import { spyOn } from "bun:test";
 import type { EffortLevel } from "../../adapters/base-api-format.js";
-import type { AggregatorEntry } from "../../model-loader.js";
+import type { AggregatorEntry, ModelIdEffort } from "../../model-loader.js";
+export type { ModelIdEffort } from "../../model-loader.js";
 import type { SlimModelEntry } from "../all-models-cache.js";
 import { catalogRouteForProvider } from "../catalog-route-bindings.js";
 import type { DevinModelConfig } from "../devin/devin-models.js";
+import * as effortRecommendations from "../effort-recommendations.js";
+import type { EffortTable } from "../effort-recommendations.js";
 
-// The connection field is not typed yet. Keep the backend contract in test data,
-// without augmenting production types or implementing any selection logic here.
-export interface ModelIdEffort {
-  via: "model_id";
-  values: Partial<Record<Exclude<EffortLevel, "none">, string>>;
-  default: { status: "unknown" };
-  off?: string;
-  baseServed: boolean;
+// Assumed selection seam: currentEffortRecommendations; guard lower-level reads too.
+export function stubEffortRecommendations(
+  table: () => EffortTable | null = () => null
+): () => void {
+  const current = spyOn(effortRecommendations, "currentEffortRecommendations").mockImplementation(
+    table
+  );
+  const read = spyOn(effortRecommendations, "readEffortRecommendations").mockImplementation(() => {
+    const value = table();
+    return value
+      ? {
+          contractVersion: 3,
+          format: 2,
+          generations: { [value.generationId]: { writtenAt: 0, efforts: value.efforts } },
+        }
+      : null;
+  });
+  const lookup = spyOn(effortRecommendations, "lookupModelEfforts").mockImplementation(
+    (modelId, generationId) => {
+      const value = table();
+      const byTaskType = value?.generationId === generationId ? value.efforts[modelId] : undefined;
+      return byTaskType
+        ? { ok: true, byTaskType }
+        : { ok: false, reason: "model", detail: "No recommendation in test data" };
+    }
+  );
+  return () => {
+    lookup.mockRestore();
+    read.mockRestore();
+    current.mockRestore();
+  };
 }
 
 export function effortMap(

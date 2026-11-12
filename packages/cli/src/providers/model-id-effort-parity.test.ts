@@ -1,3 +1,4 @@
+// Assumed no-effort table seam: currentEffortRecommendations, stubbed without disk I/O.
 /**
  * Assumed extension: RequestAuthContext has effort?: EffortLevel.
  * Antigravity's transport already accepts the original Claude request through
@@ -32,7 +33,13 @@ import {
 import type { DiscoveredModel } from "./model-discovery.js";
 import "./model-discovery-builtins.js";
 import { gatherRouteCandidates } from "./route-candidates.js";
-import { catalogEntry, connection, devinModel, effortMap } from "./test-helpers/model-id-effort.js";
+import {
+  catalogEntry,
+  connection,
+  devinModel,
+  effortMap,
+  stubEffortRecommendations,
+} from "./test-helpers/model-id-effort.js";
 import {
   AntigravityProviderTransport,
   resolveAntigravityServedModel,
@@ -82,7 +89,7 @@ beforeEach(() => {
   ];
   agServed = { servedIds: [HIGH, LOW], defaultId: HIGH, meta: {} };
   dvServed = [devinModel(HIGH, "high", { isDefault: true }), devinModel(LOW, "low")];
-  restore = [];
+  restore = [stubEffortRecommendations()];
   noNetwork.mockClear();
   globalThis.fetch = noNetwork as unknown as typeof fetch;
   _resetCatalogClient();
@@ -291,7 +298,7 @@ describe("rule 9: one model-id decision per provider", () => {
     });
   }
 
-  test("Antigravity no-effort credential and local transport still agree with the server default", async () => {
+  test("Antigravity no-effort credential and local transport move medium up to high, not server low", async () => {
     agServed.defaultId = LOW;
     const standalone = await new AntigravityCredentialProvider().getRequestAuth({ model: BASE });
     const auth = spyOn(credentials, "getRequestAuth").mockResolvedValue({ headers: {} });
@@ -302,6 +309,6 @@ describe("rule 9: one model-id decision per provider", () => {
       credential: standalone.transformPayload?.({ contents: [] }).model,
       local: transport.transformPayload({ contents: [] }).model,
       resolver: resolveAntigravityServedModel(BASE, agServed),
-    }).toEqual({ credential: LOW, local: LOW, resolver: LOW });
+    }).toEqual({ credential: HIGH, local: HIGH, resolver: HIGH });
   });
 });

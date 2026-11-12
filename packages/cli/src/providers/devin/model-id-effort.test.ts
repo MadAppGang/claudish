@@ -1,3 +1,4 @@
+// Assumed no-effort table seam: currentEffortRecommendations, stubbed without disk I/O.
 /**
  * No new callable seam is assumed for Devin: resolveDevinModelUid reads the
  * connection's modelIdEffort from the cloud models catalog. readAllModelsCache
@@ -12,6 +13,7 @@ import {
   connection,
   devinModel,
   effortMap,
+  stubEffortRecommendations,
 } from "../test-helpers/model-id-effort.js";
 import type { ModelIdEffort } from "../test-helpers/model-id-effort.js";
 import type { DevinModelConfig } from "./devin-models.js";
@@ -54,7 +56,11 @@ beforeEach(() => {
       plans: [],
     })
   );
-  restoreCache = () => read.mockRestore();
+  const restoreEfforts = stubEffortRecommendations();
+  restoreCache = () => {
+    restoreEfforts();
+    read.mockRestore();
+  };
 });
 
 afterEach(() => {
@@ -84,15 +90,16 @@ describe("Devin connection modelIdEffort", () => {
     expect(resolveDevinModelUid(LOW, "high", models())).toBe(LOW);
   });
 
-  test("rule 2: no effort uses the provider family default even when it costs more", () => {
+  test("rule 2: no effort chooses medium instead of a lower provider family default", () => {
     publish(effortMap({ high: HIGH, medium: MEDIUM, low: LOW }));
-    expect(resolveDevinModelUid(BASE, undefined, models())).toBe(MEDIUM);
+    const list = models().map((model) => ({ ...model, isFamilyDefault: model.uid === LOW }));
+    expect(resolveDevinModelUid(BASE, undefined, list)).toBe(MEDIUM);
   });
 
-  test("rule 2: no family default uses the lowest credit cost", () => {
+  test("rule 2: no family default chooses medium instead of the lowest credit cost", () => {
     publish(effortMap({ high: HIGH, medium: MEDIUM, low: LOW }));
     const list = models().map((model) => ({ ...model, isFamilyDefault: false }));
-    expect(resolveDevinModelUid(BASE, undefined, list)).toBe(LOW);
+    expect(resolveDevinModelUid(BASE, undefined, list)).toBe(MEDIUM);
   });
 
   for (const [effort, expected] of [

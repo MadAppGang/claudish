@@ -1,3 +1,4 @@
+// Assumed no-effort table seam: currentEffortRecommendations, stubbed without disk I/O.
 /**
  * Assumed extension: resolveAntigravityServedModel(requested, served, effort?).
  * Its first two arguments are unchanged; the connection's modelIdEffort is
@@ -8,7 +9,12 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 import type { EffortLevel } from "../../adapters/base-api-format.js";
 import * as allModelsCache from "../all-models-cache.js";
 import type { DiskCacheV3, SlimModelEntry } from "../all-models-cache.js";
-import { catalogEntry, connection, effortMap } from "../test-helpers/model-id-effort.js";
+import {
+  catalogEntry,
+  connection,
+  effortMap,
+  stubEffortRecommendations,
+} from "../test-helpers/model-id-effort.js";
 import type { ModelIdEffort } from "../test-helpers/model-id-effort.js";
 import { resolveAntigravityServedModel } from "./antigravity.js";
 
@@ -51,7 +57,11 @@ beforeEach(() => {
       plans: [],
     })
   );
-  restoreCache = () => read.mockRestore();
+  const restoreEfforts = stubEffortRecommendations();
+  restoreCache = () => {
+    restoreEfforts();
+    read.mockRestore();
+  };
 });
 
 afterEach(() => {
@@ -71,21 +81,21 @@ describe("Antigravity connection modelIdEffort", () => {
     expect(resolve(LOW, served(), "high")).toBe(LOW);
   });
 
-  test("rule 2: no effort keeps the backend default, including a weaker listed effort", () => {
+  test("rule 2: no effort chooses medium instead of the weaker backend default", () => {
     publish(effortMap({ high: HIGH, medium: MEDIUM, low: LOW }));
-    expect(resolve(BASE, served([HIGH, MEDIUM, LOW], LOW))).toBe(LOW);
+    expect(resolve(BASE, served([HIGH, MEDIUM, LOW], LOW))).toBe(MEDIUM);
   });
 
-  test("rule 2: absent backend default uses the highest listed effort", () => {
+  test("rule 2: absent backend default chooses medium instead of the highest listed effort", () => {
     publish(effortMap({ high: HIGH, medium: MEDIUM, low: LOW }));
-    expect(resolve(BASE, served([MEDIUM, LOW, HIGH], null))).toBe(HIGH);
+    expect(resolve(BASE, served([MEDIUM, LOW, HIGH], null))).toBe(MEDIUM);
   });
 
-  test("rule 2: an unrelated backend default is not used", () => {
+  test("rule 2: an unrelated backend default falls back to medium", () => {
     publish(effortMap({ high: HIGH, medium: MEDIUM, low: LOW }));
     expect(
       resolve(BASE, served([HIGH, MEDIUM, LOW, "gemini-other-high"], "gemini-other-high"))
-    ).toBe(HIGH);
+    ).toBe(MEDIUM);
   });
 
   for (const [effort, expected] of [
