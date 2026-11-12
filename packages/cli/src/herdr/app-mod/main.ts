@@ -39,6 +39,7 @@ import {
   type RunTab,
   failureCard,
   footerLine,
+  recordCard,
   runTabs,
   sessionTabs,
 } from "./runs.js";
@@ -517,6 +518,7 @@ export default class ClaudishPanel extends View {
       );
     if (ctl.mode === "text") return area.children(lines(ctl.transcriptLines()));
     if (row.noScreen) return area.children(lines(failureCard(row, home())));
+    if (row.recordOnly) return area.children(lines(recordCard(row, home())));
     const open = ctl.view?.target === row.target;
     const say = open
       ? row.finished

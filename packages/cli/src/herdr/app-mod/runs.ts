@@ -70,6 +70,8 @@ export interface PanelRow {
   finished: boolean;
   /** failed before Claude Code started: no screen and no transcript to show */
   noScreen: boolean;
+  /** listed from its records: no running server holds it, so no viewer can show it */
+  recordOnly: boolean;
   /** what the failure card reads */
   reason: string | null;
   reasonDetail: string | null;
@@ -186,7 +188,7 @@ function noteOf(item: RowItem): { note: string; error: boolean } {
   return { note: clipText(line, 160), error: false };
 }
 
-function rowOf(item: RowItem, runStart: number | null, now: number): PanelRow {
+function rowOf(item: RowItem, runStart: number | null, now: number, recordOnly: boolean): PanelRow {
   const look = STATE_LOOK[item.state] ?? STATE_LOOK.FAILED;
   const terminal = TERMINAL.has(item.state);
   const { note, error } = noteOf(item);
@@ -216,6 +218,7 @@ function rowOf(item: RowItem, runStart: number | null, now: number): PanelRow {
       item.turns_completed === 0 &&
       item.tool_calls === 0 &&
       (item.tokens_in ?? 0) === 0,
+    recordOnly,
     reason: item.reason,
     reasonDetail: item.reason_detail,
     modelSpec: item.model,
@@ -259,13 +262,18 @@ function sharedValue<T>(values: T[]): T | null {
 }
 
 /** One run from its items: rows (running first, then by slot), header, tone. */
-function runOf(key: string, list: RowItem[], now: number): PanelRun {
+function runOf(
+  key: string,
+  list: RowItem[],
+  now: number,
+  recordOnly: ReadonlySet<string>
+): PanelRun {
   const first = list[0] as RowItem;
   const startedAt =
     first.kind === "team_slot" ? runStartMs(first.run_id) : Date.parse(first.started_at);
   const start = startedAt !== null && Number.isFinite(startedAt) ? startedAt : null;
   const rows = list
-    .map((item) => rowOf(item, start, now))
+    .map((item) => rowOf(item, start, now, recordOnly.has(item.target)))
     .sort((a, b) => Number(a.finished) - Number(b.finished) || a.slot.localeCompare(b.slot));
   const differ = new Set(rows.map((r) => r.agent)).size > 1;
   const agent = sharedValue(rows.map((r) => r.agent));
@@ -285,8 +293,15 @@ function runOf(key: string, list: RowItem[], now: number): PanelRun {
   };
 }
 
-/** Every run in the items, newest start first; replay items are not runs and are left out. */
-export function runsOf(items: ViewItem[], now: number): PanelRun[] {
+/**
+ * Every run in the items, newest start first; replay items are not runs and are left out.
+ * `recordOnly` names the targets listed from their records, not from a running server.
+ */
+export function runsOf(
+  items: ViewItem[],
+  now: number,
+  recordOnly: ReadonlySet<string> = new Set()
+): PanelRun[] {
   const groups = new Map<string, RowItem[]>();
   for (const item of items) {
     if (!isRowItem(item)) continue;
@@ -294,7 +309,7 @@ export function runsOf(items: ViewItem[], now: number): PanelRun[] {
     groups.set(key, [...(groups.get(key) ?? []), item]);
   }
   return [...groups]
-    .map(([key, list]) => runOf(key, list, now))
+    .map(([key, list]) => runOf(key, list, now, recordOnly))
     .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
 }
 
@@ -360,6 +375,7 @@ export type ScreenMode = "screen" | "text";
 export function footerLine(row: PanelRow, mode: ScreenMode): string {
   if (mode === "text") return `read only · transcript of slot ${row.slot}`;
   if (row.noScreen) return "read only · no screen: the reason and records are shown";
+  if (row.recordOnly) return "read only · from its records: no running claudish holds it";
   if (!row.finished)
     return `read only · live screen of slot ${row.slot}; focusing it takes the view`;
   return "read only · finished: a replay of the real interface";
@@ -376,6 +392,18 @@ export function failureCard(row: PanelRow, home: string): string[] {
     "",
     `reason   ${row.reason ?? row.state.toLowerCase()}`,
     `detail   ${row.reasonDetail ?? "none recorded"}`,
+    `model    ${row.modelSpec} → ${row.providerName ?? "provider unknown"}`,
+    `records  ${tilde(row.recordsPath, home)}`,
+  ];
+}
+
+/** What a run only the records hold shows in place of a screen. */
+export function recordCard(row: PanelRow, home: string): string[] {
+  return [
+    "No running claudish MCP server holds this run any more, so its screen cannot be shown.",
+    "Text shows its conversation.",
+    "",
+    `state    ${row.state.toLowerCase()}${row.reason ? ` (${row.reason})` : ""}`,
     `model    ${row.modelSpec} → ${row.providerName ?? "provider unknown"}`,
     `records  ${tilde(row.recordsPath, home)}`,
   ];

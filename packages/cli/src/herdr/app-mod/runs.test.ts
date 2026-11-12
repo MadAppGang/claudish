@@ -5,6 +5,7 @@ import {
   EARLIER_MIN_TABS,
   failureCard,
   footerLine,
+  recordCard,
   runStartMs,
   runTabs,
   runsOf,
@@ -243,6 +244,25 @@ describe("the session view: tabs, footer, the failure card, the transcript", () 
     expect(failureCard(claims!.rows[0]!, "/Users/u").at(-1)).toBe(
       "records  ~/proj/ai-docs/sessions/viewclaims/"
     );
+  });
+
+  test("a finished slot only the records hold says so in place of a screen", () => {
+    const finished = items.find((i) => i.target === `t:${CLAIMS}/01`) as ViewItem;
+    const [claims] = runsOf(items, NOW, new Set([finished.target]));
+    const row = claims!.rows.find((r) => r.target === finished.target)!;
+    expect(row.recordOnly).toBe(true);
+    expect(claims!.rows.find((r) => r.target !== finished.target)?.recordOnly).toBe(false);
+    expect(footerLine(row, "screen")).toBe(
+      "read only · from its records: no running claudish holds it"
+    );
+    expect(recordCard(row, "/Users/u")).toEqual([
+      "No running claudish MCP server holds this run any more, so its screen cannot be shown.",
+      "Text shows its conversation.",
+      "",
+      "state    completed",
+      `model    ${row.modelSpec} → ${row.providerName ?? "provider unknown"}`,
+      "records  ~/proj/ai-docs/sessions/viewclaims/",
+    ]);
   });
 
   test("transcript lines read as speaker and text; a cont chunk joins its line", () => {

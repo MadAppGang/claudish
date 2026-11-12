@@ -192,11 +192,29 @@ describe("parseFeed", () => {
       parseFeed(
         JSON.stringify({ relay: { pid: 4, start36: "ab", started_at: "x" }, servers: [], items })
       )
-    ).toEqual({ relay: { pid: 4, start36: "ab" }, servers: [], items });
+    ).toEqual({ relay: { pid: 4, start36: "ab", version: null }, servers: [], items, history: [] });
+    // a newer relay names its version and carries the records' runs
+    const history = [sessionItem("old")];
+    expect(
+      parseFeed(
+        JSON.stringify({
+          relay: { pid: 4, start36: "ab", started_at: "x", version: "14.21.0" },
+          servers: [],
+          items,
+          history,
+        })
+      )
+    ).toEqual({
+      relay: { pid: 4, start36: "ab", version: "14.21.0" },
+      servers: [],
+      items,
+      history,
+    });
     expect(parseFeed(JSON.stringify({ servers: [], items: [] }))).toEqual({
       relay: null,
       servers: [],
       items: [],
+      history: [],
     });
     for (const bad of [null, "", "{", "[]", '{"items":[]}', '{"servers":{},"items":[]}'])
       expect(parseFeed(bad)).toBeNull();
