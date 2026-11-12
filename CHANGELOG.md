@@ -2,6 +2,86 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.20.0] - 2026-11-12
+
+### Bug Fixes
+
+- name the bundled list generation in the no-hop launch error *(routing)* ([`b0af2a9`](https://github.com/MadAppGang/claudish/commit/b0af2a9c0741f9be5c255f37fd5f314c8f9f9ab4))
+- raise the routing rulebook review limit to 60 turns *(ci)* ([`acb6956`](https://github.com/MadAppGang/claudish/commit/acb69568827d2d7a15a5f1cb70599cac6e2a719e))
+- probe a routed hop as routed when no catalog exists *(probe)* ([`66bd610`](https://github.com/MadAppGang/claudish/commit/66bd61055e1ec890e23b5b543bd24f5c5c2ee492))
+- name the bundled recommended list in describeAdvisorPlan *(advisor)* ([`9a2fcc9`](https://github.com/MadAppGang/claudish/commit/9a2fcc963e197292d35b61778c5a1e058a985d27))
+- log a dropped --model-pinned flag without -d *(routing)* ([`0600ecc`](https://github.com/MadAppGang/claudish/commit/0600ecc8a38285edd740ebecf2beae0954ceeedb))
+- send the connection wire id in the request body *(routing)* ([`f802c4e`](https://github.com/MadAppGang/claudish/commit/f802c4e6877846f027088624fbd8dc7affb6de65))
+- name the bundled recommended list in the empty reason *(picker)* ([`635ce2b`](https://github.com/MadAppGang/claudish/commit/635ce2b17b48867bbf32d5123de3238ac8a48b55))
+- wait for the catalog verdict with no catalog file *(probe)* ([`680fd1a`](https://github.com/MadAppGang/claudish/commit/680fd1ac0814ce949052036d748218181cfc3a8b))
+- name the missing catalog instead of a vendor key *(launch)* ([`fdd8200`](https://github.com/MadAppGang/claudish/commit/fdd8200579954789458a3220b3f9fb1fb86ce05f))
+- refuse an explicit spec outside the bundled list *(wire)* ([`65c6619`](https://github.com/MadAppGang/claudish/commit/65c6619d22c4cec4d37efadd8e83a117e448c771))
+- rebuild bundled-list handlers once a catalog exists *(proxy)* ([`bbd229c`](https://github.com/MadAppGang/claudish/commit/bbd229c4598f2e811a467a68a38039c6e270250c))
+- read the magmux version without waiting for its pipes to close *(pane)* ([`cb993a0`](https://github.com/MadAppGang/claudish/commit/cb993a0ae6880eccd3de8fb8cce75ff183a44b04))
+- name the timer lag and child state in the magmux probe timeout *(pane)* ([`a2f518f`](https://github.com/MadAppGang/claudish/commit/a2f518faf6fb09677910d7ccbdb1fed43cf258ad))
+- answer session_live for a live slot with no transcript yet *(mcp)* ([`3f0dcb3`](https://github.com/MadAppGang/claudish/commit/3f0dcb331df642567fa28547702dcf49a22ff5ff))
+- read the process table for the endpoint sweep only when one exists *(pane)* ([`6448ad0`](https://github.com/MadAppGang/claudish/commit/6448ad0f83992d0aca5c59a7edb231cd4bbe3020))
+- split view and herdr socket lines in time linear in length *(view)* ([`ce26bbc`](https://github.com/MadAppGang/claudish/commit/ce26bbc27948583701f8e9b7284f3f8a492bc19d))
+- name an outdated claudish in the Herdr.app panel, not missing *(herdr)* ([`c97e599`](https://github.com/MadAppGang/claudish/commit/c97e5991cd1083cdc705338f70a8b198c523db36))
+- open one socket connection per herdr request *(herdr)* ([`1bdadf9`](https://github.com/MadAppGang/claudish/commit/1bdadf9be058919fb72efbe2db4cdec4fc7d44f7))
+- keep one reconnect loop per view client and close its sockets *(view)* ([`64c556d`](https://github.com/MadAppGang/claudish/commit/64c556d5cc85e2e56105d130bee92aca716b19d0))
+- rescan the endpoint folder after arming its watcher *(view)* ([`23a4a89`](https://github.com/MadAppGang/claudish/commit/23a4a89c9e9d6dd63329aa7c4780a263a0bed7d0))
+- keep replay holds and closed herdr panes across async races *(view)* ([`650f95d`](https://github.com/MadAppGang/claudish/commit/650f95dcd2c5911ae6e962b23f4c0843314da19c))
+- strip HERDR_* and HC_* variables from the pane child env *(pane)* ([`b1c1892`](https://github.com/MadAppGang/claudish/commit/b1c1892ed1244e720774947ec5ac11072ce7e768))
+
+### Documentation
+
+- state the disk-catalog effort fallback in RB-23 *(routing)* ([`2ffa3eb`](https://github.com/MadAppGang/claudish/commit/2ffa3eb17553d3614f6356d2c3609979c8bd75de))
+- describe routing from the bundled recommended list *(routing)* ([`48c4f39`](https://github.com/MadAppGang/claudish/commit/48c4f3997e9eba78fcfbf0d033b79ac288253f2c))
+- fix the cloud models catalog cache path in routing.md *(routing)* ([`c1ebbb5`](https://github.com/MadAppGang/claudish/commit/c1ebbb5c2b2296e4e8fa8788ca0e447f92f52c69))
+- add the bundled list regeneration step *(release)* ([`c7db414`](https://github.com/MadAppGang/claudish/commit/c7db414bab0ebfab54fde7b437f9a371bce5a949))
+- add the routing rulebook with numbered rule ids *(routing)* ([`8a61cd7`](https://github.com/MadAppGang/claudish/commit/8a61cd729e0069388f85b5f67aad006192b63198))
+- add the live herdr validation evidence for session views *(reports)* ([`4d0dfc2`](https://github.com/MadAppGang/claudish/commit/4d0dfc290c493ef98e0f17ecb10464f34efbb62c))
+- add view-transport.md for sessions shown in herdr *(architecture)* ([`4ab281d`](https://github.com/MadAppGang/claudish/commit/4ab281d4946ce60f87587ebd2fa9cd251c99a4c7))
+- update CHANGELOG.md for v14.19.1([`7edda7c`](https://github.com/MadAppGang/claudish/commit/7edda7c49898b8df73c0c4f398df5f7ea881891c))
+
+### New Features
+
+- show run tabs, band rows and a session view in the Herdr.app panel *(herdr)* ([`06c198c`](https://github.com/MadAppGang/claudish/commit/06c198c3b051b1c437bc805b4e033079ba1268a6))
+- add claudish view --transcript to read a target's lines *(view)* ([`6eaa2fa`](https://github.com/MadAppGang/claudish/commit/6eaa2fa9c87785d1b549d5f707df7b973c0e2c57))
+- accept task_type on team and create_session *(mcp)* ([`45c15f8`](https://github.com/MadAppGang/claudish/commit/45c15f827846d75028f71e1a8cc317ece30656fc))
+- read bundled efforts when no catalog exists *(effort)* ([`8d5e560`](https://github.com/MadAppGang/claudish/commit/8d5e5600e684217691f239d907f5f84173808fdb))
+- check model choice against the bundled recommended list *(mcp)* ([`66287cd`](https://github.com/MadAppGang/claudish/commit/66287cd70926ed1cd03e97e5e979349a5e01db49))
+- list the bundled recommended models when no catalog exists *(mcp)* ([`0259548`](https://github.com/MadAppGang/claudish/commit/0259548a4c8fa1296a515ffed67659aa5a4aefbe))
+- name the bundled recommended list as the chain source *(probe)* ([`081004c`](https://github.com/MadAppGang/claudish/commit/081004c82efa2aa87e1097f7288949ae4a9efd73))
+- plan a bare advisor member from the bundled list *(advisor)* ([`aa3bfc0`](https://github.com/MadAppGang/claudish/commit/aa3bfc0de1978c30ae1f24669929b5eadad65e0b))
+- wait for the running catalog refresh before refusing *(launch)* ([`2493320`](https://github.com/MadAppGang/claudish/commit/2493320d8dd713e7d1167c7b8c15eae2edd801ea))
+- wait for the catalog verdict before the API key check *(launch)* ([`8ff08a3`](https://github.com/MadAppGang/claudish/commit/8ff08a368b4b039c532b54685960e8f3e7598d95))
+- read the bundled list when the backend is unreachable *(catalog)* ([`d0f114e`](https://github.com/MadAppGang/claudish/commit/d0f114e4f29d769610c65f39f75f7684ef8abdd8))
+- resolve gateway wire ids from the gateway models list *(routing)* ([`7107b2f`](https://github.com/MadAppGang/claudish/commit/7107b2fd22960c4058e98aa6e8b3307303f6d243))
+- route names outside the bundled list as with no catalog *(routing)* ([`da83b78`](https://github.com/MadAppGang/claudish/commit/da83b78a7d1d17c9a883245e665850d7efe4bc02))
+- append the fallback offline only when configured *(routing)* ([`9daa8bf`](https://github.com/MadAppGang/claudish/commit/9daa8bf9293e4b4278ef876c587fa01bd323e528))
+- record catalog reachability from refresh outcomes *(catalog)* ([`e7ae62c`](https://github.com/MadAppGang/claudish/commit/e7ae62cfd34e143d69e8384dd2c8c938fe66781c))
+- read an OpenRouter key from Keychain and config *(routing)* ([`51b8599`](https://github.com/MadAppGang/claudish/commit/51b85999e87159945af78d5aa598e524194dbfc6))
+- add a script that writes the bundled recommended list *(release)* ([`3d35bc2`](https://github.com/MadAppGang/claudish/commit/3d35bc20f7f058c9c8e2083a9d1ef6253407bc2d))
+- add a builder for the bundled recommended list *(catalog)* ([`d1ee9ae`](https://github.com/MadAppGang/claudish/commit/d1ee9ae625bd5ad0fa7438c80f205359dbfb12ea))
+- add a Herdr.app mod that lists and opens claudish sessions *(herdr)* ([`7e68694`](https://github.com/MadAppGang/claudish/commit/7e686946538cc3902e0347d5381235567e4fe3e7))
+- list a session's subagents from their meta files *(pane)* ([`033dbc8`](https://github.com/MadAppGang/claudish/commit/033dbc86dd8c09bc0358119e3273b87728ab269d))
+- share one replay of a finished session across MCP servers *(mcp)* ([`4194e7b`](https://github.com/MadAppGang/claudish/commit/4194e7b23c0bd199d7a9d0943e79873adba04a62))
+- place one read-only viewer pane per session in a claudish tab *(herdr)* ([`c7a0c26`](https://github.com/MadAppGang/claudish/commit/c7a0c2650e833b611215d5a2565ecb8dc36f0c93))
+- add claudish view <target> to watch a session read only *(view)* ([`3116e00`](https://github.com/MadAppGang/claudish/commit/3116e00813610d90a478d5180137ac1443094e05))
+- start panes with the magmux --view-sock read-only socket *(pane)* ([`57e575e`](https://github.com/MadAppGang/claudish/commit/57e575e8e1edfbb8d822de4f15091f7c5e581f18))
+- serve session rows and view claims on a local unix socket *(mcp)* ([`6486215`](https://github.com/MadAppGang/claudish/commit/64862155624765fdc57fd701bff8da8f8d56a513))
+
+### Other Changes
+
+- regenerate the bundled recommended list for 14.20.0 *(catalog)* ([`ee795b7`](https://github.com/MadAppGang/claudish/commit/ee795b735651666f1f16712a8067a56f778302c6))
+- add a fork guard for pull requests touching routing *(ci)* ([`ae6ddca`](https://github.com/MadAppGang/claudish/commit/ae6ddca0d4055920a64fae67b746530da8ea6ef4))
+- gate the publish on a routing rulebook review *(release)* ([`53d5d78`](https://github.com/MadAppGang/claudish/commit/53d5d78112ac9e4eccd9d86b105bb622fbdf4ccc))
+- add a rulebook review for pull requests touching routing *(ci)* ([`41c8e19`](https://github.com/MadAppGang/claudish/commit/41c8e1985856b214ef8ece74150b40391eacc46a))
+- add the first bundled recommended list *(catalog)* ([`199a275`](https://github.com/MadAppGang/claudish/commit/199a275c6f6e7b9c3023b12d0a4bb4a0a0321e63))
+
+### Refactoring
+
+- write taskType into spawn.json without a conditional spread *(mcp)* ([`8f09952`](https://github.com/MadAppGang/claudish/commit/8f09952e045fce8e0b243dcb4c8fc1e4bdb334db))
+- mark each catalog snapshot as disk or bundled *(catalog)* ([`6812bca`](https://github.com/MadAppGang/claudish/commit/6812bca6105e3a41846fefe4687d859afab145a9))
+- pass the defaultProvider resolution to route() *(routing)* ([`abd562a`](https://github.com/MadAppGang/claudish/commit/abd562a864d7535d3f8dff6c314ace9328db4ba8))
+
 ## [14.19.1] - 2026-11-10
 
 ### Bug Fixes
