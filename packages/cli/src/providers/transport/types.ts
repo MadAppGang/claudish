@@ -5,6 +5,7 @@
  * Does NOT own: message conversion, tool format, pricing (those are ModelAdapter concerns).
  */
 
+import type { EffortLevel } from "../../adapters/base-api-format.js";
 import type { RequestAuth, RequestAuthContext } from "../../auth/credentials/types.js";
 
 /**
@@ -276,6 +277,16 @@ export interface ProviderTransport {
    * `binding`: the request's auth binding, as for `getEndpoint`.
    */
   transformPayload?(payload: any, claudeRequest?: any, binding?: AuthBinding): any;
+
+  /**
+   * Pin the `--effort` level for every request this transport sends.
+   *
+   * ComposedHandler calls it once, beside the dialect pin, when `--effort` is
+   * set. Only a transport that encodes the level outside the body the dialect
+   * builds implements it (Antigravity chooses the model id by level); the pin
+   * outranks the level each Claude request carries.
+   */
+  setEffortOverride?(level: EffortLevel): void;
 
   /**
    * Serialize the request payload to wire bytes.

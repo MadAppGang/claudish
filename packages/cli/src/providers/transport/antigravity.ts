@@ -101,12 +101,13 @@ export {
 } from "../antigravity-model-id.js";
 
 /**
- * The reasoning level a Claude request carries: `output_config.effort`, else the
- * legacy `thinking.budget_tokens` bucket — the reading the Gemini dialect's
+ * The reasoning level a request is sent at: the `--effort` pin when one is set,
+ * else the Claude request's `output_config.effort`, else the legacy
+ * `thinking.budget_tokens` bucket — the reading the Gemini dialect's
  * `thinkingConfig` uses, so the id and the thinking control follow one level.
  */
-function effortOf(claudeRequest: unknown): EffortLevel | undefined {
-  const level = wireChoicesFromClaudeRequest(claudeRequest).effort;
+function effortOf(claudeRequest: unknown, pinned?: EffortLevel): EffortLevel | undefined {
+  const level = wireChoicesFromClaudeRequest(claudeRequest, pinned).effort;
   return isEffortLevel(level) ? level : undefined;
 }
 
@@ -256,6 +257,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
   /** Set when a fallback model is used instead of the requested one */
   private _activeModelName: string | undefined;
 
+  /** The `--effort` level, which outranks the level each Claude request carries. */
+  private pinnedEffort: EffortLevel | undefined;
+
   /**
    * Model ids this account's Antigravity subscription currently serves,
    * discovered LIVE in refreshAuth() via getServedAntigravityModels()
@@ -355,7 +359,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
     // Resolve the requested id to a served id against the live set, with the
     // function the credential provider (which builds the primary envelope) and
     // the routing availability check also use.
-    this.servedModelName = resolveAntigravityServedModel(this.modelName, served);
+    this.servedModelName = resolveAntigravityServedModel(
+      this.modelName,
+      served,
+      this.pinnedEffort ? effortOf(undefined, this.pinnedEffort) : undefined
+    );
     log(
       `[Antigravity] Auth refreshed, project: ${this.projectId}, tier: ${this._displayName}, ` +
         `model: ${this.modelName} -> ${this.servedModelName}, served: ${this.servedModels.join(",") || "(none)"}`
@@ -426,17 +434,29 @@ export class AntigravityProviderTransport implements ProviderTransport {
   }
 
   /**
+   * Pin the `--effort` level. Antigravity carries the level in the model id, so
+   * the pin chooses the id as well as the dialect's `thinkingConfig`.
+   */
+  setEffortOverride(level: EffortLevel): void {
+    this.pinnedEffort = level;
+  }
+
+  /**
    * Wrap the standard Gemini payload in the CodeAssist envelope.
    *
-   * The model id is chosen per request at the effort `claudeRequest` carries
-   * ({@link effortOf}), because Antigravity carries the level in the id
-   * and one transport serves turns with different levels. Both builders choose
-   * it with `resolveAntigravityServedModel` over the same dynamic models catalog.
+   * The model id is chosen per request at the pinned `--effort` level, else the
+   * effort `claudeRequest` carries ({@link effortOf}), because Antigravity
+   * carries the level in the id and one transport serves turns with different
+   * levels. Both builders choose it with `resolveAntigravityServedModel` over
+   * the same dynamic models catalog.
    *
    * Stores the envelope for potential fallback retries in enqueueRequest.
    */
   transformPayload(payload: any, claudeRequest?: any): any {
-    const request = claudeRequest === undefined ? undefined : { effort: effortOf(claudeRequest) };
+    const request =
+      claudeRequest === undefined && this.pinnedEffort === undefined
+        ? undefined
+        : { effort: effortOf(claudeRequest, this.pinnedEffort) };
     // PRIMARY request: the CodeAssist envelope comes from the delegated auth
     // artifact (which maps the model id). Fall back to the local builder if
     // delegation hasn't run.

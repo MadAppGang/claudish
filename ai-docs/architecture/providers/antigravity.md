@@ -211,9 +211,13 @@ different levels. The transport reads the Claude request's effort in `transformP
 (`output_config.effort`, else the legacy `thinking.budget_tokens` bucket, through
 `wireChoicesFromClaudeRequest`, the reading the dialect's `thinkingConfig` uses) and hands it to the credential's builder, or resolves with the
 same function for its local builder. `servedModelName` follows the id actually sent.
-The `--effort` pin does not reach this choice: the transport sees the Claude request,
-not the dialect's pinned level. The body's `thinkingConfig` is unchanged; an exact id
-whose level differs from the request's effort still carries the request's
+The `--effort` pin chooses the id too. `ComposedHandler` pins it on the dialects and
+on the transport (`ProviderTransport.setEffortOverride`), and the transport's
+`transformPayload` passes the pinned level to `wireChoicesFromClaudeRequest`, which
+ranks it above the request's own effort. The pinned level reaches both builders, and
+applies even when `transformPayload` gets no Claude request; `refreshAuth` resolves
+`servedModelName` at the pin as well. The body's `thinkingConfig` is unchanged; an
+exact id whose level differs from the effort still carries that effort's
 `thinkingConfig`.
 
 ## Ordering: cloud models catalog dates are poison for Antigravity's models
