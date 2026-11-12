@@ -1890,7 +1890,7 @@ function buildRowsFromDiscovered(
     if (promo) parts.push(promo);
 
     return {
-      id: c.id, // wire id — buildExplicitModelSpec adds the provider prefix
+      id: c.id, // listed wire id or connection base; buildExplicitModelSpec adds the provider prefix
       name: c.displayName,
       description: parts.join(" · "),
       provider: displayName,

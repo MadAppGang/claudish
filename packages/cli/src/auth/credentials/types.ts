@@ -154,8 +154,7 @@ export interface RequestAuth {
   endpoint?: string;
   /**
    * Wrap the payload in the provider envelope. `request`, when given, carries
-   * THIS request's effort and replaces `RequestAuthContext.effort`: one artifact
-   * can serve turns with different levels.
+   * THIS request's effort, so one artifact serves turns with different levels.
    */
   transformPayload?(payload: any, request?: { effort?: EffortLevel }): any;
   /**
