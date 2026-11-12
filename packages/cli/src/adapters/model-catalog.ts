@@ -10,7 +10,7 @@
  * constraints, not model metadata.
  */
 
-import type { ModelIdEffort, ReasoningModeCapabilities } from "../model-loader.js";
+import type { AggregatorEntry, ModelIdEffort, ReasoningModeCapabilities } from "../model-loader.js";
 import {
   type CachedSubscriptionPlan,
   type ReasoningCapability,
@@ -186,46 +186,76 @@ export function lookupRouteReasoningMode(
   )?.reasoning?.mode;
 }
 
+/** A mapped connection that publishes an effort map, with its entry's canonical model id. */
+export interface ModelIdEffortConnection {
+  /** The canonical model id of the catalog entry the connection belongs to. */
+  modelId: string;
+  connection: AggregatorEntry;
+  map: ModelIdEffort;
+}
+
+/** Every mapped connection on `provider`'s route, with its entry's canonical model id. */
+function providerConnections(
+  provider: string,
+  cachePath?: string
+): Array<{ modelId: string; connection: AggregatorEntry }> {
+  const cache = readAllModelsCache(cachePath);
+  if (!cache) return [];
+  return cache.entries.flatMap((entry) =>
+    (entry.aggregators ?? [])
+      .filter(
+        (connection) =>
+          connection.routeStatus === "mapped" &&
+          catalogRouteMatchesProvider(connection.route, provider)
+      )
+      .map((connection) => ({ modelId: entry.modelId, connection }))
+  );
+}
+
 /**
- * The effort map (`modelIdEffort`) of the ONE connection that names `wireId` as
- * its base on `provider`'s route: the connection whose route binding matches the
- * provider and whose `externalModelId` equals the requested id.
+ * The ONE connection that names `wireId` as its base on `provider`'s route, with
+ * its effort map (`modelIdEffort`): the connection whose route binding matches
+ * the provider and whose `externalModelId` equals the requested id.
  *
  * Searched by `externalModelId` across every entry, because the requested id is
  * the provider's wire id, not necessarily a canonical model id or alias. A
- * sibling connection (the 1M base beside the default-context one, another
+ * connection spelled exactly as requested decides, with a map or without one;
+ * a case-folded spelling is consulted only when no connection has the exact
+ * one. A sibling connection (the 1M base beside the default-context one, another
  * provider's connection for the same model) never supplies the map, so a base
  * whose own connection publishes none has no map. Undefined for a cold cache,
  * no such connection, or a malformed map.
  */
+export function findModelIdEffortConnection(
+  wireId: string,
+  provider: string,
+  cachePath?: string
+): ModelIdEffortConnection | undefined {
+  const wanted = wireId.trim();
+  if (!wanted) return undefined;
+  const connections = providerConnections(provider, cachePath);
+  const exact = connections.filter(({ connection }) => connection.externalModelId === wanted);
+  const lowered = wanted.toLowerCase();
+  const candidates =
+    exact.length > 0
+      ? exact
+      : connections.filter(
+          ({ connection }) => connection.externalModelId?.toLowerCase() === lowered
+        );
+  for (const candidate of candidates) {
+    const map = readModelIdEffort(candidate.connection.modelIdEffort);
+    if (map) return { ...candidate, map };
+  }
+  return undefined;
+}
+
+/** The effort map of the connection {@link findModelIdEffortConnection} finds. */
 export function lookupConnectionModelIdEffort(
   wireId: string,
   provider: string,
   cachePath?: string
 ): ModelIdEffort | undefined {
-  const wanted = wireId.trim();
-  if (!wanted) return undefined;
-  const cache = readAllModelsCache(cachePath);
-  if (!cache) return undefined;
-  const connections = cache.entries
-    .flatMap((entry) => entry.aggregators ?? [])
-    .filter(
-      (connection) =>
-        connection.routeStatus === "mapped" &&
-        catalogRouteMatchesProvider(connection.route, provider)
-    );
-  // Exact spelling first; a case-folded match only when no exact one has a map.
-  const lowered = wanted.toLowerCase();
-  const exact = connections.filter((connection) => connection.externalModelId === wanted);
-  const folded = connections.filter(
-    (connection) =>
-      connection.externalModelId !== wanted && connection.externalModelId?.toLowerCase() === lowered
-  );
-  for (const connection of [...exact, ...folded]) {
-    const map = readModelIdEffort(connection.modelIdEffort);
-    if (map) return map;
-  }
-  return undefined;
+  return findModelIdEffortConnection(wireId, provider, cachePath)?.map;
 }
 
 /**
