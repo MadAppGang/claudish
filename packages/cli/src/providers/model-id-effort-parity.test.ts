@@ -1,20 +1,15 @@
 // Assumed no-effort table seam: currentEffortRecommendations, stubbed without disk I/O.
 /**
- * Assumed extension: RequestAuthContext has effort?: EffortLevel.
- * Antigravity's transport already accepts the original Claude request through
- * ProviderTransport.transformPayload(payload, claudeRequest); no refresh seam
- * is added here. resolveAntigravityServedModel's optional third effort argument
- * is exercised in antigravity-modelid-effort.test.ts.
+ * The transport decodes effort from the Claude request and passes it to the
+ * credential's transformPayload(payload, { effort }) for each request.
  *
  * Load the authority before the concrete credential provider to avoid its
  * existing import cycle. All credential, discovery and disk I/O is intercepted.
  */
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import type { EffortLevel } from "../adapters/base-api-format.js";
 import * as antigravityToken from "../auth/antigravity-token.js";
 import * as antigravityUser from "../auth/antigravity-user.js";
 import { credentials } from "../auth/credentials/authority.js";
-import type { RequestAuthContext } from "../auth/credentials/types.js";
 import * as allModelsCache from "./all-models-cache.js";
 import type { DiskCacheV3, SlimModelEntry } from "./all-models-cache.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
@@ -71,13 +66,6 @@ const discoveryBefore = new Map(
 
 function publish(): void {
   _setCatalogEntriesForTest(entries);
-}
-
-function authContext(
-  effort: EffortLevel,
-  model = BASE
-): RequestAuthContext & { effort: EffortLevel } {
-  return { model, effort };
 }
 
 beforeEach(() => {
@@ -153,12 +141,12 @@ afterEach(() => {
 
 describe("rule 9: one model-id decision per provider", () => {
   test("Antigravity credential receives low effort and builds the low envelope", async () => {
-    const auth = await new AntigravityCredentialProvider().getRequestAuth(authContext("low"));
-    expect(auth.transformPayload?.({ contents: [] }).model).toBe(LOW);
+    const auth = await new AntigravityCredentialProvider().getRequestAuth({ model: BASE });
+    expect(auth.transformPayload?.({ contents: [] }, { effort: "low" }).model).toBe(LOW);
   });
 
   test("Antigravity delegated envelope and standalone credential both send low", async () => {
-    const standalone = await new AntigravityCredentialProvider().getRequestAuth(authContext("low"));
+    const standalone = await new AntigravityCredentialProvider().getRequestAuth({ model: BASE });
     const transport = new AntigravityProviderTransport(BASE);
     await transport.refreshAuth();
     const contract: ProviderTransport = transport;
@@ -167,13 +155,13 @@ describe("rule 9: one model-id decision per provider", () => {
       { output_config: { effort: "low" } }
     );
     expect({
-      credential: standalone.transformPayload?.({ contents: [] }).model,
+      credential: standalone.transformPayload?.({ contents: [] }, { effort: "low" }).model,
       transport: envelope.model,
     }).toEqual({ credential: LOW, transport: LOW });
   });
 
   test("Antigravity local envelope uses the same low id as the credential", async () => {
-    const standalone = await new AntigravityCredentialProvider().getRequestAuth(authContext("low"));
+    const standalone = await new AntigravityCredentialProvider().getRequestAuth({ model: BASE });
     // An artifact without a transform exercises the transport's local builder.
     const auth = spyOn(credentials, "getRequestAuth").mockResolvedValue({ headers: {} });
     restore.push(() => auth.mockRestore());
@@ -181,21 +169,19 @@ describe("rule 9: one model-id decision per provider", () => {
     await transport.refreshAuth();
     const contract: ProviderTransport = transport;
     expect({
-      credential: standalone.transformPayload?.({ contents: [] }).model,
+      credential: standalone.transformPayload?.({ contents: [] }, { effort: "low" }).model,
       local: contract.transformPayload!({ contents: [] }, { output_config: { effort: "low" } })
         .model,
     }).toEqual({ credential: LOW, local: LOW });
   });
 
   test("Antigravity exact low uid stays fixed through credential and transport at high effort", async () => {
-    const standalone = await new AntigravityCredentialProvider().getRequestAuth(
-      authContext("high", LOW)
-    );
+    const standalone = await new AntigravityCredentialProvider().getRequestAuth({ model: LOW });
     const transport = new AntigravityProviderTransport(LOW);
     await transport.refreshAuth();
     const contract: ProviderTransport = transport;
     expect({
-      credential: standalone.transformPayload?.({ contents: [] }).model,
+      credential: standalone.transformPayload?.({ contents: [] }, { effort: "high" }).model,
       transport: contract.transformPayload!({ contents: [] }, { output_config: { effort: "high" } })
         .model,
     }).toEqual({ credential: LOW, transport: LOW });

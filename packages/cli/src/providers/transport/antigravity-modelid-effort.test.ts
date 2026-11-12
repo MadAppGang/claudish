@@ -1,10 +1,5 @@
 // Assumed no-effort table seam: currentEffortRecommendations, stubbed without disk I/O.
-/**
- * Assumed extension: resolveAntigravityServedModel(requested, served, effort?).
- * Its first two arguments are unchanged; the connection's modelIdEffort is
- * looked up through the existing readAllModelsCache seam. The typed widening
- * lets today's implementation ignore effort and fail on the resulting wire id.
- */
+// The shared resolver reads connection effort maps through readAllModelsCache.
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { EffortLevel } from "../../adapters/base-api-format.js";
 import * as allModelsCache from "../all-models-cache.js";

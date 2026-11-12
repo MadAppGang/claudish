@@ -1,9 +1,5 @@
 // Assumed no-effort table seam: currentEffortRecommendations, stubbed without disk I/O.
-/**
- * No new callable seam is assumed for Devin: resolveDevinModelUid reads the
- * connection's modelIdEffort from the cloud models catalog. readAllModelsCache
- * is the existing in-memory injection seam. Direct expand tests pin identity.
- */
+// resolveDevinModelUid and expand read connection effort maps from readAllModelsCache.
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as allModelsCache from "../all-models-cache.js";
 import type { DiskCacheV3, SlimModelEntry } from "../all-models-cache.js";

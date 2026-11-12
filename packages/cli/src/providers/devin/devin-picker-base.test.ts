@@ -133,6 +133,48 @@ describe("Devin picker mapped base", () => {
     expect(row?.id).toBe(extendedMax);
   });
 
+  function crossContextMap() {
+    const base = "glm-5-2";
+    const high = `${base}-high`;
+    const extendedMax = `${base}-max-1m`;
+    entries = [
+      catalogEntry("glm-5.2", [connection("devin", base, effortMap({ high, max: extendedMax }))]),
+    ];
+    const list = [
+      devinModel(high, "high", {
+        family: "glm-5.2",
+        groupLabel: "GLM 5.2",
+        contextWindow: 200_000,
+        isDefault: true,
+      }),
+      devinModel(extendedMax, "max", {
+        family: "glm-5.2",
+        groupLabel: "GLM 5.2",
+        contextWindow: 1_000_000,
+        isDefault: true,
+      }),
+    ];
+    return { base, high, extendedMax, list };
+  }
+
+  test("R5 one connection spanning 200K and 1M never emits duplicate picker ids", () => {
+    const { list } = crossContextMap();
+    const rows = resolver.collapse(list.map(devinModelsCatalogEntry));
+    expect(rows.map((row) => row.contextWindow)).toEqual([200_000, 1_000_000]);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
+  });
+
+  test("R5 the 1M row retains its representative and never launches the 200K high id", () => {
+    const { extendedMax, list } = crossContextMap();
+    const catalog = list.map(devinModelsCatalogEntry);
+    const row = resolver.collapse(catalog).find((row) => row.contextWindow === 1_000_000)!;
+    expect({
+      expand: resolver.expand(row.id, catalog, {}),
+      uid: resolveDevinModelUid(row.id, undefined, list),
+    }).toEqual({ expand: extendedMax, uid: extendedMax });
+    expect(row.id).toBe(extendedMax);
+  });
+
   test("H5 choosing the mapped base leaves the displayed label unchanged", () => {
     const catalog = models().map(devinModelsCatalogEntry);
     const mappedLabel = resolver.collapse(catalog)[0]!.displayName;
