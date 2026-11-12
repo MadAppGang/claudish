@@ -186,10 +186,107 @@ full `servedIds` and the backend's `defaultAgentModelId`, from the `getServedAnt
 the discovery just filled (`peekServedAntigravityModels`), and then asks whether
 the resolved id is in the dynamic models catalog. An id the backend declares
 unselectable therefore still reads as not served. With no cache (a fetch that
-never succeeded under this client version) it resolves against the dynamic models
-catalog's ids with no backend default. Antigravity stays out of the resolver
+never succeeded under this client version) it resolves against the served set the
+dynamic models catalog describes, with no backend default: its ids plus the served
+ids the backend excludes, which discovery stores beside the list (`excludedIds` on
+the stored entry and on `AccountModelsList`) and never in it
+(`antigravityServedSetOfList`). Antigravity stays out of the resolver
 registry: a resolver there receives neither the full `servedIds` nor the backend
 default.
+
+**The effort level chooses the id, from the connection's effort map** (2026-11-12).
+Before this, effort never reached the id: `low` still sent `gemini-4-carbon-high`.
+`resolveAntigravityServedModel(requested, served, effort?)` now reads the
+`modelIdEffort` map of the Antigravity connection whose `externalModelId` equals
+`requested` (`findModelIdEffortConnection`, `adapters/model-catalog.ts`; never a
+sibling connection, so a 1M base never takes the default-context map). A connection
+spelled exactly as requested decides even when it publishes no map; a case-folded
+spelling is consulted only when no connection has the exact one. The choice itself
+is `chooseConnectionModelId` (`providers/model-id-effort-choice.ts`), the function
+Devin uses too. At effort `e` it sends `values[e]`, else the next higher listed
+level, else the highest; `none` sends the published `off` id. With no effort a
+served base the backend does not exclude is sent as itself (an excluded base is
+never sent: exclusion is checked before that shortcut, in the map step and in the
+exact-id step, so the transport, `providerServesModel` and the account-listed
+route candidate all reach the same map id); otherwise claudish decides the level (`wire.md`
+"Recommended effort": the efforts table's `default` cell for this connection, else
+`medium`) and maps it as above. The backend's `defaultAgentModelId` and the
+catalog's `modelIdEffort.default` do not decide for a mapped base. An id the
+account does not serve, or an id the backend declares unselectable (`excludedIds`:
+internal, role-bound, retired; the set discovery drops), is never chosen from the
+map: the rules above answer instead, over the selectable ids only (served and not
+excluded), so neither the backend default nor the catalog's family default
+(`lookupFamilyDefaultVariant`) can pick an id the map just refused.
+The spelling of an id decides nothing on `ag@`. A `-fast` or `-priority` id is
+chosen or avoided only by data: the account's dynamic models catalog, `excludedIds`
+and the connection's effort map, so a map that names `carbon-high-fast` for `high`
+sends it, and a family default naming a served `-fast` id is taken like any other.
+A suffix rule here would be a name pattern in candidate gathering, which routing
+rulebook RB-5 forbids: `route-candidates.ts` reaches this resolution for every
+account-listed candidate, and a name cannot tell what the account is billed for.
+Devin is different: its premium check reads Devin's own discovery data (the
+`Fast Mode` axis flag, `devin/devin-models.ts`), not a name (`devin.md`). The availability
+check reads the same `excludedIds` from the `peekServedAntigravityModels` cache, so
+it agrees with the transport. An exact id the account lists that is not a mapped
+base (`gemini-4-carbon-low`) is a fixed model: it is sent unchanged at any effort,
+and even when the backend excludes it, checked FIRST, before the map, the family
+default and the variant rule. Without that order an excluded `gemini-3.1-pro-high`
+fell through to the family default and went out as `gemini-3.1-pro-medium`.
+The routing readers need the excluded ids for the same reason. Discovery drops
+excluded ids from the list, so a reader that rebuilt the served set from the list
+alone (availability with no `peekServedAntigravityModels` cache, and account-listed
+gathering, which always reads the list) did not see `gemini-3.1-pro-high` as
+listed, let the family default answer `gemini-3.1-pro-medium`, and reported the
+excluded id served, while a warm process answered not served and the transport
+sent `gemini-3.1-pro-high`. The list now carries the served excluded ids beside its
+rows (`excludedIds`, an optional field of the stored entry, so a file written
+before it reads as having none until the next refresh), and both readers build
+their served set from it with `antigravityServedSetOfList`: an excluded exact id
+that is not a mapped base resolves as itself, which no row carries, so it reads
+not served and gets no account-listed candidate, warm or cold. A family base the
+account lists only as a variant (`gemini-3.8-flash` → `gemini-3.8-flash-tiered`)
+still resolves to that row on both readers.
+Exclusion gates only what claudish chooses itself: the mapped-base shortcut and
+every automatic pick.
+
+The effort reaches the one decision on both paths. The credential's envelope
+builder takes the request's effort as `transformPayload(payload, {effort})`, because
+one artifact serves turns with different levels; `RequestAuthContext` carries no
+effort. The transport reads the level in `transformPayload` and hands it
+to the credential's builder, or resolves with the same function for its local
+builder. The level is the `--effort` pin when one is set (`ComposedHandler` pins it
+on the dialects and on the transport, `ProviderTransport.setEffortOverride`); else
+`none` when the Claude request turns reasoning off (`thinking.type: "disabled"`,
+effort `none`, `budget_tokens: 0`); else `output_config.effort`, else the legacy
+`thinking.budget_tokens` bucket (`wireChoicesFromClaudeRequest`). `none` is kept
+rather than dropped, because it is what selects the `off` id. A call with no Claude
+request and no pin is a request with no effort and is resolved afresh on both
+builders; it never reuses the previous turn's id. `refreshAuth` resolves
+`servedModelName` at the pin, and `servedModelName` then follows the id actually
+sent.
+
+**No effort in the body beside an effort-carrying id.** The catalog contract says
+the effort is never written into the request body. The body follows the id
+actually SENT on each attempt, never the requested one: when the sent id is one an
+Antigravity effort map lists (a level or `off`), `antigravityBodyForModelId`
+removes `thinkingLevel` and `thinkingBudget` from `generationConfig.thinkingConfig`
+(dropping the object when nothing else is left) and keeps `includeThoughts`; any
+other sent id keeps the dialect's control. Deciding by the requested base lost the
+effort twice: a mapped base whose map id the account does not serve falls back to
+an unmapped id (`gemini-3.7-flash` at `low` sending `gemini-3.7-flash-tiered`),
+which then carried no effort anywhere; and a capacity retry reused the primary's
+body, shaped for a different id. Both builders shape the primary from the original
+dialect payload, and the transport keeps that payload (`lastPayload`) so every
+capacity retry shapes it again for its own id.
+
+**The capacity fallback never picks an excluded id.** On
+`MODEL_CAPACITY_EXHAUSTED` the retry candidates are the served ids minus the one
+that failed and minus every id in `excludedIds`. The spelling decides nothing here
+either: a served, not excluded `-fast` id is an ordinary candidate (RB-5, as above).
+With none left, the original capacity failure is returned. `getActiveModelName()` names
+the retry id that served the CURRENT request only: `enqueueRequest` clears it as
+each request starts, so a later request served on its primary id never reports an
+earlier retry to the status line.
 
 ## Ordering: cloud models catalog dates are poison for Antigravity's models
 

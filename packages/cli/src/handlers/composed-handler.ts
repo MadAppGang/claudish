@@ -564,6 +564,9 @@ export class ComposedHandler implements ModelHandler {
       )) {
         (dialect as BaseAPIFormat).setEffortOverride(options.effortOverride);
       }
+      // A transport that carries the level outside the body (Antigravity puts it
+      // in the model id) takes the same pin.
+      this.provider.setEffortOverride?.(options.effortOverride);
       log(
         `[ComposedHandler] --effort ${options.effortOverride} pinned for ${this.targetModel} (catalog clamp skipped)`
       );

@@ -84,11 +84,18 @@ export interface StoredModelsList {
   fetchedAt: number;
   age: Exclude<ListAge, "expired">;
   models: DiscoveredModel[];
+  /** Served ids the endpoint declares not selectable; see `ModelsCatalogOutcome`. */
+  excludedIds?: string[];
 }
 
+/**
+ * `excludedIds` is optional: an entry written before it existed, or for a
+ * provider whose endpoint declares no exclusions, reads as having none.
+ */
 interface StoredEntry {
   fetchedAt: number;
   models: DiscoveredModel[];
+  excludedIds?: string[];
 }
 
 interface StoredDocument {
@@ -258,6 +265,13 @@ function isOptionalNumber(value: unknown): boolean {
   return value === undefined || (typeof value === "number" && Number.isFinite(value));
 }
 
+function isOptionalIdList(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (Array.isArray(value) && value.every((id) => typeof id === "string" && id.trim().length > 0))
+  );
+}
+
 function isAxis(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const axis = value as Record<string, unknown>;
@@ -308,7 +322,8 @@ function isValidEntry(value: unknown): value is StoredEntry {
     Number.isFinite(entry.fetchedAt) &&
     Array.isArray(entry.models) &&
     entry.models.length > 0 &&
-    entry.models.every(isDiscoveredModel)
+    entry.models.every(isDiscoveredModel) &&
+    isOptionalIdList(entry.excludedIds)
   );
 }
 
@@ -357,7 +372,14 @@ export function readStoredModelsList(
     const now = nowOf(opts);
     if (!isReadable(entry, now)) return null;
     const age = classifyListAge(entry.fetchedAt, now) as Exclude<ListAge, "expired">;
-    return { provider, accountKey, fetchedAt: entry.fetchedAt, age, models: entry.models };
+    return {
+      provider,
+      accountKey,
+      fetchedAt: entry.fetchedAt,
+      age,
+      models: entry.models,
+      ...(entry.excludedIds?.length ? { excludedIds: entry.excludedIds } : {}),
+    };
   } catch {
     return null;
   }
@@ -384,24 +406,33 @@ function writeDocument(
   atomicWriteFileSync(path, `${JSON.stringify(doc)}\n`, { mode: 0o600, dirMode: 0o700 });
 }
 
-/** Atomic, 0600. Evicts beyond MAX_ACCOUNTS_PER_PROVIDER and prunes expired. Returns false on any I/O failure; never throws. `models` must be non-empty (an empty list is rejected → false). */
+/**
+ * Atomic, 0600. Evicts beyond MAX_ACCOUNTS_PER_PROVIDER and prunes expired. Returns false on any I/O failure; never throws. `models` must be non-empty (an empty list is rejected → false).
+ * `excludedIds` (served, declared not selectable) is stored beside the list when non-empty.
+ */
 export function writeStoredModelsList(
   provider: string,
   accountKey: string,
   models: DiscoveredModel[],
-  opts?: StoreOptions
+  opts?: StoreOptions,
+  excludedIds?: readonly string[]
 ): boolean {
   try {
     if (!ACCOUNT_KEY_PATTERN.test(accountKey)) return false;
     if (!Array.isArray(models) || models.length === 0 || !models.every(isDiscoveredModel)) {
       return false;
     }
+    if (!isOptionalIdList(excludedIds)) return false;
     const path = providerFile(provider, opts);
     if (!path) return false;
     const now = nowOf(opts);
     const accounts = liveAccounts(readDocument(provider, path), now);
     // A JSON round trip, so what is stored is exactly what a later read returns.
-    accounts[accountKey] = { fetchedAt: now, models: JSON.parse(JSON.stringify(models)) };
+    accounts[accountKey] = {
+      fetchedAt: now,
+      models: JSON.parse(JSON.stringify(models)),
+      ...(excludedIds?.length ? { excludedIds: [...excludedIds] } : {}),
+    };
     const others = Object.keys(accounts)
       .filter((key) => key !== accountKey)
       .sort((a, b) => accounts[a].fetchedAt - accounts[b].fetchedAt);

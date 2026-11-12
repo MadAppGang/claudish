@@ -28,6 +28,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { type EffortLevel, isEffortLevel } from "../../adapters/base-api-format.js";
 import {
   forceRefreshAntigravityToken,
   getValidAntigravityAccessToken,
@@ -50,7 +51,12 @@ import {
 } from "../../handlers/shared/call-context.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
-import { resolveAntigravityServedModel } from "../antigravity-model-id.js";
+import {
+  type AntigravityServedSet,
+  antigravityBodyForModelId,
+  resolveAntigravityServedModel,
+} from "../antigravity-model-id.js";
+import { wireChoicesFromClaudeRequest } from "../wire-request.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
@@ -93,10 +99,26 @@ const QUOTA_CHECK_TIMEOUT_MS = 3000;
 // Model-id resolution lives in `../antigravity-model-id.ts`, which is pure so
 // route gathering can share it; re-exported for this transport's importers.
 export {
+  antigravityBodyForModelId,
   rankAntigravityModel,
   resolveAntigravityModelId,
   resolveAntigravityServedModel,
 } from "../antigravity-model-id.js";
+
+/**
+ * The reasoning level a request is sent at: the `--effort` pin when one is set
+ * (`none` included); else `none` when the Claude request turns reasoning off
+ * (`thinking.type: "disabled"`, effort `none`, a zero `budget_tokens`); else the
+ * request's `output_config.effort`, else the legacy `thinking.budget_tokens`
+ * bucket. `none` is kept, because on a mapped connection it chooses the
+ * published `off` id.
+ */
+function effortOf(claudeRequest: unknown, pinned?: EffortLevel): EffortLevel | undefined {
+  if (pinned !== undefined) return pinned;
+  const choices = wireChoicesFromClaudeRequest(claudeRequest);
+  if (choices.reasoningOff) return "none";
+  return isEffortLevel(choices.effort) ? choices.effort : undefined;
+}
 
 /** Generate a short random request ID (matches the Antigravity CLI activity logger) */
 function createActivityRequestId(): string {
@@ -241,8 +263,22 @@ export class AntigravityProviderTransport implements ProviderTransport {
   /** The last envelope built by transformPayload, stored for fallback retries */
   private lastEnvelope: any = null;
 
-  /** Set when a fallback model is used instead of the requested one */
+  /**
+   * The dialect payload that envelope was built from, before any effort control
+   * was removed. Each capacity retry shapes its body from this by the id it
+   * sends, never from the primary's body.
+   */
+  private lastPayload: unknown = null;
+
+  /**
+   * The capacity-retry id that served the current request, when one did.
+   * Cleared as each request starts, so a request served on its primary id
+   * never reports an earlier request's retry.
+   */
   private _activeModelName: string | undefined;
+
+  /** The `--effort` level, which outranks the level each Claude request carries. */
+  private pinnedEffort: EffortLevel | undefined;
 
   /**
    * Model ids this account's Antigravity subscription currently serves,
@@ -251,6 +287,14 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * chain, and the model-not-found hint.
    */
   private servedModels: string[] = [];
+  /**
+   * The account's dynamic models catalog with the backend default and the ids it
+   * declares unselectable, for per-request resolution.
+   */
+  private served: AntigravityServedSet = {
+    servedIds: [],
+    defaultId: null,
+  };
 
   constructor(modelName: string) {
     this.modelName = modelName;
@@ -333,11 +377,12 @@ export class AntigravityProviderTransport implements ProviderTransport {
     // model-id resolution + the capacity fallback + the model-not-found hint all
     // reflect what THIS subscription actually serves today.
     const served = await getServedAntigravityModels(this.accessToken, this.projectId);
+    this.served = served;
     this.servedModels = served.servedIds;
     // Resolve the requested id to a served id against the live set, with the
     // function the credential provider (which builds the primary envelope) and
     // the routing availability check also use.
-    this.servedModelName = resolveAntigravityServedModel(this.modelName, served);
+    this.servedModelName = resolveAntigravityServedModel(this.modelName, served, this.pinnedEffort);
     log(
       `[Antigravity] Auth refreshed, project: ${this.projectId}, tier: ${this._displayName}, ` +
         `model: ${this.modelName} -> ${this.servedModelName}, served: ${this.servedModels.join(",") || "(none)"}`
@@ -408,19 +453,51 @@ export class AntigravityProviderTransport implements ProviderTransport {
   }
 
   /**
+   * Pin the `--effort` level. Antigravity carries the level in the model id, so
+   * the pin chooses the id as well as the dialect's `thinkingConfig`.
+   */
+  setEffortOverride(level: EffortLevel): void {
+    this.pinnedEffort = level;
+  }
+
+  /**
    * Wrap the standard Gemini payload in the CodeAssist envelope.
    *
-   * Stores the envelope for potential fallback retries in enqueueRequest.
+   * The model id is chosen per request at the pinned `--effort` level, else the
+   * effort `claudeRequest` carries ({@link effortOf}), because Antigravity
+   * carries the level in the id and one transport serves turns with different
+   * levels. A call with no Claude request and no pin is a request with no
+   * effort, resolved afresh: never the previous turn's id. Both builders choose
+   * the id with `resolveAntigravityServedModel` over the same dynamic models
+   * catalog, and both drop the body's effort controls only when the id they
+   * send carries the effort (`antigravityBodyForModelId`).
+   *
+   * Stores the envelope and the original payload for potential fallback
+   * retries in enqueueRequest.
    */
-  transformPayload(payload: any): any {
+  transformPayload(payload: any, claudeRequest?: any): any {
+    const request = { effort: effortOf(claudeRequest, this.pinnedEffort) };
     // PRIMARY request: the CodeAssist envelope comes from the delegated auth
     // artifact (which maps the model id). Fall back to the local builder if
     // delegation hasn't run.
     const envelope = this.cachedAuth?.transformPayload
-      ? this.cachedAuth.transformPayload(payload)
-      : this.buildEnvelope(payload, this.servedModelName);
+      ? this.cachedAuth.transformPayload(payload, request)
+      : this.buildLocalEnvelope(payload, request.effort);
+    if (typeof envelope?.model === "string" && envelope.model) {
+      this.servedModelName = envelope.model;
+    }
     this.lastEnvelope = envelope;
+    this.lastPayload = payload;
     return envelope;
+  }
+
+  /**
+   * The local builder's primary envelope: the id resolved at `effort`, and the
+   * body shaped for that id.
+   */
+  private buildLocalEnvelope(payload: unknown, effort: EffortLevel | undefined) {
+    const model = resolveAntigravityServedModel(this.modelName, this.served, effort);
+    return this.buildEnvelope(antigravityBodyForModelId(payload, model), model);
   }
 
   /**
@@ -463,6 +540,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
   ): Promise<Response> {
     const queue = GeminiRequestQueue.getInstance();
     const signal = opts?.signal;
+    // Only this request's capacity retry may set it again.
+    this._activeModelName = undefined;
 
     let lastResponse: Response | null = null;
     for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
@@ -521,15 +600,23 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * Handle MODEL_CAPACITY_EXHAUSTED by trying the other LIVE-served models.
    *
    * Candidates come from `this.servedModels` (discovered in refreshAuth),
-   * ordered by rank, excluding the model that just exhausted. A candidate that
-   * 404s (briefly unserved mid-tier-roll) or rate-limits is skipped.
+   * ordered by rank, excluding the model that just exhausted and every id the
+   * backend declares unselectable (`excludedIds`). The id's spelling decides
+   * nothing: a served `-fast` id is an ordinary candidate. With no candidate
+   * left, the original capacity failure is returned. Each
+   * candidate's body is shaped from the original dialect payload by the id it
+   * sends (`antigravityBodyForModelId`). A candidate that 404s (briefly unserved mid-tier-roll) or rate-limits is
+   * skipped.
    */
   private async handleCapacityExhausted(
     originalResponse: Response,
     queue: GeminiRequestQueue,
     signal?: AbortSignal
   ): Promise<Response> {
-    const candidates = this.servedModels.filter((m) => m !== this.servedModelName);
+    const excluded = this.served.excludedIds;
+    const candidates = this.servedModels.filter(
+      (m) => m !== this.servedModelName && !excluded?.has(m)
+    );
 
     if (candidates.length === 0) {
       log(`[Antigravity] ${this.servedModelName} capacity exhausted, no fallback models available`);
@@ -549,7 +636,10 @@ export class AntigravityProviderTransport implements ProviderTransport {
     );
 
     let lastResponse = originalResponse;
-    const innerPayload = this.lastEnvelope.request;
+    // The original dialect payload: the primary's body was shaped for the id it
+    // sent, and a retry id may carry the effort where that one did not, or not
+    // where it did.
+    const originalPayload = this.lastPayload;
     const endpoint = this.getEndpoint();
     const tried: string[] = [this.servedModelName];
 
@@ -560,7 +650,10 @@ export class AntigravityProviderTransport implements ProviderTransport {
       log(`[Antigravity] Trying fallback model: ${fallbackModel}`);
       tried.push(fallbackModel);
 
-      const fallbackEnvelope = this.buildEnvelope(innerPayload, fallbackModel);
+      const fallbackEnvelope = this.buildEnvelope(
+        antigravityBodyForModelId(originalPayload, fallbackModel),
+        fallbackModel
+      );
       const headers = this.buildLocalHeaders();
       headers["Content-Type"] = "application/json";
 

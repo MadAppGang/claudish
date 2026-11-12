@@ -108,6 +108,7 @@ export function redactSecrets(text: string): string {
   );
 }
 
+import type { EffortLevel } from "../../adapters/base-api-format.js";
 import type { SelectReason } from "../accounts/policy.js";
 import type { AccountRef, AccountSelectionContext } from "../accounts/types.js";
 
@@ -151,7 +152,11 @@ export interface RequestAuth {
   selectReason?: SelectReason;
   headers: Record<string, string>;
   endpoint?: string;
-  transformPayload?(payload: any): any;
+  /**
+   * Wrap the payload in the provider envelope. `request`, when given, carries
+   * THIS request's effort, so one artifact serves turns with different levels.
+   */
+  transformPayload?(payload: any, request?: { effort?: EffortLevel }): any;
   /**
    * Which half of a composite produced this. Set by the halves themselves and
    * passed through untouched by `CompositeCredentialProvider`, so a consumer can

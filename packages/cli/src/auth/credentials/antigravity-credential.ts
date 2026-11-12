@@ -22,7 +22,11 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { resolveAntigravityServedModel } from "../../providers/transport/antigravity.js";
+import type { EffortLevel } from "../../adapters/base-api-format.js";
+import {
+  antigravityBodyForModelId,
+  resolveAntigravityServedModel,
+} from "../../providers/transport/antigravity.js";
 import {
   antigravityTokenLineageMaterial,
   getValidAntigravityAccessToken,
@@ -98,23 +102,26 @@ export class AntigravityCredentialProvider implements CredentialProvider {
     const token = await getValidAntigravityAccessToken();
     const { projectId, tierId } = await setupAntigravityUser(token);
     // Resolve the requested id against the account's dynamic models catalog
-    // (fetchAvailableModels).
-    const servedModel = resolveAntigravityServedModel(
-      ctx.model,
-      await getServedAntigravityModels(token, projectId)
-    );
+    // (fetchAvailableModels), at each request's effort, which the envelope
+    // builder receives: the level can be carried in the model id. The same
+    // function the transport and the availability check use, so all three
+    // choose the same id.
+    const served = await getServedAntigravityModels(token, projectId);
     return {
       headers: {
         Authorization: `Bearer ${token}`,
         "User-Agent": buildAntigravityUserAgent(),
         "x-activity-request-id": createActivityRequestId(),
       },
-      transformPayload: (inner: any) => {
+      transformPayload: (inner: any, request?: { effort?: EffortLevel }) => {
+        const model = resolveAntigravityServedModel(ctx.model, served, request?.effort);
         const env: any = {
-          model: servedModel,
+          model,
           project: projectId,
           user_prompt_id: randomUUID(),
-          request: inner,
+          // When the id sent carries the effort, the body carries none beside
+          // it; otherwise the dialect's control stays.
+          request: antigravityBodyForModelId(inner, model),
         };
         if (tierId && tierId !== "free-tier") {
           env.enabled_credit_types = ["GOOGLE_ONE_AI"];

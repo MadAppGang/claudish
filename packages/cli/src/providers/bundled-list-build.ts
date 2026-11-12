@@ -158,6 +158,7 @@ const CONNECTION_FIELDS = {
   contextWindow: true,
   reasoning: true,
   wire: true,
+  modelIdEffort: true,
   // Published on the connection and read through `in` checks, not declared on the interface.
   limits: true,
   contentUse: true,

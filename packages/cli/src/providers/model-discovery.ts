@@ -223,7 +223,13 @@ export interface ModelDiscoveryDescriptor {
  * `unreachable` and never rejects itself.
  */
 export type FetcherResult =
-  | { kind: "models"; models: DiscoveredModel[]; endpoint?: string }
+  | {
+      kind: "models";
+      models: DiscoveredModel[];
+      endpoint?: string;
+      /** See `excludedIds` on {@link ModelsCatalogOutcome}. */
+      excludedIds?: string[];
+    }
   | { kind: "failed"; failure: Omit<DiscoveryFailure, "provider"> };
 
 /** A dynamic models catalog fetcher for a format this module does not know how to speak. */
@@ -272,7 +278,12 @@ const FETCH_TIMEOUT_MS = 5000;
  */
 const _cache = new Map<
   string,
-  { models: DiscoveredModel[]; expiresAt: number; account: string | undefined }
+  {
+    models: DiscoveredModel[];
+    excludedIds?: string[];
+    expiresAt: number;
+    account: string | undefined;
+  }
 >();
 
 /**
@@ -364,6 +375,14 @@ export type ModelsCatalogOutcome =
        * there are none.
        */
       optInIds?: string[];
+      /**
+       * Ids the account is served that its endpoint declares not selectable
+       * (Antigravity's `excludedIds`), left out of `models`. Never offered or
+       * picked; read only by an exact-id resolution, so that a requested id the
+       * account lists but may not select resolves as itself, not as a family
+       * sibling. Absent when there are none.
+       */
+      excludedIds?: string[];
     }
   | { kind: "failed"; failure: DiscoveryFailure }
   | { kind: "unsupported"; reason: "no-descriptor" | "no-fetcher" };
@@ -774,7 +793,9 @@ async function discoverViaFetcher(
   }
   _failures.delete(providerName);
   log(`[model-discovery:${providerName}] discovered ${models.length} models`);
-  return { kind: "served", models };
+  return result.excludedIds?.length
+    ? { kind: "served", models, excludedIds: result.excludedIds }
+    : { kind: "served", models };
 }
 
 /**
@@ -816,17 +837,23 @@ export function servedOutcomeOf(unsplit: DiscoveredModel[]): ModelsCatalogOutcom
  * Every model the account serves, opt-in ids included, for the EXACT-id readers:
  * whether a typed id is entitled (`providerServesModel`) and its served window
  * (`discoverContextWindow`). `optIn` holds the content-use opt-in ids, which
- * nothing may offer or pick. Fail-soft like {@link discoverProviderModels}: both
- * lists are empty on any failure. Shares the one discovery cache.
+ * nothing may offer or pick. `excludedIds` are the served ids the endpoint
+ * declares not selectable (`ModelsCatalogOutcome.excludedIds`), kept beside
+ * the lists and never in them, so a reader resolving an id sees the same
+ * served ids the transport does. Fail-soft like {@link discoverProviderModels}:
+ * both lists are empty on any failure. Shares the one discovery cache.
  */
-export async function discoverProviderServedIds(
-  providerName: string
-): Promise<{ served: DiscoveredModel[]; optIn: DiscoveredModel[] }> {
+export async function discoverProviderServedIds(providerName: string): Promise<{
+  served: DiscoveredModel[];
+  optIn: DiscoveredModel[];
+  excludedIds?: string[];
+}> {
   const outcome = await discoverEveryServedModel(providerName);
   if (outcome.kind !== "served") return { served: [], optIn: [] };
   return {
     served: outcome.models.filter((model) => !isOptInWireId(model.id)),
     optIn: outcome.models.filter((model) => isOptInWireId(model.id)),
+    ...(outcome.excludedIds ? { excludedIds: outcome.excludedIds } : {}),
   };
 }
 
@@ -848,8 +875,22 @@ export async function fetchEveryServedModel(providerName: string): Promise<Model
  * this process already has.
  */
 export function peekDiscoveredModels(providerName: string): DiscoveredModel[] | undefined {
+  return peekDiscoveredList(providerName)?.models;
+}
+
+/**
+ * {@link peekDiscoveredModels} with the excluded ids the same answer carried
+ * (`ModelsCatalogOutcome.excludedIds`), for a reader that resolves an id
+ * against the list and must see what the endpoint declared not selectable.
+ */
+export function peekDiscoveredList(
+  providerName: string
+): { models: DiscoveredModel[]; excludedIds?: string[] } | undefined {
   const cached = _cache.get(providerName);
-  return cached && cached.expiresAt > Date.now() ? cached.models : undefined;
+  if (!cached || cached.expiresAt <= Date.now()) return undefined;
+  return cached.excludedIds
+    ? { models: cached.models, excludedIds: cached.excludedIds }
+    : { models: cached.models };
 }
 
 /**
@@ -869,7 +910,9 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
   const accountBefore = perAccount ? await accountFingerprint(providerName) : undefined;
   const cached = _cache.get(providerName);
   if (cached && cached.expiresAt > Date.now() && cached.account === accountBefore) {
-    return { kind: "served", models: cached.models };
+    return cached.excludedIds
+      ? { kind: "served", models: cached.models, excludedIds: cached.excludedIds }
+      : { kind: "served", models: cached.models };
   }
   const outcome = await fetchServedModels(providerName);
   if (outcome.kind !== "served") return outcome;
@@ -878,6 +921,7 @@ async function discoverEveryServedModel(providerName: string): Promise<ModelsCat
   if (invalidationCount(providerName) !== invalidationsBefore) return outcome;
   _cache.set(providerName, {
     models: outcome.models,
+    ...(outcome.excludedIds ? { excludedIds: outcome.excludedIds } : {}),
     expiresAt: Date.now() + CACHE_TTL_MS,
     account: accountAfter ?? accountBefore,
   });

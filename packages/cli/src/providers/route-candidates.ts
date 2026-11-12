@@ -80,7 +80,10 @@
 import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import type { AggregatorEntry } from "../model-loader.js";
 import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
-import { resolveAntigravityServedModel } from "./antigravity-model-id.js";
+import {
+  antigravityServedSetOfList,
+  resolveAntigravityServedModel,
+} from "./antigravity-model-id.js";
 import {
   externalIdFor,
   getCatalogEntries,
@@ -513,20 +516,30 @@ function gatherVendorClaims(
  * `swe-1.7` is sent as `swe-1-7-medium`; Antigravity's `gemini-3.8-flash` as a
  * served variant), or `undefined` when the list does not carry it.
  *
+ * Antigravity resolves over the served ids the list describes, its excluded ids
+ * included (`antigravityServedSetOfList`), the same set the availability check
+ * falls back to. An excluded exact id therefore resolves as itself, which no row
+ * carries, so it gets no candidate, rather than one its family default's sibling
+ * would vouch for.
+ *
  * Never a content-use opt-in row: those are sent only when typed with their
  * provider, never chosen by routing (`content-use.ts`).
  */
 function listedRow(
   provider: string,
   model: string,
-  models: readonly DiscoveredModel[]
+  models: readonly DiscoveredModel[],
+  excludedIds?: readonly string[]
 ): DiscoveredModel | undefined {
   const sent =
     provider === "antigravity"
-      ? resolveAntigravityServedModel(model, {
-          servedIds: models.map((row) => row.id),
-          defaultId: null,
-        })
+      ? resolveAntigravityServedModel(
+          model,
+          antigravityServedSetOfList(
+            models.map((row) => row.id),
+            excludedIds
+          )
+        )
       : expandSelection(
           provider,
           model,
@@ -565,7 +578,7 @@ function gatherAccountListed(
     const tier = getProviderByName(provider)?.tier;
     if (!tier) continue;
     if (entry && catalogConnects(entry, provider)) continue;
-    const row = listedRow(provider, model, list.models);
+    const row = listedRow(provider, model, list.models, list.excludedIds);
     if (!row) continue;
 
     const candidate: RouteCandidate = {

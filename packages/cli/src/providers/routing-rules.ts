@@ -1594,7 +1594,15 @@ async function unboundAccountList(
   if (discovered === "deadline") return null;
   const models = [...discovered.served, ...discovered.optIn];
   if (models.length === 0) return null;
-  return { provider, models, fetchedAt: Date.now(), age: "live", mayDeny: true };
+  const list: AccountModelsList = {
+    provider,
+    models,
+    fetchedAt: Date.now(),
+    age: "live",
+    mayDeny: true,
+  };
+  if (discovered.excludedIds?.length) list.excludedIds = discovered.excludedIds;
+  return list;
 }
 
 /**
