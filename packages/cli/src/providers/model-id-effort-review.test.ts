@@ -468,9 +468,9 @@ describe("E: a mapped base uses the canonical default-task effort, else medium",
   });
 });
 
-describe("F: capacity retries never automatically choose a speed premium", () => {
+describe("F: capacity retries treat served speed suffixes as ordinary ids", () => {
   for (const suffix of ["fast", "priority"]) {
-    test(`only a -${suffix} candidate remains: return the original capacity failure`, async () => {
+    test(`only a served -${suffix} candidate remains: retry it successfully`, async () => {
       const premium = `${BASE}-high-${suffix}`;
       publish(effortMap({ high: premium, low: LOW }));
       served = { servedIds: [LOW, premium], defaultId: LOW, meta: {} };
@@ -498,7 +498,7 @@ describe("F: capacity retries never automatically choose a speed premium", () =>
       const fetchMock = mock(async (_input: unknown, init?: RequestInit) => {
         const body = JSON.parse(String(init?.body)) as { model: string };
         sent.push(body.model);
-        return sent.length === 1 ? capacity : new Response("premium must not run", { status: 200 });
+        return sent.length === 1 ? capacity : new Response("ok", { status: 200 });
       });
       globalThis.fetch = fetchMock as unknown as typeof fetch;
       const queue = spyOn(GeminiRequestQueue.getInstance(), "enqueue").mockImplementation(
@@ -512,11 +512,11 @@ describe("F: capacity retries never automatically choose a speed premium", () =>
         })
       );
       expect({ sent, status: response.status, original: response === capacity }).toEqual({
-        sent: [LOW],
-        status: 429,
-        original: true,
+        sent: [LOW, premium],
+        status: 200,
+        original: false,
       });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   }
 });

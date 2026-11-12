@@ -1,6 +1,7 @@
 // No-effort seams: lookupModelEfforts / bundledEffortRecommendations; disk reads are stubbed.
 // The shared resolver reads connection effort maps through readAllModelsCache.
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { EffortLevel } from "../../adapters/base-api-format.js";
 import * as allModelsCache from "../all-models-cache.js";
 import type { DiskCacheV3, SlimModelEntry } from "../all-models-cache.js";
@@ -63,6 +64,23 @@ afterEach(() => {
   restoreCache();
   globalThis.fetch = realFetch;
   expect(noNetwork).not.toHaveBeenCalled();
+});
+
+test("Antigravity resolution, transport and gathering import no speed-premium name helpers", () => {
+  const forbiddenImports = [
+    "../antigravity-model-id.ts",
+    "./antigravity.ts",
+    "../route-candidates.ts",
+  ].flatMap((file) => {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    const imports = source.match(/\bimport\s+[^;]+\s+from\s+["'][^"']+["'];/g) ?? [];
+    return imports.flatMap((statement) =>
+      ["namesSpeedPremium", "SPEED_PREMIUM_SUFFIXES"]
+        .filter((name) => new RegExp(`\\b${name}\\b`).test(statement))
+        .map((name) => ({ file, name }))
+    );
+  });
+  expect(forbiddenImports).toEqual([]);
 });
 
 describe("Antigravity connection modelIdEffort", () => {
@@ -166,10 +184,10 @@ describe("Antigravity connection modelIdEffort", () => {
   });
 
   for (const suffix of ["fast", "priority"]) {
-    test(`rule 7: mapped -${suffix} is never auto-selected but an exact id passes through`, () => {
+    test(`rule 7: mapped -${suffix} is selected and an exact id stays fixed`, () => {
       const premium = `${BASE}-high-${suffix}`;
       publish(effortMap({ high: premium, low: LOW }));
-      expect(resolve(BASE, served([LOW, premium], LOW), "high")).toBe(LOW);
+      expect(resolve(BASE, served([LOW, premium], LOW), "high")).toBe(premium);
       expect(resolve(premium, served([LOW, premium], LOW), "low")).toBe(premium);
     });
   }

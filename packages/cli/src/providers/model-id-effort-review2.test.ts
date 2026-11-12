@@ -261,9 +261,9 @@ describe("R1: effort controls follow the id sent on each attempt", () => {
   }
 });
 
-describe("R2: a catalog family default cannot automatically select a speed premium", () => {
+describe("R2: speed suffixes do not override effort maps or family defaults", () => {
   for (const builder of BUILDERS) {
-    test(`${builder}: exact carbon-high-fast passes but base high selects carbon-low`, async () => {
+    test(`${builder}: exact carbon-high-fast stays fixed and base high selects carbon-high-fast`, async () => {
       const base = "carbon";
       const premium = "carbon-high-fast";
       const ordinary = "carbon-low";
@@ -290,7 +290,28 @@ describe("R2: a catalog family default cannot automatically select a speed premi
       const ag = await transport(builder, base);
       expect(
         ag.transformPayload({ contents: [] }, { output_config: { effort: "high" } }).model
-      ).toBe(ordinary);
+      ).toBe(premium);
+    });
+
+    test(`${builder}: a served -fast family default is selected without an effort map`, async () => {
+      const base = "carbon";
+      const selected = "carbon-high-fast";
+      publish([
+        catalogEntry(base, [connection("antigravity", base)]),
+        {
+          ...catalogEntry(selected, [connection("antigravity", selected)]),
+          routeVariant: {
+            kind: "preset",
+            baseModelId: base,
+            familyId: base,
+            provider: "antigravity",
+            isDefault: true,
+          },
+        },
+      ]);
+      served = { servedIds: [selected, "carbon-low"], defaultId: selected, meta: {} };
+      const ag = await transport(builder, base);
+      expect(ag.transformPayload({ contents: [] }, {}).model).toBe(selected);
     });
   }
 });
@@ -400,6 +421,31 @@ describe("R6: parsed defaults and excluded capacity candidates are asserted expl
   });
 
   for (const builder of BUILDERS) {
+    for (const suffix of ["fast", "priority"]) {
+      test(`${builder}: an excluded -${suffix} id is never a capacity candidate`, async () => {
+        const excluded = `carbon-high-${suffix}`;
+        served = {
+          servedIds: [LOW, excluded],
+          defaultId: LOW,
+          excludedIds: new Set([excluded]),
+          meta: {},
+        };
+        const ag = await transport(builder);
+        const envelope = ag.transformPayload(
+          { contents: [] },
+          { output_config: { effort: "low" } }
+        );
+        expect(envelope.model).toBe(LOW);
+        const { sent, response, capacity, fetchMock } = await exhaustPrimary(ag, envelope);
+        expect({ sent: sent.map((body) => body.model), status: response.status }).toEqual({
+          sent: [LOW],
+          status: 429,
+        });
+        expect(response).toBe(capacity);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+    }
+
     test(`${builder}: R6b an excluded ordinary id is never a capacity candidate`, async () => {
       const excluded = "carbon-retired";
       served = {

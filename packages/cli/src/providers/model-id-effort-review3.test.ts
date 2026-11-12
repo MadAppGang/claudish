@@ -16,9 +16,10 @@ import type { AntigravityServedSet } from "./antigravity-model-id.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
 import * as dynamicModelsCatalog from "./dynamic-models-catalog.js";
 import { providerServesModel } from "./model-availability.js";
-import { invalidateModelDiscovery } from "./model-discovery.js";
+import { fetchEveryServedModel, invalidateModelDiscovery } from "./model-discovery.js";
 import "./model-discovery-builtins.js";
 import { gatherRouteCandidates } from "./route-candidates.js";
+import { explainRoute } from "./routing-rules.js";
 import {
   catalogEntry,
   connection,
@@ -103,6 +104,140 @@ describe("an excluded exact id that is not a mapped base stays fixed", () => {
   });
 });
 
+describe("unbound Antigravity routing preserves discovery exclusions", () => {
+  let discovery: ReturnType<typeof spyOn<typeof antigravityUser, "getServedAntigravityModels">>;
+
+  beforeEach(() => {
+    invalidateModelDiscovery("antigravity");
+    dynamicModelsCatalog._resetAccountModelsListsForTest();
+    _resetCatalogClient();
+    entries.push({
+      ...catalogEntry(MEDIUM, [connection("antigravity", MEDIUM)]),
+      routeVariant: {
+        kind: "preset",
+        baseModelId: HIGH,
+        familyId: HIGH,
+        provider: "antigravity",
+        isDefault: true,
+      },
+    });
+    _setCatalogEntriesForTest(entries);
+
+    const identity = spyOn(credentials, "accountIdentity").mockResolvedValue(undefined);
+    const readiness = spyOn(credentials, "describeReadiness").mockImplementation(
+      async (provider) => ({
+        readiness: provider === "antigravity" ? "present" : "absent",
+      })
+    );
+    const available = spyOn(credentials, "isAvailable").mockImplementation(
+      async (provider) => provider === "antigravity"
+    );
+    const token = spyOn(antigravityToken, "getValidAntigravityAccessToken").mockResolvedValue(
+      "unit-test-token"
+    );
+    const user = spyOn(antigravityUser, "setupAntigravityUser").mockResolvedValue({
+      projectId: "unit-test-project",
+      tierId: "free-tier",
+    });
+    discovery = spyOn(antigravityUser, "getServedAntigravityModels").mockImplementation(
+      async () => ({
+        ...served,
+        excludedIds: served.excludedIds ? new Set(served.excludedIds) : undefined,
+        meta: {},
+      })
+    );
+    const peek = spyOn(antigravityUser, "peekServedAntigravityModels").mockReturnValue(null);
+    for (const spy of [identity, readiness, available, token, user, discovery, peek]) {
+      restore.push(() => spy.mockRestore());
+    }
+  });
+
+  afterEach(() => {
+    invalidateModelDiscovery("antigravity");
+    dynamicModelsCatalog._resetAccountModelsListsForTest();
+    _resetCatalogClient();
+  });
+
+  async function primeDiscovery(expectedId: string, excludedIds?: string[]) {
+    const outcome = await fetchEveryServedModel("antigravity");
+    expect(outcome.kind).toBe("served");
+    if (outcome.kind !== "served") throw new Error("Antigravity discovery returned no models");
+    expect(outcome.models.map(({ id }) => id)).toEqual([expectedId]);
+    expect(outcome.excludedIds).toEqual(excludedIds);
+    expect(discovery).toHaveBeenCalledTimes(1);
+    expect(await credentials.accountIdentity("antigravity")).toBeUndefined();
+    expect(antigravityUser.peekServedAntigravityModels()).toBeNull();
+    expect(await dynamicModelsCatalog.readAccountModelsList("antigravity")).toBeNull();
+  }
+
+  async function unboundCandidates(model: string) {
+    // Observe the production gatherer without replacing its implementation.
+    const gather = spyOn(await import("./route-candidates.js"), "gatherRouteCandidates");
+    restore.push(() => gather.mockRestore());
+    const explanation = await explainRoute(model, {
+      rules: {},
+      defaultProvider: { provider: "", source: "config-file", legacyAutoPromoted: false },
+      network: "await",
+    });
+    expect(gather).toHaveBeenCalledTimes(1);
+    expect(gather.mock.calls[0]?.[0]).toBe(model);
+    expect(gather.mock.calls[0]?.[2]?.get("antigravity")).toMatchObject({
+      provider: "antigravity",
+      age: "live",
+      mayDeny: true,
+    });
+    const result = gather.mock.results[0];
+    if (result?.type !== "return") throw new Error("Chain loading did not gather candidates");
+    expect(discovery).toHaveBeenCalledTimes(1);
+    return { explanation, candidates: result.value.candidates };
+  }
+
+  test("unbound chain loading gathers no account-listed candidate for the excluded exact high id", async () => {
+    expect(lookupFamilyDefaultVariant(HIGH, "antigravity")).toBe(MEDIUM);
+    await primeDiscovery(MEDIUM, [HIGH]);
+    const { candidates } = await unboundCandidates(HIGH);
+    expect(
+      candidates.filter(
+        ({ provider, source }) => provider === "antigravity" && source === "account-listed"
+      )
+    ).toEqual([]);
+  });
+
+  test("unbound availability does not serve the excluded exact high id from cached discovery", async () => {
+    expect(lookupFamilyDefaultVariant(HIGH, "antigravity")).toBe(MEDIUM);
+    await primeDiscovery(MEDIUM, [HIGH]);
+    const availability = await providerServesModel("antigravity", HIGH);
+    expect(discovery).toHaveBeenCalledTimes(1);
+    expect(availability).not.toBe("serves");
+  });
+
+  test("control: an unbound family listed only as a tiered id is served and keeps its candidate", async () => {
+    const family = "gemini-3.8-flash";
+    const tiered = "gemini-3.8-flash-tiered";
+    entries = [];
+    served = { servedIds: [tiered], defaultId: null };
+    _setCatalogEntriesForTest(entries);
+    await primeDiscovery(tiered);
+    expect(await providerServesModel("antigravity", family)).toBe("serves");
+    const { candidates, explanation } = await unboundCandidates(family);
+    expect(candidates).toContainEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        source: "account-listed",
+        wireId: family,
+      })
+    );
+    expect(explanation.candidates).toContainEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        wireId: family,
+        outcome: "kept",
+        availability: "serves",
+      })
+    );
+  });
+});
+
 describe("stored Antigravity exact-id routing agrees with transport", () => {
   const readAccountModelsList = dynamicModelsCatalog.readAccountModelsList;
   let directory: string;
@@ -183,7 +318,45 @@ describe("stored Antigravity exact-id routing agrees with transport", () => {
     expect(lookupFamilyDefaultVariant(HIGH, "antigravity")).toBe(MEDIUM);
   }
 
+  async function storedFastFamily() {
+    const family = "carbon";
+    const selected = "carbon-high-fast";
+    entries = [
+      {
+        ...catalogEntry(selected, [connection("antigravity", selected)]),
+        routeVariant: {
+          kind: "preset",
+          baseModelId: family,
+          familyId: family,
+          provider: "antigravity",
+          isDefault: true,
+        },
+      },
+    ];
+    served = { servedIds: [selected], defaultId: selected };
+    const lists = await storedLists([selected]);
+    return { family, selected, lists };
+  }
+
   for (const state of ["cold", "warm"] as const) {
+    test(`${state}: availability serves a family whose default is a listed -fast id`, async () => {
+      const { family } = await storedFastFamily();
+      warm = state === "warm";
+      expect(await providerServesModel("antigravity", family)).toBe("serves");
+    });
+
+    test(`${state}: gathering retains a family whose default is a listed -fast id`, async () => {
+      const { family, lists } = await storedFastFamily();
+      warm = state === "warm";
+      expect(gatherRouteCandidates(family, undefined, lists).candidates).toContainEqual(
+        expect.objectContaining({
+          provider: "antigravity",
+          source: "account-listed",
+          wireId: family,
+        })
+      );
+    });
+
     test(`${state === "warm" ? "control: " : ""}${state}: availability rejects the excluded exact high id`, async () => {
       addExactIdFamilyDefault();
       await storedLists([MEDIUM]);

@@ -187,6 +187,34 @@ describe("rule 9: one model-id decision per provider", () => {
     }).toEqual({ credential: LOW, transport: LOW });
   });
 
+  for (const builder of ["cached credential", "local builder"]) {
+    test(`Antigravity ${builder}: mapped -fast agrees with the credential and resolver at high effort`, async () => {
+      const selected = "carbon-high-fast";
+      entries = [
+        catalogEntry(BASE, [
+          connection("antigravity", BASE, effortMap({ high: selected, low: LOW })),
+        ]),
+      ];
+      agServed = { servedIds: [LOW, selected], defaultId: LOW, meta: {} };
+      publish();
+      const standalone = await new AntigravityCredentialProvider().getRequestAuth({ model: BASE });
+      if (builder === "local builder") {
+        const auth = spyOn(credentials, "getRequestAuth").mockResolvedValue({ headers: {} });
+        restore.push(() => auth.mockRestore());
+      }
+      const transport = new AntigravityProviderTransport(BASE);
+      await transport.refreshAuth();
+      expect({
+        credential: standalone.transformPayload?.({ contents: [] }, { effort: "high" }).model,
+        transport: transport.transformPayload(
+          { contents: [] },
+          { output_config: { effort: "high" } }
+        ).model,
+        resolver: resolveAntigravityServedModel(BASE, agServed, "high"),
+      }).toEqual({ credential: selected, transport: selected, resolver: selected });
+    });
+  }
+
   test("Devin protobuf field 21 agrees with the map-aware resolver", async () => {
     const mapped = "carbon-low-route";
     entries = [
