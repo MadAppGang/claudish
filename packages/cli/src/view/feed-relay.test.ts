@@ -12,6 +12,7 @@ import {
 import { join } from "node:path";
 import { OWNER_START36 } from "../pane/pane-launch.js";
 import type { ViewItem } from "../pane/view-contract.js";
+import { VERSION } from "../version.js";
 import { endpointNameOf } from "./endpoints.js";
 import {
   FEED_MIN_INTERVAL_MS,
@@ -118,10 +119,14 @@ async function endpoint(root: string, name: string, items: ViewItem[]): Promise<
   return ep;
 }
 
-async function relayOn(root: string, o: { minIntervalMs?: number } = {}): Promise<FeedRelay> {
+async function relayOn(
+  root: string,
+  o: { minIntervalMs?: number; history?: () => ViewItem[]; historyMinIntervalMs?: number } = {}
+): Promise<FeedRelay> {
   const relay = new FeedRelay({
     root,
     stamp: FAKE_STAMP,
+    history: () => [],
     // the in-process fakes share this process's pid with a made-up start: treat every name as live
     endpointsAlive: async (names) => new Set(names),
     ...o,
@@ -212,7 +217,7 @@ describe("feed relay", () => {
       ep.closing();
       await until(() => readFeed(root)?.servers.length === 0, "the closing server gone");
       expect(readFeed(root)?.items).toEqual([]);
-      expect(relay.snapshot()).toEqual({ servers: [], items: [] });
+      expect(relay.snapshot()).toEqual({ servers: [], items: [], history: [] });
     },
     T
   );
@@ -231,7 +236,7 @@ describe("feed relay", () => {
       const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
       expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
       // the real process table decides liveness here
-      const relay = new FeedRelay({ root, stamp: FAKE_STAMP });
+      const relay = new FeedRelay({ root, stamp: FAKE_STAMP, history: () => [] });
       cleanups.push(() => relay.stop());
       await relay.start();
       await until(() => readFeed(root)?.items[0]?.target === "s:doomed", "the child's item");
@@ -279,7 +284,7 @@ describe("feed relay", () => {
     };
     makeFeedDir(root);
     writeFileSync(defaultFeedPath(root), JSON.stringify(live), { mode: 0o600 });
-    const busy = new FeedRelay({ root, stamp: FAKE_STAMP });
+    const busy = new FeedRelay({ root, stamp: FAKE_STAMP, history: () => [] });
     cleanups.push(() => busy.stop());
     await expect(busy.start()).rejects.toBeInstanceOf(FeedRelayBusy);
 
@@ -302,6 +307,7 @@ describe("feed relay", () => {
       const relay = new FeedRelay({
         root,
         stamp: FAKE_STAMP,
+        history: () => [],
         endpointsAlive: async (names) => new Set(names),
         backstopMs: 30,
         connect: async (path) => {
@@ -319,23 +325,118 @@ describe("feed relay", () => {
   );
 });
 
+describe("feed relay: finished runs from the records", () => {
+  test(
+    "the file carries the records' runs a server does not hold, read again when a server lets one go",
+    async () => {
+      const root = newRoot();
+      const ep = await endpoint(root, epName("ffff1"), [item("one")]);
+      let reads = 0;
+      const records = [
+        item("one", { state: "COMPLETED" }),
+        item("old", { state: "FAILED", reason: "child_exited" }),
+      ];
+      await relayOn(root, {
+        history: () => {
+          reads += 1;
+          return records;
+        },
+        historyMinIntervalMs: 0,
+      });
+      await until(() => readFeed(root)?.items.length === 1, "the server's item");
+      await until(() => readFeed(root)?.history?.length === 1, "the records' run");
+      expect(readFeed(root)?.history?.map((i) => i.target)).toEqual(["s:old"]);
+      const before = reads;
+      ep.remove();
+      await until(() => readFeed(root)?.items.length === 0, "the evicted item gone");
+      await until(() => readFeed(root)?.history?.length === 2, "the evicted run from its record");
+      expect(reads).toBeGreaterThan(before);
+      expect(readFeed(root)?.history?.map((i) => i.target)).toEqual(["s:one", "s:old"]);
+    },
+    T
+  );
+
+  test(
+    "with no server at all, the records' runs are in the file",
+    async () => {
+      const root = newRoot();
+      await relayOn(root, { history: () => [item("gone", { state: "FAILED" })] });
+      await until(() => readFeed(root)?.history?.length === 1, "the records' run");
+      expect(readFeed(root)).toMatchObject({ servers: [], items: [] });
+    },
+    T
+  );
+
+  test(
+    "item churn does not read the records again; they are read at most once per interval",
+    async () => {
+      const root = newRoot();
+      const ep = await endpoint(root, epName("ffff2"), [item("one")]);
+      let reads = 0;
+      const relay = await relayOn(root, {
+        history: () => {
+          reads += 1;
+          return [];
+        },
+        historyMinIntervalMs: 60_000,
+      });
+      await until(() => readFeed(root)?.items.length === 1, "the server's item");
+      const settled = reads;
+      for (let n = 1; n <= 10; n++) ep.upsert(item("one", { tool_calls: n }));
+      ep.remove();
+      ep.upsert(item("two"));
+      ep.remove();
+      await until(() => relay.writes > 2, "a few writes");
+      await Bun.sleep(FEED_MIN_INTERVAL_MS * 2);
+      expect(reads).toBe(settled);
+    },
+    T
+  );
+});
+
+describe("feed relay: the version that wrote the file", () => {
+  test(
+    "the relay's own stamp names its claudish version, and --feed-check passes it on",
+    async () => {
+      const root = newRoot();
+      const relay = new FeedRelay({
+        root,
+        history: () => [],
+        endpointsAlive: async (names) => new Set(names),
+      });
+      cleanups.push(() => relay.stop());
+      await relay.start();
+      await until(() => readFeed(root) !== null, "the file");
+      expect(readFeed(root)?.relay).toMatchObject({ pid: process.pid, version: VERSION });
+      expect(await checkFeed(defaultFeedPath(root))).toMatchObject({
+        alive: true,
+        relay: { pid: process.pid, version: VERSION },
+      });
+    },
+    T
+  );
+});
+
 describe("checkFeed (--feed-check)", () => {
   test("missing, a dead stamp, and a live stamp", async () => {
     const root = newRoot();
     const path = defaultFeedPath(root);
-    expect(await checkFeed(path)).toEqual({ alive: false, reason: "missing" });
+    // every answer names the checking claudish's version, so a reader can compare the relay's
+    const version = VERSION;
+    expect(await checkFeed(path)).toEqual({ alive: false, reason: "missing", version });
     makeFeedDir(root);
     writeFileSync(path, JSON.stringify({ relay: FAKE_STAMP, servers: [], items: [] }));
     expect(await checkFeed(path)).toEqual({
       alive: false,
       reason: "relay_gone",
       relay: FAKE_STAMP,
+      version,
     });
     const own = { pid: process.pid, start36: OWNER_START36, started_at: "x" };
     writeFileSync(path, JSON.stringify({ relay: own, servers: [], items: [] }));
-    expect(await checkFeed(path)).toEqual({ alive: true, relay: own });
+    expect(await checkFeed(path)).toEqual({ alive: true, relay: own, version });
     writeFileSync(path, "{ half a fi");
-    expect(await checkFeed(path)).toEqual({ alive: false, reason: "missing" });
+    expect(await checkFeed(path)).toEqual({ alive: false, reason: "missing", version });
     // the endpoint naming carries the same pid and start, so one liveness rule serves both
     expect(endpointNameOf(own.pid, own.start36)).toBe(`c${process.pid}-${OWNER_START36}.sock`);
   });

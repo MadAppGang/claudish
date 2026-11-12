@@ -10,6 +10,9 @@ import { HcStatusReporter } from "../herdr/hc-reporter.js";
 import { HerdrSocket } from "../herdr/herdr-socket.js";
 import { HerdrReporter } from "../herdr/reporter.js";
 import { setStderrQuiet } from "../logger.js";
+import { sessionsDirFrom } from "../mcp-session/home-dir.js";
+import { SessionManager } from "../mcp-session/session-manager.js";
+import { decodeCursor } from "../pane/index.js";
 import { sockRootFor } from "../pane/pane-launch.js";
 import { readProcessTableAsync } from "../pane/process-identity.js";
 import {
@@ -22,13 +25,14 @@ import {
 import { detectAndSetThemeModeSync } from "../theme/theme-mode.js";
 import { endpointOwnerAlive, endpointPathOf, listEndpoints } from "./endpoints.js";
 import { checkFeed, defaultFeedPath, runFeedRelay } from "./feed-relay.js";
+import { readHistory } from "./history.js";
 import { DEFAULT_FPS } from "./magmux-view-client.js";
 import { ViewClient } from "./view-client.js";
 import { type FrontEnd, PLAIN_TERMINAL, Viewer, type ViewerIo } from "./viewer.js";
 
 const USAGE = [
   "usage: claudish view <target> [--passive] [--fps N] [--front-end auto|herdr|herdr-core|none]",
-  "       claudish view --list [--json]",
+  "       claudish view --list [--json] [--include-finished]",
   "       claudish view --feed [file]",
   "       claudish view --feed-check [file]",
   "       claudish view --print-root",
@@ -39,6 +43,8 @@ const USAGE = [
   "  --fps N    frames per second to ask the pane for, 1..30 (default 15)",
   "  --front-end  auto (default) reports to herdr in a herdr pane and to herdr-core (OSC 7501) in",
   "             an hc terminal; none reports nothing",
+  "  --include-finished  also finished runs, and the newest runs from their records that no",
+  "             running server holds any more (`history` in the JSON)",
   "  --feed     keep a file listing every server's sessions up to date (default",
   "             <root>/feed/feed.json); the file is removed when the relay exits",
   "  --feed-check  exit 0 when the relay stamped in the feed file still runs, 1 otherwise",
@@ -53,31 +59,54 @@ const USAGE = [
 export interface ViewListing {
   servers: Array<{ endpoint: string; pid: number; version: string }>;
   items: ViewItem[];
+  /** with `includeFinished`: the newest runs from their records that no live server holds */
+  history?: ViewItem[];
 }
 
-/** Every live server's items. A server that refuses or does not answer is left out. */
-export async function collectListing(root: string = sockRootFor()): Promise<ViewListing> {
+export interface ListingOptions {
+  includeFinished?: boolean;
+  /** default `~/.claudish/sessions` */
+  sessionsDir?: string;
+}
+
+/**
+ * Every live server's items. A server that refuses or does not answer is left out. With
+ * `includeFinished`, also the finished items the servers still hold, and the newest runs from
+ * the records (`history.ts`) minus those a server answered for.
+ */
+export async function collectListing(
+  root: string = sockRootFor(),
+  o: ListingOptions = {}
+): Promise<ViewListing> {
   const table = await readProcessTableAsync();
   const names = listEndpoints(root).filter((n) => endpointOwnerAlive(n, table));
-  const results = await Promise.allSettled(names.map((n) => listOne(root, n)));
+  const includeFinished = o.includeFinished === true;
+  const results = await Promise.allSettled(names.map((n) => listOne(root, n, includeFinished)));
   const listing: ViewListing = { servers: [], items: [] };
   for (const r of results) {
     if (r.status !== "fulfilled") continue;
     listing.servers.push(r.value.server);
     listing.items.push(...r.value.items);
   }
+  if (!includeFinished) return listing;
+  const held = new Set(listing.items.map((i) => i.target));
+  listing.history = readHistory({ sessionsDir: o.sessionsDir }).filter((i) => !held.has(i.target));
   return listing;
 }
 
 async function listOne(
   root: string,
-  name: string
+  name: string,
+  includeFinished: boolean
 ): Promise<{ server: ViewListing["servers"][number]; items: ViewItem[] }> {
   const client = await ViewClient.connect(endpointPathOf(root, name), {
     hello: { name: "claudish view --list", kind: "viewer" },
   });
   try {
-    const { items } = await client.request<ViewListResult>("list");
+    const { items } = await client.request<ViewListResult>(
+      "list",
+      includeFinished ? { include_finished: true } : {}
+    );
     const hello = client.helloResult;
     return {
       server: { endpoint: name, pid: hello?.server.pid ?? 0, version: hello?.server.version ?? "" },
@@ -114,13 +143,15 @@ export function parseTranscriptArgs(
 
 /**
  * The target's transcript from the live server that holds it. Servers are asked in endpoint order;
- * the first answer wins. When none holds it, the last server's own error (`unknown_session`,
- * `unknown_run`, …), or `server_gone` when no server is running.
+ * the first answer wins. A session no server holds is read from its records. When neither has it,
+ * the last server's own error (`unknown_session`, `unknown_run`, …), or `server_gone` when no
+ * server is running.
  */
 export async function transcriptOf(
   root: string,
   target: string,
-  since?: string
+  since?: string,
+  o: DiskSources = {}
 ): Promise<TranscriptOutcome> {
   const table = await readProcessTableAsync();
   const names = listEndpoints(root).filter((n) => endpointOwnerAlive(n, table));
@@ -148,7 +179,40 @@ export async function transcriptOf(
       client?.close();
     }
   }
-  return { ok: false, error: last };
+  return diskTranscript(target, since, o) ?? { ok: false, error: last };
+}
+
+/** Where the records are: the sessions directory, and the environment that finds Claude Code's. */
+export interface DiskSources {
+  /** default `~/.claudish/sessions` */
+  sessionsDir?: string;
+  /** default this process's; `CLAUDE_CONFIG_DIR` locates the transcripts */
+  env?: Record<string, string | undefined>;
+}
+
+/**
+ * A session's transcript from `<sessionsDir>/<id>/`, read the way `transcript_session` reads a
+ * session it does not hold; null when there is no such record.
+ */
+function diskTranscript(
+  target: string,
+  since: string | undefined,
+  o: DiskSources
+): TranscriptOutcome | null {
+  const id = /^s:(.+)$/.exec(target)?.[1] ?? (target.includes(":") ? null : target);
+  if (!id) return null;
+  const env = o.env ?? process.env;
+  try {
+    const sessions = new SessionManager({
+      sessionsDir: o.sessionsDir ?? sessionsDirFrom(env),
+      parentEnv: env as NodeJS.ProcessEnv,
+      hostPid: process.pid,
+    });
+    const cursor = since === undefined ? undefined : decodeCursor(since);
+    return { ok: true, result: sessions.transcriptSession(id, cursor) as ViewTranscriptAnswer };
+  } catch {
+    return null;
+  }
 }
 
 function stateOf(item: ViewItem): string {
@@ -156,11 +220,12 @@ function stateOf(item: ViewItem): string {
 }
 
 function formatListing(listing: ViewListing): string {
-  if (listing.items.length === 0)
+  const items = [...listing.items, ...(listing.history ?? [])];
+  if (items.length === 0)
     return listing.servers.length === 0
       ? "no claudish MCP server is running\n"
       : "no running sessions\n";
-  const rows = listing.items.map((item) => [
+  const rows = items.map((item) => [
     item.target,
     stateOf(item),
     item.model ?? "",
@@ -174,6 +239,20 @@ function formatListing(listing: ViewListing): string {
       .join("  ")
       .trimEnd()}\n`;
   return line(header) + rows.map(line).join("");
+}
+
+/** `--list [--json] [--include-finished]`, or the reason it is refused. */
+export function parseListArgs(
+  args: string[]
+): { json: boolean; includeFinished: boolean } | { error: string } {
+  const out = { json: false, includeFinished: false };
+  for (const a of args) {
+    if (a === "--list") continue;
+    if (a === "--json") out.json = true;
+    else if (a === "--include-finished") out.includeFinished = true;
+    else return { error: `unknown option ${a}` };
+  }
+  return out;
 }
 
 export interface ViewArgs {
@@ -404,14 +483,12 @@ export async function viewCommand(args: string[]): Promise<number> {
     }
     return viewTarget(parsed);
   }
-  const known = new Set(["--list", "--json"]);
-  if (args.some((a) => !known.has(a))) {
-    process.stderr.write(USAGE);
+  const list = parseListArgs(args);
+  if ("error" in list) {
+    process.stderr.write(`${list.error}\n${USAGE}`);
     return 2;
   }
-  const listing = await collectListing();
-  process.stdout.write(
-    args.includes("--json") ? `${JSON.stringify(listing)}\n` : formatListing(listing)
-  );
+  const listing = await collectListing(sockRootFor(), { includeFinished: list.includeFinished });
+  process.stdout.write(list.json ? `${JSON.stringify(listing)}\n` : formatListing(listing));
   return 0;
 }

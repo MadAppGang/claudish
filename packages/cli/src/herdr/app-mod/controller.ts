@@ -8,7 +8,15 @@
  *
  * The relay is checked when the panel shows, whenever the feed file is missing, when its hc
  * terminal leaves `terminals()`, and every 15 s while visible. A dead relay empties the list at
- * once, is started again, and the polling path serves until a new relay's file appears.
+ * once, is started again, and the polling path serves until a new relay's file appears. A live
+ * relay whose stamp names another version than the checking claudish (an older build started it
+ * and still runs that build's code) is killed and started again the same way.
+ *
+ * Beside the servers' items the list carries their `history`: finished runs read from their
+ * records that no server holds any more, so earlier runs stay after a server evicts them, exits
+ * or restarts. A run read only from its records has no viewer to show; its screen area says so,
+ * and Text reads its transcript from the records. The run on screen is kept while a refresh
+ * drops it, so a click never blanks the panel.
  *
  * Selecting a session starts `claudish view <target> --front-end herdr-core` in a hidden hc
  * terminal and shows it in a keyed window; selecting another kills the previous viewer, which
@@ -34,6 +42,7 @@ import {
   LIVENESS_MS,
   PATH_HEAD,
   POLL_MS,
+  type RelayStamp,
   type TerminalInfo,
   VIEW_TERMINAL_PREFIX,
   claudishArgv,
@@ -42,6 +51,7 @@ import {
   parseFeed,
   parseHcRun,
   parseListing,
+  parseRelayStamp,
   parseTranscriptRun,
   sameRelay,
   viewRunArgs,
@@ -61,6 +71,8 @@ import {
 export const TRANSCRIPT_MS = 2_000;
 /** pages read in one go when an answer says `more` */
 const TRANSCRIPT_PAGES = 10;
+/** after a relay was replaced, the next check comes this soon */
+export const RELAY_RESTART_MS = 2_000;
 
 /**
  * Which copy of the mod is the panel. Herdr docks one copy from `mod.json` the first time it sees
@@ -132,7 +144,10 @@ export class PanelController {
   /** one line under the header: why the list is empty or stale */
   message: string | null = null;
   install: ClaudishInstall | null = null;
+  /** what the running servers hold */
   items: ViewItem[] = [];
+  /** finished runs from their records that no server holds */
+  history: ViewItem[] = [];
   servers: FeedServer[] = [];
   feedMode: "relay" | "poll" = "relay";
   selected: string | null = null;
@@ -148,6 +163,10 @@ export class PanelController {
   width = 320;
 
   private transcripts = new Map<string, TranscriptState>();
+  /** the shown run's items a refresh no longer lists, kept so the panel does not lose them */
+  private kept: ViewItem[] = [];
+  /** why the list polls while a relay is being replaced; shown over the empty-list line */
+  private relayNotice: string | null = null;
 
   private livenessDueAt = 0;
   /** the relay whose death sent the list to the polling path */
@@ -216,9 +235,27 @@ export class PanelController {
     return this.followingTranscript() ? Math.min(base, TRANSCRIPT_MS) : base;
   }
 
-  /** Every run in the items, newest first. */
+  /** The servers' items, then the records' runs, then the kept ones; one item per target. */
+  allItems(): ViewItem[] {
+    const seen = new Set<string>();
+    const out: ViewItem[] = [];
+    for (const item of [...this.items, ...this.history, ...this.kept]) {
+      if (seen.has(item.target)) continue;
+      seen.add(item.target);
+      out.push(item);
+    }
+    return out;
+  }
+
+  /** Every run, newest first. */
   runs(): PanelRun[] {
-    return runsOf(this.items, this.host.now());
+    const held = new Set(this.items.map((i) => i.target));
+    const recordOnly = new Set(
+      this.allItems()
+        .map((i) => i.target)
+        .filter((t) => !held.has(t))
+    );
+    return runsOf(this.allItems(), this.host.now(), recordOnly);
   }
 
   /** The run shown: the one picked while it exists, else the latest. */
@@ -270,8 +307,8 @@ export class PanelController {
     const t = this.transcripts.get(row.target);
     if (t?.error) return [t.error];
     if (t && t.lines.length > 0) return transcriptText(t.lines);
-    if (row.noScreen) return ["(no transcript: the session failed before its first turn)"];
-    return [t?.final ? "(no transcript lines)" : "reading the transcript…"];
+    if (row.noScreen) return ["no transcript: the session ended before Claude Code started"];
+    return [t?.final ? "no transcript: nothing was recorded" : "reading the transcript…"];
   }
 
   /** What the current mode shows for the current slot; opens nothing for a slot with no screen. */
@@ -282,7 +319,7 @@ export class PanelController {
       await this.readTranscript(row.target);
       return;
     }
-    if (row.noScreen) {
+    if (row.noScreen || row.recordOnly) {
       if (this.view) this.host.killTerminal(this.view.address);
       this.view = null;
       this.selected = null;
@@ -295,7 +332,7 @@ export class PanelController {
     if (this.mode !== "text" || !this.visible || this.phase !== "ready") return false;
     const row = this.currentRow();
     const t = row ? this.transcripts.get(row.target) : undefined;
-    return Boolean(row && !row.noScreen && !t?.final && !t?.error);
+    return Boolean(row && !row.noScreen && !row.recordOnly && !t?.final && !t?.error);
   }
 
   /** Read the target's transcript from where the last read stopped. */
@@ -367,7 +404,7 @@ export class PanelController {
     this.selected = target;
     const run = this.runs().find((r) => r.rows.some((row) => row.target === target));
     const row = run?.rows.find((r) => r.target === target);
-    const item = this.items.find((i) => i.target === target);
+    const item = this.allItems().find((i) => i.target === target);
     const fallback = item ? (item.model ?? target) : target;
     const title = run && row ? `${run.name} · ${row.slot} · ${row.model}` : fallback;
     this.host.openOverlay(viewWindowSpec(address, target, title));
@@ -415,20 +452,47 @@ export class PanelController {
     this.livenessDueAt = this.host.now() + LIVENESS_MS;
     const argv = claudishArgv(this.install, ["view", "--feed-check"]);
     const r = await this.host.exec(argv[0] as string, argv.slice(1)).catch(() => null);
-    let check: { alive?: unknown; relay?: FeedView["relay"] } = {};
+    let check: { alive?: unknown; relay?: unknown; version?: unknown } = {};
     try {
       check = JSON.parse(r?.stdout ?? "") as typeof check;
     } catch {
       check = {};
     }
-    if (check.alive === true) return;
+    const stamp = parseRelayStamp(check.relay);
+    if (check.alive === true) {
+      // a checker that names no version runs relays that stamp none: nothing to compare
+      const want = typeof check.version === "string" ? check.version : null;
+      if (want && stamp && stamp.version !== want) await this.replaceRelay(stamp, want);
+      return;
+    }
     if (this.feedMode === "relay") {
       this.items = [];
       this.servers = [];
       this.message = "reconnecting";
     }
-    this.deadRelay = check.relay ?? null;
+    this.deadRelay = stamp;
     this.feedMode = "poll";
+    await this.startRelay();
+  }
+
+  /**
+   * A live relay an older build started: kill its hc terminal and start one from this claudish.
+   * Its file is not trusted from here on; the list polls until the new relay's file appears.
+   */
+  private async replaceRelay(stamp: RelayStamp, want: string): Promise<void> {
+    this.deadRelay = stamp;
+    this.feedMode = "poll";
+    const term = liveTerminal(this.host.terminals(), FEED_TERMINAL);
+    if (!term) {
+      // not ours to end (started by hand), or already ending: poll until it exits
+      this.relayNotice = `an older feed relay (pid ${stamp.pid}) still runs; polling until it exits`;
+      this.message = this.relayNotice;
+      return;
+    }
+    this.host.killTerminal(term.address);
+    this.relayNotice = `restarting the feed relay for claudish ${want}`;
+    this.message = this.relayNotice;
+    this.livenessDueAt = this.host.now() + RELAY_RESTART_MS;
     await this.startRelay();
   }
 
@@ -455,6 +519,7 @@ export class PanelController {
     if (!feed?.relay || sameRelay(feed.relay, this.deadRelay)) return false;
     this.feedMode = "relay";
     this.deadRelay = null;
+    this.relayNotice = null;
     this.apply(feed);
     return true;
   }
@@ -467,23 +532,33 @@ export class PanelController {
 
   private async pollList(): Promise<void> {
     if (!this.install) return;
-    const out = await this.run(this.install, ["view", "--list", "--json"]);
+    // a claudish from before --include-finished refuses it with a usage error
+    const out =
+      (await this.run(this.install, ["view", "--list", "--json", "--include-finished"])) ??
+      (await this.run(this.install, ["view", "--list", "--json"]));
     const listing = out ? parseListing(out) : null;
     if (!listing) return;
-    this.servers = listing.servers;
-    this.items = listing.items;
-    this.message = this.emptyMessage();
+    this.apply(listing);
   }
 
-  private apply(feed: Pick<FeedView, "servers" | "items">): void {
+  /** Take a refresh; the shown run's items it no longer lists are kept. */
+  private apply(feed: Pick<FeedView, "servers" | "items" | "history">): void {
+    const shown = new Set(this.currentRun()?.rows.map((r) => r.target) ?? []);
+    const before = this.allItems().filter((i) => shown.has(i.target));
     this.servers = feed.servers;
     this.items = feed.items;
-    this.message = this.emptyMessage();
+    this.history = feed.history;
+    const listed = new Set([...this.items, ...this.history].map((i) => i.target));
+    this.kept = before.filter((i) => !listed.has(i.target));
+    this.message = this.relayNotice ?? this.emptyMessage();
   }
 
   private emptyMessage(): string | null {
-    if (this.items.length > 0) return null;
-    return this.servers.length === 0 ? "no claudish MCP server is running" : "no sessions";
+    if (this.servers.length === 0)
+      return this.history.length > 0
+        ? "no claudish MCP server is running · runs shown from their records"
+        : "no claudish MCP server is running";
+    return this.allItems().length > 0 ? null : "no sessions";
   }
 
   private async startViewer(target: string, name: string): Promise<string | null> {

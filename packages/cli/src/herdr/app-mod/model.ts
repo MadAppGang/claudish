@@ -40,10 +40,19 @@ export interface FeedServer {
   version: string;
 }
 
+export interface RelayStamp {
+  pid: number;
+  start36: string;
+  /** the relay's claudish version; null when an older relay wrote no version */
+  version: string | null;
+}
+
 export interface FeedView {
-  relay: { pid: number; start36: string } | null;
+  relay: RelayStamp | null;
   servers: FeedServer[];
   items: ViewItem[];
+  /** finished runs from their records that no server holds; [] from an older claudish */
+  history: ViewItem[];
 }
 
 /** What the mod resolved about the user's claudish once at load. */
@@ -57,7 +66,20 @@ export interface ClaudishInstall {
   version: string;
 }
 
-function isFeedShape(v: unknown): v is { servers: unknown[]; items: unknown[]; relay?: unknown } {
+/** A relay stamp from a feed file or `--feed-check`; null when it is not one. */
+export function parseRelayStamp(r: unknown): RelayStamp | null {
+  const o = r as { pid?: unknown; start36?: unknown; version?: unknown } | null | undefined;
+  if (!o || typeof o.pid !== "number" || typeof o.start36 !== "string") return null;
+  return {
+    pid: o.pid,
+    start36: o.start36,
+    version: typeof o.version === "string" ? o.version : null,
+  };
+}
+
+function isFeedShape(
+  v: unknown
+): v is { servers: unknown[]; items: unknown[]; relay?: unknown; history?: unknown } {
   const o = v as { servers?: unknown; items?: unknown } | null;
   return Boolean(o) && Array.isArray(o?.servers) && Array.isArray(o?.items);
 }
@@ -68,21 +90,23 @@ export function parseFeed(text: string | null): FeedView | null {
   try {
     const v = JSON.parse(text) as unknown;
     if (!isFeedShape(v)) return null;
-    const r = v.relay as { pid?: unknown; start36?: unknown } | undefined;
-    const relay =
-      r && typeof r.pid === "number" && typeof r.start36 === "string"
-        ? { pid: r.pid, start36: r.start36 }
-        : null;
-    return { relay, servers: v.servers as FeedServer[], items: v.items as ViewItem[] };
+    return {
+      relay: parseRelayStamp(v.relay),
+      servers: v.servers as FeedServer[],
+      items: v.items as ViewItem[],
+      history: Array.isArray(v.history) ? (v.history as ViewItem[]) : [],
+    };
   } catch {
     return null;
   }
 }
 
-/** `claudish view --list --json`, the polling path. */
-export function parseListing(stdout: string): Pick<FeedView, "servers" | "items"> | null {
+/** `claudish view --list --json [--include-finished]`, the polling path. */
+export function parseListing(
+  stdout: string
+): Pick<FeedView, "servers" | "items" | "history"> | null {
   const feed = parseFeed(stdout.trim());
-  return feed ? { servers: feed.servers, items: feed.items } : null;
+  return feed ? { servers: feed.servers, items: feed.items, history: feed.history } : null;
 }
 
 export function sameRelay(a: FeedView["relay"], b: FeedView["relay"]): boolean {

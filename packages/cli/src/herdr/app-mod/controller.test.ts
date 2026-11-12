@@ -37,6 +37,14 @@ class FakeHost implements ModHost {
     reason: "missing",
   };
   listing: { servers: unknown[]; items: ViewItem[] } = { servers: [], items: [] };
+  /** what `view --list --json --include-finished` adds: runs from their records */
+  history: ViewItem[] = [];
+  /** a claudish whose `view --list` predates `--include-finished` */
+  noIncludeFinished = false;
+  /** the version a relay stamps; undefined = a relay from before stamps carried one */
+  relayVersion: string | undefined = "14.16.1";
+  /** the version `--feed-check` names as its own; undefined = a claudish that names none */
+  checkerVersion: string | undefined = "14.16.1";
   nextAddress = 10;
   /** an installed claudish from before `claudish view` existed */
   noView = false;
@@ -58,12 +66,20 @@ class FakeHost implements ModHost {
       return this.noView
         ? { code: 1, stdout: "", stderr: "unknown command: view\n" }
         : { code: 0, stdout: `${ROOT}\n`, stderr: "" };
-    if (rest === "view --feed-check")
+    if (rest === "view --feed-check") {
+      const r = this.relayAlive.relay as Record<string, unknown> | undefined;
+      const relay =
+        r && !("version" in r) && this.relayVersion ? { ...r, version: this.relayVersion } : r;
       return {
         code: this.relayAlive.alive ? 0 : 1,
-        stdout: `${JSON.stringify(this.relayAlive)}\n`,
+        stdout: `${JSON.stringify({
+          ...this.relayAlive,
+          ...(relay ? { relay } : {}),
+          ...(this.checkerVersion ? { version: this.checkerVersion } : {}),
+        })}\n`,
         stderr: "",
       };
+    }
     if (rest.startsWith("view --transcript ")) {
       const words = rest.split(" ");
       const target = words[2] as string;
@@ -74,6 +90,14 @@ class FakeHost implements ModHost {
     }
     if (rest === "view --list --json")
       return { code: 0, stdout: `${JSON.stringify(this.listing)}\n`, stderr: "" };
+    if (rest === "view --list --json --include-finished")
+      return this.noIncludeFinished
+        ? { code: 2, stdout: "", stderr: "unknown option --include-finished" }
+        : {
+            code: 0,
+            stdout: `${JSON.stringify({ ...this.listing, history: this.history })}\n`,
+            stderr: "",
+          };
     return { code: 2, stdout: "", stderr: `unexpected ${rest}` };
   }
 
@@ -130,7 +154,11 @@ class FakeHost implements ModHost {
     return this.calls.filter((c) => c.via === "hc").map((c) => c.argv);
   }
 
-  writeFeed(relay: { pid: number; start36: string }, items: ViewItem[]): void {
+  writeFeed(
+    relay: { pid: number; start36: string },
+    items: ViewItem[],
+    history: ViewItem[] | undefined = undefined
+  ): void {
     this.files.set(
       FEED,
       JSON.stringify({
@@ -138,6 +166,7 @@ class FakeHost implements ModHost {
         written_at: "x",
         servers: [{}],
         items,
+        ...(history ? { history } : {}),
       })
     );
   }
@@ -232,7 +261,9 @@ describe("PanelController", () => {
     expect(ctl.feedMode).toBe("relay");
     expect(ctl.items.map((i) => i.target)).toEqual(["s:a", "s:b"]);
     expect(ctl.watching).toBe(true);
-    expect(host.claudishRuns().filter((r) => r === "view --list --json")).toHaveLength(1);
+    expect(
+      host.claudishRuns().filter((r) => r === "view --list --json --include-finished")
+    ).toHaveLength(1);
   });
 
   test("a relay found dead empties the list at once, restarts it, and ignores its stale file", async () => {
@@ -533,5 +564,167 @@ describe("PanelSeat: one copy of the mod is the panel", () => {
     await waiting;
     expect(freed).toBe(true);
     expect(seat.take(b)).toBe(true);
+  });
+});
+
+/** A session that failed before Claude Code started, as its records read. */
+function failedEarly(id: string): ViewItem {
+  return withFields(sessionItem(id, { state: "FAILED" }), {
+    reason: "child_exited",
+    reason_detail: "pane child exited with code 1; last line: error: unknown option",
+    task_type: "explain",
+    magmux: null,
+    started_at: new Date(CLOCK - 60_000).toISOString(),
+  });
+}
+
+describe("PanelController: earlier runs stay after their server lets them go", () => {
+  test("polling lists the records' runs beside the servers' items, newest first", async () => {
+    const host = new FakeHost();
+    host.clock = CLOCK;
+    host.listing = { servers: [{ endpoint: "c1-a.sock", pid: 1, version: "v" }], items: [] };
+    host.history = [failedEarly("f3517773")];
+    const ctl = await ready(host);
+    ctl.setVisible(true);
+    await ctl.tick();
+    expect(ctl.feedMode).toBe("poll");
+    expect(ctl.runs().map((r) => r.key)).toEqual(["s:f3517773"]);
+    expect(ctl.currentRow()).toMatchObject({ noScreen: true, reason: "child_exited" });
+    expect(ctl.message).toBeNull();
+
+    // the server exits: the run stays, and the line says where it is read from
+    host.listing = { servers: [], items: [] };
+    await ctl.tick();
+    expect(ctl.runs().map((r) => r.key)).toEqual(["s:f3517773"]);
+    expect(ctl.message).toBe("no claudish MCP server is running · runs shown from their records");
+  });
+
+  test("an older claudish without --include-finished is polled the old way", async () => {
+    const host = new FakeHost();
+    host.noIncludeFinished = true;
+    host.listing = {
+      servers: [{ endpoint: "c1-a.sock", pid: 1, version: "v" }],
+      items: [sessionItem("a")],
+    };
+    const ctl = await ready(host);
+    ctl.setVisible(true);
+    await ctl.tick();
+    expect(ctl.runs().map((r) => r.key)).toEqual(["s:a"]);
+    expect(host.claudishRuns()).toContain("view --list --json");
+  });
+
+  test("the relay's history is listed; a run only the records hold opens no viewer", async () => {
+    const host = new FakeHost();
+    host.clock = CLOCK;
+    host.relayAlive = { alive: true, relay: { pid: 7, start36: "b" } };
+    const done = withFields(sessionItem("d0ne0000", { state: "COMPLETED" }), {
+      turns_completed: 2,
+      tool_calls: 5,
+      started_at: new Date(CLOCK - 120_000).toISOString(),
+    });
+    host.writeFeed({ pid: 7, start36: "b" }, [], [done]);
+    const ctl = await ready(host);
+    ctl.setVisible(true);
+    await ctl.tick();
+    expect(ctl.runs().map((r) => r.key)).toEqual(["s:d0ne0000"]);
+    const row = ctl.currentRow();
+    expect(row).toMatchObject({ recordOnly: true, noScreen: false });
+    await ctl.selectSlot("s:d0ne0000");
+    expect(host.overlays).toEqual([]);
+    expect(host.hcRuns().filter((a) => a[0] === "run")).toEqual([]);
+    expect(ctl.message).toBeNull();
+  });
+
+  test("Text on a run the server evicts mid-switch keeps the rows and tabs; only the area changes", async () => {
+    const host = new FakeHost();
+    host.transcript = () => ({
+      code: 1,
+      stdout: `${JSON.stringify({ error: { code: "unknown_session", message: "no session a" } })}\n`,
+      stderr: "",
+    });
+    const ctl = await withRuns(host, [sessionItem("a")]);
+    expect(ctl.runs()).toHaveLength(1);
+    // the server lets the session go while Text is being clicked; this relay writes no history
+    host.writeFeed({ pid: 7, start36: "b" }, []);
+    await ctl.setMode("text");
+    await ctl.tick();
+    expect(ctl.runs().map((r) => r.key)).toEqual(["s:a"]);
+    expect(ctl.currentRow()?.target).toBe("s:a");
+    expect(ctl.transcriptLines()).toEqual(["no transcript: no session a"]);
+  });
+
+  test("Text on a run with no transcript says why, the rows staying", async () => {
+    const host = new FakeHost();
+    host.transcript = () => ({
+      code: 0,
+      stdout: `${JSON.stringify({ session_id: "f", cursor: null, lines: [], more: false, final: true })}\n`,
+      stderr: "",
+    });
+    const ctl = await withRuns(host, [failedEarly("f3517773")]);
+    await ctl.setMode("text");
+    expect(ctl.runs()).toHaveLength(1);
+    expect(ctl.transcriptLines()).toEqual([
+      "no transcript: the session ended before Claude Code started",
+    ]);
+  });
+});
+
+describe("PanelController: a relay an older build started is replaced", () => {
+  test("a live relay whose stamp names another version is killed and started again", async () => {
+    const host = new FakeHost();
+    host.relayVersion = undefined;
+    host.live = [{ address: "t3", name: FEED_TERMINAL, state: "live" }];
+    host.relayAlive = { alive: true, relay: { pid: 7, start36: "b" } };
+    host.writeFeed({ pid: 7, start36: "b" }, [sessionItem("a")]);
+    const ctl = await ready(host);
+    ctl.setVisible(true);
+    await ctl.tick();
+    expect(host.killed).toEqual(["t3"]);
+    const runs = host.hcRuns().filter((a) => a[0] === "run");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.slice(-2)).toEqual(["view", "--feed"]);
+    // the old relay's file is not trusted; the list polls until the new relay writes
+    expect(ctl.feedMode).toBe("poll");
+    expect(ctl.message).toBe("restarting the feed relay for claudish 14.16.1");
+
+    host.relayVersion = "14.16.1";
+    host.relayAlive = { alive: true, relay: { pid: 8, start36: "c" } };
+    host.writeFeed({ pid: 8, start36: "c" }, [sessionItem("a")]);
+    host.clock += LIVENESS_MS;
+    await ctl.tick();
+    expect(ctl.feedMode).toBe("relay");
+    expect(host.killed).toEqual(["t3"]);
+    expect(ctl.runs().map((r) => r.key)).toEqual(["s:a"]);
+  });
+
+  test("an older claudish whose --feed-check names no version never restarts its own relay", async () => {
+    const host = new FakeHost();
+    host.relayVersion = undefined;
+    host.checkerVersion = undefined;
+    host.live = [{ address: "t3", name: FEED_TERMINAL, state: "live" }];
+    host.relayAlive = { alive: true, relay: { pid: 7, start36: "b" } };
+    host.writeFeed({ pid: 7, start36: "b" }, [sessionItem("a")]);
+    const ctl = await ready(host);
+    ctl.setVisible(true);
+    for (let i = 0; i < 3; i++) {
+      await ctl.tick();
+      host.clock += LIVENESS_MS;
+    }
+    expect(host.killed).toEqual([]);
+    expect(host.hcRuns()).toEqual([]);
+    expect(ctl.feedMode).toBe("relay");
+  });
+
+  test("a relay with the same version is left alone", async () => {
+    const host = new FakeHost();
+    host.live = [{ address: "t3", name: FEED_TERMINAL, state: "live" }];
+    host.relayAlive = { alive: true, relay: { pid: 7, start36: "b", version: "14.16.1" } };
+    host.writeFeed({ pid: 7, start36: "b" }, [sessionItem("a")]);
+    const ctl = await ready(host);
+    ctl.setVisible(true);
+    await ctl.tick();
+    expect(host.killed).toEqual([]);
+    expect(host.hcRuns()).toEqual([]);
+    expect(ctl.feedMode).toBe("relay");
   });
 });

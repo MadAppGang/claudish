@@ -1886,6 +1886,21 @@ export class SessionManager {
   }
 
   /**
+   * A `list_sessions` row rebuilt from `<sessionsDir>/<id>/`, for a session this process does not
+   * hold (a finished one an earlier server ran, or one this server evicted); null when there is
+   * no record, or the directory is a team run's.
+   */
+  diskSessionRow(sessionId: string): SessionRow | null {
+    const record = this.loadDiskRecord(sessionId);
+    if (!record) return null;
+    const info = record.info;
+    return sessionRowOf(
+      info,
+      upstreamRecordsFor(info, join(record.sessionDir, "upstream-errors.jsonl"))
+    );
+  }
+
+  /**
    * Settle every live session CANCELLED (process shutdown): each closes its open wait
    * (`to:"cancelled"`) and writes its `meta.json` on that transition, before this
    * resolves. The pane registry's `reapAllPanes` does the killing; a test that wants the
