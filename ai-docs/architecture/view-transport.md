@@ -437,11 +437,32 @@ never talks to an endpoint. It reads a file and starts viewers in hc terminals:
   started by hand exits 3. The re-reads exist because on macOS a bind inside the window between
   `fs.watch()` returning and its event stream running was lost and waited for the 60 s backstop
   (8 copies in parallel: 2 of 40, 4 of 40 and 5 of 24 runs failed before the fix; 0 of 64 after).
-- **Polling path.** While no relay can run, the mod runs `claudish view --list --json` every
-  2 s. The relay is checked when the panel shows, when `feed.json` is missing, when the relay's
-  terminal leaves `terminals()`, and every 15 s while visible (`view --feed-check`, JSON plus exit
-  code). A dead relay empties the list at once and is started again. Nothing runs while the panel
-  is hidden.
+- **Polling path.** While no relay can run, the mod runs
+  `claudish view --list --json --include-finished` every 2 s (a claudish that refuses the flag is
+  polled without it). The relay is checked when the panel shows, when `feed.json` is missing, when
+  the relay's terminal leaves `terminals()`, and every 15 s while visible (`view --feed-check`,
+  JSON plus exit code). A dead relay empties the list at once and is started again. Nothing runs
+  while the panel is hidden.
+- **Earlier runs come from the records.** A server holds a finished session only until it evicts
+  it, and none at all once it exits. Live, a session that failed after 1 s (`child_exited`) was
+  evicted, the feed read `items: []`, and the panel went blank. So `feed.json` and
+  `--include-finished` carry `history`: the newest 30 runs under `~/.claudish/sessions/`, taken
+  by directory mtime (a record written by rename moves it), minus what a server holds. Rows come
+  from the builders the MCP tools use for a run they do not hold (`diskSessionRow`,
+  `teamRunRowFromDisk` on the `status.json` a `team-*` record names). One read stats every run
+  directory: 12 381 entries took 55 to 73 ms, so the relay reads them at start and when a server
+  lets items go, at most once per 2 s, on a timer of its own (sharing the write timer delayed item
+  updates for the whole interval). A run only the records hold opens no viewer; Text reads its
+  transcript from the records. The run on screen is kept while a refresh drops it.
+- **A relay from an older build is replaced.** A relay keeps running the code of the build that
+  started it; after an update it went on writing the old shape (live: pid 49877, started before
+  the update). The relay stamps its version, and `--feed-check` names its own. When they differ,
+  or the relay stamps none, the mod kills the `claudish-feed` terminal and starts one. A checker
+  that names no version is an older claudish whose relays never stamp one, so it is never
+  compared (comparing with `claudish --version` would restart such a relay in a loop). A relay
+  that exits when its binary changes would not have helped: the relay already running is the old
+  code. The relay claims the signal exit, so SIGTERM removes `feed.json` (the stats listener
+  exited 143 first and left it).
 - **Keyed window overlay.** Selecting a row starts `claudish view <target> --front-end herdr-core`
   in a hidden hc terminal `claudish-view-<12 hex of sha256(target)>` and shows it in
   `openOverlay({kind: "window", key: "claudish-view", …})`. The same key replaces the open window.
