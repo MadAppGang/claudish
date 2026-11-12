@@ -2,6 +2,50 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.21.0] - 2026-11-12
+
+### Bug Fixes
+
+- keep excludedIds on the unbound-account ag@ fallback *(routing)* ([`4b2343c`](https://github.com/MadAppGang/claudish/commit/4b2343cdba89fbe574405a1d890760b35dc31ad7))
+- remove the -fast/-priority name rule from ag@ id choice *(antigravity)* ([`261dbb1`](https://github.com/MadAppGang/claudish/commit/261dbb1e58f3bb9780a72b8a86397819d74eb391))
+- store excluded ids beside the dynamic models catalog *(antigravity)* ([`c9ba1cb`](https://github.com/MadAppGang/claudish/commit/c9ba1cbd988a57a5911283b88b3debd9842ccd2e))
+- give a picker group its base only when it launches there *(devin)* ([`70f6d5a`](https://github.com/MadAppGang/claudish/commit/70f6d5a5d04bc13e4e2056e1cfe55a288fd2e0b6))
+- send an excluded exact non-base id unchanged *(antigravity)* ([`21b5c18`](https://github.com/MadAppGang/claudish/commit/21b5c18b98dd7d7a739534ec310a6a6a94481f50))
+- keep picker row ids unique when a map spans context groups *(devin)* ([`bf0334c`](https://github.com/MadAppGang/claudish/commit/bf0334c5123ad2160e354aaf60206ac1c2296ce5))
+- read the default effort cell from the catalog's generation *(routing)* ([`a070e38`](https://github.com/MadAppGang/claudish/commit/a070e38b0e356ea32ac4b38072bff77333a583a4))
+- never send an excluded base requested with no effort *(antigravity)* ([`a7a1461`](https://github.com/MadAppGang/claudish/commit/a7a146183fd82a72d77ea7ecf0ec8a1e3912f5f0))
+- keep speed-premium ids out of the family-default fallback *(antigravity)* ([`eab1379`](https://github.com/MadAppGang/claudish/commit/eab137911a10d3b9e3d15549c1cbb47081f38240))
+- report the capacity-retry model only for its request *(antigravity)* ([`ea4289c`](https://github.com/MadAppGang/claudish/commit/ea4289c0c74837e056863cd8c5a1ce52cb6db852))
+- shape the request body by the model id actually sent *(antigravity)* ([`bf382be`](https://github.com/MadAppGang/claudish/commit/bf382bec25aca3ca7a3cb4d1f043a9bd62ff40fc))
+- drop the effort level from thinkingConfig on mapped ids *(antigravity)* ([`b94064c`](https://github.com/MadAppGang/claudish/commit/b94064c290c9a252b86e82b8fdcb2b22a1d56329))
+- skip speed-premium and excluded ids in capacity retries *(antigravity)* ([`a4d4ece`](https://github.com/MadAppGang/claudish/commit/a4d4ecef168733f173a240b78a89a1eeaf6dae59))
+- resolve a request with no effort afresh each call *(antigravity)* ([`ffd2e84`](https://github.com/MadAppGang/claudish/commit/ffd2e84485537dd5693d09343a0648694b9d991a))
+- never choose an excluded id from the effort map *(antigravity)* ([`7838f50`](https://github.com/MadAppGang/claudish/commit/7838f50a87fcd0553f2cd301180e1aa39f39c0bc))
+- send the off id when reasoning is off *(antigravity)* ([`2cb6588`](https://github.com/MadAppGang/claudish/commit/2cb6588d11277e37f75393f7f73a4fde402c9b24))
+- launch a mapped picker row as its catalog base *(devin)* ([`bf2f404`](https://github.com/MadAppGang/claudish/commit/bf2f404ccdcc8249ed024769850e146f588deb7e))
+- let an exact connection decide its effort map alone *(catalog)* ([`60cb276`](https://github.com/MadAppGang/claudish/commit/60cb2764f5510b4e6210ea2b84cb777a6a8f2fe6))
+- keep modelIdEffort in the bundled recommended list *(catalog)* ([`8b4135e`](https://github.com/MadAppGang/claudish/commit/8b4135e8d9e6c448e4883bae4ac32d2a7d6548a5))
+- choose the model id from the --effort level *(antigravity)* ([`8ad469d`](https://github.com/MadAppGang/claudish/commit/8ad469dfc40fef7ea722c9d661dd61a7b89a37e0))
+- send the model id for the request's effort level *(antigravity)* ([`84a5e14`](https://github.com/MadAppGang/claudish/commit/84a5e14b85e15f4208e080d309febbacff22b612))
+
+### Documentation
+
+- replace a retired term in served-list comments *(antigravity)* ([`1a067c6`](https://github.com/MadAppGang/claudish/commit/1a067c6b509dbb04085d89772cd63742c0b87484))
+- describe sendable ids as provider-specific *(effort)* ([`3cdf3b2`](https://github.com/MadAppGang/claudish/commit/3cdf3b28282521c6c8e0755e1ca9a0f67a0550a1))
+- describe transformPayload's request effort as it is now *(adapters)* ([`abe401d`](https://github.com/MadAppGang/claudish/commit/abe401d5a83742424fc62d6bc14bedfb7a60c9ec))
+- update CHANGELOG.md for v14.20.2([`dda6333`](https://github.com/MadAppGang/claudish/commit/dda63331b6fd9e5e875ed3a26eead0f00004e3d4))
+
+### New Features
+
+- send the model id from the catalog effort map on dv@ and ag@ (#415) *(routing)* ([`bdd30fa`](https://github.com/MadAppGang/claudish/commit/bdd30fa36239090cdba3e623508a8e7c18001a1d))
+- send a mapped base at the default effort cell, else medium *(routing)* ([`04f5fc0`](https://github.com/MadAppGang/claudish/commit/04f5fc0db8db9c7ce9d87480f9824122ce511d92))
+- choose the uid from the catalog's effort map *(devin)* ([`6177b80`](https://github.com/MadAppGang/claudish/commit/6177b80efe003abb7e9d73875f01643227a6f90b))
+- read the modelIdEffort map on a catalog connection *(routing)* ([`998c3fe`](https://github.com/MadAppGang/claudish/commit/998c3fe146e7c84e4e6f1d678b83a250e191801b))
+
+### Refactoring
+
+- remove the unused effort field from RequestAuthContext *(antigravity)* ([`1491603`](https://github.com/MadAppGang/claudish/commit/1491603b152962efe5012023c78b488fab980297))
+
 ## [14.20.2] - 2026-11-12
 
 ### Bug Fixes
