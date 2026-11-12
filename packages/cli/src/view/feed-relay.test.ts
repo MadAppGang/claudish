@@ -421,19 +421,22 @@ describe("checkFeed (--feed-check)", () => {
   test("missing, a dead stamp, and a live stamp", async () => {
     const root = newRoot();
     const path = defaultFeedPath(root);
-    expect(await checkFeed(path)).toEqual({ alive: false, reason: "missing" });
+    // every answer names the checking claudish's version, so a reader can compare the relay's
+    const version = VERSION;
+    expect(await checkFeed(path)).toEqual({ alive: false, reason: "missing", version });
     makeFeedDir(root);
     writeFileSync(path, JSON.stringify({ relay: FAKE_STAMP, servers: [], items: [] }));
     expect(await checkFeed(path)).toEqual({
       alive: false,
       reason: "relay_gone",
       relay: FAKE_STAMP,
+      version,
     });
     const own = { pid: process.pid, start36: OWNER_START36, started_at: "x" };
     writeFileSync(path, JSON.stringify({ relay: own, servers: [], items: [] }));
-    expect(await checkFeed(path)).toEqual({ alive: true, relay: own });
+    expect(await checkFeed(path)).toEqual({ alive: true, relay: own, version });
     writeFileSync(path, "{ half a fi");
-    expect(await checkFeed(path)).toEqual({ alive: false, reason: "missing" });
+    expect(await checkFeed(path)).toEqual({ alive: false, reason: "missing", version });
     // the endpoint naming carries the same pid and start, so one liveness rule serves both
     expect(endpointNameOf(own.pid, own.start36)).toBe(`c${process.pid}-${OWNER_START36}.sock`);
   });

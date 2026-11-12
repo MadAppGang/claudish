@@ -152,14 +152,23 @@ export interface FeedCheck {
   /** why it is not alive */
   reason?: "missing" | "relay_gone";
   relay?: FeedStamp;
+  /**
+   * the checking claudish's own version. A reader replaces a live relay whose stamp names
+   * another (or none); an answer without this field comes from a claudish whose relays stamp no
+   * version, so there is nothing to compare.
+   */
+  version: string;
 }
 
 /** `claudish view --feed-check`: is the relay that wrote `path` still running? */
 export async function checkFeed(path: string, table?: ProcessTable): Promise<FeedCheck> {
+  const version = VERSION;
   const stamp = readFeedStamp(path);
-  if (!stamp) return { alive: false, reason: "missing" };
+  if (!stamp) return { alive: false, reason: "missing", version };
   const alive = stampAlive(stamp, table === undefined ? await readProcessTableAsync() : table);
-  return alive ? { alive, relay: stamp } : { alive, reason: "relay_gone", relay: stamp };
+  return alive
+    ? { alive, relay: stamp, version }
+    : { alive, reason: "relay_gone", relay: stamp, version };
 }
 
 export class FeedRelay {
