@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.20.2] - 2026-11-12
+
+### Bug Fixes
+
+- publish herdr-app-mod/ in the npm package *(release)* ([`d13d78f`](https://github.com/MadAppGang/claudish/commit/d13d78fe468d31b7dcff889a38e5b1b5ef31f7b1))
+
+### Documentation
+
+- update CHANGELOG.md for v14.20.1([`2e860d8`](https://github.com/MadAppGang/claudish/commit/2e860d813da4df0eef28adc3abf050faf97532bb))
+
 ## [14.20.1] - 2026-11-12
 
 ### Bug Fixes
