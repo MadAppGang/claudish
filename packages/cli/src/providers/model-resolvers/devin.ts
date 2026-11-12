@@ -48,7 +48,9 @@
  */
 
 import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "../../adapters/base-api-format.js";
+import { lookupConnectionModelIdEffort } from "../../adapters/model-catalog.js";
 import type { DevinModelConfig } from "../devin/devin-models.js";
+import { SPEED_PREMIUM_SUFFIXES, chooseModelIdForEffort } from "../model-id-effort.js";
 import type {
   ExpandContext,
   ModelChoice,
@@ -68,7 +70,7 @@ const SPEED_AXIS_KEY = "fast mode";
  * Uid suffixes that denote a speed premium, for the entries Devin declares no
  * axes for. Kept as a fallback only — the declared flag is the authority.
  */
-const SPEED_SUFFIXES = ["fast", "priority"];
+const SPEED_SUFFIXES = SPEED_PREMIUM_SUFFIXES;
 
 /**
  * Devin's effort vocabulary -> claudish's {@link EffortLevel}.
@@ -282,9 +284,18 @@ export class DevinModelResolver implements ProviderModelResolver {
   /**
    * A selection + this turn's effort -> the uid to send.
    *
+   * 0. **The connection's effort map** (`modelIdEffort`), read from the cloud
+   *    models catalog for the connection whose `externalModelId` is exactly the
+   *    selection: `values[effort]`, else the next higher listed level, else the
+   *    highest; `off` for `none`; with no effort, the vendor's family default
+   *    among the map's ids, else the cheapest. Only an id the dynamic models
+   *    catalog lists and that carries no speed premium is sent; otherwise the
+   *    rules below decide. A listed base with no effort is sent as itself.
    * 1. **An exact uid** is honoured verbatim when the turn carries no effort, or
    *    when the uid NAMES a tier — `dv@claude-opus-5-xhigh` stays xhigh even at
-   *    effort `low`. Otherwise it identifies a group and re-resolves within it,
+   *    effort `low`, and so does a row's representative that names a tier
+   *    (`claude-opus-5-5-medium` is always medium). Otherwise it identifies a
+   *    group and re-resolves within it,
    *    which is what makes `dv@glm-5-2-1m` at effort `max` reach
    *    `glm-5-2-max-1m`; before this it was reachable by no request at all.
    * 2. **An exact vendor label or family id** resolves within the group it
@@ -311,16 +322,18 @@ export class DevinModelResolver implements ProviderModelResolver {
 
     const lower = requested.toLowerCase();
     const exact = modelsCatalog.find((entry) => entry.wireId.toLowerCase() === lower);
+
+    // 0. The connection's effort map, when the catalog publishes one for this
+    //    exact base on Devin's route.
+    const mapped = mappedWireId(requested, exact, modelsCatalog, ctx.effort);
+    if (mapped) return mapped;
+
     if (exact) {
       if (!ctx.effort) return exact.wireId;
-      const group = groups.get(keyOf(exact))!;
-      // The group's own representative always re-resolves, even when it names a
-      // tier — it is the face of the row, not a tier the user asked for. This
-      // has to be checked BEFORE the explicit-tier rule or a row whose only
-      // possible representative carries a tier would be pinned to it.
-      if (exact.wireId === defaultOf(group).wireId) return pickForEffort(group, ctx.effort).wireId;
+      // An id that names a tier is that tier, at any effort — the group's
+      // representative included.
       if (namesEffortTier(exact.wireId)) return exact.wireId;
-      return pickForEffort(group, ctx.effort).wireId;
+      return pickForEffort(groups.get(keyOf(exact))!, ctx.effort).wireId;
     }
 
     // 2. An exact vendor label or family id. Unambiguous by construction — it
@@ -352,6 +365,45 @@ export class DevinModelResolver implements ProviderModelResolver {
       pool.filter((entry) => entry.isFamilyDefault).sort(byCost)[0] ?? pool.slice().sort(byCost)[0];
     return pickForEffort(groups.get(keyOf(chosen!))!, ctx.effort).wireId;
   }
+}
+
+/**
+ * Rule 0 of `expand`: the uid the connection's effort map chooses, or undefined
+ * when no map applies and the other rules decide.
+ *
+ * A listed base requested with no effort is left to rule 1 (sent as itself): the
+ * provider then serves it at its own default.
+ */
+function mappedWireId(
+  requested: string,
+  exact: ModelsCatalogEntry | undefined,
+  modelsCatalog: ModelsCatalogEntry[],
+  effort: EffortLevel | undefined
+): string | undefined {
+  if (exact && !effort) return undefined;
+  const map = lookupConnectionModelIdEffort(requested, "devin");
+  if (!map) return undefined;
+
+  const byId = new Map<string, ModelsCatalogEntry>();
+  for (const entry of modelsCatalog) {
+    const key = entry.wireId.toLowerCase();
+    if (!byId.has(key)) byId.set(key, entry);
+  }
+  const entryOf = (id: string) => byId.get(id.toLowerCase());
+  const entriesOf = (ids: string[]) =>
+    ids.map(entryOf).filter((entry): entry is ModelsCatalogEntry => entry !== undefined);
+
+  return chooseModelIdForEffort(map, effort, {
+    sendable: (id) => {
+      const entry = entryOf(id);
+      return entry && !devinHasSpeedPremium(asConfig(entry)) ? entry.wireId : undefined;
+    },
+    serverDefault: (ids) =>
+      entriesOf(ids)
+        .filter((entry) => entry.isFamilyDefault)
+        .sort(byCost)[0]?.wireId,
+    fallback: (ids) => entriesOf(ids).sort(byCost)[0]?.wireId ?? ids[0]!,
+  });
 }
 
 /**
