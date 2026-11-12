@@ -95,9 +95,12 @@ export function mapIdForEffort(map: ModelIdEffort, effort: ModelIdEffortLevel): 
 /** How a provider answers the question the map cannot. */
 export interface ModelIdEffortProvider {
   /**
-   * The account's own spelling of `id` when its dynamic models catalog lists it
-   * AND it may be chosen automatically (not a speed premium, not an id the
-   * provider declares unselectable); else undefined.
+   * The account's own spelling of `id` when this provider may send it; else
+   * undefined. Eligibility is provider-specific. Antigravity checks only that
+   * the account's dynamic models catalog lists the id and the backend does not
+   * exclude it (`excludedIds`). Devin also refuses a speed premium, read from
+   * its discovery data (the `Fast Mode` axis flag, with
+   * {@link SPEED_PREMIUM_SUFFIXES} as its fallback).
    */
   sendable(id: string): string | undefined;
 }
@@ -108,8 +111,8 @@ export interface ModelIdEffortProvider {
  *
  * - `none`: the published `off` id when the account may send it.
  * - an effort level: {@link mapIdForEffort}, when the account may send that id.
- *   An id the account does not list, or a speed premium, is not replaced by
- *   another map id: the existing resolution answers instead.
+ *   An id the provider's `sendable` refuses is not replaced by another map id:
+ *   the existing resolution answers instead.
  *
  * A request with no effort is given its level by the caller before it gets
  * here (`model-id-effort-choice.ts`); this function never invents one.
