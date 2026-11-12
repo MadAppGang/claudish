@@ -1024,7 +1024,8 @@ export class SessionManager {
       claudeSessionId,
       ...(opts.setupFrom ? { setupFrom: opts.setupFrom } : {}),
       ...(agentRequested ? { agentRequested } : {}),
-      ...(opts.taskType ? { taskType: opts.taskType } : {}),
+      // undefined is left out of spawn.json by JSON.stringify
+      taskType: opts.taskType,
     });
     // 0600: the caller's settings.local.json can carry `env` secrets.
     if (inheritedLayer) {
