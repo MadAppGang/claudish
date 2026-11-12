@@ -184,6 +184,21 @@ describe("toSlotRow (§8 B)", () => {
     expect(absent).toMatchObject({ agent_requested: null, agent: null });
   });
 
+  test("task_type comes from the slot's identity; absent is null", () => {
+    const row = toSlotRow(
+      { slot: "01", model: "haiku", spawnModel: null, taskType: "research" },
+      snap(),
+      mergeAccounting(snap(), null)
+    );
+    expect(row.task_type).toBe("research");
+    const absent = toSlotRow(
+      { slot: "01", model: "haiku", spawnModel: null },
+      snap(),
+      mergeAccounting(snap(), null)
+    );
+    expect(absent.task_type).toBeNull();
+  });
+
   test("a running row: idle seconds from last activity, activity kept, reason null", () => {
     const now = Date.parse("2026-10-06T01:00:07.900Z");
     const row = toSlotRow(
@@ -211,6 +226,7 @@ describe("toSlotRow (§8 B)", () => {
       recent: null,
       agent_requested: null,
       agent: null,
+      task_type: null,
       view: null,
     });
     expect(Object.keys(row).sort()).toEqual(
@@ -218,6 +234,7 @@ describe("toSlotRow (§8 B)", () => {
         "activity",
         "agent_requested",
         "agent",
+        "task_type",
         "cost_usd",
         "idle_seconds",
         "last_activity_at",

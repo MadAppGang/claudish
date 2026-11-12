@@ -192,6 +192,8 @@ export interface TeamStatus {
   /** The run that wrote this file (CA-13); absent in a pre-contract file. */
   runId?: string;
   kind?: "run" | "judge";
+  /** SlotRow.task_type of every slot: what the caller said the run is for; absent = none. */
+  taskType?: string;
   models: Record<string, ModelStatus>;
 }
 
@@ -289,6 +291,8 @@ export interface TeamRunOptions {
   parentEnv?: Record<string, string | undefined>;
   /** "judge" for the judging/ sub-run of `judgeResponses`; default "run". */
   kind?: "run" | "judge";
+  /** SlotRow.task_type of every slot, as the caller set it (already validated); absent = none. */
+  taskType?: string;
   /** @internal test-only pane timing seams (X-M7); production never passes them */
   paneTimings?: PaneSessionOptions["timings"];
   /** @internal test-only boot bound; production uses the pane's 90 s */
@@ -351,6 +355,8 @@ export interface TeamJudgeOptions {
   parentClaudeSessionId?: string;
   /** The environment the judge panes are built from; default `process.env`. */
   parentEnv?: Record<string, string | undefined>;
+  /** SlotRow.task_type of every judge slot (`TeamRunOptions.taskType`). */
+  taskType?: string;
   /** @internal test-only pane timing seams */
   paneTimings?: PaneSessionOptions["timings"];
 }
@@ -432,6 +438,8 @@ interface LiveTeamRun {
   cwd: string;
   /** first line of the run's input, credentials masked */
   promptSummary: string | null;
+  /** SlotRow.task_type of every slot; null = none */
+  taskType: string | null;
 }
 
 /** A `startModels` still before its registry entry (credentials, the staggered spawn loop). */
@@ -564,7 +572,11 @@ function upstreamLogPath(path: string, id: string): string {
   return join(path, "errors", `${id}-upstream.jsonl`);
 }
 
-function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
+function neverSpawnedRow(
+  e: SlotEntry,
+  m: ModelStatus | undefined,
+  taskType: string | null
+): SlotRow {
   return {
     slot: e.id,
     model: e.model,
@@ -588,15 +600,22 @@ function neverSpawnedRow(e: SlotEntry, m: ModelStatus | undefined): SlotRow {
     recent: null,
     agent_requested: e.agentRequested,
     agent: null,
+    task_type: taskType,
     view: null,
   };
 }
 
 function liveSlotRow(run: LiveTeamRun, e: SlotEntry): SlotRow {
-  if (!e.session) return neverSpawnedRow(e, run.status.models[e.id]);
+  if (!e.session) return neverSpawnedRow(e, run.status.models[e.id], run.taskType);
   const snap = e.session.snapshot();
   return toSlotRow(
-    { slot: e.id, model: e.model, spawnModel: e.spawnModel, agentRequested: e.agentRequested },
+    {
+      slot: e.id,
+      model: e.model,
+      spawnModel: e.spawnModel,
+      agentRequested: e.agentRequested,
+      taskType: run.taskType,
+    },
     snap,
     refreshAccounting(e, snap),
     Date.now(),
@@ -731,6 +750,7 @@ export function teamRunRowFromDisk(path: string, status: TeamStatus): TeamRunRow
         recent: null,
         agent_requested: m?.agentRequested ?? null,
         agent: m?.agent ?? null,
+        task_type: typeof status.taskType === "string" ? status.taskType : null,
         view: null,
       };
     });
@@ -1737,6 +1757,8 @@ async function startModelsIn(
   const runId = mintRunId(path, startMs);
   statusCache.runId = runId;
   statusCache.kind = kind;
+  if (opts.taskType) statusCache.taskType = opts.taskType;
+  else delete statusCache.taskType;
 
   /**
    * Set while the spawn loop is being unwound (§6.1 step 7): the cancels it issues are
@@ -2316,6 +2338,7 @@ async function startModelsIn(
     projectsRoot: projects,
     cwd,
     promptSummary: promptSummaryOf(inputContent),
+    taskType: opts.taskType ?? null,
   };
   teamRuns.set(runId, run);
   newestRunByPath.set(path, runId);
@@ -2453,6 +2476,7 @@ export async function judgeResponses(
   await runModels(judgePath, {
     claudeFlags: opts.claudeFlags,
     kind: "judge",
+    ...(opts.taskType ? { taskType: opts.taskType } : {}),
     ...(opts.parentClaudeSessionId ? { parentClaudeSessionId: opts.parentClaudeSessionId } : {}),
     ...(opts.parentEnv ? { parentEnv: opts.parentEnv } : {}),
     ...(opts.paneTimings ? { paneTimings: opts.paneTimings } : {}),

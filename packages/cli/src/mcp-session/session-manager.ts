@@ -455,6 +455,7 @@ export function sessionRowOf(
     recent: info.recent,
     agent_requested: info.agentRequested ?? null,
     agent: info.agent ?? null,
+    task_type: info.taskType ?? null,
     view,
     session_id: info.sessionId,
     started_at: info.startedAt,
@@ -504,6 +505,7 @@ export function toMetaRecord(info: SessionInfo, cwd: string): Record<string, unk
     timeoutSeconds: info.timeoutSeconds,
     agentRequested: info.agentRequested ?? null,
     agent: info.agent ?? null,
+    taskType: info.taskType ?? null,
     cwd,
   };
 }
@@ -901,6 +903,7 @@ export class SessionManager {
       slots?: number;
       setupFrom?: string;
       agentRequested?: string;
+      taskType?: string;
     }
   ): void {
     const { kind, sessionId, parentClaudeSessionId, startedAt, ...rest } = record;
@@ -1021,6 +1024,7 @@ export class SessionManager {
       claudeSessionId,
       ...(opts.setupFrom ? { setupFrom: opts.setupFrom } : {}),
       ...(agentRequested ? { agentRequested } : {}),
+      ...(opts.taskType ? { taskType: opts.taskType } : {}),
     });
     // 0600: the caller's settings.local.json can carry `env` secrets.
     if (inheritedLayer) {
@@ -1060,6 +1064,7 @@ export class SessionManager {
         recent: null,
         agentRequested,
         agent: null,
+        taskType: opts.taskType ?? null,
         reason: null,
         detail: null,
         pendingInputs: opts.prompt ? 1 : 0,
@@ -2343,6 +2348,7 @@ function diskInfo(d: {
     recent: null,
     agentRequested: metaString(meta?.agentRequested) ?? metaString(spawnRecord?.agentRequested),
     agent: metaString(meta?.agent),
+    taskType: metaString(meta?.taskType) ?? metaString(spawnRecord?.taskType),
     reason,
     detail: meta === null ? NO_TERMINAL_RECORD : metaString(meta.detail),
     pendingInputs: 0,

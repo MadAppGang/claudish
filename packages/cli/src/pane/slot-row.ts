@@ -15,6 +15,8 @@ export function toSlotRow(
     spawnModel: string | null;
     /** SlotRow.agent_requested; absent = none */
     agentRequested?: string | null;
+    /** SlotRow.task_type; absent = none */
+    taskType?: string | null;
   },
   snap: PaneSnapshot,
   acct: Accounting,
@@ -60,6 +62,7 @@ export function toSlotRow(
     recent: snap.recent,
     agent_requested: id.agentRequested ?? null,
     agent: snap.agent ?? null,
+    task_type: id.taskType ?? null,
     view,
   };
 }

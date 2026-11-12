@@ -203,6 +203,11 @@ export interface SlotRow {
    * child's own transcript. null when the transcript has none: no agent, a rejected agent
    * (`reason: "agent_rejected"`), or not written yet. Kept on rows built from disk. */
   agent: string | null;
+  /** [additive] the kind of work the caller said this is (`task_type` on `team` or
+   * `create_session`: `research`, `plan`, `debug`, `judge`, …; `^[a-z][a-z0-9-]{0,23}$`). Every
+   * slot of a team run carries the run's value. null when the caller set none. Kept on rows built
+   * from disk. */
+  task_type: string | null;
   /** [additive] who holds the active view; null when nobody does, and on rows built from disk.
    * Every row claudish builds carries it; the type leaves it optional so an older row still reads. */
   view?: ViewHolder | null;

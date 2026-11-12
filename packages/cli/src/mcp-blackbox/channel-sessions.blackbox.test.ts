@@ -89,6 +89,7 @@ const SLOT_ROW_KEYS = [
   "reason_detail",
   "slot",
   "state",
+  "task_type",
   "tokens_in",
   "tokens_out",
   "tool_calls",
