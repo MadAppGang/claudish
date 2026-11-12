@@ -2234,7 +2234,7 @@
         }
       }
     },
-    "fetchedAt": "2026-11-12T05:36:20.546Z",
+    "fetchedAt": "2026-11-12T11:05:08.911Z",
     "format": 1,
     "recommendations": {
       "contractVersion": 3,
@@ -3420,6 +3420,18 @@
             "contextWindow": 1048576,
             "maxOutputTokens": 65536
           },
+          "modelIdEffort": {
+            "baseServed": false,
+            "default": {
+              "status": "unknown"
+            },
+            "values": {
+              "high": "gemini-3.8-flash-high",
+              "low": "gemini-3.8-flash-low",
+              "medium": "gemini-3.8-flash-medium"
+            },
+            "via": "model_id"
+          },
           "reasoning": {
             "request": {
               "status": "unknown"
@@ -3573,6 +3585,18 @@
           "limits": {
             "contextWindow": 1048576,
             "maxOutputTokens": 65536
+          },
+          "modelIdEffort": {
+            "baseServed": false,
+            "default": {
+              "status": "unknown"
+            },
+            "values": {
+              "high": "gemini-4-argon-high",
+              "low": "gemini-4-argon-low",
+              "medium": "gemini-4-argon-medium"
+            },
+            "via": "model_id"
           },
           "reasoning": {
             "request": {
