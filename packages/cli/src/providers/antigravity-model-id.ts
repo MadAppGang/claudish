@@ -9,7 +9,11 @@
  */
 
 import type { EffortLevel } from "../adapters/base-api-format.js";
-import { carriesEffortInModelId, lookupFamilyDefaultVariant } from "../adapters/model-catalog.js";
+import {
+  carriesEffortInModelId,
+  findModelIdEffortConnection,
+  lookupFamilyDefaultVariant,
+} from "../adapters/model-catalog.js";
 import { chooseConnectionModelId } from "./model-id-effort-choice.js";
 import { namesSpeedPremium } from "./model-id-effort.js";
 
@@ -219,8 +223,13 @@ export function resolveAntigravityModelId(
  * default nor the catalog's family default can choose a `-fast` id; an exactly
  * requested served id the backend does not exclude still passes),
  * with the cloud models catalog's family default (`lookupFamilyDefaultVariant`)
- * as its second rule. A requested id that is not a mapped base (an exact
- * `gemini-4-carbon-low`) is never re-resolved by effort.
+ * as its second rule.
+ *
+ * A requested id the account lists that is NOT a mapped base (an exact
+ * `gemini-4-carbon-low`) is sent unchanged before any of that: at any effort,
+ * and even when the backend excludes it, so neither the family default nor a
+ * variant rule replaces it. Exclusion gates only the mapped-base shortcut (an
+ * excluded base goes through its map) and every automatic choice.
  *
  * The ONE resolution the transport, the credential (which builds the primary
  * envelope), the routing availability check (`providerServesModel`) and route
@@ -234,9 +243,13 @@ export function resolveAntigravityServedModel(
   served: AntigravityServedSet,
   effort?: EffortLevel
 ): string {
+  const req = requested.trim();
+  // An exact listed id that is no connection's base is a fixed model: sent as
+  // itself at any effort, excluded or not, before any family rule can move it.
+  const isMappedBase = findModelIdEffortConnection(req, "antigravity") !== undefined;
+  if (!isMappedBase && served.servedIds.includes(req)) return req;
   const mapped = mappedAntigravityModelId(requested, served, effort);
   if (mapped) return mapped;
-  const req = requested.trim();
   if (servesSelectable(served, req)) return req;
   // An automatic choice is never an excluded id nor a speed premium; only the
   // exact request above sends a premium.

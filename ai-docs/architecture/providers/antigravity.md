@@ -214,11 +214,16 @@ internal, role-bound, retired; the set discovery drops), or a `-fast`/`-priority
 id, is never chosen from the map: the rules above answer instead, over the
 selectable ids only: served, not excluded, and no speed premium, so neither the
 backend default nor the catalog's family default (`lookupFamilyDefaultVariant`) can
-pick the `-fast` id the map just refused (an exactly requested served id the
-backend does not exclude still passes, premium included). The availability
+pick the `-fast` id the map just refused (an exactly requested served mapped base
+the backend does not exclude still passes, premium included). The availability
 check reads the same `excludedIds` from the `peekServedAntigravityModels` cache, so
-it agrees with the transport. An exact id that is not a mapped base
-(`gemini-4-carbon-low`) is sent unchanged at any effort.
+it agrees with the transport. An exact id the account lists that is not a mapped
+base (`gemini-4-carbon-low`) is a fixed model: it is sent unchanged at any effort,
+and even when the backend excludes it, checked FIRST, before the map, the family
+default and the variant rule. Without that order an excluded `gemini-3.1-pro-high`
+fell through to the family default and went out as `gemini-3.1-pro-medium`.
+Exclusion gates only what claudish chooses itself: the mapped-base shortcut and
+every automatic pick.
 
 The effort reaches the one decision on both paths. The credential's envelope
 builder takes the request's effort as `transformPayload(payload, {effort})`, because
