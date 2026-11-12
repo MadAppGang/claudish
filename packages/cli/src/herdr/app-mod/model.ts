@@ -4,6 +4,7 @@
  * own panel sits in the shown layout. Nothing here touches the host; `controller.ts` does.
  */
 
+import type { TranscriptLine } from "../../pane/contract.js";
 import type { ViewItem } from "../../pane/view-contract.js";
 import { type HcState, clipText, hcStatus, shortModel } from "../state-map.js";
 
@@ -207,6 +208,49 @@ export function parseHcRun(r: ExecResult): HcRunOutcome {
       ? body.error.message
       : (r.stderr || r.stdout).trim() || `hc exited ${r.code}`;
   return { kind: "failed", message: clipText(message, 160) };
+}
+
+export type TranscriptRun =
+  | { kind: "page"; lines: TranscriptLine[]; cursor: string | null; more: boolean; final: boolean }
+  | { kind: "error"; message: string };
+
+/**
+ * What `claudish view --transcript` answered: a page of lines, or one line saying why there is
+ * none. Exit 2 is the usage error of a claudish that predates `--transcript`.
+ */
+export function parseTranscriptRun(r: ExecResult | null, version: string): TranscriptRun {
+  if (r?.code === 2)
+    return {
+      kind: "error",
+      message: `${version} cannot read transcripts: bun install -g claudish@latest`,
+    };
+  type Body = {
+    lines?: unknown;
+    cursor?: unknown;
+    more?: unknown;
+    final?: unknown;
+    error?: { message?: unknown };
+  };
+  let body: Body = {};
+  try {
+    body = JSON.parse(r?.stdout ?? "") as Body;
+  } catch {
+    body = {};
+  }
+  if (r?.code !== 0 || !Array.isArray(body.lines)) {
+    const said = typeof body.error?.message === "string" ? body.error.message : null;
+    return {
+      kind: "error",
+      message: `no transcript: ${said ?? (r?.stderr.trim() || "claudish did not answer")}`,
+    };
+  }
+  return {
+    kind: "page",
+    lines: body.lines as TranscriptLine[],
+    cursor: typeof body.cursor === "string" ? body.cursor : null,
+    more: body.more === true,
+    final: body.final === true,
+  };
 }
 
 export interface TerminalInfo {

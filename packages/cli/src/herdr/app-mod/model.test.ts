@@ -11,6 +11,7 @@ import {
   panelNodeId,
   parseFeed,
   parseHcRun,
+  parseTranscriptRun,
   rowsOf,
   viewRunArgs,
   viewTerminalName,
@@ -244,5 +245,41 @@ describe("where the panel sits", () => {
         floating: [{ id: "f", type: "block", content: { mod: "claudish" } }],
       })
     ).toBe("f");
+  });
+});
+
+describe("parseTranscriptRun: what claudish view --transcript answered", () => {
+  const V = "claudish version 14.16.1";
+  test("a page keeps its lines, cursor, more and final", () => {
+    const stdout = JSON.stringify({
+      session_id: "a",
+      cursor: "v1.1.0.x",
+      lines: [{ kind: "user", text: "hi" }],
+      more: true,
+      final: false,
+    });
+    expect(parseTranscriptRun({ code: 0, stdout, stderr: "" }, V)).toEqual({
+      kind: "page",
+      lines: [{ kind: "user", text: "hi" }],
+      cursor: "v1.1.0.x",
+      more: true,
+      final: false,
+    });
+  });
+
+  test("a server's error, a usage error and no answer each read as one line", () => {
+    const err = JSON.stringify({ error: { code: "unknown_session", message: "no session zz" } });
+    expect(parseTranscriptRun({ code: 1, stdout: err, stderr: "" }, V)).toEqual({
+      kind: "error",
+      message: "no transcript: no session zz",
+    });
+    expect(parseTranscriptRun({ code: 2, stdout: "", stderr: "usage" }, V)).toEqual({
+      kind: "error",
+      message: `${V} cannot read transcripts: bun install -g claudish@latest`,
+    });
+    expect(parseTranscriptRun(null, V)).toEqual({
+      kind: "error",
+      message: "no transcript: claudish did not answer",
+    });
   });
 });

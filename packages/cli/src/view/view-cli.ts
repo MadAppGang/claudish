@@ -12,7 +12,13 @@ import { HerdrReporter } from "../herdr/reporter.js";
 import { setStderrQuiet } from "../logger.js";
 import { sockRootFor } from "../pane/pane-launch.js";
 import { readProcessTableAsync } from "../pane/process-identity.js";
-import type { ViewItem, ViewListResult } from "../pane/view-contract.js";
+import {
+  ViewError,
+  type ViewErrorCode,
+  type ViewItem,
+  type ViewListResult,
+  type ViewTranscriptAnswer,
+} from "../pane/view-contract.js";
 import { detectAndSetThemeModeSync } from "../theme/theme-mode.js";
 import { endpointOwnerAlive, endpointPathOf, listEndpoints } from "./endpoints.js";
 import { checkFeed, defaultFeedPath, runFeedRelay } from "./feed-relay.js";
@@ -26,6 +32,7 @@ const USAGE = [
   "       claudish view --feed [file]",
   "       claudish view --feed-check [file]",
   "       claudish view --print-root",
+  "       claudish view --transcript <target> [--since <cursor>]",
   "",
   "  <target>   s:<session_id>, t:<run_id>/<slot>, r:<replay_id>, or the same without the prefix",
   "  --passive  do not take the view at start; Enter takes it",
@@ -36,6 +43,8 @@ const USAGE = [
   "             <root>/feed/feed.json); the file is removed when the relay exits",
   "  --feed-check  exit 0 when the relay stamped in the feed file still runs, 1 otherwise",
   "  --print-root  the socket root this claudish uses",
+  "  --transcript  the target's conversation as text lines, JSON on stdout; --since takes the",
+  "             `cursor` of an earlier answer and returns only the lines after it",
   "",
   "  Keys: Enter shows the session here, q quits. Nothing typed here reaches the session.",
   "",
@@ -77,6 +86,69 @@ async function listOne(
   } finally {
     client.close();
   }
+}
+
+export type TranscriptOutcome =
+  | { ok: true; result: ViewTranscriptAnswer }
+  | { ok: false; error: { code: ViewErrorCode; message: string } };
+
+/** `--transcript <target> [--since <cursor>]`, or the reason it is refused. */
+export function parseTranscriptArgs(
+  args: string[]
+): { target: string; since?: string } | { error: string } {
+  let target = "";
+  let since: string | undefined;
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i] as string;
+    if (a === "--since") {
+      const value = args[++i];
+      if (!value || value.startsWith("-")) return { error: "--since needs a cursor" };
+      since = value;
+    } else if (a.startsWith("-")) return { error: `unknown option ${a}` };
+    else if (target) return { error: "one target at a time" };
+    else target = a;
+  }
+  if (!target) return { error: "a target is required" };
+  return since === undefined ? { target } : { target, since };
+}
+
+/**
+ * The target's transcript from the live server that holds it. Servers are asked in endpoint order;
+ * the first answer wins. When none holds it, the last server's own error (`unknown_session`,
+ * `unknown_run`, …), or `server_gone` when no server is running.
+ */
+export async function transcriptOf(
+  root: string,
+  target: string,
+  since?: string
+): Promise<TranscriptOutcome> {
+  const table = await readProcessTableAsync();
+  const names = listEndpoints(root).filter((n) => endpointOwnerAlive(n, table));
+  let last: { code: ViewErrorCode; message: string } = {
+    code: "server_gone",
+    message: "no claudish MCP server is running",
+  };
+  for (const name of names) {
+    let client: ViewClient | null = null;
+    try {
+      client = await ViewClient.connect(endpointPathOf(root, name), {
+        hello: { name: "claudish view --transcript", kind: "viewer" },
+      });
+      const result = await client.request<ViewTranscriptAnswer>("transcript", {
+        target,
+        ...(since === undefined ? {} : { since }),
+      });
+      return { ok: true, result };
+    } catch (e) {
+      last =
+        e instanceof ViewError
+          ? { code: e.code, message: e.message }
+          : { code: "server_gone", message: e instanceof Error ? e.message : String(e) };
+    } finally {
+      client?.close();
+    }
+  }
+  return { ok: false, error: last };
 }
 
 function stateOf(item: ViewItem): string {
@@ -314,6 +386,16 @@ export async function viewCommand(args: string[]): Promise<number> {
   }
   const feed = await feedCommand(args);
   if (feed !== null) return feed;
+  if (args[0] === "--transcript") {
+    const parsed = parseTranscriptArgs(args);
+    if ("error" in parsed) {
+      process.stderr.write(`${parsed.error}\n${USAGE}`);
+      return 2;
+    }
+    const out = await transcriptOf(sockRootFor(), parsed.target, parsed.since);
+    process.stdout.write(`${JSON.stringify(out.ok ? out.result : { error: out.error })}\n`);
+    return out.ok ? 0 : 1;
+  }
   if (!args.includes("--list")) {
     const parsed = parseViewArgs(args);
     if ("error" in parsed) {

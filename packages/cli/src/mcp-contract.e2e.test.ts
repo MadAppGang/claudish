@@ -45,6 +45,7 @@ const SLOT_ROW_KEYS = [
   "reason_detail",
   "slot",
   "state",
+  "task_type",
   "tokens_in",
   "tokens_out",
   "tool_calls",
@@ -118,8 +119,13 @@ function expectContractMeta(body: Json): void {
   expect(CAPABILITIES.at(-1)).toBe("view");
 }
 
-function expectSlotRow(row: Json, extended: string[] = SLOT_ROW_KEYS): void {
+function expectSlotRow(
+  row: Json,
+  extended: string[] = SLOT_ROW_KEYS,
+  taskType: string | null = null
+): void {
   expect(keys(row)).toEqual(extended);
+  expect(row.task_type).toBe(taskType);
   expect(row.agent_requested).toBeNull();
   expect(row.agent).toBeNull();
   expect(SLOT_STATES).toContain(row.state as never);
@@ -130,10 +136,10 @@ function expectSlotRow(row: Json, extended: string[] = SLOT_ROW_KEYS): void {
   }
 }
 
-function expectRunRow(run: Json): void {
+function expectRunRow(run: Json, taskType: string | null = null): void {
   expect(keys(run)).toEqual(TEAM_RUN_ROW_KEYS);
   expect(["ACTIVE", "SETTLED"]).toContain(run.state as string);
-  for (const s of run.slots as Json[]) expectSlotRow(s);
+  for (const s of run.slots as Json[]) expectSlotRow(s, SLOT_ROW_KEYS, taskType);
 }
 
 function team(args: Json): Promise<ToolResult> {
@@ -156,11 +162,12 @@ describe.skipIf(!MAGMUX_AVAILABLE)("team verbs: exact shapes, idempotent cancel"
           path,
           models: ["contract-fake-a", "contract-fake-b"],
           input: "stay busy @@HANG@@",
+          task_type: "research",
         })
       );
       const runId = started.run_id as string;
       expect(typeof runId).toBe("string");
-      expectRunRow(started.run as Json);
+      expectRunRow(started.run as Json, "research");
 
       // A — list
       const list = ok(await team({ mode: "list" }));
@@ -168,14 +175,14 @@ describe.skipIf(!MAGMUX_AVAILABLE)("team verbs: exact shapes, idempotent cancel"
       expectContractMeta(list);
       const listed = (list.runs as Json[]).find((r) => r.run_id === runId) as Json;
       expect(listed).toBeDefined();
-      expectRunRow(listed);
+      expectRunRow(listed, "research");
       expect(listed.state).toBe("ACTIVE");
       expect((listed.slots as Json[]).map((s) => s.slot)).toEqual(["01", "02"]);
 
       // B — status additions
       const status = ok(await team({ mode: "status", path }));
       expectContractMeta(status);
-      expectRunRow(status.run as Json);
+      expectRunRow(status.run as Json, "research");
       expect((status.run as Json).run_id).toBe(runId);
       const byRunId = ok(await team({ mode: "status", path, run_id: runId }));
       expectContractMeta(byRunId);
@@ -246,7 +253,12 @@ describe.skipIf(!MAGMUX_AVAILABLE)("channel verbs: exact shapes, idempotent canc
   test(
     "create_session, list_sessions, capture_session, send_input and cancel_session",
     async () => {
-      const created = ok(await server.callTool("create_session", { model: "contract-fake-model" }));
+      const created = ok(
+        await server.callTool("create_session", {
+          model: "contract-fake-model",
+          task_type: "debug",
+        })
+      );
       expect(keys(created)).toEqual(["session_id", "state"]);
       expect(created.state).toBe("STARTING");
       const id = created.session_id as string;
@@ -262,7 +274,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("channel verbs: exact shapes, idempotent canc
       expect(keys(list)).toEqual(["capabilities", "contract_version", "sessions"]);
       expectContractMeta(list);
       const row = (list.sessions as Json[]).find((s) => s.session_id === id) as Json;
-      expectSlotRow(row, SESSION_ROW_KEYS);
+      expectSlotRow(row, SESSION_ROW_KEYS, "debug");
       expect(row.slot).toBe(id);
       expect(row.reason).toBeNull();
       expect(row.activity).toBeNull();
@@ -308,7 +320,7 @@ describe.skipIf(!MAGMUX_AVAILABLE)("channel verbs: exact shapes, idempotent canc
       expect(second).toEqual({ session_id: id, state: "CANCELLED", changed: false });
 
       const after = (await sessionRow(id)) as Json;
-      expectSlotRow(after, SESSION_ROW_KEYS);
+      expectSlotRow(after, SESSION_ROW_KEYS, "debug");
       expect(after.state).toBe("CANCELLED");
       expect(after.reason).toBe("cancelled");
       expect(after.idle_seconds).toBeNull();
@@ -380,6 +392,23 @@ describe.skipIf(!MAGMUX_AVAILABLE)("every §8 verb answers its errors as a Contr
       expect(badFlags.isError).toBe(true);
       expect(badFlags.text).toStartWith("Error: invalid_args:");
       expect(badFlags.text).not.toContain("report_error");
+      // a task_type outside the pattern is refused the same way, before anything starts
+      const badType = await server.callTool("create_session", {
+        model: "contract-fake-model",
+        task_type: "Not A Type",
+      });
+      expect(badType.isError).toBe(true);
+      expect(badType.text).toStartWith("Error: invalid_args: 'task_type' must match");
+      expect(badType.text).not.toContain("report_error");
+      const badTeamType = await team({
+        mode: "run",
+        path: join(layout.cwd, "bad-type"),
+        models: ["contract-fake-a", "contract-fake-b"],
+        input: "x",
+        task_type: "x".repeat(25),
+      });
+      expect(badTeamType.isError).toBe(true);
+      expect(badTeamType.text).toStartWith("Error: invalid_args: 'task_type' must match");
 
       // list verbs have no error for valid input, and carry the contract keys
       const teams = ok(await team({ mode: "list" }));

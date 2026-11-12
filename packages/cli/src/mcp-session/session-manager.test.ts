@@ -129,6 +129,14 @@ describe("exported session seams (pure)", () => {
     });
   });
 
+  test("task_type projects to session rows and meta records; absent is null", () => {
+    const info = sampleInfo({ taskType: "debug" });
+    expect(sessionRowOf(info).task_type).toBe("debug");
+    expect(toMetaRecord(info, "/work").taskType).toBe("debug");
+    expect(sessionRowOf(sampleInfo()).task_type).toBeNull();
+    expect(toMetaRecord(sampleInfo(), "/work").taskType).toBeNull();
+  });
+
   test("sessionEventFor maps every SlotState (§3.4)", () => {
     const cases: Array<[SlotState, string | null, string, string | null]> = [
       ["STARTING", null, "starting", null],
@@ -228,6 +236,7 @@ describe("exported session seams (pure)", () => {
         "recent",
         "agent_requested",
         "agent",
+        "task_type",
         "session_id",
         "started_at",
         "completed_at",
@@ -365,6 +374,42 @@ describe("SessionManager disk reader", () => {
         agent_requested: c.requested,
         agent: c.agent,
       });
+    }
+  });
+
+  test("task_type persists through disk getSession, from meta.json or spawn.json", () => {
+    const cases = [
+      { id: "meta-type", meta: { taskType: "plan" }, spawn: { taskType: "older" }, want: "plan" },
+      { id: "spawn-type", meta: {}, spawn: { taskType: "judge" }, want: "judge" },
+      { id: "spawn-only-type", meta: null, spawn: { taskType: "research" }, want: "research" },
+      { id: "pre-change-type", meta: {}, spawn: {}, want: null },
+    ];
+    for (const c of cases) {
+      const dir = join(sessionsDir, c.id);
+      mkdirSync(dir);
+      writeFileSync(
+        join(dir, "spawn.json"),
+        JSON.stringify({
+          kind: "session",
+          sessionId: c.id,
+          model: "m",
+          startedAt: "2026-10-06T00:00:00.000Z",
+          ...c.spawn,
+        })
+      );
+      if (c.meta !== null)
+        writeFileSync(
+          join(dir, "meta.json"),
+          JSON.stringify({
+            sessionId: c.id,
+            model: "m",
+            state: "COMPLETED",
+            startedAt: "2026-10-06T00:00:00.000Z",
+            completedAt: "2026-10-06T00:01:00.000Z",
+            ...c.meta,
+          })
+        );
+      expect(sessionRowOf(manager.getSession(c.id)).task_type).toBe(c.want);
     }
   });
 

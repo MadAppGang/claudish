@@ -49,6 +49,7 @@ export function sessionItem(
     recent: null,
     agent_requested: null,
     agent: null,
+    task_type: null,
     view: null,
     started_at: "2026-11-10T00:00:00.000Z",
     completed_at: null,

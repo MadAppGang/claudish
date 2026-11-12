@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ViewItem } from "../../pane/view-contract.js";
 import { sessionItem } from "../test-helpers/placer-harness.js";
-import { INSTALL_LINE, type ModHost, PanelController } from "./controller.js";
+import { INSTALL_LINE, type ModHost, PanelController, PanelSeat } from "./controller.js";
 import {
   type ExecResult,
   FEED_TERMINAL,
@@ -41,6 +41,8 @@ class FakeHost implements ModHost {
   /** an installed claudish from before `claudish view` existed */
   noView = false;
   hcAnswer: ((argv: string[]) => ExecResult) | null = null;
+  /** `view --transcript <target> [--since <cursor>]`: the answer per target */
+  transcript: ((target: string, since: string | undefined) => ExecResult) | null = null;
 
   async exec(command: string, args: string[]): Promise<ExecResult> {
     const argv = [command, ...args];
@@ -62,6 +64,14 @@ class FakeHost implements ModHost {
         stdout: `${JSON.stringify(this.relayAlive)}\n`,
         stderr: "",
       };
+    if (rest.startsWith("view --transcript ")) {
+      const words = rest.split(" ");
+      const target = words[2] as string;
+      const since = words[3] === "--since" ? words[4] : undefined;
+      return this.transcript
+        ? this.transcript(target, since)
+        : { code: 2, stdout: "", stderr: "unknown option --transcript" };
+    }
     if (rest === "view --list --json")
       return { code: 0, stdout: `${JSON.stringify(this.listing)}\n`, stderr: "" };
     return { code: 2, stdout: "", stderr: `unexpected ${rest}` };
@@ -211,7 +221,7 @@ describe("PanelController", () => {
       FEED_TERMINAL,
     ]);
     expect(runs[0]?.slice(-2)).toEqual(["view", "--feed"]);
-    expect(ctl.mode).toBe("poll");
+    expect(ctl.feedMode).toBe("poll");
     expect(ctl.items.map((i) => i.target)).toEqual(["s:a"]);
     expect(ctl.nextWaitMs()).toBe(POLL_MS);
     expect(ctl.watching).toBe(false);
@@ -219,7 +229,7 @@ describe("PanelController", () => {
     host.relayAlive = { alive: true, relay: { pid: 7, start36: "b" } };
     host.writeFeed({ pid: 7, start36: "b" }, [sessionItem("a"), sessionItem("b")]);
     await ctl.tick();
-    expect(ctl.mode).toBe("relay");
+    expect(ctl.feedMode).toBe("relay");
     expect(ctl.items.map((i) => i.target)).toEqual(["s:a", "s:b"]);
     expect(ctl.watching).toBe(true);
     expect(host.claudishRuns().filter((r) => r === "view --list --json")).toHaveLength(1);
@@ -232,7 +242,7 @@ describe("PanelController", () => {
     const ctl = await ready(host);
     ctl.setVisible(true);
     await ctl.tick();
-    expect(ctl.mode).toBe("relay");
+    expect(ctl.feedMode).toBe("relay");
     expect(ctl.items).toHaveLength(1);
     expect(host.hcRuns()).toEqual([]);
 
@@ -242,16 +252,16 @@ describe("PanelController", () => {
     host.clock += LIVENESS_MS;
     expect(ctl.nextWaitMs()).toBe(0);
     await ctl.tick();
-    expect(ctl.mode).toBe("poll");
+    expect(ctl.feedMode).toBe("poll");
     expect(host.hcRuns()).toHaveLength(1);
     expect(ctl.items).toEqual([]);
     expect(ctl.message).toBe("no claudish MCP server is running");
     await ctl.tick();
-    expect(ctl.mode).toBe("poll");
+    expect(ctl.feedMode).toBe("poll");
 
     host.writeFeed({ pid: 8, start36: "c" }, [sessionItem("z")]);
     await ctl.tick();
-    expect(ctl.mode).toBe("relay");
+    expect(ctl.feedMode).toBe("relay");
     expect(ctl.items.map((i) => i.target)).toEqual(["s:z"]);
   });
 
@@ -351,5 +361,177 @@ describe("PanelController", () => {
     expect(host.overlays).toEqual([]);
     expect(ctl.view).toBeNull();
     expect(ctl.message).toBe("could not open s:a: core not running");
+  });
+});
+
+function withFields(item: ViewItem, fields: Record<string, unknown>): ViewItem {
+  return { ...item, ...fields } as ViewItem;
+}
+
+const CLOCK = 1_700_000_000_000;
+/** a run id as `mintRunId` writes it, for a run that started `agoMs` before CLOCK */
+const runIdOf = (name: string, agoMs: number): string =>
+  `${name}-${(CLOCK - agoMs).toString(36)}-aaaaaa`;
+const OLD_RUN = runIdOf("older", 600_000);
+
+function teamSlot(run: string, slot: string, fields: Record<string, unknown> = {}): ViewItem {
+  return withFields(sessionItem(slot), {
+    kind: "team_slot",
+    target: `t:${run}/${slot}`,
+    run_id: run,
+    run_path: `/Users/u/proj/${run.split("-")[0]}`,
+    run_kind: "run",
+    slot,
+    ...fields,
+  });
+}
+
+async function withRuns(host: FakeHost, items: ViewItem[]): Promise<PanelController> {
+  host.clock = CLOCK;
+  host.relayAlive = { alive: true, relay: { pid: 7, start36: "b" } };
+  host.writeFeed({ pid: 7, start36: "b" }, items);
+  const ctl = await ready(host);
+  ctl.setVisible(true);
+  await ctl.tick();
+  return ctl;
+}
+
+describe("PanelController: runs, the session view and the Text tab", () => {
+  test("the latest run is selected by default and follows a newer run until one is picked", async () => {
+    const host = new FakeHost();
+    const ctl = await withRuns(host, [teamSlot(OLD_RUN, "01"), teamSlot(OLD_RUN, "02")]);
+    expect(ctl.currentRun()?.name).toBe("older");
+    expect(ctl.currentRow()?.slot).toBe("01");
+    // nothing opens a window by itself
+    expect(host.overlays).toEqual([]);
+
+    host.writeFeed({ pid: 7, start36: "b" }, [
+      ...ctl.items,
+      teamSlot(runIdOf("newer", 60_000), "01"),
+    ]);
+    await ctl.tick();
+    expect(ctl.currentRun()?.name).toBe("newer");
+
+    await ctl.selectRun(OLD_RUN);
+    expect(ctl.currentRun()?.name).toBe("older");
+    host.writeFeed({ pid: 7, start36: "b" }, [
+      ...ctl.items,
+      teamSlot(runIdOf("newest", 1_000), "01"),
+    ]);
+    await ctl.tick();
+    expect(ctl.currentRun()?.name).toBe("older");
+  });
+
+  test("picking a run or a slot shows its screen in the keyed window", async () => {
+    const host = new FakeHost();
+    const ctl = await withRuns(host, [teamSlot(OLD_RUN, "01"), teamSlot(OLD_RUN, "02")]);
+    await ctl.selectSlot(`t:${OLD_RUN}/02`);
+    expect(ctl.selected).toBe(`t:${OLD_RUN}/02`);
+    expect(ctl.currentRow()?.slot).toBe("02");
+    expect(host.overlays).toHaveLength(1);
+    expect(host.hcRuns()[0]?.slice(-4)).toEqual([
+      "view",
+      `t:${OLD_RUN}/02`,
+      "--front-end",
+      "herdr-core",
+    ]);
+    await ctl.selectRun(OLD_RUN);
+    expect(ctl.currentRow()?.slot).toBe("01");
+    expect(host.overlays).toHaveLength(2);
+  });
+
+  test("a slot that failed before Claude Code started opens no viewer and closes the previous one", async () => {
+    const host = new FakeHost();
+    const ctl = await withRuns(host, [
+      teamSlot(OLD_RUN, "01"),
+      teamSlot(OLD_RUN, "02", {
+        state: "FAILED",
+        reason: "child_exited",
+        reason_detail: "pane child exited with code 1",
+        turns_completed: 0,
+        tool_calls: 0,
+        tokens_in: null,
+      }),
+    ]);
+    await ctl.selectSlot(`t:${OLD_RUN}/01`);
+    expect(host.overlays).toHaveLength(1);
+    await ctl.selectSlot(`t:${OLD_RUN}/02`);
+    expect(ctl.currentRow()?.noScreen).toBe(true);
+    expect(host.overlays).toHaveLength(1);
+    expect(host.killed).toEqual(["t10"]);
+    expect(host.hcRuns().filter((a) => a[0] === "run")).toHaveLength(1);
+  });
+
+  test("Text reads the transcript through claudish view --transcript and follows it with --since", async () => {
+    const host = new FakeHost();
+    const first = {
+      session_id: "a",
+      cursor: "v1.1.0.aaaaaaaa",
+      lines: [{ kind: "user", text: "hello" }],
+      more: false,
+      final: false,
+    };
+    const next = {
+      session_id: "a",
+      cursor: "v1.2.0.aaaaaaaa",
+      lines: [{ kind: "assistant", text: "hi there" }],
+      more: false,
+      final: true,
+    };
+    host.transcript = (_target, since) => ({
+      code: 0,
+      stdout: `${JSON.stringify(since ? next : first)}\n`,
+      stderr: "",
+    });
+    const ctl = await withRuns(host, [sessionItem("a")]);
+    await ctl.setMode("text");
+    expect(host.overlays).toEqual([]);
+    expect(ctl.transcriptLines()).toEqual(["user  hello"]);
+    host.clock += 5_000;
+    await ctl.tick();
+    expect(ctl.transcriptLines()).toEqual(["user  hello", "asst  hi there"]);
+    const reads = (): string[] =>
+      host.claudishRuns().filter((r) => r.startsWith("view --transcript"));
+    expect(reads()).toEqual([
+      "view --transcript s:a",
+      "view --transcript s:a --since v1.1.0.aaaaaaaa",
+    ]);
+    // final: no more reads, and nothing at all while hidden
+    host.clock += 5_000;
+    await ctl.tick();
+    ctl.setVisible(false);
+    await ctl.tick();
+    expect(reads()).toHaveLength(2);
+  });
+
+  test("a claudish without view --transcript says how to update instead of a blank Text tab", async () => {
+    const host = new FakeHost();
+    const ctl = await withRuns(host, [sessionItem("a")]);
+    await ctl.setMode("text");
+    expect(ctl.transcriptLines()).toEqual([
+      "claudish version 14.16.1 cannot read transcripts: bun install -g claudish@latest",
+    ]);
+  });
+});
+
+describe("PanelSeat: one copy of the mod is the panel", () => {
+  test("the first copy takes the seat; another waits until it is released", async () => {
+    const seat = new PanelSeat();
+    const a = {};
+    const b = {};
+    expect(seat.take(a)).toBe(true);
+    expect(seat.take(a)).toBe(true);
+    expect(seat.take(b)).toBe(false);
+    let freed = false;
+    const waiting = seat.freed().then(() => {
+      freed = true;
+    });
+    seat.release(b);
+    await Promise.resolve();
+    expect(freed).toBe(false);
+    seat.release(a);
+    await waiting;
+    expect(freed).toBe(true);
+    expect(seat.take(b)).toBe(true);
   });
 });

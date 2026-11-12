@@ -119,6 +119,18 @@ describe("teamRunRowFromDisk", () => {
     }
   });
 
+  test("task_type survives status.json on every slot; a pre-change file reads null", () => {
+    const status: TeamStatus = {
+      startedAt: "2026-10-06T00:00:00.000Z",
+      taskType: "judge",
+      models: { "01": slot("COMPLETED", 12), "02": slot("FAILED", 0) },
+    };
+    const persisted: TeamStatus = JSON.parse(JSON.stringify(status));
+    expect(runOf(persisted).slots.map((row) => row.task_type)).toEqual(["judge", "judge"]);
+    const { taskType: _dropped, ...older } = persisted;
+    expect(runOf(older).slots.map((row) => row.task_type)).toEqual([null, null]);
+  });
+
   test("disk rows have recent null in active and settled states", () => {
     const dir = mkdtempSync(join(tmpdir(), "team-disk-recent-"));
     try {

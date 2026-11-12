@@ -1238,6 +1238,14 @@ type and new fields may only be added.
   and loaded agree, or `agent` is null and `reason` says why. Unlike `recent`, both survive on rows
   built from disk: team `status.json` and session `meta.json` carry `agentRequested` and `agent`,
   and `spawn.json` carries `agentRequested` when there is one.
+- `task_type` (added within v1) is the kind of work the caller said this is: the `task_type`
+  argument of `team` (`run`, `judge`, `run-and-judge`) or `create_session`, a short word matching
+  `^[a-z][a-z0-9-]{0,23}$` (`research`, `plan`, `debug`, `judge`, `implement`). claudish does not
+  interpret it; it exists so a viewer can say what each run was for beside its agent. Anything
+  outside the pattern is refused `invalid_args` before anything starts; absent is null. Every slot
+  of a team run carries the run's value (the judge sub-run too). It survives on rows built from
+  disk: team `status.json` has a top-level `taskType`, session `meta.json` and `spawn.json` carry
+  `taskType`.
 - Verbs: `team(mode="list")` → `{contract_version, capabilities, runs}`; `team(mode="status")` adds
   `contract_version`, `capabilities` and a `run` row to its payload; `team(mode="cancel")` and
   `cancel_session` return per-slot `{state, changed}`; `team(mode="capture")` and `capture_session`

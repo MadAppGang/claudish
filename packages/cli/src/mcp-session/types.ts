@@ -93,6 +93,8 @@ export interface SessionInfo {
   agentRequested?: string | null;
   /** SlotRow.agent: the transcript's `agent-setting`; absent or null = none written. */
   agent?: string | null;
+  /** SlotRow.task_type: what the caller said the session is for; absent or null = none. */
+  taskType?: string | null;
   /** Set on FAILED / EMPTY / CANCELLED / TIMEOUT; null otherwise (incl. COMPLETED). */
   reason: FailureReason | null;
   detail: string | null;
@@ -165,6 +167,8 @@ export interface SessionCreateOptions {
    * `--settings` file, `<sessionDir>/inherited-settings.json`. Absent → today's flags.
    */
   setupFrom?: string;
+  /** SlotRow.task_type, as the caller set it (already validated); absent = none. */
+  taskType?: string;
   /**
    * Use this id instead of minting a random one. Must be unique among live sessions;
    * a collision throws rather than silently adopting the existing session.

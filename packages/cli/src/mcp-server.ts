@@ -627,6 +627,25 @@ export function effortArg(value: unknown): EffortLevel | undefined {
   );
 }
 
+/** `task_type` on `team` and `create_session`: a short lower-case word the caller chooses. */
+export const TASK_TYPE_PATTERN = /^[a-z][a-z0-9-]{0,23}$/;
+
+/** The `task_type` argument: null when absent; anything not matching the pattern is refused. */
+export function taskTypeArg(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string" && TASK_TYPE_PATTERN.test(value)) return value;
+  throw new Error(
+    `invalid_args: 'task_type' must match ${TASK_TYPE_PATTERN.source} (e.g. research, plan, ` +
+      `debug, judge, implement); got ${JSON.stringify(value)}`
+  );
+}
+
+const TASK_TYPE_DESCRIPTION =
+  "What kind of work this is, in one short word you choose: research, plan, debug, judge, " +
+  `implement, test, … (${TASK_TYPE_PATTERN.source}). Shown beside the agent on every row, ` +
+  "live and from the records, so a person can tell runs apart. Omit it when there is none; " +
+  "anything else is refused as invalid_args before anything starts.";
+
 /** The `effort` value that keeps Claude Code's own level, answering the clarification. */
 export const KEEP_EFFORT = "default";
 
@@ -2367,6 +2386,11 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             "model in the run (native and external alike); there is no per-model form. An " +
             "unknown agent fails the slot 'agent_rejected', listing the available agents.",
         },
+        task_type: {
+          type: "string",
+          pattern: TASK_TYPE_PATTERN.source,
+          description: `For 'run', 'judge' and 'run-and-judge': ${TASK_TYPE_DESCRIPTION} Every slot of the run carries it as \`task_type\`, the judge slots too.`,
+        },
         claude_flags: {
           type: "string",
           description:
@@ -2412,6 +2436,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       try {
         if (mode !== "run" && mode !== "judge" && mode !== "run-and-judge")
           throw new Error(`Unknown mode: ${mode}`);
+        // Refused before anything is read or started, like a malformed flag.
+        const taskType = taskTypeArg(args.task_type) ?? undefined;
         const path = args.path;
         if (typeof path !== "string" || !path) throw new Error(`'path' is required for '${mode}'`);
         await settleCatalogVerdictWithNoFile();
@@ -2481,6 +2507,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           claudeFlags: childFlags,
           efforts,
           parentClaudeSessionId,
+          taskType,
           onProgress: (u: { phase: "running" | "settled" }) => {
             // A state change is real news, so refresh the client's idle timer at
             // that moment as well as on the periodic tick. Short phase string only:
@@ -2624,6 +2651,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
               judges,
               claudeFlags: childFlags,
               parentClaudeSessionId,
+              taskType,
             });
             const out = providerNote ? { ...verdict, provider_note: providerNote } : verdict;
             return { content: [{ type: "text" as const, text: JSON.stringify(out, null, 2) }] };
@@ -2645,6 +2673,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
               judges,
               claudeFlags: childFlags,
               parentClaudeSessionId,
+              taskType,
             });
             return {
               content: [
@@ -2937,6 +2966,11 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
             "Claude Code subagent the session runs as, e.g. 'dev:reviewer'. Equivalent to " +
             "putting '--agent <name>' in claude_flags, and wins over one given there.",
         },
+        task_type: {
+          type: "string",
+          pattern: TASK_TYPE_PATTERN.source,
+          description: `${TASK_TYPE_DESCRIPTION} list_sessions rows carry it as \`task_type\`.`,
+        },
         claude_flags: {
           type: "string",
           description:
@@ -2974,6 +3008,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     group: "session",
     handler: async (args) => {
       try {
+        const taskType = taskTypeArg(args.task_type) ?? undefined;
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
         const effort = effortArg(args.effort);
         if (effort) claudishFlags.push("--effort-override", effort);
@@ -3047,6 +3082,7 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           // Claude Code reads project settings only from the child's own cwd.
           setupFrom: resolveSetupFrom(args.setup_from, workDir, process.cwd()),
           parentClaudeSessionId,
+          ...(taskType ? { taskType } : {}),
         });
 
         return {
