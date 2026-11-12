@@ -61,6 +61,13 @@ export interface AccountModelsList {
   provider: string;
   /** Unsplit: content-use opt-in ids included, exactly as discovery answered. */
   models: DiscoveredModel[];
+  /**
+   * Ids the account is served that its endpoint declares not selectable, kept
+   * beside `models` and never in it (`ModelsCatalogOutcome.excludedIds`). Read
+   * only by an exact-id resolution; absent when there are none, or when the list
+   * was stored before this field existed.
+   */
+  excludedIds?: string[];
   fetchedAt: number;
   age: Exclude<ListAge, "expired">;
   /** True only for age "live": the one list that may deny. */
@@ -109,11 +116,11 @@ const identityMemo = new Map<
   string,
   { keyPath: string; fingerprint: string; binding: AccountBinding | null; checkedAt: number }
 >();
+/** One list's content and when it was fetched, wherever it was read from. */
+type ListBody = { fetchedAt: number; models: DiscoveredModel[]; excludedIds?: string[] };
+
 /** Lists this process fetched, bound to the account key they were fetched under. */
-const liveMemory = new Map<
-  string,
-  { accountKey: string; fetchedAt: number; models: DiscoveredModel[] }
->();
+const liveMemory = new Map<string, ListBody & { accountKey: string }>();
 /** A refresh running now, with the account key it was started for. */
 const inFlight = new Map<string, { accountKey: string; outcome: Promise<ModelsCatalogOutcome> }>();
 const listeners = new Set<(provider: string, list: AccountModelsList | null) => void>();
@@ -188,15 +195,18 @@ async function accountBinding(
   return binding;
 }
 
-function toAccountList(
-  provider: string,
-  fetchedAt: number,
-  models: DiscoveredModel[],
-  now: number
-): AccountModelsList | null {
+function toAccountList(provider: string, body: ListBody, now: number): AccountModelsList | null {
+  const { fetchedAt, models, excludedIds } = body;
   const age = classifyListAge(fetchedAt, now);
   if (age === "expired") return null;
-  return { provider, models, fetchedAt, age, mayDeny: age === "live" };
+  return {
+    provider,
+    models,
+    ...(excludedIds?.length ? { excludedIds } : {}),
+    fetchedAt,
+    age,
+    mayDeny: age === "live",
+  };
 }
 
 /** The newer of this process's list and the stored one, for `binding`. Sync. */
@@ -207,15 +217,13 @@ function listFor(
 ): AccountModelsList | null {
   const now = nowOf(opts);
   const memory = liveMemory.get(provider);
-  let best =
-    memory && memory.accountKey === binding.accountKey
-      ? { fetchedAt: memory.fetchedAt, models: memory.models }
-      : undefined;
+  let best: ListBody | undefined =
+    memory && memory.accountKey === binding.accountKey ? memory : undefined;
   if (binding.persist) {
     const stored = readStoredModelsList(provider, binding.accountKey, opts);
     if (stored && (!best || stored.fetchedAt > best.fetchedAt)) best = stored;
   }
-  return best ? toAccountList(provider, best.fetchedAt, best.models, now) : null;
+  return best ? toAccountList(provider, best, now) : null;
 }
 
 function emit(provider: string, list: AccountModelsList | null): void {
@@ -295,18 +303,22 @@ async function fetchAndStore(
       };
     }
     const fetchedAt = nowOf(opts);
-    liveMemory.set(provider, { accountKey: before.accountKey, fetchedAt, models: outcome.models });
+    const body: ListBody = { fetchedAt, models: outcome.models, excludedIds: outcome.excludedIds };
+    liveMemory.set(provider, { ...body, accountKey: before.accountKey });
     const written =
       before.persist &&
-      writeStoredModelsList(provider, before.accountKey, outcome.models, {
-        ...opts,
-        now: () => fetchedAt,
-      });
+      writeStoredModelsList(
+        provider,
+        before.accountKey,
+        outcome.models,
+        { ...opts, now: () => fetchedAt },
+        outcome.excludedIds
+      );
     log(
       `[dynamic-models-catalog:${provider}] ${trigger}: ${outcome.models.length} models, ` +
         (written ? "stored" : "kept in memory")
     );
-    const list = toAccountList(provider, fetchedAt, outcome.models, fetchedAt);
+    const list = toAccountList(provider, body, fetchedAt);
     if (list) emit(provider, list);
     return outcome;
   }

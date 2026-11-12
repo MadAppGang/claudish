@@ -186,8 +186,11 @@ full `servedIds` and the backend's `defaultAgentModelId`, from the `getServedAnt
 the discovery just filled (`peekServedAntigravityModels`), and then asks whether
 the resolved id is in the dynamic models catalog. An id the backend declares
 unselectable therefore still reads as not served. With no cache (a fetch that
-never succeeded under this client version) it resolves against the dynamic models
-catalog's ids with no backend default. Antigravity stays out of the resolver
+never succeeded under this client version) it resolves against the served set the
+dynamic models catalog describes, with no backend default: its ids plus the served
+ids the backend excludes, which discovery stores beside the list (`excludedIds` on
+the stored entry and on `AccountModelsList`) and never in it
+(`antigravityServedSetOfList`). Antigravity stays out of the resolver
 registry: a resolver there receives neither the full `servedIds` nor the backend
 default.
 
@@ -222,6 +225,20 @@ base (`gemini-4-carbon-low`) is a fixed model: it is sent unchanged at any effor
 and even when the backend excludes it, checked FIRST, before the map, the family
 default and the variant rule. Without that order an excluded `gemini-3.1-pro-high`
 fell through to the family default and went out as `gemini-3.1-pro-medium`.
+The routing readers need the excluded ids for the same reason. Discovery drops
+excluded ids from the list, so a reader that rebuilt the served set from the list
+alone (availability with no `peekServedAntigravityModels` cache, and account-listed
+gathering, which always reads the list) did not see `gemini-3.1-pro-high` as
+listed, let the family default answer `gemini-3.1-pro-medium`, and reported the
+excluded id served, while a warm process answered not served and the transport
+sent `gemini-3.1-pro-high`. The list now carries the served excluded ids beside its
+rows (`excludedIds`, an optional field of the stored entry, so a file written
+before it reads as having none until the next refresh), and both readers build
+their served set from it with `antigravityServedSetOfList`: an excluded exact id
+that is not a mapped base resolves as itself, which no row carries, so it reads
+not served and gets no account-listed candidate, warm or cold. A family base the
+account lists only as a variant (`gemini-3.8-flash` → `gemini-3.8-flash-tiered`)
+still resolves to that row on both readers.
 Exclusion gates only what claudish chooses itself: the mapped-base shortcut and
 every automatic pick.
 

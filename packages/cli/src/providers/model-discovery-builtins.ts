@@ -183,9 +183,15 @@ async function fetchAntigravityModelsCatalog(): Promise<FetcherResult> {
     const otherSelectable = servedIds.filter(
       (id) => !position.has(id) && !declaredExcluded.has(id) && !isUndeclaredEditorInternal(id)
     );
+    // The served ids the backend excludes travel beside the list, never in it:
+    // nothing offers or picks them, but the exact-id resolution has to see that
+    // the account lists them, or a requested excluded id with a family default
+    // reads as served through its sibling once the in-process served set is gone.
+    const excludedServed = servedIds.filter((id) => declaredExcluded.has(id));
     return {
       kind: "models",
       endpoint,
+      ...(excludedServed.length > 0 ? { excludedIds: excludedServed } : {}),
       models: [...agentSelectable, ...otherSelectable].map((id) => {
         const m = meta[id];
         // contextWindow is left UNSET when the backend reported none

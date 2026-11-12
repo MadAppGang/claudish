@@ -112,39 +112,53 @@ function modelsCatalogHas(ids: string[], wireId: string): boolean {
  * so a bare name lost its subscription hop. It resolves here with the
  * transport's own function over the transport's own inputs: the full served
  * set and the backend's default id, cached by the discovery that just ran.
- * Only when that cache is absent does it fall back to the dynamic models
- * catalog's ids with no backend default. Loaded lazily, so no other provider's
- * check pulls in the Antigravity transport.
+ * Only when that cache is absent does it fall back to the served set the
+ * dynamic models catalog describes (`antigravityServedSetOfList`: its ids plus
+ * the excluded ids stored beside them), with no backend default. Both carry the
+ * excluded ids, so an excluded exact id resolves as itself either way and the
+ * answer does not depend on which one this process holds. Loaded lazily, so no
+ * other provider's check pulls in the Antigravity transport.
  */
 async function resolveAgainstModelsCatalog(
   provider: string,
   wireId: string,
-  models: DiscoveredModel[]
+  models: DiscoveredModel[],
+  excludedIds?: readonly string[]
 ): Promise<string> {
   if (provider === "antigravity") {
-    const [{ resolveAntigravityServedModel }, { peekServedAntigravityModels }] = await Promise.all([
-      import("./transport/antigravity.js"),
-      import("../auth/antigravity-user.js"),
-    ]);
-    const served = peekServedAntigravityModels() ?? {
-      servedIds: models.map((m) => m.id),
-      defaultId: null,
-    };
+    const [{ resolveAntigravityServedModel }, { antigravityServedSetOfList }, user] =
+      await Promise.all([
+        import("./transport/antigravity.js"),
+        import("./antigravity-model-id.js"),
+        import("../auth/antigravity-user.js"),
+      ]);
+    const served =
+      user.peekServedAntigravityModels() ??
+      antigravityServedSetOfList(
+        models.map((m) => m.id),
+        excludedIds
+      );
     return resolveAntigravityServedModel(wireId, served);
   }
   const entries = models.map(({ id, ...rest }) => ({ wireId: id, ...rest }));
   return expandSelection(provider, wireId, entries);
 }
 
-/** Whether a complete list of `provider`'s models carries `wireId` in the provider's own spelling. */
+/**
+ * Whether a complete list of `provider`'s models carries `wireId` in the
+ * provider's own spelling. `excludedIds` are the served ids the list's endpoint
+ * declares not selectable: they inform the resolution, and never count as
+ * listed.
+ */
 async function listServes(
   provider: string,
   wireId: string,
-  models: DiscoveredModel[]
+  models: DiscoveredModel[],
+  excludedIds?: readonly string[]
 ): Promise<boolean> {
   return modelsCatalogHas(
     models.map((m) => m.id),
-    await resolveAgainstModelsCatalog(provider, wireId, models)
+    await resolveAgainstModelsCatalog(provider, wireId, models, excludedIds)
   );
 }
 
@@ -174,7 +188,7 @@ async function storedListVerdict(
 ): Promise<ModelAvailability | null> {
   const list = await readAccountModelsList(provider);
   if (list) {
-    if (await listServes(provider, wireId, list.models)) return "serves";
+    if (await listServes(provider, wireId, list.models, list.excludedIds)) return "serves";
     if (list.mayDeny) return "not-served";
   }
   if (network === "background") {
@@ -188,7 +202,9 @@ async function storedListVerdict(
   if (refreshed.kind === "skipped") return list ? "unknown" : null;
   const { outcome } = refreshed;
   if (outcome.kind !== "served") return "unknown";
-  return (await listServes(provider, wireId, outcome.models)) ? "serves" : "not-served";
+  return (await listServes(provider, wireId, outcome.models, outcome.excludedIds))
+    ? "serves"
+    : "not-served";
 }
 
 /**

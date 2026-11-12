@@ -28,6 +28,27 @@ export interface AntigravityServedSet {
   excludedIds?: ReadonlySet<string>;
 }
 
+/**
+ * The served set a dynamic models catalog describes, for a reader that holds
+ * the list but not the live served set (`peekServedAntigravityModels`): the
+ * listed ids plus the served ids the backend excludes, which discovery keeps
+ * beside the list (`AccountModelsList.excludedIds`) rather than in it. Without
+ * them a requested excluded id looks unlisted, the exact-id step of
+ * {@link resolveAntigravityServedModel} cannot see it, and a family default
+ * answers with a sibling instead. No backend default: only the live served set
+ * carries one.
+ */
+export function antigravityServedSetOfList(
+  listedIds: readonly string[],
+  excludedIds: readonly string[] = []
+): AntigravityServedSet {
+  const listed = new Set(listedIds);
+  const servedIds = [...listedIds, ...excludedIds.filter((id) => !listed.has(id))];
+  return excludedIds.length > 0
+    ? { servedIds, defaultId: null, excludedIds: new Set(excludedIds) }
+    : { servedIds, defaultId: null };
+}
+
 /** Whether the backend declares `id` not selectable for this account. */
 function isExcluded(served: AntigravityServedSet, id: string): boolean {
   return served.excludedIds?.has(id) ?? false;
