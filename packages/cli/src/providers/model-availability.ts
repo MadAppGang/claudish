@@ -55,7 +55,7 @@ import {
   type DiscoveredModel,
   discoverProviderServedIds,
   getDiscoveryFailure,
-  peekDiscoveredModels,
+  peekDiscoveredList,
 } from "./model-discovery.js";
 import { expandSelection } from "./model-resolvers/registry.js";
 import { getProviderByName } from "./provider-definitions.js";
@@ -236,20 +236,22 @@ export async function providerServesModel(
     if (network === "background") {
       // Only what this process already holds; otherwise warm it for the request
       // path and answer `unknown`, which keeps the candidate where it is.
-      const held = peekDiscoveredModels(provider);
+      const held = peekDiscoveredList(provider);
       if (!held) {
         void discoverProviderServedIds(provider);
         return "unknown";
       }
-      return (await listServes(provider, wireId, held)) ? "serves" : "not-served";
+      return (await listServes(provider, wireId, held.models, held.excludedIds))
+        ? "serves"
+        : "not-served";
     }
     // BOTH lists: this answers whether the id the request carries is entitled,
     // and an explicitly typed content-use opt-in id is entitled when the account
     // serves it. Nothing here offers a model, so nothing here can choose one.
-    const { served, optIn } = await discoverProviderServedIds(provider);
+    const { served, optIn, excludedIds } = await discoverProviderServedIds(provider);
     const models = [...served, ...optIn];
     if (models.length > 0) {
-      return (await listServes(provider, wireId, models)) ? "serves" : "not-served";
+      return (await listServes(provider, wireId, models, excludedIds)) ? "serves" : "not-served";
     }
     // An empty dynamic models catalog is never a "no". `empty-models-catalog`
     // means the endpoint answered with nothing to offer; every other kind (unauthorized,
