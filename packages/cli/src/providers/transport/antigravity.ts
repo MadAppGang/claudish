@@ -101,14 +101,18 @@ export {
 } from "../antigravity-model-id.js";
 
 /**
- * The reasoning level a request is sent at: the `--effort` pin when one is set,
- * else the Claude request's `output_config.effort`, else the legacy
- * `thinking.budget_tokens` bucket — the reading the Gemini dialect's
- * `thinkingConfig` uses, so the id and the thinking control follow one level.
+ * The reasoning level a request is sent at: the `--effort` pin when one is set
+ * (`none` included); else `none` when the Claude request turns reasoning off
+ * (`thinking.type: "disabled"`, effort `none`, a zero `budget_tokens`); else the
+ * request's `output_config.effort`, else the legacy `thinking.budget_tokens`
+ * bucket. `none` is kept, because on a mapped connection it chooses the
+ * published `off` id.
  */
 function effortOf(claudeRequest: unknown, pinned?: EffortLevel): EffortLevel | undefined {
-  const level = wireChoicesFromClaudeRequest(claudeRequest, pinned).effort;
-  return isEffortLevel(level) ? level : undefined;
+  if (pinned !== undefined) return pinned;
+  const choices = wireChoicesFromClaudeRequest(claudeRequest);
+  if (choices.reasoningOff) return "none";
+  return isEffortLevel(choices.effort) ? choices.effort : undefined;
 }
 
 /** Generate a short random request ID (matches the Antigravity CLI activity logger) */
@@ -359,11 +363,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
     // Resolve the requested id to a served id against the live set, with the
     // function the credential provider (which builds the primary envelope) and
     // the routing availability check also use.
-    this.servedModelName = resolveAntigravityServedModel(
-      this.modelName,
-      served,
-      this.pinnedEffort ? effortOf(undefined, this.pinnedEffort) : undefined
-    );
+    this.servedModelName = resolveAntigravityServedModel(this.modelName, served, this.pinnedEffort);
     log(
       `[Antigravity] Auth refreshed, project: ${this.projectId}, tier: ${this._displayName}, ` +
         `model: ${this.modelName} -> ${this.servedModelName}, served: ${this.servedModels.join(",") || "(none)"}`
