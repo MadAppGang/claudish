@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.20.1] - 2026-11-12
+
+### Bug Fixes
+
+- remove feed.json when the feed relay gets SIGTERM *(view)* ([`4d21b0a`](https://github.com/MadAppGang/claudish/commit/4d21b0ab187c15c0cc96b7fb9fd1f39fdd2102b8))
+- restart a feed relay whose version differs from claudish *(herdr)* ([`d366ef6`](https://github.com/MadAppGang/claudish/commit/d366ef6557dfaa568d8029f7a1549c6218b27c51))
+- keep earlier runs in the Herdr.app panel after eviction *(herdr)* ([`843587e`](https://github.com/MadAppGang/claudish/commit/843587e8297b883c52e309e40f0fa14de587ec17))
+
+### Documentation
+
+- record why the Herdr.app panel reads finished runs from records *(view)* ([`47ab051`](https://github.com/MadAppGang/claudish/commit/47ab0514d2cf9b0635d31f0e9ca7953353c56098))
+- update CHANGELOG.md for v14.20.0([`b76a03a`](https://github.com/MadAppGang/claudish/commit/b76a03a5f2ee6e8ab37a5d48e5e7da0b4d0b6f8a))
+
+### New Features
+
+- add the checking claudish's version to --feed-check output *(view)* ([`7bdcf23`](https://github.com/MadAppGang/claudish/commit/7bdcf230adaa63b992a71ac73fd25648580b4f86))
+- write finished runs and the relay's version into feed.json *(view)* ([`8ecffe6`](https://github.com/MadAppGang/claudish/commit/8ecffe6ee107cbebd653433facd840ae5e6a4bbe))
+- list finished runs from their records with --include-finished *(view)* ([`28a57b3`](https://github.com/MadAppGang/claudish/commit/28a57b3aeb7617347eda728d7b72eda5a107a704))
+
 ## [14.20.0] - 2026-11-12
 
 ### Bug Fixes
