@@ -195,30 +195,53 @@ default.
 Before this, effort never reached the id: `low` still sent `gemini-4-carbon-high`.
 `resolveAntigravityServedModel(requested, served, effort?)` now reads the
 `modelIdEffort` map of the Antigravity connection whose `externalModelId` equals
-`requested` (`lookupConnectionModelIdEffort`, `adapters/model-catalog.ts`; never a
-sibling connection, so a 1M base never takes the default-context map). At effort `e`
-it sends `values[e]`, else the next higher listed level, else the highest; `none`
-sends the published `off` id. With no effort a served base is sent as itself;
-otherwise the backend's `defaultAgentModelId` when it is a map id, else the highest
-listed level. An id the account does not serve, or a `-fast`/`-priority` id, is
-never chosen from the map: the rules above answer instead. An exact id that is not
-a mapped base (`gemini-4-carbon-low`) is sent unchanged at any effort.
+`requested` (`findModelIdEffortConnection`, `adapters/model-catalog.ts`; never a
+sibling connection, so a 1M base never takes the default-context map). A connection
+spelled exactly as requested decides even when it publishes no map; a case-folded
+spelling is consulted only when no connection has the exact one. The choice itself
+is `chooseConnectionModelId` (`providers/model-id-effort-choice.ts`), the function
+Devin uses too. At effort `e` it sends `values[e]`, else the next higher listed
+level, else the highest; `none` sends the published `off` id. With no effort a
+served base is sent as itself; otherwise claudish decides the level (`wire.md`
+"Recommended effort": the efforts table's `default` cell for this connection, else
+`medium`) and maps it as above. The backend's `defaultAgentModelId` and the
+catalog's `modelIdEffort.default` do not decide for a mapped base. An id the
+account does not serve, an id the backend declares unselectable (`excludedIds`:
+internal, role-bound, retired; the set discovery drops), or a `-fast`/`-priority`
+id, is never chosen from the map: the rules above answer instead, over the
+selectable ids only (an exactly requested served id still passes). The availability
+check reads the same `excludedIds` from the `peekServedAntigravityModels` cache, so
+it agrees with the transport. An exact id that is not a mapped base
+(`gemini-4-carbon-low`) is sent unchanged at any effort.
 
 The effort reaches the one decision on both paths. The credential takes it as
 `RequestAuthContext.effort`, and its envelope builder takes the request's effort as
 `transformPayload(payload, {effort})`, because one artifact serves turns with
-different levels. The transport reads the Claude request's effort in `transformPayload`
-(`output_config.effort`, else the legacy `thinking.budget_tokens` bucket, through
-`wireChoicesFromClaudeRequest`, the reading the dialect's `thinkingConfig` uses) and hands it to the credential's builder, or resolves with the
-same function for its local builder. `servedModelName` follows the id actually sent.
-The `--effort` pin chooses the id too. `ComposedHandler` pins it on the dialects and
-on the transport (`ProviderTransport.setEffortOverride`), and the transport's
-`transformPayload` passes the pinned level to `wireChoicesFromClaudeRequest`, which
-ranks it above the request's own effort. The pinned level reaches both builders, and
-applies even when `transformPayload` gets no Claude request; `refreshAuth` resolves
-`servedModelName` at the pin as well. The body's `thinkingConfig` is unchanged; an
-exact id whose level differs from the effort still carries that effort's
-`thinkingConfig`.
+different levels. The transport reads the level in `transformPayload` and hands it
+to the credential's builder, or resolves with the same function for its local
+builder. The level is the `--effort` pin when one is set (`ComposedHandler` pins it
+on the dialects and on the transport, `ProviderTransport.setEffortOverride`); else
+`none` when the Claude request turns reasoning off (`thinking.type: "disabled"`,
+effort `none`, `budget_tokens: 0`); else `output_config.effort`, else the legacy
+`thinking.budget_tokens` bucket (`wireChoicesFromClaudeRequest`). `none` is kept
+rather than dropped, because it is what selects the `off` id. A call with no Claude
+request and no pin is a request with no effort and is resolved afresh on both
+builders; it never reuses the previous turn's id. `refreshAuth` resolves
+`servedModelName` at the pin, and `servedModelName` then follows the id actually
+sent.
+
+**No effort in the body beside an effort-carrying id.** The catalog contract says
+the effort is never written into the request body. When the requested id is the
+base of a connection with an effort map, or an id such a map lists,
+`antigravityBodyForModelId` removes `thinkingLevel` and `thinkingBudget` from
+`generationConfig.thinkingConfig` (dropping the object when nothing else is left)
+and keeps `includeThoughts`. Both builders apply it; a model with no map keeps its
+`thinkingConfig` unchanged.
+
+**The capacity fallback never picks a speed premium.** On
+`MODEL_CAPACITY_EXHAUSTED` the retry candidates are the served ids minus the one
+that failed, minus every `-fast`/`-priority` id and every id in `excludedIds`. With
+none left, the original capacity failure is returned.
 
 ## Ordering: cloud models catalog dates are poison for Antigravity's models
 

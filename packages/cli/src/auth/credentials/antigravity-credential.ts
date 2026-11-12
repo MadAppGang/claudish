@@ -23,7 +23,10 @@
 
 import { randomUUID } from "node:crypto";
 import type { EffortLevel } from "../../adapters/base-api-format.js";
-import { resolveAntigravityServedModel } from "../../providers/transport/antigravity.js";
+import {
+  antigravityBodyForModelId,
+  resolveAntigravityServedModel,
+} from "../../providers/transport/antigravity.js";
 import {
   antigravityTokenLineageMaterial,
   getValidAntigravityAccessToken,
@@ -116,7 +119,9 @@ export class AntigravityCredentialProvider implements CredentialProvider {
           model: servedModelAt(request ? request.effort : ctx.effort),
           project: projectId,
           user_prompt_id: randomUUID(),
-          request: inner,
+          // The model id carries the effort on a mapped connection; the body
+          // then carries none beside it.
+          request: antigravityBodyForModelId(inner, ctx.model),
         };
         if (tierId && tierId !== "free-tier") {
           env.enabled_credit_types = ["GOOGLE_ONE_AI"];

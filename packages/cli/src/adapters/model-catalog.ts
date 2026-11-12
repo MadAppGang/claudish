@@ -272,6 +272,23 @@ export function listModelIdEffortConnections(
 }
 
 /**
+ * Whether `wireId` sits on a connection of `provider` that carries the effort in
+ * the model id: it is the base of a connection with an effort map, or exactly
+ * one of the ids such a map lists (a level or `off`).
+ */
+export function carriesEffortInModelId(
+  wireId: string,
+  provider: string,
+  cachePath?: string
+): boolean {
+  if (findModelIdEffortConnection(wireId, provider, cachePath)) return true;
+  const wanted = wireId.trim();
+  return listModelIdEffortConnections(provider, cachePath).some(
+    ({ map }) => map.off === wanted || Object.values(map.values).includes(wanted)
+  );
+}
+
+/**
  * The default preset variant for a family on a given provider, if the catalog
  * knows one.
  *

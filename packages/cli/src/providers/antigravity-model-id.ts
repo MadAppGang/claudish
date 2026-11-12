@@ -9,7 +9,7 @@
  */
 
 import type { EffortLevel } from "../adapters/base-api-format.js";
-import { lookupFamilyDefaultVariant } from "../adapters/model-catalog.js";
+import { carriesEffortInModelId, lookupFamilyDefaultVariant } from "../adapters/model-catalog.js";
 import { chooseConnectionModelId } from "./model-id-effort-choice.js";
 import { namesSpeedPremium } from "./model-id-effort.js";
 
@@ -48,6 +48,36 @@ function mappedAntigravityModelId(
         ? id
         : undefined,
   });
+}
+
+/**
+ * Whether a request for `requested` is sent with its effort in the model id, so
+ * the body must carry no effort control beside it: `requested` is the base of
+ * an Antigravity connection with an effort map, or an id such a map lists.
+ */
+export function antigravityCarriesEffortInModelId(requested: string): boolean {
+  return carriesEffortInModelId(requested.trim(), "antigravity");
+}
+
+/**
+ * The Gemini body without the effort controls (`thinkingLevel`,
+ * `thinkingBudget`) when the model id carries the effort; unchanged otherwise.
+ * `includeThoughts` and every other field are kept. Never mutates `inner`.
+ */
+export function antigravityBodyForModelId<T>(inner: T, requested: string): T {
+  const body = inner as
+    | { generationConfig?: { thinkingConfig?: Record<string, unknown> } }
+    | null
+    | undefined;
+  const thinking = body?.generationConfig?.thinkingConfig;
+  if (!thinking || typeof thinking !== "object") return inner;
+  if (!("thinkingLevel" in thinking) && !("thinkingBudget" in thinking)) return inner;
+  if (!antigravityCarriesEffortInModelId(requested)) return inner;
+  const { thinkingLevel: _level, thinkingBudget: _budget, ...kept } = thinking;
+  const generationConfig: Record<string, unknown> = { ...body?.generationConfig };
+  if (Object.keys(kept).length > 0) generationConfig.thinkingConfig = kept;
+  else delete generationConfig.thinkingConfig;
+  return { ...body, generationConfig } as T;
 }
 
 /**

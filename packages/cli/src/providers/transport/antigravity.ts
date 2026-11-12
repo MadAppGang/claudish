@@ -53,6 +53,7 @@ import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
 import {
   type AntigravityServedSet,
+  antigravityBodyForModelId,
   resolveAntigravityServedModel,
 } from "../antigravity-model-id.js";
 import { namesSpeedPremium } from "../model-id-effort.js";
@@ -99,6 +100,7 @@ const QUOTA_CHECK_TIMEOUT_MS = 3000;
 // Model-id resolution lives in `../antigravity-model-id.ts`, which is pure so
 // route gathering can share it; re-exported for this transport's importers.
 export {
+  antigravityBodyForModelId,
   rankAntigravityModel,
   resolveAntigravityModelId,
   resolveAntigravityServedModel,
@@ -457,7 +459,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * levels. A call with no Claude request and no pin is a request with no
    * effort, resolved afresh: never the previous turn's id. Both builders choose
    * the id with `resolveAntigravityServedModel` over the same dynamic models
-   * catalog.
+   * catalog, and both drop the body's effort controls on a mapped connection
+   * (`antigravityBodyForModelId`).
    *
    * Stores the envelope for potential fallback retries in enqueueRequest.
    */
@@ -469,7 +472,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
     const envelope = this.cachedAuth?.transformPayload
       ? this.cachedAuth.transformPayload(payload, request)
       : this.buildEnvelope(
-          payload,
+          antigravityBodyForModelId(payload, this.modelName),
           resolveAntigravityServedModel(this.modelName, this.served, request.effort)
         );
     if (typeof envelope?.model === "string" && envelope.model) {
