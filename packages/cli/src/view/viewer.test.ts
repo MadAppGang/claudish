@@ -346,6 +346,28 @@ describe("Viewer", () => {
   );
 
   test(
+    "a finished slot that only the records list is opened with its record's run path",
+    async () => {
+      const root = newRoot();
+      const ep = await FakeViewEndpoint.start({ root, item: sessionItem(null) });
+      cleanups.push(() => ep.close());
+      const record = {
+        ...sessionItem(null, { state: "COMPLETED" }),
+        kind: "team_slot",
+        target: "t:run-old/02",
+        run_id: "run-old",
+        run_path: "/work/reviews/run-old",
+        run_kind: "run",
+      } as unknown as ViewItem;
+      const io = fakeIo();
+      await new Viewer({ root, target: "t:run-old/02", io, history: () => [record] }).run();
+      const open = ep.received.find((m) => m.op === "replay.open");
+      expect(open?.args).toEqual({ run_id: "run-old", slot: "02", path: "/work/reviews/run-old" });
+    },
+    T
+  );
+
+  test(
     "no server, and no such target",
     async () => {
       const root = newRoot();

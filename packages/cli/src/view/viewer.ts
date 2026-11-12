@@ -27,6 +27,7 @@ import {
   listEndpoints,
   ownerOfEndpointName,
 } from "./endpoints.js";
+import { readHistory } from "./history.js";
 import { type Screen, cellCols } from "./magmux-frame.js";
 import {
   DEFAULT_FPS,
@@ -99,6 +100,8 @@ export interface ViewerOptions {
   verdictMs?: number;
   resizeDebounceMs?: number;
   openView?: (path: string, o: { fps: number }) => Promise<MagmuxViewClient>;
+  /** the finished runs in the records; default `readHistory()` */
+  history?: () => ViewItem[];
 }
 
 export interface ViewerOutcome {
@@ -271,6 +274,10 @@ export class Viewer {
       return;
     }
     const finished = !found || isFinishedItem(found.item);
+    // a run no live server keeps any more is still in the records, which name its run path
+    const recorded = found
+      ? null
+      : ((this.o.history ?? readHistory)().find((i) => i.target === target) ?? null);
     if (finished && (isReplay || this.o.passive)) {
       this.done({ code: 1, message: `${target} has finished` });
       return;
@@ -287,12 +294,12 @@ export class Viewer {
       // a finished session or slot: open its replay, or join the one some server already runs
       let opened: { client: ViewClient; target: string };
       try {
-        opened = await this.openReplay(client, target, found?.item ?? null);
+        opened = await this.openReplay(client, target, found?.item ?? recorded);
       } catch (e) {
         // nobody lists it and no server knows it: it is not a session at all
         const unknown =
           e instanceof ViewError && (e.code === "unknown_session" || e.code === "unknown_op");
-        if (!found && unknown) {
+        if (!found && !recorded && unknown) {
           this.done({ code: 1, message: `no running claudish MCP server lists ${target}` });
           return;
         }
