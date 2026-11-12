@@ -31,6 +31,7 @@ import type {
   ViewListResult,
   ViewSubscribeResult,
 } from "../pane/view-contract.js";
+import { claimSignalExit } from "../signal-owner.js";
 import { VERSION } from "../version.js";
 import { EndpointWatch } from "./endpoint-watch.js";
 import { endpointNameOf, endpointOwnerAlive, endpointPathOf } from "./endpoints.js";
@@ -438,6 +439,8 @@ export async function runFeedRelay(o: { root: string; path: string }): Promise<n
     process.stderr.write(`claudish view --feed: ${e instanceof Error ? e.message : String(e)}\n`);
     return e instanceof FeedRelayBusy ? 3 : 1;
   }
+  // the stats listener would otherwise exit on SIGTERM before the file is removed
+  claimSignalExit();
   process.stdout.write(`claudish ${VERSION} feed relay: ${relay.path}\n`);
   await new Promise<void>((resolve) => {
     const done = (): void => resolve();
