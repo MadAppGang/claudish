@@ -55,6 +55,7 @@ import {
   type AntigravityServedSet,
   resolveAntigravityServedModel,
 } from "../antigravity-model-id.js";
+import { namesSpeedPremium } from "../model-id-effort.js";
 import { wireChoicesFromClaudeRequest } from "../wire-request.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
@@ -576,15 +577,22 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * Handle MODEL_CAPACITY_EXHAUSTED by trying the other LIVE-served models.
    *
    * Candidates come from `this.servedModels` (discovered in refreshAuth),
-   * ordered by rank, excluding the model that just exhausted. A candidate that
-   * 404s (briefly unserved mid-tier-roll) or rate-limits is skipped.
+   * ordered by rank, excluding the model that just exhausted, every id the
+   * backend declares unselectable, and every speed premium (`-fast`,
+   * `-priority`): a premium costs more and is sent only when the request names
+   * it. With no candidate left, the original capacity failure is returned. A
+   * candidate that 404s (briefly unserved mid-tier-roll) or rate-limits is
+   * skipped.
    */
   private async handleCapacityExhausted(
     originalResponse: Response,
     queue: GeminiRequestQueue,
     signal?: AbortSignal
   ): Promise<Response> {
-    const candidates = this.servedModels.filter((m) => m !== this.servedModelName);
+    const excluded = this.served.excludedIds;
+    const candidates = this.servedModels.filter(
+      (m) => m !== this.servedModelName && !namesSpeedPremium(m) && !excluded?.has(m)
+    );
 
     if (candidates.length === 0) {
       log(`[Antigravity] ${this.servedModelName} capacity exhausted, no fallback models available`);
