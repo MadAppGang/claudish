@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { EffortLevel } from "./adapters/base-api-format.js";
 import { writeFileAtomic } from "./fs-atomic.js";
 import { log } from "./logger.js";
 import {
@@ -191,6 +192,29 @@ export interface RouteReasoningCapabilities {
   mode?: ReasoningModeCapabilities;
 }
 
+/** An effort level a model id can carry; `none` is published as `off`, never in `values`. */
+export type ModelIdEffortLevel = Exclude<EffortLevel, "none">;
+
+/**
+ * A connection's effort map (`aggregators[].modelIdEffort`): the provider carries
+ * the reasoning level in the model id, and the catalog publishes the id for each
+ * level of the connection's base.
+ */
+export interface ModelIdEffort {
+  via: "model_id";
+  /** Effort level -> wire id. Never holds `none`. */
+  values: Partial<Record<ModelIdEffortLevel, string>>;
+  /**
+   * The level the provider serves the base at. `{status: "unknown"}` until the
+   * catalog states one; a stated default names a `values` key.
+   */
+  default?: { status: string; [field: string]: unknown };
+  /** The no-thinking id, when the connection publishes one. */
+  off?: string;
+  /** True when the base itself is a listed id. */
+  baseServed?: boolean;
+}
+
 /**
  * CLI-friendly aggregator entry — flattened view of `sources` keyed by the
  * canonical CLI provider name. Mirrors `AggregatorEntry` in
@@ -248,6 +272,13 @@ export interface AggregatorEntry {
   contextWindow?: number;
   /** Reasoning behavior verified for this exact serving provider/model route. */
   reasoning?: RouteReasoningCapabilities;
+  /**
+   * The effort carried in the model ID: the wire id this connection's base
+   * (`externalModelId`) is sent as at each effort level. Read only through
+   * `lookupConnectionModelIdEffort`, which validates the shape and ignores a
+   * malformed map without rejecting the connection.
+   */
+  modelIdEffort?: ModelIdEffort;
   /**
    * How to call this exact connection (catalog 3.7.0): API, output-limit field,
    * reasoning encoding, mode and speed. Present on every mapped connection of a
