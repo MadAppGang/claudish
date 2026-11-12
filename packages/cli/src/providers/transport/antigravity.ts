@@ -453,16 +453,15 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * The model id is chosen per request at the pinned `--effort` level, else the
    * effort `claudeRequest` carries ({@link effortOf}), because Antigravity
    * carries the level in the id and one transport serves turns with different
-   * levels. Both builders choose it with `resolveAntigravityServedModel` over
-   * the same dynamic models catalog.
+   * levels. A call with no Claude request and no pin is a request with no
+   * effort, resolved afresh: never the previous turn's id. Both builders choose
+   * the id with `resolveAntigravityServedModel` over the same dynamic models
+   * catalog.
    *
    * Stores the envelope for potential fallback retries in enqueueRequest.
    */
   transformPayload(payload: any, claudeRequest?: any): any {
-    const request =
-      claudeRequest === undefined && this.pinnedEffort === undefined
-        ? undefined
-        : { effort: effortOf(claudeRequest, this.pinnedEffort) };
+    const request = { effort: effortOf(claudeRequest, this.pinnedEffort) };
     // PRIMARY request: the CodeAssist envelope comes from the delegated auth
     // artifact (which maps the model id). Fall back to the local builder if
     // delegation hasn't run.
@@ -470,9 +469,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
       ? this.cachedAuth.transformPayload(payload, request)
       : this.buildEnvelope(
           payload,
-          request
-            ? resolveAntigravityServedModel(this.modelName, this.served, request.effort)
-            : this.servedModelName
+          resolveAntigravityServedModel(this.modelName, this.served, request.effort)
         );
     if (typeof envelope?.model === "string" && envelope.model) {
       this.servedModelName = envelope.model;
