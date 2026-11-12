@@ -178,6 +178,7 @@ import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-un
 import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
+import { firstInWindow } from "./shared/repeat-window.js";
 import {
   CREDENTIAL_DECIDED_PROVIDERS,
   type RequestBilling,
@@ -3320,9 +3321,12 @@ export class ComposedHandler implements ModelHandler {
             const msgTail = oneLineMsg
               ? ` (${oneLineMsg.length > 200 ? `${oneLineMsg.slice(0, 200)}…` : oneLineMsg})`
               : "";
-            logStderr(
-              `Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}${msgTail}`
-            );
+            // Claude Code re-sends a turn answered 400 up to five times with one
+            // feature removed each time; the line is the same each time, so stderr
+            // shows it once per window and the debug log keeps every occurrence.
+            const errorLine = `Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}${msgTail}`;
+            if (firstInWindow(errorLine)) logStderr(errorLine);
+            else log(errorLine);
 
             // Extract structured error type from provider response body if present
             let providerErrorType: string | undefined;
