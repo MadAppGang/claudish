@@ -1,4 +1,4 @@
-// Assumed no-effort table seam: currentEffortRecommendations, stubbed without disk I/O.
+// No-effort seams: lookupModelEfforts / bundledEffortRecommendations; disk reads are stubbed.
 /**
  * The transport decodes effort from the Claude request and passes it to the
  * credential's transformPayload(payload, { effort }) for each request.

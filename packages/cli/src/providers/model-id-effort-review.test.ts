@@ -1,4 +1,4 @@
-// Assumed no-effort table seam: currentEffortRecommendations, stubbed without disk I/O.
+// No-effort seams: lookupModelEfforts / bundledEffortRecommendations; disk reads are stubbed.
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { EffortLevel } from "../adapters/base-api-format.js";
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";

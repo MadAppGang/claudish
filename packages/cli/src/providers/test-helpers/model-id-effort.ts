@@ -8,7 +8,8 @@ import type { DevinModelConfig } from "../devin/devin-models.js";
 import * as effortRecommendations from "../effort-recommendations.js";
 import type { EffortTable } from "../effort-recommendations.js";
 
-// Assumed selection seam: currentEffortRecommendations; guard lower-level reads too.
+// No-effort selection uses lookupModelEfforts / bundledEffortRecommendations.
+// Stub the disk-catalog path and guard lower-level sidecar reads too.
 export function stubEffortRecommendations(
   table: () => EffortTable | null = () => null
 ): () => void {

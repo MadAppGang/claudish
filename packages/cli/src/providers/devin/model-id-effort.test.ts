@@ -1,4 +1,4 @@
-// Assumed no-effort table seam: currentEffortRecommendations, stubbed without disk I/O.
+// No-effort seams: lookupModelEfforts / bundledEffortRecommendations; disk reads are stubbed.
 // resolveDevinModelUid and expand read connection effort maps from readAllModelsCache.
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as allModelsCache from "../all-models-cache.js";

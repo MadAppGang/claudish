@@ -1,4 +1,5 @@
-// Assumed table seam: currentEffortRecommendations; collapse reads readAllModelsCache.
+// No-effort seams: lookupModelEfforts / bundledEffortRecommendations.
+// collapse reads readAllModelsCache; disk reads are stubbed.
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as allModelsCache from "../all-models-cache.js";
 import type { DiskCacheV3, SlimModelEntry } from "../all-models-cache.js";
@@ -173,6 +174,90 @@ describe("Devin picker mapped base", () => {
       uid: resolveDevinModelUid(row.id, undefined, list),
     }).toEqual({ expand: extendedMax, uid: extendedMax });
     expect(row.id).toBe(extendedMax);
+  });
+
+  test("R8 a served base stays with its real context group in either discovery order", () => {
+    const base = "glm-5-2";
+    const high = `${base}-high`;
+    entries = [
+      catalogEntry("glm-5.2", [
+        connection("devin", base, effortMap({ high }, { baseServed: true })),
+      ]),
+    ];
+    const list = [
+      devinModel(high, "high", {
+        family: "glm-5.2",
+        groupLabel: "GLM 5.2",
+        contextWindow: 200_000,
+      }),
+      devinModel(base, "medium", {
+        family: "glm-5.2",
+        groupLabel: "GLM 5.2",
+        contextWindow: 1_000_000,
+      }),
+    ];
+    // Compute both orders before asserting, so both discovery orders are exercised.
+    const results = [list, [...list].reverse()].map((discovered) => {
+      const catalog = discovered.map(devinModelsCatalogEntry);
+      const rows = resolver.collapse(catalog);
+      const launch = (contextWindow: number) => {
+        const row = rows.find((row) => row.contextWindow === contextWindow)!;
+        return {
+          id: row.id,
+          expand: resolver.expand(row.id, catalog, {}),
+          uid: resolveDevinModelUid(row.id, undefined, discovered),
+        };
+      };
+      return {
+        uniqueIds: new Set(rows.map((row) => row.id)).size,
+        rowCount: rows.length,
+        standard: launch(200_000),
+        extended: launch(1_000_000),
+      };
+    });
+    const expected = {
+      uniqueIds: 2,
+      rowCount: 2,
+      standard: { id: high, expand: high, uid: high },
+      extended: { id: base, expand: base, uid: base },
+    };
+    expect(results).toEqual([expected, expected]);
+  });
+
+  test("R9 a 1M group keeps its representative when the base resolves to an unmapped 200K sibling", () => {
+    const base = "glm-5-2";
+    const low = `${base}-low`;
+    const high = `${base}-high`;
+    const extendedMax = `${base}-max-1m`;
+    entries = [
+      catalogEntry("glm-5.2", [connection("devin", base, effortMap({ high, max: extendedMax }))]),
+    ];
+    const list = [
+      devinModel(low, "low", {
+        family: "glm-5.2",
+        groupLabel: "GLM 5.2",
+        contextWindow: 200_000,
+      }),
+      devinModel(extendedMax, "max", {
+        family: "glm-5.2",
+        groupLabel: "GLM 5.2",
+        contextWindow: 1_000_000,
+      }),
+    ];
+    const catalog = list.map(devinModelsCatalogEntry);
+    expect({
+      expand: resolver.expand(base, catalog, {}),
+      uid: resolveDevinModelUid(base, undefined, list),
+    }).toEqual({ expand: low, uid: low });
+    const rows = resolver.collapse(catalog);
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
+    const row = rows.find((row) => row.contextWindow === 1_000_000)!;
+    expect({
+      id: row.id,
+      expand: resolver.expand(row.id, catalog, {}),
+      uid: resolveDevinModelUid(row.id, undefined, list),
+    }).toEqual({ id: extendedMax, expand: extendedMax, uid: extendedMax });
   });
 
   test("H5 choosing the mapped base leaves the displayed label unchanged", () => {
