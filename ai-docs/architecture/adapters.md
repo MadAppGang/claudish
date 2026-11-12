@@ -668,6 +668,11 @@ terminal 400 now moves the chain to the next hop instead of ending the request. 
 two paragraphs above name, `isSubscriptionCredentialRejection`, became `isRejectedCredentialAnswer`
 with no billing argument, and the hop reason `subscription-credential-rejected` became
 `credential-rejected`. Rule RB-32 in `routing-rulebook.md` states the result.
+`ComposedHandler` now sets the terminal verdict on a credential rejection on every tier, not only
+on a subscription. It must: it reads the raw upstream body, and after the remap to 400 a 403 bad
+key and a 403 `RegionError` look alike, so `isRejectedCredentialAnswer` accepts only a raw 403. A
+metered 403 bad key without the header advanced as a plain retryable failure, with no notice
+(`composed-handler-metered-verdict.test.ts`).
 
 **The verdict rides a header, `x-claudish-auth-verdict`** (`terminal` or `transient`), from
 `handlers/shared/auth-failure.ts`. The status cannot carry it: a terminal failure is answered 400

@@ -3414,24 +3414,20 @@ export class ComposedHandler implements ModelHandler {
                   ? CONTEXT_OVERFLOW_PHRASE
                   : undefined,
               });
-              // A SUBSCRIPTION's rejected credential carries the terminal verdict
+              // A rejected credential carries the terminal verdict on every tier
               // (`auth-failure.ts`): an explicit spec stops with the login hint, and
               // a routing chain moves to its next hop with a notice naming that
-              // hop's billing (`FallbackHandler`). A metered hop's rejected key
-              // carries no header; `upstream_status` 401/403 is enough for the
-              // chain (`isRejectedCredentialAnswer`), so it advances the same way.
-              // A spent allowance (402/429) is
-              // not a credential failure and advances with its own warning.
-              // A model the provider does not carry (Zen Go's 401 "Model <id> is not
-              // supported") is NOT a credential rejection and keeps advancing.
-              // Subscription by THIS request's signing arm (`signedBilling`): for
-              // `openai-codex` the probe reads a process-wide last-signed arm.
-              // FallbackHandler still asks the probe for the same hop (main's code).
-              const verdictHeaders =
-                this.signedBilling(binding).subscription &&
-                isCredentialRejection(response.status, errorText)
-                  ? authVerdictHeaders("terminal")
-                  : undefined;
+              // hop's billing (`FallbackHandler`). The verdict is decided HERE,
+              // from the raw upstream body: after the remap to 400 a 403 bad key
+              // and a 403 RegionError look alike, so the chain could not tell them
+              // apart and a metered 403 advanced with no notice.
+              // A spent allowance (402/429) is not a credential failure and
+              // advances with its own warning. A model the provider does not carry
+              // (Zen Go's 401 "Model <id> is not supported") is NOT a credential
+              // rejection and keeps advancing.
+              const verdictHeaders = isCredentialRejection(response.status, errorText)
+                ? authVerdictHeaders("terminal")
+                : undefined;
               // Carry the ORIGINAL upstream status as a structured field so
               // machine consumers (probe classification) can tell a remapped
               // auth failure from a genuine 400.
