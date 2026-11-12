@@ -48,9 +48,9 @@
  */
 
 import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "../../adapters/base-api-format.js";
-import { lookupConnectionModelIdEffort } from "../../adapters/model-catalog.js";
 import type { DevinModelConfig } from "../devin/devin-models.js";
-import { SPEED_PREMIUM_SUFFIXES, chooseModelIdForEffort } from "../model-id-effort.js";
+import { chooseConnectionModelId } from "../model-id-effort-choice.js";
+import { SPEED_PREMIUM_SUFFIXES } from "../model-id-effort.js";
 import type {
   ExpandContext,
   ModelChoice,
@@ -287,10 +287,12 @@ export class DevinModelResolver implements ProviderModelResolver {
    * 0. **The connection's effort map** (`modelIdEffort`), read from the cloud
    *    models catalog for the connection whose `externalModelId` is exactly the
    *    selection: `values[effort]`, else the next higher listed level, else the
-   *    highest; `off` for `none`; with no effort, the vendor's family default
-   *    among the map's ids, else the cheapest. Only an id the dynamic models
-   *    catalog lists and that carries no speed premium is sent; otherwise the
-   *    rules below decide. A listed base with no effort is sent as itself.
+   *    highest; `off` for `none`; with no effort, the recommended-effort
+   *    table's `default` level for this connection, else `medium`, then as an
+   *    effort level (`chooseConnectionModelId`). The vendor's family default
+   *    does not decide for a mapped base. Only an id the dynamic models catalog
+   *    lists and that carries no speed premium is sent; otherwise the rules
+   *    below decide. A listed base with no effort is sent as itself.
    * 1. **An exact uid** is honoured verbatim when the turn carries no effort, or
    *    when the uid NAMES a tier — `dv@claude-opus-5-xhigh` stays xhigh even at
    *    effort `low`, and so does a row's representative that names a tier
@@ -381,28 +383,18 @@ function mappedWireId(
   effort: EffortLevel | undefined
 ): string | undefined {
   if (exact && !effort) return undefined;
-  const map = lookupConnectionModelIdEffort(requested, "devin");
-  if (!map) return undefined;
 
   const byId = new Map<string, ModelsCatalogEntry>();
   for (const entry of modelsCatalog) {
     const key = entry.wireId.toLowerCase();
     if (!byId.has(key)) byId.set(key, entry);
   }
-  const entryOf = (id: string) => byId.get(id.toLowerCase());
-  const entriesOf = (ids: string[]) =>
-    ids.map(entryOf).filter((entry): entry is ModelsCatalogEntry => entry !== undefined);
 
-  return chooseModelIdForEffort(map, effort, {
+  return chooseConnectionModelId(requested, "devin", effort, {
     sendable: (id) => {
-      const entry = entryOf(id);
+      const entry = byId.get(id.toLowerCase());
       return entry && !devinHasSpeedPremium(asConfig(entry)) ? entry.wireId : undefined;
     },
-    serverDefault: (ids) =>
-      entriesOf(ids)
-        .filter((entry) => entry.isFamilyDefault)
-        .sort(byCost)[0]?.wireId,
-    fallback: (ids) => entriesOf(ids).sort(byCost)[0]?.wireId ?? ids[0]!,
   });
 }
 

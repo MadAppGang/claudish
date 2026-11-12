@@ -205,10 +205,11 @@ export interface ModelIdEffort {
   /** Effort level -> wire id. Never holds `none`. */
   values: Partial<Record<ModelIdEffortLevel, string>>;
   /**
-   * The level the provider serves the base at. `{status: "unknown"}` until the
-   * catalog states one; a stated default names a `values` key.
+   * The level the provider serves the base at when no effort is sent: a
+   * `values` key, or `{status: "unknown"}`. Kept as published; it does not
+   * choose the id (with no effort claudish decides, see `model-id-effort-choice.ts`).
    */
-  default?: { status: string; [field: string]: unknown };
+  default?: string | { status: string; [field: string]: unknown };
   /** The no-thinking id, when the connection publishes one. */
   off?: string;
   /** True when the base itself is a listed id. */

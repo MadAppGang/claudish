@@ -9,11 +9,9 @@
  */
 
 import type { EffortLevel } from "../adapters/base-api-format.js";
-import {
-  lookupConnectionModelIdEffort,
-  lookupFamilyDefaultVariant,
-} from "../adapters/model-catalog.js";
-import { chooseModelIdForEffort, namesSpeedPremium } from "./model-id-effort.js";
+import { lookupFamilyDefaultVariant } from "../adapters/model-catalog.js";
+import { chooseConnectionModelId } from "./model-id-effort-choice.js";
+import { namesSpeedPremium } from "./model-id-effort.js";
 
 /**
  * The id the connection's effort map chooses, or undefined when no map applies
@@ -26,14 +24,8 @@ function mappedAntigravityModelId(
 ): string | undefined {
   const req = requested.trim();
   if (!effort && served.servedIds.includes(req)) return undefined;
-  const map = lookupConnectionModelIdEffort(req, "antigravity");
-  if (!map) return undefined;
-  return chooseModelIdForEffort(map, effort, {
+  return chooseConnectionModelId(req, "antigravity", effort, {
     sendable: (id) => (served.servedIds.includes(id) && !namesSpeedPremium(id) ? id : undefined),
-    serverDefault: (ids) =>
-      served.defaultId && ids.includes(served.defaultId) ? served.defaultId : undefined,
-    // `ids` is ordered highest effort first.
-    fallback: (ids) => ids[0]!,
   });
 }
 
@@ -149,12 +141,13 @@ export function resolveAntigravityModelId(
  *
  * First the connection's effort map (`modelIdEffort`), when the cloud models
  * catalog publishes one for the Antigravity connection whose `externalModelId`
- * is exactly `requested`:
+ * is `requested` (`chooseConnectionModelId`):
  *  - an effort level → `values[effort]`, else the next higher listed level,
  *    else the highest listed level;
  *  - `none` → the published `off` id;
- *  - no effort → the backend's `defaultId` when it is one of the map's ids, else
- *    the highest listed level. A served base with no effort is sent as itself.
+ *  - no effort → the recommended-effort table's `default` level for this
+ *    connection, else `medium`, then as an effort level. The backend's
+ *    `defaultId` does not decide. A served base with no effort is sent as itself.
  * Only an id the account's dynamic models catalog lists, and that carries no
  * speed premium, is sent. Otherwise, and with no map, it is
  * {@link resolveAntigravityModelId} over the account's full dynamic models

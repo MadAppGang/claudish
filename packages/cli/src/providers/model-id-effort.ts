@@ -9,7 +9,8 @@
  * the provider's caller decides whether the account may send it.
  *
  * Pure: no network, no credential, no catalog read. The lookup that finds the
- * map is `lookupConnectionModelIdEffort` (`adapters/model-catalog.ts`).
+ * map is `findModelIdEffortConnection` (`adapters/model-catalog.ts`); the level
+ * a request with no effort is sent at is decided in `model-id-effort-choice.ts`.
  */
 
 import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "../adapters/base-api-format.js";
@@ -49,8 +50,10 @@ export function readModelIdEffort(raw: unknown): ModelIdEffort | undefined {
   if (Object.keys(values).length === 0 && !off) return undefined;
 
   const map: ModelIdEffort = { via: "model_id", values };
+  const statedDefault = nonEmptyString(record.default);
   const rawDefault = asRecord(record.default);
-  if (rawDefault && typeof rawDefault.status === "string") {
+  if (statedDefault) map.default = statedDefault;
+  else if (rawDefault && typeof rawDefault.status === "string") {
     map.default = { ...rawDefault, status: rawDefault.status };
   }
   if (off) map.off = off;
@@ -78,20 +81,6 @@ function levelsDescending(map: ModelIdEffort): ModelIdEffortLevel[] {
 }
 
 /**
- * The level the catalog states as the base's default, when it states one: a
- * `default` whose status is not `unknown` and which names a `values` key.
- */
-function statedDefaultLevel(map: ModelIdEffort): ModelIdEffortLevel | undefined {
-  const stated = map.default;
-  if (!stated || stated.status === "unknown") return undefined;
-  for (const [field, value] of Object.entries(stated)) {
-    if (field === "status" || typeof value !== "string") continue;
-    if (isEffortLevel(value) && value !== "none" && map.values[value] !== undefined) return value;
-  }
-  return undefined;
-}
-
-/**
  * The map id for an effort level: `values[effort]` when listed, else the next
  * higher listed level, else the highest listed level. Undefined only for an
  * empty `values`.
@@ -108,53 +97,34 @@ export function mapIdForEffort(map: ModelIdEffort, effort: ModelIdEffortLevel): 
   return map.values[chosen];
 }
 
-/** How a provider answers the questions the map cannot. */
+/** How a provider answers the question the map cannot. */
 export interface ModelIdEffortProvider {
   /**
    * The account's own spelling of `id` when its dynamic models catalog lists it
-   * AND it may be chosen automatically (not a speed premium); else undefined.
+   * AND it may be chosen automatically (not a speed premium, not an id the
+   * provider declares unselectable); else undefined.
    */
   sendable(id: string): string | undefined;
-  /** The provider server's own default among `ids` (sendable, highest effort first). */
-  serverDefault(ids: string[]): string | undefined;
-  /** The provider's rule when its server names no default among `ids`. */
-  fallback(ids: string[]): string;
 }
 
 /**
- * The wire id the map chooses for one request, or `undefined` when the map does
- * not decide it and the provider's existing resolution applies.
+ * The wire id the map chooses for one request at `effort`, or `undefined` when
+ * the map does not decide it and the provider's existing resolution applies.
  *
  * - `none`: the published `off` id when the account may send it.
  * - an effort level: {@link mapIdForEffort}, when the account may send that id.
  *   An id the account does not list, or a speed premium, is not replaced by
  *   another map id: the existing resolution answers instead.
- * - no effort: the provider server's default among the sendable map ids, then
- *   the catalog's stated default, then the provider's fallback rule.
+ *
+ * A request with no effort is given its level by the caller before it gets
+ * here (`model-id-effort-choice.ts`); this function never invents one.
  */
 export function chooseModelIdForEffort(
   map: ModelIdEffort,
-  effort: EffortLevel | undefined,
+  effort: EffortLevel,
   provider: ModelIdEffortProvider
 ): string | undefined {
   if (effort === "none") return map.off ? provider.sendable(map.off) : undefined;
-
-  if (effort !== undefined) {
-    const id = mapIdForEffort(map, effort);
-    return id ? provider.sendable(id) : undefined;
-  }
-
-  const ids: string[] = [];
-  for (const level of levelsDescending(map)) {
-    const id = provider.sendable(map.values[level]!);
-    if (id && !ids.includes(id)) ids.push(id);
-  }
-  if (ids.length === 0) return undefined;
-
-  const server = provider.serverDefault(ids);
-  if (server) return server;
-  const statedLevel = statedDefaultLevel(map);
-  const stated = statedLevel ? provider.sendable(map.values[statedLevel]!) : undefined;
-  if (stated) return stated;
-  return provider.fallback(ids);
+  const id = mapIdForEffort(map, effort);
+  return id ? provider.sendable(id) : undefined;
 }
