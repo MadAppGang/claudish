@@ -15,7 +15,6 @@ import {
   lookupFamilyDefaultVariant,
 } from "../adapters/model-catalog.js";
 import { chooseConnectionModelId } from "./model-id-effort-choice.js";
-import { namesSpeedPremium } from "./model-id-effort.js";
 
 /**
  * The account's dynamic models catalog as model-id resolution reads it: every
@@ -66,8 +65,8 @@ function servesSelectable(served: AntigravityServedSet, id: string): boolean {
 /**
  * The id the connection's effort map chooses, or undefined when no map applies
  * and {@link resolveAntigravityModelId} decides. A map id is sendable only when
- * the account serves it, the backend does not exclude it, and it carries no
- * speed premium.
+ * the account serves it and the backend does not exclude it. Its spelling
+ * decides nothing: a `-fast` id the map names is sent like any other.
  */
 function mappedAntigravityModelId(
   requested: string,
@@ -77,10 +76,7 @@ function mappedAntigravityModelId(
   const req = requested.trim();
   if (!effort && servesSelectable(served, req)) return undefined;
   return chooseConnectionModelId(req, "antigravity", effort, {
-    sendable: (id) =>
-      served.servedIds.includes(id) && !isExcluded(served, id) && !namesSpeedPremium(id)
-        ? id
-        : undefined,
+    sendable: (id) => (servesSelectable(served, id) ? id : undefined),
   });
 }
 
@@ -237,14 +233,13 @@ export function resolveAntigravityModelId(
  *    connection, else `medium`, then as an effort level. The backend's
  *    `defaultId` does not decide. A served base with no effort is sent as itself,
  *    unless the backend excludes it.
- * Only an id the account's dynamic models catalog lists, that the backend does
- * not exclude, and that carries no speed premium, is sent. Otherwise, and with
- * no map, it is {@link resolveAntigravityModelId} over the account's selectable
- * ids (served, not excluded and no speed premium, so neither the backend's
- * default nor the catalog's family default can choose a `-fast` id; an exactly
- * requested served id the backend does not exclude still passes),
- * with the cloud models catalog's family default (`lookupFamilyDefaultVariant`)
- * as its second rule.
+ * Only an id the account's dynamic models catalog lists and the backend does
+ * not exclude is sent. Otherwise, and with no map, it is
+ * {@link resolveAntigravityModelId} over the account's selectable ids (served
+ * and not excluded), with the cloud models catalog's family default
+ * (`lookupFamilyDefaultVariant`) as its second rule. No rule reads the id's
+ * spelling: a `-fast` or `-priority` id is chosen or avoided only by that data
+ * (the account's list, `excludedIds`, the effort map), never by its name.
  *
  * A requested id the account lists that is NOT a mapped base (an exact
  * `gemini-4-carbon-low`) is sent unchanged before any of that: at any effort,
@@ -272,11 +267,8 @@ export function resolveAntigravityServedModel(
   const mapped = mappedAntigravityModelId(requested, served, effort);
   if (mapped) return mapped;
   if (servesSelectable(served, req)) return req;
-  // An automatic choice is never an excluded id nor a speed premium; only the
-  // exact request above sends a premium.
-  const selectable = served.servedIds.filter(
-    (id) => !isExcluded(served, id) && !namesSpeedPremium(id)
-  );
+  // An automatic choice is never an id the backend excludes.
+  const selectable = served.servedIds.filter((id) => !isExcluded(served, id));
   const defaultId =
     served.defaultId && selectable.includes(served.defaultId) ? served.defaultId : null;
   return resolveAntigravityModelId(

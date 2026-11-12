@@ -212,13 +212,20 @@ route candidate all reach the same map id); otherwise claudish decides the level
 "Recommended effort": the efforts table's `default` cell for this connection, else
 `medium`) and maps it as above. The backend's `defaultAgentModelId` and the
 catalog's `modelIdEffort.default` do not decide for a mapped base. An id the
-account does not serve, an id the backend declares unselectable (`excludedIds`:
-internal, role-bound, retired; the set discovery drops), or a `-fast`/`-priority`
-id, is never chosen from the map: the rules above answer instead, over the
-selectable ids only: served, not excluded, and no speed premium, so neither the
-backend default nor the catalog's family default (`lookupFamilyDefaultVariant`) can
-pick the `-fast` id the map just refused (an exactly requested served mapped base
-the backend does not exclude still passes, premium included). The availability
+account does not serve, or an id the backend declares unselectable (`excludedIds`:
+internal, role-bound, retired; the set discovery drops), is never chosen from the
+map: the rules above answer instead, over the selectable ids only (served and not
+excluded), so neither the backend default nor the catalog's family default
+(`lookupFamilyDefaultVariant`) can pick an id the map just refused.
+The spelling of an id decides nothing on `ag@`. A `-fast` or `-priority` id is
+chosen or avoided only by data: the account's dynamic models catalog, `excludedIds`
+and the connection's effort map, so a map that names `carbon-high-fast` for `high`
+sends it, and a family default naming a served `-fast` id is taken like any other.
+A suffix rule here would be a name pattern in candidate gathering, which routing
+rulebook RB-5 forbids: `route-candidates.ts` reaches this resolution for every
+account-listed candidate, and a name cannot tell what the account is billed for.
+Devin is different: its premium check reads Devin's own discovery data (the
+`Fast Mode` axis flag, `devin/devin-models.ts`), not a name (`devin.md`). The availability
 check reads the same `excludedIds` from the `peekServedAntigravityModels` cache, so
 it agrees with the transport. An exact id the account lists that is not a mapped
 base (`gemini-4-carbon-low`) is a fixed model: it is sent unchanged at any effort,
@@ -272,10 +279,11 @@ body, shaped for a different id. Both builders shape the primary from the origin
 dialect payload, and the transport keeps that payload (`lastPayload`) so every
 capacity retry shapes it again for its own id.
 
-**The capacity fallback never picks a speed premium.** On
+**The capacity fallback never picks an excluded id.** On
 `MODEL_CAPACITY_EXHAUSTED` the retry candidates are the served ids minus the one
-that failed, minus every `-fast`/`-priority` id and every id in `excludedIds`. With
-none left, the original capacity failure is returned. `getActiveModelName()` names
+that failed and minus every id in `excludedIds`. The spelling decides nothing here
+either: a served, not excluded `-fast` id is an ordinary candidate (RB-5, as above).
+With none left, the original capacity failure is returned. `getActiveModelName()` names
 the retry id that served the CURRENT request only: `enqueueRequest` clears it as
 each request starts, so a later request served on its primary id never reports an
 earlier retry to the status line.

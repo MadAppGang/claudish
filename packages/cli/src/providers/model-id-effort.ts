@@ -17,17 +17,12 @@ import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "../adapters/base
 import type { ModelIdEffort, ModelIdEffortLevel } from "../model-loader.js";
 
 /**
- * Trailing id segments that mark a speed premium (`-fast`, `-priority`). An id
- * carrying one costs more than its plain sibling and is never chosen
- * automatically; it is sent only when the request names it exactly.
+ * Trailing uid segments that mark a Devin speed premium (`-fast`, `-priority`),
+ * read by Devin's resolver only for an entry its discovery data declares no
+ * axes for. Antigravity reads no spelling: its id choice comes from the
+ * account's list, `excludedIds` and the effort map alone.
  */
 export const SPEED_PREMIUM_SUFFIXES: readonly string[] = ["fast", "priority"];
-
-/** Whether a wire id ends in a speed-premium segment. */
-export function namesSpeedPremium(wireId: string): boolean {
-  const lower = wireId.trim().toLowerCase();
-  return SPEED_PREMIUM_SUFFIXES.some((suffix) => lower.endsWith(`-${suffix}`));
-}
 
 /**
  * Validate a raw `modelIdEffort` value. A malformed map is `undefined` (no map),
