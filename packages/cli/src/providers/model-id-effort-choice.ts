@@ -25,8 +25,10 @@ import {
 import type { ModelIdEffortLevel } from "../model-loader.js";
 import {
   DEFAULT_TASK_TYPE,
+  type EffortRecommendation,
   MODEL_ID_ENCODING,
-  currentEffortRecommendations,
+  bundledEffortRecommendations,
+  lookupModelEfforts,
 } from "./effort-recommendations.js";
 import { type ModelIdEffortProvider, chooseModelIdForEffort } from "./model-id-effort.js";
 
@@ -34,12 +36,29 @@ import { type ModelIdEffortProvider, chooseModelIdForEffort } from "./model-id-e
 const NO_EFFORT_FALLBACK_LEVEL: ModelIdEffortLevel = "medium";
 
 /**
- * The level a request with no effort is sent at on `found`: the table's
- * `default` cell for the connection's canonical model id when that cell may be
- * sent on this connection as a model-id switch, else `medium`.
+ * The table's `default` cell for `found`'s canonical model id, from the efforts
+ * table of the SAME generation as the catalog the connection was read from:
+ * the bundled list's own table for the bundled list, else the sidecar's row
+ * for that generation. Another generation never answers, so a miss is
+ * undefined rather than the newest table held.
+ */
+function defaultCell(found: ModelIdEffortConnection): EffortRecommendation | undefined {
+  if (found.origin === "bundled") {
+    const table = bundledEffortRecommendations();
+    if (table?.generationId !== found.catalogGenerationId) return undefined;
+    return table.efforts[found.modelId]?.[DEFAULT_TASK_TYPE];
+  }
+  const lookup = lookupModelEfforts(found.modelId, found.catalogGenerationId);
+  return lookup.ok ? lookup.byTaskType[DEFAULT_TASK_TYPE] : undefined;
+}
+
+/**
+ * The level a request with no effort is sent at on `found`: the `default` cell
+ * of its own generation's table for the connection's canonical model id when
+ * that cell may be sent on this connection as a model-id switch, else `medium`.
  */
 export function noEffortLevel(found: ModelIdEffortConnection): ModelIdEffortLevel {
-  const cell = currentEffortRecommendations()?.efforts[found.modelId]?.[DEFAULT_TASK_TYPE];
+  const cell = defaultCell(found);
   const route = found.connection.route;
   if (!cell || !route) return NO_EFFORT_FALLBACK_LEVEL;
   const level = cell.effort.toLowerCase();

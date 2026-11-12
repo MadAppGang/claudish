@@ -144,10 +144,15 @@ Antigravity path calls:
 1. The user's effort always wins: the `--effort` pin, else the effort Claude Code sends
    (`output_config.effort`, `thinking.budget_tokens`; reasoning off is `none`, which sends `off`).
 2. With none, the table's `default` task type for the connection's CANONICAL model id (the catalog
-   entry's `modelId`, never the wire id), read through `currentEffortRecommendations`, when that
-   cell's `sendableOn` names this connection: the same `routeId`, `routeProfileId` and
-   `externalModelId`, with `encoding: "model_id_switch"`. A cell for another connection, another
-   encoding or a wire-id key does not count.
+   entry's `modelId`, never the wire id), when that cell's `sendableOn` names this connection: the
+   same `routeId`, `routeProfileId` and `externalModelId`, with `encoding: "model_id_switch"`. A
+   cell for another connection, another encoding or a wire-id key does not count. The cell comes
+   from the table of the SAME generation as the catalog the connection was read from
+   (`ModelIdEffortConnection.catalogGenerationId`): `lookupModelEfforts(modelId, generationId)`,
+   or the bundled list's own table when the connection came from the bundled list. A sidecar that
+   lacks that generation is a miss, never the newest other generation (which is what
+   `currentEffortRecommendations` falls back to for display), so a refresh or an evicted
+   generation cannot change the level with another publication's recommendation.
 3. Else `medium`.
 
 The level then maps through the connection's `values`: the exact level, else the next higher listed

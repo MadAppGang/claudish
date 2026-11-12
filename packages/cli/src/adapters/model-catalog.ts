@@ -190,17 +190,28 @@ export function lookupRouteReasoningMode(
 export interface ModelIdEffortConnection {
   /** The canonical model id of the catalog entry the connection belongs to. */
   modelId: string;
+  /**
+   * The generation of the catalog the connection was read from
+   * (`catalogGenerationId`), so a table read beside it is of the same one.
+   */
+  catalogGenerationId: string;
+  /** Set when that catalog is the bundled recommended list. */
+  origin?: "bundled";
   connection: AggregatorEntry;
   map: ModelIdEffort;
 }
 
-/** Every mapped connection on `provider`'s route, with its entry's canonical model id. */
+/** Every mapped connection on `provider`'s route, with its entry and catalog provenance. */
 function providerConnections(
   provider: string,
   cachePath?: string
-): Array<{ modelId: string; connection: AggregatorEntry }> {
+): Array<Omit<ModelIdEffortConnection, "map">> {
   const cache = readAllModelsCache(cachePath);
   if (!cache) return [];
+  const provenance = {
+    catalogGenerationId: cache.catalogGenerationId,
+    ...(cache.origin === "bundled" ? { origin: "bundled" as const } : {}),
+  };
   return cache.entries.flatMap((entry) =>
     (entry.aggregators ?? [])
       .filter(
@@ -208,7 +219,7 @@ function providerConnections(
           connection.routeStatus === "mapped" &&
           catalogRouteMatchesProvider(connection.route, provider)
       )
-      .map((connection) => ({ modelId: entry.modelId, connection }))
+      .map((connection) => ({ modelId: entry.modelId, ...provenance, connection }))
   );
 }
 
