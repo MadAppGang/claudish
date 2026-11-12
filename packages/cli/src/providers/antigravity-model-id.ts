@@ -205,7 +205,9 @@ export function resolveAntigravityModelId(
  * Only an id the account's dynamic models catalog lists, that the backend does
  * not exclude, and that carries no speed premium, is sent. Otherwise, and with
  * no map, it is {@link resolveAntigravityModelId} over the account's selectable
- * ids (served and not excluded; an exactly requested served id still passes),
+ * ids (served, not excluded and no speed premium, so neither the backend's
+ * default nor the catalog's family default can choose a `-fast` id; an exactly
+ * requested served id still passes),
  * with the cloud models catalog's family default (`lookupFamilyDefaultVariant`)
  * as its second rule. A requested id that is not a mapped base (an exact
  * `gemini-4-carbon-low`) is never re-resolved by effort.
@@ -226,9 +228,13 @@ export function resolveAntigravityServedModel(
   if (mapped) return mapped;
   const req = requested.trim();
   if (served.servedIds.includes(req)) return req;
-  const selectable = served.servedIds.filter((id) => !isExcluded(served, id));
+  // An automatic choice is never an excluded id nor a speed premium; only the
+  // exact request above sends a premium.
+  const selectable = served.servedIds.filter(
+    (id) => !isExcluded(served, id) && !namesSpeedPremium(id)
+  );
   const defaultId =
-    served.defaultId && !isExcluded(served, served.defaultId) ? served.defaultId : null;
+    served.defaultId && selectable.includes(served.defaultId) ? served.defaultId : null;
   return resolveAntigravityModelId(
     requested,
     selectable,

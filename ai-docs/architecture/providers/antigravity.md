@@ -209,7 +209,10 @@ catalog's `modelIdEffort.default` do not decide for a mapped base. An id the
 account does not serve, an id the backend declares unselectable (`excludedIds`:
 internal, role-bound, retired; the set discovery drops), or a `-fast`/`-priority`
 id, is never chosen from the map: the rules above answer instead, over the
-selectable ids only (an exactly requested served id still passes). The availability
+selectable ids only: served, not excluded, and no speed premium, so neither the
+backend default nor the catalog's family default (`lookupFamilyDefaultVariant`) can
+pick the `-fast` id the map just refused (an exactly requested served id still
+passes, premium included). The availability
 check reads the same `excludedIds` from the `peekServedAntigravityModels` cache, so
 it agrees with the transport. An exact id that is not a mapped base
 (`gemini-4-carbon-low`) is sent unchanged at any effort.
