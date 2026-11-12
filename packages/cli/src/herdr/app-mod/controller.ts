@@ -14,7 +14,15 @@
  * terminal and shows it in a keyed window; selecting another kills the previous viewer, which
  * releases its claim. Selecting a row whose viewer still runs presses Enter in it, which takes the
  * view back. Closing the mod kills the viewers and leaves the relay running.
+ *
+ * The panel shows runs (`runs.ts`): the latest is selected until the person picks one. Picking a
+ * run or a slot shows that slot's screen in the keyed window; a slot that failed before Claude Code
+ * started has none, so the panel shows its reason instead and no viewer starts. The Text tab reads
+ * the slot's transcript with `claudish view --transcript`, following it every 2 s while the panel is
+ * visible and the transcript is not final. Only one copy of the mod is the panel (`PanelSeat`).
  */
+
+import type { TranscriptLine } from "../../pane/contract.js";
 
 import type { ViewItem } from "../../pane/view-contract.js";
 import {
@@ -34,11 +42,62 @@ import {
   parseFeed,
   parseHcRun,
   parseListing,
+  parseTranscriptRun,
   sameRelay,
   viewRunArgs,
   viewTerminalName,
   viewWindowSpec,
 } from "./model.js";
+import {
+  type PanelRow,
+  type PanelRun,
+  type ScreenMode,
+  maxRunTabs,
+  runsOf,
+  transcriptText,
+} from "./runs.js";
+
+/** how often an open, unfinished transcript is read again while the panel is visible */
+export const TRANSCRIPT_MS = 2_000;
+/** pages read in one go when an answer says `more` */
+const TRANSCRIPT_PAGES = 10;
+
+/**
+ * Which copy of the mod is the panel. Herdr docks one copy from `mod.json` the first time it sees
+ * the folder, and a `pane.split {mod}` adds another; every copy runs `init`. The first to take the
+ * seat is the panel; another shows a one-line note and waits until the seat is released.
+ */
+export class PanelSeat {
+  private owner: object | null = null;
+  private waiters: Array<() => void> = [];
+
+  /** true when `who` holds the seat now (taken, or already its own) */
+  take(who: object): boolean {
+    if (this.owner === null) this.owner = who;
+    return this.owner === who;
+  }
+
+  release(who: object): void {
+    if (this.owner !== who) return;
+    this.owner = null;
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const w of waiters) w();
+  }
+
+  /** resolves when the holder releases the seat */
+  freed(): Promise<void> {
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+}
+
+interface TranscriptState {
+  lines: TranscriptLine[];
+  cursor: string | null;
+  final: boolean;
+  error: string | null;
+  readAt: number;
+}
 
 export interface ModHost {
   exec(command: string, args: string[], options?: { timeout?: number }): Promise<ExecResult>;
@@ -75,10 +134,20 @@ export class PanelController {
   install: ClaudishInstall | null = null;
   items: ViewItem[] = [];
   servers: FeedServer[] = [];
-  mode: "relay" | "poll" = "relay";
+  feedMode: "relay" | "poll" = "relay";
   selected: string | null = null;
   view: ViewTerminal | null = null;
   visible = false;
+  /** the run the person picked; null follows the latest */
+  pickedRun: string | null = null;
+  /** the slot the person picked in the run; null is its first row */
+  focus: string | null = null;
+  mode: ScreenMode = "screen";
+  earlierOpen = false;
+  /** the panel's width in px, from its last size change */
+  width = 320;
+
+  private transcripts = new Map<string, TranscriptState>();
 
   private livenessDueAt = 0;
   /** the relay whose death sent the list to the polling path */
@@ -142,13 +211,125 @@ export class PanelController {
 
   /** How long the loop may sleep before the next tick. */
   nextWaitMs(): number {
-    if (this.mode === "poll") return POLL_MS;
-    return Math.max(0, this.livenessDueAt - this.host.now());
+    const base =
+      this.feedMode === "poll" ? POLL_MS : Math.max(0, this.livenessDueAt - this.host.now());
+    return this.followingTranscript() ? Math.min(base, TRANSCRIPT_MS) : base;
+  }
+
+  /** Every run in the items, newest first. */
+  runs(): PanelRun[] {
+    return runsOf(this.items, this.host.now());
+  }
+
+  /** The run shown: the one picked while it exists, else the latest. */
+  currentRun(): PanelRun | null {
+    const runs = this.runs();
+    return runs.find((r) => r.key === this.pickedRun) ?? runs[0] ?? null;
+  }
+
+  /** The slot shown: the one picked in the current run, else its first row. */
+  currentRow(): PanelRow | null {
+    const run = this.currentRun();
+    return run?.rows.find((r) => r.target === this.focus) ?? run?.rows[0] ?? null;
+  }
+
+  /** How many run tabs fit the panel's width. */
+  maxTabs(): number {
+    return maxRunTabs(this.width);
+  }
+
+  /** Show `key`'s run, its first slot, and that slot's screen or transcript. */
+  async selectRun(key: string): Promise<void> {
+    this.pickedRun = key;
+    this.earlierOpen = false;
+    this.focus = this.runs().find((r) => r.key === key)?.rows[0]?.target ?? null;
+    await this.show();
+  }
+
+  /** Show one slot of the current run. */
+  async selectSlot(target: string): Promise<void> {
+    const run = this.runs().find((r) => r.rows.some((row) => row.target === target));
+    if (run) this.pickedRun = run.key;
+    this.focus = target;
+    await this.show();
+  }
+
+  async setMode(mode: ScreenMode): Promise<void> {
+    this.mode = mode;
+    await this.show();
+  }
+
+  toggleEarlier(): void {
+    this.earlierOpen = !this.earlierOpen;
+  }
+
+  /** The Text tab's lines for the current slot. */
+  transcriptLines(): string[] {
+    const row = this.currentRow();
+    if (!row) return [];
+    const t = this.transcripts.get(row.target);
+    if (t?.error) return [t.error];
+    if (t && t.lines.length > 0) return transcriptText(t.lines);
+    if (row.noScreen) return ["(no transcript: the session failed before its first turn)"];
+    return [t?.final ? "(no transcript lines)" : "reading the transcript…"];
+  }
+
+  /** What the current mode shows for the current slot; opens nothing for a slot with no screen. */
+  private async show(): Promise<void> {
+    const row = this.currentRow();
+    if (!row) return;
+    if (this.mode === "text") {
+      await this.readTranscript(row.target);
+      return;
+    }
+    if (row.noScreen) {
+      if (this.view) this.host.killTerminal(this.view.address);
+      this.view = null;
+      this.selected = null;
+      return;
+    }
+    await this.select(row.target);
+  }
+
+  private followingTranscript(): boolean {
+    if (this.mode !== "text" || !this.visible || this.phase !== "ready") return false;
+    const row = this.currentRow();
+    const t = row ? this.transcripts.get(row.target) : undefined;
+    return Boolean(row && !row.noScreen && !t?.final && !t?.error);
+  }
+
+  /** Read the target's transcript from where the last read stopped. */
+  private async readTranscript(target: string): Promise<void> {
+    if (!this.install) return;
+    const t: TranscriptState = this.transcripts.get(target) ?? {
+      lines: [],
+      cursor: null,
+      final: false,
+      error: null,
+      readAt: 0,
+    };
+    this.transcripts.set(target, t);
+    t.readAt = this.host.now();
+    for (let page = 0; page < TRANSCRIPT_PAGES; page++) {
+      const args = ["view", "--transcript", target, ...(t.cursor ? ["--since", t.cursor] : [])];
+      const argv = claudishArgv(this.install, args);
+      const r = await this.host.exec(argv[0] as string, argv.slice(1)).catch(() => null);
+      const answer = parseTranscriptRun(r, this.install.version);
+      if (answer.kind === "error") {
+        t.error = answer.message;
+        return;
+      }
+      t.error = null;
+      t.lines.push(...answer.lines);
+      t.cursor = answer.cursor ?? t.cursor;
+      t.final = answer.final;
+      if (!answer.more) return;
+    }
   }
 
   /** Whether the loop should follow the feed directory now. */
   get watching(): boolean {
-    return this.phase === "ready" && this.visible && this.mode === "relay";
+    return this.phase === "ready" && this.visible && this.feedMode === "relay";
   }
 
   /** One refresh. Does nothing while the panel is hidden or claudish is missing. */
@@ -159,8 +340,12 @@ export class PanelController {
       await this.checkRelay();
       checked = true;
     }
-    if (this.mode === "relay" && !(await this.readFeed()) && !checked) await this.checkRelay();
-    if (this.mode === "poll" && !(await this.readFreshFeed())) await this.pollList();
+    if (this.feedMode === "relay" && !(await this.readFeed()) && !checked) await this.checkRelay();
+    if (this.feedMode === "poll" && !(await this.readFreshFeed())) await this.pollList();
+    const row = this.currentRow();
+    const t = row ? this.transcripts.get(row.target) : undefined;
+    if (row && this.followingTranscript() && this.host.now() - (t?.readAt ?? 0) >= TRANSCRIPT_MS)
+      await this.readTranscript(row.target);
   }
 
   /** Show `target`'s live screen: its viewer terminal, started when it is not running. */
@@ -180,8 +365,11 @@ export class PanelController {
     if (!address) return;
     this.view = { target, name, address };
     this.selected = target;
+    const run = this.runs().find((r) => r.rows.some((row) => row.target === target));
+    const row = run?.rows.find((r) => r.target === target);
     const item = this.items.find((i) => i.target === target);
-    const title = item ? (item.model ?? target) : target;
+    const fallback = item ? (item.model ?? target) : target;
+    const title = run && row ? `${run.name} · ${row.slot} · ${row.model}` : fallback;
     this.host.openOverlay(viewWindowSpec(address, target, title));
   }
 
@@ -234,13 +422,13 @@ export class PanelController {
       check = {};
     }
     if (check.alive === true) return;
-    if (this.mode === "relay") {
+    if (this.feedMode === "relay") {
       this.items = [];
       this.servers = [];
       this.message = "reconnecting";
     }
     this.deadRelay = check.relay ?? null;
-    this.mode = "poll";
+    this.feedMode = "poll";
     await this.startRelay();
   }
 
@@ -265,7 +453,7 @@ export class PanelController {
   private async readFreshFeed(): Promise<boolean> {
     const feed = await this.loadFeed();
     if (!feed?.relay || sameRelay(feed.relay, this.deadRelay)) return false;
-    this.mode = "relay";
+    this.feedMode = "relay";
     this.deadRelay = null;
     this.apply(feed);
     return true;
