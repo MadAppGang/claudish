@@ -10,6 +10,15 @@
  *
  * A server's items go when it says `server.closing`, when its connection ends and its owner is
  * gone, or when its endpoint file is removed.
+ *
+ * Beside the servers' items the file carries `history`: the newest runs from their records
+ * (`history.ts`) that no server holds, so a run a server evicted, or one whose server exited,
+ * stays listed. The records are read at start and whenever a server lets items go (an item
+ * removed, a snapshot replacing its set, the server gone), at most once per
+ * `historyMinIntervalMs`; never on a timer of their own, and never for an item that only changed.
+ *
+ * The stamp names the relay's claudish version, so a reader can tell a relay an older build
+ * started and replace it.
  */
 
 import { chmodSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -25,12 +34,15 @@ import type {
 import { VERSION } from "../version.js";
 import { EndpointWatch } from "./endpoint-watch.js";
 import { endpointNameOf, endpointOwnerAlive, endpointPathOf } from "./endpoints.js";
+import { readHistory } from "./history.js";
 import { ViewClient } from "./view-client.js";
 
 export const FEED_DIR = "feed";
 export const FEED_FILE = "feed.json";
 /** at most four writes a second */
 export const FEED_MIN_INTERVAL_MS = 250;
+/** the records are read at most this often (one read stats every run directory, about 60 ms) */
+export const HISTORY_MIN_INTERVAL_MS = 2_000;
 
 export function defaultFeedPath(root: string): string {
   return join(root, FEED_DIR, FEED_FILE);
@@ -40,6 +52,8 @@ export interface FeedStamp {
   pid: number;
   start36: string;
   started_at: string;
+  /** the relay's claudish version; absent in a file an older relay wrote */
+  version?: string;
 }
 
 export interface FeedServer {
@@ -53,6 +67,8 @@ export interface FeedFile {
   written_at: string;
   servers: FeedServer[];
   items: ViewItem[];
+  /** the records' newest runs that no server holds; absent in a file an older relay wrote */
+  history?: ViewItem[];
 }
 
 export class FeedRelayBusy extends Error {
@@ -82,6 +98,9 @@ export interface FeedRelayOptions {
   connect?: (path: string) => Promise<RelayConnection>;
   backstopMs?: number;
   now?: () => number;
+  /** the records' runs; default `readHistory` on `~/.claudish/sessions` */
+  history?: () => ViewItem[];
+  historyMinIntervalMs?: number;
 }
 
 interface ServerState {
@@ -95,6 +114,7 @@ function ownStamp(): FeedStamp {
     pid: process.pid,
     start36: OWNER_START36,
     started_at: new Date(Number.parseInt(OWNER_START36, 36)).toISOString(),
+    version: VERSION,
   };
 }
 
@@ -159,6 +179,10 @@ export class FeedRelay {
   private stopped = false;
   private readonly now: () => number;
   private onWritten: (() => void) | null = null;
+  private history: ViewItem[] = [];
+  private historyDirty = true;
+  private historyReadAt = Number.NEGATIVE_INFINITY;
+  private historyTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly o: FeedRelayOptions) {
     this.path = o.path ?? defaultFeedPath(o.root);
@@ -189,6 +213,8 @@ export class FeedRelay {
     this.watch?.close();
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    if (this.historyTimer) clearTimeout(this.historyTimer);
+    this.historyTimer = null;
     for (const s of this.servers.values()) s.conn.close();
     this.servers.clear();
     rmSync(this.tmpPath(), { force: true });
@@ -204,7 +230,7 @@ export class FeedRelay {
   }
 
   /** The merged view the file carries, without the stamp and time. */
-  snapshot(): Pick<FeedFile, "servers" | "items"> {
+  snapshot(): Required<Pick<FeedFile, "servers" | "items" | "history">> {
     const names = [...this.servers.keys()].sort();
     const servers: FeedServer[] = [];
     const items: ViewItem[] = [];
@@ -214,7 +240,39 @@ export class FeedRelay {
       servers.push(s.info);
       items.push(...s.items.values());
     }
-    return { servers, items };
+    const held = new Set(items.map((i) => i.target));
+    return { servers, items, history: this.history.filter((i) => !held.has(i.target)) };
+  }
+
+  /** A server let items go: the records may now hold runs the file lacks. */
+  private recordsChanged(): void {
+    this.historyDirty = true;
+    this.schedule();
+  }
+
+  /**
+   * Read the records when they may have changed and the interval allows; when it does not, the
+   * next write comes at the end of the interval. Never throws.
+   */
+  private refreshHistory(): void {
+    if (!this.historyDirty) return;
+    const interval = this.o.historyMinIntervalMs ?? HISTORY_MIN_INTERVAL_MS;
+    const due = this.historyReadAt + interval - this.now();
+    if (due > 0) {
+      // the items are written now; the records' read waits on its own timer
+      this.historyTimer ??= setTimeout(() => {
+        this.historyTimer = null;
+        this.schedule();
+      }, due);
+      return;
+    }
+    try {
+      this.history = (this.o.history ?? (() => readHistory()))();
+    } catch {
+      // unreadable records keep the last list
+    }
+    this.historyDirty = false;
+    this.historyReadAt = this.now();
   }
 
   private isOwn(stamp: FeedStamp): boolean {
@@ -291,7 +349,7 @@ export class FeedRelay {
         this.schedule();
         return;
       case "item.remove":
-        if (state.items.delete(e.target)) this.schedule();
+        if (state.items.delete(e.target)) this.recordsChanged();
         return;
       case "server.closing":
         this.retire(name);
@@ -301,7 +359,7 @@ export class FeedRelay {
 
   private replaceItems(state: ServerState, items: ViewItem[]): void {
     state.items = new Map(items.map((i) => [i.target, i]));
-    this.schedule();
+    this.recordsChanged();
   }
 
   /** The server is going: drop its items and never dial this endpoint file again. */
@@ -315,19 +373,22 @@ export class FeedRelay {
     if (!s) return;
     this.servers.delete(name);
     s.conn.close();
-    this.schedule();
+    this.recordsChanged();
   }
 
   private schedule(): void {
+    this.scheduleIn(this.lastWriteAt + (this.o.minIntervalMs ?? FEED_MIN_INTERVAL_MS) - this.now());
+  }
+
+  private scheduleIn(ms: number): void {
     if (this.timer || this.stopped) return;
-    const wait = Math.max(
-      0,
-      this.lastWriteAt + (this.o.minIntervalMs ?? FEED_MIN_INTERVAL_MS) - this.now()
+    this.timer = setTimeout(
+      () => {
+        this.timer = null;
+        this.flush();
+      },
+      Math.max(0, ms)
     );
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      this.flush();
-    }, wait);
   }
 
   private tmpPath(): string {
@@ -337,6 +398,7 @@ export class FeedRelay {
   /** Write the file when the merged set differs from what it holds. */
   private flush(): void {
     if (this.stopped) return;
+    this.refreshHistory();
     const body = this.snapshot();
     const key = JSON.stringify(body);
     if (key === this.lastKey) return;
