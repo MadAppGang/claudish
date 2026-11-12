@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { _resetRepeatWindowForTest, firstInWindow, REPEAT_WINDOW_MS } from "./repeat-window.js";
+import { REPEAT_WINDOW_MS, _resetRepeatWindowForTest, firstInWindow } from "./repeat-window.js";
 
 describe("firstInWindow", () => {
   beforeEach(() => _resetRepeatWindowForTest());

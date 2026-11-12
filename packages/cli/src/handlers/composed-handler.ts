@@ -178,12 +178,12 @@ import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-un
 import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
-import { firstInWindow } from "./shared/repeat-window.js";
 import {
   CREDENTIAL_DECIDED_PROVIDERS,
   type RequestBilling,
   isSubscriptionProvider,
 } from "./shared/remote-provider-types.js";
+import { firstInWindow } from "./shared/repeat-window.js";
 import {
   CONTEXT_OVERFLOW_PHRASE,
   isContextOverflowError,
