@@ -147,7 +147,7 @@ if (process.env.CLAUDISH_T5_CREDENTIAL_WORKER !== "1") {
     return { name: "OpenRouter", provider: "openrouter", response };
   }
 
-  describe("T5 G1 subscription credential rejection advances", () => {
+  describe("T5 G1 a credential rejection advances on every tier", () => {
     for (const provider of [
       "kimi-coding",
       "grok-subscription",
@@ -156,19 +156,18 @@ if (process.env.CLAUDISH_T5_CREDENTIAL_WORKER !== "1") {
       "devin",
       "antigravity",
       "openai-codex",
+      // metered: native APIs and a gateway
+      "qwen-payg",
+      "openai",
+      "x-ai",
+      "fireworks",
     ]) {
       for (const status of [400, 401, 403]) {
         test(`${provider} ${status === 400 ? "terminal verdict" : `headerless ${status}`} returns the next metered answer`, async () => {
           if (provider === "openai-codex") recordSignedArm(provider, "subscription");
           const failed = rejection(status, status === 400 ? authVerdictHeaders("terminal") : {});
           expect(
-            isRetryableError(
-              failed.status,
-              await failed.clone().text(),
-              provider,
-              failed.headers,
-              provider
-            )
+            isRetryableError(failed.status, await failed.clone().text(), provider, failed.headers)
           ).toBe(true);
           const served = answer();
           const result = await runChain([
@@ -196,13 +195,7 @@ if (process.env.CLAUDISH_T5_CREDENTIAL_WORKER !== "1") {
         // Connection producers emit a connection verdict, not an auth verdict.
         const failed = rejection(status, marker);
         expect(
-          isRetryableError(
-            status,
-            await failed.clone().text(),
-            "kimi-coding",
-            failed.headers,
-            "kimi-coding"
-          )
+          isRetryableError(status, await failed.clone().text(), "kimi-coding", failed.headers)
         ).toBe(false);
         // Classification must also prefer the safety marker to a credential verdict.
         expect(
@@ -210,8 +203,7 @@ if (process.env.CLAUDISH_T5_CREDENTIAL_WORKER !== "1") {
             status,
             await failed.clone().text(),
             "kimi-coding",
-            new Headers({ ...authVerdictHeaders("terminal"), ...marker }),
-            "kimi-coding"
+            new Headers({ ...authVerdictHeaders("terminal"), ...marker })
           )
         ).toBe(false);
         const body = await failed.clone().text();
@@ -229,13 +221,7 @@ if (process.env.CLAUDISH_T5_CREDENTIAL_WORKER !== "1") {
     test("a transient subscription verdict stops instead of advancing", async () => {
       const failed = rejection(503, authVerdictHeaders("transient"));
       expect(
-        isRetryableError(
-          503,
-          await failed.clone().text(),
-          "kimi-coding",
-          failed.headers,
-          "kimi-coding"
-        )
+        isRetryableError(503, await failed.clone().text(), "kimi-coding", failed.headers)
       ).toBe(false);
       const result = await runChain([
         { name: "Kimi Coding", provider: "kimi-coding", response: failed },
@@ -247,21 +233,35 @@ if (process.env.CLAUDISH_T5_CREDENTIAL_WORKER !== "1") {
     }, 5_000);
 
     for (const provider of ["openrouter", "openai-codex"]) {
-      test(`${provider} metered terminal credential rejection still stops`, async () => {
+      test(`${provider} metered terminal credential rejection advances and is announced`, async () => {
         if (provider === "openai-codex") recordSignedArm(provider, "metered");
         const failed = rejection();
-        expect(
-          isRetryableError(400, await failed.clone().text(), provider, failed.headers, provider)
-        ).toBe(false);
+        expect(isRetryableError(400, await failed.clone().text(), provider, failed.headers)).toBe(
+          true
+        );
+        const served = answer();
         const result = await runChain([
           { name: provider, provider, response: failed },
-          { name: "Kimi Coding", provider: "kimi-coding", response: answer() },
+          { name: "Kimi Coding", provider: "kimi-coding", response: served },
           metered(),
         ]);
-        expect(result.calls).toEqual([1, 0, 0]);
-        expect(result.returned).toBe(failed);
+        expect(result.calls).toEqual([1, 1, 0]);
+        expect(result.returned).toBe(served);
+        const notice = stderrChunks.join("");
+        expect(notice).toContain(`${provider} rejected its credential (401:`);
+        expect(notice).toContain("moving to Kimi Coding (subscription)");
       }, 5_000);
     }
+
+    test("a transient metered verdict stops instead of advancing", async () => {
+      const failed = rejection(503, authVerdictHeaders("transient"));
+      const result = await runChain([
+        { name: "OpenAI", provider: "openai", response: failed },
+        metered(),
+      ]);
+      expect(result.calls).toEqual([1, 0]);
+      expect(result.returned).toBe(failed);
+    }, 5_000);
   });
 
   describe("T5 G3 credential rejection notices", () => {

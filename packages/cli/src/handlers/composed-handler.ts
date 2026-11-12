@@ -2971,8 +2971,8 @@ export class ComposedHandler implements ModelHandler {
                   // response, never a throw: inside the recovery ladder an
                   // unclassified throw escapes `handle()`. A 503, never a 401: no
                   // credential was rejected, and a headerless 401 reads as a
-                  // subscription's rejected login (`isSubscriptionCredentialRejection`),
-                  // which walks a bare chain onto a metered hop. The pool pins
+                  // rejected login (`isRejectedCredentialAnswer`), which walks a
+                  // bare chain onto the next hop, metered included. The pool pins
                   // the rejected account, so for a pooled request this is a
                   // backstop; for the legacy login it catches a re-login onto
                   // another ChatGPT account between the sign and the 401.
@@ -3413,7 +3413,10 @@ export class ComposedHandler implements ModelHandler {
               // A SUBSCRIPTION's rejected credential carries the terminal verdict
               // (`auth-failure.ts`): an explicit spec stops with the login hint, and
               // a routing chain moves to its next hop with a notice naming that
-              // hop's billing (`FallbackHandler`). A spent allowance (402/429) is
+              // hop's billing (`FallbackHandler`). A metered hop's rejected key
+              // carries no header; `upstream_status` 401/403 is enough for the
+              // chain (`isRejectedCredentialAnswer`), so it advances the same way.
+              // A spent allowance (402/429) is
               // not a credential failure and advances with its own warning.
               // A model the provider does not carry (Zen Go's 401 "Model <id> is not
               // supported") is NOT a credential rejection and keeps advancing.

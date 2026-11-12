@@ -276,12 +276,6 @@ try {
   if (scenario === "E17-backstop") {
     const { recordSignedArm } = await import(src + "/auth/credentials/billing-probe.ts");
     transport.signRequest = async () => { recordSignedArm("openai-codex", "metered"); return { arm: "api-key", headers: {}, endpoint: metered.url.href }; };
-    if (process.env.MUTATION === "backstop-force-sub") {
-      const { spyOn } = await import("bun:test");
-      const billing = await import(src + "/handlers/shared/remote-provider-types.ts");
-      const original = billing.isSubscriptionProvider;
-      spyOn(billing, "isSubscriptionProvider").mockImplementation(provider => provider === "openai-codex" || original(provider));
-    }
   }
   if (scenario === "E17-initial" && process.env.MUTATION === "guard-escape") {
     const { recordSignedArm } = await import(src + "/auth/credentials/billing-probe.ts");
@@ -691,17 +685,14 @@ for (const scenario of [
   "E17-forced",
   "E17-remove-quota",
   "E17-remove-401",
-  "E17-backstop",
 ]) {
   test(`${scenario} rejects metered signing without poisoning accepted-arm evidence`, async () => {
     const { result, stderr } = await run(scenario);
     expect(result.canary, JSON.stringify(result)).toBe(0);
     expect(result.status, result.text + stderr).toBe(400);
     expect(result.verdict).toBe("terminal");
-    expect(result.contacts).toHaveLength(
-      scenario === "E17-initial" || scenario === "E17-backstop" ? 0 : 1
-    );
-    expect(result.signedProjection).toBe(scenario !== "E17-initial" && scenario !== "E17-backstop");
+    expect(result.contacts).toHaveLength(scenario === "E17-initial" ? 0 : 1);
+    expect(result.signedProjection).toBe(scenario !== "E17-initial");
     if (scenario !== "E17-remove-401")
       expect(JSON.parse(result.text).error.upstream_status).toBeUndefined();
     if (scenario.includes("remove") || scenario === "E17-forced" || scenario === "E17-replacement")
@@ -712,6 +703,21 @@ for (const scenario of [
     }
   }, 30_000);
 }
+
+// The backstop refuses a metered signing on the Codex hop: that request never
+// reaches Codex signed with the API key. The refusal is a terminal credential
+// verdict, which advances on every tier (project owner, 2026-11-12), so the
+// chain moves to its next hop and says so.
+test("E17-backstop refuses metered signing on the Codex hop and the chain moves on", async () => {
+  const { result, stderr } = await run("E17-backstop");
+  expect(result.contacts, JSON.stringify(result)).toHaveLength(0);
+  expect(result.signedProjection).toBe(false);
+  expect(result.status, result.text + stderr).toBe(200);
+  expect(result.text).toBe("CANARY SUCCESS");
+  expect(result.canary).toBe(1);
+  expect(stderr).toContain("Codex subscription rejected its credential");
+  expect(stderr).toContain("moving to Subscription next (subscription)");
+}, 30_000);
 
 for (const scenario of ["E12-refused", "E12-reset", "E12-slow"]) {
   test(`${scenario} preserves token endpoint and unknown journal without leasing around an outage`, async () => {

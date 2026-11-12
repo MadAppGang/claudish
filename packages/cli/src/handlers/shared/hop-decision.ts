@@ -9,10 +9,10 @@
  *
  * The order is the runtime's, and it is the whole point. claudish's own recovery hold
  * and stream-failure marker stop the chain before anything else; a credential verdict
- * holds unless it is a terminal one on a subscription hop; a subscription's rejected
- * credential advances; then `isRetryableError`, whose FIRST statement refuses claudish's
- * connection verdict, so a network fault never walks a subscription user onto metered
- * billing (CLAUDE.md, the five auth sites).
+ * holds unless it is a terminal one (a rejected key, on any hop); a rejected credential
+ * answered without the verdict advances; then `isRetryableError`, whose FIRST statement
+ * refuses claudish's connection verdict, so a network fault never walks a subscription
+ * user onto metered billing (CLAUDE.md, the five auth sites).
  *
  * Kept apart from `fallback-handler.ts` so the probe can import it without loading
  * `composed-handler.ts` and the adapter stack behind it.
@@ -25,7 +25,6 @@ import {
   hasStreamFailureMarker,
   isClaudishConnectionVerdict,
 } from "./recovery-marker.js";
-import { isSubscriptionProvider } from "./remote-provider-types.js";
 
 /**
  * The marker the proxy puts on a 500 that means a handler THREW instead of answering:
@@ -44,10 +43,10 @@ export type HopFailureReason =
   | "recovery-hold"
   /** A stream that failed after a 200 (`x-claudish-stream-failure`): stop, verbatim. */
   | "stream-failure"
-  /** A credential verdict that is not a subscription's terminal rejection: stop, verbatim. */
+  /** A transient credential verdict, or one on a connection fault: stop, verbatim. */
   | "credential-hold"
-  /** A subscription's terminal verdict, or its credential rejection in the body: advance. */
-  | "subscription-credential-rejected"
+  /** A terminal credential verdict, or a credential rejection in the body, on any hop: advance. */
+  | "credential-rejected"
   /** `isRetryableError` true: advance. */
   | "retryable"
   /** `isRetryableError` false: stop. */
@@ -66,8 +65,6 @@ export type HopFailureInput =
       status: number;
       headers: Headers;
       body: string;
-      /** The claudish provider uid (`kimi-coding`); a billing question is asked of it. */
-      provider?: string;
       /** The hop's display name, which some wording rules match. */
       name: string;
     }
@@ -79,43 +76,33 @@ export type HopFailureInput =
  */
 export function decideHopFailure(input: HopFailureInput): HopFailureDecision {
   if (input.kind === "thrown") return { action: "advance", reason: "thrown" };
-  const { status, headers, body, provider, name } = input;
+  const { status, headers, body, name } = input;
 
   if (hasRecoveryMarker(headers)) return { action: "stop", reason: "recovery-hold" };
   if (hasStreamFailureMarker(headers)) return { action: "stop", reason: "stream-failure" };
 
   const connectionFault = isClaudishConnectionVerdict(headers);
   const verdict = authVerdict(headers);
-  const subscriptionRejected =
-    !connectionFault && verdict === "terminal" && !!provider && isSubscriptionProvider(provider);
-  if (verdict && !subscriptionRejected) return { action: "stop", reason: "credential-hold" };
+  const terminalRejection = !connectionFault && verdict === "terminal";
+  if (verdict && !terminalRejection) return { action: "stop", reason: "credential-hold" };
 
-  if (
-    subscriptionRejected ||
-    (!connectionFault && isSubscriptionCredentialRejection(status, body, provider))
-  ) {
-    return { action: "advance", reason: "subscription-credential-rejected" };
+  if (terminalRejection || (!connectionFault && isRejectedCredentialAnswer(status, body))) {
+    return { action: "advance", reason: "credential-rejected" };
   }
 
-  if (!isRetryableError(status, body, name, headers, provider)) {
+  if (!isRetryableError(status, body, name, headers)) {
     return { action: "stop", reason: "non-retryable" };
   }
   return { action: "advance", reason: "retryable" };
 }
 
 /**
- * A subscription candidate's dead or rejected login, answered WITHOUT the
- * verdict header. The header covers every 401 a ComposedHandler places; this
- * covers a candidate that answers one without it, so the rule holds for every
- * subscription provider and not only for the code paths that mint the header.
- * Asked of the uid — a display name is never a subscription.
+ * A candidate's dead or rejected key or login, answered WITHOUT the verdict
+ * header. The header covers every 401 a ComposedHandler places; this covers a
+ * candidate that answers one without it, so the rule holds on every hop and not
+ * only on the code paths that mint the header.
  */
-export function isSubscriptionCredentialRejection(
-  status: number,
-  errorBody: string,
-  providerId?: string
-): boolean {
-  if (!providerId || !isSubscriptionProvider(providerId)) return false;
+export function isRejectedCredentialAnswer(status: number, errorBody: string): boolean {
   const recovered = status === 400 ? extractUpstreamStatus(errorBody) : undefined;
   // A credential rejection only: a 401 that says the MODEL is not carried
   // (OpenCode Zen Go's "Model <id> is not supported") is a per-model miss and
@@ -145,8 +132,7 @@ export function isRetryableError(
   status: number,
   errorBody: string,
   provider?: string,
-  headers?: Headers,
-  providerId?: string
+  headers?: Headers
 ): boolean {
   // ── CLAUDISH'S OWN "CANNOT REACH THE HOST" IS NEVER A REASON TO ADVANCE ────
   //
@@ -172,21 +158,23 @@ export function isRetryableError(
   // the same reason as the line above.
   if (hasStreamFailureMarker(headers)) return false;
 
-  // ── A CREDENTIAL VERDICT: TERMINAL ON A SUBSCRIPTION ADVANCES, ELSE HOLDS ──
+  // ── A CREDENTIAL VERDICT: TERMINAL ADVANCES, TRANSIENT HOLDS ───────────────
   //
   // `ComposedHandler` marks its answer to a credential failure it could place
   // (`auth-failure.ts`): `terminal` — a credential that cannot succeed on
   // retry, answered 400 so the message lands inline — or `transient` — a
   // 5xx/429 on the credential path, which the SAME hop answers on Claude Code's
   // own retry, so the next candidate is the wrong remedy for it. A terminal
-  // verdict on a SUBSCRIPTION hop (an expired, wrong or revoked credential)
-  // advances to the next hop, metered included (project owner, 2026-10-21:
-  // an expired key must not block the chain). A terminal verdict on any other
-  // hop still holds. Above the quota wording and the `upstream_status`
-  // recovery below, because a terminal 400 carries `upstream_status: 401`,
-  // which that recovery reads as retryable whatever the hop.
+  // verdict (an expired, wrong or revoked key or login) advances to the next
+  // hop on EVERY tier, and `handle()` announces the move with the next hop's
+  // billing. Project owner, 2026-10-21: an expired key must not block the
+  // chain (subscriptions); 2026-11-12: the same for a metered native API or
+  // gateway key, measured live as a wrong DashScope key that failed a request
+  // OpenRouter, next in the chain with a valid key, would have served. Above
+  // the quota wording and the `upstream_status` recovery below, so a transient
+  // verdict is never read as a remapped 401.
   const verdict = authVerdict(headers);
-  if (verdict) return verdict === "terminal" && !!providerId && isSubscriptionProvider(providerId);
+  if (verdict) return verdict === "terminal";
 
   // A spent subscription allowance is retryable AT THE CHAIN LEVEL: this
   // provider cannot serve, but the next one can.
@@ -222,9 +210,9 @@ export function isRetryableError(
   // prevented at the cost of the request.
   if (hasQuotaExhaustionWording(errorBody)) return true;
 
-  // A SUBSCRIPTION's rejected credential, answered without the verdict header,
-  // advances like the terminal verdict above (`handle()` announces it).
-  if (isSubscriptionCredentialRejection(status, errorBody, providerId)) return true;
+  // A rejected credential answered without the verdict header advances like the
+  // terminal verdict above (`handle()` announces it).
+  if (isRejectedCredentialAnswer(status, errorBody)) return true;
 
   // ── Recover the ORIGINAL status from a remapped terminal error (#148) ──────
   //

@@ -130,23 +130,17 @@ describe("B1: routing-chain decisions on a subscription credential verdict", () 
             error: { message: "run `claudish login muse`", upstream_status: upstream },
           });
           expect(
-            isRetryableError(
-              400,
-              body,
-              provider,
-              new Headers(authVerdictHeaders(verdict)),
-              provider
-            )
+            isRetryableError(400, body, provider, new Headers(authVerdictHeaders(verdict)))
           ).toBe(verdict === "terminal");
         }
       }
     }
   );
   test.each(subscriptions)("%s advances a credential rejection without a verdict", (provider) => {
-    expect(isRetryableError(401, rejection, provider, new Headers(), provider)).toBe(true);
+    expect(isRetryableError(401, rejection, provider, new Headers())).toBe(true);
   });
   test("metered Meta 401 remains eligible to advance", () => {
-    expect(isRetryableError(401, rejection, "meta", new Headers(), "meta")).toBe(true);
+    expect(isRetryableError(401, rejection, "meta", new Headers())).toBe(true);
   });
 });
 
@@ -156,9 +150,7 @@ describe("B2: request-specific failures may advance", () => {
     "Model grok-4.6 is not supported for format oa-compat",
   ])("Zen Go model miss: %s", (message) => {
     for (const status of [401, 403]) {
-      expect(
-        isRetryableError(status, message, "opencode-zen-go", new Headers(), "opencode-zen-go")
-      ).toBe(true);
+      expect(isRetryableError(status, message, "opencode-zen-go", new Headers())).toBe(true);
     }
   });
   test("Kimi allowance exhaustion still advances", () => {
@@ -167,8 +159,7 @@ describe("B2: request-specific failures may advance", () => {
         403,
         "You've reached your usage limit for this billing cycle",
         "kimi-coding",
-        new Headers(),
-        "kimi-coding"
+        new Headers()
       )
     ).toBe(true);
     expect(
@@ -176,8 +167,7 @@ describe("B2: request-specific failures may advance", () => {
         429,
         "You've reached your usage limit for this billing cycle",
         "kimi-coding",
-        new Headers(),
-        "kimi-coding"
+        new Headers()
       )
     ).toBe(true);
   });

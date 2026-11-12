@@ -25,8 +25,8 @@ import type { ModelHandler } from "./types.js";
 // existing importers and tests.
 export {
   isProvider,
+  isRejectedCredentialAnswer,
   isRetryableError,
-  isSubscriptionCredentialRejection,
 } from "./shared/hop-decision.js";
 
 export interface FallbackCandidate {
@@ -59,10 +59,10 @@ export class FallbackHandler implements ModelHandler {
   async handle(c: Context, payload: any): Promise<Response> {
     const errors: Array<{ provider: string; status: number; message: string }> = [];
     const startIndex = this.lastSuccessIndex;
-    // The first subscription candidate whose credential was rejected. The chain
-    // moves past it like any retryable failure; this is kept because its
-    // message (log in again, renew the key) is the one a user can act on, so
-    // an exhausted chain still shows it.
+    // The first candidate whose credential was rejected. The chain moves past
+    // it like any retryable failure; this is kept because its message (log in
+    // again, renew the key) is the one a user can act on, so an exhausted chain
+    // still shows it.
     let firstRejection: { name: string; response: Response; body: string } | undefined;
 
     for (let attempt = 0; attempt < this.candidates.length; attempt++) {
@@ -119,7 +119,6 @@ export class FallbackHandler implements ModelHandler {
           status: response.status,
           headers: response.headers,
           body: errorBody,
-          provider,
           name,
         });
 
@@ -176,12 +175,13 @@ export class FallbackHandler implements ModelHandler {
             }
             return response;
 
-          // A TERMINAL verdict on a subscription (an expired, wrong or revoked
-          // credential) moves to the next hop, metered included (project owner,
-          // 2026-10-21): an expired key must not block the chain, and a metered
-          // key the user configured is consent to be billed by it. The move is
+          // A TERMINAL verdict (an expired, wrong or revoked key or login) moves
+          // to the next hop on every tier, metered included (project owner,
+          // 2026-10-21 for subscriptions, 2026-11-12 for metered native APIs and
+          // gateways): a dead key must not block the chain, and a metered key
+          // the user configured is consent to be billed by it. The move is
           // announced, once per provider and status.
-          case "subscription-credential-rejected": {
+          case "credential-rejected": {
             errors.push({ provider: name, status: response.status, message: errorBody });
             if (!firstRejection) firstRejection = { name, response, body: errorBody };
             if (!isLast) {

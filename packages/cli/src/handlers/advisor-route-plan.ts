@@ -553,13 +553,7 @@ async function classifyHandler(handler: ModelHandler | null, hop: AdvisorHop): P
       kind: "refused",
       handler,
       message: refusalMessageOf(body),
-      chainContinues: isRetryableError(
-        response.status,
-        body,
-        hop.displayName,
-        response.headers,
-        hop.provider
-      ),
+      chainContinues: isRetryableError(response.status, body, hop.displayName, response.headers),
     };
   }
   if (handler instanceof ComposedHandler) {
