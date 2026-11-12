@@ -258,14 +258,15 @@ export class DevinModelResolver implements ProviderModelResolver {
       windowsPerLabel.set(label, seen);
     }
 
-    const mapped = listModelIdEffortConnections("devin");
+    // A group with a catalog effort map shows and launches its connection's
+    // base, so the request's effort (or, with none, the no-effort rule) chooses
+    // the level; a suffixed representative would fix it.
+    const bases = soleConnectionBases(groups.values(), listModelIdEffortConnections("devin"));
     const choices: ModelChoice[] = [];
+    const emitted = new Set<string>();
     for (const group of groups.values()) {
       const chosen = defaultOf(group);
-      // A group with a catalog effort map shows and launches its connection's
-      // base, so the request's effort (or, with none, the no-effort rule)
-      // chooses the level; a suffixed representative would fix it.
-      const id = mappedBaseOf(group, mapped) ?? chosen.wireId;
+      const id = uniqueRowId(bases.get(group), chosen.wireId, emitted);
       const label = groupKeyOf(chosen);
       const ambiguous = (windowsPerLabel.get(label)?.size ?? 1) > 1;
       const window = chosen.contextWindow ?? 0;
@@ -411,22 +412,59 @@ function mappedWireId(
 }
 
 /**
- * The base a picker row shows and launches when the catalog publishes an effort
- * map for its group: the `externalModelId` of the Devin connection whose map
- * lists one of the group's ids (a level or `off`). Matching by listed id keeps a
- * 1M group on its own connection's base, never the default-context sibling's.
+ * The Devin connection whose effort map lists one of the group's ids (a level or
+ * `off`): the connection whose base a picker row shows and launches, when it
+ * matches no other group (see `collapse`). Matching by listed id keeps a 1M
+ * group on its own connection's base, never the default-context sibling's.
  * Undefined when no connection's map lists a member of the group.
  */
-function mappedBaseOf(
+function mappedConnectionOf(
   group: ModelsCatalogEntry[],
   connections: readonly ModelIdEffortConnection[]
-): string | undefined {
+): ModelIdEffortConnection | undefined {
   const members = new Set(group.map((entry) => entry.wireId.toLowerCase()));
   const lists = (id: string | undefined) => id !== undefined && members.has(id.toLowerCase());
-  const found = connections.find(
+  return connections.find(
     ({ map }) => lists(map.off) || Object.values(map.values).some((id) => lists(id))
   );
-  return found?.connection.externalModelId;
+}
+
+/**
+ * The base each picker group shows and launches: the `externalModelId` of the
+ * connection {@link mappedConnectionOf} finds, only when that connection matches
+ * no other group. A map spanning a 200K and a 1M group would give both rows one
+ * id, and launching the 1M row would then resolve to a 200K uid, so such groups
+ * get no base and keep their representatives.
+ */
+function soleConnectionBases(
+  groups: Iterable<ModelsCatalogEntry[]>,
+  connections: readonly ModelIdEffortConnection[]
+): Map<ModelsCatalogEntry[], string> {
+  const owners = new Map<ModelsCatalogEntry[], ModelIdEffortConnection>();
+  const groupsPerConnection = new Map<ModelIdEffortConnection, number>();
+  for (const group of groups) {
+    const owner = mappedConnectionOf(group, connections);
+    if (!owner) continue;
+    owners.set(group, owner);
+    groupsPerConnection.set(owner, (groupsPerConnection.get(owner) ?? 0) + 1);
+  }
+  const bases = new Map<ModelsCatalogEntry[], string>();
+  for (const [group, owner] of owners) {
+    const base = owner.connection.externalModelId;
+    if (base && groupsPerConnection.get(owner) === 1) bases.set(group, base);
+  }
+  return bases;
+}
+
+/**
+ * A picker row's id: the group's base when no earlier row took that id, else
+ * its representative's uid. Records the id in `emitted`, so no two rows share
+ * one.
+ */
+function uniqueRowId(base: string | undefined, representative: string, emitted: Set<string>) {
+  const id = base && !emitted.has(base.toLowerCase()) ? base : representative;
+  emitted.add(id.toLowerCase());
+  return id;
 }
 
 /**

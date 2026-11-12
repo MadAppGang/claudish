@@ -65,7 +65,10 @@ tier (`claude-opus-5-5-medium`) is that tier at any effort; it is never re-resol
 ids a Devin connection's effort map lists that connection's `externalModelId` as the row id
 (`claude-opus-5-5`, not `claude-opus-5-5-medium`), so launching the row leaves the level to the
 request's effort and, with none, to the rule above. Matching by listed id keeps a 1M group on its own
-connection's base; a 1M group no map lists keeps its representative. A group with no map keeps
+connection's base; a 1M group no map lists keeps its representative. A connection lends its base
+only to a group it alone matches: one map listing both a 200K uid and a 1M uid of the same label
+would give the two rows one id, and launching the 1M row would then resolve to a 200K uid, so both
+groups keep their representatives. No two rows ever share an id. A group with no map keeps
 `defaultOf` (the vendor's family default, else the cheapest tier-less uid). The label, window and
 cost still come from `defaultOf`. Note the two
 metadata rpcs are **unary and BARE** (`application/proto`, no envelope), field 1 is `"chisel"` there
