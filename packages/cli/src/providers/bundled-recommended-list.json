@@ -1,14 +1,14 @@
 {
   "bundle": {
     "efforts": {
-      "claude-fable-5-1": {
+      "claude-fable-5-2": {
         "code_review": {
           "basis": "owner_choice",
-          "effort": "medium",
+          "effort": "xhigh",
           "sendableOn": [
             {
               "encoding": "request_parameter",
-              "externalModelId": "claude-fable-5-1",
+              "externalModelId": "claude-fable-5-2",
               "routeId": "anthropic",
               "routeProfileId": "claude-code-subscription"
             }
@@ -20,31 +20,55 @@
           "sendableOn": [
             {
               "encoding": "request_parameter",
-              "externalModelId": "claude-fable-5-1",
+              "externalModelId": "claude-fable-5-2",
               "routeId": "anthropic",
               "routeProfileId": "claude-code-subscription"
             }
           ]
         },
         "frontend_ui": {
-          "basis": "benchmark_knee",
-          "effort": "xhigh",
+          "basis": "owner_choice",
+          "effort": "medium",
           "sendableOn": [
             {
               "encoding": "request_parameter",
-              "externalModelId": "claude-fable-5-1",
+              "externalModelId": "claude-fable-5-2",
+              "routeId": "anthropic",
+              "routeProfileId": "claude-code-subscription"
+            }
+          ]
+        },
+        "implementation": {
+          "basis": "benchmark_knee",
+          "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "claude-fable-5-2",
               "routeId": "anthropic",
               "routeProfileId": "claude-code-subscription"
             }
           ]
         },
         "long_context": {
-          "basis": "benchmark_knee",
-          "effort": "low",
+          "basis": "owner_choice",
+          "effort": "medium",
           "sendableOn": [
             {
               "encoding": "request_parameter",
-              "externalModelId": "claude-fable-5-1",
+              "externalModelId": "claude-fable-5-2",
+              "routeId": "anthropic",
+              "routeProfileId": "claude-code-subscription"
+            }
+          ]
+        },
+        "planning": {
+          "basis": "owner_choice",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "claude-fable-5-2",
               "routeId": "anthropic",
               "routeProfileId": "claude-code-subscription"
             }
@@ -56,7 +80,31 @@
           "sendableOn": [
             {
               "encoding": "request_parameter",
-              "externalModelId": "claude-fable-5-1",
+              "externalModelId": "claude-fable-5-2",
+              "routeId": "anthropic",
+              "routeProfileId": "claude-code-subscription"
+            }
+          ]
+        },
+        "research": {
+          "basis": "owner_choice",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "claude-fable-5-2",
+              "routeId": "anthropic",
+              "routeProfileId": "claude-code-subscription"
+            }
+          ]
+        },
+        "terminal_ops": {
+          "basis": "benchmark_knee",
+          "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "claude-fable-5-2",
               "routeId": "anthropic",
               "routeProfileId": "claude-code-subscription"
             }
@@ -68,7 +116,7 @@
           "sendableOn": [
             {
               "encoding": "request_parameter",
-              "externalModelId": "claude-fable-5-1",
+              "externalModelId": "claude-fable-5-2",
               "routeId": "anthropic",
               "routeProfileId": "claude-code-subscription"
             }
@@ -516,7 +564,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-3.8-flash-medium",
+              "externalModelId": "gemini-3.8-flash",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -528,7 +576,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-3.8-flash-high",
+              "externalModelId": "gemini-3.8-flash",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -540,7 +588,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-3.8-flash-high",
+              "externalModelId": "gemini-3.8-flash",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -552,7 +600,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-3.8-flash-high",
+              "externalModelId": "gemini-3.8-flash",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -564,7 +612,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-3.8-flash-low",
+              "externalModelId": "gemini-3.8-flash",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -576,7 +624,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-3.8-flash-medium",
+              "externalModelId": "gemini-3.8-flash",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -588,7 +636,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-3.8-flash-low",
+              "externalModelId": "gemini-3.8-flash",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -600,7 +648,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-3.8-flash-medium",
+              "externalModelId": "gemini-3.8-flash",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -612,7 +660,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-3.8-flash-medium",
+              "externalModelId": "gemini-3.8-flash",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -626,7 +674,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-4-argon-medium",
+              "externalModelId": "gemini-4-argon",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -638,7 +686,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-4-argon-high",
+              "externalModelId": "gemini-4-argon",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -650,7 +698,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-4-argon-high",
+              "externalModelId": "gemini-4-argon",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -662,7 +710,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-4-argon-medium",
+              "externalModelId": "gemini-4-argon",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -674,7 +722,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-4-argon-medium",
+              "externalModelId": "gemini-4-argon",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -686,7 +734,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-4-argon-medium",
+              "externalModelId": "gemini-4-argon",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -698,7 +746,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-4-argon-low",
+              "externalModelId": "gemini-4-argon",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -710,7 +758,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-4-argon-medium",
+              "externalModelId": "gemini-4-argon",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -722,7 +770,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-4-argon-medium",
+              "externalModelId": "gemini-4-argon",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -734,7 +782,7 @@
           "sendableOn": [
             {
               "encoding": "model_id_switch",
-              "externalModelId": "gemini-4-argon-medium",
+              "externalModelId": "gemini-4-argon",
               "routeId": "google",
               "routeProfileId": "antigravity-subscription"
             }
@@ -1525,6 +1573,128 @@
           ]
         }
       },
+      "minimax-m3.1-flash": {
+        "code_review": {
+          "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        },
+        "debugging": {
+          "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        },
+        "frontend_ui": {
+          "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        },
+        "implementation": {
+          "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        },
+        "long_context": {
+          "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        },
+        "planning": {
+          "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        },
+        "quick_edit": {
+          "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        },
+        "research": {
+          "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        },
+        "terminal_ops": {
+          "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        },
+        "tool_automation": {
+          "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        }
+      },
       "muse-spark-1.3": {
         "code_review": {
           "basis": "owner_choice",
@@ -1893,122 +2063,52 @@
         "code_review": {
           "basis": "owner_choice",
           "effort": "medium",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "qwen3.8-max",
-              "routeId": "qwen",
-              "routeProfileId": "qwencloud-token-plan"
-            }
-          ]
+          "sendableOn": []
         },
         "debugging": {
           "basis": "owner_choice",
           "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "qwen3.8-max",
-              "routeId": "qwen",
-              "routeProfileId": "qwencloud-token-plan"
-            }
-          ]
+          "sendableOn": []
         },
         "frontend_ui": {
           "basis": "owner_choice",
           "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "qwen3.8-max",
-              "routeId": "qwen",
-              "routeProfileId": "qwencloud-token-plan"
-            }
-          ]
+          "sendableOn": []
         },
         "implementation": {
           "basis": "owner_choice",
           "effort": "medium",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "qwen3.8-max",
-              "routeId": "qwen",
-              "routeProfileId": "qwencloud-token-plan"
-            }
-          ]
+          "sendableOn": []
         },
         "long_context": {
           "basis": "benchmark_knee",
           "effort": "low",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "qwen3.8-max",
-              "routeId": "qwen",
-              "routeProfileId": "qwencloud-token-plan"
-            }
-          ]
+          "sendableOn": []
         },
         "planning": {
           "basis": "owner_choice",
           "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "qwen3.8-max",
-              "routeId": "qwen",
-              "routeProfileId": "qwencloud-token-plan"
-            }
-          ]
+          "sendableOn": []
         },
         "quick_edit": {
           "basis": "owner_choice",
           "effort": "medium",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "qwen3.8-max",
-              "routeId": "qwen",
-              "routeProfileId": "qwencloud-token-plan"
-            }
-          ]
+          "sendableOn": []
         },
         "research": {
           "basis": "owner_choice",
           "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "qwen3.8-max",
-              "routeId": "qwen",
-              "routeProfileId": "qwencloud-token-plan"
-            }
-          ]
+          "sendableOn": []
         },
         "terminal_ops": {
           "basis": "owner_choice",
           "effort": "medium",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "qwen3.8-max",
-              "routeId": "qwen",
-              "routeProfileId": "qwencloud-token-plan"
-            }
-          ]
+          "sendableOn": []
         },
         "tool_automation": {
           "basis": "owner_choice",
           "effort": "low",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "qwen3.8-max",
-              "routeId": "qwen",
-              "routeProfileId": "qwencloud-token-plan"
-            }
-          ]
+          "sendableOn": []
         }
       },
       "qwen3.8-omni-flash": {
@@ -2134,7 +2234,7 @@
         }
       }
     },
-    "fetchedAt": "2026-11-10T00:28:15.959Z",
+    "fetchedAt": "2026-11-12T03:05:27.456Z",
     "format": 1,
     "recommendations": {
       "contractVersion": 3,
@@ -2168,7 +2268,7 @@
           "tier": "flagship"
         },
         {
-          "modelId": "minimax-m3",
+          "modelId": "minimax-m3.1-flash",
           "tier": "flagship"
         },
         {
@@ -2232,7 +2332,7 @@
           "tier": "cost_efficient"
         },
         {
-          "modelId": "claude-fable-5-1",
+          "modelId": "claude-fable-5-2",
           "tier": "luxury"
         },
         {
@@ -2240,16 +2340,16 @@
           "tier": "luxury"
         }
       ],
-      "generationId": "g-20261109161553532-980a49e4"
+      "generationId": "g-20261112022959178-a6d01f51"
     },
     "source": "https://us-central1-claudish-6da10.cloudfunctions.net"
   },
-  "catalogGenerationId": "g-20261109161553532-980a49e4",
+  "catalogGenerationId": "g-20261112022959178-a6d01f51",
   "entries": [
     {
       "aggregators": [
         {
-          "externalModelId": "claude-fable-5-1",
+          "externalModelId": "claude-fable-5-2",
           "reasoning": {
             "mode": {
               "status": "rejected"
@@ -2313,16 +2413,16 @@
           }
         },
         {
-          "externalModelId": "claude-fable-5-1",
+          "externalModelId": "claude-fable-5-2",
           "pricing": {
-            "cachedRead": 0.25,
-            "input": 10,
-            "output": 50,
+            "cachedRead": 0.2,
+            "input": 8,
+            "output": 40,
             "type": "flat"
           },
           "reasoning": {
             "mode": {
-              "status": "rejected"
+              "status": "unknown"
             },
             "request": {
               "api": "anthropic-messages",
@@ -2368,36 +2468,35 @@
                 "status": "not_applicable"
               },
               "mode": {
-                "path": "/reasoning/mode",
-                "status": "rejected"
+                "status": "unknown"
               },
               "status": "supported"
             },
             "speed": {
-              "path": "/service_tier",
-              "status": "rejected"
+              "status": "unknown"
             },
             "status": "known",
             "tokenParam": "max_tokens",
-            "toolsWithReasoning": "ok"
+            "toolsWithReasoning": {
+              "status": "unknown"
+            }
           }
         }
       ],
       "aliases": [
-        "anthropic/claude-fable-5.1",
-        "claude-fable-5-1-high",
-        "claude-fable-5-1-low",
-        "claude-fable-5-1-max",
-        "claude-fable-5-1-medium",
-        "claude-fable-5-1-xhigh"
+        "anthropic/claude-fable-5.2",
+        "claude-fable-5-2-high",
+        "claude-fable-5-2-low",
+        "claude-fable-5-2-max",
+        "claude-fable-5-2-medium",
+        "claude-fable-5-2-xhigh"
       ],
       "contextWindow": 1000000,
       "contractVersion": 3,
-      "displayName": "Claude Fable 5.1",
+      "displayName": "Claude Fable 5.2",
       "endpoints": {
         "anthropic": {
-          "api": "anthropic-messages",
-          "toolsWithReasoning": "ok"
+          "api": "anthropic-messages"
         }
       },
       "inputModalities": [
@@ -2405,7 +2504,7 @@
         "text"
       ],
       "maxOutputTokens": 128000,
-      "modelId": "claude-fable-5-1",
+      "modelId": "claude-fable-5-2",
       "outputModalities": [
         "text"
       ],
@@ -2424,7 +2523,7 @@
         "supported": true,
         "supportsBudgetTokens": false
       },
-      "releaseDate": "2026-09-01",
+      "releaseDate": "2026-11-09",
       "status": "active",
       "subscriptionPlanIds": [
         "anthropic-claude-code",
@@ -2738,16 +2837,8 @@
               "status": "supported"
             },
             "speed": {
-              "access": "usage-credits",
-              "default": "standard",
-              "echo": "/usage/speed",
-              "headers": [],
-              "path": "/speed",
-              "status": "supported",
-              "values": {
-                "fast": "fast",
-                "standard": "standard"
-              }
+              "path": "/service_tier",
+              "status": "rejected"
             },
             "status": "known",
             "tokenParam": "max_tokens",
@@ -2816,16 +2907,8 @@
               "status": "supported"
             },
             "speed": {
-              "access": "open",
-              "default": "standard",
-              "echo": "/usage/speed",
-              "headers": [],
-              "path": "/speed",
-              "status": "supported",
-              "values": {
-                "fast": "fast",
-                "standard": "standard"
-              }
+              "path": "/service_tier",
+              "status": "rejected"
             },
             "status": "known",
             "tokenParam": "max_tokens",
@@ -2835,8 +2918,8 @@
       ],
       "aliases": [
         "anthropic/claude-opus-5.5",
-        "claude-opus-5-5-low",
         "claude-opus-5-5-high",
+        "claude-opus-5-5-low",
         "claude-opus-5-5-medium",
         "claude-opus-5-5-max",
         "claude-opus-5-5-xhigh"
@@ -2964,7 +3047,7 @@
               "status": "supported"
             },
             "speed": {
-              "path": "/speed",
+              "path": "/service_tier",
               "status": "rejected"
             },
             "status": "known",
@@ -3052,7 +3135,7 @@
               "status": "supported"
             },
             "speed": {
-              "path": "/speed",
+              "path": "/service_tier",
               "status": "rejected"
             },
             "status": "known",
@@ -3064,8 +3147,8 @@
       "aliases": [
         "anthropic/claude-sonnet-5.5",
         "claude-sonnet-5.5",
-        "claude-sonnet-5-5-high",
         "claude-sonnet-5-5-medium",
+        "claude-sonnet-5-5-high",
         "claude-sonnet-5-5-low",
         "claude-sonnet-5-5-max",
         "claude-sonnet-5-5-xhigh"
@@ -3332,54 +3415,7 @@
     {
       "aggregators": [
         {
-          "externalModelId": "gemini-3.8-flash-high",
-          "fixedEffort": "high",
-          "limits": {
-            "contextWindow": 1048576,
-            "maxOutputTokens": 65536
-          },
-          "reasoning": {
-            "request": {
-              "status": "unknown"
-            }
-          },
-          "route": {
-            "routeId": "google",
-            "routeProfileId": "antigravity-subscription"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "antigravity",
-          "wire": {
-            "evidence": [],
-            "status": "unknown"
-          }
-        },
-        {
-          "externalModelId": "gemini-3.8-flash-low",
-          "fixedEffort": "low",
-          "limits": {
-            "contextWindow": 1048576,
-            "maxOutputTokens": 65536
-          },
-          "reasoning": {
-            "request": {
-              "status": "unknown"
-            }
-          },
-          "route": {
-            "routeId": "google",
-            "routeProfileId": "antigravity-subscription"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "antigravity",
-          "wire": {
-            "evidence": [],
-            "status": "unknown"
-          }
-        },
-        {
-          "externalModelId": "gemini-3.8-flash-medium",
-          "fixedEffort": "medium",
+          "externalModelId": "gemini-3.8-flash",
           "limits": {
             "contextWindow": 1048576,
             "maxOutputTokens": 65536
@@ -3479,9 +3515,9 @@
       ],
       "aliases": [
         "google/gemini-3.8-flash",
-        "gemini-3.8-flash-medium",
         "gemini-3.8-flash-high",
         "gemini-3.8-flash-low",
+        "gemini-3.8-flash-medium",
         "gemini-3-8-flash-high",
         "gemini-3-8-flash-low",
         "gemini-3-8-flash-medium"
@@ -3533,54 +3569,7 @@
     {
       "aggregators": [
         {
-          "externalModelId": "gemini-4-argon-high",
-          "fixedEffort": "high",
-          "limits": {
-            "contextWindow": 1048576,
-            "maxOutputTokens": 65536
-          },
-          "reasoning": {
-            "request": {
-              "status": "unknown"
-            }
-          },
-          "route": {
-            "routeId": "google",
-            "routeProfileId": "antigravity-subscription"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "antigravity",
-          "wire": {
-            "evidence": [],
-            "status": "unknown"
-          }
-        },
-        {
-          "externalModelId": "gemini-4-argon-low",
-          "fixedEffort": "low",
-          "limits": {
-            "contextWindow": 1048576,
-            "maxOutputTokens": 65536
-          },
-          "reasoning": {
-            "request": {
-              "status": "unknown"
-            }
-          },
-          "route": {
-            "routeId": "google",
-            "routeProfileId": "antigravity-subscription"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "antigravity",
-          "wire": {
-            "evidence": [],
-            "status": "unknown"
-          }
-        },
-        {
-          "externalModelId": "gemini-4-argon-medium",
-          "fixedEffort": "medium",
+          "externalModelId": "gemini-4-argon",
           "limits": {
             "contextWindow": 1048576,
             "maxOutputTokens": 65536
@@ -3609,21 +3598,8 @@
             "type": "flat"
           },
           "reasoning": {
-            "mode": {
-              "status": "rejected"
-            },
             "request": {
-              "api": "gemini",
-              "effort": {
-                "default": "medium",
-                "path": "/generationConfig/thinkingConfig/thinkingLevel",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "medium": "medium"
-                }
-              },
-              "status": "supported"
+              "status": "unknown"
             }
           },
           "route": {
@@ -3636,26 +3612,7 @@
             "api": "gemini",
             "evidence": [],
             "reasoning": {
-              "disable": {
-                "status": "not_applicable"
-              },
-              "effort": {
-                "default": "medium",
-                "path": "/generationConfig/thinkingConfig/thinkingLevel",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "medium": "medium"
-                }
-              },
-              "enable": {
-                "status": "not_applicable"
-              },
-              "mode": {
-                "path": "/reasoning/mode",
-                "status": "rejected"
-              },
-              "status": "supported"
+              "status": "unknown"
             },
             "speed": {
               "status": "unknown"
@@ -3671,8 +3628,8 @@
       "aliases": [
         "google/gemini-4-argon",
         "gemini-4-argon-high",
-        "gemini-4-argon-low",
-        "gemini-4-argon-medium"
+        "gemini-4-argon-medium",
+        "gemini-4-argon-low"
       ],
       "contextWindow": 1048576,
       "contractVersion": 3,
@@ -5415,36 +5372,95 @@
     {
       "aggregators": [
         {
-          "externalModelId": "MiniMax-M3",
-          "pricing": {
-            "cachedRead": 0.06,
-            "input": 0.3,
-            "output": 1.2,
-            "tiers": [
-              {
-                "cachedRead": 0.06,
-                "input": 0.3,
-                "maxInputTokens": 512000,
-                "output": 1.2
+          "externalModelId": "MiniMax-M3.1-Flash",
+          "reasoning": {
+            "request": {
+              "api": "anthropic-messages",
+              "effort": {
+                "default": "max",
+                "path": "/output_config/effort",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "max": "max",
+                  "medium": "medium",
+                  "xhigh": "xhigh"
+                }
               },
-              {
-                "cachedRead": 0.12,
-                "input": 0.6,
-                "maxInputTokens": 1000000,
-                "output": 2.4
-              }
-            ],
-            "type": "tiered"
+              "enable": [
+                {
+                  "path": "/thinking/type",
+                  "value": "adaptive"
+                }
+              ],
+              "status": "supported"
+            }
+          },
+          "route": {
+            "routeId": "minimax",
+            "routeProfileId": "coding-plan-subscription"
+          },
+          "routeStatus": "mapped",
+          "sourceProviderId": "minimax-token-plan",
+          "wire": {
+            "api": "anthropic-messages",
+            "evidence": [],
+            "reasoning": {
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "default": "max",
+                "path": "/output_config/effort",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "max": "max",
+                  "medium": "medium",
+                  "xhigh": "xhigh"
+                }
+              },
+              "enable": [
+                {
+                  "path": "/thinking/type",
+                  "value": "adaptive"
+                }
+              ],
+              "mode": {
+                "status": "not_applicable"
+              },
+              "status": "supported"
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "status": "known",
+            "tokenParam": "max_tokens",
+            "toolsWithReasoning": "ok"
+          }
+        },
+        {
+          "externalModelId": "MiniMax-M3.1-Flash",
+          "pricing": {
+            "cachedRead": 0.015,
+            "input": 0.15,
+            "output": 0.6,
+            "type": "flat"
           },
           "reasoning": {
             "request": {
               "api": "chat-completions",
-              "disable": [
-                {
-                  "path": "/thinking/type",
-                  "value": "disabled"
+              "effort": {
+                "default": "max",
+                "path": "/reasoning_effort",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "max": "max",
+                  "medium": "medium",
+                  "xhigh": "xhigh"
                 }
-              ],
+              },
               "enable": [
                 {
                   "path": "/thinking/type",
@@ -5464,14 +5480,19 @@
             "api": "chat-completions",
             "evidence": [],
             "reasoning": {
-              "disable": [
-                {
-                  "path": "/thinking/type",
-                  "value": "disabled"
-                }
-              ],
-              "effort": {
+              "disable": {
                 "status": "not_applicable"
+              },
+              "effort": {
+                "default": "max",
+                "path": "/reasoning_effort",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "max": "max",
+                  "medium": "medium",
+                  "xhigh": "xhigh"
+                }
               },
               "enable": [
                 {
@@ -5489,43 +5510,60 @@
             },
             "status": "known",
             "tokenParam": "max_completion_tokens",
-            "toolsWithReasoning": "ok"
+            "toolsWithReasoning": {
+              "status": "unknown"
+            }
           }
         }
       ],
       "aliases": [
-        "minimax/minimax-m3",
-        "accounts/fireworks/models/minimax-m3",
-        "MiniMax-M3",
-        "minimax-m3-t"
+        "minimax/minimax-m3.1-flash",
+        "MiniMaxAI/MiniMax-M3.1-Flash",
+        "accounts/fireworks/models/minimax-m3p1-flash",
+        "minimax-m3.1-flash-free",
+        "MiniMax-M3.1-Flash"
       ],
       "contextWindow": 1000000,
       "contractVersion": 3,
-      "displayName": "MiniMax-M3",
+      "displayName": "MiniMax M3.1 Flash",
       "endpoints": {
         "openai": {
-          "api": "chat-completions",
-          "toolsWithReasoning": "ok"
+          "api": "chat-completions"
         }
       },
-      "modelId": "minimax-m3",
+      "inputModalities": [
+        "image",
+        "text",
+        "video"
+      ],
+      "modelId": "minimax-m3.1-flash",
       "outputModalities": [
         "text"
       ],
       "provider": "minimax",
       "reasoning": {
-        "control": "toggle",
-        "mandatory": false,
+        "control": "effort",
+        "defaultEffort": "max",
+        "efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ],
+        "mandatory": true,
         "supported": true
       },
-      "releaseDate": "2026-06-01",
+      "releaseDate": "2026-10-19",
       "status": "active",
       "subscriptionPlanIds": [
         "llm-gateway-devpass",
+        "minimax-token-plan",
         "ollama-cloud",
         "opencode-go"
       ],
       "supportsTools": true,
+      "supportsVision": true,
       "tokenParam": "max_completion_tokens",
       "videoInput": true,
       "videoOutput": false
@@ -6060,15 +6098,6 @@
                   "value": false
                 }
               ],
-              "effort": {
-                "default": "xhigh",
-                "path": "/reasoning_effort",
-                "values": {
-                  "low": "low",
-                  "medium": "medium",
-                  "xhigh": "xhigh"
-                }
-              },
               "enable": [
                 {
                   "path": "/enable_thinking",
@@ -6095,13 +6124,7 @@
                 }
               ],
               "effort": {
-                "default": "xhigh",
-                "path": "/reasoning_effort",
-                "values": {
-                  "low": "low",
-                  "medium": "medium",
-                  "xhigh": "xhigh"
-                }
+                "status": "unknown"
               },
               "enable": [
                 {
@@ -6325,7 +6348,7 @@
       "videoOutput": false
     }
   ],
-  "lastUpdated": "2026-11-09T16:15:53.532Z",
+  "lastUpdated": "2026-11-12T02:29:59.178Z",
   "models": [],
   "plans": [
     {
@@ -6451,6 +6474,16 @@
       "id": "anthropic-claude-code",
       "inclusions": [
         {
+          "externalModelId": "claude-fable-5-2",
+          "kind": "provider_model",
+          "provider": "anthropic",
+          "resolution": {
+            "modelId": "claude-fable-5-2",
+            "status": "mapped"
+          },
+          "sourceText": "claude-fable-5-2"
+        },
+        {
           "externalModelId": "claude-haiku-5-5",
           "kind": "provider_model",
           "provider": "anthropic",
@@ -6479,16 +6512,6 @@
             "status": "mapped"
           },
           "sourceText": "claude-opus-5-5"
-        },
-        {
-          "externalModelId": "claude-fable-5-1",
-          "kind": "provider_model",
-          "provider": "anthropic",
-          "resolution": {
-            "modelId": "claude-fable-5-1",
-            "status": "mapped"
-          },
-          "sourceText": "claude-fable-5-1"
         }
       ],
       "modelDiscovery": "catalog",
@@ -6544,54 +6567,54 @@
       "id": "cognition-devin",
       "inclusions": [
         {
-          "externalModelId": "claude-fable-5-1-high",
+          "externalModelId": "claude-fable-5-2-high",
           "kind": "provider_model",
           "provider": "cognition",
           "resolution": {
-            "modelId": "claude-fable-5-1",
+            "modelId": "claude-fable-5-2",
             "status": "mapped"
           },
-          "sourceText": "Claude Fable 5.1 High"
+          "sourceText": "Claude Fable 5.2 High"
         },
         {
-          "externalModelId": "claude-fable-5-1-low",
+          "externalModelId": "claude-fable-5-2-low",
           "kind": "provider_model",
           "provider": "cognition",
           "resolution": {
-            "modelId": "claude-fable-5-1",
+            "modelId": "claude-fable-5-2",
             "status": "mapped"
           },
-          "sourceText": "Claude Fable 5.1 Low"
+          "sourceText": "Claude Fable 5.2 Low"
         },
         {
-          "externalModelId": "claude-fable-5-1-max",
+          "externalModelId": "claude-fable-5-2-max",
           "kind": "provider_model",
           "provider": "cognition",
           "resolution": {
-            "modelId": "claude-fable-5-1",
+            "modelId": "claude-fable-5-2",
             "status": "mapped"
           },
-          "sourceText": "Claude Fable 5.1 Max"
+          "sourceText": "Claude Fable 5.2 Max"
         },
         {
-          "externalModelId": "claude-fable-5-1-medium",
+          "externalModelId": "claude-fable-5-2-medium",
           "kind": "provider_model",
           "provider": "cognition",
           "resolution": {
-            "modelId": "claude-fable-5-1",
+            "modelId": "claude-fable-5-2",
             "status": "mapped"
           },
-          "sourceText": "Claude Fable 5.1 Medium"
+          "sourceText": "Claude Fable 5.2 Medium"
         },
         {
-          "externalModelId": "claude-fable-5-1-xhigh",
+          "externalModelId": "claude-fable-5-2-xhigh",
           "kind": "provider_model",
           "provider": "cognition",
           "resolution": {
-            "modelId": "claude-fable-5-1",
+            "modelId": "claude-fable-5-2",
             "status": "mapped"
           },
-          "sourceText": "Claude Fable 5.1 XHigh"
+          "sourceText": "Claude Fable 5.2 XHigh"
         },
         {
           "externalModelId": "claude-haiku-5-5-high",
@@ -7146,14 +7169,14 @@
       "id": "google-antigravity",
       "inclusions": [
         {
-          "externalModelId": "gemini-3.8-flash-medium",
+          "externalModelId": "claude-sonnet-5-5-medium",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
-            "modelId": "gemini-3.8-flash",
+            "modelId": "claude-sonnet-5-5",
             "status": "mapped"
           },
-          "sourceText": "gemini-3.8-flash-medium"
+          "sourceText": "claude-sonnet-5-5-medium"
         },
         {
           "externalModelId": "gemini-4-argon-high",
@@ -7166,6 +7189,16 @@
           "sourceText": "gemini-4-argon-high"
         },
         {
+          "externalModelId": "claude-opus-5-5-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-opus-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-opus-5-5-high"
+        },
+        {
           "externalModelId": "claude-sonnet-5-5-high",
           "kind": "provider_model",
           "provider": "antigravity",
@@ -7174,16 +7207,6 @@
             "status": "mapped"
           },
           "sourceText": "claude-sonnet-5-5-high"
-        },
-        {
-          "externalModelId": "claude-sonnet-5-5-medium",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-sonnet-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-sonnet-5-5-medium"
         },
         {
           "externalModelId": "gemini-3.8-flash-high",
@@ -7196,6 +7219,16 @@
           "sourceText": "gemini-3.8-flash-high"
         },
         {
+          "externalModelId": "claude-sonnet-5-5-low",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-sonnet-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-sonnet-5-5-low"
+        },
+        {
           "externalModelId": "gemini-3.8-flash-low",
           "kind": "provider_model",
           "provider": "antigravity",
@@ -7206,14 +7239,14 @@
           "sourceText": "gemini-3.8-flash-low"
         },
         {
-          "externalModelId": "claude-sonnet-5-5-low",
+          "externalModelId": "gemini-4-argon-medium",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
-            "modelId": "claude-sonnet-5-5",
+            "modelId": "gemini-4-argon",
             "status": "mapped"
           },
-          "sourceText": "claude-sonnet-5-5-low"
+          "sourceText": "gemini-4-argon-medium"
         },
         {
           "externalModelId": "claude-opus-5-5-low",
@@ -7226,14 +7259,14 @@
           "sourceText": "claude-opus-5-5-low"
         },
         {
-          "externalModelId": "claude-opus-5-5-high",
+          "externalModelId": "gemini-3.8-flash-medium",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
-            "modelId": "claude-opus-5-5",
+            "modelId": "gemini-3.8-flash",
             "status": "mapped"
           },
-          "sourceText": "claude-opus-5-5-high"
+          "sourceText": "gemini-3.8-flash-medium"
         },
         {
           "externalModelId": "claude-opus-5-5-medium",
@@ -7254,16 +7287,6 @@
             "status": "mapped"
           },
           "sourceText": "gemini-4-argon-low"
-        },
-        {
-          "externalModelId": "gemini-4-argon-medium",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-argon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-argon-medium"
         }
       ],
       "modelDiscovery": "client",
@@ -7332,14 +7355,14 @@
           "sourceText": "gpt-6-luna"
         },
         {
-          "externalModelId": "claude-fable-5-1",
+          "externalModelId": "claude-fable-5-2",
           "kind": "provider_model",
           "provider": "llmgateway",
           "resolution": {
-            "modelId": "claude-fable-5-1",
+            "modelId": "claude-fable-5-2",
             "status": "mapped"
           },
-          "sourceText": "claude-fable-5-1"
+          "sourceText": "claude-fable-5-2"
         },
         {
           "externalModelId": "claude-sonnet-5-5",
@@ -7442,14 +7465,14 @@
           "sourceText": "deepseek-v4.1-flash"
         },
         {
-          "externalModelId": "minimax-m3",
+          "externalModelId": "minimax-m3.1-flash",
           "kind": "provider_model",
           "provider": "llmgateway",
           "resolution": {
-            "modelId": "minimax-m3",
+            "modelId": "minimax-m3.1-flash",
             "status": "mapped"
           },
-          "sourceText": "minimax-m3"
+          "sourceText": "minimax-m3.1-flash"
         },
         {
           "externalModelId": "kimi-k3.1-pro",
@@ -7563,7 +7586,18 @@
     {
       "contractVersion": 3,
       "id": "minimax-token-plan",
-      "inclusions": [],
+      "inclusions": [
+        {
+          "externalModelId": "MiniMax-M3.1-Flash",
+          "kind": "provider_model",
+          "provider": "minimax",
+          "resolution": {
+            "modelId": "minimax-m3.1-flash",
+            "status": "mapped"
+          },
+          "sourceText": "MiniMax-M3.1-Flash"
+        }
+      ],
       "modelDiscovery": "hybrid",
       "provider": "minimax",
       "route": {
@@ -7586,44 +7620,24 @@
       "id": "ollama-cloud",
       "inclusions": [
         {
-          "externalModelId": "mimo-v2.6-pro",
+          "externalModelId": "glm-5.3-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "mimo-v2.6-pro",
+            "modelId": "glm-5.3-flash",
             "status": "mapped"
           },
-          "sourceText": "mimo-v2.6-pro"
+          "sourceText": "glm-5.3-flash"
         },
         {
-          "externalModelId": "glm-5.3",
+          "externalModelId": "minimax-m3.1-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "glm-5.3",
+            "modelId": "minimax-m3.1-flash",
             "status": "mapped"
           },
-          "sourceText": "glm-5.3"
-        },
-        {
-          "externalModelId": "minimax-m3",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "minimax-m3",
-            "status": "mapped"
-          },
-          "sourceText": "minimax-m3"
-        },
-        {
-          "externalModelId": "mimo-v2.6-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "mimo-v2.6-flash",
-            "status": "mapped"
-          },
-          "sourceText": "mimo-v2.6-flash"
+          "sourceText": "minimax-m3.1-flash"
         },
         {
           "externalModelId": "deepseek-v4.1-flash",
@@ -7636,14 +7650,24 @@
           "sourceText": "deepseek-v4.1-flash"
         },
         {
-          "externalModelId": "glm-5.3-flash",
+          "externalModelId": "mimo-v2.6-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "glm-5.3-flash",
+            "modelId": "mimo-v2.6-flash",
             "status": "mapped"
           },
-          "sourceText": "glm-5.3-flash"
+          "sourceText": "mimo-v2.6-flash"
+        },
+        {
+          "externalModelId": "glm-5.3",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "glm-5.3",
+            "status": "mapped"
+          },
+          "sourceText": "glm-5.3"
         },
         {
           "externalModelId": "kimi-k3.1-pro",
@@ -7654,6 +7678,16 @@
             "status": "mapped"
           },
           "sourceText": "kimi-k3.1-pro"
+        },
+        {
+          "externalModelId": "mimo-v2.6-pro",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "mimo-v2.6-pro",
+            "status": "mapped"
+          },
+          "sourceText": "mimo-v2.6-pro"
         }
       ],
       "modelDiscovery": "catalog",
@@ -7802,14 +7836,14 @@
           "sourceText": "mimo-v2.6-pro"
         },
         {
-          "externalModelId": "minimax-m3",
+          "externalModelId": "minimax-m3.1-flash",
           "kind": "provider_model",
           "provider": "opencode",
           "resolution": {
-            "modelId": "minimax-m3",
+            "modelId": "minimax-m3.1-flash",
             "status": "mapped"
           },
-          "sourceText": "minimax-m3"
+          "sourceText": "minimax-m3.1-flash"
         },
         {
           "externalModelId": "muse-spark-1.3-contributor",
@@ -7928,7 +7962,7 @@
     }
   ],
   "routeRegistry": {
-    "generationId": "g-20261109161553532-980a49e4",
+    "generationId": "g-20261112022959178-a6d01f51",
     "registry": {
       "contractVersion": 3,
       "registryVersion": "3.7.0",
