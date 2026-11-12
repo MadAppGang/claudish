@@ -320,7 +320,9 @@ jobs:
             // bin/ is more than the launcher: claudish.cjs requires its siblings
             // (env-files.cjs). npm always ships the bin entry itself, so leaving
             // bin/ out drops only the siblings and every install fails to start.
-            pkg.files = ['dist/', 'bin/', 'AI_AGENT_GUIDE.md', 'skills/'];
+            // herdr-app-mod/ holds the Herdr.app mod that `claudish herdr
+            // install-app-mod` copies; release-files.test.ts checks this list.
+            pkg.files = ['dist/', 'bin/', 'herdr-app-mod/', 'AI_AGENT_GUIDE.md', 'skills/'];
             // Sync optionalDependencies versions to release version
             if (pkg.optionalDependencies) {
               for (const key of Object.keys(pkg.optionalDependencies)) {
@@ -346,6 +348,8 @@ jobs:
           npm init -y > /dev/null
           npm install --no-audit --no-fund "$TARBALL"
           node node_modules/claudish/bin/claudish.cjs --version
+          test -s node_modules/claudish/herdr-app-mod/claudish/main.js
+          test -s node_modules/claudish/herdr-app-mod/claudish/mod.json
           rm -f "$TARBALL"
 
       - name: Publish to npm
