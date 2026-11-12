@@ -108,11 +108,18 @@ export function redactSecrets(text: string): string {
   );
 }
 
+import type { EffortLevel } from "../../adapters/base-api-format.js";
 import type { SelectReason } from "../accounts/policy.js";
 import type { AccountRef, AccountSelectionContext } from "../accounts/types.js";
 
 export interface RequestAuthContext {
   model: string;
+  /**
+   * The request's reasoning level, for a credential that builds the request
+   * envelope and must choose a model id that carries the effort (Antigravity).
+   * Absent means the request carries no effort.
+   */
+  effort?: EffortLevel;
   exclude?: AccountRef[];
   pin?: AccountRef;
   rejected?: RequestAuth;
@@ -151,7 +158,12 @@ export interface RequestAuth {
   selectReason?: SelectReason;
   headers: Record<string, string>;
   endpoint?: string;
-  transformPayload?(payload: any): any;
+  /**
+   * Wrap the payload in the provider envelope. `request`, when given, carries
+   * THIS request's effort and replaces `RequestAuthContext.effort`: one artifact
+   * can serve turns with different levels.
+   */
+  transformPayload?(payload: any, request?: { effort?: EffortLevel }): any;
   /**
    * Which half of a composite produced this. Set by the halves themselves and
    * passed through untouched by `CompositeCredentialProvider`, so a consumer can

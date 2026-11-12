@@ -8,7 +8,34 @@
  * primary envelope), the availability check and route gathering all share it.
  */
 
-import { lookupFamilyDefaultVariant } from "../adapters/model-catalog.js";
+import type { EffortLevel } from "../adapters/base-api-format.js";
+import {
+  lookupConnectionModelIdEffort,
+  lookupFamilyDefaultVariant,
+} from "../adapters/model-catalog.js";
+import { chooseModelIdForEffort, namesSpeedPremium } from "./model-id-effort.js";
+
+/**
+ * The id the connection's effort map chooses, or undefined when no map applies
+ * and {@link resolveAntigravityModelId} decides.
+ */
+function mappedAntigravityModelId(
+  requested: string,
+  served: { servedIds: string[]; defaultId: string | null },
+  effort: EffortLevel | undefined
+): string | undefined {
+  const req = requested.trim();
+  if (!effort && served.servedIds.includes(req)) return undefined;
+  const map = lookupConnectionModelIdEffort(req, "antigravity");
+  if (!map) return undefined;
+  return chooseModelIdForEffort(map, effort, {
+    sendable: (id) => (served.servedIds.includes(id) && !namesSpeedPremium(id) ? id : undefined),
+    serverDefault: (ids) =>
+      served.defaultId && ids.includes(served.defaultId) ? served.defaultId : undefined,
+    // `ids` is ordered highest effort first.
+    fallback: (ids) => ids[0]!,
+  });
+}
 
 /**
  * Reasoning-tier RANK — a LAST-RESORT rule, used only when neither the backend
@@ -118,9 +145,22 @@ export function resolveAntigravityModelId(
 }
 
 /**
- * The id a request for `requested` is SENT as: {@link resolveAntigravityModelId}
- * over the account's full dynamic models catalog (`servedIds`), with the cloud models catalog's family default
- * (`lookupFamilyDefaultVariant`) as its second rule.
+ * The id a request for `requested` at `effort` is SENT as.
+ *
+ * First the connection's effort map (`modelIdEffort`), when the cloud models
+ * catalog publishes one for the Antigravity connection whose `externalModelId`
+ * is exactly `requested`:
+ *  - an effort level → `values[effort]`, else the next higher listed level,
+ *    else the highest listed level;
+ *  - `none` → the published `off` id;
+ *  - no effort → the backend's `defaultId` when it is one of the map's ids, else
+ *    the highest listed level. A served base with no effort is sent as itself.
+ * Only an id the account's dynamic models catalog lists, and that carries no
+ * speed premium, is sent. Otherwise, and with no map, it is
+ * {@link resolveAntigravityModelId} over the account's full dynamic models
+ * catalog (`servedIds`), with the cloud models catalog's family default
+ * (`lookupFamilyDefaultVariant`) as its second rule. A requested id that is not
+ * a mapped base (an exact `gemini-4-carbon-low`) is never re-resolved by effort.
  *
  * The ONE resolution the transport, the credential (which builds the primary
  * envelope), the routing availability check (`providerServesModel`) and route
@@ -131,8 +171,11 @@ export function resolveAntigravityModelId(
  */
 export function resolveAntigravityServedModel(
   requested: string,
-  served: { servedIds: string[]; defaultId: string | null }
+  served: { servedIds: string[]; defaultId: string | null },
+  effort?: EffortLevel
 ): string {
+  const mapped = mappedAntigravityModelId(requested, served, effort);
+  if (mapped) return mapped;
   return resolveAntigravityModelId(
     requested,
     served.servedIds,

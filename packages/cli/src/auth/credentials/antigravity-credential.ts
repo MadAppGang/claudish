@@ -22,6 +22,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { EffortLevel } from "../../adapters/base-api-format.js";
 import { resolveAntigravityServedModel } from "../../providers/transport/antigravity.js";
 import {
   antigravityTokenLineageMaterial,
@@ -98,20 +99,21 @@ export class AntigravityCredentialProvider implements CredentialProvider {
     const token = await getValidAntigravityAccessToken();
     const { projectId, tierId } = await setupAntigravityUser(token);
     // Resolve the requested id against the account's dynamic models catalog
-    // (fetchAvailableModels).
-    const servedModel = resolveAntigravityServedModel(
-      ctx.model,
-      await getServedAntigravityModels(token, projectId)
-    );
+    // (fetchAvailableModels), at the request's effort: the level can be carried
+    // in the model id. The same function the transport and the availability
+    // check use, so all three choose the same id.
+    const served = await getServedAntigravityModels(token, projectId);
+    const servedModelAt = (effort: EffortLevel | undefined) =>
+      resolveAntigravityServedModel(ctx.model, served, effort);
     return {
       headers: {
         Authorization: `Bearer ${token}`,
         "User-Agent": buildAntigravityUserAgent(),
         "x-activity-request-id": createActivityRequestId(),
       },
-      transformPayload: (inner: any) => {
+      transformPayload: (inner: any, request?: { effort?: EffortLevel }) => {
         const env: any = {
-          model: servedModel,
+          model: servedModelAt(request ? request.effort : ctx.effort),
           project: projectId,
           user_prompt_id: randomUUID(),
           request: inner,

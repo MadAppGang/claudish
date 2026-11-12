@@ -191,6 +191,31 @@ catalog's ids with no backend default. Antigravity stays out of the resolver
 registry: a resolver there receives neither the full `servedIds` nor the backend
 default.
 
+**The effort level chooses the id, from the connection's effort map** (2026-11-12).
+Before this, effort never reached the id: `low` still sent `gemini-4-carbon-high`.
+`resolveAntigravityServedModel(requested, served, effort?)` now reads the
+`modelIdEffort` map of the Antigravity connection whose `externalModelId` equals
+`requested` (`lookupConnectionModelIdEffort`, `adapters/model-catalog.ts`; never a
+sibling connection, so a 1M base never takes the default-context map). At effort `e`
+it sends `values[e]`, else the next higher listed level, else the highest; `none`
+sends the published `off` id. With no effort a served base is sent as itself;
+otherwise the backend's `defaultAgentModelId` when it is a map id, else the highest
+listed level. An id the account does not serve, or a `-fast`/`-priority` id, is
+never chosen from the map: the rules above answer instead. An exact id that is not
+a mapped base (`gemini-4-carbon-low`) is sent unchanged at any effort.
+
+The effort reaches the one decision on both paths. The credential takes it as
+`RequestAuthContext.effort`, and its envelope builder takes the request's effort as
+`transformPayload(payload, {effort})`, because one artifact serves turns with
+different levels. The transport reads the Claude request's effort in `transformPayload`
+(`output_config.effort`, else the legacy `thinking.budget_tokens` bucket, through
+`wireChoicesFromClaudeRequest`, the reading the dialect's `thinkingConfig` uses) and hands it to the credential's builder, or resolves with the
+same function for its local builder. `servedModelName` follows the id actually sent.
+The `--effort` pin does not reach this choice: the transport sees the Claude request,
+not the dialect's pinned level. The body's `thinkingConfig` is unchanged; an exact id
+whose level differs from the request's effort still carries the request's
+`thinkingConfig`.
+
 ## Ordering: cloud models catalog dates are poison for Antigravity's models
 
 Antigravity rows set `ignoreCatalogReleaseDate`. `compareByReleaseDateDesc` sorts

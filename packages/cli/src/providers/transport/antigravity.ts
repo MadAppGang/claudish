@@ -28,6 +28,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { type EffortLevel, isEffortLevel } from "../../adapters/base-api-format.js";
 import {
   forceRefreshAntigravityToken,
   getValidAntigravityAccessToken,
@@ -51,6 +52,7 @@ import {
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
 import { resolveAntigravityServedModel } from "../antigravity-model-id.js";
+import { wireChoicesFromClaudeRequest } from "../wire-request.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
@@ -97,6 +99,16 @@ export {
   resolveAntigravityModelId,
   resolveAntigravityServedModel,
 } from "../antigravity-model-id.js";
+
+/**
+ * The reasoning level a Claude request carries: `output_config.effort`, else the
+ * legacy `thinking.budget_tokens` bucket — the reading the Gemini dialect's
+ * `thinkingConfig` uses, so the id and the thinking control follow one level.
+ */
+function effortOf(claudeRequest: unknown): EffortLevel | undefined {
+  const level = wireChoicesFromClaudeRequest(claudeRequest).effort;
+  return isEffortLevel(level) ? level : undefined;
+}
 
 /** Generate a short random request ID (matches the Antigravity CLI activity logger) */
 function createActivityRequestId(): string {
@@ -251,6 +263,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * chain, and the model-not-found hint.
    */
   private servedModels: string[] = [];
+  /** The account's dynamic models catalog with the backend default, for per-request resolution. */
+  private served: { servedIds: string[]; defaultId: string | null } = {
+    servedIds: [],
+    defaultId: null,
+  };
 
   constructor(modelName: string) {
     this.modelName = modelName;
@@ -333,6 +350,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
     // model-id resolution + the capacity fallback + the model-not-found hint all
     // reflect what THIS subscription actually serves today.
     const served = await getServedAntigravityModels(this.accessToken, this.projectId);
+    this.served = served;
     this.servedModels = served.servedIds;
     // Resolve the requested id to a served id against the live set, with the
     // function the credential provider (which builds the primary envelope) and
@@ -410,15 +428,29 @@ export class AntigravityProviderTransport implements ProviderTransport {
   /**
    * Wrap the standard Gemini payload in the CodeAssist envelope.
    *
+   * The model id is chosen per request at the effort `claudeRequest` carries
+   * ({@link effortOf}), because Antigravity carries the level in the id
+   * and one transport serves turns with different levels. Both builders choose
+   * it with `resolveAntigravityServedModel` over the same dynamic models catalog.
+   *
    * Stores the envelope for potential fallback retries in enqueueRequest.
    */
-  transformPayload(payload: any): any {
+  transformPayload(payload: any, claudeRequest?: any): any {
+    const request = claudeRequest === undefined ? undefined : { effort: effortOf(claudeRequest) };
     // PRIMARY request: the CodeAssist envelope comes from the delegated auth
     // artifact (which maps the model id). Fall back to the local builder if
     // delegation hasn't run.
     const envelope = this.cachedAuth?.transformPayload
-      ? this.cachedAuth.transformPayload(payload)
-      : this.buildEnvelope(payload, this.servedModelName);
+      ? this.cachedAuth.transformPayload(payload, request)
+      : this.buildEnvelope(
+          payload,
+          request
+            ? resolveAntigravityServedModel(this.modelName, this.served, request.effort)
+            : this.servedModelName
+        );
+    if (typeof envelope?.model === "string" && envelope.model) {
+      this.servedModelName = envelope.model;
+    }
     this.lastEnvelope = envelope;
     return envelope;
   }
