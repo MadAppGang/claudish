@@ -258,6 +258,19 @@ export function lookupConnectionModelIdEffort(
   return findModelIdEffortConnection(wireId, provider, cachePath)?.map;
 }
 
+/** Every connection on `provider`'s route that publishes a well-formed effort map. */
+export function listModelIdEffortConnections(
+  provider: string,
+  cachePath?: string
+): ModelIdEffortConnection[] {
+  const out: ModelIdEffortConnection[] = [];
+  for (const candidate of providerConnections(provider, cachePath)) {
+    const map = readModelIdEffort(candidate.connection.modelIdEffort);
+    if (map) out.push({ ...candidate, map });
+  }
+  return out;
+}
+
 /**
  * The default preset variant for a family on a given provider, if the catalog
  * knows one.

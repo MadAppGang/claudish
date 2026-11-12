@@ -48,6 +48,10 @@
  */
 
 import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "../../adapters/base-api-format.js";
+import {
+  type ModelIdEffortConnection,
+  listModelIdEffortConnections,
+} from "../../adapters/model-catalog.js";
 import type { DevinModelConfig } from "../devin/devin-models.js";
 import { chooseConnectionModelId } from "../model-id-effort-choice.js";
 import { SPEED_PREMIUM_SUFFIXES } from "../model-id-effort.js";
@@ -188,8 +192,11 @@ function byCost(a: ModelsCatalogEntry, b: ModelsCatalogEntry): number {
 }
 
 /**
- * The entry a group resolves to when no effort is requested — also the id the
- * picker shows for that row.
+ * The entry a group resolves to when no effort is requested and the catalog
+ * publishes no effort map for it, and the group's representative in the picker:
+ * its label, window and cost always, and its id when no Devin connection's
+ * effort map lists a member of the group (a mapped group shows its connection's
+ * base instead, see `collapse`).
  *
  * Order: the vendor's own default (the cheapest, when a pool spanning several
  * groups carries more than one) -> cheapest **tier-less** non-premium ->
@@ -251,9 +258,14 @@ export class DevinModelResolver implements ProviderModelResolver {
       windowsPerLabel.set(label, seen);
     }
 
+    const mapped = listModelIdEffortConnections("devin");
     const choices: ModelChoice[] = [];
     for (const group of groups.values()) {
       const chosen = defaultOf(group);
+      // A group with a catalog effort map shows and launches its connection's
+      // base, so the request's effort (or, with none, the no-effort rule)
+      // chooses the level; a suffixed representative would fix it.
+      const id = mappedBaseOf(group, mapped) ?? chosen.wireId;
       const label = groupKeyOf(chosen);
       const ambiguous = (windowsPerLabel.get(label)?.size ?? 1) > 1;
       const window = chosen.contextWindow ?? 0;
@@ -269,7 +281,7 @@ export class DevinModelResolver implements ProviderModelResolver {
       });
 
       choices.push({
-        id: chosen.wireId,
+        id,
         displayName: ambiguous && window > 0 ? `${label} (${formatWindow(window)})` : label,
         contextWindow: chosen.contextWindow,
         variants,
@@ -396,6 +408,25 @@ function mappedWireId(
       return entry && !devinHasSpeedPremium(asConfig(entry)) ? entry.wireId : undefined;
     },
   });
+}
+
+/**
+ * The base a picker row shows and launches when the catalog publishes an effort
+ * map for its group: the `externalModelId` of the Devin connection whose map
+ * lists one of the group's ids (a level or `off`). Matching by listed id keeps a
+ * 1M group on its own connection's base, never the default-context sibling's.
+ * Undefined when no connection's map lists a member of the group.
+ */
+function mappedBaseOf(
+  group: ModelsCatalogEntry[],
+  connections: readonly ModelIdEffortConnection[]
+): string | undefined {
+  const members = new Set(group.map((entry) => entry.wireId.toLowerCase()));
+  const lists = (id: string | undefined) => id !== undefined && members.has(id.toLowerCase());
+  const found = connections.find(
+    ({ map }) => lists(map.off) || Object.values(map.values).some((id) => lists(id))
+  );
+  return found?.connection.externalModelId;
 }
 
 /**
