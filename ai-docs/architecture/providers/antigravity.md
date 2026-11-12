@@ -231,12 +231,18 @@ builders; it never reuses the previous turn's id. `refreshAuth` resolves
 sent.
 
 **No effort in the body beside an effort-carrying id.** The catalog contract says
-the effort is never written into the request body. When the requested id is the
-base of a connection with an effort map, or an id such a map lists,
-`antigravityBodyForModelId` removes `thinkingLevel` and `thinkingBudget` from
-`generationConfig.thinkingConfig` (dropping the object when nothing else is left)
-and keeps `includeThoughts`. Both builders apply it; a model with no map keeps its
-`thinkingConfig` unchanged.
+the effort is never written into the request body. The body follows the id
+actually SENT on each attempt, never the requested one: when the sent id is one an
+Antigravity effort map lists (a level or `off`), `antigravityBodyForModelId`
+removes `thinkingLevel` and `thinkingBudget` from `generationConfig.thinkingConfig`
+(dropping the object when nothing else is left) and keeps `includeThoughts`; any
+other sent id keeps the dialect's control. Deciding by the requested base lost the
+effort twice: a mapped base whose map id the account does not serve falls back to
+an unmapped id (`gemini-3.7-flash` at `low` sending `gemini-3.7-flash-tiered`),
+which then carried no effort anywhere; and a capacity retry reused the primary's
+body, shaped for a different id. Both builders shape the primary from the original
+dialect payload, and the transport keeps that payload (`lastPayload`) so every
+capacity retry shapes it again for its own id.
 
 **The capacity fallback never picks a speed premium.** On
 `MODEL_CAPACITY_EXHAUSTED` the retry candidates are the served ids minus the one

@@ -264,6 +264,13 @@ export class AntigravityProviderTransport implements ProviderTransport {
   /** The last envelope built by transformPayload, stored for fallback retries */
   private lastEnvelope: any = null;
 
+  /**
+   * The dialect payload that envelope was built from, before any effort control
+   * was removed. Each capacity retry shapes its body from this by the id it
+   * sends, never from the primary's body.
+   */
+  private lastPayload: unknown = null;
+
   /** Set when a fallback model is used instead of the requested one */
   private _activeModelName: string | undefined;
 
@@ -459,10 +466,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * levels. A call with no Claude request and no pin is a request with no
    * effort, resolved afresh: never the previous turn's id. Both builders choose
    * the id with `resolveAntigravityServedModel` over the same dynamic models
-   * catalog, and both drop the body's effort controls on a mapped connection
-   * (`antigravityBodyForModelId`).
+   * catalog, and both drop the body's effort controls only when the id they
+   * send carries the effort (`antigravityBodyForModelId`).
    *
-   * Stores the envelope for potential fallback retries in enqueueRequest.
+   * Stores the envelope and the original payload for potential fallback
+   * retries in enqueueRequest.
    */
   transformPayload(payload: any, claudeRequest?: any): any {
     const request = { effort: effortOf(claudeRequest, this.pinnedEffort) };
@@ -471,15 +479,22 @@ export class AntigravityProviderTransport implements ProviderTransport {
     // delegation hasn't run.
     const envelope = this.cachedAuth?.transformPayload
       ? this.cachedAuth.transformPayload(payload, request)
-      : this.buildEnvelope(
-          antigravityBodyForModelId(payload, this.modelName),
-          resolveAntigravityServedModel(this.modelName, this.served, request.effort)
-        );
+      : this.buildLocalEnvelope(payload, request.effort);
     if (typeof envelope?.model === "string" && envelope.model) {
       this.servedModelName = envelope.model;
     }
     this.lastEnvelope = envelope;
+    this.lastPayload = payload;
     return envelope;
+  }
+
+  /**
+   * The local builder's primary envelope: the id resolved at `effort`, and the
+   * body shaped for that id.
+   */
+  private buildLocalEnvelope(payload: unknown, effort: EffortLevel | undefined) {
+    const model = resolveAntigravityServedModel(this.modelName, this.served, effort);
+    return this.buildEnvelope(antigravityBodyForModelId(payload, model), model);
   }
 
   /**
@@ -583,8 +598,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * ordered by rank, excluding the model that just exhausted, every id the
    * backend declares unselectable, and every speed premium (`-fast`,
    * `-priority`): a premium costs more and is sent only when the request names
-   * it. With no candidate left, the original capacity failure is returned. A
-   * candidate that 404s (briefly unserved mid-tier-roll) or rate-limits is
+   * it. With no candidate left, the original capacity failure is returned. Each
+   * candidate's body is shaped from the original dialect payload by the id it
+   * sends (`antigravityBodyForModelId`). A candidate that 404s (briefly unserved mid-tier-roll) or rate-limits is
    * skipped.
    */
   private async handleCapacityExhausted(
@@ -615,7 +631,10 @@ export class AntigravityProviderTransport implements ProviderTransport {
     );
 
     let lastResponse = originalResponse;
-    const innerPayload = this.lastEnvelope.request;
+    // The original dialect payload: the primary's body was shaped for the id it
+    // sent, and a retry id may carry the effort where that one did not, or not
+    // where it did.
+    const originalPayload = this.lastPayload;
     const endpoint = this.getEndpoint();
     const tried: string[] = [this.servedModelName];
 
@@ -626,7 +645,10 @@ export class AntigravityProviderTransport implements ProviderTransport {
       log(`[Antigravity] Trying fallback model: ${fallbackModel}`);
       tried.push(fallbackModel);
 
-      const fallbackEnvelope = this.buildEnvelope(innerPayload, fallbackModel);
+      const fallbackEnvelope = this.buildEnvelope(
+        antigravityBodyForModelId(originalPayload, fallbackModel),
+        fallbackModel
+      );
       const headers = this.buildLocalHeaders();
       headers["Content-Type"] = "application/json";
 

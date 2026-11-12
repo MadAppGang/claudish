@@ -115,13 +115,14 @@ export class AntigravityCredentialProvider implements CredentialProvider {
         "x-activity-request-id": createActivityRequestId(),
       },
       transformPayload: (inner: any, request?: { effort?: EffortLevel }) => {
+        const model = servedModelAt(request ? request.effort : ctx.effort);
         const env: any = {
-          model: servedModelAt(request ? request.effort : ctx.effort),
+          model,
           project: projectId,
           user_prompt_id: randomUUID(),
-          // The model id carries the effort on a mapped connection; the body
-          // then carries none beside it.
-          request: antigravityBodyForModelId(inner, ctx.model),
+          // When the id sent carries the effort, the body carries none beside
+          // it; otherwise the dialect's control stays.
+          request: antigravityBodyForModelId(inner, model),
         };
         if (tierId && tierId !== "free-tier") {
           env.enabled_credit_types = ["GOOGLE_ONE_AI"];

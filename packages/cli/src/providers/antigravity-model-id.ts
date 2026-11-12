@@ -51,20 +51,23 @@ function mappedAntigravityModelId(
 }
 
 /**
- * Whether a request for `requested` is sent with its effort in the model id, so
- * the body must carry no effort control beside it: `requested` is the base of
- * an Antigravity connection with an effort map, or an id such a map lists.
+ * Whether the id `sent` carries the effort, so the body must carry no effort
+ * control beside it: `sent` is an id an Antigravity effort map lists (a level or
+ * `off`). Decided by the id actually sent on an attempt, never by the requested
+ * one: a mapped base that falls back to an unmapped id, or a capacity retry to
+ * one, still needs the body's control.
  */
-export function antigravityCarriesEffortInModelId(requested: string): boolean {
-  return carriesEffortInModelId(requested.trim(), "antigravity");
+export function antigravityCarriesEffortInModelId(sent: string): boolean {
+  return carriesEffortInModelId(sent.trim(), "antigravity");
 }
 
 /**
- * The Gemini body without the effort controls (`thinkingLevel`,
- * `thinkingBudget`) when the model id carries the effort; unchanged otherwise.
- * `includeThoughts` and every other field are kept. Never mutates `inner`.
+ * The Gemini body for an attempt that sends `sent`: without the effort controls
+ * (`thinkingLevel`, `thinkingBudget`) when `sent` carries the effort; unchanged
+ * otherwise. `includeThoughts` and every other field are kept. Never mutates
+ * `inner`, so every attempt shapes the same original dialect payload.
  */
-export function antigravityBodyForModelId<T>(inner: T, requested: string): T {
+export function antigravityBodyForModelId<T>(inner: T, sent: string): T {
   const body = inner as
     | { generationConfig?: { thinkingConfig?: Record<string, unknown> } }
     | null
@@ -72,7 +75,7 @@ export function antigravityBodyForModelId<T>(inner: T, requested: string): T {
   const thinking = body?.generationConfig?.thinkingConfig;
   if (!thinking || typeof thinking !== "object") return inner;
   if (!("thinkingLevel" in thinking) && !("thinkingBudget" in thinking)) return inner;
-  if (!antigravityCarriesEffortInModelId(requested)) return inner;
+  if (!antigravityCarriesEffortInModelId(sent)) return inner;
   const { thinkingLevel: _level, thinkingBudget: _budget, ...kept } = thinking;
   const generationConfig: Record<string, unknown> = { ...body?.generationConfig };
   if (Object.keys(kept).length > 0) generationConfig.thinkingConfig = kept;
