@@ -271,7 +271,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   private lastPayload: unknown = null;
 
-  /** Set when a fallback model is used instead of the requested one */
+  /**
+   * The capacity-retry id that served the current request, when one did.
+   * Cleared as each request starts, so a request served on its primary id
+   * never reports an earlier request's retry.
+   */
   private _activeModelName: string | undefined;
 
   /** The `--effort` level, which outranks the level each Claude request carries. */
@@ -537,6 +541,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
   ): Promise<Response> {
     const queue = GeminiRequestQueue.getInstance();
     const signal = opts?.signal;
+    // Only this request's capacity retry may set it again.
+    this._activeModelName = undefined;
 
     let lastResponse: Response | null = null;
     for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {

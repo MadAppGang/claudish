@@ -247,7 +247,10 @@ capacity retry shapes it again for its own id.
 **The capacity fallback never picks a speed premium.** On
 `MODEL_CAPACITY_EXHAUSTED` the retry candidates are the served ids minus the one
 that failed, minus every `-fast`/`-priority` id and every id in `excludedIds`. With
-none left, the original capacity failure is returned.
+none left, the original capacity failure is returned. `getActiveModelName()` names
+the retry id that served the CURRENT request only: `enqueueRequest` clears it as
+each request starts, so a later request served on its primary id never reports an
+earlier retry to the status line.
 
 ## Ordering: cloud models catalog dates are poison for Antigravity's models
 
