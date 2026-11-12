@@ -516,7 +516,7 @@ function gatherVendorClaims(
  * `swe-1.7` is sent as `swe-1-7-medium`; Antigravity's `gemini-3.8-flash` as a
  * served variant), or `undefined` when the list does not carry it.
  *
- * Antigravity resolves over the served set the list describes, its excluded ids
+ * Antigravity resolves over the served ids the list describes, its excluded ids
  * included (`antigravityServedSetOfList`), the same set the availability check
  * falls back to. An excluded exact id therefore resolves as itself, which no row
  * carries, so it gets no candidate, rather than one its family default's sibling

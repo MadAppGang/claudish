@@ -186,7 +186,7 @@ async function fetchAntigravityModelsCatalog(): Promise<FetcherResult> {
     // The served ids the backend excludes travel beside the list, never in it:
     // nothing offers or picks them, but the exact-id resolution has to see that
     // the account lists them, or a requested excluded id with a family default
-    // reads as served through its sibling once the in-process served set is gone.
+    // reads as served through its sibling once the in-process id list is gone.
     const excludedServed = servedIds.filter((id) => declaredExcluded.has(id));
     return {
       kind: "models",

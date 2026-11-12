@@ -360,7 +360,7 @@ describe("stored Antigravity exact-id routing agrees with transport", () => {
     test(`${state === "warm" ? "control: " : ""}${state}: availability rejects the excluded exact high id`, async () => {
       addExactIdFamilyDefault();
       await storedLists([MEDIUM]);
-      // Cache warmth changes only the full served set, never the stored list.
+      // Cache warmth changes only the in-process id list, never the stored list.
       warm = true;
       const warmAnswer = await providerServesModel("antigravity", HIGH);
       expect(warmAnswer).toBe("not-served");

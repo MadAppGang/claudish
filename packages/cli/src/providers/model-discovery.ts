@@ -840,7 +840,7 @@ export function servedOutcomeOf(unsplit: DiscoveredModel[]): ModelsCatalogOutcom
  * nothing may offer or pick. `excludedIds` are the served ids the endpoint
  * declares not selectable (`ModelsCatalogOutcome.excludedIds`), kept beside
  * the lists and never in them, so a reader resolving an id sees the same
- * served set the transport does. Fail-soft like {@link discoverProviderModels}:
+ * served ids the transport does. Fail-soft like {@link discoverProviderModels}:
  * both lists are empty on any failure. Shares the one discovery cache.
  */
 export async function discoverProviderServedIds(providerName: string): Promise<{

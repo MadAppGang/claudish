@@ -28,14 +28,15 @@ export interface AntigravityServedSet {
 }
 
 /**
- * The served set a dynamic models catalog describes, for a reader that holds
- * the list but not the live served set (`peekServedAntigravityModels`): the
+ * The served ids a dynamic models catalog describes, for a reader that holds
+ * the list but not the in-process list of the account's served and excluded
+ * ids (`peekServedAntigravityModels`): the
  * listed ids plus the served ids the backend excludes, which discovery keeps
  * beside the list (`AccountModelsList.excludedIds`) rather than in it. Without
  * them a requested excluded id looks unlisted, the exact-id step of
  * {@link resolveAntigravityServedModel} cannot see it, and a family default
- * answers with a sibling instead. No backend default: only the live served set
- * carries one.
+ * answers with a sibling instead. No backend default: only the in-process
+ * list carries one.
  */
 export function antigravityServedSetOfList(
   listedIds: readonly string[],

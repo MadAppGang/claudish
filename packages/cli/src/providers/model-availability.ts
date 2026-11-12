@@ -110,9 +110,9 @@ function modelsCatalogHas(ids: string[], wireId: string): boolean {
  * and the same rule applies: `ag@gemini-3.8-flash` read as not served on an
  * account serving only `gemini-3.8-flash-tiered`, which the transport sends,
  * so a bare name lost its subscription hop. It resolves here with the
- * transport's own function over the transport's own inputs: the full served
- * set and the backend's default id, cached by the discovery that just ran.
- * Only when that cache is absent does it fall back to the served set the
+ * transport's own function over the transport's own inputs: the in-process
+ * list of served and excluded ids and the backend's default id, cached by the discovery that just ran.
+ * Only when that cache is absent does it fall back to the served ids the
  * dynamic models catalog describes (`antigravityServedSetOfList`: its ids plus
  * the excluded ids stored beside them), with no backend default. Both carry the
  * excluded ids, so an excluded exact id resolves as itself either way and the
