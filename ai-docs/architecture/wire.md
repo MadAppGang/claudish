@@ -157,7 +157,8 @@ mapped base; `readModelIdEffort` keeps a string `default` as published. The acco
 entitlement: an id its dynamic models catalog does not list (or a speed premium, or an id Antigravity
 declares unselectable) is never sent, and the provider's existing resolution answers instead. A map
 with no `values` (only `off`) leaves a no-effort request to that existing resolution too. A served
-base requested with no effort is sent as itself. Until the backend publishes the `default` column,
+base requested with no effort is sent as itself, unless Antigravity declares it unselectable; then
+the map decides as above. Until the backend publishes the `default` column,
 step 3 is the common case.
 
 ## Speed: `#<speed>`, Claude Code's `/fast`, and the Codex service tier

@@ -202,7 +202,10 @@ spelling is consulted only when no connection has the exact one. The choice itse
 is `chooseConnectionModelId` (`providers/model-id-effort-choice.ts`), the function
 Devin uses too. At effort `e` it sends `values[e]`, else the next higher listed
 level, else the highest; `none` sends the published `off` id. With no effort a
-served base is sent as itself; otherwise claudish decides the level (`wire.md`
+served base the backend does not exclude is sent as itself (an excluded base is
+never sent: exclusion is checked before that shortcut, in the map step and in the
+exact-id step, so the transport, `providerServesModel` and the account-listed
+route candidate all reach the same map id); otherwise claudish decides the level (`wire.md`
 "Recommended effort": the efforts table's `default` cell for this connection, else
 `medium`) and maps it as above. The backend's `defaultAgentModelId` and the
 catalog's `modelIdEffort.default` do not decide for a mapped base. An id the
@@ -211,8 +214,8 @@ internal, role-bound, retired; the set discovery drops), or a `-fast`/`-priority
 id, is never chosen from the map: the rules above answer instead, over the
 selectable ids only: served, not excluded, and no speed premium, so neither the
 backend default nor the catalog's family default (`lookupFamilyDefaultVariant`) can
-pick the `-fast` id the map just refused (an exactly requested served id still
-passes, premium included). The availability
+pick the `-fast` id the map just refused (an exactly requested served id the
+backend does not exclude still passes, premium included). The availability
 check reads the same `excludedIds` from the `peekServedAntigravityModels` cache, so
 it agrees with the transport. An exact id that is not a mapped base
 (`gemini-4-carbon-low`) is sent unchanged at any effort.
