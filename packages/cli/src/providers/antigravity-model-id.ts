@@ -14,18 +14,39 @@ import { chooseConnectionModelId } from "./model-id-effort-choice.js";
 import { namesSpeedPremium } from "./model-id-effort.js";
 
 /**
+ * The account's dynamic models catalog as model-id resolution reads it: every
+ * served id, the backend's default, and the ids the backend declares are not
+ * selectable (internal, role-bound, retired), which discovery also drops.
+ */
+export interface AntigravityServedSet {
+  servedIds: string[];
+  defaultId: string | null;
+  excludedIds?: ReadonlySet<string>;
+}
+
+/** Whether the backend declares `id` not selectable for this account. */
+function isExcluded(served: AntigravityServedSet, id: string): boolean {
+  return served.excludedIds?.has(id) ?? false;
+}
+
+/**
  * The id the connection's effort map chooses, or undefined when no map applies
- * and {@link resolveAntigravityModelId} decides.
+ * and {@link resolveAntigravityModelId} decides. A map id is sendable only when
+ * the account serves it, the backend does not exclude it, and it carries no
+ * speed premium.
  */
 function mappedAntigravityModelId(
   requested: string,
-  served: { servedIds: string[]; defaultId: string | null },
+  served: AntigravityServedSet,
   effort: EffortLevel | undefined
 ): string | undefined {
   const req = requested.trim();
   if (!effort && served.servedIds.includes(req)) return undefined;
   return chooseConnectionModelId(req, "antigravity", effort, {
-    sendable: (id) => (served.servedIds.includes(id) && !namesSpeedPremium(id) ? id : undefined),
+    sendable: (id) =>
+      served.servedIds.includes(id) && !isExcluded(served, id) && !namesSpeedPremium(id)
+        ? id
+        : undefined,
   });
 }
 
@@ -148,12 +169,13 @@ export function resolveAntigravityModelId(
  *  - no effort → the recommended-effort table's `default` level for this
  *    connection, else `medium`, then as an effort level. The backend's
  *    `defaultId` does not decide. A served base with no effort is sent as itself.
- * Only an id the account's dynamic models catalog lists, and that carries no
- * speed premium, is sent. Otherwise, and with no map, it is
- * {@link resolveAntigravityModelId} over the account's full dynamic models
- * catalog (`servedIds`), with the cloud models catalog's family default
- * (`lookupFamilyDefaultVariant`) as its second rule. A requested id that is not
- * a mapped base (an exact `gemini-4-carbon-low`) is never re-resolved by effort.
+ * Only an id the account's dynamic models catalog lists, that the backend does
+ * not exclude, and that carries no speed premium, is sent. Otherwise, and with
+ * no map, it is {@link resolveAntigravityModelId} over the account's selectable
+ * ids (served and not excluded; an exactly requested served id still passes),
+ * with the cloud models catalog's family default (`lookupFamilyDefaultVariant`)
+ * as its second rule. A requested id that is not a mapped base (an exact
+ * `gemini-4-carbon-low`) is never re-resolved by effort.
  *
  * The ONE resolution the transport, the credential (which builds the primary
  * envelope), the routing availability check (`providerServesModel`) and route
@@ -164,15 +186,20 @@ export function resolveAntigravityModelId(
  */
 export function resolveAntigravityServedModel(
   requested: string,
-  served: { servedIds: string[]; defaultId: string | null },
+  served: AntigravityServedSet,
   effort?: EffortLevel
 ): string {
   const mapped = mappedAntigravityModelId(requested, served, effort);
   if (mapped) return mapped;
+  const req = requested.trim();
+  if (served.servedIds.includes(req)) return req;
+  const selectable = served.servedIds.filter((id) => !isExcluded(served, id));
+  const defaultId =
+    served.defaultId && !isExcluded(served, served.defaultId) ? served.defaultId : null;
   return resolveAntigravityModelId(
     requested,
-    served.servedIds,
-    served.defaultId,
+    selectable,
+    defaultId,
     lookupFamilyDefaultVariant(requested, "antigravity")
   );
 }

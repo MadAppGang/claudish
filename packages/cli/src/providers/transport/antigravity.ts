@@ -51,7 +51,10 @@ import {
 } from "../../handlers/shared/call-context.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
-import { resolveAntigravityServedModel } from "../antigravity-model-id.js";
+import {
+  type AntigravityServedSet,
+  resolveAntigravityServedModel,
+} from "../antigravity-model-id.js";
 import { wireChoicesFromClaudeRequest } from "../wire-request.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
@@ -271,8 +274,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * chain, and the model-not-found hint.
    */
   private servedModels: string[] = [];
-  /** The account's dynamic models catalog with the backend default, for per-request resolution. */
-  private served: { servedIds: string[]; defaultId: string | null } = {
+  /**
+   * The account's dynamic models catalog with the backend default and the ids it
+   * declares unselectable, for per-request resolution.
+   */
+  private served: AntigravityServedSet = {
     servedIds: [],
     defaultId: null,
   };
