@@ -264,6 +264,74 @@ if (process.env.CLAUDISH_T5_CREDENTIAL_WORKER !== "1") {
     }, 5_000);
   });
 
+  describe("T5 G5 a spent allowance or balance names the real billing of both hops", () => {
+    // Wording measured live on 2026-11-12: Gemini API 429 "Plan limit reached",
+    // OpenCode Zen 402 "Insufficient balance".
+    function spent(upstream: number, message: string) {
+      return new Response(rejectionBody(upstream, message), { status: 400 });
+    }
+    function noticeLines(): string[] {
+      return stderrChunks
+        .join("")
+        .split("\n")
+        .filter((line) => line.includes("[Fallback]") && line.includes("moving to"));
+    }
+
+    test("a metered hop followed by a subscription is not called a subscription or per-token", async () => {
+      const served = answer();
+      const result = await runChain([
+        {
+          name: "Gemini API",
+          provider: "google",
+          response: spent(429, "Plan limit reached — your allowance is spent for this cycle"),
+        },
+        { name: "Antigravity", provider: "antigravity", response: served },
+      ]);
+      expect(result.calls).toEqual([1, 1]);
+      expect(result.returned).toBe(served);
+      const [line, ...rest] = noticeLines();
+      expect(rest).toHaveLength(0);
+      expect(line).toContain("Gemini API (metered)");
+      expect(line).toContain("(429:");
+      expect(line).toContain("moving to Antigravity (subscription)");
+      expect(line).toContain("g@");
+      expect(line).not.toContain("subscription allowance");
+      expect(line).not.toContain("PER TOKEN");
+      expect(line).not.toContain("zgo@");
+    }, 5_000);
+
+    test("a gateway out of balance names the next metered hop", async () => {
+      await runChain([
+        {
+          name: "OpenCode Zen",
+          provider: "opencode-zen",
+          response: spent(402, "Insufficient balance. Top up."),
+        },
+        metered(),
+      ]);
+      const [line] = noticeLines();
+      expect(line).toContain("OpenCode Zen (metered)");
+      expect(line).toContain("(402:");
+      expect(line).toContain("moving to OpenRouter (metered, billed per token)");
+      expect(line).not.toContain("subscription");
+    }, 5_000);
+
+    test("a spent subscription moving to a metered hop says the billing changes", async () => {
+      await runChain([
+        {
+          name: "Kimi Coding",
+          provider: "kimi-coding",
+          response: spent(429, "usage limit reached for this billing cycle"),
+        },
+        metered(),
+      ]);
+      const [line] = noticeLines();
+      expect(line).toContain("Kimi Coding (subscription)");
+      expect(line).toContain("moving to OpenRouter (metered, billed per token)");
+      expect(line).toContain("kc@");
+    }, 5_000);
+  });
+
   describe("T5 G3 credential rejection notices", () => {
     test("stderr is once per provider/status across requests, every occurrence is logged, and signing values are redacted", async () => {
       const path = logger.getLogFilePath();

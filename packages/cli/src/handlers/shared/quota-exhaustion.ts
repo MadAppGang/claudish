@@ -15,11 +15,13 @@
  *    while the provider's own explanation sat in the same message — sending
  *    them to debug a credential that was working perfectly.
  *
- * 2. `fallback-handler.ts` warns when the chain advances past a spent plan. The
- *    next candidate in a chain like `["kimi-coding", "opencode-zen-go", "kimi",
- *    "openrouter"]` is billed per token, so the user's cost model changes on a
- *    hop they never asked for. The chain still advances — availability wins —
- *    but the change is announced instead of silent.
+ * 2. `fallback-handler.ts` announces when the chain advances past a spent
+ *    allowance or balance (`announceSpentAllowance`), naming how the spent hop
+ *    and the next hop each bill. After a spent subscription, the next candidate
+ *    in a chain like `["kimi-coding", "opencode-zen-go", "kimi", "openrouter"]`
+ *    may be billed per token, so the user's cost model changes on a hop they
+ *    never asked for. The chain still advances — availability wins — but the
+ *    change is announced instead of silent.
  *
  *    It deliberately does NOT make exhaustion terminal. That was tried and
  *    reverted: an explicit `kc@k3` spec resolves to ONE candidate, so its error

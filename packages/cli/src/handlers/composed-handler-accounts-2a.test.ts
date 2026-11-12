@@ -515,7 +515,7 @@ test("E9 marked transient behind an earlier 404 survives verbatim without metere
   expect(result.subscriptionContacts).toEqual(["failure"]);
   expect(result.canary).toBe(0);
   expect(result.contacts).toEqual([]);
-  expect(stderr).not.toContain("billed PER TOKEN");
+  expect(stderr).not.toContain("billed per token");
 });
 
 test("E18 one transport keeps interleaved A/B artifacts, pins, contexts and forced-sign budgets separate", async () => {
@@ -929,7 +929,7 @@ test("E7 bare-name exhaustion reaches the metered socket with its cost warning; 
   expect(bare.result.text).toBe("CANARY SUCCESS");
   expect(bare.result.canary).toBe(1);
   expect(bare.result.contacts).toHaveLength(0);
-  expect(bare.stderr).toContain("billed PER TOKEN");
+  expect(bare.stderr).toContain("billed per token");
   const explicit = await run("E7-explicit");
   expect(explicit.result.status).toBe(400);
   expect(explicit.result.text).toContain(
@@ -937,7 +937,7 @@ test("E7 bare-name exhaustion reaches the metered socket with its cost warning; 
   );
   expect(explicit.result.verdict).toBeNull();
   expect(explicit.result.canary).toBe(0);
-  expect(explicit.stderr).not.toContain("billed PER TOKEN");
+  expect(explicit.stderr).not.toContain("billed per token");
 }, 30_000);
 
 // Rebase resolution "Decisions for the owner", decision 1: the code-mode
@@ -965,7 +965,7 @@ test("R1 code-mode pooled quota returns transient 429 without contacting a secon
     result.reset * 1000
   );
   expect(result.canary).toBe(0);
-  expect(stderr).not.toContain("billed PER TOKEN");
+  expect(stderr).not.toContain("billed per token");
 }, 30_000);
 
 // Decision 2: legs use the same request-owned forced-sign budget as the primary,
@@ -1027,5 +1027,5 @@ test("E4 spent rotation with expired eligible C answers transient 429 without le
   expect(result.exchanges).toBe(0);
   expect(result.queries).toEqual([{ before: "bbbbbbbbbbbb", after: "bbbbbbbbbbbb", reads: 0 }]);
   expect(result.canary).toBe(0);
-  expect(stderr).not.toContain("billed PER TOKEN");
+  expect(stderr).not.toContain("billed per token");
 }, 30_000);

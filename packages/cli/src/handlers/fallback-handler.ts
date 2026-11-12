@@ -11,6 +11,7 @@
 
 import type { Context } from "hono";
 import { log, logStderr } from "../logger.js";
+import { getShortestPrefix } from "../providers/provider-definitions.js";
 import { redactForClient } from "../redact.js";
 import { ComposedHandler, getRecoveryHint } from "./composed-handler.js";
 import { extractUpstreamStatus } from "./shared/anthropic-error.js";
@@ -205,18 +206,17 @@ export class FallbackHandler implements ModelHandler {
         // Retryable (auth/not-found) — log and try next provider
         errors.push({ provider: name, status: response.status, message: errorBody });
         if (!isLast) {
-          // Advancing past a SPENT SUBSCRIPTION is not the same event as
-          // advancing past a bad credential, even though both are retryable: the
-          // next candidate bills per token, so the user's cost model just
-          // changed. They did not choose that — claudish assembled this chain —
-          // so it is said out loud rather than buried in a generic line.
-          // Wording, not status — same reason as the retryability check: by here
-          // a terminal 429 has been remapped to 400, so a status-gated test
-          // would advance SILENTLY and lose exactly the notice this exists for.
+          // A spent allowance or balance is said out loud with BOTH hops'
+          // billing: the user did not choose the move (claudish assembled the
+          // chain), and a move from a subscription onto a metered hop changes
+          // their cost model. Each side's billing is read from its provider, so
+          // a metered hop is never called a subscription and a subscription is
+          // never called per-token. Wording, not status — same reason as the
+          // retryability check: by here a terminal 429 has been remapped to 400,
+          // so a status-gated test would advance SILENTLY and lose the notice.
           if (hasQuotaExhaustionWording(errorBody)) {
-            logStderr(
-              `[Fallback] ${name} subscription allowance is spent — falling through to the next provider, which is billed PER TOKEN. Use a provider prefix (e.g. \`zgo@model\`) to fail instead of switching.`
-            );
+            const next = this.candidates[(idx + 1) % this.candidates.length];
+            announceSpentAllowance({ name, provider }, response.status, errorBody, next);
           } else {
             logStderr(
               `[Fallback] ${name} failed (HTTP ${response.status}), trying next provider...`
@@ -355,6 +355,36 @@ export function announceCredentialRejection(
   }
   announcedRejections.add(key);
   logStderr(line);
+}
+
+/**
+ * Say that a hop's allowance or balance is spent and which hop the chain moves
+ * to, naming how EACH side bills. The failing hop is a subscription (a spent
+ * plan window) or metered (a prepaid balance, a key's quota); the next hop's
+ * billing is read from its own provider. The hint names the failing provider's
+ * own shortcut, so pinning it stops the chain there instead of switching.
+ */
+export function announceSpentAllowance(
+  spent: { name: string; provider?: string },
+  status: number,
+  errorBody: string,
+  next: { name: string; provider?: string }
+): void {
+  const upstreamStatus = (status === 400 ? extractUpstreamStatus(errorBody) : undefined) ?? status;
+  const providerMessage = truncate(
+    parseProviderMessage(redactForClient(errorBody)).replace(/\s+/g, " ").trim(),
+    200
+  );
+  const shortcut = spent.provider ? getShortestPrefix(spent.provider) : "";
+  const pin = shortcut
+    ? ` Name the provider (${shortcut}@…) to stop here instead of switching.`
+    : "";
+  const spentBilling =
+    spent.provider && isSubscriptionProvider(spent.provider) ? "subscription" : "metered";
+  logStderr(
+    `[Fallback] ${spent.name} (${spentBilling}) has no allowance or balance left ` +
+      `(${upstreamStatus}: ${providerMessage}) — moving to ${next.name} (${hopBillingWords(next.provider)}).${pin}`
+  );
 }
 
 /**
