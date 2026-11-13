@@ -40,7 +40,11 @@ import {
   sessionFlagsOf,
 } from "./hooks/session/interactive-launch.js";
 import { type NoSurfaceSession, startNoSurfaceSession } from "./hooks/session/no-surface.js";
-import { applyHostRouting, scrubInheritedHostRouting } from "./host-routing-env.js";
+import {
+  applyHostManagedMarker,
+  applyHostRouting,
+  scrubInheritedHostRouting,
+} from "./host-routing-env.js";
 import {
   STRIPPED_CHILD_VARS,
   magmuxPaneCapability,
@@ -127,11 +131,13 @@ function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
  * One debug line naming how a Claude launch's child is authenticated: which
  * credential variables it holds (absent, claudish's placeholder, or set),
  * whether it is host-managed, and who signs its requests. Names and states
- * only, never a value.
+ * only, never a value: `keySource` is where the Claude API launch's key was
+ * found (`macOS Keychain`), a label.
  */
 export function claudeLaunchAuthLine(
   launch: ClaudeLaunch,
-  env: Record<string, string | undefined>
+  env: Record<string, string | undefined>,
+  keySource?: string
 ): string {
   const state = (name: string): string => {
     const value = env[name];
@@ -139,12 +145,14 @@ export function claudeLaunchAuthLine(
     return isClaudishPlaceholderCredential(name, value) ? "placeholder" : "set";
   };
   const hostManaged = env[ENV.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST] ? "1" : "0";
-  const signer = launch === "subscription" ? "login-only" : "proxy";
+  const signer =
+    launch === "subscription" ? "login-only" : `proxy(${keySource ?? "unknown source"})`;
+  const loginMethod = launch === "api" ? " forceLoginMethod=console" : "";
   return (
     `[claude-runner] child auth: launch=${launch} ` +
     `ANTHROPIC_API_KEY=${state("ANTHROPIC_API_KEY")} ` +
     `ANTHROPIC_AUTH_TOKEN=${state("ANTHROPIC_AUTH_TOKEN")} ` +
-    `host-managed=${hostManaged} signer=${signer}`
+    `host-managed=${hostManaged}${loginMethod} signer=${signer}`
   );
 }
 
@@ -471,7 +479,10 @@ export function childAuthControl(
   env: NodeJS.ProcessEnv = process.env,
   deps: ChildAuthControlDeps = {}
 ): ChildAuthControl {
-  if (isProxyAuthMode(config)) {
+  // A Claude API launch hands the child claudish's placeholder token, and the
+  // proxy signs every request with the launch's key: the bearer it sends is
+  // never a login.
+  if (config.claudeLaunch === "api" || isProxyAuthMode(config)) {
     return { controlled: false, reason: "proxy-auth", where: "environment" };
   }
   // The shouldPreserveNativeAuth branch keeps what the monitor branch deletes.
@@ -551,6 +562,29 @@ export function settingsCredentialFindings(
     for (const kind of settingsFindingKinds(settings)) findings.push({ where, kind });
   }
   return findings;
+}
+
+/**
+ * The `--settings` occurrences (either spelling) that set `forceLoginMethod:
+ * "claudeai"`, as `where` labels, never a value. A `--settings` value sits at
+ * the same CLI tier as claudish's overlay and the merge keeps the user's own
+ * `forceLoginMethod`, so such a value overrides the overlay's `console`; lower
+ * tiers (user, project, local) are outranked by the overlay.
+ */
+export function settingsArgsForcingClaudeAi(
+  config: ClaudishConfig,
+  deps: ChildAuthControlDeps = {}
+): string[] {
+  const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
+  const occurrences = settingsArgOccurrences(config.claudeArgs ?? []);
+  const found: string[] = [];
+  occurrences.forEach((occurrence, i) => {
+    if (!occurrence.value) return;
+    const settings = readSettingsSource(occurrence.value, readFile);
+    if (settings?.forceLoginMethod !== "claudeai") return;
+    found.push(occurrences.length > 1 ? `--settings (occurrence ${i + 1})` : "--settings");
+  });
+  return found;
 }
 
 /** Every finding one parsed settings object holds, in a fixed order. */
@@ -2162,6 +2196,9 @@ export async function runClaudeWithProxy(
   // Proxy mode authenticates via the placeholder API key, so a claude.ai-forcing
   // login policy would block the session. Compute it once, then neutralize it.
   const proxyAuthMode = isProxyAuthMode(config);
+  // A Claude API launch authenticates with claudish's placeholder token too, so
+  // it gets the same console login method; the proxy signs with the real key.
+  const forceConsoleLogin = proxyAuthMode || config.claudeLaunch === "api";
 
   // The OS *managed* settings tier cannot be overridden by our --settings overlay.
   // If it forces claude.ai login while we're in proxy mode, Claude Code will refuse
@@ -2171,7 +2208,7 @@ export async function runClaudeWithProxy(
   // session is one of those — isProxyAuthMode excludes it — because it survives
   // this policy today under monitor and must not start aborting on it. A FOREIGN
   // main model with --advisor IS proxy auth, so it gains the clear abort.)
-  if (proxyAuthMode && managedSettingsForcesClaudeAi()) {
+  if (forceConsoleLogin && managedSettingsForcesClaudeAi()) {
     console.error(
       "[claudish] Error: your organization's managed Claude Code settings force the " +
         'claude.ai login method (forceLoginMethod: "claudeai").\n' +
@@ -2198,14 +2235,14 @@ export async function runClaudeWithProxy(
     path: tempSettingsPath,
     statusLine,
     tokenFilePath,
-  } = createTempSettingsFile(modelId ?? "default", port, proxyAuthMode, userStatusLineCommand);
+  } = createTempSettingsFile(modelId ?? "default", port, forceConsoleLogin, userStatusLineCommand);
 
   // From the moment the file exists: a signal before this line would leave it behind
   // and end the process without the caller's teardown. Claude Code is attached below.
   const signalShutdown = setupSignalHandlers(tempSettingsPath, config.quiet, onCleanup);
 
   // Merge user's --settings into our temp settings file if user provided one
-  mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine, proxyAuthMode);
+  mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine, forceConsoleLogin);
 
   // Build claude arguments
   const claudeArgs: string[] = [];
@@ -2400,16 +2437,31 @@ export async function runClaudeWithProxy(
     // is this account's own policy again.
     scrubInheritedFastModeGates(env);
     removeInheritedHostRouting(env);
+    if (config.claudeLaunch === "api") {
+      // The Claude API launch: Claude Code holds no key. Its only credential is
+      // claudish's placeholder token, which suppresses the login and raises no
+      // custom-key question; the monitor proxy drops it and signs every request
+      // with the key the launch resolved, which never enters any environment.
+      // The host marker keeps a settings `env` block from setting the base URL
+      // or a credential for this child (measured on Claude Code 2.1.323); the
+      // trust flag stays as the launcher gave it, since the requests go to
+      // Anthropic. The fast-mode gates stay closed: the key's own org policy
+      // applies.
+      env.ANTHROPIC_AUTH_TOKEN = CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
+      applyHostManagedMarker(env);
+    }
     // Don't override ANTHROPIC_MODEL - let Claude Code use its default
     // (unless user explicitly specified a model). A Claude launch keeps the
-    // user's spec in `config.model` (`claude@<id>`); Claude Code is given the
-    // bare id it can serve.
+    // user's spec in `config.model` (`claude@<id>`, `anthropic@<id>`); Claude
+    // Code is given the id it can serve.
     const launchModelId = config.claudeLaunchModel ?? modelId;
     if (launchModelId) {
       env[ENV.ANTHROPIC_MODEL] = launchModelId;
       env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = launchModelId;
     }
-    if (config.claudeLaunch) debugLog(claudeLaunchAuthLine(config.claudeLaunch, env));
+    if (config.claudeLaunch) {
+      debugLog(claudeLaunchAuthLine(config.claudeLaunch, env, config.claudeLaunchKeySource));
+    }
   } else {
     // Set Claude Code standard model environment variables
     // When using profile mode (no explicit --model), DON'T override ANTHROPIC_MODEL

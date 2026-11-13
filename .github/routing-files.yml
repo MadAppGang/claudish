@@ -26,6 +26,7 @@ routing:
   - 'packages/cli/src/handlers/handler-set.ts'
   - 'packages/cli/src/handlers/bundled-tagged-cache.ts'
   - 'packages/cli/src/launcher/catalog-warm.ts'
+  - 'packages/cli/src/launcher/claude-launch.ts'
   - 'packages/cli/src/team-grid.ts'
   - 'packages/cli/src/tui/hooks/useRouteProbe.ts'
   - 'packages/cli/src/tui/probe-proxy.ts'

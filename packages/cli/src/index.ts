@@ -763,6 +763,15 @@ async function runCli() {
     return Buffer.concat(chunks).toString("utf-8");
   }
 
+  // The Claude API launch's hold on its key: every sink redacts the key while it
+  // is held. Released once the session is over (after the proxy shut down and the
+  // end-of-session card printed), and on every way out of this function before.
+  let launchLease: import("./launcher/claude-launch.js").LaunchLease | undefined;
+  const releaseLaunchLease = (): void => {
+    launchLease?.release();
+    launchLease = undefined;
+  };
+
   try {
     // Terminal light/dark detection BEFORE any colored output — parseArgs
     // handles --help/--models/--probe, which print colored text and exit
@@ -1286,7 +1295,8 @@ async function runCli() {
     // same object reaches advisor planning and the proxy: a Claude subscription
     // launch (`claude@<id>`, or a bare Claude main model) is never signed with an
     // API key, and a settings layer that would hand the child one refuses the
-    // launch here, before spawn.
+    // launch here, before spawn. A Claude API launch (`anthropic@<id>`) resolves
+    // its key here, and the proxy signs every request with it.
     const { prepareClaudeLaunch } = await import("./launcher/claude-launch.js");
     const preparedLaunch = await traceSpan("startup:claude-launch", () =>
       prepareClaudeLaunch(cliConfig)
@@ -1295,6 +1305,7 @@ async function runCli() {
       process.stderr.write(`[claudish] Error: ${preparedLaunch.message}\n`);
       process.exit(1);
     }
+    launchLease = preparedLaunch.lease;
     if (!cliConfig.quiet) {
       for (const line of preparedLaunch.banner) process.stderr.write(`${line}\n`);
     }
@@ -1314,6 +1325,7 @@ async function runCli() {
         process.stderr.write(
           `[claudish] Error: --advisor cannot work in this launch: ${decision.reason}\n`
         );
+        releaseLaunchLease();
         process.exit(1);
       }
       if (decision?.kind === "proceed") {
@@ -1419,6 +1431,7 @@ async function runCli() {
         } else if (!outcome.sessionId) {
           // Cancelled. Exit 0 — declining to pick is not an error, and forwarding the
           // flag here would reopen a picker the user just dismissed.
+          releaseLaunchLease();
           process.exit(0);
         } else {
           cliConfig.claudeArgs.push("--resume", outcome.sessionId);
@@ -1438,7 +1451,8 @@ async function runCli() {
         cliConfig.monitor ? undefined : explicitModel,
         cliConfig.monitor,
         // A Claude subscription launch gets no key at all: nothing it forwards
-        // may be signed with one.
+        // may be signed with one. A Claude API launch's key lives only in its
+        // signing.
         launchSigning ? undefined : cliConfig.anthropicApiKey,
         modelMap,
         {
@@ -1567,6 +1581,10 @@ async function runCli() {
       }
     }
 
+    // The session is over: nothing signs with the Claude API launch's key any
+    // more, and the card that could quote it has printed.
+    releaseLaunchLease();
+
     // A signal that arrived during the teardown above stopped this run too, and
     // outranks the code Claude Code had already returned.
     exitCode = signalShutdownExitCode() ?? exitCode;
@@ -1601,6 +1619,7 @@ async function runCli() {
   } catch (error) {
     console.error("[claudish] Fatal error:", error);
     console.error("[claudish] Stack:", error instanceof Error ? error.stack : "no stack");
+    releaseLaunchLease();
     process.exit(signalShutdownExitCode() ?? 1);
   }
 }

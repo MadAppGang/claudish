@@ -10,7 +10,8 @@ export type OpenRouterModel = string;
 /**
  * A top-level launch whose main model names a Claude route explicitly:
  * `"subscription"` is `claude@<id>`, a monitor session on Claude Code's own
- * login; `"api"` is `anthropic@<id>`, the metered Claude API.
+ * login; `"api"` is `anthropic@<id>`, a monitor session on the metered Claude
+ * API, every request signed by claudish's proxy with the user's key.
  */
 export type ClaudeLaunch = "subscription" | "api";
 
@@ -46,8 +47,9 @@ export interface ClaudishConfig {
   jsonOutput: boolean; // Output in JSON format for tool integration
   monitor: boolean; // Monitor mode - proxy to real Anthropic API and log everything
   /**
-   * Set only by `decideClaudeLaunch`: `claude@<id>` at top level is
-   * `"subscription"`. Absent on every other launch. Implies `monitor`.
+   * Set only by `decideClaudeLaunch`: at top level `claude@<id>` is
+   * `"subscription"` and `anthropic@<id>` (`a@`, `api@`) is `"api"`. Absent on
+   * every other launch. Implies `monitor`.
    */
   claudeLaunch?: ClaudeLaunch;
   /**
@@ -55,6 +57,12 @@ export interface ClaudishConfig {
    * `ANTHROPIC_MODEL`. `model` keeps the user's route-carrying spec.
    */
   claudeLaunchModel?: string;
+  /**
+   * Set only by `prepareClaudeLaunch` on a Claude API launch: where the key the
+   * proxy signs with was found (`macOS Keychain`, `1Password`, …). A label,
+   * never the key.
+   */
+  claudeLaunchKeySource?: string;
   stdin: boolean; // Read prompt from stdin instead of args
   openrouterApiKey?: string; // Optional in monitor mode
   anthropicApiKey?: string; // Required in monitor mode

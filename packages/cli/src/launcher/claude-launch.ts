@@ -15,6 +15,13 @@
  * API-billing opt-in says. In a pane child it is the bare `<id>`, the native
  * passthrough a bare slot already takes.
  *
+ * `anthropic@<id>` (`a@`, `api@`) names the Claude API. At top level it is a
+ * monitor session too: Claude Code holds only claudish's placeholder token and
+ * the proxy signs every request with the user's key (`launch-key`), so the key
+ * never enters Claude Code's environment, its tool shells, MCP servers or a
+ * nested claudish. In a pane child, and inside a chain, it stays a proxied hop
+ * claudish signs itself.
+ *
  * Decided in two steps. `decideClaudeLaunch` runs before the launch's catalog
  * verdict and key validation, which must already see `monitor`;
  * `prepareClaudeLaunch` runs after the catalog warm and before the advisor
@@ -22,21 +29,28 @@
  */
 
 import { isClaudishPlaceholderCredential } from "../auth/claudish-placeholder.js";
+import type { CredentialAuthority } from "../auth/credentials/authority.js";
 import {
   type SettingsFinding,
+  managedSettingsForcesClaudeAi,
+  settingsArgsForcingClaudeAi,
   settingsCredentialFindings,
   wantsAnthropicApiBilling,
 } from "../claude-runner.js";
 import { LOGIN_ONLY_SIGNING, type NativeSigning } from "../handlers/shared/anthropic-forward.js";
 import { isPaneChild } from "../pane/child-env.js";
+import { resolveModelNameSync } from "../providers/catalog-client.js";
 import { normalizeNativeModelSpec } from "../providers/claude-code-aliases.js";
 import { MODEL_CHAIN_SEPARATOR, parseModelSpec } from "../providers/model-parser.js";
 import {
   CLAUDE_SUBSCRIPTION_LABEL,
+  claudeLaunchMarkerRefusal,
   claudeSubscriptionInner,
   claudeSubscriptionSpecRefusal,
   nativeRouteFor,
 } from "../providers/native-route.js";
+import { WireMarkerError, splitWireMarkers } from "../providers/wire-markers.js";
+import { acquireSigningLease, redactSecrets } from "../redact.js";
 import type { ClaudishConfig } from "../types.js";
 
 export interface LaunchSigningDeps {
@@ -133,6 +147,35 @@ function isClaudeSubscriptionSpec(spec: string): boolean {
   return parsed.isExplicitProvider && parsed.provider === "native-anthropic";
 }
 
+/** True when `spec` is `anthropic@`, `a@` or `api@` before a name: the Claude API. */
+function isClaudeApiSpec(spec: string): boolean {
+  const parsed = parseModelSpec(spec);
+  return parsed.isExplicitProvider && parsed.provider === CLAUDE_API_PROVIDER;
+}
+
+/** The claudish provider of the Claude API. */
+const CLAUDE_API_PROVIDER = "anthropic";
+
+/**
+ * The refusal for a top-level Claude API spec that carries a speed or mode
+ * marker or a `:N` suffix, or null. Monitor mode forwards Claude Code's own
+ * requests, so neither could apply: each would be dropped silently.
+ */
+function claudeApiLaunchRefusal(spec: string): string | null {
+  let markers: ReturnType<typeof splitWireMarkers>;
+  try {
+    markers = splitWireMarkers(spec);
+  } catch (err) {
+    if (err instanceof WireMarkerError) return err.message;
+    throw err;
+  }
+  if (markers.mode || markers.speed) return claudeLaunchMarkerRefusal(spec);
+  if (/:\d+$/.test(spec)) {
+    return `${spec}: a Claude API launch is one Claude Code session on Anthropic's API, so a :N concurrency suffix cannot apply.`;
+  }
+  return null;
+}
+
 /** Whether the launch may go on; when it may, `decideClaudeLaunch` has updated the config. */
 export type ClaudeLaunchDecision = { ok: true } | { ok: false; message: string };
 
@@ -152,6 +195,9 @@ export interface DecideClaudeLaunchDeps {
  *   otherwise the launch becomes a monitor session, `claudeLaunch:
  *   "subscription"`, and `model` keeps the user's spec for every later reader
  *   (the end-of-session card, the advisor notice).
+ * - One `anthropic@X` (`a@X`, `api@X`) main model at top level: a monitor
+ *   session, `claudeLaunch: "api"`; a speed or mode marker or a `:N` suffix
+ *   refuses it. In a pane child, and inside a chain, it stays a proxied hop.
  * - Anything else is left as it is.
  */
 export function decideClaudeLaunch(
@@ -170,7 +216,20 @@ export function decideClaudeLaunch(
     return refusal ? { ok: false, message: refusal } : { ok: true };
   }
   const main = specs[0];
-  if (main === undefined || !isClaudeSubscriptionSpec(main)) return { ok: true };
+  if (main === undefined) return { ok: true };
+
+  if (isClaudeApiSpec(main)) {
+    // A pane child keeps the proxied hop, which honours markers: a headless
+    // pane is never given a key, and claudish signs that hop itself.
+    if (deps.paneChild ?? isPaneChild()) return { ok: true };
+    const refusal = claudeApiLaunchRefusal(main);
+    if (refusal) return { ok: false, message: refusal };
+    config.monitor = true;
+    config.claudeLaunch = "api";
+    return { ok: true };
+  }
+
+  if (!isClaudeSubscriptionSpec(main)) return { ok: true };
 
   if (deps.paneChild ?? isPaneChild()) {
     config.model = normalizeNativeModelSpec(claudeSubscriptionInner(main));
@@ -204,11 +263,23 @@ export interface PrepareClaudeLaunchDeps {
   wantsApiBilling?: (config: ClaudishConfig) => boolean;
   /** Default `process.env`: the launch environment, read for settings and scrubbed of claudish's placeholder key. */
   env?: NodeJS.ProcessEnv;
+  /** Default the credential authority: resolves the Claude API launch's key. */
+  credentials?: Pick<CredentialAuthority, "resolveForUse">;
+  /** Default `managedSettingsForcesClaudeAi()`: the OS managed tier forces the claude.ai login. */
+  managedForcesClaudeAi?: () => boolean;
+  /** Default `settingsArgsForcingClaudeAi(config)`: the `--settings` values that force it. */
+  settingsForcingClaudeAi?: (config: ClaudishConfig) => string[];
+  /** Default `resolveModelNameSync(name, "anthropic").resolvedId`: the wire id Claude Code is given. */
+  wireIdFor?: (name: string) => string;
 }
 
 /**
  * Step 2, after the catalog warm and before the advisor check and the proxy.
  *
+ * - `claudeLaunch: "api"`: the key is resolved now, Claude Code is given the
+ *   catalog's wire id, and the proxy signs with the key (`launch-key`); the
+ *   returned lease keeps the key redacted until the caller releases it, after
+ *   the session ends.
  * - `claudeLaunch: "subscription"`: Claude Code is given the bare Claude name
  *   (`claudeLaunchModel`; Claude Code resolves its own aliases), a settings
  *   layer that would hand it an API key refuses the launch, an inherited
@@ -227,6 +298,10 @@ export async function prepareClaudeLaunch(
     deps.settingsFindings ??
     ((c: ClaudishConfig, e: NodeJS.ProcessEnv) => settingsCredentialFindings(c, e));
   const main = typeof config.model === "string" ? config.model : undefined;
+
+  if (config.claudeLaunch === "api" && main) {
+    return prepareClaudeApiLaunch(config, main, env, deps);
+  }
 
   if (config.claudeLaunch === "subscription" && main) {
     const check = subscriptionSettingsCheck(findingsOf(config, env), { bareName: false });
@@ -257,6 +332,93 @@ export async function prepareClaudeLaunch(
   });
   if (check.refusal) return { ok: false, message: check.refusal };
   return { ok: true, banner: noticeLines(check.notices), signing };
+}
+
+/**
+ * The Claude API launch. Claude Code holds only claudish's placeholder token;
+ * the monitor proxy signs every request with the key resolved here, which is
+ * held by the returned signing and lease and nowhere else: never in an
+ * environment, `config.anthropicApiKey` or a file.
+ *
+ * Refused before any key is read when Claude Code could not start on it: the OS
+ * managed tier, or a `--settings` value, forcing the claude.ai login. Then
+ * refused when no source has a key (naming the sources searched) or a vault
+ * that has one could not be read (its reason).
+ */
+async function prepareClaudeApiLaunch(
+  config: ClaudishConfig,
+  main: string,
+  env: NodeJS.ProcessEnv,
+  deps: PrepareClaudeLaunchDeps
+): Promise<PreparedClaudeLaunch> {
+  const managedForcesClaudeAi = deps.managedForcesClaudeAi ?? managedSettingsForcesClaudeAi;
+  if (managedForcesClaudeAi()) {
+    return {
+      ok: false,
+      message:
+        'your organization\'s managed Claude Code settings force the claude.ai login method (forceLoginMethod: "claudeai"), ' +
+        "which a Claude API session cannot start under, and managed settings cannot be overridden. " +
+        "Use claude@<id> for the Claude subscription.",
+    };
+  }
+  const forcing = (deps.settingsForcingClaudeAi ?? settingsArgsForcingClaudeAi)(config);
+  if (forcing.length > 0) {
+    return {
+      ok: false,
+      message:
+        `${forcing.join(", ")} ${forcing.length === 1 ? "sets" : "set"} forceLoginMethod: "claudeai", ` +
+        "which overrides the console login a Claude API session starts under. " +
+        "Remove it, or use claude@<id> for the Claude subscription.",
+    };
+  }
+
+  const authority =
+    deps.credentials ?? (await import("../auth/credentials/authority.js")).credentials;
+  const resolution = await authority.resolveForUse(CLAUDE_API_PROVIDER, {
+    allowOpPrompt: config.interactive,
+  });
+  if (resolution.state === "absent") {
+    return {
+      ok: false,
+      message:
+        `No Anthropic API key for the Claude API (looked in ${resolution.searched.join(", ")}). ` +
+        "Store one with claudish keychain set ANTHROPIC_API_KEY, or export it.",
+    };
+  }
+  if (resolution.state === "failed") {
+    return {
+      ok: false,
+      message: `The Anthropic API key for the Claude API could not be read: ${redactSecrets(resolution.reason)}`,
+    };
+  }
+
+  const key = resolution.key;
+  const lease = acquireSigningLease();
+  lease.add([key]);
+
+  // Claude Code is given the wire id the catalog publishes for this model on
+  // the Claude API; `model` keeps the user's spec.
+  const inner = parseModelSpec(main).model;
+  const wireIdFor =
+    deps.wireIdFor ??
+    ((name: string) => resolveModelNameSync(name, CLAUDE_API_PROVIDER).resolvedId);
+  config.claudeLaunchModel = wireIdFor(inner);
+  config.claudeLaunchKeySource = resolution.source;
+  // The proxy receives no key of its own on this launch, and the parse-time
+  // capture of the launch environment's key is not the one that signs.
+  config.anthropicApiKey = undefined;
+  if (isClaudishPlaceholderCredential("ANTHROPIC_API_KEY", env.ANTHROPIC_API_KEY)) {
+    delete env.ANTHROPIC_API_KEY;
+  }
+
+  return {
+    ok: true,
+    banner: [
+      `[claudish] Monitor mode · Claude API · ANTHROPIC_API_KEY from ${resolution.source} · signed by claudish`,
+    ],
+    signing: { kind: "launch-key", key: () => key },
+    lease,
+  };
 }
 
 function noticeLines(notices: readonly string[]): string[] {
