@@ -20,6 +20,11 @@ import { dirname, join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { claudeCodeKeychainServiceCandidates } from "./auth/claude-code-facts.js";
+import {
+  CLAUDISH_PLACEHOLDER_API_KEY,
+  CLAUDISH_PLACEHOLDER_AUTH_TOKEN,
+  isClaudishPlaceholderCredential,
+} from "./auth/claudish-placeholder.js";
 import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
@@ -233,15 +238,13 @@ export function shouldHideIncidentalAnthropicKey(
   return !wantsAnthropicApiBilling(config, env);
 }
 
-/**
- * The placeholder ANTHROPIC_API_KEY claudish puts in a PROXIED child's env. Its only
- * job is suppressing Claude Code's login dialog; the proxy handles real auth.
- */
-export const CLAUDISH_PLACEHOLDER_API_KEY =
-  "sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx";
-
-/** The placeholder ANTHROPIC_AUTH_TOKEN paired with CLAUDISH_PLACEHOLDER_API_KEY. */
-export const CLAUDISH_PLACEHOLDER_AUTH_TOKEN = "placeholder-token-not-used-proxy-handles-auth";
+// claudish's placeholder credentials live in a leaf module the credential layer
+// can import; re-exported here for the launcher's existing importers.
+export {
+  CLAUDISH_PLACEHOLDER_API_KEY,
+  CLAUDISH_PLACEHOLDER_AUTH_TOKEN,
+  isClaudishPlaceholderCredential,
+};
 
 /**
  * Pure proxy mode's placeholder credentials. The token alone suppresses Claude Code's
@@ -295,17 +298,6 @@ function removeInheritedHostRouting(env: NodeJS.ProcessEnv): void {
   if (removed.length > 0) {
     debugLog(`[claude-runner] Removed inherited host-routing variables: ${removed.join(", ")}`);
   }
-}
-
-/**
- * Is `value` claudish's OWN placeholder for the env variable `name`? Only an exact
- * match counts, and only for the variable that placeholder belongs to. Every other
- * value, including unset, is not a placeholder.
- */
-export function isClaudishPlaceholderCredential(name: string, value: string | undefined): boolean {
-  if (name === "ANTHROPIC_API_KEY") return value === CLAUDISH_PLACEHOLDER_API_KEY;
-  if (name === "ANTHROPIC_AUTH_TOKEN") return value === CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
-  return false;
 }
 
 /** Set, non-empty, and not claudish's own placeholder. */
