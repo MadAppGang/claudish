@@ -193,13 +193,10 @@ export function claudeCodeStartupCredential(
   if (typeof token === "string" && token.trim().length > 0) return { kind: "login" };
   if (fileExists(join(claudeCodeConfigDir(env), ".credentials.json"))) return { kind: "login" };
 
-  const oauth = anyPresent(
-    [
-      ...claudeCodeSecureStorageServices("-credentials", env),
-      ...claudeCodeKeychainServiceCandidates(env),
-    ],
-    presence
-  );
+  // Only the names Claude Code itself uses: `CLAUDE_SECURESTORAGE_CONFIG_DIR`
+  // decides alone when set. A login under any other name is not the one it
+  // would start with.
+  const oauth = anyPresent(claudeCodeSecureStorageServices("-credentials", env), presence);
   if (oauth === "found") return { kind: "login" };
   // A login store that did not answer may hold the login: a Console key found
   // elsewhere proves a key exists, not that no login does.
