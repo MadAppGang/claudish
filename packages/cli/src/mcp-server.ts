@@ -25,6 +25,7 @@ import {
 } from "./auth/accounts/allowance-report-schema.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
+import { realValueFor } from "./env-placeholder.js";
 import { writeFileAtomic } from "./fs-atomic.js";
 import { detectFrontEnd } from "./herdr/front-end.js";
 import { loadHooksOnce } from "./hooks/index.js";
@@ -331,7 +332,7 @@ async function getProxy(): Promise<ProxyServer> {
       process.env.OPENROUTER_API_KEY,
       undefined, // no default model — each call specifies its own
       false, // not monitor mode
-      process.env.ANTHROPIC_API_KEY,
+      realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY),
       undefined, // no model map
       { quiet: true, hostMode: "mcp" }
     );
@@ -356,7 +357,7 @@ function getProbeProxy(): Promise<ProxyServer> {
       process.env.OPENROUTER_API_KEY,
       undefined,
       false,
-      process.env.ANTHROPIC_API_KEY,
+      realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY),
       undefined,
       { quiet: true, hooks: false, hostMode: "mcp", probeProxy: true }
     );

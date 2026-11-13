@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EFFORT_LEVELS, isEffortLevel } from "./adapters/base-api-format.js";
+import { isClaudishPlaceholderCredential } from "./auth/claudish-placeholder.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import {
   CODE_MODE_ENV_VAR,
@@ -18,6 +19,7 @@ import {
   parseCodeModeSetting,
 } from "./code-mode/policy.js";
 import { ENV } from "./config.js";
+import { realValueFor } from "./env-placeholder.js";
 import { setStderrQuiet } from "./logger.js";
 import {
   type ModelDoc,
@@ -1112,9 +1114,10 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // handed to NativeHandler, which sends it to api.anthropic.com and gets a 401.
   // --monitor has always scrubbed it; `--advisor` keeps doing so now that it no
   // longer implies monitor.
+  // Exact match only: a user's key that merely contains "placeholder" is theirs.
   if (
     (config.monitor || config.advisor) &&
-    process.env.ANTHROPIC_API_KEY?.includes("placeholder")
+    isClaudishPlaceholderCredential("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY)
   ) {
     delete process.env.ANTHROPIC_API_KEY;
   }
@@ -1903,7 +1906,7 @@ async function probeModelRouting(
           process.env.OPENROUTER_API_KEY,
           undefined,
           false,
-          process.env.ANTHROPIC_API_KEY,
+          realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY),
           undefined,
           // Hooks never see --probe traffic. A probe proxy builds a hop marked
           // as routed the way real traffic builds a routing chain's hop.
@@ -2016,7 +2019,7 @@ async function probeModelRouting(
           process.env.OPENROUTER_API_KEY,
           undefined,
           false,
-          process.env.ANTHROPIC_API_KEY,
+          realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY),
           undefined,
           // Hooks never see --probe traffic. A probe proxy builds a hop marked
           // as routed the way real traffic builds a routing chain's hop.

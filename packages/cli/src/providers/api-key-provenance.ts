@@ -37,6 +37,7 @@ import {
 } from "../auth/vertex-auth.js";
 import { activeGlobalConfigFile, getConfigFileOverride } from "../config-override.js";
 import { readAllowedDotenv } from "../dotenv-allowlist.js";
+import { realValueFor } from "../env-placeholder.js";
 import { isOpHydratedVar } from "./onepassword.js";
 
 /**
@@ -141,14 +142,16 @@ export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): Key
   });
 
   // Layer 3: process.env (final runtime value — includes shell profile, dotenv, config.json)
-  // Check aliases too
+  // Check aliases too. claudish's own placeholder (inherited from a proxied parent
+  // session) is not a key, here as at sign time.
   let runtimeVar = envVar;
-  let runtimeValue = process.env[envVar] || null;
+  let runtimeValue = realValueFor(envVar, process.env[envVar]) || null;
   if (!runtimeValue && aliases) {
     for (const alias of aliases) {
-      if (process.env[alias]) {
+      const aliasValue = realValueFor(alias, process.env[alias]);
+      if (aliasValue) {
         runtimeVar = alias;
-        runtimeValue = process.env[alias]!;
+        runtimeValue = aliasValue;
         break;
       }
     }

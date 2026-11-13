@@ -29,6 +29,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
+import { realValueFor } from "./env-placeholder.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { type SlotRoute, createProxyServer } from "./proxy-server.js";
 
@@ -164,7 +165,7 @@ export async function serveCommand(args: string[]): Promise<void> {
   // must read them explicitly or null-provider→OpenRouter and claude-* slots
   // (native passthrough) would have no credentials.
   const openrouterApiKey = process.env.OPENROUTER_API_KEY;
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  const anthropicApiKey = realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY);
 
   const proxy = await createProxyServer(
     serveArgs.port,

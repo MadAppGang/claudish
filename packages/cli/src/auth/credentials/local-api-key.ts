@@ -46,7 +46,7 @@
  * `process.env`, so a credentialed provider never reaches the read at all.
  */
 
-import { realValue } from "../../env-placeholder.js";
+import { realValueFor } from "../../env-placeholder.js";
 import { getApiKey } from "../../profile-config.js";
 
 export interface LocalApiKeyQuery {
@@ -80,10 +80,12 @@ export function resolveLocalApiKey(q: LocalApiKeyQuery): string | undefined {
   // NOTE: map alias names to their VALUES before .find — `aliases.find(a =>
   // process.env[a])` returns the alias NAME (a truthy string), so the request
   // would be signed with the literal env-var name → 401.
+  // realValueFor also drops claudish's own placeholder for that variable, which a
+  // nested claudish inherits from the proxied session that started it.
   return (
-    realValue(process.env[q.envVar]) ||
-    (q.aliases ?? []).map((a) => realValue(process.env[a])).find((v) => !!v) ||
-    realValue(getApiKey(q.envVar))
+    realValueFor(q.envVar, process.env[q.envVar]) ||
+    (q.aliases ?? []).map((a) => realValueFor(a, process.env[a])).find((v) => !!v) ||
+    realValueFor(q.envVar, getApiKey(q.envVar))
   );
 }
 
