@@ -6,9 +6,10 @@
  *
  * What differs from the source: the status row carries the viewer's own text, the terminal size
  * and the output are injected (so the bytes can be compared in a test), nothing is written to
- * stderr, and a band can stand in for the picture. The pane's own colours are painted as they
- * came; claudish's colours (the status row and the band) are read from `cliAnsi()` at every
- * paint, never at module load, so a theme detected after import still applies.
+ * stderr. The pane's own colours are painted as they came; claudish's colours (the status row)
+ * are read from `cliAnsi()` at every paint, never at module load, so a theme detected after
+ * import still applies. A pane larger than this terminal is clipped; a smaller one leaves the
+ * rest of the screen blank.
  */
 
 import { cliAnsi } from "../theme/ansi.js";
@@ -218,7 +219,7 @@ export class AnsiPainter {
     this.push(at(c.y, c.x) + CURSOR_SHOW);
   }
 
-  /** Paint a whole screen from the model: after this terminal was resized, or a band went away. */
+  /** Paint a whole screen from the model: after this terminal was resized. */
   repaint(screen: Screen): void {
     this.size(screen.rows, screen.cols);
     this.clear();
@@ -227,18 +228,6 @@ export class AnsiPainter {
       if (line) this.row(y, line, cellCols(line));
     }
     this.cursor(screen.cur);
-    if (this.lastStatus) this.status(this.lastStatus.text, this.lastStatus.tone);
-  }
-
-  /** The picture is withheld: one line says why, and the rest of the screen is empty. */
-  band(text: string): void {
-    this.enter();
-    const t = this.o.term();
-    const a = cliAnsi();
-    this.lastCursor = { y: 0, x: 0, vis: false };
-    this.push(
-      `${CLEAR}${at(0, 0)}${SGR_RESET}${a.YELLOW}${a.BOLD}${fit(` ${text}`, t.cols)}${SGR_RESET}${CURSOR_HIDE}`
-    );
     if (this.lastStatus) this.status(this.lastStatus.text, this.lastStatus.tone);
   }
 

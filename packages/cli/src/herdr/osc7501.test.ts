@@ -102,11 +102,11 @@ describe("HcStatusReporter", () => {
   test("writes one line per change of what it says, and clears it at the end", () => {
     const out: string[] = [];
     const r = new HcStatusReporter({ write: (s) => out.push(s) });
-    r.report({ item: null, holding: false, ended: false });
+    r.report({ item: null, ended: false });
     expect(out).toEqual([]);
     const running = withFields(sessionItem("a"), { activity: "Bash" });
-    r.report({ item: running, holding: false, ended: false });
-    r.report({ item: { ...running, tokens_in: 5 } as ViewItem, holding: true, ended: false });
+    r.report({ item: running, ended: false });
+    r.report({ item: { ...running, tokens_in: 5 } as ViewItem, ended: false });
     expect(out).toHaveLength(1);
     expect(decodeOsc7501(out[0] as string)).toEqual({
       state: "working",
@@ -116,14 +116,13 @@ describe("HcStatusReporter", () => {
     });
     r.report({
       item: withFields(running, { state: "AWAITING_PERMISSION" }),
-      holding: true,
       ended: false,
     });
     expect(decodeOsc7501(out[1] as string)).toMatchObject({ state: "blocked", kind: "permission" });
     r.close();
     r.close();
     expect(out.slice(2)).toEqual([clearOsc7501()]);
-    r.report({ item: running, holding: false, ended: true });
+    r.report({ item: running, ended: true });
     expect(out).toHaveLength(3);
   });
 
@@ -150,7 +149,7 @@ describe("the viewer's front end choice", () => {
       if ("error" in choice) throw new Error(choice.error);
       expect(choice.frontEnd).toBeInstanceOf(HcStatusReporter);
       expect(choice.frontEnd.name).toBe("herdr-core");
-      choice.frontEnd.report({ item: sessionItem("a"), holding: true, ended: false });
+      choice.frontEnd.report({ item: sessionItem("a"), ended: false });
       expect(out).toHaveLength(1);
       expect(out[0]?.startsWith(`${ESC}]7501;state=working:app=claudish`)).toBe(true);
     }

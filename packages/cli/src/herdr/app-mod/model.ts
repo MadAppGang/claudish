@@ -213,7 +213,7 @@ export function feedRunArgs(install: ClaudishInstall, home: string): string[] {
   return hcRunArgs(FEED_TERMINAL, home, claudishArgv(install, ["view", "--feed"]));
 }
 
-/** `hc run` for one session's viewer, a hand-run viewer that takes the view at start. */
+/** `hc run` for one session's viewer: the same read-only viewer a person runs by hand. */
 export function viewRunArgs(
   install: ClaudishInstall,
   target: string,

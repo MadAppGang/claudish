@@ -376,8 +376,7 @@ export function footerLine(row: PanelRow, mode: ScreenMode): string {
   if (mode === "text") return `read only · transcript of slot ${row.slot}`;
   if (row.noScreen) return "read only · no screen: the reason and records are shown";
   if (row.recordOnly) return "read only · from its records: no running claudish holds it";
-  if (!row.finished)
-    return `read only · live screen of slot ${row.slot}; focusing it takes the view`;
+  if (!row.finished) return `read only · live screen of slot ${row.slot}`;
   return "read only · finished: a replay of the real interface";
 }
 

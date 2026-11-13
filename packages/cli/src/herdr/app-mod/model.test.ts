@@ -110,7 +110,7 @@ describe("hc terminals the mod starts", () => {
     expect(() => viewTerminalName("s:a", () => "NOT-HEX")).toThrow();
   });
 
-  test("selection starts a hidden, self-removing viewer that takes the view, with PATH and root given", () => {
+  test("selection starts a hidden, self-removing read-only viewer, with PATH and root given", () => {
     expect(viewRunArgs(INSTALL, "s:abc", "claudish-view-0123456789ab", "/Users/u")).toEqual([
       "run",
       "--bg",

@@ -56,11 +56,22 @@ function codeOf(e: unknown): string {
 }
 
 function viewerIo(): ViewerIo {
+  return recordingIo().io;
+}
+
+/** A terminal that keeps what the viewer painted, so a test can wait for its status row. */
+function recordingIo(): { io: ViewerIo; text: () => string } {
+  let out = "";
   return {
-    write: () => {},
-    term: () => ({ cols: 80, rows: 25 }),
-    onKeys: () => () => {},
-    onResize: () => () => {},
+    io: {
+      write: (s) => {
+        out += s;
+      },
+      term: () => ({ cols: 120, rows: 25 }),
+      onKeys: () => () => {},
+      onResize: () => () => {},
+    },
+    text: () => out,
   };
 }
 
@@ -273,15 +284,11 @@ describe.if(flockAvailable())("replays shared across servers", () => {
       replay_id: opened.replay_id,
     });
     expect(joined.replay_id).toBe(opened.replay_id);
-    const claim = await va.request<{ granted: boolean; view: { holder: string } }>("claim", {
-      target: `r:${opened.replay_id}`,
-      cols: 70,
-      rows: 20,
-    });
-    expect(claim.granted).toBe(true);
-    expect(claim.view.holder).toBe("terminal");
-    // the claim and the size live on the owner
-    expect((await b.replays.captureMcp(opened.replay_id)).view?.holder).toBe("terminal");
+    // a viewer only watches: no claim, and the view stays nobody's on the owner
+    await expect(
+      va.request("claim", { target: `r:${opened.replay_id}`, cols: 70, rows: 20 })
+    ).rejects.toMatchObject({ code: "unknown_op" });
+    expect((await b.replays.captureMcp(opened.replay_id)).view).toBeNull();
     va.close();
     expect(w.spawns.panes).toHaveLength(1);
   });
@@ -365,47 +372,51 @@ describe.if(flockAvailable())("replays shared across servers", () => {
     expect(b.replays.registry.read(uuid)?.replay_id).toBe(second.replay_id);
   });
 
-  test("claudish view <finished session> through a server holding a remote entry: redirected, joined and claimed on the owner", async () => {
+  test("claudish view <finished session> through a server holding a remote entry: redirected and joined on the owner, never claimed", async () => {
     const w = newWorld();
     const a = await w.server();
     const b = await w.server();
     const opened = await a.replays.open(w.target);
     await b.replays.open(w.target);
-    const io = viewerIo();
+    const term = recordingIo();
     const v = new Viewer({
       root: w.root,
       target: "s:s1",
-      io,
+      io: term.io,
       endpoint: endpointPathOf(w.root, b.name),
       endpointAlive: (n) => w.endpointAlive(n),
     });
     const run = v.run();
     const target = `r:${opened.replay_id}`;
-    await eventually(() => expect(a.claims.holder(target)?.holder).toBe("terminal"));
+    await eventually(() => expect(term.text()).toContain(target));
+    await Bun.sleep(100);
+    expect(a.claims.holder(target)).toBeNull();
     expect(b.claims.holder(target)).toBeNull();
     expect(w.spawns.panes).toHaveLength(1);
     v.quit();
     expect((await run).code).toBe(0);
-    // A's Claude Code still holds it: the viewer's release ends nothing
+    // A's Claude Code still holds the replay: the viewer leaving ends nothing
     await Bun.sleep(100);
     expect(w.alive()).toHaveLength(1);
-    expect(a.claims.holder(target)).toBeNull();
   });
 
   test("claudish view <finished session> with no replay anywhere opens one, held by the viewer alone", async () => {
     const w = newWorld();
     const a = await w.server();
-    const io = viewerIo();
+    const term = recordingIo();
     const v = new Viewer({
       root: w.root,
       target: "s1",
-      io,
+      io: term.io,
       endpointAlive: (n) => w.endpointAlive(n),
     });
     const run = v.run();
     await eventually(() => expect(w.alive()).toHaveLength(1));
     const [listed] = a.replays.list();
-    await eventually(() => expect(a.claims.holder(listed?.target ?? "")?.holder).toBe("terminal"));
+    const target = listed?.target ?? "";
+    await eventually(() => expect(term.text()).toContain(target));
+    // the replay is held by the viewer's connection, and its view is nobody's
+    expect(a.claims.holder(target)).toBeNull();
     v.quit();
     expect((await run).code).toBe(0);
     await eventually(() => expect(w.alive()).toHaveLength(0));
@@ -424,19 +435,19 @@ describe.if(flockAvailable())("replays shared across servers", () => {
     await eventually(() => expect(w.alive()).toHaveLength(1));
     const [listed] = a.replays.list();
     const target = listed?.target ?? "";
-    await eventually(() => expect(a.claims.holder(target)?.holder).toBe("terminal"));
     let secondDone = false;
+    const secondTerm = recordingIo();
     const second = new Viewer({
       root: w.root,
       target,
-      io: viewerIo(),
+      io: secondTerm.io,
       endpointAlive: (n) => w.endpointAlive(n),
     });
     const secondRun = second.run().then((o) => {
       secondDone = true;
       return o;
     });
-    await eventually(() => expect(a.claims.holder(target)?.holder).toBe("terminal"));
+    await eventually(() => expect(secondTerm.text()).toContain(target));
     await Bun.sleep(100);
     first.quit();
     expect((await firstRun).code).toBe(0);

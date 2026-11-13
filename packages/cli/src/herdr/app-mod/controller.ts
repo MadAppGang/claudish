@@ -19,9 +19,9 @@
  * drops it, so a click never blanks the panel.
  *
  * Selecting a session starts `claudish view <target> --front-end herdr-core` in a hidden hc
- * terminal and shows it in a keyed window; selecting another kills the previous viewer, which
- * releases its claim. Selecting a row whose viewer still runs presses Enter in it, which takes the
- * view back. Closing the mod kills the viewers and leaves the relay running.
+ * terminal and shows it in a keyed window; selecting another kills the previous viewer. A viewer
+ * only watches: it never takes the view from Claude Code, so selecting a row whose viewer still
+ * runs only shows its window again. Closing the mod kills the viewers and leaves the relay running.
  *
  * The panel shows runs (`runs.ts`): the latest is selected until the person picks one. Picking a
  * run or a slot shows that slot's screen in the keyed window; a slot that failed before Claude Code
@@ -399,10 +399,7 @@ export class PanelController {
       this.view = null;
     }
     let address = liveTerminal(this.host.terminals(), name)?.address ?? null;
-    if (address) {
-      // a running viewer claimed only at its start; Enter takes the view back from wherever it went
-      await this.host.hc(["keys", address, "enter"]).catch(() => null);
-    } else address = await this.startViewer(target, name);
+    if (!address) address = await this.startViewer(target, name);
     if (!address) return;
     this.view = { target, name, address };
     this.selected = target;

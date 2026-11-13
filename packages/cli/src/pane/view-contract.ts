@@ -121,7 +121,6 @@ export interface ViewClientHello {
   name: string;
   kind: ViewClientKind;
   front_end?: ViewFrontEnd;
-  term_program?: string;
   /** the caller's own endpoint file name; required for `kind: "peer"` */
   endpoint?: string;
 }
@@ -151,14 +150,11 @@ export type ViewCaptureAnswer = CaptureResult | CaptureUnchanged;
 export type ViewTranscriptAnswer = TranscriptResult | TeamTranscriptResult;
 export type ViewResizeAnswer = ResizeResult | TeamResizeResult;
 
+/** A peer's `replay.resize`: the resize, and whether its Claude Code now holds the view. */
 export interface ViewClaimResult {
   granted: boolean;
   view: ViewHolder | null;
   resize: ViewResizeAnswer;
-}
-
-export interface ViewHolderResult {
-  view: ViewHolder | null;
 }
 
 export type ViewRemoveReason = "evicted" | "replay_closed" | "run_pruned";
@@ -181,7 +177,6 @@ export type ViewErrorCode =
   | ContractError["error"]["code"]
   | "unknown_op"
   | "forbidden"
-  | "view_not_held"
   | "slow_consumer"
   | "too_many_connections"
   | "line_too_long"
