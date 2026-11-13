@@ -243,8 +243,11 @@ function rulesOfScope(mergedRules: MergedRule[], scope: MergedRule["kind"]): Rou
   );
 }
 
-/** The native passthrough's hop label: it has no tier; Claude Code's own auth serves it. */
-const NATIVE_HOP_LABEL = "Claude Code's own auth";
+/** The native passthrough's hop label: it has no tier; Claude Code's own login serves it. */
+const NATIVE_HOP_LABEL = "Claude Code's own login";
+
+/** What a comparison row's label adds: it is listed, never used by a launch of the name. */
+const COMPARISON_LABEL = "compared, not used by a launch";
 
 /**
  * A probe row's hop label: the native row's own auth, else routing-rules.ts's
@@ -430,8 +433,12 @@ export function RoutingContent({
   }
 
   if (probeMode === "running" || probeMode === "done") {
-    const successEntry = probeResults.find((e) => e.status === "success");
-    const outcome = deriveProbeOutcome(probeMode, probeResults);
+    // The route a launch takes is read from the non-comparison rows only: a
+    // comparison row's success or failure says nothing about the Claude
+    // subscription a bare Claude name launches on.
+    const routeRows = probeResults.filter((e) => !e.comparison);
+    const successEntry = routeRows.find((e) => e.status === "success");
+    const outcome = deriveProbeOutcome(probeMode, routeRows);
     const allFailed = outcome === "no-route";
     const unverified = outcome === "unverified";
     const totalMs = successEntry?.ms;
@@ -496,7 +503,8 @@ export function RoutingContent({
         {probeResults.map((entry, idx) => {
           const isDropped = entry.status === "dropped";
           const isNotReached = entry.status === "skipped";
-          const isSelected = entry.status === "success" && probeMode === "done";
+          const isSelected =
+            entry.status === "success" && probeMode === "done" && !entry.comparison;
           const status = rowStatusView(entry);
           const nameCol = entry.displayName.padEnd(18).substring(0, 18);
 
@@ -526,6 +534,7 @@ export function RoutingContent({
                 <span fg={isDropped ? C.dim : C.fgMuted}>{entry.displayName}</span>
                 <span fg={C.dim}>{" · "}</span>
                 <span fg={hopLabelColor(entry)}>{hopLabel(entry)}</span>
+                {entry.comparison && <span fg={C.dim}>{` · ${COMPARISON_LABEL}`}</span>}
               </text>
             </box>
           );
@@ -555,7 +564,7 @@ export function RoutingContent({
                     {"Result: "}
                   </span>
                   <span fg={C.fgMuted}>
-                    {"◐ Served natively on Claude Code's own auth — not probed here"}
+                    {"◐ Claude subscription · Claude Code's own login — not probed here"}
                   </span>
                 </>
               ) : (
