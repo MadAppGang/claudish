@@ -162,3 +162,28 @@ export function readHistory(o: HistoryOptions = {}): ViewItem[] {
   }
   return out;
 }
+
+/**
+ * The item `target` (`s:<session_id>` or `t:<run_id>/<slot>`) names, from its record however old;
+ * null when no record holds it. A session's record is its own directory; a team slot's run is
+ * searched newest first, reading only team records. Never throws.
+ */
+export function findRecordedItem(target: string, o: HistoryOptions = {}): ViewItem | null {
+  const sessionsDir = o.sessionsDir ?? sessionsDirFrom(process.env);
+  const sessions = new SessionManager({ sessionsDir, hostPid: process.pid });
+  if (target.startsWith("s:")) {
+    const id = target.slice(2);
+    if (!id || id.includes("/") || id.startsWith(".")) return null;
+    const items = runItems(sessions, join(sessionsDir, id), id, new Set());
+    return items?.find((i) => i.target === target) ?? null;
+  }
+  if (!target.startsWith("t:")) return null;
+  const seenRuns = new Set<string>();
+  for (const name of runDirs(sessionsDir)) {
+    const dir = join(sessionsDir, name);
+    if (!name.startsWith("team-") && readJson(join(dir, "spawn.json"))?.kind !== "team") continue;
+    const found = runItems(sessions, dir, name, seenRuns)?.find((i) => i.target === target);
+    if (found) return found;
+  }
+  return null;
+}

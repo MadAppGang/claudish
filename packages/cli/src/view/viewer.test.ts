@@ -360,7 +360,12 @@ describe("Viewer", () => {
         run_kind: "run",
       } as unknown as ViewItem;
       const io = fakeIo();
-      await new Viewer({ root, target: "t:run-old/02", io, history: () => [record] }).run();
+      await new Viewer({
+        root,
+        target: "t:run-old/02",
+        io,
+        recorded: (t) => (t === record.target ? record : null),
+      }).run();
       const open = ep.received.find((m) => m.op === "replay.open");
       expect(open?.args).toEqual({ run_id: "run-old", slot: "02", path: "/work/reviews/run-old" });
     },

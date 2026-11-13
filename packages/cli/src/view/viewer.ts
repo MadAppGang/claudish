@@ -27,7 +27,7 @@ import {
   listEndpoints,
   ownerOfEndpointName,
 } from "./endpoints.js";
-import { readHistory } from "./history.js";
+import { findRecordedItem } from "./history.js";
 import { type Screen, cellCols } from "./magmux-frame.js";
 import {
   DEFAULT_FPS,
@@ -100,8 +100,8 @@ export interface ViewerOptions {
   verdictMs?: number;
   resizeDebounceMs?: number;
   openView?: (path: string, o: { fps: number }) => Promise<MagmuxViewClient>;
-  /** the finished runs in the records; default `readHistory()` */
-  history?: () => ViewItem[];
+  /** the target's item from its record, however old; default `findRecordedItem` */
+  recorded?: (target: string) => ViewItem | null;
 }
 
 export interface ViewerOutcome {
@@ -275,9 +275,7 @@ export class Viewer {
     }
     const finished = !found || isFinishedItem(found.item);
     // a run no live server keeps any more is still in the records, which name its run path
-    const recorded = found
-      ? null
-      : ((this.o.history ?? readHistory)().find((i) => i.target === target) ?? null);
+    const recorded = found ? null : (this.o.recorded ?? findRecordedItem)(target);
     if (finished && (isReplay || this.o.passive)) {
       this.done({ code: 1, message: `${target} has finished` });
       return;
