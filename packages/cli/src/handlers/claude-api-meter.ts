@@ -64,7 +64,11 @@ function reportsTokens(u: NonNullable<ClaudeApiTurn["usage"]>): boolean {
 
 /** One model's running totals, as its stats rows carry them. */
 interface ModelTotals {
-  /** The latest request's billed input, as `TokenTracker.update` keeps it. */
+  /**
+   * The latest billed input a request reported, as `TokenTracker.update`
+   * keeps it. A request that reported output only (a cancelled stream after
+   * its input was counted elsewhere) leaves it as it was.
+   */
   input: number;
   output: number;
   cost: number;
@@ -154,7 +158,7 @@ export function createClaudeApiMeter(opts: {
           tracker.addSideTurn(cost, input, output, detail);
           totals.cost += cost;
         }
-        totals.input = input;
+        if (input > 0) totals.input = input;
         totals.output += output;
       }
 
