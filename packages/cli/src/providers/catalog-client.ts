@@ -309,9 +309,9 @@ export function logResolution(
   quiet = false
 ): void {
   if (result.wasResolved && !quiet) {
-    process.stderr.write(
-      `[Model] Resolved "${userInput}" → "${result.resolvedId}" (${result.sourceLabel})\n`
-    );
+    const line = `[Model] Resolved "${userInput}" → "${result.resolvedId}" (${result.sourceLabel})`;
+    log(line);
+    process.stderr.write(`${line}\n`);
   }
 }
 
