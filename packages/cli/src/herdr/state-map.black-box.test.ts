@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionViewItem } from "../pane/view-contract.js";
 import { hcStatus, herdrAgentState, herdrMetadata } from "./state-map.js";
-import { replayItem, sessionItem } from "./test-helpers/placer-harness.js";
+import { replayItem, sessionItem } from "./test-helpers/view-items.js";
 
 describe("host-neutral status and metadata", () => {
   test.each([

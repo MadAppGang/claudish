@@ -79,8 +79,6 @@ export interface ReplayViewItem {
   final: boolean;
   magmux: ViewMagmux | null;
   view: ViewHolder | null;
-  /** workspace keys with a herdr viewer on this replay or a placement reserved */
-  herdr_workspaces: string[];
 }
 
 export type ViewItem = SessionViewItem | TeamSlotViewItem | ReplayViewItem;
@@ -124,11 +122,8 @@ export interface ViewClientHello {
   kind: ViewClientKind;
   front_end?: ViewFrontEnd;
   term_program?: string;
-  workspace_key?: string;
   /** the caller's own endpoint file name; required for `kind: "peer"` */
   endpoint?: string;
-  /** a placed herdr viewer's placement transaction and attempt, `<txn>.<attempt>` */
-  placement?: string;
 }
 
 export interface ViewHelloResult {
@@ -139,7 +134,6 @@ export interface ViewHelloResult {
     started_at: string;
     endpoint: string;
     front_end: ViewFrontEnd;
-    workspace_id?: string;
   };
   contract_version: 1;
   capabilities: string[];

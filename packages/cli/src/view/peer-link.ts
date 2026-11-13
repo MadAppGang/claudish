@@ -21,19 +21,12 @@ import { ViewClient } from "./view-client.js";
 /** `replay.close` waits for the owner's reap and registry removal. */
 export const PEER_CLOSE_MS = 30_000;
 
-export interface PeerPlaceAsk {
-  workspace_key: string;
-  txn: string;
-}
-
 export interface ReplayOpenWire {
   replay_id: string;
   target: string;
   seq: number;
   magmux: ViewMagmux | null;
   view: ViewHolder | null;
-  herdr_workspaces: string[];
-  place: boolean;
 }
 
 /** Why a joined replay stopped being served by its owner. */
@@ -67,16 +60,8 @@ export class PeerLink {
     return !this.ended;
   }
 
-  open(
-    replayId: string,
-    place: PeerPlaceAsk | undefined,
-    timeoutMs: number
-  ): Promise<ReplayOpenWire> {
-    return this.client.request<ReplayOpenWire>(
-      "replay.open",
-      { replay_id: replayId, ...(place ? { place } : {}) },
-      timeoutMs
-    );
+  open(replayId: string, timeoutMs: number): Promise<ReplayOpenWire> {
+    return this.client.request<ReplayOpenWire>("replay.open", { replay_id: replayId }, timeoutMs);
   }
 
   capture(
@@ -106,13 +91,6 @@ export class PeerLink {
 
   release(replayId: string): Promise<{ closed: boolean }> {
     return this.client.request("replay.release", { replay_id: replayId });
-  }
-
-  placeDone(replayId: string, workspaceKey: string): Promise<unknown> {
-    return this.client.request("replay.place_done", {
-      replay_id: replayId,
-      workspace_key: workspaceKey,
-    });
   }
 
   /** Subscribe to the replay's target on the owner; `onEnd` fires once, when it stops. */

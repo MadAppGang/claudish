@@ -491,28 +491,4 @@ describe.if(flockAvailable())("replays shared across servers", () => {
     await Bun.sleep(700);
     await eventually(() => expect(w.alive()).toHaveLength(0));
   });
-
-  test("a peer may place once per workspace: the owner's grant, then place_done gives it back", async () => {
-    const w = newWorld();
-    const a = await w.server();
-    const opened = await a.replays.open(w.target);
-    const peer = await ViewClient.connect(endpointPathOf(w.root, a.name), {
-      hello: { name: "peer", kind: "peer", endpoint: (await w.server()).name } as never,
-    });
-    const key = "0123abcd/w1";
-    const one = await peer.request<{ place: boolean }>("replay.open", {
-      replay_id: opened.replay_id,
-      place: { workspace_key: key, txn: "ptxn1" },
-    });
-    expect(one.place).toBe(true);
-    const two = await peer.request<{ place: boolean }>("replay.open", {
-      replay_id: opened.replay_id,
-      place: { workspace_key: key, txn: "ptxn2" },
-    });
-    expect(two.place).toBe(false);
-    expect(a.grants.workspaces(`r:${opened.replay_id}`)).toEqual([key]);
-    await peer.request("replay.place_done", { replay_id: opened.replay_id, workspace_key: key });
-    expect(a.grants.workspaces(`r:${opened.replay_id}`)).toEqual([]);
-    peer.close();
-  });
 });

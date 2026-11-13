@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { SessionViewItem } from "../../pane/view-contract.js";
-import { sessionItem } from "../test-helpers/placer-harness.js";
+import { sessionItem } from "../test-helpers/view-items.js";
 import {
   claudishArgv,
   feedRunArgs,
@@ -90,7 +90,6 @@ describe("Herdr.app session model", () => {
     expect(view).toContain(target);
     expect(view).toContain("--front-end");
     expect(view).toContain("herdr-core");
-    expect(view).not.toContain("--passive");
     for (const args of [view, feed]) {
       expect(args).toContain(install.path);
       expect(args).toContain(`CLAUDISH_PANE_ROOT=${install.root}`);

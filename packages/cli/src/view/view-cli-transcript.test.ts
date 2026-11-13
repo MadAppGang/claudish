@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
-import { sessionItem } from "../herdr/test-helpers/placer-harness.js";
+import { sessionItem } from "../herdr/test-helpers/view-items.js";
 import { ContractErrorException } from "../pane/contract.js";
 import { makeViewRoot } from "./test-helpers/fake-view-endpoint.js";
 import { ViewClaims } from "./view-claims.js";

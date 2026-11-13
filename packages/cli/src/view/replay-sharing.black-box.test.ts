@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { eventually } from "../herdr/test-helpers/placer-harness.js";
+import { eventually } from "../herdr/test-helpers/view-items.js";
 import type { CaptureResult } from "../pane/contract.js";
 import type { ViewClaimResult, ViewListResult } from "../pane/view-contract.js";
 import { flockAvailable } from "./kernel-lock.js";

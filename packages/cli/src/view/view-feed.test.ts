@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { sessionItem } from "../herdr/test-helpers/placer-harness.js";
+import { sessionItem } from "../herdr/test-helpers/view-items.js";
 import type { ViewItem } from "../pane/view-contract.js";
 import { ViewFeed, type ViewFeedEvent } from "./view-feed.js";
 

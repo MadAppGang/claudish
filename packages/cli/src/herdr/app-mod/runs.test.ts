@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ViewItem } from "../../pane/view-contract.js";
-import { replayItem, sessionItem } from "../test-helpers/placer-harness.js";
+import { replayItem, sessionItem } from "../test-helpers/view-items.js";
 import {
   EARLIER_MIN_TABS,
   failureCard,

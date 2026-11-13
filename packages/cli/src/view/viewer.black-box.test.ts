@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { eventually, sessionItem } from "../herdr/test-helpers/placer-harness.js";
+import { eventually, sessionItem } from "../herdr/test-helpers/view-items.js";
 import type { ViewHolder } from "../pane/contract.js";
 import { capturedFrames } from "./test-data/captured-frames.js";
 import {
@@ -53,7 +53,7 @@ function terminal() {
     },
   };
 }
-async function rig(passive = false) {
+async function rig() {
   const root = `/tmp/wbb-${randomBytes(4).toString("hex")}`;
   makeViewRoot(root);
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -70,7 +70,6 @@ async function rig(passive = false) {
   const viewer = new Viewer({
     root,
     target: "s:a",
-    passive,
     io: term.io,
     endpoint: ep.path,
     endpointAlive: () => true,
@@ -120,34 +119,6 @@ describe("read-only viewer over both real Unix connections", () => {
       cols: 90,
       rows: 27,
     });
-  });
-
-  test("TEST-34 REQ-10 REQ-12 REQ-13 passive pane size never reaches child until Enter", async () => {
-    const r = await rig(true);
-    await eventually(() => expect(r.term.text()).toContain("Enter to view here"));
-
-    r.term.resizeTo(112, 33);
-    await Bun.sleep(30);
-
-    expect(r.ep.ops()).not.toContain("claim");
-    expect(r.ep.ops()).not.toContain("resize");
-    expect(r.mag.received).toEqual([]);
-    expect(r.viewer.holding).toBe(false);
-    r.term.press("\r");
-    await eventually(() => expect(r.term.text()).toContain("bold red"));
-    expect(r.ep.received.find((m) => m.op === "claim")?.args).toEqual({
-      target: "s:a",
-      cols: 112,
-      rows: 32,
-    });
-    r.term.resizeTo(120, 36);
-    await eventually(() =>
-      expect(r.ep.received.find((m) => m.op === "resize")?.args).toEqual({
-        target: "s:a",
-        cols: 120,
-        rows: 35,
-      })
-    );
   });
 
   test("TEST-35 REQ-10 REQ-28 typed, pasted and navigation bytes remain local and q exits", async () => {
