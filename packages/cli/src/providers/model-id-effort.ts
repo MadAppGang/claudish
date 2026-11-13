@@ -14,7 +14,7 @@
  */
 
 import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "../adapters/base-api-format.js";
-import type { ModelIdEffort, ModelIdEffortLevel } from "../model-loader.js";
+import type { AggregatorEntry, ModelIdEffort, ModelIdEffortLevel } from "../model-loader.js";
 
 /**
  * Trailing uid segments that mark a Devin speed premium (`-fast`, `-priority`),
@@ -54,6 +54,24 @@ export function readModelIdEffort(raw: unknown): ModelIdEffort | undefined {
   if (off) map.off = off;
   if (typeof record.baseServed === "boolean") map.baseServed = record.baseServed;
   return map;
+}
+
+/**
+ * The id `connection`'s effort map lists (for a level or as `off`) that equals
+ * `requested`, in the map's own spelling: an exact match first, then a
+ * case-insensitive one. Undefined when the connection has no valid map or the
+ * map lists no such id. Whole-id comparison only; no suffix is ever parsed.
+ */
+export function publishedEffortWireId(
+  connection: Pick<AggregatorEntry, "modelIdEffort">,
+  requested: string
+): string | undefined {
+  const map = readModelIdEffort(connection.modelIdEffort);
+  if (!map) return undefined;
+  const ids = [...Object.values(map.values), ...(map.off ? [map.off] : [])];
+  if (ids.includes(requested)) return requested;
+  const lowered = requested.toLowerCase();
+  return ids.find((id) => id.toLowerCase() === lowered);
 }
 
 /** A plain object, or undefined. */
