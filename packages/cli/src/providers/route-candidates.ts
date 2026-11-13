@@ -543,7 +543,8 @@ function listedRow(
       : expandSelection(
           provider,
           model,
-          models.map(({ id, ...rest }) => ({ wireId: id, ...rest }))
+          models.map(({ id, ...rest }) => ({ wireId: id, ...rest })),
+          { quiet: true }
         );
   const needle = sent.trim().toLowerCase();
   const row = models.find((candidate) => candidate.id.trim().toLowerCase() === needle);

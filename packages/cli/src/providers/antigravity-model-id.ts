@@ -14,7 +14,12 @@ import {
   findModelIdEffortConnection,
   lookupFamilyDefaultVariant,
 } from "../adapters/model-catalog.js";
-import { chooseConnectionModelId } from "./model-id-effort-choice.js";
+import {
+  type ConnectionMapDecision,
+  type ModelIdChoice,
+  chooseConnectionModelId,
+  existingResolutionChoice,
+} from "./model-id-effort-choice.js";
 
 /**
  * The account's dynamic models catalog as model-id resolution reads it: every
@@ -64,18 +69,17 @@ function servesSelectable(served: AntigravityServedSet, id: string): boolean {
 }
 
 /**
- * The id the connection's effort map chooses, or undefined when no map applies
- * and {@link resolveAntigravityModelId} decides. A map id is sendable only when
- * the account serves it and the backend does not exclude it. Its spelling
- * decides nothing: a `-fast` id the map names is sent like any other.
+ * What the connection's effort map decides for `req`: the id it chooses, the
+ * level it looked up when that id cannot be sent, or undefined when the
+ * connection publishes no map. A map id is sendable only when the account
+ * serves it and the backend does not exclude it. Its spelling decides nothing:
+ * a `-fast` id the map names is sent like any other.
  */
 function mappedAntigravityModelId(
-  requested: string,
+  req: string,
   served: AntigravityServedSet,
   effort: EffortLevel | undefined
-): string | undefined {
-  const req = requested.trim();
-  if (!effort && servesSelectable(served, req)) return undefined;
+): ConnectionMapDecision | undefined {
   return chooseConnectionModelId(req, "antigravity", effort, {
     sendable: (id) => (servesSelectable(served, id) ? id : undefined),
   });
@@ -260,22 +264,42 @@ export function resolveAntigravityServedModel(
   served: AntigravityServedSet,
   effort?: EffortLevel
 ): string {
+  return chooseAntigravityServedModel(requested, served, effort).id;
+}
+
+/**
+ * {@link resolveAntigravityServedModel} with what decided the id: the level the
+ * choice used and its source, for the envelope builders' debug line.
+ */
+export function chooseAntigravityServedModel(
+  requested: string,
+  served: AntigravityServedSet,
+  effort?: EffortLevel
+): ModelIdChoice {
   const req = requested.trim();
   // An exact listed id that is no connection's base is a fixed model: sent as
   // itself at any effort, excluded or not, before any family rule can move it.
   const isMappedBase = findModelIdEffortConnection(req, "antigravity") !== undefined;
-  if (!isMappedBase && served.servedIds.includes(req)) return req;
-  const mapped = mappedAntigravityModelId(requested, served, effort);
-  if (mapped) return mapped;
-  if (servesSelectable(served, req)) return req;
+  if (!isMappedBase && served.servedIds.includes(req)) {
+    return { id: req, effort, source: "exact id" };
+  }
+  // A mapped base the account lists, requested with no effort, is sent as
+  // itself: the backend then serves it at its own default.
+  if (isMappedBase && !effort && servesSelectable(served, req)) {
+    return { id: req, effort: undefined, source: "served base" };
+  }
+  const decision = mappedAntigravityModelId(req, served, effort);
+  if (decision?.usable) return decision.choice;
+  if (servesSelectable(served, req)) return existingResolutionChoice(req, effort, decision);
   // An automatic choice is never an id the backend excludes.
   const selectable = served.servedIds.filter((id) => !isExcluded(served, id));
   const defaultId =
     served.defaultId && selectable.includes(served.defaultId) ? served.defaultId : null;
-  return resolveAntigravityModelId(
+  const id = resolveAntigravityModelId(
     requested,
     selectable,
     defaultId,
     lookupFamilyDefaultVariant(requested, "antigravity")
   );
+  return existingResolutionChoice(id, effort, decision);
 }

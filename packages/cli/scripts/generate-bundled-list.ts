@@ -5,6 +5,9 @@
  *
  * Any failure writes nothing and exits 1. The file on disk therefore always came
  * whole from one generation, and a broken read cannot ship as an empty list.
+ * A warning (a gap the list carries as published, such as a recommended model
+ * with effort levels and no effort row) is printed to stderr; the list is still
+ * written and the exit code is 0.
  *
  *   bun run scripts/generate-bundled-list.ts [--base-url URL] [--allow-nonproduction]
  */
@@ -135,11 +138,14 @@ function printSummary(summary: BundledListSummary, byteSize: number): void {
     `dropped connections by profile kind: ${formatCounts(summary.droppedConnectionsByKind)}`,
     `unmapped connections: ${summary.unmappedConnections}`,
     `effort rows ${summary.effortRows}, outside the list ${summary.effortRowsOutsideBundle}`,
-    `recommended with no effort row, because they publish no effort levels: ${summary.modelsWithNoEffortRow.join(", ") || "none"}`,
+    `recommended with no effort row: ${summary.modelsWithNoEffortRow.join(", ") || "none"}`,
     `dropped sendableOn entries: ${summary.droppedSendableOn}`,
     `bytes ${byteSize}`,
   ];
   for (const line of lines) console.log(`[generate-bundled-list] ${line}`);
+  for (const warning of summary.warnings) {
+    console.error(`[generate-bundled-list] WARNING: ${warning}`);
+  }
 }
 
 /** Reads, builds, self-checks and writes the list; throws with nothing written on any failure. */

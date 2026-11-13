@@ -26,6 +26,18 @@
             }
           ]
         },
+        "default": {
+          "basis": "vendor_default",
+          "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "claude-fable-5-2",
+              "routeId": "anthropic",
+              "routeProfileId": "claude-code-subscription"
+            }
+          ]
+        },
         "frontend_ui": {
           "basis": "owner_choice",
           "effort": "medium",
@@ -139,6 +151,18 @@
         "debugging": {
           "basis": "vendor_guidance",
           "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "claude-haiku-5-5",
+              "routeId": "anthropic",
+              "routeProfileId": "claude-code-subscription"
+            }
+          ]
+        },
+        "default": {
+          "basis": "vendor_default",
+          "effort": "medium",
           "sendableOn": [
             {
               "encoding": "request_parameter",
@@ -270,6 +294,18 @@
             }
           ]
         },
+        "default": {
+          "basis": "vendor_default",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "claude-opus-5-5",
+              "routeId": "anthropic",
+              "routeProfileId": "claude-code-subscription"
+            }
+          ]
+        },
         "frontend_ui": {
           "basis": "owner_choice",
           "effort": "high",
@@ -368,6 +404,18 @@
             }
           ]
         },
+        "default": {
+          "basis": "vendor_default",
+          "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "claude-sonnet-5-5",
+              "routeId": "anthropic",
+              "routeProfileId": "claude-code-subscription"
+            }
+          ]
+        },
         "frontend_ui": {
           "basis": "owner_choice",
           "effort": "max",
@@ -453,58 +501,6 @@
           ]
         }
       },
-      "deepseek-v4-pro": {
-        "code_review": {
-          "basis": "owner_choice",
-          "effort": "high",
-          "sendableOn": []
-        },
-        "debugging": {
-          "basis": "owner_choice",
-          "effort": "max",
-          "sendableOn": []
-        },
-        "frontend_ui": {
-          "basis": "owner_choice",
-          "effort": "max",
-          "sendableOn": []
-        },
-        "implementation": {
-          "basis": "benchmark_knee",
-          "effort": "max",
-          "sendableOn": []
-        },
-        "long_context": {
-          "basis": "benchmark_knee",
-          "effort": "high",
-          "sendableOn": []
-        },
-        "planning": {
-          "basis": "benchmark_knee",
-          "effort": "high",
-          "sendableOn": []
-        },
-        "quick_edit": {
-          "basis": "owner_choice",
-          "effort": "high",
-          "sendableOn": []
-        },
-        "research": {
-          "basis": "owner_choice",
-          "effort": "max",
-          "sendableOn": []
-        },
-        "terminal_ops": {
-          "basis": "owner_choice",
-          "effort": "high",
-          "sendableOn": []
-        },
-        "tool_automation": {
-          "basis": "benchmark_knee",
-          "effort": "max",
-          "sendableOn": []
-        }
-      },
       "deepseek-v4.1-flash": {
         "code_review": {
           "basis": "owner_choice",
@@ -514,6 +510,11 @@
         "debugging": {
           "basis": "owner_choice",
           "effort": "max",
+          "sendableOn": []
+        },
+        "default": {
+          "basis": "vendor_default",
+          "effort": "high",
           "sendableOn": []
         },
         "frontend_ui": {
@@ -814,6 +815,18 @@
             }
           ]
         },
+        "default": {
+          "basis": "vendor_default",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "GLM-5.3",
+              "routeId": "z-ai",
+              "routeProfileId": "glm-coding-subscription"
+            }
+          ]
+        },
         "frontend_ui": {
           "basis": "owner_choice",
           "effort": "max",
@@ -926,6 +939,18 @@
         },
         "debugging": {
           "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "GLM-5.3-Flash",
+              "routeId": "z-ai",
+              "routeProfileId": "glm-coding-subscription"
+            }
+          ]
+        },
+        "default": {
+          "basis": "vendor_default",
           "effort": "max",
           "sendableOn": [
             {
@@ -1180,6 +1205,18 @@
             }
           ]
         },
+        "default": {
+          "basis": "vendor_default",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6-luna",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
         "frontend_ui": {
           "basis": "owner_choice",
           "effort": "xhigh",
@@ -1302,153 +1339,113 @@
             }
           ]
         },
-        "frontend_ui": {
-          "basis": "owner_choice",
-          "effort": "high",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "implementation": {
-          "basis": "benchmark_knee",
-          "effort": "max",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "long_context": {
-          "basis": "benchmark_knee",
-          "effort": "low",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "planning": {
-          "basis": "benchmark_knee",
-          "effort": "max",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "quick_edit": {
-          "basis": "vendor_guidance",
-          "effort": "low",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "research": {
-          "basis": "benchmark_knee",
-          "effort": "max",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "terminal_ops": {
-          "basis": "benchmark_knee",
-          "effort": "xhigh",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        },
-        "tool_automation": {
-          "basis": "benchmark_knee",
-          "effort": "high",
-          "sendableOn": [
-            {
-              "encoding": "request_parameter",
-              "externalModelId": "gpt-6.1-sol",
-              "routeId": "openai",
-              "routeProfileId": "codex-subscription"
-            }
-          ]
-        }
-      },
-      "grok-4.7": {
-        "code_review": {
-          "basis": "owner_choice",
-          "effort": "high",
-          "sendableOn": []
-        },
-        "debugging": {
-          "basis": "owner_choice",
-          "effort": "xhigh",
-          "sendableOn": []
-        },
-        "frontend_ui": {
-          "basis": "owner_choice",
-          "effort": "xhigh",
-          "sendableOn": []
-        },
-        "implementation": {
-          "basis": "benchmark_knee",
-          "effort": "high",
-          "sendableOn": []
-        },
-        "long_context": {
-          "basis": "benchmark_knee",
-          "effort": "low",
-          "sendableOn": []
-        },
-        "planning": {
-          "basis": "benchmark_knee",
-          "effort": "high",
-          "sendableOn": []
-        },
-        "quick_edit": {
-          "basis": "owner_choice",
+        "default": {
+          "basis": "vendor_default",
           "effort": "medium",
-          "sendableOn": []
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-sol",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
+        "frontend_ui": {
+          "basis": "owner_choice",
+          "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-sol",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
+        "implementation": {
+          "basis": "benchmark_knee",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-sol",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
+        "long_context": {
+          "basis": "benchmark_knee",
+          "effort": "low",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-sol",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
+        "planning": {
+          "basis": "benchmark_knee",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-sol",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
+        "quick_edit": {
+          "basis": "vendor_guidance",
+          "effort": "low",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-sol",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
         },
         "research": {
           "basis": "benchmark_knee",
-          "effort": "high",
-          "sendableOn": []
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-sol",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
         },
         "terminal_ops": {
-          "basis": "owner_choice",
-          "effort": "high",
-          "sendableOn": []
+          "basis": "benchmark_knee",
+          "effort": "xhigh",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-sol",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
         },
         "tool_automation": {
-          "basis": "vendor_guidance",
-          "effort": "low",
-          "sendableOn": []
+          "basis": "benchmark_knee",
+          "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-sol",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
         }
       },
       "kimi-k3.1-pro": {
@@ -1466,6 +1463,18 @@
         },
         "debugging": {
           "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "k3.1-pro",
+              "routeId": "moonshotai",
+              "routeProfileId": "kimi-code-subscription"
+            }
+          ]
+        },
+        "default": {
+          "basis": "vendor_default",
           "effort": "max",
           "sendableOn": [
             {
@@ -1588,6 +1597,18 @@
         },
         "debugging": {
           "basis": "owner_choice",
+          "effort": "max",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "MiniMax-M3.1-Flash",
+              "routeId": "minimax",
+              "routeProfileId": "coding-plan-subscription"
+            }
+          ]
+        },
+        "default": {
+          "basis": "vendor_default",
           "effort": "max",
           "sendableOn": [
             {
@@ -2059,58 +2080,6 @@
           ]
         }
       },
-      "qwen3.8-max": {
-        "code_review": {
-          "basis": "owner_choice",
-          "effort": "medium",
-          "sendableOn": []
-        },
-        "debugging": {
-          "basis": "owner_choice",
-          "effort": "xhigh",
-          "sendableOn": []
-        },
-        "frontend_ui": {
-          "basis": "owner_choice",
-          "effort": "xhigh",
-          "sendableOn": []
-        },
-        "implementation": {
-          "basis": "owner_choice",
-          "effort": "medium",
-          "sendableOn": []
-        },
-        "long_context": {
-          "basis": "benchmark_knee",
-          "effort": "low",
-          "sendableOn": []
-        },
-        "planning": {
-          "basis": "owner_choice",
-          "effort": "xhigh",
-          "sendableOn": []
-        },
-        "quick_edit": {
-          "basis": "owner_choice",
-          "effort": "medium",
-          "sendableOn": []
-        },
-        "research": {
-          "basis": "owner_choice",
-          "effort": "xhigh",
-          "sendableOn": []
-        },
-        "terminal_ops": {
-          "basis": "owner_choice",
-          "effort": "medium",
-          "sendableOn": []
-        },
-        "tool_automation": {
-          "basis": "owner_choice",
-          "effort": "low",
-          "sendableOn": []
-        }
-      },
       "qwen3.8-omni-flash": {
         "code_review": {
           "basis": "owner_choice",
@@ -2126,6 +2095,18 @@
         },
         "debugging": {
           "basis": "owner_choice",
+          "effort": "xhigh",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "qwen3.8-omni-flash",
+              "routeId": "qwen",
+              "routeProfileId": "dashscope-direct"
+            }
+          ]
+        },
+        "default": {
+          "basis": "vendor_default",
           "effort": "xhigh",
           "sendableOn": [
             {
@@ -2234,7 +2215,7 @@
         }
       }
     },
-    "fetchedAt": "2026-11-12T11:05:08.911Z",
+    "fetchedAt": "2026-11-13T03:25:33.693Z",
     "format": 1,
     "recommendations": {
       "contractVersion": 3,
@@ -2252,15 +2233,11 @@
           "tier": "flagship"
         },
         {
-          "modelId": "grok-4.7",
-          "tier": "flagship"
-        },
-        {
           "modelId": "kimi-k3.1-pro",
           "tier": "flagship"
         },
         {
-          "modelId": "qwen3.8-max",
+          "modelId": "qwen4-max-preview",
           "tier": "flagship"
         },
         {
@@ -2272,7 +2249,7 @@
           "tier": "flagship"
         },
         {
-          "modelId": "deepseek-v4-pro",
+          "modelId": "deepseek-v4.1-flash",
           "tier": "flagship"
         },
         {
@@ -2293,10 +2270,6 @@
         },
         {
           "modelId": "gemini-3.8-flash",
-          "tier": "lightweight"
-        },
-        {
-          "modelId": "deepseek-v4.1-flash",
           "tier": "lightweight"
         },
         {
@@ -2332,6 +2305,10 @@
           "tier": "cost_efficient"
         },
         {
+          "modelId": "claude-haiku-5-5",
+          "tier": "cost_efficient"
+        },
+        {
           "modelId": "claude-fable-5-2",
           "tier": "luxury"
         },
@@ -2340,11 +2317,11 @@
           "tier": "luxury"
         }
       ],
-      "generationId": "g-20261112022959178-a6d01f51"
+      "generationId": "g-20261112195224186-062fe295"
     },
     "source": "https://us-central1-claudish-6da10.cloudfunctions.net"
   },
-  "catalogGenerationId": "g-20261112022959178-a6d01f51",
+  "catalogGenerationId": "g-20261112195224186-062fe295",
   "entries": [
     {
       "aggregators": [
@@ -2918,9 +2895,9 @@
       ],
       "aliases": [
         "anthropic/claude-opus-5.5",
+        "claude-opus-5-5-medium",
         "claude-opus-5-5-high",
         "claude-opus-5-5-low",
-        "claude-opus-5-5-medium",
         "claude-opus-5-5-max",
         "claude-opus-5-5-xhigh"
       ],
@@ -2981,12 +2958,6 @@
             },
             "request": {
               "api": "anthropic-messages",
-              "disable": [
-                {
-                  "path": "/thinking/type",
-                  "value": "between_tools"
-                }
-              ],
               "effort": {
                 "default": "high",
                 "path": "/output_config/effort",
@@ -2998,12 +2969,6 @@
                   "xhigh": "xhigh"
                 }
               },
-              "enable": [
-                {
-                  "path": "/thinking/type",
-                  "value": "adaptive"
-                }
-              ],
               "status": "supported"
             }
           },
@@ -3017,12 +2982,9 @@
             "api": "anthropic-messages",
             "evidence": [],
             "reasoning": {
-              "disable": [
-                {
-                  "path": "/thinking/type",
-                  "value": "between_tools"
-                }
-              ],
+              "disable": {
+                "status": "unknown"
+              },
               "effort": {
                 "default": "high",
                 "path": "/output_config/effort",
@@ -3034,12 +2996,9 @@
                   "xhigh": "xhigh"
                 }
               },
-              "enable": [
-                {
-                  "path": "/thinking/type",
-                  "value": "adaptive"
-                }
-              ],
+              "enable": {
+                "status": "unknown"
+              },
               "mode": {
                 "path": "/reasoning/mode",
                 "status": "rejected"
@@ -3069,12 +3028,6 @@
             },
             "request": {
               "api": "anthropic-messages",
-              "disable": [
-                {
-                  "path": "/thinking/type",
-                  "value": "between_tools"
-                }
-              ],
               "effort": {
                 "default": "high",
                 "path": "/output_config/effort",
@@ -3086,12 +3039,6 @@
                   "xhigh": "xhigh"
                 }
               },
-              "enable": [
-                {
-                  "path": "/thinking/type",
-                  "value": "adaptive"
-                }
-              ],
               "status": "supported"
             }
           },
@@ -3105,12 +3052,9 @@
             "api": "anthropic-messages",
             "evidence": [],
             "reasoning": {
-              "disable": [
-                {
-                  "path": "/thinking/type",
-                  "value": "between_tools"
-                }
-              ],
+              "disable": {
+                "status": "unknown"
+              },
               "effort": {
                 "default": "high",
                 "path": "/output_config/effort",
@@ -3122,12 +3066,9 @@
                   "xhigh": "xhigh"
                 }
               },
-              "enable": [
-                {
-                  "path": "/thinking/type",
-                  "value": "adaptive"
-                }
-              ],
+              "enable": {
+                "status": "unknown"
+              },
               "mode": {
                 "path": "/reasoning/mode",
                 "status": "rejected"
@@ -3182,7 +3123,7 @@
           "medium",
           "low"
         ],
-        "mandatory": false,
+        "mandatory": true,
         "supported": true,
         "supportsBudgetTokens": false
       },
@@ -3197,111 +3138,6 @@
       "supportsTools": true,
       "supportsVision": true,
       "tokenParam": "max_tokens",
-      "videoInput": false,
-      "videoOutput": false
-    },
-    {
-      "aggregators": [
-        {
-          "externalModelId": "deepseek-v4-pro",
-          "pricing": {
-            "type": "unavailable"
-          },
-          "reasoning": {
-            "request": {
-              "status": "unknown"
-            }
-          },
-          "route": {
-            "routeId": "deepseek",
-            "routeProfileId": "direct-api"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "deepseek",
-          "wire": {
-            "api": "responses",
-            "evidence": [],
-            "reasoning": {
-              "disable": {
-                "status": "unknown"
-              },
-              "effort": {
-                "default": {
-                  "status": "unknown"
-                },
-                "path": "/reasoning/effort",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "max": "max"
-                }
-              },
-              "enable": {
-                "status": "unknown"
-              },
-              "mode": {
-                "status": "not_applicable"
-              },
-              "status": "supported"
-            },
-            "speed": {
-              "status": "not_applicable"
-            },
-            "status": "known",
-            "tokenParam": "max_output_tokens",
-            "toolsWithReasoning": "ok"
-          }
-        }
-      ],
-      "aliases": [
-        "deepseek/deepseek-v4-pro",
-        "deepseek-v4-pro-t",
-        "deepseek-v4-pro-e",
-        "deepseek-v4-pro-high",
-        "deepseek-v4-pro-max"
-      ],
-      "contextWindow": 1048576,
-      "contractVersion": 3,
-      "displayName": "DeepSeek-V4-Pro",
-      "endpoints": {
-        "openai": {
-          "api": "responses",
-          "toolsWithReasoning": "ok"
-        }
-      },
-      "inputModalities": [
-        "text"
-      ],
-      "maxOutputTokens": 393216,
-      "modelId": "deepseek-v4-pro",
-      "outputModalities": [
-        "text"
-      ],
-      "provider": "deepseek",
-      "reasoning": {
-        "control": "effort",
-        "defaultEffort": "high",
-        "efforts": [
-          "max",
-          "high",
-          "low"
-        ],
-        "mandatory": false,
-        "supported": true
-      },
-      "status": "active",
-      "subscriptionPlanIds": [
-        "alibaba-token-plan-individual",
-        "alibaba-token-plan-team-edition",
-        "byteplus-modelark-coding-plan",
-        "cognition-devin",
-        "llm-gateway-devpass",
-        "opencode-go"
-      ],
-      "supportsThinking": true,
-      "supportsTools": true,
-      "supportsVision": false,
-      "tokenParam": "max_output_tokens",
       "videoInput": false,
       "videoOutput": false
     },
@@ -3527,9 +3363,9 @@
       ],
       "aliases": [
         "google/gemini-3.8-flash",
-        "gemini-3.8-flash-high",
-        "gemini-3.8-flash-low",
         "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
+        "gemini-3.8-flash-high",
         "gemini-3-8-flash-high",
         "gemini-3-8-flash-low",
         "gemini-3-8-flash-medium"
@@ -3651,9 +3487,9 @@
       ],
       "aliases": [
         "google/gemini-4-argon",
-        "gemini-4-argon-high",
+        "gemini-4-argon-low",
         "gemini-4-argon-medium",
-        "gemini-4-argon-low"
+        "gemini-4-argon-high"
       ],
       "contextWindow": 1048576,
       "contractVersion": 3,
@@ -4886,130 +4722,6 @@
     {
       "aggregators": [
         {
-          "externalModelId": "grok-4.7",
-          "pricing": {
-            "cachedRead": 0.5,
-            "input": 2,
-            "output": 6,
-            "type": "flat"
-          },
-          "reasoning": {
-            "request": {
-              "api": "responses",
-              "effort": {
-                "default": "high",
-                "path": "/reasoning/effort",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "medium": "medium",
-                  "xhigh": "xhigh"
-                }
-              },
-              "status": "supported"
-            }
-          },
-          "route": {
-            "routeId": "x-ai",
-            "routeProfileId": "direct-api"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "x-ai",
-          "wire": {
-            "api": "responses",
-            "evidence": [],
-            "reasoning": {
-              "disable": {
-                "status": "not_applicable"
-              },
-              "effort": {
-                "default": "high",
-                "path": "/reasoning/effort",
-                "values": {
-                  "high": "high",
-                  "low": "low",
-                  "medium": "medium",
-                  "xhigh": "xhigh"
-                }
-              },
-              "enable": {
-                "status": "not_applicable"
-              },
-              "mode": {
-                "status": "not_applicable"
-              },
-              "status": "supported"
-            },
-            "speed": {
-              "access": "open",
-              "default": "standard",
-              "echo": "/service_tier",
-              "headers": [],
-              "path": "/service_tier",
-              "status": "supported",
-              "values": {
-                "priority": "priority",
-                "standard": "default"
-              }
-            },
-            "status": "known",
-            "tokenParam": "max_output_tokens",
-            "toolsWithReasoning": "ok"
-          }
-        }
-      ],
-      "aliases": [
-        "x-ai/grok-4.7",
-        "grok-4-7-high",
-        "grok-4-7-low",
-        "grok-4-7-medium",
-        "grok-4-7-xhigh"
-      ],
-      "contextWindow": 500000,
-      "contractVersion": 3,
-      "displayName": "Grok 4.7",
-      "endpoints": {
-        "openai": {
-          "api": "responses",
-          "toolsWithReasoning": "ok"
-        }
-      },
-      "inputModalities": [
-        "image",
-        "text"
-      ],
-      "modelId": "grok-4.7",
-      "outputModalities": [
-        "text"
-      ],
-      "provider": "x-ai",
-      "reasoning": {
-        "control": "effort",
-        "defaultEffort": "high",
-        "efforts": [
-          "xhigh",
-          "high",
-          "medium",
-          "low"
-        ],
-        "mandatory": true,
-        "supported": true
-      },
-      "releaseDate": "2026-09-21",
-      "status": "active",
-      "subscriptionPlanIds": [
-        "cognition-devin",
-        "opencode-go"
-      ],
-      "supportsTools": true,
-      "supportsVision": true,
-      "tokenParam": "max_output_tokens",
-      "videoInput": false,
-      "videoOutput": false
-    },
-    {
-      "aggregators": [
-        {
           "externalModelId": "kimi-k3.1-pro",
           "pricing": {
             "type": "unavailable"
@@ -6009,7 +5721,8 @@
       "displayName": "Muse Wonder Full",
       "inputModalities": [
         "image",
-        "text"
+        "text",
+        "video"
       ],
       "modelId": "muse-wonder-full",
       "outputModalities": [
@@ -6033,237 +5746,6 @@
       "subscriptionPlanIds": [
         "meta-muse-code"
       ]
-    },
-    {
-      "aggregators": [
-        {
-          "externalModelId": "qwen3.8-max",
-          "pricing": {
-            "type": "unavailable"
-          },
-          "reasoning": {
-            "request": {
-              "api": "responses",
-              "disable": [
-                {
-                  "path": "/enable_thinking",
-                  "value": false
-                }
-              ],
-              "effort": {
-                "path": "/reasoning/effort",
-                "values": {
-                  "low": "low",
-                  "xhigh": "xhigh"
-                }
-              },
-              "enable": [
-                {
-                  "path": "/enable_thinking",
-                  "value": true
-                }
-              ],
-              "status": "supported"
-            }
-          },
-          "route": {
-            "routeId": "qwen",
-            "routeProfileId": "dashscope-direct"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "qwen",
-          "wire": {
-            "api": "responses",
-            "evidence": [],
-            "reasoning": {
-              "disable": [
-                {
-                  "path": "/enable_thinking",
-                  "value": false
-                }
-              ],
-              "effort": {
-                "default": {
-                  "status": "unknown"
-                },
-                "path": "/reasoning/effort",
-                "values": {
-                  "low": "low",
-                  "xhigh": "xhigh"
-                }
-              },
-              "enable": [
-                {
-                  "path": "/enable_thinking",
-                  "value": true
-                }
-              ],
-              "mode": {
-                "status": "not_applicable"
-              },
-              "status": "supported"
-            },
-            "speed": {
-              "status": "not_applicable"
-            },
-            "status": "known",
-            "tokenParam": "max_output_tokens",
-            "toolsWithReasoning": "ok"
-          }
-        },
-        {
-          "externalModelId": "qwen3.8-max",
-          "reasoning": {
-            "request": {
-              "api": "chat-completions",
-              "disable": [
-                {
-                  "path": "/enable_thinking",
-                  "value": false
-                }
-              ],
-              "enable": [
-                {
-                  "path": "/enable_thinking",
-                  "value": true
-                }
-              ],
-              "status": "supported"
-            }
-          },
-          "route": {
-            "routeId": "qwen",
-            "routeProfileId": "qwencloud-token-plan"
-          },
-          "routeStatus": "mapped",
-          "sourceProviderId": "qwen-cloud",
-          "wire": {
-            "api": "chat-completions",
-            "evidence": [],
-            "reasoning": {
-              "disable": [
-                {
-                  "path": "/enable_thinking",
-                  "value": false
-                }
-              ],
-              "effort": {
-                "status": "unknown"
-              },
-              "enable": [
-                {
-                  "path": "/enable_thinking",
-                  "value": true
-                }
-              ],
-              "mode": {
-                "status": "not_applicable"
-              },
-              "status": "supported"
-            },
-            "speed": {
-              "status": "not_applicable"
-            },
-            "status": "known",
-            "tokenParam": "max_completion_tokens",
-            "toolsWithReasoning": "ok"
-          }
-        }
-      ],
-      "aliases": [
-        "accounts/fireworks/models/qwen3p8-max",
-        "qwen3.8-max-el"
-      ],
-      "contextWindow": 1000000,
-      "contractVersion": 3,
-      "displayName": "Qwen3.8-Max",
-      "endpoints": {
-        "openai": {
-          "api": "responses",
-          "toolsWithReasoning": "ok"
-        }
-      },
-      "inputModalities": [
-        "image",
-        "text",
-        "video"
-      ],
-      "maxOutputTokens": 131072,
-      "modelId": "qwen3.8-max",
-      "outputModalities": [
-        "text"
-      ],
-      "provider": "qwen",
-      "reasoning": {
-        "control": "effort",
-        "defaultEffort": "xhigh",
-        "efforts": [
-          "xhigh",
-          "medium",
-          "low"
-        ],
-        "mandatory": false,
-        "supported": true
-      },
-      "releaseDate": "2026-08-02",
-      "status": "active",
-      "subscriptionPlanIds": [
-        "alibaba-token-plan-individual",
-        "alibaba-token-plan-team-edition",
-        "llm-gateway-devpass",
-        "opencode-go"
-      ],
-      "supportsThinking": true,
-      "supportsTools": true,
-      "supportsVision": true,
-      "tokenParam": "max_output_tokens",
-      "videoInput": true,
-      "videoOutput": false
-    },
-    {
-      "aggregators": [],
-      "aliases": [
-        "qwen/qwen3.8-max-prime"
-      ],
-      "contextWindow": 1000000,
-      "contractVersion": 3,
-      "displayName": "Qwen3.8 Max Prime",
-      "inputModalities": [
-        "image",
-        "text",
-        "video"
-      ],
-      "modelId": "qwen3.8-max-prime",
-      "outputModalities": [
-        "text"
-      ],
-      "provider": "qwen",
-      "reasoning": {
-        "control": "effort",
-        "defaultEffort": "xhigh",
-        "efforts": [
-          "xhigh",
-          "high",
-          "medium",
-          "low",
-          "minimal"
-        ],
-        "mandatory": true,
-        "supported": true
-      },
-      "releaseDate": "2026-08-02",
-      "routeVariant": {
-        "baseModelId": "qwen3.8-max",
-        "familyId": "qwen3.8-max",
-        "kind": "provider-preset",
-        "preset": "prime",
-        "provider": "qwen"
-      },
-      "status": "preview",
-      "supportsTools": true,
-      "supportsVision": true,
-      "videoInput": true,
-      "videoOutput": false
     },
     {
       "aggregators": [
@@ -6370,9 +5852,64 @@
       "tokenParam": "max_output_tokens",
       "videoInput": true,
       "videoOutput": false
+    },
+    {
+      "aggregators": [
+        {
+          "externalModelId": "qwen4-max-preview",
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "route": {
+            "routeId": "qwen",
+            "routeProfileId": "qwencloud-token-plan"
+          },
+          "routeStatus": "mapped",
+          "sourceProviderId": "qwen-cloud",
+          "wire": {
+            "api": "chat-completions",
+            "evidence": [],
+            "reasoning": {
+              "status": "unknown"
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "status": "known",
+            "tokenParam": {
+              "status": "unknown"
+            },
+            "toolsWithReasoning": "ok"
+          }
+        }
+      ],
+      "aliases": [],
+      "contractVersion": 3,
+      "displayName": "qwen4-max-preview",
+      "modelId": "qwen4-max-preview",
+      "provider": "qwen",
+      "reasoning": {
+        "control": "effort",
+        "defaultEffort": "xhigh",
+        "efforts": [
+          "xhigh",
+          "medium",
+          "low"
+        ],
+        "mandatory": false,
+        "supported": true
+      },
+      "status": "preview",
+      "subscriptionPlanIds": [
+        "alibaba-token-plan-individual",
+        "alibaba-token-plan-team-edition"
+      ],
+      "supportsVision": true
     }
   ],
-  "lastUpdated": "2026-11-12T02:29:59.178Z",
+  "lastUpdated": "2026-11-12T19:52:24.186Z",
   "models": [],
   "plans": [
     {
@@ -6392,14 +5929,14 @@
       "id": "alibaba-token-plan-individual",
       "inclusions": [
         {
-          "externalModelId": "qwen3.8-max",
+          "externalModelId": "qwen4-max-preview",
           "kind": "provider_model",
           "provider": "qwencloud",
           "resolution": {
-            "modelId": "qwen3.8-max",
+            "modelId": "qwen4-max-preview",
             "status": "mapped"
           },
-          "sourceText": "qwen3.8-max"
+          "sourceText": "qwen4-max-preview"
         },
         {
           "externalModelId": "glm-5.3",
@@ -6410,16 +5947,6 @@
             "status": "mapped"
           },
           "sourceText": "glm-5.3"
-        },
-        {
-          "externalModelId": "deepseek-v4-pro",
-          "kind": "provider_model",
-          "provider": "qwencloud",
-          "resolution": {
-            "modelId": "deepseek-v4-pro",
-            "status": "mapped"
-          },
-          "sourceText": "deepseek-v4-pro"
         },
         {
           "externalModelId": "deepseek-v4.1-flash",
@@ -6445,24 +5972,14 @@
       "id": "alibaba-token-plan-team-edition",
       "inclusions": [
         {
-          "externalModelId": "qwen3.8-max",
+          "externalModelId": "qwen4-max-preview",
           "kind": "provider_model",
           "provider": "qwencloud",
           "resolution": {
-            "modelId": "qwen3.8-max",
+            "modelId": "qwen4-max-preview",
             "status": "mapped"
           },
-          "sourceText": "qwen3.8-max"
-        },
-        {
-          "externalModelId": "deepseek-v4-pro",
-          "kind": "provider_model",
-          "provider": "qwencloud",
-          "resolution": {
-            "modelId": "deepseek-v4-pro",
-            "status": "mapped"
-          },
-          "sourceText": "deepseek-v4-pro"
+          "sourceText": "qwen4-max-preview"
         },
         {
           "externalModelId": "deepseek-v4.1-flash",
@@ -6559,16 +6076,6 @@
             "status": "mapped"
           },
           "sourceText": "GLM-5.3-Flash"
-        },
-        {
-          "externalModelId": "DeepSeek-V4-Pro",
-          "kind": "provider_model",
-          "provider": "byteplus",
-          "resolution": {
-            "modelId": "deepseek-v4-pro",
-            "status": "mapped"
-          },
-          "sourceText": "DeepSeek-V4-Pro"
         },
         {
           "externalModelId": "DeepSeek-V4.1-Flash",
@@ -6789,26 +6296,6 @@
             "status": "mapped"
           },
           "sourceText": "Claude Sonnet 5.5 XHigh"
-        },
-        {
-          "externalModelId": "deepseek-v4-pro-high",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "deepseek-v4-pro",
-            "status": "mapped"
-          },
-          "sourceText": "DeepSeek V4 Pro High"
-        },
-        {
-          "externalModelId": "deepseek-v4-pro-max",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "deepseek-v4-pro",
-            "status": "mapped"
-          },
-          "sourceText": "DeepSeek V4 Pro Max"
         },
         {
           "externalModelId": "gemini-3-8-flash-high",
@@ -7091,46 +6578,6 @@
           "sourceText": "GPT-6 Luna XHigh Thinking"
         },
         {
-          "externalModelId": "grok-4-7-high",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "grok-4.7",
-            "status": "mapped"
-          },
-          "sourceText": "Grok 4.7 High"
-        },
-        {
-          "externalModelId": "grok-4-7-low",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "grok-4.7",
-            "status": "mapped"
-          },
-          "sourceText": "Grok 4.7 Low"
-        },
-        {
-          "externalModelId": "grok-4-7-medium",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "grok-4.7",
-            "status": "mapped"
-          },
-          "sourceText": "Grok 4.7 Medium"
-        },
-        {
-          "externalModelId": "grok-4-7-xhigh",
-          "kind": "provider_model",
-          "provider": "cognition",
-          "resolution": {
-            "modelId": "grok-4.7",
-            "status": "mapped"
-          },
-          "sourceText": "Grok 4.7 XHigh"
-        },
-        {
           "externalModelId": "kimi-k3-1-pro-high",
           "kind": "provider_model",
           "provider": "cognition",
@@ -7203,14 +6650,14 @@
           "sourceText": "claude-sonnet-5-5-medium"
         },
         {
-          "externalModelId": "gemini-4-argon-high",
+          "externalModelId": "claude-opus-5-5-medium",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
-            "modelId": "gemini-4-argon",
+            "modelId": "claude-opus-5-5",
             "status": "mapped"
           },
-          "sourceText": "gemini-4-argon-high"
+          "sourceText": "claude-opus-5-5-medium"
         },
         {
           "externalModelId": "claude-opus-5-5-high",
@@ -7223,34 +6670,24 @@
           "sourceText": "claude-opus-5-5-high"
         },
         {
-          "externalModelId": "claude-sonnet-5-5-high",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-sonnet-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-sonnet-5-5-high"
-        },
-        {
-          "externalModelId": "gemini-3.8-flash-high",
+          "externalModelId": "gemini-3.8-flash-medium",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
             "modelId": "gemini-3.8-flash",
             "status": "mapped"
           },
-          "sourceText": "gemini-3.8-flash-high"
+          "sourceText": "gemini-3.8-flash-medium"
         },
         {
-          "externalModelId": "claude-sonnet-5-5-low",
+          "externalModelId": "gemini-4-argon-low",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
-            "modelId": "claude-sonnet-5-5",
+            "modelId": "gemini-4-argon",
             "status": "mapped"
           },
-          "sourceText": "claude-sonnet-5-5-low"
+          "sourceText": "gemini-4-argon-low"
         },
         {
           "externalModelId": "gemini-3.8-flash-low",
@@ -7263,6 +6700,16 @@
           "sourceText": "gemini-3.8-flash-low"
         },
         {
+          "externalModelId": "claude-sonnet-5-5-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-sonnet-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-sonnet-5-5-high"
+        },
+        {
           "externalModelId": "gemini-4-argon-medium",
           "kind": "provider_model",
           "provider": "antigravity",
@@ -7271,6 +6718,26 @@
             "status": "mapped"
           },
           "sourceText": "gemini-4-argon-medium"
+        },
+        {
+          "externalModelId": "gemini-4-argon-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-argon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-argon-high"
+        },
+        {
+          "externalModelId": "gemini-3.8-flash-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-3.8-flash",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-3.8-flash-high"
         },
         {
           "externalModelId": "claude-opus-5-5-low",
@@ -7283,34 +6750,14 @@
           "sourceText": "claude-opus-5-5-low"
         },
         {
-          "externalModelId": "gemini-3.8-flash-medium",
+          "externalModelId": "claude-sonnet-5-5-low",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
-            "modelId": "gemini-3.8-flash",
+            "modelId": "claude-sonnet-5-5",
             "status": "mapped"
           },
-          "sourceText": "gemini-3.8-flash-medium"
-        },
-        {
-          "externalModelId": "claude-opus-5-5-medium",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-opus-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-opus-5-5-medium"
-        },
-        {
-          "externalModelId": "gemini-4-argon-low",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-argon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-argon-low"
+          "sourceText": "claude-sonnet-5-5-low"
         }
       ],
       "modelDiscovery": "client",
@@ -7469,16 +6916,6 @@
           "sourceText": "muse-spark-1.3"
         },
         {
-          "externalModelId": "deepseek-v4-pro",
-          "kind": "provider_model",
-          "provider": "llmgateway",
-          "resolution": {
-            "modelId": "deepseek-v4-pro",
-            "status": "mapped"
-          },
-          "sourceText": "deepseek-v4-pro"
-        },
-        {
           "externalModelId": "deepseek-v4.1-flash",
           "kind": "provider_model",
           "provider": "llmgateway",
@@ -7507,16 +6944,6 @@
             "status": "mapped"
           },
           "sourceText": "kimi-k3.1-pro"
-        },
-        {
-          "externalModelId": "qwen3.8-max",
-          "kind": "provider_model",
-          "provider": "llmgateway",
-          "resolution": {
-            "modelId": "qwen3.8-max",
-            "status": "mapped"
-          },
-          "sourceText": "qwen3.8-max"
         },
         {
           "externalModelId": "qwen3.8-omni-flash",
@@ -7644,26 +7071,6 @@
       "id": "ollama-cloud",
       "inclusions": [
         {
-          "externalModelId": "glm-5.3-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "glm-5.3-flash",
-            "status": "mapped"
-          },
-          "sourceText": "glm-5.3-flash"
-        },
-        {
-          "externalModelId": "minimax-m3.1-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "minimax-m3.1-flash",
-            "status": "mapped"
-          },
-          "sourceText": "minimax-m3.1-flash"
-        },
-        {
           "externalModelId": "deepseek-v4.1-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
@@ -7672,6 +7079,16 @@
             "status": "mapped"
           },
           "sourceText": "deepseek-v4.1-flash"
+        },
+        {
+          "externalModelId": "mimo-v2.6-pro",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "mimo-v2.6-pro",
+            "status": "mapped"
+          },
+          "sourceText": "mimo-v2.6-pro"
         },
         {
           "externalModelId": "mimo-v2.6-flash",
@@ -7684,14 +7101,14 @@
           "sourceText": "mimo-v2.6-flash"
         },
         {
-          "externalModelId": "glm-5.3",
+          "externalModelId": "glm-5.3-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "glm-5.3",
+            "modelId": "glm-5.3-flash",
             "status": "mapped"
           },
-          "sourceText": "glm-5.3"
+          "sourceText": "glm-5.3-flash"
         },
         {
           "externalModelId": "kimi-k3.1-pro",
@@ -7704,14 +7121,24 @@
           "sourceText": "kimi-k3.1-pro"
         },
         {
-          "externalModelId": "mimo-v2.6-pro",
+          "externalModelId": "minimax-m3.1-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "mimo-v2.6-pro",
+            "modelId": "minimax-m3.1-flash",
             "status": "mapped"
           },
-          "sourceText": "mimo-v2.6-pro"
+          "sourceText": "minimax-m3.1-flash"
+        },
+        {
+          "externalModelId": "glm-5.3",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "glm-5.3",
+            "status": "mapped"
+          },
+          "sourceText": "glm-5.3"
         }
       ],
       "modelDiscovery": "catalog",
@@ -7769,16 +7196,6 @@
       "contractVersion": 3,
       "id": "opencode-go",
       "inclusions": [
-        {
-          "externalModelId": "grok-4.7",
-          "kind": "provider_model",
-          "provider": "opencode",
-          "resolution": {
-            "modelId": "grok-4.7",
-            "status": "mapped"
-          },
-          "sourceText": "grok-4.7"
-        },
         {
           "externalModelId": "glm-5.3-flash",
           "kind": "provider_model",
@@ -7880,16 +7297,6 @@
           "sourceText": "muse-spark-1.3-contributor"
         },
         {
-          "externalModelId": "qwen3.8-max",
-          "kind": "provider_model",
-          "provider": "opencode",
-          "resolution": {
-            "modelId": "qwen3.8-max",
-            "status": "mapped"
-          },
-          "sourceText": "qwen3.8-max"
-        },
-        {
           "externalModelId": "deepseek-v4.1-flash",
           "kind": "provider_model",
           "provider": "opencode",
@@ -7898,16 +7305,6 @@
             "status": "mapped"
           },
           "sourceText": "deepseek-v4.1-flash"
-        },
-        {
-          "externalModelId": "deepseek-v4-pro",
-          "kind": "provider_model",
-          "provider": "opencode",
-          "resolution": {
-            "modelId": "deepseek-v4-pro",
-            "status": "mapped"
-          },
-          "sourceText": "deepseek-v4-pro"
         }
       ],
       "modelDiscovery": "catalog",
@@ -7986,7 +7383,7 @@
     }
   ],
   "routeRegistry": {
-    "generationId": "g-20261112022959178-a6d01f51",
+    "generationId": "g-20261112195224186-062fe295",
     "registry": {
       "contractVersion": 3,
       "registryVersion": "3.7.0",

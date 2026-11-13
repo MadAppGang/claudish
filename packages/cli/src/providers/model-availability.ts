@@ -141,7 +141,7 @@ async function resolveAgainstModelsCatalog(
     return resolveAntigravityServedModel(wireId, served);
   }
   const entries = models.map(({ id, ...rest }) => ({ wireId: id, ...rest }));
-  return expandSelection(provider, wireId, entries);
+  return expandSelection(provider, wireId, entries, { quiet: true });
 }
 
 /**
