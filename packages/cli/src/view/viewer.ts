@@ -1,16 +1,17 @@
 /**
  * `claudish view <target>`: one session's live screen in this terminal, read only.
  *
- * Three connections make it: the endpoint of the MCP server that owns the target (rows, and the
- * active-view claim), the pane's read-only magmux view socket (frames), and this terminal (the
- * painter and the keys). Only the holder of the view watches frames and sizes the pane; any other
- * viewer shows a band saying where the session is viewed, with frames unwatched.
+ * Three connections make it: the endpoint of the MCP server that owns the target (rows), the
+ * pane's read-only magmux view socket (frames), and this terminal (the painter and the keys).
  *
- * Keys are this viewer's own: Enter takes the view, q quits. No byte typed here reaches the
- * session: neither connection has an op that could carry one.
+ * A viewer only watches. It never holds the view and never sizes the pane: Claude Code sets the
+ * session's size, and the picture is painted at that size, clipped to this terminal when the pane
+ * is larger and left blank around it when the pane is smaller.
+ *
+ * The one key is q, which quits. No byte typed here reaches the session: neither connection has
+ * an op that could carry one.
  */
 
-import type { ViewHolder } from "../pane/contract.js";
 import { readProcessTableAsync } from "../pane/process-identity.js";
 import {
   ViewError,
@@ -38,17 +39,10 @@ import {
 import { ViewClient } from "./view-client.js";
 import { isFinishedItem } from "./view-directory.js";
 
-/** A viewer's claim lives 15 s on the server; this renews it well inside that. */
-export const RENEW_EVERY_MS = 5_000;
 /** How long the final screen and its verdict stay up before the viewer exits. */
 export const VERDICT_MS = 2_000;
 export const RESIZE_DEBOUNCE_MS = 100;
 const VIEW_RETRY_MS = 500;
-
-/** What a front end may ask of the viewer: user acts in the host, such as selecting its pane. */
-export interface FrontEndHooks {
-  take(): void;
-}
 
 /**
  * What this viewer tells the terminal it runs in, beyond painting. A plain terminal is told
@@ -56,9 +50,7 @@ export interface FrontEndHooks {
  */
 export interface FrontEnd {
   readonly name: ViewFrontEnd;
-  report(state: { item: ViewItem | null; holding: boolean; ended: boolean }): void;
-  /** called once the viewer follows its target */
-  attach?(hooks: FrontEndHooks): void;
+  report(state: { item: ViewItem | null; ended: boolean }): void;
   close(): void | Promise<void>;
 }
 
@@ -84,13 +76,10 @@ export interface ViewerOptions {
   fps?: number;
   io: ViewerIo;
   frontEnd?: FrontEnd;
-  /** the hello's `term_program`; the server cuts and filters it into the holder label */
-  termProgram?: string;
   /** dial only this endpoint (its path) */
   endpoint?: string;
   /** whether an endpoint's server may run; default the process table (tests replace it) */
   endpointAlive?: (endpoint: string) => boolean;
-  renewMs?: number;
   verdictMs?: number;
   resizeDebounceMs?: number;
   openView?: (path: string, o: { fps: number }) => Promise<MagmuxViewClient>;
@@ -192,10 +181,6 @@ function verdictOf(item: ViewItem): string {
   return `${item.target} ${item.state}${why}`;
 }
 
-export function bandText(view: ViewHolder | null): string {
-  return view ? `viewing in ${view.label} — Enter to view here` : "Enter to view here";
-}
-
 export class Viewer {
   private readonly painter: AnsiPainter;
   private readonly frontEnd: FrontEnd;
@@ -206,9 +191,6 @@ export class Viewer {
   private view: MagmuxViewClient | null = null;
   private viewPath: string | null = null;
   private opening = false;
-  private claimId: string | null = null;
-  private claiming = false;
-  private renewTimer: ReturnType<typeof setInterval> | null = null;
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private ending = false;
@@ -223,11 +205,7 @@ export class Viewer {
     this.fps = o.fps ?? DEFAULT_FPS;
   }
 
-  get holding(): boolean {
-    return this.claimId !== null;
-  }
-
-  /** Leave now: the claim is released and the terminal restored before `run` resolves. */
+  /** Leave now: the terminal is restored before `run` resolves. */
   quit(): void {
     void this.finish({ code: 0, message: "" });
   }
@@ -332,8 +310,8 @@ export class Viewer {
     this.stops.push(this.o.io.onKeys((chunk) => this.onKeys(chunk)));
     this.stops.push(this.o.io.onResize(() => this.onResize()));
     await this.subscribe();
-    this.frontEnd.attach?.({ take: () => void this.takeIfNotHolding() });
-    await this.take();
+    this.render();
+    await this.ensureWatch();
   }
 
   private connectTo(endpoint: string): Promise<ViewClient> {
@@ -343,7 +321,6 @@ export class Viewer {
         name: "claudish view",
         kind: "viewer",
         front_end: this.frontEnd.name,
-        ...(this.o.termProgram ? { term_program: this.o.termProgram } : {}),
       },
     });
   }
@@ -397,80 +374,14 @@ export class Viewer {
     await client.request("replay.open", { replay_id: t.replayId }, REPLAY_OPEN_MS);
   }
 
-  private async takeIfNotHolding(): Promise<void> {
-    if (!this.holding) await this.take();
-  }
-
   private async subscribe(): Promise<void> {
     await this.client?.request("subscribe", { targets: [this.target], include_finished: true });
-  }
-
-  /* ───────────────────────────── the claim ───────────────────────────── */
-
-  /** A user act: the latest one wins on the server. */
-  private async take(): Promise<void> {
-    if (!this.client || this.ending || this.claiming) return;
-    this.claiming = true;
-    try {
-      const size = this.paneSize();
-      const r = await this.client.request<{ granted: boolean; view: ViewHolder | null }>("claim", {
-        target: this.target,
-        cols: size.cols,
-        rows: size.rows,
-      });
-      if (r.granted && r.view) this.claimId = r.view.claim_id;
-      else this.claimId = null;
-    } catch (e) {
-      this.streamNote = `could not take the view: ${e instanceof Error ? e.message : String(e)}`;
-    } finally {
-      this.claiming = false;
-    }
-    this.holdingChanged();
-  }
-
-  private async renew(): Promise<void> {
-    if (!this.client || !this.claimId || this.ending) return;
-    try {
-      const r = await this.client.request<{ view: ViewHolder | null }>("renew", {
-        target: this.target,
-      });
-      if (r.view?.claim_id !== this.claimId) this.lose();
-    } catch (e) {
-      if (e instanceof ViewError && e.code === "view_not_held") this.lose();
-    }
-  }
-
-  private lose(): void {
-    if (!this.claimId) return;
-    this.claimId = null;
-    this.holdingChanged();
-  }
-
-  private holdingChanged(): void {
-    if (this.ending) return;
-    if (this.holding) {
-      if (!this.renewTimer) {
-        this.renewTimer = setInterval(() => void this.renew(), this.o.renewMs ?? RENEW_EVERY_MS);
-      }
-      void this.ensureWatch();
-    } else {
-      if (this.renewTimer) clearInterval(this.renewTimer);
-      this.renewTimer = null;
-      void this.view?.unwatch();
-    }
-    this.render();
-  }
-
-  /** The pane size this terminal can show whole: everything but the status row. */
-  private paneSize(): TermSize {
-    const t = this.o.io.term();
-    return { cols: Math.max(1, t.cols), rows: Math.max(1, t.rows - STATUS_ROWS) };
   }
 
   /* ───────────────────────────── the frames ───────────────────────────── */
 
   private async ensureWatch(): Promise<void> {
-    if (!this.holding || this.ending || this.opening) return;
+    if (this.ending || this.opening) return;
     const path = this.item?.magmux?.view_socket ?? null;
     if (!path) {
       this.streamNote = "waiting for the pane's view socket";
@@ -508,7 +419,7 @@ export class Viewer {
       frame: (screen, changed, keyframe) => this.onFrame(screen, changed, keyframe),
       ended: (why) => this.onStreamEnded(opened, why),
     });
-    if (this.holding) await opened.watch();
+    await opened.watch();
   }
 
   private retryWatch(): void {
@@ -519,8 +430,9 @@ export class Viewer {
     }, VIEW_RETRY_MS);
   }
 
+  /** A keyframe carries the pane's own size: the picture follows it, whatever this terminal is. */
   private onFrame(screen: Screen, changed: number[], keyframe: boolean): void {
-    if (!this.holding || this.ending) return;
+    if (this.ending) return;
     if (keyframe) {
       this.painter.size(screen.rows, screen.cols);
       this.painter.clear();
@@ -581,29 +493,19 @@ export class Viewer {
       void this.end(verdictOf(item));
       return;
     }
-    // while a claim is on its way, the row may already carry its grant: the reply decides
-    if (!this.claiming && this.claimId && item.view?.claim_id !== this.claimId) {
-      this.lose();
-      return;
-    }
-    if (this.holding && (item.magmux?.view_socket ?? null) !== pathBefore) void this.ensureWatch();
-    this.frontEnd.report({ item, holding: this.holding, ended: false });
-    if (!this.holding) this.render();
-    else this.paintStatus();
+    // the pane's view socket appeared or moved: follow it
+    if ((item.magmux?.view_socket ?? null) !== pathBefore) void this.ensureWatch();
+    this.frontEnd.report({ item, ended: false });
+    this.paintStatus();
   }
 
   private async onReconnected(): Promise<void> {
     if (this.ending) return;
-    // the server released this connection's claim when it dropped; a held view is taken again
-    const held = this.holding;
-    this.claimId = null;
     // the dropped connection's hold went with it. A replay that is gone ends through the new
     // subscription's snapshot, which no longer lists it: a remove sent while the connection was
     // down never reaches this one
     if (this.client) await this.joinReplay(this.client).catch(() => {});
     await this.subscribe().catch(() => {});
-    if (held) await this.take();
-    else this.holdingChanged();
   }
 
   /* ───────────────────────────── the terminal ───────────────────────────── */
@@ -614,44 +516,23 @@ export class Viewer {
         void this.finish({ code: 0, message: "" });
         return;
       }
-      if ((ch === "\r" || ch === "\n") && !this.holding) void this.take();
     }
   }
 
+  /** Only this terminal changed: the picture is painted again, and the pane keeps its size. */
   private onResize(): void {
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
     this.resizeTimer = setTimeout(() => {
       this.resizeTimer = null;
-      void this.applyResize();
+      if (!this.ending) this.render();
     }, this.o.resizeDebounceMs ?? RESIZE_DEBOUNCE_MS);
   }
 
-  private async applyResize(): Promise<void> {
-    if (this.ending) return;
-    this.render();
-    if (!this.holding || !this.client) return;
-    const size = this.paneSize();
-    try {
-      await this.client.request("resize", {
-        target: this.target,
-        cols: size.cols,
-        rows: size.rows,
-      });
-    } catch (e) {
-      if (e instanceof ViewError && e.code === "view_not_held") this.lose();
-    }
-  }
-
-  /** Paint what this viewer shows now: the picture for the holder, the band for anyone else. */
+  /** Paint the session's current screen, at the pane's size, and the status row. */
   private render(): void {
     if (this.finished) return;
-    if (!this.holding) {
-      this.painter.band(bandText(this.item?.view ?? null));
-      this.paintStatus();
-      return;
-    }
-    const screen = this.view?.isWatching ? this.view.screen : null;
-    if (screen && screen.frames > 0) this.painter.repaint(screen);
+    const screen = this.shownScreen();
+    if (screen) this.painter.repaint(screen);
     this.paintStatus();
   }
 
@@ -662,14 +543,14 @@ export class Viewer {
       ? [verdict]
       : [this.target, this.streamNote, this.item ? stateOf(this.item) : ""];
     const bits = [...head, this.item?.model ?? "", ...this.geometryBits(screen)];
-    if (!verdict) bits.push(this.holding ? "q quit" : "Enter view · q quit");
+    if (!verdict) bits.push("q quit");
     const live = screen !== null && !this.streamNote;
     this.painter.status(bits.filter(Boolean).join(" · "), tone ?? (live ? "live" : "waiting"));
   }
 
-  /** The screen on display: only the holder's, and only once a frame has arrived. */
+  /** The screen on display, once a frame has arrived. */
   private shownScreen(): Screen | null {
-    const screen = this.holding && this.view?.isWatching ? this.view.screen : null;
+    const screen = this.view?.isWatching ? this.view.screen : null;
     return screen && screen.frames > 0 ? screen : null;
   }
 
@@ -689,9 +570,7 @@ export class Viewer {
   private async end(verdict: string): Promise<void> {
     if (this.ending) return;
     this.ending = true;
-    if (this.renewTimer) clearInterval(this.renewTimer);
-    this.renewTimer = null;
-    this.frontEnd.report({ item: this.item, holding: this.holding, ended: true });
+    this.frontEnd.report({ item: this.item, ended: true });
     this.paintStatus("ended", verdict);
     this.painter.flush();
     await Bun.sleep(this.o.verdictMs ?? VERDICT_MS);
@@ -703,14 +582,8 @@ export class Viewer {
     this.ending = true;
     this.finished = true;
     for (const t of [this.resizeTimer, this.retryTimer]) if (t) clearTimeout(t);
-    if (this.renewTimer) clearInterval(this.renewTimer);
-    this.renewTimer = null;
     for (const stop of this.stops.splice(0)) stop();
     const client = this.client;
-    if (client && this.claimId) {
-      this.claimId = null;
-      await client.request("release", { target: this.target }).catch(() => {});
-    }
     const view = this.view;
     this.view = null;
     if (view) {

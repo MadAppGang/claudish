@@ -554,7 +554,7 @@ export default class ClaudishPanel extends View {
           .text_color(t.foreground)
           .child(`claudish · ${String(p.title ?? "")}`)
       )
-      .child(div().text_color(t.dim).child("read only · Enter takes the view"))
+      .child(div().text_color(t.dim).child("read only"))
       .child(
         div()
           .id("claudish-close")
@@ -565,7 +565,7 @@ export default class ClaudishPanel extends View {
             s.text_color(t.foreground)
           )
           .on_click(() => {
-            // the window closes itself when its terminal ends; the viewer releases its claim
+            // the window closes itself when its terminal ends
             if (terminal) run("terminal.kill", { terminal });
             else if (overlay) closeOverlay(overlay);
           })

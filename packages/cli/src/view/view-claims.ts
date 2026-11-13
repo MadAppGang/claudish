@@ -2,20 +2,18 @@
  * Who holds the active view of each item. One claim per target, the latest act wins, and memory
  * is the only store.
  *
- * Holder and label always come from the caller's role, never from a client's words. A viewer's
- * claim lives 15 s and its heartbeat renews it; a Claude Code claim (this server's MCP link, or
- * another server's) lives 10 s and is renewed by a resize or by that owner's own capture. Closing a
- * connection releases what it held. One `unref()`'d timer sits at the earliest expiry and only
- * exists while a claim does.
+ * Only Claude Code holds a view: this server's MCP link, or another server relaying its own Claude
+ * Code over a peer connection. A local viewer only watches, so a viewer caller is refused. Holder
+ * and label come from the caller's role, never from a client's words. A claim lives 10 s and is
+ * renewed by a resize or by that owner's own capture. Closing a peer connection releases what it
+ * held. One `unref()`'d timer sits at the earliest expiry and only exists while a claim does.
  */
 
 import { randomBytes } from "node:crypto";
 import type { ViewHolder } from "../pane/contract.js";
 import { ViewError } from "../pane/view-contract.js";
 
-export const VIEWER_CLAIM_TTL_MS = 15_000;
 export const CLAUDE_CODE_CLAIM_TTL_MS = 10_000;
-const TERM_PROGRAM_MAX_CHARS = 24;
 
 export type ClaimCaller =
   | { kind: "mcp" }
@@ -23,8 +21,6 @@ export type ClaimCaller =
       kind: "conn";
       connId: string;
       role: "viewer" | "peer";
-      frontEnd?: string;
-      termProgram?: string;
     };
 
 /** The caller every MCP verb passes. */
@@ -34,9 +30,9 @@ interface Claim {
   claimId: string;
   holder: ViewHolder["holder"];
   label: string;
-  /** "mcp", or the connection id */
+  /** "mcp", or the peer connection's id */
   owner: string;
-  ownerRole: "mcp" | "peer" | "viewer";
+  ownerRole: "mcp" | "peer";
   since: string;
   expiresAt: number;
 }
@@ -51,31 +47,12 @@ function ownerOf(caller: ClaimCaller): string {
   return caller.kind === "mcp" ? "mcp" : caller.connId;
 }
 
-function ttlOf(ownerRole: Claim["ownerRole"]): number {
-  return ownerRole === "viewer" ? VIEWER_CLAIM_TTL_MS : CLAUDE_CODE_CLAIM_TTL_MS;
-}
-
-/** `term_program` reaches other clients as a label: only these characters, and not many of them. */
-function terminalLabel(termProgram: string | undefined): string {
-  const clean = (termProgram ?? "")
-    .replace(/[^A-Za-z0-9 ._-]/g, "")
-    .slice(0, TERM_PROGRAM_MAX_CHARS)
-    .trim();
-  return clean || "a terminal";
-}
-
 function holderOfCaller(caller: ClaimCaller): Pick<Claim, "holder" | "label" | "ownerRole"> {
   if (caller.kind === "mcp")
     return { holder: "claude_code", label: "Claude Code", ownerRole: "mcp" };
   if (caller.role === "peer")
     return { holder: "claude_code", label: "Claude Code", ownerRole: "peer" };
-  const frontEnd = caller.frontEnd ?? "none";
-  if (frontEnd === "herdr") return { holder: "herdr", label: "herdr", ownerRole: "viewer" };
-  if (frontEnd === "herdr-core")
-    return { holder: "herdr_app", label: "Herdr.app", ownerRole: "viewer" };
-  if (frontEnd === "none")
-    return { holder: "terminal", label: terminalLabel(caller.termProgram), ownerRole: "viewer" };
-  throw new ViewError("forbidden", `unknown front end ${JSON.stringify(frontEnd)}`);
+  throw new ViewError("forbidden", "a viewer only watches; Claude Code holds the view");
 }
 
 function toHolder(c: Claim): ViewHolder {
@@ -93,7 +70,7 @@ export class ViewClaims {
     this.now = options.now ?? Date.now;
   }
 
-  /** The latest act wins. Throws `forbidden` for a front end this server does not know. */
+  /** The latest act wins. Throws `forbidden` for a viewer, which never holds a view. */
   claim(target: string, caller: ClaimCaller): ViewHolder {
     const who = holderOfCaller(caller);
     const by = ownerOf(caller);
@@ -105,7 +82,7 @@ export class ViewClaims {
       claimId: same && cur ? cur.claimId : randomBytes(8).toString("hex"),
       owner: by,
       since: same && cur ? cur.since : new Date(now).toISOString(),
-      expiresAt: now + ttlOf(who.ownerRole),
+      expiresAt: now + CLAUDE_CODE_CLAIM_TTL_MS,
     };
     this.claims.set(target, next);
     this.schedule();
@@ -113,17 +90,7 @@ export class ViewClaims {
     return toHolder(next);
   }
 
-  /** A viewer's heartbeat. Throws `view_not_held` when the caller does not hold the view. */
-  renew(target: string, caller: ClaimCaller): ViewHolder {
-    const cur = this.live(target);
-    if (!cur || cur.owner !== ownerOf(caller))
-      throw new ViewError("view_not_held", `this client does not hold the view of ${target}`);
-    cur.expiresAt = this.now() + ttlOf(cur.ownerRole);
-    this.schedule();
-    return toHolder(cur);
-  }
-
-  /** A capture renews only a Claude Code claim, and only for the owner of that claim. */
+  /** A capture renews a claim only for the owner of that claim. */
   renewFromCapture(target: string, caller: ClaimCaller): void {
     if (caller.kind === "conn" && caller.role !== "peer") return;
     const cur = this.live(target);
@@ -132,14 +99,7 @@ export class ViewClaims {
     this.schedule();
   }
 
-  /** Drops the caller's claim when it holds one. Answers who holds the view now. */
-  release(target: string, caller: ClaimCaller): ViewHolder | null {
-    const cur = this.live(target);
-    if (cur && cur.owner === ownerOf(caller)) this.drop(target);
-    return this.holder(target);
-  }
-
-  /** Everything a closed connection held. */
+  /** Everything a closed peer connection held. */
   releaseConnection(connId: string): void {
     for (const [target, c] of [...this.claims])
       if (c.owner === connId && c.expiresAt > this.now()) this.drop(target);

@@ -76,8 +76,9 @@ export class PeerLink {
     });
   }
 
-  claim(replayId: string, cols: number, rows: number): Promise<ViewClaimResult> {
-    return this.client.request("claim", { target: targetOfReplay(replayId), cols, rows }, 15_000);
+  /** This server's Claude Code resizes the replay, which takes the view on the owner. */
+  resize(replayId: string, cols: number, rows: number): Promise<ViewClaimResult> {
+    return this.client.request("replay.resize", { replay_id: replayId, cols, rows }, 15_000);
   }
 
   scroll(replayId: string, req: ScrollRequest): Promise<ScrollResult> {

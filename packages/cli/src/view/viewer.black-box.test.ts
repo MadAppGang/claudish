@@ -73,7 +73,6 @@ async function rig() {
     io: term.io,
     endpoint: ep.path,
     endpointAlive: () => true,
-    renewMs: 200,
     verdictMs: 5,
     resizeDebounceMs: 5,
   });
@@ -86,39 +85,29 @@ async function rig() {
 }
 
 describe("read-only viewer over both real Unix connections", () => {
-  test("TEST-33 REQ-9 REQ-10 REQ-11 REQ-12 losing view hides late frames; Enter retakes same pane", async () => {
+  test("TEST-33 REQ-9 REQ-10 REQ-11 REQ-12 another holder changes nothing: frames keep painting, Enter takes nothing", async () => {
     const r = await rig();
     await eventually(() => expect(r.term.text()).toContain("bold red"));
     const other: ViewHolder = {
-      holder: "herdr",
-      label: "herdr",
+      holder: "claude_code",
+      label: "Claude Code",
       since: "2026-11-10T00:00:00.000Z",
       claim_id: "another-view",
     };
 
     r.ep.steal(other);
-    await eventually(() => {
-      expect(r.viewer.holding).toBe(false);
-      expect(r.term.text()).toContain("viewing in herdr");
-      expect(r.mag.types()).toContain("unwatch");
-    });
     r.term.clear();
     r.mag.push({ ...r.frames[0], seq: 999 });
+    await eventually(() => expect(r.term.text()).toContain("bold red"));
+    r.term.press("\r");
     r.term.resizeTo(90, 28);
     await Bun.sleep(30);
-    expect(r.term.text()).not.toContain("bold red");
 
-    r.term.press("\r");
-    await eventually(() => {
-      expect(r.viewer.holding).toBe(true);
-      expect(r.term.text()).toContain("bold red");
-    });
-    expect(r.ep.received.filter((m) => m.op === "claim")).toHaveLength(2);
-    expect(r.ep.received.filter((m) => m.op === "claim").at(-1)?.args).toEqual({
-      target: "s:a",
-      cols: 90,
-      rows: 27,
-    });
+    expect(r.mag.types()).not.toContain("unwatch");
+    expect(r.ep.ops().filter((op) => ["claim", "renew", "release", "resize"].includes(op))).toEqual(
+      []
+    );
+    expect(r.ep.item.view).toEqual(other);
   });
 
   test("TEST-35 REQ-10 REQ-28 typed, pasted and navigation bytes remain local and q exits", async () => {
@@ -132,21 +121,12 @@ describe("read-only viewer over both real Unix connections", () => {
     const outcome = await r.run;
 
     expect(outcome).toEqual({ code: 0, message: "" });
-    const endpointAllowed = new Set([
-      "hello",
-      "list",
-      "subscribe",
-      "unsubscribe",
-      "claim",
-      "renew",
-      "release",
-    ]);
+    const endpointAllowed = new Set(["hello", "list", "subscribe", "unsubscribe"]);
     const magmuxAllowed = new Set(["capabilities", "watch", "unwatch", "resync"]);
     expect(r.ep.ops().filter((op) => !endpointAllowed.has(op))).toEqual([]);
     expect(r.mag.types().filter((type) => !magmuxAllowed.has(type))).toEqual([]);
     const wire = JSON.stringify([r.ep.received, r.mag.received]);
     expect(wire).not.toContain("never-deliver-7319");
     expect(wire).not.toContain("pasted-text-7319");
-    expect(r.ep.ops()).toContain("release");
   });
 });

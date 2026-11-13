@@ -29,7 +29,7 @@ export class HcStatusReporter implements FrontEnd {
 
   constructor(private readonly o: HcStatusReporterOptions) {}
 
-  report(state: { item: ViewItem | null; holding: boolean; ended: boolean }): void {
+  report(state: { item: ViewItem | null; ended: boolean }): void {
     if (!state.item || this.closed) return;
     const s = hcStatus(state.item, { titleMode: this.o.titleMode });
     const line = encodeOsc7501({ ...s, app: HC_APP_NAME });

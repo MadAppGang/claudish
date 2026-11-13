@@ -5,12 +5,7 @@ import { Socket } from "node:net";
 import { join } from "node:path";
 import { eventually, sessionItem } from "../herdr/test-helpers/view-items.js";
 import type { CaptureResult } from "../pane/contract.js";
-import type {
-  SessionViewItem,
-  ViewEvent,
-  ViewListResult,
-  ViewResizeAnswer,
-} from "../pane/view-contract.js";
+import type { SessionViewItem, ViewEvent, ViewListResult } from "../pane/view-contract.js";
 import { makeViewRoot } from "./test-helpers/fake-view-endpoint.js";
 import { type ClaimCaller, ViewClaims } from "./view-claims.js";
 import { ViewClient } from "./view-client.js";
@@ -122,7 +117,7 @@ async function rig() {
     cleanups.push(() => c.close());
     return c;
   }
-  return { root, rows, feed, server, client };
+  return { root, rows, feed, server, client, claims };
 }
 
 describe("local read-only view protocol over real Unix sockets", () => {
@@ -207,12 +202,17 @@ describe("local read-only view protocol over real Unix sockets", () => {
         "scroll",
         "replay.scroll",
         "replay.close",
+        "replay.resize",
       ]) {
         await expect(
           c.request(op, { target: "s:a", replay_id: "replay-a", input: "must not deliver" })
         ).rejects.toMatchObject({ code: "forbidden" });
       }
-      await expect(c.request("not-a-real-operation")).rejects.toMatchObject({ code: "unknown_op" });
+      for (const op of ["not-a-real-operation", "claim", "renew", "release", "resize"]) {
+        await expect(c.request(op, { target: "s:a", cols: 120, rows: 40 })).rejects.toMatchObject({
+          code: "unknown_op",
+        });
+      }
       expect(await c.request<ViewListResult>("list")).toEqual(before);
       expect(await c.request<CaptureResult>("capture", { target: "s:a" })).toMatchObject({
         cols: 80,
@@ -240,70 +240,38 @@ describe("local read-only view protocol over real Unix sockets", () => {
     expect((await peer.request<ViewListResult>("list")).items).toHaveLength(2);
   });
 
-  test("TEST-20 REQ-12 REQ-13 resize without claim fails and leaves visible dimensions unchanged", async () => {
+  test("TEST-20 REQ-12 REQ-13 a viewer cannot claim, renew, release or resize: the MCP view and size stay", async () => {
     const r = await rig();
+    const mcpView = r.claims.claim("s:a", { kind: "mcp" });
     const c = await r.client();
 
-    await expect(c.request("resize", { target: "s:a", cols: 110, rows: 30 })).rejects.toMatchObject(
-      { code: "view_not_held" }
-    );
+    for (const op of ["claim", "renew", "release", "resize"]) {
+      await expect(c.request(op, { target: "s:a", cols: 110, rows: 30 })).rejects.toMatchObject({
+        code: "unknown_op",
+      });
+    }
 
     expect(await c.request<CaptureResult>("capture", { target: "s:a" })).toMatchObject({
       cols: 80,
       rows: 24,
-      view: null,
+      view: mcpView,
       final: false,
     });
   });
 
-  test("TEST-21 REQ-12 REQ-13 same-size take steals view; only latest holder may resize", async () => {
+  test("TEST-22 REQ-18 a viewer's disconnect leaves Claude Code's view and the session as they were", async () => {
     const r = await rig();
-    const a = await r.client();
-    const b = await r.client();
-    const first = await a.request<{ view: { claim_id: string }; resize: ViewResizeAnswer }>(
-      "claim",
-      { target: "s:a", cols: 100, rows: 30 }
-    );
-    expect(first.resize).toMatchObject({ cols: 100, rows: 30, changed: true });
-
-    const second = await b.request<{ view: { claim_id: string }; resize: ViewResizeAnswer }>(
-      "claim",
-      { target: "s:a", cols: 100, rows: 30 }
-    );
-
-    expect(second.view.claim_id).not.toBe(first.view.claim_id);
-    expect(second.resize).toMatchObject({ cols: 100, rows: 30, changed: false });
-    await expect(a.request("resize", { target: "s:a", cols: 120, rows: 35 })).rejects.toMatchObject(
-      { code: "view_not_held" }
-    );
-    await b.request("resize", { target: "s:a", cols: 120, rows: 35 });
-    expect(await a.request<CaptureResult>("capture", { target: "s:a" })).toMatchObject({
-      cols: 120,
-      rows: 35,
-      view: { claim_id: second.view.claim_id, holder: "herdr" },
-    });
-  });
-
-  test("TEST-22 REQ-18 holder disconnect clears view but leaves session running", async () => {
-    const r = await rig();
-    const holder = await r.client();
+    const mcpView = r.claims.claim("s:a", { kind: "mcp" });
+    const viewer = await r.client();
     const reader = await r.client();
-    await holder.request("claim", { target: "s:a", cols: 80, rows: 24 });
+    await viewer.request("capture", { target: "s:a" });
 
-    holder.close();
-    await eventually(() => expect(r.rows.get("a")?.state).toBe("RUNNING"));
-    for (let i = 0; i < 100; i++) {
-      const listed = await reader.request<ViewListResult>("list");
-      if (listed.items.find((x) => x.target === "s:a")?.view === null) break;
-      await Bun.sleep(10);
-    }
+    viewer.close();
+    await Bun.sleep(50);
 
     expect(
       (await reader.request<ViewListResult>("list")).items.find((x) => x.target === "s:a")
-    ).toMatchObject({ state: "RUNNING", view: null });
-    expect(await reader.request<CaptureResult>("capture", { target: "s:a" })).toMatchObject({
-      final: false,
-    });
+    ).toMatchObject({ state: "RUNNING", view: mcpView });
   });
 
   test("TEST-40 REQ-4 REQ-28 REQ-36 oversized unterminated line closes only its sender", async () => {

@@ -1,8 +1,10 @@
 /**
- * The local view transport: one owner-only unix socket per MCP server, JSON Lines, read-only except
- * the active-view claim. It reads the owners through `ViewDirectory` and pushes rows from
- * `ViewFeed`. It logs op names and target ids only, because rows and screens are the user's.
+ * The local view transport: one owner-only unix socket per MCP server, JSON Lines. It reads the
+ * owners through `ViewDirectory` and pushes rows from `ViewFeed`. It logs op names and target ids
+ * only, because rows and screens are the user's.
  *
+ * A viewer only watches: no op lets it hold the view or size a pane. The one claim on this socket
+ * is a peer server's `replay.resize`, relaying its own Claude Code's resize of a shared replay.
  * Nothing here can reach a child's input: no op sends text, cancels, scrolls or starts anything.
  */
 
@@ -24,6 +26,7 @@ import {
   type ViewFrontEnd,
   type ViewItem,
   type ViewRemoveReason,
+  targetOfReplay,
 } from "../pane/view-contract.js";
 import { redactSecrets } from "../redact.js";
 import { type BoundEndpoint, bindEndpoint, endpointOwnerAlive } from "./endpoints.js";
@@ -47,7 +50,11 @@ const MUTATORS: ReadonlySet<string> = new Set([
   "run_prompt",
   "close_replay",
 ]);
-const PEER_ONLY_OPS: ReadonlySet<string> = new Set(["replay.scroll", "replay.close"]);
+const PEER_ONLY_OPS: ReadonlySet<string> = new Set([
+  "replay.scroll",
+  "replay.close",
+  "replay.resize",
+]);
 
 const CLIENT_KINDS: ReadonlySet<string> = new Set(["viewer", "relay", "peer"]);
 const FRONT_ENDS: ReadonlySet<string> = new Set(["herdr", "herdr-core", "none"]);
@@ -64,8 +71,6 @@ interface Connection {
   id: string;
   sock: Socket;
   role: ViewClientKind;
-  frontEnd: ViewFrontEnd | undefined;
-  termProgram: string | undefined;
   greeted: boolean;
   subs: Map<number, Subscription>;
   inbound: string;
@@ -230,8 +235,6 @@ export class ViewServer {
       id: `conn-${this.nextConn++}`,
       sock,
       role: "viewer",
-      frontEnd: undefined,
-      termProgram: undefined,
       greeted: false,
       subs: new Map(),
       inbound: "",
@@ -344,6 +347,8 @@ export class ViewServer {
         return this.replayScroll(conn, args);
       case "replay.close":
         return this.replayClose(conn, args);
+      case "replay.resize":
+        return this.replayResize(conn, args);
       case "hello":
         return this.hello(conn, args);
       case "list":
@@ -370,14 +375,6 @@ export class ViewServer {
             args.since === undefined ? undefined : stringArg(args, "since")
           ),
         };
-      case "claim":
-        return this.claim(conn, args);
-      case "renew":
-        return this.renew(conn, args);
-      case "release":
-        return this.release(conn, args);
-      case "resize":
-        return this.resize(conn, args);
       default:
         throw new ViewError("unknown_op", `unknown op ${JSON.stringify(op)}`);
     }
@@ -404,8 +401,6 @@ export class ViewServer {
         throw new ViewError("forbidden", "a peer must name another live server's endpoint");
     }
     conn.role = kind as ViewClientKind;
-    conn.frontEnd = frontEnd as ViewFrontEnd | undefined;
-    conn.termProgram = typeof client.term_program === "string" ? client.term_program : undefined;
     conn.greeted = true;
     return {
       result: {
@@ -453,28 +448,6 @@ export class ViewServer {
       kind: "conn",
       connId: conn.id,
       role: conn.role === "peer" ? "peer" : "viewer",
-      frontEnd: conn.frontEnd,
-      termProgram: conn.termProgram,
-    };
-  }
-
-  private assertCanClaim(conn: Connection): void {
-    if (conn.role === "relay") throw new ViewError("forbidden", "a relay cannot hold the view");
-  }
-
-  private async claim(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
-    this.assertCanClaim(conn);
-    const target = stringArg(args, "target");
-    const cols = integerArg(args, "cols");
-    const rows = integerArg(args, "rows");
-    const caller = this.callerOf(conn);
-    const resize = await this.o.directory.resize(target, cols, rows, caller);
-    return {
-      result: {
-        granted: this.o.claims.holds(target, caller),
-        view: this.o.claims.viewFor(target, caller),
-        resize,
-      },
     };
   }
 
@@ -556,27 +529,20 @@ export class ViewServer {
     return { result: await ops.closeBy(replayIdArg(args), this.replayOpener(conn)) };
   }
 
-  private renew(conn: Connection, args: Record<string, unknown>): Handled {
-    if (conn.role !== "viewer") throw new ViewError("forbidden", "only a viewer renews a claim");
-    const view = this.o.claims.renew(stringArg(args, "target"), this.callerOf(conn));
-    return { result: { view } };
-  }
-
-  private release(conn: Connection, args: Record<string, unknown>): Handled {
-    this.assertCanClaim(conn);
-    const view = this.o.claims.release(stringArg(args, "target"), this.callerOf(conn));
-    return { result: { view } };
-  }
-
-  private async resize(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
-    this.assertCanClaim(conn);
-    const target = stringArg(args, "target");
+  /** A joined server's `resize_session` of a shared replay: its Claude Code takes the view. */
+  private async replayResize(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
+    const target = targetOfReplay(replayIdArg(args));
     const cols = integerArg(args, "cols");
     const rows = integerArg(args, "rows");
     const caller = this.callerOf(conn);
-    if (!this.o.claims.holds(target, caller))
-      throw new ViewError("view_not_held", `this client does not hold the view of ${target}`);
-    return { result: await this.o.directory.resize(target, cols, rows, caller) };
+    const resize = await this.o.directory.resize(target, cols, rows, caller);
+    return {
+      result: {
+        granted: this.o.claims.holds(target, caller),
+        view: this.o.claims.viewFor(target, caller),
+        resize,
+      },
+    };
   }
 
   private publish(e: ViewFeedEvent): void {

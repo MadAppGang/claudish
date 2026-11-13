@@ -782,7 +782,7 @@ export class ReplayManager {
   ): Promise<ResizeResult> {
     if (entry.finishedAt === null) {
       try {
-        const r = await entry.link.claim(entry.replayId, cols, rows);
+        const r = await entry.link.resize(entry.replayId, cols, rows);
         if (r.view?.holder === "claude_code") entry.lastClaimId = r.view.claim_id;
         const resize = r.resize as ResizeResult;
         return { ...resize, session_id: entry.replayId, view: this.relative(entry, r.view) };

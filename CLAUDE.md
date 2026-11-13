@@ -46,7 +46,7 @@ lives in `ROADMAP.md`.
 - `view-transport.md` — sessions as native herdr items: one magmux per session and only its
   read-only `.view` socket published (`--view-sock`, the two-socket check), the local view socket
   `claudish.view.v1` (ops, roles, what a viewer may never do), the two-stage change gate (no timers
-  while idle), view claims (latest user act wins, 15 s / 10 s TTLs, claim on herdr focus), replays
+  while idle), view claims (only Claude Code holds a view, 10 s TTL; a local viewer only watches), replays
   shared across servers under a kernel `flock` handed to magmux at fd 3, claudish opening nothing
   in herdr terminal (the Claude Code mod shows sessions; `claudish view` by hand in any pane),
   herdr 0.9.5 answering one request per connection, the Herdr.app mod, and the `HERDR_*`/`HC_*`

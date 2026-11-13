@@ -25,7 +25,7 @@ Claude Code ── stdio MCP ──▶ claudish MCP server (one per Claude Code)
             magmux --view-sock --id <pane> --sock-dir <root>
               <root>/magmux-<pane>.sock   control, never published
               <root>/magmux-<pane>.view   read-only, published ◀── watch ── claudish view <target>
-                               ▲                                   (by hand, any pane) │ claim, renew,
+                               ▲                                   (by hand, any pane) │ list,
                                │                                                       ▼ subscribe
                                └── watch ── claudish view (hc terminal) ──▶ <root>/endpoints/c<pid>-<start36>.sock
                                               ▲ keyed window in Herdr.app     (claudish.view.v1)
@@ -92,10 +92,10 @@ binds nothing.
 Framing is JSON Lines:
 
 ```
-→ {"id": 3, "op": "claim", "args": {"target": "s:0441fed6-…", "cols": 219, "rows": 56}}
-← {"id": 3, "ok": true, "result": {"granted": true, "view": {"holder": "herdr", "label": "herdr", …}, "resize": {…}}}
+→ {"id": 3, "op": "subscribe", "args": {"targets": ["s:0441fed6-…"], "include_finished": true}}
+← {"id": 3, "ok": true, "result": {"sub": 1}}
 ← {"type": "event", "sub": 1, "seq": 7, "event": "item.upsert", "item": {…}}
-← {"id": 4, "ok": false, "error": {"code": "view_not_held", "message": "…"}}
+← {"id": 4, "ok": false, "error": {"code": "unknown_op", "message": "…"}}
 ```
 
 A target is `s:<session_id>`, `t:<run_id>/<slot>` or `r:<replay_id>`. A `ViewItem` is the contract
@@ -114,11 +114,12 @@ the control sockets.
 | `hello` | all | role, front end, term program; answers protocol, server, capabilities |
 | `list`, `subscribe`, `unsubscribe` | all | rows; a subscription gets a `snapshot`, then upserts |
 | `capture`, `transcript` | all | the same answers as the MCP verbs, with `view` |
-| `claim`, `release` | viewer, peer | take or drop the active view (below) |
-| `renew` | viewer | the viewer's heartbeat |
-| `resize` | the holder | `view_not_held` for anyone else |
 | `replay.open`, `replay.release` | viewer, peer | open or join a replay; drop this connection's hold |
 | `replay.scroll`, `replay.close` | peer only | relayed from another server's own Claude Code |
+| `replay.resize` | peer only | another server's Claude Code resizes a shared replay, which takes its view (below) |
+
+There is no `claim`, `renew`, `release` or `resize` op: they answer `unknown_op`. A local viewer
+only watches (below).
 
 Events are `snapshot`, `item.upsert` (a full row), `item.remove {target, reason}` with reason
 `evicted`, `replay_closed` or `run_pruned`, and `server.closing` (sub 0). They are ordered per
@@ -135,7 +136,7 @@ this socket.
 ```ts
 type ViewErrorCode =
   | ContractError["error"]["code"]   // the contract v1 codes
-  | "unknown_op" | "forbidden" | "view_not_held" | "slow_consumer" | "too_many_connections"
+  | "unknown_op" | "forbidden" | "slow_consumer" | "too_many_connections"
   | "line_too_long" | "replay_limit" | "replay_elsewhere" | "server_gone";
 ```
 
@@ -177,19 +178,22 @@ are the owners, not the feed:
 Clients compute `idle_seconds` from `last_activity_at`: no upsert is sent because time passed.
 The feed returns at once from `changed` when it has no listener. `ViewServer` subscribes to the
 feed only while one of its clients holds a subscription, so a server with no client builds no row
-on any change. The transport adds four timers, each alive only while it has work:
+on any change. The transport adds three timers, each alive only while it has work:
 
 - the claims timer, one per server, while a claim exists;
-- a viewer's 5 s heartbeat, while it holds a claim;
 - the relay's 60 s endpoint backstop;
 - the mod's 15 s relay check, while its panel is visible.
 
-## View claims: one size, the latest user act wins
+## View claims: only Claude Code holds a view
 
 A magmux pane has one grid. Two clients that both resize it undo each other, each answering
-`changed: true`. So exactly one holder per item sets the size, and every other viewer shows a
-one-line band instead of the picture: `viewing in <label> — Enter to view here`, or
-`Enter to view here` when nobody holds it. A non-holder unwatches frames.
+`changed: true`. So exactly one holder per item sets the size, and that holder is always a Claude
+Code: this server's own MCP link, or another server relaying its own Claude Code. A local viewer
+(`claudish view <target>` run by hand in any terminal or herdr pane, and the same command the
+Herdr.app mod starts) only watches. It never claims, renews, releases or resizes, and selecting or
+focusing it changes nothing. It watches frames from the start and paints the session at the size
+Claude Code gave it: clipped to its own terminal when the pane is larger (the status row says
+`CLIPPED to <cols>x<rows>`), blank around it when the pane is smaller. Its only key is `q`.
 
 ```ts
 interface ViewHolder {
@@ -200,42 +204,31 @@ interface ViewHolder {
 }
 ```
 
-**One mode: take.** A claim always takes the view, whoever held it. An earlier design had an
-`if_free` mode for background panes; it was removed because it handed the view to a background pane
-at creation and again after every lapse, which the user never asked for. The view moves only on a
-user act:
+The contract keeps `herdr`, `herdr_app` and `terminal` in the closed set (contract v1 only ever
+adds), but no server grants them any more: `ViewClaims.claim` refuses a viewer caller with
+`forbidden`.
+
+**One mode: take.** A claim always takes the view from whichever Claude Code held it. The view
+moves only on a Claude Code act:
 
 | Act | Claim |
 |---|---|
-| `claudish view <target>` run by hand, or a Herdr.app row selected | takes at start |
-| Enter in any viewer | takes |
-| selecting the herdr pane a `claudish view` runs in | takes, on `pane_focused` for its own `$HERDR_PANE_ID` |
 | MCP `resize_session`, `team(mode:"resize")`, a replay resize | takes (MCP resize claims before it resizes) |
+| a joined server's replay resize, relayed as `replay.resize` | takes on the owner, as that peer |
 | MCP `capture_session` | renews an existing Claude Code claim of this caller; never takes |
 | a viewer's `capture` | touches no claim |
+| `claudish view`, Enter in it, selecting its herdr pane or Herdr.app row | nothing |
 
-The focus claim reads herdr's `pane_focused` event (subscribed as `{type:"pane.focused"}`; the
-event name is underscored). It fires on selecting a pane and on switching to a tab, and not on
-reselecting the focused pane (S6). `CLAUDISH_VIEW_FOCUS_CLAIM=0` turns it off. Reselecting a
-Herdr.app row whose viewer still runs sends that terminal an Enter (`hc keys <address> enter`),
-which takes the view back.
-
-**TTLs.** A viewer claim lives 15 s and its heartbeat renews it every 5 s; closing the connection
-(SIGKILL included, the kernel closes it) releases everything it held. A Claude Code claim, this
-server's MCP link or a peer server, lives 10 s and is renewed by a resize or by that owner's own
-capture. A peer relays its Claude Code's captures one for one, so both lapse together. An expired
-claim reads as absent at once, before the single `unref()`'d timer removes it. After a lapse the
-view is null and stays null until a user acts.
+**TTL.** A Claude Code claim, this server's MCP link or a peer server, lives 10 s and is renewed
+by a resize or by that owner's own capture. A peer relays its Claude Code's captures one for one,
+so both lapse together. Closing a peer connection releases everything it held. An expired claim
+reads as absent at once, before the single `unref()`'d timer removes it. After a lapse the view is
+null and stays null until Claude Code acts again.
 
 **The holder is relative in MCP answers.** Over the local transport any Claude Code reads
 `claude_code`. In an MCP answer the owning server says `claude_code` for its own MCP link and
 `claude_code_other` (label "another Claude Code") for a peer's claim, so a Claude Code mod can tell
 its own expanded view from another Claude Code's.
-
-Measured live in herdr (validation check 5): `resize_session` 120x40 answered holder
-`claude_code` and the herdr pane's viewer showed the band; Enter in the pane made the next capture answer
-219x56 with holder `herdr`; `resize_session` again gave 120x40 `claude_code`. The first capture
-right after Enter still read 120x40 (the resize was not applied yet); the second read 219x56.
 
 ## Replays shared across servers
 
@@ -345,7 +338,7 @@ herdr answered with an error and did nothing. `HerdrNoReply` means no reply came
 | Fact | Measured | Consequence in code |
 |---|---|---|
 | error codes | `pane_not_found`; not `not_found` | matched by name |
-| `pane_focused` | on select and on tab switch; not on reselect | the focus claim |
+| `pane_focused` | on select and on tab switch; not on reselect | not subscribed: focus changes nothing |
 
 ## The Herdr.app mod
 
@@ -391,8 +384,8 @@ never talks to an endpoint. It reads a file and starts viewers in hc terminals:
   in a hidden hc terminal `claudish-view-<12 hex of sha256(target)>` and shows it in
   `openOverlay({kind: "window", key: "claudish-view", …})`. The same key replaces the open window.
   `layout.set` is refused on the shipped "main" layout, and `terminal.show` would replace a user's
-  pane, which is why it is a window (S7e). Selecting another row kills the previous viewer, which
-  releases its claim.
+  pane, which is why it is a window (S7e). Selecting another row kills the previous viewer.
+  Reselecting a row whose viewer still runs only shows its window again: nothing is typed into it.
 - **Status through OSC 7501.** Inside an hc terminal the viewer writes
   `ESC ] 7501 ; state=…:app=claudish:title=<b64>:msg=<b64> ESC \` on each row change; hc accepted it
   (S7d: `"reported":true`, state `working`, msg `Bash`; then `blocked`, `permission: Bash`).
@@ -479,8 +472,6 @@ the pane sweep: by then a reaped orphan replay's magmux has freed its lock.
 
 ## What is not verified
 
-- Focus behaviour with an attached herdr TUI client: S6 ran on a headless server. The live checks
-  used a visible session and agree for the paths they drove.
 - `flock` on Linux (`__errno_location`, the `O_CLOEXEC` value).
 - Two real MCP server processes sharing one replay end to end: the tests run several servers in one
   process, with the lock holders as real child processes.
@@ -513,7 +504,7 @@ the pane sweep: by then a reaped orphan replay's magmux has freed its lock.
 | `pane/view-socket.ts` | the two-socket check before a `.view` path is published |
 | `view/view-server.ts`, `view/view-client.ts`, `view/endpoints.ts` | the endpoint, ops, roles, bounds; the client and its reconnect rule |
 | `view/change-key.ts`, `view/view-feed.ts`, `view/token-watch.ts` | the two change gates and the token-file watch |
-| `view/view-claims.ts` | claims, TTLs, relative holders |
+| `view/view-claims.ts` | Claude Code claims, the TTL, relative holders |
 | `view/kernel-lock.ts`, `view/replay-registry.ts`, `view/peer-link.ts`, `mcp-session/replay-manager.ts` | replays shared across servers |
 | `view/viewer.ts`, `view/magmux-view-client.ts`, `view/magmux-frame.ts`, `view/ansi-painter.ts` | `claudish view`; the frame decoder is a verbatim copy of magmux's `demo/rc/frame.ts` |
 | `herdr/front-end.ts`, `herdr/herdr-socket.ts`, `herdr/reporter.ts` | a `claudish view` in a herdr pane: front end detection and the agent report |

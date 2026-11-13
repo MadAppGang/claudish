@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { eventually } from "../herdr/test-helpers/view-items.js";
 import type { CaptureResult } from "../pane/contract.js";
-import type { ViewClaimResult, ViewListResult } from "../pane/view-contract.js";
+import type { ViewListResult } from "../pane/view-contract.js";
 import { flockAvailable } from "./kernel-lock.js";
 import { type ReplayWorld, makeReplayWorld } from "./test-helpers/replay-servers.js";
 import { ViewClient } from "./view-client.js";
@@ -124,20 +124,23 @@ describe.skipIf(!supported)(
         view: { holder: "claude_code_other", label: "another Claude Code" },
       });
 
-      const grant = await c.request<ViewClaimResult>("claim", { target, cols: 110, rows: 32 });
-      expect(grant.view?.holder).toBe("herdr");
-      for (const s of [a, b]) {
-        expect(await s.replays.captureMcp(opened.replay_id)).toMatchObject({
-          cols: 110,
-          rows: 32,
-          view: { holder: "herdr", claim_id: grant.view?.claim_id },
-        });
-      }
+      // a viewer only watches: its claim is no op, and B's Claude Code keeps the view and size
+      await expect(c.request("claim", { target, cols: 110, rows: 32 })).rejects.toMatchObject({
+        code: "unknown_op",
+      });
+      await expect(
+        c.request("replay.resize", { replay_id: opened.replay_id, cols: 110, rows: 32 })
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect(await b.replays.captureMcp(opened.replay_id)).toMatchObject({
+        cols: 100,
+        rows: 30,
+        view: { holder: "claude_code" },
+      });
 
       // Even an unchanged size is a new user act and must take the view.
-      expect(await a.replays.resize(opened.replay_id, 110, 32)).toMatchObject({
-        cols: 110,
-        rows: 32,
+      expect(await a.replays.resize(opened.replay_id, 100, 30)).toMatchObject({
+        cols: 100,
+        rows: 30,
         changed: false,
         view: { holder: "claude_code" },
       });
@@ -145,7 +148,7 @@ describe.skipIf(!supported)(
         view: { holder: "claude_code_other" },
       });
       await expect(c.request("resize", { target, cols: 120, rows: 35 })).rejects.toMatchObject({
-        code: "view_not_held",
+        code: "unknown_op",
       });
       expect(w.alive()).toHaveLength(1);
     }, 15_000);

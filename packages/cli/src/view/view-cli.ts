@@ -354,7 +354,6 @@ export function chooseFrontEnd(
       herdr: new HerdrSocket(pane.socketPath),
       paneId: pane.paneId,
       titleMode,
-      focusClaim: env.CLAUDISH_VIEW_FOCUS_CLAIM !== "0",
     }),
   };
 }
@@ -377,7 +376,6 @@ async function viewTarget(parsed: ViewArgs): Promise<number> {
     target: parsed.target,
     fps: parsed.fps,
     io: processIo(),
-    termProgram: process.env.TERM_PROGRAM,
     frontEnd: choice.frontEnd,
   });
   const stop = (): void => viewer.quit();

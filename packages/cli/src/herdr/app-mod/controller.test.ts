@@ -373,7 +373,7 @@ describe("PanelController", () => {
     expect(host.live.map((t) => t.name)).toEqual([FEED_TERMINAL]);
   });
 
-  test("reselecting a row whose viewer runs takes the view back: Enter is pressed in that viewer", async () => {
+  test("reselecting a row whose viewer runs shows it again and sends that viewer no key", async () => {
     const host = new FakeHost();
     host.relayAlive = { alive: true, relay: { pid: 7, start36: "b" } };
     host.writeFeed({ pid: 7, start36: "b" }, [sessionItem("a")]);
@@ -381,11 +381,10 @@ describe("PanelController", () => {
     ctl.setVisible(true);
     await ctl.tick();
     await ctl.select("s:a");
-    // a fresh viewer claims at its own start: no key is needed
-    expect(host.hcRuns().filter((a) => a[0] === "keys")).toEqual([]);
-    // the view went elsewhere meanwhile; the user selects the row again
     await ctl.select("s:a");
-    expect(host.hcRuns().filter((a) => a[0] !== "run")).toEqual([["keys", "t10", "enter"]]);
+    // a viewer only watches: nothing is typed into it to take the view
+    expect(host.hcRuns().filter((a) => a[0] !== "run")).toEqual([]);
+    expect(host.hcRuns().filter((a) => a[0] === "run")).toHaveLength(1);
     expect(host.overlays).toHaveLength(2);
   });
 
