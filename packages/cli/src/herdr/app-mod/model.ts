@@ -10,6 +10,23 @@ import { type HcState, clipText, hcStatus, shortModel } from "../state-map.js";
 
 export const MOD_NAME = "claudish";
 /** the hidden hc terminal that runs `claudish view --feed` */
+/** the command the panel runs when the mod's settings.json names none */
+export const DEFAULT_COMMAND = "claudish";
+
+/**
+ * The command `settings.json` in the mod's folder names (`{ "command": "claudishD" }`), or the
+ * default. The name goes into a `/bin/sh -c` line, so only a plain command name is taken.
+ */
+export function commandSetting(text: string | null): string {
+  if (!text) return DEFAULT_COMMAND;
+  try {
+    const v = (JSON.parse(text) as { command?: unknown } | null)?.command;
+    return typeof v === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(v) ? v : DEFAULT_COMMAND;
+  } catch {
+    return DEFAULT_COMMAND;
+  }
+}
+
 export const FEED_TERMINAL = "claudish-feed";
 export const VIEW_TERMINAL_PREFIX = "claudish-view-";
 /** opening a window with the same key replaces the open one in its place */

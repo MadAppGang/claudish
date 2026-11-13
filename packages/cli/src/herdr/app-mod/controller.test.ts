@@ -193,6 +193,24 @@ describe("PanelController", () => {
     expect(host.claudishRuns()).toEqual([]);
   });
 
+  test("the mod's settings.json names another claudish command; an unsafe name is ignored", async () => {
+    const settings = "/Users/u/.config/herdr-app/mods/claudish/settings.json";
+    const probeOf = (host: FakeHost): string =>
+      host.calls.find((c) => c.argv[0] === "/bin/sh")?.argv[2] ?? "";
+    const dev = new FakeHost();
+    dev.files.set(settings, '{ "command": "claudishD" }');
+    await ready(dev);
+    expect(probeOf(dev)).toContain("command -v claudishD &&");
+    const unsafe = new FakeHost();
+    unsafe.files.set(settings, '{ "command": "x; rm -rf ~" }');
+    await ready(unsafe);
+    expect(probeOf(unsafe)).toContain("command -v claudish &&");
+    expect(probeOf(unsafe)).not.toContain("rm -rf");
+    const none = new FakeHost();
+    await ready(none);
+    expect(probeOf(none)).toContain("command -v claudish &&");
+  });
+
   test("a claudish without the view command is named with its version and an update line, not as missing", async () => {
     const host = new FakeHost();
     host.noView = true;

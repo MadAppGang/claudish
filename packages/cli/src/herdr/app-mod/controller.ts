@@ -40,12 +40,14 @@ import {
   type FeedServer,
   type FeedView,
   LIVENESS_MS,
+  MOD_NAME,
   PATH_HEAD,
   POLL_MS,
   type RelayStamp,
   type TerminalInfo,
   VIEW_TERMINAL_PREFIX,
   claudishArgv,
+  commandSetting,
   feedRunArgs,
   liveTerminal,
   parseFeed,
@@ -186,10 +188,12 @@ export class PanelController {
 
   /** Find the user's claudish. Ends in `missing` with the install line when it cannot run. */
   async boot(): Promise<void> {
+    const settings = `${this.host.home()}/.config/herdr-app/mods/${MOD_NAME}/settings.json`;
+    const command = commandSetting(await this.host.readTextFile(settings).catch(() => null));
     const probe = await this.host
       .exec("/bin/sh", [
         "-c",
-        `PATH="${PATH_HEAD.join(":")}:$PATH"; export PATH; command -v claudish && printf '%s\\n' "$PATH"`,
+        `PATH="${PATH_HEAD.join(":")}:$PATH"; export PATH; command -v ${command} && printf '%s\\n' "$PATH"`,
       ])
       .catch(() => null);
     const [path, pathEnv] = (probe?.code === 0 ? probe.stdout : "").trim().split("\n");
