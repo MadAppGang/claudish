@@ -671,12 +671,16 @@ function readableClaudeSettingsLayers(
   const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
   const home = deps.home ?? homedir();
   const cwd = deps.cwd ?? process.cwd();
+  // A layer `--setting-sources` turns off hands the child nothing, so it is not
+  // inspected. Managed settings and every `--settings` value apply whatever it says.
+  const enabled = enabledSettingSources(config.claudeArgs ?? []);
+  const on = (source: SettingSource): boolean => enabled === null || enabled.has(source);
   const files = [
     managedSettingsPath(),
-    join(home, ".claude", "settings.json"),
-    ...(env.CLAUDE_CONFIG_DIR ? [join(env.CLAUDE_CONFIG_DIR, "settings.json")] : []),
-    join(cwd, ".claude", "settings.json"),
-    join(cwd, ".claude", "settings.local.json"),
+    ...(on("user") ? [join(home, ".claude", "settings.json")] : []),
+    ...(on("user") && env.CLAUDE_CONFIG_DIR ? [join(env.CLAUDE_CONFIG_DIR, "settings.json")] : []),
+    ...(on("project") ? [join(cwd, ".claude", "settings.json")] : []),
+    ...(on("local") ? [join(cwd, ".claude", "settings.local.json")] : []),
   ];
   const layers: Array<{ where: string; settings: Record<string, unknown> | null }> = [];
   for (const file of files) {
@@ -695,6 +699,42 @@ function readableClaudeSettingsLayers(
     layers.push({ where, settings });
   });
   return layers;
+}
+
+/** A settings file tier `--setting-sources` can turn on or off. */
+type SettingSource = "user" | "project" | "local";
+
+/**
+ * The file tiers Claude Code loads under the passthrough `--setting-sources`
+ * (comma-separated `user`, `project`, `local`; either spelling, the last
+ * occurrence wins), or null when the flag is absent or carries no value, which
+ * means every tier loads. `--setting-sources ""` loads none of them. Managed
+ * settings and `--settings` values are outside this flag's reach.
+ */
+function enabledSettingSources(args: readonly string[]): Set<SettingSource> | null {
+  let value: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === "--setting-sources") {
+      const next = args[i + 1];
+      // A following flag is not this flag's value (the passthrough parser rule).
+      if (next === undefined || next.startsWith("-")) {
+        value = undefined;
+        continue;
+      }
+      value = next;
+      i++;
+    } else if (token.startsWith("--setting-sources=")) {
+      value = token.slice("--setting-sources=".length);
+    }
+  }
+  if (value === undefined) return null;
+  const sources = new Set<SettingSource>();
+  for (const part of value.split(",")) {
+    const name = part.trim();
+    if (name === "user" || name === "project" || name === "local") sources.add(name);
+  }
+  return sources;
 }
 
 /**

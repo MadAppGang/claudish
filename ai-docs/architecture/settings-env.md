@@ -66,7 +66,11 @@ settings layer that would hand the child one REFUSES the launch before spawn, na
 never the value (`settingsCredentialFindings`, `claude-runner.ts`; `subscriptionSettingsCheck`,
 `launcher/claude-launch.ts`). It reads the layers `childAuthControl` reads (managed, user,
 `$CLAUDE_CONFIG_DIR`, project, project-local, every `--settings` occurrence) and returns every
-finding of every layer: an earlier layer never hides a later one. Refused: a real
+finding of every layer: an earlier layer never hides a later one. Both follow a passthrough
+`--setting-sources`: a file tier it turns off (`user` covers `~/.claude` and `$CLAUDE_CONFIG_DIR`)
+hands the child nothing and is not read; managed settings and `--settings` values always are.
+`run_prompt`'s print child runs with `--setting-sources ""`, so only managed settings and the
+launch environment can refuse it. Refused: a real
 `ANTHROPIC_API_KEY` in an `env` block, an `apiKeyHelper`, an `ANTHROPIC_CUSTOM_HEADERS` (in a
 settings `env` block or the launch environment) carrying `x-api-key` or a non-login
 `authorization`, a real `ANTHROPIC_AUTH_TOKEN` in an `env` block (Claude Code would send it

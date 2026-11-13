@@ -254,15 +254,18 @@ interface ChildOutcome {
 }
 
 /**
- * The settings findings of a print child for `model`: the user-wide layers (its
- * cwd is empty), read with the HOME and CLAUDE_CONFIG_DIR the child inherits.
+ * The settings findings of a print child for `model`: the layers that still
+ * apply under the child's own flags. `--setting-sources ""` turns off the user,
+ * project and local files, so only managed settings (and the launch
+ * environment) are inspected, read with the HOME and CLAUDE_CONFIG_DIR the
+ * child inherits.
  */
 function defaultSettingsFindings(
   model: string,
   env: Record<string, string | undefined>
 ): SettingsFinding[] {
   return settingsCredentialFindings(
-    { model, claudeArgs: [] } as unknown as ClaudishConfig,
+    { model, claudeArgs: [...PRINT_FLAGS] } as unknown as ClaudishConfig,
     env as NodeJS.ProcessEnv,
     { ...(env.HOME ? { home: env.HOME } : {}), cwd: EMPTY_PRINT_CWD }
   );
@@ -298,7 +301,7 @@ export async function runPromptViaClaudeCode(
 
   // The Claude subscription is never signed with an API key: a settings layer
   // that would hand the print child one refuses the call before any child starts.
-  // The child's cwd is an empty directory, so only the user-wide layers apply.
+  // Only the layers the child still loads are inspected (managed settings).
   const printEnv = claudeCodePrintEnv(parentEnv);
   const findings = (opts.settingsFindings ?? defaultSettingsFindings)(model, printEnv);
   // `bareName: false`: the remedy never offers --anthropic-api-billing, because
