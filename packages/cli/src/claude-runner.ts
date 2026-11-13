@@ -476,7 +476,10 @@ export interface SettingsFinding {
  * EVERY credential finding of EVERY layer `childAuthControl` reads (managed,
  * user, `$CLAUDE_CONFIG_DIR`, project, project-local, every `--settings`
  * occurrence), each layer independently: a token in a layer does not hide a
- * helper in it, and an earlier layer does not hide a later one. The launch
+ * helper in it, and an earlier layer does not hide a later one. A `--settings`
+ * value that cannot be read or parsed is an `unreadable` finding, the one the
+ * merge drops included: the merge reads that value again later, and a value
+ * this check could not read is never assumed to hand the child nothing. The launch
  * environment's ANTHROPIC_CUSTOM_HEADERS is one more layer, `environment`. Its
  * own ANTHROPIC_API_KEY is not a finding: every launch branch deletes or hides
  * it before spawning.
@@ -494,7 +497,7 @@ export function settingsCredentialFindings(
   if (customHeadersSignWithKey(env.ANTHROPIC_CUSTOM_HEADERS)) {
     findings.push({ where: "environment", kind: "custom-headers-auth" });
   }
-  for (const { where, settings } of readableClaudeSettingsLayers(config, env, deps)) {
+  for (const { where, settings } of claudeSettingsLayers(config, env, deps)) {
     if (settings === null) {
       findings.push({ where, kind: "unreadable" });
       continue;
@@ -669,6 +672,18 @@ function readableClaudeSettingsLayers(
   env: NodeJS.ProcessEnv,
   deps: ChildAuthControlDeps
 ): SettingsLayer[] {
+  return claudeSettingsLayers(config, env, deps).filter((layer) => !layer.droppedByMerge);
+}
+
+/**
+ * {@link readableClaudeSettingsLayers}, plus the first two-token `--settings`
+ * value when it cannot be read or parsed, marked `droppedByMerge`.
+ */
+function claudeSettingsLayers(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv,
+  deps: ChildAuthControlDeps
+): SettingsLayer[] {
   const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
   const home = deps.home ?? homedir();
   const cwd = deps.cwd ?? process.cwd();
@@ -704,7 +719,10 @@ function readableClaudeSettingsLayers(
     // Merge's own guard: a missing or empty value is neither merged nor read.
     if (!occurrence.value) return;
     const settings = readSettingsSource(occurrence.value, readFile);
-    if (occurrence === merged && !settings) return; // dropped by the merge
+    if (occurrence === merged && !settings) {
+      layers.push({ where, settings, tier: "cli", droppedByMerge: true });
+      return;
+    }
     layers.push({ where, settings, tier: "cli" });
   });
   return layers;
@@ -723,6 +741,8 @@ interface SettingsLayer {
   where: string;
   settings: Record<string, unknown> | null;
   tier: SettingsTier;
+  /** The first two-token `--settings` value, unreadable, which the merge splices out. */
+  droppedByMerge?: true;
 }
 
 /**

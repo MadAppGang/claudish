@@ -75,7 +75,10 @@ launch environment can refuse it. Refused: a real
 settings `env` block or the launch environment) carrying `x-api-key` or a non-login
 `authorization`, a real `ANTHROPIC_AUTH_TOKEN` in an `env` block (Claude Code would send it
 instead of the login, and every request would then fail with a "Sign in" answer that names the
-wrong cause), and a `--settings` value claudish cannot read or parse. A settings
+wrong cause), and a `--settings` value claudish cannot read or parse — the first two-token one
+included, although the merge drops it: the merge reads the value a second time, so a value this
+check could not read is never taken as handing the child nothing (`childAuthControl` and
+`settingsClaudeLoginToken` still skip that one). A settings
 `ANTHROPIC_BASE_URL` is a one-line notice: it moves where the login's requests go, not which
 credential signs them.
 The same refusal runs on every launch `launchSigningFor` signs `login-only`: a bare Claude main
