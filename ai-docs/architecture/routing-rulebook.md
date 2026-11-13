@@ -22,9 +22,9 @@ hooks system.
 
 Only a `proxyRouteDecision` → `bare` target reaches `route()`. `nativeRouteFor()` answers native
 Claude names first in the proxy, `--probe`, the TUI probe, MCP `preflight` and `planAdvisorModel`.
-`claude@<id>` is the native decision of `<id>` and never reaches `route()`; an MCP strip turns it
-into `<id>` only when `<id>` is itself native and the spec carries no marker and no `:N`, and leaves
-any other `claude@` unchanged for the launch to refuse. `--probe` and the config TUI may also list a
+`claude@<id>` is the native decision of `<id>` and never reaches `route()`; the MCP strip never
+removes `claude@` (a bare name follows the API-billing opt-in, `claude@` never does), and the pane
+child that receives it keeps the choice as `claudeSubscriptionPin`. `--probe` and the config TUI may also list a
 BARE native name's catalog routes (`comparisonCandidates`: no user rule, no fallback hop, the native
 provider excluded before the credential filter, plus one off-catalog `anthropic` candidate when the
 catalog has no entry); that list is never a `RoutePlan` and no request is routed from it.
