@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -19,7 +19,12 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
-import { claudeCodeKeychainServiceCandidates } from "./auth/claude-code-facts.js";
+import {
+  type ClaudeCodeLoginDeps,
+  type KeychainCredentialProbe,
+  defaultKeychainAnthropicProbe,
+  hasClaudeCodeLogin,
+} from "./auth/claude-code-login.js";
 import {
   CLAUDISH_PLACEHOLDER_API_KEY,
   CLAUDISH_PLACEHOLDER_AUTH_TOKEN,
@@ -156,69 +161,9 @@ export function claudeLaunchAuthLine(
   );
 }
 
-/** Existence-only probe for an OS-credential-store Anthropic OAuth item. */
-export type KeychainCredentialProbe = () => boolean;
-
-// Startup-only memo (see hasResolvableAnthropicAuth call graph — at most a couple of
-// evaluations per launch), keyed by the SERVICE NAMES probed so a changed
-// CLAUDE_CONFIG_DIR is not answered from the previous directory's result.
-// Tests inject their own probe, so this stays inert there.
-const macosKeychainAnthropicMemo = new Map<string, boolean>();
-
-/**
- * Existence-only probe for Claude Code's macOS login-Keychain OAuth item.
- *
- * The service is `Claude Code[-<sha256(configDir)[0:8]>]-credentials` — the hash
- * suffix appears whenever `CLAUDE_CONFIG_DIR` is not the default. This probe
- * hardcoded the UNSUFFIXED name, so a user with a custom config dir was reported
- * as having no Claude login however signed in they were, and claudish then
- * injected a placeholder key over a perfectly good subscription. Each candidate
- * from {@link claudeCodeKeychainServiceCandidates} is tried in order.
- *
- * Uses `security find-generic-password` WITHOUT `-w`, so it reads item ATTRIBUTES
- * and never item DATA: no secret is requested, no Keychain-access dialog appears,
- * and the token is never touched — Claude Code itself still forwards the OAuth
- * once claudish skips the placeholder key. Non-darwin → false (returns before
- * spawning). Best-effort: any error (security absent, non-zero exit, item
- * missing) → false.
- *
- * `CLAUDISH_DISABLE_KEYCHAIN=1` short-circuits it to false, mirroring
- * `hasKeychainSource()`. A test run must be able to guarantee it spawns no
- * `security` at all — see `keychain.md` on why a flag the production code
- * honours is the only stub that cannot leak.
- */
-export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = () => {
-  if (process.platform !== "darwin") return false;
-  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return false;
-
-  const services = claudeCodeKeychainServiceCandidates();
-  const memoKey = services.join("|");
-  const memoized = macosKeychainAnthropicMemo.get(memoKey);
-  if (memoized !== undefined) return memoized;
-
-  // `CLAUDISH_KEYCHAIN_FILE` redirects every `security` call to a throwaway
-  // keychain, and it must be the LAST argument on any subcommand. Honoured here
-  // so live verification has the same safe target the rest of the keychain code
-  // has.
-  const keychainFile = process.env.CLAUDISH_KEYCHAIN_FILE;
-  let found = false;
-  try {
-    for (const service of services) {
-      const args = ["find-generic-password", "-s", service];
-      if (keychainFile) args.push(keychainFile);
-      // Existence only — NO `-w`, so no secret is requested and no prompt appears.
-      const res = spawnSync("security", args, { stdio: "ignore" });
-      if (!res.error && res.status === 0) {
-        found = true;
-        break;
-      }
-    }
-  } catch {
-    found = false;
-  }
-  macosKeychainAnthropicMemo.set(memoKey, found);
-  return found;
-};
+// The Claude Code login probe lives in a leaf module the pickers can import;
+// re-exported here for the launcher's existing importers.
+export { type KeychainCredentialProbe, defaultKeychainAnthropicProbe };
 
 /**
  * Does the user explicitly want their real ANTHROPIC_API_KEY used, accepting
@@ -350,24 +295,13 @@ function isRealAnthropicEnvCredential(
  * Does the environment carry a resolvable Anthropic credential? Used to decide
  * whether classifier passthrough can safely preserve Claude Code's real auth
  * (skipping the placeholder key) without stranding Claude Code at a login gate.
- * Checks, in order: env tokens (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN), Claude
- * Code's OAuth credentials file (~/.claude/.credentials.json), and — on macOS — the
- * login Keychain item Claude Code stores its OAuth in ("Claude Code-credentials",
- * existence-only; the secret is never read). Deps are injectable for hermetic tests.
- *
- * TODO: Windows/Linux may also keep the OAuth in an OS credential store (Credential
- * Manager / libsecret) rather than the file; only the macOS Keychain is covered so far.
+ * Checks, in order: env tokens (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN), then a
+ * Claude Code login (`hasClaudeCodeLogin`: a real CLAUDE_CODE_OAUTH_TOKEN, the OAuth
+ * credentials file, or — on macOS — the login Keychain item, existence-only; the
+ * secret is never read). Deps are injectable for hermetic tests.
  */
-export function hasResolvableAnthropicAuth(
-  deps: {
-    env?: NodeJS.ProcessEnv;
-    fileExists?: (path: string) => boolean;
-    keychainProbe?: KeychainCredentialProbe;
-  } = {}
-): boolean {
+export function hasResolvableAnthropicAuth(deps: ClaudeCodeLoginDeps = {}): boolean {
   const env = deps.env ?? process.env;
-  const fileExists = deps.fileExists ?? existsSync;
-  const keychainProbe = deps.keychainProbe ?? defaultKeychainAnthropicProbe;
   // claudish's own placeholders leak from a parent proxied session into every
   // process it starts. They authenticate nothing, so they do not count.
   if (
@@ -376,8 +310,7 @@ export function hasResolvableAnthropicAuth(
   ) {
     return true;
   }
-  if (fileExists(join(homedir(), ".claude", ".credentials.json"))) return true;
-  return keychainProbe();
+  return hasClaudeCodeLogin(deps);
 }
 
 /**

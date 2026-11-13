@@ -16,7 +16,6 @@ import { catalogRouteMatchesProvider } from "./providers/catalog-route-bindings.
 
 import { confirm, input, search, select } from "@inquirer/prompts";
 import { lookupModel, lookupModelCapabilities } from "./adapters/model-catalog.js";
-import { credentials } from "./auth/credentials/authority.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import { log } from "./logger.js";
 import {
@@ -47,6 +46,7 @@ import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { collapseModelsCatalog } from "./providers/model-resolvers/registry.js";
 import { type ModelOffer, offerIsLive } from "./providers/model-resolvers/types.js";
 import { PROVIDER_FILTER_ALIAS_EXTRA } from "./providers/picker-alias-extra.js";
+import { CLAUDE_SUBSCRIPTION_PROVIDER, pickerProviderReady } from "./providers/picker-readiness.js";
 import {
   type ProviderDefinition,
   getAllProviders,
@@ -1034,6 +1034,8 @@ export interface ProviderChoice {
  * Keyed by ProviderDefinition.name.
  */
 const PICKER_COPY: Record<string, { name?: string; description?: string }> = {
+  "native-anthropic": { name: "Claude subscription", description: "Claude Code's own login" },
+  anthropic: { name: "Claude API", description: "Metered on your Anthropic API key" },
   openrouter: { description: "580+ models via unified API" },
   "opencode-zen": { name: "OpenCode Zen", description: "OpenCode-hosted models" },
   google: { name: "Google Gemini", description: "Direct API" },
@@ -1073,6 +1075,8 @@ const PICKER_COPY: Record<string, { name?: string; description?: string }> = {
  * list rather than nowhere. Ordering is the only thing this table controls.
  */
 const PICKER_ORDER = [
+  "native-anthropic",
+  "anthropic",
   "openrouter",
   "opencode-zen",
   "opencode-zen-go",
@@ -1197,9 +1201,9 @@ async function getProviderChoices() {
   const checks = await Promise.all(
     all.map(async (choice) => {
       if (!choice.provider) return true; // skip, custom — always shown
-      // The authority knows every catalog provider; isAvailable resolves the
-      // full env/config/oauth/op:// readiness for that provider name.
-      return credentials.isAvailable(choice.provider);
+      // The one picker readiness rule: the Claude subscription asks for a
+      // Claude Code login, every other provider asks the credential authority.
+      return pickerProviderReady(choice.provider);
     })
   );
   return all.filter((_, i) => checks[i]);
@@ -1323,6 +1327,18 @@ function resolveProviderAggregatorEntry(
 }
 
 /**
+ * How a picker labels a provider's price: `"sub"` for a flat-rate subscription
+ * and for the Claude subscription (Claude Code's own login, which claudish
+ * never bills), `"metered"` otherwise. Display only: `calculateCost` never asks
+ * it, so a cost computed for `native-anthropic` stays metered.
+ */
+export function displayBillingOf(provider: string): "sub" | "metered" {
+  return isSubscriptionProvider(provider) || provider === CLAUDE_SUBSCRIPTION_PROVIDER
+    ? "sub"
+    : "metered";
+}
+
+/**
  * Display price for a picker row under the SELECTED provider.
  *
  * Prefers the TRUE per-aggregator rate (the matched aggregators[] entry's
@@ -1341,7 +1357,7 @@ export function resolveProviderDisplayPrice(provider: string, model: ModelInfo):
   // their metered siblings' dollar rates: the catalog knows the OWNER's price,
   // and for a subscription that number is not what the user pays. Quoting it is
   // worse than saying nothing.
-  if (isSubscriptionProvider(provider)) return "SUB";
+  if (displayBillingOf(provider) === "sub") return "SUB";
   const entry = resolveProviderAggregatorEntry(provider, model);
   const entryPrice = formatAveragePricing(entry?.pricing);
   if (entryPrice?.average) return entryPrice.average;

@@ -184,10 +184,13 @@ export type ListOrigin = "discovered" | "catalog";
  * Two reshapes, both to buy columns back for the model name: the `/1M` suffix goes
  * because the column header says `$/1M` once for the whole list, and `LOCAL`
  * becomes `local` because a local model has no price at all and shouting is for
- * things that cost money.
+ * things that cost money. A `sub` row prints `SUB` whatever string arrived: the
+ * billing mode comes from the same `displayBillingOf` rule, so this agrees with
+ * `resolveProviderDisplayPrice` and covers a row priced from the catalog alone.
  */
 export function priceLabel(display: string, billing: BillingMode): string {
   if (billing === "local") return "local";
+  if (billing === "sub") return "SUB";
   const s = (display || "N/A").trim();
   if (s === "LOCAL") return "local";
   if (s === "SUB" || s === "FREE" || s === "N/A") return s;
