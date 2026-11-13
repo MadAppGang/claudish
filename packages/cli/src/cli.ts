@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EFFORT_LEVELS, isEffortLevel } from "./adapters/base-api-format.js";
 import { isClaudishPlaceholderCredential } from "./auth/claudish-placeholder.js";
+import { keySourcesSearched } from "./auth/credentials/key-sources.js";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import {
   CODE_MODE_ENV_VAR,
@@ -38,6 +39,7 @@ import {
   type ProbeChainLink,
   type ProbeDroppedLink,
   probeChainFrom,
+  refusedLinkOf,
   resultLinksFrom,
   routingFieldsFrom,
 } from "./probe/probe-chain.js";
@@ -71,7 +73,13 @@ import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { NATIVE_NOT_PROBED } from "./providers/native-route.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { type ProbeResult, describeProbeState, probeLink } from "./providers/probe-live.js";
-import { type ProbeTarget, describeDropped, probeTargets } from "./providers/probe-runner.js";
+import {
+  type ProbeSendRefusal,
+  type ProbeTarget,
+  describeDropped,
+  probeSendRefusal,
+  probeTargets,
+} from "./providers/probe-runner.js";
 import {
   BUILTIN_PROVIDERS,
   type ProviderDefinition,
@@ -1583,8 +1591,11 @@ async function printVersion(): Promise<void> {
  * from, so `--probe` shows exactly the chain a request uses: the kept candidates
  * in order, then the candidates the credential, availability and membership
  * filters dropped, each with its outcome. Only kept candidates are probed
- * (`probeTargets`). A native link is never probed: it is served on Claude Code's
- * own auth, which this process cannot forward (`NATIVE_NOT_PROBED`).
+ * (`probeTargets`). A native link is never probed: it is the Claude subscription,
+ * served on Claude Code's own login, which this process cannot forward
+ * (`NATIVE_NOT_PROBED`). A bare Claude name also lists the model's other catalog
+ * routes (the Claude API, gateways, re-serving subscriptions) after it, each
+ * probed and marked `comparison`: a launch of the name never uses them.
  *
  * Two paths:
  * - JSON path (--json): prints the decisions as JSON to stdout
@@ -1626,9 +1637,14 @@ async function probeModelRouting(
     catalog?: RouteExplanation["catalog"];
     catalogSource?: RouteExplanation["catalogSource"];
     fallbackWithheld?: RouteExplanation["fallbackWithheld"];
+    /** A bare Claude name: whether the catalog could be read for its comparison routes. */
+    comparisonCatalog?: RouteExplanation["comparisonCatalog"];
     outcome: RouteExplanation["outcome"];
     warnings: RouteWarning[];
-    /** The kept hops in `route()`'s order; a native target's one not-probed link. `[]` = no route. */
+    /**
+     * The kept hops in `route()`'s order. A native target: the Claude subscription's
+     * not-probed link first, then its comparison links. `[]` = no route.
+     */
     chain: ProbeChainLink[];
     /** Every other candidate, in chain order, with its outcome. Never probed. */
     dropped: ProbeDroppedLink[];
@@ -1670,10 +1686,18 @@ async function probeModelRouting(
    * read again AFTER them, from that hop's own probe result, so its Key line
    * names the login that signed THAT request (or that it was rejected). Both
    * the `--json` and the TUI/printer paths call this once their probes settle.
+   *
+   * A read-at-use key (the Claude API's) is read only when its hop is sent, so
+   * before the send its provenance can say only "not read yet"; read again
+   * after, it names the source and masked value of the key that signed.
    */
   function refreshMuseProvenance(chain: ProbeChainLink[]): void {
     for (const link of chain) {
       if (link.provider === "meta-muse-code") link.provenance = museKeyProvenance(link.probe);
+      else if (link.probe && getProviderByName(link.provider)?.vaultKeyReadAtUse === true) {
+        const provenance = probeCredentials.provenanceFor(link.provider);
+        if (provenance) link.provenance = provenance;
+      }
     }
   }
 
@@ -1723,6 +1747,13 @@ async function probeModelRouting(
         ? resolveCredentialProvenance(provider, keyInfo.envVar, keyInfo.aliases)
         : undefined;
     },
+    searchedFor(provider) {
+      // A read-at-use key (the Claude API's) is found or not at send time, so its
+      // row says where claudish looked when none was there.
+      return getProviderByName(provider)?.vaultKeyReadAtUse === true
+        ? keySourcesSearched().join(", ")
+        : undefined;
+    },
   };
 
   /** One model's decision, its rows, and the hops a probe sends requests down. */
@@ -1737,12 +1768,41 @@ async function probeModelRouting(
 
   /** The routing decision for one model (shared by both paths). */
   async function explainForProbe(modelInput: string): Promise<ModelProbe> {
-    const explanation = await explainRouteSettled(modelInput);
+    const explanation = await explainRouteSettled(modelInput, { comparison: true });
     const { chain, dropped } = probeChainFrom(explanation, probeCredentials);
-    // Both are the kept candidates in chain order, so the i-th target is the
-    // i-th link. A native target has one link and no targets.
-    const targets = probeTargets(explanation).map((target, i) => ({ target, link: chain[i] }));
+    // Targets and probed links are both in chain order, so the i-th target is
+    // the i-th probed link. Paired by POSITION: two hops may share a provider and
+    // a wire id (`or@x#fast`, `or@x`). The Claude subscription's link is never
+    // probed, so it has no target.
+    const probed = chain.filter((link) => !link.notProbed);
+    const targets = probeTargets(explanation).map((target, i) => ({ target, link: probed[i] }));
     return { modelInput, explanation, chain, dropped, targets };
+  }
+
+  /**
+   * Whether a target may be sent: a read-at-use key is read now, and one that
+   * cannot be read, or is not there, refuses the send (`probeSendRefusal`).
+   */
+  async function sendRefusalFor(target: ProbeTarget): Promise<ProbeSendRefusal | null> {
+    const { credentials } = await import("./auth/credentials/authority.js");
+    return probeSendRefusal(target.provider, (name) => credentials.resolveForUse(name));
+  }
+
+  /** A link whose send was refused leaves the chain and joins the dropped rows. */
+  function dropRefusedLink(
+    probe: ModelProbe,
+    link: ProbeChainLink,
+    refusal: ProbeSendRefusal
+  ): ProbeDroppedLink {
+    const hint =
+      refusal.outcome === "no-credential" ? probeCredentials.hintFor(link.provider) : undefined;
+    const entry: ProbeDroppedLink = {
+      ...refusedLinkOf(link, refusal),
+      ...(hint ? { credentialHint: hint } : {}),
+    };
+    probe.chain = probe.chain.filter((l) => l !== link);
+    probe.dropped.push(entry);
+    return entry;
   }
 
   /** One live request down one kept hop. `probeSpec` is final, so no second pinning. */
@@ -1781,6 +1841,7 @@ async function probeModelRouting(
       ...(exp.catalog ? { catalog: exp.catalog } : {}),
       ...(exp.catalogSource ? { catalogSource: exp.catalogSource } : {}),
       ...(exp.fallbackWithheld ? { fallbackWithheld: exp.fallbackWithheld } : {}),
+      ...(exp.comparisonCatalog ? { comparisonCatalog: exp.comparisonCatalog } : {}),
       outcome: exp.outcome,
       warnings: exp.warnings,
       chain: probe.chain,
@@ -1792,13 +1853,14 @@ async function probeModelRouting(
 
   /**
    * Compute wiring for the first kept hop. A native link has none to report: the
-   * native passthrough forwards the request as is, through no adapter.
+   * native passthrough forwards the request as is, through no adapter. A
+   * comparison link is not a hop of the name's route, so it has none either.
    */
   async function computeWiring(
     chain: ProbeChainLink[],
     parsedModel: string
   ): Promise<Wiring | undefined> {
-    const firstReadyRoute = chain.find((c) => c.hasCredentials && !c.notProbed);
+    const firstReadyRoute = chain.find((c) => c.hasCredentials && !c.notProbed && !c.comparison);
     if (!firstReadyRoute) return undefined;
 
     const providerName = firstReadyRoute.provider;
@@ -1930,11 +1992,16 @@ async function probeModelRouting(
         // Kept hops only. Dropped candidates and a native link are never probed.
         if (liveProxy) {
           const url = liveProxy.url;
-          const probes = await Promise.all(
-            probe.targets.map(({ target }) => probeTarget(url, target))
+          const sent = await Promise.all(
+            probe.targets.map(async ({ target }) => {
+              const refusal = await sendRefusalFor(target);
+              return refusal ? { refusal } : { result: await probeTarget(url, target) };
+            })
           );
           probe.targets.forEach(({ link }, i) => {
-            link.probe = probes[i];
+            const outcome = sent[i];
+            if ("result" in outcome) link.probe = outcome.result;
+            else dropRefusedLink(probe, link, outcome.refusal);
           });
         }
         refreshMuseProvenance(probe.chain);
@@ -2041,17 +2108,38 @@ async function probeModelRouting(
     }
     updateStep("Resolving routing chains", "done");
 
-    // Step 3: One row per link, per model: the kept hops (probed when a live
-    // probe runs, otherwise not probed), the native link, then the dropped
-    // candidates. Only the kept hops are ever sent a request.
-    const liveRows: Array<{ id: string; target: ProbeTarget; link: ProbeChainLink }> = [];
+    // Step 3: One row per link, per model, in chain order (the Claude
+    // subscription's link first for a bare Claude name, then its comparison
+    // links), then the dropped candidates. Only the probed links are ever sent a
+    // request; the rest are not probed.
+    const liveRows: Array<{
+      id: string;
+      probe: ModelProbe;
+      target: ProbeTarget;
+      link: ProbeChainLink;
+    }> = [];
     const rows: ProbeLinkState[] = [];
     for (const probe of modelProbes) {
       const model = probe.modelInput;
-      probe.targets.forEach(({ target, link }, i) => {
+      const targetOf = new Map(probe.targets.map(({ target, link }) => [link, target]));
+      probe.chain.forEach((link, i) => {
+        if (link.notProbed) {
+          rows.push({
+            id: `${model}:native`,
+            model,
+            displayName: link.displayName,
+            modelSpec: link.modelSpec,
+            status: "not-probed",
+            tone: "native",
+            note: `◐ ${NATIVE_NOT_PROBED}`,
+          });
+          return;
+        }
+        const target = targetOf.get(link);
+        if (!target) return;
         const id = `${model}:${i}:${target.provider}`;
         if (liveProxy) {
-          liveRows.push({ id, target, link });
+          liveRows.push({ id, probe, target, link });
           rows.push({
             id,
             model,
@@ -2071,18 +2159,6 @@ async function probeModelRouting(
           });
         }
       });
-      for (const link of probe.chain) {
-        if (!link.notProbed) continue;
-        rows.push({
-          id: `${model}:native`,
-          model,
-          displayName: link.displayName,
-          modelSpec: link.modelSpec,
-          status: "not-probed",
-          tone: "native",
-          note: `◐ native — ${NATIVE_NOT_PROBED}`,
-        });
-      }
       probe.dropped.forEach((entry, i) => {
         rows.push({
           id: `${model}:dropped:${i}:${entry.provider}`,
@@ -2091,7 +2167,7 @@ async function probeModelRouting(
           modelSpec: entry.wireId,
           status: "not-probed",
           tone: "dropped",
-          note: `– ${describeDropped(entry.outcome, entry.credentialHint, entry.detail)}`,
+          note: `– ${describeDropped(entry.outcome, entry.credentialHint, entry.detail, entry.searched)}`,
         });
       });
     }
@@ -2102,7 +2178,17 @@ async function probeModelRouting(
     if (liveProxy) {
       const url = liveProxy.url;
       await Promise.all(
-        liveRows.map(async ({ id, target, link }) => {
+        liveRows.map(async ({ id, probe, target, link }) => {
+          const refusal = await sendRefusalFor(target);
+          if (refusal) {
+            const entry = dropRefusedLink(probe, link, refusal);
+            updateLink(id, {
+              status: "not-probed",
+              tone: "dropped",
+              note: `– ${describeDropped(entry.outcome, entry.credentialHint, entry.detail, entry.searched)}`,
+            });
+            return;
+          }
           updateLink(id, { status: "probing", startTime: Date.now() });
           const result = await probeTarget(url, target);
           if (result.state === "live") {

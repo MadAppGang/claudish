@@ -362,8 +362,10 @@ export interface ChainEntry {
   credentialHint?: string;
   provenance?: KeyProvenance;
   probe?: ProbeResult;
-  /** A native link: served on Claude Code's own auth, so it is never probed. */
+  /** A native link: served on Claude Code's own login, so it is never probed. */
   notProbed?: "native-auth";
+  /** A route of a bare Claude name listed for comparison; not used by a launch of the name. */
+  comparison?: true;
 }
 
 /** A candidate the routing chain did not keep. Listed with its outcome, never probed. */
@@ -378,6 +380,10 @@ export interface DroppedEntry {
   detail?: string;
   /** A no-credential candidate whose credential is not an env var (Muse Code). */
   provenance?: KeyProvenance;
+  /** A route of a bare Claude name listed for comparison; not used by a launch of the name. */
+  comparison?: true;
+  /** A no-credential candidate: where claudish looked for its key. */
+  searched?: string;
 }
 
 export interface WiringInfo {
@@ -667,7 +673,7 @@ function buildRowData(result: ModelResult, isLiveProbe: boolean): RowData[] {
         provider: entry.displayName,
         label: entry.label ?? "",
         spec: entry.modelSpec,
-        status: `${pc.cyan}◐ native — not probed${pc.reset}`,
+        status: `${pc.cyan}◐ not probed${pc.reset}`,
         note: NATIVE_NOT_PROBED,
       };
     }
@@ -713,8 +719,16 @@ function buildDroppedRowData(result: ModelResult): RowData[] {
     label: entry.label ?? "",
     spec: entry.wireId,
     status: `${pc.dim}– ${droppedStatus(entry.outcome, entry.detail)}${pc.reset}`,
-    note: droppedRemedy(entry.credentialHint),
+    note: droppedNote(entry),
   }));
+}
+
+/** A dropped row's sub-row: the remedy, then where claudish looked for the key. */
+function droppedNote(entry: DroppedEntry): string | undefined {
+  const remedy = droppedRemedy(entry.credentialHint);
+  if (!entry.searched) return remedy;
+  const looked = `looked in: ${entry.searched}`;
+  return remedy ? `${remedy} (${looked})` : looked;
 }
 
 const COLUMN_HEADERS = ["#", "Provider", "Tier", "Model Spec", "Status"];
@@ -774,7 +788,7 @@ function buildKeyLine(
   droppedProvenance?: KeyProvenance
 ): string {
   if (activeEntry?.notProbed) {
-    return `${pc.bold}Key${pc.reset}  ${pc.dim}Claude Code's own auth (not visible to this process)${pc.reset}`;
+    return `${pc.bold}Key${pc.reset}  ${pc.dim}Claude Code's own login (not visible to this process)${pc.reset}`;
   }
   const provenance = activeEntry?.provenance ?? droppedProvenance;
   if (provenance) {
@@ -830,7 +844,15 @@ interface CardLayout {
 function cardSummary(result: ModelResult): { text: string; color: string } {
   const first = result.chain[0];
   if (!first) return { text: result.routingExplanation || "no route", color: pc.red };
-  if (first.notProbed) return { text: `${first.displayName} · not probed`, color: pc.cyan };
+  if (first.notProbed) {
+    const compared = result.chain.filter((c) => c.comparison);
+    if (compared.length === 0) return { text: `${first.displayName} · not probed`, color: pc.cyan };
+    const live = compared.filter((c) => c.probe?.state === "live").length;
+    return {
+      text: `${first.displayName} · not probed · ${live}/${compared.length} compared live`,
+      color: pc.cyan,
+    };
+  }
   const probed = result.chain.filter((c) => !c.notProbed);
   const live = probed.filter((c) => c.probe?.state === "live").length;
   return {
@@ -850,9 +872,12 @@ function buildCardLayout(
   const titleStyled = `${pc.bold}${pc.cyan}${result.model}${pc.reset}`;
   const summaryStyled = `${summary.color}${summary.text}${pc.reset}`;
 
+  // The route a request takes: a comparison link never is one, so it never
+  // names the Key or Wire line.
+  const routeEntries = result.chain.filter((c) => !c.comparison);
   const activeEntry =
-    result.chain.find((c) => c.probe?.state === "live") ??
-    result.chain.find((c) => c.hasCredentials);
+    routeEntries.find((c) => c.probe?.state === "live") ??
+    routeEntries.find((c) => c.hasCredentials);
 
   // Nothing kept: a dropped no-login candidate whose credential is not an env
   // var (muse@ with no Muse Code login) still names its login state and fix,

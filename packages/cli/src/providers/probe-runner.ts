@@ -1,5 +1,7 @@
+import type { UseResolution } from "../auth/credentials/types.js";
 import { hasProviderPrefix } from "./model-parser.js";
 import { type ProbeLinkInput, type ProbeResult, probeLink } from "./probe-live.js";
+import { getProviderByName } from "./provider-definitions.js";
 import type { CandidateOutcome, ExplainedCandidate, RouteExplanation } from "./routing-rules.js";
 
 // Interactive probes must outlive the slowest legitimate credential path.
@@ -53,15 +55,20 @@ export function droppedStatus(outcome: DroppedOutcome, detail?: string): string 
   return detail ? `${DROPPED_LABEL[outcome]}: ${detail}` : DROPPED_LABEL[outcome];
 }
 
-/** One line for a dropped candidate: its outcome, then the remedy when one is known. */
+/**
+ * One line for a dropped candidate: its outcome, then the remedy when one is
+ * known, then where claudish looked for the key when that was recorded.
+ */
 export function describeDropped(
   outcome: DroppedOutcome,
   credentialHint?: string,
-  detail?: string
+  detail?: string,
+  searched?: string
 ): string {
   const status = droppedStatus(outcome, detail);
   const remedy = droppedRemedy(credentialHint);
-  return remedy ? `${status} · ${remedy}` : status;
+  const line = remedy ? `${status} · ${remedy}` : status;
+  return searched ? `${line} (looked in: ${searched})` : line;
 }
 
 /** One hop a probe sends a request down: a kept candidate and the model spec to send. */
@@ -70,6 +77,11 @@ export type ProbeTarget = ExplainedCandidate & {
   probeSpec: string;
   /** `"routed"` for a hop of a bare name's routing chain; absent for an explicit spec. */
   hopOrigin?: "routed";
+  /**
+   * A route of a bare Claude name listed beside the Claude subscription for
+   * comparison: probed, never a hop a launch of the name uses.
+   */
+  comparison?: true;
 };
 
 /**
@@ -106,7 +118,7 @@ export function probeHopOriginFor(explanation: RouteExplanation): "routed" | und
  */
 export function probeTargets(explanation: RouteExplanation): ProbeTarget[] {
   const hopOrigin = probeHopOriginFor(explanation);
-  return explanation.candidates
+  const hops = explanation.candidates
     .filter((candidate) => candidate.outcome === "kept")
     .map((candidate) => ({
       ...candidate,
@@ -116,6 +128,50 @@ export function probeTargets(explanation: RouteExplanation): ProbeTarget[] {
           : pinProbeModelSpec(candidate),
       ...(hopOrigin ? { hopOrigin } : {}),
     }));
+  // A bare Claude name's other catalog routes, after the hops (a native target
+  // has none). Each is pinned to its own provider and built as a routed hop,
+  // exactly as that provider's hop of a routed chain would be.
+  const compared = (explanation.comparisonCandidates ?? [])
+    .filter((candidate) => candidate.outcome === "kept")
+    .map(
+      (candidate): ProbeTarget => ({
+        ...candidate,
+        probeSpec: pinProbeModelSpec(candidate),
+        hopOrigin: "routed",
+        comparison: true,
+      })
+    );
+  return [...hops, ...compared];
+}
+
+/** Why a probe target was not sent: it became a dropped row instead. */
+export interface ProbeSendRefusal {
+  outcome: "no-credential" | "credential-unreadable";
+  /** `credential-unreadable`: the vault's reason. */
+  detail?: string;
+  /** `no-credential`: where claudish looked, comma-separated. */
+  searched?: string;
+}
+
+/**
+ * Before a probe sends down a hop whose provider reads its vault key only when a
+ * request is signed (`vaultKeyReadAtUse`): read that key now. Readiness found the
+ * key PRESENT without reading it (a Keychain item by enumeration), so the read
+ * can still fail; a failed read becomes a dropped row with the vault's reason,
+ * never a request sent with an empty key. `null`: send. Other providers are not
+ * asked here: their key was read by the credential filter already.
+ */
+export async function probeSendRefusal(
+  provider: string,
+  resolveForUse: (name: string) => Promise<UseResolution>
+): Promise<ProbeSendRefusal | null> {
+  if (getProviderByName(provider)?.vaultKeyReadAtUse !== true) return null;
+  const resolution = await resolveForUse(provider);
+  if (resolution.state === "present") return null;
+  if (resolution.state === "failed") {
+    return { outcome: "credential-unreadable", detail: resolution.reason };
+  }
+  return { outcome: "no-credential", searched: resolution.searched.join(", ") };
 }
 
 export function probeProviderRoute(

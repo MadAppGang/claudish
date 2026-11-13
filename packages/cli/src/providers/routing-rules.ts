@@ -2286,7 +2286,7 @@ export function describeRouteExplanation(explanation: RouteExplanation): string 
 function describeOrigin(explanation: RouteExplanation): string {
   switch (explanation.source) {
     case "native":
-      return "native · Claude Code's own auth · not probed";
+      return describeNativeOrigin(explanation);
     case "explicit": {
       const name = explanation.candidates[0]?.displayName ?? explanation.routedModel;
       return explanation.via === "vendor-qualified-id"
@@ -2300,6 +2300,23 @@ function describeOrigin(explanation: RouteExplanation): string {
     case "catalog":
       return describeCatalogOrigin(explanation);
   }
+}
+
+/**
+ * A native target's line. It names the Claude subscription a launch of the name
+ * uses, and says whether the model's other routes are listed beside it, for
+ * comparison only.
+ */
+function describeNativeOrigin(explanation: RouteExplanation): string {
+  const head = `${explanation.native?.displayName ?? "native"} · Claude Code's own login · not probed`;
+  if (explanation.native?.isTierAlias) return `${head} · probe a concrete id to compare routes`;
+  if (explanation.comparisonCatalog === "unreadable") {
+    return `${head} · catalog unreadable — other routes not listed`;
+  }
+  if (explanation.comparisonCandidates !== undefined) {
+    return `${head} · other routes listed for comparison, not used by a launch of this name`;
+  }
+  return head;
 }
 
 function describeCatalogOrigin(explanation: RouteExplanation): string {

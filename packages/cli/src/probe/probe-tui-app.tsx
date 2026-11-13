@@ -87,10 +87,14 @@ export interface ProbeResultLink {
   /** Why a withheld gateway hop has no wire id. */
   droppedDetail?: string;
   probe?: ProbeResult;
-  /** A native link: served on Claude Code's own auth, so it is never probed. */
+  /** A native link: served on Claude Code's own login, so it is never probed. */
   notProbed?: "native-auth";
+  /** A route of a bare Claude name listed for comparison; not used by a launch of the name. */
+  comparison?: true;
   /** Set on a candidate the routing chain dropped: why. Never probed. */
   dropped?: DroppedOutcome;
+  /** A dropped no-credential row: where claudish looked for its key. */
+  searched?: string;
   /**
    * The Key line of a credential that is not an env var (`keyLineText`):
    * `Muse Code borrowed copy · Muse Code Power Usage  (signed this probe request)`.
@@ -905,11 +909,11 @@ function shortFailureReason(probe: ProbeResult | undefined, hasCreds: boolean): 
  * render time.
  */
 function notProbedRow(link: ProbeResultLink): { mark: string; text: string; fg: string } | null {
-  if (link.notProbed) return { mark: "◐  ", text: `native — ${NATIVE_NOT_PROBED}`, fg: C.cyan };
+  if (link.notProbed) return { mark: "◐  ", text: NATIVE_NOT_PROBED, fg: C.cyan };
   if (link.dropped) {
     return {
       mark: "–  ",
-      text: describeDropped(link.dropped, link.credentialHint, link.droppedDetail),
+      text: describeDropped(link.dropped, link.credentialHint, link.droppedDetail, link.searched),
       fg: C.dim,
     };
   }
@@ -1056,8 +1060,11 @@ function DetailModel({
   maxTokPerSec: number;
   isLast: boolean;
 }) {
-  // Winner = first link that probed live+timed (the route claudish uses).
-  const winnerIdx = result.links.findIndex((l) => l.probe?.state === "live" && !!l.probe.timing);
+  // Winner = first link that probed live+timed (the route claudish uses). A
+  // comparison link is not on that route, so it never wins.
+  const winnerIdx = result.links.findIndex(
+    (l) => !l.comparison && l.probe?.state === "live" && !!l.probe.timing
+  );
   const winner = winnerIdx >= 0 ? result.links[winnerIdx] : undefined;
 
   // Header: bold model name (left) + dim routing explanation (right-aligned so
@@ -1078,7 +1085,7 @@ function DetailModel({
   // Full route: the ordered chain of providers claudish would try — the kept
   // hops only, each with its tier label. Dropped rows are listed above, not here.
   const routeChain = result.links
-    .filter((l) => !l.dropped)
+    .filter((l) => !l.dropped && !l.comparison)
     .map((l) => (l.label ? `${l.displayName} (${l.label})` : l.displayName))
     .join(" → ");
   const liveLinks = result.links.filter((l) => l.probe?.state === "live" && !!l.probe.timing);

@@ -32,7 +32,6 @@
 
 import { claudeCodeTierAlias, normalizeNativeModelSpec } from "./claude-code-aliases.js";
 import { parseModelChain, parseModelSpec } from "./model-parser.js";
-import { getProviderByName } from "./provider-definitions.js";
 import { WireMarkerError, splitWireMarkers } from "./wire-markers.js";
 
 export interface NativeRoute {
@@ -79,6 +78,9 @@ export type ProxyRouteDecision =
   /** `route()` decides. `model` is the parsed name: a known `vendor/` is stripped. */
   | { type: "bare"; model: string };
 
+/** The user-facing name of the native passthrough: the user's own Claude Code login. */
+export const CLAUDE_SUBSCRIPTION_LABEL = "Claude subscription";
+
 /**
  * What every surface says about a native link instead of a probe result: `--probe`,
  * the MCP preflight and the config TUI's route probe.
@@ -86,12 +88,13 @@ export type ProxyRouteDecision =
  * A native link is never probed. The native handler authenticates by forwarding
  * the INBOUND request's Claude Code header, and a synthetic request from this
  * process carries none, so its answer is noise: "x-api-key header is required"
- * for a healthy model and a typo alike. Substituting `ANTHROPIC_API_KEY` probes a
- * different credential from the one a session uses. So it is a third outcome,
- * neither live nor failed.
+ * for a healthy model and a typo alike. Signing it with `ANTHROPIC_API_KEY` would
+ * probe a different route: that is the Claude API (`anthropic@<id>`), which
+ * `--probe` lists and probes as its own row. So the Claude subscription is a third
+ * outcome, neither live nor failed.
  */
 export const NATIVE_NOT_PROBED =
-  "not probed — served on Claude Code's own auth, which this process cannot forward";
+  "not probed — the Claude subscription is served on Claude Code's own login, which this process cannot forward";
 
 /** The prefix the proxy's `isPoeModel` tests, case-sensitively, as it always has. */
 const POE_PREFIX = "poe:";
@@ -158,7 +161,7 @@ function nativeRouteOf(model: string): NativeRoute {
   return {
     provider: "native-anthropic",
     modelSpec: normalizeNativeModelSpec(model),
-    displayName: getProviderByName("native-anthropic")?.displayName ?? "Anthropic (Native)",
+    displayName: CLAUDE_SUBSCRIPTION_LABEL,
     isTierAlias: claudeCodeTierAlias(model) !== null,
   };
 }

@@ -252,11 +252,16 @@ and an explicit target is a one-item chain), `dropped[]` lists every other candi
 outcome, and only kept candidates are probed (`probeTargets`, `providers/probe-runner.ts`).
 Three consequences to know before reading its output:
 
-- **A native name is one link, never probed** (`notProbed: "native-auth"`,
-  `NATIVE_NOT_PROBED`). The native handler forwards the inbound Claude Code header, which a
-  probe from this process does not have; substituting `ANTHROPIC_API_KEY` tested a different
-  credential from the one a session uses. Why no Claude API row appeared beside it: [A Claude
-  model has two routes](#a-claude-model-has-two-routes-claude-subscription-and-claude-api).
+- **A native name's first link is the Claude subscription, never probed**
+  (`notProbed: "native-auth"`, `NATIVE_NOT_PROBED`). The native handler forwards the inbound
+  Claude Code header, which a probe from this process does not have; signing it with
+  `ANTHROPIC_API_KEY` would test the Claude API, a different route. The model's other catalog
+  routes follow it as links marked `comparison: true` (the Claude API among them), each probed;
+  `chain[0]` stays the route a launch takes, and a comparison link never names the Key or Wire
+  line. A Claude API key the Keychain holds is read only when its row is sent
+  (`probeSendRefusal`); a read that fails makes the row dropped with the vault's reason, never a
+  request sent without a key, and `--no-probe` reads no value at all. See [A Claude model has
+  two routes](#a-claude-model-has-two-routes-claude-subscription-and-claude-api).
 - **`--no-probe` still asks providers.** The availability filter is part of `route()`, so an
   account's dynamic models catalog is read for each credentialed candidate that declares
   discovery (the account's stored list; only a list at most five minutes old may deny).
