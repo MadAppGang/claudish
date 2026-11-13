@@ -43,14 +43,22 @@ const NO_EFFORT_FALLBACK_LEVEL: ModelIdEffortLevel = "medium";
  * - `catalog default`: no effort; the recommended-effort table's `default`
  *   cell for this connection gave the level;
  * - `medium fallback`: no effort and no usable `default` cell;
- * - `exact id`: the requested id, sent unchanged;
- * - `no map`: no map decided; the provider's existing resolution chose the id.
+ * - `exact id`: a requested id that is not a mapped base, sent unchanged;
+ * - `served base`: a mapped base requested with no effort, sent unchanged
+ *   because the account's dynamic models catalog lists the base itself;
+ * - `map id not usable`: the connection publishes a map for the requested base,
+ *   but the map's id for the level cannot be sent; the provider's existing
+ *   resolution chose the id;
+ * - `no map`: the connection publishes no map for the requested base; the
+ *   provider's existing resolution chose the id.
  */
 export type ModelIdSource =
   | "request"
   | "catalog default"
   | "medium fallback"
   | "exact id"
+  | "served base"
+  | "map id not usable"
   | "no map";
 
 /** The id one request is sent as, the effort level the choice used, and its source. */
@@ -59,6 +67,30 @@ export interface ModelIdChoice {
   /** The level the choice used; undefined when the id depended on none. */
   effort: EffortLevel | undefined;
   source: ModelIdSource;
+}
+
+/**
+ * What a connection's effort map decided for one request: the id it chose, or,
+ * when the map's id for the level cannot be sent, the level the lookup used.
+ */
+export type ConnectionMapDecision =
+  | { usable: true; choice: ModelIdChoice }
+  | { usable: false; effort: EffortLevel };
+
+/**
+ * The choice for an id the provider's existing resolution chose because no map
+ * id was sent: `map id not usable` at the map lookup's level when the
+ * connection publishes a map (`unusable`), else `no map` at the request's own
+ * `effort`.
+ */
+export function existingResolutionChoice(
+  id: string,
+  effort: EffortLevel | undefined,
+  unusable: Extract<ConnectionMapDecision, { usable: false }> | undefined
+): ModelIdChoice {
+  return unusable
+    ? { id, effort: unusable.effort, source: "map id not usable" }
+    : { id, effort, source: "no map" };
 }
 
 /**
@@ -116,20 +148,23 @@ function noEffortLevel(found: ModelIdEffortConnection): {
 }
 
 /**
- * The wire id the effort map of `requested`'s own connection on `provider`
- * chooses at `effort`, with the level it used and that level's source, or
- * undefined when no map applies or the map's id is not sendable, and the
- * provider's existing resolution decides.
+ * What the effort map of `requested`'s own connection on `provider` decides at
+ * `effort`: the wire id with the level it used and that level's source, or the
+ * level alone when the map's id for it is not sendable. Undefined when the
+ * connection publishes no map for `requested`. In both non-chosen cases the
+ * provider's existing resolution decides the id.
  */
 export function chooseConnectionModelId(
   requested: string,
   provider: string,
   effort: EffortLevel | undefined,
   account: ModelIdEffortProvider
-): ModelIdChoice | undefined {
+): ConnectionMapDecision | undefined {
   const found = findModelIdEffortConnection(requested, provider);
   if (!found) return undefined;
   const decided = effort ? { level: effort, source: "request" as const } : noEffortLevel(found);
   const id = chooseModelIdForEffort(found.map, decided.level, account);
-  return id ? { id, effort: decided.level, source: decided.source } : undefined;
+  return id
+    ? { usable: true, choice: { id, effort: decided.level, source: decided.source } }
+    : { usable: false, effort: decided.level };
 }

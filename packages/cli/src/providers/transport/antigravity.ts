@@ -274,8 +274,10 @@ export class AntigravityProviderTransport implements ProviderTransport {
   private lastPayload: unknown = null;
 
   /**
-   * What decided that envelope's model id. A capacity retry's debug line names
-   * its own id with this level and source.
+   * What decided that envelope's model id, handed to the next request only:
+   * `enqueueRequest` takes it before its first await and carries it through
+   * that request's capacity retry, so a later `transformPayload` cannot change
+   * the level and source an earlier request's retry line names.
    */
   private lastChoice: ModelIdChoice | undefined;
 
@@ -561,6 +563,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
   ): Promise<Response> {
     const queue = GeminiRequestQueue.getInstance();
     const signal = opts?.signal;
+    // This request's own choice, taken before any await: a request transformed
+    // while this one waits overwrites the field, never this copy.
+    const choice = this.lastChoice;
     // Only this request's capacity retry may set it again.
     this._activeModelName = undefined;
 
@@ -592,7 +597,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
       );
 
       if (classification.reason === "MODEL_CAPACITY_EXHAUSTED") {
-        return this.handleCapacityExhausted(response, queue, signal);
+        return this.handleCapacityExhausted(response, queue, choice, signal);
       }
 
       if (classification.terminal) {
@@ -627,11 +632,13 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * left, the original capacity failure is returned. Each
    * candidate's body is shaped from the original dialect payload by the id it
    * sends (`antigravityBodyForModelId`). A candidate that 404s (briefly unserved mid-tier-roll) or rate-limits is
-   * skipped.
+   * skipped. Each candidate's debug line names its id with `choice`, the level
+   * and source of the request being retried.
    */
   private async handleCapacityExhausted(
     originalResponse: Response,
     queue: GeminiRequestQueue,
+    choice: ModelIdChoice | undefined,
     signal?: AbortSignal
   ): Promise<Response> {
     const excluded = this.served.excludedIds;
@@ -669,9 +676,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
       // aborted through the signal on its own fetch.
       if (signal?.aborted) throw callAbortError();
       log(`[Antigravity] Trying fallback model: ${fallbackModel}`);
-      if (this.lastChoice) {
-        logModelIdChoice("Antigravity", this.modelName, { ...this.lastChoice, id: fallbackModel });
-      }
+      if (choice) logModelIdChoice("Antigravity", this.modelName, { ...choice, id: fallbackModel });
       tried.push(fallbackModel);
 
       const fallbackEnvelope = this.buildEnvelope(
