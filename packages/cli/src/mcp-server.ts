@@ -670,6 +670,21 @@ export function effortClarification(
 }
 
 /**
+ * The caller's strings, as given, whose spec after the provider strip is not a
+ * native Claude name: `given[i]` is kept when `stripped[i]` is not native. The
+ * strip can turn an unrequested `anthropic@claude-haiku-5-5` into the bare native
+ * name, which runs on Claude Code's own login and ignores the effort, so asking
+ * for one would stop the call for nothing. Keys stay the caller's own strings,
+ * as `efforts` keys must read.
+ */
+export function givenWhereNotNative(
+  given: readonly string[],
+  stripped: readonly string[]
+): string[] {
+  return given.filter((_, i) => nativeRouteFor(stripped[i] ?? given[i]) === null);
+}
+
+/**
  * The answer that stops a call made with no effort: the caller knows its task,
  * so it picks the column and calls again. Starts nothing.
  */
@@ -1737,9 +1752,12 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
           "with user_required_model: true"
         );
         if (choice) return choice;
-        // Keyed as the caller wrote the model, like team's 'efforts' keys.
+        // Keyed as the caller wrote the model, like team's 'efforts' keys, and
+        // asked only when the spec that will run is not native.
         const recommended =
-          args.effort === undefined ? effortClarification([args.model as string]) : undefined;
+          args.effort === undefined
+            ? effortClarification(givenWhereNotNative([args.model as string], specs))
+            : undefined;
         if (recommended) {
           return needsEffortResult(
             recommended,
@@ -2543,7 +2561,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
 
         if (runsModels && givenModels && args.efforts === undefined) {
           // Keyed as the caller wrote the models: that is how 'efforts' keys must read.
-          const recommended = effortClarification(givenModels);
+          const recommended = effortClarification(
+            givenWhereNotNative(givenModels, models ?? givenModels)
+          );
           if (recommended) {
             return needsEffortResult(
               recommended,
@@ -3047,7 +3067,9 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         );
         if (choice) return choice;
         const recommended =
-          args.effort === undefined ? effortClarification([args.model as string]) : undefined;
+          args.effort === undefined
+            ? effortClarification(givenWhereNotNative([args.model as string], [requestedModel]))
+            : undefined;
         if (recommended) {
           return needsEffortResult(
             recommended,
