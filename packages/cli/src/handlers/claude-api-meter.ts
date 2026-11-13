@@ -52,6 +52,16 @@ export function claudeApiContextWindow(name: string): number {
   return ownConnection(entry, CLAUDE_API_PROVIDER, name)?.contextWindow ?? entry.contextWindow ?? 0;
 }
 
+/** True when a response reported any token count. */
+function reportsTokens(u: NonNullable<ClaudeApiTurn["usage"]>): boolean {
+  return [
+    u.input_tokens,
+    u.output_tokens,
+    u.cache_read_input_tokens,
+    u.cache_creation_input_tokens,
+  ].some((n) => typeof n === "number" && n > 0);
+}
+
 /** One model's running totals, as its stats rows carry them. */
 interface ModelTotals {
   /** The latest request's billed input, as `TokenTracker.update` keeps it. */
@@ -116,9 +126,11 @@ export function createClaudeApiMeter(opts: {
       }
       const ok =
         turn.error === undefined && turn.streamErrorType === undefined && isSuccess(turn.status);
-      // Anthropic bills the tokens a response reported, a cancelled stream's
-      // included; a failed request reports none and changes no counter.
-      if (ok && turn.usage) {
+      // Anthropic bills the tokens a response reported, whatever became of the
+      // request: a cancelled stream's, and a stream that failed after
+      // `message_start`, are counted, while the event keeps the failed status.
+      // A request that reported no usage changes no counter.
+      if (turn.usage && reportsTokens(turn.usage)) {
         const u = turn.usage;
         const cacheRead = u.cache_read_input_tokens ?? 0;
         const cacheCreation = u.cache_creation_input_tokens ?? 0;
