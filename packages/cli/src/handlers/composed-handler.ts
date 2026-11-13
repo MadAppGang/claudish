@@ -2636,8 +2636,8 @@ export class ComposedHandler implements ModelHandler {
     if (episodeCount() > 0) noteTargetReachable(this.provider.name, endpoint);
 
     // Check if the transport fell back to a different model (e.g., capacity exhaustion)
-    if (this.provider.getActiveModelName?.()) {
-      const activeModel = this.provider.getActiveModelName()!;
+    const activeModel = this.provider.getActiveModelName?.(providerRequest);
+    if (activeModel) {
       this.tokenTracker.setActiveModelName(activeModel);
       log(`[ComposedHandler] Transport fell back to model: ${activeModel}`);
     }

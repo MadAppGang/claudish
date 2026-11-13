@@ -250,6 +250,8 @@ interface AntigravityRequestState {
   sentId: string;
   /** What decided that id; names the level and source on each retry's line. */
   choice: ModelIdChoice | undefined;
+  /** The capacity-retry id that served this request, when one did. */
+  activeModelName?: string;
 }
 
 export class AntigravityProviderTransport implements ProviderTransport {
@@ -290,13 +292,6 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   private lastRequest: AntigravityRequestState | undefined;
 
-  /**
-   * The capacity-retry id that served the current request, when one did.
-   * Cleared as each request starts, so a request served on its primary id
-   * never reports an earlier request's retry.
-   */
-  private _activeModelName: string | undefined;
-
   /** The `--effort` level, which outranks the level each Claude request carries. */
   private pinnedEffort: EffortLevel | undefined;
 
@@ -324,8 +319,13 @@ export class AntigravityProviderTransport implements ProviderTransport {
     this.servedModelName = modelName;
   }
 
-  getActiveModelName(): string | undefined {
-    return this._activeModelName;
+  /**
+   * The capacity-retry id that served `request` (the value `transformPayload`
+   * returned for it), or `undefined` when its primary id served it. Without a
+   * request it names, the most recent transform's.
+   */
+  getActiveModelName(request?: unknown): string | undefined {
+    return this.requestState(request)?.activeModelName;
   }
 
   /**
@@ -579,7 +579,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
     const state = this.requestState(opts?.request);
     const sentId = state?.sentId ?? this.servedModelName;
     // Only this request's capacity retry may set it again.
-    this._activeModelName = undefined;
+    if (state) state.activeModelName = undefined;
 
     let lastResponse: Response | null = null;
     for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
@@ -719,7 +719,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
       );
 
       if (fallbackResponse.status === 200) {
-        this._activeModelName = fallbackModel;
+        request.activeModelName = fallbackModel;
         logStderr(
           `[Antigravity] Using fallback model: ${fallbackModel} (${sentId} had no capacity)`
         );

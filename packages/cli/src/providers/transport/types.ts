@@ -345,8 +345,10 @@ export interface ProviderTransport {
    * Active model name after fallback (e.g., capacity exhaustion triggered a model switch).
    * If set, the composed handler writes this to the token file so the status line
    * shows the actual model being used, not the originally requested one.
+   * `request` is the value `transformPayload` returned for the request asked
+   * about; a transport that keeps per-request state answers for that request.
    */
-  getActiveModelName?(): string | undefined;
+  getActiveModelName?(request?: unknown): string | undefined;
 
   /**
    * Get quota remaining fraction (0-1) for a specific model.
