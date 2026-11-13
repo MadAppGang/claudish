@@ -259,16 +259,21 @@ export class NativeHandler implements ModelHandler {
 
     // Execute fetch
     const startedAt = performance.now();
+    // Each request is metered once; the outer catch meters only what no
+    // response path did.
+    let metered = false;
     const meterTurn = (
       status: number,
       rest: Omit<ClaudeApiTurn, "model" | "status" | "latencyMs">
-    ) =>
+    ) => {
+      metered = true;
       meter?.record({
         model: target,
         status,
         latencyMs: performance.now() - startedAt,
         ...rest,
       });
+    };
     try {
       const anthropicResponse = await fetch(url, {
         method: "POST",
@@ -428,7 +433,16 @@ export class NativeHandler implements ModelHandler {
       // request's credential, so it is redacted before it is logged or returned;
       // a success body is parsed exactly as it arrived.
       const raw = await anthropicResponse.text();
-      const data = JSON.parse(anthropicResponse.ok ? raw : redactForClient(raw));
+      // biome-ignore lint/suspicious/noExplicitAny: the Messages API response is untyped at this layer
+      let data: any;
+      try {
+        data = JSON.parse(anthropicResponse.ok ? raw : redactForClient(raw));
+      } catch (parseError) {
+        // A body that is not JSON (a gateway's HTML 502 page) keeps the status
+        // that came with it.
+        meterTurn(anthropicResponse.status, { error: parseError });
+        throw parseError;
+      }
       meterTurn(anthropicResponse.status, anthropicResponse.ok ? { usage: data?.usage } : {});
       log("\n=== [NATIVE] Response ===");
       log(JSON.stringify(data, null, 2));
@@ -445,7 +459,7 @@ export class NativeHandler implements ModelHandler {
     } catch (error) {
       const message = redactForClient(String(error));
       log(`[Native] Fetch Error: ${message}`);
-      meterTurn(0, { error });
+      if (!metered) meterTurn(0, { error });
       return c.json(wrapAnthropicError(500, message), 500);
     }
   }
