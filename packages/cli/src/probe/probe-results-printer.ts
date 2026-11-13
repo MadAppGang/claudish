@@ -40,6 +40,7 @@ import {
   timelineBarCells,
   tokBarCells,
 } from "../tui/theme.js";
+import { leaderboardRows } from "./leaderboard-rows.js";
 
 interface PrinterColors {
   reset: string;
@@ -1106,41 +1107,10 @@ function renderLegend(w: Writer): void {
 
 // ── Leaderboard ────────────────────────────────────────────────────
 //
-// One row per MODEL, comparing the route claudish would actually take (the
-// representative entry — first chain link that came back live+timed, or the
-// direct probe). Sorted fastest→slowest by totalMs on a SHARED-SCALE timeline
-// bar so models read one-to-one at a glance. Rendered as a borderless section
-// above the detailed cards. No per-row bg slab — rank + bar length carry order.
-
-interface LeaderRow {
-  model: string;
-  /** Representative provider's display name (the route that would be used). */
-  provider: string;
-  /** Live+timed timing for the representative entry; undefined = unavailable. */
-  timing?: ProbeTiming;
-  /** Why an unavailable row has no timing: `no live route`, `not probed (native)`, `no route`. */
-  missing?: string;
-}
-
-/**
- * Pick the representative entry for a model: the first chain link that probed
- * live AND carried timing (the route claudish would actually use). A model with
- * none is listed dim, under its first kept hop — or, with no hop at all, under
- * the explanation line. Never under the parser's provider (`auto-route`).
- */
-function pickRepresentative(result: ModelResult): LeaderRow {
-  for (const entry of result.chain ?? []) {
-    if (entry.probe?.state === "live" && entry.probe.timing) {
-      return { model: result.model, provider: entry.displayName, timing: entry.probe.timing };
-    }
-  }
-  const first = result.chain?.[0];
-  return {
-    model: result.model,
-    provider: first?.displayName ?? result.routingExplanation,
-    missing: first?.notProbed ? "not probed (native)" : first ? "no live route" : "no route",
-  };
-}
+// One row per live, timed ROUTE (`leaderboardRows`), so the routes of one model
+// sit beside each other. Sorted fastest→slowest by totalMs on a SHARED-SCALE
+// timeline bar. Rendered as a borderless section above the detailed cards. No
+// per-row bg slab — rank + bar length carry order.
 
 /**
  * Render the leaderboard section: title, column header, one aligned row per
@@ -1160,10 +1130,15 @@ function renderLeaderboard(
   maxWidth: number,
   w: Writer
 ): void {
-  const reps = results.map(pickRepresentative);
-  const live = reps.filter((r) => r.timing).sort((a, b) => a.timing!.totalMs - b.timing!.totalMs);
-  const unavailable = reps.filter((r) => !r.timing);
+  const { ranked: live, unranked: unavailable } = leaderboardRows(
+    results.map((r) => ({
+      model: r.model,
+      links: r.chain ?? [],
+      emptyLabel: r.routingExplanation,
+    }))
+  );
   if (live.length === 0) return; // nothing to rank
+  const reps = [...live, ...unavailable];
 
   // Name column: widest model name (clamped so a single long name can't blow
   // out the row). All rows share it so the bars start at the same x.
@@ -1171,10 +1146,9 @@ function renderLeaderboard(
   const rawNameW = Math.max(5, ...allNames.map((n) => n.length));
   const nameW = Math.min(rawNameW, 28);
 
-  // Provider column: the route claudish would actually take for each model
-  // (the representative entry's display name). Dim, sits between the name and
-  // the timeline bar so you can read "which model, via which provider" at a
-  // glance. Clamped like the name column. The literal "PROVIDER" header sets a
+  // Provider column: each row's route (its link's display name). Dim, sits
+  // between the name and the timeline bar so you can read "which model, via
+  // which provider" at a glance. Clamped like the name column. The literal "PROVIDER" header sets a
   // 8-char floor so the column never narrower than its own label.
   const allProviders = reps.map((r) => r.provider);
   const rawProvW = Math.max(8, ...allProviders.map((p) => p.length));
@@ -1217,7 +1191,7 @@ function renderLeaderboard(
 
   // ── Title ──
   w(
-    `${margin}${pc.bold}${pc.cyan}Leaderboard${pc.reset}${pc.dim} — fastest model first${pc.reset}\n`
+    `${margin}${pc.bold}${pc.cyan}Leaderboard${pc.reset}${pc.dim} — fastest route first${pc.reset}\n`
   );
 
   // ── Column header (dim), aligned to the data rows. The data-row lead-in is
@@ -1288,7 +1262,7 @@ function renderLeaderboard(
     );
   });
 
-  // ── Unavailable models — dim, no bar. Keep the provider column aligned with
+  // ── Unranked rows — dim, no bar. Keep the provider column aligned with
   //    the live rows so the table reads as one block. ──
   for (const row of unavailable) {
     const rankStr = " ".repeat(rankW);

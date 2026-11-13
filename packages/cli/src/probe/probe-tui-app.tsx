@@ -38,6 +38,7 @@ import {
   tokBarCells,
 } from "../tui/theme.js";
 import { VERSION } from "../version.js";
+import { type LeaderboardRow, leaderboardRows } from "./leaderboard-rows.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -1288,35 +1289,23 @@ function DetailsView({
 // SAME layout + module constants as the Details tab so the two tabs line up.
 // NO full-row bg slab — rank order + bar length carry the ranking.
 
-interface LeaderRowData {
-  model: string;
-  /** Representative provider's display name (the route that would be used). */
-  provider: string;
-  /** Live+timed timing for the representative; undefined = no live route. */
-  timing?: ProbeTiming;
-  /** Why an unavailable row has no timing: `no live route`, `not probed (native)`, `no route`. */
-  missing?: string;
-}
+type LeaderRowData = LeaderboardRow;
 
 /**
- * Representative entry for a model: the first link that probed live AND carried
- * timing (the route claudish would actually use). An explicit target is a
- * one-item chain, so iterating the links is the whole story. A model with none
- * is listed under its first kept hop — or, with no hop at all, under the
- * explanation line. Never under the parser's provider (`auto-route`).
+ * The Leaderboard's rows (`leaderboardRows`): one per live, timed route, the
+ * dropped rows left out, since they are not routes a request takes.
  */
-function pickRepresentativeLink(result: ProbeModelResult): LeaderRowData {
-  for (const link of result.links) {
-    if (link.probe?.state === "live" && link.probe.timing) {
-      return { model: result.model, provider: link.displayName, timing: link.probe.timing };
-    }
-  }
-  const first = result.links.find((link) => !link.dropped);
-  return {
-    model: result.model,
-    provider: first?.displayName ?? result.routingExplanation,
-    missing: first?.notProbed ? "not probed (native)" : first ? "no live route" : "no route",
-  };
+function leaderRowsOf(results: ProbeModelResult[]): {
+  ranked: LeaderRowData[];
+  unranked: LeaderRowData[];
+} {
+  return leaderboardRows(
+    results.map((result) => ({
+      model: result.model,
+      links: result.links.filter((link) => !link.dropped),
+      emptyLabel: result.routingExplanation,
+    }))
+  );
 }
 
 /** One leaderboard data row (a live, timed representative). */
@@ -1438,9 +1427,8 @@ function LeaderboardView({
   maxTotalMs: number;
   maxTokPerSec: number;
 }) {
-  const reps = results.map(pickRepresentativeLink);
-  const live = reps.filter((r) => r.timing).sort((a, b) => a.timing!.totalMs - b.timing!.totalMs);
-  const unavailable = reps.filter((r) => !r.timing);
+  const { ranked: live, unranked: unavailable } = leaderRowsOf(results);
+  const reps = [...live, ...unavailable];
 
   // Name + provider columns: widest entry, clamped (mirrors renderLeaderboard's
   // min(28) / min(max(8,…),18)). Shared across all rows so bars start at one x.
@@ -1460,7 +1448,7 @@ function LeaderboardView({
         <span fg={C.cyan} attributes={A.bold}>
           {"Leaderboard"}
         </span>
-        <span fg={C.dim}>{" — fastest first"}</span>
+        <span fg={C.dim}>{" — fastest route first"}</span>
       </text>
       {/* Column header (dim) */}
       <text>
@@ -1495,7 +1483,7 @@ function LeaderboardView({
       {/* Live rows — fastest first */}
       {live.map((row, idx) => (
         <LeaderLiveRow
-          key={`lb:${row.model}`}
+          key={`lb:${row.model}:${row.provider}:${idx}`}
           row={row}
           rank={idx + 1}
           isFastest={idx === 0}
@@ -1508,8 +1496,8 @@ function LeaderboardView({
         />
       ))}
       {/* Unavailable models — dim, no bar. Provider column kept aligned. */}
-      {unavailable.map((row) => (
-        <text key={`lb-na:${row.model}`}>
+      {unavailable.map((row, idx) => (
+        <text key={`lb-na:${row.model}:${row.provider}:${idx}`}>
           <span fg={C.dim}>{`  ${" ".repeat(rankW)}   `}</span>
           <span fg={C.dim}>{padEndSafe(row.model, nameW)}</span>
           <span fg={C.dim}> </span>
