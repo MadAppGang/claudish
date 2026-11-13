@@ -513,9 +513,13 @@ both startup planning and the proxy call it, so the plan and the call agree:
 | Signing | Key arm | A Claude member with no login |
 |---|---|---|
 | `inbound` | `"lookup"` | steps 2-4 above, as before |
-| `inbound` on a launch with no main model (plain `--monitor`, `--advisor` alone) and no API-billing opt-in (`advisorKeyLookupAllowed`, `launcher/claude-launch.ts`) | `"request-key"` | step 2 only: the request's own `x-api-key`, never `ANTHROPIC_API_KEY`; startup refuses a member that would need the key (`claude-no-credential`) |
-| `login-only` (the Claude subscription) | `"off"` | no key is read: `{arm: null}`, "Claude subscription session: the advisor signs only with Claude Code's login, never an API key"; startup refuses such a member with cause `claude-no-credential` |
+| `inbound` on a launch with no main model (plain `--monitor`, `--advisor` alone) and no API-billing opt-in (`advisorKeyLookupAllowed`, `launcher/claude-launch.ts`) | `"request-key"` | step 2 only: claudish never looks up `ANTHROPIC_API_KEY`; only the credential Claude Code itself sent (its `x-api-key`, which a settings layer may have given it) can sign; startup refuses a member that would need the key (`claude-no-credential`) |
+| `login-only` (the Claude subscription: a Claude main model or tier without the opt-in, a `claude@` tier, a pinned pane child; `launchSigningFor`) | `"off"` | no key is read: `{arm: null}`, "Claude subscription session: the advisor signs only with Claude Code's login, never an API key"; startup refuses such a member with cause `claude-no-credential` |
 | `launch-key` (the Claude API launch) | `{launchKey}` | the launch's own key, never an inbound one and never a second lookup; planned as `claude-native` with `apiKeySource: "claude-api-launch-key"`, and the notice names "the Claude API launch's key" |
+
+The `claude-native` plan carries the arm as a label (`keyFallback`: `none`, `request-key`,
+`lookup`, `launch-key`), and the startup notice names what signs a request with no login from it:
+nothing for `"off"`, the request's `x-api-key` and never `ANTHROPIC_API_KEY` for `"request-key"`.
 
 Startup reads the LAUNCH's signing (`evaluateAdvisorStartup(…, {launchSigning})`, from
 `prepareClaudeLaunch`, which `index.ts` runs before the advisor check). Without it a Claude API
