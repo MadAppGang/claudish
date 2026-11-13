@@ -32,6 +32,7 @@ import {
   routeOwnership,
 } from "./route-candidates.js";
 import { buildCatalogChain, route } from "./routing-rules.js";
+import { catalogEntry, connection, effortMap } from "./test-helpers/model-id-effort.js";
 
 const GENERATION = "g-20260921062451697-f490edba";
 
@@ -453,6 +454,58 @@ describe("the subscription band", () => {
         "aa-gateway",
       ]);
     }
+  });
+});
+
+describe("exact effort-map wire ids in default candidate gathering", () => {
+  const base = "example-model";
+  const low = `${base}-low`;
+  const googleBase = "example-google-base";
+
+  function withEffortCatalog(run: (path: string) => void): void {
+    const dir = mkdtempSync(join(tmpdir(), "claudish-candidate-effort-"));
+    const path = join(dir, "all-models.json");
+    try {
+      writeAllModelsCache(
+        {
+          catalogGenerationId: "candidate-effort-test-data",
+          version: 3,
+          lastUpdated: new Date().toISOString(),
+          entries: [
+            catalogEntry(
+              base,
+              [
+                connection("antigravity", base, effortMap({ low })),
+                connection("google", googleBase),
+              ],
+              [low]
+            ),
+          ],
+          models: [],
+          plans: [],
+        },
+        path
+      );
+      run(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("keeps Antigravity's exact effort-map id and Google's base id", () => {
+    withEffortCatalog((path) => {
+      const candidates = gatherRouteCandidates(low, path).candidates;
+      expect(candidates.find(({ provider }) => provider === "google")?.wireId).toBe(googleBase);
+      expect(candidates.find(({ provider }) => provider === "antigravity")?.wireId).toBe(low);
+    });
+  });
+
+  test("keeps the base wire ids when gathering the base name", () => {
+    withEffortCatalog((path) => {
+      const candidates = gatherRouteCandidates(base, path).candidates;
+      expect(candidates.find(({ provider }) => provider === "google")?.wireId).toBe(googleBase);
+      expect(candidates.find(({ provider }) => provider === "antigravity")?.wireId).toBe(base);
+    });
   });
 });
 

@@ -63,6 +63,7 @@ import {
   validateRoutingRulesAgainstProviders,
 } from "./routing-rules.js";
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
+import { catalogEntry, connection, effortMap } from "./test-helpers/model-id-effort.js";
 
 const keychainGuardAtFileLoad = process.env.CLAUDISH_DISABLE_KEYCHAIN;
 const SYNTHETIC_MODEL_ID = "acme-x1.0";
@@ -506,6 +507,57 @@ describe("buildRoutingChain", () => {
     expect(routes[0].provider).toBe("google");
     // PROVIDER_TO_PREFIX["google"] = "g"
     expect(routes[0].modelSpec).toBe("g@gemini-2.5-pro");
+  });
+});
+
+describe("provider-only rules with exact effort-map wire ids", () => {
+  const base = "example-model";
+  const low = `${base}-low`;
+  const planId = "antigravity-test-plan";
+  let dir: string;
+  let path: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudish-provider-rule-effort-"));
+    path = join(dir, "all-models.json");
+    const entry = {
+      ...catalogEntry(base, [connection("antigravity", base, effortMap({ low }))], [low]),
+      subscriptionPlanIds: [planId],
+    };
+    writeAllModelsCache(
+      {
+        catalogGenerationId: "provider-rule-effort-test-data",
+        version: 3,
+        lastUpdated: new Date().toISOString(),
+        entries: [entry],
+        models: [],
+        plans: [
+          {
+            id: planId,
+            modelDiscovery: "catalog",
+            routeStatus: "supported",
+            route: catalogRouteForProvider("antigravity"),
+          },
+        ],
+      },
+      path
+    );
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("keeps the exact Antigravity effort-map id on a provider-only rule", () => {
+    expect(buildRoutingChain(["antigravity"], low, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${low}` },
+    ]);
+  });
+
+  test("keeps the base wire id on the same provider-only rule", () => {
+    expect(buildRoutingChain(["antigravity"], base, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${base}` },
+    ]);
   });
 });
 
