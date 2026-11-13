@@ -22,6 +22,7 @@ routing:
   - 'packages/cli/src/model-loader.ts'
   - 'packages/cli/src/default-provider.ts'
   - 'packages/cli/src/recommended-listing.ts'
+  - 'packages/cli/src/services/pricing-cache.ts'
   - 'packages/cli/src/handlers/handler-set.ts'
   - 'packages/cli/src/handlers/bundled-tagged-cache.ts'
   - 'packages/cli/src/launcher/catalog-warm.ts'

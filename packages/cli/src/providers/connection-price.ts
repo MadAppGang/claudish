@@ -35,6 +35,7 @@
  * price. Numbers read under a guessed type are worse than no numbers.
  */
 
+import type { ModelPricing } from "../handlers/shared/remote-provider-types.js";
 import type { AggregatorEntry } from "../model-loader.js";
 
 /** A connection's price reduced to one number that can be ordered, plus what to show a user. */
@@ -178,6 +179,53 @@ export function connectionPrice(pricing: AggregatorEntry["pricing"]): Connection
       // contract grew one. Reached even when `input`/`output` are present:
       // without the discriminator, how to read them is not known.
       return unknownPrice();
+  }
+}
+
+/**
+ * The rates one request on this connection is billed at, read by the same
+ * `pricing.type` rules as {@link connectionPrice} (no alias, and an unmeasured
+ * zero is unknown): `flat` → the published input and output rates, and
+ * `cachedRead` as the cache-read rate; `tiered` → the first tier, marked an
+ * estimate, because a request above that tier's `maxInputTokens` is billed at a
+ * higher band this does not select; `free` → zero; `unavailable`, no pricing, an
+ * unrecognised type or an unmeasured zero → undefined, so the caller falls back.
+ */
+export function connectionRequestRates(agg: AggregatorEntry): ModelPricing | undefined {
+  const pricing = agg.pricing;
+  if (!pricing) return undefined;
+  const rates = (
+    input: number | undefined,
+    output: number | undefined,
+    cachedRead: number | undefined
+  ): ModelPricing | undefined => {
+    const inputRate = usableRate(input);
+    const outputRate = usableRate(output);
+    if (inputRate === null || outputRate === null) return undefined;
+    if (isUnmeasuredZero(inputRate + outputRate)) return undefined;
+    const cacheReadRate = usableRate(cachedRead);
+    return {
+      inputCostPer1M: inputRate,
+      outputCostPer1M: outputRate,
+      ...(cacheReadRate !== null ? { cacheReadCostPer1M: cacheReadRate } : {}),
+    };
+  };
+
+  switch (pricing.type) {
+    case "flat":
+      return rates(pricing.input, pricing.output, pricing.cachedRead);
+    case "tiered": {
+      const firstTier = pricing.tiers?.[0];
+      const tierRates = firstTier
+        ? rates(firstTier.input, firstTier.output, firstTier.cachedRead ?? pricing.cachedRead)
+        : undefined;
+      const result = tierRates ?? rates(pricing.input, pricing.output, pricing.cachedRead);
+      return result ? { ...result, isEstimate: true } : undefined;
+    }
+    case "free":
+      return { inputCostPer1M: 0, outputCostPer1M: 0 };
+    default:
+      return undefined;
   }
 }
 

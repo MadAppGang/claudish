@@ -1,4 +1,3 @@
-import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 /**
  * Dynamic pricing cache service
  *
@@ -14,17 +13,15 @@ import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings
  *   getModelPricing() → in-memory map → disk cache → provider defaults
  *   warmPricingCache() → background: disk cache (no network fetch)
  *
- * Provider → OpenRouter ID resolution:
- *   Non-OpenRouter providers (`openai`, `google`, `kimi`, `glm`, ...) need
- *   their `(provider, modelName)` mapped to an OpenRouter `vendor/model` ID
- *   to consult the pricing map. We do this by reading the slim catalog's
- *   `aggregators[]` field via `catalog-query.ts` — each entry already lists
- *   `{provider: "openrouter", externalId: "vendor/model"}` for its OR
- *   listing, so we look up the entry by alias/modelId and use the
- *   `externalId` directly. Replaces the static `PROVIDER_TO_OR_PREFIX` map
- *   that was deleted in commit 6 (architecture §6.C). The `glm → zhipu/`
- *   bug noted in F6 is fixed by construction since the catalog has the
- *   correct vendor (`z-ai/`) on its `aggregators` array.
+ * A non-OpenRouter provider's request (`anthropic`, `openai`, `kimi`, ...) is
+ *   priced at its OWN catalog connection's published rate first: the entry is
+ *   found by alias, model id, or a mapped connection of that provider whose wire
+ *   id is the name, and the provider's mapped connection gives the rate
+ *   (`connectionRequestRates`). Only when it publishes none is the model's
+ *   OpenRouter row used, through the OpenRouter `externalId` on the same entry,
+ *   and with neither the caller falls to a marked estimate. Entries are read
+ *   through `getCatalogEntries()`, the disk catalog else the bundled recommended
+ *   list, so a launch with no catalog file still prices by the catalog.
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -35,7 +32,10 @@ import {
   registerDynamicPricingLookup,
 } from "../handlers/shared/remote-provider-types.js";
 import { log } from "../logger.js";
-import { findEntryByAlias, findEntryByModelId } from "../providers/catalog-query.js";
+import type { SlimModelEntry } from "../providers/all-models-cache.js";
+import { getCatalogEntries } from "../providers/catalog-client.js";
+import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
+import { connectionRequestRates } from "../providers/connection-price.js";
 
 // In-memory pricing map: OpenRouter model ID → pricing
 const pricingMap = new Map<string, ModelPricing>();
@@ -64,6 +64,35 @@ function prefixMatch(modelName: string): ModelPricing | undefined {
   return undefined;
 }
 
+/** A mapped connection of `provider` on `entry`: the one whose wire id is `name`, else the first. */
+function ownConnection(entry: SlimModelEntry, provider: string, name: string) {
+  const own = (entry.aggregators ?? []).filter(
+    (a) => a.routeStatus === "mapped" && catalogRouteMatchesProvider(a.route, provider)
+  );
+  return own.find((a) => a.externalModelId === name) ?? own[0];
+}
+
+/**
+ * The catalog entry a request's model name prices from: by alias, then by
+ * model id, then by a mapped connection of `provider` whose wire id is the name
+ * (a request is priced by the wire id it was sent with, which may be neither).
+ */
+function pricingEntry(provider: string, name: string): SlimModelEntry | undefined {
+  const entries = getCatalogEntries() ?? [];
+  return (
+    entries.find((e) => e.aliases.includes(name)) ??
+    entries.find((e) => e.modelId === name) ??
+    entries.find((e) =>
+      (e.aggregators ?? []).some(
+        (a) =>
+          a.routeStatus === "mapped" &&
+          a.externalModelId === name &&
+          catalogRouteMatchesProvider(a.route, provider)
+      )
+    )
+  );
+}
+
 /**
  * Synchronous lookup of dynamic pricing for a provider + model.
  * Returns undefined if no dynamic pricing is available (caller should fall back).
@@ -72,11 +101,9 @@ function prefixMatch(modelName: string): ModelPricing | undefined {
  * (`openai/gpt-5`), so we hit `pricingMap` directly with a prefix-match
  * fallback for variant strings.
  *
- * For all other providers we consult the slim catalog's `aggregators[]`
- * field (architecture §6.C): find the entry by alias or modelId, locate its
- * OpenRouter aggregator entry, then look up the `externalId` in the
- * pricing map. This replaces the legacy `PROVIDER_TO_OR_PREFIX` map and
- * inherits whatever vendor prefix the catalog reports.
+ * For all other providers: the provider's own mapped connection's published
+ * rate first (for `anthropic`, `anthropic/direct-api`), then the model's
+ * OpenRouter row, then undefined.
  */
 export function getDynamicPricingSync(
   provider: string,
@@ -86,8 +113,12 @@ export function getDynamicPricingSync(
     return pricingMap.get(modelName) ?? prefixMatch(modelName);
   }
 
-  const entry = findEntryByAlias(modelName) ?? findEntryByModelId(modelName);
+  const entry = pricingEntry(provider, modelName);
   if (!entry) return undefined;
+
+  const own = ownConnection(entry, provider, modelName);
+  const ownRates = own ? connectionRequestRates(own) : undefined;
+  if (ownRates) return ownRates;
 
   const orAgg = entry.aggregators?.find((a) => catalogRouteMatchesProvider(a.route, "openrouter"));
   if (!orAgg) return undefined;
