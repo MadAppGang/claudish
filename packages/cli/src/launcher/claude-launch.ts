@@ -31,6 +31,10 @@
  * check and the proxy.
  */
 
+import {
+  type ClaudeCodeStartupCredential,
+  claudeCodeStartupCredential,
+} from "../auth/claude-code-login.js";
 import { isClaudishPlaceholderCredential } from "../auth/claudish-placeholder.js";
 import type { CredentialAuthority } from "../auth/credentials/authority.js";
 import {
@@ -41,7 +45,11 @@ import {
   settingsCredentialFindings,
   wantsAnthropicApiBilling,
 } from "../claude-runner.js";
-import { LOGIN_ONLY_SIGNING, type NativeSigning } from "../handlers/shared/anthropic-forward.js";
+import {
+  CLAUDE_LOGIN_BEARER,
+  LOGIN_ONLY_SIGNING,
+  type NativeSigning,
+} from "../handlers/shared/anthropic-forward.js";
 import { isPaneChild } from "../pane/child-env.js";
 import { resolveModelNameSync } from "../providers/catalog-client.js";
 import { normalizeNativeModelSpec } from "../providers/claude-code-aliases.js";
@@ -145,11 +153,12 @@ function refusedClause(finding: SettingsFinding): string | null {
  * requests go, not which credential signs them.
  *
  * `bareName`: the launch named a bare Claude model, so the user may also opt
- * into API billing instead.
+ * into API billing instead. `cause`: why the launch is the Claude subscription,
+ * when the main model does not say it (`subscriptionCause`).
  */
 export function subscriptionSettingsCheck(
   findings: readonly SettingsFinding[],
-  opts: { bareName: boolean }
+  opts: { bareName: boolean; cause?: string }
 ): SubscriptionSettingsCheck {
   const clauses: string[] = [];
   const files: string[] = [];
@@ -169,7 +178,70 @@ export function subscriptionSettingsCheck(
   const remedy =
     `Remove ${clauses.length === 1 ? "it" : "them"} from ${files.join(", ")}, or use ` +
     `anthropic@<id> for the Claude API${opts.bareName ? ", or pass --anthropic-api-billing" : ""}.`;
-  return { refusal: `Claude subscription: ${clauses.join("; ")}. ${remedy}`, notices };
+  return {
+    refusal: `${subscriptionPrefix(opts.cause)}: ${clauses.join("; ")}. ${remedy}`,
+    notices,
+  };
+}
+
+/** `Claude subscription`, with the reason the launch is one when given. */
+function subscriptionPrefix(cause: string | undefined): string {
+  return cause ? `${CLAUDE_SUBSCRIPTION_LABEL}, ${cause}` : CLAUDE_SUBSCRIPTION_LABEL;
+}
+
+/**
+ * Why a launch whose main model is not a Claude model is the Claude
+ * subscription: each tier that names a Claude model, with where it came from
+ * (`because the haiku model claude-haiku-x from profile "work" is a Claude
+ * model`). Undefined when the main model is a Claude model or no tier is one.
+ */
+export function subscriptionCause(config: ClaudishConfig): string | undefined {
+  const main = typeof config.model === "string" ? config.model : undefined;
+  if (main && nativeRouteFor(main) !== null) return undefined;
+  const named = TIER_FIELDS.flatMap(([tier, field]) => {
+    const spec = config[field];
+    if (!isClaudeTier(spec)) return [];
+    const source = config.modelTierSources?.[tier];
+    return [`the ${tier} model ${spec}${source ? ` from ${source}` : ""}`];
+  });
+  if (named.length === 0) return undefined;
+  return `because ${named.join(", ")} ${named.length === 1 ? "is a Claude model" : "are Claude models"}`;
+}
+
+function isClaudeTier(spec: string | undefined): spec is string {
+  return typeof spec === "string" && spec.length > 0 && nativeRouteFor(spec) !== null;
+}
+
+/**
+ * The refusal for a Claude subscription launch whose Claude Code has no
+ * Claude login, or null. A stored Console key is not one: Claude Code would
+ * send it as `x-api-key` (no login screen, measured on 2.1.325) and every
+ * request would be refused. `unknown` (a store that did not answer) is not
+ * refused: each request is still checked.
+ */
+export function claudeLoginRefusal(
+  credential: ClaudeCodeStartupCredential,
+  opts: { bareName: boolean; cause?: string }
+): string | null {
+  const optIn = opts.bareName ? ", or pass --anthropic-api-billing to bill the key" : "";
+  switch (credential.kind) {
+    case "login":
+    case "unknown":
+      return null;
+    case "api-key":
+      return (
+        `${subscriptionPrefix(opts.cause)}: Claude Code's own credential is an Anthropic API key ` +
+        `(stored in ${credential.where}), not a Claude login, and claudish never signs a Claude ` +
+        `subscription request with an API key. Use anthropic@<id> for the Claude API${optIn}, ` +
+        "or sign in to your Claude subscription with /login in Claude Code."
+      );
+    case "none":
+      return (
+        `${subscriptionPrefix(opts.cause)}: Claude Code has no Claude login on this machine, and ` +
+        "claudish never signs a Claude subscription request with an API key. Sign in with /login " +
+        `in Claude Code, or use anthropic@<id> for the Claude API${optIn}.`
+      );
+  }
 }
 
 /** True when `spec` names a bare Claude model, not `claude@` before one. */
@@ -381,6 +453,8 @@ export interface PrepareClaudeLaunchDeps {
   settingsForcingClaudeAi?: (config: ClaudishConfig) => string[];
   /** Default `resolveModelNameSync(name, "anthropic").resolvedId`: the wire id Claude Code is given. */
   wireIdFor?: (name: string) => string;
+  /** Default `claudeCodeStartupCredential({env})`: the credential Claude Code would start with. */
+  claudeCodeCredential?: (env: NodeJS.ProcessEnv) => ClaudeCodeStartupCredential;
 }
 
 /**
@@ -397,8 +471,12 @@ export interface PrepareClaudeLaunchDeps {
  *   every request is signed `login-only`.
  * - Any other launch `launchSigningFor` signs `login-only` (a bare Claude main
  *   model or tier without the API-billing opt-in, a `claude@` tier, a pinned
- *   pane child): the same settings refusal, and `login-only`. An opt-in a pin
- *   overrides is named in a notice.
+ *   pane child): the same settings refusal, a real shell ANTHROPIC_AUTH_TOKEN
+ *   that is not a Claude login token refused the same way, and `login-only`.
+ *   An opt-in a pin overrides is named in a notice. Each refusal names the tier
+ *   that made a foreign launch the Claude subscription.
+ * - Both login-only branches refuse when Claude Code has no Claude login
+ *   (`claudeLoginRefusal`): a stored Console key alone, or nothing at all.
  * - Anything else: no effect.
  */
 export async function prepareClaudeLaunch(
@@ -415,9 +493,15 @@ export async function prepareClaudeLaunch(
     return prepareClaudeApiLaunch(config, main, env, deps);
   }
 
+  const credentialOf =
+    deps.claudeCodeCredential ??
+    ((e: NodeJS.ProcessEnv) => claudeCodeStartupCredential({ env: e }));
+
   if (config.claudeLaunch === "subscription" && main) {
     const check = subscriptionSettingsCheck(findingsOf(config, env), { bareName: false });
     if (check.refusal) return { ok: false, message: check.refusal };
+    const loginRefusal = claudeLoginRefusal(credentialOf(env), { bareName: false });
+    if (loginRefusal) return { ok: false, message: loginRefusal };
     if (isClaudishPlaceholderCredential("ANTHROPIC_API_KEY", env.ANTHROPIC_API_KEY)) {
       delete env.ANTHROPIC_API_KEY;
     }
@@ -439,10 +523,19 @@ export async function prepareClaudeLaunch(
     return signing ? { ok: true, banner: [], signing } : { ok: true, banner: [] };
   }
   // The opt-in is offered only where it could apply: a pin keeps the login.
-  const check = subscriptionSettingsCheck(findingsOf(config, env), {
-    bareName: !config.claudeSubscriptionPin,
-  });
+  const bareName = !config.claudeSubscriptionPin;
+  const cause = subscriptionCause(config);
+  const shellToken = shellAuthToken(env);
+  const findings = findingsOf(config, env);
+  if (shellToken === "other") {
+    findings.push({ where: "your shell environment", kind: "auth-token" });
+  }
+  const check = subscriptionSettingsCheck(findings, { bareName, cause });
   if (check.refusal) return { ok: false, message: check.refusal };
+  if (shellToken !== "login") {
+    const loginRefusal = claudeLoginRefusal(credentialOf(env), { bareName, cause });
+    if (loginRefusal) return { ok: false, message: loginRefusal };
+  }
   const notices = [...check.notices];
   if (
     config.claudeSubscriptionPin &&
@@ -543,6 +636,19 @@ async function prepareClaudeApiLaunch(
     signing: { kind: "launch-key", key: () => key },
     lease,
   };
+}
+
+/**
+ * The user's own ANTHROPIC_AUTH_TOKEN, which a login-only launch that is not a
+ * monitor session keeps for the child: Claude Code sends it instead of its
+ * login. `login` when it is a Claude login token itself, `other` for any other
+ * real value, `none` when unset or claudish's placeholder.
+ */
+function shellAuthToken(env: NodeJS.ProcessEnv): "none" | "login" | "other" {
+  const token = env.ANTHROPIC_AUTH_TOKEN;
+  if (typeof token !== "string" || token.trim().length === 0) return "none";
+  if (isClaudishPlaceholderCredential("ANTHROPIC_AUTH_TOKEN", token)) return "none";
+  return CLAUDE_LOGIN_BEARER.test(`Bearer ${token}`) ? "login" : "other";
 }
 
 function noticeLines(notices: readonly string[]): string[] {

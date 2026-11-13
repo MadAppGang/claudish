@@ -211,6 +211,17 @@ export const CLAUDE_SUBSCRIPTION_NO_LOGIN =
   "signs a Claude subscription request with an API key. Sign in with /login, or use " +
   "anthropic@<id> for the Claude API.";
 
+/**
+ * Why a `login-only` request that carries an API key (`x-api-key`) and no
+ * Claude login is answered 401: Claude Code's own credential is a key (a
+ * stored Console key, or one the user approved), so /login is not the fix.
+ */
+export const CLAUDE_SUBSCRIPTION_API_KEY_REQUEST =
+  "Claude subscription session: this request carries an API key (x-api-key), not a Claude Code " +
+  "login, and claudish never signs a Claude subscription request with an API key. Use " +
+  "anthropic@<id> for the Claude API, or, for a bare Claude model name, pass " +
+  "--anthropic-api-billing to bill the key.";
+
 /** The Context key the request's signing is set under, for the native handler. */
 export const NATIVE_SIGNING_KEY = "nativeSigning" as const;
 
@@ -275,7 +286,11 @@ export async function buildForwardRequest(
     }
     case "login-only": {
       if (!isLogin || inbound.authorization === undefined) {
-        return { refused: CLAUDE_SUBSCRIPTION_NO_LOGIN };
+        const carriesKey =
+          inbound["x-api-key"] !== undefined && inbound.authorization === undefined;
+        return {
+          refused: carriesKey ? CLAUDE_SUBSCRIPTION_API_KEY_REQUEST : CLAUDE_SUBSCRIPTION_NO_LOGIN,
+        };
       }
       headers.authorization = inbound.authorization;
       break;

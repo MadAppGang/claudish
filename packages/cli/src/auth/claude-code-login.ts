@@ -11,9 +11,14 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { claudeCodeConfigDir, claudeCodeKeychainServiceCandidates } from "./claude-code-facts.js";
+import {
+  claudeCodeConfigDir,
+  claudeCodeGlobalConfigPath,
+  claudeCodeKeychainServiceCandidates,
+  claudeCodeSecureStorageServices,
+} from "./claude-code-facts.js";
 
 /**
  * Existence-only probe for an OS-credential-store Anthropic OAuth item. `env`
@@ -112,4 +117,121 @@ export function hasClaudeCodeLogin(deps: ClaudeCodeLoginDeps = {}): boolean {
   const fileExists = deps.fileExists ?? existsSync;
   if (fileExists(join(claudeCodeConfigDir(env), ".credentials.json"))) return true;
   return (deps.keychainProbe ?? defaultKeychainAnthropicProbe)(env);
+}
+
+/** What one presence probe of a Keychain service answered; `failed` is never `absent`. */
+export type KeychainPresence = "found" | "absent" | "failed";
+
+/** `security`'s exit status for "no such item". */
+const SECURITY_ITEM_NOT_FOUND = 44;
+
+/**
+ * Presence of any generic-password item under `service`, from its ATTRIBUTES:
+ * `find-generic-password` without `-w` reads no item data, so it raises no
+ * access dialog. Non-darwin: `absent`. `CLAUDISH_DISABLE_KEYCHAIN=1`: `failed`,
+ * since the store was not asked. Honours `CLAUDISH_KEYCHAIN_FILE`.
+ */
+export function defaultKeychainPresence(service: string): KeychainPresence {
+  if (process.platform !== "darwin") return "absent";
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return "failed";
+  const args = ["find-generic-password", "-s", service];
+  const keychainFile = process.env.CLAUDISH_KEYCHAIN_FILE;
+  if (keychainFile) args.push(keychainFile);
+  try {
+    const res = spawnSync("security", args, { stdio: "ignore" });
+    if (res.error) return "failed";
+    if (res.status === 0) return "found";
+    return res.status === SECURITY_ITEM_NOT_FOUND ? "absent" : "failed";
+  } catch {
+    return "failed";
+  }
+}
+
+/**
+ * The credential Claude Code would start with, as far as presence can tell:
+ *
+ * - `login`: a claude.ai login (a non-empty `CLAUDE_CODE_OAUTH_TOKEN`, the
+ *   `.credentials.json` file, or the OAuth Keychain item);
+ * - `api-key`: no login, but a stored Console key (`primaryApiKey` in Claude
+ *   Code's global config, or its API-key Keychain item). Claude Code sends it
+ *   as `x-api-key` and shows no login screen (measured on 2.1.325); `where`
+ *   names the store, never a value;
+ * - `none`: neither, and every store answered;
+ * - `unknown`: neither found, and a store could not be asked (an unreadable
+ *   config file, a Keychain that did not answer).
+ */
+export type ClaudeCodeStartupCredential =
+  | { kind: "login" }
+  | { kind: "api-key"; where: string }
+  | { kind: "none" }
+  | { kind: "unknown" };
+
+/** Injectable reads for {@link claudeCodeStartupCredential}; each defaults to the real one. */
+export interface ClaudeCodeStartupCredentialDeps {
+  env?: NodeJS.ProcessEnv;
+  fileExists?: (path: string) => boolean;
+  readFile?: (path: string) => string;
+  keychainPresence?: (service: string) => KeychainPresence;
+}
+
+/**
+ * Which credential Claude Code holds, read at launch for a Claude subscription
+ * session. Presence only: the config file is parsed to learn whether
+ * `primaryApiKey` is set, and its value is neither kept nor returned; the
+ * Keychain is probed by service name, never read.
+ */
+export function claudeCodeStartupCredential(
+  deps: ClaudeCodeStartupCredentialDeps = {}
+): ClaudeCodeStartupCredential {
+  const env = deps.env ?? process.env;
+  const fileExists = deps.fileExists ?? existsSync;
+  const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
+  const presence = deps.keychainPresence ?? defaultKeychainPresence;
+
+  const token = env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (typeof token === "string" && token.trim().length > 0) return { kind: "login" };
+  if (fileExists(join(claudeCodeConfigDir(env), ".credentials.json"))) return { kind: "login" };
+
+  const oauth = anyPresent(
+    [
+      ...claudeCodeSecureStorageServices("-credentials", env),
+      ...claudeCodeKeychainServiceCandidates(env),
+    ],
+    presence
+  );
+  if (oauth === "found") return { kind: "login" };
+
+  const configPath = claudeCodeGlobalConfigPath(env);
+  const stored = fileExists(configPath) ? configSetsConsoleKey(configPath, readFile) : "absent";
+  if (stored === "found") return { kind: "api-key", where: configPath };
+  const keychainKey = anyPresent(claudeCodeSecureStorageServices("", env), presence);
+  if (keychainKey === "found") return { kind: "api-key", where: "the macOS Keychain" };
+  const unanswered = oauth === "failed" || stored === "failed" || keychainKey === "failed";
+  return unanswered ? { kind: "unknown" } : { kind: "none" };
+}
+
+/** `found` at the first service present; `failed` when none is and one did not answer. */
+function anyPresent(
+  services: readonly string[],
+  presence: (service: string) => KeychainPresence
+): KeychainPresence {
+  let failed = false;
+  for (const service of new Set(services)) {
+    const answer = presence(service);
+    if (answer === "found") return "found";
+    if (answer === "failed") failed = true;
+  }
+  return failed ? "failed" : "absent";
+}
+
+/** Whether Claude Code's global config sets `primaryApiKey`; the value is not kept. */
+function configSetsConsoleKey(path: string, readFile: (path: string) => string): KeychainPresence {
+  try {
+    const parsed: unknown = JSON.parse(readFile(path));
+    if (parsed === null || typeof parsed !== "object") return "absent";
+    const key = (parsed as Record<string, unknown>).primaryApiKey;
+    return typeof key === "string" && key.length > 0 ? "found" : "absent";
+  } catch {
+    return "failed";
+  }
 }
