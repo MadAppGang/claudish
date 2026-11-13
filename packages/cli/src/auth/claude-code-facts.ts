@@ -25,6 +25,17 @@ function defaultConfigDir(env: NodeJS.ProcessEnv): string {
   return resolve(env.HOME || homedir(), ".claude");
 }
 
+/**
+ * The directory Claude Code keeps its config and file-backed login in:
+ * `CLAUDE_CONFIG_DIR` (resolved against the working directory) when set, else
+ * `~/.claude` under `HOME`.
+ */
+export function claudeCodeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.CLAUDE_CONFIG_DIR?.trim();
+  if (!raw) return defaultConfigDir(env);
+  return isAbsolute(raw) ? resolve(raw) : resolve(process.cwd(), raw);
+}
+
 /** `sha256(configDir)` truncated to 8 hex characters, as the binary does. */
 function configDirHash(configDir: string): string {
   return createHash("sha256").update(configDir).digest("hex").slice(0, 8);

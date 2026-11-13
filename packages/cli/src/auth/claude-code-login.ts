@@ -11,13 +11,15 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { claudeCodeKeychainServiceCandidates } from "./claude-code-facts.js";
+import { claudeCodeConfigDir, claudeCodeKeychainServiceCandidates } from "./claude-code-facts.js";
 import { isClaudishPlaceholderCredential } from "./claudish-placeholder.js";
 
-/** Existence-only probe for an OS-credential-store Anthropic OAuth item. */
-export type KeychainCredentialProbe = () => boolean;
+/**
+ * Existence-only probe for an OS-credential-store Anthropic OAuth item. `env`
+ * decides the config directory, and so the item's service name.
+ */
+export type KeychainCredentialProbe = (env?: NodeJS.ProcessEnv) => boolean;
 
 // Startup-only memo (at most a couple of evaluations per launch), keyed by the
 // SERVICE NAMES probed so a changed CLAUDE_CONFIG_DIR is not answered from the
@@ -47,11 +49,15 @@ const macosKeychainAnthropicMemo = new Map<string, boolean>();
  * `security` at all — see `keychain.md` on why a flag the production code
  * honours is the only stub that cannot leak.
  */
-export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = () => {
+export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = (env = process.env) => {
   if (process.platform !== "darwin") return false;
-  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1") return false;
+  // The test guard is honoured from either environment: a caller's own env
+  // must never be the reason a test run spawns `security`.
+  if (process.env.CLAUDISH_DISABLE_KEYCHAIN === "1" || env.CLAUDISH_DISABLE_KEYCHAIN === "1") {
+    return false;
+  }
 
-  const services = claudeCodeKeychainServiceCandidates();
+  const services = claudeCodeKeychainServiceCandidates(env);
   const memoKey = services.join("|");
   const memoized = macosKeychainAnthropicMemo.get(memoKey);
   if (memoized !== undefined) return memoized;
@@ -89,8 +95,10 @@ export interface ClaudeCodeLoginDeps {
 
 /**
  * True when Claude Code has a login it can sign the Claude subscription with: a
- * real `CLAUDE_CODE_OAUTH_TOKEN` (not claudish's placeholder), Claude Code's
- * `~/.claude/.credentials.json`, or its macOS Keychain item. Existence only.
+ * real `CLAUDE_CODE_OAUTH_TOKEN` (not claudish's placeholder), the
+ * `.credentials.json` in Claude Code's config directory (`CLAUDE_CONFIG_DIR`,
+ * else `~/.claude`, both read from `env`), or its macOS Keychain item for that
+ * directory. Existence only.
  *
  * TODO: Windows/Linux may also keep the OAuth in an OS credential store
  * (Credential Manager / libsecret) rather than the file; only the macOS Keychain
@@ -107,6 +115,6 @@ export function hasClaudeCodeLogin(deps: ClaudeCodeLoginDeps = {}): boolean {
     return true;
   }
   const fileExists = deps.fileExists ?? existsSync;
-  if (fileExists(join(homedir(), ".claude", ".credentials.json"))) return true;
-  return (deps.keychainProbe ?? defaultKeychainAnthropicProbe)();
+  if (fileExists(join(claudeCodeConfigDir(env), ".credentials.json"))) return true;
+  return (deps.keychainProbe ?? defaultKeychainAnthropicProbe)(env);
 }
