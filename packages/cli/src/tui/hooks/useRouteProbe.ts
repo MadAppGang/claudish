@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { keySourcesSearched } from "../../auth/credentials/key-sources.js";
 import { bundledListLabel } from "../../providers/bundled-list-data.js";
 import { explainRouteSettled } from "../../providers/explain-route-settled.js";
 import { prepareMuseLoginForTuiAction } from "../../providers/meta-muse/muse-credentials.js";
@@ -10,6 +11,7 @@ import {
   probeProviderRoute,
   probeSendRefusal,
 } from "../../providers/probe-runner.js";
+import { getProviderByName } from "../../providers/provider-definitions.js";
 import {
   type ExplainedCandidate,
   type FallbackWithheld,
@@ -114,8 +116,21 @@ function rowOf(candidate: ExplainedCandidate, hopOrigin: "routed" | undefined): 
   if (candidate.outcome !== "kept") {
     row.status = "dropped";
     row.outcome = candidate.outcome;
+    // A read-at-use key (the Claude API's) is looked for at send time, so a row
+    // with none says where claudish looked, as `--probe` does.
+    if (
+      candidate.outcome === "no-credential" &&
+      getProviderByName(candidate.provider)?.vaultKeyReadAtUse === true
+    ) {
+      row.error = lookedIn(keySourcesSearched().join(", "));
+    }
   }
   return row;
+}
+
+/** The "where claudish looked" detail of a row with no key. */
+function lookedIn(searched: string): string {
+  return `looked in ${searched}`;
 }
 
 /** One hop the probe tests: its row, and the spec a request would send. */
@@ -337,7 +352,11 @@ export function useRouteProbe(): UseRouteProbeReturn {
                       ...e,
                       status: "dropped" as const,
                       outcome: refusal.outcome,
-                      ...(refusal.detail ? { error: refusal.detail } : {}),
+                      ...(refusal.detail
+                        ? { error: refusal.detail }
+                        : refusal.searched
+                          ? { error: lookedIn(refusal.searched) }
+                          : {}),
                     }
                   : e
               )

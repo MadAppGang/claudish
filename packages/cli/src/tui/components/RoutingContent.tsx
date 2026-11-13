@@ -59,7 +59,11 @@ function rowStatusView(entry: ProbeEntry): { icon: string; color: string; text: 
         // A subscription the user holds whose key could not be read is a
         // warning: the request lands on a different hop.
         color: entry.outcome === "credential-unreadable" ? C.yellow : C.dim,
-        text: entry.outcome ? `dropped · ${DROPPED_TEXT[entry.outcome]}` : "dropped",
+        // `error` on a dropped row is its detail: where claudish looked for a
+        // missing key, or why a stored one could not be read.
+        text: entry.outcome
+          ? `dropped · ${DROPPED_TEXT[entry.outcome]}${entry.error ? ` · ${entry.error}` : ""}`
+          : "dropped",
       };
     case "skipped":
       return { icon: "·", color: C.dim, text: "not reached" };
