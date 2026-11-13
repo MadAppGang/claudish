@@ -19,6 +19,7 @@ import {
   recordKeychainHydratedVar,
 } from "../auth/credentials/keychain-source.js";
 import { invalidateOpResolutionCache } from "../auth/credentials/op-source.js";
+import { realValueFor } from "../env-placeholder.js";
 import { log } from "../logger.js";
 import {
   disableLocalProvider,
@@ -147,6 +148,7 @@ import {
   providerIsReadyForDisplay,
   providerLoginAction,
   providerSetLabel,
+  readAtUseVaultSource,
 } from "./providers.js";
 import { A, C } from "./theme.js";
 import type {
@@ -590,8 +592,15 @@ export function App({ requestLogin }: AppProps = {}) {
   const { editProfileValue, profileScope, suggestions, suggestionIndex, providerPickerIndex } =
     wizard;
 
-  const hasCfgKey = !!config.apiKeys?.[selectedProvider.apiKeyEnvVar];
-  const hasEnvKey = !!process.env[selectedProvider.apiKeyEnvVar];
+  // A placeholder (claudish's own, an unexpanded `${VAR}`) is not a key.
+  const hasCfgKey = !!realValueFor(
+    selectedProvider.apiKeyEnvVar,
+    config.apiKeys?.[selectedProvider.apiKeyEnvVar]
+  );
+  const hasEnvKey = !!realValueFor(
+    selectedProvider.apiKeyEnvVar,
+    process.env[selectedProvider.apiKeyEnvVar]
+  );
   /**
    * Does the SELECTED provider have a credential of any kind?
    *
@@ -635,6 +644,14 @@ export function App({ requestLogin }: AppProps = {}) {
   // 1Password tag) because the keychain is resolved FIRST, so when both stores
   // could supply a variable, the keychain is the one that did.
   const isKcKey = hasEnvKey && isKeychainHydratedVar(selectedProvider.apiKeyEnvVar);
+  // A read-at-use key in no environment variable and no config.json entry is
+  // read from a vault when a request signs: name that vault, and the masked
+  // value once the authority has resolved it. Presence only, never the key.
+  const vaultKeySource =
+    hasKey && !hasEnvKey && !hasCfgKey ? readAtUseVaultSource(selectedProvider) : undefined;
+  const vaultKeyMask = vaultKeySource
+    ? credentials.describeOrigin(selectedProvider.catalogName)?.masked
+    : undefined;
   const cfgKeyMask = maskKey(config.apiKeys?.[selectedProvider.apiKeyEnvVar]);
   const envKeyMask = maskKey(process.env[selectedProvider.apiKeyEnvVar]);
   const activeEndpointEnvVar = selectedProvider.endpointEnvVar;
@@ -2344,7 +2361,8 @@ export function App({ requestLogin }: AppProps = {}) {
         // — reporting a denied ACL as "there was nothing there", while the item
         // and its live credential both remained.
         let failureMsg: string | null = null;
-        if (hasCfgKey) {
+        // Any stored entry, a placeholder included: `x` clears what is there.
+        if (config.apiKeys?.[selectedProvider.apiKeyEnvVar]) {
           try {
             removeApiKey(selectedProvider.apiKeyEnvVar);
             removedFrom.push("config.json");
@@ -2877,6 +2895,8 @@ export function App({ requestLogin }: AppProps = {}) {
             isOpKey={isOpKey}
             isKcKey={isKcKey}
             hasKcKey={hasKcKey}
+            {...(vaultKeySource ? { vaultKeySource } : {})}
+            {...(vaultKeyMask ? { vaultKeyMask } : {})}
             keySaveTarget={keychainSupported ? "macOS Keychain" : "config.json"}
             credentialNote={providerCredentialNote(selectedProvider)}
             cfgKeyMask={cfgKeyMask}

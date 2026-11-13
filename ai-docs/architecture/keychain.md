@@ -353,8 +353,18 @@ The op source draws the same line for denied handshakes, for the same reason.
   (`runOpAdd`) and the Providers-tab key save never write the key variable of a
   `vaultKeyReadAtUse` provider (`readAtUseKeyEnvVars()`, today `ANTHROPIC_API_KEY`) into
   `process.env`: there it would reach every child the TUI starts. The tab sees such a key by
-  presence (`keychainHasAnyOf`, `configHasOpReferenceFor`), and the mount-time `isAvailable`
-  pass asks for it with `allowOpPrompt: false`.
+  presence (`readAtUseVaultSource`, `tui/providers.ts`): the vault the authority last resolved it
+  from (`describeOrigin`, which is how a 1Password Environment or set the config cannot name
+  shows up), else a Keychain item (`keychainHasAnyOf`), else a single op:// reference
+  (`configHasOpReferenceFor`). The mount-time `isAvailable` pass asks for it with
+  `allowOpPrompt: false`. The detail pane's `From:` names that vault `(used)` and its `Key:` the
+  masked value once resolved; a placeholder in the environment or `config.json` counts as no key
+  (`realValueFor`).
+- **A saved key signs at once.** A key typed in the tab goes to the authority as a replacement
+  (`credentials.replaceKey`): the provider signs with it ahead of every other store until its next
+  invalidation, without any `process.env` write. A store that still outranks it in a new launch
+  (a shell export this process did not hydrate, or a `config.json` entry for a Keychain save,
+  `sourcesOutranking`) is named in the status line.
 - **Hydration filters on `resolveLocalApiKey`, NOT on `process.env`.** This is subtle and was a
   real bug. `config.json` outranks the keychain but does not live in `process.env`, so skipping
   only variables "absent from env" pushed the keychain value into env — where step 1 of the chain

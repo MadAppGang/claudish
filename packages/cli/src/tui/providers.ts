@@ -4,6 +4,7 @@
  */
 
 import { hasSharedAntigravityToken } from "../auth/antigravity-token.js";
+import { credentials } from "../auth/credentials/authority.js";
 import { keychainHasAnyOf } from "../auth/credentials/keychain-source.js";
 import { configHasOpReferenceFor } from "../auth/credentials/op-source.js";
 import { type CredentialSource, describeSourceSync } from "../auth/credentials/source.js";
@@ -14,6 +15,7 @@ import {
   hasVertexAdcCredentials,
   peekVertexProjectOrigin,
 } from "../auth/vertex-auth.js";
+import { realValueFor } from "../env-placeholder.js";
 import { hasDevinCredentials } from "../providers/devin/devin-credentials.js";
 import type { LocalLiveness } from "../providers/local-liveness.js";
 import {
@@ -97,14 +99,33 @@ function toProviderDef(def: ProviderDefinition): ProviderDef {
 }
 
 /**
- * A read-at-use key's vault presence: a Keychain item (enumeration, never its
- * value) or a single op:// reference in the config (a scan, no SDK). False for
+ * The vault a read-at-use key is read from, by presence only: the vault the
+ * credential authority last resolved it from (`describeOrigin`, which covers a
+ * 1Password Environment or set the config cannot name), else a Keychain item
+ * (enumeration, never its value; the Keychain is resolved before 1Password),
+ * else a single op:// reference in the config (a scan, no SDK). Undefined for
  * every other provider, whose vault keys hydration writes into `process.env`.
+ * Never key material.
+ */
+export function readAtUseVaultSource(p: ProviderDef): "macOS Keychain" | "1Password" | undefined {
+  if (!p.vaultKeyReadAtUse || !p.apiKeyEnvVar) return undefined;
+  const origin = credentials.describeOrigin(p.catalogName)?.source;
+  if (origin === "macOS Keychain" || origin === "1Password") return origin;
+  const names = [p.apiKeyEnvVar, ...(p.aliases ?? [])];
+  if (keychainHasAnyOf(names)) return "macOS Keychain";
+  if (names.some((name) => configHasOpReferenceFor(name))) return "1Password";
+  return undefined;
+}
+
+/**
+ * A read-at-use key's presence: a vault `readAtUseVaultSource` names, or any
+ * key the authority already resolved for it. False for every other provider.
  */
 function readAtUseVaultKeyPresent(p: ProviderDef): boolean {
   if (!p.vaultKeyReadAtUse || !p.apiKeyEnvVar) return false;
-  const names = [p.apiKeyEnvVar, ...(p.aliases ?? [])];
-  return keychainHasAnyOf(names) || names.some((name) => configHasOpReferenceFor(name));
+  return (
+    readAtUseVaultSource(p) !== undefined || credentials.describeOrigin(p.catalogName) !== undefined
+  );
 }
 
 /** Re-exported from the credential layer, which owns the classification rules. */
@@ -217,10 +238,11 @@ export function providerAuthCapabilities(
   config: { apiKeys?: Record<string, string> }
 ): AuthCapabilities {
   const apiKeySupported = !!p.apiKeyEnvVar;
+  // A placeholder (claudish's own, an unexpanded `${VAR}`) is not a key.
   const apiKeySet =
     apiKeySupported &&
-    (!!process.env[p.apiKeyEnvVar] ||
-      !!config.apiKeys?.[p.apiKeyEnvVar] ||
+    (!!realValueFor(p.apiKeyEnvVar, process.env[p.apiKeyEnvVar]) ||
+      !!realValueFor(p.apiKeyEnvVar, config.apiKeys?.[p.apiKeyEnvVar]) ||
       readAtUseVaultKeyPresent(p));
   // Devin has no claudish-side login (the token is minted by `devin login` and
   // read from that CLI's own file), so it declares no oauthLoginSlug — but it
