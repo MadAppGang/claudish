@@ -417,10 +417,12 @@ function resolveRoutingEntries(
     }
 
     // Every provider's wire id comes from the SAME catalog lookup
-    // (`aggregators[]`), not a per-provider resolver. This is what makes
-    // `ag@gemini-3.6-flash` reach `gemini-3.6-flash-high` and
-    // `together-ai@glm-5` reach `zai-org/GLM-5` without either provider
-    // needing bespoke code. No match → the name passes through unchanged.
+    // (`aggregators[]`), not a per-provider resolver: this is what makes
+    // `together-ai@glm-5` reach `zai-org/GLM-5` without bespoke code. An id
+    // the connection's effort map (`modelIdEffort`) publishes is kept as
+    // typed. For a base name this lookup returns the base; the effort-specific
+    // id is picked later from the effort map (`chooseConnectionModelId`).
+    // No match → the name passes through unchanged.
     if (!wireIdResolved) {
       const externalId = resolveExternalId(modelName, provider, cachePath);
       if (externalId === null && atIdx === -1 && readsGatewayList(provider, cachePath)) {
