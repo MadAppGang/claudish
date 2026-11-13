@@ -13,14 +13,22 @@
  * here because a real request would stop here too. Metered hops are probed like any
  * other (a configured key is consent, and the runtime would use that hop); the report
  * names each hop's billing. A native Claude name is never probed (CLAUDE.md: the third
- * outcome). Pure apart from the injected probe.
+ * outcome): a launch of it takes the Claude subscription. The report names its Claude API
+ * route below the table (`anthropic@<id>`, metered on the user's key), which a launch
+ * uses only when the caller names it; that route is not probed either, since probing it
+ * would spend money on a route the launch does not take. Pure apart from the injected
+ * probe and the credential readiness the Claude API note reads.
  */
+import { credentials } from "../auth/credentials/authority.js";
+import { keySourcesSearched } from "../auth/credentials/key-sources.js";
 import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import { redactSecrets } from "../redact.js";
+import { resolveCredentialProvenance } from "./api-key-provenance.js";
 import { bundledListLabel } from "./bundled-list-data.js";
+import { resolveExternalId } from "./catalog-client.js";
 import { explainRouteSettled } from "./explain-route-settled.js";
-import { isLocalProviderName } from "./model-parser.js";
-import { NATIVE_NOT_PROBED, nativeRouteFor } from "./native-route.js";
+import { isLocalProviderName, parseModelSpec } from "./model-parser.js";
+import { NATIVE_NOT_PROBED, type NativeRoute, nativeRouteFor } from "./native-route.js";
 import { type ProbeChainReason, type ProbeResult, describeProbeState } from "./probe-live.js";
 import { type ProbeTarget, probeTargets } from "./probe-runner.js";
 import type { NoRouteCause, RouteExplanation } from "./routing-rules.js";
@@ -54,8 +62,28 @@ export interface PreflightHop {
   reason?: WalkerReason;
 }
 
+/**
+ * A Claude model's Claude API route, beside the Claude subscription a launch of
+ * the bare name takes. Readiness only: never probed, and no Keychain value read.
+ */
+export type PreflightClaudeApi =
+  /** A key is present; `source` names where (never the value). */
+  | { state: "available"; spec: string; source: string }
+  | { state: "absent"; searched: string[] }
+  /** The 1Password step failed; the Keychain is not read here. */
+  | { state: "unreadable"; reason: string }
+  /** The catalog publishes no Claude API connection for the model. */
+  | { state: "not-in-catalog" };
+
 export type PreflightModelResult = (
-  | { kind: "native"; model: string; displayName: string; modelSpec: string }
+  | {
+      kind: "native";
+      model: string;
+      displayName: string;
+      modelSpec: string;
+      /** A bare Claude name only: absent for `claude@<id>` and a tier alias. */
+      claudeApi?: PreflightClaudeApi;
+    }
   | { kind: "no-route"; model: string; cause: NoRouteCause; reason: string; hint?: string }
   /** Routing itself threw. */
   | { kind: "route-error"; model: string; message: string }
@@ -90,6 +118,36 @@ export interface PreflightDeps {
   explain?: (model: string) => Promise<RouteExplanation>;
   /** Called before each hop is probed (progress reporting). */
   onHop?: (hop: PreflightHop, total: number) => void;
+  /** Default {@link describeClaudeApi}. */
+  claudeApi?: (native: NativeRoute) => Promise<PreflightClaudeApi>;
+}
+
+/** The claudish provider of the Claude API, and the key it signs with. */
+const CLAUDE_API_PROVIDER = "anthropic";
+const CLAUDE_API_KEY_VAR = "ANTHROPIC_API_KEY";
+
+/**
+ * The Claude API route of a native model, from the catalog this process already
+ * holds and the key's readiness. Readiness never reads a Keychain value
+ * (presence by enumeration) and never prompts for 1Password.
+ */
+export async function describeClaudeApi(native: NativeRoute): Promise<PreflightClaudeApi> {
+  const wireId = resolveExternalId(native.modelSpec, CLAUDE_API_PROVIDER);
+  if (!wireId) return { state: "not-in-catalog" };
+  const { readiness, detail } = await credentials.describeReadiness(CLAUDE_API_PROVIDER, {
+    allowOpPrompt: false,
+  });
+  if (readiness === "present") {
+    return {
+      state: "available",
+      spec: `${CLAUDE_API_PROVIDER}@${wireId}`,
+      source:
+        detail ??
+        resolveCredentialProvenance(CLAUDE_API_PROVIDER, CLAUDE_API_KEY_VAR).effectiveSource,
+    };
+  }
+  if (readiness === "failed") return { state: "unreadable", reason: detail ?? "unknown error" };
+  return { state: "absent", searched: keySourcesSearched() };
 }
 
 /** How a provider bills: local, subscription (`isSubscriptionProvider`), else metered. */
@@ -117,11 +175,16 @@ export async function preflightModel(
 ): Promise<PreflightModelResult> {
   const native = nativeRouteFor(model);
   if (native) {
+    // `claude@<id>` names the Claude subscription itself, and a tier alias has no
+    // concrete id the Claude API could be asked for.
+    const bare = !native.isTierAlias && !parseModelSpec(model).isExplicitProvider;
+    const claudeApi = bare ? await (deps.claudeApi ?? describeClaudeApi)(native) : undefined;
     return {
       kind: "native",
       model,
       displayName: native.displayName,
       modelSpec: native.modelSpec,
+      ...(claudeApi ? { claudeApi } : {}),
     };
   }
 
@@ -296,6 +359,25 @@ function rowFor(r: PreflightModelResult): string {
   }
 }
 
+/** The note line that names a Claude model's Claude API route, below the table. */
+function claudeApiLine(model: string, api: PreflightClaudeApi): string {
+  const head = `\`${model}\` — Claude API: `;
+  switch (api.state) {
+    case "available":
+      return cellText(
+        `${head}\`${api.spec}\` (metered, ${CLAUDE_API_KEY_VAR} from ${api.source}), used only when named`
+      );
+    case "absent":
+      return cellText(
+        `${head}absent — no ${CLAUDE_API_KEY_VAR} (looked in ${api.searched.join(", ")})`
+      );
+    case "unreadable":
+      return cellText(`${head}${CLAUDE_API_KEY_VAR} could not be read: ${api.reason}`);
+    case "not-in-catalog":
+      return cellText(`${head}the catalog publishes no Claude API connection for this model`);
+  }
+}
+
 /** The billing a model counts under: the serving hop, or the first hop when not probed. */
 function countedBilling(r: PreflightModelResult): HopBilling | undefined {
   if (r.kind === "served") return r.served.billing;
@@ -333,6 +415,13 @@ export function renderPreflightReport(
     "|---|---|---|---|---|",
     ...results.map(rowFor),
   ];
+
+  // What a launch of a bare Claude name does NOT use, so it is not a table row:
+  // the table answers what each launch uses, and that is the Claude subscription.
+  const claudeApiLines = results.flatMap((r) =>
+    r.kind === "native" && r.claudeApi ? [claudeApiLine(r.model, r.claudeApi)] : []
+  );
+  if (claudeApiLines.length > 0) lines.push("", ...claudeApiLines);
 
   const failedHopLines = results.flatMap((r) =>
     r.kind === "served" || r.kind === "failed"
