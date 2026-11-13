@@ -405,7 +405,9 @@ function readConfigKey(envVar: string): string | null {
     const cfg = JSON.parse(readFileSync(configPath, "utf-8")) as {
       apiKeys?: Record<string, string>;
     };
-    return cfg.apiKeys?.[envVar] || null;
+    // claudish's own placeholder, or an unexpanded `${VAR}`, is not a key, here
+    // as at sign time.
+    return realValueFor(envVar, cfg.apiKeys?.[envVar]) || null;
   } catch {
     return null;
   }
