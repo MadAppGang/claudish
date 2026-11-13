@@ -1573,7 +1573,7 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
   {
     createHandler: noHandler(
       "virtual",
-      "No baseUrl. Exists only so nativeModelPatterns can steer a bare claude-* name to the native path."
+      "No baseUrl. Steers a bare claude-* name, or claude@ before one, to the native path; claude@ serves only Claude Code's own Claude models."
     ),
     // The route IS the Claude Code subscription — the catalog's
     // `anthropic/claude-code-subscription` profile — so `subscription` is the
@@ -1597,8 +1597,11 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiKeyEnvVar: "",
     apiKeyDescription: "Anthropic (Native Claude Code auth)",
     apiKeyUrl: "",
-    shortcuts: [],
-    shortestPrefix: "",
+    // `claude@<id>` is the Claude subscription spec: the same native decision as
+    // the bare `<id>` (native-route.ts). The patterns below keep steering a bare
+    // claude-* name here.
+    shortcuts: ["claude"],
+    shortestPrefix: "claude",
     legacyPrefixes: [],
     nativeModelPatterns: [{ pattern: /^anthropic\//i }, { pattern: /^claude-/i }],
     description: "Native Claude Code auth",

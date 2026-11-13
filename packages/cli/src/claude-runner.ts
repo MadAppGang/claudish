@@ -55,6 +55,7 @@ import { loadConfig } from "./profile-config.js";
 import { contextWindowLimit } from "./providers/context-window-limit.js";
 import { LIVE_DISCOVERY_BOUND_MS, discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
+import { nativeRouteFor } from "./providers/native-route.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
 import {
@@ -101,9 +102,11 @@ function releaseTerminalIsolation(): void {
 }
 
 /**
- * Check if any resolved model mapping targets a native Anthropic model: a name
- * Claude Code owns (`claude-*`, `opus`, `opusplan`, `sonnet[1m]`, …), which the
- * parser attributes to native-anthropic. When true, placeholder auth tokens must
+ * Check if any resolved model mapping targets a native Anthropic model: the
+ * proxy's native decision, a name Claude Code owns (`claude-*`, `opus`,
+ * `opusplan`, `sonnet[1m]`, …) or `claude@` before one. A `claude@` whose inner
+ * name is not Claude Code's (`claude@gpt-6`) does not count: nothing serves it,
+ * so it must not switch a launch onto native auth. When true, placeholder auth tokens must
  * NOT be set — Claude Code needs its real subscription credentials so
  * NativeHandler can forward them to api.anthropic.com. Any other bare name
  * (`o4-mini`) is routed by the proxy, so it does not count.
@@ -116,7 +119,7 @@ function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
     config.modelHaiku,
     config.modelSubagent,
   ];
-  return models.some((m) => m && parseModelSpec(m).provider === "native-anthropic");
+  return models.some((m) => m && nativeRouteFor(m) !== null);
 }
 
 /** Existence-only probe for an OS-credential-store Anthropic OAuth item. */

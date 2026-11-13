@@ -22,9 +22,12 @@ hooks system.
 
 Only a `proxyRouteDecision` → `bare` target reaches `route()`. `nativeRouteFor()` answers native
 Claude names first in the proxy, `--probe`, the TUI probe, MCP `preflight` and `planAdvisorModel`.
+`claude@<id>` is the native decision of `<id>` and never reaches `route()`; an MCP strip turns it
+into `<id>` only when `<id>` is itself native and the spec carries no marker and no `:N`, and leaves
+any other `claude@` unchanged for the launch to refuse.
 
-- **Scope:** `providers/native-route.ts`, `proxy-server.ts`, `cli.ts`, `tui/hooks/useRouteProbe.ts`, `providers/preflight-chain.ts`, `handlers/advisor-route-plan.ts`.
-- **Check:** `providers/native-route.test.ts`, `providers/preflight-chain.test.ts`.
+- **Scope:** `providers/native-route.ts`, `proxy-server.ts`, `cli.ts`, `tui/hooks/useRouteProbe.ts`, `providers/preflight-chain.ts`, `handlers/advisor-route-plan.ts`, `mcp-server.ts` (`stripUnrequestedProvider`).
+- **Check:** `providers/native-route.test.ts`, `providers/preflight-chain.test.ts`, `providers/native-route.claude-prefix.test.ts`, `mcp-provider-strip.test.ts` (the `claude@` cases).
 
 ### RB-2
 

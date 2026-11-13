@@ -19,14 +19,21 @@
  * and `route()` decides it like every other bare name. The native passthrough
  * serves none of them, so it used to answer each with an Anthropic 404.
  *
- * Explicit specs are never native: `anthropic@claude-opus-5` names a vendor,
- * and `dv@claude-opus-5-high` is Devin re-serving a Claude id under its own
+ * Explicit specs are never native, with one exception: `claude@<id>` names the
+ * Claude subscription itself, so it is exactly the decision of `<id>` when `<id>`
+ * is a name Claude Code owns. Every other explicit spec names a route of its own:
+ * `anthropic@claude-opus-5` is the Claude API (metered on the user's Anthropic
+ * key), and `dv@claude-opus-5-high` is Devin re-serving a Claude id under its own
  * prefix. `parseModelSpec` already resolves that precedence; this only reads it.
+ *
+ * A `claude@` spec is checked once, on the caller's original string, by
+ * {@link claudeSubscriptionSpecRefusal} before anything strips or normalizes it.
  */
 
 import { claudeCodeTierAlias, normalizeNativeModelSpec } from "./claude-code-aliases.js";
-import { parseModelSpec } from "./model-parser.js";
+import { parseModelChain, parseModelSpec } from "./model-parser.js";
 import { getProviderByName } from "./provider-definitions.js";
+import { WireMarkerError, splitWireMarkers } from "./wire-markers.js";
 
 export interface NativeRoute {
   provider: "native-anthropic";
@@ -100,6 +107,21 @@ const POE_PREFIX = "poe:";
  */
 export function proxyRouteDecision(target: string): ProxyRouteDecision {
   const parsed = parseModelSpec(target);
+  if (parsed.isExplicitProvider && parsed.provider === "native-anthropic") {
+    // `claude@<id>` is the Claude subscription: the decision of the bare `<id>`
+    // after it (`parsed.model` carries no marker). An inner name Claude Code does
+    // not own stays an explicit native-anthropic spec, which nothing serves, so
+    // it is refused and never routed.
+    const inner = proxyRouteDecision(parsed.model);
+    if (inner.type === "native") return inner;
+    return {
+      type: "explicit",
+      provider: "native-anthropic",
+      model: parsed.model,
+      spec: target,
+      via: "model-spec",
+    };
+  }
   if (parsed.isExplicitProvider) {
     return {
       type: "explicit",
@@ -142,10 +164,78 @@ function nativeRouteOf(model: string): NativeRoute {
 }
 
 /**
- * Non-null only for a BARE name (no `@`, no `/`) that `parseModelSpec` attributes
- * to native-anthropic — the proxy's `native` decision.
+ * Non-null only for the proxy's `native` decision: a BARE name (no `@`, no `/`)
+ * that `parseModelSpec` attributes to native-anthropic, or `claude@` before one.
  */
 export function nativeRouteFor(model: string): NativeRoute | null {
   const decision = proxyRouteDecision(model);
   return decision.type === "native" ? decision.route : null;
+}
+
+/** True for a spec whose explicit provider is the Claude subscription (`claude@…`). */
+function isClaudeSubscriptionSpec(spec: string): boolean {
+  const parsed = parseModelSpec(spec);
+  return parsed.isExplicitProvider && parsed.provider === "native-anthropic";
+}
+
+/**
+ * The refusal for a Claude launch spec that carries a speed or mode marker. The
+ * Claude subscription and the Claude API launch talk to Anthropic through Claude
+ * Code itself, so a marker claudish puts on routed hops cannot be honoured, and a
+ * marker that cannot be honoured is refused, never dropped.
+ */
+export function claudeLaunchMarkerRefusal(spec: string): string {
+  return (
+    `${spec}: a Claude launch talks to Anthropic through Claude Code itself, so ` +
+    "claudish's speed and mode markers cannot apply; use /fast and /effort inside the session."
+  );
+}
+
+/**
+ * The one check of a `claude@` spec, run on the caller's ORIGINAL string before
+ * anything strips or normalizes it. `null` for a spec that is not `claude@…`,
+ * and for one `claude@<name Claude Code owns>` with no marker and no `:N`
+ * concurrency suffix. Otherwise the sentence that refuses it:
+ *
+ * - `claude@` inside a `+` chain: the Claude subscription is served by Claude
+ *   Code itself, so it cannot be one hop of a chain claudish routes;
+ * - a mode or speed marker (split strictly: `#bogus` gives the marker error);
+ * - a `:N` suffix, which `parseModelSpec` would split off silently;
+ * - an inner name that is not Claude Code's own (`claude@gpt-6`).
+ */
+export function claudeSubscriptionSpecRefusal(spec: string): string | null {
+  const elements = parseModelChain(spec);
+  if (elements.length > 1) {
+    return elements.some(isClaudeSubscriptionSpec)
+      ? "claude@ is the Claude subscription, which Claude Code serves itself; it cannot be a hop of a + chain"
+      : null;
+  }
+  if (!isClaudeSubscriptionSpec(spec)) return null;
+  let markers: ReturnType<typeof splitWireMarkers>;
+  try {
+    markers = splitWireMarkers(spec);
+  } catch (err) {
+    if (err instanceof WireMarkerError) return err.message;
+    throw err;
+  }
+  if (markers.mode || markers.speed) return claudeLaunchMarkerRefusal(spec);
+  const rawModel = spec.slice(spec.indexOf("@") + 1);
+  if (/:\d+$/.test(rawModel)) {
+    return `${spec}: claude@ is the Claude subscription, which Claude Code serves itself; it takes no :N concurrency suffix`;
+  }
+  const inner = parseModelSpec(spec).model;
+  if (nativeRouteFor(inner) === null) {
+    return `claude@ serves Claude Code's own Claude models; ${inner} is not one`;
+  }
+  return null;
+}
+
+/**
+ * The bare name after `claude@` for a `claude@` spec that
+ * {@link claudeSubscriptionSpecRefusal} accepts; any other spec unchanged. Call
+ * it only after that check: a refused spec is never reduced to its inner name.
+ */
+export function claudeSubscriptionInner(spec: string): string {
+  if (!isClaudeSubscriptionSpec(spec) || claudeSubscriptionSpecRefusal(spec) !== null) return spec;
+  return parseModelSpec(spec).model;
 }

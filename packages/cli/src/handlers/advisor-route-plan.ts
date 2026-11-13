@@ -28,7 +28,12 @@ import { bundledProvenance } from "../providers/bundled-list-data.js";
 import { warmCatalog } from "../providers/catalog-client.js";
 import { withBundledListScope } from "../providers/catalog-reachability.js";
 import { parseModelSpec } from "../providers/model-parser.js";
-import { nativeRouteFor, proxyRouteDecision } from "../providers/native-route.js";
+import {
+  claudeSubscriptionInner,
+  claudeSubscriptionSpecRefusal,
+  nativeRouteFor,
+  proxyRouteDecision,
+} from "../providers/native-route.js";
 import type { RouteTier } from "../providers/provider-definitions.js";
 import {
   type CandidateOutcome,
@@ -165,6 +170,19 @@ export async function planAdvisorModel(
   role: AdvisorRole,
   deps: PlanAdvisorDeps
 ): Promise<AdvisorModelPlan> {
+  // A `claude@` spec is checked whole, on the spec as given, before anything
+  // splits or normalizes it: the Claude subscription honours no marker and no
+  // `:N`, and an inner name Claude Code does not own is served by nothing.
+  const claudeRefusal = claudeSubscriptionSpecRefusal(spec);
+  if (claudeRefusal) {
+    return {
+      kind: "refused",
+      spec,
+      role,
+      cause: carriesWireMarker(spec) ? "wire-marker" : "claude-no-credential",
+      reason: claudeRefusal,
+    };
+  }
   let markers: WireMarkers;
   try {
     markers = splitWireMarkers(spec);
@@ -176,7 +194,9 @@ export async function planAdvisorModel(
   }
   const model = markers.spec;
 
-  if (nativeRouteFor(model)) return planClaudeMember(spec, role, model, deps);
+  if (nativeRouteFor(model)) {
+    return planClaudeMember(spec, role, claudeSubscriptionInner(model), deps);
+  }
 
   // Advisor startup never waits for the cloud models catalog. A bare name is
   // planned from the catalog file as it is now; with none on disk, from the
@@ -236,6 +256,17 @@ export async function planAdvisorModel(
     hops,
     invocationMode: explanation.source === "explicit" ? "explicit-model" : "auto-route",
   };
+}
+
+/** True when `spec` carries a mode or speed marker, or a malformed one. */
+function carriesWireMarker(spec: string): boolean {
+  try {
+    const markers = splitWireMarkers(spec);
+    return markers.mode !== undefined || markers.speed !== undefined;
+  } catch (err) {
+    if (err instanceof WireMarkerError) return true;
+    throw err;
+  }
 }
 
 async function planClaudeMember(

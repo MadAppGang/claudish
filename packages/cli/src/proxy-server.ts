@@ -57,7 +57,7 @@ import {
   getCustomEndpointResult,
 } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
-import { proxyRouteDecision } from "./providers/native-route.js";
+import { claudeSubscriptionSpecRefusal, proxyRouteDecision } from "./providers/native-route.js";
 import { PROBE_HOP_ORIGIN_HEADER, probeHopOriginOf } from "./providers/probe-hop-origin.js";
 import { describeMissingCredential, getProviderByName } from "./providers/provider-definitions.js";
 import {
@@ -258,6 +258,14 @@ function maybeCaptureClassifierRequest(c: Context, body: any): void {
   } catch {
     // Diagnostic capture is best-effort — never break the request path.
   }
+}
+
+/** What resolving one request's handler found besides the handler itself. */
+interface RequestResolution {
+  markers?: WireMarkers;
+  refusal?: string;
+  /** The bare model a `claude@<id>` target is sent as on the native passthrough. */
+  nativeModel?: string;
 }
 
 export async function createProxyServer(
@@ -477,13 +485,20 @@ export async function createProxyServer(
   //
   // `probeHopOrigin` is the probe's routed-hop mark, already filtered through
   // `probeHopOriginOf`: always absent on a proxy that is not a probe proxy.
+  //
+  // `resolved.nativeModel` is set when the target was a `claude@<id>` spec: the
+  // native passthrough forwards the request's own model, so the caller rewrites
+  // it to the bare `<id>` before the handler sees it (Anthropic answers a
+  // `claude@` string with a 400).
   const getHandlerForRequest = async (
     requestedModel: string,
-    probeHopOrigin?: "routed"
+    probeHopOrigin?: "routed",
+    resolved?: { nativeModel?: string }
   ): Promise<ModelHandler> => {
-    const out: { markers?: WireMarkers; refusal?: string } = {};
+    const out: RequestResolution = {};
     const handler = await resolveHandlerForRequest(requestedModel, out, probeHopOrigin);
     if (out.refusal) return new RefusingHandler(out.refusal);
+    if (resolved && out.nativeModel) resolved.nativeModel = out.nativeModel;
     return out.markers && (out.markers.mode || out.markers.speed)
       ? new WireMarkerHandler(handler, out.markers)
       : handler;
@@ -495,7 +510,7 @@ export async function createProxyServer(
 
   const resolveHandlerForRequest = async (
     requestedModel: string,
-    out: { markers?: WireMarkers; refusal?: string },
+    out: RequestResolution,
     probeHopOrigin?: "routed"
   ): Promise<ModelHandler> => {
     // 1. Monitor Mode Override
@@ -556,6 +571,16 @@ export async function createProxyServer(
       probeHopOrigin && !slotMatched && !wasFromModelMap && target === requestedModel
         ? probeHopOrigin
         : undefined;
+
+    // A `claude@` spec is checked whole, before its markers are split off: the
+    // Claude subscription honours no marker, no `:N` and no chain, and a
+    // `claude@` whose inner name Claude Code does not own is served by nothing.
+    // Refused here, it never reaches the routing below.
+    const claudeRefusal = claudeSubscriptionSpecRefusal(target);
+    if (claudeRefusal) {
+      out.refusal = claudeRefusal;
+      return nativeHandler;
+    }
 
     try {
       const markers = splitWireMarkers(target);
@@ -699,7 +724,9 @@ export async function createProxyServer(
     // spellings this single rewrite could never produce.
     {
       const parsedTarget = parseModelSpec(target);
-      if (parsedTarget.isExplicitProvider) {
+      // `claude@<id>` is the native decision of `<id>`: Claude Code serves it, so
+      // there is no wire id to look up.
+      if (parsedTarget.isExplicitProvider && proxyRouteDecision(target).type !== "native") {
         await ensureCatalogReady(5000);
         const outcome = resolveTargetForCatalog(
           target,
@@ -723,6 +750,13 @@ export async function createProxyServer(
     // other decision falls through to steps 3-7 below.
     {
       const decision = proxyRouteDecision(target);
+      // `claude@<id>`: the Claude subscription, on the native passthrough with the
+      // request's model rewritten to the bare `<id>`. A bare native name reaches
+      // the same handler at step 6.
+      if (decision.type === "native" && parseModelSpec(target).isExplicitProvider) {
+        out.nativeModel = decision.route.modelSpec;
+        return nativeHandler;
+      }
       if (decision.type === "bare") {
         const cacheKey = `fallback:${target}`;
         const cachedChain = fallbackHandlerCache.get(cacheKey);
@@ -1110,7 +1144,9 @@ export async function createProxyServer(
       if (typeof body?.model !== "string" || body.model.length === 0) {
         return c.json(wrapAnthropicError(400, "missing required field: model"), 400);
       }
-      const handler = await getHandlerForRequest(body.model, requestProbeHopOrigin(c));
+      const resolved: { nativeModel?: string } = {};
+      const handler = await getHandlerForRequest(body.model, requestProbeHopOrigin(c), resolved);
+      if (resolved.nativeModel) body.model = resolved.nativeModel;
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
@@ -1237,10 +1273,14 @@ export async function createProxyServer(
       // The advisor wrapper goes on the RESOLVED handler (FallbackHandler
       // included), once per request, around the hooks. See `withAdvisor` and
       // `withRequestHooks` above.
+      const resolved: { nativeModel?: string } = {};
       const handler = withAdvisor(
-        withRequestHooks(await getHandlerForRequest(body.model, requestProbeHopOrigin(c))),
+        withRequestHooks(
+          await getHandlerForRequest(body.model, requestProbeHopOrigin(c), resolved)
+        ),
         advisorPresence
       );
+      if (resolved.nativeModel) body.model = resolved.nativeModel;
 
       // Route. The `await` is load-bearing: `return handler.handle(...)` hands
       // the promise back BEFORE it settles, so a rejection escapes this

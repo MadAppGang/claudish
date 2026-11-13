@@ -98,7 +98,11 @@ import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js"
 import { OPENROUTER_MODELS_URL, fetchGatewayModels } from "./providers/gateway-models-list.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { isLocalProviderName, parseModelChain, parseModelSpec } from "./providers/model-parser.js";
-import { nativeRouteFor } from "./providers/native-route.js";
+import {
+  claudeSubscriptionInner,
+  claudeSubscriptionSpecRefusal,
+  nativeRouteFor,
+} from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
 import {
   type PreflightModelResult,
@@ -462,13 +466,16 @@ export async function runPromptViaProxy(
 }
 
 /**
- * One `run_prompt` request, on the path its model needs. `nativeRouteFor` FIRST, as
- * the proxy does (CLAUDE.md invariant): a bare Claude name (`claude-*`, `opus`,
- * `sonnet`, `haiku`, `internal`, ...) runs as one Claude Code print-mode call on the
- * user's own Claude Code login, because the proxy's native route forwards the
- * caller's credential and an MCP call has none. Every other model, including the
- * explicit `anthropic@claude-*` (metered), goes through the in-process proxy. The
- * ORIGINAL model string is passed on; claudish's CLI owns alias normalisation.
+ * One `run_prompt` request, on the path its model needs. A `claude@` spec is
+ * checked FIRST, on the string as given (`claudeSubscriptionSpecRefusal`): a
+ * marker, a `:N` suffix, a chain or an inner name Claude Code does not own is
+ * refused before any child starts, never reduced to its inner name. Then
+ * `nativeRouteFor`, as the proxy does (CLAUDE.md invariant): a bare Claude name
+ * (`claude-*`, `opus`, `sonnet`, `haiku`, `internal`, ...) or `claude@` before one
+ * runs as one Claude Code print-mode call on the user's own Claude Code login,
+ * because the proxy's native route forwards the caller's credential and an MCP call
+ * has none. The print child gets the bare name (`claude@` removed); claudish's CLI
+ * owns alias normalisation. Every other model goes through the in-process proxy.
  *
  * `effort` reaches only the proxy path: on the print path Claude Code sets the
  * effort of its own Claude model.
@@ -480,8 +487,12 @@ export async function runPrompt(
   signal?: AbortSignal,
   effort?: EffortLevel
 ): Promise<RunPromptResult> {
+  const refusal = claudeSubscriptionSpecRefusal(model);
+  if (refusal) throw new Error(refusal);
   if (nativeRouteFor(model) !== null) {
-    return runPromptViaClaudeCode(model, prompt, systemPrompt, { signal });
+    return runPromptViaClaudeCode(claudeSubscriptionInner(model), prompt, systemPrompt, {
+      signal,
+    });
   }
   return runPromptViaProxy(model, prompt, systemPrompt, effort);
 }
@@ -761,6 +772,13 @@ export function stripUnrequestedProvider(
   if (required || parseModelChain(spec).length !== 1) return spec;
   const parsed = parseModelSpec(spec);
   if (!parsed.isExplicitProvider || parsed.isLegacySyntax) return spec;
+  if (parsed.provider === "native-anthropic") {
+    // claude@ is the Claude subscription. Stripping it is safe only when the spec
+    // passes its own check, so the bare name IS the subscription's decision;
+    // anything else (a marker, `:N`, an inner name Claude Code does not own) stays
+    // claude@ so the launch path refuses it, never routed.
+    return claudeSubscriptionSpecRefusal(spec) === null ? claudeSubscriptionInner(spec) : spec;
+  }
   // Only a built-in claudish provider: a user's custom endpoint (`corp-proxy@gpt-4o`)
   // names a vendor and a bill the bare name would not reach. An unrequested
   // `anthropic@claude-*` (the metered Claude API) is a builtin and strips to the
@@ -794,6 +812,26 @@ export function userRequiredProvidersArg(
     }
   }
   return new Set(value as string[]);
+}
+
+/**
+ * The tool error for the first caller-given spec `claude@` cannot serve, checked on
+ * the strings exactly as given, before any provider strip, model-choice stop or
+ * effort question, so nothing is started for it. Undefined when every spec passes.
+ */
+export function claudeSpecRefusalResult(
+  given: readonly string[]
+): { content: Array<{ type: "text"; text: string }>; isError: true } | undefined {
+  for (const spec of given) {
+    const refusal = claudeSubscriptionSpecRefusal(spec);
+    if (refusal) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${spec} refused: ${refusal}` }],
+        isError: true,
+      };
+    }
+  }
+  return undefined;
 }
 
 /** One `{from, to}` per spec whose provider was removed, for the tool's answer and the log. */
@@ -1742,6 +1780,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     heartbeat: true,
     handler: async (args, ctx) => {
       try {
+        const claudeRefusal = claudeSpecRefusalResult([args.model as string]);
+        if (claudeRefusal) return claudeRefusal;
         await settleCatalogVerdictWithNoFile();
         const { specs, stripped } = strippedProviders(
           [args.model as string],
@@ -2022,6 +2062,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
       const modelIds = args.models as string[];
       const prompt = args.prompt as string;
       const systemPrompt = args.system_prompt as string | undefined;
+      const claudeRefusal = claudeSpecRefusalResult(modelIds);
+      if (claudeRefusal) return claudeRefusal;
 
       // Ordering: ARGUMENT order, deliberately. The caller chose this sequence
       // and reads the comparison against it, so the repo-wide newest-first
@@ -2459,6 +2501,11 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
         await settleCatalogVerdictWithNoFile();
         const givenModels = args.models as string[] | undefined;
         const givenJudges = args.judges as string[] | undefined;
+        const claudeRefusal = claudeSpecRefusalResult([
+          ...(givenModels ?? []),
+          ...(givenJudges ?? []),
+        ]);
+        if (claudeRefusal) return claudeRefusal;
         const requiredProviders = userRequiredProvidersArg(args.user_required_provider, [
           ...(givenModels ?? []),
           ...(givenJudges ?? []),
@@ -3026,6 +3073,8 @@ function defineTools(sessionManager: SessionManager, nested: boolean): ToolDefin
     group: "session",
     handler: async (args) => {
       try {
+        const claudeRefusal = claudeSpecRefusalResult([args.model as string]);
+        if (claudeRefusal) return claudeRefusal;
         const taskType = taskTypeArg(args.task_type) ?? undefined;
         const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags) ?? [];
         const effort = effortArg(args.effort);
