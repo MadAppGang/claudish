@@ -762,8 +762,9 @@ export function stripUnrequestedProvider(
   const parsed = parseModelSpec(spec);
   if (!parsed.isExplicitProvider || parsed.isLegacySyntax) return spec;
   // Only a built-in claudish provider: a user's custom endpoint (`corp-proxy@gpt-4o`)
-  // or an explicit metered `anthropic@claude-*` names a vendor and a bill the
-  // bare name would not reach.
+  // names a vendor and a bill the bare name would not reach. An unrequested
+  // `anthropic@claude-*` (the metered Claude API) is a builtin and strips to the
+  // bare name, which runs on the Claude subscription.
   const builtin = BUILTIN_PROVIDERS.find((p) => p.name === parsed.provider);
   if (!builtin || builtin.isLocal || isLocalProviderName(parsed.provider)) return spec;
   if (!isCatalogModel(parsed.model)) return spec;

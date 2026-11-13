@@ -76,7 +76,7 @@ So `team` (`models`, `judges`), `create_session` and `run_prompt` remove the pro
 provider is a BUILT-IN claudish provider and whose model part is exactly a canonical model id of
 the cloud models catalog is changed; markers (`+pro`, `#fast`) stay. Unchanged: chains, local
 providers, `custom-url`, a user's custom endpoint (`corp-proxy@gpt-4o` names a vendor and a bill
-the bare name would not reach), an explicit metered `anthropic@claude-*`, legacy syntax, a wire id
+the bare name would not reach), legacy syntax, a wire id
 that is not a catalog model id (`kc@k3`), and two specs that would strip to one name
 (`or@kimi-k3`, `kc@kimi-k3`: a provider comparison keeps both providers and both efforts). The
 answer names every removal (`provider_note` / `note`) and the MCP log records it.
@@ -178,14 +178,27 @@ Fixing one cause alone changes nothing visible: a provider for `anthropic/direct
 never gathered for a native name, and gathering candidates for a native name still finds no
 provider that can sign the Claude API.
 
+**The Claude API provider is `anthropic`** (shortcuts `anthropic@`, `a@`, `api@`; tier
+`native`; `x-api-key` on `ANTHROPIC_API_KEY`), bound to `anthropic/direct-api` in the routing
+table. It is metered by name: in neither `SUBSCRIPTION_PROVIDERS` nor
+`CREDENTIAL_DECIDED_PROVIDERS`. What it deliberately lacks: `nativeModelPatterns` (patterns are
+tried in builtin order, and `/^claude-/` there would take every bare Claude name away from the
+Claude subscription), `baseUrlEnvVars` (`ANTHROPIC_BASE_URL` is how claudish points a child
+Claude Code at its own proxy, so a nested claudish would send the key to the parent's proxy),
+and `apiKeyAliases` (`ANTHROPIC_AUTH_TOKEN` is the subscription's OAuth token). It reads a vault
+key only at use (`vaultKeyReadAtUse`, [keychain.md](./keychain.md)), so a key it resolves never
+reaches `process.env` and a later native child. A bare Claude name still never reaches
+`route()`, so routing it is unchanged; `anthropic@<id>` names the route explicitly.
+
 **The name `anthropic` means two things.** It is the catalog's route id for Anthropic's own
 endpoints (`anthropic/direct-api`, `anthropic/claude-code-subscription`) and the vendor slug the
-savings panel reads its first-party price under. It is ALSO the hook route provider
-`NativeHandler` reports (`route: {provider: "anthropic", native: true}`), and `isNativeRoute`
-(`hooks/request-stage.ts`) answers true for `providerName === "anthropic"` whatever the model, a
-rule `ComposedHandler.routeInfo` feeds too. So a hook scoped `routes: native` runs on every route
-whose wire is Anthropic's own and whose model is Claude, through the native passthrough or a
-provider named `anthropic`; `routes: foreign` runs on neither. A rule that must tell the native
+savings panel reads its first-party price under, and the Claude API provider's name. It is ALSO
+the hook route provider `NativeHandler` reports (`route: {provider: "anthropic", native: true}`),
+and `isNativeRoute` (`hooks/request-stage.ts`) answers true for `providerName === "anthropic"`
+whatever the model, a rule `ComposedHandler.routeInfo` feeds too. So a proxied `anthropic@`
+request reports `RouteInfo.native: true`, as the native passthrough does: the wire is
+Anthropic's own and the model is Claude, which is what the plan-mode measurement behind `native`
+covers. A hook scoped `routes: native` runs on both Claude routes; `routes: foreign` on neither. A rule that must tell the native
 passthrough apart from a metered call reads `provider_name` and `adapter_name` in stats, never
 the hook's provider name.
 
@@ -577,11 +590,13 @@ A connection names a route binding `(routeId, routeProfileId)`, never a claudish
   The candidate gatherer reads it through `routingProvidersForRoute`, which returns EVERY name
   bound to a route: `z-ai` and `glm` share `z-ai/direct-api` because their keys sit in two
   silos, and the credential filter decides which one serves.
-- **`LOOKUP_ONLY_ROUTE_BINDINGS`: `anthropic`, `moonshotai`, `zen`.** Names that catalog READS
-  ask about (the savings panel's first-party price, the Kimi picker list, a legacy picker value)
-  and that no claudish provider answers to. They are never route candidates. In the routing
-  table they were candidates by accident of spelling: a custom endpoint named `anthropic` would
-  have been gathered for every model Anthropic's native API serves.
+- **`LOOKUP_ONLY_ROUTE_BINDINGS`: `moonshotai`, `zen`.** Names that catalog READS ask about
+  (the Kimi picker list, a legacy picker value) and that no claudish provider answers to. They
+  are never route candidates. In the routing table they were candidates by accident of
+  spelling. `anthropic` sat here until claudish had a provider for Anthropic's native API: then
+  a custom endpoint named `anthropic` would have been gathered for every model that route
+  serves. It is now the Claude API's binding in the routing table, and the savings panel reads
+  its first-party price through the same name.
 
 Reads see both tables (`catalogRouteForProvider`; `catalogReadProvidersForRoute` lists routing
 names first), so each read answers as it did before the split. A name that owns no endpoint and

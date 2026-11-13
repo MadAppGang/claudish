@@ -82,7 +82,8 @@ The reason is the environment, not the cost. Every other API-key provider writes
 through into `process.env` so spawned children inherit it, and for a key that Claude Code itself
 reads that is the bug: `ANTHROPIC_API_KEY` in `process.env` reaches every child Claude Code claudish
 starts and moves a session on the user's Claude login onto metered billing. A read-at-use
-provider's key never leaves the process.
+provider's key never leaves the process. `anthropic`, the Claude API, is the provider that
+declares it.
 
 The resolving step is recorded as the key's origin (`describeOrigin`: the source and a masked
 value, never the key), so `--probe` provenance names `macOS Keychain` or `1Password` for a key no

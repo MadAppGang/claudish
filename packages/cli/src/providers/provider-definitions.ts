@@ -1534,6 +1534,41 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     description: "Qwen (auto-routed via OpenRouter)",
   },
 
+  // ── Claude API (Anthropic's metered native API) ────────────────────
+  {
+    createHandler: anthropicCompatHandler,
+    tier: "native",
+    name: "anthropic",
+    displayName: "Claude API",
+    transport: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    // NO baseUrlEnvVars: ANTHROPIC_BASE_URL is how claudish points a child Claude
+    // Code at its own proxy. A claudish started inside a session inherits it, and
+    // reading it here would send the user's key to the parent's proxy.
+    apiPath: "/v1/messages",
+    apiKeyEnvVar: "ANTHROPIC_API_KEY",
+    // NO apiKeyAliases: ANTHROPIC_AUTH_TOKEN is the Claude subscription's OAuth
+    // token, never an API key.
+    apiKeyDescription: "Anthropic API key",
+    apiKeyUrl: "https://console.anthropic.com/settings/keys",
+    authScheme: "x-api-key",
+    shortcuts: ["anthropic", "a", "api"],
+    shortestPrefix: "anthropic",
+    // The key is read only when a request is signed, and only into this process:
+    // Claude Code reads ANTHROPIC_API_KEY from its environment, so a vault key
+    // written there would move a later native child onto metered billing, and a
+    // readiness check that reads a Keychain value raises the item's access dialog.
+    vaultKeyReadAtUse: true,
+    // NO legacyPrefixes: `anthropic/<id>` stays the vendor-qualified id OpenRouter
+    // serves. NO nativeModelPatterns: patterns are tried in BUILTIN order, and
+    // /^claude-/ here would take a bare claude-* name away from native-anthropic,
+    // whose Claude Code login serves it. NO modelDiscovery: the catalog publishes
+    // this route's connections.
+    legacyPrefixes: [],
+    isDirectApi: true,
+    description: "Claude API, metered on your Anthropic key (anthropic@, a@, api@)",
+  },
+
   // ── Native Anthropic (Claude Code auth) ────────────────────────────
   {
     createHandler: noHandler(
@@ -1550,6 +1585,9 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // `nativeRouteFor()` must intercept a bare Claude name BEFORE `route()`,
     // because there is no credential store here for the credential filter to
     // consult and the chain would degrade to OpenRouter.
+    //
+    // Anthropic's metered native API on the user's key is a separate provider,
+    // `anthropic` (the Claude API, above), bound to `anthropic/direct-api`.
     tier: "subscription",
     name: "native-anthropic",
     displayName: "Anthropic (Native)",
