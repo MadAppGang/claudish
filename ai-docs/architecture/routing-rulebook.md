@@ -24,7 +24,10 @@ Only a `proxyRouteDecision` → `bare` target reaches `route()`. `nativeRouteFor
 Claude names first in the proxy, `--probe`, the TUI probe, MCP `preflight` and `planAdvisorModel`.
 `claude@<id>` is the native decision of `<id>` and never reaches `route()`; the MCP strip never
 removes `claude@` (a bare name follows the API-billing opt-in, `claude@` never does), and the pane
-child that receives it keeps the choice as `claudeSubscriptionPin`. `--probe` and the config TUI may also list a
+child that receives it keeps the choice as `claudeSubscriptionPin`. A `claude@` spec
+`claudeSubscriptionSpecRefusal` refuses (a marker, `:N`, a chain hop, a name Claude Code does not
+own) is refused on the spec as given BEFORE native recognition, in `explainRoute` (no-route
+`explicit-refused`) and in `preflightModel` as in every launch. `--probe` and the config TUI may also list a
 BARE native name's catalog routes (`comparisonCandidates`: no user rule, no fallback hop, the native
 provider excluded before the credential filter, plus one off-catalog `anthropic` candidate when the
 catalog has no entry); that list is never a `RoutePlan` and no request is routed from it.
@@ -35,8 +38,8 @@ catalog has no entry); that list is never a `RoutePlan` and no request is routed
 ### RB-2
 
 An explicit `provider@model` is a one-hop chain to that provider: no gathering, rules or fallback.
-Its outcomes are `explicit-unknown-shortcut`, `explicit-no-credential`, `explicit-unbuildable` and
-`explicit-not-served` only. Offline, a model outside the bundled recommended list, or a bundled
+Its outcomes are `explicit-unknown-shortcut`, `explicit-no-credential`, `explicit-unbuildable`,
+`explicit-not-served` and, for a refused `claude@` spec only (RB-1), `explicit-refused`. Offline, a model outside the bundled recommended list, or a bundled
 model with no bundled connection for that provider, is refused as with no catalog. A probe sends
 each hop of a bare name's routing chain as a spec marked `x-claudish-hop-origin: routed`; only a
 proxy started for probing (`probeProxy`) honours the mark and builds that hop as a routed hop, so a

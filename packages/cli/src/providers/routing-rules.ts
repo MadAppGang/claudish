@@ -32,7 +32,11 @@ import { type AvailabilityNetwork, providerServesModel } from "./model-availabil
 import { discoverProviderServedIds } from "./model-discovery.js";
 import { AUTO_ROUTE_PROVIDER, PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
-import { type NativeRoute, proxyRouteDecision } from "./native-route.js";
+import {
+  type NativeRoute,
+  claudeSubscriptionSpecRefusal,
+  proxyRouteDecision,
+} from "./native-route.js";
 import { PREDEFINED_ENDPOINTS } from "./predefined-catalog.js";
 import { type RouteTier, getAllProviders, getProviderByName } from "./provider-definitions.js";
 import {
@@ -686,7 +690,12 @@ export type NoRouteCause =
   /** An explicit spec's plan membership excludes the model, so no route could be built. */
   | "explicit-unbuildable"
   /** An explicit spec's provider does not serve the model. */
-  | "explicit-not-served";
+  | "explicit-not-served"
+  /**
+   * A `claude@` spec the Claude subscription refuses before any routing: a
+   * marker, a `:N` suffix, a `+` chain hop, or a name Claude Code does not own.
+   */
+  | "explicit-refused";
 
 /**
  * The decision. It mirrors `RoutePlan.kind` field for field, which is what makes
@@ -1993,6 +2002,9 @@ async function explainRoutePlan(
  * would use, every candidate the chain considered and what removed it, and why.
  * For `--probe` and the config TUI.
  *
+ * A `claude@` spec the Claude subscription refuses is answered first, as a
+ * no-route (`explicit-refused`), exactly as the proxy refuses it.
+ *
  * It starts where the proxy starts, at `proxyRouteDecision`. A `native` target is
  * answered there (no candidates: Claude Code's own auth serves it). `poe:<id>` and
  * `anthropic/<id>` are the explicit targets the proxy serves without `route()`.
@@ -2006,6 +2018,20 @@ export async function explainRoute(
   target: string,
   opts: ExplainRouteOptions = {}
 ): Promise<RouteExplanation> {
+  // Checked on the spec as given, as every launch checks it: `proxyRouteDecision`
+  // reads `claude@<id>#fast` as the native `<id>`, which no launch serves.
+  const claudeRefusal = claudeSubscriptionSpecRefusal(target);
+  if (claudeRefusal) {
+    return {
+      requestedModel: target,
+      routedModel: target,
+      source: "explicit",
+      via: "model-spec",
+      candidates: [],
+      outcome: { kind: "no-route", cause: "explicit-refused", reason: claudeRefusal },
+      warnings: [],
+    };
+  }
   const decision = proxyRouteDecision(target);
 
   if (decision.type === "native") {

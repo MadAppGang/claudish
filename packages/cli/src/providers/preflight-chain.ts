@@ -28,7 +28,12 @@ import { bundledListLabel } from "./bundled-list-data.js";
 import { resolveExternalId } from "./catalog-client.js";
 import { explainRouteSettled } from "./explain-route-settled.js";
 import { isLocalProviderName, parseModelSpec } from "./model-parser.js";
-import { NATIVE_NOT_PROBED, type NativeRoute, nativeRouteFor } from "./native-route.js";
+import {
+  NATIVE_NOT_PROBED,
+  type NativeRoute,
+  claudeSubscriptionSpecRefusal,
+  nativeRouteFor,
+} from "./native-route.js";
 import { type ProbeChainReason, type ProbeResult, describeProbeState } from "./probe-live.js";
 import { type ProbeTarget, probeTargets } from "./probe-runner.js";
 import type { NoRouteCause, RouteExplanation } from "./routing-rules.js";
@@ -173,6 +178,10 @@ export async function preflightModel(
   model: string,
   deps: PreflightDeps
 ): Promise<PreflightModelResult> {
+  // A `claude@` spec every launch refuses (a marker, `:N`) is refused here too,
+  // before `nativeRouteFor` reads it as the native name inside.
+  const claudeRefusal = claudeSubscriptionSpecRefusal(model);
+  if (claudeRefusal) return { kind: "route-error", model, message: claudeRefusal };
   const native = nativeRouteFor(model);
   if (native) {
     // `claude@<id>` names the Claude subscription itself, and a tier alias has no
