@@ -491,6 +491,11 @@ export interface AdvisorStartupDeps {
    * its advisor key arm (`advisorKeyArmFor`). Absent ⇒ `inbound`: `"lookup"`.
    */
   launchSigning?: NativeSigning;
+  /**
+   * `advisorKeyLookupAllowed(config)`: false keeps a Claude member off
+   * ANTHROPIC_API_KEY on an `inbound` launch. Default true.
+   */
+  advisorKeyLookup?: boolean;
   /** Default `planAdvisorModel`. */
   plan?: (spec: string, role: AdvisorRole, deps: PlanAdvisorDeps) => Promise<AdvisorModelPlan>;
   /** Default: a fresh advisor handler set (`requestRole: "advisor"`, no token file). */
@@ -538,7 +543,11 @@ export async function evaluateAdvisorStartup(
   const planDeps: PlanAdvisorDeps = {
     childAuth,
     anthropicKeyPresent: deps.anthropicKeyPresent ?? anthropicKeyPresent,
-    keyArm: deps.launchSigning ? advisorKeyArmFor(deps.launchSigning) : "lookup",
+    keyArm: deps.launchSigning
+      ? advisorKeyArmFor(deps.launchSigning, { keyLookup: deps.advisorKeyLookup !== false })
+      : deps.advisorKeyLookup === false
+        ? "request-key"
+        : "lookup",
   };
   const plan = deps.plan ?? planAdvisorModel;
 

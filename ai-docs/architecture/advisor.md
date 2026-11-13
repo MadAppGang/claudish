@@ -513,6 +513,7 @@ both startup planning and the proxy call it, so the plan and the call agree:
 | Signing | Key arm | A Claude member with no login |
 |---|---|---|
 | `inbound` | `"lookup"` | steps 2-4 above, as before |
+| `inbound` on a launch with no main model (plain `--monitor`, `--advisor` alone) and no API-billing opt-in (`advisorKeyLookupAllowed`, `launcher/claude-launch.ts`) | `"request-key"` | step 2 only: the request's own `x-api-key`, never `ANTHROPIC_API_KEY`; startup refuses a member that would need the key (`claude-no-credential`) |
 | `login-only` (the Claude subscription) | `"off"` | no key is read: `{arm: null}`, "Claude subscription session: the advisor signs only with Claude Code's login, never an API key"; startup refuses such a member with cause `claude-no-credential` |
 | `launch-key` (the Claude API launch) | `{launchKey}` | the launch's own key, never an inbound one and never a second lookup; planned as `claude-native` with `apiKeySource: "claude-api-launch-key"`, and the notice names "the Claude API launch's key" |
 
@@ -520,7 +521,10 @@ Startup reads the LAUNCH's signing (`evaluateAdvisorStartup(…, {launchSigning}
 `prepareClaudeLaunch`, which `index.ts` runs before the advisor check). Without it a Claude API
 launch whose key is only in the Keychain would plan through `native-anthropic`'s lookup, which has
 no Keychain step, and refuse a member the runtime could serve. The proxy reads each REQUEST's
-signing, so a `claude@<id>` request is `"off"` on any launch. On the Claude API launch
+signing, so a `claude@<id>` request is `"off"` on any launch. A member whose own spec is
+`claude@…` is `"off"` too, at planning and at runtime, whatever the launch signs with: an explicit
+subscription spec is never consent to its metered sibling, so with no login it is refused at
+startup (`claude-no-credential`). On the Claude API launch
 `childAuthControl` answers `proxy-auth` (the bearer Claude Code sends is claudish's placeholder),
 so the login arm never runs there.
 

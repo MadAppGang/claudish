@@ -78,11 +78,19 @@ export interface AdvisorHop {
 /**
  * What a Claude advisor member may sign with when the request carries no usable
  * Claude login. `"lookup"`: the request's x-api-key, else ANTHROPIC_API_KEY
- * through the advisor's own lookup. `"off"`: nothing; the Claude subscription is
- * never signed with an API key. `{launchKey}`: the key the Claude API launch
- * signs every request with, billed to the same key.
+ * through the advisor's own lookup. `"request-key"`: the request's x-api-key
+ * only, never ANTHROPIC_API_KEY (a session with no main model, which runs on
+ * Claude Code's own credential, without the API-billing opt-in). `"off"`:
+ * nothing; the Claude subscription is never signed with an API key.
+ * `{launchKey}`: the key the Claude API launch signs every request with, billed
+ * to the same key.
  */
-export type ClaudeAdvisorKeyArm = "lookup" | "off" | { launchKey: () => string };
+export type ClaudeAdvisorKeyArm = "lookup" | "request-key" | "off" | { launchKey: () => string };
+
+/** Why a Claude advisor call is not signed on a session with no main model and no opt-in. */
+export const NO_MAIN_MODEL_ADVISOR_NO_KEY =
+  "this session has no main model, so it runs on Claude Code's own credential, and the advisor " +
+  "never signs with ANTHROPIC_API_KEY there without --anthropic-api-billing";
 
 /** Why a Claude subscription session's advisor call with no login is not signed at all. */
 export const CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY =
@@ -350,6 +358,17 @@ async function planClaudeMember(
       expectedArm: "api-key",
       authSource,
       apiKeySource: "inbound-x-api-key",
+    };
+  }
+  if (keyArm === "request-key") {
+    return {
+      kind: "refused",
+      spec,
+      role,
+      cause: "claude-no-credential",
+      reason:
+        `${spec} is a Claude model; this launch gives the advisor no Claude login ` +
+        `(${noLoginPhrase(authSource)}), and ${NO_MAIN_MODEL_ADVISOR_NO_KEY}.`,
     };
   }
   if (!(await deps.anthropicKeyPresent())) {

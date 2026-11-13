@@ -191,15 +191,21 @@ export type { ClaudeAdvisorKeyArm };
 /**
  * The one mapping from a native request's signing to the advisor's key arm,
  * shared by startup planning and the proxy, so the plan and the call agree.
+ * `keyLookup: false` (a launch with no main model and no API-billing opt-in,
+ * `advisorKeyLookupAllowed`) keeps an `inbound` request's advisor off
+ * ANTHROPIC_API_KEY: only the request's own x-api-key may sign it.
  */
-export function advisorKeyArmFor(signing: NativeSigning): ClaudeAdvisorKeyArm {
+export function advisorKeyArmFor(
+  signing: NativeSigning,
+  opts: { keyLookup?: boolean } = {}
+): ClaudeAdvisorKeyArm {
   switch (signing.kind) {
     case "launch-key":
       return { launchKey: signing.key };
     case "login-only":
       return "off";
     case "inbound":
-      return "lookup";
+      return opts.keyLookup === false ? "request-key" : "lookup";
   }
 }
 

@@ -1302,7 +1302,9 @@ async function runCli() {
     // API key, and a settings layer that would hand the child one refuses the
     // launch here, before spawn. A Claude API launch (`anthropic@<id>`) resolves
     // its key here, and the proxy signs every request with it.
-    const { prepareClaudeLaunch } = await import("./launcher/claude-launch.js");
+    const { advisorKeyLookupAllowed, prepareClaudeLaunch } = await import(
+      "./launcher/claude-launch.js"
+    );
     const preparedLaunch = await traceSpan("startup:claude-launch", () =>
       prepareClaudeLaunch(cliConfig)
     );
@@ -1319,12 +1321,10 @@ async function runCli() {
     if (cliConfig.advisor) {
       const { evaluateAdvisorStartup } = await import("./advisor-startup.js");
       const decision = await traceSpan("startup:advisor-check", () =>
-        evaluateAdvisorStartup(
-          cliConfig,
-          resolveAdvisorToolEnv(cliConfig),
-          process.env,
-          launchSigning ? { launchSigning } : {}
-        )
+        evaluateAdvisorStartup(cliConfig, resolveAdvisorToolEnv(cliConfig), process.env, {
+          ...(launchSigning ? { launchSigning } : {}),
+          advisorKeyLookup: advisorKeyLookupAllowed(cliConfig),
+        })
       );
       if (decision?.kind === "refuse") {
         process.stderr.write(
@@ -1466,6 +1466,7 @@ async function runCli() {
             ? { claudeApiMainModel: cliConfig.claudeLaunchModel }
             : {}),
           apiBillingOptIn: wantsAnthropicApiBilling(cliConfig),
+          advisorKeyLookup: advisorKeyLookupAllowed(cliConfig),
           summarizeTools: cliConfig.summarizeTools,
           quiet: cliConfig.quiet,
           isInteractive: cliConfig.interactive,

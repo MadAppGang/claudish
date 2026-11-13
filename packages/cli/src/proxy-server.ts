@@ -236,6 +236,12 @@ export interface ProxyServerOptions {
    */
   apiBillingOptIn?: boolean;
   /**
+   * `advisorKeyLookupAllowed(config)`: false (a launch with no main model and no
+   * API-billing opt-in) keeps a Claude advisor member off ANTHROPIC_API_KEY on
+   * an `inbound` request. Default true.
+   */
+  advisorKeyLookup?: boolean;
+  /**
    * Run hooks on this proxy's `/v1/messages` traffic. Default true. `--probe`
    * passes false: hooks never see probe traffic. Monitor mode and the
    * classifier passthrough never run hooks whatever this says.
@@ -465,7 +471,7 @@ export async function createProxyServer(
           ...(advisorRuntime ? { childAuth: advisorRuntime.childAuth } : {}),
           // A Claude member's key follows the request's signing: none on the
           // Claude subscription, the launch key on the Claude API launch.
-          keyArm: advisorKeyArmFor(signing),
+          keyArm: advisorKeyArmFor(signing, { keyLookup: options.advisorKeyLookup !== false }),
         },
       }
     );

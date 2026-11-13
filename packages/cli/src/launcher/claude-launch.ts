@@ -79,6 +79,28 @@ export function launchSigningFor(
   return wantsApiBilling(config) ? undefined : LOGIN_ONLY_SIGNING;
 }
 
+/**
+ * Whether a Claude advisor member of this launch may fall back to
+ * ANTHROPIC_API_KEY when its request carries no Claude login. Not on a launch
+ * with no main model (plain `--monitor`, `--advisor` alone) unless the user
+ * opted into API billing: such a session runs on Claude Code's own credential,
+ * the Claude subscription for a login, and is never moved onto the key.
+ */
+export function advisorKeyLookupAllowed(
+  config: ClaudishConfig,
+  deps: LaunchSigningDeps = {}
+): boolean {
+  const tiers = [config.modelOpus, config.modelSonnet, config.modelHaiku, config.modelSubagent];
+  const hasMainModel =
+    (config.modelChain?.length ?? 0) > 0 ||
+    Boolean(config.model) ||
+    tiers.some((m) => typeof m === "string" && m.length > 0);
+  if (hasMainModel) return true;
+  const wantsApiBilling =
+    deps.wantsApiBilling ?? ((c: ClaudishConfig) => wantsAnthropicApiBilling(c));
+  return wantsApiBilling(config);
+}
+
 /** What a Claude subscription launch does about the settings findings it read. */
 export interface SubscriptionSettingsCheck {
   /** The refusal naming every finding that could hand the child a key; null when none can. */

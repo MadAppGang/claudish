@@ -63,6 +63,7 @@ import {
   CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY,
   type ClaudeAdvisorKeyArm,
   type ExtractedAdvice,
+  NO_MAIN_MODEL_ADVISOR_NO_KEY,
   buildAdvisorPanelPayload,
   describeAdvisorRefusal,
   extractAdvice,
@@ -1942,7 +1943,8 @@ function loginSkippedPhrase(facts: ClaudeRequestFacts): string {
  * the request, never by failure: the login when `facts.login` exists; else what
  * `keyArm` allows. On `"lookup"`: the inbound `x-api-key` if real; else
  * ANTHROPIC_API_KEY (`anthropicKey`, the advisor's own lookup, asked only now).
- * On `"off"` (the Claude subscription): nothing, no key is read. On
+ * On `"request-key"`: the inbound `x-api-key` only. On `"off"` (the Claude
+ * subscription): nothing, no key is read. On
  * `{launchKey}` (the Claude API launch): the launch's key, never an inbound one.
  * A real bearer that failed a check, or a request with no bearer at all, is
  * never moved to a metered key silently: the result carries a warning naming
@@ -1983,6 +1985,9 @@ export async function resolveClaudeAdvisorAuth(
       facts,
       ...(skipped ? { warning: `${skipped}; billed per token on the request's x-api-key` } : {}),
     };
+  }
+  if (keyArm === "request-key") {
+    return { arm: null, reason: `no Claude credential: ${NO_MAIN_MODEL_ADVISOR_NO_KEY}`, facts };
   }
   const key = await anthropicKey();
   if (key) {
