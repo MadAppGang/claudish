@@ -70,6 +70,23 @@ function isSseErrorEvent(lines: readonly string[]): boolean {
 }
 
 /**
+ * The error type one complete SSE error event names (`overloaded_error`, the
+ * `error.type` of its data), `"error"` when it names none, and undefined for an
+ * event that is not an error.
+ */
+export function sseErrorTypeOf(lines: readonly string[]): string | undefined {
+  if (!isSseErrorEvent(lines)) return undefined;
+  const data = lines.filter((line) => sseField(line).name === "data").map((l) => sseField(l).value);
+  try {
+    const parsed = JSON.parse(data.join("\n")) as { error?: { type?: unknown } } | null;
+    const type = parsed?.error?.type;
+    return typeof type === "string" && type.length > 0 ? type : "error";
+  } catch {
+    return "error";
+  }
+}
+
+/**
  * The lines of one complete SSE event (each without its "\n"; the blank
  * separator, when present, is the last), ready to forward. An error event's
  * `data:` lines carry upstream text that may echo the request's credential, so
@@ -280,6 +297,12 @@ export class NativeHandler implements ModelHandler {
         // The usage the stream reports, for the meter: input and cache counts
         // on `message_start`, output on `message_delta`.
         const usage: AnthropicUsage = {};
+        // The first error event the stream carried: Anthropic reports an
+        // overload or a mid-stream failure inside an HTTP 200 stream.
+        let streamErrorType: string | undefined;
+        const noteEvent = (event: readonly string[]) => {
+          if (meter && streamErrorType === undefined) streamErrorType = sseErrorTypeOf(event);
+        };
         return c.body(
           new ReadableStream(
             cancelEndsUpstreamWork<Uint8Array>(upstream, {
@@ -313,7 +336,9 @@ export class NativeHandler implements ModelHandler {
                 // own "\n", so the framing is rebuilt byte for byte.
                 const flushHeld = (tail = "") => {
                   if (held.length === 0 && !tail) return;
-                  const lines = redactSseErrorEvent(tail ? [...held, tail] : held);
+                  const event = tail ? [...held, tail] : held;
+                  noteEvent(event);
+                  const lines = redactSseErrorEvent(event);
                   held = [];
                   forward(lines, tail ? lines.join("\n") : `${lines.join("\n")}\n`);
                 };
@@ -337,6 +362,7 @@ export class NativeHandler implements ModelHandler {
                     for (const line of text.slice(0, cut).split("\n")) {
                       held.push(line);
                       if (line === "" || line === "\r") {
+                        noteEvent(held);
                         const event = redactSseErrorEvent(held);
                         held = [];
                         lines.push(...event);
@@ -347,7 +373,11 @@ export class NativeHandler implements ModelHandler {
                   }
                   flushHeld(pending + decoder.decode());
                   if (eventLog) log(eventLog);
-                  meterTurn(anthropicResponse.status, { usage, cancelled });
+                  meterTurn(anthropicResponse.status, {
+                    usage,
+                    cancelled,
+                    ...(streamErrorType !== undefined ? { streamErrorType } : {}),
+                  });
                   if (!cancelled) controller.close();
                 } catch (e) {
                   // The lines already read are forwarded, as they were before
@@ -359,7 +389,13 @@ export class NativeHandler implements ModelHandler {
                   log(`[Native] Stream Error: ${redactForClient(String(e))}`);
                   meterTurn(
                     anthropicResponse.status,
-                    cancelled ? { usage, cancelled } : { usage, error: e }
+                    cancelled
+                      ? { usage, cancelled }
+                      : {
+                          usage,
+                          error: e,
+                          ...(streamErrorType !== undefined ? { streamErrorType } : {}),
+                        }
                   );
                   if (!cancelled) {
                     try {

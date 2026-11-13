@@ -64,6 +64,29 @@ function isSuccess(status: number): boolean {
   return status >= 200 && status < 300;
 }
 
+/** The HTTP status Anthropic documents for each error type it can put in a stream. */
+const STREAM_ERROR_STATUS: Readonly<Record<string, number>> = {
+  invalid_request_error: 400,
+  authentication_error: 401,
+  permission_error: 403,
+  not_found_error: 404,
+  request_too_large: 413,
+  rate_limit_error: 429,
+  api_error: 500,
+};
+
+/**
+ * A stream error event as a stats failure: an overload as one, any other type
+ * classified by its documented status.
+ */
+function streamFailure(type: string): { error_class: string; error_code: string } {
+  const status = STREAM_ERROR_STATUS[type];
+  if (type === "overloaded_error") return { error_class: "overload", error_code: type };
+  return status !== undefined
+    ? classifyError(undefined, status)
+    : { error_class: "http_error", error_code: "stream_error" };
+}
+
 /**
  * A meter for one Claude API launch. `mainModel` is the id Claude Code was
  * given; `port` keys the status line's token file, as for every handler.
@@ -91,7 +114,8 @@ export function createClaudeApiMeter(opts: {
         totals = { input: 0, output: 0, cost: 0 };
         totalsByModel.set(turn.model, totals);
       }
-      const ok = turn.error === undefined && isSuccess(turn.status);
+      const ok =
+        turn.error === undefined && turn.streamErrorType === undefined && isSuccess(turn.status);
       // Anthropic bills the tokens a response reported, a cancelled stream's
       // included; a failed request reports none and changes no counter.
       if (ok && turn.usage) {
@@ -125,9 +149,11 @@ export function createClaudeApiMeter(opts: {
       try {
         const failure = turn.cancelled
           ? { error_class: "cancelled", error_code: "client_cancelled" }
-          : turn.error !== undefined || !isSuccess(turn.status)
-            ? classifyError(turn.error, turn.status > 0 ? turn.status : undefined)
-            : undefined;
+          : turn.streamErrorType !== undefined && isSuccess(turn.status)
+            ? streamFailure(turn.streamErrorType)
+            : turn.error !== undefined || !isSuccess(turn.status)
+              ? classifyError(turn.error, turn.status > 0 ? turn.status : undefined)
+              : undefined;
         recordStats({
           model_id: turn.model,
           provider_name: CLAUDE_API_PROVIDER,

@@ -24,6 +24,11 @@ export interface ClaudeApiTurn {
   cancelled?: boolean;
   /** The request failed without a usable response: the fetch or the stream read threw. */
   error?: unknown;
+  /**
+   * The stream carried an SSE error event (its `error.type`, e.g.
+   * `overloaded_error`), so the request failed although the HTTP status was 2xx.
+   */
+  streamErrorType?: string;
 }
 
 export interface ClaudeApiMeter {
