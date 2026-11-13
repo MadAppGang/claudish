@@ -663,10 +663,12 @@ export async function createProxyServer(
     //
     // Runs for EVERY provider, not just OpenRouter. It is one `aggregators[]`
     // lookup, so it answers `mm@minimax-m2.5` → `MiniMax-M2.5` (MiniMax's own
-    // api_official spelling, and their API is case-sensitive) and
-    // `ag@gemini-3.6-flash` → `gemini-3.6-flash-high` with the same code path
-    // that already handled `or@qwen3-coder-next`. Gating it to one provider was
-    // why every other provider grew its own bespoke translation.
+    // api_official spelling, and their API is case-sensitive) with the same code
+    // path that already handled `or@qwen3-coder-next`. Gating it to one provider
+    // was why every other provider grew its own bespoke translation. An id the
+    // connection's effort map (`modelIdEffort`) publishes is kept as typed. For a
+    // base name the lookup returns the base wire id; the effort-specific id is
+    // picked later from the effort map (`chooseConnectionModelId`).
     //
     // Safe to run unconditionally: a model the catalog doesn't know — a local
     // GGUF, a custom endpoint's private id — resolves to null and passes
