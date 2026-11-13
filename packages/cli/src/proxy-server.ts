@@ -21,6 +21,11 @@ import {
 } from "./handlers/advisor-panel-gateway.js";
 import { shutdownAdvisorChains } from "./handlers/advisor-route-plan.js";
 import { bundledTaggedCache } from "./handlers/bundled-tagged-cache.js";
+import {
+  type ClaudeApiMeter,
+  claudeApiContextWindow,
+  createClaudeApiMeter,
+} from "./handlers/claude-api-meter.js";
 import type { ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
@@ -217,6 +222,12 @@ export interface ProxyServerOptions {
    */
   nativeSigning?: NativeSigning;
   /**
+   * The Claude API launch's main model, the id Claude Code was given. Read only
+   * with `launch-key` signing: the meter that records every request the launch's
+   * key signs moves the status line's context occupancy on this model's turns.
+   */
+  claudeApiMainModel?: string;
+  /**
    * True when the launch opted into billing a native Claude model to the
    * Anthropic API key (`--anthropic-api-billing`). Without it, a request for a
    * native Claude name that this launch's own model mapping chose is signed
@@ -393,12 +404,28 @@ export async function createProxyServer(
       },
     };
 
+  // The Claude API launch signs every forwarded request with the user's key, so
+  // every one is metered: stats and claudish's cost line, each turn priced by
+  // its own model. The pricing lookup is registered first (a local read), or the
+  // first turn would be priced at the generic estimate.
+  let claudeApiMeter: ClaudeApiMeter | undefined;
+  if (options.nativeSigning?.kind === "launch-key") {
+    await warmPricingCache();
+    const mainModel = options.claudeApiMainModel ?? "";
+    claudeApiMeter = createClaudeApiMeter({
+      port,
+      mainModel,
+      contextWindow: mainModel ? claudeApiContextWindow(mainModel) : 0,
+    });
+  }
+
   // Define handlers for different roles. Who signs each native request is set
   // on its context (`setNativeSigning`); the handler holds no key.
   const nativeHandler = new NativeHandler(
     undefined,
     options.advisorModels,
-    options.advisorCollector
+    options.advisorCollector,
+    claudeApiMeter
   );
 
   /**

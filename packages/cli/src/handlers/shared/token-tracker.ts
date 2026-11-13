@@ -130,6 +130,25 @@ export function computeCacheReadDiscount(
 }
 
 /**
+ * One turn's cost at `pricing`: the whole context and the output at their
+ * rates, less the cache-read discount clamped against that context. The
+ * arithmetic of `TokenTracker.update`, so a turn priced outside a tracker (a
+ * side turn on another model) costs what the same turn would cost inside one.
+ */
+export function computeTurnCost(
+  pricing: ModelPricing,
+  inputTokens: number,
+  outputTokens: number,
+  detail?: UsageCacheDetail
+): number {
+  return (
+    (inputTokens / 1_000_000) * pricing.inputCostPer1M +
+    (outputTokens / 1_000_000) * pricing.outputCostPer1M -
+    computeCacheReadDiscount(pricing, inputTokens, detail)
+  );
+}
+
+/**
  * Every cost-bearing update below takes an optional `billing`: the decision of
  * the request whose usage it records (`RequestBilling`, decided when that
  * request was signed). Absent, pricing falls back to `isSubscriptionProvider`,
@@ -321,13 +340,29 @@ export class TokenTracker {
     const pricing = this.getPricing(billing);
     // This strategy charges the whole context every turn, so the whole context
     // is what the cache discount is clamped against.
-    const cost =
-      (inputTokens / 1_000_000) * pricing.inputCostPer1M +
-      (outputTokens / 1_000_000) * pricing.outputCostPer1M -
-      this.cacheReadDiscount(pricing, inputTokens, detail);
-    this.sessionTotalCost += cost;
+    this.sessionTotalCost += computeTurnCost(pricing, inputTokens, outputTokens, detail);
 
     this.writeFile(inputTokens, this.sessionOutputTokens, pricing.isEstimate, pricing);
+  }
+
+  /**
+   * A turn of the same session on ANOTHER model (a subagent or background turn),
+   * priced by the caller at that model's rate: its cost, billed input, cache
+   * reads and output are added, and the token file is written. The context
+   * figures (`sessionInputTokens`, `lastInputTokens`) are left alone: they
+   * describe the main conversation, which this turn is not part of.
+   */
+  addSideTurn(
+    cost: number,
+    inputTokens: number,
+    outputTokens: number,
+    detail?: UsageCacheDetail
+  ): void {
+    this.sessionTotalCost += cost;
+    this.sessionBilledInputTokens += inputTokens;
+    this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
+    this.sessionOutputTokens += outputTokens;
+    this.writeFile(this.getLastInputTokens(), this.sessionOutputTokens);
   }
 
   /**

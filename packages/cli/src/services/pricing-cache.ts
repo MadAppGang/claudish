@@ -65,7 +65,7 @@ function prefixMatch(modelName: string): ModelPricing | undefined {
 }
 
 /** A mapped connection of `provider` on `entry`: the one whose wire id is `name`, else the first. */
-function ownConnection(entry: SlimModelEntry, provider: string, name: string) {
+export function ownConnection(entry: SlimModelEntry, provider: string, name: string) {
   const own = (entry.aggregators ?? []).filter(
     (a) => a.routeStatus === "mapped" && catalogRouteMatchesProvider(a.route, provider)
   );
@@ -76,8 +76,10 @@ function ownConnection(entry: SlimModelEntry, provider: string, name: string) {
  * The catalog entry a request's model name prices from: by alias, then by
  * model id, then by a mapped connection of `provider` whose wire id is the name
  * (a request is priced by the wire id it was sent with, which may be neither).
+ * Exported so a reader that must agree with the price (the Claude API meter's
+ * model identity and context window) finds the same entry.
  */
-function pricingEntry(provider: string, name: string): SlimModelEntry | undefined {
+export function catalogEntryForRequest(provider: string, name: string): SlimModelEntry | undefined {
   const entries = getCatalogEntries() ?? [];
   return (
     entries.find((e) => e.aliases.includes(name)) ??
@@ -113,7 +115,7 @@ export function getDynamicPricingSync(
     return pricingMap.get(modelName) ?? prefixMatch(modelName);
   }
 
-  const entry = pricingEntry(provider, modelName);
+  const entry = catalogEntryForRequest(provider, modelName);
   if (!entry) return undefined;
 
   const own = ownConnection(entry, provider, modelName);

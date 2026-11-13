@@ -19,6 +19,12 @@ import {
   nativeSigningOf,
 } from "./shared/anthropic-forward.js";
 import {
+  type AnthropicUsage,
+  type ClaudeApiMeter,
+  type ClaudeApiTurn,
+  mergeSseUsage,
+} from "./shared/claude-api-usage.js";
+import {
   type UpstreamReaderSlot,
   cancelEndsUpstreamWork,
 } from "./shared/stream-parsers/upstream-cancel.js";
@@ -107,14 +113,25 @@ export class NativeHandler implements ModelHandler {
   private baseUrl: string;
   private advisorModels?: string[];
   private advisorCollector?: string | null;
+  private meter?: ClaudeApiMeter;
 
   /**
    * Who signs a request is decided per request by the proxy and set on its
    * context (`setNativeSigning`). `apiKey` serves only a request that carries no
    * signing (a direct caller): it is that request's `inbound` fallback key.
+   *
+   * `meter` is the Claude API launch's: every request signed with the launch's
+   * key (`launch-key`) is recorded on it once its response ends. No other
+   * request is metered here.
    */
-  constructor(apiKey?: string, advisorModels?: string[], advisorCollector?: string | null) {
+  constructor(
+    apiKey?: string,
+    advisorModels?: string[],
+    advisorCollector?: string | null,
+    meter?: ClaudeApiMeter
+  ) {
     this.apiKey = apiKey;
+    this.meter = meter;
     // Always forward to the real Anthropic API (the origin the advisor's Claude
     // call uses too). `resolveUpstreamUrl` is a no-op unless
     // CLAUDISH_TEST_UPSTREAM names a LOOPBACK target, which is how the
@@ -190,12 +207,11 @@ export class NativeHandler implements ModelHandler {
     // the credential authority (env → config → op://). A Claude subscription
     // request (`login-only`) with no Claude login is answered here, 401, with no
     // upstream call: it is never signed with an API key.
-    const forward = await buildForwardRequest(
-      c,
-      payload,
-      `${this.baseUrl}/v1/messages`,
-      nativeSigningOf(c) ?? this.defaultSigning(target)
-    );
+    const signing = nativeSigningOf(c) ?? this.defaultSigning(target);
+    const forward = await buildForwardRequest(c, payload, `${this.baseUrl}/v1/messages`, signing);
+    // Metered when, and only when, the launch's key signs it: what decides is
+    // the signer, never the credential the request arrived with.
+    const meter = signing.kind === "launch-key" ? this.meter : undefined;
     if ("refused" in forward) {
       log(`[Native] refused: ${forward.refused}`);
       return c.json(
@@ -225,6 +241,17 @@ export class NativeHandler implements ModelHandler {
     }
 
     // Execute fetch
+    const startedAt = performance.now();
+    const meterTurn = (
+      status: number,
+      rest: Omit<ClaudeApiTurn, "model" | "status" | "latencyMs">
+    ) =>
+      meter?.record({
+        model: target,
+        status,
+        latencyMs: performance.now() - startedAt,
+        ...rest,
+      });
     try {
       const anthropicResponse = await fetch(url, {
         method: "POST",
@@ -250,6 +277,9 @@ export class NativeHandler implements ModelHandler {
         // (which logs the whole stream at its end) before it resolves.
         const upstream: UpstreamReaderSlot = {};
         let cancelled = false;
+        // The usage the stream reports, for the meter: input and cache counts
+        // on `message_start`, output on `message_delta`.
+        const usage: AnthropicUsage = {};
         return c.body(
           new ReadableStream(
             cancelEndsUpstreamWork<Uint8Array>(upstream, {
@@ -271,7 +301,10 @@ export class NativeHandler implements ModelHandler {
                 let eventLog = "";
 
                 const forward = (lines: string[], text: string) => {
-                  for (const line of lines) if (line.trim()) eventLog += `${line}\n`;
+                  for (const line of lines) {
+                    if (line.trim()) eventLog += `${line}\n`;
+                    if (meter) mergeSseUsage(line, usage);
+                  }
                   if (cancelled || !text) return;
                   controller.enqueue(encoder.encode(text));
                 };
@@ -314,6 +347,7 @@ export class NativeHandler implements ModelHandler {
                   }
                   flushHeld(pending + decoder.decode());
                   if (eventLog) log(eventLog);
+                  meterTurn(anthropicResponse.status, { usage, cancelled });
                   if (!cancelled) controller.close();
                 } catch (e) {
                   // The lines already read are forwarded, as they were before
@@ -323,6 +357,10 @@ export class NativeHandler implements ModelHandler {
                   } catch {}
                   if (eventLog) log(eventLog);
                   log(`[Native] Stream Error: ${redactForClient(String(e))}`);
+                  meterTurn(
+                    anthropicResponse.status,
+                    cancelled ? { usage, cancelled } : { usage, error: e }
+                  );
                   if (!cancelled) {
                     try {
                       controller.close();
@@ -355,6 +393,7 @@ export class NativeHandler implements ModelHandler {
       // a success body is parsed exactly as it arrived.
       const raw = await anthropicResponse.text();
       const data = JSON.parse(anthropicResponse.ok ? raw : redactForClient(raw));
+      meterTurn(anthropicResponse.status, anthropicResponse.ok ? { usage: data?.usage } : {});
       log("\n=== [NATIVE] Response ===");
       log(JSON.stringify(data, null, 2));
 
@@ -370,6 +409,7 @@ export class NativeHandler implements ModelHandler {
     } catch (error) {
       const message = redactForClient(String(error));
       log(`[Native] Fetch Error: ${message}`);
+      meterTurn(0, { error });
       return c.json(wrapAnthropicError(500, message), 500);
     }
   }

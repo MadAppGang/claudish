@@ -1457,6 +1457,9 @@ async function runCli() {
         modelMap,
         {
           ...(launchSigning ? { nativeSigning: launchSigning } : {}),
+          ...(cliConfig.claudeLaunch === "api" && cliConfig.claudeLaunchModel
+            ? { claudeApiMainModel: cliConfig.claudeLaunchModel }
+            : {}),
           apiBillingOptIn: wantsAnthropicApiBilling(cliConfig),
           summarizeTools: cliConfig.summarizeTools,
           quiet: cliConfig.quiet,
