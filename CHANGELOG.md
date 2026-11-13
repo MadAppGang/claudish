@@ -2,6 +2,26 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.21.1] - 2026-11-13
+
+### Bug Fixes
+
+- read a published empty effort row as an absent row *(catalog)* ([`5186ca9`](https://github.com/MadAppGang/claudish/commit/5186ca9fd2791416292d69aca39e09948b183597))
+- warn on a recommended model with no effort row, not fail *(catalog)* ([`cf427f4`](https://github.com/MadAppGang/claudish/commit/cf427f471417c06b67e881e08f2b30639ee5b36f))
+- name a request's own uid in its not-served error *(devin)* ([`9e5377f`](https://github.com/MadAppGang/claudish/commit/9e5377f5dd489e33af18a43c661d16e074670479))
+- report the capacity-retry model only for its own request *(antigravity)* ([`85a4f9b`](https://github.com/MadAppGang/claudish/commit/85a4f9b8148b7f21284c637fb95f7cc669c70198))
+- send a capacity retry with its own request's body *(antigravity)* ([`413cc35`](https://github.com/MadAppGang/claudish/commit/413cc354548fbbc11f2d8fa87341819f1d95bc0f))
+- log "map id not usable" and "served base" sources on ag@ and dv@ *(routing)* ([`6952d92`](https://github.com/MadAppGang/claudish/commit/6952d925de23fcbe581b5f12aed602c1872fb6ef))
+
+### Documentation
+
+- update CHANGELOG.md for v14.21.0([`b899440`](https://github.com/MadAppGang/claudish/commit/b899440004b432fb12c29d8178f601416ea12ab0))
+
+### New Features
+
+- log the model id sent on ag@ and dv@ under --debug (#417) *(routing)* ([`1a93c87`](https://github.com/MadAppGang/claudish/commit/1a93c87850f524a30cc1b7f3eac8bde57e051baf))
+- log the model id sent on ag@ and dv@ under --debug *(routing)* ([`3cc81df`](https://github.com/MadAppGang/claudish/commit/3cc81dfbb858cb7f4fe9bcf8bb18b224ea7c8c7f))
+
 ## [14.21.0] - 2026-11-12
 
 ### Bug Fixes
