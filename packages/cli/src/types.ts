@@ -15,6 +15,9 @@ export type OpenRouterModel = string;
  */
 export type ClaudeLaunch = "subscription" | "api";
 
+/** A Claude Code role a tier flag, variable or profile maps to a model. */
+export type ModelTier = "opus" | "sonnet" | "haiku" | "subagent";
+
 export interface ClaudishConfig {
   model?: OpenRouterModel | string; // Optional - will prompt if not provided
   /**
@@ -114,6 +117,12 @@ export interface ClaudishConfig {
   modelSonnet?: string;
   modelHaiku?: string;
   modelSubagent?: string;
+  /**
+   * Where each tier above came from, set by `parseArgs`: a flag (`--model-haiku`),
+   * an environment variable (`CLAUDISH_MODEL_HAIKU`), or a profile
+   * (`profile "work"`). A label for messages, never a model spec.
+   */
+  modelTierSources?: Partial<Record<ModelTier, string>>;
 
   // Classifier passthrough (auto-mode permission check → native Claude).
   // Opt-in: reroutes Claude Code's auto-mode permission classifier request to

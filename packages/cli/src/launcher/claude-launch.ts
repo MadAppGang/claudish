@@ -56,7 +56,7 @@ import {
 import { shadowedEndpointRefusal } from "../providers/shadowed-endpoint.js";
 import { WireMarkerError, splitWireMarkers } from "../providers/wire-markers.js";
 import { acquireSigningLease, redactSecrets } from "../redact.js";
-import type { ClaudishConfig } from "../types.js";
+import type { ClaudishConfig, ModelTier } from "../types.js";
 
 export interface LaunchSigningDeps {
   /** Default `wantsAnthropicApiBilling` (flag, env, config). */
@@ -212,6 +212,56 @@ function claudeApiLaunchRefusal(spec: string): string | null {
   return null;
 }
 
+/** Each tier field, by the Claude Code role it maps. */
+const TIER_FIELDS: ReadonlyArray<
+  readonly [ModelTier, "modelOpus" | "modelSonnet" | "modelHaiku" | "modelSubagent"]
+> = [
+  ["opus", "modelOpus"],
+  ["sonnet", "modelSonnet"],
+  ["haiku", "modelHaiku"],
+  ["subagent", "modelSubagent"],
+];
+
+/** How to remove one tier, from where it came from. */
+function tierRemedy(tier: ModelTier, source: string | undefined): string {
+  if (source === undefined) return `remove the ${tier} mapping`;
+  if (source.startsWith("--")) return `drop ${source}`;
+  if (source.startsWith("profile ") || source === "a profile") {
+    return `remove the ${tier} mapping from ${source}`;
+  }
+  return `unset ${source}`;
+}
+
+/**
+ * The refusal for a top-level Claude launch (`claude@` or `anthropic@` main
+ * model) that also maps a tier, or null. Such a launch is one Claude Code
+ * session on one route, forwarded unchanged, so no role mapping can apply: a
+ * `claude@` tier would be signed with the Claude API launch's key, and any
+ * other tier would be dropped silently. Names every tier and where it came from.
+ */
+function claudeLaunchTierRefusal(
+  config: ClaudishConfig,
+  main: string,
+  launch: "subscription" | "api"
+): string | null {
+  const mapped = TIER_FIELDS.flatMap(([tier, field]) => {
+    const spec = config[field];
+    return typeof spec === "string" && spec.length > 0 ? [{ tier, spec }] : [];
+  });
+  if (mapped.length === 0) return null;
+  const sourceOf = (tier: ModelTier) => config.modelTierSources?.[tier];
+  const described = mapped.map(({ tier, spec }) => {
+    const source = sourceOf(tier);
+    return `the ${tier} model ${spec}${source ? ` (from ${source})` : ""}`;
+  });
+  const remedies = [...new Set(mapped.map(({ tier }) => tierRemedy(tier, sourceOf(tier))))];
+  const label = launch === "api" ? "Claude API" : CLAUDE_SUBSCRIPTION_LABEL;
+  return (
+    `${main} is a ${label} launch: one Claude Code session that does not use role mappings, ` +
+    `so ${described.join(", ")} cannot apply. To launch it, ${remedies.join(", ")}.`
+  );
+}
+
 /** Whether the launch may go on; when it may, `decideClaudeLaunch` has updated the config. */
 export type ClaudeLaunchDecision = { ok: true } | { ok: false; message: string };
 
@@ -240,6 +290,11 @@ export interface DecideClaudeLaunchDeps {
  * - One `anthropic@X` (`a@X`, `api@X`) main model at top level: a monitor
  *   session, `claudeLaunch: "api"`; a speed or mode marker or a `:N` suffix
  *   refuses it. In a pane child, and inside a chain, it stays a proxied hop.
+ * - Either top-level monitor session with any tier set (a flag, an
+ *   environment variable or a profile) refuses the launch, naming each tier
+ *   and its source: the session forwards Claude Code's requests unchanged on
+ *   one route, so a tier could only be dropped, or, for a `claude@` tier on
+ *   the Claude API, signed with the launch's key.
  * - Anything else is left as it is.
  */
 export function decideClaudeLaunch(
@@ -274,7 +329,7 @@ export function decideClaudeLaunch(
     // A pane child keeps the proxied hop, which honours markers: a headless
     // pane is never given a key, and claudish signs that hop itself.
     if (deps.paneChild ?? isPaneChild()) return { ok: true };
-    const refusal = claudeApiLaunchRefusal(main);
+    const refusal = claudeApiLaunchRefusal(main) ?? claudeLaunchTierRefusal(config, main, "api");
     if (refusal) return { ok: false, message: refusal };
     config.monitor = true;
     config.claudeLaunch = "api";
@@ -288,6 +343,8 @@ export function decideClaudeLaunch(
     config.claudeSubscriptionPin = true;
     return { ok: true };
   }
+  const tierRefusal = claudeLaunchTierRefusal(config, main, "subscription");
+  if (tierRefusal) return { ok: false, message: tierRefusal };
   config.monitor = true;
   config.claudeLaunch = "subscription";
   return { ok: true };

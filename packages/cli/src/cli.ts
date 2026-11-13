@@ -95,7 +95,7 @@ import {
 import { nativeShortcutForVendor, renderRecommendedText } from "./recommended-listing.js";
 import { setRecoveryFlagOverrides } from "./recovery/settings.js";
 import { cliAnsi } from "./theme/ansi.js";
-import type { ClaudishConfig } from "./types.js";
+import type { ClaudishConfig, ModelTier } from "./types.js";
 import { VERSION } from "./version.js";
 // Re-export from centralized provider-resolver for backwards compatibility
 export {
@@ -513,14 +513,35 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
   // Parse model mappings from env vars
   // Priority: CLAUDISH_MODEL_* (highest) > ANTHROPIC_DEFAULT_* / CLAUDE_CODE_SUBAGENT_MODEL (fallback)
-  config.modelOpus =
-    process.env[ENV.CLAUDISH_MODEL_OPUS] || process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL];
-  config.modelSonnet =
-    process.env[ENV.CLAUDISH_MODEL_SONNET] || process.env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL];
-  config.modelHaiku =
-    process.env[ENV.CLAUDISH_MODEL_HAIKU] || process.env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL];
-  config.modelSubagent =
-    process.env[ENV.CLAUDISH_MODEL_SUBAGENT] || process.env[ENV.CLAUDE_CODE_SUBAGENT_MODEL];
+  // Each tier's source is kept beside it, for a launch that refuses the tier.
+  const tierSources: NonNullable<ClaudishConfig["modelTierSources"]> = {};
+  config.modelTierSources = tierSources;
+  const tierFromEnv = (tier: ModelTier, names: readonly string[]): string | undefined => {
+    for (const name of names) {
+      const value = process.env[name];
+      if (value) {
+        tierSources[tier] = name;
+        return value;
+      }
+    }
+    return undefined;
+  };
+  config.modelOpus = tierFromEnv("opus", [
+    ENV.CLAUDISH_MODEL_OPUS,
+    ENV.ANTHROPIC_DEFAULT_OPUS_MODEL,
+  ]);
+  config.modelSonnet = tierFromEnv("sonnet", [
+    ENV.CLAUDISH_MODEL_SONNET,
+    ENV.ANTHROPIC_DEFAULT_SONNET_MODEL,
+  ]);
+  config.modelHaiku = tierFromEnv("haiku", [
+    ENV.CLAUDISH_MODEL_HAIKU,
+    ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL,
+  ]);
+  config.modelSubagent = tierFromEnv("subagent", [
+    ENV.CLAUDISH_MODEL_SUBAGENT,
+    ENV.CLAUDE_CODE_SUBAGENT_MODEL,
+  ]);
 
   const envPort = process.env[ENV.CLAUDISH_PORT];
   if (envPort) {
@@ -607,16 +628,28 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--model-opus") {
       // Model mapping flags
       const val = args[++i];
-      if (val) config.modelOpus = val;
+      if (val) {
+        config.modelOpus = val;
+        tierSources.opus = "--model-opus";
+      }
     } else if (arg === "--model-sonnet") {
       const val = args[++i];
-      if (val) config.modelSonnet = val;
+      if (val) {
+        config.modelSonnet = val;
+        tierSources.sonnet = "--model-sonnet";
+      }
     } else if (arg === "--model-haiku") {
       const val = args[++i];
-      if (val) config.modelHaiku = val;
+      if (val) {
+        config.modelHaiku = val;
+        tierSources.haiku = "--model-haiku";
+      }
     } else if (arg === "--model-subagent") {
       const val = args[++i];
-      if (val) config.modelSubagent = val;
+      if (val) {
+        config.modelSubagent = val;
+        tierSources.subagent = "--model-subagent";
+      }
     } else if (arg === "--port") {
       const portArg = args[++i];
       if (!portArg) {
@@ -1167,20 +1200,27 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     !config.modelSubagent
   ) {
     // A project profile's raw-URL tiers are dropped here (project-models.ts).
-    const profileModels = usableProfileModels(getRunModelMapping(config.profile));
+    const runMapping = getRunModelMapping(config.profile);
+    const profileModels = usableProfileModels(runMapping);
+    const profileSource =
+      runMapping.profileName !== undefined ? `profile "${runMapping.profileName}"` : "a profile";
 
     // Apply profile models only if not set by CLI flags
     if (!config.modelOpus && profileModels.opus) {
       config.modelOpus = profileModels.opus;
+      tierSources.opus = profileSource;
     }
     if (!config.modelSonnet && profileModels.sonnet) {
       config.modelSonnet = profileModels.sonnet;
+      tierSources.sonnet = profileSource;
     }
     if (!config.modelHaiku && profileModels.haiku) {
       config.modelHaiku = profileModels.haiku;
+      tierSources.haiku = profileSource;
     }
     if (!config.modelSubagent && profileModels.subagent) {
       config.modelSubagent = profileModels.subagent;
+      tierSources.subagent = profileSource;
     }
   }
 
