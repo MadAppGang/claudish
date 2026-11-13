@@ -30,12 +30,47 @@ describe("settingsCredentialFindings on an unreadable --settings value", () => {
       {},
       reads()
     );
-    expect(found.map((f) => f.kind)).toEqual(["unreadable"]);
+    expect(found).toEqual([{ where: "/missing.json", kind: "unreadable" }]);
   });
 
   test("the login-token reader still skips the value the merge drops", () => {
     expect(settingsClaudeLoginToken(config(["--settings", "{invalid"]), {}, reads())).toBe(
       "absent"
     );
+  });
+});
+
+describe("settingsCredentialFindings names a --settings file by its path", () => {
+  const key = { env: { ANTHROPIC_API_KEY: "sk-ant-findings-test-not-real" } };
+
+  test("a two-token and an equals file value are named by their paths", () => {
+    const found = settingsCredentialFindings(
+      config(["--setting-sources", "", "--settings", "/a.json", "--settings=/b.json"]),
+      {},
+      reads({ "/a.json": key, "/b.json": key })
+    );
+    expect(found).toEqual([
+      { where: "/a.json", kind: "api-key" },
+      { where: "/b.json", kind: "api-key" },
+    ]);
+  });
+
+  test("an unreadable forwarded file is named by its path", () => {
+    const found = settingsCredentialFindings(
+      config(["--setting-sources", "", "--settings=/missing.json"]),
+      {},
+      reads()
+    );
+    expect(found).toEqual([{ where: "/missing.json", kind: "unreadable" }]);
+  });
+
+  test("inline JSON is named --settings, never by its content", () => {
+    const found = settingsCredentialFindings(
+      config(["--setting-sources", "", "--settings", JSON.stringify(key)]),
+      {},
+      reads()
+    );
+    expect(found).toEqual([{ where: "--settings", kind: "api-key" }]);
+    expect(JSON.stringify(found)).not.toContain("sk-ant-findings-test-not-real");
   });
 });

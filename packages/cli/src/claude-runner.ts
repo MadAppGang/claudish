@@ -497,12 +497,14 @@ export function settingsCredentialFindings(
   if (customHeadersSignWithKey(env.ANTHROPIC_CUSTOM_HEADERS)) {
     findings.push({ where: "environment", kind: "custom-headers-auth" });
   }
-  for (const { where, settings } of claudeSettingsLayers(config, env, deps)) {
-    if (settings === null) {
+  for (const layer of claudeSettingsLayers(config, env, deps)) {
+    // A `--settings` file is named by its path, which the user can open and edit.
+    const where = layer.file ?? layer.where;
+    if (layer.settings === null) {
       findings.push({ where, kind: "unreadable" });
       continue;
     }
-    for (const kind of settingsFindingKinds(settings)) findings.push({ where, kind });
+    for (const kind of settingsFindingKinds(layer.settings)) findings.push({ where, kind });
   }
   return findings;
 }
@@ -719,11 +721,12 @@ function claudeSettingsLayers(
     // Merge's own guard: a missing or empty value is neither merged nor read.
     if (!occurrence.value) return;
     const settings = readSettingsSource(occurrence.value, readFile);
+    const file = isInlineSettings(occurrence.value) ? {} : { file: occurrence.value };
     if (occurrence === merged && !settings) {
-      layers.push({ where, settings, tier: "cli", droppedByMerge: true });
+      layers.push({ where, settings, tier: "cli", droppedByMerge: true, ...file });
       return;
     }
-    layers.push({ where, settings, tier: "cli" });
+    layers.push({ where, settings, tier: "cli", ...file });
   });
   return layers;
 }
@@ -743,6 +746,8 @@ interface SettingsLayer {
   tier: SettingsTier;
   /** The first two-token `--settings` value, unreadable, which the merge splices out. */
   droppedByMerge?: true;
+  /** A `--settings` value that names a file: its path. Absent for inline JSON, which may hold a secret. */
+  file?: string;
 }
 
 /**
@@ -830,6 +835,11 @@ function enabledSettingSources(args: readonly string[]): Set<SettingSource> | nu
   return sources;
 }
 
+/** True for a `--settings` value given as inline JSON rather than a file path. */
+function isInlineSettings(source: string): boolean {
+  return source.trimStart().startsWith("{");
+}
+
 /**
  * One settings source, parsed: inline JSON (a `--settings` value starting with
  * `{`) or a file path. Null when it cannot be read or is not a JSON object.
@@ -839,7 +849,7 @@ function readSettingsSource(
   readFile: (path: string) => string
 ): Record<string, unknown> | null {
   try {
-    const raw = source.trimStart().startsWith("{") ? source : readFile(source);
+    const raw = isInlineSettings(source) ? source : readFile(source);
     const parsed = JSON.parse(raw) as unknown;
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch {
