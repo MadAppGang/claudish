@@ -559,6 +559,46 @@ describe("provider-only rules with exact effort-map wire ids", () => {
       { provider: "antigravity", modelSpec: `ag@${base}` },
     ]);
   });
+
+  test("keeps the connection's published spelling for a case-insensitive alias", () => {
+    expect(buildRoutingChain(["antigravity"], "Example-Model-Low", path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${low}` },
+    ]);
+  });
+
+  test("uses only the membership-resolved entry's effort map", () => {
+    const sharedLow = "shared-low";
+    writeAllModelsCache(
+      {
+        catalogGenerationId: "provider-rule-effort-scope-test-data",
+        version: 3,
+        lastUpdated: new Date().toISOString(),
+        entries: [
+          catalogEntry("a-base", [
+            connection("antigravity", "a-base", effortMap({ low: sharedLow })),
+          ]),
+          {
+            ...catalogEntry("b-base", [connection("antigravity", "b-base")], [sharedLow]),
+            subscriptionPlanIds: [planId],
+          },
+        ],
+        models: [],
+        plans: [
+          {
+            id: planId,
+            modelDiscovery: "catalog",
+            routeStatus: "supported",
+            route: catalogRouteForProvider("antigravity"),
+          },
+        ],
+      },
+      path
+    );
+
+    expect(buildRoutingChain(["antigravity"], sharedLow, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: "ag@b-base" },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

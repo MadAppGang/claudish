@@ -507,6 +507,14 @@ describe("exact effort-map wire ids in default candidate gathering", () => {
       expect(candidates.find(({ provider }) => provider === "antigravity")?.wireId).toBe(base);
     });
   });
+
+  test("keeps the connection's published spelling for a case-insensitive alias", () => {
+    withEffortCatalog((path) => {
+      const candidates = gatherRouteCandidates("Example-Model-Low", path).candidates;
+      expect(candidates.find(({ provider }) => provider === "google")?.wireId).toBe(googleBase);
+      expect(candidates.find(({ provider }) => provider === "antigravity")?.wireId).toBe(low);
+    });
+  });
 });
 
 describe("vendor claims and availability", () => {

@@ -238,6 +238,34 @@ describe("R1/R3: catalog candidate boundaries", () => {
     }
   });
 
+  test("R3: bare contributor alias gathers only ordinary connection wire ids", () => {
+    installMuseCatalog();
+    const result = gathering.gatherRouteCandidates("muse-spark-1.3-contributor", cachePath);
+
+    expect(
+      result.candidates.every((candidate) => candidate.wireId !== "muse-spark-1.3-contributor")
+    ).toBe(true);
+    for (const provider of ["meta-muse-code", "meta"]) {
+      expect(result.candidates).toContainEqual(
+        expect.objectContaining({ provider, wireId: "muse-spark-1.3" })
+      );
+    }
+  });
+
+  test("R3: provider-only Muse rule keeps the ordinary connection wire id", () => {
+    installMuseCatalog();
+    expect(
+      routing.buildRoutingChain(["meta-muse-code"], "muse-spark-1.3-contributor", cachePath)
+    ).toMatchObject([{ provider: "meta-muse-code", modelSpec: "muse@muse-spark-1.3" }]);
+  });
+
+  test("R3: explicit Muse contributor spec stays verbatim", () => {
+    installMuseCatalog();
+    expect(
+      routing.buildRoutingChain(["muse@muse-spark-1.3-contributor"], "muse-spark-1.3", cachePath)
+    ).toMatchObject([{ provider: "meta-muse-code", modelSpec: "muse@muse-spark-1.3-contributor" }]);
+  });
+
   test("R3: zgo user rule excludes a contributor-only mapping", async () => {
     install(routingFixture("gemini-4-argon"));
     const routes = routing.buildRoutingChain(["zgo"], "gemini-4-argon", cachePath);
