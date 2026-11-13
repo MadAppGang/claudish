@@ -864,6 +864,57 @@ Two things this uncovered:
    Use `-d` / `--debug-claudish` (which writes `./logs/`), not `--debug` — the
    latter is passed through to Claude Code and tells you nothing about the proxy.
 
+## Who signs a native request: `NativeSigning` (`handlers/shared/anthropic-forward.ts`)
+
+The native passthrough (`NativeHandler`, `count_tokens`, the classifier passthrough) forwards
+Claude Code's own request to Anthropic. Which credential goes out is one rule, `NativeSigning`,
+applied in `buildForwardRequest`:
+
+| Kind | Used for | What is sent |
+|---|---|---|
+| `inbound` | every launch that is not a Claude launch: plain `--monitor`, `--anthropic-api-billing`, a foreign main model, `serve`, the probe proxy | the credential pair as it arrived; a Claude login bearer drops an `x-api-key` beside it; a request with neither header gets the fallback key (this process's key, else `ANTHROPIC_API_KEY` through the credential authority's `native-anthropic`) |
+| `login-only` | the Claude subscription: a `claude@` launch, a bare Claude main model without `--anthropic-api-billing`, and any request whose decision is `claude@<id>` | `authorization` only when it matches `CLAUDE_LOGIN_BEARER` (`sk-ant-oat<n>-`); an inbound `x-api-key` and any other bearer are dropped; no fallback is ever called |
+| `launch-key` | the Claude API launch (`anthropic@<id>` at top level) | every inbound credential dropped; `x-api-key` set to the key the launch resolved |
+
+**The 401.** A `login-only` request with no Claude login gets claudish's own answer, HTTP 401
+`authentication_error`, through `redactForClient`, and no upstream call: "Claude subscription
+session: this request carries no Claude Code login, and claudish never signs a Claude subscription
+request with an API key. Sign in with /login, or use anthropic@<id> for the Claude API." Before
+this rule, a bare Claude name launched with no Claude Code login and an `ANTHROPIC_API_KEY` in the
+shell ran, billed to that key through the `inbound` fallback; it now gets the 401.
+`--anthropic-api-billing` and `anthropic@<id>` are the two ways to bill the key.
+
+**Who decides.** The launch computes its signing in `prepareClaudeLaunch`
+(`launcher/claude-launch.ts`) and passes it as `ProxyServerOptions.nativeSigning`; absent means
+`inbound`. On a `launch-key` or `login-only` launch `index.ts` passes the proxy no
+`anthropicApiKey`, so no fallback key exists to reach. Per request (`resolveHandlerForRequest`,
+`proxy-server.ts`):
+
+- a `claude@<id>` decision is `login-only` whatever the launch, and the request's model is
+  rewritten to the bare `<id>` before the handler or `count_tokens` forwards it;
+- a bare native name that the launch's own configuration chose (a slot, a role mapping,
+  `--model`) is
+  `login-only` on an `inbound` launch unless the launch opted into API billing
+  (`apiBillingOptIn`); a request that passes its own model through keeps the launch's signing;
+- every other request, and every classifier-passthrough request, takes the launch's signing.
+
+**Settings cannot move the signer.** On the Claude API launch whatever Claude Code sends (the
+placeholder token, a settings `ANTHROPIC_API_KEY`, an `apiKeyHelper`'s output, an
+`ANTHROPIC_CUSTOM_HEADERS` auth header) is dropped, so every request that reaches the proxy is
+billed to the key the user chose. On the Claude subscription a key-signed request is refused.
+
+**Metering follows the signer.** `NativeHandler` records a turn on the Claude API meter
+(`handlers/claude-api-meter.ts`) when, and only when, the request was signed `launch-key`: every
+forwarded request of that launch, a no-auth one included, and nothing on any other launch. Each
+turn is priced by its own model (subagent and background turns run on other models through the
+same handler), and only a turn on the session's main model moves the status line's context
+occupancy. Stats record `provider_name: "anthropic"`, `adapter_name: "native-passthrough"`; a
+non-2xx turn records `success: false` and changes no counter. `count_tokens` is not metered:
+Anthropic does not bill it.
+
+**The advisor follows the same signing** (`advisorKeyArmFor`, `handlers/advisor-decorator.ts`):
+see [advisor.md](advisor.md).
+
 ## A credential a request signed with is redacted by value in every sink (`redact.ts`)
 
 A provider can echo the key it received: in a 401 body, in an error frame of a 200 stream, in the
@@ -896,8 +947,11 @@ outside its headers exposes the value through `redactionSecrets?()`: Devin (the 
 body) and Antigravity (its capacity fallback sends the access token itself). The advisor adds
 Claude Code's inbound bearer and `x-api-key` to the main request's lease when it reads them
 (`claudeRequestFacts`, `handlers/native-handler-advisor.ts`). The native passthrough registers the
-exact headers it sends (the inbound bearer or key, or its fallback key) on EVERY native request,
-before its fetch (`NativeHandler.handle`), so an ordinary native turn's lease is not empty.
+exact headers it sends (the inbound bearer or key, its fallback key, or the Claude API launch's
+key) on EVERY native request, before its fetch (`buildForwardRequest`), so an ordinary native
+turn's lease is not empty. The Claude API launch also holds its key on a launch lease from the
+moment it is resolved until after the proxy shuts down and the end-of-session card is printed
+(`prepareClaudeLaunch`; `index.ts` releases it at every exit).
 
 **Who holds a lease, and when it is released.**
 

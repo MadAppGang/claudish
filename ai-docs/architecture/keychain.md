@@ -90,8 +90,17 @@ value, never the key), so `--probe` provenance names `macOS Keychain` or `1Passw
 environment layer shows, and `macOS Keychain (not read yet)` for one enumeration found and nothing
 has read.
 
+Where the value is read for `anthropic`: the Claude API launch (`anthropic@<id>` at top level)
+calls `resolveForUse("anthropic", {allowOpPrompt})` once before spawn, with a 1Password prompt
+allowed only on an interactive launch, and hands the key to the proxy's signer, never to an
+environment; `--probe` reads it when it sends the Claude API row (`probeSendRefusal`, which turns
+a read that throws into a dropped row); a proxied `anthropic@` hop reads it through
+`getRequestAuth`. The picker's Claude API row, `--probe --no-probe` and MCP `preflight` read only
+presence, and the picker's hint row names the stores searched (`looked in: env, config, Keychain,
+1Password`, `keySourcesSearched`).
+
 Every other provider's readiness still reads its Keychain value, which is the access-dialog path
-this section warns about; moving them is a separate change.
+this section warns about.
 
 ## `security` behaviours that are traps
 
