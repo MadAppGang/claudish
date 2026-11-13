@@ -84,7 +84,7 @@ ComposedHandler = FormatConverter (explicit adapter) + ModelTranslator (auto-sel
 transport.overrideStreamFormat() ?? modelAdapter.getStreamFormat() ?? providerAdapter.getStreamFormat()
 ```
 
-**Adding a new provider**: Add one entry to `PROVIDER_PROFILES` table in `providers/provider-profiles.ts`.
+**Adding a new provider**: Add one entry to `BUILTIN_PROVIDERS` in `providers/provider-definitions.ts`. Its required `createHandler` field names the builder in `providers/provider-profiles.ts` (`lazyHandler(…)`) or says why none is built (`noHandler(reason, note)`); there is no second table to keep in step.
 **Adding a new model**: Create a ModelTranslator adapter, register in `adapters/adapter-manager.ts`.
 **Verifying wiring**: `claudish --probe <model>` shows the full adapter composition.
 
