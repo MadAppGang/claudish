@@ -130,6 +130,8 @@ negative case: if you are about to type one of those words, stop and use the lef
 | dynamic subscription | client subscription | a subscription whose models the account's own discovery decides (Antigravity, SuperGrok, Devin) |
 | account list | roster (for a list of accounts), membership (for accounts) | the accounts registered for one claudish provider in `subscriptionAccounts`; a list of CREDENTIALS, never a list of models |
 | native API | direct API | the vendor's own metered endpoint (the `direct-api` profile) |
+| Claude subscription | Claude login route, Max route, native route (as a product name) | the user's own Claude Code login, served by the native passthrough (`native-anthropic`); specs: a bare Claude name, `claude@<id>`. Never signed with an Anthropic API key |
+| Claude API | direct Claude, Claude key route, Anthropic API (as a product name, for the route) | Anthropic's metered API on the user's Anthropic API key; claudish provider `anthropic` (route binding `anthropic/direct-api`); specs `anthropic@<id>`, `a@<id>`, `api@<id>` |
 | gateway | aggregator (as a tier) | a metered service reselling many vendors: OpenRouter, Together, Fireworks, Poe, Vertex |
 | metered | pay-as-you-go, PAYG | billed per token. PAYG survives only in the names `qwen-payg` and "Alibaba PAYG" |
 | probe pick | probe model, test model | the first model Test All tries on a provider |
