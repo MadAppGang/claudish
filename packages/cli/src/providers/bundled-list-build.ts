@@ -347,8 +347,9 @@ function readRecommendationRows(rawEntries: unknown[]): {
 
 /**
  * Parses the efforts as published, failing on anything the runtime parser would
- * silently lose: an absent field, a dropped cell, or a published row with no
- * cell (`{}`), which the parser drops whole. It reads the raw cells, so
+ * silently lose: an absent field, a row that is not an object, or a dropped cell.
+ * A published row with no cell (`{}`) carries nothing to lose: it is read as an
+ * absent row, exactly as the runtime parser reads it. It reads the raw cells, so
  * the later narrowing of `sendableOn` to the kept connections cannot trip it.
  */
 function readEfforts(raw: unknown): Record<string, ModelEffortRecommendations> {
@@ -358,10 +359,11 @@ function readEfforts(raw: unknown): Record<string, ModelEffortRecommendations> {
   const parsed = parseEffortRecommendations(raw);
   const lostCells: string[] = [];
   for (const [modelId, byTask] of Object.entries(raw)) {
-    // A row that is not an object, or an object with no cell, is dropped whole.
-    const cellKeys = isRecord(byTask) ? Object.keys(byTask) : [];
-    const taskTypes = cellKeys.length > 0 ? cellKeys : ["(row)"];
-    for (const taskType of taskTypes) {
+    if (!isRecord(byTask)) {
+      lostCells.push(modelId);
+      continue;
+    }
+    for (const taskType of Object.keys(byTask)) {
       if (!parsed[modelId]?.[taskType]) lostCells.push(`${modelId}.${taskType}`);
     }
   }
