@@ -72,7 +72,7 @@ import { claimSignalExit } from "./signal-owner.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
-import type { ClaudishConfig } from "./types.js";
+import type { ClaudeLaunch, ClaudishConfig } from "./types.js";
 
 /**
  * Terminal-isolation state for the running session. Module-level because the
@@ -121,6 +121,31 @@ function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
     config.modelSubagent,
   ];
   return models.some((m) => m && nativeRouteFor(m) !== null);
+}
+
+/**
+ * One debug line naming how a Claude launch's child is authenticated: which
+ * credential variables it holds (absent, claudish's placeholder, or set),
+ * whether it is host-managed, and who signs its requests. Names and states
+ * only, never a value.
+ */
+export function claudeLaunchAuthLine(
+  launch: ClaudeLaunch,
+  env: Record<string, string | undefined>
+): string {
+  const state = (name: string): string => {
+    const value = env[name];
+    if (!value) return "absent";
+    return isClaudishPlaceholderCredential(name, value) ? "placeholder" : "set";
+  };
+  const hostManaged = env[ENV.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST] ? "1" : "0";
+  const signer = launch === "subscription" ? "login-only" : "proxy";
+  return (
+    `[claude-runner] child auth: launch=${launch} ` +
+    `ANTHROPIC_API_KEY=${state("ANTHROPIC_API_KEY")} ` +
+    `ANTHROPIC_AUTH_TOKEN=${state("ANTHROPIC_AUTH_TOKEN")} ` +
+    `host-managed=${hostManaged} signer=${signer}`
+  );
 }
 
 /** Existence-only probe for an OS-credential-store Anthropic OAuth item. */
@@ -2376,11 +2401,15 @@ export async function runClaudeWithProxy(
     scrubInheritedFastModeGates(env);
     removeInheritedHostRouting(env);
     // Don't override ANTHROPIC_MODEL - let Claude Code use its default
-    // (unless user explicitly specified a model)
-    if (modelId) {
-      env[ENV.ANTHROPIC_MODEL] = modelId;
-      env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = modelId;
+    // (unless user explicitly specified a model). A Claude launch keeps the
+    // user's spec in `config.model` (`claude@<id>`); Claude Code is given the
+    // bare id it can serve.
+    const launchModelId = config.claudeLaunchModel ?? modelId;
+    if (launchModelId) {
+      env[ENV.ANTHROPIC_MODEL] = launchModelId;
+      env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = launchModelId;
     }
+    if (config.claudeLaunch) debugLog(claudeLaunchAuthLine(config.claudeLaunch, env));
   } else {
     // Set Claude Code standard model environment variables
     // When using profile mode (no explicit --model), DON'T override ANTHROPIC_MODEL

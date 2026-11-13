@@ -1094,6 +1094,19 @@ async function runCli() {
       process.exit(1);
     }
 
+    // A Claude launch is decided before anything below reads `monitor`: one
+    // `claude@<id>` main model is a monitor session on Claude Code's own login
+    // (`claudeLaunch`), and a `claude@` spec the subscription cannot serve
+    // refuses the launch here, before any key is validated.
+    {
+      const { decideClaudeLaunch } = await import("./launcher/claude-launch.js");
+      const decision = decideClaudeLaunch(cliConfig);
+      if (!decision.ok) {
+        console.error(`[claudish] Error: ${decision.message}`);
+        process.exit(1);
+      }
+    }
+
     // No catalog file and a bare name to route: learn whether the backend can be
     // reached before the first routing decision below, which needs the answer.
     const endCatalogVerdict = beginSpan("startup:catalog-verdict");
@@ -1178,7 +1191,13 @@ async function runCli() {
     // Clean up stdin after interactive prompts (readline, @inquirer/prompts).
     // These leave lingering data/keypress listeners and raw mode state that interfere
     // with Claude Code's TTY handling when spawned with stdio: "inherit". (#85, #88, #99)
-    if (cliConfig.interactive && !cliConfig.monitor && process.stdin.isTTY) {
+    // A Claude launch is a monitor session the picker may have drawn for, so it
+    // cleans up too; a plain `--monitor` never drew one.
+    if (
+      cliConfig.interactive &&
+      (!cliConfig.monitor || cliConfig.claudeLaunch !== undefined) &&
+      process.stdin.isTTY
+    ) {
       if (typeof process.stdin.setRawMode === "function") {
         process.stdin.setRawMode(false);
       }
@@ -1264,27 +1283,22 @@ async function runCli() {
     // runtime (no lazy path), and owns its handlers from then on.
     //
     // Who signs this launch's native requests is decided once, here, and the
-    // same object reaches advisor planning and the proxy: a bare Claude main
-    // model is the Claude subscription, never signed with an API key.
-    const { isBareClaudeName, launchSigningFor, subscriptionSettingsCheck } = await import(
-      "./launcher/claude-launch.js"
+    // same object reaches advisor planning and the proxy: a Claude subscription
+    // launch (`claude@<id>`, or a bare Claude main model) is never signed with an
+    // API key, and a settings layer that would hand the child one refuses the
+    // launch here, before spawn.
+    const { prepareClaudeLaunch } = await import("./launcher/claude-launch.js");
+    const preparedLaunch = await traceSpan("startup:claude-launch", () =>
+      prepareClaudeLaunch(cliConfig)
     );
-    const launchSigning = launchSigningFor(cliConfig);
-    // The Claude subscription is never signed with an API key, so a settings
-    // layer that would hand the child one refuses the launch here, before spawn.
-    if (launchSigning?.kind === "login-only" && cliConfig.model) {
-      const { settingsCredentialFindings } = await import("./claude-runner.js");
-      const check = subscriptionSettingsCheck(settingsCredentialFindings(cliConfig, process.env), {
-        bareName: isBareClaudeName(cliConfig.model),
-      });
-      if (check.refusal) {
-        process.stderr.write(`[claudish] Error: ${check.refusal}\n`);
-        process.exit(1);
-      }
-      if (!cliConfig.quiet) {
-        for (const notice of check.notices) process.stderr.write(`[claudish] Note: ${notice}\n`);
-      }
+    if (!preparedLaunch.ok) {
+      process.stderr.write(`[claudish] Error: ${preparedLaunch.message}\n`);
+      process.exit(1);
     }
+    if (!cliConfig.quiet) {
+      for (const line of preparedLaunch.banner) process.stderr.write(`${line}\n`);
+    }
+    const launchSigning = preparedLaunch.signing;
     let advisorRuntime: import("./handlers/advisor-panel-gateway.js").AdvisorRuntime | undefined;
     if (cliConfig.advisor) {
       const { evaluateAdvisorStartup } = await import("./advisor-startup.js");

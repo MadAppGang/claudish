@@ -7,6 +7,13 @@ import type { AdvisorPanelGateway } from "./handlers/advisor-route-plan.js";
 export type OpenRouterModel = string;
 
 // CLI Configuration
+/**
+ * A top-level launch whose main model names a Claude route explicitly:
+ * `"subscription"` is `claude@<id>`, a monitor session on Claude Code's own
+ * login; `"api"` is `anthropic@<id>`, the metered Claude API.
+ */
+export type ClaudeLaunch = "subscription" | "api";
+
 export interface ClaudishConfig {
   model?: OpenRouterModel | string; // Optional - will prompt if not provided
   /**
@@ -38,6 +45,16 @@ export interface ClaudishConfig {
   quiet: boolean; // Suppress [claudish] log messages (default true in single-shot mode)
   jsonOutput: boolean; // Output in JSON format for tool integration
   monitor: boolean; // Monitor mode - proxy to real Anthropic API and log everything
+  /**
+   * Set only by `decideClaudeLaunch`: `claude@<id>` at top level is
+   * `"subscription"`. Absent on every other launch. Implies `monitor`.
+   */
+  claudeLaunch?: ClaudeLaunch;
+  /**
+   * Set only by `prepareClaudeLaunch`: the id Claude Code receives as
+   * `ANTHROPIC_MODEL`. `model` keeps the user's route-carrying spec.
+   */
+  claudeLaunchModel?: string;
   stdin: boolean; // Read prompt from stdin instead of args
   openrouterApiKey?: string; // Optional in monitor mode
   anthropicApiKey?: string; // Required in monitor mode
