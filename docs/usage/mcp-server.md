@@ -82,8 +82,13 @@ replaced by yours (or by an empty one), and it runs in a new empty working direc
 project `CLAUDE.md` or memory is loaded. claudish never reads your Claude Code login itself; the
 `claude` binary signs in on its own. The answer ends with an `Auth:` line,
 `Auth: Claude Code login (subscription)` on a subscription. If you never signed in, the error is
-Claude Code's own "Not logged in" text: run `claude` once. An explicit spec such as
-`anthropic@claude-opus-5-5` is the metered Anthropic API and takes the ordinary routing path.
+Claude Code's own "Not logged in" text: run `claude` once. `claude@<id>` is the same Claude
+subscription call; a `claude@` before a name Claude Code does not serve, or with a marker or a
+`:N` suffix, is refused. `anthropic@claude-opus-5-5` (also `a@`, `api@`) is the Claude API:
+metered on your `ANTHROPIC_API_KEY`, sent through claudish's proxy, which signs it with the key.
+Without `user_required_provider`, a `claude@` or `anthropic@` on a Claude model is removed and
+the call runs on the Claude subscription. See
+[Settings Reference § 5.2.1](../settings-reference.md#521-claude-the-claude-subscription-and-the-claude-api).
 
 **Model IDs:**
 | Common Name | Model ID |

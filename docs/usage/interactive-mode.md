@@ -34,6 +34,23 @@ Pick a number, hit Enter. You're in.
 
 ---
 
+## Claude in the Selector
+
+The provider list starts with two Claude rows:
+
+- **Claude subscription**: Claude models on your own Claude Code login. Listed when Claude Code
+  is signed in; an Anthropic API key does not count. Prices show `SUB`.
+- **Claude API**: Claude models on Anthropic's API, billed per token to your `ANTHROPIC_API_KEY`.
+  Listed when a key is in your environment, `~/.claudish/config.json`, the macOS Keychain or
+  1Password. Without one the row is hidden; `k` shows it as `needs ANTHROPIC_API_KEY`, and with
+  the cursor on it the hint line names where claudish looked: `looked in: env, config, Keychain,
+  1Password`.
+
+Picking a model under either row starts a [monitor-mode](monitor-mode.md#claude-subscription-or-claude-api)
+session, the same as `--model claude@<id>` or `--model anthropic@<id>`.
+
+---
+
 ## Skip the Selector
 
 Already know which model you want? Skip straight to it:

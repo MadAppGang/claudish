@@ -35,6 +35,36 @@ Claudish extracts the token from Claude Code's requests. No extra config needed.
 
 ---
 
+## Claude subscription or Claude API
+
+Two model specs start a monitor session for you, one per Claude route:
+
+```bash
+claudish --model claude@claude-haiku-5-5      # Claude subscription: your Claude Code login
+claudish --model anthropic@claude-haiku-5-5   # Claude API: billed to your ANTHROPIC_API_KEY
+```
+
+`a@` and `api@` are short for `anthropic@`. The model picker's **Claude subscription** and
+**Claude API** rows start the same two sessions.
+
+- **Claude subscription** (`claude@`): Claude Code uses its own login. claudish never signs these
+  requests with an API key. If your Claude Code settings would give the session an API key (a
+  settings `env` block, an `apiKeyHelper`, auth headers in `ANTHROPIC_CUSTOM_HEADERS`), claudish
+  refuses to start and names the file.
+- **Claude API** (`anthropic@`): Claude Code holds only a claudish placeholder token, and claudish
+  adds your key to each request on its way to Anthropic. The key never reaches Claude Code's
+  environment, its tool shells or MCP servers. Each request is recorded in claudish's stats and
+  cost line, priced by the model that served it.
+
+In both, claudish's hooks do not run, and a failed request is not retried or moved to another
+route: Claude Code's requests go to Anthropic as they are. Speed and mode markers (`#fast`,
+`+pro`) are refused on these launches; use `/fast` and `/effort` inside the session.
+
+Details, refusals and the behaviour in `team`, MCP and `--probe`:
+[Settings Reference § 5.2.1](../settings-reference.md#521-claude-the-claude-subscription-and-the-claude-api).
+
+---
+
 ## Debug Logs
 
 Enable debug mode to save logs:
