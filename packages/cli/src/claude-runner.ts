@@ -177,11 +177,17 @@ export { type KeychainCredentialProbe, defaultKeychainAnthropicProbe };
  *
  * A config read failure must never block launch, so it degrades to "not opted
  * in" — the safe direction, since that only ever avoids spending money.
+ *
+ * A launch whose user named the Claude subscription explicitly (`claude@<id>`,
+ * kept as `claudeSubscriptionPin` in a pane child) never opts in: an explicit
+ * subscription spec is not consent to the metered API, whatever the flag, the
+ * environment or the config file says.
  */
 export function wantsAnthropicApiBilling(
   config: ClaudishConfig,
   env: NodeJS.ProcessEnv = process.env
 ): boolean {
+  if (config.claudeSubscriptionPin) return false;
   if (config.anthropicApiBilling) return true;
 
   const raw = env[ENV.CLAUDISH_ANTHROPIC_API_BILLING];
@@ -2540,7 +2546,9 @@ export async function runClaudeWithProxy(
     if (hidAnthropicApiKey) {
       log(
         "[claudish]   ANTHROPIC_API_KEY found but hidden so it can't override that subscription · " +
-          "use --anthropic-api-billing (or anthropicApiBilling: true) to bill the API instead"
+          (config.claudeSubscriptionPin
+            ? "use anthropic@<id> to bill the Claude API instead"
+            : "use --anthropic-api-billing (or anthropicApiBilling: true) to bill the API instead")
       );
     }
   }

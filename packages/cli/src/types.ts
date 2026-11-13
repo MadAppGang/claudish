@@ -63,6 +63,13 @@ export interface ClaudishConfig {
    * never the key.
    */
   claudeLaunchKeySource?: string;
+  /**
+   * Set only by `decideClaudeLaunch` in a pane child given `claude@<id>`: the
+   * model became the bare `<id>`, and this keeps the user's explicit choice of
+   * the Claude subscription. The launch then signs `login-only` and hides a
+   * real ANTHROPIC_API_KEY whatever the API-billing opt-in says.
+   */
+  claudeSubscriptionPin?: boolean;
   stdin: boolean; // Read prompt from stdin instead of args
   openrouterApiKey?: string; // Optional in monitor mode
   anthropicApiKey?: string; // Required in monitor mode

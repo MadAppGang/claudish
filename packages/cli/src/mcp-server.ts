@@ -773,11 +773,11 @@ export function stripUnrequestedProvider(
   const parsed = parseModelSpec(spec);
   if (!parsed.isExplicitProvider || parsed.isLegacySyntax) return spec;
   if (parsed.provider === "native-anthropic") {
-    // claude@ is the Claude subscription. Stripping it is safe only when the spec
-    // passes its own check, so the bare name IS the subscription's decision;
-    // anything else (a marker, `:N`, an inner name Claude Code does not own) stays
-    // claude@ so the launch path refuses it, never routed.
-    return claudeSubscriptionSpecRefusal(spec) === null ? claudeSubscriptionInner(spec) : spec;
+    // claude@ is the Claude subscription, and it is never removed: a bare Claude
+    // name follows the user's API-billing opt-in, while claude@ signs the login
+    // only. The pane child reads the claude@ itself (`decideClaudeLaunch`), and a
+    // spec it cannot serve is refused there, never routed.
+    return spec;
   }
   // Only a built-in claudish provider: a user's custom endpoint (`corp-proxy@gpt-4o`)
   // names a vendor and a bill the bare name would not reach. An unrequested

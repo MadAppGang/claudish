@@ -13,7 +13,9 @@
  * monitor session: Claude Code talks to Anthropic on its own login and the
  * proxy forwards every request unchanged, signed `login-only` whatever the
  * API-billing opt-in says. In a pane child it is the bare `<id>`, the native
- * passthrough a bare slot already takes.
+ * passthrough a bare slot already takes, pinned to the subscription
+ * (`claudeSubscriptionPin`): `login-only` and the key hidden, whatever the
+ * opt-in says.
  *
  * `anthropic@<id>` (`a@`, `api@`) names the Claude API. At top level it is a
  * monitor session too: Claude Code holds only claudish's placeholder token and
@@ -60,8 +62,9 @@ export interface LaunchSigningDeps {
 
 /**
  * The launch's native signing: `login-only` for a bare Claude main model (or
- * `claude@` before one) without the API-billing opt-in, else undefined, which
- * the proxy reads as `inbound`.
+ * `claude@` before one) without the API-billing opt-in, and always for one a
+ * pane child was given as `claude@` (`claudeSubscriptionPin`); else undefined,
+ * which the proxy reads as `inbound`.
  */
 export function launchSigningFor(
   config: ClaudishConfig,
@@ -69,6 +72,7 @@ export function launchSigningFor(
 ): NativeSigning | undefined {
   const main = config.model;
   if (!main || nativeRouteFor(main) === null) return undefined;
+  if (config.claudeSubscriptionPin) return LOGIN_ONLY_SIGNING;
   const wantsApiBilling =
     deps.wantsApiBilling ?? ((c: ClaudishConfig) => wantsAnthropicApiBilling(c));
   return wantsApiBilling(config) ? undefined : LOGIN_ONLY_SIGNING;
@@ -191,8 +195,8 @@ export interface DecideClaudeLaunchDeps {
  * - A `claude@` spec the subscription cannot serve (a name Claude Code does not
  *   own, a marker, a `:N` suffix) refuses the launch, and so does `claude@`
  *   inside a chain: the Claude subscription is served by Claude Code itself.
- * - One `claude@X` main model: in a pane child the model becomes the bare `X`;
- *   otherwise the launch becomes a monitor session, `claudeLaunch:
+ * - One `claude@X` main model: in a pane child the model becomes the bare `X`
+ *   and `claudeSubscriptionPin` is set; otherwise the launch becomes a monitor session, `claudeLaunch:
  *   "subscription"`, and `model` keeps the user's spec for every later reader
  *   (the end-of-session card, the advisor notice).
  * - One `anthropic@X` (`a@X`, `api@X`) main model at top level: a monitor
@@ -233,6 +237,7 @@ export function decideClaudeLaunch(
 
   if (deps.paneChild ?? isPaneChild()) {
     config.model = normalizeNativeModelSpec(claudeSubscriptionInner(main));
+    config.claudeSubscriptionPin = true;
     return { ok: true };
   }
   config.monitor = true;
@@ -328,7 +333,7 @@ export async function prepareClaudeLaunch(
     return signing ? { ok: true, banner: [], signing } : { ok: true, banner: [] };
   }
   const check = subscriptionSettingsCheck(findingsOf(config, env), {
-    bareName: isBareClaudeName(main),
+    bareName: isBareClaudeName(main) && !config.claudeSubscriptionPin,
   });
   if (check.refusal) return { ok: false, message: check.refusal };
   return { ok: true, banner: noticeLines(check.notices), signing };
