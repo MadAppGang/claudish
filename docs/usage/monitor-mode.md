@@ -48,9 +48,10 @@ claudish --model anthropic@claude-haiku-5-5   # Claude API: billed to your ANTHR
 **Claude API** rows start the same two sessions.
 
 - **Claude subscription** (`claude@`): Claude Code uses its own login. claudish never signs these
-  requests with an API key. If your Claude Code settings would give the session an API key (a
-  settings `env` block, an `apiKeyHelper`, auth headers in `ANTHROPIC_CUSTOM_HEADERS`), claudish
-  refuses to start and names the file.
+  requests with an API key. If your Claude Code settings would give the session an API key or
+  token (`ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in a settings `env` block, an
+  `apiKeyHelper`, auth headers in `ANTHROPIC_CUSTOM_HEADERS`), claudish refuses to start and names
+  the file.
 - **Claude API** (`anthropic@`): Claude Code holds only a claudish placeholder token, and claudish
   adds your key to each request on its way to Anthropic. The key never reaches Claude Code's
   environment, its tool shells or MCP servers. Each request is recorded in claudish's stats and

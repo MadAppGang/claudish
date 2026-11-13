@@ -78,9 +78,11 @@ instead of the login, and every request would then fail with a "Sign in" answer 
 wrong cause), and a `--settings` value claudish cannot read or parse. A settings
 `ANTHROPIC_BASE_URL` is a one-line notice: it moves where the login's requests go, not which
 credential signs them.
-The same refusal runs for a bare Claude main model without `--anthropic-api-billing` (top level
-and pane child, where its message also offers that flag) and in MCP `run_prompt`'s print child
-(`runPromptViaClaudeCode`). What claudish cannot read (an MDM profile, a file Claude Code adds
+The same refusal runs on every launch `launchSigningFor` signs `login-only`: a bare Claude main
+model or tier without `--anthropic-api-billing` (top level and pane child, where its message also
+offers that flag), and a `claude@<id>` tier, which sets `claudeSubscriptionPin` so the opt-in is
+ignored (a startup note says so) and a real `ANTHROPIC_API_KEY` is hidden from the child. It also
+runs in MCP `run_prompt`'s print child (`runPromptViaClaudeCode`). What claudish cannot read (an MDM profile, a file Claude Code adds
 later) is the same limit `childAuthControl` documents; a key-signed request from there that
 reaches the proxy is still refused.
 

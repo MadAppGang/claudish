@@ -628,11 +628,13 @@ usual launch, hooks included.
   marker (`#fast`, `+pro`), with a `:N` suffix, or inside a `+` chain.
 - `anthropic@<id>` with a marker or a `:N` suffix, on a top-level launch. Use `/fast` and
   `/effort` inside the session instead.
-- A Claude subscription launch (`claude@<id>`, or a bare Claude name without
-  `--anthropic-api-billing`) whose Claude Code settings would give it an API key: a real
-  `ANTHROPIC_API_KEY` in a settings `env` block, an `apiKeyHelper`, an `ANTHROPIC_CUSTOM_HEADERS`
-  that carries `x-api-key` or a non-login `authorization`, or a `--settings` file claudish cannot
-  read. The message names the file, never the value. Remove the key, or use `anthropic@<id>`.
+- A Claude subscription launch (`claude@<id>` as the model or any tier, or a bare Claude name
+  as the model or any tier without `--anthropic-api-billing`) whose Claude Code settings would
+  give it an API key: a real `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in a settings `env`
+  block, an `apiKeyHelper`, an `ANTHROPIC_CUSTOM_HEADERS` that carries `x-api-key` or a non-login
+  `authorization`, or a `--settings` file claudish cannot read. A settings file a passthrough
+  `--setting-sources` turns off is not read. The message names the file, never the value. Remove
+  the key, or use `anthropic@<id>`.
 - A Claude API launch with no key (the message lists where claudish looked), with a key a vault
   could not read, or under settings that set `forceLoginMethod: "claudeai"` (managed settings or
   a `--settings` value).
@@ -648,18 +650,24 @@ anthropic@<id> for the Claude API.` Sign in with `/login`, launch `anthropic@<id
 now belong to the builtin providers above. Such an endpoint is skipped with the warning
 `customEndpoints['anthropic'] skipped: 'anthropic' is already claimed by builtin provider
 'anthropic' (as its name, a shortcut, or a legacy prefix). The builtin wins. Rename your entry
-(e.g. 'anthropic-custom') to use it.` Rename it in `customEndpoints`.
+(e.g. 'anthropic-custom') to use it.` Rename it in `customEndpoints`. Until you do, a model spec
+on that name (`anthropic@<model>`, in `--model`, a tier, `--advisor`, a routing rule, `--probe` or
+an MCP tool) is refused with the rename, so it never reaches the builtin. A running claudish MCP
+server reads custom endpoints once: restart it after the rename.
 
 **Elsewhere.**
 
 - `--model-opus`, `--model-sonnet`, `--model-haiku`, `--model-subagent` and profile tiers map a
   role, they do not start a monitor session: `claude@<id>` runs that role on your Claude Code
   login, and `anthropic@<id>` runs it through claudish's proxy, signed with your key and metered.
+  A `claude@<id>` tier keeps the whole session on your login: `ANTHROPIC_API_KEY` is hidden from
+  Claude Code and `--anthropic-api-billing` does not apply (a startup note says so).
 - A `team` slot or `create_session`: `claude@<id>` runs as `<id>` on your Claude Code login;
   `anthropic@<id>` runs through claudish's proxy, signed with your key and metered.
-- MCP tools remove an `anthropic@` or `claude@` you did not ask for from a Claude model, so it
-  runs on the Claude subscription, unless `user_required_provider` is set. A `claude@` before a
-  name Claude Code does not serve is refused, never routed.
+- MCP tools remove an `anthropic@` you did not ask for from a Claude model, so it runs on the
+  Claude subscription, unless `user_required_provider` is set. A `claude@` is kept: it already
+  names the Claude subscription. A `claude@` before a name Claude Code does not serve is refused,
+  never routed.
 - `claudish --probe claude-haiku-5-5` shows the Claude subscription row (not probed: it runs on
   Claude Code's login, which `--probe` cannot use), then every other route the catalog publishes
   for the model and you hold a credential for (the Claude API, OpenRouter, Devin, …), each
