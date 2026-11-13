@@ -119,6 +119,7 @@ import {
   loadRoutingRules,
   matchRoutingRuleKey,
 } from "./providers/routing-rules.js";
+import { shadowedEndpointRefusal } from "./providers/shadowed-endpoint.js";
 import { createProxyServer } from "./proxy-server.js";
 import { renderEffortTableMarkdown, renderRecommendedMarkdown } from "./recommended-listing.js";
 import { sanitizeForReport } from "./redact.js";
@@ -815,13 +816,18 @@ export function userRequiredProvidersArg(
 }
 
 /**
- * The tool error for the first caller-given spec `claude@` cannot serve, checked on
- * the strings exactly as given, before any provider strip, model-choice stop or
+ * The tool error for the first caller-given spec `claude@` cannot serve, or that
+ * names a custom endpoint a Claude builtin took over (`shadowedEndpointRefusal`),
+ * checked on the strings exactly as given, before any provider strip, model-choice stop or
  * effort question, so nothing is started for it. Undefined when every spec passes.
  */
 export function claudeSpecRefusalResult(
   given: readonly string[]
 ): { content: Array<{ type: "text"; text: string }>; isError: true } | undefined {
+  const shadowed = shadowedEndpointRefusal(given);
+  if (shadowed) {
+    return { content: [{ type: "text" as const, text: `Error: ${shadowed}` }], isError: true };
+  }
   for (const spec of given) {
     const refusal = claudeSubscriptionSpecRefusal(spec);
     if (refusal) {

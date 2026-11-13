@@ -51,6 +51,7 @@ import {
   claudeSubscriptionSpecRefusal,
   nativeRouteFor,
 } from "../providers/native-route.js";
+import { shadowedEndpointRefusal } from "../providers/shadowed-endpoint.js";
 import { WireMarkerError, splitWireMarkers } from "../providers/wire-markers.js";
 import { acquireSigningLease, redactSecrets } from "../redact.js";
 import type { ClaudishConfig } from "../types.js";
@@ -186,12 +187,17 @@ export type ClaudeLaunchDecision = { ok: true } | { ok: false; message: string }
 export interface DecideClaudeLaunchDeps {
   /** Default `isPaneChild()`: this process is the claudish of a `team` or MCP session pane. */
   paneChild?: boolean;
+  /** Default `shadowedEndpointRefusal`: a spec on a custom endpoint name a Claude builtin took over. */
+  shadowedEndpointRefusal?: (specs: readonly string[]) => string | null;
 }
 
 /**
  * Step 1, before the launch's catalog verdict and key validation. Reads the
  * whole `--model` chain (`modelChain`, else `model`) and the four tier fields.
  *
+ * - A spec on a custom endpoint name a Claude builtin took over (`anthropic@`
+ *   while `customEndpoints.anthropic` exists) refuses the launch, naming the
+ *   rename: it would reach the builtin, not the user's endpoint.
  * - A `claude@` spec the subscription cannot serve (a name Claude Code does not
  *   own, a marker, a `:N` suffix) refuses the launch, and so does `claude@`
  *   inside a chain: the Claude subscription is served by Claude Code itself.
@@ -210,6 +216,11 @@ export function decideClaudeLaunch(
 ): ClaudeLaunchDecision {
   const specs = config.modelChain ?? (typeof config.model === "string" ? [config.model] : []);
   const tiers = [config.modelOpus, config.modelSonnet, config.modelHaiku, config.modelSubagent];
+  const named = [...specs, ...tiers].filter(
+    (spec): spec is string => typeof spec === "string" && spec.length > 0
+  );
+  const shadowed = (deps.shadowedEndpointRefusal ?? shadowedEndpointRefusal)(named);
+  if (shadowed) return { ok: false, message: shadowed };
   for (const spec of [...specs, ...tiers]) {
     if (typeof spec !== "string" || spec.length === 0) continue;
     const refusal = claudeSubscriptionSpecRefusal(spec);

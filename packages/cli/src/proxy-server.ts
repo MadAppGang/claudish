@@ -79,6 +79,7 @@ import {
   route,
   routingRuleProblems,
 } from "./providers/routing-rules.js";
+import { shadowedEndpointRefusal } from "./providers/shadowed-endpoint.js";
 import { discoverProviderProbeModel } from "./providers/transport/provider-model-discovery.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
 import {
@@ -669,6 +670,15 @@ export async function createProxyServer(
     const claudeRefusal = claudeSubscriptionSpecRefusal(target);
     if (claudeRefusal) {
       out.refusal = claudeRefusal;
+      return nativeHandler;
+    }
+    // A spec on a custom endpoint name a Claude builtin took over would reach
+    // the builtin, not the user's endpoint: refused, naming the rename.
+    const shadowed = shadowedEndpointRefusal(
+      options.modelChain && target === options.modelChain[0] ? options.modelChain : [target]
+    );
+    if (shadowed) {
+      out.refusal = shadowed;
       return nativeHandler;
     }
 
