@@ -232,12 +232,6 @@ const badInputs: Array<[string, (input: BundledListInputs) => void]> = [
     },
   ],
   [
-    "a model publishing effort levels has an empty row",
-    (i) => {
-      recommendations(i).efforts!["gpt-6.1-sol"] = {};
-    },
-  ],
-  [
     "the recommendation set is empty",
     (i) => {
       recommendations(i).entries = [];
@@ -272,6 +266,37 @@ describe("R1 RB-17: builder rejects incomplete or untrustworthy publications", (
       expect(warningsOf(summary).join("\n")).toContain(id);
     }));
 
+  test("R1: a recommended model with effort levels and an empty row is kept with the absent-row warning", () =>
+    withInput((inputs) => {
+      const ids = ["gpt-6.1-sol", "kimi-k3"];
+      const rows = recommendations(inputs);
+      rows.efforts![ids[0]!] = {};
+      delete rows.efforts![ids[1]!];
+      for (const id of ids) {
+        expect(model(inputs, id).reasoning!.efforts!.length).toBeGreaterThan(0);
+      }
+      inputs.slim.models.reverse();
+      rows.entries.reverse();
+
+      let result!: ReturnType<typeof buildBundledListWithSummary>;
+      expect(() => {
+        result = buildBundledListWithSummary(inputs);
+      }).not.toThrow();
+      const { file, summary } = result;
+
+      for (const id of ids) {
+        expect(file.entries.some((entry) => entry.modelId === id)).toBe(true);
+        expect(file.bundle.recommendations.entries.some((entry) => entry.modelId === id)).toBe(
+          true
+        );
+        expect(Object.hasOwn(file.bundle.efforts, id)).toBe(false);
+        expect(summary.modelsWithNoEffortRow).toContain(id);
+      }
+      expect(warningsOf(summary)).toEqual([
+        `recommendations.efforts: 2 recommended model(s) publish effort levels and have no effort row, bundled without one: ${ids.join(", ")}`,
+      ]);
+    }));
+
   test("R1: two recommended models with no effort rows are kept and warned in sorted order", () =>
     withInput((inputs) => {
       const ids = ["gpt-6.1-sol", "kimi-k3"];
@@ -300,7 +325,7 @@ describe("R1 RB-17: builder rejects incomplete or untrustworthy publications", (
       expect(warnings.indexOf(ids[0]!)).toBeLessThan(warnings.indexOf(ids[1]!));
     }));
 
-  test("R1: a dropped effort cell still fails when another model has no effort row", () =>
+  test("R1: a non-empty effort row with a dropped cell still fails when another model has no row", () =>
     withInput((inputs) => {
       delete recommendations(inputs).efforts!["kimi-k3"];
       recommendations(inputs).efforts!["gpt-6.1-sol"]!.coding!.effort = "";
@@ -324,6 +349,46 @@ describe("R1 RB-17: builder rejects incomplete or untrustworthy publications", (
       expect(file.entries.some((entry) => entry.modelId === "minimax-m3")).toBe(true);
       expect(file.bundle.efforts["minimax-m3"]).toBeUndefined();
       expect(summary.modelsWithNoEffortRow).toContain("minimax-m3");
+      expect(warningsOf(summary)).toEqual([]);
+    }));
+
+  test("R1: a recommended model with no effort levels and an empty row is kept without a warning", () =>
+    withInput((inputs) => {
+      const id = "minimax-m3";
+      const rows = recommendations(inputs);
+      rows.entries.push({ modelId: id, tier: "lightweight" });
+      rows.efforts![id] = {};
+      expect(model(inputs, id).reasoning?.efforts ?? []).toEqual([]);
+
+      let result!: ReturnType<typeof buildBundledListWithSummary>;
+      expect(() => {
+        result = buildBundledListWithSummary(inputs);
+      }).not.toThrow();
+      const { file, summary } = result;
+
+      expect(file.entries.some((entry) => entry.modelId === id)).toBe(true);
+      expect(file.bundle.recommendations.entries.some((entry) => entry.modelId === id)).toBe(true);
+      expect(Object.hasOwn(file.bundle.efforts, id)).toBe(false);
+      expect(summary.modelsWithNoEffortRow).toContain(id);
+      expect(warningsOf(summary)).toEqual([]);
+    }));
+
+  test("R1: an empty effort row outside the bundled list is discarded without failing", () =>
+    withInput((inputs) => {
+      const id = "minimax-m3";
+      const rows = recommendations(inputs);
+      expect(rows.entries.some((entry) => entry.modelId === id)).toBe(false);
+      rows.efforts![id] = {};
+
+      let result!: ReturnType<typeof buildBundledListWithSummary>;
+      expect(() => {
+        result = buildBundledListWithSummary(inputs);
+      }).not.toThrow();
+      const { file, summary } = result;
+
+      expect(file.entries.some((entry) => entry.modelId === id)).toBe(false);
+      expect(file.bundle.recommendations.entries.some((entry) => entry.modelId === id)).toBe(false);
+      expect(Object.hasOwn(file.bundle.efforts, id)).toBe(false);
       expect(warningsOf(summary)).toEqual([]);
     }));
 
