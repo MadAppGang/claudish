@@ -6,7 +6,6 @@ import { NATIVE_NOT_PROBED } from "../../providers/native-route.js";
 import { describeProbeState } from "../../providers/probe-live.js";
 import {
   INTERACTIVE_PROBE_TIMEOUT_MS,
-  type ProbeSendRefusal,
   probeHopOriginFor,
   probeProviderRoute,
   probeSendRefusal,
@@ -329,11 +328,6 @@ export function useRouteProbe(): UseRouteProbeReturn {
           const { credentials } = await import("../../auth/credentials/authority.js");
           const refusal = await probeSendRefusal(link.provider, (name) =>
             credentials.resolveForUse(name)
-          ).catch(
-            (err: unknown): ProbeSendRefusal => ({
-              outcome: "credential-unreadable",
-              detail: err instanceof Error ? err.message : String(err),
-            })
           );
           if (refusal) {
             setProbeResults((prev) =>

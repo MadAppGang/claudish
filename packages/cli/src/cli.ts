@@ -1781,7 +1781,8 @@ async function probeModelRouting(
 
   /**
    * Whether a target may be sent: a read-at-use key is read now, and one that
-   * cannot be read, or is not there, refuses the send (`probeSendRefusal`).
+   * cannot be read (a reported failure or a thrown read), or is not there,
+   * refuses the send for that target only (`probeSendRefusal`).
    */
   async function sendRefusalFor(target: ProbeTarget): Promise<ProbeSendRefusal | null> {
     const { credentials } = await import("./auth/credentials/authority.js");

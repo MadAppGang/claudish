@@ -1,4 +1,5 @@
 import type { UseResolution } from "../auth/credentials/types.js";
+import { redactSecrets } from "../redact.js";
 import { hasProviderPrefix } from "./model-parser.js";
 import { type ProbeLinkInput, type ProbeResult, probeLink } from "./probe-live.js";
 import { getProviderByName } from "./provider-definitions.js";
@@ -160,13 +161,23 @@ export interface ProbeSendRefusal {
  * can still fail; a failed read becomes a dropped row with the vault's reason,
  * never a request sent with an empty key. `null`: send. Other providers are not
  * asked here: their key was read by the credential filter already.
+ *
+ * A read that throws is the same outcome as one that reports failure: that one
+ * route is `credential-unreadable` and nothing is sent for it, so the rest of
+ * the probe carries on. The thrown message is redacted before it is shown.
  */
 export async function probeSendRefusal(
   provider: string,
   resolveForUse: (name: string) => Promise<UseResolution>
 ): Promise<ProbeSendRefusal | null> {
   if (getProviderByName(provider)?.vaultKeyReadAtUse !== true) return null;
-  const resolution = await resolveForUse(provider);
+  let resolution: UseResolution;
+  try {
+    resolution = await resolveForUse(provider);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { outcome: "credential-unreadable", detail: redactSecrets(message) };
+  }
   if (resolution.state === "present") return null;
   if (resolution.state === "failed") {
     return { outcome: "credential-unreadable", detail: resolution.reason };
