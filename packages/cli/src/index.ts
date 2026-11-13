@@ -698,7 +698,12 @@ if (isMcpMode) {
       "startup:credential-resolution",
       () =>
         Promise.all(
-          tuiProviders.map((p) => credentials.isAvailable(p.catalogName, { allowOpPrompt: true }))
+          // A read-at-use key (the Claude API) is answered by presence and read
+          // only when a request signs, so mounting the TUI raises no 1Password
+          // prompt for it.
+          tuiProviders.map((p) =>
+            credentials.isAvailable(p.catalogName, { allowOpPrompt: p.vaultKeyReadAtUse !== true })
+          )
         ),
       { providers: tuiProviders.length }
     );

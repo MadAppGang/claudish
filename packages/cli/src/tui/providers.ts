@@ -4,6 +4,8 @@
  */
 
 import { hasSharedAntigravityToken } from "../auth/antigravity-token.js";
+import { keychainHasAnyOf } from "../auth/credentials/keychain-source.js";
+import { configHasOpReferenceFor } from "../auth/credentials/op-source.js";
 import { type CredentialSource, describeSourceSync } from "../auth/credentials/source.js";
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
 import {
@@ -47,6 +49,12 @@ export interface ProviderDef {
    * `oauthLoginSlug` cannot be accepted here and silently ignored there.
    */
   oauthSlug?: ProviderDefinition["oauthLoginSlug"];
+  /**
+   * The catalog's `vaultKeyReadAtUse`: a Keychain or 1Password key is read only
+   * when a request signs and never written into `process.env`, so readiness
+   * sees it by presence.
+   */
+  vaultKeyReadAtUse?: true;
 }
 
 export type ProviderLoginAction =
@@ -84,7 +92,19 @@ function toProviderDef(def: ProviderDefinition): ProviderDef {
     // table here. If a provider supports `claudish login {slug}`, the
     // catalog entry declares which slug.
     oauthSlug: def.oauthLoginSlug,
+    ...(def.vaultKeyReadAtUse === true ? { vaultKeyReadAtUse: true as const } : {}),
   };
+}
+
+/**
+ * A read-at-use key's vault presence: a Keychain item (enumeration, never its
+ * value) or a single op:// reference in the config (a scan, no SDK). False for
+ * every other provider, whose vault keys hydration writes into `process.env`.
+ */
+function readAtUseVaultKeyPresent(p: ProviderDef): boolean {
+  if (!p.vaultKeyReadAtUse || !p.apiKeyEnvVar) return false;
+  const names = [p.apiKeyEnvVar, ...(p.aliases ?? [])];
+  return keychainHasAnyOf(names) || names.some((name) => configHasOpReferenceFor(name));
 }
 
 /** Re-exported from the credential layer, which owns the classification rules. */
@@ -149,7 +169,7 @@ export function providerIsReady(
   // op:// key. So the config TUI's display readiness is fully covered here
   // WITHOUT an async authority call (kept sync for React render paths). The
   // authority remains the source of truth for routing/sign-time (async).
-  return providerAuthSource(p, config) !== null;
+  return providerAuthSource(p, config) !== null || readAtUseVaultKeyPresent(p);
 }
 
 /**
@@ -198,7 +218,10 @@ export function providerAuthCapabilities(
 ): AuthCapabilities {
   const apiKeySupported = !!p.apiKeyEnvVar;
   const apiKeySet =
-    apiKeySupported && (!!process.env[p.apiKeyEnvVar] || !!config.apiKeys?.[p.apiKeyEnvVar]);
+    apiKeySupported &&
+    (!!process.env[p.apiKeyEnvVar] ||
+      !!config.apiKeys?.[p.apiKeyEnvVar] ||
+      readAtUseVaultKeyPresent(p));
   // Devin has no claudish-side login (the token is minted by `devin login` and
   // read from that CLI's own file), so it declares no oauthLoginSlug — but it
   // IS token-authenticated, and gating the column on `oauthSlug` alone would

@@ -349,6 +349,12 @@ The op source draws the same line for denied handshakes, for the same reason.
   roughly one read's wall clock, not ten). Needed because `describeSourceSync` — which decides the
   readiness dot, the "configured first" sort and the not-configured divider — cannot await, so a
   keychain-only provider would render as unconfigured despite working at request time.
+- **Hydration skips read-at-use keys.** `hydrateKeychainIntoEnv`, the 1Password add path
+  (`runOpAdd`) and the Providers-tab key save never write the key variable of a
+  `vaultKeyReadAtUse` provider (`readAtUseKeyEnvVars()`, today `ANTHROPIC_API_KEY`) into
+  `process.env`: there it would reach every child the TUI starts. The tab sees such a key by
+  presence (`keychainHasAnyOf`, `configHasOpReferenceFor`), and the mount-time `isAvailable`
+  pass asks for it with `allowOpPrompt: false`.
 - **Hydration filters on `resolveLocalApiKey`, NOT on `process.env`.** This is subtle and was a
   real bug. `config.json` outranks the keychain but does not live in `process.env`, so skipping
   only variables "absent from env" pushed the keychain value into env — where step 1 of the chain

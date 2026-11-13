@@ -1722,6 +1722,22 @@ export function getProviderByName(name: string): ProviderDefinition | undefined 
 }
 
 /**
+ * The key variables (each `apiKeyEnvVar` and its aliases) of the builtin
+ * providers declared `vaultKeyReadAtUse`. A vault value for one of these is read
+ * only when a request signs and is never written into `process.env`, so no bulk
+ * hydration step may write it there either.
+ */
+export function readAtUseKeyEnvVars(): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const def of BUILTIN_PROVIDERS) {
+    if (def.vaultKeyReadAtUse !== true) continue;
+    if (def.apiKeyEnvVar) names.add(def.apiKeyEnvVar);
+    for (const alias of def.apiKeyAliases ?? []) names.add(alias);
+  }
+  return names;
+}
+
+/**
  * Whether `provider` keeps a stored list: it declares `modelDiscovery`, its tier
  * is `subscription` or `dynamic-subscription`, and it is not local. Pure.
  */

@@ -100,7 +100,7 @@ import {
 } from "../providers/probe-catalog.js";
 import { describeProbeState } from "../providers/probe-live.js";
 import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../providers/probe-runner.js";
-import { getProviderByName } from "../providers/provider-definitions.js";
+import { getProviderByName, readAtUseKeyEnvVars } from "../providers/provider-definitions.js";
 import { invalidateProbeDiscovery } from "../providers/transport/probe-discovery.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
 // Real package version (auto-generated at build), not the stale hardcoded
@@ -1081,8 +1081,13 @@ export function App({ requestLogin }: AppProps = {}) {
         try {
           const auth = await acquireOpAuth();
           let hydrated = 0;
+          // A read-at-use key (ANTHROPIC_API_KEY) is left out: the credential
+          // authority reads it from 1Password when a request signs, and in
+          // process.env it would reach every child Claude Code.
+          const readAtUse = readAtUseKeyEnvVars();
           const apply = (vars: Record<string, string>): void => {
             for (const [name, val] of Object.entries(vars)) {
+              if (readAtUse.has(name)) continue;
               if (!process.env[name]) {
                 process.env[name] = val;
                 hydrated++;
@@ -1564,16 +1569,20 @@ export function App({ requestLogin }: AppProps = {}) {
                 // on — enabling first would leave it on after a failed write,
                 // pointing at a store with nothing in it.
                 setKeychainEnabled(true);
-                // Make it active for the rest of this session. Overwriting a
-                // shell-exported value here is intended: the user just typed a
-                // replacement, and this only affects THIS process — their shell
-                // is untouched.
-                process.env[envVar] = val;
-                // Record the ORIGIN, or `x` will not know this env value came
-                // from the keychain and will leave the deleted secret live in
-                // process.env — still inherited by children, still
-                // authenticating — until the process exits.
-                recordKeychainHydratedVar(envVar);
+                // A read-at-use key stays in the Keychain: the authority reads
+                // it when a request signs, and readiness sees it by presence.
+                if (!target.vaultKeyReadAtUse) {
+                  // Make it active for the rest of this session. Overwriting a
+                  // shell-exported value here is intended: the user just typed a
+                  // replacement, and this only affects THIS process — their shell
+                  // is untouched.
+                  process.env[envVar] = val;
+                  // Record the ORIGIN, or `x` will not know this env value came
+                  // from the keychain and will leave the deleted secret live in
+                  // process.env — still inherited by children, still
+                  // authenticating — until the process exits.
+                  recordKeychainHydratedVar(envVar);
+                }
                 refreshKeychainVars();
                 setStatusMsg(`Key saved to macOS Keychain for ${target.displayName} (${envVar}).`);
                 saved = true;
@@ -1593,7 +1602,9 @@ export function App({ requestLogin }: AppProps = {}) {
                 setStatusMsg(configSaveFailure(err));
                 return;
               }
-              process.env[envVar] = val;
+              // config.json is read by the authority itself; a read-at-use key
+              // is not copied into process.env.
+              if (!target.vaultKeyReadAtUse) process.env[envVar] = val;
               // When the keychain write failed, the status line already explains
               // the fallback and must not be clobbered.
               if (!keychainSupported) {
