@@ -35,6 +35,7 @@ import { parseModelSpec } from "./model-parser.js";
 import {
   type NativeRoute,
   claudeSubscriptionSpecRefusal,
+  isClaudeSubscriptionSpec,
   proxyRouteDecision,
 } from "./native-route.js";
 import { PREDEFINED_ENDPOINTS } from "./predefined-catalog.js";
@@ -695,9 +696,10 @@ export type NoRouteCause =
   /**
    * A spec refused before any routing: a `claude@` spec the Claude
    * subscription refuses (a marker, a `:N` suffix, a `+` chain hop, a name
-   * Claude Code does not own), or a spec (as given, or a matched user rule's
+   * Claude Code does not own), a spec (as given, or a matched user rule's
    * entry) on a custom endpoint name a Claude builtin took over
-   * (`shadowedEndpointRefusal`).
+   * (`shadowedEndpointRefusal`), or a matched user rule's entry naming the
+   * Claude subscription (`claude`, `claude@<id>`).
    */
   | "explicit-refused";
 
@@ -1413,18 +1415,16 @@ async function explainBareNameWithin(
   const matchedKey = matchRoutingRuleKey(model, routing.rules);
   const matched = matchedKey === null ? null : routing.rules[matchedKey];
 
-  let explanation: RouteExplanation;
   // A rule entry on a custom endpoint name a Claude builtin took over would
-  // reach the builtin, not the user's endpoint: the rule is refused, naming
-  // the rename. A plain entry names the provider for this model.
-  const ruleShadowed =
-    matchedKey !== null && matched !== null
-      ? shadowedEndpointRefusal(
-          matched.map((entry) => (entry.includes("@") ? entry : `${entry}@${model}`))
-        )
-      : null;
-  if (matchedKey !== null && ruleShadowed !== null) {
-    explanation = {
+  // reach the builtin, not the user's endpoint, and an entry naming the Claude
+  // subscription would be routed as a metered native hop: either refuses the
+  // rule. A plain entry names the provider for this model.
+  const ruleRefusal =
+    matchedKey !== null && matched !== null ? userRuleRefusal(matchedKey, matched, model) : null;
+  if (matchedKey !== null && ruleRefusal !== null) {
+    // Refused before any candidate is gathered, and returned here: nothing
+    // below may replace it with an empty-chain or unreadable-catalog outcome.
+    return {
       requestedModel,
       routedModel: model,
       source: "user-rule",
@@ -1432,10 +1432,13 @@ async function explainBareNameWithin(
       ...(routing.scopeOf ? { ruleScope: routing.scopeOf(matchedKey) } : {}),
       ...explanationCatalogSource(cachePath),
       candidates: [],
-      outcome: { kind: "no-route", cause: "explicit-refused", reason: ruleShadowed },
+      outcome: { kind: "no-route", cause: "explicit-refused", reason: ruleRefusal },
       warnings: ruleProblemWarnings(routing.ruleProblems),
     };
-  } else if (matchedKey !== null && matched !== null) {
+  }
+
+  let explanation: RouteExplanation;
+  if (matchedKey !== null && matched !== null) {
     const gatewayLists = await loadGatewayWireLists(
       gatewayListsNeeded(matched, model, cachePath),
       network,
@@ -1981,6 +1984,31 @@ export async function routeExplained(
   );
   emitRouteNotices(explanation);
   return { plan: toRoutePlan(explanation), explanation };
+}
+
+/**
+ * The refusal for a matched user rule, or null: an entry on a custom endpoint
+ * name a Claude builtin took over (`shadowedEndpointRefusal`), or an entry
+ * naming the Claude subscription (`claude`, `claude@<id>`). The Claude
+ * subscription is served by Claude Code on its own login, never as a routed
+ * hop, which would sign it with an API key. A plain entry names the provider
+ * for `model`.
+ */
+function userRuleRefusal(
+  pattern: string,
+  entries: readonly RoutingEntry[],
+  model: string
+): string | null {
+  const specs = entries.map((entry) => (entry.includes("@") ? entry : `${entry}@${model}`));
+  const shadowed = shadowedEndpointRefusal(specs);
+  if (shadowed) return shadowed;
+  const claude = entries.find((_, i) => isClaudeSubscriptionSpec(specs[i] ?? ""));
+  if (claude === undefined) return null;
+  return (
+    `routing rule "${pattern}" lists "${claude}", the Claude subscription, which Claude Code ` +
+    "serves on its own login and claudish never routes. Remove it from the rule, or use " +
+    "anthropic@<id> for the Claude API."
+  );
 }
 
 /** A spec refused before any routing (`explicit-refused`), with the refusal as its reason. */
