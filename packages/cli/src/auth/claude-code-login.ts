@@ -157,8 +157,9 @@ export function defaultKeychainPresence(service: string): KeychainPresence {
  *   as `x-api-key` and shows no login screen (measured on 2.1.325); `where`
  *   names the store, never a value;
  * - `none`: neither, and every store answered;
- * - `unknown`: neither found, and a store could not be asked (an unreadable
- *   config file, a Keychain that did not answer).
+ * - `unknown`: no login found and a login store could not be asked (a Keychain
+ *   that did not answer), whatever the key stores hold; or neither found and a
+ *   key store could not be asked (an unreadable config file).
  */
 export type ClaudeCodeStartupCredential =
   | { kind: "login" }
@@ -200,13 +201,16 @@ export function claudeCodeStartupCredential(
     presence
   );
   if (oauth === "found") return { kind: "login" };
+  // A login store that did not answer may hold the login: a Console key found
+  // elsewhere proves a key exists, not that no login does.
+  if (oauth === "failed") return { kind: "unknown" };
 
   const configPath = claudeCodeGlobalConfigPath(env);
   const stored = fileExists(configPath) ? configSetsConsoleKey(configPath, readFile) : "absent";
   if (stored === "found") return { kind: "api-key", where: configPath };
   const keychainKey = anyPresent(claudeCodeSecureStorageServices("", env), presence);
   if (keychainKey === "found") return { kind: "api-key", where: "the macOS Keychain" };
-  const unanswered = oauth === "failed" || stored === "failed" || keychainKey === "failed";
+  const unanswered = stored === "failed" || keychainKey === "failed";
   return unanswered ? { kind: "unknown" } : { kind: "none" };
 }
 
