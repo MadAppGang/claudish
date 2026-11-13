@@ -163,10 +163,15 @@ export interface ProviderTransport {
    * bounds the wrong thing: the caller's wall clock then includes a wait
    * governed by whatever the ACTIVE request's own timeout is. On the local
    * queue that number is ten minutes.
+   *
+   * `opts.request` is the exact value {@link transformPayload} returned for
+   * this request. One transport instance serves overlapping requests, so a
+   * transport that keeps per-request state from the transform (a retry body,
+   * the id it sent) looks it up by this value, never by "the last transform".
    */
   enqueueRequest?(
     fetchFn: () => Promise<Response>,
-    opts?: { signal?: AbortSignal }
+    opts?: { signal?: AbortSignal; request?: unknown }
   ): Promise<Response>;
 
   /**

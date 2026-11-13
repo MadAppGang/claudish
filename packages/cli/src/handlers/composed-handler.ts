@@ -2073,8 +2073,14 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)
+    // `providerRequest` keeps the exact value the transform returned for THIS
+    // request; every `enqueueRequest` of the request passes it as
+    // `opts.request`, so a transport serving overlapping requests reads this
+    // request's own state. `requestPayload` is reassigned later and is no key.
+    let providerRequest: unknown;
     if (this.provider.transformPayload) {
       requestPayload = this.provider.transformPayload(requestPayload, claudeRequest, binding);
+      providerRequest = requestPayload;
     }
 
     // 5s. Codex speed (deferred at 5w): the tier the account's dynamic models
@@ -2498,7 +2504,10 @@ export class ComposedHandler implements ModelHandler {
       let received: Response;
       try {
         received = await (this.provider.enqueueRequest
-          ? this.provider.enqueueRequest(fetchCurrent, { signal: attemptSignal })
+          ? this.provider.enqueueRequest(fetchCurrent, {
+              signal: attemptSignal,
+              request: providerRequest,
+            })
           : fetchCurrent());
       } catch (error) {
         clamp.disarm();
@@ -3809,7 +3818,7 @@ export class ComposedHandler implements ModelHandler {
         },
         getRequestInit: () => (this.provider.getRequestInit?.() || {}) as Record<string, unknown>,
         enqueueRequest: this.provider.enqueueRequest
-          ? (fn, o) => this.provider.enqueueRequest!(fn, o)
+          ? (fn, o) => this.provider.enqueueRequest!(fn, { ...o, request: providerRequest })
           : undefined,
         settleStreamHead: async (res, reissue, signal) => {
           const settled = await this.settleResponsesStreamHead(res, reissue, { signal });

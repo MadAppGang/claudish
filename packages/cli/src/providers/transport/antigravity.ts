@@ -238,6 +238,20 @@ function parseRetryDelay(value: any): number | undefined {
   return undefined;
 }
 
+/** What one request's capacity retry needs from that request's transform. */
+interface AntigravityRequestState {
+  /**
+   * The dialect payload the envelope was built from, before any effort control
+   * was removed. Each capacity retry shapes its body from this by the id it
+   * sends, never from the primary's body.
+   */
+  payload: unknown;
+  /** The model id the primary request sent. */
+  sentId: string;
+  /** What decided that id; names the level and source on each retry's line. */
+  choice: ModelIdChoice | undefined;
+}
+
 export class AntigravityProviderTransport implements ProviderTransport {
   readonly name = "antigravity";
   private _displayName = "Antigravity";
@@ -263,23 +277,18 @@ export class AntigravityProviderTransport implements ProviderTransport {
    */
   private cachedAuth: RequestAuth | null = null;
 
-  /** The last envelope built by transformPayload, stored for fallback retries */
-  private lastEnvelope: any = null;
+  /**
+   * Each request's own state, keyed by the envelope `transformPayload`
+   * returned for it. Requests overlap on one transport, so `enqueueRequest`
+   * reads the state of `opts.request` and never another request's.
+   */
+  private requests = new WeakMap<object, AntigravityRequestState>();
 
   /**
-   * The dialect payload that envelope was built from, before any effort control
-   * was removed. Each capacity retry shapes its body from this by the id it
-   * sends, never from the primary's body.
+   * The most recent transform's state, for a caller that enqueues without
+   * `opts.request`.
    */
-  private lastPayload: unknown = null;
-
-  /**
-   * What decided that envelope's model id, handed to the next request only:
-   * `enqueueRequest` takes it before its first await and carries it through
-   * that request's capacity retry, so a later `transformPayload` cannot change
-   * the level and source an earlier request's retry line names.
-   */
-  private lastChoice: ModelIdChoice | undefined;
+  private lastRequest: AntigravityRequestState | undefined;
 
   /**
    * The capacity-retry id that served the current request, when one did.
@@ -483,8 +492,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * catalog, and both drop the body's effort controls only when the id they
    * send carries the effort (`antigravityBodyForModelId`).
    *
-   * Stores the envelope and the original payload for potential fallback
-   * retries in enqueueRequest.
+   * Stores the original payload, the sent id and its choice under the returned
+   * envelope, for that request's capacity retries in enqueueRequest.
    */
   transformPayload(payload: any, claudeRequest?: any): any {
     let choice: ModelIdChoice | undefined;
@@ -503,9 +512,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
     if (typeof envelope?.model === "string" && envelope.model) {
       this.servedModelName = envelope.model;
     }
-    this.lastEnvelope = envelope;
-    this.lastPayload = payload;
-    this.lastChoice = choice;
+    const state: AntigravityRequestState = { payload, sentId: this.servedModelName, choice };
+    if (envelope && typeof envelope === "object") this.requests.set(envelope, state);
+    this.lastRequest = envelope ? state : undefined;
     if (choice) logModelIdChoice("Antigravity", this.modelName, choice);
     return envelope;
   }
@@ -556,16 +565,19 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * rather than cancelled (unbilled reads). An abort rejects with `AbortError`,
    * which ComposedHandler answers before classifying anything. Without a
    * signal every step is what it was.
+   *
+   * `opts.request` names the request: its own transform's state decides the
+   * retry body, the candidates and the sent-id line. Without it, the most
+   * recent transform's state is taken here, before the first await.
    */
   async enqueueRequest(
     fetchFn: () => Promise<Response>,
-    opts?: { signal?: AbortSignal }
+    opts?: { signal?: AbortSignal; request?: unknown }
   ): Promise<Response> {
     const queue = GeminiRequestQueue.getInstance();
     const signal = opts?.signal;
-    // This request's own choice, taken before any await: a request transformed
-    // while this one waits overwrites the field, never this copy.
-    const choice = this.lastChoice;
+    const state = this.requestState(opts?.request);
+    const sentId = state?.sentId ?? this.servedModelName;
     // Only this request's capacity retry may set it again.
     this._activeModelName = undefined;
 
@@ -578,7 +590,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
         // A 404 usually means this model is not served by the tier we are on.
         // Only rewrite when the account's dynamic models catalog CONFIRMS that.
         if (response.status === 404) {
-          return this.rewriteModelNotFound(response);
+          return this.rewriteModelNotFound(response, sentId);
         }
         return response;
       }
@@ -597,11 +609,17 @@ export class AntigravityProviderTransport implements ProviderTransport {
       );
 
       if (classification.reason === "MODEL_CAPACITY_EXHAUSTED") {
-        return this.handleCapacityExhausted(response, queue, choice, signal);
+        return this.handleCapacityExhausted(response, queue, state, sentId, signal);
       }
 
       if (classification.terminal) {
-        return await this.explainTerminalQuota(response, bodyText, classification.reason, signal);
+        return await this.explainTerminalQuota(
+          response,
+          bodyText,
+          classification.reason,
+          sentId,
+          signal
+        );
       }
 
       if (attempt < MAX_RETRY_ATTEMPTS) {
@@ -612,7 +630,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
           `[Antigravity] Rate limited (${classification.reason || "unattributed — server gave no reason or retry delay"}), retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt}/${MAX_RETRY_ATTEMPTS})`
         );
         if (attempt === 1) {
-          await raceCallAbort(this.logQuotaInfo(), signal);
+          await raceCallAbort(this.logQuotaInfo(sentId), signal);
         }
         if (await sleepUnlessAborted(delay, signal)) throw callAbortError();
       }
@@ -620,6 +638,15 @@ export class AntigravityProviderTransport implements ProviderTransport {
 
     logStderr(`[Antigravity] Rate limit persisted after ${MAX_RETRY_ATTEMPTS} retries`);
     return lastResponse!;
+  }
+
+  /**
+   * The state `transformPayload` stored for `request`; without a request it
+   * names, the most recent transform's.
+   */
+  private requestState(request: unknown): AntigravityRequestState | undefined {
+    const keyed = request && typeof request === "object" ? this.requests.get(request) : undefined;
+    return keyed ?? this.lastRequest;
   }
 
   /**
@@ -632,44 +659,41 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * left, the original capacity failure is returned. Each
    * candidate's body is shaped from the original dialect payload by the id it
    * sends (`antigravityBodyForModelId`). A candidate that 404s (briefly unserved mid-tier-roll) or rate-limits is
-   * skipped. Each candidate's debug line names its id with `choice`, the level
-   * and source of the request being retried.
+   * skipped. Each candidate's debug line names its id with the request's
+   * `choice`, the level and source of the request being retried. Everything
+   * request-specific comes from `request`, the retried request's own state.
    */
   private async handleCapacityExhausted(
     originalResponse: Response,
     queue: GeminiRequestQueue,
-    choice: ModelIdChoice | undefined,
+    request: AntigravityRequestState | undefined,
+    sentId: string,
     signal?: AbortSignal
   ): Promise<Response> {
     const excluded = this.served.excludedIds;
-    const candidates = this.servedModels.filter(
-      (m) => m !== this.servedModelName && !excluded?.has(m)
-    );
+    const candidates = this.servedModels.filter((m) => m !== sentId && !excluded?.has(m));
 
     if (candidates.length === 0) {
-      log(`[Antigravity] ${this.servedModelName} capacity exhausted, no fallback models available`);
+      log(`[Antigravity] ${sentId} capacity exhausted, no fallback models available`);
       return originalResponse;
     }
 
-    if (!this.lastEnvelope) {
-      log(
-        `[Antigravity] ${this.servedModelName} capacity exhausted but no stored envelope for retry`
-      );
+    if (!request) {
+      log(`[Antigravity] ${sentId} capacity exhausted but no stored envelope for retry`);
       return originalResponse;
     }
 
-    log(`[Antigravity] Model ${this.servedModelName} capacity exhausted, starting fallback chain`);
-    logStderr(
-      `[Antigravity] ${this.servedModelName} capacity exhausted, trying fallback models...`
-    );
+    log(`[Antigravity] Model ${sentId} capacity exhausted, starting fallback chain`);
+    logStderr(`[Antigravity] ${sentId} capacity exhausted, trying fallback models...`);
 
     let lastResponse = originalResponse;
     // The original dialect payload: the primary's body was shaped for the id it
     // sent, and a retry id may carry the effort where that one did not, or not
     // where it did.
-    const originalPayload = this.lastPayload;
+    const originalPayload = request.payload;
+    const choice = request.choice;
     const endpoint = this.getEndpoint();
-    const tried: string[] = [this.servedModelName];
+    const tried: string[] = [sentId];
 
     for (const fallbackModel of candidates) {
       // No candidate starts after the call's deadline; the one in flight is
@@ -697,7 +721,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
       if (fallbackResponse.status === 200) {
         this._activeModelName = fallbackModel;
         logStderr(
-          `[Antigravity] Using fallback model: ${fallbackModel} (${this.servedModelName} had no capacity)`
+          `[Antigravity] Using fallback model: ${fallbackModel} (${sentId} had no capacity)`
         );
         return fallbackResponse;
       }
@@ -725,7 +749,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
     log("[Antigravity] All fallback models exhausted");
     logStderr(`[Antigravity] All models capacity exhausted (tried: ${tried.join(" -> ")})`);
     if (lastResponse.status === 404) {
-      return this.rewriteModelNotFound(lastResponse, true);
+      return this.rewriteModelNotFound(lastResponse, sentId, true);
     }
     return lastResponse;
   }
@@ -760,13 +784,17 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * Returns the response UNTOUCHED when the account's dynamic models catalog
    * contains the model.
    */
-  private rewriteModelNotFound(response: Response, capacityFallbacksExhausted = false): Response {
+  private rewriteModelNotFound(
+    response: Response,
+    sentId: string,
+    capacityFallbacksExhausted = false
+  ): Response {
     // The dynamic models catalog is the LIVE fetchAvailableModels result — no hardcoded seed.
     const served = this.servedModels;
 
-    if (!capacityFallbacksExhausted && served.includes(this.servedModelName)) {
+    if (!capacityFallbacksExhausted && served.includes(sentId)) {
       log(
-        `[Antigravity] 404 for ${this.servedModelName}, which IS in the dynamic models catalog — passing through unmodified`
+        `[Antigravity] 404 for ${sentId}, which IS in the dynamic models catalog — passing through unmodified`
       );
       return response;
     }
@@ -810,7 +838,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * when the reading could not be taken (no token/project, endpoint down, or —
    * tellingly — the credential itself is no longer accepted).
    */
-  private async quotaRemainingForServedModel(): Promise<number | undefined> {
+  private async quotaRemainingForServedModel(sentId: string): Promise<number | undefined> {
     if (!this.accessToken || !this.projectId) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const data = await Promise.race([
@@ -824,7 +852,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
     const buckets = data?.buckets;
     if (!buckets?.length) return undefined;
     const bucket =
-      buckets.find((b) => b.modelId === this.servedModelName) ??
+      buckets.find((b) => b.modelId === sentId) ??
       buckets.find((b) => b.modelId === this.modelName);
     return typeof bucket?.remainingFraction === "number" ? bucket.remainingFraction : undefined;
   }
@@ -856,10 +884,11 @@ export class AntigravityProviderTransport implements ProviderTransport {
     response: Response,
     bodyText: string,
     reason: string | undefined,
+    sentId: string,
     signal?: AbortSignal
   ): Promise<Response> {
-    const remaining = await raceCallAbort(this.quotaRemainingForServedModel(), signal);
-    const model = this.servedModelName;
+    const remaining = await raceCallAbort(this.quotaRemainingForServedModel(sentId), signal);
+    const model = sentId;
 
     let advice: string;
     if (remaining !== undefined && remaining > 0) {
@@ -908,7 +937,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * have plenty of quota" and makes the rate limit look inexplicable. The
    * absence of a bucket is itself the answer, so name it.
    */
-  private async logQuotaInfo(): Promise<void> {
+  private async logQuotaInfo(sentId: string): Promise<void> {
     if (!this.accessToken || !this.projectId) return;
     try {
       const data = await retrieveUserQuota(this.accessToken, this.projectId);
@@ -930,15 +959,15 @@ export class AntigravityProviderTransport implements ProviderTransport {
           : "?";
         // Mark the row for the model we are actually being throttled on, so the
         // relevant line is findable in a list of similar-looking ones.
-        const mine = this.isThrottledModel(bucket.modelId);
+        const mine = this.isThrottledModel(bucket.modelId, sentId);
         if (mine) sawThrottledModel = true;
         lines.push(`  ${mine ? "> " : "  "}${bucket.modelId}: ${pct} remaining (resets ${reset})`);
       }
       if (lines.length === 0) return;
 
       const requested =
-        this.servedModelName && this.servedModelName !== this.modelName
-          ? `${this.modelName} (served as ${this.servedModelName})`
+        sentId && sentId !== this.modelName
+          ? `${this.modelName} (served as ${sentId})`
           : this.modelName;
       const header = sawThrottledModel
         ? `[Antigravity] Quota status (> = ${requested}):`
@@ -950,10 +979,10 @@ export class AntigravityProviderTransport implements ProviderTransport {
     }
   }
 
-  /** Does this quota bucket describe the model this transport is serving? */
-  private isThrottledModel(bucketModelId: string): boolean {
+  /** Does this quota bucket describe the model the throttled request sent? */
+  private isThrottledModel(bucketModelId: string, sentId: string): boolean {
     const id = bucketModelId.toLowerCase();
-    return id === this.modelName.toLowerCase() || id === this.servedModelName.toLowerCase();
+    return id === this.modelName.toLowerCase() || id === sentId.toLowerCase();
   }
 
   /**
