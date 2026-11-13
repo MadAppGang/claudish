@@ -1,4 +1,5 @@
 import { log } from "../logger.js";
+import type { AggregatorEntry } from "../model-loader.js";
 import {
   type CachedSubscriptionPlan,
   type DiskCacheV3,
@@ -30,6 +31,7 @@ import {
   isRouteRegistry,
 } from "./connection-wire.js";
 import { allConnections, splitOptInConnections } from "./content-use.js";
+import { readModelIdEffort } from "./model-id-effort.js";
 import { _clearChatCapabilityIndex } from "./transport/probe-discovery.js";
 
 const MAX_CATALOG_PAGES = 40;
@@ -200,14 +202,27 @@ export function externalIdFor(entry: SlimModelEntry, provider: string): string |
   return wireIds.find((wireId) => !isMovingPointer(wireId)) ?? null;
 }
 
-/** Whether `entry` maps `wireId` exactly on a route bound to `provider`, opt-in rows included. */
+/**
+ * Whether `entry` maps `wireId` exactly on a route bound to `provider`, opt-in rows
+ * included: as a connection's `externalModelId`, or as an id its effort map
+ * (`modelIdEffort`) lists for a level or for `off`. An effort-map id is a wire id
+ * the connection publishes in its own right, so it is sent as typed and never
+ * folded back into the base through an alias.
+ */
 function publishesWireIdFor(entry: SlimModelEntry, provider: string, wireId: string): boolean {
   return allConnections(entry).some(
     (connection) =>
       connection.routeStatus === "mapped" &&
-      connection.externalModelId === wireId &&
-      catalogRouteMatchesProvider(connection.route, provider)
+      catalogRouteMatchesProvider(connection.route, provider) &&
+      (connection.externalModelId === wireId || effortMapListsWireId(connection, wireId))
   );
+}
+
+/** Whether a connection's effort map lists `wireId` as a level's id or as `off`. */
+function effortMapListsWireId(connection: AggregatorEntry, wireId: string): boolean {
+  const map = readModelIdEffort(connection.modelIdEffort);
+  if (!map) return false;
+  return map.off === wireId || Object.values(map.values).includes(wireId);
 }
 
 export function resolveExternalId(
