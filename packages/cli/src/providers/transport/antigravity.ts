@@ -54,8 +54,10 @@ import { log, logStderr } from "../../logger.js";
 import {
   type AntigravityServedSet,
   antigravityBodyForModelId,
+  chooseAntigravityServedModel,
   resolveAntigravityServedModel,
 } from "../antigravity-model-id.js";
+import { type ModelIdChoice, logModelIdChoice } from "../model-id-effort-choice.js";
 import { wireChoicesFromClaudeRequest } from "../wire-request.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
@@ -100,6 +102,7 @@ const QUOTA_CHECK_TIMEOUT_MS = 3000;
 // route gathering can share it; re-exported for this transport's importers.
 export {
   antigravityBodyForModelId,
+  chooseAntigravityServedModel,
   rankAntigravityModel,
   resolveAntigravityModelId,
   resolveAntigravityServedModel,
@@ -269,6 +272,12 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * sends, never from the primary's body.
    */
   private lastPayload: unknown = null;
+
+  /**
+   * What decided that envelope's model id. A capacity retry's debug line names
+   * its own id with this level and source.
+   */
+  private lastChoice: ModelIdChoice | undefined;
 
   /**
    * The capacity-retry id that served the current request, when one did.
@@ -476,28 +485,40 @@ export class AntigravityProviderTransport implements ProviderTransport {
    * retries in enqueueRequest.
    */
   transformPayload(payload: any, claudeRequest?: any): any {
-    const request = { effort: effortOf(claudeRequest, this.pinnedEffort) };
+    let choice: ModelIdChoice | undefined;
+    const request = {
+      effort: effortOf(claudeRequest, this.pinnedEffort),
+      onModelChoice: (decided: ModelIdChoice) => {
+        choice = decided;
+      },
+    };
     // PRIMARY request: the CodeAssist envelope comes from the delegated auth
     // artifact (which maps the model id). Fall back to the local builder if
     // delegation hasn't run.
     const envelope = this.cachedAuth?.transformPayload
       ? this.cachedAuth.transformPayload(payload, request)
-      : this.buildLocalEnvelope(payload, request.effort);
+      : this.buildLocalEnvelope(payload, request);
     if (typeof envelope?.model === "string" && envelope.model) {
       this.servedModelName = envelope.model;
     }
     this.lastEnvelope = envelope;
     this.lastPayload = payload;
+    this.lastChoice = choice;
+    if (choice) logModelIdChoice("Antigravity", this.modelName, choice);
     return envelope;
   }
 
   /**
-   * The local builder's primary envelope: the id resolved at `effort`, and the
-   * body shaped for that id.
+   * The local builder's primary envelope: the id resolved at the request's
+   * effort, and the body shaped for that id.
    */
-  private buildLocalEnvelope(payload: unknown, effort: EffortLevel | undefined) {
-    const model = resolveAntigravityServedModel(this.modelName, this.served, effort);
-    return this.buildEnvelope(antigravityBodyForModelId(payload, model), model);
+  private buildLocalEnvelope(
+    payload: unknown,
+    request: { effort?: EffortLevel; onModelChoice?: (choice: ModelIdChoice) => void }
+  ) {
+    const choice = chooseAntigravityServedModel(this.modelName, this.served, request.effort);
+    request.onModelChoice?.(choice);
+    return this.buildEnvelope(antigravityBodyForModelId(payload, choice.id), choice.id);
   }
 
   /**
@@ -648,6 +669,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
       // aborted through the signal on its own fetch.
       if (signal?.aborted) throw callAbortError();
       log(`[Antigravity] Trying fallback model: ${fallbackModel}`);
+      if (this.lastChoice) {
+        logModelIdChoice("Antigravity", this.modelName, { ...this.lastChoice, id: fallbackModel });
+      }
       tried.push(fallbackModel);
 
       const fallbackEnvelope = this.buildEnvelope(

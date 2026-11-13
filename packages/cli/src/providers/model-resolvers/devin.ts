@@ -53,7 +53,11 @@ import {
   listModelIdEffortConnections,
 } from "../../adapters/model-catalog.js";
 import type { DevinModelConfig } from "../devin/devin-models.js";
-import { chooseConnectionModelId } from "../model-id-effort-choice.js";
+import {
+  type ModelIdChoice,
+  chooseConnectionModelId,
+  logModelIdChoice,
+} from "../model-id-effort-choice.js";
 import { SPEED_PREMIUM_SUFFIXES } from "../model-id-effort.js";
 import type {
   ExpandContext,
@@ -266,7 +270,7 @@ export class DevinModelResolver implements ProviderModelResolver {
     const bases = soleConnectionBases(
       [...groups.values()],
       listModelIdEffortConnections("devin"),
-      (base) => this.expand(base, modelsCatalog, {})
+      (base) => this.expand(base, modelsCatalog, { quiet: true })
     );
     const choices: ModelChoice[] = [];
     const emitted = new Set<string>();
@@ -330,8 +334,20 @@ export class DevinModelResolver implements ProviderModelResolver {
    *    message naming what IS served; guessing here would hide it.
    */
   expand(selection: string, modelsCatalog: ModelsCatalogEntry[], ctx: ExpandContext): string {
+    const choice = this.choose(selection, modelsCatalog, ctx.effort);
+    if (!ctx.quiet) logModelIdChoice("Devin", selection.trim() || selection, choice);
+    return choice.id;
+  }
+
+  /** The rules of {@link expand}, with what decided the uid. */
+  private choose(
+    selection: string,
+    modelsCatalog: ModelsCatalogEntry[],
+    effort: EffortLevel | undefined
+  ): ModelIdChoice {
+    const unmapped = (id: string): ModelIdChoice => ({ id, effort, source: "no map" });
     const requested = selection.trim();
-    if (!requested || modelsCatalog.length === 0) return requested || selection;
+    if (!requested || modelsCatalog.length === 0) return unmapped(requested || selection);
 
     const groups = new Map<string, ModelsCatalogEntry[]>();
     for (const entry of modelsCatalog) {
@@ -346,15 +362,16 @@ export class DevinModelResolver implements ProviderModelResolver {
 
     // 0. The connection's effort map, when the catalog publishes one for this
     //    exact base on Devin's route.
-    const mapped = mappedWireId(requested, exact, modelsCatalog, ctx.effort);
+    const mapped = mappedWireId(requested, exact, modelsCatalog, effort);
     if (mapped) return mapped;
 
     if (exact) {
-      if (!ctx.effort) return exact.wireId;
       // An id that names a tier is that tier, at any effort — the group's
       // representative included.
-      if (namesEffortTier(exact.wireId)) return exact.wireId;
-      return pickForEffort(groups.get(keyOf(exact))!, ctx.effort).wireId;
+      if (!effort || namesEffortTier(exact.wireId)) {
+        return { id: exact.wireId, effort, source: "exact id" };
+      }
+      return unmapped(pickForEffort(groups.get(keyOf(exact))!, effort).wireId);
     }
 
     // 2. An exact vendor label or family id. Unambiguous by construction — it
@@ -372,11 +389,11 @@ export class DevinModelResolver implements ProviderModelResolver {
     //    the backend's error, rewritten against the dynamic models catalog,
     //    names what is served.
     const pool = named.length > 0 ? named : effortSiblings(lower, modelsCatalog);
-    if (pool.length === 0) return requested;
+    if (pool.length === 0) return unmapped(requested);
     // Effort siblings pick among themselves, across whatever groups they sit in
     // and never among the other members of those groups: every sibling is the
     // requested base, so the answer is always `<base>-<effort>`.
-    if (named.length === 0) return pickForEffort(pool, ctx.effort).wireId;
+    if (named.length === 0) return unmapped(pickForEffort(pool, effort).wireId);
 
     // One label, possibly several context groups (GLM-5.2 is 200K and 1M): take
     // the group the vendor itself defaults to, else the cheapest. Sorted, not
@@ -384,7 +401,7 @@ export class DevinModelResolver implements ProviderModelResolver {
     // the order the dynamic models catalog happened to arrive in.
     const chosen =
       pool.filter((entry) => entry.isFamilyDefault).sort(byCost)[0] ?? pool.slice().sort(byCost)[0];
-    return pickForEffort(groups.get(keyOf(chosen!))!, ctx.effort).wireId;
+    return unmapped(pickForEffort(groups.get(keyOf(chosen!))!, effort).wireId);
   }
 }
 
@@ -400,7 +417,7 @@ function mappedWireId(
   exact: ModelsCatalogEntry | undefined,
   modelsCatalog: ModelsCatalogEntry[],
   effort: EffortLevel | undefined
-): string | undefined {
+): ModelIdChoice | undefined {
   if (exact && !effort) return undefined;
 
   const byId = new Map<string, ModelsCatalogEntry>();

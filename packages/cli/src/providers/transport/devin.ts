@@ -168,7 +168,7 @@ export class DevinProviderTransport implements ProviderTransport {
    */
   getContextWindow(): number {
     if (this.served.length === 0) return 0;
-    const uid = resolveDevinModelUid(this.modelName, undefined, this.served);
+    const uid = resolveDevinModelUid(this.modelName, undefined, this.served, { quiet: true });
     return this.served.find((model) => model.uid === uid)?.contextWindow ?? 0;
   }
 

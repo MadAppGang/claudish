@@ -14,7 +14,7 @@ import {
   findModelIdEffortConnection,
   lookupFamilyDefaultVariant,
 } from "../adapters/model-catalog.js";
-import { chooseConnectionModelId } from "./model-id-effort-choice.js";
+import { type ModelIdChoice, chooseConnectionModelId } from "./model-id-effort-choice.js";
 
 /**
  * The account's dynamic models catalog as model-id resolution reads it: every
@@ -73,7 +73,7 @@ function mappedAntigravityModelId(
   requested: string,
   served: AntigravityServedSet,
   effort: EffortLevel | undefined
-): string | undefined {
+): ModelIdChoice | undefined {
   const req = requested.trim();
   if (!effort && servesSelectable(served, req)) return undefined;
   return chooseConnectionModelId(req, "antigravity", effort, {
@@ -260,22 +260,37 @@ export function resolveAntigravityServedModel(
   served: AntigravityServedSet,
   effort?: EffortLevel
 ): string {
+  return chooseAntigravityServedModel(requested, served, effort).id;
+}
+
+/**
+ * {@link resolveAntigravityServedModel} with what decided the id: the level the
+ * choice used and its source, for the envelope builders' debug line.
+ */
+export function chooseAntigravityServedModel(
+  requested: string,
+  served: AntigravityServedSet,
+  effort?: EffortLevel
+): ModelIdChoice {
   const req = requested.trim();
   // An exact listed id that is no connection's base is a fixed model: sent as
   // itself at any effort, excluded or not, before any family rule can move it.
   const isMappedBase = findModelIdEffortConnection(req, "antigravity") !== undefined;
-  if (!isMappedBase && served.servedIds.includes(req)) return req;
+  if (!isMappedBase && served.servedIds.includes(req)) {
+    return { id: req, effort, source: "exact id" };
+  }
   const mapped = mappedAntigravityModelId(requested, served, effort);
   if (mapped) return mapped;
-  if (servesSelectable(served, req)) return req;
+  if (servesSelectable(served, req)) return { id: req, effort, source: "exact id" };
   // An automatic choice is never an id the backend excludes.
   const selectable = served.servedIds.filter((id) => !isExcluded(served, id));
   const defaultId =
     served.defaultId && selectable.includes(served.defaultId) ? served.defaultId : null;
-  return resolveAntigravityModelId(
+  const id = resolveAntigravityModelId(
     requested,
     selectable,
     defaultId,
     lookupFamilyDefaultVariant(requested, "antigravity")
   );
+  return { id, effort, source: "no map" };
 }

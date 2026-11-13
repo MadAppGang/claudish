@@ -23,9 +23,10 @@
 
 import { randomUUID } from "node:crypto";
 import type { EffortLevel } from "../../adapters/base-api-format.js";
+import type { ModelIdChoice } from "../../providers/model-id-effort-choice.js";
 import {
   antigravityBodyForModelId,
-  resolveAntigravityServedModel,
+  chooseAntigravityServedModel,
 } from "../../providers/transport/antigravity.js";
 import {
   antigravityTokenLineageMaterial,
@@ -113,8 +114,13 @@ export class AntigravityCredentialProvider implements CredentialProvider {
         "User-Agent": buildAntigravityUserAgent(),
         "x-activity-request-id": createActivityRequestId(),
       },
-      transformPayload: (inner: any, request?: { effort?: EffortLevel }) => {
-        const model = resolveAntigravityServedModel(ctx.model, served, request?.effort);
+      transformPayload: (
+        inner: any,
+        request?: { effort?: EffortLevel; onModelChoice?: (choice: ModelIdChoice) => void }
+      ) => {
+        const choice = chooseAntigravityServedModel(ctx.model, served, request?.effort);
+        request?.onModelChoice?.(choice);
+        const model = choice.id;
         const env: any = {
           model,
           project: projectId,

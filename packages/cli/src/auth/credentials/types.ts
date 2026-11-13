@@ -109,6 +109,7 @@ export function redactSecrets(text: string): string {
 }
 
 import type { EffortLevel } from "../../adapters/base-api-format.js";
+import type { ModelIdChoice } from "../../providers/model-id-effort-choice.js";
 import type { SelectReason } from "../accounts/policy.js";
 import type { AccountRef, AccountSelectionContext } from "../accounts/types.js";
 
@@ -154,9 +155,14 @@ export interface RequestAuth {
   endpoint?: string;
   /**
    * Wrap the payload in the provider envelope. `request`, when given, carries
-   * THIS request's effort, so one artifact serves turns with different levels.
+   * THIS request's effort, so one artifact serves turns with different levels,
+   * and `onModelChoice`, told the model id the envelope sends and what decided
+   * it, where the envelope chooses one.
    */
-  transformPayload?(payload: any, request?: { effort?: EffortLevel }): any;
+  transformPayload?(
+    payload: any,
+    request?: { effort?: EffortLevel; onModelChoice?: (choice: ModelIdChoice) => void }
+  ): any;
   /**
    * Which half of a composite produced this. Set by the halves themselves and
    * passed through untouched by `CompositeCredentialProvider`, so a consumer can
