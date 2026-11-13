@@ -127,6 +127,7 @@ export type AdvisorModelPlan =
         | "unresolved-alias"
         | "claude-selector"
         | "claude-no-credential"
+        | "claude-subscription-spec"
         | "no-callable-hop";
       reason: string;
       hint?: string;
@@ -201,7 +202,7 @@ export async function planAdvisorModel(
       kind: "refused",
       spec,
       role,
-      cause: carriesWireMarker(spec) ? "wire-marker" : "claude-no-credential",
+      cause: carriesWireMarker(spec) ? "wire-marker" : "claude-subscription-spec",
       reason: claudeRefusal,
     };
   }
@@ -497,6 +498,7 @@ export function describeAdvisorRefusal(
     case "claude-selector":
     case "unresolved-alias":
     case "claude-no-credential":
+    case "claude-subscription-spec":
       return refusal.reason;
     case "catalog-unreadable":
       return (
