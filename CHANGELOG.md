@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.22.0] - 2026-11-13
+
+### Bug Fixes
+
+- size the Herdr.app panel's model lines to their count *(herdr)* ([`8af5bab`](https://github.com/MadAppGang/claudish/commit/8af5bab5c63d76ddd08887d8ca8c14231857e9c2))
+- find a finished slot's record beyond the newest 30 runs *(view)* ([`5ec28f9`](https://github.com/MadAppGang/claudish/commit/5ec28f99e0e2ddddb20a021d5b036294cb2690f6))
+- open a finished team slot's replay from its record's run path *(view)* ([`fb822db`](https://github.com/MadAppGang/claudish/commit/fb822db5ee5599e643f83b03d40360d842cdc80d))
+
+### Documentation
+
+- update CHANGELOG.md for v14.21.1([`4037c8a`](https://github.com/MadAppGang/claudish/commit/4037c8a66c23e08be0c5fe91b55b0a9473682a3f))
+
+### New Features
+
+- remove the claudish tab and viewer panes from herdr terminal *(herdr)* ([`2b6db86`](https://github.com/MadAppGang/claudish/commit/2b6db861c390e46351e1d1aed648cc9a90a61f00))
+- remove the session tab row from the Herdr.app panel *(herdr)* ([`e3c862f`](https://github.com/MadAppGang/claudish/commit/e3c862f56494f1a35c63fc318364b327e00682de))
+- read the claudish command from the Herdr.app mod's settings.json *(herdr)* ([`f529ad0`](https://github.com/MadAppGang/claudish/commit/f529ad0be1b695d6dca8166eef6c2c5bbba4bccb))
+- add claudish herdr show-panel to reopen the Herdr.app panel *(herdr)* ([`07ae2aa`](https://github.com/MadAppGang/claudish/commit/07ae2aa234d01ed4e2ba92e9292230018a0ec181))
+
 ## [14.21.1] - 2026-11-13
 
 ### Bug Fixes
