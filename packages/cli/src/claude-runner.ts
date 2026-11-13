@@ -29,6 +29,7 @@ import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
 import { applyProxyFastModeGates, scrubInheritedFastModeGates } from "./fast-mode-gates.js";
+import { CLAUDE_LOGIN_BEARER } from "./handlers/shared/anthropic-forward.js";
 import { getHookEngine } from "./hooks/index.js";
 import { InProcessSink, setProcessSink } from "./hooks/injection/sinks.js";
 import { sessionHooksNeedBinding } from "./hooks/session/binding.js";
@@ -477,6 +478,99 @@ export function childAuthControl(
     if (reason) return { controlled: false, reason, where };
   }
   return { controlled: true };
+}
+
+/**
+ * One thing a Claude Code settings layer (or the launch environment) does to
+ * the credential the child signs with. `where` is a path, `--settings` (with its
+ * occurrence), or `environment`; never a value.
+ */
+export interface SettingsFinding {
+  where: string;
+  kind:
+    | "api-key"
+    | "api-key-helper"
+    | "auth-token"
+    | "custom-headers-auth"
+    | "base-url"
+    | "unreadable";
+}
+
+/**
+ * EVERY credential finding of EVERY layer `childAuthControl` reads (managed,
+ * user, `$CLAUDE_CONFIG_DIR`, project, project-local, every `--settings`
+ * occurrence), each layer independently: a token in a layer does not hide a
+ * helper in it, and an earlier layer does not hide a later one. The launch
+ * environment's ANTHROPIC_CUSTOM_HEADERS is one more layer, `environment`. Its
+ * own ANTHROPIC_API_KEY is not a finding: every launch branch deletes or hides
+ * it before spawning.
+ *
+ * `childAuthControl` keeps its first-match loop: it answers one question,
+ * controlled or not. This answers the Claude subscription's: may any of these
+ * hand the child an API key to sign with instead of the login?
+ */
+export function settingsCredentialFindings(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ChildAuthControlDeps = {}
+): SettingsFinding[] {
+  const findings: SettingsFinding[] = [];
+  if (customHeadersSignWithKey(env.ANTHROPIC_CUSTOM_HEADERS)) {
+    findings.push({ where: "environment", kind: "custom-headers-auth" });
+  }
+  for (const { where, settings } of readableClaudeSettingsLayers(config, env, deps)) {
+    if (settings === null) {
+      findings.push({ where, kind: "unreadable" });
+      continue;
+    }
+    for (const kind of settingsFindingKinds(settings)) findings.push({ where, kind });
+  }
+  return findings;
+}
+
+/** Every finding one parsed settings object holds, in a fixed order. */
+function settingsFindingKinds(settings: Record<string, unknown>): SettingsFinding["kind"][] {
+  const env =
+    settings.env && typeof settings.env === "object"
+      ? (settings.env as Record<string, unknown>)
+      : {};
+  const realValue = (name: "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY"): boolean => {
+    const value = env[name];
+    return (
+      typeof value === "string" &&
+      value.trim().length > 0 &&
+      !isClaudishPlaceholderCredential(name, value)
+    );
+  };
+  const kinds: SettingsFinding["kind"][] = [];
+  if (realValue("ANTHROPIC_API_KEY")) kinds.push("api-key");
+  if (typeof settings.apiKeyHelper === "string" && settings.apiKeyHelper.trim()) {
+    kinds.push("api-key-helper");
+  }
+  if (customHeadersSignWithKey(env.ANTHROPIC_CUSTOM_HEADERS)) kinds.push("custom-headers-auth");
+  if (realValue("ANTHROPIC_AUTH_TOKEN")) kinds.push("auth-token");
+  if (typeof env.ANTHROPIC_BASE_URL === "string" && env.ANTHROPIC_BASE_URL.trim()) {
+    kinds.push("base-url");
+  }
+  return kinds;
+}
+
+/**
+ * True when an ANTHROPIC_CUSTOM_HEADERS value (one `Name: value` per line)
+ * attaches a key to every request: an `x-api-key`, or an `authorization` that
+ * is not a Claude login bearer.
+ */
+function customHeadersSignWithKey(value: unknown): boolean {
+  if (typeof value !== "string" || !value) return false;
+  for (const line of value.split(/\r?\n/)) {
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    const name = line.slice(0, colon).trim().toLowerCase();
+    const headerValue = line.slice(colon + 1).trim();
+    if (name === "x-api-key") return true;
+    if (name === "authorization" && !CLAUDE_LOGIN_BEARER.test(headerValue)) return true;
+  }
+  return false;
 }
 
 /** One `--settings` occurrence in the passthrough args, in either spelling. */

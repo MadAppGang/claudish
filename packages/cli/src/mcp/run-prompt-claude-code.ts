@@ -23,12 +23,15 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type SettingsFinding, settingsCredentialFindings } from "../claude-runner.js";
 import { ENV } from "../config.js";
 import { scrubInheritedFastModeGates } from "../fast-mode-gates.js";
 import { scrubInheritedHostRouting } from "../host-routing-env.js";
+import { isBareClaudeName, subscriptionSettingsCheck } from "../launcher/claude-launch.js";
 import { PANE_LAUNCH_VARS } from "../pane/child-env.js";
 import { isStrippedFromChildEnv, resolveClaudishLaunch } from "../pane/pane-launch.js";
 import { sanitizeForReport } from "../redact.js";
+import type { ClaudishConfig } from "../types.js";
 
 /** What one `run_prompt` call answers, on either path. */
 export interface RunPromptResult {
@@ -251,6 +254,24 @@ interface ChildOutcome {
 }
 
 /**
+ * The settings findings of a print child for `model`: the user-wide layers (its
+ * cwd is empty), read with the HOME and CLAUDE_CONFIG_DIR the child inherits.
+ */
+function defaultSettingsFindings(
+  model: string,
+  env: Record<string, string | undefined>
+): SettingsFinding[] {
+  return settingsCredentialFindings(
+    { model, claudeArgs: [] } as unknown as ClaudishConfig,
+    env as NodeJS.ProcessEnv,
+    { ...(env.HOME ? { home: env.HOME } : {}), cwd: EMPTY_PRINT_CWD }
+  );
+}
+
+/** A cwd with no project settings: the print child's own cwd is a fresh empty directory. */
+const EMPTY_PRINT_CWD = join(tmpdir(), "claudish-run-prompt-settings-check");
+
+/**
  * Run one Claude model prompt as `claudish -p` and return its answer. Throws an
  * `Error` whose message is the `run_prompt` error text (without the `Error: ` prefix).
  *
@@ -261,11 +282,27 @@ export async function runPromptViaClaudeCode(
   model: string,
   prompt: string,
   systemPrompt: string | undefined,
-  opts: { signal?: AbortSignal; parentEnv?: Record<string, string | undefined> } = {}
+  opts: {
+    signal?: AbortSignal;
+    parentEnv?: Record<string, string | undefined>;
+    /** Test seam; default reads the settings layers the print child would read. */
+    settingsFindings?: (
+      model: string,
+      env: Record<string, string | undefined>
+    ) => SettingsFinding[];
+  } = {}
 ): Promise<RunPromptResult> {
   const signal = opts.signal;
   if (signal?.aborted) throw new Error("cancelled");
   const parentEnv = opts.parentEnv ?? process.env;
+
+  // The Claude subscription is never signed with an API key: a settings layer
+  // that would hand the print child one refuses the call before any child starts.
+  // The child's cwd is an empty directory, so only the user-wide layers apply.
+  const printEnv = claudeCodePrintEnv(parentEnv);
+  const findings = (opts.settingsFindings ?? defaultSettingsFindings)(model, printEnv);
+  const check = subscriptionSettingsCheck(findings, { bareName: isBareClaudeName(model) });
+  if (check.refusal) throw new Error(check.refusal);
 
   let launch: ReturnType<typeof resolveClaudishLaunch>;
   try {
@@ -291,14 +328,7 @@ export async function runPromptViaClaudeCode(
     }
 
     const argv = claudeCodePrintArgv(model, systemPromptFile);
-    const outcome = await runChild(
-      launch,
-      argv,
-      cwd,
-      claudeCodePrintEnv(parentEnv),
-      prompt,
-      signal
-    );
+    const outcome = await runChild(launch, argv, cwd, printEnv, prompt, signal);
 
     if (signal?.aborted) throw new Error("cancelled");
 

@@ -1266,8 +1266,25 @@ async function runCli() {
     // Who signs this launch's native requests is decided once, here, and the
     // same object reaches advisor planning and the proxy: a bare Claude main
     // model is the Claude subscription, never signed with an API key.
-    const { launchSigningFor } = await import("./launcher/claude-launch.js");
+    const { isBareClaudeName, launchSigningFor, subscriptionSettingsCheck } = await import(
+      "./launcher/claude-launch.js"
+    );
     const launchSigning = launchSigningFor(cliConfig);
+    // The Claude subscription is never signed with an API key, so a settings
+    // layer that would hand the child one refuses the launch here, before spawn.
+    if (launchSigning?.kind === "login-only" && cliConfig.model) {
+      const { settingsCredentialFindings } = await import("./claude-runner.js");
+      const check = subscriptionSettingsCheck(settingsCredentialFindings(cliConfig, process.env), {
+        bareName: isBareClaudeName(cliConfig.model),
+      });
+      if (check.refusal) {
+        process.stderr.write(`[claudish] Error: ${check.refusal}\n`);
+        process.exit(1);
+      }
+      if (!cliConfig.quiet) {
+        for (const notice of check.notices) process.stderr.write(`[claudish] Note: ${notice}\n`);
+      }
+    }
     let advisorRuntime: import("./handlers/advisor-panel-gateway.js").AdvisorRuntime | undefined;
     if (cliConfig.advisor) {
       const { evaluateAdvisorStartup } = await import("./advisor-startup.js");
