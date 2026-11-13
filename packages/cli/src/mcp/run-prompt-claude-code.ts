@@ -27,7 +27,7 @@ import { type SettingsFinding, settingsCredentialFindings } from "../claude-runn
 import { ENV } from "../config.js";
 import { scrubInheritedFastModeGates } from "../fast-mode-gates.js";
 import { scrubInheritedHostRouting } from "../host-routing-env.js";
-import { isBareClaudeName, subscriptionSettingsCheck } from "../launcher/claude-launch.js";
+import { subscriptionSettingsCheck } from "../launcher/claude-launch.js";
 import { PANE_LAUNCH_VARS } from "../pane/child-env.js";
 import { isStrippedFromChildEnv, resolveClaudishLaunch } from "../pane/pane-launch.js";
 import { sanitizeForReport } from "../redact.js";
@@ -301,7 +301,10 @@ export async function runPromptViaClaudeCode(
   // The child's cwd is an empty directory, so only the user-wide layers apply.
   const printEnv = claudeCodePrintEnv(parentEnv);
   const findings = (opts.settingsFindings ?? defaultSettingsFindings)(model, printEnv);
-  const check = subscriptionSettingsCheck(findings, { bareName: isBareClaudeName(model) });
+  // `bareName: false`: the remedy never offers --anthropic-api-billing, because
+  // the print child honours no opt-in (it never receives ANTHROPIC_API_KEY), and
+  // a claude@ spec reaches here already reduced to its bare name.
+  const check = subscriptionSettingsCheck(findings, { bareName: false });
   if (check.refusal) throw new Error(check.refusal);
 
   let launch: ReturnType<typeof resolveClaudishLaunch>;
