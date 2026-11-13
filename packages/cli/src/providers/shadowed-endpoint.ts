@@ -73,7 +73,8 @@ export function shadowedEndpointRefusal(
         `${element}: '${typed}@' is the builtin ${label}${shortcuts ? ` (${shortcuts})` : ""}, ` +
         `not your custom endpoint '${typed}', which claudish skipped because the builtin owns ` +
         `that name. Rename customEndpoints['${typed}'] in ~/.claudish/config.json ` +
-        `(e.g. '${typed}-custom') and use ${typed}-custom@<model>.`
+        `(e.g. '${typed}-custom') and use ${typed}-custom@<model>, then restart the claudish ` +
+        "MCP server if one is running: it reads custom endpoints once, when it starts."
       );
     }
   }
