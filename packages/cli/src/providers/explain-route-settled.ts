@@ -11,6 +11,7 @@ import { isBareRoute } from "../launcher/catalog-warm.js";
 import { readDiskCatalog } from "./all-models-cache.js";
 import { ensureCatalogReady, settleCatalogVerdict } from "./catalog-client.js";
 import { bundledListEnabled } from "./catalog-reachability.js";
+import { nativeRouteFor } from "./native-route.js";
 import { type RouteExplanation, explainRoute } from "./routing-rules.js";
 
 /**
@@ -21,13 +22,25 @@ import { type RouteExplanation, explainRoute } from "./routing-rules.js";
  */
 export async function settleCatalogForBareName(target: string): Promise<void> {
   if (!isBareRoute(target)) return;
+  await settleCatalog();
+}
+
+async function settleCatalog(): Promise<void> {
   if (readDiskCatalog() !== null || !bundledListEnabled()) return;
   await settleCatalogVerdict();
   await ensureCatalogReady(5000);
 }
 
-/** {@link explainRoute}, after {@link settleCatalogForBareName}. */
-export async function explainRouteSettled(target: string): Promise<RouteExplanation> {
-  await settleCatalogForBareName(target);
-  return explainRoute(target);
+/**
+ * {@link explainRoute}, after {@link settleCatalogForBareName}. With `comparison`,
+ * a native target's catalog routes are gathered too, so its catalog is settled
+ * the same way.
+ */
+export async function explainRouteSettled(
+  target: string,
+  opts: { comparison?: boolean } = {}
+): Promise<RouteExplanation> {
+  if (opts.comparison && nativeRouteFor(target) !== null) await settleCatalog();
+  else await settleCatalogForBareName(target);
+  return explainRoute(target, opts.comparison ? { comparison: true } : {});
 }

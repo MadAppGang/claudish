@@ -653,6 +653,12 @@ export interface ExplainedCandidate {
    * confirmed the model, `unknown` when nothing denied it.
    */
   availability?: "serves" | "unknown";
+  /**
+   * `off-catalog`: a comparison candidate for a native name the catalog has no
+   * entry for. Nothing published it; it is listed so a probe can ask the vendor's
+   * own API about the name, whose answer (a 404 for a typo) is the evidence.
+   */
+  origin?: "off-catalog";
 }
 
 /** Why a target has no route. */
@@ -764,6 +770,17 @@ export interface RouteExplanation {
   warnings: RouteWarning[];
   /** Native only: what the native passthrough sends, on Claude Code's own auth. */
   native?: NativeRoute;
+  /**
+   * A BARE native target explained with `comparison` only: the model's other
+   * catalog routes, gathered with no user rule and no fallback hop, the native
+   * provider removed before the credential filter, each with its outcome. Plus
+   * one off-catalog `anthropic` candidate when the catalog has no entry for the
+   * name. Display only: never a `RoutePlan`, never a hop of any request; a
+   * launch of the name still takes the Claude subscription.
+   */
+  comparisonCandidates?: ExplainedCandidate[];
+  /** With `comparisonCandidates`: whether the catalog could be read and had the name. */
+  comparisonCatalog?: "found" | "absent" | "unreadable";
 }
 
 export interface ExplainRouteOptions {
@@ -782,6 +799,12 @@ export interface ExplainRouteOptions {
   cachePath?: string;
   /** Absent: `"await"`. See {@link RouteNetwork}. */
   network?: RouteNetwork;
+  /**
+   * For a BARE native target (not `claude@`, not a tier alias): also list the
+   * model's other catalog routes as `comparisonCandidates`, for a display that
+   * compares them. The decision itself is unchanged.
+   */
+  comparison?: boolean;
 }
 
 /**
@@ -1321,7 +1344,8 @@ async function explainBareName(
   nativeProvider: string,
   routing: BareRouting,
   cachePath?: string,
-  network: RouteNetwork = "await"
+  network: RouteNetwork = "await",
+  comparison?: ComparisonGathering
 ): Promise<RouteExplanation> {
   const deadline = startListDeadline();
   try {
@@ -1332,11 +1356,31 @@ async function explainBareName(
       routing,
       deadline.reached,
       cachePath,
-      network
+      network,
+      comparison
     );
   } finally {
     deadline.cancel();
   }
+}
+
+/**
+ * How a comparison gathering differs from a routing decision's. Routing callers
+ * pass none, so their chains are unchanged.
+ */
+interface ComparisonGathering {
+  /**
+   * Removed from the candidates BEFORE the credential filter, so their credential
+   * provider is never asked. The native provider's can write a 1Password key into
+   * `process.env.ANTHROPIC_API_KEY`, which would move a later native child onto
+   * metered billing.
+   */
+  excludeProviders: ReadonlySet<string>;
+  /**
+   * Appended as an `off-catalog` candidate when the catalog was read and has no
+   * entry for the name, so a probe still asks the vendor's own API about it.
+   */
+  offCatalogProvider: string;
 }
 
 /** {@link explainBareName}, under the routing decision's missing-list deadline. */
@@ -1347,7 +1391,8 @@ async function explainBareNameWithin(
   routing: BareRouting,
   deadline: Promise<"deadline">,
   cachePath?: string,
-  network: RouteNetwork = "await"
+  network: RouteNetwork = "await",
+  comparison?: ComparisonGathering
 ): Promise<RouteExplanation> {
   // `null` and `[]` are DIFFERENT answers and the old `?? []` conflated them.
   // `[]` is a user rule that matched and named no provider — strict no-route,
@@ -1399,6 +1444,18 @@ async function explainBareNameWithin(
       outcome: { kind: "ok" },
       warnings: ruleProblemWarnings(routing.ruleProblems),
     };
+  }
+
+  if (comparison) {
+    explanation.candidates = explanation.candidates.filter(
+      (candidate) => !comparison.excludeProviders.has(candidate.provider)
+    );
+    if (
+      explanation.catalog === "absent" &&
+      !explanation.candidates.some((c) => c.provider === comparison.offCatalogProvider)
+    ) {
+      explanation.candidates.push(offCatalogCandidate(comparison.offCatalogProvider, model));
+    }
   }
 
   const remaining = explanation.candidates.filter(
@@ -1952,7 +2009,7 @@ export async function explainRoute(
   const decision = proxyRouteDecision(target);
 
   if (decision.type === "native") {
-    return {
+    const explanation: RouteExplanation = {
       requestedModel: target,
       routedModel: target,
       source: "native",
@@ -1961,6 +2018,12 @@ export async function explainRoute(
       warnings: [],
       native: decision.route,
     };
+    if (opts.comparison && isComparableNativeTarget(target, decision.route)) {
+      const compared = await explainComparison(decision.route, opts);
+      explanation.comparisonCandidates = compared.candidates;
+      explanation.comparisonCatalog = compared.catalog;
+    }
+    return explanation;
   }
   if (decision.type === "poe") {
     return explainUnroutedExplicit(target, "poe", "poe", decision.model);
@@ -1982,6 +2045,56 @@ export async function explainRoute(
     target,
     opts.network
   );
+}
+
+/**
+ * Whether a native target gets comparison routes: a BARE name only. `claude@<id>`
+ * names one route itself, and a tier alias (`opus`) is a selector whose concrete
+ * id Claude Code chooses at run time, so no catalog route can be compared for it.
+ */
+function isComparableNativeTarget(target: string, native: NativeRoute): boolean {
+  return !native.isTierAlias && !parseModelSpec(target).isExplicitProvider;
+}
+
+/** No fallback hop: a comparison lists what the catalog publishes, nothing more. */
+const NO_FALLBACK: ResolvedDefaultProvider = {
+  provider: "",
+  source: "hardcoded",
+  legacyAutoPromoted: false,
+};
+
+/**
+ * The catalog routes of a bare native name, for display beside the Claude
+ * subscription. Gathered by the bare-name path with no user rule (a rule for
+ * `claude-*` steers routed names, and this name is never routed) and no fallback,
+ * attributed to no provider (`AUTO_ROUTE_PROVIDER`, as any unattributed bare name),
+ * with the native provider removed before the credential filter.
+ */
+async function explainComparison(
+  native: NativeRoute,
+  opts: ExplainRouteOptions
+): Promise<{ candidates: ExplainedCandidate[]; catalog: "found" | "absent" | "unreadable" }> {
+  const compared = await explainBareName(
+    native.modelSpec,
+    native.modelSpec,
+    AUTO_ROUTE_PROVIDER,
+    { rules: {}, defaultProvider: NO_FALLBACK },
+    opts.cachePath,
+    opts.network,
+    { excludeProviders: new Set([native.provider]), offCatalogProvider: CLAUDE_API_PROVIDER }
+  );
+  const catalog = compared.catalog ?? "unreadable";
+  return { candidates: catalog === "unreadable" ? [] : compared.candidates, catalog };
+}
+
+/** The claudish provider of the Claude API: Anthropic's metered API on the user's key. */
+const CLAUDE_API_PROVIDER = "anthropic";
+
+/** A candidate nothing published: `provider@model`, for a probe to ask about. */
+function offCatalogCandidate(provider: string, model: string): ExplainedCandidate {
+  const candidate = explainCandidate(routeFor(provider, model), "candidate", "kept");
+  candidate.origin = "off-catalog";
+  return candidate;
 }
 
 /**

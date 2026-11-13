@@ -190,6 +190,20 @@ key only at use (`vaultKeyReadAtUse`, [keychain.md](./keychain.md)), so a key it
 reaches `process.env` and a later native child. A bare Claude name still never reaches
 `route()`, so routing it is unchanged; `anthropic@<id>` names the route explicitly.
 
+**`--probe` lists a bare Claude name's other routes, for comparison only.** `explainRoute(t,
+{comparison: true})` keeps the native decision (`source: "native"`, `candidates: []`) and adds
+`comparisonCandidates`: the model's catalog routes, gathered by the bare-name path with no user
+rule (a `claude-*` rule steers routed names, and this name is never routed), no fallback hop,
+and the parser's provider replaced by `auto-route`. `native-anthropic` is removed BEFORE the
+credential filter, so its credential provider is never asked: it can write a 1Password key into
+`process.env.ANTHROPIC_API_KEY`. The gatherer itself is untouched (no `reason: "virtual"`
+filter), and routing callers pass no option, so their chains are unchanged. When the catalog
+was read and has no entry for the name, one off-catalog `anthropic@<name>` candidate is listed,
+so a misspelled name gets Anthropic's own 404 rather than silence; when no catalog can be read,
+none is listed and the line says so. A tier alias (`opus`) and `claude@<id>` get no comparison:
+the alias has no concrete id, and `claude@` names one route itself. The list is never a
+`RoutePlan`, and no request is routed from it (RB-1).
+
 **The name `anthropic` means two things.** It is the catalog's route id for Anthropic's own
 endpoints (`anthropic/direct-api`, `anthropic/claude-code-subscription`) and the vendor slug the
 savings panel reads its first-party price under, and the Claude API provider's name. It is ALSO

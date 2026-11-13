@@ -24,10 +24,13 @@ Only a `proxyRouteDecision` → `bare` target reaches `route()`. `nativeRouteFor
 Claude names first in the proxy, `--probe`, the TUI probe, MCP `preflight` and `planAdvisorModel`.
 `claude@<id>` is the native decision of `<id>` and never reaches `route()`; an MCP strip turns it
 into `<id>` only when `<id>` is itself native and the spec carries no marker and no `:N`, and leaves
-any other `claude@` unchanged for the launch to refuse.
+any other `claude@` unchanged for the launch to refuse. `--probe` and the config TUI may also list a
+BARE native name's catalog routes (`comparisonCandidates`: no user rule, no fallback hop, the native
+provider excluded before the credential filter, plus one off-catalog `anthropic` candidate when the
+catalog has no entry); that list is never a `RoutePlan` and no request is routed from it.
 
-- **Scope:** `providers/native-route.ts`, `proxy-server.ts`, `cli.ts`, `tui/hooks/useRouteProbe.ts`, `providers/preflight-chain.ts`, `handlers/advisor-route-plan.ts`, `mcp-server.ts` (`stripUnrequestedProvider`).
-- **Check:** `providers/native-route.test.ts`, `providers/preflight-chain.test.ts`, `providers/native-route.claude-prefix.test.ts`, `mcp-provider-strip.test.ts` (the `claude@` cases).
+- **Scope:** `providers/native-route.ts`, `proxy-server.ts`, `cli.ts`, `tui/hooks/useRouteProbe.ts`, `providers/preflight-chain.ts`, `handlers/advisor-route-plan.ts`, `mcp-server.ts` (`stripUnrequestedProvider`), `providers/routing-rules.ts` (`explainRoute`'s comparison), `providers/explain-route-settled.ts`, `providers/probe-runner.ts`, `launcher/claude-launch.ts`.
+- **Check:** `providers/native-route.test.ts`, `providers/preflight-chain.test.ts`, `providers/native-route.claude-prefix.test.ts`, `mcp-provider-strip.test.ts` (the `claude@` cases), `providers/routing-rules.comparison.test.ts`.
 
 ### RB-2
 
