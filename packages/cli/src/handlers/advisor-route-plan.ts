@@ -97,6 +97,15 @@ export const NO_MAIN_MODEL_ADVISOR_NO_KEY =
 export const CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY =
   "Claude subscription session: the advisor signs only with Claude Code's login, never an API key";
 
+/** The notice label of a Claude member's key arm (`AdvisorModelPlan.keyFallback`). */
+export type ClaudeKeyFallback = "none" | "request-key" | "lookup" | "launch-key";
+
+/** The notice label of `arm`. */
+function keyFallbackOf(arm: ClaudeAdvisorKeyArm): ClaudeKeyFallback {
+  if (typeof arm === "object") return "launch-key";
+  return arm === "off" ? "none" : arm;
+}
+
 /** Where a Claude member's API key comes from on a launch without a usable login. */
 export type ClaudeApiKeySource =
   | "inbound-x-api-key"
@@ -125,6 +134,14 @@ export type AdvisorModelPlan =
       authSource?: { reason: ChildAuthSource; where: string };
       /** Set only for `api-key`: what the call is expected to sign with. */
       apiKeySource?: ClaudeApiKeySource;
+      /**
+       * What signs a call whose request carries no Claude login, from the key
+       * arm: nothing (`none`, the `"off"` arm), the request's x-api-key only
+       * (`request-key`), that or ANTHROPIC_API_KEY (`lookup`, also when
+       * absent), or the Claude API launch's key (`launch-key`). A label for
+       * the notice; never key material.
+       */
+      keyFallback?: ClaudeKeyFallback;
     }
   | {
       kind: "refused";
@@ -326,11 +343,19 @@ async function planClaudeMember(
     return { kind: "refused", spec, role, cause: claude.cause, reason: claude.reason };
   }
   const { childAuth } = deps;
+  const keyArm = deps.keyArm ?? "lookup";
+  const keyFallback = keyFallbackOf(keyArm);
   if (childAuth.controlled) {
-    return { kind: "claude-native", spec, role, model: claude.id, expectedArm: "claude-login" };
+    return {
+      kind: "claude-native",
+      spec,
+      role,
+      model: claude.id,
+      expectedArm: "claude-login",
+      keyFallback,
+    };
   }
   const authSource = { reason: childAuth.reason, where: childAuth.where };
-  const keyArm = deps.keyArm ?? "lookup";
   if (typeof keyArm === "object") {
     // The Claude API launch: the proxy signs every request with the launch key,
     // and the advisor bills the same key. No second lookup, no inbound key.
@@ -342,6 +367,7 @@ async function planClaudeMember(
       expectedArm: "api-key",
       authSource,
       apiKeySource: "claude-api-launch-key",
+      keyFallback,
     };
   }
   if (keyArm === "off") {
@@ -366,6 +392,7 @@ async function planClaudeMember(
       expectedArm: "api-key",
       authSource,
       apiKeySource: "inbound-x-api-key",
+      keyFallback,
     };
   }
   if (keyArm === "request-key") {
@@ -400,6 +427,7 @@ async function planClaudeMember(
     expectedArm: "api-key",
     authSource,
     apiKeySource: "ANTHROPIC_API_KEY",
+    keyFallback,
   };
 }
 
@@ -475,16 +503,24 @@ export const SKIPPED_PHRASE: Readonly<Record<Exclude<CandidateOutcome, "kept">, 
 export function describeClaudeAdvisorPlan(
   plan: Extract<AdvisorModelPlan, { kind: "claude-native" }>
 ): string {
+  const fallback = plan.keyFallback ?? "lookup";
   if (plan.expectedArm === "claude-login") {
-    return (
-      `${plan.spec} -> ${ANTHROPIC_API_HOST} (subscription: your Claude Code login; if a request ` +
-      "carries none: its x-api-key or ANTHROPIC_API_KEY, metered, billed per token)"
-    );
+    const without =
+      fallback === "none"
+        ? "a request that carries none is not signed, never with an API key"
+        : fallback === "request-key"
+          ? "if a request carries none: its x-api-key, metered, billed per token; never ANTHROPIC_API_KEY"
+          : fallback === "launch-key"
+            ? "if a request carries none: the Claude API launch's key, metered, billed per token"
+            : "if a request carries none: its x-api-key or ANTHROPIC_API_KEY, metered, billed per token";
+    return `${plan.spec} -> ${ANTHROPIC_API_HOST} (subscription: your Claude Code login; ${without})`;
   }
   const source = plan.authSource ?? { reason: "proxy-auth" as const, where: "environment" };
   const key =
     plan.apiKeySource === "inbound-x-api-key"
-      ? "the x-api-key Claude Code sends, else ANTHROPIC_API_KEY"
+      ? fallback === "request-key"
+        ? "the x-api-key Claude Code sends, never ANTHROPIC_API_KEY"
+        : "the x-api-key Claude Code sends, else ANTHROPIC_API_KEY"
       : plan.apiKeySource === "claude-api-launch-key"
         ? "the Claude API launch's key"
         : "ANTHROPIC_API_KEY";
