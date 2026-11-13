@@ -2073,14 +2073,17 @@ export class ComposedHandler implements ModelHandler {
     }
 
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)
-    // `providerRequest` keeps the exact value the transform returned for THIS
-    // request; every `enqueueRequest` of the request passes it as
-    // `opts.request`, so a transport serving overlapping requests reads this
-    // request's own state. `requestPayload` is reassigned later and is no key.
-    let providerRequest: unknown;
+    // `transportRequest` is THIS request's transport value: the exact value the
+    // transform returned, or (no transform) the payload first serialized at 6a.
+    // Every per-request transport hook gets it (`serializeBody`,
+    // `enqueueRequest` `opts.request`, `getActiveModelName`,
+    // `rewriteInStreamError`), so a transport serving overlapping requests
+    // reads this request's own state. `requestPayload` is reassigned later and
+    // is no key.
+    let transportRequest: unknown;
     if (this.provider.transformPayload) {
       requestPayload = this.provider.transformPayload(requestPayload, claudeRequest, binding);
-      providerRequest = requestPayload;
+      transportRequest = requestPayload;
     }
 
     // 5s. Codex speed (deferred at 5w): the tier the account's dynamic models
@@ -2293,8 +2296,9 @@ export class ComposedHandler implements ModelHandler {
     // Always the encoding of the CURRENT `requestPayload`: parameter recovery
     // replaces the payload and re-encodes it here, so the 401 auth retry below
     // never resends bytes the provider already rejected.
+    if (!this.provider.transformPayload) transportRequest = requestPayload;
     const serialize = () =>
-      this.provider.serializeBody?.(requestPayload) ?? {
+      this.provider.serializeBody?.(requestPayload, transportRequest) ?? {
         body: JSON.stringify(requestPayload),
         contentType: "application/json",
       };
@@ -2506,7 +2510,7 @@ export class ComposedHandler implements ModelHandler {
         received = await (this.provider.enqueueRequest
           ? this.provider.enqueueRequest(fetchCurrent, {
               signal: attemptSignal,
-              request: providerRequest,
+              request: transportRequest,
             })
           : fetchCurrent());
       } catch (error) {
@@ -2636,7 +2640,7 @@ export class ComposedHandler implements ModelHandler {
     if (episodeCount() > 0) noteTargetReachable(this.provider.name, endpoint);
 
     // Check if the transport fell back to a different model (e.g., capacity exhaustion)
-    const activeModel = this.provider.getActiveModelName?.(providerRequest);
+    const activeModel = this.provider.getActiveModelName?.(transportRequest);
     if (activeModel) {
       this.tokenTracker.setActiveModelName(activeModel);
       log(`[ComposedHandler] Transport fell back to model: ${activeModel}`);
@@ -3602,7 +3606,11 @@ export class ComposedHandler implements ModelHandler {
         // doctrine as 7b — retry the transient class, and surface the terminal class
         // as a 400 rendered inline rather than a status Claude Code silently retries.
         if (this.resolveStreamFormat() === "connect-proto") {
-          const settled = await this.settleDevinStreamHead(response, () => attempt());
+          const settled = await this.settleDevinStreamHead(
+            response,
+            () => attempt(),
+            transportRequest
+          );
           if (callAborted(c)) {
             if (settled.kind === "ok") await settled.response.body?.cancel().catch(() => {});
             return this.respondCallAborted(startTime, fallbackMeta);
@@ -3810,7 +3818,7 @@ export class ComposedHandler implements ModelHandler {
         // dropped fields, and a leg re-sends the body that was accepted.
         serializeBody: (body) => {
           const b = body ?? requestPayload;
-          const s = this.provider.serializeBody?.(b);
+          const s = this.provider.serializeBody?.(b, transportRequest);
           return {
             body: s?.body ?? JSON.stringify(b),
             contentType: s?.contentType ?? "application/json",
@@ -3818,7 +3826,7 @@ export class ComposedHandler implements ModelHandler {
         },
         getRequestInit: () => (this.provider.getRequestInit?.() || {}) as Record<string, unknown>,
         enqueueRequest: this.provider.enqueueRequest
-          ? (fn, o) => this.provider.enqueueRequest!(fn, { ...o, request: providerRequest })
+          ? (fn, o) => this.provider.enqueueRequest!(fn, { ...o, request: transportRequest })
           : undefined,
         settleStreamHead: async (res, reissue, signal) => {
           const settled = await this.settleResponsesStreamHead(res, reissue, { signal });
@@ -4127,7 +4135,8 @@ export class ComposedHandler implements ModelHandler {
    */
   private async settleDevinStreamHead(
     initial: Response,
-    reissue: () => Promise<Response>
+    reissue: () => Promise<Response>,
+    request?: unknown
   ): Promise<
     | { kind: "ok"; response: Response }
     | { kind: "terminal"; code: string; message: string }
@@ -4136,8 +4145,12 @@ export class ComposedHandler implements ModelHandler {
     // Optional-method probe rather than a `ProviderTransport` member: this whole
     // branch is Devin-specific by construction, and widening the shared
     // interface for one consumer would invite the next provider to add another.
+    // `request` is the request's transport value, so the rewrite names the uid
+    // THIS request sent.
     const rewrite = (
-      this.provider as { rewriteInStreamError?: (code: string, message: string) => string }
+      this.provider as {
+        rewriteInStreamError?: (code: string, message: string, request?: unknown) => string;
+      }
     ).rewriteInStreamError?.bind(this.provider);
 
     let response = initial;
@@ -4147,7 +4160,7 @@ export class ComposedHandler implements ModelHandler {
       if (verdict.kind === "clean") return { kind: "ok", response: verdict.response };
 
       if (verdict.kind === "terminal") {
-        const message = rewrite?.(verdict.code, verdict.message) ?? verdict.message;
+        const message = rewrite?.(verdict.code, verdict.message, request) ?? verdict.message;
         log(`[${this.provider.displayName}] terminal in-stream error ${verdict.code}`);
         return { kind: "terminal", code: verdict.code, message };
       }

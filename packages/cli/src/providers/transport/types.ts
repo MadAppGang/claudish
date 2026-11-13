@@ -164,10 +164,12 @@ export interface ProviderTransport {
    * governed by whatever the ACTIVE request's own timeout is. On the local
    * queue that number is ten minutes.
    *
-   * `opts.request` is the exact value {@link transformPayload} returned for
-   * this request. One transport instance serves overlapping requests, so a
-   * transport that keeps per-request state from the transform (a retry body,
-   * the id it sent) looks it up by this value, never by "the last transform".
+   * `opts.request` is the request's own transport value: what
+   * {@link transformPayload} returned, or, for a transport without one, the
+   * payload {@link serializeBody} first received. One transport instance
+   * serves overlapping requests, so a transport that keeps per-request state
+   * (a retry body, the id it sent) looks it up by this value, never by "the
+   * last transform" or "the last serialize".
    */
   enqueueRequest?(
     fetchFn: () => Promise<Response>,
@@ -312,8 +314,11 @@ export interface ProviderTransport {
    * is a transport hook.
    *
    * Called after `transformPayload`, so it sees the final payload.
+   * `request` is the request's transport value (see {@link enqueueRequest});
+   * a re-encode after parameter recovery passes the same value with the new
+   * payload, so per-request state stays keyed to one request.
    */
-  serializeBody?(payload: any): { body: SerializedBody; contentType: string };
+  serializeBody?(payload: any, request?: unknown): { body: SerializedBody; contentType: string };
 
   /**
    * Optional: credential values this transport sends OUTSIDE the headers that
@@ -345,8 +350,9 @@ export interface ProviderTransport {
    * Active model name after fallback (e.g., capacity exhaustion triggered a model switch).
    * If set, the composed handler writes this to the token file so the status line
    * shows the actual model being used, not the originally requested one.
-   * `request` is the value `transformPayload` returned for the request asked
-   * about; a transport that keeps per-request state answers for that request.
+   * `request` is the transport value of the request asked about (see
+   * {@link enqueueRequest}); a transport that keeps per-request state answers
+   * for that request.
    */
   getActiveModelName?(request?: unknown): string | undefined;
 

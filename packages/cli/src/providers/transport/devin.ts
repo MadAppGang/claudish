@@ -64,8 +64,18 @@ export class DevinProviderTransport implements ProviderTransport {
   /** The dynamic models catalog this subscription serves, refreshed per request (TTL-cached). */
   private served: DevinModelConfig[] = [];
 
-  /** The uid actually sent in field 21, set by serializeBody(). */
+  /**
+   * The uid the most recent serializeBody() sent in field 21: the answer for a
+   * caller that names no request.
+   */
   private resolvedUid: string;
+
+  /**
+   * The uid sent in field 21, per request, keyed by the request's transport
+   * value. One transport serves overlapping requests at different efforts, so
+   * a reader that names its request answers from this, never `resolvedUid`.
+   */
+  private readonly resolvedUids = new WeakMap<object, string>();
 
   constructor(modelName: string) {
     this.modelName = modelName;
@@ -122,7 +132,7 @@ export class DevinProviderTransport implements ProviderTransport {
     return apiKey ? [apiKey] : [];
   }
 
-  serializeBody(payload: any): { body: SerializedBody; contentType: string } {
+  serializeBody(payload: any, request?: unknown): { body: SerializedBody; contentType: string } {
     const apiKey = readDevinApiKey();
     if (!apiKey) {
       // refreshAuth() runs first and already fails loudly on a missing
@@ -134,16 +144,18 @@ export class DevinProviderTransport implements ProviderTransport {
       throw err;
     }
 
-    const request = payload as DevinRequestPayload;
-    this.resolvedUid = resolveDevinModelUid(
-      request.modelUid || this.modelName,
-      request.effort,
+    const devinPayload = payload as DevinRequestPayload;
+    const uid = resolveDevinModelUid(
+      devinPayload.modelUid || this.modelName,
+      devinPayload.effort,
       this.served
     );
-    const resolved = { ...request, modelUid: this.resolvedUid };
+    this.resolvedUid = uid;
+    if (typeof request === "object" && request !== null) this.resolvedUids.set(request, uid);
+    const resolved = { ...devinPayload, modelUid: uid };
 
-    if (this.resolvedUid !== this.modelName) {
-      log(`[Devin] model resolved: ${this.modelName} -> ${this.resolvedUid}`);
+    if (uid !== this.modelName) {
+      log(`[Devin] model resolved: ${this.modelName} -> ${uid}`);
     }
     // NEVER log the encoded bytes: metadata field 1.3 carries the api key.
     // describeDevinRequestForLog cannot leak it by construction.
@@ -180,8 +192,18 @@ export class DevinProviderTransport implements ProviderTransport {
    * so it rides the same hook. Returning undefined when they match keeps the
    * status line quiet in the common case.
    */
-  getActiveModelName(): string | undefined {
-    return this.resolvedUid !== this.modelName ? this.resolvedUid : undefined;
+  getActiveModelName(request?: unknown): string | undefined {
+    const uid = this.uidFor(request);
+    return uid !== this.modelName ? uid : undefined;
+  }
+
+  /** The uid `request` sent; without one, the most recent serializeBody()'s. */
+  private uidFor(request: unknown): string {
+    if (typeof request === "object" && request !== null) {
+      const uid = this.resolvedUids.get(request);
+      if (uid !== undefined) return uid;
+    }
+    return this.resolvedUid;
   }
 
   /**
@@ -233,16 +255,17 @@ export class DevinProviderTransport implements ProviderTransport {
    * `permission_denied` was ALSO the symptom of the wrong role enum during
    * protocol work, and collapsing the two would hide the more dangerous one.
    */
-  rewriteInStreamError(_code: string, message: string): string {
+  rewriteInStreamError(_code: string, message: string, request?: unknown): string {
+    const uid = this.uidFor(request);
     if (this.served.length === 0) return message;
-    if (this.served.some((model) => model.uid === this.resolvedUid)) return message;
+    if (this.served.some((model) => model.uid === uid)) return message;
 
     const families = [...new Set(this.served.map((model) => model.family).filter(Boolean))].sort();
     // 167 models span ~40 families, and pasting all of them buries the one line
     // the user needs. Families sharing the request's leading token come first —
     // someone who typed `claude-opus-99` wants the claude-opus families, not
     // an alphabetical wall starting at `code-fast`.
-    const stem = this.resolvedUid.split("-")[0]?.toLowerCase() ?? "";
+    const stem = uid.split("-")[0]?.toLowerCase() ?? "";
     const related = families.filter((f) => f.toLowerCase().startsWith(stem));
     const ordered = [...related, ...families.filter((f) => !related.includes(f))];
     const SHOWN = 12;
@@ -253,7 +276,7 @@ export class DevinProviderTransport implements ProviderTransport {
         ? ` Available families: ${shown.join(", ")}${more > 0 ? `, +${more} more` : ""}.`
         : "";
     return (
-      `\`${this.resolvedUid}\` is not served by your Devin subscription.${familyClause} ` +
+      `\`${uid}\` is not served by your Devin subscription.${familyClause} ` +
       "Run `claudish models dv@` to list the uids this subscription can call. " +
       `(Upstream said: ${message})`
     );
