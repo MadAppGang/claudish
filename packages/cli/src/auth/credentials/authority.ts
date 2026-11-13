@@ -20,15 +20,18 @@ import { clearSignedArm, installBillingProbes } from "./billing-probe.js";
 import { makeCodexCredential } from "./codex-credential.js";
 import { DevinCredentialProvider } from "./devin-credential.js";
 import { GrokSubscriptionCredentialProvider } from "./grok-credential.js";
+import { keySourcesSearched } from "./key-sources.js";
 import { makeKimiCodingCredential, makeKimiCredential } from "./kimi-credential.js";
 import { LocalCredentialProvider } from "./local-credential.js";
 import { MuseCodeCredentialProvider } from "./muse-code-credential.js";
 import { NativeAnthropicCredentialProvider } from "./native-anthropic-credential.js";
 import type {
   CredentialProvider,
+  KeyOrigin,
   ReadinessResult,
   RequestAuth,
   RequestAuthContext,
+  UseResolution,
 } from "./types.js";
 import { readinessDetail } from "./types.js";
 import { VertexCredentialProvider } from "./vertex-credential.js";
@@ -39,7 +42,13 @@ import { VertexCredentialProvider } from "./vertex-credential.js";
  * consumers import it from here and never have to know which of the two files
  * declares it.
  */
-export type { CredentialReadiness, ReadinessResult } from "./types.js";
+export type {
+  CredentialReadiness,
+  KeyOrigin,
+  KeySource,
+  ReadinessResult,
+  UseResolution,
+} from "./types.js";
 export { readinessDetail } from "./types.js";
 
 /** Built-in local provider names that get a LocalCredentialProvider. */
@@ -183,6 +192,36 @@ export class CredentialAuthority {
    */
   async isAvailable(name: string, opts?: { allowOpPrompt?: boolean }): Promise<boolean> {
     return (await this.describeReadiness(name, opts)).readiness === "present";
+  }
+
+  /**
+   * Resolve `name`'s API key now, for a use that will sign with it: a launch, or
+   * a probe send. One resolution, so the source it reports is the step that
+   * produced THIS key, and a vault that could not be read says why instead of
+   * looking like a missing key. Never throws; never caches a failure.
+   *
+   * A provider that does not resolve an API key (an OAuth login, the native
+   * passthrough) answers `absent` with the sources an API key would be read from.
+   */
+  async resolveForUse(name: string, opts?: { allowOpPrompt?: boolean }): Promise<UseResolution> {
+    const provider = this.registry.get(name);
+    if (!provider?.resolveForUse) return { state: "absent", searched: keySourcesSearched() };
+    try {
+      return await provider.resolveForUse(opts);
+    } catch (err) {
+      return {
+        state: "failed",
+        reason: readinessDetail(err) ?? `the ${name} credential could not be resolved`,
+      };
+    }
+  }
+
+  /**
+   * Where the last key `name` resolved in this process came from, and its masked
+   * value. Never the key. undefined when nothing has been resolved yet.
+   */
+  describeOrigin(name: string): KeyOrigin | undefined {
+    return this.registry.get(name)?.describeOrigin?.();
   }
 
   async getRequestAuth(name: string, ctx: RequestAuthContext): Promise<RequestAuth> {
@@ -389,6 +428,7 @@ export class CredentialAuthority {
           // provider now declares `authScheme: "none"`, which says no credential
           // is expected rather than inventing one. See provider-definitions.ts.)
           oauthFallback: def.oauthFallback,
+          ...(def.vaultKeyReadAtUse === true ? { readAtUse: true as const } : {}),
         }),
         [def.name, ...(RUNTIME_NAME_ALIASES[def.name] ?? [])]
       );

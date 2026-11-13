@@ -17,7 +17,12 @@
  * When step 4 or 5 resolves a key, the value is written THROUGH into process.env
  * so spawned child processes (MCP team/session) inherit it and never touch the
  * SDK or the keychain. The authority is the ONLY code that pushes keys from
- * either vault into process.env.
+ * either vault into process.env. A provider declared `readAtUse` is the
+ * exception: it keeps a vault key to itself, and answers Keychain readiness by
+ * presence (see `ApiKeyDescriptor.readAtUse`).
+ *
+ * Every resolution records its origin (`describeOrigin`: the step and a masked
+ * value), so a display can say where the key came from without holding it.
  *
  * `describeReadiness()` reports `present` / `absent` / `failed`, and
  * `isAvailable()` is its `=== "present"` projection. Steps 4 and 5 are the two
@@ -47,9 +52,12 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { realValue } from "../../env-placeholder.js";
+import { realValue, realValueFor } from "../../env-placeholder.js";
+import { maskCredential } from "../../logger.js";
+import { keySourcesSearched } from "./key-sources.js";
 import {
   hasKeychainSource,
+  keychainHasAnyOf,
   recordKeychainHydratedVar,
   resolveKeychainKeyForEnvVars,
 } from "./keychain-source.js";
@@ -57,10 +65,15 @@ import { resolveLocalApiKey } from "./local-api-key.js";
 import { hasOpSources, resolveOpKeyForEnvVars } from "./op-source.js";
 import type {
   CredentialProvider,
+  KeyOrigin,
+  KeySource,
   ReadinessResult,
   RequestAuth,
   RequestAuthContext,
+  UseResolution,
 } from "./types.js";
+
+export type { KeyOrigin, KeySource, UseResolution } from "./types.js";
 
 /**
  * The outcome of one async key resolution: the key (possibly ""), plus WHY it
@@ -75,6 +88,8 @@ import type {
 interface KeyResolution {
   key: string;
   failure?: string;
+  /** The step that produced a non-empty `key`. Never set for an empty one. */
+  source?: KeySource;
 }
 
 export interface ApiKeyDescriptor {
@@ -108,6 +123,19 @@ export interface ApiKeyDescriptor {
    * circuit it and sign requests with the string "op://…".
    */
   declaredKey?: () => string | undefined;
+  /**
+   * Read a vault key (macOS Keychain, 1Password) only into this provider, never
+   * into `process.env`, and test Keychain readiness by presence alone.
+   *
+   * For a key Claude Code also reads (`ANTHROPIC_API_KEY`): a value written into
+   * `process.env` would reach every child Claude Code this process starts and
+   * move it onto metered billing, and a readiness check that reads a Keychain
+   * value raises that item's access dialog on every picker open. With this set,
+   * readiness asks the Keychain only whether the item exists (enumeration, which
+   * reads no item data), and the value is read when a request is signed or
+   * `resolveForUse` is called.
+   */
+  readAtUse?: true;
 }
 
 /**
@@ -120,6 +148,12 @@ export interface ApiKeyDescriptor {
  * and there is still exactly ONE implementation.
  */
 export { realValue };
+
+/**
+ * The readiness detail of a read-at-use key found in the Keychain by presence:
+ * the item exists, and its value is read only when a request is signed.
+ */
+export const KEYCHAIN_READ_WHEN_USED = "macOS Keychain (read when used)";
 
 export class ApiKeyCredentialProvider implements CredentialProvider {
   readonly catalogName: string;
@@ -140,6 +174,9 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   private readonly staticHeaders: Record<string, string>;
   private readonly oauthFallback?: string;
   private readonly declaredKey?: () => string | undefined;
+  private readonly readAtUse: boolean;
+  /** Origin of the last key resolved (never the key): read by `describeOrigin`. */
+  private lastOrigin: KeyOrigin | undefined;
 
   /** Memoized resolved key ("" = resolved-and-empty). undefined = not yet resolved. */
   private cachedKey: string | undefined;
@@ -162,6 +199,26 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     this.staticHeaders = descriptor.staticHeaders ?? {};
     this.oauthFallback = descriptor.oauthFallback;
     this.declaredKey = descriptor.declaredKey;
+    this.readAtUse = descriptor.readAtUse === true;
+  }
+
+  /**
+   * Which local step holds the key `resolveFromEnvConfig` returns: the
+   * environment (primary variable or an alias) or the config (its `apiKeys`
+   * entry, or a custom endpoint's declared key).
+   */
+  private localSource(): KeySource {
+    const inEnv =
+      realValueFor(this.envVar, process.env[this.envVar]) ||
+      this.aliases.some((a) => realValueFor(a, process.env[a]));
+    return inEnv ? "environment" : "config";
+  }
+
+  /** Remember where a resolved key came from, masked. Returns the resolution. */
+  private settle(key: string, source: KeySource): KeyResolution {
+    this.cachedKey = key;
+    this.lastOrigin = { source, masked: maskCredential(key) };
+    return { key, source };
   }
 
   /**
@@ -231,16 +288,17 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     // A cached key is a SETTLED answer — either a real value or a stable,
     // deliberately-memoized absence. Neither carries a failure, because the
     // rules below refuse to cache anything that might have been one.
-    if (this.cachedKey !== undefined) return { key: this.cachedKey };
+    if (this.cachedKey !== undefined) {
+      return this.cachedKey && this.lastOrigin
+        ? { key: this.cachedKey, source: this.lastOrigin.source }
+        : { key: this.cachedKey };
+    }
     if (this.resolving) return this.resolving;
 
     this.resolving = (async (): Promise<KeyResolution> => {
       // Steps 1-3: env / aliases / config — no SDK.
       const local = this.resolveFromEnvConfig();
-      if (local) {
-        this.cachedKey = local;
-        return { key: local };
-      }
+      if (local) return this.settle(local, this.localSource());
       // Step 4: macOS Keychain, only if the backend is on (the sync sniff gates
       // the `security` spawn). Local and quiet, so it is tried before 1Password.
       let keychainFailure: string | undefined;
@@ -248,11 +306,13 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
         const kc = resolveKeychainKeyForEnvVars([this.envVar, ...this.aliases]);
         if (kc.value) {
           // Write-through mirror: child processes inherit this and re-resolve
-          // nothing — the same contract the op step below honours.
-          process.env[this.envVar] = kc.value;
-          recordKeychainHydratedVar(this.envVar);
-          this.cachedKey = kc.value;
-          return { key: kc.value };
+          // nothing — the same contract the op step below honours. A read-at-use
+          // provider keeps the value to itself (see `ApiKeyDescriptor.readAtUse`).
+          if (!this.readAtUse) {
+            process.env[this.envVar] = kc.value;
+            recordKeychainHydratedVar(this.envVar);
+          }
+          return this.settle(kc.value, "macOS Keychain");
         }
         // A keychain MISS is stable (the item is genuinely absent) and may be
         // cached below. A keychain FAILURE — locked, or a declined ACL — is
@@ -283,9 +343,9 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
           resolved[this.envVar] ?? this.aliases.map((a) => resolved[a]).find((v) => !!v);
         if (value) {
           // Write-through mirror: child processes inherit this, no re-resolve.
-          process.env[this.envVar] = value;
-          this.cachedKey = value;
-          return { key: value };
+          // Not for a read-at-use provider.
+          if (!this.readAtUse) process.env[this.envVar] = value;
+          return this.settle(value, "1Password");
         }
         // op source EXISTS but resolution came back empty — this can be a
         // TRANSIENT op-auth failure (onAuthFailure:"skip" swallows it). Do NOT
@@ -333,6 +393,17 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     // Cheap checks first — avoid the op pull when an oauth file already qualifies.
     if (this.resolveFromEnvConfig()) return { readiness: "present" };
     if (this.hasOauthFallbackFile()) return { readiness: "present" };
+    // A read-at-use provider never reads a Keychain VALUE to answer readiness:
+    // presence comes from enumeration, which reads no item data and so raises no
+    // access dialog. A key this provider already resolved is present too.
+    if (this.readAtUse) {
+      if (this.cachedKey) return { readiness: "present" };
+      if (keychainHasAnyOf([this.envVar, ...this.aliases])) {
+        return { readiness: "present", detail: KEYCHAIN_READ_WHEN_USED };
+      }
+      // Nothing in the Keychain, so the resolution below reaches no Keychain
+      // value read: only the 1Password step can answer.
+    }
     const { key, failure } = await this.resolveKeyDetailed(opts);
     if (key) return { readiness: "present" };
     // No key AND no failure means every store answered and none holds one —
@@ -348,6 +419,26 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   invalidate(): void {
     this.cachedKey = undefined;
     this.resolving = undefined;
+    this.lastOrigin = undefined;
+  }
+
+  /**
+   * Resolve the key now, for a use that will sign with it (a launch, a probe
+   * send). One resolution: the key with the step that produced it, the vault's
+   * reason when a store could not be asked, or the sources that were searched.
+   * A failure is never cached, as in every other resolution.
+   */
+  async resolveForUse(opts?: { allowOpPrompt?: boolean }): Promise<UseResolution> {
+    if (this.authScheme === "none") return { state: "absent", searched: keySourcesSearched() };
+    const { key, failure, source } = await this.resolveKeyDetailed(opts);
+    if (key) return { state: "present", key, source: source ?? this.localSource() };
+    if (failure) return { state: "failed", reason: failure };
+    return { state: "absent", searched: keySourcesSearched() };
+  }
+
+  /** Where the last key this provider resolved came from, masked. Never the key. */
+  describeOrigin(): KeyOrigin | undefined {
+    return this.lastOrigin;
   }
 
   /**

@@ -246,6 +246,16 @@ export interface ProviderDefinition {
    * belongs to whichever change is looking at that provider.
    */
   siblingKeyEnvVars?: string[];
+  /**
+   * Read this provider's key from a vault (macOS Keychain, 1Password) only into
+   * the credential provider, never into `process.env`, and answer its Keychain
+   * readiness by presence (enumeration) without reading the value.
+   *
+   * For a key another program also reads from the environment: a vault value
+   * written there reaches every child process claudish starts. The value is
+   * read when a request is signed, or by the authority's `resolveForUse`.
+   */
+  vaultKeyReadAtUse?: true;
   /** Human-readable API key description */
   apiKeyDescription: string;
   /** URL where user can obtain an API key */

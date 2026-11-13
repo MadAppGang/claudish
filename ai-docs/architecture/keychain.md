@@ -68,6 +68,30 @@ Keychain Access.app and another claudish process can write it while this one run
 collapsing a burst inside one operation, not caching across a session — the same reasoning, and
 the same TTL, as `antigravity-token.ts`'s shared-token memo.
 
+### Read-at-use keys: presence for readiness, the value only when a request signs
+
+A provider declared `vaultKeyReadAtUse` (`ApiKeyDescriptor.readAtUse` in the authority) applies the
+split above to readiness itself. `describeReadiness` answers from env and config, then from
+`keychainHasAnyOf` (enumeration: `present`, detail `macOS Keychain (read when used)`), then from the
+1Password step; it never reads a Keychain value, so a picker open, `--probe --no-probe` or MCP
+`preflight` raises no access dialog for it. The value is read by `getRequestAuth` (a request being
+signed) and by the authority's `resolveForUse` (a launch, a probe send), and it is kept in the
+credential provider: neither vault step writes it into `process.env` or records it as hydrated.
+
+The reason is the environment, not the cost. Every other API-key provider writes a vault key
+through into `process.env` so spawned children inherit it, and for a key that Claude Code itself
+reads that is the bug: `ANTHROPIC_API_KEY` in `process.env` reaches every child Claude Code claudish
+starts and moves a session on the user's Claude login onto metered billing. A read-at-use
+provider's key never leaves the process.
+
+The resolving step is recorded as the key's origin (`describeOrigin`: the source and a masked
+value, never the key), so `--probe` provenance names `macOS Keychain` or `1Password` for a key no
+environment layer shows, and `macOS Keychain (not read yet)` for one enumeration found and nothing
+has read.
+
+Every other provider's readiness still reads its Keychain value, which is the access-dialog path
+this section warns about; moving them is a separate change.
+
 ## `security` behaviours that are traps
 
 ### 1. `-w` returns HEX for values containing control characters
