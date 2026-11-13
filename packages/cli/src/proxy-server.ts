@@ -389,12 +389,13 @@ export async function createProxyServer(
     hookEngine ? withHooks(handler, hookEngine) : handler;
 
   /**
-   * The launch's signing for one native request: who signs it. `inbound`
-   * unless the launch said otherwise: the request's own credentials, and for a
+   * The signing of a native request the routing step left undecided: the
+   * launch's `nativeSigning` (which `launchSigningFor` in
+   * `launcher/claude-launch.ts` chose), else `inbound`: the request's own credentials, and for a
    * request that arrived with none, this process's key, then
    * ANTHROPIC_API_KEY through the credential authority.
    */
-  const launchSigningFor = (model: unknown): NativeSigning =>
+  const defaultRequestSigning = (model: unknown): NativeSigning =>
     options.nativeSigning ?? {
       kind: "inbound",
       fallbackKey: async () => {
@@ -1285,7 +1286,7 @@ export async function createProxyServer(
           c,
           body,
           resolveUpstreamUrl("https://api.anthropic.com/v1/messages/count_tokens"),
-          resolved.signing ?? launchSigningFor(body.model)
+          resolved.signing ?? defaultRequestSigning(body.model)
         );
         if ("refused" in forward) {
           log(`[CountTokens] refused: ${forward.refused}`);
@@ -1385,7 +1386,7 @@ export async function createProxyServer(
         // Signed by the LAUNCH's rule, never a hard-wired `inbound`: on a Claude
         // subscription launch the classifier carries the login or is refused,
         // and on a foreign-model launch it keeps the user's own credential.
-        const classifierSigning = launchSigningFor(body.model);
+        const classifierSigning = defaultRequestSigning(body.model);
         setNativeSigning(c, classifierSigning);
         // Wrapped like every other request so the advisor work NativeHandler
         // used to do here still happens; not counted by the absent-tool
@@ -1402,7 +1403,7 @@ export async function createProxyServer(
         requestProbeHopOrigin(c),
         resolved
       );
-      const signing = resolved.signing ?? launchSigningFor(body.model);
+      const signing = resolved.signing ?? defaultRequestSigning(body.model);
       setNativeSigning(c, signing);
       const handler = withAdvisor(withRequestHooks(resolvedHandler), signing, advisorPresence);
       if (resolved.nativeModel) body.model = resolved.nativeModel;
