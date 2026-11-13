@@ -308,11 +308,10 @@ export function logResolution(
   result: ModelResolutionResult,
   quiet = false
 ): void {
-  if (result.wasResolved && !quiet) {
-    const line = `[Model] Resolved "${userInput}" → "${result.resolvedId}" (${result.sourceLabel})`;
-    log(line);
-    process.stderr.write(`${line}\n`);
-  }
+  if (!result.wasResolved) return;
+  const line = `[Model] Resolved "${userInput}" → "${result.resolvedId}" (${result.sourceLabel})`;
+  log(line);
+  if (!quiet) process.stderr.write(`${line}\n`);
 }
 
 export { catalogWarmDisabledFor };
