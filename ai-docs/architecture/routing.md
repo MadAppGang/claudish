@@ -151,6 +151,44 @@ prints the two billing notices, and returns the kept candidates (`toRoutePlan`).
 config TUI and the team grid render `explainRoute`, and `describeRouteExplanation` words its
 origin in one line for all three.
 
+## A Claude model has two routes: Claude subscription and Claude API
+
+**Claude subscription** is the user's own Claude Code login, served by the native passthrough
+(`native-anthropic`, `NativeHandler`). **Claude API** is Anthropic's metered native API on the
+user's Anthropic API key: the catalog's `anthropic/direct-api` route.
+
+**Why `--probe claude-haiku-5-5` showed one row (v14.20.0).** The Summary had a single line,
+`Anthropic (Native) ◐ native — not probed`, and no Claude API row, even with `ANTHROPIC_API_KEY`
+set and seven mapped connections in the catalog for that model (`anthropic/direct-api`,
+`anthropic/claude-code-subscription`, Devin, OpenCode Go, OpenCode Zen, OpenRouter, Poe). Three
+independent causes, each enough on its own:
+
+1. **No candidates were gathered.** `proxyRouteDecision` classifies a bare Claude name as
+   `native` before `route()`, so `explainRoute` answers `{source: "native", candidates: []}`
+   and never asks `gatherRouteCandidates` about the model.
+2. **The probe has nothing to send.** `probeChainFrom` turns a native explanation into one link
+   with `notProbed: "native-auth"`, and `probeTargets` has no candidate to turn into a request.
+3. **No claudish provider could call `anthropic/direct-api`.** The name `anthropic` sat in
+   `LOOKUP_ONLY_ROUTE_BINDINGS`, so it was never a route candidate. The only credential provider
+   that read `ANTHROPIC_API_KEY` was `native-anthropic`'s (`NativeAnthropicCredentialProvider`),
+   and that provider is `noHandler("virtual")` with `apiKeyEnvVar: ""`: it supplies the native
+   passthrough's fallback key, it does not serve a route.
+
+Fixing one cause alone changes nothing visible: a provider for `anthropic/direct-api` is still
+never gathered for a native name, and gathering candidates for a native name still finds no
+provider that can sign the Claude API.
+
+**The name `anthropic` means two things.** It is the catalog's route id for Anthropic's own
+endpoints (`anthropic/direct-api`, `anthropic/claude-code-subscription`) and the vendor slug the
+savings panel reads its first-party price under. It is ALSO the hook route provider
+`NativeHandler` reports (`route: {provider: "anthropic", native: true}`), and `isNativeRoute`
+(`hooks/request-stage.ts`) answers true for `providerName === "anthropic"` whatever the model, a
+rule `ComposedHandler.routeInfo` feeds too. So a hook scoped `routes: native` runs on every route
+whose wire is Anthropic's own and whose model is Claude, through the native passthrough or a
+provider named `anthropic`; `routes: foreign` runs on neither. A rule that must tell the native
+passthrough apart from a metered call reads `provider_name` and `adapter_name` in stats, never
+the hook's provider name.
+
 ## Where a bare name's chain comes from
 
 **There is no built-in routing table.** `providers/default-routing-rules.ts` — 24 hand-written
@@ -190,7 +228,8 @@ Three consequences to know before reading its output:
 - **A native name is one link, never probed** (`notProbed: "native-auth"`,
   `NATIVE_NOT_PROBED`). The native handler forwards the inbound Claude Code header, which a
   probe from this process does not have; substituting `ANTHROPIC_API_KEY` tested a different
-  credential from the one a session uses.
+  credential from the one a session uses. Why no Claude API row appeared beside it: [A Claude
+  model has two routes](#a-claude-model-has-two-routes-claude-subscription-and-claude-api).
 - **`--no-probe` still asks providers.** The availability filter is part of `route()`, so an
   account's dynamic models catalog is read for each credentialed candidate that declares
   discovery (the account's stored list; only a list at most five minutes old may deny).
