@@ -3,11 +3,12 @@
  * signs the native requests its proxy forwards, and whether the launch is a
  * monitor session on Claude Code's own login.
  *
- * A launch whose main model is a bare Claude name is the Claude subscription,
- * so its native requests are signed with Claude Code's login only, never with
- * an Anthropic API key (`login-only`), unless the user opted into API billing
- * (`--anthropic-api-billing`). Every other launch keeps the proxy's `inbound`
- * rule, which an absent signing selects.
+ * A launch whose main model or any tier is a bare Claude name is the Claude
+ * subscription, so its native requests are signed with Claude Code's login
+ * only, never with an Anthropic API key (`login-only`), unless the user opted
+ * into API billing (`--anthropic-api-billing`). A `claude@<id>` tier pins the
+ * launch to the subscription whatever the opt-in says. Every other launch keeps
+ * the proxy's `inbound` rule, which an absent signing selects.
  *
  * `claude@<id>` names the Claude subscription explicitly. At top level it is a
  * monitor session: Claude Code talks to Anthropic on its own login and the
@@ -34,6 +35,7 @@ import { isClaudishPlaceholderCredential } from "../auth/claudish-placeholder.js
 import type { CredentialAuthority } from "../auth/credentials/authority.js";
 import {
   type SettingsFinding,
+  hasNativeAnthropicMapping,
   managedSettingsForcesClaudeAi,
   settingsArgsForcingClaudeAi,
   settingsCredentialFindings,
@@ -62,18 +64,24 @@ export interface LaunchSigningDeps {
 }
 
 /**
- * The launch's native signing: `login-only` for a bare Claude main model (or
- * `claude@` before one) without the API-billing opt-in, and always for one a
- * pane child was given as `claude@` (`claudeSubscriptionPin`); else undefined,
- * which the proxy reads as `inbound`.
+ * The launch's native signing; undefined is the proxy's `inbound` rule.
+ *
+ * - `login-only` on a launch pinned to the Claude subscription
+ *   (`claudeSubscriptionPin`: `claude@` as a pane child's model, or as any
+ *   tier), whatever the API-billing opt-in says.
+ * - `login-only` when the main model or any tier is a Claude model and the
+ *   user did not opt into API billing.
+ * - Else undefined.
+ *
+ * A top-level `claude@` or `anthropic@` main model never reaches this function:
+ * `prepareClaudeLaunch` decides both as monitor sessions first.
  */
 export function launchSigningFor(
   config: ClaudishConfig,
   deps: LaunchSigningDeps = {}
 ): NativeSigning | undefined {
-  const main = config.model;
-  if (!main || nativeRouteFor(main) === null) return undefined;
   if (config.claudeSubscriptionPin) return LOGIN_ONLY_SIGNING;
+  if (!hasNativeAnthropicMapping(config)) return undefined;
   const wantsApiBilling =
     deps.wantsApiBilling ?? ((c: ClaudishConfig) => wantsAnthropicApiBilling(c));
   return wantsApiBilling(config) ? undefined : LOGIN_ONLY_SIGNING;
@@ -224,6 +232,7 @@ export interface DecideClaudeLaunchDeps {
  * - A `claude@` spec the subscription cannot serve (a name Claude Code does not
  *   own, a marker, a `:N` suffix) refuses the launch, and so does `claude@`
  *   inside a chain: the Claude subscription is served by Claude Code itself.
+ * - A `claude@X` tier sets `claudeSubscriptionPin`; the tier keeps its spec.
  * - One `claude@X` main model: in a pane child the model becomes the bare `X`
  *   and `claudeSubscriptionPin` is set; otherwise the launch becomes a monitor session, `claudeLaunch:
  *   "subscription"`, and `model` keeps the user's spec for every later reader
@@ -248,6 +257,11 @@ export function decideClaudeLaunch(
     if (typeof spec !== "string" || spec.length === 0) continue;
     const refusal = claudeSubscriptionSpecRefusal(spec);
     if (refusal) return { ok: false, message: refusal };
+  }
+  // A `claude@` tier is the Claude subscription named explicitly: the proxy
+  // serves it on the native passthrough, and the whole launch keeps the login.
+  if (tiers.some((spec) => typeof spec === "string" && isClaudeSubscriptionSpec(spec))) {
+    config.claudeSubscriptionPin = true;
   }
   if (specs.length > 1) {
     const refusal = claudeSubscriptionSpecRefusal(specs.join(MODEL_CHAIN_SEPARATOR));
@@ -324,8 +338,10 @@ export interface PrepareClaudeLaunchDeps {
  *   layer that would hand it an API key refuses the launch, an inherited
  *   placeholder `ANTHROPIC_API_KEY` is scrubbed as `--monitor` scrubs it, and
  *   every request is signed `login-only`.
- * - A bare Claude main model without the API-billing opt-in: the same settings
- *   refusal, and `login-only`.
+ * - Any other launch `launchSigningFor` signs `login-only` (a bare Claude main
+ *   model or tier without the API-billing opt-in, a `claude@` tier, a pinned
+ *   pane child): the same settings refusal, and `login-only`. An opt-in a pin
+ *   overrides is named in a notice.
  * - Anything else: no effect.
  */
 export async function prepareClaudeLaunch(
@@ -359,18 +375,28 @@ export async function prepareClaudeLaunch(
     };
   }
 
-  const signing = launchSigningFor(
-    config,
-    deps.wantsApiBilling ? { wantsApiBilling: deps.wantsApiBilling } : {}
-  );
-  if (signing?.kind !== "login-only" || !main) {
+  const wantsApiBilling =
+    deps.wantsApiBilling ?? ((c: ClaudishConfig) => wantsAnthropicApiBilling(c));
+  const signing = launchSigningFor(config, { wantsApiBilling });
+  if (signing?.kind !== "login-only") {
     return signing ? { ok: true, banner: [], signing } : { ok: true, banner: [] };
   }
+  // The opt-in is offered only where it could apply: a pin keeps the login.
   const check = subscriptionSettingsCheck(findingsOf(config, env), {
-    bareName: isBareClaudeName(main) && !config.claudeSubscriptionPin,
+    bareName: !config.claudeSubscriptionPin,
   });
   if (check.refusal) return { ok: false, message: check.refusal };
-  return { ok: true, banner: noticeLines(check.notices), signing };
+  const notices = [...check.notices];
+  if (
+    config.claudeSubscriptionPin &&
+    wantsApiBilling({ ...config, claudeSubscriptionPin: false })
+  ) {
+    notices.push(
+      "the API-billing opt-in does not apply: claude@ names the Claude subscription, so this " +
+        "session keeps Claude Code's own login and ANTHROPIC_API_KEY is hidden from it"
+    );
+  }
+  return { ok: true, banner: noticeLines(notices), signing };
 }
 
 /**

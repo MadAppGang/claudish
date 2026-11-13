@@ -121,7 +121,7 @@ function releaseTerminalIsolation(): void {
  * NativeHandler can forward them to api.anthropic.com. Any other bare name
  * (`o4-mini`) is routed by the proxy, so it does not count.
  */
-function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
+export function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
   const models = [
     config.model,
     config.modelOpus,
@@ -178,8 +178,9 @@ export { type KeychainCredentialProbe, defaultKeychainAnthropicProbe };
  * A config read failure must never block launch, so it degrades to "not opted
  * in" — the safe direction, since that only ever avoids spending money.
  *
- * A launch whose user named the Claude subscription explicitly (`claude@<id>`,
- * kept as `claudeSubscriptionPin` in a pane child) never opts in: an explicit
+ * A launch whose user named the Claude subscription explicitly (`claude@<id>`
+ * as a pane child's model or as any tier, kept as `claudeSubscriptionPin`)
+ * never opts in: an explicit
  * subscription spec is not consent to the metered API, whatever the flag, the
  * environment or the config file says.
  */
