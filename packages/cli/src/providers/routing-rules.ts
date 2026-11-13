@@ -49,6 +49,7 @@ import {
   gatherRouteCandidates,
 } from "./route-candidates.js";
 import { buildCredentialHint } from "./routing-hints.js";
+import { shadowedEndpointRefusal } from "./shadowed-endpoint.js";
 import {
   describeUnknownShortcut,
   isKnownProviderName,
@@ -692,8 +693,11 @@ export type NoRouteCause =
   /** An explicit spec's provider does not serve the model. */
   | "explicit-not-served"
   /**
-   * A `claude@` spec the Claude subscription refuses before any routing: a
-   * marker, a `:N` suffix, a `+` chain hop, or a name Claude Code does not own.
+   * A spec refused before any routing: a `claude@` spec the Claude
+   * subscription refuses (a marker, a `:N` suffix, a `+` chain hop, a name
+   * Claude Code does not own), or a spec (as given, or a matched user rule's
+   * entry) on a custom endpoint name a Claude builtin took over
+   * (`shadowedEndpointRefusal`).
    */
   | "explicit-refused";
 
@@ -1410,7 +1414,28 @@ async function explainBareNameWithin(
   const matched = matchedKey === null ? null : routing.rules[matchedKey];
 
   let explanation: RouteExplanation;
-  if (matchedKey !== null && matched !== null) {
+  // A rule entry on a custom endpoint name a Claude builtin took over would
+  // reach the builtin, not the user's endpoint: the rule is refused, naming
+  // the rename. A plain entry names the provider for this model.
+  const ruleShadowed =
+    matchedKey !== null && matched !== null
+      ? shadowedEndpointRefusal(
+          matched.map((entry) => (entry.includes("@") ? entry : `${entry}@${model}`))
+        )
+      : null;
+  if (matchedKey !== null && ruleShadowed !== null) {
+    explanation = {
+      requestedModel,
+      routedModel: model,
+      source: "user-rule",
+      matchedPattern: matchedKey,
+      ...(routing.scopeOf ? { ruleScope: routing.scopeOf(matchedKey) } : {}),
+      ...explanationCatalogSource(cachePath),
+      candidates: [],
+      outcome: { kind: "no-route", cause: "explicit-refused", reason: ruleShadowed },
+      warnings: ruleProblemWarnings(routing.ruleProblems),
+    };
+  } else if (matchedKey !== null && matched !== null) {
     const gatewayLists = await loadGatewayWireLists(
       gatewayListsNeeded(matched, model, cachePath),
       network,
@@ -1958,6 +1983,19 @@ export async function routeExplained(
   return { plan: toRoutePlan(explanation), explanation };
 }
 
+/** A spec refused before any routing (`explicit-refused`), with the refusal as its reason. */
+function refusedExplanation(target: string, reason: string): RouteExplanation {
+  return {
+    requestedModel: target,
+    routedModel: target,
+    source: "explicit",
+    via: "model-spec",
+    candidates: [],
+    outcome: { kind: "no-route", cause: "explicit-refused", reason },
+    warnings: [],
+  };
+}
+
 /**
  * The decision `route()` returns, explained. `route()` and `explainRoute` both
  * call this, which is what keeps the chain a display shows and the chain a
@@ -1976,6 +2014,8 @@ async function explainRoutePlan(
   const parsed = parseModelSpec(modelSpec);
 
   if (parsed.isExplicitProvider) {
+    const shadowed = shadowedEndpointRefusal([modelSpec]);
+    if (shadowed) return refusedExplanation(requestedModel, shadowed);
     // Not normalized here — see normalizeGlmSlug's note on explicit specs.
     return explainExplicitSpec(
       requestedModel,
@@ -2002,8 +2042,9 @@ async function explainRoutePlan(
  * would use, every candidate the chain considered and what removed it, and why.
  * For `--probe` and the config TUI.
  *
- * A `claude@` spec the Claude subscription refuses is answered first, as a
- * no-route (`explicit-refused`), exactly as the proxy refuses it.
+ * A `claude@` spec the Claude subscription refuses, and a spec on a custom
+ * endpoint name a Claude builtin took over, are answered first, as a no-route
+ * (`explicit-refused`), exactly as the proxy refuses them.
  *
  * It starts where the proxy starts, at `proxyRouteDecision`. A `native` target is
  * answered there (no candidates: Claude Code's own auth serves it). `poe:<id>` and
@@ -2020,18 +2061,10 @@ export async function explainRoute(
 ): Promise<RouteExplanation> {
   // Checked on the spec as given, as every launch checks it: `proxyRouteDecision`
   // reads `claude@<id>#fast` as the native `<id>`, which no launch serves.
-  const claudeRefusal = claudeSubscriptionSpecRefusal(target);
-  if (claudeRefusal) {
-    return {
-      requestedModel: target,
-      routedModel: target,
-      source: "explicit",
-      via: "model-spec",
-      candidates: [],
-      outcome: { kind: "no-route", cause: "explicit-refused", reason: claudeRefusal },
-      warnings: [],
-    };
-  }
+  // So is a spec on a custom endpoint name a Claude builtin took over, which
+  // `proxyRouteDecision` would read as that builtin (`claude@<id>` as native).
+  const refusal = claudeSubscriptionSpecRefusal(target) ?? shadowedEndpointRefusal([target]);
+  if (refusal) return refusedExplanation(target, refusal);
   const decision = proxyRouteDecision(target);
 
   if (decision.type === "native") {

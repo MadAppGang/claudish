@@ -37,6 +37,7 @@ import {
 import { type ProbeChainReason, type ProbeResult, describeProbeState } from "./probe-live.js";
 import { type ProbeTarget, probeTargets } from "./probe-runner.js";
 import type { NoRouteCause, RouteExplanation } from "./routing-rules.js";
+import { shadowedEndpointRefusal } from "./shadowed-endpoint.js";
 
 /** How a hop bills. */
 export type HopBilling = "subscription" | "metered" | "local";
@@ -180,7 +181,8 @@ export async function preflightModel(
 ): Promise<PreflightModelResult> {
   // A `claude@` spec every launch refuses (a marker, `:N`) is refused here too,
   // before `nativeRouteFor` reads it as the native name inside.
-  const claudeRefusal = claudeSubscriptionSpecRefusal(model);
+  // So is a spec on a custom endpoint name a Claude builtin took over.
+  const claudeRefusal = claudeSubscriptionSpecRefusal(model) ?? shadowedEndpointRefusal([model]);
   if (claudeRefusal) return { kind: "route-error", model, message: claudeRefusal };
   const native = nativeRouteFor(model);
   if (native) {

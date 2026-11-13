@@ -42,6 +42,7 @@ import {
   type RouteExplanation,
   explainRoute,
 } from "../providers/routing-rules.js";
+import { shadowedEndpointRefusal } from "../providers/shadowed-endpoint.js";
 import { CatalogPendingHandler, RefusingHandler } from "../providers/wire-handler.js";
 import {
   WireMarkerError,
@@ -213,6 +214,13 @@ export async function planAdvisorModel(
       cause: carriesWireMarker(spec) ? "wire-marker" : "claude-subscription-spec",
       reason: claudeRefusal,
     };
+  }
+  // A member on a custom endpoint name a Claude builtin took over would reach
+  // the builtin, not the user's endpoint, and no handler is built for a
+  // refused plan.
+  const shadowed = shadowedEndpointRefusal([spec]);
+  if (shadowed) {
+    return { kind: "refused", spec, role, cause: "explicit-refused", reason: shadowed };
   }
   let markers: WireMarkers;
   try {
