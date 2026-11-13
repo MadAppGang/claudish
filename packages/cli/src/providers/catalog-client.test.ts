@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as logger from "../logger.js";
 import type { AggregatorEntry } from "../model-loader.js";
 import {
   type DiskCacheV3,
@@ -14,10 +15,13 @@ import {
 import type { CachedSubscriptionPlan } from "./all-models-cache.js";
 import {
   _resetCatalogClient,
+  _setCatalogEntriesForTest,
   buildRoutesUrl,
   catalogWarmDisabledFor,
   getCatalogEntries,
+  logResolution,
   refreshCatalog,
+  resolveExternalId,
   resolveTargetForCatalog,
 } from "./catalog-client.js";
 import { CATALOG_V3_ACCEPT } from "./catalog-v3.js";
@@ -28,6 +32,7 @@ import type {
   RouteRegistry,
 } from "./connection-wire.js";
 import { parseModelSpec } from "./model-parser.js";
+import { catalogEntry, connection, effortMap } from "./test-helpers/model-id-effort.js";
 
 // the reader of the previous release, kept verbatim as an oracle.
 const previousReleaseReader = (() => {
@@ -562,6 +567,88 @@ describe("resolveTargetForCatalog", () => {
       expect(bare).toEqual({ target: model, resolution: null });
     });
   }
+});
+
+describe("exact effort-map wire ids", () => {
+  const base = "example-model";
+  const low = `${base}-low`;
+  const high = `${base}-high`;
+  const off = `${base}-off`;
+  const mediumAlias = `${base}-medium`;
+  const devinBase = "example-devin-base-uid";
+  const devinLow = "example-devin-low-uid";
+  const googleBase = "example-google-base";
+
+  beforeEach(() => {
+    _setCatalogEntriesForTest([
+      catalogEntry(
+        base,
+        [
+          connection("antigravity", base, effortMap({ low, high }, { off })),
+          connection("devin", devinBase, effortMap({ low: devinLow })),
+          connection("google", googleBase),
+        ],
+        [low, high, off, mediumAlias, devinLow]
+      ),
+    ]);
+  });
+
+  test("keeps an exact Antigravity effort-map value even when it is an alias", () => {
+    expect(resolveExternalId(low, "antigravity")).toBe(low);
+  });
+
+  test("keeps an exact Devin effort-map uid even when it is an alias", () => {
+    expect(resolveExternalId(devinLow, "devin")).toBe(devinLow);
+  });
+
+  test("keeps an exact effort-map off id even when it is an alias", () => {
+    expect(resolveExternalId(off, "antigravity")).toBe(off);
+  });
+
+  test("keeps an explicit ag target whose wire id is an effort-map value", () => {
+    const target = `ag@${low}`;
+    const parsed = parseModelSpec(target);
+    const result = resolveTargetForCatalog(
+      target,
+      parsed.isExplicitProvider,
+      parsed.model,
+      parsed.provider
+    );
+
+    expect(result.resolution?.wasResolved).toBe(false);
+    expect(result.target).toBe(target);
+    expect(result.resolution?.resolvedId).toBe(low);
+  });
+
+  test("resolves a suffixed alias to the wire id of a connection with no effort map", () => {
+    expect(resolveExternalId(mediumAlias, "google")).toBe(googleBase);
+  });
+
+  test("does not preserve another provider's exact effort-map id", () => {
+    expect(resolveExternalId(low, "google")).toBe(googleBase);
+  });
+
+  test("logs a model resolution through the debug logger as well as stderr", () => {
+    const logSpy = spyOn(logger, "log").mockImplementation(() => {});
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      logResolution(low, {
+        resolvedId: base,
+        wasResolved: true,
+        sourceLabel: "antigravity catalog",
+      });
+
+      expect(logSpy.mock.calls).toHaveLength(1);
+      expect(logSpy.mock.calls[0]![0]).toContain(`[Model] Resolved "${low}" → "${base}"`);
+      expect(stderrSpy).toHaveBeenCalledTimes(1);
+      expect(stderrSpy.mock.calls[0]![0]).toBe(
+        `[Model] Resolved "${low}" → "${base}" (antigravity catalog)\n`
+      );
+    } finally {
+      stderrSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
 });
 
 describe("route registry refresh", () => {
