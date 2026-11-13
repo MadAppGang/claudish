@@ -58,13 +58,7 @@ import {
 } from "../pane/view-contract.js";
 import { transcriptPathFor } from "../session/session-discovery.js";
 import { type KernelLock, KernelLockUnavailable, flockAvailable } from "../view/kernel-lock.js";
-import {
-  type PeerEnd,
-  type PeerLink,
-  PeerLinks,
-  type PeerPlaceAsk,
-  type ReplayOpenWire,
-} from "../view/peer-link.js";
+import { type PeerEnd, type PeerLink, PeerLinks, type ReplayOpenWire } from "../view/peer-link.js";
 import { ReplayRegistry } from "../view/replay-registry.js";
 import { type ClaimCaller, MCP_CALLER, type ViewClaims } from "../view/view-claims.js";
 import type { ViewFeed } from "../view/view-feed.js";
@@ -123,25 +117,6 @@ export type ReplayOpener =
 
 const MCP_OPENER: ReplayOpener = { kind: "mcp" };
 
-/** The owner's placement grant, for `replay.open {place}` from a peer. */
-export interface ReplayGrants {
-  grant(target: string, workspaceKey: string, owner: string, txn: string): boolean;
-  doneFor(target: string, workspaceKey: string, owner: string): void;
-  workspaces(target: string): string[];
-}
-
-/** This server's herdr placer, as the replays see it. */
-export interface ReplayPlacer {
-  /** this server's workspace key, once the placer runs */
-  workspaceKey(): string | null;
-  /** this server's MCP link opened or joined a replay it owns */
-  owned(target: string): void;
-  /** the owner granted this server a placement for a joined replay */
-  remote(target: string, txn: string, ownerEndpoint: string): void;
-  /** a joined replay stopped being served */
-  ended(target: string): void;
-}
-
 interface Holds {
   mcp: boolean;
   conns: Set<string>;
@@ -183,8 +158,6 @@ interface RemoteEntry {
   lastScreen: CaptureResult | null;
   /** the `claim_id` of this server's last peer grant: a `claude_code` holder with it is ours */
   lastClaimId: string | null;
-  placeTxn: string | null;
-  placeKey: string | null;
   of: ReplayViewItem["of"];
   model: string | null;
 }
@@ -213,8 +186,6 @@ export interface ReplayOpenAnswer {
   seq: number;
   magmux: ViewMagmux | null;
   view: ViewHolder | null;
-  herdr_workspaces: string[];
-  place: boolean;
 }
 
 function unavailable(reason: ReplayUnavailableReason, message: string): ContractErrorException {
@@ -296,8 +267,6 @@ export class ReplayManager {
   private shuttingDown = false;
   private feed: ViewFeed | null = null;
   private claims: ViewClaims | null = null;
-  private grants: ReplayGrants | null = null;
-  private placer: ReplayPlacer | null = null;
   private endpoint: () => string | null = () => null;
   private registryValue: ReplayRegistry | null = null;
   private peersValue: PeerLinks | null;
@@ -312,19 +281,14 @@ export class ReplayManager {
   }
 
   /** Bound once at startup; `replay_session` and the local transport then share the holders. */
-  setViewServices(services: { feed: ViewFeed; claims: ViewClaims; grants?: ReplayGrants }): void {
+  setViewServices(services: { feed: ViewFeed; claims: ViewClaims }): void {
     this.feed = services.feed;
     this.claims = services.claims;
-    this.grants = services.grants ?? null;
   }
 
   /** This server's endpoint name, once bound: what its registry entries and peer hellos name. */
   setEndpoint(name: () => string | null): void {
     this.endpoint = name;
-  }
-
-  setPlacer(placer: ReplayPlacer | null): void {
-    this.placer = placer;
   }
 
   /** True when replays are shared across servers through the kernel lock and the registry. */
@@ -352,30 +316,6 @@ export class ReplayManager {
       out.push(this.itemOf(e));
     }
     return out;
-  }
-
-  /** A joined replay as the placer reads it: this server never lists it. */
-  remoteItem(target: string): Omit<ReplayViewItem, "view"> | null {
-    for (const e of this.byId.values())
-      if (e.kind === "remote" && targetOfReplay(e.replayId) === target)
-        return {
-          kind: "replay",
-          target,
-          replay_id: e.replayId,
-          of: e.of,
-          model: e.model,
-          final: e.finishedAt !== null,
-          magmux: null,
-          herdr_workspaces: [],
-        };
-    return null;
-  }
-
-  /** The owner endpoint of a joined replay; null for one this server owns. */
-  ownerEndpointOf(target: string): string | null {
-    for (const e of this.byId.values())
-      if (e.kind === "remote" && targetOfReplay(e.replayId) === target) return e.ownerEndpoint;
-    return null;
   }
 
   /**
@@ -425,11 +365,7 @@ export class ReplayManager {
   }
 
   /** A peer's or a viewer's `replay.open {replay_id}`: a join of a live owned entry, nothing else. */
-  async join(
-    replayId: string,
-    opener: ReplayOpener & { kind: "conn" },
-    place?: PeerPlaceAsk
-  ): Promise<ReplayOpenAnswer> {
+  async join(replayId: string, opener: ReplayOpener & { kind: "conn" }): Promise<ReplayOpenAnswer> {
     const entry = this.byId.get(replayId);
     if (
       !entry ||
@@ -442,15 +378,7 @@ export class ReplayManager {
     await entry.opening;
     if (entry.closed || entry.finishedAt !== null) throw unknownReplay(replayId);
     this.addHold(entry, opener);
-    let placed = false;
-    if (place && opener.role === "peer" && this.grants)
-      placed = this.grants.grant(
-        targetOfReplay(replayId),
-        place.workspace_key,
-        opener.connId,
-        place.txn
-      );
-    return { ...this.answerOfOwned(entry, opener), place: placed };
+    return this.answerOfOwned(entry, opener);
   }
 
   private async openAs(
@@ -489,7 +417,7 @@ export class ReplayManager {
           this.assertViewerRoom(opener.connId, false);
         this.addHold(entry, opener);
       }
-      return { ...this.answerOfOwned(entry, opener), place: false };
+      return this.answerOfOwned(entry, opener);
     }
   }
 
@@ -544,7 +472,6 @@ export class ReplayManager {
     }
     const uuid = slot.uuid;
     const deadline = Date.now() + this.readyMs + (this.options.joinExtraMs ?? REPLAY_JOIN_EXTRA_MS);
-    const place = this.placeAsk(opener);
     for (;;) {
       if (this.shuttingDown) throw unavailable("spawn_failed", "the server is shutting down");
       let lock: KernelLock | null;
@@ -570,7 +497,6 @@ export class ReplayManager {
             e.owner_endpoint,
             e.replay_id,
             e.pane_id,
-            place,
             left,
             target
           );
@@ -638,7 +564,6 @@ export class ReplayManager {
     ownerEndpoint: string,
     replayId: string,
     paneId: string,
-    place: PeerPlaceAsk | undefined,
     timeoutMs: number,
     target: ReplayTarget
   ): Promise<RemoteEntry | null> {
@@ -646,7 +571,7 @@ export class ReplayManager {
     let answer: ReplayOpenWire;
     try {
       link = await this.peers.link(ownerEndpoint);
-      answer = await link.open(replayId, place, timeoutMs);
+      answer = await link.open(replayId, timeoutMs);
     } catch {
       // unknown_session, server_gone, refused or timed out: the lock decides on the next pass
       return null;
@@ -662,24 +587,14 @@ export class ReplayManager {
       lastScreen: null,
       // a join takes no claim: any `claude_code` holder in the answer is another server's
       lastClaimId: null,
-      placeTxn: answer.place && place ? place.txn : null,
-      placeKey: answer.place && place ? place.workspace_key : null,
       of: target.of ?? { session_id: slot.uuid },
       model: target.model ?? null,
     };
     this.byId.set(entry.replayId, entry);
     slot.entry = entry;
     void link.follow(entry.replayId, (why) => void this.remoteEnded(entry, why));
-    if (entry.placeTxn)
-      this.placer?.remote(targetOfReplay(entry.replayId), entry.placeTxn, ownerEndpoint);
     this.seqOfJoin.set(entry.replayId, { seq: answer.seq, view: answer.view });
     return entry;
-  }
-
-  private placeAsk(opener: ReplayOpener): PeerPlaceAsk | undefined {
-    if (opener.kind !== "mcp" || !this.placer) return undefined;
-    const key = this.placer.workspaceKey();
-    return key ? { workspace_key: key, txn: `p${randomBytes(6).toString("hex")}` } : undefined;
   }
 
   private mintReplayId(): string {
@@ -747,9 +662,8 @@ export class ReplayManager {
     this.notify(entry);
   }
 
-  private answerOfOwned(entry: OwnedEntry, opener: ReplayOpener): Omit<ReplayOpenAnswer, "place"> {
+  private answerOfOwned(entry: OwnedEntry, opener: ReplayOpener): ReplayOpenAnswer {
     const target = targetOfReplay(entry.replayId);
-    if (opener.kind === "mcp" && entry.finishedAt === null) this.placer?.owned(target);
     return {
       replay_id: entry.replayId,
       target,
@@ -758,7 +672,6 @@ export class ReplayManager {
         ? { pane_id: entry.pane.paneId, view_socket: entry.pane.viewSockPath }
         : null,
       view: this.claims?.viewFor(target, callerOf(opener)) ?? null,
-      herdr_workspaces: this.grants?.workspaces(target) ?? [],
     };
   }
 
@@ -770,8 +683,6 @@ export class ReplayManager {
       seq: again ? (entry.lastScreen?.seq ?? joined?.seq ?? 0) : (joined?.seq ?? 0),
       magmux: null,
       view: this.relative(entry, joined?.view ?? null),
-      herdr_workspaces: [],
-      place: false,
     };
   }
 
@@ -972,22 +883,6 @@ export class ReplayManager {
       if (e.kind === "owned" && e.holds.conns.has(connId)) void this.release(e.replayId, connId);
   }
 
-  /** This server's placement for a joined replay will not become a viewer: tell its owner. */
-  givePlacementBack(target: string): void {
-    for (const e of this.byId.values()) {
-      if (e.kind !== "remote" || targetOfReplay(e.replayId) !== target || !e.placeKey) continue;
-      const key = e.placeKey;
-      e.placeKey = null;
-      e.placeTxn = null;
-      if (e.link.isOpen) void e.link.placeDone(e.replayId, key).catch(() => {});
-    }
-  }
-
-  /** A peer's `replay.place_done`: a reservation that will not become a viewer. */
-  placeDone(id: string, workspaceKey: string, connId: string): void {
-    this.grants?.doneFor(targetOfReplay(id), workspaceKey, connId);
-  }
-
   /** The one reap: closing → reap → registry removal → `item.remove`. True when verified. */
   private reapOwned(entry: OwnedEntry): Promise<boolean> {
     if (entry.closing) return entry.closing;
@@ -1029,13 +924,11 @@ export class ReplayManager {
 
   /** `close_replay` on a joined replay: relayed, and answered after the owner's reap. */
   private async closeRemote(entry: RemoteEntry): Promise<ReplayCloseResult> {
-    const target = targetOfReplay(entry.replayId);
     if (entry.finishedAt === null) {
       try {
         const r = await entry.link.close(entry.replayId);
         this.forget(entry);
         entry.link.unfollow(entry.replayId);
-        this.placer?.ended(target);
         return r;
       } catch (e) {
         // alive but silent for the whole wait: the process cannot be verified gone
@@ -1043,14 +936,12 @@ export class ReplayManager {
         if (!answered && entry.link.isOpen) {
           this.forget(entry);
           entry.link.unfollow(entry.replayId);
-          this.placer?.ended(target);
           return { closed: true, reap_unverified: true };
         }
       }
     }
     this.forget(entry);
     entry.link.unfollow(entry.replayId);
-    this.placer?.ended(target);
     return (await this.verifyGone(entry))
       ? { closed: true }
       : { closed: true, reap_unverified: true };
@@ -1091,7 +982,6 @@ export class ReplayManager {
       void entry.link.release(entry.replayId).catch(() => {});
     }
     entry.link.unfollow(entry.replayId);
-    this.placer?.ended(targetOfReplay(entry.replayId));
     this.evict();
   }
 
@@ -1126,7 +1016,6 @@ export class ReplayManager {
       model: e.model,
       final: e.finishedAt !== null,
       magmux: e.pane ? { pane_id: e.pane.paneId, view_socket: e.pane.viewSockPath } : null,
-      herdr_workspaces: [],
     };
   }
 

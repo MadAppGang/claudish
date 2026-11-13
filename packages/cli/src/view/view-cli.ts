@@ -5,7 +5,7 @@
  * Code started them.
  */
 
-import { detectFrontEnd, herdrPaneEnv, workspaceKeyOf } from "../herdr/front-end.js";
+import { detectFrontEnd, herdrPaneEnv } from "../herdr/front-end.js";
 import { HcStatusReporter } from "../herdr/hc-reporter.js";
 import { HerdrSocket } from "../herdr/herdr-socket.js";
 import { HerdrReporter } from "../herdr/reporter.js";
@@ -31,7 +31,7 @@ import { ViewClient } from "./view-client.js";
 import { type FrontEnd, PLAIN_TERMINAL, Viewer, type ViewerIo } from "./viewer.js";
 
 const USAGE = [
-  "usage: claudish view <target> [--passive] [--fps N] [--front-end auto|herdr|herdr-core|none]",
+  "usage: claudish view <target> [--fps N] [--front-end auto|herdr|herdr-core|none]",
   "       claudish view --list [--json] [--include-finished]",
   "       claudish view --feed [file]",
   "       claudish view --feed-check [file]",
@@ -39,7 +39,6 @@ const USAGE = [
   "       claudish view --transcript <target> [--since <cursor>]",
   "",
   "  <target>   s:<session_id>, t:<run_id>/<slot>, r:<replay_id>, or the same without the prefix",
-  "  --passive  do not take the view at start; Enter takes it",
   "  --fps N    frames per second to ask the pane for, 1..30 (default 15)",
   "  --front-end  auto (default) reports to herdr in a herdr pane and to herdr-core (OSC 7501) in",
   "             an hc terminal; none reports nothing",
@@ -257,14 +256,13 @@ export function parseListArgs(
 
 export interface ViewArgs {
   target: string;
-  passive: boolean;
   fps: number;
   frontEnd: "auto" | "herdr" | "herdr-core" | "none";
 }
 
 /** The `<target>` form's argv, or the reason it is refused. */
 export function parseViewArgs(args: string[]): ViewArgs | { error: string } {
-  const out: ViewArgs = { target: "", passive: false, fps: DEFAULT_FPS, frontEnd: "auto" };
+  const out: ViewArgs = { target: "", fps: DEFAULT_FPS, frontEnd: "auto" };
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string;
     const error = a.startsWith("-") ? applyOption(out, a, args[i + 1]) : applyTarget(out, a);
@@ -276,10 +274,6 @@ export function parseViewArgs(args: string[]): ViewArgs | { error: string } {
 
 /** One option of the `<target>` form; the error, or null. */
 function applyOption(out: ViewArgs, option: string, value: string | undefined): string | null {
-  if (option === "--passive") {
-    out.passive = true;
-    return null;
-  }
   if (option === "--fps") {
     const n = Number(value);
     if (!Number.isInteger(n) || n < 1 || n > 30) return "--fps must be 1..30";
@@ -328,27 +322,8 @@ function processIo(): ViewerIo {
   };
 }
 
-/** What a placer put in this pane's environment; read once and removed from ours. */
-export interface PlacedPane {
-  placed: boolean;
-  endpoint: string | undefined;
-  placement: string | undefined;
-}
-
-export function takePlacedEnv(env: NodeJS.ProcessEnv): PlacedPane {
-  const out: PlacedPane = {
-    placed: Boolean(env.CLAUDISH_VIEW_PLACED),
-    endpoint: env.CLAUDISH_VIEW_ENDPOINT || undefined,
-    placement: env.CLAUDISH_VIEW_PLACEMENT || undefined,
-  };
-  for (const k of ["CLAUDISH_VIEW_PLACED", "CLAUDISH_VIEW_ENDPOINT", "CLAUDISH_VIEW_PLACEMENT"])
-    delete env[k];
-  return out;
-}
-
 interface FrontEndChoice {
   frontEnd: FrontEnd;
-  workspaceKey?: string;
 }
 
 /**
@@ -356,14 +331,13 @@ interface FrontEndChoice {
  * what `--front-end` names; the plain terminal otherwise. No herdr call is made outside a herdr
  * pane, and no OSC 7501 line is written outside an hc terminal.
  */
-export async function chooseFrontEnd(
+export function chooseFrontEnd(
   wanted: ViewArgs["frontEnd"],
   env: NodeJS.ProcessEnv,
-  placed: PlacedPane,
   write: (bytes: string) => void = (s) => {
     process.stdout.write(s);
   }
-): Promise<FrontEndChoice | { error: string }> {
+): FrontEndChoice | { error: string } {
   const frontEnd = wanted === "auto" ? detectFrontEnd(env) : wanted;
   if (frontEnd === "none") return { frontEnd: PLAIN_TERMINAL };
   const titleMode = env.CLAUDISH_HERDR_TITLE === "model" ? "model" : "summary";
@@ -375,32 +349,22 @@ export async function chooseFrontEnd(
   const pane = herdrPaneEnv(env);
   if (!pane)
     return { error: "--front-end herdr needs a herdr pane (HERDR_PANE_ID, HERDR_SOCKET_PATH)" };
-  const herdr = new HerdrSocket(pane.socketPath);
-  let workspaceId = pane.workspaceId;
-  if (!workspaceId) {
-    const got = await herdr.request("pane.get", { pane_id: pane.paneId }).catch(() => null);
-    const p = got?.pane as { workspace_id?: unknown } | undefined;
-    workspaceId = typeof p?.workspace_id === "string" ? p.workspace_id : null;
-  }
   return {
     frontEnd: new HerdrReporter({
-      herdr,
+      herdr: new HerdrSocket(pane.socketPath),
       paneId: pane.paneId,
-      placed: placed.placed,
       titleMode,
       focusClaim: env.CLAUDISH_VIEW_FOCUS_CLAIM !== "0",
     }),
-    ...(workspaceId ? { workspaceKey: workspaceKeyOf(pane.socketPath, workspaceId) } : {}),
   };
 }
 
 async function viewTarget(parsed: ViewArgs): Promise<number> {
-  const placed = takePlacedEnv(process.env);
   if (!process.stdout.isTTY || !process.stdin.isTTY) {
     process.stderr.write("claudish view <target> needs a terminal on stdin and stdout\n");
     return 2;
   }
-  const choice = await chooseFrontEnd(parsed.frontEnd, process.env, placed);
+  const choice = chooseFrontEnd(parsed.frontEnd, process.env);
   if ("error" in choice) {
     process.stderr.write(`${choice.error}\n`);
     return 2;
@@ -411,14 +375,10 @@ async function viewTarget(parsed: ViewArgs): Promise<number> {
   const viewer = new Viewer({
     root: sockRootFor(),
     target: parsed.target,
-    passive: parsed.passive,
     fps: parsed.fps,
     io: processIo(),
     termProgram: process.env.TERM_PROGRAM,
     frontEnd: choice.frontEnd,
-    ...(placed.endpoint ? { endpoint: placed.endpoint } : {}),
-    ...(choice.workspaceKey ? { workspaceKey: choice.workspaceKey } : {}),
-    ...(placed.placement ? { placement: placed.placement } : {}),
   });
   const stop = (): void => viewer.quit();
   process.on("SIGTERM", stop);
@@ -428,7 +388,7 @@ async function viewTarget(parsed: ViewArgs): Promise<number> {
     if (outcome.message) process.stdout.write(`${outcome.message}\n`);
     return outcome.code;
   } finally {
-    // also when the viewer ended before following its target: a placed pane still closes
+    // also when the viewer ended before following its target: the agent is still released
     await choice.frontEnd.close();
     setStderrQuiet(false);
     process.off("SIGTERM", stop);

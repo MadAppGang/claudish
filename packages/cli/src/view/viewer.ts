@@ -81,21 +81,15 @@ export interface ViewerOptions {
   root: string;
   /** any of the six accepted spellings */
   target: string;
-  /** do not take the view at start: Enter still takes it */
-  passive?: boolean;
   fps?: number;
   io: ViewerIo;
   frontEnd?: FrontEnd;
   /** the hello's `term_program`; the server cuts and filters it into the holder label */
   termProgram?: string;
-  /** dial only this endpoint (its path), as a placed viewer does */
+  /** dial only this endpoint (its path) */
   endpoint?: string;
   /** whether an endpoint's server may run; default the process table (tests replace it) */
   endpointAlive?: (endpoint: string) => boolean;
-  /** a herdr viewer's `<socket hash>/<workspace_id>` */
-  workspaceKey?: string;
-  /** a placed herdr viewer's `<txn>.<attempt>` */
-  placement?: string;
   renewMs?: number;
   verdictMs?: number;
   resizeDebounceMs?: number;
@@ -276,7 +270,7 @@ export class Viewer {
     const finished = !found || isFinishedItem(found.item);
     // a run no live server keeps any more is still in the records, which name its run path
     const recorded = found ? null : (this.o.recorded ?? findRecordedItem)(target);
-    if (finished && (isReplay || this.o.passive)) {
+    if (finished && isReplay) {
       this.done({ code: 1, message: `${target} has finished` });
       return;
     }
@@ -339,8 +333,7 @@ export class Viewer {
     this.stops.push(this.o.io.onResize(() => this.onResize()));
     await this.subscribe();
     this.frontEnd.attach?.({ take: () => void this.takeIfNotHolding() });
-    if (this.o.passive) this.render();
-    else await this.take();
+    await this.take();
   }
 
   private connectTo(endpoint: string): Promise<ViewClient> {
@@ -351,8 +344,6 @@ export class Viewer {
         kind: "viewer",
         front_end: this.frontEnd.name,
         ...(this.o.termProgram ? { term_program: this.o.termProgram } : {}),
-        ...(this.o.workspaceKey ? { workspace_key: this.o.workspaceKey } : {}),
-        ...(this.o.placement ? { placement: this.o.placement } : {}),
       },
     });
   }

@@ -27,9 +27,6 @@ import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js"
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { writeFileAtomic } from "./fs-atomic.js";
 import { detectFrontEnd } from "./herdr/front-end.js";
-import { startMcpHerdrPlacer } from "./herdr/mcp-herdr.js";
-import { PlacementGrants, ServerPlacementGrants } from "./herdr/placement-grants.js";
-import type { HerdrPlacer } from "./herdr/placer.js";
 import { loadHooksOnce } from "./hooks/index.js";
 import { type ProtocolStdout, isolateProtocolStdout } from "./hooks/output-capture.js";
 import { initLogger, log } from "./logger.js";
@@ -151,7 +148,6 @@ import {
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
 import { VERSION } from "./version.js";
-import { endpointPathOf } from "./view/endpoints.js";
 import { ViewClaims } from "./view/view-claims.js";
 import { ViewDirectory } from "./view/view-directory.js";
 import { ViewFeed } from "./view/view-feed.js";
@@ -3694,12 +3690,8 @@ async function main() {
   // their records on disk; nothing is pushed to the host.
   const viewFeed = new ViewFeed();
   const viewClaims = new ViewClaims({ notify: (target) => viewFeed.changed(target, true) });
-  const placementGrants = new PlacementGrants({
-    notify: (target) => viewFeed.changed(target, true),
-  });
-  const placerGrants = new ServerPlacementGrants(placementGrants);
   const sessionManager = new SessionManager({ feed: viewFeed, claims: viewClaims });
-  replays.setViewServices({ feed: viewFeed, claims: viewClaims, grants: placementGrants });
+  replays.setViewServices({ feed: viewFeed, claims: viewClaims });
   setViewServices({ feed: viewFeed, claims: viewClaims });
 
   // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
@@ -3792,7 +3784,7 @@ async function main() {
   // stdout's private descriptor when isolation is active).
   const transport = new StdioServerTransport(process.stdin, iso.protocolOut);
   await server.connect(transport);
-  const viewTransport: ViewTransport = { server: null, placer: null };
+  const viewTransport: ViewTransport = { server: null };
   installMcpShutdown(sessionManager, viewTransport);
   // The startup sweep: panes whose owner died (and whose watcher died too) are reaped
   // after an identity check. Asynchronous, and once per root per process — the first
@@ -3822,7 +3814,6 @@ async function main() {
       },
       replays,
       claims: viewClaims,
-      herdrWorkspaces: (target) => placementGrants.workspaces(target),
     });
     viewFeed.setBuilder((target) => directory.item(target));
     replays.setEndpoint(() => viewTransport.server?.endpointName || null);
@@ -3833,8 +3824,6 @@ async function main() {
       feed: viewFeed,
       version: VERSION,
       frontEnd: detectFrontEnd(process.env),
-      workspaceId: () => viewTransport.placer?.workspace,
-      herdrViewers: placementGrants,
       replays,
       resolveReplayTarget: (of) =>
         "session_id" in of
@@ -3851,59 +3840,13 @@ async function main() {
       })
       .catch((err: unknown) =>
         log(`[view] transport off: ${err instanceof Error ? err.message : String(err)}`)
-      )
-      // the placer starts once the endpoint exists: a placed viewer dials it. Outside a herdr
-      // pane it is never built, and nothing here dials herdr.
-      .then(() =>
-        startMcpHerdrPlacer({
-          env: process.env,
-          root: sockRootFor(),
-          feed: viewFeed,
-          // a joined replay is never listed here, so the placer reads it from the replays
-          item: (target) => {
-            const joined = directory.item(target) ? null : replays.remoteItem(target);
-            return joined ? { ...joined, view: null } : directory.item(target);
-          },
-          grants: placerGrants,
-          endpoint: () =>
-            viewTransport.server
-              ? { name: viewTransport.server.endpointName, path: viewTransport.server.endpointPath }
-              : null,
-          endpointFor: (target) => {
-            const owner = replays.ownerEndpointOf(target);
-            return owner ? endpointPathOf(sockRootFor(), owner) : null;
-          },
-          cwd: process.cwd(),
-          log,
-        })
-      )
-      .then((placer) => {
-        if (!placer) return;
-        if (viewTransport.closing) {
-          void placer.shutdown();
-          return;
-        }
-        viewTransport.placer = placer;
-        replays.setPlacer({
-          workspaceKey: () => placer.key || null,
-          owned: (target) => placer.replayOpened(target),
-          remote: (target, txn) => {
-            placerGrants.addRemote(txn, () => replays.givePlacementBack(target));
-            placer.placeGranted(target, txn);
-          },
-          ended: (target) => placer.ended(target),
-        });
-      })
-      .catch((err: unknown) =>
-        log(`[herdr] placer off: ${err instanceof Error ? err.message : String(err)}`)
       );
   }
 }
 
-/** The local view transport and the herdr placer, both started after the MCP transport. */
+/** The local view transport, started after the MCP transport. */
 interface ViewTransport {
   server: ViewServer | null;
-  placer: HerdrPlacer | null;
   closing?: boolean;
 }
 
@@ -3920,8 +3863,6 @@ function installMcpShutdown(sessionManager: SessionManager, viewTransport: ViewT
     // A replay already registered is reaped with every other pane; this stops one that is not yet.
     replays.beginShutdown();
     viewTransport.closing = true;
-    // the placed viewer panes go first (bounded): their sessions are about to end
-    await viewTransport.placer?.shutdown();
     viewTransport.server?.announceClosing();
     // `run_prompt`'s Claude Code print children are plain processes, not panes: stop
     // their process groups here, or they outlive the server.

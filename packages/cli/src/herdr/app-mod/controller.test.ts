@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ViewItem } from "../../pane/view-contract.js";
-import { sessionItem } from "../test-helpers/placer-harness.js";
+import { sessionItem } from "../test-helpers/view-items.js";
 import { INSTALL_LINE, type ModHost, PanelController, PanelSeat } from "./controller.js";
 import {
   type ExecResult,

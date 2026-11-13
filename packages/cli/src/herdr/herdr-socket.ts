@@ -43,7 +43,7 @@ export interface HerdrEvent {
   data: Record<string, unknown>;
 }
 
-/** What the placer and the reporter need from herdr; the fake in tests implements the same socket. */
+/** What the reporter needs from herdr; the fake in tests implements the same socket. */
 export interface HerdrApi {
   request<T = Record<string, unknown>>(
     method: string,

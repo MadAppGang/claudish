@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, rmSync, statSync } from "node:fs";
 import { Socket } from "node:net";
 import { join } from "node:path";
-import { eventually, sessionItem } from "../herdr/test-helpers/placer-harness.js";
+import { eventually, sessionItem } from "../herdr/test-helpers/view-items.js";
 import type { CaptureResult } from "../pane/contract.js";
 import type {
   SessionViewItem,
@@ -207,7 +207,6 @@ describe("local read-only view protocol over real Unix sockets", () => {
         "scroll",
         "replay.scroll",
         "replay.close",
-        "replay.place_done",
       ]) {
         await expect(
           c.request(op, { target: "s:a", replay_id: "replay-a", input: "must not deliver" })

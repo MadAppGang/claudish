@@ -3,8 +3,9 @@
 A claudish MCP server serves its sessions, team slots and replays to local clients other than its
 own Claude Code. Those clients are `claudish view <target>` (in a plain terminal, in a herdr pane,
 or in a hidden hc terminal under Herdr.app), the feed relay that lists them for the Herdr.app mod,
-and other claudish MCP servers. Inside herdr, the server also places one viewer pane per item in a
-background tab named `claudish`, so each session shows up as an agent in herdr's own panel.
+and other claudish MCP servers. claudish opens nothing in herdr terminal: no tab, no pane. Sessions
+are shown beside Claude Code by the Claude Code mod, and a user may run `claudish view <target>` in
+any pane by hand.
 
 This file records why the transport is shaped the way it is and what was measured to get there.
 The code is `packages/cli/src/view/` (transport, viewer, replays shared across servers),
@@ -19,13 +20,13 @@ of the pane driver it describes.
 
 ```
 Claude Code ── stdio MCP ──▶ claudish MCP server (one per Claude Code)
-                               │ control socket (claudish only)        │ herdr socket (placer)
-                               ▼                                       ▼
-            magmux --view-sock --id <pane> --sock-dir <root>      herdr: tab "claudish"
-              <root>/magmux-<pane>.sock   control, never published     one pane per item:
+                               │ control socket (claudish only)
+                               ▼
+            magmux --view-sock --id <pane> --sock-dir <root>
+              <root>/magmux-<pane>.sock   control, never published
               <root>/magmux-<pane>.view   read-only, published ◀── watch ── claudish view <target>
-                               ▲                                            │ claim, renew, subscribe
-                               │                                            ▼
+                               ▲                                   (by hand, any pane) │ claim, renew,
+                               │                                                       ▼ subscribe
                                └── watch ── claudish view (hc terminal) ──▶ <root>/endpoints/c<pid>-<start36>.sock
                                               ▲ keyed window in Herdr.app     (claudish.view.v1)
                                               └ mod lists from <root>/feed/feed.json (claudish view --feed)
@@ -99,8 +100,8 @@ Framing is JSON Lines:
 
 A target is `s:<session_id>`, `t:<run_id>/<slot>` or `r:<replay_id>`. A `ViewItem` is the contract
 v1 `SessionRow` or `SlotRow` plus `prompt_summary`, `prompts_sent`, `pending_inputs`, `subagents`
-and `magmux {pane_id, view_socket}`; a replay item has `of`, `model`, `final`, `view` and
-`herdr_workspaces`. Built on the contract rows, the two surfaces cannot drift.
+and `magmux {pane_id, view_socket}`; a replay item has `of`, `model`, `final` and `view`. Built on
+the contract rows, the two surfaces cannot drift.
 
 **Who may connect.** Any process of the same user that can reach the 0700 root. `hello` declares a
 role: `viewer` (the default for a connection that skips `hello`), `relay` or `peer`. A `peer` must
@@ -110,14 +111,14 @@ the control sockets.
 
 | op | who | what it does |
 |---|---|---|
-| `hello` | all | role, front end, `workspace_key`, placement token; answers protocol, server, capabilities |
+| `hello` | all | role, front end, term program; answers protocol, server, capabilities |
 | `list`, `subscribe`, `unsubscribe` | all | rows; a subscription gets a `snapshot`, then upserts |
 | `capture`, `transcript` | all | the same answers as the MCP verbs, with `view` |
 | `claim`, `release` | viewer, peer | take or drop the active view (below) |
 | `renew` | viewer | the viewer's heartbeat |
 | `resize` | the holder | `view_not_held` for anyone else |
 | `replay.open`, `replay.release` | viewer, peer | open or join a replay; drop this connection's hold |
-| `replay.scroll`, `replay.close`, `replay.place_done` | peer only | relayed from another server's own Claude Code |
+| `replay.scroll`, `replay.close` | peer only | relayed from another server's own Claude Code |
 
 Events are `snapshot`, `item.upsert` (a full row), `item.remove {target, reason}` with reason
 `evicted`, `replay_closed` or `run_pruned`, and `server.closing` (sub 0). They are ordered per
@@ -200,15 +201,15 @@ interface ViewHolder {
 ```
 
 **One mode: take.** A claim always takes the view, whoever held it. An earlier design had an
-`if_free` mode for passive panes; it was removed because it handed the view to a background pane at
-creation and again after every lapse, which the user never asked for. A passive viewer now never
-claims by itself. The view moves only on a user act:
+`if_free` mode for background panes; it was removed because it handed the view to a background pane
+at creation and again after every lapse, which the user never asked for. The view moves only on a
+user act:
 
 | Act | Claim |
 |---|---|
 | `claudish view <target>` run by hand, or a Herdr.app row selected | takes at start |
 | Enter in any viewer | takes |
-| selecting a placed viewer's herdr pane | takes, on `pane_focused` for its own `$HERDR_PANE_ID` |
+| selecting the herdr pane a `claudish view` runs in | takes, on `pane_focused` for its own `$HERDR_PANE_ID` |
 | MCP `resize_session`, `team(mode:"resize")`, a replay resize | takes (MCP resize claims before it resizes) |
 | MCP `capture_session` | renews an existing Claude Code claim of this caller; never takes |
 | a viewer's `capture` | touches no claim |
@@ -232,7 +233,7 @@ view is null and stays null until a user acts.
 its own expanded view from another Claude Code's.
 
 Measured live in herdr (validation check 5): `resize_session` 120x40 answered holder
-`claude_code` and the placed pane showed the band; Enter in the pane made the next capture answer
+`claude_code` and the herdr pane's viewer showed the band; Enter in the pane made the next capture answer
 219x56 with holder `herdr`; `resize_session` again gave 120x40 `claude_code`. The first capture
 right after Enter still read 120x40 (the resize was not applied yet); the second read 219x56.
 
@@ -293,79 +294,15 @@ gets `item.remove {reason:"replay_closed"}` and keeps the frozen last screen wit
 Where `flock` cannot be bound (no libc binding, or a filesystem answering `ENOLCK`/`ENOTSUP`),
 replays are per server, as before: no registry, no remote entry, no redirect.
 
-## The herdr placer
+## herdr terminal
 
-`HerdrPlacer` runs only when the MCP server itself runs in a herdr pane: `TERM_PROGRAM=herdr`
-with `HERDR_PANE_ID`, `HERDR_SOCKET_PATH` and `HERDR_ENV=1`. tmux inside herdr rewrites
-`TERM_PROGRAM`, so `CLAUDISH_HERDR=1` forces the herdr front end there; `CLAUDISH_HERDR=0` turns it
-off. The placer gives each session, slot and replay of this server one passive viewer pane in a
-tab labelled `claudish` in the server's workspace. Outside herdr nothing dials:
-`startMcpHerdrPlacer` returns null before any socket is opened. Validation check 7 found 0
-`[herdr]` lines in the debug log, and herdr's tab lists identical before and after.
+claudish opens nothing in herdr terminal: no tab, no pane, and the MCP server never dials herdr.
+Sessions are shown beside Claude Code by the Claude Code mod. A user may run
+`claudish view <target>` in any herdr pane by hand; that viewer reports for its pane (below) and
+never closes it.
 
-A placed pane runs `claudish view <target> --passive --front-end herdr` as its argv. Its env adds
-`CLAUDISH_VIEW_PLACED`, `CLAUDISH_VIEW_ENDPOINT`, a placement token for replays, and whichever of
-`CLAUDISH_PANE_ROOT`, `CLAUDISH_BIN`, `CLAUDISH_HERDR_TITLE`, `CLAUDISH_VIEW_FOCUS_CLAIM` and
-`CLAUDISH_HERDR` the server has set: a herdr pane inherits herdr's environment, not the server's.
-
-**Every pane is born in a scratch tab.** The placer never splits a user's tab and never types into
-a shell:
-
-1. `layout.apply {workspace_id, tab_label: "claudish-new-<8 hex>", focus: false, root: {type:"pane", command, env, …}}`.
-   The new pane is `result.layout.focused_pane_id` in `result.layout.tab_id`. `focus: false` left
-   the focused tab where it was (S2).
-2. `tab.list`. No `claudish` tab: `tab.rename` the scratch tab to `claudish`; it is the claudish tab
-   now.
-3. A `claudish` tab exists (several: the lowest `number`): `pane.move {pane_id, destination:{type:"tab",
-   tab_id, split, target_pane_id?}, focus: false}`, splitting right and down in turn, anchored on
-   this placer's newest pane there. `changed: true` is placed; herdr closes the emptied scratch tab
-   itself and names it in `closed_tab_id` (a later `tab.close` answers `tab_not_found`).
-
-The token in the label is how a lost reply is recovered. If `layout.apply` times out or its socket
-drops, herdr may have made the tab anyway. The placer then lists tabs and closes the one with its
-token. A token is retired only once its tab is verified absent, so a lost cleanup request is
-retried, not forgotten. A `tab_created` that arrives before its own reply is never closed.
-
-**The abandon path.** Some failures come after the pane exists: `tab.list` or `tab.rename`
-failing, a second `pane.move` failure, a `changed: false` other than `zoomed_tab`. Each closes the
-pane and its scratch tab, logs `[herdr] placement for <target> abandoned`, and does not retry. Two
-errors are not failures. `target_pane_not_found` on the anchor moves once more without it.
-`tab_not_found` means the claudish tab closed meanwhile, so the scratch tab is renamed instead.
-
-**A zoomed claudish tab is never unzoomed.** S2 measured that `pane.zoom` moves the user's focus to
-the pane's tab, across workspaces too, for `off` as well as `on`. A move into a zoomed tab answers
-`changed: false, reason: "zoomed_tab"`; the placer closes the scratch pane and parks the placement
-until a `layout_updated` event reports that tab `zoomed: false`, or the tab closes. A zoom survives
-a tab switch, so `tab_focused` does not unpark it.
-
-**The alternative creation path is not built.** `pane.split` takes no `command`, so it would need a
-typed line. S3 split a pane 20 times and sent a line at once each time: lost 20 of 20 (echoed,
-never run); sent 3 s later it ran.
-
-**Serialization.** Placements run one at a time through an in-process queue, each holding
-`<root>/herdr/<workspace key>.lock` (a `flock` this server never hands on) across its herdr calls.
-The workspace key is `<first 8 hex of sha256(HERDR_SOCKET_PATH)>/<workspace_id>`, because herdr's
-ids belong to one herdr server. A waiter polls 15 s; a miss sends the placement once to the back of
-the queue, and a second miss skips it. Inside the lock the placer checks again that the item still
-runs and has no pane of its own. A 2-slot team start makes one tab (check 4: panes w1:p9 and
-w1:pA in one tab).
-
-**Replays are placed once per workspace.** Sessions and slots are placed from this server's feed.
-A replay is placed only when this server's MCP link opens or joins it, and only when the replay's
-owner grants it: the owner refuses a workspace that already has a connected herdr viewer of that
-replay or a reservation. So a hand-run `claudish view` of a replay followed by the MCP
-`replay_session` places nothing more (check 6b), and two servers in one workspace place one pane.
-
-**The viewer closes its own pane.** When its item ends, a placed viewer paints the final screen
-with a verdict for 2 s, releases its agent, and calls `pane.close $HERDR_PANE_ID`. That way a
-SIGKILLed MCP server leaves no pane behind. S4 showed an argv pane closes anyway when its program
-exits, emitting `pane_exited` and never `pane_closed`, so the explicit close is a harmless double.
-The placer arms a 4 s grace timer per own pane when the item ends, and closes the pane only if it
-still exists then. At shutdown it closes its panes at once, bounded at 500 ms. A viewer the user
-started (no `CLAUDISH_VIEW_PLACED`) never closes the pane it runs in. A pane the user closes while
-its item runs is not placed again for that item.
-
-**The agent report.** The viewer is the pane's foreground program, and it reports for the pane:
+**The agent report.** A `claudish view` in a herdr pane is the pane's foreground program, and it
+reports for the pane:
 
 | Call | Source | Carries |
 |---|---|---|
@@ -395,33 +332,20 @@ session wrote `tab.list` twice on one connection:
           (the second tab.list, written at +300 ms, is never answered)
 ```
 
-The first `HerdrSocket` shared one connection. The placer's `tab.list` right after a successful
-`layout.apply` went into the closing connection and failed with `HerdrNoReply` "dropped", so every
-placement was abandoned. The first live run showed no claudish tab and
-`[herdr] placement for s:<id> abandoned` three times. `HerdrSocket.request` now opens a connection
-per request and closes it after the reply. An event subscription keeps a connection of its own,
+The first `HerdrSocket` shared one connection, and a second request on it went into the closing
+connection and failed with `HerdrNoReply` "dropped". `HerdrSocket.request` opens a connection per
+request and closes it after the reply. An event subscription keeps a connection of its own,
 which herdr holds open. The test fake (`pane/test-helpers/fake-herdr.ts`) answers one request per
 connection and then closes it, so a reused connection fails in tests the way it fails live.
 
 Two failures look alike and mean opposite things, so they are two classes. `HerdrApiError` means
 herdr answered with an error and did nothing. `HerdrNoReply` means no reply came (`timeout` or
-`dropped`). The outcome is then unknown: a caller that created something must find out by reading.
+`dropped`). The outcome is then unknown.
 
 | Fact | Measured | Consequence in code |
 |---|---|---|
-| `layout.apply` with `focus: false` | focused tab unchanged | creation never steals focus |
-| `pane.move` emptying a tab | herdr closes it, `closed_tab_id` | `tab_not_found` on a later close is success |
-| error codes | `tab_not_found`, `target_pane_not_found`, `pane_not_found`; not `not_found` | matched by name |
-| `pane.zoom on` / `off` | `focus_changed: true`, user moved to that tab | never called |
-| a zoom across a tab switch | stays zoomed | unpark waits for `layout_updated`, not `tab_focused` |
-| an argv pane's program exits (code 0 or 3) | pane and last-pane tab gone, only `pane_exited` | both events mean gone |
+| error codes | `pane_not_found`; not `not_found` | matched by name |
 | `pane_focused` | on select and on tab switch; not on reselect | the focus claim |
-| events of `layout.apply` | `tab_created`, `layout_updated`, `pane_created` arrive after its reply | the `awaiting` orphan rule |
-| a line typed right after `pane.split` | lost 20 of 20 | no split-and-type path |
-
-S2 to S6 ran on a headless herdr server with no attached client; check 1 to 6 confirmed the main
-path in a visible herdr session (claudish tab w1:t8, caller tab w1:t1 kept `focused: true`, no
-scratch tab left).
 
 ## The Herdr.app mod
 
@@ -528,15 +452,13 @@ Nothing in claudish reads these variables there.
 
 | Event | What happens |
 |---|---|
-| MCP server SIGKILLed | Kernel closes its sockets and lock descriptors. Viewers see EOF with a dead owner: no reconnect loop, "claudish server ended", agent released, a placed viewer closes its own pane. Pane watchers reap magmux and remove `.sock`, `.view` and records; a replay's magmux dying frees its lock. Peers keep their last capture as `final`. The endpoint file and registry entries wait for the next sweep. |
-| Clean shutdown | `replays.beginShutdown()`, then `placer.shutdown()` (own panes closed, 500 ms bound), then `server.closing` to every client, then the existing team, session and pane reaps. The endpoint is unlinked last, so a peer can still fetch a final screen. |
+| MCP server SIGKILLed | Kernel closes its sockets and lock descriptors. Viewers see EOF with a dead owner: no reconnect loop, "claudish server ended", agent released. Pane watchers reap magmux and remove `.sock`, `.view` and records; a replay's magmux dying frees its lock. Peers keep their last capture as `final`. The endpoint file and registry entries wait for the next sweep. |
+| Clean shutdown | `replays.beginShutdown()`, then `server.closing` to every client, then the existing team, session and pane reaps. The endpoint is unlinked last, so a peer can still fetch a final screen. |
 | magmux ignored `--view-sock` | `view_socket_unverified`, `view_socket: null`; the session runs, herdr shows no screen |
 | `.view` bind failure | `magmux: view socket <path>: <err>`, exit 1, `pane_lost` |
-| herdr socket gone or restarted | the placer logs, resubscribes after 1 s and reconciles its records against herdr |
-| a placement fails after the pane exists | the abandon path: pane and scratch tab closed, no retry |
 | a viewer is slow | magmux coalesces frames latest-wins per subscriber; the local transport drops it at 4 MiB queued; a reconnect gets a fresh snapshot |
 | relay SIGKILLed | noticed within 15 s while the panel is visible, else at the next show; items dropped, relay restarted |
-| process table untrusted | nothing is judged dead: endpoints and the feed file stay. The replay and placement locks never read the table |
+| process table untrusted | nothing is judged dead: endpoints and the feed file stay. The replay locks never read the table |
 
 **Who removes what.** `.view` goes with the pane's other files, at the same three places as `.sock`:
 
@@ -546,10 +468,9 @@ Nothing in claudish reads these variables there.
 | the pane watcher's script | the owner died | `rm -f -- "$ROOT/magmux-$PANE.view"` beside the `.sock` line |
 | the startup sweep (`sweepRecordlessViewSockets`) | a later server starts | a recordless `magmux-c<pid>-*.view` whose owner is dead and whose control socket is gone |
 
-The startup sweep (`sweepOrphanPanes`) also removes three more kinds of leftover:
+The startup sweep (`sweepOrphanPanes`) also removes two more kinds of leftover:
 
 - endpoint files whose owner a trusted process table proves dead;
-- free `herdr/*.lock` files (`removeIfFree`, no table read);
 - `feed/feed.json` of a relay the table proves dead. The stamp is read again before the unlink, so
   a relay that started meanwhile keeps its file.
 
@@ -558,10 +479,9 @@ the pane sweep: by then a reaped orphan replay's magmux has freed its lock.
 
 ## What is not verified
 
-- Focus behaviour with an attached herdr TUI client: S2 to S6 ran on a headless server. The live
-  checks used a visible session and agree for the paths they drove.
-- `flock` on Linux (`__errno_location`, the `O_CLOEXEC` value) and `selfArgv` for a compiled binary
-  in a real placement.
+- Focus behaviour with an attached herdr TUI client: S6 ran on a headless server. The live checks
+  used a visible session and agree for the paths they drove.
+- `flock` on Linux (`__errno_location`, the `O_CLOEXEC` value).
 - Two real MCP server processes sharing one replay end to end: the tests run several servers in one
   process, with the lock holders as real child processes.
 - Herdr.app's live list and screen: the mod runs the first `claudish` on its `PATH`, which was the
@@ -580,8 +500,7 @@ the pane sweep: by then a reaped orphan replay's magmux has freed its lock.
 - edit `view/view-claims.ts` or a capture or resize path's `caller`;
 - edit `view/kernel-lock.ts`, `view/replay-registry.ts`, `view/peer-link.ts`, the replay launcher's
   `exec 3>&-`, or `ReplayManager`'s holds and close;
-- edit `herdr/herdr-socket.ts` (one connection per request), `herdr/placer.ts` (never `pane.zoom`,
-  never `pane.split`), `herdr/reporter.ts` or the fake herdr;
+- edit `herdr/herdr-socket.ts` (one connection per request), `herdr/reporter.ts` or the fake herdr;
 - edit `herdr/app-mod/`, `view/feed-relay.ts` or `view/endpoint-watch.ts`;
 - change `isStrippedFromChildEnv`, `MULTIPLEXER_IDENTITY_PREFIXES` or `MULTIPLEXER_IDENTITY_VARS`;
 - change the sweep, the pane watcher's script or `removePaneFiles`.
@@ -597,6 +516,6 @@ the pane sweep: by then a reaped orphan replay's magmux has freed its lock.
 | `view/view-claims.ts` | claims, TTLs, relative holders |
 | `view/kernel-lock.ts`, `view/replay-registry.ts`, `view/peer-link.ts`, `mcp-session/replay-manager.ts` | replays shared across servers |
 | `view/viewer.ts`, `view/magmux-view-client.ts`, `view/magmux-frame.ts`, `view/ansi-painter.ts` | `claudish view`; the frame decoder is a verbatim copy of magmux's `demo/rc/frame.ts` |
-| `herdr/front-end.ts`, `herdr/herdr-socket.ts`, `herdr/placer.ts`, `herdr/placement-grants.ts`, `herdr/reporter.ts`, `herdr/mcp-herdr.ts` | the herdr terminal adapter |
+| `herdr/front-end.ts`, `herdr/herdr-socket.ts`, `herdr/reporter.ts` | a `claudish view` in a herdr pane: front end detection and the agent report |
 | `herdr/app-mod/`, `herdr/hc-reporter.ts`, `herdr/osc7501.ts`, `view/feed-relay.ts`, `view/endpoint-watch.ts` | the Herdr.app front end |
 | `pane/test-helpers/fake-herdr.ts` | the fake herdr 0.9.5 socket, one request per connection |

@@ -5,15 +5,13 @@ import { PLAIN_TERMINAL } from "../view/viewer.js";
 import { HcStatusReporter } from "./hc-reporter.js";
 import { clearOsc7501, decodeOsc7501, encodeOsc7501 } from "./osc7501.js";
 import { hcStatus } from "./state-map.js";
-import { replayItem, sessionItem } from "./test-helpers/placer-harness.js";
+import { replayItem, sessionItem } from "./test-helpers/view-items.js";
 
 const ESC = "\x1b";
 
 function withFields(item: ViewItem, fields: Record<string, unknown>): ViewItem {
   return { ...item, ...fields } as ViewItem;
 }
-
-const notPlaced = { placed: false, endpoint: undefined, placement: undefined };
 
 describe("encodeOsc7501", () => {
   test("is byte for byte the line hc 0.1.19 parsed into status {state, app, title, msg}", () => {
@@ -144,11 +142,11 @@ describe("the viewer's front end choice", () => {
     });
   });
 
-  test("in an hc terminal, auto and herdr-core report by OSC 7501 to the viewer's own output", async () => {
+  test("in an hc terminal, auto and herdr-core report by OSC 7501 to the viewer's own output", () => {
     const hcEnv = { HC_TERMINAL_ID: "t7", TERM_PROGRAM: "ghostty" };
     for (const wanted of ["auto", "herdr-core"] as const) {
       const out: string[] = [];
-      const choice = await chooseFrontEnd(wanted, hcEnv, notPlaced, (s) => out.push(s));
+      const choice = chooseFrontEnd(wanted, hcEnv, (s) => out.push(s));
       if ("error" in choice) throw new Error(choice.error);
       expect(choice.frontEnd).toBeInstanceOf(HcStatusReporter);
       expect(choice.frontEnd.name).toBe("herdr-core");
@@ -158,20 +156,15 @@ describe("the viewer's front end choice", () => {
     }
   });
 
-  test("outside an hc terminal no OSC 7501 line is ever written", async () => {
+  test("outside an hc terminal no OSC 7501 line is ever written", () => {
     const out: string[] = [];
-    const auto = await chooseFrontEnd("auto", { TERM_PROGRAM: "iTerm.app" }, notPlaced, (s) =>
-      out.push(s)
-    );
+    const auto = chooseFrontEnd("auto", { TERM_PROGRAM: "iTerm.app" }, (s) => out.push(s));
     expect(auto).toEqual({ frontEnd: PLAIN_TERMINAL });
-    expect(await chooseFrontEnd("herdr-core", {}, notPlaced, (s) => out.push(s))).toEqual({
+    expect(chooseFrontEnd("herdr-core", {}, (s) => out.push(s))).toEqual({
       error: "--front-end herdr-core needs an hc terminal (HC_TERMINAL_ID)",
     });
-    const off = await chooseFrontEnd(
-      "auto",
-      { HC_TERMINAL_ID: "t7", CLAUDISH_HERDR: "0" },
-      notPlaced,
-      (s) => out.push(s)
+    const off = chooseFrontEnd("auto", { HC_TERMINAL_ID: "t7", CLAUDISH_HERDR: "0" }, (s) =>
+      out.push(s)
     );
     expect(off).toEqual({ frontEnd: PLAIN_TERMINAL });
     expect(out).toEqual([]);

@@ -24,7 +24,6 @@ import {
   type ViewFrontEnd,
   type ViewItem,
   type ViewRemoveReason,
-  parseViewTarget,
 } from "../pane/view-contract.js";
 import { redactSecrets } from "../redact.js";
 import { type BoundEndpoint, bindEndpoint, endpointOwnerAlive } from "./endpoints.js";
@@ -48,11 +47,7 @@ const MUTATORS: ReadonlySet<string> = new Set([
   "run_prompt",
   "close_replay",
 ]);
-const PEER_ONLY_OPS: ReadonlySet<string> = new Set([
-  "replay.scroll",
-  "replay.close",
-  "replay.place_done",
-]);
+const PEER_ONLY_OPS: ReadonlySet<string> = new Set(["replay.scroll", "replay.close"]);
 
 const CLIENT_KINDS: ReadonlySet<string> = new Set(["viewer", "relay", "peer"]);
 const FRONT_ENDS: ReadonlySet<string> = new Set(["herdr", "herdr-core", "none"]);
@@ -71,10 +66,6 @@ interface Connection {
   role: ViewClientKind;
   frontEnd: ViewFrontEnd | undefined;
   termProgram: string | undefined;
-  /** a herdr viewer's `<socket hash>/<workspace_id>` */
-  workspaceKey: string | undefined;
-  /** a placed herdr viewer's `<txn>.<attempt>` */
-  placement: string | undefined;
   greeted: boolean;
   subs: Map<number, Subscription>;
   inbound: string;
@@ -85,24 +76,12 @@ interface Connection {
   closed: boolean;
 }
 
-/** Told which herdr viewers are connected, for the replay placement grants. */
-export interface HerdrViewerSink {
-  viewerSubscribed(
-    target: string,
-    connId: string,
-    workspaceKey: string,
-    placement: string | null
-  ): void;
-  connectionGone(connId: string): void;
-}
-
 /** The replay side of the transport: `ReplayManager`. */
 export interface ViewReplayOps {
   openForViewer(target: ReplayTarget, connId: string): Promise<unknown>;
   join(
     replayId: string,
-    opener: { kind: "conn"; connId: string; role: "viewer" | "peer" },
-    place?: { workspace_key: string; txn: string }
+    opener: { kind: "conn"; connId: string; role: "viewer" | "peer" }
   ): Promise<unknown>;
   release(replayId: string, connId: string): Promise<{ closed: boolean }>;
   scroll(replayId: string, req: ScrollRequest, caller: ClaimCaller): Promise<unknown>;
@@ -110,7 +89,6 @@ export interface ViewReplayOps {
     replayId: string,
     closer: { kind: "conn"; connId: string; role: "viewer" | "peer" }
   ): Promise<unknown>;
-  placeDone(replayId: string, workspaceKey: string, connId: string): void;
   connectionGone(connId: string): void;
 }
 
@@ -132,14 +110,8 @@ export interface ViewServerOptions {
   version: string;
   /** what `hello` answers as this server's front end */
   frontEnd?: ViewFrontEnd;
-  /** this server's herdr workspace id, when its front end is herdr */
-  workspaceId?: () => string | undefined;
-  herdrViewers?: HerdrViewerSink;
 }
 
-const WORKSPACE_KEY = /^[0-9a-f]{8}\/[A-Za-z0-9:_-]{1,64}$/;
-const PLACEMENT = /^[A-Za-z0-9]{1,32}\.[A-Za-z0-9]{1,32}$/;
-const TXN = /^[A-Za-z0-9]{1,32}$/;
 const REPLAY_ID = /^replay-[0-9a-f]{16}$/;
 
 function replayIdArg(args: Record<string, unknown>): string {
@@ -260,8 +232,6 @@ export class ViewServer {
       role: "viewer",
       frontEnd: undefined,
       termProgram: undefined,
-      workspaceKey: undefined,
-      placement: undefined,
       greeted: false,
       subs: new Map(),
       inbound: "",
@@ -288,7 +258,6 @@ export class ViewServer {
     conn.outbound = [];
     conn.outboundBytes = 0;
     this.o.claims.releaseConnection(conn.id);
-    this.o.herdrViewers?.connectionGone(conn.id);
     this.o.replays?.connectionGone(conn.id);
     this.followFeed();
   }
@@ -375,8 +344,6 @@ export class ViewServer {
         return this.replayScroll(conn, args);
       case "replay.close":
         return this.replayClose(conn, args);
-      case "replay.place_done":
-        return this.replayPlaceDone(conn, args);
       case "hello":
         return this.hello(conn, args);
       case "list":
@@ -439,13 +406,7 @@ export class ViewServer {
     conn.role = kind as ViewClientKind;
     conn.frontEnd = frontEnd as ViewFrontEnd | undefined;
     conn.termProgram = typeof client.term_program === "string" ? client.term_program : undefined;
-    // only a well-formed key and token count; anything else is a viewer with no herdr workspace
-    if (typeof client.workspace_key === "string" && WORKSPACE_KEY.test(client.workspace_key))
-      conn.workspaceKey = client.workspace_key;
-    if (typeof client.placement === "string" && PLACEMENT.test(client.placement))
-      conn.placement = client.placement;
     conn.greeted = true;
-    const workspaceId = this.o.workspaceId?.();
     return {
       result: {
         protocol: VIEW_PROTOCOL,
@@ -455,7 +416,6 @@ export class ViewServer {
           started_at: this.startedAt,
           endpoint: this.endpointName,
           front_end: this.o.frontEnd ?? "none",
-          ...(workspaceId ? { workspace_id: workspaceId } : {}),
         },
         contract_version: CONTRACT_VERSION,
         capabilities: [...CAPABILITIES],
@@ -475,15 +435,6 @@ export class ViewServer {
     };
     conn.subs.set(sub.id, sub);
     this.followFeed();
-    if (conn.frontEnd === "herdr" && conn.workspaceKey && targets)
-      for (const target of targets)
-        if (parseViewTarget(target)?.kind === "replay")
-          this.o.herdrViewers?.viewerSubscribed(
-            target,
-            conn.id,
-            conn.workspaceKey,
-            conn.placement ?? null
-          );
     return {
       result: { sub: sub.id },
       after: () => {
@@ -544,7 +495,7 @@ export class ViewServer {
   }
 
   /**
-   * A join of a live replay by id (viewer or peer; `place` from a peer only), or a viewer's open
+   * A join of a live replay by id (viewer or peer), or a viewer's open
    * of a finished session or slot. A replay owned elsewhere answers `replay_elsewhere`.
    */
   private async replayOpen(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
@@ -552,11 +503,8 @@ export class ViewServer {
       return await this.replayOpenOn(conn, args);
     } finally {
       // the connection closed while the open waited for the boot: what the open added on its
-      // behalf (a hold, a peer's placement grant) is released now, as the close would have
-      if (conn.closed) {
-        this.o.herdrViewers?.connectionGone(conn.id);
-        this.o.replays?.connectionGone(conn.id);
-      }
+      // behalf (a hold) is released now, as the close would have
+      if (conn.closed) this.o.replays?.connectionGone(conn.id);
     }
   }
 
@@ -564,21 +512,7 @@ export class ViewServer {
     const ops = this.replayOps();
     const opener = this.replayOpener(conn);
     if (args.replay_id !== undefined) {
-      const id = replayIdArg(args);
-      let place: { workspace_key: string; txn: string } | undefined;
-      if (args.place !== undefined) {
-        if (opener.role !== "peer") throw new ViewError("forbidden", "'place' is for peer servers");
-        const p = asObject(args.place);
-        if (
-          typeof p.workspace_key !== "string" ||
-          !WORKSPACE_KEY.test(p.workspace_key) ||
-          typeof p.txn !== "string" ||
-          !TXN.test(p.txn)
-        )
-          throw new ViewError("invalid_args", "'place' needs a workspace_key and a txn");
-        place = { workspace_key: p.workspace_key, txn: p.txn };
-      }
-      return { result: await ops.join(id, opener, place) };
+      return { result: await ops.join(replayIdArg(args), opener) };
     }
     if (opener.role === "peer")
       throw new ViewError("invalid_args", "a peer joins a replay by its replay_id");
@@ -620,14 +554,6 @@ export class ViewServer {
   private async replayClose(conn: Connection, args: Record<string, unknown>): Promise<Handled> {
     const ops = this.replayOps();
     return { result: await ops.closeBy(replayIdArg(args), this.replayOpener(conn)) };
-  }
-
-  private replayPlaceDone(conn: Connection, args: Record<string, unknown>): Handled {
-    const ops = this.replayOps();
-    const key = stringArg(args, "workspace_key");
-    if (!WORKSPACE_KEY.test(key)) throw new ViewError("invalid_args", "not a workspace key");
-    ops.placeDone(replayIdArg(args), key, conn.id);
-    return { result: {} };
   }
 
   private renew(conn: Connection, args: Record<string, unknown>): Handled {

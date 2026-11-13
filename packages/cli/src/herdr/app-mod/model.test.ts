@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ViewItem } from "../../pane/view-contract.js";
-import { replayItem, sessionItem } from "../test-helpers/placer-harness.js";
+import { replayItem, sessionItem } from "../test-helpers/view-items.js";
 import {
   type ClaudishInstall,
   FEED_TERMINAL,
@@ -148,7 +148,6 @@ describe("hc terminals the mod starts", () => {
     ]);
     expect(args.slice(-3)).toEqual(["/Users/u/.bun/bin/claudish", "view", "--feed"]);
     expect(args).not.toContain("--label");
-    expect(args).not.toContain("--passive");
   });
 
   test("hc's answers: started, the name taken (hc 0.1.19's own reply), and a failure", () => {

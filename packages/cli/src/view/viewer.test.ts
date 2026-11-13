@@ -113,7 +113,7 @@ function newRoot(): string {
   return root;
 }
 
-async function rig(o: { passive?: boolean } = {}): Promise<Rig> {
+async function rig(): Promise<Rig> {
   const root = newRoot();
   const viewPath = join(root, "magmux-pv.view");
   const mag = await FakeMagmuxView.start({ path: viewPath, frames: capturedFrames("sgr-runs") });
@@ -122,7 +122,6 @@ async function rig(o: { passive?: boolean } = {}): Promise<Rig> {
   const viewer = new Viewer({
     root,
     target: "sess-1",
-    passive: o.passive,
     io,
     renewMs: 40,
     verdictMs: 20,
@@ -249,21 +248,6 @@ describe("Viewer", () => {
   );
 
   test(
-    "a passive viewer does not claim at start and shows the band",
-    async () => {
-      const r = await rig({ passive: true });
-      await until(() => r.io.output.includes("Enter to view here"), "the band");
-      await Bun.sleep(100);
-      expect(r.ep.ops()).not.toContain("claim");
-      expect(r.mag.received).toEqual([]);
-      r.io.press("\r");
-      await until(() => r.io.output.includes("bold red"), "the screen after Enter");
-      expect(r.ep.ops().filter((op) => op === "claim")).toHaveLength(1);
-    },
-    T
-  );
-
-  test(
     "a resized terminal resizes the pane only while this viewer holds the view",
     async () => {
       const r = await rig();
@@ -326,7 +310,7 @@ describe("Viewer", () => {
   );
 
   test(
-    "a finished target is opened as a replay on the server that lists it; a passive viewer never opens one",
+    "a finished target is opened as a replay on the server that lists it",
     async () => {
       const root = newRoot();
       const ep = await FakeViewEndpoint.start({
@@ -339,8 +323,6 @@ describe("Viewer", () => {
       const outcome = await new Viewer({ root, target: "s:sess-1", io }).run();
       expect(outcome.code).toBe(1);
       expect(ep.ops()).toEqual(["hello", "list", "hello", "replay.open"]);
-      const passive = await new Viewer({ root, target: "s:sess-1", io, passive: true }).run();
-      expect(passive).toEqual({ code: 1, message: "s:sess-1 has finished" });
     },
     T
   );
