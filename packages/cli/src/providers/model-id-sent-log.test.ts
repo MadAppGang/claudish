@@ -34,7 +34,14 @@ const HIGH = `${BASE}-high`;
 const GENERATION = "sent-model-id-test-data";
 const BUILDERS = ["cached credential", "local builder"] as const;
 type Builder = (typeof BUILDERS)[number];
-type Source = "request" | "catalog default" | "medium fallback" | "exact id" | "no map";
+type Source =
+  | "request"
+  | "catalog default"
+  | "medium fallback"
+  | "exact id"
+  | "no map"
+  | "map id not usable"
+  | "served base";
 type Envelope = { model: string; request: unknown };
 const originalFetch = globalThis.fetch;
 const TOKEN = "unit-test-token";
@@ -98,6 +105,7 @@ function expectedLine(
 }
 
 function expectDebugLines(expected: string[]) {
+  expect(sendingLines()).toHaveLength(expected.length);
   expect(sendingLines()).toEqual(expected);
   expect(sendingLines(stderrSpy)).toEqual([]);
   for (const line of sendingLines()) {
@@ -269,6 +277,108 @@ describe("Antigravity sent model id debug log", () => {
       ]);
     });
 
+    test(`${builder}: overlapping capacity retry retains request high after a no-effort request`, async () => {
+      useLocalBuilder = builder === "local builder";
+      const ag = new AntigravityProviderTransport(BASE);
+      await ag.refreshAuth();
+      const endpoint = ag.getEndpoint();
+      const headers = await ag.getHeaders();
+      const sent: string[] = [];
+      let releaseRetry!: (response: Response) => void;
+      const pendingRetry = new Promise<Response>((resolve) => {
+        releaseRetry = resolve;
+      });
+      let notifyRetryStarted!: () => void;
+      const retryStarted = new Promise<void>((resolve) => {
+        notifyRetryStarted = resolve;
+      });
+      const fetchMock = mock(async (input: unknown, init?: RequestInit) => {
+        if (input !== endpoint || init?.method !== "POST" || typeof init.body !== "string") {
+          throw new Error("Unexpected fetch outside the Antigravity request");
+        }
+        sent.push((JSON.parse(init.body) as Envelope).model);
+        if (sent.length === 1) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                code: 429,
+                status: "RESOURCE_EXHAUSTED",
+                message: "Model capacity exhausted",
+                details: [
+                  {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    reason: "MODEL_CAPACITY_EXHAUSTED",
+                  },
+                ],
+              },
+            }),
+            { status: 429 }
+          );
+        }
+        if (sent.length === 2) {
+          notifyRetryStarted();
+          return pendingRetry;
+        }
+        return new Response("ok", { status: 200 });
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      const send = (effort?: EffortLevel) => {
+        const envelope = ag.transformPayload(
+          { contents: [{ role: "user", parts: [{ text: BODY_TEXT }] }] },
+          effort ? { output_config: { effort } } : {}
+        );
+        return ag.enqueueRequest(() =>
+          fetch(endpoint, { method: "POST", headers, body: JSON.stringify(envelope) })
+        );
+      };
+
+      const requestA = send("high");
+      await retryStarted;
+      let responseB: Response;
+      try {
+        responseB = await send();
+      } finally {
+        releaseRetry(new Response("not found", { status: 404 }));
+      }
+      const responseA = await requestA;
+
+      expect(responseA.status).toBe(200);
+      expect(responseB.status).toBe(200);
+      expect(sent).toEqual([HIGH, MEDIUM, MEDIUM, LOW]);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      // A sends its primary and two retry candidates; B sends its primary once.
+      expect(sendingLines()).toHaveLength(4);
+      expectDebugLines([
+        expectedLine("Antigravity", HIGH, BASE, "high", "request"),
+        expectedLine("Antigravity", MEDIUM, BASE, "high", "request"),
+        expectedLine("Antigravity", MEDIUM, BASE, "medium", "medium fallback"),
+        expectedLine("Antigravity", LOW, BASE, "high", "request"),
+      ]);
+    });
+
+    test(`${builder}: unavailable mapped high logs map id not usable`, async () => {
+      served = { servedIds: [MEDIUM, LOW], defaultId: MEDIUM, meta: {} };
+      expect(await sendAntigravity(builder, { effort: "high" })).toEqual([MEDIUM]);
+      expectDebugLines([expectedLine("Antigravity", MEDIUM, BASE, "high", "map id not usable")]);
+    });
+
+    test(`${builder}: excluded mapped high logs map id not usable`, async () => {
+      served = {
+        servedIds: [HIGH, MEDIUM, LOW],
+        defaultId: MEDIUM,
+        excludedIds: new Set([HIGH]),
+        meta: {},
+      };
+      expect(await sendAntigravity(builder, { effort: "high" })).toEqual([MEDIUM]);
+      expectDebugLines([expectedLine("Antigravity", MEDIUM, BASE, "high", "map id not usable")]);
+    });
+
+    test(`${builder}: listed mapped base with no effort logs served base`, async () => {
+      served = { servedIds: [BASE, HIGH, MEDIUM, LOW], defaultId: HIGH, meta: {} };
+      expect(await sendAntigravity(builder)).toEqual([BASE]);
+      expectDebugLines([expectedLine("Antigravity", BASE, BASE, undefined, "served base")]);
+    });
+
     test(`${builder}: exactly one sending line for one request`, async () => {
       expect(await sendAntigravity(builder, { effort: "high" })).toEqual([HIGH]);
       expect(sendingLines()).toHaveLength(1);
@@ -284,15 +394,24 @@ describe("Devin expansion sent model id debug log", () => {
     low: "devin-opus-reasoning-a",
   };
 
-  function expand(effort?: EffortLevel) {
-    const models = (["high", "medium", "low"] as const).map((level) =>
+  function modelsFor(
+    levels: Array<keyof typeof UIDS> = ["high", "medium", "low"],
+    premiumHigh = false
+  ) {
+    return levels.map((level) =>
       devinModel(UIDS[level], level, {
         family: BASE,
         groupLabel: "Claude Opus 5.5",
         isDefault: level === "high",
+        premium: premiumHigh && level === "high",
       })
     );
-    return new DevinModelResolver().expand(BASE, models.map(devinModelsCatalogEntry), { effort });
+  }
+
+  function expand(effort?: EffortLevel) {
+    return new DevinModelResolver().expand(BASE, modelsFor().map(devinModelsCatalogEntry), {
+      effort,
+    });
   }
 
   beforeEach(() => {
@@ -313,5 +432,39 @@ describe("Devin expansion sent model id debug log", () => {
   test("absent default logs medium fallback", () => {
     expect(expand()).toBe(UIDS.medium);
     expectDebugLines([expectedLine("Devin", UIDS.medium, BASE, "medium", "medium fallback")]);
+  });
+
+  test("unavailable mapped high logs map id not usable", () => {
+    const models = modelsFor(["medium", "low"]).map(devinModelsCatalogEntry);
+    expect(new DevinModelResolver().expand(BASE, models, { effort: "high" })).toBe(UIDS.medium);
+    expectDebugLines([expectedLine("Devin", UIDS.medium, BASE, "high", "map id not usable")]);
+  });
+
+  test("speed-premium mapped high logs map id not usable", () => {
+    const models = modelsFor(undefined, true).map(devinModelsCatalogEntry);
+    expect(new DevinModelResolver().expand(BASE, models, { effort: "high" })).toBe(UIDS.medium);
+    expectDebugLines([expectedLine("Devin", UIDS.medium, BASE, "high", "map id not usable")]);
+  });
+
+  test("listed mapped base with no effort logs served base", () => {
+    const models = [
+      devinModel(BASE, "medium", { family: BASE, groupLabel: "Claude Opus 5.5" }),
+      ...modelsFor(),
+    ].map(devinModelsCatalogEntry);
+    expect(new DevinModelResolver().expand(BASE, models, {})).toBe(BASE);
+    expectDebugLines([expectedLine("Devin", BASE, BASE, undefined, "served base")]);
+  });
+
+  test("connection without a map still logs no map", () => {
+    entries = [catalogEntry(CANONICAL, [connection("devin", BASE)])];
+    _setCatalogEntriesForTest(entries);
+    expect(expand("low")).toBe(UIDS.low);
+    expectDebugLines([expectedLine("Devin", UIDS.low, BASE, "low", "no map")]);
+  });
+
+  test("exact non-base uid still logs exact id", () => {
+    const models = modelsFor().map(devinModelsCatalogEntry);
+    expect(new DevinModelResolver().expand(UIDS.low, models, {})).toBe(UIDS.low);
+    expectDebugLines([expectedLine("Devin", UIDS.low, UIDS.low, undefined, "exact id")]);
   });
 });
