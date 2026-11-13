@@ -97,7 +97,13 @@ presence only, which credential Claude Code would start with. A stored Console k
 Code[-<hash>]`) with no claude.ai login refuses the launch: Claude Code 2.1.325 sends that key as
 `x-api-key` with no `authorization` and shows no login screen, so every request would get the
 401. No login of any kind refuses it with the `/login` text. A store that did not answer
-(`unknown`) is not refused; each request is still checked. A refusal on a foreign launch names
+(`unknown`) is not refused; each request is still checked. An OAuth Keychain lookup that did not
+answer makes the result `unknown` even when a Console key was found. The check reads the
+environment the child will hold: a non-empty `CLAUDE_CODE_OAUTH_TOKEN` in the `env` block of an
+enabled settings layer (managed, `--settings`, local, project, user, in that precedence, with
+`--setting-sources` honoured) is a login (`settingsClaudeLoginToken`, `claude-runner.ts`), an
+empty one replaces the shell's, and an unreadable `--settings` value at or above the deciding tier
+makes it `unknown`. Presence only: the token value is never kept or returned. A refusal on a foreign launch names
 the tier that made it the Claude subscription and its source. A top-level `claude@` or
 `anthropic@` launch never gets here with a tier: `decideClaudeLaunch` refuses any tier on it.
 

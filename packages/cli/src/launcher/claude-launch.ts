@@ -39,9 +39,11 @@ import { isClaudishPlaceholderCredential } from "../auth/claudish-placeholder.js
 import type { CredentialAuthority } from "../auth/credentials/authority.js";
 import {
   type SettingsFinding,
+  type SettingsLoginToken,
   hasNativeAnthropicMapping,
   managedSettingsForcesClaudeAi,
   settingsArgsForcingClaudeAi,
+  settingsClaudeLoginToken,
   settingsCredentialFindings,
   wantsAnthropicApiBilling,
 } from "../claude-runner.js";
@@ -455,6 +457,34 @@ export interface PrepareClaudeLaunchDeps {
   wireIdFor?: (name: string) => string;
   /** Default `claudeCodeStartupCredential({env})`: the credential Claude Code would start with. */
   claudeCodeCredential?: (env: NodeJS.ProcessEnv) => ClaudeCodeStartupCredential;
+  /** Default `settingsClaudeLoginToken(config, env)`: a settings layer's CLAUDE_CODE_OAUTH_TOKEN, by presence. */
+  settingsLoginToken?: (config: ClaudishConfig, env: NodeJS.ProcessEnv) => SettingsLoginToken;
+}
+
+/**
+ * The credential Claude Code would start with, from the environment it will
+ * hold: a settings layer's non-empty CLAUDE_CODE_OAUTH_TOKEN is a login, an
+ * empty one replaces the launch environment's, and a layer that could not be
+ * read makes anything short of a stored login `unknown`.
+ */
+function effectiveStartupCredential(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv,
+  deps: PrepareClaudeLaunchDeps
+): ClaudeCodeStartupCredential {
+  const credentialOf =
+    deps.claudeCodeCredential ??
+    ((e: NodeJS.ProcessEnv) => claudeCodeStartupCredential({ env: e }));
+  const fromSettings = (deps.settingsLoginToken ?? settingsClaudeLoginToken)(config, env);
+  if (fromSettings === "set") return { kind: "login" };
+  if (fromSettings === "cleared") {
+    const withoutToken = { ...env };
+    delete withoutToken.CLAUDE_CODE_OAUTH_TOKEN;
+    return credentialOf(withoutToken);
+  }
+  const stored = credentialOf(env);
+  if (fromSettings === "unknown" && stored.kind !== "login") return { kind: "unknown" };
+  return stored;
 }
 
 /**
@@ -476,7 +506,8 @@ export interface PrepareClaudeLaunchDeps {
  *   An opt-in a pin overrides is named in a notice. Each refusal names the tier
  *   that made a foreign launch the Claude subscription.
  * - Both login-only branches refuse when Claude Code has no Claude login
- *   (`claudeLoginRefusal`): a stored Console key alone, or nothing at all.
+ *   (`claudeLoginRefusal`): a stored Console key alone, or nothing at all. A
+ *   settings layer's CLAUDE_CODE_OAUTH_TOKEN counts (`effectiveStartupCredential`).
  * - Anything else: no effect.
  */
 export async function prepareClaudeLaunch(
@@ -493,14 +524,12 @@ export async function prepareClaudeLaunch(
     return prepareClaudeApiLaunch(config, main, env, deps);
   }
 
-  const credentialOf =
-    deps.claudeCodeCredential ??
-    ((e: NodeJS.ProcessEnv) => claudeCodeStartupCredential({ env: e }));
-
   if (config.claudeLaunch === "subscription" && main) {
     const check = subscriptionSettingsCheck(findingsOf(config, env), { bareName: false });
     if (check.refusal) return { ok: false, message: check.refusal };
-    const loginRefusal = claudeLoginRefusal(credentialOf(env), { bareName: false });
+    const loginRefusal = claudeLoginRefusal(effectiveStartupCredential(config, env, deps), {
+      bareName: false,
+    });
     if (loginRefusal) return { ok: false, message: loginRefusal };
     if (isClaudishPlaceholderCredential("ANTHROPIC_API_KEY", env.ANTHROPIC_API_KEY)) {
       delete env.ANTHROPIC_API_KEY;
@@ -533,7 +562,10 @@ export async function prepareClaudeLaunch(
   const check = subscriptionSettingsCheck(findings, { bareName, cause });
   if (check.refusal) return { ok: false, message: check.refusal };
   if (shellToken !== "login") {
-    const loginRefusal = claudeLoginRefusal(credentialOf(env), { bareName, cause });
+    const loginRefusal = claudeLoginRefusal(effectiveStartupCredential(config, env, deps), {
+      bareName,
+      cause,
+    });
     if (loginRefusal) return { ok: false, message: loginRefusal };
   }
   const notices = [...check.notices];

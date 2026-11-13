@@ -668,7 +668,7 @@ function readableClaudeSettingsLayers(
   config: ClaudishConfig,
   env: NodeJS.ProcessEnv,
   deps: ChildAuthControlDeps
-): Array<{ where: string; settings: Record<string, unknown> | null }> {
+): SettingsLayer[] {
   const readFile = deps.readFile ?? ((path: string) => readFileSync(path, "utf-8"));
   const home = deps.home ?? homedir();
   const cwd = deps.cwd ?? process.cwd();
@@ -676,17 +676,25 @@ function readableClaudeSettingsLayers(
   // inspected. Managed settings and every `--settings` value apply whatever it says.
   const enabled = enabledSettingSources(config.claudeArgs ?? []);
   const on = (source: SettingSource): boolean => enabled === null || enabled.has(source);
-  const files = [
-    managedSettingsPath(),
-    ...(on("user") ? [join(home, ".claude", "settings.json")] : []),
-    ...(on("user") && env.CLAUDE_CONFIG_DIR ? [join(env.CLAUDE_CONFIG_DIR, "settings.json")] : []),
-    ...(on("project") ? [join(cwd, ".claude", "settings.json")] : []),
-    ...(on("local") ? [join(cwd, ".claude", "settings.local.json")] : []),
+  const files: Array<[string, SettingsTier]> = [
+    [managedSettingsPath(), "managed"],
+    ...(on("user")
+      ? [[join(home, ".claude", "settings.json"), "user"] as [string, SettingsTier]]
+      : []),
+    ...(on("user") && env.CLAUDE_CONFIG_DIR
+      ? [[join(env.CLAUDE_CONFIG_DIR, "settings.json"), "user"] as [string, SettingsTier]]
+      : []),
+    ...(on("project")
+      ? [[join(cwd, ".claude", "settings.json"), "project"] as [string, SettingsTier]]
+      : []),
+    ...(on("local")
+      ? [[join(cwd, ".claude", "settings.local.json"), "local"] as [string, SettingsTier]]
+      : []),
   ];
-  const layers: Array<{ where: string; settings: Record<string, unknown> | null }> = [];
-  for (const file of files) {
+  const layers: SettingsLayer[] = [];
+  for (const [file, tier] of files) {
     const settings = readSettingsSource(file, readFile);
-    if (settings) layers.push({ where: file, settings });
+    if (settings) layers.push({ where: file, settings, tier });
   }
   const occurrences = settingsArgOccurrences(config.claudeArgs ?? []);
   const merged = occurrences.find((o) => o.spelling === "separate");
@@ -697,9 +705,73 @@ function readableClaudeSettingsLayers(
     if (!occurrence.value) return;
     const settings = readSettingsSource(occurrence.value, readFile);
     if (occurrence === merged && !settings) return; // dropped by the merge
-    layers.push({ where, settings });
+    layers.push({ where, settings, tier: "cli" });
   });
   return layers;
+}
+
+/**
+ * A settings layer's place in Claude Code's precedence, highest first:
+ * managed, then the command line (`--settings`), local, project, user.
+ */
+type SettingsTier = "managed" | "cli" | "local" | "project" | "user";
+
+const SETTINGS_TIER_ORDER: readonly SettingsTier[] = ["managed", "cli", "local", "project", "user"];
+
+/** One settings layer the child may apply; `settings` is null when it could not be read. */
+interface SettingsLayer {
+  where: string;
+  settings: Record<string, unknown> | null;
+  tier: SettingsTier;
+}
+
+/**
+ * What the settings layers the child applies do to its `CLAUDE_CODE_OAUTH_TOKEN`,
+ * by presence only (the value is never kept or returned):
+ *
+ * - `set`: the highest tier that names it gives a non-empty value, so the child
+ *   holds a Claude login token whatever the launch environment says;
+ * - `cleared`: that tier gives an empty value, which replaces the launch
+ *   environment's;
+ * - `absent`: no layer names it; the launch environment's value stands;
+ * - `unknown`: a layer at or above the deciding tier could not be read, or two
+ *   layers of the deciding tier disagree.
+ *
+ * Reads the same layers as `childAuthControl` (managed, user, project, local,
+ * every `--settings`), with `--setting-sources` honoured. The launch is not
+ * host-managed when this matters, so Claude Code applies the settings `env`
+ * block over the inherited environment (`settings-env.md`).
+ */
+export type SettingsLoginToken = "set" | "cleared" | "absent" | "unknown";
+
+export function settingsClaudeLoginToken(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ChildAuthControlDeps = {}
+): SettingsLoginToken {
+  const layers = readableClaudeSettingsLayers(config, env, deps);
+  for (const tier of SETTINGS_TIER_ORDER) {
+    let unreadable = false;
+    let nonEmpty = false;
+    let empty = false;
+    for (const layer of layers) {
+      if (layer.tier !== tier) continue;
+      if (layer.settings === null) {
+        unreadable = true;
+        continue;
+      }
+      const block = layer.settings.env;
+      if (!block || typeof block !== "object") continue;
+      const value = (block as Record<string, unknown>).CLAUDE_CODE_OAUTH_TOKEN;
+      if (typeof value !== "string") continue;
+      if (value.trim().length > 0) nonEmpty = true;
+      else empty = true;
+    }
+    if (unreadable || (nonEmpty && empty)) return "unknown";
+    if (nonEmpty) return "set";
+    if (empty) return "cleared";
+  }
+  return "absent";
 }
 
 /** A settings file tier `--setting-sources` can turn on or off. */
