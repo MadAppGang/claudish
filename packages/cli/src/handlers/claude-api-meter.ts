@@ -11,6 +11,12 @@
  * Claude Code sends subagent and background turns on other models through the
  * same passthrough, so each turn is priced by its OWN model. Only a turn on the
  * session's main model moves the context occupancy the status line shows.
+ *
+ * The status line shows the whole session (one tracker), but a stats event
+ * carries its own model's running totals: `estimated_cost` is read as the
+ * emitting model's running total, so a model's spend is its row maximum, and a
+ * session-wide figure on every row would count each model's spend again under
+ * the others.
  */
 
 import { getProviderByName } from "../providers/provider-definitions.js";
@@ -46,6 +52,14 @@ export function claudeApiContextWindow(name: string): number {
   return ownConnection(entry, CLAUDE_API_PROVIDER, name)?.contextWindow ?? entry.contextWindow ?? 0;
 }
 
+/** One model's running totals, as its stats rows carry them. */
+interface ModelTotals {
+  /** The latest request's billed input, as `TokenTracker.update` keeps it. */
+  input: number;
+  output: number;
+  cost: number;
+}
+
 function isSuccess(status: number): boolean {
   return status >= 200 && status < 300;
 }
@@ -67,9 +81,16 @@ export function createClaudeApiMeter(opts: {
     ...(displayName ? { providerDisplayName: displayName } : {}),
   });
   const mainId = canonicalModelId(opts.mainModel);
+  // Keyed by the request's model name, which is the stats row's `model_id`.
+  const totalsByModel = new Map<string, ModelTotals>();
 
   return {
     record(turn: ClaudeApiTurn): void {
+      let totals = totalsByModel.get(turn.model);
+      if (!totals) {
+        totals = { input: 0, output: 0, cost: 0 };
+        totalsByModel.set(turn.model, totals);
+      }
       const ok = turn.error === undefined && isSuccess(turn.status);
       // Anthropic bills the tokens a response reported, a cancelled stream's
       // included; a failed request reports none and changes no counter.
@@ -84,7 +105,9 @@ export function createClaudeApiMeter(opts: {
           cacheCreationTokens: cacheCreation,
         };
         if (canonicalModelId(turn.model) === mainId) {
+          const before = tracker.getTotalCost();
           tracker.update(input, output, detail);
+          totals.cost += tracker.getTotalCost() - before;
         } else {
           const cost = computeTurnCost(
             getModelPricing(CLAUDE_API_PROVIDER, turn.model),
@@ -93,7 +116,10 @@ export function createClaudeApiMeter(opts: {
             detail
           );
           tracker.addSideTurn(cost, input, output, detail);
+          totals.cost += cost;
         }
+        totals.input = input;
+        totals.output += output;
       }
 
       try {
@@ -110,9 +136,9 @@ export function createClaudeApiMeter(opts: {
           success: ok && !turn.cancelled,
           http_status: turn.status,
           ...(failure ?? {}),
-          input_tokens: tracker.getInputTokens(),
-          output_tokens: tracker.getOutputTokens(),
-          estimated_cost: tracker.getTotalCost(),
+          input_tokens: totals.input,
+          output_tokens: totals.output,
+          estimated_cost: totals.cost,
           is_free_model: false,
           token_strategy: "standard",
           adapter_name: "native-passthrough",
