@@ -20,7 +20,7 @@ import {
   reasoningStatusOf,
 } from "../providers/all-models-cache.js";
 import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
-import { readModelIdEffort } from "../providers/model-id-effort.js";
+import { publishedEffortWireId, readModelIdEffort } from "../providers/model-id-effort.js";
 import { compareByReleaseDateDesc } from "../providers/model-ordering.js";
 import { getProviderByName, getShortcuts } from "../providers/provider-definitions.js";
 
@@ -443,9 +443,14 @@ export function resolveSubscriptionRouting(
       (candidate) =>
         candidate.routeStatus === "mapped" && catalogRouteMatchesProvider(candidate.route, provider)
     );
-    return connection?.externalModelId
-      ? { kind: "serves", externalId: connection.externalModelId }
-      : { kind: "unknown" };
+    if (!connection?.externalModelId) return { kind: "unknown" };
+    // A name this connection's effort map lists (`<model>-low`, which the
+    // catalog also lists as an alias of the base) is sent as that id: the base
+    // would let the transport pick a different effort's id.
+    return {
+      kind: "serves",
+      externalId: publishedEffortWireId(connection, modelId) ?? connection.externalModelId,
+    };
   }
 
   // Client-selected and hybrid memberships are decided by the user's live session.
