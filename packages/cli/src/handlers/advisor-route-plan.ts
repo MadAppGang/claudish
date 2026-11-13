@@ -568,8 +568,12 @@ export function describeAdvisorRefusal(
         `${refusal.spec}: no model catalog is on disk yet, so a bare name cannot be ` +
         "routed. Use provider@model, or launch again once the catalog has been fetched."
       );
-    default:
-      return `${refusal.spec}: ${refusal.reason}${refusal.hint ? ` ${refusal.hint}` : ""}`;
+    default: {
+      // A reason that already names the spec (a marker refusal, a shadowed
+      // endpoint) is not prefixed a second time.
+      const prefix = refusal.reason.startsWith(`${refusal.spec}: `) ? "" : `${refusal.spec}: `;
+      return `${prefix}${refusal.reason}${refusal.hint ? ` ${refusal.hint}` : ""}`;
+    }
   }
 }
 
