@@ -1,8 +1,9 @@
 /**
  * Does this machine hold a Claude Code login? The readiness of the Claude
- * subscription: a real `CLAUDE_CODE_OAUTH_TOKEN`, Claude Code's OAuth
- * credentials file, or its macOS login-Keychain item. Existence only: no secret
- * is read, and the Keychain probe reads item attributes, never data, so it
+ * subscription: a non-empty `CLAUDE_CODE_OAUTH_TOKEN`, Claude Code's OAuth
+ * credentials file, or its macOS login-Keychain item. No stored secret is read:
+ * the environment token is checked only for being non-empty, the file only for
+ * existence, and the Keychain probe reads item attributes, never data, so it
  * raises no access dialog.
  *
  * An Anthropic API key is NOT a Claude Code login: the Claude subscription is
@@ -13,7 +14,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { claudeCodeConfigDir, claudeCodeKeychainServiceCandidates } from "./claude-code-facts.js";
-import { isClaudishPlaceholderCredential } from "./claudish-placeholder.js";
 
 /**
  * Existence-only probe for an OS-credential-store Anthropic OAuth item. `env`
@@ -95,7 +95,8 @@ export interface ClaudeCodeLoginDeps {
 
 /**
  * True when Claude Code has a login it can sign the Claude subscription with: a
- * real `CLAUDE_CODE_OAUTH_TOKEN` (not claudish's placeholder), the
+ * non-empty `CLAUDE_CODE_OAUTH_TOKEN` (claudish never sets a placeholder for
+ * it), the
  * `.credentials.json` in Claude Code's config directory (`CLAUDE_CONFIG_DIR`,
  * else `~/.claude`, both read from `env`), or its macOS Keychain item for that
  * directory. Existence only.
@@ -107,13 +108,7 @@ export interface ClaudeCodeLoginDeps {
 export function hasClaudeCodeLogin(deps: ClaudeCodeLoginDeps = {}): boolean {
   const env = deps.env ?? process.env;
   const token = env.CLAUDE_CODE_OAUTH_TOKEN;
-  if (
-    typeof token === "string" &&
-    token.trim().length > 0 &&
-    !isClaudishPlaceholderCredential("CLAUDE_CODE_OAUTH_TOKEN", token)
-  ) {
-    return true;
-  }
+  if (typeof token === "string" && token.trim().length > 0) return true;
   const fileExists = deps.fileExists ?? existsSync;
   if (fileExists(join(claudeCodeConfigDir(env), ".credentials.json"))) return true;
   return (deps.keychainProbe ?? defaultKeychainAnthropicProbe)(env);
