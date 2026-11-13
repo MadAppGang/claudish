@@ -187,11 +187,11 @@ export interface RequestAuth {
 
 /**
  * Where a resolved API key came from: the step of the resolution chain that
- * produced it. A label, never key material. `.env` is listed because provenance
- * reports it; a credential provider sees a `.env` value only once it is loaded
- * into the environment, and reports that one as `environment`.
+ * produced it. A label, never key material. A credential provider sees a
+ * `.env` value only once it is loaded into the environment, and reports that
+ * one as `environment`.
  */
-export type KeySource = "environment" | ".env" | "config" | "macOS Keychain" | "1Password";
+export type KeySource = "environment" | "config" | "macOS Keychain" | "1Password";
 
 /** The origin of the key a provider last resolved: its source and a masked value. */
 export interface KeyOrigin {
