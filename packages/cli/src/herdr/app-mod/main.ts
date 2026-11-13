@@ -69,6 +69,9 @@ function roleOf(): Role {
 
 type Theme = Record<string, string>;
 type El = NativeElement;
+
+/** model lines shown at their own height; more than this scroll inside 240 px */
+const ROWS_BEFORE_SCROLL = 6;
 type Colour = `#${string}`;
 
 /** A theme colour by name, as a `#rrggbb` the toolkit accepts; the fallback when it is missing. */
@@ -385,15 +388,20 @@ export default class ClaudishPanel extends View {
     p: Palette
   ): El {
     void cx;
-    return v_flex()
-      .id("claudish-rows")
-      .px(14)
-      .pt(4)
-      .pb(10)
-      .gap(4)
-      .max_h(240)
-      .overflow_y_scrollbar()
-      .children(current.rows.map((r) => this.bandRow(r, r.target === selected?.target, t, p)));
+    return (
+      v_flex()
+        .id("claudish-rows")
+        .flex_none()
+        .px(14)
+        .pt(4)
+        .pb(10)
+        .gap(4)
+        // a scroll box takes its whole max height, so only a long run gets one
+        .when(current.rows.length > ROWS_BEFORE_SCROLL, (el: El) =>
+          el.max_h(240).overflow_y_scrollbar()
+        )
+        .children(current.rows.map((r) => this.bandRow(r, r.target === selected?.target, t, p)))
+    );
   }
 
   private bandRow(r: PanelRow, selected: boolean, t: Theme, p: Palette): El {
