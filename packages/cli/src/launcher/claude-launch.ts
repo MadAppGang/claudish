@@ -432,16 +432,18 @@ async function prepareClaudeApiLaunch(
   }
 
   const key = resolution.key;
-  const lease = acquireSigningLease();
-  lease.add([key]);
-
   // Claude Code is given the wire id the catalog publishes for this model on
-  // the Claude API; `model` keeps the user's spec.
+  // the Claude API; `model` keeps the user's spec. Resolved before the lease is
+  // taken, so a throw here leaves no lease behind.
   const inner = parseModelSpec(main).model;
   const wireIdFor =
     deps.wireIdFor ??
     ((name: string) => resolveModelNameSync(name, CLAUDE_API_PROVIDER).resolvedId);
-  config.claudeLaunchModel = wireIdFor(inner);
+  const launchModel = wireIdFor(inner);
+
+  const lease = acquireSigningLease();
+  lease.add([key]);
+  config.claudeLaunchModel = launchModel;
   config.claudeLaunchKeySource = resolution.source;
   // The proxy receives no key of its own on this launch, and the parse-time
   // capture of the launch environment's key is not the one that signs.
