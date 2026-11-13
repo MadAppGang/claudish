@@ -10,7 +10,9 @@
  * vendor's own catalog connections: a gateway or cross-vendor connection is
  * dropped, and the roles are decided by data equality, never a name pattern.
  * Anything the file could not honestly describe throws {@link BundleShapeError}
- * instead of shipping a partial list.
+ * instead of shipping a partial list. A gap in one model's publication that the
+ * file can carry as published (a model with effort levels and no effort row) is
+ * bundled as is and reported in the summary's `warnings`.
  */
 import type { AggregatorEntry } from "../model-loader.js";
 import { type RecommendationTier, isRecommendationTier } from "../model-loader.js";
@@ -103,8 +105,13 @@ export interface BundledListSummary {
   unmappedConnections: number;
   effortRows: number;
   effortRowsOutsideBundle: number;
-  /** Recommended models bundled with no effort row, because they publish no effort levels. */
+  /** Every recommended model bundled with no effort row, sorted, whether or not it publishes effort levels. */
   modelsWithNoEffortRow: string[];
+  /**
+   * Gaps in the publication that are bundled as published and do not fail the
+   * build. The generator prints each one; an empty list means none.
+   */
+  warnings: string[];
   droppedSendableOn: number;
   /** Per model id, how many connections were kept: the self-check compares a re-read against it. */
   keptConnectionsPerEntry: Record<string, number>;
@@ -340,7 +347,8 @@ function readRecommendationRows(rawEntries: unknown[]): {
 
 /**
  * Parses the efforts as published, failing on anything the runtime parser would
- * silently lose: an absent field or a dropped cell. It reads the raw cells, so
+ * silently lose: an absent field, a dropped cell, or a published row with no
+ * cell (`{}`), which the parser drops whole. It reads the raw cells, so
  * the later narrowing of `sendableOn` to the kept connections cannot trip it.
  */
 function readEfforts(raw: unknown): Record<string, ModelEffortRecommendations> {
@@ -350,7 +358,9 @@ function readEfforts(raw: unknown): Record<string, ModelEffortRecommendations> {
   const parsed = parseEffortRecommendations(raw);
   const lostCells: string[] = [];
   for (const [modelId, byTask] of Object.entries(raw)) {
-    const taskTypes = isRecord(byTask) ? Object.keys(byTask) : ["(row)"];
+    // A row that is not an object, or an object with no cell, is dropped whole.
+    const cellKeys = isRecord(byTask) ? Object.keys(byTask) : [];
+    const taskTypes = cellKeys.length > 0 ? cellKeys : ["(row)"];
     for (const taskType of taskTypes) {
       if (!parsed[modelId]?.[taskType]) lostCells.push(`${modelId}.${taskType}`);
     }
@@ -365,27 +375,31 @@ function readEfforts(raw: unknown): Record<string, ModelEffortRecommendations> {
 }
 
 /**
- * The recommended models with no effort row. Only a model with published effort
- * levels has task slots to recommend for, so one of those with no row fails the
- * build, naming every such model so one run reports the whole gap. The others
- * (`control: "toggle"`, or no reasoning block) are returned.
+ * The recommended models with no effort row, sorted, and the warnings they raise.
+ *
+ * A model with no effort levels (`control: "toggle"`, or no reasoning block) has
+ * no task slots to recommend for, so its missing row is expected and silent. A
+ * model that publishes effort levels and has no row is a gap in the cloud models
+ * catalog: it is still bundled exactly as published, with no row, and one
+ * warning names every such model so a single run reports the whole gap. One
+ * model's gap never blocks the rest of the list.
  */
 function modelsWithNoEffortRow(
   recommended: readonly SlimModelEntry[],
   efforts: Record<string, ModelEffortRecommendations>
-): string[] {
+): { modelIds: string[]; warnings: string[] } {
   const withNoRow = recommended.filter((model) => !efforts[model.modelId]);
   const uncovered = withNoRow
     .filter((model) => (model.reasoning?.efforts?.length ?? 0) > 0)
     .map((model) => model.modelId)
     .sort(compareCodeUnits);
-  if (uncovered.length > 0) {
-    throw new BundleShapeError(
-      "recommendations.efforts",
-      `${uncovered.length} recommended model(s) publish effort levels and have no effort row: ${uncovered.join(", ")}`
-    );
-  }
-  return withNoRow.map((model) => model.modelId).sort(compareCodeUnits);
+  const warnings =
+    uncovered.length > 0
+      ? [
+          `recommendations.efforts: ${uncovered.length} recommended model(s) publish effort levels and have no effort row, bundled without one: ${uncovered.join(", ")}`,
+        ]
+      : [];
+  return { modelIds: withNoRow.map((model) => model.modelId).sort(compareCodeUnits), warnings };
 }
 
 function connectionKey(routeId: string, routeProfileId: string, wireId: string): string {
@@ -519,6 +533,7 @@ function emptySummary(generationId: string): BundledListSummary {
     effortRows: 0,
     effortRowsOutsideBundle: 0,
     modelsWithNoEffortRow: [],
+    warnings: [],
     droppedSendableOn: 0,
     keptConnectionsPerEntry: {},
   };
@@ -592,10 +607,12 @@ export function buildBundledListWithSummary(inputs: BundledListInputs): {
 
   const summary = emptySummary(generationId);
   summary.skippedTiers = skippedTiers;
-  summary.modelsWithNoEffortRow = modelsWithNoEffortRow(
+  const noEffortRow = modelsWithNoEffortRow(
     models.filter((model) => recommendedIds.has(model.modelId)),
     efforts
   );
+  summary.modelsWithNoEffortRow = noEffortRow.modelIds;
+  summary.warnings.push(...noEffortRow.warnings);
   for (const row of rows) bumpCount(summary.rowsPerTier, row.tier);
 
   const entries = models
