@@ -29,8 +29,11 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
+import { wantsAnthropicApiBilling } from "./claude-runner.js";
 import { realValueFor } from "./env-placeholder.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
+import { parseModelSpec } from "./providers/model-parser.js";
+import { nativeRouteFor } from "./providers/native-route.js";
 import { type SlotRoute, createProxyServer } from "./proxy-server.js";
 
 interface ServeArgs {
@@ -120,6 +123,35 @@ function loadModelMap(path: string): { slotMap: Map<string, SlotRoute>; slotIds:
   return { slotMap, slotIds };
 }
 
+/**
+ * The startup refusal for slots that name the Claude subscription, or null.
+ *
+ * Claude Desktop sends no Claude Code login, so a slot on the subscription
+ * could only ever answer 401. A bare Claude name (`"model": "claude-opus-5"`,
+ * no provider) is served on the Anthropic API key only when the user opted
+ * into API billing, as on the CLI; `claude@` (`"provider": "claude"`) names the
+ * subscription itself, which no opt-in moves onto the key.
+ */
+export function serveSubscriptionSlotRefusal(
+  slotMap: ReadonlyMap<string, SlotRoute>,
+  apiBillingOptIn: boolean
+): string | null {
+  const refused: string[] = [];
+  for (const [slot, route] of slotMap) {
+    const spec = route.provider ? `${route.provider}@${route.model}` : route.model;
+    if (nativeRouteFor(spec) === null) continue;
+    const explicit = parseModelSpec(spec).isExplicitProvider;
+    if (explicit || !apiBillingOptIn) refused.push(`"${slot}" → ${spec}`);
+  }
+  if (refused.length === 0) return null;
+  return (
+    `slot ${refused.join(", ")} names the Claude subscription, which needs Claude Code's own ` +
+    `login, and Claude Desktop sends none. Use "provider": "anthropic" for the Claude API on ` +
+    "your ANTHROPIC_API_KEY, or, for a bare Claude model name, opt into API billing " +
+    "(CLAUDISH_ANTHROPIC_API_BILLING=1 or anthropicApiBilling: true in ~/.claudish/config.json)."
+  );
+}
+
 export async function serveCommand(args: string[]): Promise<void> {
   // A gateway for Claude Desktop answers requests nobody at a terminal made:
   // it never opens a credential dialog (`auth/credentials/prompt-role.ts`).
@@ -157,13 +189,23 @@ export async function serveCommand(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // A slot on the Claude subscription could only answer 401 to Claude Desktop.
+  const apiBillingOptIn = wantsAnthropicApiBilling({});
+  const subscriptionRefusal = serveSubscriptionSlotRefusal(slotMap, apiBillingOptIn);
+  if (subscriptionRefusal) {
+    console.error(`[claudish serve] ${subscriptionRefusal}`);
+    process.exit(1);
+  }
+
   // API keys come from the environment here. Config-only / op:// keys are now
   // resolved lazily by the credential authority when a model is actually routed
   // (the old loadStoredApiKeys env-push at module load was removed in the
   // async-credential-layer refactor), so this reads env-set keys directly.
   // serve bypasses parseArgs (which the normal CLI uses to fill these), so we
-  // must read them explicitly or null-provider→OpenRouter and claude-* slots
-  // (native passthrough) would have no credentials.
+  // must read them explicitly or null-provider→OpenRouter slots would have no
+  // credentials. A bare claude-* slot (native passthrough) is served on the
+  // Anthropic API key only under the API-billing opt-in; without it the slot is
+  // refused above.
   const openrouterApiKey = process.env.OPENROUTER_API_KEY;
   const anthropicApiKey = realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY);
 
@@ -178,6 +220,7 @@ export async function serveCommand(args: string[]): Promise<void> {
       slotMap,
       servedSlotIds: slotIds,
       hostMode: "serve",
+      apiBillingOptIn,
     }
   );
 

@@ -184,7 +184,7 @@ export { type KeychainCredentialProbe, defaultKeychainAnthropicProbe };
  * environment or the config file says.
  */
 export function wantsAnthropicApiBilling(
-  config: ClaudishConfig,
+  config: Pick<ClaudishConfig, "anthropicApiBilling" | "claudeSubscriptionPin">,
   env: NodeJS.ProcessEnv = process.env
 ): boolean {
   if (config.claudeSubscriptionPin) return false;
