@@ -2,7 +2,7 @@
 
 **Know what you're spending. No surprises.**
 
-OpenRouter charges per token. Claudish can help you track costs across sessions.
+Metered providers charge per token. Claudish can help you track costs across sessions.
 
 > **Note:** Cost tracking is experimental. Estimates are approximations based on model pricing data.
 
@@ -69,7 +69,21 @@ Claudish tracks:
 - **Output tokens** - What the model generates
 - **Model used** - For accurate per-model pricing
 
-Costs are calculated using OpenRouter's published pricing.
+Each request is priced on its own, from the cloud models catalog, at the rate of
+the connection that served it:
+
+- A metered request uses the rate its provider publishes for that model's
+  connection in the catalog. A tiered price uses its first tier and is marked
+  an estimate; a free connection costs nothing.
+- When the provider's connection publishes no rate, the model's OpenRouter
+  price from the same catalog entry is used. With neither, claudish falls back
+  to a per-provider default and marks the cost an estimate.
+- A request served by a subscription is never counted as spend. It shows a
+  cost of zero, whatever the model.
+- A Claude API session is metered on your own `ANTHROPIC_API_KEY`: a launch
+  with `anthropic@`, `a@` or `api@`, or the **Claude API** row in the picker.
+  Every turn, subagent and background turns included, is priced at its own
+  model's catalog rate. A Claude subscription session is not metered.
 
 ---
 
@@ -77,12 +91,13 @@ Costs are calculated using OpenRouter's published pricing.
 
 **Why "estimated"?**
 
-1. **Pricing changes** - OpenRouter adjusts prices periodically
+1. **Pricing changes** - Providers adjust prices, and claudish prices with the catalog it last read
 2. **Token counting** - Different tokenizers give slightly different counts
 3. **Caching** - Some requests may be cached (cheaper or free)
 4. **Special pricing** - Free tiers, promotions, etc.
 
-For accurate billing, check your [OpenRouter dashboard](https://openrouter.ai/activity).
+For accurate billing, check the provider's own usage page. For OpenRouter, that is
+your [OpenRouter dashboard](https://openrouter.ai/activity).
 
 ---
 
