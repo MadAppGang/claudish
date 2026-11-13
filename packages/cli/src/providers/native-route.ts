@@ -195,6 +195,23 @@ export function claudeLaunchMarkerRefusal(spec: string): string {
 }
 
 /**
+ * {@link claudeLaunchMarkerRefusal} when `spec` carries any `+` or `#` marker,
+ * one `splitWireMarkers` rejects (`#bogus`, a repeated or misplaced marker)
+ * included; null when it carries none. No marker applies to a Claude launch,
+ * so a malformed one is refused for that reason, not for its spelling.
+ */
+export function claudeLaunchMarkersRefusal(spec: string): string | null {
+  let markers: ReturnType<typeof splitWireMarkers>;
+  try {
+    markers = splitWireMarkers(spec);
+  } catch (err) {
+    if (err instanceof WireMarkerError) return claudeLaunchMarkerRefusal(spec);
+    throw err;
+  }
+  return markers.mode || markers.speed ? claudeLaunchMarkerRefusal(spec) : null;
+}
+
+/**
  * The one check of a `claude@` spec, run on the caller's ORIGINAL string before
  * anything strips or normalizes it. `null` for a spec that is not `claude@…`,
  * and for one `claude@<name Claude Code owns>` with no marker and no `:N`
@@ -202,7 +219,7 @@ export function claudeLaunchMarkerRefusal(spec: string): string {
  *
  * - `claude@` inside a `+` chain: the Claude subscription is served by Claude
  *   Code itself, so it cannot be one hop of a chain claudish routes;
- * - a mode or speed marker (split strictly: `#bogus` gives the marker error);
+ * - any mode or speed marker, an unknown one (`#bogus`) included;
  * - a `:N` suffix, which `parseModelSpec` would split off silently;
  * - an inner name that is not Claude Code's own (`claude@gpt-6`).
  */
@@ -214,14 +231,8 @@ export function claudeSubscriptionSpecRefusal(spec: string): string | null {
       : null;
   }
   if (!isClaudeSubscriptionSpec(spec)) return null;
-  let markers: ReturnType<typeof splitWireMarkers>;
-  try {
-    markers = splitWireMarkers(spec);
-  } catch (err) {
-    if (err instanceof WireMarkerError) return err.message;
-    throw err;
-  }
-  if (markers.mode || markers.speed) return claudeLaunchMarkerRefusal(spec);
+  const markerRefusal = claudeLaunchMarkersRefusal(spec);
+  if (markerRefusal) return markerRefusal;
   const rawModel = spec.slice(spec.indexOf("@") + 1);
   if (/:\d+$/.test(rawModel)) {
     return `${spec}: claude@ is the Claude subscription, which Claude Code serves itself; it takes no :N concurrency suffix`;

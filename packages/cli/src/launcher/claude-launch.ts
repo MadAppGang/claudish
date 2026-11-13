@@ -58,13 +58,12 @@ import { normalizeNativeModelSpec } from "../providers/claude-code-aliases.js";
 import { MODEL_CHAIN_SEPARATOR, parseModelSpec } from "../providers/model-parser.js";
 import {
   CLAUDE_SUBSCRIPTION_LABEL,
-  claudeLaunchMarkerRefusal,
+  claudeLaunchMarkersRefusal,
   claudeSubscriptionInner,
   claudeSubscriptionSpecRefusal,
   nativeRouteFor,
 } from "../providers/native-route.js";
 import { shadowedEndpointRefusal } from "../providers/shadowed-endpoint.js";
-import { WireMarkerError, splitWireMarkers } from "../providers/wire-markers.js";
 import { acquireSigningLease, redactSecrets } from "../redact.js";
 import type { ClaudishConfig, ModelTier } from "../types.js";
 
@@ -272,14 +271,8 @@ const CLAUDE_API_PROVIDER = "anthropic";
  * requests, so neither could apply: each would be dropped silently.
  */
 function claudeApiLaunchRefusal(spec: string): string | null {
-  let markers: ReturnType<typeof splitWireMarkers>;
-  try {
-    markers = splitWireMarkers(spec);
-  } catch (err) {
-    if (err instanceof WireMarkerError) return err.message;
-    throw err;
-  }
-  if (markers.mode || markers.speed) return claudeLaunchMarkerRefusal(spec);
+  const markerRefusal = claudeLaunchMarkersRefusal(spec);
+  if (markerRefusal) return markerRefusal;
   if (/:\d+$/.test(spec)) {
     return `${spec}: a Claude API launch is one Claude Code session on Anthropic's API, so a :N concurrency suffix cannot apply.`;
   }
