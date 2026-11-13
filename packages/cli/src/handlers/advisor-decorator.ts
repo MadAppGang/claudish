@@ -295,8 +295,12 @@ function advisorCallDeps(
   return {
     ...(deps.panel ? { gateway: deps.panel } : {}),
     claude: {
-      resolveAuth: (): Promise<ClaudeAdvisorAuth> =>
-        resolveClaudeAdvisorAuth(facts, anthropicKey, deps.claude?.keyArm ?? "lookup"),
+      resolveAuth: (opts): Promise<ClaudeAdvisorAuth> =>
+        resolveClaudeAdvisorAuth(
+          facts,
+          anthropicKey,
+          opts?.subscriptionOnly ? "off" : (deps.claude?.keyArm ?? "lookup")
+        ),
       ...(deps.claude?.fetchImpl ? { fetchImpl: deps.claude.fetchImpl } : {}),
     },
   };

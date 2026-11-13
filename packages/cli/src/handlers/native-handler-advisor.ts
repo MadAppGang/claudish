@@ -40,6 +40,7 @@ import type { ChildAuthControl, ChildAuthSource } from "../child-auth-types.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
 import { resolveConnection } from "../providers/connection-resolver.js";
 import type { KnownWire, WireApi } from "../providers/connection-wire.js";
+import { isClaudeSubscriptionSpec } from "../providers/native-route.js";
 import { getProviderByName } from "../providers/provider-definitions.js";
 import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
 import {
@@ -2666,10 +2667,12 @@ export interface ClaudeAdvisorDeps {
   /**
    * The credential for this advisor call's Claude members, by presence and
    * provenance on the main request (`resolveClaudeAdvisorAuth`). Called only
-   * when a Claude member runs, and memoised per advisor call, so a routed-only
-   * panel never resolves an Anthropic key.
+   * when a Claude member runs, and memoised per advisor call and per arm, so a
+   * routed-only panel never resolves an Anthropic key. `subscriptionOnly`: the
+   * member was named `claude@…`, so it signs with the login or nothing, never
+   * an API key, whatever the launch's key arm is.
    */
-  resolveAuth: () => Promise<ClaudeAdvisorAuth>;
+  resolveAuth: (opts?: { subscriptionOnly?: boolean }) => Promise<ClaudeAdvisorAuth>;
   /** Test seam; defaults to the global fetch at call time. */
   fetchImpl?: typeof fetch;
 }
@@ -2750,7 +2753,7 @@ interface MemberRequest {
 async function runAdvisorMember(
   req: MemberRequest,
   params: Pick<RunAdvisorCallParams, "gateway" | "claude" | "warn">,
-  claudeAuth: () => Promise<ClaudeAdvisorAuth>
+  claudeAuth: (subscriptionOnly: boolean) => Promise<ClaudeAdvisorAuth>
 ): Promise<AdvisorModelOutcome> {
   const plan = memberPlan(params.gateway, req.spec, req.role);
   switch (plan.kind) {
@@ -2970,13 +2973,13 @@ async function runClaudeMember(
   plan: Extract<AdvisorModelPlan, { kind: "claude-native" }>,
   req: MemberRequest,
   params: Pick<RunAdvisorCallParams, "claude" | "warn">,
-  claudeAuth: () => Promise<ClaudeAdvisorAuth>
+  claudeAuth: (subscriptionOnly: boolean) => Promise<ClaudeAdvisorAuth>
 ): Promise<AdvisorModelOutcome> {
   const outcome = await runClaudeAdvisorCall({
     role: req.role,
     spec: req.spec,
     model: plan.model,
-    auth: await claudeAuth(),
+    auth: await claudeAuth(isClaudeSubscriptionSpec(plan.spec)),
     system: req.system,
     turns: req.turns,
     timeoutMs: req.timeoutMs,
@@ -2999,18 +3002,28 @@ async function runClaudeMember(
   };
 }
 
-/** One credential resolution per advisor call, and none unless a Claude member asks. */
-function memoClaudeAuth(claude: ClaudeAdvisorDeps | undefined): () => Promise<ClaudeAdvisorAuth> {
-  let pending: Promise<ClaudeAdvisorAuth> | undefined;
-  return () => {
-    pending ??= claude
-      ? claude.resolveAuth()
-      : Promise.resolve({
-          arm: null,
-          reason: "no Claude credential: the advisor was given no access to the main request",
-          facts: {},
-        });
-    return pending;
+/**
+ * One credential resolution per advisor call and per arm (a `claude@` member's
+ * login-only one, every other Claude member's), and none unless a Claude member
+ * asks.
+ */
+function memoClaudeAuth(
+  claude: ClaudeAdvisorDeps | undefined
+): (subscriptionOnly: boolean) => Promise<ClaudeAdvisorAuth> {
+  const pending = new Map<boolean, Promise<ClaudeAdvisorAuth>>();
+  return (subscriptionOnly) => {
+    let auth = pending.get(subscriptionOnly);
+    if (!auth) {
+      auth = claude
+        ? claude.resolveAuth(subscriptionOnly ? { subscriptionOnly: true } : undefined)
+        : Promise.resolve({
+            arm: null,
+            reason: "no Claude credential: the advisor was given no access to the main request",
+            facts: {},
+          });
+      pending.set(subscriptionOnly, auth);
+    }
+    return auth;
   };
 }
 

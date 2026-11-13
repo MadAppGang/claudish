@@ -176,7 +176,7 @@ export function nativeRouteFor(model: string): NativeRoute | null {
 }
 
 /** True for a spec whose explicit provider is the Claude subscription (`claude@…`). */
-function isClaudeSubscriptionSpec(spec: string): boolean {
+export function isClaudeSubscriptionSpec(spec: string): boolean {
   const parsed = parseModelSpec(spec);
   return parsed.isExplicitProvider && parsed.provider === "native-anthropic";
 }

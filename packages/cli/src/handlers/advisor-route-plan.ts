@@ -31,6 +31,7 @@ import { parseModelSpec } from "../providers/model-parser.js";
 import {
   claudeSubscriptionInner,
   claudeSubscriptionSpecRefusal,
+  isClaudeSubscriptionSpec,
   nativeRouteFor,
   proxyRouteDecision,
 } from "../providers/native-route.js";
@@ -216,7 +217,14 @@ export async function planAdvisorModel(
   const model = markers.spec;
 
   if (nativeRouteFor(model)) {
-    return planClaudeMember(spec, role, claudeSubscriptionInner(model), deps);
+    // `claude@` names the Claude subscription, which is never signed with an API
+    // key: its member uses the "off" arm whatever the launch signs with.
+    return planClaudeMember(
+      spec,
+      role,
+      claudeSubscriptionInner(model),
+      isClaudeSubscriptionSpec(spec) ? { ...deps, keyArm: "off" } : deps
+    );
   }
 
   // Advisor startup never waits for the cloud models catalog. A bare name is
@@ -325,7 +333,11 @@ async function planClaudeMember(
       spec,
       role,
       cause: "claude-no-credential",
-      reason: `${spec}: ${CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY}`,
+      reason: isClaudeSubscriptionSpec(spec)
+        ? `${spec} names the Claude subscription, and this launch gives the advisor no Claude ` +
+          `login (${noLoginPhrase(authSource)}); claude@ is never signed with an API key. ` +
+          `${restoreLoginHint(authSource)}, or use anthropic@<id> for the Claude API.`
+        : `${spec}: ${CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY}`,
     };
   }
   if (sendsInboundApiKey(childAuth)) {
