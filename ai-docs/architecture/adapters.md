@@ -872,14 +872,22 @@ applied in `buildForwardRequest`:
 
 | Kind | Used for | What is sent |
 |---|---|---|
-| `inbound` | every launch that is not a Claude launch: plain `--monitor`, `--anthropic-api-billing`, a foreign main model, `serve`, the probe proxy | the credential pair as it arrived; a Claude login bearer drops an `x-api-key` beside it; a request with neither header gets the fallback key (this process's key, else `ANTHROPIC_API_KEY` through the credential authority's `native-anthropic`) |
-| `login-only` | the Claude subscription: a `claude@` launch, a bare Claude main model without `--anthropic-api-billing`, and any request whose decision is `claude@<id>` | `authorization` only when it matches `CLAUDE_LOGIN_BEARER` (`sk-ant-oat<n>-`); an inbound `x-api-key` and any other bearer are dropped; no fallback is ever called |
+| `inbound` | every launch that is not a Claude launch and maps no Claude model: plain `--monitor`, `--anthropic-api-billing` (unpinned), a foreign main model with no Claude tier, `serve`, the probe proxy | the credential pair as it arrived; a Claude login bearer drops an `x-api-key` beside it; a request with neither header gets the fallback key (this process's key, else `ANTHROPIC_API_KEY` through the credential authority's `native-anthropic`) |
+| `login-only` | the Claude subscription: a top-level `claude@` launch; a launch whose main model or any tier is a bare Claude name, without `--anthropic-api-billing`, a foreign main model included; a launch pinned by `claudeSubscriptionPin` whatever the opt-in says (a `claude@` tier, a pane child given `claude@`, `run_prompt`'s print child for `claude@`, which gets `--claude-subscription-pin`); and any request whose decision is `claude@<id>` | `authorization` only when it matches `CLAUDE_LOGIN_BEARER` (`sk-ant-oat<n>-`); an inbound `x-api-key` and any other bearer are dropped; no fallback is ever called |
 | `launch-key` | the Claude API launch (`anthropic@<id>` at top level) | every inbound credential dropped; `x-api-key` set to the key the launch resolved |
 
 **The 401.** A `login-only` request with no Claude login gets claudish's own answer, HTTP 401
 `authentication_error`, through `redactForClient`, and no upstream call: "Claude subscription
 session: this request carries no Claude Code login, and claudish never signs a Claude subscription
-request with an API key. Sign in with /login, or use anthropic@<id> for the Claude API." Before
+request with an API key. Sign in with /login, or use anthropic@<id> for the Claude API." A request
+that carries `x-api-key` and no login bearer (Claude Code's own credential is a key: a stored
+Console `primaryApiKey`, or an approved `ANTHROPIC_API_KEY`, both sent as `x-api-key` with no
+`authorization`, measured on Claude Code 2.1.325) gets its own text instead
+(`CLAUDE_SUBSCRIPTION_API_KEY_REQUEST`): it carries an API key, not a Claude login, and the fixes are
+`anthropic@<id>` or, for a bare Claude name, `--anthropic-api-billing`. A `login-only` launch is
+refused once at startup before either can happen (`prepareClaudeLaunch`, `claudeLoginRefusal`):
+`claudeCodeStartupCredential` asks, by presence only, whether Claude Code holds a claude.ai login,
+only a stored Console key, or nothing, and a store that does not answer is not refused. Before
 this rule, a bare Claude name launched with no Claude Code login and an `ANTHROPIC_API_KEY` in the
 shell ran, billed to that key through the `inbound` fallback; it now gets the 401.
 `--anthropic-api-billing` and `anthropic@<id>` are the two ways to bill the key.

@@ -82,9 +82,24 @@ The same refusal runs on every launch `launchSigningFor` signs `login-only`: a b
 model or tier without `--anthropic-api-billing` (top level and pane child, where its message also
 offers that flag), and a `claude@<id>` tier, which sets `claudeSubscriptionPin` so the opt-in is
 ignored (a startup note says so) and a real `ANTHROPIC_API_KEY` is hidden from the child. It also
-runs in MCP `run_prompt`'s print child (`runPromptViaClaudeCode`). What claudish cannot read (an MDM profile, a file Claude Code adds
-later) is the same limit `childAuthControl` documents; a key-signed request from there that
-reaches the proxy is still refused.
+runs in MCP `run_prompt`'s print child (`runPromptViaClaudeCode`), which for a `claude@<id>` spec
+gets `--claude-subscription-pin`, so an inherited opt-in cannot make it sign with a key. What
+claudish cannot read (an MDM profile, a file Claude Code adds later) is the same limit
+`childAuthControl` documents; a key-signed request from there that reaches the proxy is still
+refused.
+
+On the `login-only` launch that is not a monitor session, the native-mapping branch keeps the
+user's own shell `ANTHROPIC_AUTH_TOKEN` for the child, so a real one that is not a Claude login
+token (`sk-ant-oat<n>-`) is refused the same way, named as "your shell environment". Both
+`login-only` branches then ask `claudeCodeStartupCredential` (`auth/claude-code-login.ts`), by
+presence only, which credential Claude Code would start with. A stored Console key
+(`primaryApiKey` in `<CLAUDE_CONFIG_DIR or HOME>/.claude.json`, or the Keychain item `Claude
+Code[-<hash>]`) with no claude.ai login refuses the launch: Claude Code 2.1.325 sends that key as
+`x-api-key` with no `authorization` and shows no login screen, so every request would get the
+401. No login of any kind refuses it with the `/login` text. A store that did not answer
+(`unknown`) is not refused; each request is still checked. A refusal on a foreign launch names
+the tier that made it the Claude subscription and its source. A top-level `claude@` or
+`anthropic@` launch never gets here with a tier: `decideClaudeLaunch` refuses any tier on it.
 
 **Claude API (`anthropic@<id>`).** Claude Code holds no key. Its only credential is claudish's
 placeholder token (`ANTHROPIC_AUTH_TOKEN`, no `ANTHROPIC_API_KEY`), which suppresses the login and

@@ -635,6 +635,19 @@ usual launch, hooks included.
   `authorization`, or a `--settings` file claudish cannot read. A settings file a passthrough
   `--setting-sources` turns off is not read. The message names the file, never the value. Remove
   the key, or use `anthropic@<id>`.
+- A Claude subscription launch whose Claude Code has no Claude login: the message says so and
+  names `/login` and `anthropic@<id>`. When Claude Code's own credential is a stored Console key
+  (`primaryApiKey` in its config, or its Keychain item) and no claude.ai login exists, the message
+  says it is an API key, not a Claude login, and names `anthropic@<id>` and, for a bare Claude
+  name, `--anthropic-api-billing`. claudish checks presence only and never reads the key. A
+  real `ANTHROPIC_AUTH_TOKEN` exported in your shell, other than a Claude login token, is refused
+  like a settings one. A refusal caused by a tier (for example a profile's haiku model) names the
+  tier and where it came from.
+- A top-level `claude@<id>` or `anthropic@<id>` launch with any tier set (`--model-opus`,
+  `--model-sonnet`, `--model-haiku`, `--model-subagent`, a `CLAUDISH_MODEL_*` or
+  `ANTHROPIC_DEFAULT_*_MODEL` variable, or a profile, the default profile included). Such a launch
+  is one Claude Code session that does not use role mappings; the message names each tier and its
+  source. Remove the tier, or name a non-Claude main model to map roles.
 - A Claude API launch with no key (the message lists where claudish looked), with a key a vault
   could not read, or under settings that set `forceLoginMethod: "claudeai"` (managed settings or
   a `--settings` value).
@@ -644,7 +657,9 @@ no Claude Code login and an `ANTHROPIC_API_KEY` in your shell used to run, bille
 request now gets HTTP 401: `Claude subscription session: this request carries no Claude Code login,
 and claudish never signs a Claude subscription request with an API key. Sign in with /login, or use
 anthropic@<id> for the Claude API.` Sign in with `/login`, launch `anthropic@<id>`, or pass
-`--anthropic-api-billing` to bill the key on purpose.
+`--anthropic-api-billing` to bill the key on purpose. A request that carries an API key and no
+login gets `Claude subscription session: this request carries an API key (x-api-key), not a
+Claude Code login, ...`, naming `anthropic@<id>` and `--anthropic-api-billing`.
 
 **Changed: a custom endpoint cannot be named `anthropic`, `a`, `api` or `claude`.** Those names
 now belong to the builtin providers above. Such an endpoint is skipped with the warning
@@ -658,7 +673,8 @@ server reads custom endpoints once: restart it after the rename.
 **Elsewhere.**
 
 - `--model-opus`, `--model-sonnet`, `--model-haiku`, `--model-subagent` and profile tiers map a
-  role, they do not start a monitor session: `claude@<id>` runs that role on your Claude Code
+  role under a non-Claude main model (a top-level `claude@` or `anthropic@` launch refuses them),
+  they do not start a monitor session: `claude@<id>` runs that role on your Claude Code
   login, and `anthropic@<id>` runs it through claudish's proxy, signed with your key and metered.
   A `claude@<id>` tier keeps the whole session on your login: `ANTHROPIC_API_KEY` is hidden from
   Claude Code and `--anthropic-api-billing` does not apply (a startup note says so).
@@ -666,7 +682,8 @@ server reads custom endpoints once: restart it after the rename.
   `anthropic@<id>` runs through claudish's proxy, signed with your key and metered.
 - MCP tools remove an `anthropic@` you did not ask for from a Claude model, so it runs on the
   Claude subscription, unless `user_required_provider` is set. A `claude@` is kept: it already
-  names the Claude subscription. A `claude@` before a name Claude Code does not serve is refused,
+  names the Claude subscription, and `run_prompt` keeps it on your login whatever
+  `--anthropic-api-billing` setting the MCP server inherits. A `claude@` before a name Claude Code does not serve is refused,
   never routed.
 - `claudish --probe claude-haiku-5-5` shows the Claude subscription row (not probed: it runs on
   Claude Code's login, which `--probe` cannot use), then every other route the catalog publishes

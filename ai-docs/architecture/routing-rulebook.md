@@ -39,7 +39,8 @@ catalog has no entry); that list is never a `RoutePlan` and no request is routed
 
 An explicit `provider@model` is a one-hop chain to that provider: no gathering, rules or fallback.
 Its outcomes are `explicit-unknown-shortcut`, `explicit-no-credential`, `explicit-unbuildable`,
-`explicit-not-served` and, for a refused `claude@` spec only (RB-1), `explicit-refused`. Offline, a model outside the bundled recommended list, or a bundled
+`explicit-not-served` and `explicit-refused`, for a refused `claude@` spec (RB-1) or a spec on a
+custom endpoint name a Claude builtin took over (`shadowedEndpointRefusal`). Offline, a model outside the bundled recommended list, or a bundled
 model with no bundled connection for that provider, is refused as with no catalog. A probe sends
 each hop of a bare name's routing chain as a spec marked `x-claudish-hop-origin: routed`; only a
 proxy started for probing (`probeProxy`) honours the mark and builds that hop as a routed hop, so a
@@ -51,7 +52,11 @@ spec the user typed stays explicit, and a proxy serving Claude Code ignores the 
 ### RB-3
 
 A matching user rule (project over global) is used verbatim, never merged or given a fallback. A
-matched `[]` is no-route `rule-empty`.
+matched `[]` is no-route `rule-empty`. A matched rule with an entry on a custom endpoint name a
+Claude builtin took over, or an entry naming the Claude subscription (`claude`, `claude@<id>`,
+which Claude Code serves on its own login and is never a routed hop), is refused whole: no-route
+`explicit-refused`, decided before any candidate is gathered and never replaced by `rule-empty`
+or `catalog-unreadable` (`userRuleRefusal`).
 
 - **Scope:** `providers/routing-rules.ts`.
 - **Check:** `providers/routing-rules.test.ts`, S3.
