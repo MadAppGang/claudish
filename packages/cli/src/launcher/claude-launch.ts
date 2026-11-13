@@ -96,9 +96,10 @@ function refusedClause(finding: SettingsFinding): string | null {
       return `${finding.where} sets an apiKeyHelper, whose output Claude Code would send as an API key instead of your login`;
     case "custom-headers-auth":
       return `${finding.where} sets ANTHROPIC_CUSTOM_HEADERS with an x-api-key or a non-login authorization header, which Claude Code would attach to every request`;
+    case "auth-token":
+      return `${finding.where} sets ANTHROPIC_AUTH_TOKEN, which Claude Code would send instead of your login`;
     case "unreadable":
       return `${finding.where} could not be read or parsed, so claudish cannot confirm it hands Claude Code no API key`;
-    case "auth-token":
     case "base-url":
       return null;
   }
@@ -107,11 +108,11 @@ function refusedClause(finding: SettingsFinding): string | null {
 /**
  * The Claude subscription is never signed with an Anthropic API key, so a
  * settings layer that would hand the child one REFUSES the launch, naming every
- * such file; it is never a warning that spawns anyway. A settings
- * ANTHROPIC_AUTH_TOKEN is not refused here (it is not the API key, and the
- * proxy refuses each request it signs that is not a login), and a settings
- * ANTHROPIC_BASE_URL is a notice: it moves where the login's requests go, not
- * which credential signs them.
+ * such file; it is never a warning that spawns anyway. A real settings
+ * ANTHROPIC_AUTH_TOKEN is refused the same way: Claude Code would send it
+ * instead of the login, and every request would then fail naming the wrong
+ * cause. A settings ANTHROPIC_BASE_URL is a notice: it moves where the login's
+ * requests go, not which credential signs them.
  *
  * `bareName`: the launch named a bare Claude model, so the user may also opt
  * into API billing instead.
