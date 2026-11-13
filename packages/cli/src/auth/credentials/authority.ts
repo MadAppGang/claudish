@@ -28,6 +28,7 @@ import { NativeAnthropicCredentialProvider } from "./native-anthropic-credential
 import type {
   CredentialProvider,
   KeyOrigin,
+  KeySource,
   ReadinessResult,
   RequestAuth,
   RequestAuthContext,
@@ -329,6 +330,32 @@ export class CredentialAuthority {
       if (seen.has(p)) continue;
       seen.add(p);
       p.invalidate?.();
+    }
+  }
+
+  /**
+   * Make a key the user just saved sign for `name` at once, in this process,
+   * without writing it into `process.env`: the provider's memo is dropped (as
+   * `invalidate` does) and the saved key outranks every other store until the
+   * next invalidation. A provider that cannot hold a replacement is only
+   * invalidated.
+   */
+  replaceKey(name: string, key: string, source: KeySource): void {
+    this.invalidate(name);
+    this.registry.get(name)?.replaceKey?.(key, source);
+  }
+
+  /**
+   * The local stores that will still outrank a key just saved to `savedTo`
+   * when a new process resolves `name`, so the caller can say so instead of
+   * presenting the saved key as the one every launch uses. Call it BEFORE the
+   * save touches `process.env` or `config.json`. Never throws.
+   */
+  sourcesOutranking(name: string, key: string, savedTo: KeySource): KeySource[] {
+    try {
+      return this.registry.get(name)?.sourcesOutranking?.(key, savedTo) ?? [];
+    } catch {
+      return [];
     }
   }
 

@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 // mutation made from this tab must drop that memo — otherwise a key the user
 // just deleted keeps being served for the rest of the session, and a key they
 // just set is not seen until relaunch.
-import { credentials } from "../auth/credentials/authority.js";
+import { type KeySource, credentials } from "../auth/credentials/authority.js";
 // macOS Keychain — the default store for keys typed into this tab on macOS.
 // `hydrateKeychainIntoEnv` is what makes a keychain-only key visible to the SYNC
 // readiness classifier: it write-throughs into process.env exactly as the
@@ -119,7 +119,7 @@ import { ProvidersContent } from "./components/ProvidersContent.js";
 import { RoutingContent } from "./components/RoutingContent.js";
 import { RoutingDetail } from "./components/RoutingDetail.js";
 import { TabBar } from "./components/TabBar.js";
-import { configSaveFailure } from "./config-save.js";
+import { configSaveFailure, outrankedKeyNote } from "./config-save.js";
 import { DETAIL_H, FOOTER_H, HEADER_H, TABS_H, getChainProviders } from "./constants.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
@@ -1562,9 +1562,17 @@ export function App({ requestLogin }: AppProps = {}) {
             // and it is the store this tab now advertises. config.json stays the
             // fallback everywhere the keychain does not exist.
             let saved = false;
+            // The store that took the key, for the authority's replacement.
+            let savedTo: KeySource = "config";
             if (keychainSupported) {
               try {
                 writeKeychainSecret(envVar, val);
+                savedTo = "macOS Keychain";
+                // Asked before the write-through below changes process.env.
+                const note = outrankedKeyNote(
+                  envVar,
+                  credentials.sourcesOutranking(target.catalogName, val, savedTo)
+                );
                 // A successful write is the only thing that turns the backend
                 // on — enabling first would leave it on after a failed write,
                 // pointing at a store with nothing in it.
@@ -1584,7 +1592,9 @@ export function App({ requestLogin }: AppProps = {}) {
                   recordKeychainHydratedVar(envVar);
                 }
                 refreshKeychainVars();
-                setStatusMsg(`Key saved to macOS Keychain for ${target.displayName} (${envVar}).`);
+                setStatusMsg(
+                  `Key saved to macOS Keychain for ${target.displayName} (${envVar}).${note}`
+                );
                 saved = true;
               } catch (err) {
                 // Fall through to config.json rather than losing the key the
@@ -1595,6 +1605,10 @@ export function App({ requestLogin }: AppProps = {}) {
               }
             }
             if (!saved) {
+              const note = outrankedKeyNote(
+                envVar,
+                credentials.sourcesOutranking(target.catalogName, val, "config")
+              );
               try {
                 setApiKey(envVar, val);
               } catch (err) {
@@ -1608,12 +1622,14 @@ export function App({ requestLogin }: AppProps = {}) {
               // When the keychain write failed, the status line already explains
               // the fallback and must not be clobbered.
               if (!keychainSupported) {
-                setStatusMsg(`Key saved for ${target.displayName} (${envVar}).`);
+                setStatusMsg(`Key saved for ${target.displayName} (${envVar}).${note}`);
               }
             }
             // Whichever store took it, the authority's memo for this provider is
-            // now stale — drop it so the new key is used without a relaunch.
-            credentials.invalidate(target.catalogName);
+            // now stale. The replacement drops it and makes the saved key sign
+            // in this process at once, ahead of an older shell export or
+            // config.json entry, without writing it into process.env.
+            credentials.replaceKey(target.catalogName, val, savedTo);
             invalidateProbeProxyHandlers(target.catalogName);
             clearTestResult(target.name);
           }

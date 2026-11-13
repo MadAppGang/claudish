@@ -54,9 +54,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { realValue, realValueFor } from "../../env-placeholder.js";
 import { maskCredential } from "../../logger.js";
+import { getApiKey } from "../../profile-config.js";
+import { isOpHydratedVar } from "../../providers/onepassword.js";
 import { keySourcesSearched } from "./key-sources.js";
 import {
   hasKeychainSource,
+  isKeychainHydratedVar,
   keychainHasAnyOf,
   recordKeychainHydratedVar,
   resolveKeychainKeyForEnvVars,
@@ -177,6 +180,12 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   private readonly readAtUse: boolean;
   /** Origin of the last key resolved (never the key): read by `describeOrigin`. */
   private lastOrigin: KeyOrigin | undefined;
+  /**
+   * A key the user just saved in this process, with the store it went to. It
+   * signs ahead of every other step until the next `invalidate()`, so a saved
+   * replacement takes effect at once without being written into `process.env`.
+   */
+  private replacement: { key: string; source: KeySource } | undefined;
 
   /** Memoized resolved key ("" = resolved-and-empty). undefined = not yet resolved. */
   private cachedKey: string | undefined;
@@ -285,6 +294,7 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
    * failure" rules below are what make the next call retry.
    */
   private async resolveKeyDetailed(opts?: { allowOpPrompt?: boolean }): Promise<KeyResolution> {
+    if (this.replacement) return this.settle(this.replacement.key, this.replacement.source);
     // A cached key is a SETTLED answer — either a real value or a stable,
     // deliberately-memoized absence. Neither carries a failure, because the
     // rules below refuse to cache anything that might have been one.
@@ -390,6 +400,7 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     // env/config/oauth/1Password chain for it would be pure cost, and on the
     // 1Password step a real prompt for a key that does not exist.
     if (this.authScheme === "none") return { readiness: "present" };
+    if (this.replacement) return { readiness: "present" };
     // Cheap checks first — avoid the op pull when an oauth file already qualifies.
     if (this.resolveFromEnvConfig()) return { readiness: "present" };
     if (this.hasOauthFallbackFile()) return { readiness: "present" };
@@ -420,6 +431,48 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     this.cachedKey = undefined;
     this.resolving = undefined;
     this.lastOrigin = undefined;
+    this.replacement = undefined;
+  }
+
+  /**
+   * Sign with `key`, just saved to `source`, from now until the next
+   * `invalidate()`. Held here only: nothing is written into `process.env`.
+   */
+  replaceKey(key: string, source: KeySource): void {
+    this.invalidate();
+    this.replacement = { key, source };
+  }
+
+  /**
+   * The stores that will still outrank a key saved to `savedTo` when a NEW
+   * process resolves this provider: a real value other than `key` in the
+   * environment (a shell export, not a value this process hydrated from a
+   * vault), and, for a vault save, one in `config.json`'s `apiKeys`. Reads
+   * names and local values only; no vault is asked.
+   */
+  sourcesOutranking(key: string, savedTo: KeySource): KeySource[] {
+    const outranking: KeySource[] = [];
+    const primary = realValueFor(this.envVar, process.env[this.envVar]);
+    const primaryExported =
+      !!primary &&
+      primary !== key &&
+      !isKeychainHydratedVar(this.envVar) &&
+      !isOpHydratedVar(this.envVar);
+    const aliasExported = this.aliases.some((a) => {
+      const v = realValueFor(a, process.env[a]);
+      return !!v && v !== key;
+    });
+    if (primaryExported || aliasExported) outranking.push("environment");
+    if (savedTo !== "environment" && savedTo !== "config") {
+      let configured: string | undefined;
+      try {
+        configured = realValueFor(this.envVar, getApiKey(this.envVar));
+      } catch {
+        configured = undefined;
+      }
+      if (configured && configured !== key) outranking.push("config");
+    }
+    return outranking;
   }
 
   /**

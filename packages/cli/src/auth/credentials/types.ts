@@ -255,6 +255,16 @@ export interface CredentialProvider {
   accountIdentity?(opts?: { allowOpPrompt?: boolean }): Promise<string | undefined>;
   /** Drop any memoized resolution so the next read re-resolves (TUI hydrate-on-add). */
   invalidate?(): void;
+  /**
+   * Sign with a key the user just saved to `source`, until the next
+   * `invalidate()`. Held in memory only, never written into `process.env`.
+   */
+  replaceKey?(key: string, source: KeySource): void;
+  /**
+   * The local stores that still outrank a key saved to `savedTo` in a new
+   * process (see `ApiKeyCredentialProvider.sourcesOutranking`).
+   */
+  sourcesOutranking?(key: string, savedTo: KeySource): KeySource[];
   login?(): Promise<void>;
   logout?(): Promise<void>;
 }
