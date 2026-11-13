@@ -628,6 +628,11 @@ describe("exact effort-map wire ids", () => {
     expect(resolveExternalId(low, "google")).toBe(googleBase);
   });
 
+  test("resolves aliases absent from Antigravity's effort map to its base wire id", () => {
+    expect(resolveExternalId(mediumAlias, "antigravity")).toBe(base);
+    expect(resolveExternalId(devinLow, "antigravity")).toBe(base);
+  });
+
   test("logs a model resolution through the debug logger as well as stderr", () => {
     const logSpy = spyOn(logger, "log").mockImplementation(() => {});
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -644,6 +649,29 @@ describe("exact effort-map wire ids", () => {
       expect(stderrSpy.mock.calls[0]![0]).toBe(
         `[Model] Resolved "${low}" → "${base}" (antigravity catalog)\n`
       );
+    } finally {
+      stderrSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  test("logs a quiet model resolution without writing to stderr", () => {
+    const logSpy = spyOn(logger, "log").mockImplementation(() => {});
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      logResolution(
+        low,
+        {
+          resolvedId: base,
+          wasResolved: true,
+          sourceLabel: "antigravity catalog",
+        },
+        true
+      );
+
+      expect(stderrSpy).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      expect(logSpy.mock.calls[0]![0]).toContain(`[Model] Resolved "${low}" → "${base}"`);
     } finally {
       stderrSpy.mockRestore();
       logSpy.mockRestore();
