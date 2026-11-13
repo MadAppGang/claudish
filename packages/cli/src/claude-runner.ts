@@ -199,7 +199,7 @@ export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = () => {
  * A config read failure must never block launch, so it degrades to "not opted
  * in" — the safe direction, since that only ever avoids spending money.
  */
-function wantsAnthropicApiBilling(
+export function wantsAnthropicApiBilling(
   config: ClaudishConfig,
   env: NodeJS.ProcessEnv = process.env
 ): boolean {

@@ -727,6 +727,7 @@ async function runCli() {
     signalShutdownExitCode,
     isAdvisorNativeSession,
     resolveAdvisorToolEnv,
+    wantsAnthropicApiBilling,
   } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
   const { DEFAULT_PORT_RANGE } = await import("./config.js");
@@ -1261,11 +1262,22 @@ async function runCli() {
     // Startup PLANS every member and BUILDS every routed member's chain here,
     // before the port exists; the proxy's panel gateway runs on exactly that
     // runtime (no lazy path), and owns its handlers from then on.
+    //
+    // Who signs this launch's native requests is decided once, here, and the
+    // same object reaches advisor planning and the proxy: a bare Claude main
+    // model is the Claude subscription, never signed with an API key.
+    const { launchSigningFor } = await import("./launcher/claude-launch.js");
+    const launchSigning = launchSigningFor(cliConfig);
     let advisorRuntime: import("./handlers/advisor-panel-gateway.js").AdvisorRuntime | undefined;
     if (cliConfig.advisor) {
       const { evaluateAdvisorStartup } = await import("./advisor-startup.js");
       const decision = await traceSpan("startup:advisor-check", () =>
-        evaluateAdvisorStartup(cliConfig, resolveAdvisorToolEnv(cliConfig))
+        evaluateAdvisorStartup(
+          cliConfig,
+          resolveAdvisorToolEnv(cliConfig),
+          process.env,
+          launchSigning ? { launchSigning } : {}
+        )
       );
       if (decision?.kind === "refuse") {
         process.stderr.write(
@@ -1394,9 +1406,13 @@ async function runCli() {
         cliConfig.monitor ? undefined : cliConfig.openrouterApiKey!,
         cliConfig.monitor ? undefined : explicitModel,
         cliConfig.monitor,
-        cliConfig.anthropicApiKey,
+        // A Claude subscription launch gets no key at all: nothing it forwards
+        // may be signed with one.
+        launchSigning ? undefined : cliConfig.anthropicApiKey,
         modelMap,
         {
+          ...(launchSigning ? { nativeSigning: launchSigning } : {}),
+          apiBillingOptIn: wantsAnthropicApiBilling(cliConfig),
           summarizeTools: cliConfig.summarizeTools,
           quiet: cliConfig.quiet,
           isInteractive: cliConfig.interactive,

@@ -48,7 +48,7 @@ import type { Context } from "hono";
 import type { ChildAuthControl } from "../child-auth-types.js";
 import { extractSessionId } from "../hooks/harness.js";
 import { log, logStderr } from "../logger.js";
-import type { AdvisorPanelGateway } from "./advisor-route-plan.js";
+import type { AdvisorPanelGateway, ClaudeAdvisorKeyArm } from "./advisor-route-plan.js";
 import {
   type AdvisorSwapConfig,
   type AdvisorToolResult,
@@ -75,6 +75,7 @@ import {
   stubAdvisorAdvice,
   swapAdvisorToolInBody,
 } from "./native-handler-advisor.js";
+import type { NativeSigning } from "./shared/anthropic-forward.js";
 import type { ModelHandler } from "./types.js";
 
 declare module "hono" {
@@ -185,13 +186,33 @@ export interface AdvisorSwapDeps {
   claude?: ClaudeAdvisorSwapDeps;
 }
 
+export type { ClaudeAdvisorKeyArm };
+
+/**
+ * The one mapping from a native request's signing to the advisor's key arm,
+ * shared by startup planning and the proxy, so the plan and the call agree.
+ */
+export function advisorKeyArmFor(signing: NativeSigning): ClaudeAdvisorKeyArm {
+  switch (signing.kind) {
+    case "launch-key":
+      return { launchKey: signing.key };
+    case "login-only":
+      return "off";
+    case "inbound":
+      return "lookup";
+  }
+}
+
 /** The decorator's inputs for Claude members and the Claude collector. */
 export interface ClaudeAdvisorSwapDeps {
   /**
    * This launch's `childAuthControl(config, env)`, decided at startup. Only a
    * launch where claudish controls the child's auth lets the bearer sign.
+   * Absent ⇒ no launch decision exists, and the bearer never signs.
    */
-  childAuth: ChildAuthControl;
+  childAuth?: ChildAuthControl;
+  /** The request's key arm (`advisorKeyArmFor`); default `"lookup"`. */
+  keyArm?: ClaudeAdvisorKeyArm;
   /** ANTHROPIC_API_KEY lookup; defaults to the advisor's own credential lookup. */
   anthropicKey?: () => Promise<string | undefined>;
   /** Read for ANTHROPIC_AUTH_TOKEN; defaults to `process.env`. */
@@ -274,7 +295,8 @@ function advisorCallDeps(
   return {
     ...(deps.panel ? { gateway: deps.panel } : {}),
     claude: {
-      resolveAuth: (): Promise<ClaudeAdvisorAuth> => resolveClaudeAdvisorAuth(facts, anthropicKey),
+      resolveAuth: (): Promise<ClaudeAdvisorAuth> =>
+        resolveClaudeAdvisorAuth(facts, anthropicKey, deps.claude?.keyArm ?? "lookup"),
       ...(deps.claude?.fetchImpl ? { fetchImpl: deps.claude.fetchImpl } : {}),
     },
   };

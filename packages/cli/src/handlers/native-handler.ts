@@ -12,7 +12,12 @@ import {
   stripAdvisorBeta,
 } from "./native-handler-advisor.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
-import { buildForwardRequest, inboundAuthHeaders } from "./shared/anthropic-forward.js";
+import {
+  type NativeSigning,
+  buildForwardRequest,
+  inboundAuthHeaders,
+  nativeSigningOf,
+} from "./shared/anthropic-forward.js";
 import {
   type UpstreamReaderSlot,
   cancelEndsUpstreamWork,
@@ -103,6 +108,11 @@ export class NativeHandler implements ModelHandler {
   private advisorModels?: string[];
   private advisorCollector?: string | null;
 
+  /**
+   * Who signs a request is decided per request by the proxy and set on its
+   * context (`setNativeSigning`). `apiKey` serves only a request that carries no
+   * signing (a direct caller): it is that request's `inbound` fallback key.
+   */
   constructor(apiKey?: string, advisorModels?: string[], advisorCollector?: string | null) {
     this.apiKey = apiKey;
     // Always forward to the real Anthropic API (the origin the advisor's Claude
@@ -174,20 +184,26 @@ export class NativeHandler implements ModelHandler {
     // thinking strip above, so a payload that strip, a hook stage or the
     // advisor decorator changed goes out in its new serialization.
     //
-    // A request that arrived with NO auth (e.g. the --probe client, which
-    // doesn't replicate Claude Code's injected key) falls back to the api key
+    // Who signs is the request's `NativeSigning` (see anthropic-forward.ts). On
+    // `inbound`, a request that arrived with NO auth falls back to the api key
     // this handler was constructed with, else ANTHROPIC_API_KEY resolved through
-    // the credential authority (env → config → op://).
-    const { headers, url, body } = await buildForwardRequest(
+    // the credential authority (env → config → op://). A Claude subscription
+    // request (`login-only`) with no Claude login is answered here, 401, with no
+    // upstream call: it is never signed with an API key.
+    const forward = await buildForwardRequest(
       c,
       payload,
       `${this.baseUrl}/v1/messages`,
-      async () => {
-        if (this.apiKey) return this.apiKey;
-        const auth = await credentials.getRequestAuth("native-anthropic", { model: target });
-        return auth.headers["x-api-key"];
-      }
+      nativeSigningOf(c) ?? this.defaultSigning(target)
     );
+    if ("refused" in forward) {
+      log(`[Native] refused: ${forward.refused}`);
+      return c.json(
+        wrapAnthropicError(401, redactForClient(forward.refused), "authentication_error"),
+        401
+      );
+    }
+    const { headers, url, body } = forward;
     const incomingBeta = headers["anthropic-beta"];
     if (incomingBeta && advisorSwapped) {
       // When we swap the advisor tool we must also strip the matching beta
@@ -356,6 +372,18 @@ export class NativeHandler implements ModelHandler {
       log(`[Native] Fetch Error: ${message}`);
       return c.json(wrapAnthropicError(500, message), 500);
     }
+  }
+
+  /** `inbound` with this handler's key, then the credential authority, as the fallback. */
+  private defaultSigning(model: string): NativeSigning {
+    return {
+      kind: "inbound",
+      fallbackKey: async () => {
+        if (this.apiKey) return this.apiKey;
+        const auth = await credentials.getRequestAuth("native-anthropic", { model });
+        return auth.headers["x-api-key"];
+      },
+    };
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: the Messages API payload is untyped at this layer

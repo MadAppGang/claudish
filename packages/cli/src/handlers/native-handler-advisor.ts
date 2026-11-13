@@ -59,6 +59,8 @@ import {
   type AdvisorPanelGateway,
   type AdvisorPanelResult,
   type AdvisorTurn,
+  CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY,
+  type ClaudeAdvisorKeyArm,
   type ExtractedAdvice,
   buildAdvisorPanelPayload,
   describeAdvisorRefusal,
@@ -1905,13 +1907,14 @@ export function claudeRequestFacts(
 export type ClaudeCredentialSource =
   | "claude-code-login"
   | "inbound-x-api-key"
-  | "ANTHROPIC_API_KEY";
+  | "ANTHROPIC_API_KEY"
+  | "claude-api-launch-key";
 
 export type ClaudeAdvisorAuth =
   | { arm: "oauth"; source: "claude-code-login"; login: ClaudeLogin; facts: ClaudeRequestFacts }
   | {
       arm: "api-key";
-      source: "inbound-x-api-key" | "ANTHROPIC_API_KEY";
+      source: "inbound-x-api-key" | "ANTHROPIC_API_KEY" | "claude-api-launch-key";
       apiKey: string;
       facts: ClaudeRequestFacts;
       /** Why a present bearer was not used; the call warns with it (never silent). */
@@ -1935,20 +1938,35 @@ function loginSkippedPhrase(facts: ClaudeRequestFacts): string {
 
 /**
  * The credential for one Claude advisor call, by presence and provenance on
- * the request, never by failure: the login when `facts.login` exists; else the
- * inbound `x-api-key` if real; else ANTHROPIC_API_KEY (`anthropicKey`, the
- * advisor's own lookup, asked only now). A real bearer that failed a check, or
- * a request with no bearer at all, is never moved to a metered key silently:
- * the result carries a warning naming the reason. claudish's own placeholder
- * (a proxy-auth launch, whose startup notice already says metered) is not a
- * credential and only shows in the record (`loginSkipped`).
+ * the request, never by failure: the login when `facts.login` exists; else what
+ * `keyArm` allows. On `"lookup"`: the inbound `x-api-key` if real; else
+ * ANTHROPIC_API_KEY (`anthropicKey`, the advisor's own lookup, asked only now).
+ * On `"off"` (the Claude subscription): nothing, no key is read. On
+ * `{launchKey}` (the Claude API launch): the launch's key, never an inbound one.
+ * A real bearer that failed a check, or a request with no bearer at all, is
+ * never moved to a metered key silently: the result carries a warning naming
+ * the reason. claudish's own placeholder (a proxy-auth launch, whose startup
+ * notice already says metered) is not a credential and only shows in the record
+ * (`loginSkipped`).
  */
 export async function resolveClaudeAdvisorAuth(
   facts: ClaudeRequestFacts,
-  anthropicKey: () => Promise<string | undefined> = () => resolveAdvisorCredential("anthropic")
+  anthropicKey: () => Promise<string | undefined> = () => resolveAdvisorCredential("anthropic"),
+  keyArm: ClaudeAdvisorKeyArm = "lookup"
 ): Promise<ClaudeAdvisorAuth> {
   if (facts.login) {
     return { arm: "oauth", source: "claude-code-login", login: facts.login, facts };
+  }
+  if (keyArm === "off") {
+    return { arm: null, reason: CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY, facts };
+  }
+  if (typeof keyArm === "object") {
+    return {
+      arm: "api-key",
+      source: "claude-api-launch-key",
+      apiKey: keyArm.launchKey(),
+      facts,
+    };
   }
   const skipped =
     facts.loginSkipped === undefined

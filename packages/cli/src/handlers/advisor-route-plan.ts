@@ -74,8 +74,24 @@ export interface AdvisorHop {
   billing: AdvisorBilling;
 }
 
+/**
+ * What a Claude advisor member may sign with when the request carries no usable
+ * Claude login. `"lookup"`: the request's x-api-key, else ANTHROPIC_API_KEY
+ * through the advisor's own lookup. `"off"`: nothing; the Claude subscription is
+ * never signed with an API key. `{launchKey}`: the key the Claude API launch
+ * signs every request with, billed to the same key.
+ */
+export type ClaudeAdvisorKeyArm = "lookup" | "off" | { launchKey: () => string };
+
+/** Why a Claude subscription session's advisor call with no login is not signed at all. */
+export const CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY =
+  "Claude subscription session: the advisor signs only with Claude Code's login, never an API key";
+
 /** Where a Claude member's API key comes from on a launch without a usable login. */
-export type ClaudeApiKeySource = "inbound-x-api-key" | "ANTHROPIC_API_KEY";
+export type ClaudeApiKeySource =
+  | "inbound-x-api-key"
+  | "ANTHROPIC_API_KEY"
+  | "claude-api-launch-key";
 
 export type AdvisorModelPlan =
   | {
@@ -132,6 +148,11 @@ export interface PlanAdvisorDeps {
   warmCatalog?: () => Promise<void>;
   /** Default `isSubscriptionProvider`. */
   isSubscription?: (provider: string) => boolean;
+  /**
+   * The launch's advisor key arm (`advisorKeyArmFor` of its `NativeSigning`),
+   * the same arm the proxy signs with. Default `"lookup"`.
+   */
+  keyArm?: ClaudeAdvisorKeyArm;
 }
 
 /**
@@ -284,6 +305,29 @@ async function planClaudeMember(
     return { kind: "claude-native", spec, role, model: claude.id, expectedArm: "claude-login" };
   }
   const authSource = { reason: childAuth.reason, where: childAuth.where };
+  const keyArm = deps.keyArm ?? "lookup";
+  if (typeof keyArm === "object") {
+    // The Claude API launch: the proxy signs every request with the launch key,
+    // and the advisor bills the same key. No second lookup, no inbound key.
+    return {
+      kind: "claude-native",
+      spec,
+      role,
+      model: claude.id,
+      expectedArm: "api-key",
+      authSource,
+      apiKeySource: "claude-api-launch-key",
+    };
+  }
+  if (keyArm === "off") {
+    return {
+      kind: "refused",
+      spec,
+      role,
+      cause: "claude-no-credential",
+      reason: `${spec}: ${CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY}`,
+    };
+  }
   if (sendsInboundApiKey(childAuth)) {
     return {
       kind: "claude-native",
@@ -401,7 +445,9 @@ export function describeClaudeAdvisorPlan(
   const key =
     plan.apiKeySource === "inbound-x-api-key"
       ? "the x-api-key Claude Code sends, else ANTHROPIC_API_KEY"
-      : "ANTHROPIC_API_KEY";
+      : plan.apiKeySource === "claude-api-launch-key"
+        ? "the Claude API launch's key"
+        : "ANTHROPIC_API_KEY";
   return (
     `${plan.spec} -> ${ANTHROPIC_API_HOST} (metered, billed per token: ${key}; ` +
     `${noLoginPhrase(source)}, so the advisor never signs with a bearer on this launch. ` +
