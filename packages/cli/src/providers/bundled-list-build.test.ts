@@ -48,6 +48,8 @@ const recommendations = (input: BundledListInputs) =>
   input.recommended.recommendations as Recommendations;
 const model = (input: BundledListInputs, id = "gpt-6.1-sol") =>
   (input.slim.models as SlimModelEntry[]).find((entry) => entry.modelId === id)!;
+const warningsOf = (summary: ReturnType<typeof buildBundledListWithSummary>["summary"]) =>
+  (summary as typeof summary & { warnings?: string[] }).warnings ?? [];
 const registry = (input: BundledListInputs) => input.routes.registry as RouteRegistry;
 const own = (input: BundledListInputs) =>
   model(input).aggregators!.find(
@@ -230,12 +232,6 @@ const badInputs: Array<[string, (input: BundledListInputs) => void]> = [
     },
   ],
   [
-    "a model publishing effort levels has no row",
-    (i) => {
-      delete recommendations(i).efforts!["gpt-6.1-sol"];
-    },
-  ],
-  [
     "a model publishing effort levels has an empty row",
     (i) => {
       recommendations(i).efforts!["gpt-6.1-sol"] = {};
@@ -258,7 +254,64 @@ describe("R1 RB-17: builder rejects incomplete or untrustworthy publications", (
       }));
   }
 
-  test("R1: a model with no effort levels and no row is bundled and named in the summary", () =>
+  test("R1: a recommended model with effort levels and no row is kept with a warning", () =>
+    withInput((inputs) => {
+      const id = "gpt-6.1-sol";
+      delete recommendations(inputs).efforts![id];
+      expect(model(inputs, id).reasoning!.efforts!.length).toBeGreaterThan(0);
+
+      let result!: ReturnType<typeof buildBundledListWithSummary>;
+      expect(() => {
+        result = buildBundledListWithSummary(inputs);
+      }).not.toThrow();
+      const { file, summary } = result;
+
+      expect(file.entries.some((entry) => entry.modelId === id)).toBe(true);
+      expect(file.bundle.recommendations.entries.some((entry) => entry.modelId === id)).toBe(true);
+      expect(Object.hasOwn(file.bundle.efforts, id)).toBe(false);
+      expect(warningsOf(summary).join("\n")).toContain(id);
+    }));
+
+  test("R1: two recommended models with no effort rows are kept and warned in sorted order", () =>
+    withInput((inputs) => {
+      const ids = ["gpt-6.1-sol", "kimi-k3"];
+      for (const id of ids) {
+        delete recommendations(inputs).efforts![id];
+        expect(model(inputs, id).reasoning!.efforts!.length).toBeGreaterThan(0);
+      }
+      inputs.slim.models.reverse();
+      recommendations(inputs).entries.reverse();
+
+      let result!: ReturnType<typeof buildBundledListWithSummary>;
+      expect(() => {
+        result = buildBundledListWithSummary(inputs);
+      }).not.toThrow();
+      const { file, summary } = result;
+
+      for (const id of ids) {
+        expect(file.entries.some((entry) => entry.modelId === id)).toBe(true);
+        expect(file.bundle.recommendations.entries.some((entry) => entry.modelId === id)).toBe(
+          true
+        );
+        expect(Object.hasOwn(file.bundle.efforts, id)).toBe(false);
+      }
+      const warnings = warningsOf(summary).join("\n");
+      for (const id of ids) expect(warnings).toContain(id);
+      expect(warnings.indexOf(ids[0]!)).toBeLessThan(warnings.indexOf(ids[1]!));
+    }));
+
+  test("R1: a dropped effort cell still fails when another model has no effort row", () =>
+    withInput((inputs) => {
+      delete recommendations(inputs).efforts!["kimi-k3"];
+      recommendations(inputs).efforts!["gpt-6.1-sol"]!.coding!.effort = "";
+
+      expect(() => buildBundledListWithSummary(inputs)).toThrow(BundleShapeError);
+      expect(() => buildBundledListWithSummary(inputs)).toThrow(
+        "recommendations.efforts: the runtime parser drops 1 cell(s): gpt-6.1-sol.coding"
+      );
+    }));
+
+  test("R1: a model with no effort levels and no row is bundled without a warning", () =>
     withInput((inputs) => {
       // Choose a captured no-effort-level model, not a patched reasoning capability.
       const rows = recommendations(inputs);
@@ -271,6 +324,7 @@ describe("R1 RB-17: builder rejects incomplete or untrustworthy publications", (
       expect(file.entries.some((entry) => entry.modelId === "minimax-m3")).toBe(true);
       expect(file.bundle.efforts["minimax-m3"]).toBeUndefined();
       expect(summary.modelsWithNoEffortRow).toContain("minimax-m3");
+      expect(warningsOf(summary)).toEqual([]);
     }));
 
   test("R1 RB-23: narrowing sendableOn to no kept connections does not discard or reject the cell", () =>
