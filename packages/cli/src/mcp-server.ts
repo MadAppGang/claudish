@@ -101,6 +101,7 @@ import { isLocalProviderName, parseModelChain, parseModelSpec } from "./provider
 import {
   claudeSubscriptionInner,
   claudeSubscriptionSpecRefusal,
+  isClaudeSubscriptionSpec,
   nativeRouteFor,
 } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
@@ -475,8 +476,10 @@ export async function runPromptViaProxy(
  * (`claude-*`, `opus`, `sonnet`, `haiku`, `internal`, ...) or `claude@` before one
  * runs as one Claude Code print-mode call on the user's own Claude Code login,
  * because the proxy's native route forwards the caller's credential and an MCP call
- * has none. The print child gets the bare name (`claude@` removed); claudish's CLI
- * owns alias normalisation. Every other model goes through the in-process proxy.
+ * has none. The print child gets the bare name (`claude@` removed) and, for a
+ * `claude@` spec, `--claude-subscription-pin`, so it signs login-only whatever
+ * API-billing opt-in it inherits; claudish's CLI owns alias normalisation. Every
+ * other model goes through the in-process proxy.
  *
  * `effort` reaches only the proxy path: on the print path Claude Code sets the
  * effort of its own Claude model.
@@ -493,6 +496,9 @@ export async function runPrompt(
   if (nativeRouteFor(model) !== null) {
     return runPromptViaClaudeCode(claudeSubscriptionInner(model), prompt, systemPrompt, {
       signal,
+      // The child sees the bare name; the pin keeps the caller's explicit
+      // choice of the Claude subscription across the boundary.
+      subscriptionPin: isClaudeSubscriptionSpec(model),
     });
   }
   return runPromptViaProxy(model, prompt, systemPrompt, effort);

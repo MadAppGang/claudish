@@ -75,14 +75,33 @@ const PRINT_FLAGS = [
 ] as const;
 
 /**
+ * Pins the print child to the Claude subscription: given when the caller named
+ * `claude@<id>`, which reaches the child as the bare `<id>`. Without it the
+ * child would honour an inherited API-billing opt-in (flag, variable or
+ * config) and forward an API key Claude Code sends, such as a stored Console
+ * key.
+ */
+const SUBSCRIPTION_PIN_FLAG = "--claude-subscription-pin";
+
+/**
  * The argv after claudish's own launch words. No positional prompt and no flag value
  * that could start with `-`: claudish's passthrough parser takes a value only when it
  * does not start with `-`, so the prompt travels on stdin and the system prompt in a
  * file. `--system-prompt ""` replaces Claude Code's default system prompt (3 232 input
  * tokens) when the caller gave none, because the proxy path sends none either.
  */
-export function claudeCodePrintArgv(model: string, systemPromptFile: string | undefined): string[] {
-  const head = [PRINT_FLAGS[0], "--model", model, ...PRINT_FLAGS.slice(1)];
+export function claudeCodePrintArgv(
+  model: string,
+  systemPromptFile: string | undefined,
+  opts: { subscriptionPin?: boolean } = {}
+): string[] {
+  const head = [
+    PRINT_FLAGS[0],
+    "--model",
+    model,
+    ...(opts.subscriptionPin ? [SUBSCRIPTION_PIN_FLAG] : []),
+    ...PRINT_FLAGS.slice(1),
+  ];
   return systemPromptFile !== undefined
     ? [...head, "--system-prompt-file", systemPromptFile]
     : [...head, "--system-prompt", ""];
@@ -288,6 +307,11 @@ export async function runPromptViaClaudeCode(
   opts: {
     signal?: AbortSignal;
     parentEnv?: Record<string, string | undefined>;
+    /**
+     * The caller named `claude@<id>`: the child is pinned to the Claude
+     * subscription (`--claude-subscription-pin`), whatever opt-in it inherits.
+     */
+    subscriptionPin?: boolean;
     /** Test seam; default reads the settings layers the print child would read. */
     settingsFindings?: (
       model: string,
@@ -305,8 +329,8 @@ export async function runPromptViaClaudeCode(
   const printEnv = claudeCodePrintEnv(parentEnv);
   const findings = (opts.settingsFindings ?? defaultSettingsFindings)(model, printEnv);
   // `bareName: false`: the remedy never offers --anthropic-api-billing, because
-  // the print child honours no opt-in (it never receives ANTHROPIC_API_KEY), and
-  // a claude@ spec reaches here already reduced to its bare name.
+  // the print child never receives ANTHROPIC_API_KEY, and a claude@ spec reaches
+  // here already reduced to its bare name, with `subscriptionPin` set.
   const check = subscriptionSettingsCheck(findings, { bareName: false });
   if (check.refusal) throw new Error(check.refusal);
 
@@ -333,7 +357,9 @@ export async function runPromptViaClaudeCode(
       writeFileSync(systemPromptFile, systemPrompt, { mode: 0o600 });
     }
 
-    const argv = claudeCodePrintArgv(model, systemPromptFile);
+    const argv = claudeCodePrintArgv(model, systemPromptFile, {
+      subscriptionPin: opts.subscriptionPin === true,
+    });
     const outcome = await runChild(launch, argv, cwd, printEnv, prompt, signal);
 
     if (signal?.aborted) throw new Error("cancelled");

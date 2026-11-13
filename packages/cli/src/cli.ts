@@ -250,6 +250,7 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--model-haiku": "value",
   "--model-subagent": "value",
   "--model-pinned": "none",
+  "--claude-subscription-pin": "none",
   "--port": "value",
   "--auto-approve": "none",
   "-y": "none",
@@ -625,6 +626,14 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // left out of `--help`; index.ts honours it only in a pane child
       // (`modelPinnedHonoured`) and drops it, with a debug line, anywhere else.
       config.modelPinned = true;
+    } else if (arg === "--claude-subscription-pin") {
+      // Written by the MCP server on run_prompt's print child for a `claude@`
+      // spec, whose model reaches the child as the bare name: it keeps the
+      // explicit choice of the Claude subscription across that boundary, so the
+      // child signs login-only whatever API-billing opt-in it inherits. It only
+      // ever narrows signing to the login, so it is honoured from any argv, and
+      // left out of `--help`.
+      config.claudeSubscriptionPin = true;
     } else if (arg === "--model-opus") {
       // Model mapping flags
       const val = args[++i];

@@ -67,10 +67,11 @@ export interface ClaudishConfig {
    */
   claudeLaunchKeySource?: string;
   /**
-   * Set only by `decideClaudeLaunch`: in a pane child given `claude@<id>` (the
+   * Set by `decideClaudeLaunch`: in a pane child given `claude@<id>` (the
    * model became the bare `<id>`), and on any launch whose tier
    * (`modelOpus`, `modelSonnet`, `modelHaiku`, `modelSubagent`) is
-   * `claude@<id>`. It keeps the user's explicit choice of the Claude
+   * `claude@<id>`. Also set by `--claude-subscription-pin`, which `run_prompt`
+   * passes its print child for a `claude@<id>` spec. It keeps the user's explicit choice of the Claude
    * subscription: the launch then signs `login-only` and hides a real
    * ANTHROPIC_API_KEY whatever the API-billing opt-in says.
    */
