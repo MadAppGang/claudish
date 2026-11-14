@@ -699,9 +699,7 @@ function claudeSettingsLayers(
   const files: Array<[string, SettingsTier]> = [
     [managedSettingsPath(), "managed"],
     ...(on("user")
-      ? userSettingsFiles(env.CLAUDE_CONFIG_DIR, home, cwd).map(
-          (file) => [file, "user"] as [string, SettingsTier]
-        )
+      ? [[userSettingsFile(env.CLAUDE_CONFIG_DIR, home, cwd), "user"] as [string, SettingsTier]]
       : []),
     ...(on("project")
       ? [[join(cwd, ".claude", "settings.json"), "project"] as [string, SettingsTier]]
@@ -732,19 +730,15 @@ function claudeSettingsLayers(
 }
 
 /**
- * The user settings file Claude Code loads, measured on 2.1.325: ONE file,
- * `$CLAUDE_CONFIG_DIR/settings.json` when that is a non-empty string, at the
- * path exactly as given (a trailing space is kept: `"<cfg> "` loads
- * `<cfg> /settings.json`), a relative value resolved against `cwd`; else
- * `<home>/.claude/settings.json`. A whitespace-only value is unmeasured, so
- * both candidates are read: the check can only add refusals.
+ * The user settings file Claude Code loads, measured on 2.1.325: ONE file.
+ * `CLAUDE_CONFIG_DIR` unset: `<home>/.claude/settings.json`. Any string value,
+ * empty and whitespace-only included, is taken exactly as given and resolved
+ * against `cwd`: `""` loads `<cwd>/settings.json`, and `"<cfg> "` loads
+ * `<cfg> /settings.json` (`resolve` keeps the space).
  */
-function userSettingsFiles(configDir: string | undefined, home: string, cwd: string): string[] {
-  const defaultFile = join(home, ".claude", "settings.json");
-  if (!configDir) return [defaultFile];
-  // `resolve` keeps a trailing space: it only normalises separators and dots.
-  const file = join(resolve(cwd, configDir), "settings.json");
-  return configDir.trim() ? [file] : [defaultFile, file];
+function userSettingsFile(configDir: string | undefined, home: string, cwd: string): string {
+  if (configDir === undefined) return join(home, ".claude", "settings.json");
+  return join(resolve(cwd, configDir), "settings.json");
 }
 
 /**

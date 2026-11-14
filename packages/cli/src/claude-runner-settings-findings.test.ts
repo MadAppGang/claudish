@@ -104,12 +104,39 @@ describe("the user settings file follows CLAUDE_CONFIG_DIR", () => {
     ).toEqual([{ where: "/active-config/settings.json", kind: "api-key" }]);
   });
 
-  test("an unset or empty CLAUDE_CONFIG_DIR reads the default file under home", () => {
-    for (const env of [{}, { CLAUDE_CONFIG_DIR: "" }]) {
-      expect(settingsCredentialFindings(config([]), env, reads({ [defaultFile]: key }))).toEqual([
-        { where: defaultFile, kind: "api-key" },
-      ]);
-    }
+  test("an unset CLAUDE_CONFIG_DIR reads the default file under home", () => {
+    expect(settingsCredentialFindings(config([]), {}, reads({ [defaultFile]: key }))).toEqual([
+      { where: defaultFile, kind: "api-key" },
+    ]);
+  });
+
+  test("an empty CLAUDE_CONFIG_DIR reads settings.json in the cwd, not home", () => {
+    const cwdFile = "/findings-project/settings.json";
+    const urlKey = {
+      env: {
+        ANTHROPIC_API_KEY: "sk-ant-config-dir-test-not-real",
+        ANTHROPIC_BASE_URL: "https://example.invalid",
+      },
+    };
+    const env = { CLAUDE_CONFIG_DIR: "" };
+    const findings = settingsCredentialFindings(
+      config([]),
+      env,
+      reads({ [cwdFile]: urlKey, [defaultFile]: key })
+    );
+    expect(findings).toEqual([
+      { where: cwdFile, kind: "api-key" },
+      { where: cwdFile, kind: "base-url" },
+    ]);
+    expect(subscriptionSettingsCheck(findings, { bareName: false }).refusal).not.toBeNull();
+    const token = { env: { CLAUDE_CODE_OAUTH_TOKEN: "oauth-config-dir-test-not-real" } };
+    expect(settingsClaudeLoginToken(config([]), env, reads({ [cwdFile]: token }))).toBe("set");
+    const monitor = { claudeArgs: [], monitor: true } as unknown as ClaudishConfig;
+    expect(childAuthControl(monitor, env, reads({ [cwdFile]: urlKey }))).toEqual({
+      controlled: false,
+      reason: "settings-api-key",
+      where: cwdFile,
+    });
   });
 
   const keyAndUrl = {
@@ -156,7 +183,7 @@ describe("the user settings file follows CLAUDE_CONFIG_DIR", () => {
     ).toEqual([{ where: "/findings-project/rel-config/settings.json", kind: "api-key" }]);
   });
 
-  test("a whitespace-only CLAUDE_CONFIG_DIR reads both the default and the untrimmed path", () => {
+  test("a whitespace-only CLAUDE_CONFIG_DIR reads only its untrimmed path", () => {
     const blankPath = "/findings-project/  /settings.json";
     expect(
       settingsCredentialFindings(
@@ -164,7 +191,7 @@ describe("the user settings file follows CLAUDE_CONFIG_DIR", () => {
         { CLAUDE_CONFIG_DIR: "  " },
         reads({ [defaultFile]: key, [blankPath]: key })
       ).map((f) => f.where)
-    ).toEqual([defaultFile, blankPath]);
+    ).toEqual([blankPath]);
   });
 });
 
