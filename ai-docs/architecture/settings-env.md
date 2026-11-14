@@ -218,6 +218,13 @@ The line shows the URL's origin only (scheme, host, port). Userinfo, path, query
 each hold a gateway credential, and none of those is a signing value, so the registry would not
 redact it from the debug log. The child's environment gets the full URL.
 
+Every process a gateway session starts inherits its `ANTHROPIC_CUSTOM_HEADERS`, so a claudish
+started there would hand its own Claude Code the parent's `X-Target-URL`. `applyHarnessGateway`
+records the value it set in `CLAUDISH_SET_HARNESS_GATEWAY_TARGET`, and every launch
+(`runClaudeWithProxy`, and `run_prompt`'s print child through `claudeCodePrintEnv`) removes the line
+whose value equals that record, then the record. A user's own `X-Target-URL` has no record and stays.
+This is the `CLAUDISH_SET_HOST_ROUTING_VARS` pattern of `host-routing-env.ts`.
+
 The proxy never sends `X-Target-URL` upstream. The native forward is a header allowlist
 (`handlers/shared/anthropic-forward.ts`), and the composed path reads only `x-api-key` from the
 inbound request.

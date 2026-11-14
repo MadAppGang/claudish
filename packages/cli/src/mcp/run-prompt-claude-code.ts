@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { type SettingsFinding, settingsCredentialFindings } from "../claude-runner.js";
 import { ENV } from "../config.js";
 import { scrubInheritedFastModeGates } from "../fast-mode-gates.js";
+import { scrubInheritedHarnessGatewayTarget } from "../harness-gateway.js";
 import { scrubInheritedHostRouting } from "../host-routing-env.js";
 import { subscriptionSettingsCheck } from "../launcher/claude-launch.js";
 import { PANE_LAUNCH_VARS } from "../pane/child-env.js";
@@ -146,6 +147,8 @@ export function claudeCodePrintEnv(
   // A server started inside a routed session inherits the host-routing pair, under
   // which Claude Code ignores the login this child runs on.
   scrubInheritedHostRouting(env);
+  // A server started inside a gateway session inherits that session's X-Target-URL.
+  scrubInheritedHarnessGatewayTarget(env);
   return env;
 }
 

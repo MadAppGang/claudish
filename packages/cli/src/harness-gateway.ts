@@ -118,6 +118,37 @@ export function applyHarnessGateway(
   });
   kept.push(`${HARNESS_GATEWAY_TARGET_HEADER}: ${proxyUrl}`);
   env.ANTHROPIC_CUSTOM_HEADERS = kept.join("\n");
+  env[HARNESS_GATEWAY_TARGET_RECORD] = proxyUrl;
+}
+
+/**
+ * Records the `X-Target-URL` value claudish set, so that a launch started inside
+ * that session (a tool shell, a nested claudish, the MCP server) can remove it.
+ */
+export const HARNESS_GATEWAY_TARGET_RECORD = "CLAUDISH_SET_HARNESS_GATEWAY_TARGET";
+
+/**
+ * Remove the `X-Target-URL` line a parent claudish session set, and the record.
+ * Only a line whose value equals the record goes: a user's own `X-Target-URL`
+ * stays. Without a record nothing is touched. An `ANTHROPIC_CUSTOM_HEADERS` left
+ * with no line is deleted. Mutates `env` in place.
+ */
+export function scrubInheritedHarnessGatewayTarget(env: Record<string, string | undefined>): void {
+  const record = env[HARNESS_GATEWAY_TARGET_RECORD];
+  if (record === undefined) return;
+  delete env[HARNESS_GATEWAY_TARGET_RECORD];
+  const headers = env.ANTHROPIC_CUSTOM_HEADERS;
+  if (headers === undefined) return;
+  const target = HARNESS_GATEWAY_TARGET_HEADER.toLowerCase();
+  const kept = headers.split(/\r?\n/).filter((line) => {
+    if (!line.trim()) return false;
+    const colon = line.indexOf(":");
+    if (colon <= 0) return true;
+    const name = line.slice(0, colon).trim().toLowerCase();
+    return name !== target || line.slice(colon + 1).trim() !== record;
+  });
+  if (kept.length === 0) delete env.ANTHROPIC_CUSTOM_HEADERS;
+  else env.ANTHROPIC_CUSTOM_HEADERS = kept.join("\n");
 }
 
 /**

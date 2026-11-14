@@ -116,6 +116,8 @@ describe("harness gateway child environment", () => {
     expect(env).toEqual({
       ANTHROPIC_BASE_URL: gatewayUrl,
       ANTHROPIC_CUSTOM_HEADERS: `X-Target-URL: ${proxyUrl}`,
+      // The record that lets a launch inside this session remove the line.
+      CLAUDISH_SET_HARNESS_GATEWAY_TARGET: proxyUrl,
       KEEP: "unchanged",
     });
   });

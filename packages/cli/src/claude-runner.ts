@@ -40,6 +40,7 @@ import {
   applyHarnessGateway,
   harnessGatewayNotice,
   resolveHarnessGateway,
+  scrubInheritedHarnessGatewayTarget,
 } from "./harness-gateway.js";
 import { getHookEngine } from "./hooks/index.js";
 import { InProcessSink, setProcessSink } from "./hooks/injection/sinks.js";
@@ -2530,6 +2531,9 @@ export async function runClaudeWithProxy(
     ...advisorToolEnv.vars,
   };
   scrubChildEnv(env, { interactive: Boolean(config.interactive) });
+  // A launch from inside a gateway session inherits that session's X-Target-URL,
+  // which names the parent's proxy; with the gateway off it would misroute.
+  scrubInheritedHarnessGatewayTarget(env);
 
   if (harnessGateway.kind === "on") {
     applyHarnessGateway(env, harnessGateway.url, proxyUrl);
