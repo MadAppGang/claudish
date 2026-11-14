@@ -320,6 +320,40 @@ Tests: `inline-system.test.ts` (each placement, the unchanged prefix) and
 `composed-handler-inline-system.test.ts` (the wire body on Chat Completions, Gemini, Responses
 and an Anthropic-shaped route; the first three fail without step 2c).
 
+**One test over every wire format (`composed-handler-wire-fidelity.test.ts`).** One request with
+every piece Claude Code sends, each with its own marker, goes through the handler once per
+format the code builds (Chat Completions through `DefaultAPIFormat`, `OpenAIAPIFormat`,
+`OpenRouterAPIFormat`, `LiteLLMAPIFormat` and `LocalModelAdapter`; the local adapter's `mlx`
+simple mode; Gemini; Responses; Anthropic-shaped; Devin; Ollama Cloud). Each format's row lists
+the pieces it cannot carry, with the reason; a marker missing without a reason fails, and so does
+a listed limit that stops being true, so a converter change that starts carrying a piece updates
+the row on purpose. The rows also pin, per format, what an unknown role (`developer`) and an
+unknown block type do: on the Anthropic-shaped wire they pass through (the provider answers);
+every other converter skips them with no log line. That is recorded, not decided.
+
+Gemini pairs a model turn's function calls with the function responses of the ONE user turn
+after it. Claude Code splits a parallel round's results across two user messages when a
+notification arrives between them, so `GeminiAPIFormat.convertMessages` merges a user content
+into a directly preceding user content (`gemini-api-format-tool-round.test.ts`). Gemini's
+published error for the split form is "the number of function response parts is equal to the
+number of function call parts of the function call turn"; it was not measured live.
+
+A `functionResponse` names only the function, so the n-th response belongs to the n-th call.
+Two `Read` calls whose results arrive B first would each get the other's file. The converter
+therefore remembers the Claude call id behind each part (`callIdOf`, a `WeakMap`, because the
+parts themselves carry no id) and puts a user turn's responses in the order of the calls before
+it; each response keeps the image parts its tool result carried, and the turn's other parts
+follow. The text-only wires (Ollama Cloud, the local adapter's `mlx` mode) write
+`[Tool Result]: …` with no id or name and still pair by arrival order: a stated limit in the
+test, not fixed.
+
+Pinned as limits in the test, not decided here: `cache_control` on the system prompt is gone
+on every wire (step 1, above); a `tool_addition` block reaches no wire (step 2c moves only text);
+Gemini drops a tool result's `tool_reference` and `document` items with no log; the
+Anthropic-shaped adapter removes `tool_reference` on purpose; Ollama Cloud skips a top-level
+image with no note and sends no tool definitions; the error flag of an `is_error` result exists
+only on the Anthropic-shaped wire.
+
 Tests: `identity-filter.test.ts` (the rules on a captured prompt, the reader rename and the names
 it keeps, idempotency, what is never touched, the inputs of both review rounds) and
 `composed-handler-identity.test.ts` (the wire body for a gateway and for `antigravity`, which

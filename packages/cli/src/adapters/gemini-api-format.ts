@@ -32,16 +32,32 @@ export class GeminiAPIFormat extends BaseAPIFormat {
    */
   private toolCallMap = new Map<string, { name: string; thoughtSignature?: string }>();
 
+  /**
+   * The Claude call id behind a functionCall part, a functionResponse part, and
+   * the image parts a tool result carried after its response. Gemini's parts
+   * carry no id, so this is the only place the pairing is still known. Rebuilt
+   * on every convertMessages call.
+   */
+  private callIdOf = new WeakMap<object, string>();
+
   // ─── Message Conversion (Claude → Gemini parts) ─────────────────
 
   override convertMessages(claudeRequest: any, _filterIdentityFn?: (s: string) => string): any[] {
     const messages: any[] = [];
+    this.callIdOf = new WeakMap();
 
     if (claudeRequest.messages) {
       for (const msg of claudeRequest.messages) {
         if (msg.role === "user") {
           const parts = this.convertUserParts(msg);
-          if (parts.length > 0) messages.push({ role: "user", parts });
+          if (parts.length === 0) continue;
+          // Claude Code can split one tool round's results across two user
+          // messages (a notification arrived between them). Gemini pairs a
+          // model turn's function calls with the function responses of the ONE
+          // turn after it, so adjacent user messages become one content.
+          const prev = messages[messages.length - 1];
+          if (prev?.role === "user") prev.parts.push(...parts);
+          else messages.push({ role: "user", parts });
         } else if (msg.role === "assistant") {
           const parts = this.convertAssistantParts(msg);
           if (parts.length > 0) messages.push({ role: "model", parts });
@@ -49,7 +65,48 @@ export class GeminiAPIFormat extends BaseAPIFormat {
       }
     }
 
+    messages.forEach((content, i) => {
+      const next = messages[i + 1];
+      if (content.role === "model" && next?.role === "user") {
+        next.parts = this.alignResponsesToCalls(content.parts, next.parts);
+      }
+    });
     return messages;
+  }
+
+  /**
+   * Put a user turn's function responses in the order of the calls in the
+   * model turn before it. Gemini pairs a response with the call at the same
+   * position (a response names only the function), so two `Read` calls whose
+   * results arrived B first would each get the other's output. Each response
+   * keeps the image parts its tool result carried; the turn's other parts
+   * (text, user images) follow the responses in their own order.
+   */
+  private alignResponsesToCalls(callParts: any[], parts: any[]): any[] {
+    const callOrder = callParts
+      .filter((p) => p.functionCall)
+      .map((p) => this.callIdOf.get(p))
+      .filter((id): id is string => id !== undefined);
+    const groups: { id: string; parts: any[] }[] = [];
+    const others: any[] = [];
+    for (const part of parts) {
+      const id = this.callIdOf.get(part);
+      if (part.functionResponse && id !== undefined) groups.push({ id, parts: [part] });
+      else if (id !== undefined && groups.at(-1)?.id === id) groups.at(-1)?.parts.push(part);
+      else others.push(part);
+    }
+    if (groups.length === 0) return parts;
+    const rank = (id: string) => {
+      const at = callOrder.indexOf(id);
+      return at === -1 ? callOrder.length : at;
+    };
+    const sorted = [...groups].sort((a, b) => rank(a.id) - rank(b.id));
+    if (sorted.some((g, i) => g !== groups[i])) {
+      log(
+        `[GeminiAPIFormat] Reordered ${groups.length} function responses to their function calls' order`
+      );
+    }
+    return [...sorted.flatMap((g) => g.parts), ...others];
   }
 
   private convertUserParts(msg: any): any[] {
@@ -75,6 +132,7 @@ export class GeminiAPIFormat extends BaseAPIFormat {
             continue;
           }
 
+          const firstResultPart = parts.length;
           // Extract images from array content and send as separate inlineData parts.
           // Claude sends tool_results like browser_screenshot as [{type:"text",...},{type:"image",...}].
           // Gemini can't interpret images embedded in a JSON string — they need inlineData parts.
@@ -118,6 +176,9 @@ export class GeminiAPIFormat extends BaseAPIFormat {
                 },
               },
             });
+          }
+          for (const part of parts.slice(firstResultPart)) {
+            this.callIdOf.set(part, block.tool_use_id);
           }
         }
       }
@@ -172,6 +233,7 @@ export class GeminiAPIFormat extends BaseAPIFormat {
             this.toolCallMap.set(block.id, { ...toolInfo, name: block.name });
           }
 
+          this.callIdOf.set(functionCallPart, block.id);
           parts.push(functionCallPart);
         }
       }
