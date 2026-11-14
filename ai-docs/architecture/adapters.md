@@ -338,6 +338,22 @@ into a directly preceding user content (`gemini-api-format-tool-round.test.ts`).
 published error for the split form is "the number of function response parts is equal to the
 number of function call parts of the function call turn"; it was not measured live.
 
+A `functionResponse` names only the function, so the n-th response belongs to the n-th call.
+Two `Read` calls whose results arrive B first would each get the other's file. The converter
+therefore remembers the Claude call id behind each part (`callIdOf`, a `WeakMap`, because the
+parts themselves carry no id) and puts a user turn's responses in the order of the calls before
+it; each response keeps the image parts its tool result carried, and the turn's other parts
+follow. The text-only wires (Ollama Cloud, the local adapter's `mlx` mode) write
+`[Tool Result]: …` with no id or name and still pair by arrival order: a stated limit in the
+test, not fixed.
+
+Pinned as limits in the test, not decided here: `cache_control` on the system prompt is gone
+on every wire (step 1, above); a `tool_addition` block reaches no wire (step 2c moves only text);
+Gemini drops a tool result's `tool_reference` and `document` items with no log; the
+Anthropic-shaped adapter removes `tool_reference` on purpose; Ollama Cloud skips a top-level
+image with no note and sends no tool definitions; the error flag of an `is_error` result exists
+only on the Anthropic-shaped wire.
+
 Tests: `identity-filter.test.ts` (the rules on a captured prompt, the reader rename and the names
 it keeps, idempotency, what is never touched, the inputs of both review rounds) and
 `composed-handler-identity.test.ts` (the wire body for a gateway and for `antigravity`, which
