@@ -320,6 +320,24 @@ Tests: `inline-system.test.ts` (each placement, the unchanged prefix) and
 `composed-handler-inline-system.test.ts` (the wire body on Chat Completions, Gemini, Responses
 and an Anthropic-shaped route; the first three fail without step 2c).
 
+**One test over every wire format (`composed-handler-wire-fidelity.test.ts`).** One request with
+every piece Claude Code sends, each with its own marker, goes through the handler once per
+format the code builds (Chat Completions through `DefaultAPIFormat`, `OpenAIAPIFormat`,
+`OpenRouterAPIFormat`, `LiteLLMAPIFormat` and `LocalModelAdapter`; the local adapter's `mlx`
+simple mode; Gemini; Responses; Anthropic-shaped; Devin; Ollama Cloud). Each format's row lists
+the pieces it cannot carry, with the reason; a marker missing without a reason fails, and so does
+a listed limit that stops being true, so a converter change that starts carrying a piece updates
+the row on purpose. The rows also pin, per format, what an unknown role (`developer`) and an
+unknown block type do: on the Anthropic-shaped wire they pass through (the provider answers);
+every other converter skips them with no log line. That is recorded, not decided.
+
+Gemini pairs a model turn's function calls with the function responses of the ONE user turn
+after it. Claude Code splits a parallel round's results across two user messages when a
+notification arrives between them, so `GeminiAPIFormat.convertMessages` merges a user content
+into a directly preceding user content (`gemini-api-format-tool-round.test.ts`). Gemini's
+published error for the split form is "the number of function response parts is equal to the
+number of function call parts of the function call turn"; it was not measured live.
+
 Tests: `identity-filter.test.ts` (the rules on a captured prompt, the reader rename and the names
 it keeps, idempotency, what is never touched, the inputs of both review rounds) and
 `composed-handler-identity.test.ts` (the wire body for a gateway and for `antigravity`, which
