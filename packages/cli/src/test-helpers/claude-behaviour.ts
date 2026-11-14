@@ -12,7 +12,9 @@ export function contractConfig(value: Partial<ClaudishConfig> = {}): ClaudishCon
 
 // Contract §3.7 names "never"; the declared network union disagrees.
 // Keep the contracted input rather than substituting another network policy.
-type RouteOptions = NonNullable<Parameters<typeof import("../providers/routing-rules.js").explainRoute>[1]>;
+type RouteOptions = NonNullable<
+  Parameters<typeof import("../providers/routing-rules.js").explainRoute>[1]
+>;
 export const CONTRACT_OFFLINE_NETWORK = "never" as unknown as NonNullable<RouteOptions["network"]>;
 
 export const MODEL = "claude-haiku-5-5";
@@ -51,10 +53,13 @@ export async function isolatedFile(meta: ImportMeta, define: () => Promise<void>
       const child = Bun.spawn([process.execPath, "--no-env-file", "test", meta.path], {
         cwd: process.cwd(),
         env: { ...cleanEnv(home), T_CLAUDE_BEHAVIOUR_FILE: meta.path },
-        stdout: "pipe", stderr: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
       });
       const [out, err, code] = await Promise.all([
-        new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
       ]);
       expect(code, out + err).toBe(0);
     } finally {
@@ -62,40 +67,67 @@ export async function isolatedFile(meta: ImportMeta, define: () => Promise<void>
     }
   }, 120_000);
 }
-export function connection(routeId: string, routeProfileId: string, externalModelId = MODEL, pricing?: unknown) {
+export function connection(
+  routeId: string,
+  routeProfileId: string,
+  externalModelId = MODEL,
+  pricing?: unknown
+) {
   return {
-    sourceProviderId: routeId, sourceCollectorId: "test-data", confidence: "api_official",
-    routeStatus: "mapped", route: { routeId, routeProfileId }, externalModelId,
+    sourceProviderId: routeId,
+    sourceCollectorId: "test-data",
+    confidence: "api_official",
+    routeStatus: "mapped",
+    route: { routeId, routeProfileId },
+    externalModelId,
     ...(pricing === undefined ? {} : { pricing }),
   };
 }
-export function catalog(entries = [{
-  modelId: MODEL, aliases: [], provider: "anthropic", contextWindow: 200000,
-  aggregators: [
-    connection("anthropic", "direct-api"),
-    connection("anthropic", "claude-code-subscription"),
-    connection("openrouter", "gateway", "anthropic/" + MODEL),
-  ],
-}]) {
+export function catalog(
+  entries = [
+    {
+      modelId: MODEL,
+      aliases: [],
+      provider: "anthropic",
+      contextWindow: 200000,
+      aggregators: [
+        connection("anthropic", "direct-api"),
+        connection("anthropic", "claude-code-subscription"),
+        connection("openrouter", "gateway", "anthropic/" + MODEL),
+      ],
+    },
+  ]
+) {
   return {
-    version: 3 as const, lastUpdated: new Date().toISOString(), entries,
-    models: entries.map(e => ({ id: e.modelId })), plans: [], catalogGenerationId: "behaviour-test-data",
+    version: 3 as const,
+    lastUpdated: new Date().toISOString(),
+    entries,
+    models: entries.map((e) => ({ id: e.modelId })),
+    plans: [],
+    catalogGenerationId: "behaviour-test-data",
   };
 }
 export const CLI = join(import.meta.dir, "..", "index.ts");
 export async function cli(home: string, args: string[], env: Record<string, string> = {}) {
   const child = Bun.spawn([process.execPath, "--no-env-file", CLI, ...args], {
-    cwd: home, env: { ...cleanEnv(home), ...env }, stdout: "pipe", stderr: "pipe",
+    cwd: home,
+    env: { ...cleanEnv(home), ...env },
+    stdout: "pipe",
+    stderr: "pipe",
   });
   const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
   ]);
   return { stdout, stderr, code };
 }
 /** A fake Claude Code records its launch and optionally makes one proxy request. */
 export function standIn(home: string): Record<string, string> {
   const path = join(home, "fake-claude");
-  put(path, `#!${process.execPath}
+  put(
+    path,
+    `#!${process.execPath}
 import {writeFileSync, readFileSync, existsSync} from "node:fs";
 const args = process.argv.slice(2);
 const i = args.indexOf("--settings");
@@ -115,10 +147,16 @@ if(process.env.T_SEND_REQUEST) {
   writeFileSync(process.env.T_REQUEST_RECORD, JSON.stringify({status:r.status,body:await r.text()}));
 }
 console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,result:"fake reply",usage:{input_tokens:1,output_tokens:1}}));
-`);
+`
+  );
   // chmod is applied only to our newly created stand-in.
   Bun.spawnSync(["chmod", "700", path], { env: cleanEnv(home) });
-  return { CLAUDE_PATH: path, CLAUDISH_BIN: path, T_CHILD_RECORD: join(home, "child.json"), T_REQUEST_RECORD: join(home, "request.json") };
+  return {
+    CLAUDE_PATH: path,
+    CLAUDISH_BIN: path,
+    T_CHILD_RECORD: join(home, "child.json"),
+    T_REQUEST_RECORD: join(home, "request.json"),
+  };
 }
 export function childRecord(home: string) {
   return JSON.parse(readFileSync(join(home, "child.json"), "utf8"));

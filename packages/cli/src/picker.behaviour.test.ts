@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { isolatedFile, MODEL } from "./test-helpers/claude-behaviour.js";
+import { MODEL, isolatedFile } from "./test-helpers/claude-behaviour.js";
 await isolatedFile(import.meta, async () => {
-  const { buildProviderChoices, buildExplicitModelSpec, providerShortcut, displayBillingOf } = await import("./model-selector.js");
+  const { buildProviderChoices, buildExplicitModelSpec, providerShortcut, displayBillingOf } =
+    await import("./model-selector.js");
   const { pickerProviderReady } = await import("./providers/picker-readiness.js");
   const { billingModeOf } = await import("./picker/PickerDataSource.js");
   const { resolveProviderDetailKeyDisplay } = await import("./tui/components/ProviderDetail.js");
@@ -27,22 +28,62 @@ await isolatedFile(import.meta, async () => {
   });
 
   test("B-19 uses login readiness only for the subscription", async () => {
-    const forbidden = async () => { throw new Error("subscription readiness must not consult API availability"); };
-    expect(await pickerProviderReady("native-anthropic", { hasLogin: () => true, isAvailable: forbidden })).toBe(true);
-    expect(await pickerProviderReady("native-anthropic", { hasLogin: () => false, isAvailable: async () => true })).toBe(false);
-    expect(await pickerProviderReady("native-anthropic", { hasLogin: () => { throw new Error("unreadable login"); }, isAvailable: forbidden })).toBe(false);
+    const forbidden = async () => {
+      throw new Error("subscription readiness must not consult API availability");
+    };
+    expect(
+      await pickerProviderReady("native-anthropic", {
+        hasLogin: () => true,
+        isAvailable: forbidden,
+      })
+    ).toBe(true);
+    expect(
+      await pickerProviderReady("native-anthropic", {
+        hasLogin: () => false,
+        isAvailable: async () => true,
+      })
+    ).toBe(false);
+    expect(
+      await pickerProviderReady("native-anthropic", {
+        hasLogin: () => {
+          throw new Error("unreadable login");
+        },
+        isAvailable: forbidden,
+      })
+    ).toBe(false);
     expect(await pickerProviderReady("anthropic", { isAvailable: async () => true })).toBe(true);
-    expect(await pickerProviderReady("anthropic", { isAvailable: async () => { throw new Error("unreadable key"); } })).toBe(false);
+    expect(
+      await pickerProviderReady("anthropic", {
+        isAvailable: async () => {
+          throw new Error("unreadable key");
+        },
+      })
+    ).toBe(false);
   });
 
   test("B-93 displays read-at-use vault sources without treating placeholders as keys", () => {
     // AuthSource's union is omitted from the contract; the vault branch is independent of it.
     const base = {
-      isLocal: false, isReady: true, authSource: "api-key",
-      hasEnvKey: false, hasCfgKey: false, envKeyMask: "", cfgKeyMask: "",
+      isLocal: false,
+      isReady: true,
+      authSource: "api-key",
+      hasEnvKey: false,
+      hasCfgKey: false,
+      envKeyMask: "",
+      cfgKeyMask: "",
     } as unknown as Parameters<typeof resolveProviderDetailKeyDisplay>[0];
-    expect(resolveProviderDetailKeyDisplay({ ...base, vaultKeySource: "macOS Keychain", vaultKeyMask: "sk-a...0000" })).toBe("sk-a...0000");
-    expect(resolveProviderDetailKeyDisplay({ ...base, vaultKeySource: "macOS Keychain" })).toBe("keychain");
-    expect(resolveProviderDetailKeyDisplay({ ...base, vaultKeySource: "1Password" })).toBe("1Password");
+    expect(
+      resolveProviderDetailKeyDisplay({
+        ...base,
+        vaultKeySource: "macOS Keychain",
+        vaultKeyMask: "sk-a...0000",
+      })
+    ).toBe("sk-a...0000");
+    expect(resolveProviderDetailKeyDisplay({ ...base, vaultKeySource: "macOS Keychain" })).toBe(
+      "keychain"
+    );
+    expect(resolveProviderDetailKeyDisplay({ ...base, vaultKeySource: "1Password" })).toBe(
+      "1Password"
+    );
   });
 });

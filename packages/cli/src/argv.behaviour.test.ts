@@ -6,18 +6,25 @@ await isolatedFile(import.meta, async () => {
 
   test("B-27 records tier sources and flag precedence", async () => {
     const names = ["CLAUDISH_MODEL_OPUS", "ANTHROPIC_DEFAULT_OPUS_MODEL"];
-    const saved = names.map(n => process.env[n]);
+    const saved = names.map((n) => process.env[n]);
     try {
       for (const n of names) delete process.env[n];
-      expect((await parseArgs(["--model-haiku", "x"])).modelTierSources?.haiku).toBe("--model-haiku");
+      expect((await parseArgs(["--model-haiku", "x"])).modelTierSources?.haiku).toBe(
+        "--model-haiku"
+      );
       process.env.CLAUDISH_MODEL_OPUS = "claude-opus-x";
       expect((await parseArgs([])).modelTierSources?.opus).toBe("CLAUDISH_MODEL_OPUS");
-      expect((await parseArgs(["--model-opus", "flag-model"])).modelTierSources?.opus).toBe("--model-opus");
+      expect((await parseArgs(["--model-opus", "flag-model"])).modelTierSources?.opus).toBe(
+        "--model-opus"
+      );
       delete process.env.CLAUDISH_MODEL_OPUS;
       process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = "claude-opus-y";
       expect((await parseArgs([])).modelTierSources?.opus).toBe("ANTHROPIC_DEFAULT_OPUS_MODEL");
     } finally {
-      names.forEach((n, i) => { if (saved[i] === undefined) delete process.env[n]; else process.env[n] = saved[i]; });
+      names.forEach((n, i) => {
+        if (saved[i] === undefined) delete process.env[n];
+        else process.env[n] = saved[i];
+      });
     }
   });
 
