@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import {
@@ -379,6 +379,8 @@ export type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 /** Injectable reads for {@link childAuthControl}; defaults read the real files. */
 export interface ChildAuthControlDeps {
   readFile?: (path: string) => string;
+  /** What a path is: a directory, a file, or nothing. Finds the `.git` entry. */
+  pathKind?: (path: string) => "dir" | "file" | undefined;
   cwd?: string;
   home?: string;
 }
@@ -404,8 +406,9 @@ export interface ChildAuthControlDeps {
  *      `shouldHideIncidentalAnthropicKey`;
  *   3. ANTHROPIC_CUSTOM_HEADERS carries no auth header;
  *   4. no Claude Code settings layer claudish can read — managed settings, the
- *      user file (and `$CLAUDE_CONFIG_DIR/settings.json`), the project and
- *      project-local files, and every `--settings` value in either spelling —
+ *      user file (and `$CLAUDE_CONFIG_DIR/settings.json`), the project file, the
+ *      project-local files (the main checkout's and the working directory's,
+ *      {@link localSettingsFiles}), and every `--settings` value in either spelling —
  *      names an `apiKeyHelper` or sets an Anthropic credential in its `env`
  *      block, and no `--settings` value the child receives is unreadable.
  *
@@ -704,9 +707,7 @@ function claudeSettingsLayers(
     ...(on("project")
       ? [[join(cwd, ".claude", "settings.json"), "project"] as [string, SettingsTier]]
       : []),
-    ...(on("local")
-      ? [[join(cwd, ".claude", "settings.local.json"), "local"] as [string, SettingsTier]]
-      : []),
+    ...(on("local") ? localSettingsFiles(cwd, readFile, deps.pathKind ?? statPathKind) : []),
   ];
   const layers: SettingsLayer[] = [];
   for (const [file, tier] of files) {
@@ -729,6 +730,85 @@ function claudeSettingsLayers(
     layers.push({ where, settings, tier: "cli", ...file });
   });
   return layers;
+}
+
+/**
+ * The project-local settings files Claude Code loads for a launch from `cwd`,
+ * measured on Claude Code 2.1.325: `.claude/settings.local.json` at the
+ * repository's MAIN checkout (for a linked worktree, the checkout that owns the
+ * common Git directory, never the worktree itself), plus the legacy file in the
+ * working directory. Outside Git only the working directory's file. Project
+ * settings (`settings.json`) load from the working directory alone.
+ */
+function localSettingsFiles(
+  cwd: string,
+  readFile: (path: string) => string,
+  pathKind: (path: string) => "dir" | "file" | undefined
+): Array<[string, SettingsTier]> {
+  const cwdFile = join(cwd, ".claude", "settings.local.json");
+  const root = mainCheckoutRoot(cwd, readFile, pathKind);
+  const rootFile = root === undefined ? undefined : join(root, ".claude", "settings.local.json");
+  const files = rootFile && rootFile !== cwdFile ? [rootFile, cwdFile] : [cwdFile];
+  return files.map((file) => [file, "local"]);
+}
+
+/**
+ * The main checkout of the Git repository holding `cwd`, read from the files
+ * alone (no `git` process): the first `.git` walking up from `cwd`. A `.git`
+ * directory makes its parent the root. A `.git` file (`gitdir: <path>`, a
+ * linked worktree) points at a Git directory whose `commondir` names the common
+ * Git directory; the root is that directory's parent. A `.git` file with no
+ * readable `commondir` keeps its own directory as the root. No `.git` at all:
+ * undefined.
+ */
+function mainCheckoutRoot(
+  cwd: string,
+  readFile: (path: string) => string,
+  pathKind: (path: string) => "dir" | "file" | undefined
+): string | undefined {
+  let dir = resolve(cwd);
+  for (;;) {
+    const entry = join(dir, ".git");
+    const kind = pathKind(entry);
+    if (kind === "dir") return dir;
+    if (kind === "file") {
+      const gitDir = gitDirOfFile(entry, readFile);
+      if (gitDir === undefined) return dir;
+      let common: string;
+      try {
+        common = readFile(join(gitDir, "commondir")).trim();
+      } catch {
+        return dir;
+      }
+      if (!common) return dir;
+      return dirname(resolve(gitDir, common));
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/** The Git directory a `.git` file's `gitdir:` line names, resolved against the file's directory. */
+function gitDirOfFile(entry: string, readFile: (path: string) => string): string | undefined {
+  let text: string;
+  try {
+    text = readFile(entry);
+  } catch {
+    return undefined;
+  }
+  const match = /^gitdir:\s*(.+?)\s*$/m.exec(text);
+  return match ? resolve(dirname(entry), match[1]) : undefined;
+}
+
+/** {@link ChildAuthControlDeps.pathKind} on the real file system. */
+function statPathKind(path: string): "dir" | "file" | undefined {
+  try {
+    const stat = statSync(path);
+    return stat.isDirectory() ? "dir" : "file";
+  } catch {
+    return undefined;
+  }
 }
 
 /**

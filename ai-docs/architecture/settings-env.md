@@ -66,7 +66,13 @@ settings layer that would hand the child one REFUSES the launch before spawn, na
 never the value (`settingsCredentialFindings`, `claude-runner.ts`; `subscriptionSettingsCheck`,
 `launcher/claude-launch.ts`). It reads the layers `childAuthControl` reads (managed, user,
 `$CLAUDE_CONFIG_DIR`, project, project-local, every `--settings` occurrence) and returns every
-finding of every layer: an earlier layer never hides a later one. Both follow a passthrough
+finding of every layer: an earlier layer never hides a later one. Project-local means two files,
+measured on Claude Code 2.1.325 with SessionStart-hook markers: `.claude/settings.local.json` at
+the repository's main checkout (for a linked worktree, the checkout owning the common Git
+directory, never the worktree's own file) and the legacy one in the working directory. Claudish
+finds the main checkout from the files alone (`localSettingsFiles`, `mainCheckoutRoot`): the first
+`.git` up from the working directory, and for a `.git` file its `gitdir`'s `commondir`. Project
+`settings.json` loads from the working directory only, never the Git root. Both follow a passthrough
 `--setting-sources`: a file tier it turns off (`user` covers `~/.claude` and `$CLAUDE_CONFIG_DIR`)
 hands the child nothing and is not read; managed settings and `--settings` values always are.
 `run_prompt`'s print child runs with `--setting-sources ""`, so only managed settings and the
