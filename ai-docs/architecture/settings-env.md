@@ -64,17 +64,19 @@ end-of-session card and the advisor notice name the route.
 host-managed, as above. The Claude subscription is never signed with an Anthropic API key, so a
 settings layer that would hand the child one REFUSES the launch before spawn, naming the file and
 never the value (`settingsCredentialFindings`, `claude-runner.ts`; `subscriptionSettingsCheck`,
-`launcher/claude-launch.ts`). It reads the layers `childAuthControl` reads (managed, user,
-`$CLAUDE_CONFIG_DIR`, project, project-local, every `--settings` occurrence) and returns every
-finding of every layer: an earlier layer never hides a later one. Project-local means two files,
-measured on Claude Code 2.1.325 with SessionStart-hook markers: `.claude/settings.local.json` at
-the repository's main checkout (for a linked worktree, the checkout owning the common Git
-directory, never the worktree's own file) and the legacy one in the working directory. Claudish
-finds the main checkout from the files alone (`localSettingsFiles`, `mainCheckoutRoot`): the first
-`.git` up from the working directory, and for a `.git` file its `gitdir`'s `commondir`. Project
-`settings.json` loads from the working directory only, never the Git root. Both follow a passthrough
-`--setting-sources`: a file tier it turns off (`user` covers `~/.claude` and `$CLAUDE_CONFIG_DIR`)
-hands the child nothing and is not read; managed settings and `--settings` values always are.
+`launcher/claude-launch.ts`). It reads the layers `childAuthControl` reads (managed, the user
+file, project, project-local, every `--settings` occurrence) and returns every finding of every
+layer: an earlier layer never hides a later one. Measured on Claude Code 2.1.325 with
+SessionStart-hook markers: the user file is ONE file, `$CLAUDE_CONFIG_DIR/settings.json` when
+that is set and `~/.claude/settings.json` only when it is not. Project-local means two files:
+`.claude/settings.local.json` at the repository's main checkout (for a linked worktree, the
+checkout owning the common Git directory, never the worktree's own file) and the legacy one in
+the working directory. Claudish finds the main checkout from the files alone
+(`localSettingsFiles`, `mainCheckoutRoot`): the first `.git` up from the working directory, and
+for a `.git` file its `gitdir`'s `commondir`. Project `settings.json` loads from the working
+directory only, never the Git root. Both follow a passthrough `--setting-sources`: a file tier
+it turns off hands the child nothing and is not read; managed settings and `--settings` values
+always are.
 `run_prompt`'s print child runs with `--setting-sources ""`, so only managed settings and the
 launch environment can refuse it. Refused: a real
 `ANTHROPIC_API_KEY` in an `env` block, an `apiKeyHelper`, an `ANTHROPIC_CUSTOM_HEADERS` (in a

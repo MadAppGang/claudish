@@ -19,6 +19,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
+import { claudeCodeConfigDir } from "./auth/claude-code-facts.js";
 import {
   type ClaudeCodeLoginDeps,
   type KeychainCredentialProbe,
@@ -406,8 +407,8 @@ export interface ChildAuthControlDeps {
  *      `shouldHideIncidentalAnthropicKey`;
  *   3. ANTHROPIC_CUSTOM_HEADERS carries no auth header;
  *   4. no Claude Code settings layer claudish can read — managed settings, the
- *      user file (and `$CLAUDE_CONFIG_DIR/settings.json`), the project file, the
- *      project-local files (the main checkout's and the working directory's,
+ *      user file (`$CLAUDE_CONFIG_DIR/settings.json` when set, else
+ *      `~/.claude/settings.json`), the project file, the project-local files (the main checkout's and the working directory's,
  *      {@link localSettingsFiles}), and every `--settings` value in either spelling —
  *      names an `apiKeyHelper` or sets an Anthropic credential in its `env`
  *      block, and no `--settings` value the child receives is unreadable.
@@ -477,7 +478,7 @@ export interface SettingsFinding {
 
 /**
  * EVERY credential finding of EVERY layer `childAuthControl` reads (managed,
- * user, `$CLAUDE_CONFIG_DIR`, project, project-local, every `--settings`
+ * the one user file, project, project-local, every `--settings`
  * occurrence), each layer independently: a token in a layer does not hide a
  * helper in it, and an earlier layer does not hide a later one. A `--settings`
  * value that cannot be read or parsed is an `unreadable` finding, the one the
@@ -698,11 +699,18 @@ function claudeSettingsLayers(
   const on = (source: SettingSource): boolean => enabled === null || enabled.has(source);
   const files: Array<[string, SettingsTier]> = [
     [managedSettingsPath(), "managed"],
+    // Claude Code reads ONE user file: `$CLAUDE_CONFIG_DIR/settings.json` when
+    // that is set, else `~/.claude/settings.json` (measured on 2.1.325).
     ...(on("user")
-      ? [[join(home, ".claude", "settings.json"), "user"] as [string, SettingsTier]]
-      : []),
-    ...(on("user") && env.CLAUDE_CONFIG_DIR
-      ? [[join(env.CLAUDE_CONFIG_DIR, "settings.json"), "user"] as [string, SettingsTier]]
+      ? [
+          [
+            join(
+              env.CLAUDE_CONFIG_DIR?.trim() ? claudeCodeConfigDir(env) : join(home, ".claude"),
+              "settings.json"
+            ),
+            "user",
+          ] as [string, SettingsTier],
+        ]
       : []),
     ...(on("project")
       ? [[join(cwd, ".claude", "settings.json"), "project"] as [string, SettingsTier]]

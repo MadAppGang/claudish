@@ -74,12 +74,12 @@ await isolatedFile(import.meta, async () => {
         .map((f) => f.where)
         .sort();
     expect(paths(["--setting-sources", ""])).toEqual([]);
-    expect(paths(["--setting-sources=user"])).toEqual([user, cfg].sort());
+    expect(paths(["--setting-sources=user"])).toEqual([cfg]);
     expect(paths(["--setting-sources", "project,local"])).toEqual([project, local].sort());
     expect(paths(["--setting-sources", "user", "--setting-sources", "project,local"])).toEqual(
       [project, local].sort()
     );
-    expect(paths(["--setting-sources", "--x"])).toEqual([user, cfg, project, local].sort());
+    expect(paths(["--setting-sources", "--x"])).toEqual([cfg, project, local].sort());
     expect(paths(["--setting-sources", "", "--settings", "/extra.json"])).toEqual(["/extra.json"]);
     expect(
       childAuthControl(

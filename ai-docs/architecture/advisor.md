@@ -481,8 +481,9 @@ does not require it. So the decision is made at launch by `childAuthControl(conf
 (`claude-runner.ts:390`): controlled only when the launch is native-auth (no foreign `--model`
 handing the child claudish's placeholder), no user `ANTHROPIC_AUTH_TOKEN` and no real
 `ANTHROPIC_API_KEY` reaches the child, `ANTHROPIC_CUSTOM_HEADERS` carries no auth header, and no
-settings layer claudish can read (managed settings, `~/.claude/settings.json`,
-`$CLAUDE_CONFIG_DIR/settings.json`, the project and project-local files, `--settings`) names an
+settings layer claudish can read (managed settings, the user file —
+`$CLAUDE_CONFIG_DIR/settings.json` when set, else `~/.claude/settings.json` — the project file,
+the project-local files at the main checkout and the working directory, `--settings`) names an
 `apiKeyHelper` or sets an Anthropic credential in its `env`. It cannot see settings delivered by a
 mechanism it does not read (an MDM profile). The decision travels in `AdvisorRuntime.childAuth`
 to the decorator (`proxy-server.ts:326`); a decorator given none treats the launch as not

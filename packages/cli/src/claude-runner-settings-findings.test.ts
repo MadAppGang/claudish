@@ -4,6 +4,7 @@ import {
   settingsClaudeLoginToken,
   settingsCredentialFindings,
 } from "./claude-runner.js";
+import { subscriptionSettingsCheck } from "./launcher/claude-launch.js";
 import type { ClaudishConfig } from "./types.js";
 
 const config = (claudeArgs: string[]) => ({ claudeArgs }) as unknown as ClaudishConfig;
@@ -76,6 +77,39 @@ describe("settingsCredentialFindings names a --settings file by its path", () =>
     );
     expect(found).toEqual([{ where: "--settings", kind: "api-key" }]);
     expect(JSON.stringify(found)).not.toContain("sk-ant-findings-test-not-real");
+  });
+});
+
+describe("the user settings file follows CLAUDE_CONFIG_DIR", () => {
+  const key = { env: { ANTHROPIC_API_KEY: "sk-ant-config-dir-test-not-real" } };
+  const defaultFile = "/findings-home/.claude/settings.json";
+
+  test("a key in the inactive default file does not refuse a subscription launch", () => {
+    const findings = settingsCredentialFindings(
+      config([]),
+      { CLAUDE_CONFIG_DIR: "/clean-config" },
+      reads({ [defaultFile]: key })
+    );
+    expect(findings).toEqual([]);
+    expect(subscriptionSettingsCheck(findings, { bareName: false }).refusal).toBeNull();
+  });
+
+  test("a key in the active CLAUDE_CONFIG_DIR file is a finding", () => {
+    expect(
+      settingsCredentialFindings(
+        config([]),
+        { CLAUDE_CONFIG_DIR: "/active-config" },
+        reads({ "/active-config/settings.json": key, [defaultFile]: key })
+      )
+    ).toEqual([{ where: "/active-config/settings.json", kind: "api-key" }]);
+  });
+
+  test("an unset or blank CLAUDE_CONFIG_DIR reads the default file under home", () => {
+    for (const env of [{}, { CLAUDE_CONFIG_DIR: "  " }]) {
+      expect(settingsCredentialFindings(config([]), env, reads({ [defaultFile]: key }))).toEqual([
+        { where: defaultFile, kind: "api-key" },
+      ]);
+    }
   });
 });
 
