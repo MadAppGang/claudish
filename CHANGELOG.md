@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.22.1] - 2026-11-14
+
+### Documentation
+
+- update CHANGELOG.md for v14.22.0([`2bc092b`](https://github.com/MadAppGang/claudish/commit/2bc092b84f41ec9bac2b88a4f068ec106dd82396))
+
+### New Features
+
+- make claudish view watch only, never claim the view *(view)* ([`836e4a3`](https://github.com/MadAppGang/claudish/commit/836e4a3afceb1b313324d659119e49fec0d29c90))
+
 ## [14.22.0] - 2026-11-13
 
 ### Bug Fixes
