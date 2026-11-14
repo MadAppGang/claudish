@@ -180,6 +180,54 @@ so its abuse configuration is maintained together with this exact text. The temp
 line ("User requests are enclosed within <USER_REQUEST> tags") is not sent, because claudish
 does not wrap user turns in those tags.
 
+## Tool names are renamed to the provider's own on `antigravity` (`format/tool-name-alias.ts`)
+
+A sibling of the identity scrub, same goal of not looking foreign, but reversible and much
+narrower. `ComposedHandler` step 2b, right after the identity scrub.
+
+- `aliasToolsForProvider(req, provider)` renames the Claude Code built-ins that have a true agy
+  equivalent — `Bash`→`run_command`, `Write`→`write_to_file`, `Edit`→`edit_file`,
+  `Grep`→`grep_search`, `Glob`→`find_by_name`, `LS`→`list_dir` — in the tool definitions, in a
+  forced `tool_choice`, and in assistant-history `tool_use` blocks. The table is
+  `antigravity`-only; every other provider gets the request back unchanged. Names come from the
+  `agy` binary's own few-shot tool calls.
+- The alias is built PER REQUEST and returns `forward` and `restore` for the pairs that request
+  applied. A pair is skipped when the request already declares a tool under the native name (a
+  custom or MCP `run_command`): the rename would declare one name twice, and a table-wide
+  restore would turn that tool's calls into `Bash` calls. Never restore from the whole table.
+- The inbound half is mandatory: a name sent out must come back, or Claude Code gets a
+  `tool_use` for a tool it never declared and the turn dies. The handler passes this request's
+  `restore` to the `gemini-sse` parser as `mapToolName`. The parser gives the restored name to
+  the streamed block and the tool-count observer, and the WIRE name to `onToolCall`:
+  `GeminiAPIFormat.toolCallMap` names the next request's `functionResponse` from that store,
+  and the next request's `functionCall` is renamed to the wire name again on the way out. A
+  restored name in the store made the call and its result disagree (`run_command` / `Bash`).
+- The pairs a request applies follow the tools it declares, so ONE call can carry a different
+  name on a later request (a custom `run_command` appears: `Bash` is no longer renamed).
+  `GeminiAPIFormat.convertAssistantParts` therefore refreshes a stored name to the name the
+  `tool_use` block carries on the current request, and keeps the stored thought signature. A
+  store that only adds, and never refreshes, sends `functionCall: Bash` beside
+  `functionResponse: run_command`.
+- Hook stage B runs after the rename, and a hook names a tool as it saw it in stage A (`Bash`).
+  `applyToolDescriptions` therefore takes the request's `forward` and looks the tool up under
+  its wire name; the journal still records the name the hook asked for. Without it every
+  description action on a renamed tool ended `invalid: unknown_tool`. A raw `providerRequest`
+  hook sees the wire names.
+- `Read` is deliberately NOT aliased: the binary carries both `read_file` and `view_file` and does
+  not settle which is current. A wrong name is worse than none.
+
+**The honest limit — names only, not shapes.** The argument SCHEMAS stay Claude Code's. agy's
+`edit_file` takes an `Instruction` plus a `CodeEdit` with `{{...}}` elision that a separate
+apply-model reconciles; Claude Code's `Edit` takes exact `old_string`/`new_string`. So a renamed
+tool carries Claude Code's arguments under agy's name. This matches the backend's tool VOCABULARY,
+not its request SHAPE, and an `edit_file` bearing `old_string`/`new_string` may read as MORE
+anomalous, not less. Whether the rename helps is unproven; it is cheap and reversible, which is the
+only reason it is defensible. Tests: `tool-name-alias.test.ts` (round trip, `tool_choice`, a
+request that already declares a native name, the call and result names through the Gemini
+adapter, stage B through `forward`), `gemini-sse-tool-alias.test.ts` (inbound restore and the
+wire name in the history store), `composed-handler-tool-alias.test.ts` (outbound end to end,
+and a tool call through the handler: it fails when the handler does not pass `restore`).
+
 **Not covered.** A `ToolSearch` result carries tool definitions as a tool result, so its
 descriptions pass unscrubbed. `subscription-devin-probe.ts` replays a captured request through
 `filterIdentity` only, so its tool descriptions and reminders are not scrubbed.

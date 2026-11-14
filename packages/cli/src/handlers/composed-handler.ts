@@ -179,6 +179,7 @@ import {
   keepsClaudeIdentity,
   scrubHarnessIdentity,
 } from "./shared/format/identity-filter.js";
+import { aliasToolsForProvider } from "./shared/format/tool-name-alias.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
@@ -1594,6 +1595,15 @@ export class ComposedHandler implements ModelHandler {
       claudeRequest = scrubHarnessIdentity(claudeRequest, identityHeadFor(this.provider.name));
     }
 
+    // 2b. Rename tools to the provider's own names (antigravity only): in the
+    // definitions, in `tool_choice` and in assistant-history tool_use blocks.
+    // The alias is this request's own: stage B looks a hook's tool up through
+    // `forward`, and the gemini-sse case undoes the rename on the response with
+    // `restore`. A name sent out must come back, or Claude Code gets a tool_use
+    // it never declared.
+    const toolAlias = aliasToolsForProvider(claudeRequest, this.provider.name);
+    claudeRequest = toolAlias.request;
+
     // 3. Convert messages and tools. No identity filter here: step 2a already
     // scrubbed `claudeRequest` (or `keepIdentity` left it alone), so a second
     // pass would only risk re-adding a header to the cleaned prompt.
@@ -1710,7 +1720,7 @@ export class ComposedHandler implements ModelHandler {
     // changes the Claude-format copy only, journaled `capped`). It runs before
     // the raw tier on purpose: a raw `providerRequest` hook sees the request the
     // closed actions produced.
-    hookScope?.applyToolDescriptions(claudeRequest.tools ?? [], tools);
+    hookScope?.applyToolDescriptions(claudeRequest.tools ?? [], tools, toolAlias.forward);
 
     // 3b. Raw `providerRequest` hooks (the unsafe tier; the Gemini
     // thought-signature built-in lives here), after stage B so they see the
@@ -3979,7 +3989,8 @@ export class ComposedHandler implements ModelHandler {
             output: u.output,
           };
           ledger.finalInput = u.finalInput;
-        }
+        },
+        toolAlias.restore
       ),
       () => {
         clientCancelled = true;
@@ -4302,7 +4313,9 @@ export class ComposedHandler implements ModelHandler {
      * reports it once over every leg (`onTurnBilled`); every other format
      * reports it from `onTokenUpdate`.
      */
-    onBilled?: (u: TurnBilledUsage) => void
+    onBilled?: (u: TurnBilledUsage) => void,
+    /** Undoes this request's tool-name alias on a tool call the provider returns. */
+    restoreToolName?: (name: string) => string
   ): Response {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
     // without reassigning the function parameter.
@@ -4464,6 +4477,7 @@ export class ComposedHandler implements ModelHandler {
           onToolCallObserved: observeToolCall,
           unwrapResponse: this.options.unwrapGeminiResponse,
           priorInputTokens,
+          mapToolName: restoreToolName,
         });
       }
 
