@@ -947,7 +947,8 @@ The gateway sits between Claude Code and claudish. Claude Code sends each reques
 The gateway shortens the `tool_result` text and forwards the request to claudish. claudish then
 routes it as usual, so it works on native and foreign routes.
 
-Set the gateway URL in the global config. It must be a loopback address:
+Set the gateway URL in the global config. It must be a loopback address (`127.x.x.x`, `::1` or
+`localhost`), with no `user:password@`, backslash or control character:
 
 ```json
 { "harnessGateway": { "url": "http://127.0.0.1:18081" } }

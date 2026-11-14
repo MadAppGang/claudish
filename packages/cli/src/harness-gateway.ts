@@ -34,13 +34,35 @@ export type HarnessGatewaySetting =
   | { kind: "invalid"; message: string };
 
 const RULE =
-  "it must be an http:// or https:// URL whose host is 127.0.0.1 (any 127.x.x.x), ::1 or localhost";
+  "it must be an http:// or https:// URL whose host is 127.0.0.1 (any 127.x.x.x), ::1 or localhost, with no user:password@, backslash or control character";
+
+/**
+ * Text the WHATWG parser reads differently from other URL parsers, or silently
+ * drops: a backslash (read as `/` in http URLs, as part of userinfo elsewhere)
+ * and any control character (tab, CR and LF are removed before parsing).
+ */
+const AMBIGUOUS = /[\\\u0000-\u001f\u007f]/;
+
+/**
+ * The parsed URL as text, with no trailing `/` added to a bare origin, so the
+ * value matches what the user wrote when it was already canonical.
+ */
+function canonical(parsed: URL, written: string): string {
+  const bareOrigin = parsed.pathname === "/" && !parsed.search && !parsed.hash;
+  return bareOrigin && !written.endsWith("/") ? parsed.origin : parsed.href;
+}
 
 /**
  * Read `harnessGateway` from a loaded global config. An absent block, or a block
  * with no `url`, is `off`. Anything else that is not a loopback http(s) URL is
  * `invalid`, with a message naming the key and the rule. The message never
  * repeats the value, which may carry userinfo.
+ *
+ * An accepted value is handed over in its canonical form: the child and every
+ * process it starts read `ANTHROPIC_BASE_URL`, and some of them parse URLs by
+ * other rules than the check did. Userinfo is refused because Claude Code on
+ * Node cannot send a request to a URL that holds credentials, and would print
+ * that URL in its error.
  */
 export function resolveHarnessGateway(config: ClaudishProfileConfig): HarnessGatewaySetting {
   const block = config.harnessGateway;
@@ -53,11 +75,20 @@ export function resolveHarnessGateway(config: ClaudishProfileConfig): HarnessGat
   if (!parsed.success) {
     return { kind: "invalid", message: `harnessGateway.url must be a string: ${RULE}` };
   }
-  const url = parsed.data.url.trim();
-  if (!isLoopbackTarget(url)) {
-    return { kind: "invalid", message: `harnessGateway.url is not accepted: ${RULE}` };
+  const written = parsed.data.url.trim();
+  const refused = {
+    kind: "invalid",
+    message: `harnessGateway.url is not accepted: ${RULE}`,
+  } as const;
+  if (AMBIGUOUS.test(written) || !isLoopbackTarget(written)) return refused;
+  let url: URL;
+  try {
+    url = new URL(written);
+  } catch {
+    return refused;
   }
-  return { kind: "on", url };
+  if (url.username || url.password) return refused;
+  return { kind: "on", url: canonical(url, written) };
 }
 
 /**

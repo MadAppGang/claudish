@@ -198,6 +198,15 @@ The rule: the URL must be `http://` or `https://`, and its host must be loopback
 not `{ "url": string }`, refuses the launch with one error that names the key and the rule.
 There is no fallback to the proxy URL. The error never repeats the value.
 
+The check parses with the WHATWG URL parser, but Claude Code exports `ANTHROPIC_BASE_URL` to every
+process it starts, and some of those parse by RFC 3986. The two read some text differently:
+`http://127.0.0.1\@evil.example:18081` is host `127.0.0.1` to WHATWG and host `evil.example` to
+Python's `urlsplit`, and WHATWG drops a tab, CR or LF anywhere in the text. So a value with a
+backslash or a control character is refused, and an accepted value is handed over in its parsed,
+canonical form (`http://0177.0.0.1:18081` becomes `http://127.0.0.1:18081`). Userinfo is refused
+too: Claude Code on Node cannot build a request for a URL that holds credentials, and its error
+prints the URL.
+
 On a native Claude route (a bare Claude name, a pane child's `claude@<id>`), Claude Code signs
 each request with the user's Claude login token, and that token passes through the gateway. The
 loopback rule keeps it on the machine; the gateway's own logs are outside claudish's
