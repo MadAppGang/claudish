@@ -1186,7 +1186,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // Collect available API keys (NO validation here - validation happens in index.ts AFTER model selection)
   // This ensures we know which model the user wants before checking if they have the right key
   config.openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY];
-  config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  // claudish's own placeholder, inherited from a proxied parent, is not a key.
+  config.anthropicApiKey = realValueFor("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY);
 
   // Set default for quiet mode if not explicitly set
   // Single-shot mode: quiet by default
