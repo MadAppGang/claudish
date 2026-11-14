@@ -59,8 +59,9 @@ export function readModelIdEffort(raw: unknown): ModelIdEffort | undefined {
 /**
  * The id `connection`'s effort map lists (for a level or as `off`) that equals
  * `requested`, in the map's own spelling: an exact match first, then a
- * case-insensitive one. Undefined when the connection has no valid map or the
- * map lists no such id. Whole-id comparison only; no suffix is ever parsed.
+ * case-insensitive one when exactly one distinct spelling matches. Undefined when
+ * the connection has no valid map, the map lists no such id, or two spellings
+ * match only case-insensitively. Whole-id comparison only; no suffix is ever parsed.
  */
 export function publishedEffortWireId(
   connection: Pick<AggregatorEntry, "modelIdEffort">,
@@ -71,7 +72,8 @@ export function publishedEffortWireId(
   const ids = [...Object.values(map.values), ...(map.off ? [map.off] : [])];
   if (ids.includes(requested)) return requested;
   const lowered = requested.toLowerCase();
-  return ids.find((id) => id.toLowerCase() === lowered);
+  const spellings = new Set(ids.filter((id) => id.toLowerCase() === lowered));
+  return spellings.size === 1 ? [...spellings][0] : undefined;
 }
 
 /** A plain object, or undefined. */
