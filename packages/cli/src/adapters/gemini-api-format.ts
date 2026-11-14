@@ -15,7 +15,6 @@
 
 import { mapToolChoiceToGemini } from "../handlers/shared/format/openai-tools.js";
 import { convertToolsToGemini } from "../handlers/shared/gemini-schema.js";
-import { filterIdentity } from "../handlers/shared/openai-compat.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import {
@@ -200,7 +199,6 @@ export class GeminiAPIFormat extends BaseAPIFormat {
       let systemContent = Array.isArray(claudeRequest.system)
         ? claudeRequest.system.map((i: any) => i.text || i).join("\n\n")
         : claudeRequest.system;
-      systemContent = filterIdentity(systemContent);
 
       // Gemini-specific reasoning suppression
       systemContent += `\n\nCRITICAL INSTRUCTION FOR OUTPUT FORMAT:

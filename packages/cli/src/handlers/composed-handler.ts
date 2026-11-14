@@ -174,8 +174,12 @@ import {
   classifyConnectionError,
 } from "./shared/connection-error.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
+import {
+  identityHeadFor,
+  keepsClaudeIdentity,
+  scrubHarnessIdentity,
+} from "./shared/format/identity-filter.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
-import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
 import {
@@ -1578,8 +1582,22 @@ export class ComposedHandler implements ModelHandler {
     const adapter = this.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
 
-    // 3. Convert messages and tools
-    let messages = adapter.convertMessages(claudeRequest, filterIdentity);
+    // 2a. Remove Claude Code's identity from the text it injects (system
+    // prompt, reminders, tool descriptions) unless the upstream model really
+    // is Claude. After hook stage A, which reads the original system text.
+    const keepIdentity = keepsClaudeIdentity({
+      native: this.routeInfo().native,
+      vendor: this.upstreamFacts()?.vendor ?? null,
+      model: this.bareModelName,
+    });
+    if (!keepIdentity) {
+      claudeRequest = scrubHarnessIdentity(claudeRequest, identityHeadFor(this.provider.name));
+    }
+
+    // 3. Convert messages and tools. No identity filter here: step 2a already
+    // scrubbed `claudeRequest` (or `keepIdentity` left it alone), so a second
+    // pass would only risk re-adding a header to the cleaned prompt.
+    let messages = adapter.convertMessages(claudeRequest, undefined);
     let tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
     // Per-API tool-count cap (e.g. OpenAI Chat Completions hard-caps `tools` at

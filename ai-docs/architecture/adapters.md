@@ -88,6 +88,108 @@ transport.overrideStreamFormat() ?? modelAdapter.getStreamFormat() ?? providerAd
 **Adding a new model**: Create a ModelTranslator adapter, register in `adapters/adapter-manager.ts`.
 **Verifying wiring**: `claudish --probe <model>` shows the full adapter composition.
 
+## Claude Code's identity never reaches a foreign model (`format/identity-filter.ts`)
+
+Claude Code opens its system prompt with "You are Claude Code, Anthropic's official CLI for
+Claude.", lists the Claude model family, names its own model and knowledge cutoff, and calls
+itself "Claude Code" in reminders and tool descriptions. A foreign model reads all of it as a
+statement about itself.
+
+**Measured (2026-11-14).** A 15-hour `gemini-4-carbon` session over `ag@` sent that opening
+line on every request. The old filter ran only in the Gemini, Codex and OpenAI-shaped
+adapters, only on the system prompt, and missed the model-family and `/fast` lines. The
+Anthropic-shaped adapters (Kimi, MiniMax, GLM, Z.AI, vertex-anthropic) ignore their filter
+argument, so they sent the line unchanged. The filter also prepended "You are NOT Claude",
+which itself puts Claude into the context. The Antigravity account behind that session was
+disabled with `403 TOS_VIOLATION` partway through it. No log proves the identity text caused it.
+
+**What runs now.** `ComposedHandler` step 2a, once per attempt, after hook stage A (the hooks
+parse the ORIGINAL system text: plan path, skill list) and before `convertMessages`:
+
+- `keepsClaudeIdentity` decides. A catalog vendor decides first: `anthropic` keeps the
+  identity, any other vendor is scrubbed. With no catalog vendor, a native route or a Claude
+  model id keeps it (`claude-*`, also the dotted cloud spellings `anthropic.claude-…` and
+  `us.anthropic.claude-…`). The vendor outranks `native` because the handler's `native` flag
+  is a NAME rule: a foreign model that only carries a `claude-…` name passes it.
+- `scrubHarnessIdentity` rewrites ONLY text Claude Code injects: the system prompt; inline
+  `role: "system"` messages (the skill list, agent list and MCP instructions, plus the tool
+  definitions their `tool_addition` blocks carry); `<system-reminder>` and
+  `<local-command-caveat>` spans in user messages; Claude Code's fixed wrapper sentences ("This
+  is how Claude Code surfaces…", "Another Claude session sent a message:", "This came from
+  another Claude session…"); tool descriptions and the `description` strings inside input
+  schemas. Never user-typed text, assistant turns, tool results, tool names, schema keys or
+  `enum` / `const` / `default` / `examples` values. A tool result can be file contents; a
+  renamed one makes the next `Edit` quote text the file lacks.
+- A wrapper sentence counts only as a WHOLE LINE in Claude Code's own wording, outside a fenced
+  block. The same words inside a line the user typed ('replace the literal "Another Claude
+  session sent a message:"'), or inside source the user pasted in a fence, are the user's text.
+  The first cut matched them anywhere and rewrote the user's replacement target.
+- An identity sentence ends at a full stop followed by whitespace, the end of the text, or a
+  tag. Without the tag case, a sentence directly before `</system-reminder>` survived.
+- Inside a schema, the value of `properties`, `patternProperties`, `$defs` and `definitions`
+  maps a NAME to a schema. A parameter named `default` or `enum` is a name there, so its
+  schema is scrubbed; only the keyword `default` / `enum` is data.
+- Three kinds of text are told apart. A statement of who the reader is (identity sentences,
+  three environment lines, `<claude_background_info>`) is REMOVED. Text that addresses the
+  reader as "Claude" ("Claude uses it when…") becomes "the assistant", and the harness name
+  "Claude Code" becomes "Agent CLI". A NAME of a real product, model, tool or file stays
+  ("Claude Docs", "Claude API", "Anthropic SDK", `mcp__Claude_Browser__*`, `claude-opus-5-5`,
+  `CLAUDE.md`, the `Claude-Session:` commit trailer): the model must still be able to use it.
+- NO NAME IS RENAMED INSIDE CODE OR A LITERAL: a fenced block, an inline code span, or a
+  double-quoted string on one line (`LITERAL_SPAN`). A reminder can carry a file the user
+  wrote (a `CLAUDE.md`, a memory file), and `const label = "Ask Claude to help"` renamed there
+  no longer matches the file. Prose in double quotes is kept as well; that is the accepted
+  price. Two review rounds each found a new literal form that a per-character guard missed,
+  so the rule is the span, not the neighbouring character. Identity SENTENCES are still
+  removed inside a span. A single-quoted literal is not a span (an apostrophe is too common).
+- Outside a span, "Claude" counts as the reader unless it is part of a longer name, path or id
+  (`/`, `\`, `.`, `@`, `-`), follows a determiner ("a Claude model"), precedes a capitalised
+  word or a version ("Claude Docs", "Claude 4"), opens one of a short list of lower-case
+  product phrases ("Claude models", "Claude in Chrome"), is a file name (`Claude.json`), or is
+  assigned (`Claude = true`). "Claude Code" is kept inside a path
+  (`/Applications/Claude Code.app`). The rules err toward KEEPING: a missed rename leaves one
+  confusing word, a wrong one breaks a name, a path or a value.
+- Measured on the captured request (3.4 MB, 24 tools): mentions of Claude, Anthropic or a Claude
+  model name went from 15 to 0 in the system prompt, 150 to 19 in tool descriptions, 52 to 9 in
+  input schemas, 87 to 48 in inline system messages. Every survivor is a product, tool name or
+  URL. The scrub took 10.5 ms.
+- The system prompt opens with a header from `identityHeadFor` (`antigravity` gets the identity
+  block Google's own client sends, below; every other provider a neutral line) — but ONLY when an
+  identity opener was actually there to replace. A hook that set a short system note, or an empty
+  prompt, gets no synthesized header: there is no "you are Claude" to counter. `IDENTITY_OPENER`
+  is the anchor. This matters because the raw `providerRequest` hook snapshots `claudeRequest`
+  after step 2a, so a header added from nothing would surface in every hook that reads `system`.
+- `scrubHarnessIdentity` keeps the SHAPE of `system` (an array stays an array, with its
+  `cache_control` blocks; a block scrubbed to empty is dropped; the header is its own block).
+  In `ComposedHandler` that is not reachable today: `transformOpenAIToClaude` (step 1) already
+  joins a `system` array into one string, so `cache_control` breakpoints on the system prompt
+  are gone before step 2a on every route. That flattening is older than the scrub and is a
+  separate question; the scrub must not be the second place that loses them.
+- ONE OWNER. Step 2a decides, and no adapter filters identity. `convertMessages` is called with
+  no filter, and `GeminiAPIFormat` and `CodexAPIFormat` no longer call `filterIdentity` in
+  `buildPayload`. An adapter cannot know the route: both ran unconditionally, so a real Claude
+  model on `ag@` (Antigravity serves them) or on a Responses endpoint lost its identity after
+  step 2a had decided to keep it. Do not put a filter back into an adapter. `filterIdentity`
+  stays for `subscription-devin-probe.ts`; it adds a header only when the text holds an
+  identity opener.
+
+**Antigravity's own header.** Copied from the `agy` 1.5.9 binary, the default non-autonomous
+branch of its `antigravity_identity` template. Google links that template with
+`LINT.IfChange(antigravity_identity)` … `LINT.ThenChange(…/prediction_service/config/abuse.pi:antigravity_identity)`,
+so its abuse configuration is maintained together with this exact text. The template's third
+line ("User requests are enclosed within <USER_REQUEST> tags") is not sent, because claudish
+does not wrap user turns in those tags.
+
+**Not covered.** A `ToolSearch` result carries tool definitions as a tool result, so its
+descriptions pass unscrubbed. `subscription-devin-probe.ts` replays a captured request through
+`filterIdentity` only, so its tool descriptions and reminders are not scrubbed.
+
+Tests: `identity-filter.test.ts` (the rules on a captured prompt, the reader rename and the names
+it keeps, idempotency, what is never touched, the inputs of both review rounds) and
+`composed-handler-identity.test.ts` (the wire body for a gateway and for `antigravity`, which
+fail without step 2a; a real Claude model, a control that must stay unchanged; both outcomes on
+the real Gemini and Responses adapters).
+
 ## Stream Parsers
 Located in `handlers/shared/stream-parsers/`:
 - `openai-sse.ts` — OpenAI SSE → Claude SSE (used by most providers)
