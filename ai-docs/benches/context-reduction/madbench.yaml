@@ -11,9 +11,14 @@ params:
   # The folder under ./tools with the variant's scripts: start.sh (optional,
   # run before the agent) and evidence.sh (run after it).
   tool: baseline
+  # The executable that starts the session: `claude`, or `claudish`, which
+  # runs Claude Code behind its own proxy. MADBENCH_CLAUDISH names the claudish
+  # build to use.
+  binary: claude
 
 harness:
   type: claude-code
+  binary: "{{binary}}"
   model: "{{model}}"
   use_subscription: required
   config:

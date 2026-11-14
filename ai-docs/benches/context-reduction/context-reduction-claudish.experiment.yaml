@@ -1,0 +1,42 @@
+description: "the same context-reduction comparison with claudish between Claude Code and the Anthropic API"
+bench: ./madbench.yaml
+
+# Every variant starts claudish, not claude: `binary: claudish`, with
+# MADBENCH_CLAUDISH naming the build. The model is the bare Claude name, so
+# claudish runs a normal session on the Claude subscription and loads its
+# hooks. A `claude@` model would be a monitor session, which loads none.
+#
+# The variants differ only in the composed files, the one staged plugin and
+# the second provision step, which copies the variant's claudish config into
+# the run's ~/.claudish.
+guard_changes:
+  allow:
+    - harness/config/files/**
+    - harness/config/plugins/**
+    - sandbox/provision/steps/1
+
+variants:
+  # claudish with no context tool.
+  - name: claudish-baseline
+    params:
+      binary: claudish
+      tool: claudish-baseline
+  # rtk as a claudish toolCall hook: the Bash command is rewritten in the
+  # model's response, before Claude Code runs it.
+  - name: claudish-rtk
+    params:
+      binary: claudish
+      tool: claudish-rtk
+  # context-mode staged as a plugin, as in the native variant. Fetch it first
+  # with fetch-context-mode.sh.
+  - name: claudish-context-mode
+    params:
+      binary: claudish
+      tool: claudish-context-mode
+      plugins: [./vendor/context-mode/plugins/claude-code]
+  # Context Gateway between Claude Code and claudish (harnessGateway.url), with
+  # the native local variant's config: trimming, no model call of its own.
+  - name: claudish-context-gateway-local
+    params:
+      binary: claudish
+      tool: claudish-context-gateway-local

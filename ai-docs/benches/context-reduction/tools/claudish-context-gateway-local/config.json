@@ -1,0 +1,5 @@
+{
+  "telemetry": { "enabled": false, "askedAt": "2026-11-15T00:00:00.000Z" },
+  "stats": { "enabled": false },
+  "harnessGateway": { "url": "http://127.0.0.1:18431" }
+}
