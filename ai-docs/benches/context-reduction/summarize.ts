@@ -146,8 +146,13 @@ if (files.length === 0) {
 
 const rows: Row[] = [];
 for (const file of files) {
-  const report = JSON.parse(await Bun.file(file).text()) as { results?: Result[] };
-  for (const r of report.results ?? []) rows.push(trialRow(file, r));
+  // One trial: `results` at the top. Several trials: one `results` per trial.
+  const report = JSON.parse(await Bun.file(file).text()) as {
+    results?: Result[];
+    trials?: { results?: Result[] }[];
+  };
+  const results = report.results ?? report.trials?.flatMap((t) => t.results ?? []) ?? [];
+  for (const r of results) rows.push(trialRow(file, r));
 }
 
 const variants = [...new Set(rows.map((r) => r.variant))];
