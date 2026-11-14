@@ -252,6 +252,7 @@ function gatheredCandidate(model: string, provider: string): RouteCandidate {
 describe("catalog route candidate gathering and order", () => {
   test("derives native providers from vendor route bindings", () => {
     const expected = {
+      anthropic: "anthropic",
       openai: "openai",
       google: "google",
       "x-ai": "x-ai",
@@ -269,7 +270,7 @@ describe("catalog route candidate gathering and order", () => {
         Object.keys(expected).map((vendor) => [vendor, nativeProviderForVendor(vendor)])
       )
     ).toEqual(expected);
-    expect(nativeProviderForVendor("anthropic")).toBeUndefined();
+    expect(nativeProviderForVendor("no-such-vendor")).toBeUndefined();
   });
 
   test("puts a flat-rate subscription before a metered connection", () => {
