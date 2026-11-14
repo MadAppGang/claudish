@@ -93,7 +93,8 @@ describe.skipIf(process.platform === "win32")("REQ-5: harness gateway CLI launch
 
   async function launch(
     args: string[],
-    config: { harnessGateway?: { url: string } }
+    config: { harnessGateway?: { url: string } },
+    opts: { prompt?: boolean } = {}
   ): Promise<LaunchResult> {
     writeFileSync(configPath, JSON.stringify(config));
     const out = join(dir, "child-env.json");
@@ -119,40 +120,43 @@ describe.skipIf(process.platform === "win32")("REQ-5: harness gateway CLI launch
 });\n`
     );
 
-    const proc = spawn(
-      process.execPath,
-      [
-        "run",
-        "--no-env-file",
-        "--preload",
-        denyFetch,
-        join(import.meta.dir, "index.ts"),
-        ...args,
-        "-y",
-        "hi",
-      ],
-      {
-        cwd: dir,
-        detached: true,
-        env: {
-          PATH: process.env.PATH,
-          HOME: home,
-          TMPDIR: dir,
-          CLAUDE_CONFIG_DIR: join(home, ".claude"),
-          XDG_CONFIG_HOME: join(home, ".config"),
-          ZDOTDIR: home,
-          CLAUDISH_CONFIG: configPath,
-          CLAUDE_PATH: standIn,
-          ENV_OUT: out,
-          _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1",
-          CLAUDISH_DISABLE_CATALOG_WARM: "1",
-          CLAUDISH_DISABLE_KEYCHAIN: "1",
-          CLAUDISH_DISABLE_OP: "1",
-          CLAUDISH_NO_PREDEFINED_ENDPOINTS: "1",
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      }
-    );
+    const bunArgs = [
+      "run",
+      "--no-env-file",
+      "--preload",
+      denyFetch,
+      join(import.meta.dir, "index.ts"),
+      ...args,
+      // Without a prompt the launch is interactive.
+      "-y",
+      ...(opts.prompt === false ? [] : ["hi"]),
+    ];
+    // An interactive launch needs a terminal: macOS `script` gives it a pseudo-terminal.
+    const [command, commandArgs] =
+      opts.prompt === false
+        ? ["script", ["-q", "/dev/null", process.execPath, ...bunArgs]]
+        : [process.execPath, bunArgs];
+    const proc = spawn(command, commandArgs, {
+      cwd: dir,
+      detached: true,
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        TMPDIR: dir,
+        CLAUDE_CONFIG_DIR: join(home, ".claude"),
+        XDG_CONFIG_HOME: join(home, ".config"),
+        ZDOTDIR: home,
+        CLAUDISH_CONFIG: configPath,
+        CLAUDE_PATH: standIn,
+        ENV_OUT: out,
+        _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1",
+        CLAUDISH_DISABLE_CATALOG_WARM: "1",
+        CLAUDISH_DISABLE_KEYCHAIN: "1",
+        CLAUDISH_DISABLE_OP: "1",
+        CLAUDISH_NO_PREDEFINED_ENDPOINTS: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     let output = "";
     proc.stdout.on("data", (chunk) => {
@@ -211,10 +215,52 @@ describe.skipIf(process.platform === "win32")("REQ-5: harness gateway CLI launch
     const result = await launch(foreignArgs, { harnessGateway: { url: invalidGatewayUrl } });
 
     expect(result.signal, result.output).toBeNull();
-    expect(result.code, result.output).not.toBeNull();
-    expect(result.code, result.output).not.toBe(0);
+    // Exit 1 with the key's own message, so an unrelated startup error cannot pass.
+    expect(result.code, result.output).toBe(1);
+    expect(result.output).toContain("harnessGateway.url");
+    expect(result.output).not.toContain(invalidGatewayUrl);
     expect(result.childEnv, result.output).toBeNull();
   }, 30_000);
+
+  const notice = "requests go through the gateway at";
+
+  // A single-shot launch is quiet by default, like every launch banner.
+  test("the gateway notice reaches the terminal in a --verbose single-shot launch", async () => {
+    const result = await launch([...foreignArgs, "--verbose"], {
+      harnessGateway: { url: gatewayUrl },
+    });
+    startedChild(result);
+    expect(result.output).toContain(`${notice} ${gatewayUrl}`);
+  }, 30_000);
+
+  test.skipIf(process.platform !== "darwin")(
+    "the gateway notice reaches the terminal in an interactive launch",
+    async () => {
+      const result = await launch(
+        foreignArgs,
+        { harnessGateway: { url: gatewayUrl } },
+        { prompt: false }
+      );
+      // The notice prints before Claude Code starts. Under `script` the interactive
+      // multiplexer gets no terminal size and stops, which this case does not test.
+      expect(result.output).toContain(`${notice} ${gatewayUrl}`);
+    },
+    30_000
+  );
+
+  test.skipIf(process.platform !== "darwin")(
+    "--quiet hides the gateway notice in an interactive launch",
+    async () => {
+      const result = await launch(
+        [...foreignArgs, "--quiet"],
+        { harnessGateway: { url: gatewayUrl } },
+        { prompt: false }
+      );
+      expect(result.output).toContain("[claudish]");
+      expect(result.output).not.toContain(notice);
+    },
+    30_000
+  );
 
   test("REQ-5: no gateway key keeps the foreign-model child on the local proxy", async () => {
     const result = await launch(foreignArgs, {});

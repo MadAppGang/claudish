@@ -214,6 +214,11 @@ signing-value registry. The startup line says so: `Claude Code's requests go thr
 at <origin>; on this native Claude route the Claude login token passes through it`. On a foreign
 route the token Claude Code sends is claudish's placeholder.
 
+The line prints with the other launch banners, through `runClaudeWithProxy`'s quiet-aware `log`:
+shown in an interactive session, hidden by `--quiet` and in a single-shot launch unless
+`--verbose` is given, and always written to the debug log. It does not go through `logStderr`,
+which in an interactive session writes to the diag file only, where nobody reads it.
+
 The line shows the URL's origin only (scheme, host, port). Userinfo, path, query and fragment can
 each hold a gateway credential, and none of those is a signing value, so the registry would not
 redact it from the debug log. The child's environment gets the full URL.

@@ -2535,9 +2535,13 @@ export async function runClaudeWithProxy(
   // which names the parent's proxy; with the gateway off it would misroute.
   scrubInheritedHarnessGatewayTarget(env);
 
+  // Printed with the launch banners below, so an interactive session shows it and
+  // --quiet hides it; logStderr would send it to the diag file in an interactive one.
+  let gatewayNotice: string | undefined;
   if (harnessGateway.kind === "on") {
     applyHarnessGateway(env, harnessGateway.url, proxyUrl);
-    logStderr(harnessGatewayNotice(harnessGateway.url, shouldPreserveNativeAuth(config)));
+    gatewayNotice = harnessGatewayNotice(harnessGateway.url, shouldPreserveNativeAuth(config));
+    debugLog(`[claude-runner] ${gatewayNotice}`);
   }
 
   // Can this launch put a recovery banner on screen at all? Asked HERE, before
@@ -2819,6 +2823,7 @@ export async function runClaudeWithProxy(
       );
     }
   }
+  if (gatewayNotice) log(`[claudish] ${gatewayNotice}`);
 
   if (config.interactive) {
     log(`\n[claudish] Model: ${modelDisplayName}\n`);
