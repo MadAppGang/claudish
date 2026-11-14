@@ -787,6 +787,288 @@ and requests from team judges, are not held at all.
 
 ---
 
+## Context tools
+
+Three outside tools make a session's context smaller. claudish ships none of their code. This
+section shows how to connect each one to a session that claudish starts, on a native Claude route
+and on foreign routes.
+
+| Tool | What it does | How it connects |
+|---|---|---|
+| rtk | Rewrites a Bash command so that it prints shorter output. | A `toolCall` hook. |
+| context-mode | An MCP server and Claude Code hooks that run large commands outside the context. | A Claude Code plugin directory, passed with `--plugin-dir`. |
+| Context-Gateway | A proxy that shortens `tool_result` text in every request. | A gateway between Claude Code and claudish, set with `harnessGateway.url`. |
+
+**Hooks do not run in monitor sessions.** A top-level `claudish --model claude@<id>`, and any
+`--monitor` session, is a monitor session: claudish forwards its traffic unchanged and loads no
+hooks. When a hook must run on a native Claude route, use `create_session` or `team` (there
+`claude@<id>` runs as a normal session), or a bare Claude name such as `claudish --model
+claude-sonnet-<version>`.
+
+### rtk
+
+The hook below sends each `Bash` command to `rtk rewrite`. When rtk returns a different command,
+the hook replaces the command in the tool call. Claude Code then runs the rtk form. Install rtk so
+that `rtk` is on the PATH of the claudish process.
+
+```ts
+/// <reference path="./claudish-hooks.d.ts" />
+/**
+ * Replaces a Bash command with the form `rtk rewrite` returns, so the command
+ * prints shorter output. Needs `rtk` on the PATH of the claudish process.
+ */
+import { act, defineHook } from "claudish/hooks";
+
+// claudish runs hooks under Bun. This declares the one Bun call the hook makes.
+declare const Bun: {
+  spawn(
+    cmd: string[],
+    opts: { signal: AbortSignal; stdout: "pipe"; stderr: "ignore" }
+  ): { stdout: ReadableStream<Uint8Array>; exited: Promise<number> };
+};
+
+export default defineHook({
+  apiVersion: 1,
+  id: "rtk-bash-rewrite",
+  description: "Replaces a Bash command with its rtk form",
+  defaultSeverity: "fix",
+  routes: "all",
+  timeoutMs: 2000,
+  on: {
+    toolCall: {
+      tools: ["Bash"],
+      async handle(ctx) {
+        const command = ctx.tool.args.command;
+        if (typeof command !== "string" || command.trim() === "") return;
+        // ctx.signal stops rtk when the hook's timeout runs out.
+        const proc = Bun.spawn(["rtk", "rewrite", command], {
+          signal: ctx.signal,
+          stdout: "pipe",
+          stderr: "ignore",
+        });
+        const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+        // Exit 0 and 3 print a rewritten command. Exit 1 and 2 mean no rewrite.
+        if (code !== 0 && code !== 3) return;
+        const rewritten = stdout.trim();
+        if (rewritten === "" || rewritten === command) return;
+        // The reason goes to the journal. It never holds the command.
+        return [act.repairToolArgs({ ...ctx.tool.args, command: rewritten }, "rtk rewrite")];
+      },
+    },
+  },
+});
+```
+
+Save it as `rtk-bash-rewrite.ts` beside your config file and add it:
+
+```json
+{ "hooks": { "modules": ["./rtk-bash-rewrite.ts"] } }
+```
+
+- **Routes.** It works on native and foreign routes. On a native Claude route the `toolCall` event
+  fires on the response from Anthropic, the same as on a foreign route.
+- **Permissions.** Claude Code shows and permission-checks the command it receives, which is the
+  `rtk …` form. An allow rule for the original command, such as `Bash(git status)`, no longer
+  matches it.
+- **Failures.** A failure is fail-open: rtk missing, a crash, or a timeout leaves the command as the
+  model wrote it, and the journal records the failure. After 5 failures in a row claudish disables
+  the hook for the rest of the process. A missing `rtk` therefore costs five tool calls of up to 2 s
+  each, then nothing.
+- **Severity.** At `warn` the hook runs and the journal records the repair, but the command is not
+  changed. Use this to see what rtk would do.
+
+### context-mode
+
+context-mode needs no claudish config. It is a Claude Code plugin, and claudish passes the flag that
+loads it.
+
+1. Clone the context-mode repository.
+2. Pass `--plugin-dir <clone>/plugins/claude-code` to Claude Code:
+   - on the CLI, as a flag claudish passes through: `claudish --model <model> --plugin-dir
+     <clone>/plugins/claude-code`;
+   - in MCP `create_session` or `team`, as `claude_flags: "--plugin-dir <clone>/plugins/claude-code"`.
+     The path must contain no whitespace.
+
+This loads its MCP server and its Claude Code hooks for that session only. Nothing is written to
+`~/.claude`. Its tools are named `mcp__plugin_context-mode_context-mode__ctx_*`, for example
+`mcp__plugin_context-mode_context-mode__ctx_execute`.
+
+context-mode 2.1.10 needs Node 24.15.0 or newer as `node` on Claude Code's PATH, because its plugin
+runs `node server.mjs`. With an older Node the server starts but lists only `ctx_doctor`. If
+`ctx_execute` is missing, call the `ctx_doctor` tool and read its D2 row. context-mode stores its data
+in `~/.context-mode`, or in `CONTEXT_MODE_DATA_DIR` when that is set.
+
+context-mode is licensed under Elastic-2.0. claudish ships none of its code.
+
+**Optional hook: point foreign models at `ctx_execute`.** context-mode's own hooks guide the model.
+A foreign model can also get the hint in the `Bash` tool description. The hook below adds it only
+when the session has both tools:
+
+```ts
+/// <reference path="./claudish-hooks.d.ts" />
+/**
+ * Adds a sentence to the Bash tool description that points the model at
+ * context-mode's ctx_execute tool for commands with large output.
+ */
+import { act, defineHook } from "claudish/hooks";
+
+const CTX_EXECUTE = "mcp__plugin_context-mode_context-mode__ctx_execute";
+
+export default defineHook({
+  apiVersion: 1,
+  id: "context-mode-hint",
+  description: "Points foreign models at ctx_execute for commands with large output",
+  routes: "foreign",
+  on: {
+    request(ctx) {
+      const names = ctx.request.tools.map((t) => t.name);
+      if (!names.includes("Bash") || !names.includes(CTX_EXECUTE)) return;
+      return [
+        act.rewriteToolDescription(
+          "Bash",
+          `For a command whose output may be large (test runs, logs, builds, long listings), use the ${CTX_EXECUTE} tool instead. It runs the command and returns a short result.`
+        ),
+      ];
+    },
+  },
+});
+```
+
+### Context-Gateway
+
+The gateway sits between Claude Code and claudish. Claude Code sends each request to the gateway.
+The gateway shortens the `tool_result` text and forwards the request to claudish. claudish then
+routes it as usual, so it works on native and foreign routes.
+
+Set the gateway URL in the global config. It must be a loopback address:
+
+```json
+{ "harnessGateway": { "url": "http://127.0.0.1:18081" } }
+```
+
+claudish points Claude Code's `ANTHROPIC_BASE_URL` at this URL. It adds an `X-Target-URL` header
+that names claudish's own proxy, so one gateway serves every session.
+
+claudish does not start the gateway. Start it yourself, and always pass `--config`:
+
+```bash
+context-gateway serve --config ~/context-gateway.yaml --no-banner
+```
+
+Without `--config` the gateway writes files into `~/.config/context-gateway/configs/`.
+
+**Credentials.** On a native Claude route, Claude Code sends your Claude login token with each
+request, so the token passes through the gateway process. On a foreign route Claude Code holds only
+claudish's placeholder token.
+
+**Injected tools.** The gateway adds two tools to every request: `expand_context` and
+`gateway_search_tools`.
+
+**Model names.** The gateway removes the prefixes `anthropic/`, `openai/`, `google/` and `meta/`
+from the `model` field of each request, and claudish routes by that field. Give a foreign model as
+a model spec with a provider shortcut, such as `or@openai/<model>`. A bare name such as
+`openai/<model>` reaches claudish without its prefix and can route to a different model.
+
+**Monitor sessions.** A monitor session ignores `harnessGateway` and keeps claudish's proxy URL.
+
+**Recommended config: local only.** The gateway makes no calls of its own and writes no logs:
+
+```yaml
+server: {port: 18081, read_timeout: 30s, write_timeout: 1000s}
+store: {type: memory, ttl: 1h}
+preemptive: {enabled: false}
+post_session: {enabled: false}
+pipes:
+  tool_output: {enabled: true, strategy: trimming, fallback_strategy: passthrough, min_tokens: 512, target_compression_ratio: 0.5, enable_expand_context: true}
+  tool_discovery: {enabled: false}
+  task_output: {enabled: false}
+monitoring: {log_level: "off", telemetry_enabled: false}
+```
+
+`trimming` is lossy. It drops the start of a long tool result and keeps the end. The model can call
+the injected `expand_context` tool to get the original back.
+
+**Second config: summaries by a Haiku model.** With `strategy: external_provider` the gateway asks
+a Haiku model to summarise each long tool result. With `auth: oauth` it makes these Haiku calls
+**with your captured Claude login token**, and they are billed to your Claude subscription. Each
+long tool result costs one extra model call.
+
+```yaml
+server: {port: 18081, read_timeout: 30s, write_timeout: 1000s}
+store: {type: memory, ttl: 1h}
+preemptive: {enabled: false}
+post_session: {enabled: false}
+providers:
+  anthropic: {auth: oauth, model: claude-haiku-4-5}
+pipes:
+  tool_output: {enabled: true, strategy: external_provider, provider: anthropic, fallback_strategy: passthrough, min_tokens: 512, target_compression_ratio: 0.5, enable_expand_context: true}
+  tool_discovery: {enabled: false}
+  task_output: {enabled: false}
+monitoring: {log_level: "off", telemetry_enabled: false}
+```
+
+Set `model` to a Haiku model id your account serves. The gateway captures the token from the
+requests Claude Code sends, and it sends its Haiku calls to the `X-Target-URL` it received, which is
+claudish's proxy. claudish routes each Haiku call like any other request, so your hooks and the
+debug log see them too. Use this config on native Claude routes. On a foreign route the captured
+token is claudish's placeholder, not a Claude login. If a Haiku call fails,
+`fallback_strategy: passthrough` leaves the tool result unchanged.
+
+**Measure it.** This observe-only hook logs how many bytes of `tool_result` text each request
+carries. With the gateway in front, the number is the size after the gateway shortened the
+results. It logs counts only, never the content. `ctx.log` writes only when claudish runs with
+`--debug-claudish`.
+
+```ts
+/// <reference path="./claudish-hooks.d.ts" />
+/**
+ * Logs the bytes of tool_result text in each request, and the number of
+ * tool_result blocks. Changes nothing.
+ */
+import type { HookDefinition } from "claudish/hooks";
+
+const encoder = new TextEncoder();
+
+/** Text bytes of one tool_result's content: a string, or blocks with text. */
+function textBytes(content: unknown): number {
+  if (typeof content === "string") return encoder.encode(content).length;
+  if (!Array.isArray(content)) return 0;
+  let bytes = 0;
+  for (const block of content) {
+    if (block && typeof block === "object" && typeof block.text === "string") {
+      bytes += encoder.encode(block.text).length;
+    }
+  }
+  return bytes;
+}
+
+export default {
+  apiVersion: 1,
+  id: "tool-result-meter",
+  description: "Logs the tool_result text bytes in each request",
+  routes: "all",
+  on: {
+    request(ctx) {
+      let bytes = 0;
+      let blocks = 0;
+      for (const message of ctx.request.messages) {
+        if (typeof message.content === "string") continue;
+        for (const block of message.content) {
+          if (block.type !== "tool_result") continue;
+          blocks += 1;
+          bytes += textBytes("content" in block ? block.content : undefined);
+        }
+      }
+      ctx.log(`tool_result_bytes=${bytes} blocks=${blocks}`);
+    },
+  },
+} satisfies HookDefinition;
+```
+
+Save it as `tool-result-meter.ts` and add it to `hooks.modules` beside the others.
+
+---
+
 ## Commands
 
 | Command | What it does | Exit |

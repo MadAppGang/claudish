@@ -677,7 +677,7 @@ continues the *same* turn, which a driver reads as a re-wake.
 - **Types for authors.** `scripts/generate-hooks-dts.ts` emits `src/hooks/ambient-dts.generated.ts`
   (committed, like `version.ts`, so typecheck and the binary need no build step), the text
   `claudish hooks init` writes as `claudish-hooks.d.ts`. `--check` fails on drift.
-  `hooks-command.test.ts` compiles every whole-file example in `docs/advanced/hooks.md` against it,
+  `hooks-docs.test.ts` compiles every whole-file example in `docs/advanced/hooks.md` against it,
   loads each with `claudish hooks check`, and asserts the doc shows the init example verbatim.
 
 **`behavior` is reported, not migrated.** Old modules cannot be ported mechanically (different shape,
@@ -734,6 +734,40 @@ timeout, `null` on failure, never blocks. It sees only a digest (tool names, har
 argument keys plus path-like values), never conversation text. Its model is discovered
 (`ollama-discovery`, smallest non-embedding), never pinned, and ids outside the vocabulary are
 discarded. It is an observe-mode `toolCall` hook, so turning it on no longer holds `Write` content.
+
+## Context tools: which one is a hook
+
+Three context-reduction tools are documented in the user guide (`docs/advanced/hooks.md` § Context
+tools). Only rtk is a hook. Paths below are relative to `packages/cli/src/`.
+
+- **rtk is a `toolCall` hook, and it works on the native route.** `withRequestHooks` wraps the
+  resolved handler, native included (`proxy-server.ts:388-389`, applied at `:1408`), and the closed
+  transform holds a listed tool's block on any route's Claude SSE (`hooks/seam-transform.ts:408-411`,
+  `this.opts.hooks.intercepts(cb.name)`). So `repairToolArgs` rewrites a native `Bash` call the same
+  way it rewrites a foreign one. Claude Code then permission-checks the rewritten command, so an
+  allow rule for the original no longer matches. The example spreads `ctx.tool.args` because the
+  action replaces the whole argument object, and its `reason` is a constant because the journal
+  stores it.
+- **Monitor sessions load no hooks.** `startProxyServer` skips `loadHooksOnce` when `monitorMode` is
+  set (`proxy-server.ts:374`), and the monitor branch returns the bare native handler
+  (`proxy-server.ts:609`). A top-level `claude@<id>` is a monitor session
+  (`launcher/claude-launch.ts:415`; the Claude API launch at `:401`). In a pane child the same spec
+  becomes the bare name and hooks run (`launcher/claude-launch.ts:408-410`). Decision 2026-11-14:
+  document this, do not change monitor mode.
+- **context-mode is not a hook.** It is a Claude Code plugin (an MCP server plus Claude Code hooks).
+  `--plugin-dir` already passes through on the CLI and in `claude_flags`, so claudish adds no surface.
+- **Context-Gateway is launch config, not a hook.** It must sit between Claude Code and claudish for
+  the whole session, which needs the child's `ANTHROPIC_BASE_URL` set before Claude Code starts. No
+  hook can do that: `sessionStart` runs in the MCP server for a pane session and is not awaited
+  before the child's first request, `sessionEnd` is capped at 1.5 s (too short to stop a process
+  cleanly), and no hook can change the child's environment. So it is the global key
+  `harnessGateway.url` (`settings-env.md`), and the user starts the gateway.
+- **No closed action rewrites a `tool_result`.** Message text actions touch only `text` blocks
+  (`hooks/actions.ts:693-697`; `ClaudeContentBlock` in `hooks/public.ts` says so). A
+  `replaceToolResult` action was costed (about 250 lines: action, size limit, applier, declaration,
+  docs) and not built (decision 2026-11-14): it would not connect Context-Gateway, which shortens
+  results itself. The documented meter hook only counts `tool_result` bytes in a `request` hook,
+  which is the evidence that the gateway shortened them.
 
 ## Where to look
 
