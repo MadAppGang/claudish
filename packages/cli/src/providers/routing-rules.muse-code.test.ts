@@ -259,11 +259,29 @@ describe("R1/R3: catalog candidate boundaries", () => {
     ).toMatchObject([{ provider: "meta-muse-code", modelSpec: "muse@muse-spark-1.3" }]);
   });
 
+  test("R3: provider-only Meta rule keeps the ordinary connection wire id", () => {
+    installMuseCatalog();
+    expect(
+      routing.buildRoutingChain(["meta"], "muse-spark-1.3-contributor", cachePath)
+    ).toMatchObject([{ provider: "meta", modelSpec: "meta@muse-spark-1.3" }]);
+  });
+
   test("R3: explicit Muse contributor spec stays verbatim", () => {
     installMuseCatalog();
     expect(
       routing.buildRoutingChain(["muse@muse-spark-1.3-contributor"], "muse-spark-1.3", cachePath)
     ).toMatchObject([{ provider: "meta-muse-code", modelSpec: "muse@muse-spark-1.3-contributor" }]);
+  });
+
+  test("R3: explicit Meta contributor rule entry stays verbatim", () => {
+    installMuseCatalog();
+    expect(
+      routing.buildRoutingChain(
+        ["meta@muse-spark-1.3-contributor"],
+        "muse-spark-1.3-contributor",
+        cachePath
+      )
+    ).toMatchObject([{ provider: "meta", modelSpec: "meta@muse-spark-1.3-contributor" }]);
   });
 
   test("R3: zgo user rule excludes a contributor-only mapping", async () => {

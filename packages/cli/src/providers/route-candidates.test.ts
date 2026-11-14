@@ -462,7 +462,7 @@ describe("exact effort-map wire ids in default candidate gathering", () => {
   const low = `${base}-low`;
   const googleBase = "example-google-base";
 
-  function withEffortCatalog(run: (path: string) => void): void {
+  function withEffortCatalog(run: (path: string) => void, effortWireId = low): void {
     const dir = mkdtempSync(join(tmpdir(), "claudish-candidate-effort-"));
     const path = join(dir, "all-models.json");
     try {
@@ -475,10 +475,10 @@ describe("exact effort-map wire ids in default candidate gathering", () => {
             catalogEntry(
               base,
               [
-                connection("antigravity", base, effortMap({ low })),
+                connection("antigravity", base, effortMap({ low: effortWireId })),
                 connection("google", googleBase),
               ],
-              [low]
+              [effortWireId]
             ),
           ],
           models: [],
@@ -515,9 +515,54 @@ describe("exact effort-map wire ids in default candidate gathering", () => {
       expect(candidates.find(({ provider }) => provider === "antigravity")?.wireId).toBe(low);
     });
   });
+
+  test("keeps the base id when an effort-map value opts content in", () => {
+    const optIn = `${base}-contributor`;
+    withEffortCatalog((path) => {
+      const candidates = gatherRouteCandidates(optIn, path).candidates;
+      expect(candidates.find(({ provider }) => provider === "antigravity")?.wireId).toBe(base);
+    }, optIn);
+  });
 });
 
 describe("vendor claims and availability", () => {
+  test("never gathers an opt-in wire id from a vendor claim", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudish-opt-in-vendor-claim-"));
+    const path = join(dir, "all-models.json");
+    const requested = "example-model-contributor";
+    try {
+      writeAllModelsCache(
+        {
+          catalogGenerationId: "opt-in-vendor-claim-test-data",
+          version: 3,
+          lastUpdated: new Date().toISOString(),
+          entries: [
+            catalogEntry("example-model", [connection("google", "example-model")], [requested]),
+          ],
+          models: [],
+          plans: [],
+        },
+        path
+      );
+      const lists: AccountModelsListSnapshot = new Map([
+        [
+          "antigravity",
+          {
+            provider: "antigravity",
+            models: [{ id: requested, reported: "chat" }],
+            fetchedAt: Date.now(),
+            age: "live",
+            mayDeny: true,
+          },
+        ],
+      ]);
+      const gathered = gatherRouteCandidates(requested, path, lists);
+      expect(gathered.candidates.some(({ wireId }) => wireId === requested)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a vendor claim is gathered but the dynamic models catalog may remove it", async () => {
     const gathered = gatherRouteCandidates("gemini-3.8-flash", cachePath);
     expect(gathered.candidates).toContainEqual(

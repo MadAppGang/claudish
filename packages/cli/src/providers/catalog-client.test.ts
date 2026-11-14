@@ -597,6 +597,14 @@ describe("exact effort-map wire ids", () => {
     expect(resolveExternalId(low, "antigravity")).toBe(low);
   });
 
+  test("keeps an explicit Antigravity effort-map value that opts content in", () => {
+    const optIn = `${base}-contributor`;
+    _setCatalogEntriesForTest([
+      catalogEntry(base, [connection("antigravity", base, effortMap({ low: optIn }))], [optIn]),
+    ]);
+    expect(resolveExternalId(optIn, "antigravity")).toBe(optIn);
+  });
+
   test("keeps an exact Devin effort-map uid even when it is an alias", () => {
     expect(resolveExternalId(devinLow, "devin")).toBe(devinLow);
   });

@@ -517,11 +517,13 @@ describe("provider-only rules with exact effort-map wire ids", () => {
   let dir: string;
   let path: string;
 
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "claudish-provider-rule-effort-"));
-    path = join(dir, "all-models.json");
+  function seed(effortWireId = low): void {
     const entry = {
-      ...catalogEntry(base, [connection("antigravity", base, effortMap({ low }))], [low]),
+      ...catalogEntry(
+        base,
+        [connection("antigravity", base, effortMap({ low: effortWireId }))],
+        [effortWireId]
+      ),
       subscriptionPlanIds: [planId],
     };
     writeAllModelsCache(
@@ -542,6 +544,12 @@ describe("provider-only rules with exact effort-map wire ids", () => {
       },
       path
     );
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudish-provider-rule-effort-"));
+    path = join(dir, "all-models.json");
+    seed();
   });
 
   afterEach(() => {
@@ -556,6 +564,14 @@ describe("provider-only rules with exact effort-map wire ids", () => {
 
   test("keeps the base wire id on the same provider-only rule", () => {
     expect(buildRoutingChain(["antigravity"], base, path)).toMatchObject([
+      { provider: "antigravity", modelSpec: `ag@${base}` },
+    ]);
+  });
+
+  test("keeps the base id when a membership-resolved effort-map value opts content in", () => {
+    const optIn = `${base}-contributor`;
+    seed(optIn);
+    expect(buildRoutingChain(["antigravity"], optIn, path)).toMatchObject([
       { provider: "antigravity", modelSpec: `ag@${base}` },
     ]);
   });
