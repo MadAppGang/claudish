@@ -193,6 +193,18 @@ export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): Key
       effectiveSource = "shell environment";
       // layers[2] already marked active
     }
+  } else if (configValue && !configValue.startsWith("op://")) {
+    // Startup does not copy `apiKeys` into process.env: the credential authority
+    // reads a key the config file holds at use, so the file is the source. An
+    // `op://` reference is not a key; `vaultProvenance` reports it.
+    layers[1].isActive = true;
+    return {
+      envVar,
+      hasValue: true,
+      effectiveMasked: maskKey(configValue),
+      effectiveSource: configLayerLabel(),
+      layers,
+    };
   }
 
   // NOTE: `runtimeValue` stays local. It is deliberately NOT placed on the
