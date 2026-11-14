@@ -36,6 +36,7 @@ import { ENV } from "./config.js";
 import { applyProxyFastModeGates, scrubInheritedFastModeGates } from "./fast-mode-gates.js";
 import { CLAUDE_LOGIN_BEARER } from "./handlers/shared/anthropic-forward.js";
 import {
+  HARNESS_GATEWAY_OFF_VAR,
   type HarnessGatewaySetting,
   applyHarnessGateway,
   harnessGatewayNotice,
@@ -2406,7 +2407,9 @@ export async function runClaudeWithProxy(
   // keeps the proxy URL and ignores the key. A value that breaks the loopback
   // rule refuses the launch here, before any file or child exists.
   const globalConfig = loadConfig();
-  const gatewayEligible = !config.monitor && !advisorNativeSession;
+  // MCP run_prompt's print child is marked to ignore the key too.
+  const gatewayHeldOff = process.env[HARNESS_GATEWAY_OFF_VAR] === "1";
+  const gatewayEligible = !config.monitor && !advisorNativeSession && !gatewayHeldOff;
   const harnessGateway: HarnessGatewaySetting = gatewayEligible
     ? resolveHarnessGateway(globalConfig)
     : { kind: "off" };
@@ -2416,7 +2419,11 @@ export async function runClaudeWithProxy(
     return 1;
   }
   if (!gatewayEligible && globalConfig.harnessGateway !== undefined) {
-    debugLog("[claude-runner] harnessGateway ignored: a monitor session keeps the proxy URL");
+    debugLog(
+      gatewayHeldOff
+        ? `[claude-runner] harnessGateway ignored: ${HARNESS_GATEWAY_OFF_VAR}=1`
+        : "[claude-runner] harnessGateway ignored: a monitor session keeps the proxy URL"
+    );
   }
 
   // Chain, don't clobber: find the status line the user would otherwise have
@@ -2534,6 +2541,7 @@ export async function runClaudeWithProxy(
   // A launch from inside a gateway session inherits that session's X-Target-URL,
   // which names the parent's proxy; with the gateway off it would misroute.
   scrubInheritedHarnessGatewayTarget(env);
+  delete env[HARNESS_GATEWAY_OFF_VAR];
 
   // Printed with the launch banners below, so an interactive session shows it and
   // --quiet hides it; logStderr would send it to the diag file in an interactive one.

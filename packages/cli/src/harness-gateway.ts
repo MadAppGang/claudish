@@ -28,6 +28,14 @@ import { isLoopbackTarget } from "./test-upstream.js";
 /** The header that carries claudish's proxy URL to the gateway. */
 export const HARNESS_GATEWAY_TARGET_HEADER = "X-Target-URL";
 
+/**
+ * Set to `1` in the environment of a claudish that must not use the gateway:
+ * MCP `run_prompt`'s single print child, which runs with no tools, so a gateway
+ * that shortens tool results has nothing to do there, and a stopped gateway
+ * would fail the call. The launch removes it from Claude Code's environment.
+ */
+export const HARNESS_GATEWAY_OFF_VAR = "CLAUDISH_HARNESS_GATEWAY_OFF";
+
 export type HarnessGatewaySetting =
   | { kind: "off" }
   | { kind: "on"; url: string }

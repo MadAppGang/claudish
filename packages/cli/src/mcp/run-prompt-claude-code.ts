@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { type SettingsFinding, settingsCredentialFindings } from "../claude-runner.js";
 import { ENV } from "../config.js";
 import { scrubInheritedFastModeGates } from "../fast-mode-gates.js";
-import { scrubInheritedHarnessGatewayTarget } from "../harness-gateway.js";
+import { HARNESS_GATEWAY_OFF_VAR, scrubInheritedHarnessGatewayTarget } from "../harness-gateway.js";
 import { scrubInheritedHostRouting } from "../host-routing-env.js";
 import { subscriptionSettingsCheck } from "../launcher/claude-launch.js";
 import { PANE_LAUNCH_VARS } from "../pane/child-env.js";
@@ -363,7 +363,10 @@ export async function runPromptViaClaudeCode(
     const argv = claudeCodePrintArgv(model, systemPromptFile, {
       subscriptionPin: opts.subscriptionPin === true,
     });
-    const outcome = await runChild(launch, argv, cwd, printEnv, prompt, signal);
+    // The child runs with no tools, so a gateway that shortens tool results has
+    // nothing to do, and a stopped one would fail the call.
+    const childEnv = { ...printEnv, [HARNESS_GATEWAY_OFF_VAR]: "1" };
+    const outcome = await runChild(launch, argv, cwd, childEnv, prompt, signal);
 
     if (signal?.aborted) throw new Error("cancelled");
 

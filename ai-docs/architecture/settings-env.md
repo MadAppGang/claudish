@@ -239,8 +239,12 @@ Not changed:
 - A monitor session (`--monitor`, a top-level `claude@<id>` or `anthropic@<id>`) and the
   no-model `--advisor` session keep the proxy URL and ignore the key. The key is not validated
   there; a debug log line says it was ignored.
-- MCP `run_prompt`'s print child on a Claude model does not use the proxy at all, so the key
-  does not apply to it.
+- MCP `run_prompt`'s print child on a Claude model ignores the key. That child is a claudish
+  started with a bare Claude name, so it is not a monitor session and would otherwise take the
+  gateway; `runPromptViaClaudeCode` starts it with `CLAUDISH_HARNESS_GATEWAY_OFF=1`, which
+  `runClaudeWithProxy` reads and removes. The child runs with no tools, so the gateway has nothing
+  to shorten, and a stopped gateway would fail the call. A foreign model's `run_prompt` calls the
+  in-process proxy and never starts Claude Code.
 - claudish does not start or stop the gateway. The user, or the bench, runs it.
 
 Pane children (`create_session`, `team`) are claudish processes that read the same config file

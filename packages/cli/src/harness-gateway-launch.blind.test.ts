@@ -94,7 +94,7 @@ describe.skipIf(process.platform === "win32")("REQ-5: harness gateway CLI launch
   async function launch(
     args: string[],
     config: { harnessGateway?: { url: string } },
-    opts: { prompt?: boolean } = {}
+    opts: { prompt?: boolean; env?: Record<string, string> } = {}
   ): Promise<LaunchResult> {
     writeFileSync(configPath, JSON.stringify(config));
     const out = join(dir, "child-env.json");
@@ -154,6 +154,7 @@ describe.skipIf(process.platform === "win32")("REQ-5: harness gateway CLI launch
         CLAUDISH_DISABLE_KEYCHAIN: "1",
         CLAUDISH_DISABLE_OP: "1",
         CLAUDISH_NO_PREDEFINED_ENDPOINTS: "1",
+        ...opts.env,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -220,6 +221,20 @@ describe.skipIf(process.platform === "win32")("REQ-5: harness gateway CLI launch
     expect(result.output).toContain("harnessGateway.url");
     expect(result.output).not.toContain(invalidGatewayUrl);
     expect(result.childEnv, result.output).toBeNull();
+  }, 30_000);
+
+  test("a launch marked CLAUDISH_HARNESS_GATEWAY_OFF ignores a valid gateway", async () => {
+    const result = await launch(
+      foreignArgs,
+      { harnessGateway: { url: gatewayUrl } },
+      { env: { CLAUDISH_HARNESS_GATEWAY_OFF: "1" } }
+    );
+    const env = startedChild(result);
+    expect(env.ANTHROPIC_BASE_URL).toStartWith("http://127.0.0.1:");
+    expect(env.ANTHROPIC_BASE_URL).not.toBe(gatewayUrl);
+    expect(targetHeaderLines(env)).toEqual([]);
+    // Claude Code and what it starts never inherit the marker.
+    expect(env.CLAUDISH_HARNESS_GATEWAY_OFF).toBeUndefined();
   }, 30_000);
 
   const notice = "requests go through the gateway at";
