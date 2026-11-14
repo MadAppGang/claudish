@@ -1,3 +1,5 @@
+// TEMPORARY — stands in for MadAppGang/madbench#212 (metric sources for subagent tokens and cost). Delete when madbench ships it.
+//
 // Turns madbench report JSON files into per-trial and per-variant numbers.
 //
 //   bun summarize.ts <report.json>... [--json <out.json>]
