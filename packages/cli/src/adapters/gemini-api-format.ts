@@ -24,7 +24,23 @@ import {
   matchesModelFamily,
 } from "./base-api-format.js";
 
+export interface GeminiAPIFormatOptions {
+  /**
+   * Choose thinkingLevel or thinkingBudget from the model name. Only the
+   * Antigravity transport sets it; every other handler leaves the reasoning
+   * field to the connection's catalog wire.
+   */
+  thinkingFromModelName?: boolean;
+}
+
 export class GeminiAPIFormat extends BaseAPIFormat {
+  private readonly thinkingFromModelName: boolean;
+
+  constructor(modelId: string, wireFormat?: StreamFormat, options: GeminiAPIFormatOptions = {}) {
+    super(modelId, wireFormat);
+    this.thinkingFromModelName = options.thinkingFromModelName === true;
+  }
+
   /**
    * Map of tool_use_id → { name, thoughtSignature }.
    * Persists across requests (NOT cleared in reset) because Gemini requires
@@ -294,48 +310,54 @@ export class GeminiAPIFormat extends BaseAPIFormat {
       }
     }
 
-    // Thinking/reasoning configuration.
-    // output_config.effort (modern Claude Code) takes priority; the legacy
-    // thinking.budget_tokens path is the fallback. Gemini 3 and Gemini 2.5 use
-    // DIFFERENT controls — and Gemini 3 400s if both thinkingLevel and
-    // thinkingBudget are sent, so we only ever emit one.
-    const effort = this.resolveEffortLevel(claudeRequest);
-    if (effort) {
-      if (matchesModelFamily(this.modelId, "gemini-3")) {
-        payload.generationConfig.thinkingConfig = {
-          thinkingLevel: this.effortToThinkingLevel(effort),
-        };
-        log(
-          `[GeminiAPIFormat] thinkingLevel -> ${payload.generationConfig.thinkingConfig.thinkingLevel} (from ${effort}) for ${this.modelId}`
-        );
-      } else {
-        const budget = this.budgetWithinOutputCap(
-          this.effortToThinkingBudget(effort),
-          claudeRequest.max_tokens
-        );
-        if (budget === undefined) {
+    // Reasoning configuration. By default this dialect writes no thinkingConfig:
+    // the connection's catalog wire writes the reasoning field (step 5w), and a
+    // wire with no published effort path sends none. The model-name rule below
+    // serves the Antigravity transport only. There, output_config.effort takes
+    // priority and the legacy thinking.budget_tokens path is the fallback;
+    // gemini-3 names get thinkingLevel and every other name thinkingBudget,
+    // never both, because Gemini 3 answers 400 when both are sent.
+    if (this.thinkingFromModelName) {
+      const effort = this.resolveEffortLevel(claudeRequest);
+      if (effort) {
+        if (matchesModelFamily(this.modelId, "gemini-3")) {
+          payload.generationConfig.thinkingConfig = {
+            thinkingLevel: this.effortToThinkingLevel(effort),
+          };
           log(
-            `[GeminiAPIFormat] thinking omitted (from ${effort}): max_tokens ${claudeRequest.max_tokens} leaves no valid budget for ${this.modelId}`
+            `[GeminiAPIFormat] thinkingLevel -> ${payload.generationConfig.thinkingConfig.thinkingLevel} (from ${effort}) for ${this.modelId}`
           );
         } else {
-          payload.generationConfig.thinkingConfig = { thinkingBudget: budget };
-          log(`[GeminiAPIFormat] thinkingBudget -> ${budget} (from ${effort}) for ${this.modelId}`);
+          const budget = this.budgetWithinOutputCap(
+            this.effortToThinkingBudget(effort),
+            claudeRequest.max_tokens
+          );
+          if (budget === undefined) {
+            log(
+              `[GeminiAPIFormat] thinking omitted (from ${effort}): max_tokens ${claudeRequest.max_tokens} leaves no valid budget for ${this.modelId}`
+            );
+          } else {
+            payload.generationConfig.thinkingConfig = { thinkingBudget: budget };
+            log(
+              `[GeminiAPIFormat] thinkingBudget -> ${budget} (from ${effort}) for ${this.modelId}`
+            );
+          }
         }
-      }
-    } else if (claudeRequest.thinking) {
-      // Legacy fallback: raw thinking.budget_tokens.
-      const { budget_tokens } = claudeRequest.thinking;
+      } else if (claudeRequest.thinking) {
+        // Legacy fallback: raw thinking.budget_tokens.
+        const { budget_tokens } = claudeRequest.thinking;
 
-      if (matchesModelFamily(this.modelId, "gemini-3")) {
-        // Gemini 3 uses thinking_level
-        payload.generationConfig.thinkingConfig = {
-          thinkingLevel: budget_tokens >= 16000 ? "high" : "low",
-        };
-      } else {
-        // Gemini 2.5 uses thinking_budget
-        payload.generationConfig.thinkingConfig = {
-          thinkingBudget: Math.min(budget_tokens, GeminiAPIFormat.MAX_GEMINI_BUDGET),
-        };
+        if (matchesModelFamily(this.modelId, "gemini-3")) {
+          // Gemini 3 uses thinking_level
+          payload.generationConfig.thinkingConfig = {
+            thinkingLevel: budget_tokens >= 16000 ? "high" : "low",
+          };
+        } else {
+          // Gemini 2.5 uses thinking_budget
+          payload.generationConfig.thinkingConfig = {
+            thinkingBudget: Math.min(budget_tokens, GeminiAPIFormat.MAX_GEMINI_BUDGET),
+          };
+        }
       }
     }
 
@@ -444,12 +466,12 @@ export class GeminiAPIFormat extends BaseAPIFormat {
    * in the only channel it had — the answer.
    *
    * Both conditions are gone:
-   *  1. `thinkingConfig` (buildPayload below, added 9 days later in 2b0064d)
-   *     gives the model a real place to think, which is what actually stops
-   *     the leak. Prevention, not post-hoc deletion. NOTE this applies to the
-   *     direct `g@`/`ag@` paths only — `or@gemini-*` builds its payload in
-   *     OpenRouterAPIFormat and never reaches this buildPayload, so there the
-   *     protection is OpenRouter's own reasoning handling, not this.
+   *  1. Gemini 2.5 and later think in a channel of their own, which is what
+   *     actually stops the leak. Prevention, not post-hoc deletion. The
+   *     `thinkingConfig` that tunes it comes from the connection's catalog
+   *     wire (step 5w), or, on `ag@` only, from the model-name rule in
+   *     buildPayload below. `or@gemini-*` builds its payload in
+   *     OpenRouterAPIFormat and never reaches this buildPayload.
    *  2. Reasoning no longer arrives as visible text. Gemini 3.x returns it as
    *     an opaque `thoughtSignature` on a part whose `text` is "" — measured
    *     on a real capture: `thoughtsTokenCount: 57` with zero reasoning text

@@ -130,8 +130,9 @@ describe("resolveEffortLevel (shared)", () => {
 
 // ─── Part 2C: Gemini ──────────────────────────────────────────────────────
 
+// The model-name rule, which only the Antigravity profile turns on.
 function geminiThinkingConfig(modelId: string, req: any): any {
-  const fmt = new GeminiAPIFormat(modelId);
+  const fmt = new GeminiAPIFormat(modelId, undefined, { thinkingFromModelName: true });
   return (fmt as any).buildPayload(req, [], []).generationConfig.thinkingConfig;
 }
 
@@ -178,6 +179,53 @@ describe("Gemini thinking config", () => {
   test("legacy thinking.budget_tokens still works (no output_config)", () => {
     const cfg = geminiThinkingConfig("gemini-2.5-pro", { thinking: { budget_tokens: 99999 } });
     expect(cfg.thinkingBudget).toBe(24576); // capped
+  });
+});
+
+// REGRESSION: the Gemini dialect chose thinkingLevel or thinkingBudget from the model name.
+describe("Gemini dialect sends no thinking config of its own", () => {
+  function defaultThinkingConfig(modelId: string, req: any): any {
+    const fmt = new GeminiAPIFormat(modelId);
+    return (fmt as any).buildPayload({ max_tokens: 32000, messages: [], ...req }, [], [])
+      .generationConfig.thinkingConfig;
+  }
+
+  test("gemini-4-carbon, output_config.effort high", () => {
+    expect(
+      defaultThinkingConfig("gemini-4-carbon", { output_config: { effort: "high" } })
+    ).toBeUndefined();
+  });
+
+  test("gemini-4-carbon, output_config.effort minimal", () => {
+    expect(
+      defaultThinkingConfig("gemini-4-carbon", { output_config: { effort: "minimal" } })
+    ).toBeUndefined();
+  });
+
+  test("gemini-3-pro, output_config.effort high", () => {
+    expect(
+      defaultThinkingConfig("gemini-3-pro", { output_config: { effort: "high" } })
+    ).toBeUndefined();
+  });
+
+  test("gemini-2.5-pro, output_config.effort high", () => {
+    expect(
+      defaultThinkingConfig("gemini-2.5-pro", { output_config: { effort: "high" } })
+    ).toBeUndefined();
+  });
+
+  test("gemini-4-carbon, thinking enabled with budget_tokens 20000", () => {
+    expect(
+      defaultThinkingConfig("gemini-4-carbon", {
+        thinking: { type: "enabled", budget_tokens: 20000 },
+      })
+    ).toBeUndefined();
+  });
+
+  test("gemini-4-carbon, thinking disabled", () => {
+    expect(
+      defaultThinkingConfig("gemini-4-carbon", { thinking: { type: "disabled" } })
+    ).toBeUndefined();
   });
 });
 

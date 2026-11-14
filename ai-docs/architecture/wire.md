@@ -259,6 +259,10 @@ by that field.
   OpenRouter/Poe models the catalog does not publish get the same default.
 - **Dynamic subscriptions** (`gk@`, `ag@`, `dv@`) publish no wire; the account decides what they
   serve. Only `gk@` names a dialect, explicitly in its profile (Grok effort with learn-on-400).
+  The Gemini dialect writes no `thinkingConfig` of its own: step 5w writes the wire's effort path,
+  and a wire with none sends no reasoning field. Only the Antigravity handler keeps the model-name
+  rule (`thinkingFromModelName`): `thinkingLevel` for `gemini-3` names, else `thinkingBudget`,
+  capped below a Claude model's `max_tokens`.
   Nothing picks a dialect by model name any more; `dialect-manager.ts` serves local models only.
   One model quirk no wire field describes stays, keyed on the catalog VENDOR: a `minimax` model
   on any connection gets the MiniMax dialect for its temperature clamp (its reasoning fields are
