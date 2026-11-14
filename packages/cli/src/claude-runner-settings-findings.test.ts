@@ -104,12 +104,67 @@ describe("the user settings file follows CLAUDE_CONFIG_DIR", () => {
     ).toEqual([{ where: "/active-config/settings.json", kind: "api-key" }]);
   });
 
-  test("an unset or blank CLAUDE_CONFIG_DIR reads the default file under home", () => {
-    for (const env of [{}, { CLAUDE_CONFIG_DIR: "  " }]) {
+  test("an unset or empty CLAUDE_CONFIG_DIR reads the default file under home", () => {
+    for (const env of [{}, { CLAUDE_CONFIG_DIR: "" }]) {
       expect(settingsCredentialFindings(config([]), env, reads({ [defaultFile]: key }))).toEqual([
         { where: defaultFile, kind: "api-key" },
       ]);
     }
+  });
+
+  const keyAndUrl = {
+    env: {
+      ANTHROPIC_API_KEY: "sk-ant-config-dir-test-not-real",
+      ANTHROPIC_BASE_URL: "https://example.invalid",
+    },
+  };
+  const spaced = "/spaced-config /settings.json";
+
+  test("a trailing-space CLAUDE_CONFIG_DIR is read at its untrimmed path", () => {
+    const env = { CLAUDE_CONFIG_DIR: "/spaced-config " };
+    const findings = settingsCredentialFindings(
+      config([]),
+      env,
+      reads({ [spaced]: keyAndUrl, "/spaced-config/settings.json": {} })
+    );
+    expect(findings).toEqual([
+      { where: spaced, kind: "api-key" },
+      { where: spaced, kind: "base-url" },
+    ]);
+    expect(subscriptionSettingsCheck(findings, { bareName: false }).refusal).not.toBeNull();
+  });
+
+  test("the login-token reader and childAuthControl read the untrimmed path", () => {
+    const env = { CLAUDE_CONFIG_DIR: "/spaced-config " };
+    const token = { env: { CLAUDE_CODE_OAUTH_TOKEN: "oauth-config-dir-test-not-real" } };
+    expect(settingsClaudeLoginToken(config([]), env, reads({ [spaced]: token }))).toBe("set");
+    const monitor = { claudeArgs: [], monitor: true } as unknown as ClaudishConfig;
+    expect(childAuthControl(monitor, env, reads({ [spaced]: keyAndUrl }))).toEqual({
+      controlled: false,
+      reason: "settings-api-key",
+      where: spaced,
+    });
+  });
+
+  test("a relative CLAUDE_CONFIG_DIR resolves against the injected cwd", () => {
+    expect(
+      settingsCredentialFindings(
+        config([]),
+        { CLAUDE_CONFIG_DIR: "rel-config" },
+        reads({ "/findings-project/rel-config/settings.json": key })
+      )
+    ).toEqual([{ where: "/findings-project/rel-config/settings.json", kind: "api-key" }]);
+  });
+
+  test("a whitespace-only CLAUDE_CONFIG_DIR reads both the default and the untrimmed path", () => {
+    const blankPath = "/findings-project/  /settings.json";
+    expect(
+      settingsCredentialFindings(
+        config([]),
+        { CLAUDE_CONFIG_DIR: "  " },
+        reads({ [defaultFile]: key, [blankPath]: key })
+      ).map((f) => f.where)
+    ).toEqual([defaultFile, blankPath]);
   });
 });
 

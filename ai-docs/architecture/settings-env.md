@@ -68,7 +68,11 @@ never the value (`settingsCredentialFindings`, `claude-runner.ts`; `subscription
 file, project, project-local, every `--settings` occurrence) and returns every finding of every
 layer: an earlier layer never hides a later one. Measured on Claude Code 2.1.325 with
 SessionStart-hook markers: the user file is ONE file, `$CLAUDE_CONFIG_DIR/settings.json` when
-that is set and `~/.claude/settings.json` only when it is not. Project-local means two files:
+that is a non-empty string and `~/.claude/settings.json` only when it is not. The directory is
+taken UNTRIMMED: `CLAUDE_CONFIG_DIR="<cfg> "` loads `<cfg> /settings.json`, so claudish reads
+that path (`userSettingsFiles`, relative values against the working directory), never
+`claudeCodeConfigDir`, which trims. A whitespace-only value is unmeasured; both the default file
+and the untrimmed path are read, so the check can only add refusals. Project-local means two files:
 `.claude/settings.local.json` at the repository's main checkout (for a linked worktree, the
 checkout owning the common Git directory, never the worktree's own file) and the legacy one in
 the working directory. Claudish finds the main checkout from the files alone

@@ -19,7 +19,6 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
-import { claudeCodeConfigDir } from "./auth/claude-code-facts.js";
 import {
   type ClaudeCodeLoginDeps,
   type KeychainCredentialProbe,
@@ -699,18 +698,10 @@ function claudeSettingsLayers(
   const on = (source: SettingSource): boolean => enabled === null || enabled.has(source);
   const files: Array<[string, SettingsTier]> = [
     [managedSettingsPath(), "managed"],
-    // Claude Code reads ONE user file: `$CLAUDE_CONFIG_DIR/settings.json` when
-    // that is set, else `~/.claude/settings.json` (measured on 2.1.325).
     ...(on("user")
-      ? [
-          [
-            join(
-              env.CLAUDE_CONFIG_DIR?.trim() ? claudeCodeConfigDir(env) : join(home, ".claude"),
-              "settings.json"
-            ),
-            "user",
-          ] as [string, SettingsTier],
-        ]
+      ? userSettingsFiles(env.CLAUDE_CONFIG_DIR, home, cwd).map(
+          (file) => [file, "user"] as [string, SettingsTier]
+        )
       : []),
     ...(on("project")
       ? [[join(cwd, ".claude", "settings.json"), "project"] as [string, SettingsTier]]
@@ -738,6 +729,22 @@ function claudeSettingsLayers(
     layers.push({ where, settings, tier: "cli", ...file });
   });
   return layers;
+}
+
+/**
+ * The user settings file Claude Code loads, measured on 2.1.325: ONE file,
+ * `$CLAUDE_CONFIG_DIR/settings.json` when that is a non-empty string, at the
+ * path exactly as given (a trailing space is kept: `"<cfg> "` loads
+ * `<cfg> /settings.json`), a relative value resolved against `cwd`; else
+ * `<home>/.claude/settings.json`. A whitespace-only value is unmeasured, so
+ * both candidates are read: the check can only add refusals.
+ */
+function userSettingsFiles(configDir: string | undefined, home: string, cwd: string): string[] {
+  const defaultFile = join(home, ".claude", "settings.json");
+  if (!configDir) return [defaultFile];
+  // `resolve` keeps a trailing space: it only normalises separators and dots.
+  const file = join(resolve(cwd, configDir), "settings.json");
+  return configDir.trim() ? [file] : [defaultFile, file];
 }
 
 /**
