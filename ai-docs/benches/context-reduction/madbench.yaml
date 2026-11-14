@@ -1,0 +1,133 @@
+description: "context reduction: one long claudish feature session with subagents, graded by the feature's own tests"
+
+params:
+  # The model that does the work.
+  model: claude-sonnet-5-5
+  # A second folder of files laid over ./config/base in the run's ~/.claude.
+  # Empty: the plain Claude Code baseline.
+  overlay: ""
+  # Plugins staged into the run's own HOME. Empty: none.
+  plugins: []
+  # The folder under ./tools with the variant's scripts: start.sh (optional,
+  # run before the agent) and evidence.sh (run after it).
+  tool: baseline
+
+harness:
+  type: claude-code
+  model: "{{model}}"
+  use_subscription: required
+  config:
+    # The composed tree is the run's whole user scope. Every variant difference
+    # lives here: settings.json (hooks, env) and instruction files.
+    dirs: ["./config/base", "{{overlay}}"]
+    plugins: "{{plugins}}"
+  args:
+    # Interactive: a tool call parks at an approval menu nobody answers
+    # unless the mode is bypass.
+    - --permission-mode
+    - bypassPermissions
+
+defaults:
+  # home, because plugin staging writes its registry into the run's own HOME.
+  # The same level for every variant, so the level is not a variable.
+  sandbox:
+    level: home
+    share:
+      paths:
+        # Tool install folders under the real home, which `home` hides.
+        - { from: ~/.bun, to: ~/.bun, access: rw }
+        - { from: ~/.local/bin, to: ~/.local/bin, access: rw }
+        - { from: ~/.local/share/claude, to: ~/.local/share/claude, access: rw }
+        # The variants' start and evidence scripts, read-only for the run.
+        - { from: ./tools, to: ~/.bench-tools, access: copy }
+        # Where evidence.sh copies a tool's own logs.
+        - { from: ./out, to: ~/.bench-out, access: rw }
+    provision:
+      timeout: 5m
+      steps:
+        - bun install --frozen-lockfile
+        # A variant whose tool is a process starts it here.
+        - f="$HOME/.bench-tools/{{tool}}/start.sh"; if [ -f "$f" ]; then sh "$f"; fi
+  interactive: true
+  timeout: 75m
+  capture: log
+
+# A closed script: a question from the agent gets its first option, with no
+# model and no network.
+driver:
+  answers:
+    - match: "*"
+      choose: 1
+
+metrics:
+  - { name: hidden_tests, source: check.score, check: HiddenTests, aggregate: mean, better: higher }
+  - { name: cost, source: session.cost, aggregate: sum, unit: usd, better: lower }
+  - { name: prompt_tokens, source: session.prompt_tokens, aggregate: mean, unit: tokens, better: lower }
+  - { name: output_tokens, source: session.output_tokens, aggregate: mean, unit: tokens, better: lower }
+  - { name: cache_read, source: session.cache_read_tokens, aggregate: mean, unit: tokens }
+  - { name: cache_creation, source: session.cache_creation_tokens, aggregate: mean, unit: tokens }
+  - { name: model_requests, source: session.model_requests, aggregate: mean, better: lower }
+  - { name: steps_main, source: session.steps.main, aggregate: mean }
+  - { name: steps_all, source: session.steps.all, aggregate: mean }
+  - { name: duration, source: scenario.duration, aggregate: mean, better: lower }
+
+scenarios:
+  - name: context-window-flag
+    description: "add --context-window for local models to claudish, with subagents for exploration and review"
+    # claudish as it was one commit before the feature landed. The workspace
+    # holds no .git, so the feature commit is not there to read.
+    repo:
+      url: ../../..
+      ref: fe1a93ec9d6bc63538bbb1401663eb30a51e2e33
+    prompt: |
+      I want a new claudish flag: `--context-window <size>`. It sets the context window for a local model (LM Studio or Ollama). Today the LM Studio window is fixed at 64,000 tokens and I cannot change it from the command line.
+
+      Work in this order.
+
+      1. Explore first, with subagents. Start at least two subagents with the Agent tool, at the same time, and wait for their reports before you edit anything. One maps how `packages/cli/src/cli.ts` parses flags (`parseArgs`, the passthrough walker that decides which arguments go to Claude Code) and how a flag value reaches the proxy. The other maps how the local providers decide their context window: the LM Studio instance code (`ensureLMStudioInstance`, the machine and device selection under `packages/cli/src/providers/`), the local transport under `packages/cli/src/providers/transport/`, the Ollama path, and the picker rows built by `expandModelsToMachines`.
+
+      2. Build the feature in `packages/cli`:
+         - `--context-window <size>` accepts a plain number or a number with a `k` or `m` suffix, in either case, with an optional decimal: `128000`, `128k`, `64K`, `1m`, `1.5m`. It refuses an empty value, `abc`, `0`, `-5`, `12x` and `k`.
+         - `parseArgs` sets `config.contextWindow` to the number of tokens. With no flag it stays undefined. A bad value prints an error that names `--context-window` and exits with code 1.
+         - A new module `packages/cli/src/providers/context-window-limit.ts` exports `parseContextWindow(text)`, which returns the number of tokens or `undefined` for a bad value, and `contextWindowLimit()`, which reads the environment variable `CLAUDISH_CONTEXT_WINDOW`.
+         - claudish writes the flag's value to `CLAUDISH_CONTEXT_WINDOW` before the proxy starts, so every local provider path reads one value.
+         - The value is a limit, not a demand: the window in use is the lesser of the limit and what the model has loaded. It applies to local providers only (lmstudio, ollama).
+         - The LM Studio default rises from 64,000 to 128,000 tokens.
+         - Picker rows from `expandModelsToMachines` carry `maxContextWindow`, the model's maximum.
+         - When `ensureLMStudioInstance` refuses because a running instance has a smaller window, the message names the flag with the running size, for example `--context-window 8192`.
+         - A limit above the model's maximum loads the maximum.
+         - The passthrough walker treats `--context-window 128k` as claudish's own flag with one value, and does not pass it to Claude Code.
+         - The flag appears in the `--help` text.
+
+      3. Add tests for what you built, beside the code they cover, and run them with `bun test` from `packages/cli`. Run `bun run typecheck` there too. Fix what fails.
+
+      Do not change `bun.lock` or any `package.json`. Do not add dependencies.
+    follow_ups:
+      - |
+        Now get the work reviewed. Start a subagent with the Agent tool and have it review every file you changed against the list in my first message, item by item, and look for a case the tests miss. Fix each real finding it reports. Then run `bun test` and `bun run typecheck` from `packages/cli` once more and tell me the result, with the list of files you changed.
+    checks:
+      # The grade: the feature's own tests, copied into the workspace only now.
+      - type: custom:exec
+        metric: HiddenTests
+        command: ["bun", "./checks/grade-check.ts"]
+        timeout: "600s"
+      # The agent delegated, as the prompt asks: two explorers and one reviewer.
+      - { type: session:subagent-count, metric: Delegated, value: 3 }
+      # The work is in the place the prompt names, and the dependency files
+      # are as they were.
+      - type: file-changes
+        metric: StayedInBounds
+        must:
+          create: packages/cli/src/providers/context-window-limit.ts
+          update: packages/cli/src/cli.ts
+        must-not:
+          touch: [bun.lock, package.json, packages/cli/package.json]
+      # A measurement, not a grade: what the variant's tool recorded about its
+      # own work. The output tail lands in the report. It passes only when
+      # the run left a Claude Code transcript, so a run that did nothing fails.
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"

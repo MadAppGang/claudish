@@ -1,0 +1,32 @@
+description: "does a context-reduction tool cut tokens and cost on a long coding session without costing the result?"
+bench: ./madbench.yaml
+
+# The variants differ only in the files composed into the run's ~/.claude, in
+# the one staged plugin, and in which tool folder the second provision step
+# reads. Model, argv, sandbox level, prompt and Checks are equal.
+guard_changes:
+  allow:
+    - harness/config/files/**
+    - harness/config/plugins/**
+    - sandbox/provision/steps/1
+
+variants:
+  # Plain Claude Code.
+  - name: baseline
+  # rtk rewrites Bash commands through a PreToolUse hook and condenses output.
+  - name: rtk
+    params:
+      overlay: ./config/rtk
+      tool: rtk
+  # context-mode: a plugin with hooks and MCP tools that keep large output in
+  # a local store. Fetch it first with fetch-context-mode.sh.
+  - name: context-mode
+    params:
+      tool: context-mode
+      plugins: [./vendor/context-mode/plugins/claude-code]
+  # Context Gateway: a local proxy between Claude Code and the Anthropic API
+  # that compresses tool output and summarizes history with Haiku.
+  - name: context-gateway
+    params:
+      overlay: ./config/context-gateway
+      tool: context-gateway

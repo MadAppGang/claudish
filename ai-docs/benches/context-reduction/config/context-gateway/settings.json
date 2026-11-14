@@ -1,0 +1,5 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:18431"
+  }
+}

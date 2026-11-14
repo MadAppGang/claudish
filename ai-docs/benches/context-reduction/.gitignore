@@ -1,0 +1,5 @@
+# context-mode is under the Elastic License 2.0: its code is fetched at staging
+# time by fetch-context-mode.sh and never committed.
+vendor/
+# Tool evidence copied out of a run, and report files.
+out/
