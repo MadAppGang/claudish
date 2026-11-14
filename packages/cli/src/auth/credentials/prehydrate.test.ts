@@ -290,7 +290,7 @@ describe("pre-route target characterization", () => {
   const native = (modelSpec: string, isTierAlias = false) => ({
     provider: "native-anthropic" as const,
     modelSpec,
-    displayName: "Anthropic (Native)",
+    displayName: "Claude subscription",
     isTierAlias,
   });
 
