@@ -899,7 +899,7 @@ For OpenAI- or Anthropic-compatible servers:
 | `apiKey` | string | yes, unless `authScheme: "none"` | API key; supports `${VAR}` env expansion. Must be **omitted** under `authScheme: "none"` |
 | `authScheme` | `"bearer"`, `"x-api-key"` or `"none"` | no | Auth header scheme (default: `bearer`) |
 | `modelPrefix` | string | no | Prepended to model name before sending to API |
-| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models`, which is what the nested Claude Code's `/model` command lists. Not an allowlist — an unlisted name still reaches the endpoint — and not the model picker's list, which comes from the endpoint itself (see below) |
+| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models`. Claude Code's `/model` command does not list them: it builds its list from Claude's own models and the `modelPicker` setting, and asks a gateway's `/v1/models` only when `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` is set, keeping only ids that contain `claude` or `anthropic`. Not an allowlist — an unlisted name still reaches the endpoint — and not the model picker's list, which comes from the endpoint itself (see below) |
 | `wire` | object | no | How requests are built — see **Declaring the wire** below |
 
 Usage: `claudish --model my-vllm@llama3.1-70b "task"`
@@ -967,7 +967,7 @@ Full control over transport, auth, headers, and stream format:
 | `headers` | object | no | Additional HTTP headers |
 | `streamFormat` | string | no | Stream parser override (e.g., `"openai-sse"`, `"anthropic-sse"`) |
 | `modelPrefix` | string | no | Prepended to model name |
-| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models` (see the simple table above) |
+| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models`; Claude Code's `/model` does not list them (see the simple table above) |
 | `wire` | object | no | How requests are built — see **Declaring the wire** below |
 
 ### Declaring the wire (v10.5.0+)
