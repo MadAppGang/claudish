@@ -221,6 +221,18 @@ export const PredefinedEndpointsConfigSchema = z.object({
   enable: z.array(z.string()).optional(),
 });
 
+/**
+ * `harnessGateway`: a local HTTP gateway placed between Claude Code and claudish's
+ * proxy. `url` becomes the child's `ANTHROPIC_BASE_URL`, and the proxy URL travels
+ * to the gateway in an `X-Target-URL` header. The loopback rule is checked at the
+ * consumption site (`harness-gateway.ts`), which names the key in its refusal.
+ */
+export const HarnessGatewayConfigSchema = z.object({
+  url: z.string(),
+});
+
+export type HarnessGatewayConfig = z.infer<typeof HarnessGatewayConfigSchema>;
+
 export type CustomEndpointWire = z.infer<typeof CustomEndpointWireSchema>;
 
 /**

@@ -35,6 +35,12 @@ import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
 import { applyProxyFastModeGates, scrubInheritedFastModeGates } from "./fast-mode-gates.js";
 import { CLAUDE_LOGIN_BEARER } from "./handlers/shared/anthropic-forward.js";
+import {
+  type HarnessGatewaySetting,
+  applyHarnessGateway,
+  harnessGatewayNotice,
+  resolveHarnessGateway,
+} from "./harness-gateway.js";
 import { getHookEngine } from "./hooks/index.js";
 import { InProcessSink, setProcessSink } from "./hooks/injection/sinks.js";
 import { sessionHooksNeedBinding } from "./hooks/session/binding.js";
@@ -2394,6 +2400,24 @@ export async function runClaudeWithProxy(
     return 1;
   }
 
+  // `harnessGateway.url`: a loopback gateway in front of the proxy. A monitor
+  // session (and the no-model advisor session, which takes the monitor branch)
+  // keeps the proxy URL and ignores the key. A value that breaks the loopback
+  // rule refuses the launch here, before any file or child exists.
+  const globalConfig = loadConfig();
+  const gatewayEligible = !config.monitor && !advisorNativeSession;
+  const harnessGateway: HarnessGatewaySetting = gatewayEligible
+    ? resolveHarnessGateway(globalConfig)
+    : { kind: "off" };
+  if (harnessGateway.kind === "invalid") {
+    console.error(`[claudish] Error: ${harnessGateway.message}.`);
+    onCleanup?.();
+    return 1;
+  }
+  if (!gatewayEligible && globalConfig.harnessGateway !== undefined) {
+    debugLog("[claude-runner] harnessGateway ignored: a monitor session keeps the proxy URL");
+  }
+
   // Chain, don't clobber: find the status line the user would otherwise have
   // seen so claudish's segment can be appended to it. Must run BEFORE
   // mergeUserSettingsIfPresent, which splices --settings out of claudeArgs.
@@ -2506,6 +2530,11 @@ export async function runClaudeWithProxy(
     ...advisorToolEnv.vars,
   };
   scrubChildEnv(env, { interactive: Boolean(config.interactive) });
+
+  if (harnessGateway.kind === "on") {
+    applyHarnessGateway(env, harnessGateway.url, proxyUrl);
+    logStderr(harnessGatewayNotice(harnessGateway.url, shouldPreserveNativeAuth(config)));
+  }
 
   // Can this launch put a recovery banner on screen at all? Asked HERE, before
   // the child environment is finalised, because the answer gates the watchdog
