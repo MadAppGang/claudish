@@ -1446,7 +1446,7 @@ secret was never read. Anthropic documents none of this, and any release can cha
 
 | Fact | Value | In claudish's code |
 |---|---|---|
-| Keychain service | `Claude Code${OAUTH_FILE_SUFFIX}-credentials[-<sha256(configDir)[0:8]>]`; `OAUTH_FILE_SUFFIX` is `""` in prod (`-local-oauth`, `-custom-oauth` otherwise). The hash suffix appears whenever `CLAUDE_CONFIG_DIR` is non-empty, even when it names the default dir; `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when set, overrides. Static: the hash input is the configured dir string, NFC-normalized (live only for one ordinary path; see below). The login keychain holds 252 suffixed items in this order and none in the old one | `claudeCodeKeychainService()` (`auth/claude-code-facts.ts`), used by `claude-runner.ts`'s login probe, is **wrong**: it builds `Claude Code-<hash>-credentials` and drops the suffix for the default dir (MTL-316) |
+| Keychain service | `Claude Code${OAUTH_FILE_SUFFIX}-credentials[-<sha256(configDir)[0:8]>]`; `OAUTH_FILE_SUFFIX` is `""` in prod (`-local-oauth`, `-custom-oauth` otherwise). The hash suffix appears whenever `CLAUDE_CONFIG_DIR` is non-empty, even when it names the default dir; `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when set, overrides. Static: the hash input is the configured dir string, NFC-normalized (live only for one ordinary path; see below). The login keychain holds 252 suffixed items in this order and none in the old one | `claudeCodeSecureStorageServices("-credentials")` (`auth/claude-code-facts.ts`) builds these names; both the launch check (`claudeCodeStartupCredential`) and the picker's login probe (`defaultKeychainAnthropicProbe`) ask exactly them |
 | Account attribute | `$USER`; `claude-code-user` when `$USER` is unreadable or fails `/^[a-zA-Z0-9._-]+$/`. Every start also reads the legacy API-key service `Claude Code-<hash>` | Phase 4 |
 | Item format | JSON with the key `claudeAiOauth`, beside keys such as `designOauth` | the key only |
 | Access | `security -i`, hex `-X`, argv fallback for large payloads — so the ACL trusts `/usr/bin/security`, which claudish also uses | Phase 4 |
@@ -1492,8 +1492,8 @@ were not separated live. Static (the report's appendix, `HW()`, `dN()` and `Le` 
 input is `B8t()` (or `~/.claude`) NFC-normalized, with no `realpath` call in `Le`. The body of
 `B8t()` is not extracted, so whether it returns `CLAUDE_CONFIG_DIR` raw, resolved or
 slash-stripped is unverified, statically and live. Still unmeasured live: whether a trailing slash
-survives. `claudeCodeKeychainServiceCandidates()` probes resolved, raw, slash-stripped and
-unsuffixed names, which is cheap because the probe reads attributes only and never prompts. The
+survives. `claudeCodeSecureStorageServices()` probes resolved, raw and slash-stripped
+names (never the unsuffixed one under a custom directory), which is cheap because the probe reads attributes only and never prompts. The
 `security -i` stdin limit is 4095 bytes per chunk (measured 2026-10-26, MTL-268); 2.1.312 sends
 `-i` lines up to 4032 bytes and switches to argv above that (`re=4032`, static; quoted in the
 report's appendix).

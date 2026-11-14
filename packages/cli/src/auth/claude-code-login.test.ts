@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { claudeCodeSecureStorageServices } from "./claude-code-facts.js";
-import { claudeCodeStartupCredential } from "./claude-code-login.js";
+import { claudeCodeStartupCredential, keychainLoginPresent } from "./claude-code-login.js";
 
 /** Runs the startup check over no files and records every Keychain service it asks about. */
 function probed(env: NodeJS.ProcessEnv): string[] {
@@ -38,5 +38,41 @@ describe("claudeCodeStartupCredential Keychain services", () => {
     const asked = probed({ HOME: "/h", CLAUDE_CONFIG_DIR: "/cfg" });
     expect(asked).not.toContain("Claude Code-credentials");
     expect(asked.every((s) => /^Claude Code(-credentials)?-[0-9a-f]{8}$/.test(s))).toBe(true);
+  });
+});
+
+describe("the picker's Keychain login probe asks the launch check's services", () => {
+  /** Every service `keychainLoginPresent` asks, each answered `absent`. */
+  function asked(env: NodeJS.ProcessEnv): string[] {
+    const services: string[] = [];
+    keychainLoginPresent(env, (service) => {
+      services.push(service);
+      return "absent";
+    });
+    return services;
+  }
+
+  for (const env of [
+    { HOME: "/h" },
+    { HOME: "/h", CLAUDE_CONFIG_DIR: "/cfg" },
+    { HOME: "/h", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/s" },
+    { HOME: "/h", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_SECURESTORAGE_CONFIG_DIR: "" },
+  ]) {
+    test(`asks claudeCodeSecureStorageServices for ${JSON.stringify(env)}`, () => {
+      expect(asked(env)).toEqual(claudeCodeSecureStorageServices("-credentials", env));
+    });
+  }
+
+  test("a custom config directory never falls back to the unsuffixed login", () => {
+    expect(asked({ HOME: "/h", CLAUDE_CONFIG_DIR: "/cfg" })).not.toContain(
+      "Claude Code-credentials"
+    );
+  });
+
+  test("a login under the hashed -credentials-<hash> name is found", () => {
+    const env = { HOME: "/h", CLAUDE_CONFIG_DIR: "/cfg" };
+    const [service] = claudeCodeSecureStorageServices("-credentials", env);
+    expect(keychainLoginPresent(env, (s) => (s === service ? "found" : "absent"))).toBe(true);
+    expect(keychainLoginPresent(env, () => "absent")).toBe(false);
   });
 });

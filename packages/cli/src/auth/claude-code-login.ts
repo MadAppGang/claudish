@@ -16,7 +16,6 @@ import { join } from "node:path";
 import {
   claudeCodeConfigDir,
   claudeCodeGlobalConfigPath,
-  claudeCodeKeychainServiceCandidates,
   claudeCodeSecureStorageServices,
 } from "./claude-code-facts.js";
 
@@ -35,12 +34,12 @@ const macosKeychainAnthropicMemo = new Map<string, boolean>();
 /**
  * Existence-only probe for Claude Code's macOS login-Keychain OAuth item.
  *
- * The service is `Claude Code[-<sha256(configDir)[0:8]>]-credentials` — the hash
- * suffix appears whenever `CLAUDE_CONFIG_DIR` is not the default. This probe
- * hardcoded the UNSUFFIXED name, so a user with a custom config dir was reported
- * as having no Claude login however signed in they were, and claudish then
- * injected a placeholder key over a perfectly good subscription. Each candidate
- * from {@link claudeCodeKeychainServiceCandidates} is tried in order.
+ * It asks exactly the services the launch check asks
+ * (`claudeCodeSecureStorageServices("-credentials", env)`, the
+ * `Claude Code-credentials[-<hash>]` names), so picker readiness and the launch
+ * agree: `CLAUDE_SECURESTORAGE_CONFIG_DIR` decides alone when set, and a custom
+ * `CLAUDE_CONFIG_DIR` never falls back to the unsuffixed default login, which
+ * the child would not start with.
  *
  * Uses `security find-generic-password` WITHOUT `-w`, so it reads item ATTRIBUTES
  * and never item DATA: no secret is requested, no Keychain-access dialog appears,
@@ -62,34 +61,26 @@ export const defaultKeychainAnthropicProbe: KeychainCredentialProbe = (env = pro
     return false;
   }
 
-  const services = claudeCodeKeychainServiceCandidates(env);
-  const memoKey = services.join("|");
+  const memoKey = claudeCodeSecureStorageServices("-credentials", env).join("|");
   const memoized = macosKeychainAnthropicMemo.get(memoKey);
   if (memoized !== undefined) return memoized;
-
-  // `CLAUDISH_KEYCHAIN_FILE` redirects every `security` call to a throwaway
-  // keychain, and it must be the LAST argument on any subcommand. Honoured here
-  // so live verification has the same safe target the rest of the keychain code
-  // has.
-  const keychainFile = process.env.CLAUDISH_KEYCHAIN_FILE;
-  let found = false;
-  try {
-    for (const service of services) {
-      const args = ["find-generic-password", "-s", service];
-      if (keychainFile) args.push(keychainFile);
-      // Existence only — NO `-w`, so no secret is requested and no prompt appears.
-      const res = spawnSync("security", args, { stdio: "ignore" });
-      if (!res.error && res.status === 0) {
-        found = true;
-        break;
-      }
-    }
-  } catch {
-    found = false;
-  }
+  // Existence only: `defaultKeychainPresence` runs `find-generic-password`
+  // WITHOUT `-w` and honours `CLAUDISH_KEYCHAIN_FILE`.
+  const found = keychainLoginPresent(env, defaultKeychainPresence);
   macosKeychainAnthropicMemo.set(memoKey, found);
   return found;
 };
+
+/**
+ * Whether a Claude Code OAuth Keychain item is present, asking `presence` about
+ * each service. Presence only.
+ */
+export function keychainLoginPresent(
+  env: NodeJS.ProcessEnv,
+  presence: (service: string) => KeychainPresence
+): boolean {
+  return anyPresent(claudeCodeSecureStorageServices("-credentials", env), presence) === "found";
+}
 
 /** Injectable reads for {@link hasClaudeCodeLogin}; each defaults to the real one. */
 export interface ClaudeCodeLoginDeps {
