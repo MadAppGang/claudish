@@ -799,9 +799,9 @@ and on foreign routes.
 | context-mode | An MCP server and Claude Code hooks that run large commands outside the context. | A Claude Code plugin directory, passed with `--plugin-dir`. |
 | Context-Gateway | A proxy that shortens `tool_result` text in every request. | A gateway between Claude Code and claudish, set with `harnessGateway.url`. |
 
-**Hooks do not run in monitor sessions.** A top-level `claudish --model claude@<id>`, and any
-`--monitor` session, is a monitor session: claudish forwards its traffic unchanged and loads no
-hooks. When a hook must run on a native Claude route, use `create_session` or `team` (there
+**Hooks do not run in monitor sessions.** A top-level `claudish --model claude@<id>` or
+`anthropic@<id>` (`a@`, `api@`), and any `--monitor` session, is a monitor session: claudish
+forwards its traffic unchanged and loads no hooks. When a hook must run on a native Claude route, use `create_session` or `team` (there
 `claude@<id>` runs as a normal session), or a bare Claude name such as `claudish --model
 claude-sonnet-<version>`.
 
@@ -934,7 +934,8 @@ export default defineHook({
       return [
         act.rewriteToolDescription(
           "Bash",
-          `For a command whose output may be large (test runs, logs, builds, long listings), use the ${CTX_EXECUTE} tool instead. It runs the command and returns a short result.`
+          // The text is appended as it is, so it starts with its own separator.
+          `\n\nFor a command whose output may be large (test runs, logs, builds, long listings), use the ${CTX_EXECUTE} tool instead. It runs the command and returns a short result.`
         ),
       ];
     },
@@ -981,11 +982,14 @@ claudish's placeholder token.
 `gateway_search_tools`.
 
 **Model names.** The gateway removes the prefixes `anthropic/`, `openai/`, `google/` and `meta/`
-from the `model` field of each request, and claudish routes by that field. Give a foreign model as
-a model spec with a provider shortcut, such as `or@openai/<model>`. A bare name such as
-`openai/<model>` reaches claudish without its prefix and can route to a different model.
+from the `model` field of each request. A session started with `--model` routes by that model and
+is not affected. Where claudish routes by the request's `model` field (a profile with no matching
+role, `claudish serve`), give a foreign model as a model spec with a provider shortcut, such as
+`or@openai/<model>`: a bare `openai/<model>` reaches claudish without its prefix and can route to a
+different model.
 
-**Monitor sessions.** A monitor session ignores `harnessGateway` and keeps claudish's proxy URL.
+**Launches that ignore `harnessGateway`.** A monitor session (see above), an `--advisor` session
+with no `--model`, and MCP `run_prompt` on a Claude model keep claudish's proxy URL. claudish writes one debug log line when it ignores the key.
 
 **Recommended config: local only.** The gateway shortens tool results itself and sends no
 conversation text to any other service. It still checks api.github.com for a newer release when it
