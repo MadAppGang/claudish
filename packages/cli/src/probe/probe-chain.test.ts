@@ -130,7 +130,23 @@ describe("--probe explanation JSON", () => {
         notProbed: "native-auth",
       }),
     ]);
-    expect(native.dropped).toEqual([]);
+    // A bare Claude name lists its other catalog routes for comparison only: the
+    // Claude API is shown, never added to the chain, and with no Anthropic key it
+    // is dropped as no-credential with the sources searched.
+    expect(native.dropped).toEqual([
+      {
+        comparison: true,
+        credentialHint: "ANTHROPIC_API_KEY",
+        displayName: "Claude API",
+        label: "native API",
+        outcome: "no-credential",
+        position: "candidate",
+        provider: "anthropic",
+        searched: "environment, ~/.claudish/config.json",
+        tier: "native",
+        wireId: "claude-opus-5",
+      },
+    ]);
   });
 
   test("keeps only credentialed candidates and lists every dropped outcome", () => {
