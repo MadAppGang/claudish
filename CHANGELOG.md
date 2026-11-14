@@ -2,6 +2,109 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.23.0] - 2026-11-14
+
+### ⚠ BREAKING CHANGES
+
+- a customEndpoints entry named anthropic, a, api or claude is no longer used. Rename the entry; a spec that names it is refused with a message that gives the rename. *(routing)* ([`18e12e8`](https://github.com/MadAppGang/claudish/commit/18e12e8c5f85e5e1fb445fa57888bb77200fff86))
+
+### Bug Fixes
+
+- sign an unmapped bare Claude request login-only without the opt-in *(serve)* ([`9c2c405`](https://github.com/MadAppGang/claudish/commit/9c2c405db5044351a00ab7a3791b05e749134395))
+- NFC-normalize CLAUDE_CONFIG_DIR before reading settings.json *(launch)* ([`0c4af25`](https://github.com/MadAppGang/claudish/commit/0c4af256e34db67e12b76fd7648866697cecac5f))
+- resolve an empty CLAUDE_CONFIG_DIR against the cwd *(launch)* ([`70ac4f5`](https://github.com/MadAppGang/claudish/commit/70ac4f50e3def9d07157d65b6eaaa185bf5f4de4))
+- read CLAUDE_CONFIG_DIR's settings.json at its untrimmed path *(launch)* ([`eb2b739`](https://github.com/MadAppGang/claudish/commit/eb2b7390c1d2391cb176b71fa951c3b7f881245a))
+- keep the outranked-key note when a Keychain save falls back *(tui)* ([`ef90cbc`](https://github.com/MadAppGang/claudish/commit/ef90cbcedcfc8fb8f864bc83d05cfb87b60d5708))
+- ignore claudish's placeholder ANTHROPIC_API_KEY in parseArgs *(launch)* ([`518759a`](https://github.com/MadAppGang/claudish/commit/518759a3385e350fd43bdcfb894d59e15a22f27d))
+- name ~/.claudish/config.json as a config-only key's source *(probe)* ([`1ad1878`](https://github.com/MadAppGang/claudish/commit/1ad1878c5a1c76a4c417804e3fd468d089dfa463))
+- price each Claude API turn at its published input band *(metering)* ([`0311d39`](https://github.com/MadAppGang/claudish/commit/0311d39eb043f5530a9599b66f5c209bcca4ec1b))
+- probe the Claude Code-credentials-<hash> Keychain login *(picker)* ([`9c2d10d`](https://github.com/MadAppGang/claudish/commit/9c2d10df26874b4b61a4cb2aee37f1c9f475cb8b))
+- read only the user settings.json CLAUDE_CONFIG_DIR selects *(launch)* ([`2155bf2`](https://github.com/MadAppGang/claudish/commit/2155bf2b80dc669ff20e8a11d70f84c89e3112bf))
+- read the Git root settings.local.json Claude Code loads *(launch)* ([`2793867`](https://github.com/MadAppGang/claudish/commit/2793867b7f0f2a717dac24bf557d979d4b2b503d))
+- size the shortcut column to the widest shortcut shown *(picker)* ([`4ba6e43`](https://github.com/MadAppGang/claudish/commit/4ba6e4308b1aa59ea511279799f059a2a5b4201e))
+- size the Leaderboard PROVIDER column to the longest name *(probe)* ([`f9b730a`](https://github.com/MadAppGang/claudish/commit/f9b730a7d369733375d98d0203f2e299e157c993))
+- follow CLAUDE_SECURESTORAGE_CONFIG_DIR in the login probe *(launch)* ([`cbafc2f`](https://github.com/MadAppGang/claudish/commit/cbafc2f8f28758656fa840ab291bf2db424dea0e))
+- name a --settings file finding by its path *(launch)* ([`28cc139`](https://github.com/MadAppGang/claudish/commit/28cc139de951845c41498b540c614bb9981ed734))
+- report an unparsable merged --settings value as unreadable *(launch)* ([`03ceb1e`](https://github.com/MadAppGang/claudish/commit/03ceb1e8adaf0466d6206d4e07e39d0bf09b6306))
+- keep the Claude API input total on an output-only usage *(stats)* ([`669ba35`](https://github.com/MadAppGang/claudish/commit/669ba3548632de24f78d261ea5dbb59ca07e8ee3))
+- refuse an unknown marker on a Claude launch as a marker *(launch)* ([`44a54ac`](https://github.com/MadAppGang/claudish/commit/44a54ace9bcbce24914004fb25bf93a647824ec8))
+- count a settings CLAUDE_CODE_OAUTH_TOKEN as a Claude login *(launch)* ([`513402d`](https://github.com/MadAppGang/claudish/commit/513402d55bd3ff5ba7a040f6bb6a517372172a3e))
+- start when the Claude OAuth Keychain item does not answer *(launch)* ([`141c4cc`](https://github.com/MadAppGang/claudish/commit/141c4cc83e138b1f7d77aabed78aca414b843658))
+- refuse a user rule entry naming the Claude subscription *(routing)* ([`e93bf4b`](https://github.com/MadAppGang/claudish/commit/e93bf4bac7f55c82199a0ad98abf0435684d3717))
+- pin run_prompt's print child for a claude@ spec *(mcp)* ([`cc8c35e`](https://github.com/MadAppGang/claudish/commit/cc8c35ea2c41440888e6ee15cda5ebb45558dd01))
+- refuse a Claude subscription launch with no Claude login *(launch)* ([`6d6aab8`](https://github.com/MadAppGang/claudish/commit/6d6aab8d7f5c738dfa5882efac5394b5d18522db))
+- refuse a tier on a top-level claude@ or anthropic@ launch *(launch)* ([`ee47f21`](https://github.com/MadAppGang/claudish/commit/ee47f213c8a4b398382b674135a8db070207904a))
+- tell a shadowed endpoint's owner to restart the MCP server *(routing)* ([`25e6dc7`](https://github.com/MadAppGang/claudish/commit/25e6dc70954e54060d96c9fffe653cde396e2e8b))
+- print a claude@<id>#fast refusal's spec prefix once *(advisor)* ([`d21d7d8`](https://github.com/MadAppGang/claudish/commit/d21d7d8017a130658910f45bdf8b05b16b07e976))
+- show the vault a read-at-use Claude API key is read from *(config)* ([`cd3baf1`](https://github.com/MadAppGang/claudish/commit/cd3baf13f7594883fd4f15ba08ea4a0fb419bf19))
+- name the key arm's real fallback in the startup notice *(advisor)* ([`9b1e3d2`](https://github.com/MadAppGang/claudish/commit/9b1e3d2f0ebc50fb5e65f68dac20129d0b4c79c9))
+- refuse a shadowed endpoint spec on every planning path *(routing)* ([`9fdd77b`](https://github.com/MadAppGang/claudish/commit/9fdd77b550962213596b06256e970c45248f1a1d))
+- sign a launch with a Claude tier and no --model login-only *(launch)* ([`357dfe7`](https://github.com/MadAppGang/claudish/commit/357dfe763330f27ad688c666d87665b346963c3d))
+- skip settings files --setting-sources turns off in run_prompt *(mcp)* ([`8060b51`](https://github.com/MadAppGang/claudish/commit/8060b510671d351a7ae2fb6b6f2b08a4c7588f48))
+- sign with a saved replacement key ahead of the old one *(config)* ([`442e189`](https://github.com/MadAppGang/claudish/commit/442e1890e4f49b357463c258f8efe2312984e592))
+- take the Claude API signing lease after the wire id resolves *(launch)* ([`6d9b95a`](https://github.com/MadAppGang/claudish/commit/6d9b95af2a10ee2db0fdd840bfb7e3ba48be3c71))
+- stop a run_prompt refusal from suggesting --anthropic-api-billing *(mcp)* ([`7361fd3`](https://github.com/MadAppGang/claudish/commit/7361fd38287c93b4e5a8c38beb4c9733281e815d))
+- show where claudish looked on a dropped Claude API row *(config)* ([`b58bfed`](https://github.com/MadAppGang/claudish/commit/b58bfed393891c56a3677e7b6b5fee580c7e6f8d))
+- drop claudish's placeholder from the config.json key layer *(probe)* ([`5231429`](https://github.com/MadAppGang/claudish/commit/5231429b6042b21c9d7cf531e8258e02f2a74063))
+- read the Claude Code login under CLAUDE_CONFIG_DIR *(picker)* ([`066eae6`](https://github.com/MadAppGang/claudish/commit/066eae6a4589b0478510427cf33f480fe1a7df04))
+- keep a no-model session's Claude member off ANTHROPIC_API_KEY *(advisor)* ([`4d2b487`](https://github.com/MadAppGang/claudish/commit/4d2b4876559f321e7e61bcd42705d8afe3984078))
+- refuse a subscription launch whose settings set AUTH_TOKEN *(launch)* ([`1090316`](https://github.com/MadAppGang/claudish/commit/1090316e76adc357d5da37da590c6ca762e86386))
+- refuse a Claude subscription slot at startup *(serve)* ([`088bea3`](https://github.com/MadAppGang/claudish/commit/088bea3b8f3ac4bbe434581614567ee813728752))
+- refuse a claude@ spec with a marker or :N in explainRoute *(probe)* ([`7d52272`](https://github.com/MadAppGang/claudish/commit/7d5227226c0e09aee605b674053158d30cb79bde))
+- refuse custom endpoints named anthropic, a, api or claude *(routing)* ([`18e12e8`](https://github.com/MadAppGang/claudish/commit/18e12e8c5f85e5e1fb445fa57888bb77200fff86))
+- keep a read-at-use Anthropic key out of the TUI's process.env *(config)* ([`860099f`](https://github.com/MadAppGang/claudish/commit/860099f9dad74cc2a93b3c13a2445388b0e0d34d))
+- keep the HTTP status of a non-JSON Claude API error body *(stats)* ([`e935f39`](https://github.com/MadAppGang/claudish/commit/e935f39c0caa0599f0dbfccf48aba282826dd842))
+- count usage a failed Claude API stream already reported *(stats)* ([`8a68e6d`](https://github.com/MadAppGang/claudish/commit/8a68e6db5cd2bcee084d21f09d6f2d1d35963681))
+- record an SSE error event in a 200 stream as a failure *(stats)* ([`a99dbde`](https://github.com/MadAppGang/claudish/commit/a99dbdefe8074500ae2adf70bda9d6a3e0682eaf))
+- emit each model's own totals from the Claude API meter *(stats)* ([`d5fe25e`](https://github.com/MadAppGang/claudish/commit/d5fe25ecd811ec2f1500c8cbaab30d58edd1f98e))
+- give a refused claude@<foreign> member its own cause *(advisor)* ([`dc58278`](https://github.com/MadAppGang/claudish/commit/dc582788b494bd90384b929a4b91bcfe58f566ec))
+- refuse a claude@ advisor member instead of the API key *(advisor)* ([`e784b25`](https://github.com/MadAppGang/claudish/commit/e784b2587922f1904f82b20798857e23b6dcee92))
+- sign a claude@ pane slot login-only under API-billing opt-in *(launch)* ([`71d3f8b`](https://github.com/MadAppGang/claudish/commit/71d3f8b2b09767e64b5cb7f85f09912a11532a1f))
+- drop a route whose key read throws as credential-unreadable *(probe)* ([`e8ef522`](https://github.com/MadAppGang/claudish/commit/e8ef522912e81956bc00737f5e25e8277c2b06d4))
+- price a request at its own catalog connection's rate *(pricing)* ([`b7e1766`](https://github.com/MadAppGang/claudish/commit/b7e176682a67e1440787d26c59593202b927cfa0))
+- refuse a subscription launch whose settings set an API key *(launch)* ([`6d06ec9`](https://github.com/MadAppGang/claudish/commit/6d06ec9e0b2b2039a31407a3d98aafbf16e4c208))
+- never sign a Claude subscription request with an API key *(native)* ([`462e765`](https://github.com/MadAppGang/claudish/commit/462e76585fc0f011240e6da33f8c0ee7e3ad63c6))
+- check needs_effort against the spec after its provider strip *(mcp)* ([`34511a0`](https://github.com/MadAppGang/claudish/commit/34511a0e5b6cd0cf3342330956c1d621d419cf1e))
+- treat the placeholder ANTHROPIC_API_KEY as no key *(credentials)* ([`f262092`](https://github.com/MadAppGang/claudish/commit/f2620920d3bb1f218bdb65325e7344fae4529fd9))
+
+### Documentation
+
+- match RB-2, RB-3 and the signing table to the refusals *(routing)* ([`3b1410b`](https://github.com/MadAppGang/claudish/commit/3b1410ba536d6bf9ca4e023ee7e388ce2e425273))
+- match the Claude subscription pages to the refusals *(settings)* ([`ce3f4b6`](https://github.com/MadAppGang/claudish/commit/ce3f4b660098be6ff7a1879bc0e37821eccd9d94))
+- state that request-key never looks up ANTHROPIC_API_KEY *(advisor)* ([`6e8c0ae`](https://github.com/MadAppGang/claudish/commit/6e8c0aeaee6e73dd1e9b0cdfdc3e9aa96707d6d2))
+- state in RB-1 that the MCP strip keeps claude@ *(routing)* ([`8e2a88b`](https://github.com/MadAppGang/claudish/commit/8e2a88b5dce48f0df47b192a76a42365cbc96bf2))
+- say costs come from the serving catalog connection's rate *(stats)* ([`85dd996`](https://github.com/MadAppGang/claudish/commit/85dd996c18fb0defcb028e7fee3ad647a7b9b7f2))
+- describe adding a provider via ProviderDefinition.createHandler([`b530f40`](https://github.com/MadAppGang/claudish/commit/b530f408a3ca5e1203b2cb1f56169ea5a396102c))
+- replace the two-table provider invariant with the required createHandler field *(claude-md)* ([`92bfde1`](https://github.com/MadAppGang/claudish/commit/92bfde128415dc35d7121556a124dde5afc8e76b))
+- add Claude subscription and Claude API to the thesaurus *(claude-md)* ([`a648bad`](https://github.com/MadAppGang/claudish/commit/a648bad38579cfeaf459a99ec84c7e51754a7334))
+- document anthropic@, claude@ and the Claude picker rows([`2d73be0`](https://github.com/MadAppGang/claudish/commit/2d73be0574db01b88f3f9259f41dc8bcd1118a48))
+- describe the two Claude routes *(architecture)* ([`7e98ef7`](https://github.com/MadAppGang/claudish/commit/7e98ef7ae8e1ee6456674a62efa72debd7a4a742))
+- record why --probe shows one row for a Claude model *(routing)* ([`b707199`](https://github.com/MadAppGang/claudish/commit/b707199ba72dc2db8ede09efdec4d992e7170c77))
+- update CHANGELOG.md for v14.22.1([`ef86806`](https://github.com/MadAppGang/claudish/commit/ef86806ce208c38ce14db6e4ec9dd5550e232126))
+
+### New Features
+
+- show Claude subscription and Claude API provider rows *(picker)* ([`b907255`](https://github.com/MadAppGang/claudish/commit/b90725504e6316d03083700fed9dbef84f899435))
+- record metered stats and cost for a Claude API session *(stats)* ([`a4f9409`](https://github.com/MadAppGang/claudish/commit/a4f9409f419905feb93489a7ee87b63c3b67b94a))
+- run anthropic@<id> as a monitor session on the API key *(launch)* ([`9fbd8c1`](https://github.com/MadAppGang/claudish/commit/9fbd8c1880887e111367b56364db0208fc3ab335))
+- start claude@<id> as a monitor session on the login *(launch)* ([`4cb181c`](https://github.com/MadAppGang/claudish/commit/4cb181c362f65a1519d04dfac3c1d982e7d4048d))
+- label a native Claude slot as the Claude subscription *(team)* ([`2fd8b98`](https://github.com/MadAppGang/claudish/commit/2fd8b986cef5cb1d2e58a7cb3199b602317c0e1c))
+- name the Claude API route in preflight for a Claude model *(mcp)* ([`7b3a5cc`](https://github.com/MadAppGang/claudish/commit/7b3a5cc89de1a6e56d65c9ebfcc769d9ec2ab8f6))
+- list both Claude routes in the config TUI route probe *(config)* ([`414a00f`](https://github.com/MadAppGang/claudish/commit/414a00fb6e8728f0cd9a3938a96b33854d9079b9))
+- rank every live route in the Leaderboard *(probe)* ([`6ea42a6`](https://github.com/MadAppGang/claudish/commit/6ea42a67c222226eb81c1b69e910d77f42dd1b4f))
+- probe every catalog route of a bare Claude model *(probe)* ([`09e9371`](https://github.com/MadAppGang/claudish/commit/09e93713007b4885e284f7be851cc4ce68ca1d32))
+- list a bare Claude name's catalog routes for display *(routing)* ([`feb0f88`](https://github.com/MadAppGang/claudish/commit/feb0f88fde3f3a1b9bfcfe88149b18be9c3bf3df))
+- add claude@ as the Claude subscription spec *(routing)* ([`7cf0e4e`](https://github.com/MadAppGang/claudish/commit/7cf0e4e5ad309b14ddfa2e67fb8cbd572e44e8c3))
+- add anthropic@, a@ and api@ for the metered Claude API *(anthropic)* ([`04d2809`](https://github.com/MadAppGang/claudish/commit/04d28097f85575fa7a01d68ef7e08aa155e042bd))
+- read a vault key only when a request is signed *(credentials)* ([`d06982a`](https://github.com/MadAppGang/claudish/commit/d06982ae5d5c96835b8984553b5ce09860e1b912))
+
+### Refactoring
+
+- rename the signing closure to defaultRequestSigning *(proxy)* ([`eed1f12`](https://github.com/MadAppGang/claudish/commit/eed1f1271c7fc10202bcede6dcbe4b25476e6a83))
+- remove the unused ".env" member of KeySource *(credentials)* ([`57e8f01`](https://github.com/MadAppGang/claudish/commit/57e8f0104f2985fe1426f6e3f49de44a7d3620b4))
+- drop the dead CLAUDE_CODE_OAUTH_TOKEN placeholder check *(auth)* ([`7c5f69c`](https://github.com/MadAppGang/claudish/commit/7c5f69c479ef1941a97f519988a19bc49327b018))
+- move claudish's placeholder credentials to a leaf module *(auth)* ([`bab4811`](https://github.com/MadAppGang/claudish/commit/bab48117664858ef526d42499fb759a7cf355b2a))
+
 ## [14.22.1] - 2026-11-14
 
 ### Documentation
