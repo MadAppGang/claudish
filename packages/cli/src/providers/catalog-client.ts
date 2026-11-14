@@ -31,7 +31,7 @@ import {
   isRouteRegistry,
 } from "./connection-wire.js";
 import { allConnections, splitOptInConnections } from "./content-use.js";
-import { publishedEffortWireId } from "./model-id-effort.js";
+import { implicitEffortWireId, publishedEffortWireId } from "./model-id-effort.js";
 import { _clearChatCapabilityIndex } from "./transport/probe-discovery.js";
 
 const MAX_CATALOG_PAGES = 40;
@@ -223,10 +223,56 @@ function effortMapListsWireId(connection: AggregatorEntry, wireId: string): bool
   return publishedEffortWireId(connection, wireId) === wireId;
 }
 
+/**
+ * {@link publishesWireIdFor} for a name routing chooses a provider for: ordinary
+ * connections only (`aggregators`), and an effort-map id only when it does not
+ * opt content in. A content-use opt-in id is never kept as typed here, so the
+ * steps of {@link resolveExternalId} after the exact one choose the base.
+ */
+function publishesImplicitWireIdFor(
+  entry: SlimModelEntry,
+  provider: string,
+  wireId: string
+): boolean {
+  return (entry.aggregators ?? []).some(
+    (connection) =>
+      connection.routeStatus === "mapped" &&
+      catalogRouteMatchesProvider(connection.route, provider) &&
+      (connection.externalModelId === wireId || implicitEffortWireId(connection, wireId) === wireId)
+  );
+}
+
+/**
+ * The wire id for a model spec typed with its provider (`meta@<id>`, a
+ * `provider@model` routing entry): an id the provider publishes, opt-in rows
+ * included, is sent verbatim.
+ */
 export function resolveExternalId(
   userInput: string,
   provider: string,
   cachePath?: string
+): string | null {
+  return resolveWireId(userInput, provider, cachePath, publishesWireIdFor);
+}
+
+/**
+ * The wire id for a name whose provider routing chose (a provider-only routing
+ * entry, which names no model): {@link resolveExternalId} without its
+ * opt-in-inclusive exact step, so a content-use opt-in id is never sent.
+ */
+export function resolveImplicitExternalId(
+  userInput: string,
+  provider: string,
+  cachePath?: string
+): string | null {
+  return resolveWireId(userInput, provider, cachePath, publishesImplicitWireIdFor);
+}
+
+function resolveWireId(
+  userInput: string,
+  provider: string,
+  cachePath: string | undefined,
+  publishesExactly: (entry: SlimModelEntry, provider: string, wireId: string) => boolean
 ): string | null {
   const entries = cachePath ? readAllModelsCache(cachePath)?.entries : getCatalogEntries();
 
@@ -236,11 +282,12 @@ export function resolveExternalId(
   }
   if (!entries) return null;
 
-  // An id this provider publishes, typed exactly, is its own answer — opt-in
-  // rows included. This is how `meta@muse-spark-1.3-contributor` is sent
-  // verbatim: every step below CHOOSES a wire id, and a chosen one is never a
-  // content-use opt-in (`content-use.ts`).
-  if (entries.some((entry) => publishesWireIdFor(entry, provider, userInput))) return userInput;
+  // An id this provider publishes, typed exactly, is its own answer. On the
+  // explicit path opt-in rows count too: this is how
+  // `meta@muse-spark-1.3-contributor` is sent verbatim. Every step below
+  // CHOOSES a wire id, and a chosen one is never a content-use opt-in
+  // (`content-use.ts`).
+  if (entries.some((entry) => publishesExactly(entry, provider, userInput))) return userInput;
 
   const byModelId = entries.find((entry) => entry.modelId === userInput);
   if (byModelId) return externalIdFor(byModelId, provider);

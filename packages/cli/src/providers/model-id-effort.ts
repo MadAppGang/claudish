@@ -15,6 +15,7 @@
 
 import { EFFORT_LEVELS, type EffortLevel, isEffortLevel } from "../adapters/base-api-format.js";
 import type { AggregatorEntry, ModelIdEffort, ModelIdEffortLevel } from "../model-loader.js";
+import { isOptInWireId } from "./content-use.js";
 
 /**
  * Trailing uid segments that mark a Devin speed premium (`-fast`, `-priority`),
@@ -74,6 +75,20 @@ export function publishedEffortWireId(
   const lowered = requested.toLowerCase();
   const spellings = new Set(ids.filter((id) => id.toLowerCase() === lowered));
   return spellings.size === 1 ? [...spellings][0] : undefined;
+}
+
+/**
+ * {@link publishedEffortWireId} for a reader that CHOOSES the wire id: a bare
+ * name, a provider-only routing entry, or default candidate gathering. A map id
+ * that opts content in (`content-use.ts`) is never chosen, so the caller keeps
+ * the connection's base id. Only an explicit `provider@model` sends one.
+ */
+export function implicitEffortWireId(
+  connection: Pick<AggregatorEntry, "modelIdEffort">,
+  requested: string
+): string | undefined {
+  const id = publishedEffortWireId(connection, requested);
+  return id !== undefined && !isOptInWireId(id) ? id : undefined;
 }
 
 /** A plain object, or undefined. */

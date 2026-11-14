@@ -105,7 +105,7 @@ import {
 import { allConnections, isOptInWireId } from "./content-use.js";
 import type { AccountModelsListSnapshot } from "./dynamic-models-catalog.js";
 import type { DiscoveredModel } from "./model-discovery.js";
-import { publishedEffortWireId } from "./model-id-effort.js";
+import { implicitEffortWireId } from "./model-id-effort.js";
 import { expandSelection } from "./model-resolvers/registry.js";
 import { readProbeModelsCache } from "./probe-catalog.js";
 import { type RouteTier, getAllProviders, getProviderByName } from "./provider-definitions.js";
@@ -311,9 +311,9 @@ function gatherFromConnections(
       if (!baseWireId || baseWireId !== connection.externalModelId) continue;
       // A requested name this connection's effort map lists (`<model>-low`,
       // which the catalog also lists as an alias of the base) is sent in the
-      // map's spelling. Every other hop keeps its base id, and the transport
-      // picks the effort's id from it.
-      const wireId = publishedEffortWireId(connection, model) ?? baseWireId;
+      // map's spelling, unless that id opts content in. Every other hop keeps
+      // its base id, and the transport picks the effort's id from it.
+      const wireId = implicitEffortWireId(connection, model) ?? baseWireId;
 
       const candidate = connectionCandidate(entry, connection, provider, tier, wireId);
       // The catalog-published subscription tier only: a dynamic subscription's

@@ -11,7 +11,12 @@ import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { readAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { bundledListLabel } from "./bundled-list-data.js";
-import { catalogOrigin, getCatalogEntries, resolveExternalId } from "./catalog-client.js";
+import {
+  catalogOrigin,
+  getCatalogEntries,
+  resolveExternalId,
+  resolveImplicitExternalId,
+} from "./catalog-client.js";
 import type { ConnectionPrice } from "./connection-price.js";
 import { FRESH_MS, LIVE_MS } from "./dynamic-models-catalog-store.js";
 import {
@@ -422,9 +427,14 @@ function resolveRoutingEntries(
     // the connection's effort map (`modelIdEffort`) publishes is kept as
     // typed. For a base name this lookup returns the base; the effort-specific
     // id is picked later from the effort map (`chooseConnectionModelId`).
-    // No match → the name passes through unchanged.
+    // No match → the name passes through unchanged. A provider-only entry
+    // names no model, so its exact step never keeps a content-use opt-in id;
+    // only an explicit `provider@model` entry sends one as typed.
     if (!wireIdResolved) {
-      const externalId = resolveExternalId(modelName, provider, cachePath);
+      const externalId =
+        atIdx === -1
+          ? resolveImplicitExternalId(modelName, provider, cachePath)
+          : resolveExternalId(modelName, provider, cachePath);
       if (externalId === null && atIdx === -1 && readsGatewayList(provider, cachePath)) {
         const answer = gatewayListAnswer(provider, modelName, opts.gatewayLists);
         if (answer.wireId === undefined) {
@@ -490,7 +500,7 @@ function gatewayListsNeeded(
     .filter(
       (provider) =>
         readsGatewayList(provider, cachePath) &&
-        resolveExternalId(model, provider, cachePath) === null
+        resolveImplicitExternalId(model, provider, cachePath) === null
     );
   return [...new Set(providers)];
 }
