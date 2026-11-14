@@ -179,6 +179,7 @@ import {
   keepsClaudeIdentity,
   scrubHarnessIdentity,
 } from "./shared/format/identity-filter.js";
+import { inlineSystemAsUserText } from "./shared/format/inline-system.js";
 import { aliasToolsForProvider } from "./shared/format/tool-name-alias.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
@@ -1603,6 +1604,18 @@ export class ComposedHandler implements ModelHandler {
     // it never declared.
     const toolAlias = aliasToolsForProvider(claudeRequest, this.provider.name);
     claudeRequest = toolAlias.request;
+
+    // 2c. Give inline `role: "system"` messages to the model. Claude Code
+    // sends the skill list, MCP server instructions and background-task
+    // notifications that way, and the Gemini, Chat Completions and Responses
+    // converters convert only `user` and `assistant` messages: without this the
+    // text never reaches the model. Each one becomes a text block in the user
+    // message beside it, at its own position (see `inline-system.ts` for why
+    // not the system prompt). After 2a, so the text is already scrubbed.
+    const withInlineSystem = inlineSystemAsUserText(claudeRequest.messages);
+    if (withInlineSystem !== claudeRequest.messages) {
+      claudeRequest = { ...claudeRequest, messages: withInlineSystem };
+    }
 
     // 3. Convert messages and tools. No identity filter here: step 2a already
     // scrubbed `claudeRequest` (or `keepIdentity` left it alone), so a second

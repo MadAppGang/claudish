@@ -136,19 +136,53 @@ parse the ORIGINAL system text: plan path, skill list) and before `convertMessag
   ("Claude Docs", "Claude API", "Anthropic SDK", `mcp__Claude_Browser__*`, `claude-opus-5-5`,
   `CLAUDE.md`, the `Claude-Session:` commit trailer): the model must still be able to use it.
 - NO NAME IS RENAMED INSIDE CODE OR A LITERAL: a fenced block, an inline code span, or a
-  double-quoted string on one line (`LITERAL_SPAN`). A reminder can carry a file the user
-  wrote (a `CLAUDE.md`, a memory file), and `const label = "Ask Claude to help"` renamed there
-  no longer matches the file. Prose in double quotes is kept as well; that is the accepted
-  price. Two review rounds each found a new literal form that a per-character guard missed,
-  so the rule is the span, not the neighbouring character. Identity SENTENCES are still
-  removed inside a span. A single-quoted literal is not a span (an apostrophe is too common).
-- Outside a span, "Claude" counts as the reader unless it is part of a longer name, path or id
-  (`/`, `\`, `.`, `@`, `-`), follows a determiner ("a Claude model"), precedes a capitalised
-  word or a version ("Claude Docs", "Claude 4"), opens one of a short list of lower-case
-  product phrases ("Claude models", "Claude in Chrome"), is a file name (`Claude.json`), or is
-  assigned (`Claude = true`). "Claude Code" is kept inside a path
-  (`/Applications/Claude Code.app`). The rules err toward KEEPING: a missed rename leaves one
-  confusing word, a wrong one breaks a name, a path or a value.
+  double-quoted string on one line, read with its escapes (`literalRanges`). A fence is a real
+  Markdown fence (`FENCE`): an opening LINE of three or more backticks or tildes, also inside a
+  list item or a blockquote, closed by a line of at least as many of the SAME character, or
+  open to the end of the text when no such line follows. The length match lets a
+  four-backtick block hold a three-backtick example; the line start keeps `~~~` in a prose
+  line from opening a block. A `<system-reminder>` tag or a wrapper line inside a fence or an
+  inline code span of a user message is pasted source, not an injected span, and is not
+  scrubbed at all (`codeRanges`).
+- An injected span runs from an opening tag to the first closing tag that is OUTSIDE code
+  (`scrubTagged`). A real reminder can carry a `CLAUDE.md` with a fenced example of a
+  reminder; a matcher that stopped at the example's closing tag scrubbed half of the real
+  reminder and renamed the example.
+- Where an injected span ENDS is decided by counting tags (`closingTagAt`), not by fences.
+  Opening and closing tags inside the span are paired, so a reminder nested in a reminder, or
+  a fenced example of one, does not end the outer span early. Only inline code is skipped (a
+  line that mentions one tag has no partner). Fences are not consulted for the end: a fence
+  that opens inside a reminder and never closes (a memory file cut off in the middle of a
+  block) would hide the real closing tag and the whole reminder would go out unscrubbed. An
+  OPENING tag, in contrast, counts as pasted source inside any code, also after a fence that
+  never closes. Limit: a fenced example that holds an opening tag and no closing tag (or the
+  reverse) is not balanced, and the span then ends at the wrong tag.
+- Inline code is a run of backticks closed by a run of the same length ON ONE LINE. Markdown
+  lets inline code cross a line break; this does not, by decision: a stray backtick in prose
+  would pair with one lines later and a real reminder between them would escape the scrub. A
+  name inside inline code that spans lines is therefore renamed. Known limit.
+- Cost, measured on synthetic 2 MB requests: 14 to 33 ms, also for one single 2 MB block
+  holding 1500 reminders. A text with no "Claude" and no tag is skipped.
+- EVERY PATTERN MUST BE LINEAR ON HOSTILE INPUT. Six patterns were not, and no review found
+  one until a round asked for slow input; the last four came out of one audit that fed each
+  pattern its own prefix, repeated, with nothing that lets the match finish. All six were the
+  same mistake: after a prefix matches, the pattern scans to the end of the line or the text
+  for something that never comes, and does so again for every prefix.
+
+  | Pattern | Hostile input, under 200 KB | Before | Now |
+  |---|---|---|---|
+  | `[ \t]*\(claude…` | 100,000 spaces | 2 s | one optional space |
+  | inline code as a regex | 25,000 backticks, no closing run | 2 to 3 s | `inlineCodeRanges`, a scanner |
+  | closed-fence pattern | 30,000 fences that never close | 490 ms | removed; tags are counted |
+  | double-quoted string as a regex | 60,000 `\"`, no closing quote | 1.1 s | `stringRanges`, a scanner |
+  | `<claude_background_info>[\s\S]*?` | 8,000 opening tags, no close | 500 ms | `removeBackgroundInfo`, a plain search |
+  | sentence scan `[^\n]*?\.` | "Assistant knowledge cutoff is" x 7,000, no full stop | 440 ms | bounded, `{0,300}` |
+
+  After the audit, 26 hostile shapes under 200 KB take 0.3 to 69 ms, and the slowest (a line
+  of `> ` markers) grows in a straight line with size. Rules for the next edit: no pattern
+  starts with an unbounded run; a lazy scan after a literal prefix carries a length bound; a
+  paired delimiter is found by a scanner or a plain search, never by a regex with a
+  backreference. `identity-filter.test.ts` holds time bounds on these inputs.
 - Measured on the captured request (3.4 MB, 24 tools): mentions of Claude, Anthropic or a Claude
   model name went from 15 to 0 in the system prompt, 150 to 19 in tool descriptions, 52 to 9 in
   input schemas, 87 to 48 in inline system messages. Every survivor is a product, tool name or
@@ -230,7 +264,61 @@ and a tool call through the handler: it fails when the handler does not pass `re
 
 **Not covered.** A `ToolSearch` result carries tool definitions as a tool result, so its
 descriptions pass unscrubbed. `subscription-devin-probe.ts` replays a captured request through
-`filterIdentity` only, so its tool descriptions and reminders are not scrubbed.
+`filterIdentity` only, so its tool descriptions and reminders are not scrubbed. An inline system message's
+`tool_addition` blocks (tool definitions added mid-session) carry no text, so step 2c below
+does not move them, and it removes the message that carried them, so a raw `providerRequest`
+hook no longer sees them (hook stage A still does).
+
+**Inline system messages (step 2c, `format/inline-system.ts`).** Claude Code sends
+`role: "system"` messages INSIDE `messages`: the skill list, the agent list and MCP server
+instructions near the start, and a background-task notification wherever the task ended. A
+captured request (2026-11-14) has one directly after a `tool_result`. The Gemini, Chat
+Completions and Responses converters convert only `user` and `assistant` messages. Measured
+on all three: neither inline text reached the wire body. On the 15-hour `gemini-4-carbon`
+session the model never saw a background-task notification (3 of 3), and the scrub of inline
+system messages had no effect on those routes.
+
+`ComposedHandler` step 2c gives each one to the model as a TEXT BLOCK IN A USER MESSAGE. Where
+it goes depends ONLY on the messages before it:
+
+- while a TOOL ROUND IS OPEN (an assistant message called tools and not every call has its
+  `tool_result` yet), the text waits and is appended to the user message that carries the
+  round's last result;
+- otherwise, after a user message, it is appended to that message;
+- otherwise it becomes a user message of its own, which the user's next turn then joins (some
+  wire formats require user and assistant turns to alternate).
+
+Text Claude Code did not wrap gets `<system-reminder>` tags. Step 2c runs after step 2a, so the
+text is already scrubbed. Two rules here were each learned from a review round, and both must
+hold:
+
+- NEVER INSIDE AN OPEN TOOL ROUND. With parallel tool calls Claude Code can send
+  `tool_result a`, a notification, `tool_result b`, or a notification before the first result.
+  Text there ends the tool round on the wire: `convertMessagesToOpenAI` then reports the
+  remaining calls as "No tool result was provided" and demotes the real results to user text
+  (measured on Chat Completions, Responses, Devin, LiteLLM, OpenRouter and the local adapter).
+- NEVER BY LOOKING AHEAD. A notification is often the last message of one request and has a
+  user message after it on the next. A rule that reads the following message moves the text
+  between those two requests, so the wire form of an already-sent message changes.
+
+Known limits of the placement, each seen only in hand-written input, not in a request
+Claude Code sends: a request that ENDS while tool calls have no result yet gets the held text
+at its end, inside the open round (Claude Code calls the model after the tools finish); a
+`tool_result` that answers no call, directly after a created user message, is put before the
+notice by the OpenAI converter; and a user message whose content is a string becomes a block
+array when a notice joins it, with the same text.
+
+Do NOT move this text into the system prompt, which the first cut did. A notification says
+something happened now; in the system prompt it loses its position. And the system prompt is
+the first part of every request, so each notification would change the text in front of the
+whole conversation and the provider's prefix cache would miss on every one. A block at the
+notification's own position changes only the tail. `AnthropicAPIFormat.buildPayload` still
+hoists into `system` for a caller without the handler; through the handler nothing is left
+for it to hoist.
+
+Tests: `inline-system.test.ts` (each placement, the unchanged prefix) and
+`composed-handler-inline-system.test.ts` (the wire body on Chat Completions, Gemini, Responses
+and an Anthropic-shaped route; the first three fail without step 2c).
 
 Tests: `identity-filter.test.ts` (the rules on a captured prompt, the reader rename and the names
 it keeps, idempotency, what is never touched, the inputs of both review rounds) and
