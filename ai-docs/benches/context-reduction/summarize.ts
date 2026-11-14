@@ -75,22 +75,27 @@ function sumCalls(events: SessionEvent[]) {
   const sub = emptyTokens();
   let unanswered = 0;
   const models = new Set<string>();
+  // Per model, because a token of a smaller model costs less.
+  const byModel: Record<string, Tokens> = {};
   for (const e of events) {
     if (e.type !== "llm_call") continue;
-    if (e.request?.model) models.add(e.request.model);
+    const model = e.request?.model ?? "unknown";
+    models.add(model);
     // A call with no usage got no response: the Session ended first.
     if (!e.usage) {
       unanswered += 1;
       continue;
     }
     addUsage(e.agent_id ? sub : main, e.usage);
+    byModel[model] ??= emptyTokens();
+    addUsage(byModel[model], e.usage);
   }
-  return { main, sub, unanswered, models };
+  return { main, sub, unanswered, models, byModel };
 }
 
 function trialRow(file: string, r: Result) {
   const events = r.session?.events ?? [];
-  const { main, sub, unanswered, models } = sumCalls(events);
+  const { main, sub, unanswered, models, byModel } = sumCalls(events);
   const check = (metric: string) => r.checks?.find((c) => c.spec?.metric === metric)?.result;
   const hidden = check("HiddenTests");
   const evidence = check("ToolEvidence")?.evidence?.output;
@@ -120,6 +125,7 @@ function trialRow(file: string, r: Result) {
     requestsAll: main.requests + sub.requests,
     unanswered,
     models: [...models].sort(),
+    byModel,
     evidence: typeof evidence === "string" ? evidence : "",
   };
 }
@@ -262,6 +268,22 @@ console.log(
           mins
         ),
       ];
+    })
+  )
+);
+
+console.log("\n## Per variant and model: mean over trials, all threads\n");
+console.log(
+  table(
+    ["variant", "model", "requests", "prompt tokens", "output tokens"],
+    variants.flatMap((v) => {
+      const t = rows.filter((r) => r.variant === v);
+      const names = [...new Set(t.flatMap((r) => Object.keys(r.byModel)))].sort();
+      return names.map((m) => {
+        const of = (f: (x: Tokens) => number) =>
+          mean(t.map((r) => (r.byModel[m] ? f(r.byModel[m]) : 0)));
+        return [v, m, int(of((x) => x.requests)), int(of(promptOf)), int(of((x) => x.output))];
+      });
     })
   )
 );
