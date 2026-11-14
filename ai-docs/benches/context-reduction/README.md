@@ -14,11 +14,33 @@ tests grade the result. The agent never sees them.
 | `rtk` | a `PreToolUse` hook on `Bash` that runs `/opt/homebrew/bin/rtk hook claude`, plus the instruction file `rtk init` writes |
 | `context-mode` | the context-mode plugin, staged from `vendor/context-mode` |
 | `context-gateway-local` | `ANTHROPIC_BASE_URL` points at a local Context Gateway, started by a provision step. The gateway trims tool output itself (`trimming`), summarizes nothing and makes no model call |
-| `context-gateway-haiku` | the same gateway, but it compresses tool output and summarizes history with Haiku, signed with the session's own Claude login |
+| `haiku-subagent` | the overlay `config/haiku-subagent`: a Claude Code subagent `output-digest` with `model: haiku`, which runs a large command or reads a large file region and returns only what the main agent asked for, plus a `CLAUDE.md` that tells the main agent to use it |
 
-The two gateway variants share `tools/context-gateway/start.sh` and
-`evidence.sh`. Each variant's own folder holds its `config.yaml` and two
-wrapper scripts that pass that config.
+A gateway variant with a Haiku summarizer is not here. The gateway signs its
+own Haiku calls with the captured Claude login, and the API refuses each one
+with `429 rate_limit_error "Error"` (the shape refusal in
+`ai-docs/architecture/advisor.md`). The gateway then sends every output on
+unchanged.
+
+### Through claudish
+
+`context-reduction-claudish.experiment.yaml` runs the same Scenario with
+claudish between Claude Code and the Anthropic API. Its variants set the Bench
+param `binary` to `claudish`; the model stays the bare name
+`claude-sonnet-5-5`. A bare Claude name is a normal claudish session on the
+Claude subscription, so claudish loads its hooks. A `claude@` model would be a
+monitor session, which loads no hooks and ignores `harnessGateway`.
+
+| Variant | What differs |
+|---|---|
+| `claudish-baseline` | nothing but claudish |
+| `claudish-rtk` | the `toolCall` hook `rtk-bash-rewrite.ts` from `docs/advanced/hooks.md` |
+| `claudish-context-mode` | the context-mode plugin, staged as in `context-mode` |
+| `claudish-context-gateway-local` | `harnessGateway.url` in front of claudish, with the gateway config of `context-gateway-local` |
+
+Provision step 2 runs `tools/claudish/start.sh`, which copies the variant's
+`config.json` (and hook file) into the run's `~/.claudish`. claudish reads
+hooks and `harnessGateway` from the global config only.
 
 ## Before a run
 
@@ -31,6 +53,19 @@ wrapper scripts that pass that config.
    source folder does not exist. Git ignores `out/`.
 4. The tools must be installed: `rtk` 1.2.0 at `/opt/homebrew/bin/rtk`,
    `context-gateway` v0.5.3 at `~/.local/bin/context-gateway`.
+5. For the claudish Experiment, put the claudish build you want to measure
+   first on `PATH`. madbench looks `binary: claudish` up on `PATH`;
+   `MADBENCH_CLAUDISH` does not change it. A build older than
+   `harnessGateway` runs the gateway variant without the gateway, and says
+   nothing. On macOS a compiled build must be signed again before it runs,
+   or the system kills it with exit code 137:
+
+   ```
+   (cd packages/cli && bun run build:binary)
+   mkdir -p /path/to/bin && mv packages/cli/claudish /path/to/bin/claudish
+   codesign --force --sign - /path/to/bin/claudish
+   PATH=/path/to/bin:$PATH madbench …
+   ```
 
 ## Run
 
@@ -46,7 +81,8 @@ madbench ai-docs/benches/context-reduction/context-reduction.experiment.yaml \
 ```
 
 `--variant baseline` runs one variant. `--concurrency 1` is required: the
-gateway variant listens on one fixed port, 18431.
+gateway variants listen on one fixed port, 18431. The claudish Experiment runs
+the same way with `context-reduction-claudish.experiment.yaml`.
 
 ## The grade
 
@@ -95,16 +131,13 @@ runs after it. So:
   after the agent stopped. It prints the gateway's counts, copies its logs to
   `out/`, and stops the gateway.
 
-Neither gateway config uses a third-party service. The `compresr` strategy is
-off and its URL is empty in both.
-
-- `context-gateway-local` configures no provider. The gateway trims tool
-  output inside its own process and makes no model call. It holds no
-  credential; it forwards Claude Code's own requests.
-- `context-gateway-haiku` sends tool output and history to Haiku on the
-  Anthropic API, signed with the same Claude login the session uses
-  (`auth: oauth`).
-
+The gateway config (`tools/context-gateway-local/config.yaml`, used by both
+gateway variants) uses no third-party service. The `compresr` strategy is off
+and its URL is empty. It configures no provider: the gateway trims tool output
+inside its own process and makes no model call. It holds no credential; it
+forwards Claude Code's own requests. The claudish variant starts it with
+`GATEWAY_ALLOWED_HOSTS=127.0.0.1`, because there it forwards to claudish's
+proxy on loopback.
 
 The gateway makes one call that the config cannot turn off: a release check
 to `api.github.com`. That call carries no workspace data.
@@ -119,4 +152,6 @@ in the report JSON under the Check's `evidence.output`.
 | `baseline` | none |
 | `rtk` | `rtk gain`: the tokens rtk counts as saved |
 | `context-mode` | the files in its data folders, copied to `out/` |
-| `context-gateway-local`, `context-gateway-haiku` | line counts of the gateway's compression, summary and telemetry logs, `session_stats.json`, logs copied to `out/` |
+| `context-gateway-local` | line counts of the gateway's compression, summary and telemetry logs, `session_stats.json`, logs copied to `out/` |
+| `haiku-subagent` | none; the report's subagents and `llm_call` Events show `output-digest` and its Haiku calls |
+| `claudish-*` | first `route=claudish` and the count of `[Proxy]` lines in claudish's own log, then the evidence of the matching native variant |
