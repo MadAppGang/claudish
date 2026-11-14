@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.24.0] - 2026-11-14
+
+### Bug Fixes
+
+- send inline system messages on Gemini and OpenAI routes *(adapters)* ([`8a77f4a`](https://github.com/MadAppGang/claudish/commit/8a77f4aeb97e5cb5e3d3e6886dd6630bff63e64b))
+- remove Claude Code's identity from foreign-model requests *(adapters)* ([`ebe2f43`](https://github.com/MadAppGang/claudish/commit/ebe2f439f3317015b8ca3085ad5798d5e4c422d1))
+
+### Documentation
+
+- update CHANGELOG.md for v14.23.0([`c0aca2c`](https://github.com/MadAppGang/claudish/commit/c0aca2c0b2435e7ab7194dec45510ddd7b4a4bcf))
+
+### New Features
+
+- send Claude Code's tools under agy's own tool names *(antigravity)* ([`9db1f59`](https://github.com/MadAppGang/claudish/commit/9db1f59d84fe7362b0c33e1c5b59af3cad5c9175))
+
 ## [14.23.0] - 2026-11-14
 
 ### ⚠ BREAKING CHANGES
