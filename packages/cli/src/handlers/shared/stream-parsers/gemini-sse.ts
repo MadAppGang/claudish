@@ -38,6 +38,14 @@ export interface GeminiSseOptions {
   priorInputTokens?: number;
   /** CodeAssist wraps chunks in {response: {...}} */
   unwrapResponse?: boolean;
+  /**
+   * Maps an upstream tool name back to the one Claude Code declared, undoing a
+   * provider-native tool-name alias (`tool-name-alias.ts`). Identity when the
+   * route uses no alias — which is every route but `antigravity`. The restored
+   * name reaches the `tool_use` block and `onToolCallObserved`; `onToolCall`
+   * (the adapter's history store) gets the upstream name unchanged.
+   */
+  mapToolName?: (upstreamName: string) => string;
 }
 
 export function createGeminiSseStream(
@@ -329,12 +337,19 @@ export function createGeminiSseStream(
                     const toolIdx = toolCalls.size;
                     const toolId = `toolu_${Date.now()}_${toolIdx}`;
                     const blockIndex = curIdx++;
-                    opts.onToolCallObserved?.(part.functionCall.name);
+                    // Claude Code and the tool-count observer get the name the
+                    // request declared. The adapter's history store gets the WIRE
+                    // name: the next request renames this call again on the way
+                    // out, and its functionResponse must carry that same name.
+                    const toolName = opts.mapToolName
+                      ? opts.mapToolName(part.functionCall.name)
+                      : part.functionCall.name;
+                    opts.onToolCallObserved?.(toolName);
                     const args = JSON.stringify(part.functionCall.args || {});
 
                     const t = {
                       id: toolId,
-                      name: part.functionCall.name,
+                      name: toolName,
                       blockIndex,
                       started: true,
                       closed: false,
@@ -349,7 +364,7 @@ export function createGeminiSseStream(
                     send("content_block_start", {
                       type: "content_block_start",
                       index: blockIndex,
-                      content_block: { type: "tool_use", id: toolId, name: part.functionCall.name },
+                      content_block: { type: "tool_use", id: toolId, name: toolName },
                     });
                     send("content_block_delta", {
                       type: "content_block_delta",

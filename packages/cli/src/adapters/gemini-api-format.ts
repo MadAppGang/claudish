@@ -15,7 +15,6 @@
 
 import { mapToolChoiceToGemini } from "../handlers/shared/format/openai-tools.js";
 import { convertToolsToGemini } from "../handlers/shared/gemini-schema.js";
-import { filterIdentity } from "../handlers/shared/openai-compat.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import {
@@ -162,9 +161,15 @@ export class GeminiAPIFormat extends BaseAPIFormat {
             functionCallPart.thoughtSignature = thoughtSignature;
           }
 
-          // Ensure tool is tracked in our map (for tool_result lookups)
-          if (!this.toolCallMap.has(block.id)) {
+          // Track the call for its tool_result, under the name it carries on
+          // THIS request. A route that renames tools can send one call under a
+          // different name on a later request (the set of renamed tools follows
+          // the tools declared), and the functionResponse must repeat the name
+          // of the functionCall beside it. The stored signature is kept.
+          if (!toolInfo) {
             this.toolCallMap.set(block.id, { name: block.name, thoughtSignature });
+          } else if (toolInfo.name !== block.name) {
+            this.toolCallMap.set(block.id, { ...toolInfo, name: block.name });
           }
 
           parts.push(functionCallPart);
@@ -200,7 +205,6 @@ export class GeminiAPIFormat extends BaseAPIFormat {
       let systemContent = Array.isArray(claudeRequest.system)
         ? claudeRequest.system.map((i: any) => i.text || i).join("\n\n")
         : claudeRequest.system;
-      systemContent = filterIdentity(systemContent);
 
       // Gemini-specific reasoning suppression
       systemContent += `\n\nCRITICAL INSTRUCTION FOR OUTPUT FORMAT:

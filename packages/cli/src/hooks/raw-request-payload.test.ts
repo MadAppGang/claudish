@@ -61,7 +61,8 @@ describe("raw providerRequest mutations before adapter.buildPayload", () => {
     expect(serialized).toContain(MESSAGE_MARKER);
     expect(serialized).toContain(TOOL_MARKER);
     const payload = JSON.parse(serialized);
-    expect(payload.instructions).toContain(SYSTEM_MARKER);
-    expect(payload.instructions).not.toBe(SYSTEM_MARKER);
+    // The hook's text holds no Claude Code identity, so the adapter's identity
+    // filter adds no header: the hook's system text is the instructions, whole.
+    expect(payload.instructions).toBe(SYSTEM_MARKER);
   });
 });

@@ -502,7 +502,9 @@ export function applyStageB(
   // biome-ignore lint/suspicious/noExplicitAny: see above
   convertedTools: any[] | null,
   held: ReadonlyArray<PlannedAction<RequestAction>>,
-  removedTools: ReadonlyMap<string, number> = new Map()
+  removedTools: ReadonlyMap<string, number> = new Map(),
+  /** The name a tool carries in both arrays, when the request renamed it after stage A. */
+  wireName: (tool: string) => string = (tool) => tool
 ): ActionResult<RequestAction>[] {
   const results: ActionResult<RequestAction>[] = [];
   for (const [index, item] of held.entries()) {
@@ -513,7 +515,7 @@ export function applyStageB(
     // view the hooks between saw); one after it is `superseded: tool_removed`.
     const outcome: Outcome =
       removedAt === undefined
-        ? describeOnBoth(claudeTools, convertedTools, a)
+        ? describeOnBoth(claudeTools, convertedTools, { ...a, tool: wireName(a.tool) })
         : index < removedAt
           ? { decision: "matched" }
           : { decision: "superseded", detail: "tool_removed" };

@@ -476,14 +476,20 @@ export class HookRequestScope {
    * `convertedTools` is null on a route with one representation (native). Both
    * arrays have ELEMENTS replaced, never their tool objects mutated, so the
    * converted array the provider payload aliases sees the change. Runs once;
-   * later calls do nothing.
+   * later calls do nothing. `wireName` maps an action's tool (the name the hook
+   * saw in stage A) to the name it carries now, for a route that renames tools.
    */
-  // biome-ignore lint/suspicious/noExplicitAny: Claude-format and provider-format tool arrays
-  applyToolDescriptions(claudeTools: any[], convertedTools: any[] | null): void {
+  applyToolDescriptions(
+    // biome-ignore lint/suspicious/noExplicitAny: Claude-format and provider-format tool arrays
+    claudeTools: any[],
+    // biome-ignore lint/suspicious/noExplicitAny: see above
+    convertedTools: any[] | null,
+    wireName?: (tool: string) => string
+  ): void {
     if (this.held.length === 0) return;
     const held = this.held;
     this.held = [];
-    const results = applyStageB(claudeTools, convertedTools, held, this.removedTools);
+    const results = applyStageB(claudeTools, convertedTools, held, this.removedTools, wireName);
     if (results.length > 0) this.engine.recordResults("request", results, this.meta);
   }
 

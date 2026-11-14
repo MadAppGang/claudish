@@ -315,6 +315,13 @@ That rule now governs only the fallback list. When the backend sends
 
 **Model ids — LIVE discovery, no hardcoded map**: the Antigravity backend requires a reasoning-tier suffix (bare `gemini-3.6-flash` → 404), but which variants a subscription serves is **per-account and drifts**, so claudish never hardcodes a model list. `getServedAntigravityModels()` fetches the live set from the backend's own `v1internal:fetchAvailableModels` (body `{project}`) — the served ids are the response `models` keys, plus a backend `defaultAgentModelId` — cached with a TTL. `resolveAntigravityModelId(requested, servedIds, defaultId)` then resolves against that LIVE set: exact match passes through; a bare family (e.g. `gemini-3.6-flash`) resolves to the backend's `defaultAgentModelId` when it's a variant of that family, else to the strongest reasoning tier by a *rank rule* (`high>medium>low>extra-low>tiered` — a rule, like `rankCodeAssistModel`, not pinned ids); anything else passes through to the F1–F7 404 rewrite. The only literals are the tier-rank ordering and endpoint strings — no concrete model ids in source.
 
+**Identity in the request body**: besides the transport identity below, two body-level scrubs run
+for `ag@` in `ComposedHandler` (both in `handlers/shared/format/`, both detailed in `adapters.md`):
+the system prompt and injected text lose Claude Code's identity and open with Antigravity's own
+header (`identity-filter.ts`), and the tools with a true agy equivalent are renamed to agy's names
+and restored on the response (`tool-name-alias.ts`). The tool rename is names only, not argument
+schemas — see the honest limit in `adapters.md`.
+
 **Identity strings**: `User-Agent: antigravity/cli/<ver> (aidev_client; os_type=<platform>; arch=<arch>; auth_method=consumer)` + `metadata: { ideType: "ANTIGRAVITY" }`. The transport keeps all the F1–F7 improvements from the old codeassist path (terminal-error → 400 surfaced inline, the 404 rewrite that checks the dynamic models catalog, `rankCodeAssistModel`). Full reverse-engineering write-up: `ai-docs/sessions/antigravity-refactor-20260803-125333-d0791562/architecture.md` (write-up lost — predates the ai-docs tracking fix).
 
 ## Raw model list for models-index (`claudish subscription models antigravity --raw --json`)

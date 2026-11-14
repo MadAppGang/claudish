@@ -160,10 +160,10 @@ export class AnthropicAPIFormat extends BaseAPIFormat {
     // Put behind a provider check upstream and it would have to name every
     // anthropic-transport provider and stay current with the list.
     //
-    // The OpenAI path never needed it: convertMessagesToOpenAI already hoists
-    // system entries (openai-messages.ts:24), and Chat Completions accepts the
-    // role anyway. `transformMessages()` in transform.ts does the same hoisting
-    // and is EXPORTED BUT NEVER CALLED — dead since before this file existed.
+    // `ComposedHandler` step 2c moves inline system text into the neighbouring
+    // user message for every route before conversion, so through the handler
+    // there is nothing left to hoist here. This call stays for a caller that
+    // builds a payload without the handler.
     const { messages: cleanMessages, hoisted } = hoistInlineSystem(messages);
 
     const payload: any = {
