@@ -547,6 +547,8 @@ export interface ProviderRowProps {
   cursor: boolean;
   /** Usable content columns. */
   inner: number;
+  /** Display width of the widest shortcut the list shows: the shortcut column's width. */
+  widestShortcut: number;
 }
 
 /**
@@ -576,10 +578,11 @@ export function ProviderRow({
   note,
   cursor,
   inner,
+  widestShortcut,
 }: ProviderRowProps): ReactNode {
   const { glyph, fg } = readinessGlyph(readiness);
   const bill = billingLabel(billing);
-  const L = deriveProviderRowLayout(inner);
+  const L = deriveProviderRowLayout(inner, widestShortcut);
   const tail =
     readiness === "missing" && note !== ""
       ? note

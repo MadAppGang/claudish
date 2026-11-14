@@ -81,7 +81,7 @@ import { sweepAccountModelsLists } from "../providers/dynamic-models-catalog.js"
 import { getProviderByName } from "../providers/provider-definitions.js";
 import { EmptyState } from "../tui/components/EmptyState.js";
 import { useAnimationFrame } from "../tui/hooks/useAnimationFrame.js";
-import { truncate } from "../tui/viz/text.js";
+import { displayWidth, truncate } from "../tui/viz/text.js";
 import { tokens } from "../tui/viz/tokens.js";
 import { DiscoveryNotice, discoveryNoticeContent, noticeRows } from "./DiscoveryNotice.js";
 import {
@@ -364,6 +364,11 @@ export function ModelPicker({
    * provider with a `k` somewhere in its slug.
    */
   const providerRows: ProviderState[] = matchProviders(providerPool, filter);
+  /**
+   * The shortcut column's width: the widest shortcut of the list the filter reads
+   * from, not of the filtered rows, so the column does not move while the user types.
+   */
+  const widestShortcut = Math.max(0, ...providerPool.map((r) => displayWidth(r.shortcut)));
 
   /**
    * A MODEL COUNT ONLY WHERE ONE IS ACTUALLY KNOWN — the owner's rule: *"we could
@@ -949,6 +954,7 @@ export function ModelPicker({
                   note={unavailableNote(r, notEnabledLocal)}
                   cursor={r.value === here?.value}
                   inner={layout.inner}
+                  widestShortcut={widestShortcut}
                 />
               ))
             )}
