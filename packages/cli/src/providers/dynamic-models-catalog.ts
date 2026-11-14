@@ -87,6 +87,7 @@ export type RefreshTrigger =
   | "cold-account"
   | "picker-open"
   | "picker-provider"
+  | "launch-lineup"
   | "search-all";
 
 export type RefreshResult =

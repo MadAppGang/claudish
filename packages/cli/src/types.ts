@@ -18,6 +18,22 @@ export type ClaudeLaunch = "subscription" | "api";
 /** A Claude Code role a tier flag, variable or profile maps to a model. */
 export type ModelTier = "opus" | "sonnet" | "haiku" | "subagent";
 
+/**
+ * One claudish provider whose models a launch lists in Claude Code's `/model`:
+ * a listing entry (`--model devin@`, `--model 'or@*'`), or the provider of a
+ * full spec on a launch that has one.
+ */
+export interface ProviderListing {
+  /** claudish provider name, resolved from the shortcut after endpoint registration. */
+  provider: string;
+  /** The value as typed (`or@*`), or the full spec that named this provider. */
+  typed: string;
+  /** `all` for `x@*`: every chat model; `recommended` for `x@` (a gateway lists only recommended ones). `*` wins when both were given. */
+  scope: "recommended" | "all";
+  /** Pinned full specs naming this provider, argv order; each is a row when the provider is ready. */
+  pinnedSpecs: string[];
+}
+
 export interface ClaudishConfig {
   model?: OpenRouterModel | string; // Optional - will prompt if not provided
   /**
