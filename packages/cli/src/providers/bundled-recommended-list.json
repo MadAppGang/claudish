@@ -2337,7 +2337,7 @@
         }
       }
     },
-    "fetchedAt": "2026-11-13T21:33:25.499Z",
+    "fetchedAt": "2026-11-14T04:56:53.157Z",
     "format": 1,
     "recommendations": {
       "contractVersion": 3,
@@ -2395,6 +2395,10 @@
           "tier": "lightweight"
         },
         {
+          "modelId": "deepseek-v4.1-flash",
+          "tier": "lightweight"
+        },
+        {
           "modelId": "glm-5.3-flash",
           "tier": "lightweight"
         },
@@ -2439,11 +2443,11 @@
           "tier": "luxury"
         }
       ],
-      "generationId": "g-20261113212335409-2e2b419f"
+      "generationId": "g-20261114034642007-3ae33242"
     },
     "source": "https://us-central1-claudish-6da10.cloudfunctions.net"
   },
-  "catalogGenerationId": "g-20261113212335409-2e2b419f",
+  "catalogGenerationId": "g-20261114034642007-3ae33242",
   "entries": [
     {
       "aggregators": [
@@ -6143,7 +6147,7 @@
       "supportsVision": true
     }
   ],
-  "lastUpdated": "2026-11-13T21:23:35.409Z",
+  "lastUpdated": "2026-11-14T03:46:42.007Z",
   "models": [],
   "plans": [
     {
@@ -7365,46 +7369,6 @@
           "sourceText": "kimi-k3.1-pro"
         },
         {
-          "externalModelId": "glm-5.3-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "glm-5.3-flash",
-            "status": "mapped"
-          },
-          "sourceText": "glm-5.3-flash"
-        },
-        {
-          "externalModelId": "mimo-v2.6-pro",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "mimo-v2.6-pro",
-            "status": "mapped"
-          },
-          "sourceText": "mimo-v2.6-pro"
-        },
-        {
-          "externalModelId": "glm-5.3",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "glm-5.3",
-            "status": "mapped"
-          },
-          "sourceText": "glm-5.3"
-        },
-        {
-          "externalModelId": "minimax-m3.1-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "minimax-m3.1-flash",
-            "status": "mapped"
-          },
-          "sourceText": "minimax-m3.1-flash"
-        },
-        {
           "externalModelId": "deepseek-v4.1-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
@@ -7423,6 +7387,46 @@
             "status": "mapped"
           },
           "sourceText": "mimo-v2.6-flash"
+        },
+        {
+          "externalModelId": "glm-5.3",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "glm-5.3",
+            "status": "mapped"
+          },
+          "sourceText": "glm-5.3"
+        },
+        {
+          "externalModelId": "glm-5.3-flash",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "glm-5.3-flash",
+            "status": "mapped"
+          },
+          "sourceText": "glm-5.3-flash"
+        },
+        {
+          "externalModelId": "minimax-m3.1-flash",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "minimax-m3.1-flash",
+            "status": "mapped"
+          },
+          "sourceText": "minimax-m3.1-flash"
+        },
+        {
+          "externalModelId": "mimo-v2.6-pro",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "mimo-v2.6-pro",
+            "status": "mapped"
+          },
+          "sourceText": "mimo-v2.6-pro"
         }
       ],
       "modelDiscovery": "catalog",
@@ -7667,7 +7671,7 @@
     }
   ],
   "routeRegistry": {
-    "generationId": "g-20261113212335409-2e2b419f",
+    "generationId": "g-20261114034642007-3ae33242",
     "registry": {
       "contractVersion": 3,
       "registryVersion": "3.7.0",
