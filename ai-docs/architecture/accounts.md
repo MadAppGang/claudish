@@ -32,7 +32,7 @@ moves to its next hop, metered included, with one stderr notice naming that hop'
 decision 2026-10-21, `9ace3fe5`; `routing.md`). A transient one is 503 (or the token host's real
 429/5xx) with `x-claudish-auth-verdict: transient`, retried on the same hop and never advanced.
 True pool exhaustion takes the verdict-free quota seam, which advances a bare chain with the
-`billed PER TOKEN` warning. The table is in *The error surface, as
+spent-allowance notice (`announceSpentAllowance`, naming both hops' billing). The table is in *The error surface, as
 built*; anything below that says a chain "advances on 401" or names `mapAccountsError` describes
 the pre-v13 design and is superseded.
 
@@ -403,7 +403,7 @@ OTHER hops, and what happens there depends on the answer's verdict:
 - **Transient failure**: returned verbatim and retried on the same hop, even behind an earlier
   failed candidate, with no cost warning.
 - **True pool exhaustion** (`AllAccountsExhaustedError`): decision 1, the only answer that may advance
-  onto a metered hop, with the `billed PER TOKEN` warning. An explicit `cx@` stops with the message.
+  onto a metered hop, with the spent-allowance notice (`announceSpentAllowance`, naming both hops' billing). An explicit `cx@` stops with the message.
 
 ## The refresh gate never runs unlocked
 
@@ -749,7 +749,7 @@ or a 5xx (`RangeError` otherwise), so a credential 401 can never be dressed as t
 
 | Error or response | Flags, upstream | Client sees | Routing chain |
 |---|---|---|---|
-| `AllAccountsExhaustedError` | terminal, 429, real blockers | 400 `invalid_request_error`, upstream 429, pinned message, **no V header** (`respondAccountsQuotaFailure`) | bare name may advance, metered included, with `billed PER TOKEN`; `cx@` stops |
+| `AllAccountsExhaustedError` | terminal, 429, real blockers | 400 `invalid_request_error`, upstream 429, pinned message, **no V header** (`respondAccountsQuotaFailure`) | bare name may advance, metered included, with the spent-allowance notice; `cx@` stops |
 | `NeedsReauthError` | terminal, 401, blockers | 400, upstream 401, V=terminal | bare name advances to the next hop, metered included, announced on stderr; `cx@` stops |
 | `NoUsableAccountError` (incl. `AccountChangedDuringLeaseError`: removed, disabled or re-identified) | terminal, 401, blockers | 400, upstream 401, V=terminal | same |
 | `AccountListInvalidError` | terminal, 400, path and field | 400, upstream 400, V=terminal | same; a repair instruction, not repeated 503s |
@@ -781,7 +781,7 @@ which mapped every taxonomy error to an advancing 400, was never built; `error-s
 only the narrow quota seam.
 
 **The exhaustion wording is pinned** (decision 1). `hasQuotaExhaustionWording` decides both whether
-a bare chain advances and whether the "billed PER TOKEN" warning fires. The template leads with
+a bare chain advances and whether the spent-allowance notice is printed. The template leads with
 `usage limit`, which also survives the balance-phrase veto:
 
 ```

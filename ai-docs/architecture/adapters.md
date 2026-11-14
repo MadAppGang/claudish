@@ -650,9 +650,29 @@ first rejection's message appended to `error.message` (the per-attempt list clip
 characters, which cut the login line off). When the rejection was the only failure, its own
 response is returned unchanged. Unchanged and still ahead of this rule: connection verdicts, the
 recovery hold and stream failures return before any credential reading, so a network fault never
-walks onto metered billing; a transient verdict and a metered hop's terminal verdict return at
-once. Billing follows the signing arm of the hop that served. Tests:
-`fallback-handler.subscription-only.test.ts`, `fallback-handler.muse-code.test.ts`.
+walks onto metered billing; a transient verdict returns at once. Billing follows the signing arm
+of the hop that served. Tests: `fallback-handler.subscription-only.test.ts`,
+`fallback-handler.muse-code.test.ts`, `fallback-handler.credential-advance.test.ts`.
+
+**Extended 2026-11-12: a metered hop's rejected key advances too.** Until then a terminal verdict
+from a metered native API or gateway still returned at once. A live run of claudish 14.20.1 with a
+wrong `DASHSCOPE_API_KEY` and a valid `OPENROUTER_API_KEY` failed `qwen3.8-max` with
+`API Error: 400 Qwen-payg error (HTTP 401)`, although OpenRouter, later in the chain, would have
+served. Jack chose "advance, warn loudly" over keeping the stop and over dropping the key for the
+session. So `decideHopFailure` and `isRetryableError` no longer read the hop's billing: a terminal
+verdict, or a headerless 401/403 credential rejection (`isRejectedCredentialAnswer`), advances on
+every tier with the same `announceCredentialRejection` notice. What still stops is unchanged: a
+connection fault (even one carrying a terminal verdict), the recovery hold, a stream failure and a
+transient verdict. The Codex metered-signing backstop (accounts E17) still refuses to sign; its
+terminal 400 now moves the chain to the next hop instead of ending the request. The predicate the
+two paragraphs above name, `isSubscriptionCredentialRejection`, became `isRejectedCredentialAnswer`
+with no billing argument, and the hop reason `subscription-credential-rejected` became
+`credential-rejected`. Rule RB-32 in `routing-rulebook.md` states the result.
+`ComposedHandler` now sets the terminal verdict on a credential rejection on every tier, not only
+on a subscription. It must: it reads the raw upstream body, and after the remap to 400 a 403 bad
+key and a 403 `RegionError` look alike, so `isRejectedCredentialAnswer` accepts only a raw 403. A
+metered 403 bad key without the header advanced as a plain retryable failure, with no notice
+(`composed-handler-metered-verdict.test.ts`).
 
 **The verdict rides a header, `x-claudish-auth-verdict`** (`terminal` or `transient`), from
 `handlers/shared/auth-failure.ts`. The status cannot carry it: a terminal failure is answered 400
@@ -716,11 +736,18 @@ receive the candidate's DISPLAY name, and `isSubscriptionProvider("Kimi Coding")
 ### The hop decision is one function (`handlers/shared/hop-decision.ts`)
 
 What `FallbackHandler.handle` does after a hop that did not answer `ok` is the pure function
-`decideHopFailure`, with `isRetryableError`, `isSubscriptionCredentialRejection` and `isProvider`
+`decideHopFailure`, with `isRetryableError`, `isRejectedCredentialAnswer` and `isProvider`
 beside it (`fallback-handler.ts` re-exports them). Its reasons, in the handler's order:
-`recovery-hold`, `stream-failure`, `credential-hold` (stop, response verbatim);
-`subscription-credential-rejected` (advance, announced); `retryable` (advance) and `non-retryable`
-(stop); and `thrown` (advance), which the handler's `catch` asks for. It lives in its own module so
+`recovery-hold`, `stream-failure`, `credential-hold` (a transient verdict, or a verdict on a
+connection fault: stop, response verbatim); `credential-rejected` (a terminal verdict or a rejected
+key in the body, on EVERY tier: advance, announced with the next hop's billing); `retryable`
+(advance) and `non-retryable` (stop); and `thrown` (advance), which the handler's `catch` asks for.
+No reason reads the hop's billing: until 2026-11-12 a terminal verdict advanced only on a
+subscription hop and held on a metered one, so a wrong DashScope key failed a request that
+OpenRouter, next in the chain with a valid key, would have served (measured live; owner decision
+2026-11-12, "advance, warn loudly"). A spent allowance or balance advances as `retryable` and is
+announced by `announceSpentAllowance`, which names how the spent hop and the next hop each bill and
+the spent provider's own shortcut to pin it. It lives in its own module so
 the probe can import it without loading `composed-handler.ts`: `probeLink` sets
 `ProbeResult.chainAction` from it, and MCP `preflight` walks a model's routing chain by it
 (`mcp-sessions.md`). A second copy of the rule is how preflight once said "drop or replace" for a

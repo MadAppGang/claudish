@@ -183,6 +183,7 @@ import {
   type RequestBilling,
   isSubscriptionProvider,
 } from "./shared/remote-provider-types.js";
+import { firstInWindow } from "./shared/repeat-window.js";
 import {
   CONTEXT_OVERFLOW_PHRASE,
   isContextOverflowError,
@@ -2987,8 +2988,8 @@ export class ComposedHandler implements ModelHandler {
                   // response, never a throw: inside the recovery ladder an
                   // unclassified throw escapes `handle()`. A 503, never a 401: no
                   // credential was rejected, and a headerless 401 reads as a
-                  // subscription's rejected login (`isSubscriptionCredentialRejection`),
-                  // which walks a bare chain onto a metered hop. The pool pins
+                  // rejected login (`isRejectedCredentialAnswer`), which walks a
+                  // bare chain onto the next hop, metered included. The pool pins
                   // the rejected account, so for a pooled request this is a
                   // backstop; for the legacy login it catches a re-login onto
                   // another ChatGPT account between the sign and the 401.
@@ -3336,9 +3337,12 @@ export class ComposedHandler implements ModelHandler {
             const msgTail = oneLineMsg
               ? ` (${oneLineMsg.length > 200 ? `${oneLineMsg.slice(0, 200)}…` : oneLineMsg})`
               : "";
-            logStderr(
-              `Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}${msgTail}`
-            );
+            // Claude Code re-sends a turn answered 400 up to five times with one
+            // feature removed each time; the line is the same each time, so stderr
+            // shows it once per window and the debug log keeps every occurrence.
+            const errorLine = `Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}${msgTail}`;
+            if (firstInWindow(errorLine)) logStderr(errorLine);
+            else log(errorLine);
 
             // Extract structured error type from provider response body if present
             let providerErrorType: string | undefined;
@@ -3426,21 +3430,20 @@ export class ComposedHandler implements ModelHandler {
                   ? CONTEXT_OVERFLOW_PHRASE
                   : undefined,
               });
-              // A SUBSCRIPTION's rejected credential carries the terminal verdict
+              // A rejected credential carries the terminal verdict on every tier
               // (`auth-failure.ts`): an explicit spec stops with the login hint, and
               // a routing chain moves to its next hop with a notice naming that
-              // hop's billing (`FallbackHandler`). A spent allowance (402/429) is
-              // not a credential failure and advances with its own warning.
-              // A model the provider does not carry (Zen Go's 401 "Model <id> is not
-              // supported") is NOT a credential rejection and keeps advancing.
-              // Subscription by THIS request's signing arm (`signedBilling`): for
-              // `openai-codex` the probe reads a process-wide last-signed arm.
-              // FallbackHandler still asks the probe for the same hop (main's code).
-              const verdictHeaders =
-                this.signedBilling(binding).subscription &&
-                isCredentialRejection(response.status, errorText)
-                  ? authVerdictHeaders("terminal")
-                  : undefined;
+              // hop's billing (`FallbackHandler`). The verdict is decided HERE,
+              // from the raw upstream body: after the remap to 400 a 403 bad key
+              // and a 403 RegionError look alike, so the chain could not tell them
+              // apart and a metered 403 advanced with no notice.
+              // A spent allowance (402/429) is not a credential failure and
+              // advances with its own warning. A model the provider does not carry
+              // (Zen Go's 401 "Model <id> is not supported") is NOT a credential
+              // rejection and keeps advancing.
+              const verdictHeaders = isCredentialRejection(response.status, errorText)
+                ? authVerdictHeaders("terminal")
+                : undefined;
               // Carry the ORIGINAL upstream status as a structured field so
               // machine consumers (probe classification) can tell a remapped
               // auth failure from a genuine 400.

@@ -341,6 +341,23 @@ cause (`<why>` by reachability / not in the bundled recommended list / `claudish
 - **Scope:** `index.ts`, `launcher/catalog-warm.ts`, `providers/catalog-client.ts` (`settleCatalogVerdict`, `settleCatalogRefresh`), `providers/provider-resolver.ts`.
 - **Check:** S12, S12b, S12c, S12d, S12e, S16, S16b, S16c.
 
+### RB-32
+
+A hop whose credential is rejected with a terminal verdict advances the routing chain to the next
+hop, on every tier: subscription (decision 2026-10-21), native API and gateway (decision
+2026-11-12). The advance prints one notice naming the rejected provider, the status, the next hop
+and the next hop's billing. A transient verdict, or a connection fault that arrives with an auth
+status, stops on the hop and never advances. An explicit spec has one hop, so a rejected key stops
+it with the provider's error. A hop that advances past a spent allowance or balance prints a
+notice naming how the spent hop and the next hop each bill, and the provider's own shortcut.
+
+- **Scope:** `handlers/shared/hop-decision.ts` (`decideHopFailure`, `isRetryableError`,
+  `isRejectedCredentialAnswer`), `handlers/fallback-handler.ts` (`announceSpentAllowance`),
+  `handlers/shared/auth-failure.ts`.
+- **Check:** `handlers/shared/hop-decision.test.ts`,
+  `handlers/fallback-handler.credential-advance.test.ts` (G1, G2, G5),
+  `handlers/composed-handler-accounts-2a.test.ts` (E17-backstop).
+
 ## Changing a rule
 
 The CI review reads this file from the PR's base. A PR that changes a rule and its code together

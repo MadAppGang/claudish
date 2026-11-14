@@ -435,8 +435,8 @@ Go key on 2026-10-21; `model-failures-2026-10-21.md`, D6). Now `preflightModel` 
 from `explainRoute` → `probeTargets` (the chain `--probe` shows, in order) and probes each until one
 is live. A failed hop is followed by `ProbeResult.chainAction`, which `probeLink` sets with
 `decideHopFailure`, the SAME function `FallbackHandler` uses (`adapters.md`): advance, or stop here
-because a real request would stop here too (a connection fault, a stream failure, a credential hold
-on a metered hop). Two walker defaults stop rather than guess: a non-live result with no
+because a real request would stop here too (a connection fault, a stream failure, a transient
+credential verdict). Two walker defaults stop rather than guess: a non-live result with no
 `chainAction` (`no-decision`, e.g. `key-missing`), and a probe that throws (`probe-error`). A native
 Claude name is never probed (the third outcome). Metered hops are probed like any other: a configured
 key is consent, and the runtime would use that hop.

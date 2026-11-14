@@ -276,12 +276,6 @@ try {
   if (scenario === "E17-backstop") {
     const { recordSignedArm } = await import(src + "/auth/credentials/billing-probe.ts");
     transport.signRequest = async () => { recordSignedArm("openai-codex", "metered"); return { arm: "api-key", headers: {}, endpoint: metered.url.href }; };
-    if (process.env.MUTATION === "backstop-force-sub") {
-      const { spyOn } = await import("bun:test");
-      const billing = await import(src + "/handlers/shared/remote-provider-types.ts");
-      const original = billing.isSubscriptionProvider;
-      spyOn(billing, "isSubscriptionProvider").mockImplementation(provider => provider === "openai-codex" || original(provider));
-    }
   }
   if (scenario === "E17-initial" && process.env.MUTATION === "guard-escape") {
     const { recordSignedArm } = await import(src + "/auth/credentials/billing-probe.ts");
@@ -521,7 +515,7 @@ test("E9 marked transient behind an earlier 404 survives verbatim without metere
   expect(result.subscriptionContacts).toEqual(["failure"]);
   expect(result.canary).toBe(0);
   expect(result.contacts).toEqual([]);
-  expect(stderr).not.toContain("billed PER TOKEN");
+  expect(stderr).not.toContain("billed per token");
 });
 
 test("E18 one transport keeps interleaved A/B artifacts, pins, contexts and forced-sign budgets separate", async () => {
@@ -691,17 +685,14 @@ for (const scenario of [
   "E17-forced",
   "E17-remove-quota",
   "E17-remove-401",
-  "E17-backstop",
 ]) {
   test(`${scenario} rejects metered signing without poisoning accepted-arm evidence`, async () => {
     const { result, stderr } = await run(scenario);
     expect(result.canary, JSON.stringify(result)).toBe(0);
     expect(result.status, result.text + stderr).toBe(400);
     expect(result.verdict).toBe("terminal");
-    expect(result.contacts).toHaveLength(
-      scenario === "E17-initial" || scenario === "E17-backstop" ? 0 : 1
-    );
-    expect(result.signedProjection).toBe(scenario !== "E17-initial" && scenario !== "E17-backstop");
+    expect(result.contacts).toHaveLength(scenario === "E17-initial" ? 0 : 1);
+    expect(result.signedProjection).toBe(scenario !== "E17-initial");
     if (scenario !== "E17-remove-401")
       expect(JSON.parse(result.text).error.upstream_status).toBeUndefined();
     if (scenario.includes("remove") || scenario === "E17-forced" || scenario === "E17-replacement")
@@ -712,6 +703,21 @@ for (const scenario of [
     }
   }, 30_000);
 }
+
+// The backstop refuses a metered signing on the Codex hop: that request never
+// reaches Codex signed with the API key. The refusal is a terminal credential
+// verdict, which advances on every tier (project owner, 2026-11-12), so the
+// chain moves to its next hop and says so.
+test("E17-backstop refuses metered signing on the Codex hop and the chain moves on", async () => {
+  const { result, stderr } = await run("E17-backstop");
+  expect(result.contacts, JSON.stringify(result)).toHaveLength(0);
+  expect(result.signedProjection).toBe(false);
+  expect(result.status, result.text + stderr).toBe(200);
+  expect(result.text).toBe("CANARY SUCCESS");
+  expect(result.canary).toBe(1);
+  expect(stderr).toContain("Codex subscription rejected its credential");
+  expect(stderr).toContain("moving to Subscription next (subscription)");
+}, 30_000);
 
 for (const scenario of ["E12-refused", "E12-reset", "E12-slow"]) {
   test(`${scenario} preserves token endpoint and unknown journal without leasing around an outage`, async () => {
@@ -923,7 +929,7 @@ test("E7 bare-name exhaustion reaches the metered socket with its cost warning; 
   expect(bare.result.text).toBe("CANARY SUCCESS");
   expect(bare.result.canary).toBe(1);
   expect(bare.result.contacts).toHaveLength(0);
-  expect(bare.stderr).toContain("billed PER TOKEN");
+  expect(bare.stderr).toContain("billed per token");
   const explicit = await run("E7-explicit");
   expect(explicit.result.status).toBe(400);
   expect(explicit.result.text).toContain(
@@ -931,7 +937,7 @@ test("E7 bare-name exhaustion reaches the metered socket with its cost warning; 
   );
   expect(explicit.result.verdict).toBeNull();
   expect(explicit.result.canary).toBe(0);
-  expect(explicit.stderr).not.toContain("billed PER TOKEN");
+  expect(explicit.stderr).not.toContain("billed per token");
 }, 30_000);
 
 // Rebase resolution "Decisions for the owner", decision 1: the code-mode
@@ -959,7 +965,7 @@ test("R1 code-mode pooled quota returns transient 429 without contacting a secon
     result.reset * 1000
   );
   expect(result.canary).toBe(0);
-  expect(stderr).not.toContain("billed PER TOKEN");
+  expect(stderr).not.toContain("billed per token");
 }, 30_000);
 
 // Decision 2: legs use the same request-owned forced-sign budget as the primary,
@@ -1021,5 +1027,5 @@ test("E4 spent rotation with expired eligible C answers transient 429 without le
   expect(result.exchanges).toBe(0);
   expect(result.queries).toEqual([{ before: "bbbbbbbbbbbb", after: "bbbbbbbbbbbb", reads: 0 }]);
   expect(result.canary).toBe(0);
-  expect(stderr).not.toContain("billed PER TOKEN");
+  expect(stderr).not.toContain("billed per token");
 }, 30_000);
