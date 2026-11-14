@@ -113,7 +113,7 @@ describe("custom-endpoints-loader", () => {
     expect(getRuntimeProfiles().get("my-vllm")).toBeDefined();
   });
 
-  test("custom endpoint named anthropic is not a route candidate for a Claude model", () => {
+  test("custom endpoint named anthropic is refused and never a route candidate for a Claude model", () => {
     const dir = mkdtempSync(join(tmpdir(), "claudish-anthropic-endpoint-"));
     const cachePath = join(dir, "cloud-models-catalog-v3.json");
 
@@ -150,7 +150,9 @@ describe("custom-endpoints-loader", () => {
       const script = `
         const { loadCustomEndpoints } = await import(${JSON.stringify(loaderModuleUrl)});
         const { gatherRouteCandidates } = await import(${JSON.stringify(candidatesModuleUrl)});
-        const { clearRuntimeRegistry } = await import(${JSON.stringify(runtimeModuleUrl)});
+        const { clearRuntimeRegistry, getRuntimeProfiles, getRuntimeProviders } = await import(
+          ${JSON.stringify(runtimeModuleUrl)}
+        );
         try {
           const loaded = loadCustomEndpoints({
             version: "1.0.0",
@@ -167,7 +169,11 @@ describe("custom-endpoints-loader", () => {
           });
           const providers = gatherRouteCandidates("claude-stage8", ${JSON.stringify(cachePath)})
             .candidates.map((candidate) => candidate.provider);
-          process.stdout.write(JSON.stringify({ loaded, providers }));
+          const runtime = {
+            providers: [...getRuntimeProviders().keys()],
+            profiles: [...getRuntimeProfiles().keys()],
+          };
+          process.stdout.write(JSON.stringify({ loaded, providers, runtime }));
         } finally {
           clearRuntimeRegistry();
         }
@@ -188,9 +194,23 @@ describe("custom-endpoints-loader", () => {
       const stderr = child.stderr.toString();
 
       expect(child.exitCode, stderr || stdout).toBe(0);
+      // The builtin Claude API owns the name, so the user's endpoint is refused and
+      // never registered; the one route candidate is the builtin's own
+      // anthropic/direct-api binding, never the user's URL.
       expect(JSON.parse(stdout)).toEqual({
-        loaded: { registered: 1, errors: [], refused: [] },
-        providers: [],
+        loaded: {
+          registered: 0,
+          errors: [],
+          refused: [
+            {
+              name: "anthropic",
+              reason:
+                "'anthropic' is already claimed by builtin provider 'anthropic' (as its name, a shortcut, or a legacy prefix)",
+            },
+          ],
+        },
+        providers: ["anthropic"],
+        runtime: { providers: [], profiles: [] },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
