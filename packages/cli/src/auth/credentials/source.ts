@@ -40,6 +40,7 @@
  * so it waits for a coordinated change.
  */
 
+import { realValueFor } from "../../env-placeholder.js";
 import { isLocalProviderEnabled } from "../../profile-config.js";
 import { hasDevinCredentials } from "../../providers/devin/devin-credentials.js";
 import {
@@ -161,8 +162,10 @@ export function describeSourceSync(p: SourceClassifiable, config: SourceConfig):
   // realValue() drops an unexpanded `${VAR}` placeholder — the literal string a
   // host passes through when the referenced shell variable is unset. Sign-time
   // refuses to use one, so it must not count as a credential here either.
-  const hasCfg = !!p.apiKeyEnvVar && !!realValue(config.apiKeys?.[p.apiKeyEnvVar]);
-  const hasEnv = !!p.apiKeyEnvVar && !!realValue(process.env[p.apiKeyEnvVar]);
+  // realValueFor() also drops claudish's own placeholder for that variable.
+  const hasCfg =
+    !!p.apiKeyEnvVar && !!realValueFor(p.apiKeyEnvVar, config.apiKeys?.[p.apiKeyEnvVar]);
+  const hasEnv = !!p.apiKeyEnvVar && !!realValueFor(p.apiKeyEnvVar, process.env[p.apiKeyEnvVar]);
   if (hasEnv && hasCfg) return "e+c";
   if (hasEnv) return "env";
   if (hasCfg) return "cfg";

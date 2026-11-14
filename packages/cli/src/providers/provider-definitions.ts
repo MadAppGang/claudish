@@ -246,6 +246,16 @@ export interface ProviderDefinition {
    * belongs to whichever change is looking at that provider.
    */
   siblingKeyEnvVars?: string[];
+  /**
+   * Read this provider's key from a vault (macOS Keychain, 1Password) only into
+   * the credential provider, never into `process.env`, and answer its Keychain
+   * readiness by presence (enumeration) without reading the value.
+   *
+   * For a key another program also reads from the environment: a vault value
+   * written there reaches every child process claudish starts. The value is
+   * read when a request is signed, or by the authority's `resolveForUse`.
+   */
+  vaultKeyReadAtUse?: true;
   /** Human-readable API key description */
   apiKeyDescription: string;
   /** URL where user can obtain an API key */
@@ -1524,11 +1534,46 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     description: "Qwen (auto-routed via OpenRouter)",
   },
 
+  // ── Claude API (Anthropic's metered native API) ────────────────────
+  {
+    createHandler: anthropicCompatHandler,
+    tier: "native",
+    name: "anthropic",
+    displayName: "Claude API",
+    transport: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    // NO baseUrlEnvVars: ANTHROPIC_BASE_URL is how claudish points a child Claude
+    // Code at its own proxy. A claudish started inside a session inherits it, and
+    // reading it here would send the user's key to the parent's proxy.
+    apiPath: "/v1/messages",
+    apiKeyEnvVar: "ANTHROPIC_API_KEY",
+    // NO apiKeyAliases: ANTHROPIC_AUTH_TOKEN is the Claude subscription's OAuth
+    // token, never an API key.
+    apiKeyDescription: "Anthropic API key",
+    apiKeyUrl: "https://console.anthropic.com/settings/keys",
+    authScheme: "x-api-key",
+    shortcuts: ["anthropic", "a", "api"],
+    shortestPrefix: "anthropic",
+    // The key is read only when a request is signed, and only into this process:
+    // Claude Code reads ANTHROPIC_API_KEY from its environment, so a vault key
+    // written there would move a later native child onto metered billing, and a
+    // readiness check that reads a Keychain value raises the item's access dialog.
+    vaultKeyReadAtUse: true,
+    // NO legacyPrefixes: `anthropic/<id>` stays the vendor-qualified id OpenRouter
+    // serves. NO nativeModelPatterns: patterns are tried in BUILTIN order, and
+    // /^claude-/ here would take a bare claude-* name away from native-anthropic,
+    // whose Claude Code login serves it. NO modelDiscovery: the catalog publishes
+    // this route's connections.
+    legacyPrefixes: [],
+    isDirectApi: true,
+    description: "Claude API, metered on your Anthropic key (anthropic@, a@, api@)",
+  },
+
   // ── Native Anthropic (Claude Code auth) ────────────────────────────
   {
     createHandler: noHandler(
       "virtual",
-      "No baseUrl. Exists only so nativeModelPatterns can steer a bare claude-* name to the native path."
+      "No baseUrl. Steers a bare claude-* name, or claude@ before one, to the native path; claude@ serves only Claude Code's own Claude models."
     ),
     // The route IS the Claude Code subscription — the catalog's
     // `anthropic/claude-code-subscription` profile — so `subscription` is the
@@ -1540,6 +1585,9 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // `nativeRouteFor()` must intercept a bare Claude name BEFORE `route()`,
     // because there is no credential store here for the credential filter to
     // consult and the chain would degrade to OpenRouter.
+    //
+    // Anthropic's metered native API on the user's key is a separate provider,
+    // `anthropic` (the Claude API, above), bound to `anthropic/direct-api`.
     tier: "subscription",
     name: "native-anthropic",
     displayName: "Anthropic (Native)",
@@ -1549,8 +1597,11 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     apiKeyEnvVar: "",
     apiKeyDescription: "Anthropic (Native Claude Code auth)",
     apiKeyUrl: "",
-    shortcuts: [],
-    shortestPrefix: "",
+    // `claude@<id>` is the Claude subscription spec: the same native decision as
+    // the bare `<id>` (native-route.ts). The patterns below keep steering a bare
+    // claude-* name here.
+    shortcuts: ["claude"],
+    shortestPrefix: "claude",
     legacyPrefixes: [],
     nativeModelPatterns: [{ pattern: /^anthropic\//i }, { pattern: /^claude-/i }],
     description: "Native Claude Code auth",
@@ -1668,6 +1719,22 @@ export function getProviderByName(name: string): ProviderDefinition | undefined 
   const builtin = ensureProviderByNameCache().get(name);
   if (builtin) return builtin;
   return getRuntimeProviders().get(name);
+}
+
+/**
+ * The key variables (each `apiKeyEnvVar` and its aliases) of the builtin
+ * providers declared `vaultKeyReadAtUse`. A vault value for one of these is read
+ * only when a request signs and is never written into `process.env`, so no bulk
+ * hydration step may write it there either.
+ */
+export function readAtUseKeyEnvVars(): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const def of BUILTIN_PROVIDERS) {
+    if (def.vaultKeyReadAtUse !== true) continue;
+    if (def.apiKeyEnvVar) names.add(def.apiKeyEnvVar);
+    for (const alias of def.apiKeyAliases ?? []) names.add(alias);
+  }
+  return names;
 }
 
 /**

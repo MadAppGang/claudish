@@ -23,12 +23,15 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type SettingsFinding, settingsCredentialFindings } from "../claude-runner.js";
 import { ENV } from "../config.js";
 import { scrubInheritedFastModeGates } from "../fast-mode-gates.js";
 import { scrubInheritedHostRouting } from "../host-routing-env.js";
+import { subscriptionSettingsCheck } from "../launcher/claude-launch.js";
 import { PANE_LAUNCH_VARS } from "../pane/child-env.js";
 import { isStrippedFromChildEnv, resolveClaudishLaunch } from "../pane/pane-launch.js";
 import { sanitizeForReport } from "../redact.js";
+import type { ClaudishConfig } from "../types.js";
 
 /** What one `run_prompt` call answers, on either path. */
 export interface RunPromptResult {
@@ -72,14 +75,33 @@ const PRINT_FLAGS = [
 ] as const;
 
 /**
+ * Pins the print child to the Claude subscription: given when the caller named
+ * `claude@<id>`, which reaches the child as the bare `<id>`. Without it the
+ * child would honour an inherited API-billing opt-in (flag, variable or
+ * config) and forward an API key Claude Code sends, such as a stored Console
+ * key.
+ */
+const SUBSCRIPTION_PIN_FLAG = "--claude-subscription-pin";
+
+/**
  * The argv after claudish's own launch words. No positional prompt and no flag value
  * that could start with `-`: claudish's passthrough parser takes a value only when it
  * does not start with `-`, so the prompt travels on stdin and the system prompt in a
  * file. `--system-prompt ""` replaces Claude Code's default system prompt (3 232 input
  * tokens) when the caller gave none, because the proxy path sends none either.
  */
-export function claudeCodePrintArgv(model: string, systemPromptFile: string | undefined): string[] {
-  const head = [PRINT_FLAGS[0], "--model", model, ...PRINT_FLAGS.slice(1)];
+export function claudeCodePrintArgv(
+  model: string,
+  systemPromptFile: string | undefined,
+  opts: { subscriptionPin?: boolean } = {}
+): string[] {
+  const head = [
+    PRINT_FLAGS[0],
+    "--model",
+    model,
+    ...(opts.subscriptionPin ? [SUBSCRIPTION_PIN_FLAG] : []),
+    ...PRINT_FLAGS.slice(1),
+  ];
   return systemPromptFile !== undefined
     ? [...head, "--system-prompt-file", systemPromptFile]
     : [...head, "--system-prompt", ""];
@@ -251,6 +273,27 @@ interface ChildOutcome {
 }
 
 /**
+ * The settings findings of a print child for `model`: the layers that still
+ * apply under the child's own flags. `--setting-sources ""` turns off the user,
+ * project and local files, so only managed settings (and the launch
+ * environment) are inspected, read with the HOME and CLAUDE_CONFIG_DIR the
+ * child inherits.
+ */
+function defaultSettingsFindings(
+  model: string,
+  env: Record<string, string | undefined>
+): SettingsFinding[] {
+  return settingsCredentialFindings(
+    { model, claudeArgs: [...PRINT_FLAGS] } as unknown as ClaudishConfig,
+    env as NodeJS.ProcessEnv,
+    { ...(env.HOME ? { home: env.HOME } : {}), cwd: EMPTY_PRINT_CWD }
+  );
+}
+
+/** A cwd with no project settings: the print child's own cwd is a fresh empty directory. */
+const EMPTY_PRINT_CWD = join(tmpdir(), "claudish-run-prompt-settings-check");
+
+/**
  * Run one Claude model prompt as `claudish -p` and return its answer. Throws an
  * `Error` whose message is the `run_prompt` error text (without the `Error: ` prefix).
  *
@@ -261,11 +304,35 @@ export async function runPromptViaClaudeCode(
   model: string,
   prompt: string,
   systemPrompt: string | undefined,
-  opts: { signal?: AbortSignal; parentEnv?: Record<string, string | undefined> } = {}
+  opts: {
+    signal?: AbortSignal;
+    parentEnv?: Record<string, string | undefined>;
+    /**
+     * The caller named `claude@<id>`: the child is pinned to the Claude
+     * subscription (`--claude-subscription-pin`), whatever opt-in it inherits.
+     */
+    subscriptionPin?: boolean;
+    /** Test seam; default reads the settings layers the print child would read. */
+    settingsFindings?: (
+      model: string,
+      env: Record<string, string | undefined>
+    ) => SettingsFinding[];
+  } = {}
 ): Promise<RunPromptResult> {
   const signal = opts.signal;
   if (signal?.aborted) throw new Error("cancelled");
   const parentEnv = opts.parentEnv ?? process.env;
+
+  // The Claude subscription is never signed with an API key: a settings layer
+  // that would hand the print child one refuses the call before any child starts.
+  // Only the layers the child still loads are inspected (managed settings).
+  const printEnv = claudeCodePrintEnv(parentEnv);
+  const findings = (opts.settingsFindings ?? defaultSettingsFindings)(model, printEnv);
+  // `bareName: false`: the remedy never offers --anthropic-api-billing, because
+  // the print child never receives ANTHROPIC_API_KEY, and a claude@ spec reaches
+  // here already reduced to its bare name, with `subscriptionPin` set.
+  const check = subscriptionSettingsCheck(findings, { bareName: false });
+  if (check.refusal) throw new Error(check.refusal);
 
   let launch: ReturnType<typeof resolveClaudishLaunch>;
   try {
@@ -290,15 +357,10 @@ export async function runPromptViaClaudeCode(
       writeFileSync(systemPromptFile, systemPrompt, { mode: 0o600 });
     }
 
-    const argv = claudeCodePrintArgv(model, systemPromptFile);
-    const outcome = await runChild(
-      launch,
-      argv,
-      cwd,
-      claudeCodePrintEnv(parentEnv),
-      prompt,
-      signal
-    );
+    const argv = claudeCodePrintArgv(model, systemPromptFile, {
+      subscriptionPin: opts.subscriptionPin === true,
+    });
+    const outcome = await runChild(launch, argv, cwd, printEnv, prompt, signal);
 
     if (signal?.aborted) throw new Error("cancelled");
 

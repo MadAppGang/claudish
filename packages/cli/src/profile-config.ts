@@ -963,6 +963,8 @@ export interface RunModelMapping {
    * profile's tiers before a run uses them.
    */
   projectProfile: string | null;
+  /** The name of the profile the tiers came from, for messages; absent when unknown. */
+  profileName?: string;
 }
 
 /**
@@ -975,12 +977,15 @@ export function getRunModelMapping(profileName?: string): RunModelMapping {
   const name = profileName || local?.defaultProfile || undefined;
   if (name !== undefined) {
     const fromLocal = local?.profiles[name];
-    if (fromLocal) return { models: fromLocal.models ?? {}, projectProfile: name };
+    if (fromLocal) {
+      return { models: fromLocal.models ?? {}, projectProfile: name, profileName: name };
+    }
     const fromGlobal = loadConfig().profiles[name];
-    if (fromGlobal) return { models: fromGlobal.models, projectProfile: null };
+    if (fromGlobal) return { models: fromGlobal.models, projectProfile: null, profileName: name };
     if (profileName) return { models: {}, projectProfile: null };
   }
-  return { models: getDefaultProfile("global").models, projectProfile: null };
+  const fallback = getDefaultProfile("global");
+  return { models: fallback.models, projectProfile: null, profileName: fallback.name };
 }
 
 /**

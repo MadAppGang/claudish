@@ -544,6 +544,8 @@ allowance or bill at a higher rate. `CLAUDE_CODE_DISABLE_FAST_MODE=1` turns `/fa
 
 | Shortcut(s) | Canonical Provider | Notes |
 |-------------|-------------------|-------|
+| `claude` | `native-anthropic` | Claude subscription: Claude Code's own login, never an API key. See [5.2.1](#521-claude-the-claude-subscription-and-the-claude-api) |
+| `anthropic`, `a`, `api` | `anthropic` | Claude API: Anthropic's API, metered on your `ANTHROPIC_API_KEY`. See [5.2.1](#521-claude-the-claude-subscription-and-the-claude-api) |
 | `g`, `gemini` | `google` | Direct Google Gemini API (`GEMINI_API_KEY`) |
 | `oai` | `openai` | Direct OpenAI API (`OPENAI_API_KEY`) |
 | `or`, `openrouter` | `openrouter` | OpenRouter (`OPENROUTER_API_KEY`) |
@@ -580,6 +582,120 @@ allowance or bill at a higher rate. `CLAUDE_CODE_DISABLE_FAST_MODE=1` turns `/fa
 | `vllm` | vLLM | `http://localhost:8000` |
 | `mlx` | MLX | `http://127.0.0.1:8080` |
 
+### 5.2.1 Claude: the Claude subscription and the Claude API
+
+A Claude model has two routes:
+
+| Route | Model specs | Billed to | Who signs each request |
+|---|---|---|---|
+| Claude subscription | a bare Claude name (`claude-haiku-5-5`, `opus`), or `claude@<id>` | your Claude Code login | Claude Code's login, never an API key |
+| Claude API | `anthropic@<id>`, `a@<id>`, `api@<id>` | your `ANTHROPIC_API_KEY`, per token | claudish, with your key |
+
+A bare Claude name always means the Claude subscription. The Claude API is used only when you
+name it with `anthropic@`, `a@` or `api@`, or pick its row in the model picker.
+
+**Launching.**
+
+```bash
+claudish --model claude@claude-haiku-5-5      # monitor session on your Claude Code login
+claudish --model anthropic@claude-haiku-5-5   # monitor session billed to your Anthropic API key
+```
+
+Both start Claude Code in [monitor mode](usage/monitor-mode.md) and print one banner line naming
+the route:
+
+```
+[claudish] Monitor mode · Claude subscription · Claude Code's own login
+[claudish] Monitor mode · Claude API · ANTHROPIC_API_KEY from macOS Keychain · signed by claudish
+```
+
+On the Claude API launch Claude Code holds only a claudish placeholder token. claudish's proxy
+adds your key to each request Claude Code sends, unchanged otherwise, so the key never reaches
+Claude Code's environment, its tool shells, MCP servers or a claudish started inside the session.
+The key is read from the environment, `~/.claudish/config.json`, the macOS Keychain (`claudish
+keychain set ANTHROPIC_API_KEY`) or 1Password, in that order. Every request is recorded in
+claudish's stats and cost line as metered; a subagent or background turn on another Claude model
+is priced as that model. A Claude subscription session records no spend.
+
+Both launches are monitor sessions: Claude Code's requests go to Anthropic as they are, so
+claudish's [hooks](advanced/hooks.md) do not run in them, and claudish does not retry a failed
+request or move it to another route. A bare Claude name launched without `--monitor` keeps its
+usual launch, hooks included.
+
+**Refused before Claude Code starts** (one line, exit 1):
+
+- `claude@` before a name Claude Code does not serve (`claude@gpt-6`), with a speed or mode
+  marker (`#fast`, `+pro`), with a `:N` suffix, or inside a `+` chain.
+- `anthropic@<id>` with a marker or a `:N` suffix, on a top-level launch. Use `/fast` and
+  `/effort` inside the session instead.
+- A Claude subscription launch (`claude@<id>` as the model or any tier, or a bare Claude name
+  as the model or any tier without `--anthropic-api-billing`) whose Claude Code settings would
+  give it an API key: a real `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in a settings `env`
+  block, an `apiKeyHelper`, an `ANTHROPIC_CUSTOM_HEADERS` that carries `x-api-key` or a non-login
+  `authorization`, or a `--settings` file claudish cannot read. A settings file a passthrough
+  `--setting-sources` turns off is not read. The message names the file, never the value. Remove
+  the key, or use `anthropic@<id>`.
+- A Claude subscription launch whose Claude Code has no Claude login: the message says so and
+  names `/login` and `anthropic@<id>`. When Claude Code's own credential is a stored Console key
+  (`primaryApiKey` in its config, or its Keychain item) and no claude.ai login exists, the message
+  says it is an API key, not a Claude login, and names `anthropic@<id>` and, for a bare Claude
+  name, `--anthropic-api-billing`. claudish checks presence only and never reads the key. A
+  real `ANTHROPIC_AUTH_TOKEN` exported in your shell, other than a Claude login token, is refused
+  like a settings one. A refusal caused by a tier (for example a profile's haiku model) names the
+  tier and where it came from.
+- A top-level `claude@<id>` or `anthropic@<id>` launch with any tier set (`--model-opus`,
+  `--model-sonnet`, `--model-haiku`, `--model-subagent`, a `CLAUDISH_MODEL_*` or
+  `ANTHROPIC_DEFAULT_*_MODEL` variable, or a profile, the default profile included). Such a launch
+  is one Claude Code session that does not use role mappings; the message names each tier and its
+  source. Remove the tier, or name a non-Claude main model to map roles.
+- A Claude API launch with no key (the message lists where claudish looked), with a key a vault
+  could not read, or under settings that set `forceLoginMethod: "claudeai"` (managed settings or
+  a `--settings` value).
+
+**Changed: a bare Claude name no longer bills an exported key.** Launching a bare Claude name with
+no Claude Code login and an `ANTHROPIC_API_KEY` in your shell used to run, billed to that key. Each
+request now gets HTTP 401: `Claude subscription session: this request carries no Claude Code login,
+and claudish never signs a Claude subscription request with an API key. Sign in with /login, or use
+anthropic@<id> for the Claude API.` Sign in with `/login`, launch `anthropic@<id>`, or pass
+`--anthropic-api-billing` to bill the key on purpose. A request that carries an API key and no
+login gets `Claude subscription session: this request carries an API key (x-api-key), not a
+Claude Code login, ...`, naming `anthropic@<id>` and `--anthropic-api-billing`.
+
+**Changed: a custom endpoint cannot be named `anthropic`, `a`, `api` or `claude`.** Those names
+now belong to the builtin providers above. Such an endpoint is skipped with the warning
+`customEndpoints['anthropic'] skipped: 'anthropic' is already claimed by builtin provider
+'anthropic' (as its name, a shortcut, or a legacy prefix). The builtin wins. Rename your entry
+(e.g. 'anthropic-custom') to use it.` Rename it in `customEndpoints`. Until you do, a model spec
+on that name (`anthropic@<model>`, in `--model`, a tier, `--advisor`, a routing rule, `--probe` or
+an MCP tool) is refused with the rename, so it never reaches the builtin. A running claudish MCP
+server reads custom endpoints once: restart it after the rename.
+
+**Elsewhere.**
+
+- `--model-opus`, `--model-sonnet`, `--model-haiku`, `--model-subagent` and profile tiers map a
+  role under a non-Claude main model (a top-level `claude@` or `anthropic@` launch refuses them),
+  they do not start a monitor session: `claude@<id>` runs that role on your Claude Code
+  login, and `anthropic@<id>` runs it through claudish's proxy, signed with your key and metered.
+  A `claude@<id>` tier keeps the whole session on your login: `ANTHROPIC_API_KEY` is hidden from
+  Claude Code and `--anthropic-api-billing` does not apply (a startup note says so).
+- A `team` slot or `create_session`: `claude@<id>` runs as `<id>` on your Claude Code login;
+  `anthropic@<id>` runs through claudish's proxy, signed with your key and metered.
+- MCP tools remove an `anthropic@` you did not ask for from a Claude model, so it runs on the
+  Claude subscription, unless `user_required_provider` is set. A `claude@` is kept: it already
+  names the Claude subscription, and `run_prompt` keeps it on your login whatever
+  `--anthropic-api-billing` setting the MCP server inherits. A `claude@` before a name Claude Code does not serve is refused,
+  never routed.
+- `claudish --probe claude-haiku-5-5` shows the Claude subscription row (not probed: it runs on
+  Claude Code's login, which `--probe` cannot use), then every other route the catalog publishes
+  for the model and you hold a credential for (the Claude API, OpenRouter, Devin, …), each
+  probed. Every route that answers is its own Leaderboard row, fastest first. These rows are for
+  comparison; a launch of the bare name still takes the Claude subscription. Without an Anthropic
+  key the Claude API row says so and lists where claudish looked. A tier alias (`opus`) lists no
+  other routes; probe a concrete id. `claudish --probe anthropic@claude-haiku-5-5` probes the
+  Claude API alone.
+- MCP `preflight` reports a Claude model as the Claude subscription, not probed, and adds one note
+  line below its table naming the Claude API route and its key, or why it is absent.
+
 ### 5.3 Native Auto-Detection (no provider prefix)
 
 When no `provider@` prefix is given, Claudish detects the provider from the model name pattern. Resolution is by the first matching pattern:
@@ -599,7 +715,7 @@ When no `provider@` prefix is given, Claudish detects the provider from the mode
 | `qwen3-*` (hyphenated, e.g. `qwen3-coder-plus`) | Auto-routed (no direct API) | Same routing chain as `qwen3.*` |
 | `qwen*` (everything else) | Auto-routed (no direct API) | Falls to OpenRouter or LiteLLM |
 | `poe:*` | Poe | Literal `poe:` prefix |
-| `anthropic/*` or `claude-*` | Native Anthropic | Claude Code's own auth, no proxy |
+| `anthropic/*` or `claude-*` | Native Anthropic | The Claude subscription: Claude Code's own login, never an API key ([5.2.1](#521-claude-the-claude-subscription-and-the-claude-api)) |
 | `vendor/model` (unknown vendor) | Error | Must use explicit `openrouter@vendor/model` |
 | bare name (no `/`) | Native Anthropic | Treated as Claude model; no proxy |
 
@@ -902,6 +1018,12 @@ Claudish validates all `customEndpoints` entries with Zod at proxy startup. Inva
 - Emit a warning to stderr with the validation error
 - Are skipped (not registered)
 - Do not prevent the proxy from starting
+
+An entry whose name is a builtin provider's name, shortcut or legacy prefix is skipped the same
+way, with the warning `customEndpoints['<name>'] skipped: '<name>' is already claimed by builtin
+provider '<owner>' (as its name, a shortcut, or a legacy prefix). The builtin wins. Rename your
+entry (e.g. '<name>-custom') to use it.` That includes `anthropic`, `a`, `api` and `claude`, which name the
+Claude API and the Claude subscription ([5.2.1](#521-claude-the-claude-subscription-and-the-claude-api)).
 
 ### Runtime registration
 

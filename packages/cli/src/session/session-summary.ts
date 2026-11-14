@@ -18,6 +18,8 @@
  * alignment, and Jack asked for the probe TUI's look, which uses none.
  */
 
+import { hasProviderPrefix, parseModelSpec } from "../providers/model-parser.js";
+import { getProviderByName } from "../providers/provider-definitions.js";
 import { C, isLightTheme } from "../tui/theme.js";
 import { lighten } from "../tui/viz/color.js";
 import { padStartTo, padTo, truncate } from "../tui/viz/text.js";
@@ -145,6 +147,20 @@ export interface SummaryInput {
 function shellArg(path: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
 }
+
+/**
+ * A Claude API session: billed at Claude's own published rates on the user's key.
+ * The savings rows compare a session against those same rates, so on this one they
+ * would say nothing, and they are not shown.
+ */
+function isClaudeApiSession(stats: SessionStats, modelSpec: string): boolean {
+  const claudeApi = getProviderByName(CLAUDE_API_PROVIDER);
+  if (claudeApi && stats.providerName === claudeApi.displayName) return true;
+  return hasProviderPrefix(modelSpec) && parseModelSpec(modelSpec).provider === CLAUDE_API_PROVIDER;
+}
+
+/** The claudish provider of the Claude API. */
+const CLAUDE_API_PROVIDER = "anthropic";
 
 export function renderSessionSummary(input: SummaryInput): string[] {
   const { stats, modelSpec, resumeModelSpec, resumeId, resumeCwd, exitCode } = input;
@@ -306,8 +322,9 @@ export function renderSessionSummary(input: SummaryInput): string[] {
   // something true and different: `vs Opus` fills and `vs Sonnet` sits at 40%, which is
   // the ratio between what those two would have charged. The percentage did not
   // disappear, it moved to the text, where a number that is often constant belongs.
-  const dearest = Math.max(0, ...stats.savings.map((s) => s.baselineUsd));
-  for (const s of stats.savings) {
+  const savings = isClaudeApiSession(stats, modelSpec) ? [] : stats.savings;
+  const dearest = Math.max(0, ...savings.map((s) => s.baselineUsd));
+  for (const s of savings) {
     const label = padTo(`vs ${s.label}`, LABEL_W);
     if (s.savedUsd >= 0) {
       const pct = s.baselineUsd > 0 ? (s.savedUsd / s.baselineUsd) * 100 : 0;

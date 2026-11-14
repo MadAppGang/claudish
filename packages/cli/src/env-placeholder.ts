@@ -1,3 +1,5 @@
+import { isClaudishPlaceholderCredential } from "./auth/claudish-placeholder.js";
+
 /**
  * One rule for "this env value is an unexpanded `${VAR}` placeholder, not a value".
  *
@@ -30,4 +32,19 @@ export const UNEXPANDED_PLACEHOLDER = /^\$\{[^}]*\}$/;
 export function realValue(v: string | undefined): string | undefined {
   if (!v) return undefined;
   return UNEXPANDED_PLACEHOLDER.test(v.trim()) ? undefined : v;
+}
+
+/**
+ * {@link realValue} for the value of one named variable: also undefined when the
+ * value is claudish's OWN placeholder for that variable (exact match only).
+ *
+ * A nested claudish inherits `ANTHROPIC_API_KEY` set to claudish's placeholder from
+ * the proxied session that started it. That string is not the user's key; a layer
+ * that reads it as one signs a request Anthropic rejects, or reports a provider
+ * ready that cannot serve. Sign time and display time both use this, so they cannot
+ * disagree about it.
+ */
+export function realValueFor(envVar: string, v: string | undefined): string | undefined {
+  const value = realValue(v);
+  return value !== undefined && isClaudishPlaceholderCredential(envVar, value) ? undefined : value;
 }

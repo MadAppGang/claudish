@@ -7,6 +7,8 @@ export const API_KEY_MAP: Record<string, { envVar: string; aliases?: string[] }>
   openrouter: { envVar: "OPENROUTER_API_KEY" },
   google: { envVar: "GEMINI_API_KEY" },
   openai: { envVar: "OPENAI_API_KEY" },
+  // The Claude API. No alias: ANTHROPIC_AUTH_TOKEN is the Claude subscription's token.
+  anthropic: { envVar: "ANTHROPIC_API_KEY" },
   minimax: { envVar: "MINIMAX_API_KEY" },
   "minimax-coding": { envVar: "MINIMAX_CODING_API_KEY" },
   kimi: { envVar: "MOONSHOT_API_KEY", aliases: ["KIMI_API_KEY"] },

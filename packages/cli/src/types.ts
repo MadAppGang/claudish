@@ -7,6 +7,17 @@ import type { AdvisorPanelGateway } from "./handlers/advisor-route-plan.js";
 export type OpenRouterModel = string;
 
 // CLI Configuration
+/**
+ * A top-level launch whose main model names a Claude route explicitly:
+ * `"subscription"` is `claude@<id>`, a monitor session on Claude Code's own
+ * login; `"api"` is `anthropic@<id>`, a monitor session on the metered Claude
+ * API, every request signed by claudish's proxy with the user's key.
+ */
+export type ClaudeLaunch = "subscription" | "api";
+
+/** A Claude Code role a tier flag, variable or profile maps to a model. */
+export type ModelTier = "opus" | "sonnet" | "haiku" | "subagent";
+
 export interface ClaudishConfig {
   model?: OpenRouterModel | string; // Optional - will prompt if not provided
   /**
@@ -38,6 +49,33 @@ export interface ClaudishConfig {
   quiet: boolean; // Suppress [claudish] log messages (default true in single-shot mode)
   jsonOutput: boolean; // Output in JSON format for tool integration
   monitor: boolean; // Monitor mode - proxy to real Anthropic API and log everything
+  /**
+   * Set only by `decideClaudeLaunch`: at top level `claude@<id>` is
+   * `"subscription"` and `anthropic@<id>` (`a@`, `api@`) is `"api"`. Absent on
+   * every other launch. Implies `monitor`.
+   */
+  claudeLaunch?: ClaudeLaunch;
+  /**
+   * Set only by `prepareClaudeLaunch`: the id Claude Code receives as
+   * `ANTHROPIC_MODEL`. `model` keeps the user's route-carrying spec.
+   */
+  claudeLaunchModel?: string;
+  /**
+   * Set only by `prepareClaudeLaunch` on a Claude API launch: where the key the
+   * proxy signs with was found (`macOS Keychain`, `1Password`, …). A label,
+   * never the key.
+   */
+  claudeLaunchKeySource?: string;
+  /**
+   * Set by `decideClaudeLaunch`: in a pane child given `claude@<id>` (the
+   * model became the bare `<id>`), and on any launch whose tier
+   * (`modelOpus`, `modelSonnet`, `modelHaiku`, `modelSubagent`) is
+   * `claude@<id>`. Also set by `--claude-subscription-pin`, which `run_prompt`
+   * passes its print child for a `claude@<id>` spec. It keeps the user's explicit choice of the Claude
+   * subscription: the launch then signs `login-only` and hides a real
+   * ANTHROPIC_API_KEY whatever the API-billing opt-in says.
+   */
+  claudeSubscriptionPin?: boolean;
   stdin: boolean; // Read prompt from stdin instead of args
   openrouterApiKey?: string; // Optional in monitor mode
   anthropicApiKey?: string; // Required in monitor mode
@@ -80,6 +118,12 @@ export interface ClaudishConfig {
   modelSonnet?: string;
   modelHaiku?: string;
   modelSubagent?: string;
+  /**
+   * Where each tier above came from, set by `parseArgs`: a flag (`--model-haiku`),
+   * an environment variable (`CLAUDISH_MODEL_HAIKU`), or a profile
+   * (`profile "work"`). A label for messages, never a model spec.
+   */
+  modelTierSources?: Partial<Record<ModelTier, string>>;
 
   // Classifier passthrough (auto-mode permission check → native Claude).
   // Opt-in: reroutes Claude Code's auto-mode permission classifier request to

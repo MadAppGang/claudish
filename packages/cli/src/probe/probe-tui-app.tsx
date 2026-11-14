@@ -38,6 +38,7 @@ import {
   tokBarCells,
 } from "../tui/theme.js";
 import { VERSION } from "../version.js";
+import { type LeaderboardRow, leaderboardRows, providerColumnWidth } from "./leaderboard-rows.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -87,10 +88,14 @@ export interface ProbeResultLink {
   /** Why a withheld gateway hop has no wire id. */
   droppedDetail?: string;
   probe?: ProbeResult;
-  /** A native link: served on Claude Code's own auth, so it is never probed. */
+  /** A native link: served on Claude Code's own login, so it is never probed. */
   notProbed?: "native-auth";
+  /** A route of a bare Claude name listed for comparison; not used by a launch of the name. */
+  comparison?: true;
   /** Set on a candidate the routing chain dropped: why. Never probed. */
   dropped?: DroppedOutcome;
+  /** A dropped no-credential row: where claudish looked for its key. */
+  searched?: string;
   /**
    * The Key line of a credential that is not an env var (`keyLineText`):
    * `Muse Code borrowed copy · Muse Code Power Usage  (signed this probe request)`.
@@ -356,6 +361,11 @@ function formatElapsed(ms: number): string {
 function padEndSafe(s: string, n: number): string {
   if (s.length >= n) return s.slice(0, n);
   return s + " ".repeat(n - s.length);
+}
+
+/** Left-align into `n` columns; a longer string ends in an ellipsis so a cut reads as a cut. */
+function fitEnd(s: string, n: number): string {
+  return padEndSafe(s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s, n);
 }
 
 /**
@@ -905,11 +915,11 @@ function shortFailureReason(probe: ProbeResult | undefined, hasCreds: boolean): 
  * render time.
  */
 function notProbedRow(link: ProbeResultLink): { mark: string; text: string; fg: string } | null {
-  if (link.notProbed) return { mark: "◐  ", text: `native — ${NATIVE_NOT_PROBED}`, fg: C.cyan };
+  if (link.notProbed) return { mark: "◐  ", text: NATIVE_NOT_PROBED, fg: C.cyan };
   if (link.dropped) {
     return {
       mark: "–  ",
-      text: describeDropped(link.dropped, link.credentialHint, link.droppedDetail),
+      text: describeDropped(link.dropped, link.credentialHint, link.droppedDetail, link.searched),
       fg: C.dim,
     };
   }
@@ -1056,8 +1066,11 @@ function DetailModel({
   maxTokPerSec: number;
   isLast: boolean;
 }) {
-  // Winner = first link that probed live+timed (the route claudish uses).
-  const winnerIdx = result.links.findIndex((l) => l.probe?.state === "live" && !!l.probe.timing);
+  // Winner = first link that probed live+timed (the route claudish uses). A
+  // comparison link is not on that route, so it never wins.
+  const winnerIdx = result.links.findIndex(
+    (l) => !l.comparison && l.probe?.state === "live" && !!l.probe.timing
+  );
   const winner = winnerIdx >= 0 ? result.links[winnerIdx] : undefined;
 
   // Header: bold model name (left) + dim routing explanation (right-aligned so
@@ -1078,7 +1091,7 @@ function DetailModel({
   // Full route: the ordered chain of providers claudish would try — the kept
   // hops only, each with its tier label. Dropped rows are listed above, not here.
   const routeChain = result.links
-    .filter((l) => !l.dropped)
+    .filter((l) => !l.dropped && !l.comparison)
     .map((l) => (l.label ? `${l.displayName} (${l.label})` : l.displayName))
     .join(" → ");
   const liveLinks = result.links.filter((l) => l.probe?.state === "live" && !!l.probe.timing);
@@ -1281,35 +1294,23 @@ function DetailsView({
 // SAME layout + module constants as the Details tab so the two tabs line up.
 // NO full-row bg slab — rank order + bar length carry the ranking.
 
-interface LeaderRowData {
-  model: string;
-  /** Representative provider's display name (the route that would be used). */
-  provider: string;
-  /** Live+timed timing for the representative; undefined = no live route. */
-  timing?: ProbeTiming;
-  /** Why an unavailable row has no timing: `no live route`, `not probed (native)`, `no route`. */
-  missing?: string;
-}
+type LeaderRowData = LeaderboardRow;
 
 /**
- * Representative entry for a model: the first link that probed live AND carried
- * timing (the route claudish would actually use). An explicit target is a
- * one-item chain, so iterating the links is the whole story. A model with none
- * is listed under its first kept hop — or, with no hop at all, under the
- * explanation line. Never under the parser's provider (`auto-route`).
+ * The Leaderboard's rows (`leaderboardRows`): one per live, timed route, the
+ * dropped rows left out, since they are not routes a request takes.
  */
-function pickRepresentativeLink(result: ProbeModelResult): LeaderRowData {
-  for (const link of result.links) {
-    if (link.probe?.state === "live" && link.probe.timing) {
-      return { model: result.model, provider: link.displayName, timing: link.probe.timing };
-    }
-  }
-  const first = result.links.find((link) => !link.dropped);
-  return {
-    model: result.model,
-    provider: first?.displayName ?? result.routingExplanation,
-    missing: first?.notProbed ? "not probed (native)" : first ? "no live route" : "no route",
-  };
+function leaderRowsOf(results: ProbeModelResult[]): {
+  ranked: LeaderRowData[];
+  unranked: LeaderRowData[];
+} {
+  return leaderboardRows(
+    results.map((result) => ({
+      model: result.model,
+      links: result.links.filter((link) => !link.dropped),
+      emptyLabel: result.routingExplanation,
+    }))
+  );
 }
 
 /** One leaderboard data row (a live, timed representative). */
@@ -1365,7 +1366,7 @@ function LeaderLiveRow({
         {padEndSafe(row.model, nameW)}
       </span>
       <span> </span>
-      <span fg={C.dim}>{padEndSafe(row.provider, provW)}</span>
+      <span fg={C.dim}>{fitEnd(row.provider, provW)}</span>
       <span> </span>
     </>
   );
@@ -1431,15 +1432,19 @@ function LeaderboardView({
   maxTotalMs: number;
   maxTokPerSec: number;
 }) {
-  const reps = results.map(pickRepresentativeLink);
-  const live = reps.filter((r) => r.timing).sort((a, b) => a.timing!.totalMs - b.timing!.totalMs);
-  const unavailable = reps.filter((r) => !r.timing);
+  const { ranked: live, unranked: unavailable } = leaderRowsOf(results);
+  const reps = [...live, ...unavailable];
 
-  // Name + provider columns: widest entry, clamped (mirrors renderLeaderboard's
-  // min(28) / min(max(8,…),18)). Shared across all rows so bars start at one x.
+  // Name + provider columns: widest entry. The name is clamped at 28 (mirrors
+  // renderLeaderboard); the provider takes what the terminal leaves once the lead,
+  // the timeline and TOTAL (the columns that never drop) have their cells.
+  // Shared across all rows so bars start at one x.
   const nameW = Math.min(28, Math.max(5, ...reps.map((r) => r.model.length)));
-  const provW = Math.min(18, Math.max(8, ...reps.map((r) => r.provider.length)));
   const rankW = Math.max(1, String(Math.max(1, live.length)).length);
+  // [2 indent][rankW][3 gap + ● + gap][nameW][1] PROVIDER [1][B timeline][2][TOTAL]
+  const fixedW =
+    2 + rankW + 3 + nameW + 1 + 1 + (layout.barWidth > 0 ? layout.barWidth + 2 : 0) + TOTAL_COL;
+  const provW = providerColumnWidth(reps, layout.width - fixedW);
 
   // Column header — aligned to the data rows. The data-row lead-in before the
   // name spans rankW + 3 (gap + ● slot + gap), matching LeaderLiveRow's lead.
@@ -1453,7 +1458,7 @@ function LeaderboardView({
         <span fg={C.cyan} attributes={A.bold}>
           {"Leaderboard"}
         </span>
-        <span fg={C.dim}>{" — fastest first"}</span>
+        <span fg={C.dim}>{" — fastest route first"}</span>
       </text>
       {/* Column header (dim) */}
       <text>
@@ -1488,7 +1493,7 @@ function LeaderboardView({
       {/* Live rows — fastest first */}
       {live.map((row, idx) => (
         <LeaderLiveRow
-          key={`lb:${row.model}`}
+          key={`lb:${row.model}:${row.provider}:${idx}`}
           row={row}
           rank={idx + 1}
           isFastest={idx === 0}
@@ -1501,12 +1506,12 @@ function LeaderboardView({
         />
       ))}
       {/* Unavailable models — dim, no bar. Provider column kept aligned. */}
-      {unavailable.map((row) => (
-        <text key={`lb-na:${row.model}`}>
+      {unavailable.map((row, idx) => (
+        <text key={`lb-na:${row.model}:${row.provider}:${idx}`}>
           <span fg={C.dim}>{`  ${" ".repeat(rankW)}   `}</span>
           <span fg={C.dim}>{padEndSafe(row.model, nameW)}</span>
           <span fg={C.dim}> </span>
-          <span fg={C.dim}>{padEndSafe(row.provider, provW)}</span>
+          <span fg={C.dim}>{fitEnd(row.provider, provW)}</span>
           <span fg={C.dim}>{` — ${row.missing}`}</span>
         </text>
       ))}

@@ -28,7 +28,13 @@ import { bundledProvenance } from "../providers/bundled-list-data.js";
 import { warmCatalog } from "../providers/catalog-client.js";
 import { withBundledListScope } from "../providers/catalog-reachability.js";
 import { parseModelSpec } from "../providers/model-parser.js";
-import { nativeRouteFor, proxyRouteDecision } from "../providers/native-route.js";
+import {
+  claudeSubscriptionInner,
+  claudeSubscriptionSpecRefusal,
+  isClaudeSubscriptionSpec,
+  nativeRouteFor,
+  proxyRouteDecision,
+} from "../providers/native-route.js";
 import type { RouteTier } from "../providers/provider-definitions.js";
 import {
   type CandidateOutcome,
@@ -36,6 +42,7 @@ import {
   type RouteExplanation,
   explainRoute,
 } from "../providers/routing-rules.js";
+import { shadowedEndpointRefusal } from "../providers/shadowed-endpoint.js";
 import { CatalogPendingHandler, RefusingHandler } from "../providers/wire-handler.js";
 import {
   WireMarkerError,
@@ -69,8 +76,41 @@ export interface AdvisorHop {
   billing: AdvisorBilling;
 }
 
+/**
+ * What a Claude advisor member may sign with when the request carries no usable
+ * Claude login. `"lookup"`: the request's x-api-key, else ANTHROPIC_API_KEY
+ * through the advisor's own lookup. `"request-key"`: the request's x-api-key
+ * only, never ANTHROPIC_API_KEY (a session with no main model, which runs on
+ * Claude Code's own credential, without the API-billing opt-in). `"off"`:
+ * nothing; the Claude subscription is never signed with an API key.
+ * `{launchKey}`: the key the Claude API launch signs every request with, billed
+ * to the same key.
+ */
+export type ClaudeAdvisorKeyArm = "lookup" | "request-key" | "off" | { launchKey: () => string };
+
+/** Why a Claude advisor call is not signed on a session with no main model and no opt-in. */
+export const NO_MAIN_MODEL_ADVISOR_NO_KEY =
+  "this session has no main model, so it runs on Claude Code's own credential, and the advisor " +
+  "never signs with ANTHROPIC_API_KEY there without --anthropic-api-billing";
+
+/** Why a Claude subscription session's advisor call with no login is not signed at all. */
+export const CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY =
+  "Claude subscription session: the advisor signs only with Claude Code's login, never an API key";
+
+/** The notice label of a Claude member's key arm (`AdvisorModelPlan.keyFallback`). */
+export type ClaudeKeyFallback = "none" | "request-key" | "lookup" | "launch-key";
+
+/** The notice label of `arm`. */
+function keyFallbackOf(arm: ClaudeAdvisorKeyArm): ClaudeKeyFallback {
+  if (typeof arm === "object") return "launch-key";
+  return arm === "off" ? "none" : arm;
+}
+
 /** Where a Claude member's API key comes from on a launch without a usable login. */
-export type ClaudeApiKeySource = "inbound-x-api-key" | "ANTHROPIC_API_KEY";
+export type ClaudeApiKeySource =
+  | "inbound-x-api-key"
+  | "ANTHROPIC_API_KEY"
+  | "claude-api-launch-key";
 
 export type AdvisorModelPlan =
   | {
@@ -94,6 +134,14 @@ export type AdvisorModelPlan =
       authSource?: { reason: ChildAuthSource; where: string };
       /** Set only for `api-key`: what the call is expected to sign with. */
       apiKeySource?: ClaudeApiKeySource;
+      /**
+       * What signs a call whose request carries no Claude login, from the key
+       * arm: nothing (`none`, the `"off"` arm), the request's x-api-key only
+       * (`request-key`), that or ANTHROPIC_API_KEY (`lookup`, also when
+       * absent), or the Claude API launch's key (`launch-key`). A label for
+       * the notice; never key material.
+       */
+      keyFallback?: ClaudeKeyFallback;
     }
   | {
       kind: "refused";
@@ -105,6 +153,7 @@ export type AdvisorModelPlan =
         | "unresolved-alias"
         | "claude-selector"
         | "claude-no-credential"
+        | "claude-subscription-spec"
         | "no-callable-hop";
       reason: string;
       hint?: string;
@@ -127,6 +176,11 @@ export interface PlanAdvisorDeps {
   warmCatalog?: () => Promise<void>;
   /** Default `isSubscriptionProvider`. */
   isSubscription?: (provider: string) => boolean;
+  /**
+   * The launch's advisor key arm (`advisorKeyArmFor` of its `NativeSigning`),
+   * the same arm the proxy signs with. Default `"lookup"`.
+   */
+  keyArm?: ClaudeAdvisorKeyArm;
 }
 
 /**
@@ -165,6 +219,26 @@ export async function planAdvisorModel(
   role: AdvisorRole,
   deps: PlanAdvisorDeps
 ): Promise<AdvisorModelPlan> {
+  // A `claude@` spec is checked whole, on the spec as given, before anything
+  // splits or normalizes it: the Claude subscription honours no marker and no
+  // `:N`, and an inner name Claude Code does not own is served by nothing.
+  const claudeRefusal = claudeSubscriptionSpecRefusal(spec);
+  if (claudeRefusal) {
+    return {
+      kind: "refused",
+      spec,
+      role,
+      cause: carriesWireMarker(spec) ? "wire-marker" : "claude-subscription-spec",
+      reason: claudeRefusal,
+    };
+  }
+  // A member on a custom endpoint name a Claude builtin took over would reach
+  // the builtin, not the user's endpoint, and no handler is built for a
+  // refused plan.
+  const shadowed = shadowedEndpointRefusal([spec]);
+  if (shadowed) {
+    return { kind: "refused", spec, role, cause: "explicit-refused", reason: shadowed };
+  }
   let markers: WireMarkers;
   try {
     markers = splitWireMarkers(spec);
@@ -176,7 +250,16 @@ export async function planAdvisorModel(
   }
   const model = markers.spec;
 
-  if (nativeRouteFor(model)) return planClaudeMember(spec, role, model, deps);
+  if (nativeRouteFor(model)) {
+    // `claude@` names the Claude subscription, which is never signed with an API
+    // key: its member uses the "off" arm whatever the launch signs with.
+    return planClaudeMember(
+      spec,
+      role,
+      claudeSubscriptionInner(model),
+      isClaudeSubscriptionSpec(spec) ? { ...deps, keyArm: "off" } : deps
+    );
+  }
 
   // Advisor startup never waits for the cloud models catalog. A bare name is
   // planned from the catalog file as it is now; with none on disk, from the
@@ -238,6 +321,17 @@ export async function planAdvisorModel(
   };
 }
 
+/** True when `spec` carries a mode or speed marker, or a malformed one. */
+function carriesWireMarker(spec: string): boolean {
+  try {
+    const markers = splitWireMarkers(spec);
+    return markers.mode !== undefined || markers.speed !== undefined;
+  } catch (err) {
+    if (err instanceof WireMarkerError) return true;
+    throw err;
+  }
+}
+
 async function planClaudeMember(
   spec: string,
   role: AdvisorRole,
@@ -249,10 +343,46 @@ async function planClaudeMember(
     return { kind: "refused", spec, role, cause: claude.cause, reason: claude.reason };
   }
   const { childAuth } = deps;
+  const keyArm = deps.keyArm ?? "lookup";
+  const keyFallback = keyFallbackOf(keyArm);
   if (childAuth.controlled) {
-    return { kind: "claude-native", spec, role, model: claude.id, expectedArm: "claude-login" };
+    return {
+      kind: "claude-native",
+      spec,
+      role,
+      model: claude.id,
+      expectedArm: "claude-login",
+      keyFallback,
+    };
   }
   const authSource = { reason: childAuth.reason, where: childAuth.where };
+  if (typeof keyArm === "object") {
+    // The Claude API launch: the proxy signs every request with the launch key,
+    // and the advisor bills the same key. No second lookup, no inbound key.
+    return {
+      kind: "claude-native",
+      spec,
+      role,
+      model: claude.id,
+      expectedArm: "api-key",
+      authSource,
+      apiKeySource: "claude-api-launch-key",
+      keyFallback,
+    };
+  }
+  if (keyArm === "off") {
+    return {
+      kind: "refused",
+      spec,
+      role,
+      cause: "claude-no-credential",
+      reason: isClaudeSubscriptionSpec(spec)
+        ? `${spec} names the Claude subscription, and this launch gives the advisor no Claude ` +
+          `login (${noLoginPhrase(authSource)}); claude@ is never signed with an API key. ` +
+          `${restoreLoginHint(authSource)}, or use anthropic@<id> for the Claude API.`
+        : `${spec}: ${CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY}`,
+    };
+  }
   if (sendsInboundApiKey(childAuth)) {
     return {
       kind: "claude-native",
@@ -262,6 +392,18 @@ async function planClaudeMember(
       expectedArm: "api-key",
       authSource,
       apiKeySource: "inbound-x-api-key",
+      keyFallback,
+    };
+  }
+  if (keyArm === "request-key") {
+    return {
+      kind: "refused",
+      spec,
+      role,
+      cause: "claude-no-credential",
+      reason:
+        `${spec} is a Claude model; this launch gives the advisor no Claude login ` +
+        `(${noLoginPhrase(authSource)}), and ${NO_MAIN_MODEL_ADVISOR_NO_KEY}.`,
     };
   }
   if (!(await deps.anthropicKeyPresent())) {
@@ -285,6 +427,7 @@ async function planClaudeMember(
     expectedArm: "api-key",
     authSource,
     apiKeySource: "ANTHROPIC_API_KEY",
+    keyFallback,
   };
 }
 
@@ -360,17 +503,27 @@ export const SKIPPED_PHRASE: Readonly<Record<Exclude<CandidateOutcome, "kept">, 
 export function describeClaudeAdvisorPlan(
   plan: Extract<AdvisorModelPlan, { kind: "claude-native" }>
 ): string {
+  const fallback = plan.keyFallback ?? "lookup";
   if (plan.expectedArm === "claude-login") {
-    return (
-      `${plan.spec} -> ${ANTHROPIC_API_HOST} (subscription: your Claude Code login; if a request ` +
-      "carries none: its x-api-key or ANTHROPIC_API_KEY, metered, billed per token)"
-    );
+    const without =
+      fallback === "none"
+        ? "a request that carries none is not signed, never with an API key"
+        : fallback === "request-key"
+          ? "if a request carries none: its x-api-key, metered, billed per token; never ANTHROPIC_API_KEY"
+          : fallback === "launch-key"
+            ? "if a request carries none: the Claude API launch's key, metered, billed per token"
+            : "if a request carries none: its x-api-key or ANTHROPIC_API_KEY, metered, billed per token";
+    return `${plan.spec} -> ${ANTHROPIC_API_HOST} (subscription: your Claude Code login; ${without})`;
   }
   const source = plan.authSource ?? { reason: "proxy-auth" as const, where: "environment" };
   const key =
     plan.apiKeySource === "inbound-x-api-key"
-      ? "the x-api-key Claude Code sends, else ANTHROPIC_API_KEY"
-      : "ANTHROPIC_API_KEY";
+      ? fallback === "request-key"
+        ? "the x-api-key Claude Code sends, never ANTHROPIC_API_KEY"
+        : "the x-api-key Claude Code sends, else ANTHROPIC_API_KEY"
+      : plan.apiKeySource === "claude-api-launch-key"
+        ? "the Claude API launch's key"
+        : "ANTHROPIC_API_KEY";
   return (
     `${plan.spec} -> ${ANTHROPIC_API_HOST} (metered, billed per token: ${key}; ` +
     `${noLoginPhrase(source)}, so the advisor never signs with a bearer on this launch. ` +
@@ -408,14 +561,19 @@ export function describeAdvisorRefusal(
     case "claude-selector":
     case "unresolved-alias":
     case "claude-no-credential":
+    case "claude-subscription-spec":
       return refusal.reason;
     case "catalog-unreadable":
       return (
         `${refusal.spec}: no model catalog is on disk yet, so a bare name cannot be ` +
         "routed. Use provider@model, or launch again once the catalog has been fetched."
       );
-    default:
-      return `${refusal.spec}: ${refusal.reason}${refusal.hint ? ` ${refusal.hint}` : ""}`;
+    default: {
+      // A reason that already names the spec (a marker refusal, a shadowed
+      // endpoint) is not prefixed a second time.
+      const prefix = refusal.reason.startsWith(`${refusal.spec}: `) ? "" : `${refusal.spec}: `;
+      return `${prefix}${refusal.reason}${refusal.hint ? ` ${refusal.hint}` : ""}`;
+    }
   }
 }
 

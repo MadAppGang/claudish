@@ -109,6 +109,12 @@ export interface ProbeEntry {
   position?: "candidate" | "fallback";
   /** `"routed"` for a hop of a bare name's routing chain; absent for an explicit spec. */
   hopOrigin?: "routed";
+  /**
+   * A route of a bare Claude name listed beside the Claude subscription for
+   * comparison: tested, but never the route a launch of the name takes, so it
+   * never decides the panel's result.
+   */
+  comparison?: true;
   error?: string;
   ms?: number;
 }

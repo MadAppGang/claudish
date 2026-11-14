@@ -40,6 +40,7 @@ import {
   timelineBarCells,
   tokBarCells,
 } from "../tui/theme.js";
+import { leaderboardRows, providerColumnWidth } from "./leaderboard-rows.js";
 
 interface PrinterColors {
   reset: string;
@@ -362,8 +363,10 @@ export interface ChainEntry {
   credentialHint?: string;
   provenance?: KeyProvenance;
   probe?: ProbeResult;
-  /** A native link: served on Claude Code's own auth, so it is never probed. */
+  /** A native link: served on Claude Code's own login, so it is never probed. */
   notProbed?: "native-auth";
+  /** A route of a bare Claude name listed for comparison; not used by a launch of the name. */
+  comparison?: true;
 }
 
 /** A candidate the routing chain did not keep. Listed with its outcome, never probed. */
@@ -378,6 +381,10 @@ export interface DroppedEntry {
   detail?: string;
   /** A no-credential candidate whose credential is not an env var (Muse Code). */
   provenance?: KeyProvenance;
+  /** A route of a bare Claude name listed for comparison; not used by a launch of the name. */
+  comparison?: true;
+  /** A no-credential candidate: where claudish looked for its key. */
+  searched?: string;
 }
 
 export interface WiringInfo {
@@ -667,7 +674,7 @@ function buildRowData(result: ModelResult, isLiveProbe: boolean): RowData[] {
         provider: entry.displayName,
         label: entry.label ?? "",
         spec: entry.modelSpec,
-        status: `${pc.cyan}◐ native — not probed${pc.reset}`,
+        status: `${pc.cyan}◐ not probed${pc.reset}`,
         note: NATIVE_NOT_PROBED,
       };
     }
@@ -713,8 +720,16 @@ function buildDroppedRowData(result: ModelResult): RowData[] {
     label: entry.label ?? "",
     spec: entry.wireId,
     status: `${pc.dim}– ${droppedStatus(entry.outcome, entry.detail)}${pc.reset}`,
-    note: droppedRemedy(entry.credentialHint),
+    note: droppedNote(entry),
   }));
+}
+
+/** A dropped row's sub-row: the remedy, then where claudish looked for the key. */
+function droppedNote(entry: DroppedEntry): string | undefined {
+  const remedy = droppedRemedy(entry.credentialHint);
+  if (!entry.searched) return remedy;
+  const looked = `looked in: ${entry.searched}`;
+  return remedy ? `${remedy} (${looked})` : looked;
 }
 
 const COLUMN_HEADERS = ["#", "Provider", "Tier", "Model Spec", "Status"];
@@ -774,7 +789,7 @@ function buildKeyLine(
   droppedProvenance?: KeyProvenance
 ): string {
   if (activeEntry?.notProbed) {
-    return `${pc.bold}Key${pc.reset}  ${pc.dim}Claude Code's own auth (not visible to this process)${pc.reset}`;
+    return `${pc.bold}Key${pc.reset}  ${pc.dim}Claude Code's own login (not visible to this process)${pc.reset}`;
   }
   const provenance = activeEntry?.provenance ?? droppedProvenance;
   if (provenance) {
@@ -830,7 +845,15 @@ interface CardLayout {
 function cardSummary(result: ModelResult): { text: string; color: string } {
   const first = result.chain[0];
   if (!first) return { text: result.routingExplanation || "no route", color: pc.red };
-  if (first.notProbed) return { text: `${first.displayName} · not probed`, color: pc.cyan };
+  if (first.notProbed) {
+    const compared = result.chain.filter((c) => c.comparison);
+    if (compared.length === 0) return { text: `${first.displayName} · not probed`, color: pc.cyan };
+    const live = compared.filter((c) => c.probe?.state === "live").length;
+    return {
+      text: `${first.displayName} · not probed · ${live}/${compared.length} compared live`,
+      color: pc.cyan,
+    };
+  }
   const probed = result.chain.filter((c) => !c.notProbed);
   const live = probed.filter((c) => c.probe?.state === "live").length;
   return {
@@ -850,9 +873,12 @@ function buildCardLayout(
   const titleStyled = `${pc.bold}${pc.cyan}${result.model}${pc.reset}`;
   const summaryStyled = `${summary.color}${summary.text}${pc.reset}`;
 
+  // The route a request takes: a comparison link never is one, so it never
+  // names the Key or Wire line.
+  const routeEntries = result.chain.filter((c) => !c.comparison);
   const activeEntry =
-    result.chain.find((c) => c.probe?.state === "live") ??
-    result.chain.find((c) => c.hasCredentials);
+    routeEntries.find((c) => c.probe?.state === "live") ??
+    routeEntries.find((c) => c.hasCredentials);
 
   // Nothing kept: a dropped no-login candidate whose credential is not an env
   // var (muse@ with no Muse Code login) still names its login state and fix,
@@ -1081,41 +1107,10 @@ function renderLegend(w: Writer): void {
 
 // ── Leaderboard ────────────────────────────────────────────────────
 //
-// One row per MODEL, comparing the route claudish would actually take (the
-// representative entry — first chain link that came back live+timed, or the
-// direct probe). Sorted fastest→slowest by totalMs on a SHARED-SCALE timeline
-// bar so models read one-to-one at a glance. Rendered as a borderless section
-// above the detailed cards. No per-row bg slab — rank + bar length carry order.
-
-interface LeaderRow {
-  model: string;
-  /** Representative provider's display name (the route that would be used). */
-  provider: string;
-  /** Live+timed timing for the representative entry; undefined = unavailable. */
-  timing?: ProbeTiming;
-  /** Why an unavailable row has no timing: `no live route`, `not probed (native)`, `no route`. */
-  missing?: string;
-}
-
-/**
- * Pick the representative entry for a model: the first chain link that probed
- * live AND carried timing (the route claudish would actually use). A model with
- * none is listed dim, under its first kept hop — or, with no hop at all, under
- * the explanation line. Never under the parser's provider (`auto-route`).
- */
-function pickRepresentative(result: ModelResult): LeaderRow {
-  for (const entry of result.chain ?? []) {
-    if (entry.probe?.state === "live" && entry.probe.timing) {
-      return { model: result.model, provider: entry.displayName, timing: entry.probe.timing };
-    }
-  }
-  const first = result.chain?.[0];
-  return {
-    model: result.model,
-    provider: first?.displayName ?? result.routingExplanation,
-    missing: first?.notProbed ? "not probed (native)" : first ? "no live route" : "no route",
-  };
-}
+// One row per live, timed ROUTE (`leaderboardRows`), so the routes of one model
+// sit beside each other. Sorted fastest→slowest by totalMs on a SHARED-SCALE
+// timeline bar. Rendered as a borderless section above the detailed cards. No
+// per-row bg slab — rank + bar length carry order.
 
 /**
  * Render the leaderboard section: title, column header, one aligned row per
@@ -1135,10 +1130,15 @@ function renderLeaderboard(
   maxWidth: number,
   w: Writer
 ): void {
-  const reps = results.map(pickRepresentative);
-  const live = reps.filter((r) => r.timing).sort((a, b) => a.timing!.totalMs - b.timing!.totalMs);
-  const unavailable = reps.filter((r) => !r.timing);
+  const { ranked: live, unranked: unavailable } = leaderboardRows(
+    results.map((r) => ({
+      model: r.model,
+      links: r.chain ?? [],
+      emptyLabel: r.routingExplanation,
+    }))
+  );
   if (live.length === 0) return; // nothing to rank
+  const reps = [...live, ...unavailable];
 
   // Name column: widest model name (clamped so a single long name can't blow
   // out the row). All rows share it so the bars start at the same x.
@@ -1146,23 +1146,9 @@ function renderLeaderboard(
   const rawNameW = Math.max(5, ...allNames.map((n) => n.length));
   const nameW = Math.min(rawNameW, 28);
 
-  // Provider column: the route claudish would actually take for each model
-  // (the representative entry's display name). Dim, sits between the name and
-  // the timeline bar so you can read "which model, via which provider" at a
-  // glance. Clamped like the name column. The literal "PROVIDER" header sets a
-  // 8-char floor so the column never narrower than its own label.
-  const allProviders = reps.map((r) => r.provider);
-  const rawProvW = Math.max(8, ...allProviders.map((p) => p.length));
-  const provW = Math.min(rawProvW, 18);
-
   // Rank column fits the largest index.
   const rankW = Math.max(1, String(live.length).length);
-
-  // Margin + fixed lead columns (mirrors the card sub-row layout to the right
-  // of the name): [2 margin][rank][1][● 1][1][name][1][provider][1][B timeline][2][TOTAL 7]
-  //   …then breakdown / tok bar / tok value as width allows.
   const MARGIN = 2;
-  const leadW = MARGIN + rankW + 1 + 1 + 1 + nameW + 1 + provW + 1; // up to start of timeline
 
   // Leaderboard column widths from the timeline bar onward. Unlike the cards'
   // bars sub-row, the leaderboard's net/srv/str numbers are UNLABELED in the
@@ -1176,6 +1162,19 @@ function renderLeaderboard(
   const LB_TOK_VALUE = PRINTER_TOK_VALUE_W; // 9
   const LB_FULL = LB_TIMELINE + LB_BREAKDOWN + LB_TOKBAR + LB_TOK_VALUE; // 81
   const LB_NOTOK = LB_TIMELINE + LB_BREAKDOWN + 2 + LB_TOK_VALUE; // 66
+
+  // Provider column: each row's route (its link's display name). Dim, sits
+  // between the name and the timeline bar so you can read "which model, via
+  // which provider" at a glance. As wide as the longest name shown, within what
+  // the terminal leaves once the lead, the timeline + TOTAL and the tok/s value
+  // (the columns that never drop) have their cells.
+  const fixedW = MARGIN + rankW + 3 + nameW + 1 + 1 + LB_TIMELINE + 2 + LB_TOK_VALUE;
+  const provW = providerColumnWidth(reps, maxWidth - fixedW);
+
+  // Margin + fixed lead columns (mirrors the card sub-row layout to the right
+  // of the name): [2 margin][rank][1][● 1][1][name][1][provider][1][B timeline][2][TOTAL 7]
+  //   …then breakdown / tok bar / tok value as width allows.
+  const leadW = MARGIN + rankW + 1 + 1 + 1 + nameW + 1 + provW + 1; // up to start of timeline
 
   // Size to full columns when the terminal allows, else clamp to terminal.
   const width = Math.min(maxWidth, leadW + LB_FULL);
@@ -1192,7 +1191,7 @@ function renderLeaderboard(
 
   // ── Title ──
   w(
-    `${margin}${pc.bold}${pc.cyan}Leaderboard${pc.reset}${pc.dim} — fastest model first${pc.reset}\n`
+    `${margin}${pc.bold}${pc.cyan}Leaderboard${pc.reset}${pc.dim} — fastest route first${pc.reset}\n`
   );
 
   // ── Column header (dim), aligned to the data rows. The data-row lead-in is
@@ -1263,7 +1262,7 @@ function renderLeaderboard(
     );
   });
 
-  // ── Unavailable models — dim, no bar. Keep the provider column aligned with
+  // ── Unranked rows — dim, no bar. Keep the provider column aligned with
   //    the live rows so the table reads as one block. ──
   for (const row of unavailable) {
     const rankStr = " ".repeat(rankW);

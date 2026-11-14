@@ -2970,7 +2970,11 @@ describe("explainRoute", () => {
 
     expect(native).toMatchObject({ source: "native", requestedModel: "opus", routedModel: "opus" });
     expect(native.candidates).toEqual([]);
-    expect(describeRouteExplanation(native)).toBe("native · Claude Code's own auth · not probed");
+    // `opus` is a tier alias, so the description points at a concrete id for the
+    // route comparison.
+    expect(describeRouteExplanation(native)).toBe(
+      "Claude subscription · Claude Code's own login · not probed · probe a concrete id to compare routes"
+    );
     expect(explicit).toMatchObject({
       source: "explicit",
       via: "vendor-qualified-id",

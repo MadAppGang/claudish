@@ -184,7 +184,56 @@ export function bodyToForward(c: Context, payload: unknown): string {
  * the same letters, or an api key helper's value, which Claude Code sends in
  * both headers.
  */
-const CLAUDE_LOGIN_BEARER = /^Bearer\s+sk-ant-oat\d+-/i;
+export const CLAUDE_LOGIN_BEARER = /^Bearer\s+sk-ant-oat\d+-/i;
+
+/**
+ * Who signs one native request, decided by the launch and the request's route:
+ *
+ * - `inbound`: the credentials the request arrived with; `fallbackKey` only when
+ *   it arrived with neither `authorization` nor `x-api-key`.
+ * - `login-only`: the Claude subscription. Only a Claude login bearer is sent; an
+ *   inbound `x-api-key` and any other bearer are dropped, and nothing is ever
+ *   signed with an API key. A request with no login is refused.
+ * - `launch-key`: the Claude API launch. Every inbound credential is dropped and
+ *   the request is signed with the key the launch resolved.
+ */
+export type NativeSigning =
+  | { kind: "inbound"; fallbackKey: () => Promise<string | undefined> }
+  | { kind: "login-only" }
+  | { kind: "launch-key"; key: () => string };
+
+/** The Claude subscription's signing, shared because it carries no state. */
+export const LOGIN_ONLY_SIGNING: NativeSigning = { kind: "login-only" };
+
+/** Why a `login-only` request with no Claude login is answered 401 by claudish. */
+export const CLAUDE_SUBSCRIPTION_NO_LOGIN =
+  "Claude subscription session: this request carries no Claude Code login, and claudish never " +
+  "signs a Claude subscription request with an API key. Sign in with /login, or use " +
+  "anthropic@<id> for the Claude API.";
+
+/**
+ * Why a `login-only` request that carries an API key (`x-api-key`) and no
+ * Claude login is answered 401: Claude Code's own credential is a key (a
+ * stored Console key, or one the user approved), so /login is not the fix.
+ */
+export const CLAUDE_SUBSCRIPTION_API_KEY_REQUEST =
+  "Claude subscription session: this request carries an API key (x-api-key), not a Claude Code " +
+  "login, and claudish never signs a Claude subscription request with an API key. Use " +
+  "anthropic@<id> for the Claude API, or, for a bare Claude model name, pass " +
+  "--anthropic-api-billing to bill the key.";
+
+/** The Context key the request's signing is set under, for the native handler. */
+export const NATIVE_SIGNING_KEY = "nativeSigning" as const;
+
+/** Set the signing the native handler uses for the request on `c`. */
+export function setNativeSigning(c: Context, signing: NativeSigning): void {
+  c.set(NATIVE_SIGNING_KEY, signing);
+}
+
+/** The signing set on `c` for this request, if any. */
+export function nativeSigningOf(c: Context): NativeSigning | undefined {
+  return c.get(NATIVE_SIGNING_KEY) as NativeSigning | undefined;
+}
 
 /** One request to send to Anthropic, ready for `fetch`. */
 export interface ForwardRequest {
@@ -196,16 +245,17 @@ export interface ForwardRequest {
 
 /**
  * The request to send to `endpoint` (an absolute URL with no query) for the
- * inbound request on `c`: Claude Code's own headers, its credentials as they
- * arrived, its allowed query parameters and its body bytes while `payload` is
- * unchanged.
+ * inbound request on `c`: Claude Code's own headers, the credentials `signing`
+ * allows, its allowed query parameters and its body bytes while `payload` is
+ * unchanged. `{refused}` when `signing` is `login-only` and the request carries
+ * no Claude login: the caller answers it without any upstream call.
  *
  * The credential pair is read from the headers AS THEY ARRIVED: a `Connection`
  * header naming one must not make an authenticated request look
  * unauthenticated, or the fallback would swap the user's own login for a
- * metered key. `fallbackKey` is called only when the request arrived with
- * neither `authorization` nor `x-api-key`. An `x-api-key` beside a Claude login
- * bearer is not sent: the login signs the request alone.
+ * metered key. On `inbound`, `fallbackKey` is called only when the request
+ * arrived with neither `authorization` nor `x-api-key`, and an `x-api-key`
+ * beside a Claude login bearer is not sent: the login signs the request alone.
  *
  * Every credential value the request sends, in its headers or its URL, is
  * registered on the request's signing lease before this returns.
@@ -214,21 +264,44 @@ export async function buildForwardRequest(
   c: Context,
   payload: unknown,
   endpoint: string,
-  fallbackKey: () => Promise<string | undefined>
-): Promise<ForwardRequest> {
-  const headers: Record<string, string> = {
-    ...requestHeadersToForward(c.req.raw.headers),
-    ...inboundAuthHeaders(c.req.raw.headers),
-  };
-  if (headers.authorization && CLAUDE_LOGIN_BEARER.test(headers.authorization)) {
-    delete headers["x-api-key"];
+  signing: NativeSigning
+): Promise<ForwardRequest | { refused: string }> {
+  const inbound = inboundAuthHeaders(c.req.raw.headers);
+  const headers: Record<string, string> = requestHeadersToForward(c.req.raw.headers);
+  // The allowlist carries both credential names; which of them go out is
+  // decided below, from the pair as it arrived.
+  delete headers.authorization;
+  delete headers["x-api-key"];
+  const isLogin =
+    inbound.authorization !== undefined && CLAUDE_LOGIN_BEARER.test(inbound.authorization);
+  switch (signing.kind) {
+    case "inbound": {
+      Object.assign(headers, inbound);
+      if (isLogin) delete headers["x-api-key"];
+      if (!headers.authorization && !headers["x-api-key"]) {
+        const key = await signing.fallbackKey();
+        if (key) headers["x-api-key"] = key;
+      }
+      break;
+    }
+    case "login-only": {
+      if (!isLogin || inbound.authorization === undefined) {
+        const carriesKey =
+          inbound["x-api-key"] !== undefined && inbound.authorization === undefined;
+        return {
+          refused: carriesKey ? CLAUDE_SUBSCRIPTION_API_KEY_REQUEST : CLAUDE_SUBSCRIPTION_NO_LOGIN,
+        };
+      }
+      headers.authorization = inbound.authorization;
+      break;
+    }
+    case "launch-key": {
+      headers["x-api-key"] = signing.key();
+      break;
+    }
   }
   headers["content-type"] = "application/json";
   if (!headers["anthropic-version"]) headers["anthropic-version"] = "2023-06-01";
-  if (!headers.authorization && !headers["x-api-key"]) {
-    const key = await fallbackKey();
-    if (key) headers["x-api-key"] = key;
-  }
   const url = `${endpoint}${forwardedSearch(c)}`;
   addSigningSecrets(c, credentialValuesFromRequest(headers, url));
   return { headers, url, body: bodyToForward(c, payload) };

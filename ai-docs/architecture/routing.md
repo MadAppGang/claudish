@@ -76,7 +76,7 @@ So `team` (`models`, `judges`), `create_session` and `run_prompt` remove the pro
 provider is a BUILT-IN claudish provider and whose model part is exactly a canonical model id of
 the cloud models catalog is changed; markers (`+pro`, `#fast`) stay. Unchanged: chains, local
 providers, `custom-url`, a user's custom endpoint (`corp-proxy@gpt-4o` names a vendor and a bill
-the bare name would not reach), an explicit metered `anthropic@claude-*`, legacy syntax, a wire id
+the bare name would not reach), legacy syntax, a wire id
 that is not a catalog model id (`kc@k3`), and two specs that would strip to one name
 (`or@kimi-k3`, `kc@kimi-k3`: a provider comparison keeps both providers and both efforts). The
 answer names every removal (`provider_note` / `note`) and the MCP log records it.
@@ -151,6 +151,71 @@ prints the two billing notices, and returns the kept candidates (`toRoutePlan`).
 config TUI and the team grid render `explainRoute`, and `describeRouteExplanation` words its
 origin in one line for all three.
 
+## A Claude model has two routes: Claude subscription and Claude API
+
+**Claude subscription** is the user's own Claude Code login, served by the native passthrough
+(`native-anthropic`, `NativeHandler`). **Claude API** is Anthropic's metered native API on the
+user's Anthropic API key: the catalog's `anthropic/direct-api` route.
+
+**Why `--probe claude-haiku-5-5` showed one row (v14.20.0).** The Summary had a single line,
+`Anthropic (Native) ◐ native — not probed`, and no Claude API row, even with `ANTHROPIC_API_KEY`
+set and seven mapped connections in the catalog for that model (`anthropic/direct-api`,
+`anthropic/claude-code-subscription`, Devin, OpenCode Go, OpenCode Zen, OpenRouter, Poe). Three
+independent causes, each enough on its own:
+
+1. **No candidates were gathered.** `proxyRouteDecision` classifies a bare Claude name as
+   `native` before `route()`, so `explainRoute` answers `{source: "native", candidates: []}`
+   and never asks `gatherRouteCandidates` about the model.
+2. **The probe has nothing to send.** `probeChainFrom` turns a native explanation into one link
+   with `notProbed: "native-auth"`, and `probeTargets` has no candidate to turn into a request.
+3. **No claudish provider could call `anthropic/direct-api`.** The name `anthropic` sat in
+   `LOOKUP_ONLY_ROUTE_BINDINGS`, so it was never a route candidate. The only credential provider
+   that read `ANTHROPIC_API_KEY` was `native-anthropic`'s (`NativeAnthropicCredentialProvider`),
+   and that provider is `noHandler("virtual")` with `apiKeyEnvVar: ""`: it supplies the native
+   passthrough's fallback key, it does not serve a route.
+
+Fixing one cause alone changes nothing visible: a provider for `anthropic/direct-api` is still
+never gathered for a native name, and gathering candidates for a native name still finds no
+provider that can sign the Claude API.
+
+**The Claude API provider is `anthropic`** (shortcuts `anthropic@`, `a@`, `api@`; tier
+`native`; `x-api-key` on `ANTHROPIC_API_KEY`), bound to `anthropic/direct-api` in the routing
+table. It is metered by name: in neither `SUBSCRIPTION_PROVIDERS` nor
+`CREDENTIAL_DECIDED_PROVIDERS`. What it deliberately lacks: `nativeModelPatterns` (patterns are
+tried in builtin order, and `/^claude-/` there would take every bare Claude name away from the
+Claude subscription), `baseUrlEnvVars` (`ANTHROPIC_BASE_URL` is how claudish points a child
+Claude Code at its own proxy, so a nested claudish would send the key to the parent's proxy),
+and `apiKeyAliases` (`ANTHROPIC_AUTH_TOKEN` is the subscription's OAuth token). It reads a vault
+key only at use (`vaultKeyReadAtUse`, [keychain.md](./keychain.md)), so a key it resolves never
+reaches `process.env` and a later native child. A bare Claude name still never reaches
+`route()`, so routing it is unchanged; `anthropic@<id>` names the route explicitly.
+
+**`--probe` lists a bare Claude name's other routes, for comparison only.** `explainRoute(t,
+{comparison: true})` keeps the native decision (`source: "native"`, `candidates: []`) and adds
+`comparisonCandidates`: the model's catalog routes, gathered by the bare-name path with no user
+rule (a `claude-*` rule steers routed names, and this name is never routed), no fallback hop,
+and the parser's provider replaced by `auto-route`. `native-anthropic` is removed BEFORE the
+credential filter, so its credential provider is never asked: it can write a 1Password key into
+`process.env.ANTHROPIC_API_KEY`. The gatherer itself is untouched (no `reason: "virtual"`
+filter), and routing callers pass no option, so their chains are unchanged. When the catalog
+was read and has no entry for the name, one off-catalog `anthropic@<name>` candidate is listed,
+so a misspelled name gets Anthropic's own 404 rather than silence; when no catalog can be read,
+none is listed and the line says so. A tier alias (`opus`) and `claude@<id>` get no comparison:
+the alias has no concrete id, and `claude@` names one route itself. The list is never a
+`RoutePlan`, and no request is routed from it (RB-1).
+
+**The name `anthropic` means two things.** It is the catalog's route id for Anthropic's own
+endpoints (`anthropic/direct-api`, `anthropic/claude-code-subscription`) and the vendor slug the
+savings panel reads its first-party price under, and the Claude API provider's name. It is ALSO
+the hook route provider `NativeHandler` reports (`route: {provider: "anthropic", native: true}`),
+and `isNativeRoute` (`hooks/request-stage.ts`) answers true for `providerName === "anthropic"`
+whatever the model, a rule `ComposedHandler.routeInfo` feeds too. So a proxied `anthropic@`
+request reports `RouteInfo.native: true`, as the native passthrough does: the wire is
+Anthropic's own and the model is Claude, which is what the plan-mode measurement behind `native`
+covers. A hook scoped `routes: native` runs on both Claude routes; `routes: foreign` on neither. A rule that must tell the native
+passthrough apart from a metered call reads `provider_name` and `adapter_name` in stats, never
+the hook's provider name.
+
 ## Where a bare name's chain comes from
 
 **There is no built-in routing table.** `providers/default-routing-rules.ts` — 24 hand-written
@@ -187,10 +252,16 @@ and an explicit target is a one-item chain), `dropped[]` lists every other candi
 outcome, and only kept candidates are probed (`probeTargets`, `providers/probe-runner.ts`).
 Three consequences to know before reading its output:
 
-- **A native name is one link, never probed** (`notProbed: "native-auth"`,
-  `NATIVE_NOT_PROBED`). The native handler forwards the inbound Claude Code header, which a
-  probe from this process does not have; substituting `ANTHROPIC_API_KEY` tested a different
-  credential from the one a session uses.
+- **A native name's first link is the Claude subscription, never probed**
+  (`notProbed: "native-auth"`, `NATIVE_NOT_PROBED`). The native handler forwards the inbound
+  Claude Code header, which a probe from this process does not have; signing it with
+  `ANTHROPIC_API_KEY` would test the Claude API, a different route. The model's other catalog
+  routes follow it as links marked `comparison: true` (the Claude API among them), each probed;
+  `chain[0]` stays the route a launch takes, and a comparison link never names the Key or Wire
+  line. A Claude API key the Keychain holds is read only when its row is sent
+  (`probeSendRefusal`); a read that fails makes the row dropped with the vault's reason, never a
+  request sent without a key, and `--no-probe` reads no value at all. See [A Claude model has
+  two routes](#a-claude-model-has-two-routes-claude-subscription-and-claude-api).
 - **`--no-probe` still asks providers.** The availability filter is part of `route()`, so an
   account's dynamic models catalog is read for each credentialed candidate that declares
   discovery (the account's stored list; only a list at most five minutes old may deny).
@@ -538,11 +609,13 @@ A connection names a route binding `(routeId, routeProfileId)`, never a claudish
   The candidate gatherer reads it through `routingProvidersForRoute`, which returns EVERY name
   bound to a route: `z-ai` and `glm` share `z-ai/direct-api` because their keys sit in two
   silos, and the credential filter decides which one serves.
-- **`LOOKUP_ONLY_ROUTE_BINDINGS`: `anthropic`, `moonshotai`, `zen`.** Names that catalog READS
-  ask about (the savings panel's first-party price, the Kimi picker list, a legacy picker value)
-  and that no claudish provider answers to. They are never route candidates. In the routing
-  table they were candidates by accident of spelling: a custom endpoint named `anthropic` would
-  have been gathered for every model Anthropic's native API serves.
+- **`LOOKUP_ONLY_ROUTE_BINDINGS`: `moonshotai`, `zen`.** Names that catalog READS ask about
+  (the Kimi picker list, a legacy picker value) and that no claudish provider answers to. They
+  are never route candidates. In the routing table they were candidates by accident of
+  spelling. `anthropic` sat here until claudish had a provider for Anthropic's native API: then
+  a custom endpoint named `anthropic` would have been gathered for every model that route
+  serves. It is now the Claude API's binding in the routing table, and the savings panel reads
+  its first-party price through the same name.
 
 Reads see both tables (`catalogRouteForProvider`; `catalogReadProvidersForRoute` lists routing
 names first), so each read answers as it did before the split. A name that owns no endpoint and

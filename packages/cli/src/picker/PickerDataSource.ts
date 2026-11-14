@@ -36,13 +36,12 @@
  *     multi-second 1Password handshake.
  */
 
-import { credentials } from "../auth/credentials/authority.js";
-import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import {
   type ModelInfo,
   type PickerDiscoveryOutcome,
   buildDiscoveredModelOutcome,
   buildProviderChoices,
+  displayBillingOf,
   outcomeFromModelsCatalog,
   providerShortcut,
   servedModelsForProvider,
@@ -65,6 +64,7 @@ import {
   discoverProviderModelsCatalog,
   servedOutcomeOf,
 } from "../providers/model-discovery.js";
+import { pickerProviderReady } from "../providers/picker-readiness.js";
 import { getAllProviders, getProviderByName } from "../providers/provider-definitions.js";
 
 /** How a provider bills — the row's tag, and the reason a price may be absent. */
@@ -142,9 +142,12 @@ export interface PickerDataSource {
   descriptions(): Promise<DescriptionIndex>;
 }
 
-/** How a provider bills, from the two oracles that already answer it. */
+/**
+ * How a provider bills: the picker billing label (`displayBillingOf`, which
+ * counts the Claude subscription as `sub`), then the local-daemon flag.
+ */
 export function billingModeOf(provider: string): BillingMode {
-  if (isSubscriptionProvider(provider)) return "sub";
+  if (displayBillingOf(provider) === "sub") return "sub";
   return getProviderByName(provider)?.isLocal === true ? "local" : "metered";
 }
 
@@ -340,9 +343,9 @@ export function createPickerDataSource(): PickerDataSource {
     probeCredentials(providers: string[]): AsyncIterable<[string, boolean]> {
       return inCompletionOrder(
         providers.map(async (name): Promise<[string, boolean]> => {
-          // Documented never to throw (`authority.ts:110-117`), guarded anyway:
-          // behind a live renderer an unhandled rejection has nowhere to surface.
-          const ready = await credentials.isAvailable(name).catch(() => false);
+          // The one picker readiness rule; it never throws, which matters
+          // behind a live renderer where a rejection has nowhere to surface.
+          const ready = await pickerProviderReady(name);
           if (ready && isPersistedListProvider(name) && !refreshed.has(name)) {
             refreshed.add(name);
             // Started, never awaited: the stored list is already on screen, and

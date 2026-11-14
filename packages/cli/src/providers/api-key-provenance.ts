@@ -26,7 +26,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { isKeychainHydratedVar } from "../auth/credentials/keychain-source.js";
+import { credentials } from "../auth/credentials/authority.js";
+import { isKeychainHydratedVar, keychainHasAnyOf } from "../auth/credentials/keychain-source.js";
+import { configHasOpReferenceFor } from "../auth/credentials/op-source.js";
 import {
   VERTEX_NO_PROJECT_REMEDY,
   VERTEX_PROJECT_ENV_VARS,
@@ -37,6 +39,7 @@ import {
 } from "../auth/vertex-auth.js";
 import { activeGlobalConfigFile, getConfigFileOverride } from "../config-override.js";
 import { readAllowedDotenv } from "../dotenv-allowlist.js";
+import { realValueFor } from "../env-placeholder.js";
 import { isOpHydratedVar } from "./onepassword.js";
 
 /**
@@ -141,14 +144,16 @@ export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): Key
   });
 
   // Layer 3: process.env (final runtime value — includes shell profile, dotenv, config.json)
-  // Check aliases too
+  // Check aliases too. claudish's own placeholder (inherited from a proxied parent
+  // session) is not a key, here as at sign time.
   let runtimeVar = envVar;
-  let runtimeValue = process.env[envVar] || null;
+  let runtimeValue = realValueFor(envVar, process.env[envVar]) || null;
   if (!runtimeValue && aliases) {
     for (const alias of aliases) {
-      if (process.env[alias]) {
+      const aliasValue = realValueFor(alias, process.env[alias]);
+      if (aliasValue) {
         runtimeVar = alias;
-        runtimeValue = process.env[alias]!;
+        runtimeValue = aliasValue;
         break;
       }
     }
@@ -188,6 +193,18 @@ export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): Key
       effectiveSource = "shell environment";
       // layers[2] already marked active
     }
+  } else if (configValue && !configValue.startsWith("op://")) {
+    // Startup does not copy `apiKeys` into process.env: the credential authority
+    // reads a key the config file holds at use, so the file is the source. An
+    // `op://` reference is not a key; `vaultProvenance` reports it.
+    layers[1].isActive = true;
+    return {
+      envVar,
+      hasValue: true,
+      effectiveMasked: maskKey(configValue),
+      effectiveSource: configLayerLabel(),
+      layers,
+    };
   }
 
   // NOTE: `runtimeValue` stays local. It is deliberately NOT placed on the
@@ -222,7 +239,46 @@ export function resolveCredentialProvenance(
   aliases?: string[]
 ): KeyProvenance {
   if (provider === "vertex") return vertexProjectProvenance(envVar, aliases);
-  return resolveApiKeyProvenance(envVar, aliases);
+  const base = resolveApiKeyProvenance(envVar, aliases);
+  if (base.hasValue) return base;
+  return vaultProvenance(provider, envVar, aliases, base);
+}
+
+/**
+ * A key no environment layer shows: one this process resolved from a vault
+ * without writing it into `process.env` (a read-at-use provider), or one a vault
+ * holds that nothing has read yet. Reported as "not set" before, which sent the
+ * user looking for a key that works.
+ *
+ * The resolved origin comes first: it names the step that produced the key that
+ * signs. Presence follows, from the Keychain's enumeration (no item data read)
+ * and a config `op://` reference (a config scan, no SDK).
+ */
+function vaultProvenance(
+  provider: string,
+  envVar: string,
+  aliases: string[] | undefined,
+  base: KeyProvenance
+): KeyProvenance {
+  const origin = credentials.describeOrigin(provider);
+  if (origin) {
+    return {
+      ...base,
+      hasValue: true,
+      effectiveMasked: origin.masked,
+      effectiveSource: origin.source,
+    };
+  }
+  const names = [envVar, ...(aliases ?? [])];
+  const stored = keychainHasAnyOf(names)
+    ? "macOS Keychain (not read yet)"
+    : names.some((name) => configHasOpReferenceFor(name))
+      ? "1Password (not read yet)"
+      : undefined;
+  if (!stored) return base;
+  // No masked value: nothing has read it. Not `effectiveLabel`, which means "this
+  // credential is not an env var" and would replace the variable in a remedy.
+  return { ...base, hasValue: true, effectiveMasked: null, effectiveSource: stored };
 }
 
 /**
@@ -297,6 +353,8 @@ export function formatProvenanceLog(p: KeyProvenance): string {
   if (p.effectiveLabel) {
     return `${p.effectiveLabel} [from: ${p.effectiveSource}]`;
   }
+  // A stored key nothing has read yet has no masked value to show.
+  if (p.effectiveMasked === null) return `${p.envVar} [from: ${p.effectiveSource}]`;
   return `${p.envVar}=${p.effectiveMasked} [from: ${p.effectiveSource}]`;
 }
 
@@ -320,7 +378,9 @@ export function formatProvenanceProbe(p: KeyProvenance, indent = "    "): string
   lines.push(
     p.effectiveLabel
       ? `${indent}${p.effectiveLabel}  [from: ${p.effectiveSource}]`
-      : `${indent}${p.envVar} = ${p.effectiveMasked}  [from: ${p.effectiveSource}]`
+      : p.effectiveMasked === null
+        ? `${indent}${p.envVar}  [from: ${p.effectiveSource}]`
+        : `${indent}${p.envVar} = ${p.effectiveMasked}  [from: ${p.effectiveSource}]`
   );
 
   for (const layer of p.layers) {
@@ -357,7 +417,9 @@ function readConfigKey(envVar: string): string | null {
     const cfg = JSON.parse(readFileSync(configPath, "utf-8")) as {
       apiKeys?: Record<string, string>;
     };
-    return cfg.apiKeys?.[envVar] || null;
+    // claudish's own placeholder, or an unexpanded `${VAR}`, is not a key, here
+    // as at sign time.
+    return realValueFor(envVar, cfg.apiKeys?.[envVar]) || null;
   } catch {
     return null;
   }

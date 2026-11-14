@@ -435,8 +435,8 @@ export function isVendorOwnRoute(
  * show a vendor's `provider@` shortcut beside its models. Deriving it replaced a
  * hand-written vendor table that mapped `qwen` to the steering placeholder `qwen`,
  * which has no shortcut, so Qwen rows showed none; the answer is `qwen-payg`
- * (`qpay@`). `anthropic` has no answer: Claude's own route here is the
- * `native-anthropic` subscription, and Anthropic's native API is lookup-only.
+ * (`qpay@`). For `anthropic` the answer is `anthropic` (the Claude API,
+ * `anthropic/direct-api`), never the `native-anthropic` subscription.
  */
 export function nativeProviderForVendor(vendorSlug: string): string | undefined {
   for (const [provider, binding] of Object.entries(CATALOG_ROUTE_BINDINGS)) {

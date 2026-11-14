@@ -276,15 +276,14 @@ export interface ProviderRowLayout {
 
 const PROVIDER_GLYPH_CELLS = 2;
 /**
- * `zengo@` AS A WORD, so 8 + 1 separator.
- *
- * Longest shortcut in the provider list is `mistral@` at 8 — `native-anthropic@` is longer
- * and is not on this list, having no credential store. It was briefly 10, sized for
- * a CHIP's `displayWidth(label) + 2` fill, and the chip is gone: 17 filled prefixes
- * in a column fused into one grey band (`rows.tsx` header). Text needs only its own
- * width plus the separator.
+ * The one cell after the shortcut. The shortcut itself is as wide as the widest one
+ * the list shows (`deriveProviderRowLayout`'s `widestShortcut`), so no shortcut is
+ * cut while the row has room: a measured constant went stale as soon as a longer
+ * shortcut joined the list (`anthropic@`, 10, under a 9-cell column). It is TEXT, not
+ * a chip: 17 filled prefixes in a column fused into one grey band (`rows.tsx`
+ * header), so it needs only its own width plus this separator.
  */
-const PROVIDER_SHORTCUT_CELLS = 9;
+const PROVIDER_SHORTCUT_GAP = 1;
 /**
  * `local` is the longest billing word: 5 + 2 for the fill every state now carries.
  *
@@ -309,6 +308,11 @@ const PROVIDER_BILLING_CELLS = 7;
  * MOONSHOT_API_KEY`, the case the header names, is 22 and still fits whole.
  */
 const PROVIDER_TAIL_CELLS = 25;
+/**
+ * What the tail keeps when it gives cells to the name: the NAMED case above,
+ * `needs MOONSHOT_API_KEY`, 22 cells.
+ */
+const PROVIDER_TAIL_NAMED_CELLS = 22;
 const PROVIDER_GAP_AFTER_NAME = 1;
 /** Below this a provider name is no longer a name. */
 const MIN_PROVIDER_NAME_CELLS = 6;
@@ -325,14 +329,26 @@ const MIN_PROVIDER_NAME_CELLS = 6;
  */
 const MAX_PROVIDER_NAME_CELLS = 26;
 
-export function deriveProviderRowLayout(inner: number): ProviderRowLayout {
+/**
+ * `widestShortcut` is the display width of the widest shortcut among the rows the
+ * list shows, so the column fits every one of them, separator included.
+ */
+export function deriveProviderRowLayout(inner: number, widestShortcut: number): ProviderRowLayout {
   const cells = Number.isFinite(inner) ? Math.max(0, Math.floor(inner)) : 0;
-  let shortcut = PROVIDER_SHORTCUT_CELLS;
+  const shortcutText = Number.isFinite(widestShortcut) ? Math.max(0, Math.ceil(widestShortcut)) : 0;
+  let shortcut = shortcutText + PROVIDER_SHORTCUT_GAP;
   let billing = PROVIDER_BILLING_CELLS;
   let tail = PROVIDER_TAIL_CELLS;
   const fixed = (): number =>
     CURSOR_CELLS + PROVIDER_GLYPH_CELLS + shortcut + billing + tail + PROVIDER_GAP_AFTER_NAME;
   let name = cells - fixed();
+  if (name < MAX_PROVIDER_NAME_CELLS && tail > PROVIDER_TAIL_NAMED_CELLS) {
+    // The tail gives way first (see below), down to its named case, so a wider
+    // shortcut column does not cut a name that fitted whole before it.
+    const give = Math.min(MAX_PROVIDER_NAME_CELLS - name, tail - PROVIDER_TAIL_NAMED_CELLS);
+    tail -= give;
+    name = cells - fixed();
+  }
   if (name < MIN_PROVIDER_NAME_CELLS) {
     // The tail gives way first — a count is re-stated in full on the detail line
     // below, so it is the one cell here that is a duplicate rather than a fact.

@@ -32,7 +32,12 @@ import { type AvailabilityNetwork, providerServesModel } from "./model-availabil
 import { discoverProviderServedIds } from "./model-discovery.js";
 import { AUTO_ROUTE_PROVIDER, PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
-import { type NativeRoute, proxyRouteDecision } from "./native-route.js";
+import {
+  type NativeRoute,
+  claudeSubscriptionSpecRefusal,
+  isClaudeSubscriptionSpec,
+  proxyRouteDecision,
+} from "./native-route.js";
 import { PREDEFINED_ENDPOINTS } from "./predefined-catalog.js";
 import { type RouteTier, getAllProviders, getProviderByName } from "./provider-definitions.js";
 import {
@@ -45,6 +50,7 @@ import {
   gatherRouteCandidates,
 } from "./route-candidates.js";
 import { buildCredentialHint } from "./routing-hints.js";
+import { shadowedEndpointRefusal } from "./shadowed-endpoint.js";
 import {
   describeUnknownShortcut,
   isKnownProviderName,
@@ -653,6 +659,12 @@ export interface ExplainedCandidate {
    * confirmed the model, `unknown` when nothing denied it.
    */
   availability?: "serves" | "unknown";
+  /**
+   * `off-catalog`: a comparison candidate for a native name the catalog has no
+   * entry for. Nothing published it; it is listed so a probe can ask the vendor's
+   * own API about the name, whose answer (a 404 for a typo) is the evidence.
+   */
+  origin?: "off-catalog";
 }
 
 /** Why a target has no route. */
@@ -680,7 +692,16 @@ export type NoRouteCause =
   /** An explicit spec's plan membership excludes the model, so no route could be built. */
   | "explicit-unbuildable"
   /** An explicit spec's provider does not serve the model. */
-  | "explicit-not-served";
+  | "explicit-not-served"
+  /**
+   * A spec refused before any routing: a `claude@` spec the Claude
+   * subscription refuses (a marker, a `:N` suffix, a `+` chain hop, a name
+   * Claude Code does not own), a spec (as given, or a matched user rule's
+   * entry) on a custom endpoint name a Claude builtin took over
+   * (`shadowedEndpointRefusal`), or a matched user rule's entry naming the
+   * Claude subscription (`claude`, `claude@<id>`).
+   */
+  | "explicit-refused";
 
 /**
  * The decision. It mirrors `RoutePlan.kind` field for field, which is what makes
@@ -764,6 +785,17 @@ export interface RouteExplanation {
   warnings: RouteWarning[];
   /** Native only: what the native passthrough sends, on Claude Code's own auth. */
   native?: NativeRoute;
+  /**
+   * A BARE native target explained with `comparison` only: the model's other
+   * catalog routes, gathered with no user rule and no fallback hop, the native
+   * provider removed before the credential filter, each with its outcome. Plus
+   * one off-catalog `anthropic` candidate when the catalog has no entry for the
+   * name. Display only: never a `RoutePlan`, never a hop of any request; a
+   * launch of the name still takes the Claude subscription.
+   */
+  comparisonCandidates?: ExplainedCandidate[];
+  /** With `comparisonCandidates`: whether the catalog could be read and had the name. */
+  comparisonCatalog?: "found" | "absent" | "unreadable";
 }
 
 export interface ExplainRouteOptions {
@@ -782,6 +814,12 @@ export interface ExplainRouteOptions {
   cachePath?: string;
   /** Absent: `"await"`. See {@link RouteNetwork}. */
   network?: RouteNetwork;
+  /**
+   * For a BARE native target (not `claude@`, not a tier alias): also list the
+   * model's other catalog routes as `comparisonCandidates`, for a display that
+   * compares them. The decision itself is unchanged.
+   */
+  comparison?: boolean;
 }
 
 /**
@@ -1321,7 +1359,8 @@ async function explainBareName(
   nativeProvider: string,
   routing: BareRouting,
   cachePath?: string,
-  network: RouteNetwork = "await"
+  network: RouteNetwork = "await",
+  comparison?: ComparisonGathering
 ): Promise<RouteExplanation> {
   const deadline = startListDeadline();
   try {
@@ -1332,11 +1371,31 @@ async function explainBareName(
       routing,
       deadline.reached,
       cachePath,
-      network
+      network,
+      comparison
     );
   } finally {
     deadline.cancel();
   }
+}
+
+/**
+ * How a comparison gathering differs from a routing decision's. Routing callers
+ * pass none, so their chains are unchanged.
+ */
+interface ComparisonGathering {
+  /**
+   * Removed from the candidates BEFORE the credential filter, so their credential
+   * provider is never asked. The native provider's can write a 1Password key into
+   * `process.env.ANTHROPIC_API_KEY`, which would move a later native child onto
+   * metered billing.
+   */
+  excludeProviders: ReadonlySet<string>;
+  /**
+   * Appended as an `off-catalog` candidate when the catalog was read and has no
+   * entry for the name, so a probe still asks the vendor's own API about it.
+   */
+  offCatalogProvider: string;
 }
 
 /** {@link explainBareName}, under the routing decision's missing-list deadline. */
@@ -1347,13 +1406,36 @@ async function explainBareNameWithin(
   routing: BareRouting,
   deadline: Promise<"deadline">,
   cachePath?: string,
-  network: RouteNetwork = "await"
+  network: RouteNetwork = "await",
+  comparison?: ComparisonGathering
 ): Promise<RouteExplanation> {
   // `null` and `[]` are DIFFERENT answers and the old `?? []` conflated them.
   // `[]` is a user rule that matched and named no provider — strict no-route,
   // and the one thing that must not then collect a fallback.
   const matchedKey = matchRoutingRuleKey(model, routing.rules);
   const matched = matchedKey === null ? null : routing.rules[matchedKey];
+
+  // A rule entry on a custom endpoint name a Claude builtin took over would
+  // reach the builtin, not the user's endpoint, and an entry naming the Claude
+  // subscription would be routed as a metered native hop: either refuses the
+  // rule. A plain entry names the provider for this model.
+  const ruleRefusal =
+    matchedKey !== null && matched !== null ? userRuleRefusal(matchedKey, matched, model) : null;
+  if (matchedKey !== null && ruleRefusal !== null) {
+    // Refused before any candidate is gathered, and returned here: nothing
+    // below may replace it with an empty-chain or unreadable-catalog outcome.
+    return {
+      requestedModel,
+      routedModel: model,
+      source: "user-rule",
+      matchedPattern: matchedKey,
+      ...(routing.scopeOf ? { ruleScope: routing.scopeOf(matchedKey) } : {}),
+      ...explanationCatalogSource(cachePath),
+      candidates: [],
+      outcome: { kind: "no-route", cause: "explicit-refused", reason: ruleRefusal },
+      warnings: ruleProblemWarnings(routing.ruleProblems),
+    };
+  }
 
   let explanation: RouteExplanation;
   if (matchedKey !== null && matched !== null) {
@@ -1399,6 +1481,18 @@ async function explainBareNameWithin(
       outcome: { kind: "ok" },
       warnings: ruleProblemWarnings(routing.ruleProblems),
     };
+  }
+
+  if (comparison) {
+    explanation.candidates = explanation.candidates.filter(
+      (candidate) => !comparison.excludeProviders.has(candidate.provider)
+    );
+    if (
+      explanation.catalog === "absent" &&
+      !explanation.candidates.some((c) => c.provider === comparison.offCatalogProvider)
+    ) {
+      explanation.candidates.push(offCatalogCandidate(comparison.offCatalogProvider, model));
+    }
   }
 
   const remaining = explanation.candidates.filter(
@@ -1893,6 +1987,44 @@ export async function routeExplained(
 }
 
 /**
+ * The refusal for a matched user rule, or null: an entry on a custom endpoint
+ * name a Claude builtin took over (`shadowedEndpointRefusal`), or an entry
+ * naming the Claude subscription (`claude`, `claude@<id>`). The Claude
+ * subscription is served by Claude Code on its own login, never as a routed
+ * hop, which would sign it with an API key. A plain entry names the provider
+ * for `model`.
+ */
+function userRuleRefusal(
+  pattern: string,
+  entries: readonly RoutingEntry[],
+  model: string
+): string | null {
+  const specs = entries.map((entry) => (entry.includes("@") ? entry : `${entry}@${model}`));
+  const shadowed = shadowedEndpointRefusal(specs);
+  if (shadowed) return shadowed;
+  const claude = entries.find((_, i) => isClaudeSubscriptionSpec(specs[i] ?? ""));
+  if (claude === undefined) return null;
+  return (
+    `routing rule "${pattern}" lists "${claude}", the Claude subscription, which Claude Code ` +
+    "serves on its own login and claudish never routes. Remove it from the rule, or use " +
+    "anthropic@<id> for the Claude API."
+  );
+}
+
+/** A spec refused before any routing (`explicit-refused`), with the refusal as its reason. */
+function refusedExplanation(target: string, reason: string): RouteExplanation {
+  return {
+    requestedModel: target,
+    routedModel: target,
+    source: "explicit",
+    via: "model-spec",
+    candidates: [],
+    outcome: { kind: "no-route", cause: "explicit-refused", reason },
+    warnings: [],
+  };
+}
+
+/**
  * The decision `route()` returns, explained. `route()` and `explainRoute` both
  * call this, which is what keeps the chain a display shows and the chain a
  * request uses the same.
@@ -1910,6 +2042,8 @@ async function explainRoutePlan(
   const parsed = parseModelSpec(modelSpec);
 
   if (parsed.isExplicitProvider) {
+    const shadowed = shadowedEndpointRefusal([modelSpec]);
+    if (shadowed) return refusedExplanation(requestedModel, shadowed);
     // Not normalized here — see normalizeGlmSlug's note on explicit specs.
     return explainExplicitSpec(
       requestedModel,
@@ -1936,6 +2070,10 @@ async function explainRoutePlan(
  * would use, every candidate the chain considered and what removed it, and why.
  * For `--probe` and the config TUI.
  *
+ * A `claude@` spec the Claude subscription refuses, and a spec on a custom
+ * endpoint name a Claude builtin took over, are answered first, as a no-route
+ * (`explicit-refused`), exactly as the proxy refuses them.
+ *
  * It starts where the proxy starts, at `proxyRouteDecision`. A `native` target is
  * answered there (no candidates: Claude Code's own auth serves it). `poe:<id>` and
  * `anthropic/<id>` are the explicit targets the proxy serves without `route()`.
@@ -1949,10 +2087,16 @@ export async function explainRoute(
   target: string,
   opts: ExplainRouteOptions = {}
 ): Promise<RouteExplanation> {
+  // Checked on the spec as given, as every launch checks it: `proxyRouteDecision`
+  // reads `claude@<id>#fast` as the native `<id>`, which no launch serves.
+  // So is a spec on a custom endpoint name a Claude builtin took over, which
+  // `proxyRouteDecision` would read as that builtin (`claude@<id>` as native).
+  const refusal = claudeSubscriptionSpecRefusal(target) ?? shadowedEndpointRefusal([target]);
+  if (refusal) return refusedExplanation(target, refusal);
   const decision = proxyRouteDecision(target);
 
   if (decision.type === "native") {
-    return {
+    const explanation: RouteExplanation = {
       requestedModel: target,
       routedModel: target,
       source: "native",
@@ -1961,6 +2105,12 @@ export async function explainRoute(
       warnings: [],
       native: decision.route,
     };
+    if (opts.comparison && isComparableNativeTarget(target, decision.route)) {
+      const compared = await explainComparison(decision.route, opts);
+      explanation.comparisonCandidates = compared.candidates;
+      explanation.comparisonCatalog = compared.catalog;
+    }
+    return explanation;
   }
   if (decision.type === "poe") {
     return explainUnroutedExplicit(target, "poe", "poe", decision.model);
@@ -1982,6 +2132,56 @@ export async function explainRoute(
     target,
     opts.network
   );
+}
+
+/**
+ * Whether a native target gets comparison routes: a BARE name only. `claude@<id>`
+ * names one route itself, and a tier alias (`opus`) is a selector whose concrete
+ * id Claude Code chooses at run time, so no catalog route can be compared for it.
+ */
+function isComparableNativeTarget(target: string, native: NativeRoute): boolean {
+  return !native.isTierAlias && !parseModelSpec(target).isExplicitProvider;
+}
+
+/** No fallback hop: a comparison lists what the catalog publishes, nothing more. */
+const NO_FALLBACK: ResolvedDefaultProvider = {
+  provider: "",
+  source: "hardcoded",
+  legacyAutoPromoted: false,
+};
+
+/**
+ * The catalog routes of a bare native name, for display beside the Claude
+ * subscription. Gathered by the bare-name path with no user rule (a rule for
+ * `claude-*` steers routed names, and this name is never routed) and no fallback,
+ * attributed to no provider (`AUTO_ROUTE_PROVIDER`, as any unattributed bare name),
+ * with the native provider removed before the credential filter.
+ */
+async function explainComparison(
+  native: NativeRoute,
+  opts: ExplainRouteOptions
+): Promise<{ candidates: ExplainedCandidate[]; catalog: "found" | "absent" | "unreadable" }> {
+  const compared = await explainBareName(
+    native.modelSpec,
+    native.modelSpec,
+    AUTO_ROUTE_PROVIDER,
+    { rules: {}, defaultProvider: NO_FALLBACK },
+    opts.cachePath,
+    opts.network,
+    { excludeProviders: new Set([native.provider]), offCatalogProvider: CLAUDE_API_PROVIDER }
+  );
+  const catalog = compared.catalog ?? "unreadable";
+  return { candidates: catalog === "unreadable" ? [] : compared.candidates, catalog };
+}
+
+/** The claudish provider of the Claude API: Anthropic's metered API on the user's key. */
+const CLAUDE_API_PROVIDER = "anthropic";
+
+/** A candidate nothing published: `provider@model`, for a probe to ask about. */
+function offCatalogCandidate(provider: string, model: string): ExplainedCandidate {
+  const candidate = explainCandidate(routeFor(provider, model), "candidate", "kept");
+  candidate.origin = "off-catalog";
+  return candidate;
 }
 
 /**
@@ -2173,7 +2373,7 @@ export function describeRouteExplanation(explanation: RouteExplanation): string 
 function describeOrigin(explanation: RouteExplanation): string {
   switch (explanation.source) {
     case "native":
-      return "native · Claude Code's own auth · not probed";
+      return describeNativeOrigin(explanation);
     case "explicit": {
       const name = explanation.candidates[0]?.displayName ?? explanation.routedModel;
       return explanation.via === "vendor-qualified-id"
@@ -2187,6 +2387,23 @@ function describeOrigin(explanation: RouteExplanation): string {
     case "catalog":
       return describeCatalogOrigin(explanation);
   }
+}
+
+/**
+ * A native target's line. It names the Claude subscription a launch of the name
+ * uses, and says whether the model's other routes are listed beside it, for
+ * comparison only.
+ */
+function describeNativeOrigin(explanation: RouteExplanation): string {
+  const head = `${explanation.native?.displayName ?? "native"} · Claude Code's own login · not probed`;
+  if (explanation.native?.isTierAlias) return `${head} · probe a concrete id to compare routes`;
+  if (explanation.comparisonCatalog === "unreadable") {
+    return `${head} · catalog unreadable — other routes not listed`;
+  }
+  if (explanation.comparisonCandidates !== undefined) {
+    return `${head} · other routes listed for comparison, not used by a launch of this name`;
+  }
+  return head;
 }
 
 function describeCatalogOrigin(explanation: RouteExplanation): string {

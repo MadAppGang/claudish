@@ -92,7 +92,9 @@ export function parsePinnedSpec(
 /**
  * Display name of the claudish provider serving the slot. The token file is
  * observation, not routing; `nativeRouteFor` runs before any route lookup (CLAUDE.md
- * invariant); a pinned spec names its provider; anything else is not known yet.
+ * invariant) and names a native slot by its route, the Claude subscription, since
+ * the provider name alone does not say the slot runs on the user's own login; a
+ * pinned spec names its provider; anything else is not known yet.
  */
 export function resolveProvider(input: {
   model: string;
@@ -101,7 +103,7 @@ export function resolveProvider(input: {
 }): string | null {
   if (input.tokenFile?.provider_name) return input.tokenFile.provider_name;
   const native = nativeRouteFor(input.model);
-  if (native) return getProviderByName("native-anthropic")?.displayName ?? native.displayName;
+  if (native) return native.displayName;
   const pinned = parsePinnedSpec(input.spawnModel);
   if (pinned) return getProviderByName(pinned.provider)?.displayName ?? pinned.provider;
   return null;

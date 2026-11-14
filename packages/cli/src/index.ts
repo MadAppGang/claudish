@@ -698,7 +698,12 @@ if (isMcpMode) {
       "startup:credential-resolution",
       () =>
         Promise.all(
-          tuiProviders.map((p) => credentials.isAvailable(p.catalogName, { allowOpPrompt: true }))
+          // A read-at-use key (the Claude API) is answered by presence and read
+          // only when a request signs, so mounting the TUI raises no 1Password
+          // prompt for it.
+          tuiProviders.map((p) =>
+            credentials.isAvailable(p.catalogName, { allowOpPrompt: p.vaultKeyReadAtUse !== true })
+          )
         ),
       { providers: tuiProviders.length }
     );
@@ -727,6 +732,7 @@ async function runCli() {
     signalShutdownExitCode,
     isAdvisorNativeSession,
     resolveAdvisorToolEnv,
+    wantsAnthropicApiBilling,
   } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
   const { DEFAULT_PORT_RANGE } = await import("./config.js");
@@ -761,6 +767,15 @@ async function runCli() {
     }
     return Buffer.concat(chunks).toString("utf-8");
   }
+
+  // The Claude API launch's hold on its key: every sink redacts the key while it
+  // is held. Released once the session is over (after the proxy shut down and the
+  // end-of-session card printed), and on every way out of this function before.
+  let launchLease: import("./launcher/claude-launch.js").LaunchLease | undefined;
+  const releaseLaunchLease = (): void => {
+    launchLease?.release();
+    launchLease = undefined;
+  };
 
   try {
     // Terminal light/dark detection BEFORE any colored output — parseArgs
@@ -1093,6 +1108,19 @@ async function runCli() {
       process.exit(1);
     }
 
+    // A Claude launch is decided before anything below reads `monitor`: one
+    // `claude@<id>` main model is a monitor session on Claude Code's own login
+    // (`claudeLaunch`), and a `claude@` spec the subscription cannot serve
+    // refuses the launch here, before any key is validated.
+    {
+      const { decideClaudeLaunch } = await import("./launcher/claude-launch.js");
+      const decision = decideClaudeLaunch(cliConfig);
+      if (!decision.ok) {
+        console.error(`[claudish] Error: ${decision.message}`);
+        process.exit(1);
+      }
+    }
+
     // No catalog file and a bare name to route: learn whether the backend can be
     // reached before the first routing decision below, which needs the answer.
     const endCatalogVerdict = beginSpan("startup:catalog-verdict");
@@ -1177,7 +1205,13 @@ async function runCli() {
     // Clean up stdin after interactive prompts (readline, @inquirer/prompts).
     // These leave lingering data/keypress listeners and raw mode state that interfere
     // with Claude Code's TTY handling when spawned with stdio: "inherit". (#85, #88, #99)
-    if (cliConfig.interactive && !cliConfig.monitor && process.stdin.isTTY) {
+    // A Claude launch is a monitor session the picker may have drawn for, so it
+    // cleans up too; a plain `--monitor` never drew one.
+    if (
+      cliConfig.interactive &&
+      (!cliConfig.monitor || cliConfig.claudeLaunch !== undefined) &&
+      process.stdin.isTTY
+    ) {
       if (typeof process.stdin.setRawMode === "function") {
         process.stdin.setRawMode(false);
       }
@@ -1261,16 +1295,42 @@ async function runCli() {
     // Startup PLANS every member and BUILDS every routed member's chain here,
     // before the port exists; the proxy's panel gateway runs on exactly that
     // runtime (no lazy path), and owns its handlers from then on.
+    //
+    // Who signs this launch's native requests is decided once, here, and the
+    // same object reaches advisor planning and the proxy: a Claude subscription
+    // launch (`claude@<id>`, or a bare Claude main model) is never signed with an
+    // API key, and a settings layer that would hand the child one refuses the
+    // launch here, before spawn. A Claude API launch (`anthropic@<id>`) resolves
+    // its key here, and the proxy signs every request with it.
+    const { advisorKeyLookupAllowed, prepareClaudeLaunch } = await import(
+      "./launcher/claude-launch.js"
+    );
+    const preparedLaunch = await traceSpan("startup:claude-launch", () =>
+      prepareClaudeLaunch(cliConfig)
+    );
+    if (!preparedLaunch.ok) {
+      process.stderr.write(`[claudish] Error: ${preparedLaunch.message}\n`);
+      process.exit(1);
+    }
+    launchLease = preparedLaunch.lease;
+    if (!cliConfig.quiet) {
+      for (const line of preparedLaunch.banner) process.stderr.write(`${line}\n`);
+    }
+    const launchSigning = preparedLaunch.signing;
     let advisorRuntime: import("./handlers/advisor-panel-gateway.js").AdvisorRuntime | undefined;
     if (cliConfig.advisor) {
       const { evaluateAdvisorStartup } = await import("./advisor-startup.js");
       const decision = await traceSpan("startup:advisor-check", () =>
-        evaluateAdvisorStartup(cliConfig, resolveAdvisorToolEnv(cliConfig))
+        evaluateAdvisorStartup(cliConfig, resolveAdvisorToolEnv(cliConfig), process.env, {
+          ...(launchSigning ? { launchSigning } : {}),
+          advisorKeyLookup: advisorKeyLookupAllowed(cliConfig),
+        })
       );
       if (decision?.kind === "refuse") {
         process.stderr.write(
           `[claudish] Error: --advisor cannot work in this launch: ${decision.reason}\n`
         );
+        releaseLaunchLease();
         process.exit(1);
       }
       if (decision?.kind === "proceed") {
@@ -1376,6 +1436,7 @@ async function runCli() {
         } else if (!outcome.sessionId) {
           // Cancelled. Exit 0 — declining to pick is not an error, and forwarding the
           // flag here would reopen a picker the user just dismissed.
+          releaseLaunchLease();
           process.exit(0);
         } else {
           cliConfig.claudeArgs.push("--resume", outcome.sessionId);
@@ -1394,9 +1455,18 @@ async function runCli() {
         cliConfig.monitor ? undefined : cliConfig.openrouterApiKey!,
         cliConfig.monitor ? undefined : explicitModel,
         cliConfig.monitor,
-        cliConfig.anthropicApiKey,
+        // A Claude subscription launch gets no key at all: nothing it forwards
+        // may be signed with one. A Claude API launch's key lives only in its
+        // signing.
+        launchSigning ? undefined : cliConfig.anthropicApiKey,
         modelMap,
         {
+          ...(launchSigning ? { nativeSigning: launchSigning } : {}),
+          ...(cliConfig.claudeLaunch === "api" && cliConfig.claudeLaunchModel
+            ? { claudeApiMainModel: cliConfig.claudeLaunchModel }
+            : {}),
+          apiBillingOptIn: wantsAnthropicApiBilling(cliConfig),
+          advisorKeyLookup: advisorKeyLookupAllowed(cliConfig),
           summarizeTools: cliConfig.summarizeTools,
           quiet: cliConfig.quiet,
           isInteractive: cliConfig.interactive,
@@ -1520,6 +1590,10 @@ async function runCli() {
       }
     }
 
+    // The session is over: nothing signs with the Claude API launch's key any
+    // more, and the card that could quote it has printed.
+    releaseLaunchLease();
+
     // A signal that arrived during the teardown above stopped this run too, and
     // outranks the code Claude Code had already returned.
     exitCode = signalShutdownExitCode() ?? exitCode;
@@ -1554,6 +1628,7 @@ async function runCli() {
   } catch (error) {
     console.error("[claudish] Fatal error:", error);
     console.error("[claudish] Stack:", error instanceof Error ? error.stack : "no stack");
+    releaseLaunchLease();
     process.exit(signalShutdownExitCode() ?? 1);
   }
 }

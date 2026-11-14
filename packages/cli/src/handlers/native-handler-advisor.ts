@@ -40,6 +40,7 @@ import type { ChildAuthControl, ChildAuthSource } from "../child-auth-types.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
 import { resolveConnection } from "../providers/connection-resolver.js";
 import type { KnownWire, WireApi } from "../providers/connection-wire.js";
+import { isClaudeSubscriptionSpec } from "../providers/native-route.js";
 import { getProviderByName } from "../providers/provider-definitions.js";
 import { mergeWireHeaders, shapeRequestFromWire } from "../providers/wire-request.js";
 import {
@@ -59,7 +60,10 @@ import {
   type AdvisorPanelGateway,
   type AdvisorPanelResult,
   type AdvisorTurn,
+  CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY,
+  type ClaudeAdvisorKeyArm,
   type ExtractedAdvice,
+  NO_MAIN_MODEL_ADVISOR_NO_KEY,
   buildAdvisorPanelPayload,
   describeAdvisorRefusal,
   extractAdvice,
@@ -1905,13 +1909,14 @@ export function claudeRequestFacts(
 export type ClaudeCredentialSource =
   | "claude-code-login"
   | "inbound-x-api-key"
-  | "ANTHROPIC_API_KEY";
+  | "ANTHROPIC_API_KEY"
+  | "claude-api-launch-key";
 
 export type ClaudeAdvisorAuth =
   | { arm: "oauth"; source: "claude-code-login"; login: ClaudeLogin; facts: ClaudeRequestFacts }
   | {
       arm: "api-key";
-      source: "inbound-x-api-key" | "ANTHROPIC_API_KEY";
+      source: "inbound-x-api-key" | "ANTHROPIC_API_KEY" | "claude-api-launch-key";
       apiKey: string;
       facts: ClaudeRequestFacts;
       /** Why a present bearer was not used; the call warns with it (never silent). */
@@ -1935,20 +1940,36 @@ function loginSkippedPhrase(facts: ClaudeRequestFacts): string {
 
 /**
  * The credential for one Claude advisor call, by presence and provenance on
- * the request, never by failure: the login when `facts.login` exists; else the
- * inbound `x-api-key` if real; else ANTHROPIC_API_KEY (`anthropicKey`, the
- * advisor's own lookup, asked only now). A real bearer that failed a check, or
- * a request with no bearer at all, is never moved to a metered key silently:
- * the result carries a warning naming the reason. claudish's own placeholder
- * (a proxy-auth launch, whose startup notice already says metered) is not a
- * credential and only shows in the record (`loginSkipped`).
+ * the request, never by failure: the login when `facts.login` exists; else what
+ * `keyArm` allows. On `"lookup"`: the inbound `x-api-key` if real; else
+ * ANTHROPIC_API_KEY (`anthropicKey`, the advisor's own lookup, asked only now).
+ * On `"request-key"`: the inbound `x-api-key` only. On `"off"` (the Claude
+ * subscription): nothing, no key is read. On
+ * `{launchKey}` (the Claude API launch): the launch's key, never an inbound one.
+ * A real bearer that failed a check, or a request with no bearer at all, is
+ * never moved to a metered key silently: the result carries a warning naming
+ * the reason. claudish's own placeholder (a proxy-auth launch, whose startup
+ * notice already says metered) is not a credential and only shows in the record
+ * (`loginSkipped`).
  */
 export async function resolveClaudeAdvisorAuth(
   facts: ClaudeRequestFacts,
-  anthropicKey: () => Promise<string | undefined> = () => resolveAdvisorCredential("anthropic")
+  anthropicKey: () => Promise<string | undefined> = () => resolveAdvisorCredential("anthropic"),
+  keyArm: ClaudeAdvisorKeyArm = "lookup"
 ): Promise<ClaudeAdvisorAuth> {
   if (facts.login) {
     return { arm: "oauth", source: "claude-code-login", login: facts.login, facts };
+  }
+  if (keyArm === "off") {
+    return { arm: null, reason: CLAUDE_SUBSCRIPTION_ADVISOR_NO_KEY, facts };
+  }
+  if (typeof keyArm === "object") {
+    return {
+      arm: "api-key",
+      source: "claude-api-launch-key",
+      apiKey: keyArm.launchKey(),
+      facts,
+    };
   }
   const skipped =
     facts.loginSkipped === undefined
@@ -1964,6 +1985,9 @@ export async function resolveClaudeAdvisorAuth(
       facts,
       ...(skipped ? { warning: `${skipped}; billed per token on the request's x-api-key` } : {}),
     };
+  }
+  if (keyArm === "request-key") {
+    return { arm: null, reason: `no Claude credential: ${NO_MAIN_MODEL_ADVISOR_NO_KEY}`, facts };
   }
   const key = await anthropicKey();
   if (key) {
@@ -2648,10 +2672,12 @@ export interface ClaudeAdvisorDeps {
   /**
    * The credential for this advisor call's Claude members, by presence and
    * provenance on the main request (`resolveClaudeAdvisorAuth`). Called only
-   * when a Claude member runs, and memoised per advisor call, so a routed-only
-   * panel never resolves an Anthropic key.
+   * when a Claude member runs, and memoised per advisor call and per arm, so a
+   * routed-only panel never resolves an Anthropic key. `subscriptionOnly`: the
+   * member was named `claude@…`, so it signs with the login or nothing, never
+   * an API key, whatever the launch's key arm is.
    */
-  resolveAuth: () => Promise<ClaudeAdvisorAuth>;
+  resolveAuth: (opts?: { subscriptionOnly?: boolean }) => Promise<ClaudeAdvisorAuth>;
   /** Test seam; defaults to the global fetch at call time. */
   fetchImpl?: typeof fetch;
 }
@@ -2732,7 +2758,7 @@ interface MemberRequest {
 async function runAdvisorMember(
   req: MemberRequest,
   params: Pick<RunAdvisorCallParams, "gateway" | "claude" | "warn">,
-  claudeAuth: () => Promise<ClaudeAdvisorAuth>
+  claudeAuth: (subscriptionOnly: boolean) => Promise<ClaudeAdvisorAuth>
 ): Promise<AdvisorModelOutcome> {
   const plan = memberPlan(params.gateway, req.spec, req.role);
   switch (plan.kind) {
@@ -2952,13 +2978,13 @@ async function runClaudeMember(
   plan: Extract<AdvisorModelPlan, { kind: "claude-native" }>,
   req: MemberRequest,
   params: Pick<RunAdvisorCallParams, "claude" | "warn">,
-  claudeAuth: () => Promise<ClaudeAdvisorAuth>
+  claudeAuth: (subscriptionOnly: boolean) => Promise<ClaudeAdvisorAuth>
 ): Promise<AdvisorModelOutcome> {
   const outcome = await runClaudeAdvisorCall({
     role: req.role,
     spec: req.spec,
     model: plan.model,
-    auth: await claudeAuth(),
+    auth: await claudeAuth(isClaudeSubscriptionSpec(plan.spec)),
     system: req.system,
     turns: req.turns,
     timeoutMs: req.timeoutMs,
@@ -2981,18 +3007,28 @@ async function runClaudeMember(
   };
 }
 
-/** One credential resolution per advisor call, and none unless a Claude member asks. */
-function memoClaudeAuth(claude: ClaudeAdvisorDeps | undefined): () => Promise<ClaudeAdvisorAuth> {
-  let pending: Promise<ClaudeAdvisorAuth> | undefined;
-  return () => {
-    pending ??= claude
-      ? claude.resolveAuth()
-      : Promise.resolve({
-          arm: null,
-          reason: "no Claude credential: the advisor was given no access to the main request",
-          facts: {},
-        });
-    return pending;
+/**
+ * One credential resolution per advisor call and per arm (a `claude@` member's
+ * login-only one, every other Claude member's), and none unless a Claude member
+ * asks.
+ */
+function memoClaudeAuth(
+  claude: ClaudeAdvisorDeps | undefined
+): (subscriptionOnly: boolean) => Promise<ClaudeAdvisorAuth> {
+  const pending = new Map<boolean, Promise<ClaudeAdvisorAuth>>();
+  return (subscriptionOnly) => {
+    let auth = pending.get(subscriptionOnly);
+    if (!auth) {
+      auth = claude
+        ? claude.resolveAuth(subscriptionOnly ? { subscriptionOnly: true } : undefined)
+        : Promise.resolve({
+            arm: null,
+            reason: "no Claude credential: the advisor was given no access to the main request",
+            facts: {},
+          });
+      pending.set(subscriptionOnly, auth);
+    }
+    return auth;
   };
 }
 

@@ -19,13 +19,19 @@ export interface CatalogRouteBinding {
  *
  * The split exists because the gatherer returns every name bound to a route. A
  * read-only name in the routing table was a candidate by accident of spelling:
- * a custom endpoint a user named `anthropic` would have been gathered for every
- * model Anthropic's native API serves. The reads still see both tables
+ * before claudish had a provider for Anthropic's native API, a custom endpoint a
+ * user named `anthropic` would have been gathered for every model that route
+ * serves. The reads still see both tables
  * ({@link catalogRouteForProvider}, {@link catalogReadProvidersForRoute}), so each
  * of them answers exactly as before the split.
  */
 export const CATALOG_ROUTE_BINDINGS: Readonly<Record<string, CatalogRouteBinding>> = {
   "native-anthropic": { routeId: "anthropic", routeProfileId: "claude-code-subscription" },
+  // The Claude API: Anthropic's metered native API on the user's ANTHROPIC_API_KEY.
+  // A bare Claude name never reaches route() (the native passthrough serves it on
+  // Claude Code's login), so this binding gathers a candidate only for a name that
+  // does reach route(); `anthropic@<id>` names the route explicitly.
+  anthropic: { routeId: "anthropic", routeProfileId: "direct-api" },
   "openai-codex": { routeId: "openai", routeProfileId: "codex-subscription" },
   openai: { routeId: "openai", routeProfileId: "direct-api" },
   "kimi-coding": { routeId: "moonshotai", routeProfileId: "kimi-code-subscription" },
@@ -99,12 +105,6 @@ export const UNBOUND_SUBSCRIPTION_PROFILES: readonly (CatalogRouteBinding & { re
  * goes away should go with it.
  */
 export const LOOKUP_ONLY_ROUTE_BINDINGS: Readonly<Record<string, CatalogRouteBinding>> = {
-  // Anthropic's native API. Its reader is the session summary's savings panel,
-  // which takes the first-party price from this route (`FIRST_PARTY` in
-  // `session/baseline-pricing.ts`). The probe map also keys this route's probe
-  // pick under this name (`probe-catalog.ts`). claudish calls Claude through
-  // `native-anthropic` or a gateway, never through this route.
-  anthropic: { routeId: "anthropic", routeProfileId: "direct-api" },
   // The catalog's vendor slug for Kimi. Its reader is the Kimi picker list: the
   // picker maps `kimi` to `moonshotai` (`pickerProviderToFirebaseSlug` in
   // `model-selector.ts`) and asks `modelsByVendor("moonshotai")` and
