@@ -83,15 +83,15 @@ export function applyHarnessGateway(
   env.ANTHROPIC_CUSTOM_HEADERS = kept.join("\n");
 }
 
-/** The URL without any userinfo, for display. */
+/**
+ * The URL's origin only, for display. Userinfo, path, query and fragment can each
+ * carry a credential, so none of them is shown; an unparseable value is never echoed.
+ */
 function displayUrl(url: string): string {
   try {
-    const parsed = new URL(url);
-    parsed.username = "";
-    parsed.password = "";
-    return parsed.toString();
+    return new URL(url).origin;
   } catch {
-    return url;
+    return "the configured harnessGateway.url";
   }
 }
 

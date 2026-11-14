@@ -202,8 +202,12 @@ On a native Claude route (a bare Claude name, a pane child's `claude@<id>`), Cla
 each request with the user's Claude login token, and that token passes through the gateway. The
 loopback rule keeps it on the machine; the gateway's own logs are outside claudish's
 signing-value registry. The startup line says so: `Claude Code's requests go through the gateway
-at <url>; on this native Claude route the Claude login token passes through it`. On a foreign
+at <origin>; on this native Claude route the Claude login token passes through it`. On a foreign
 route the token Claude Code sends is claudish's placeholder.
+
+The line shows the URL's origin only (scheme, host, port). Userinfo, path, query and fragment can
+each hold a gateway credential, and none of those is a signing value, so the registry would not
+redact it from the debug log. The child's environment gets the full URL.
 
 The proxy never sends `X-Target-URL` upstream. The native forward is a header allowlist
 (`handlers/shared/anthropic-forward.ts`), and the composed path reads only `x-api-key` from the

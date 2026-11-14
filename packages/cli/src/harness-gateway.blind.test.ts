@@ -194,7 +194,9 @@ describe("harness gateway notice", () => {
 
         const notice = harnessGatewayNotice(url, nativeRoute);
 
-        expect(notice).toContain(address);
+        // The notice shows the origin only: a path, query or fragment can carry a credential.
+        expect(notice).toContain(new URL(address).origin);
+        expect(notice).not.toContain("/gateway");
         expect(notice).not.toContain(username);
         expect(notice).not.toContain(password);
         expect(notice).not.toContain(url);
