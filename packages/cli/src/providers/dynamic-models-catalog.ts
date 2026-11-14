@@ -50,8 +50,10 @@ import {
 import {
   type DiscoveredModel,
   type ModelsCatalogOutcome,
+  discoverProviderModelsCatalog,
   fetchEveryServedModel,
   invalidateModelDiscovery,
+  servedOutcomeOf,
 } from "./model-discovery.js";
 import { BUILTIN_PROVIDERS, isPersistedListProvider } from "./provider-definitions.js";
 
@@ -383,6 +385,33 @@ export async function refreshAccountModelsList(
       },
     };
   }
+}
+
+/**
+ * The live answer for a provider that keeps a stored list: the account-bound
+ * refresh, so the answer is written through for the next process. A list
+ * younger than `LIVE_MS` is already the live answer and is read, not fetched.
+ * With no credential the plain discovery runs, because its failure is the
+ * notice that names the missing credential. `trigger` names the caller in the
+ * refresh's log line. Never rejects.
+ */
+export async function liveOrStoredModelsCatalog(
+  provider: string,
+  trigger: RefreshTrigger
+): Promise<ModelsCatalogOutcome> {
+  const result = await refreshAccountModelsList(provider, trigger, {
+    minAgeMs: LIVE_MS,
+  });
+  if (result.kind === "refreshed") {
+    return result.outcome.kind === "served"
+      ? servedOutcomeOf(result.outcome.models)
+      : result.outcome;
+  }
+  if (result.reason === "too-recent") {
+    const list = await readAccountModelsList(provider);
+    if (list) return servedOutcomeOf(list.models);
+  }
+  return discoverProviderModelsCatalog(provider);
 }
 
 /**
