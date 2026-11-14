@@ -790,6 +790,128 @@
           ]
         }
       },
+      "gemini-4-hydrogen": {
+        "code_review": {
+          "basis": "owner_choice",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "model_id_switch",
+              "externalModelId": "gemini-4-hydrogen",
+              "routeId": "google",
+              "routeProfileId": "antigravity-subscription"
+            }
+          ]
+        },
+        "debugging": {
+          "basis": "owner_choice",
+          "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "model_id_switch",
+              "externalModelId": "gemini-4-hydrogen",
+              "routeId": "google",
+              "routeProfileId": "antigravity-subscription"
+            }
+          ]
+        },
+        "frontend_ui": {
+          "basis": "owner_choice",
+          "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "model_id_switch",
+              "externalModelId": "gemini-4-hydrogen",
+              "routeId": "google",
+              "routeProfileId": "antigravity-subscription"
+            }
+          ]
+        },
+        "implementation": {
+          "basis": "vendor_guidance",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "model_id_switch",
+              "externalModelId": "gemini-4-hydrogen",
+              "routeId": "google",
+              "routeProfileId": "antigravity-subscription"
+            }
+          ]
+        },
+        "long_context": {
+          "basis": "owner_choice",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "model_id_switch",
+              "externalModelId": "gemini-4-hydrogen",
+              "routeId": "google",
+              "routeProfileId": "antigravity-subscription"
+            }
+          ]
+        },
+        "planning": {
+          "basis": "owner_choice",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "model_id_switch",
+              "externalModelId": "gemini-4-hydrogen",
+              "routeId": "google",
+              "routeProfileId": "antigravity-subscription"
+            }
+          ]
+        },
+        "quick_edit": {
+          "basis": "vendor_guidance",
+          "effort": "low",
+          "sendableOn": [
+            {
+              "encoding": "model_id_switch",
+              "externalModelId": "gemini-4-hydrogen",
+              "routeId": "google",
+              "routeProfileId": "antigravity-subscription"
+            }
+          ]
+        },
+        "research": {
+          "basis": "owner_choice",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "model_id_switch",
+              "externalModelId": "gemini-4-hydrogen",
+              "routeId": "google",
+              "routeProfileId": "antigravity-subscription"
+            }
+          ]
+        },
+        "terminal_ops": {
+          "basis": "owner_choice",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "model_id_switch",
+              "externalModelId": "gemini-4-hydrogen",
+              "routeId": "google",
+              "routeProfileId": "antigravity-subscription"
+            }
+          ]
+        },
+        "tool_automation": {
+          "basis": "vendor_guidance",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "model_id_switch",
+              "externalModelId": "gemini-4-hydrogen",
+              "routeId": "google",
+              "routeProfileId": "antigravity-subscription"
+            }
+          ]
+        }
+      },
       "glm-5.3": {
         "code_review": {
           "basis": "owner_choice",
@@ -2215,7 +2337,7 @@
         }
       }
     },
-    "fetchedAt": "2026-11-13T14:24:41.274Z",
+    "fetchedAt": "2026-11-13T21:33:25.499Z",
     "format": 1,
     "recommendations": {
       "contractVersion": 3,
@@ -2229,7 +2351,7 @@
           "tier": "flagship"
         },
         {
-          "modelId": "gemini-4-argon",
+          "modelId": "gemini-4-hydrogen",
           "tier": "flagship"
         },
         {
@@ -2317,11 +2439,11 @@
           "tier": "luxury"
         }
       ],
-      "generationId": "g-20261112195224186-062fe295"
+      "generationId": "g-20261113212335409-2e2b419f"
     },
     "source": "https://us-central1-claudish-6da10.cloudfunctions.net"
   },
-  "catalogGenerationId": "g-20261112195224186-062fe295",
+  "catalogGenerationId": "g-20261113212335409-2e2b419f",
   "entries": [
     {
       "aggregators": [
@@ -3088,9 +3210,9 @@
       "aliases": [
         "anthropic/claude-sonnet-5.5",
         "claude-sonnet-5.5",
-        "claude-sonnet-5-5-medium",
-        "claude-sonnet-5-5-high",
         "claude-sonnet-5-5-low",
+        "claude-sonnet-5-5-high",
+        "claude-sonnet-5-5-medium",
         "claude-sonnet-5-5-max",
         "claude-sonnet-5-5-xhigh"
       ],
@@ -3364,8 +3486,8 @@
       "aliases": [
         "google/gemini-3.8-flash",
         "gemini-3.8-flash-medium",
-        "gemini-3.8-flash-low",
         "gemini-3.8-flash-high",
+        "gemini-3.8-flash-low",
         "gemini-3-8-flash-high",
         "gemini-3-8-flash-low",
         "gemini-3-8-flash-medium"
@@ -3487,9 +3609,9 @@
       ],
       "aliases": [
         "google/gemini-4-argon",
-        "gemini-4-argon-low",
+        "gemini-4-argon-high",
         "gemini-4-argon-medium",
-        "gemini-4-argon-high"
+        "gemini-4-argon-low"
       ],
       "contextWindow": 1048576,
       "contractVersion": 3,
@@ -3530,6 +3652,124 @@
         "google-antigravity",
         "llm-gateway-devpass",
         "opencode-go"
+      ],
+      "supportsTools": true,
+      "supportsVision": true,
+      "videoInput": true,
+      "videoOutput": false
+    },
+    {
+      "aggregators": [
+        {
+          "externalModelId": "gemini-4-hydrogen",
+          "limits": {
+            "contextWindow": 1048576,
+            "maxOutputTokens": 262144
+          },
+          "modelIdEffort": {
+            "baseServed": false,
+            "default": {
+              "status": "unknown"
+            },
+            "values": {
+              "high": "gemini-4-hydrogen-high",
+              "low": "gemini-4-hydrogen-low",
+              "medium": "gemini-4-hydrogen-medium",
+              "xhigh": "gemini-4-hydrogen-xhigh"
+            },
+            "via": "model_id"
+          },
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "route": {
+            "routeId": "google",
+            "routeProfileId": "antigravity-subscription"
+          },
+          "routeStatus": "mapped",
+          "sourceProviderId": "antigravity",
+          "wire": {
+            "evidence": [],
+            "status": "unknown"
+          }
+        },
+        {
+          "externalModelId": "gemini-4-hydrogen",
+          "pricing": {
+            "input": 1.5,
+            "output": 7.5,
+            "type": "flat"
+          },
+          "reasoning": {
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "route": {
+            "routeId": "google",
+            "routeProfileId": "direct-api"
+          },
+          "routeStatus": "mapped",
+          "sourceProviderId": "google",
+          "wire": {
+            "api": "gemini",
+            "evidence": [],
+            "reasoning": {
+              "status": "unknown"
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "status": "known",
+            "tokenParam": {
+              "status": "not_applicable"
+            },
+            "toolsWithReasoning": {
+              "status": "unknown"
+            }
+          }
+        }
+      ],
+      "aliases": [
+        "google/gemini-4-hydrogen",
+        "gemini-4-hydrogen-low",
+        "gemini-4-hydrogen-high",
+        "gemini-4-hydrogen-xhigh",
+        "gemini-4-hydrogen-medium"
+      ],
+      "contextWindow": 1048576,
+      "contractVersion": 3,
+      "displayName": "Gemini 4 Hydrogen",
+      "endpoints": {
+        "gemini": {
+          "api": "gemini"
+        }
+      },
+      "maxOutputTokens": 65536,
+      "modelId": "gemini-4-hydrogen",
+      "outputModalities": [
+        "text"
+      ],
+      "provider": "google",
+      "reasoning": {
+        "control": "effort",
+        "defaultEffort": "medium",
+        "efforts": [
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ],
+        "mandatory": true,
+        "supported": true
+      },
+      "releaseDate": "2026-11-12",
+      "status": "active",
+      "subscriptionPlanIds": [
+        "google-antigravity",
+        "llm-gateway-devpass"
       ],
       "supportsTools": true,
       "supportsVision": true,
@@ -4115,7 +4355,7 @@
       ],
       "contextWindow": 1050000,
       "contractVersion": 3,
-      "displayName": "GPT-6-Astra",
+      "displayName": "GPT-6 Astra",
       "endpoints": {
         "openai": {
           "api": "responses",
@@ -4632,7 +4872,7 @@
       ],
       "contextWindow": 1050000,
       "contractVersion": 3,
-      "displayName": "GPT-6.1-Sol",
+      "displayName": "GPT-6.1 Sol",
       "endpoints": {
         "openai": {
           "api": "responses",
@@ -5875,7 +6115,7 @@
               "status": "unknown"
             },
             "speed": {
-              "status": "unknown"
+              "status": "not_applicable"
             },
             "status": "known",
             "tokenParam": {
@@ -5891,13 +6131,7 @@
       "modelId": "qwen4-max-preview",
       "provider": "qwen",
       "reasoning": {
-        "control": "effort",
-        "defaultEffort": "xhigh",
-        "efforts": [
-          "xhigh",
-          "medium",
-          "low"
-        ],
+        "control": "toggle",
         "mandatory": false,
         "supported": true
       },
@@ -5909,7 +6143,7 @@
       "supportsVision": true
     }
   ],
-  "lastUpdated": "2026-11-12T19:52:24.186Z",
+  "lastUpdated": "2026-11-13T21:23:35.409Z",
   "models": [],
   "plans": [
     {
@@ -6640,14 +6874,34 @@
       "id": "google-antigravity",
       "inclusions": [
         {
-          "externalModelId": "claude-sonnet-5-5-medium",
+          "externalModelId": "gemini-4-hydrogen-low",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-hydrogen",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-hydrogen-low"
+        },
+        {
+          "externalModelId": "gemini-4-hydrogen-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-hydrogen",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-hydrogen-high"
+        },
+        {
+          "externalModelId": "claude-sonnet-5-5-low",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
             "modelId": "claude-sonnet-5-5",
             "status": "mapped"
           },
-          "sourceText": "claude-sonnet-5-5-medium"
+          "sourceText": "claude-sonnet-5-5-low"
         },
         {
           "externalModelId": "claude-opus-5-5-medium",
@@ -6660,6 +6914,16 @@
           "sourceText": "claude-opus-5-5-medium"
         },
         {
+          "externalModelId": "claude-sonnet-5-5-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-sonnet-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-sonnet-5-5-high"
+        },
+        {
           "externalModelId": "claude-opus-5-5-high",
           "kind": "provider_model",
           "provider": "antigravity",
@@ -6670,6 +6934,16 @@
           "sourceText": "claude-opus-5-5-high"
         },
         {
+          "externalModelId": "claude-opus-5-5-low",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-opus-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-opus-5-5-low"
+        },
+        {
           "externalModelId": "gemini-3.8-flash-medium",
           "kind": "provider_model",
           "provider": "antigravity",
@@ -6678,6 +6952,56 @@
             "status": "mapped"
           },
           "sourceText": "gemini-3.8-flash-medium"
+        },
+        {
+          "externalModelId": "gemini-4-argon-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-argon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-argon-high"
+        },
+        {
+          "externalModelId": "gemini-4-argon-medium",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-argon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-argon-medium"
+        },
+        {
+          "externalModelId": "claude-sonnet-5-5-medium",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-sonnet-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-sonnet-5-5-medium"
+        },
+        {
+          "externalModelId": "gemini-4-hydrogen-xhigh",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-hydrogen",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-hydrogen-xhigh"
+        },
+        {
+          "externalModelId": "gemini-3.8-flash-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-3.8-flash",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-3.8-flash-high"
         },
         {
           "externalModelId": "gemini-4-argon-low",
@@ -6700,64 +7024,14 @@
           "sourceText": "gemini-3.8-flash-low"
         },
         {
-          "externalModelId": "claude-sonnet-5-5-high",
+          "externalModelId": "gemini-4-hydrogen-medium",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
-            "modelId": "claude-sonnet-5-5",
+            "modelId": "gemini-4-hydrogen",
             "status": "mapped"
           },
-          "sourceText": "claude-sonnet-5-5-high"
-        },
-        {
-          "externalModelId": "gemini-4-argon-medium",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-argon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-argon-medium"
-        },
-        {
-          "externalModelId": "gemini-4-argon-high",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-argon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-argon-high"
-        },
-        {
-          "externalModelId": "gemini-3.8-flash-high",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-3.8-flash",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-3.8-flash-high"
-        },
-        {
-          "externalModelId": "claude-opus-5-5-low",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-opus-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-opus-5-5-low"
-        },
-        {
-          "externalModelId": "claude-sonnet-5-5-low",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-sonnet-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-sonnet-5-5-low"
+          "sourceText": "gemini-4-hydrogen-medium"
         }
       ],
       "modelDiscovery": "client",
@@ -6884,6 +7158,16 @@
             "status": "mapped"
           },
           "sourceText": "gemini-4-argon"
+        },
+        {
+          "externalModelId": "gemini-4-hydrogen",
+          "kind": "provider_model",
+          "provider": "llmgateway",
+          "resolution": {
+            "modelId": "gemini-4-hydrogen",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-hydrogen"
         },
         {
           "externalModelId": "mimo-v2.6-pro",
@@ -7071,34 +7355,14 @@
       "id": "ollama-cloud",
       "inclusions": [
         {
-          "externalModelId": "deepseek-v4.1-flash",
+          "externalModelId": "kimi-k3.1-pro",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "deepseek-v4.1-flash",
+            "modelId": "kimi-k3.1-pro",
             "status": "mapped"
           },
-          "sourceText": "deepseek-v4.1-flash"
-        },
-        {
-          "externalModelId": "mimo-v2.6-pro",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "mimo-v2.6-pro",
-            "status": "mapped"
-          },
-          "sourceText": "mimo-v2.6-pro"
-        },
-        {
-          "externalModelId": "mimo-v2.6-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "mimo-v2.6-flash",
-            "status": "mapped"
-          },
-          "sourceText": "mimo-v2.6-flash"
+          "sourceText": "kimi-k3.1-pro"
         },
         {
           "externalModelId": "glm-5.3-flash",
@@ -7111,14 +7375,24 @@
           "sourceText": "glm-5.3-flash"
         },
         {
-          "externalModelId": "kimi-k3.1-pro",
+          "externalModelId": "mimo-v2.6-pro",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "kimi-k3.1-pro",
+            "modelId": "mimo-v2.6-pro",
             "status": "mapped"
           },
-          "sourceText": "kimi-k3.1-pro"
+          "sourceText": "mimo-v2.6-pro"
+        },
+        {
+          "externalModelId": "glm-5.3",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "glm-5.3",
+            "status": "mapped"
+          },
+          "sourceText": "glm-5.3"
         },
         {
           "externalModelId": "minimax-m3.1-flash",
@@ -7131,14 +7405,24 @@
           "sourceText": "minimax-m3.1-flash"
         },
         {
-          "externalModelId": "glm-5.3",
+          "externalModelId": "deepseek-v4.1-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "glm-5.3",
+            "modelId": "deepseek-v4.1-flash",
             "status": "mapped"
           },
-          "sourceText": "glm-5.3"
+          "sourceText": "deepseek-v4.1-flash"
+        },
+        {
+          "externalModelId": "mimo-v2.6-flash",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "mimo-v2.6-flash",
+            "status": "mapped"
+          },
+          "sourceText": "mimo-v2.6-flash"
         }
       ],
       "modelDiscovery": "catalog",
@@ -7383,7 +7667,7 @@
     }
   ],
   "routeRegistry": {
-    "generationId": "g-20261112195224186-062fe295",
+    "generationId": "g-20261113212335409-2e2b419f",
     "registry": {
       "contractVersion": 3,
       "registryVersion": "3.7.0",
