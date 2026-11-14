@@ -78,6 +78,18 @@ describe("rtk example exit codes", () => {
     expect(JSON.stringify(actions)).toContain("rtk git status --porcelain");
   });
 
+  // `rtk rewrite --help` prints rtk's usage and exits 0, so a command that starts
+  // with a dash must reach rtk after `--`.
+  test("passes the command after --, so a dash-led command is not an rtk flag", async () => {
+    const handler = await loadExample();
+    fakeRtk(1);
+    await handler.handle({
+      tool: { name: "Bash", args: { command: "--help" } },
+      signal: new AbortController().signal,
+    });
+    expect(spawnSpy?.mock.calls[0]?.[0]).toEqual(["rtk", "rewrite", "--", "--help"]);
+  });
+
   for (const code of [139, 127, -1]) {
     test(`exit ${code} throws, without the command in the error`, async () => {
       const handler = await loadExample();

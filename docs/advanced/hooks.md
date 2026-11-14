@@ -840,8 +840,9 @@ export default defineHook({
       async handle(ctx) {
         const command = ctx.tool.args.command;
         if (typeof command !== "string" || command.trim() === "") return;
-        // ctx.signal stops rtk when the hook's timeout runs out.
-        const proc = Bun.spawn(["rtk", "rewrite", command], {
+        // ctx.signal stops rtk when the hook's timeout runs out. `--` keeps a command
+        // that starts with a dash, such as `--help`, from being read as an rtk flag.
+        const proc = Bun.spawn(["rtk", "rewrite", "--", command], {
           signal: ctx.signal,
           stdout: "pipe",
           stderr: "ignore",
