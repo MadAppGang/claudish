@@ -843,8 +843,10 @@ So the Unicode property escape is the whole cause, and the lookahead is innocent
 That matters for the shape of the fix: "strip every `pattern`" throws away working
 constraints, and "strip lookarounds" fixes nothing. `isPortablePattern` instead
 allows only the escape letters Python's `re` knows (`\A \b \B \d \D \s \S \w \W \Z`,
-the character escapes, `\x \u \U \N`), plus every non-letter escape and every digit
-backreference. It also rejects a bare `(?<name>)`, which Python spells `(?P<name>)`,
+the character escapes, `\x \u \U \N`), plus every non-letter escape and the `\1`..`\9`
+backreferences. `\0` is NOT portable: DeepSeek rejects `^[^\0]*$` with "is not a regex"
+(#341). A lone `\0` is rewritten to `\x00` before the check, keeping the constraint; `\0`
+followed by digits is an octal escape and the pattern is dropped. It also rejects a bare `(?<name>)`, which Python spells `(?P<name>)`,
 while allowing the `(?<=` and `(?<!` lookbehinds.
 
 Dropping is right because a `pattern` is ADVISORY — it steers the model, and the
