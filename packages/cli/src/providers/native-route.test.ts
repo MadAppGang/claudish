@@ -20,13 +20,13 @@ describe("nativeRouteFor", () => {
     expect(nativeRouteFor("claude-opus-5")).toEqual({
       provider: "native-anthropic",
       modelSpec: "claude-opus-5",
-      displayName: "Anthropic (Native)",
+      displayName: "Claude subscription",
       isTierAlias: false,
     });
     expect(nativeRouteFor("claude-fable-5-1")).toEqual({
       provider: "native-anthropic",
       modelSpec: "claude-fable-5-1",
-      displayName: "Anthropic (Native)",
+      displayName: "Claude subscription",
       isTierAlias: false,
     });
 
@@ -34,7 +34,7 @@ describe("nativeRouteFor", () => {
       expect(nativeRouteFor(alias)).toEqual({
         provider: "native-anthropic",
         modelSpec: normalizeNativeModelSpec(alias),
-        displayName: "Anthropic (Native)",
+        displayName: "Claude subscription",
         isTierAlias: claudeCodeTierAlias(alias) !== null,
       });
     }
