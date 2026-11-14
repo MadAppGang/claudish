@@ -40,7 +40,7 @@ import {
   timelineBarCells,
   tokBarCells,
 } from "../tui/theme.js";
-import { leaderboardRows } from "./leaderboard-rows.js";
+import { leaderboardRows, providerColumnWidth } from "./leaderboard-rows.js";
 
 interface PrinterColors {
   reset: string;
@@ -1146,22 +1146,9 @@ function renderLeaderboard(
   const rawNameW = Math.max(5, ...allNames.map((n) => n.length));
   const nameW = Math.min(rawNameW, 28);
 
-  // Provider column: each row's route (its link's display name). Dim, sits
-  // between the name and the timeline bar so you can read "which model, via
-  // which provider" at a glance. Clamped like the name column. The literal "PROVIDER" header sets a
-  // 8-char floor so the column never narrower than its own label.
-  const allProviders = reps.map((r) => r.provider);
-  const rawProvW = Math.max(8, ...allProviders.map((p) => p.length));
-  const provW = Math.min(rawProvW, 18);
-
   // Rank column fits the largest index.
   const rankW = Math.max(1, String(live.length).length);
-
-  // Margin + fixed lead columns (mirrors the card sub-row layout to the right
-  // of the name): [2 margin][rank][1][● 1][1][name][1][provider][1][B timeline][2][TOTAL 7]
-  //   …then breakdown / tok bar / tok value as width allows.
   const MARGIN = 2;
-  const leadW = MARGIN + rankW + 1 + 1 + 1 + nameW + 1 + provW + 1; // up to start of timeline
 
   // Leaderboard column widths from the timeline bar onward. Unlike the cards'
   // bars sub-row, the leaderboard's net/srv/str numbers are UNLABELED in the
@@ -1175,6 +1162,19 @@ function renderLeaderboard(
   const LB_TOK_VALUE = PRINTER_TOK_VALUE_W; // 9
   const LB_FULL = LB_TIMELINE + LB_BREAKDOWN + LB_TOKBAR + LB_TOK_VALUE; // 81
   const LB_NOTOK = LB_TIMELINE + LB_BREAKDOWN + 2 + LB_TOK_VALUE; // 66
+
+  // Provider column: each row's route (its link's display name). Dim, sits
+  // between the name and the timeline bar so you can read "which model, via
+  // which provider" at a glance. As wide as the longest name shown, within what
+  // the terminal leaves once the lead, the timeline + TOTAL and the tok/s value
+  // (the columns that never drop) have their cells.
+  const fixedW = MARGIN + rankW + 3 + nameW + 1 + 1 + LB_TIMELINE + 2 + LB_TOK_VALUE;
+  const provW = providerColumnWidth(reps, maxWidth - fixedW);
+
+  // Margin + fixed lead columns (mirrors the card sub-row layout to the right
+  // of the name): [2 margin][rank][1][● 1][1][name][1][provider][1][B timeline][2][TOTAL 7]
+  //   …then breakdown / tok bar / tok value as width allows.
+  const leadW = MARGIN + rankW + 1 + 1 + 1 + nameW + 1 + provW + 1; // up to start of timeline
 
   // Size to full columns when the terminal allows, else clamp to terminal.
   const width = Math.min(maxWidth, leadW + LB_FULL);

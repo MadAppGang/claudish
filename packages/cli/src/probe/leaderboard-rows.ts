@@ -44,6 +44,20 @@ export interface LeaderboardRow {
   missing?: "no live route" | "no route" | "not probed (Claude subscription)";
 }
 
+/** The PROVIDER header's own width: the column is never narrower than its label. */
+const PROVIDER_LABEL_WIDTH = "PROVIDER".length;
+
+/**
+ * The PROVIDER column's width, for both renderers: the longest display name
+ * among the rows shown, never under the header's width, and never past `room`,
+ * the cells the row has left once every column that never drops has its own.
+ * A name wider than `room` is the only one cut, and the caller ends it in `…`.
+ */
+export function providerColumnWidth(rows: LeaderboardRow[], room: number): number {
+  const widest = Math.max(PROVIDER_LABEL_WIDTH, ...rows.map((row) => row.provider.length));
+  return Math.min(widest, Math.max(PROVIDER_LABEL_WIDTH, room));
+}
+
 /** Ranked rows ascending by total time (stable); unranked rows per model, in input order. */
 export function leaderboardRows(models: LeaderboardModelInput[]): {
   ranked: LeaderboardRow[];

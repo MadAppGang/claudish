@@ -38,7 +38,7 @@ import {
   tokBarCells,
 } from "../tui/theme.js";
 import { VERSION } from "../version.js";
-import { type LeaderboardRow, leaderboardRows } from "./leaderboard-rows.js";
+import { type LeaderboardRow, leaderboardRows, providerColumnWidth } from "./leaderboard-rows.js";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -361,6 +361,11 @@ function formatElapsed(ms: number): string {
 function padEndSafe(s: string, n: number): string {
   if (s.length >= n) return s.slice(0, n);
   return s + " ".repeat(n - s.length);
+}
+
+/** Left-align into `n` columns; a longer string ends in an ellipsis so a cut reads as a cut. */
+function fitEnd(s: string, n: number): string {
+  return padEndSafe(s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s, n);
 }
 
 /**
@@ -1361,7 +1366,7 @@ function LeaderLiveRow({
         {padEndSafe(row.model, nameW)}
       </span>
       <span> </span>
-      <span fg={C.dim}>{padEndSafe(row.provider, provW)}</span>
+      <span fg={C.dim}>{fitEnd(row.provider, provW)}</span>
       <span> </span>
     </>
   );
@@ -1430,11 +1435,16 @@ function LeaderboardView({
   const { ranked: live, unranked: unavailable } = leaderRowsOf(results);
   const reps = [...live, ...unavailable];
 
-  // Name + provider columns: widest entry, clamped (mirrors renderLeaderboard's
-  // min(28) / min(max(8,…),18)). Shared across all rows so bars start at one x.
+  // Name + provider columns: widest entry. The name is clamped at 28 (mirrors
+  // renderLeaderboard); the provider takes what the terminal leaves once the lead,
+  // the timeline and TOTAL (the columns that never drop) have their cells.
+  // Shared across all rows so bars start at one x.
   const nameW = Math.min(28, Math.max(5, ...reps.map((r) => r.model.length)));
-  const provW = Math.min(18, Math.max(8, ...reps.map((r) => r.provider.length)));
   const rankW = Math.max(1, String(Math.max(1, live.length)).length);
+  // [2 indent][rankW][3 gap + ● + gap][nameW][1] PROVIDER [1][B timeline][2][TOTAL]
+  const fixedW =
+    2 + rankW + 3 + nameW + 1 + 1 + (layout.barWidth > 0 ? layout.barWidth + 2 : 0) + TOTAL_COL;
+  const provW = providerColumnWidth(reps, layout.width - fixedW);
 
   // Column header — aligned to the data rows. The data-row lead-in before the
   // name spans rankW + 3 (gap + ● slot + gap), matching LeaderLiveRow's lead.
@@ -1501,7 +1511,7 @@ function LeaderboardView({
           <span fg={C.dim}>{`  ${" ".repeat(rankW)}   `}</span>
           <span fg={C.dim}>{padEndSafe(row.model, nameW)}</span>
           <span fg={C.dim}> </span>
-          <span fg={C.dim}>{padEndSafe(row.provider, provW)}</span>
+          <span fg={C.dim}>{fitEnd(row.provider, provW)}</span>
           <span fg={C.dim}>{` — ${row.missing}`}</span>
         </text>
       ))}
