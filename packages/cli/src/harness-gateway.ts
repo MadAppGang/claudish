@@ -41,7 +41,13 @@ const RULE =
  * drops: a backslash (read as `/` in http URLs, as part of userinfo elsewhere)
  * and any control character (tab, CR and LF are removed before parsing).
  */
-const AMBIGUOUS = /[\\\u0000-\u001f\u007f]/;
+function isAmbiguous(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 0x5c || code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
 
 /**
  * The parsed URL as text, with no trailing `/` added to a bare origin, so the
@@ -80,7 +86,7 @@ export function resolveHarnessGateway(config: ClaudishProfileConfig): HarnessGat
     kind: "invalid",
     message: `harnessGateway.url is not accepted: ${RULE}`,
   } as const;
-  if (AMBIGUOUS.test(written) || !isLoopbackTarget(written)) return refused;
+  if (isAmbiguous(written) || !isLoopbackTarget(written)) return refused;
   let url: URL;
   try {
     url = new URL(written);
