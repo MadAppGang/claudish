@@ -2405,7 +2405,9 @@ export async function runClaudeWithProxy(
   // `harnessGateway.url`: a loopback gateway in front of the proxy. A monitor
   // session (and the no-model advisor session, which takes the monitor branch)
   // keeps the proxy URL and ignores the key. A value that breaks the loopback
-  // rule refuses the launch here, before any file or child exists.
+  // rule refuses the launch here, before Claude Code starts. The proxy is already
+  // listening and user hook modules are already loaded by then; the caller stops
+  // the proxy on the exit code.
   const globalConfig = loadConfig();
   // MCP run_prompt's print child is marked to ignore the key too.
   const gatewayHeldOff = process.env[HARNESS_GATEWAY_OFF_VAR] === "1";
