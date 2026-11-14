@@ -183,6 +183,19 @@ describe("the user settings file follows CLAUDE_CONFIG_DIR", () => {
     ).toEqual([{ where: "/findings-project/rel-config/settings.json", kind: "api-key" }]);
   });
 
+  test("a decomposed CLAUDE_CONFIG_DIR reads the NFC-composed path", () => {
+    const decomposed = "/café-config";
+    const composed = "/café-config";
+    expect(decomposed).not.toBe(composed);
+    expect(
+      settingsCredentialFindings(
+        config([]),
+        { CLAUDE_CONFIG_DIR: decomposed },
+        reads({ [`${composed}/settings.json`]: key })
+      )
+    ).toEqual([{ where: `${composed}/settings.json`, kind: "api-key" }]);
+  });
+
   test("a whitespace-only CLAUDE_CONFIG_DIR reads only its untrimmed path", () => {
     const blankPath = "/findings-project/  /settings.json";
     expect(

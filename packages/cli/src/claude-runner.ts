@@ -734,11 +734,13 @@ function claudeSettingsLayers(
  * `CLAUDE_CONFIG_DIR` unset: `<home>/.claude/settings.json`. Any string value,
  * empty and whitespace-only included, is taken exactly as given and resolved
  * against `cwd`: `""` loads `<cwd>/settings.json`, and `"<cfg> "` loads
- * `<cfg> /settings.json` (`resolve` keeps the space).
+ * `<cfg> /settings.json` (`resolve` keeps the space). The directory is
+ * NFC-normalized first, as the binary does, so a decomposed `cafe\u0301` reads
+ * the composed `caf\u00e9` path.
  */
 function userSettingsFile(configDir: string | undefined, home: string, cwd: string): string {
-  if (configDir === undefined) return join(home, ".claude", "settings.json");
-  return join(resolve(cwd, configDir), "settings.json");
+  const dir = (configDir ?? join(home, ".claude")).normalize("NFC");
+  return join(resolve(cwd, dir), "settings.json");
 }
 
 /**
