@@ -171,3 +171,86 @@ would replace it with the launch key.
 
 `claude-runner-host-routing.test.ts` checks the environment a stand-in `claude` receives for
 each kind of launch.
+
+## A gateway in front of the proxy: `harnessGateway.url`
+
+The global config key `harnessGateway: { "url": "<url>" }` (in `~/.claudish/config.json`, or
+the `--config` / `CLAUDISH_CONFIG` file) puts a local HTTP gateway between Claude Code and
+claudish's proxy. A tool that rewrites requests, such as a context compressor, runs there.
+Claude Code speaks the Anthropic format to the proxy on every route, so the gateway works the
+same on a native route and on a foreign one.
+
+What changes in the child environment (`applyHarnessGateway`, `harness-gateway.ts`, called by
+`runClaudeWithProxy`):
+
+- `ANTHROPIC_BASE_URL` is the gateway URL, not the proxy URL.
+- `ANTHROPIC_CUSTOM_HEADERS` gets one more line, `X-Target-URL: <proxy URL>`. The gateway
+  sends each request on to that URL. Other header lines stay as they were. An existing
+  `X-Target-URL` line, such as one a parent claudish session left in the environment, is
+  replaced, so the gateway sees one target. Each session sends its own proxy URL, so one
+  gateway serves every session and the proxy needs no fixed port.
+- Nothing else. The host marker, the placeholder token and every other variable are the same
+  as without the key.
+
+The rule: the URL must be `http://` or `https://`, and its host must be loopback: `127.x.x.x`,
+`::1` or `localhost`. It is the `CLAUDISH_TEST_UPSTREAM` rule (`isLoopbackTarget`,
+`test-upstream.ts`); `0.0.0.0` is not loopback. A value that breaks the rule, or a block that is
+not `{ "url": string }`, refuses the launch with one error that names the key and the rule.
+There is no fallback to the proxy URL. The error never repeats the value.
+
+The check parses with the WHATWG URL parser, but Claude Code exports `ANTHROPIC_BASE_URL` to every
+process it starts, and some of those parse by RFC 3986. The two read some text differently:
+`http://127.0.0.1\@evil.example:18081` is host `127.0.0.1` to WHATWG and host `evil.example` to
+Python's `urlsplit`, and WHATWG drops a tab, CR or LF anywhere in the text. So a value with a
+backslash or a control character is refused, and an accepted value is handed over in its parsed,
+canonical form (`http://0177.0.0.1:18081` becomes `http://127.0.0.1:18081`). Userinfo is refused
+too: Claude Code on Node cannot build a request for a URL that holds credentials, and its error
+prints the URL.
+
+On a native Claude route (a bare Claude name, a pane child's `claude@<id>`), Claude Code signs
+each request with the user's Claude login token, and that token passes through the gateway. The
+loopback rule keeps it on the machine; the gateway's own logs are outside claudish's
+signing-value registry. The startup line says so: `Claude Code's requests go through the gateway
+at <origin>; on this native Claude route the Claude login token passes through it`. On a foreign
+route the token Claude Code sends is claudish's placeholder.
+
+The line prints with the other launch banners, through `runClaudeWithProxy`'s quiet-aware `log`:
+shown in an interactive session, hidden by `--quiet` and in a single-shot launch unless
+`--verbose` is given, and always written to the debug log. It does not go through `logStderr`,
+which in an interactive session writes to the diag file only, where nobody reads it.
+
+The line shows the URL's origin only (scheme, host, port). Userinfo, path, query and fragment can
+each hold a gateway credential, and none of those is a signing value, so the registry would not
+redact it from the debug log. The child's environment gets the full URL.
+
+Every process a gateway session starts inherits its `ANTHROPIC_CUSTOM_HEADERS`, so a claudish
+started there would hand its own Claude Code the parent's `X-Target-URL`. `applyHarnessGateway`
+records the value it set in `CLAUDISH_SET_HARNESS_GATEWAY_TARGET`, and every launch
+(`runClaudeWithProxy`, and `run_prompt`'s print child through `claudeCodePrintEnv`) removes the line
+whose value equals that record, then the record. A user's own `X-Target-URL` has no record and stays.
+This is the `CLAUDISH_SET_HOST_ROUTING_VARS` pattern of `host-routing-env.ts`.
+
+The proxy never sends `X-Target-URL` upstream. The native forward is a header allowlist
+(`handlers/shared/anthropic-forward.ts`), and the composed path reads only `x-api-key` from the
+inbound request.
+
+Not changed:
+
+- A monitor session (`--monitor`, a top-level `claude@<id>` or `anthropic@<id>`) and the
+  no-model `--advisor` session keep the proxy URL and ignore the key. The key is not validated
+  there; a debug log line says it was ignored.
+- MCP `run_prompt`'s print child on a Claude model ignores the key. That child is a claudish
+  started with a bare Claude name, so it is not a monitor session and would otherwise take the
+  gateway; `runPromptViaClaudeCode` starts it with `CLAUDISH_HARNESS_GATEWAY_OFF=1`, which
+  `runClaudeWithProxy` reads and removes. The child runs with no tools, so the gateway has nothing
+  to shorten, and a stopped gateway would fail the call. A foreign model's `run_prompt` calls the
+  in-process proxy and never starts Claude Code.
+- claudish does not start or stop the gateway. The user, or the bench, runs it.
+
+Pane children (`create_session`, `team`) are claudish processes that read the same config file
+(the parent's `--config` travels as `CLAUDISH_CONFIG`), so each one points its own Claude Code
+at the gateway with its own proxy URL.
+
+Limit: on a session that is not host-managed (a native route), a settings `env` block that sets
+`ANTHROPIC_BASE_URL` or `ANTHROPIC_CUSTOM_HEADERS` replaces these values, as described at the top
+of this file.

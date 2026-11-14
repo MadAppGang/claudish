@@ -35,6 +35,14 @@ import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
 import { applyProxyFastModeGates, scrubInheritedFastModeGates } from "./fast-mode-gates.js";
 import { CLAUDE_LOGIN_BEARER } from "./handlers/shared/anthropic-forward.js";
+import {
+  HARNESS_GATEWAY_OFF_VAR,
+  type HarnessGatewaySetting,
+  applyHarnessGateway,
+  harnessGatewayNotice,
+  resolveHarnessGateway,
+  scrubInheritedHarnessGatewayTarget,
+} from "./harness-gateway.js";
 import { getHookEngine } from "./hooks/index.js";
 import { InProcessSink, setProcessSink } from "./hooks/injection/sinks.js";
 import { sessionHooksNeedBinding } from "./hooks/session/binding.js";
@@ -2394,6 +2402,32 @@ export async function runClaudeWithProxy(
     return 1;
   }
 
+  // `harnessGateway.url`: a loopback gateway in front of the proxy. A monitor
+  // session (and the no-model advisor session, which takes the monitor branch)
+  // keeps the proxy URL and ignores the key. A value that breaks the loopback
+  // rule refuses the launch here, before Claude Code starts. The proxy is already
+  // listening and user hook modules are already loaded by then; the caller stops
+  // the proxy on the exit code.
+  const globalConfig = loadConfig();
+  // MCP run_prompt's print child is marked to ignore the key too.
+  const gatewayHeldOff = process.env[HARNESS_GATEWAY_OFF_VAR] === "1";
+  const gatewayEligible = !config.monitor && !advisorNativeSession && !gatewayHeldOff;
+  const harnessGateway: HarnessGatewaySetting = gatewayEligible
+    ? resolveHarnessGateway(globalConfig)
+    : { kind: "off" };
+  if (harnessGateway.kind === "invalid") {
+    console.error(`[claudish] Error: ${harnessGateway.message}.`);
+    onCleanup?.();
+    return 1;
+  }
+  if (!gatewayEligible && globalConfig.harnessGateway !== undefined) {
+    debugLog(
+      gatewayHeldOff
+        ? `[claude-runner] harnessGateway ignored: ${HARNESS_GATEWAY_OFF_VAR}=1`
+        : "[claude-runner] harnessGateway ignored: a monitor session keeps the proxy URL"
+    );
+  }
+
   // Chain, don't clobber: find the status line the user would otherwise have
   // seen so claudish's segment can be appended to it. Must run BEFORE
   // mergeUserSettingsIfPresent, which splices --settings out of claudeArgs.
@@ -2506,6 +2540,19 @@ export async function runClaudeWithProxy(
     ...advisorToolEnv.vars,
   };
   scrubChildEnv(env, { interactive: Boolean(config.interactive) });
+  // A launch from inside a gateway session inherits that session's X-Target-URL,
+  // which names the parent's proxy; with the gateway off it would misroute.
+  scrubInheritedHarnessGatewayTarget(env);
+  delete env[HARNESS_GATEWAY_OFF_VAR];
+
+  // Printed with the launch banners below, so an interactive session shows it and
+  // --quiet hides it; logStderr would send it to the diag file in an interactive one.
+  let gatewayNotice: string | undefined;
+  if (harnessGateway.kind === "on") {
+    applyHarnessGateway(env, harnessGateway.url, proxyUrl);
+    gatewayNotice = harnessGatewayNotice(harnessGateway.url, shouldPreserveNativeAuth(config));
+    debugLog(`[claude-runner] ${gatewayNotice}`);
+  }
 
   // Can this launch put a recovery banner on screen at all? Asked HERE, before
   // the child environment is finalised, because the answer gates the watchdog
@@ -2786,6 +2833,7 @@ export async function runClaudeWithProxy(
       );
     }
   }
+  if (gatewayNotice) log(`[claudish] ${gatewayNotice}`);
 
   if (config.interactive) {
     log(`\n[claudish] Model: ${modelDisplayName}\n`);
