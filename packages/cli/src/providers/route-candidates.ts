@@ -494,6 +494,9 @@ function gatherVendorClaims(
   candidates: RouteCandidate[]
 ): void {
   if (!entry || !isChatModelEntry(entry)) return;
+  // A claim's wire id is the requested name verbatim, so a content-use opt-in
+  // name would be chosen for the user (`content-use.ts`): no claim.
+  if (isOptInWireId(model)) return;
   for (const def of getAllProviders()) {
     if (def.tier !== "dynamic-subscription") continue;
     if (!isVendorOwnRoute(catalogRouteForProvider(def.name), entry)) continue;
