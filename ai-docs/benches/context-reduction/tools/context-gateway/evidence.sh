@@ -2,7 +2,7 @@
 # Runs after the agent stopped. Prints the gateway's own counts, copies its logs
 # out when the run shares an output folder, and stops the gateway.
 run="$HOME/.context-gateway-bench"
-echo "variant=context-gateway"
+echo "variant=${1:-context-gateway}"
 echo "tool=$("${CONTEXT_GATEWAY_BIN:-$HOME/.local/bin/context-gateway}" --version 2>&1 | grep -o 'context-gateway v[0-9.]*' | head -1)"
 
 lines() { if [ -f "$1" ]; then wc -l <"$1" | tr -d ' '; else echo absent; fi; }
@@ -16,7 +16,7 @@ if [ -f "$run/logs/session_stats.json" ]; then
 fi
 
 if [ -d "$HOME/.bench-out" ]; then
-  out="$HOME/.bench-out/context-gateway-$(date +%Y%m%dT%H%M%S)"
+  out="$HOME/.bench-out/${1:-context-gateway}-$(date +%Y%m%dT%H%M%S)"
   mkdir -p "$out" && cp -R "$run/logs" "$run/gateway.out" "$out/" 2>/dev/null
   echo "copied=$out"
 fi

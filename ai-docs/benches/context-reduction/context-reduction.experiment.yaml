@@ -24,9 +24,18 @@ variants:
     params:
       tool: context-mode
       plugins: [./vendor/context-mode/plugins/claude-code]
-  # Context Gateway: a local proxy between Claude Code and the Anthropic API
-  # that compresses tool output and summarizes history with Haiku.
-  - name: context-gateway
+  # Context Gateway: a local proxy between Claude Code and the Anthropic API.
+  # Both gateway variants point Claude Code at the same port; they differ in
+  # the gateway's own config file.
+  #
+  # local: the gateway trims tool output itself and makes no model call.
+  - name: context-gateway-local
     params:
       overlay: ./config/context-gateway
-      tool: context-gateway
+      tool: context-gateway-local
+  # haiku: the gateway compresses tool output and summarizes history with
+  # Haiku, signed with the session's own Claude login.
+  - name: context-gateway-haiku
+    params:
+      overlay: ./config/context-gateway
+      tool: context-gateway-haiku

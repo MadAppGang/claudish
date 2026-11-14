@@ -1,4 +1,7 @@
 #!/bin/sh
+# Shared by the gateway variants: each variant's own start.sh calls it with
+# its config file.
+#
 # Runs as a provision step before the agent starts. Starts Context Gateway on
 # the port settings.json points Claude Code at, and waits until it answers.
 #
@@ -8,7 +11,7 @@
 # timer stops it after 100 minutes whatever happened.
 set -eu
 
-here=$(cd "$(dirname "$0")" && pwd)
+config=${1:?usage: start.sh <config.yaml>}
 port=18431
 gw=${CONTEXT_GATEWAY_BIN:-$HOME/.local/bin/context-gateway}
 run="$HOME/.context-gateway-bench"
@@ -22,7 +25,7 @@ fi
 
 mkdir -p "$run/logs"
 cd "$run"
-nohup "$gw" serve --config "$here/config.yaml" --no-banner \
+nohup "$gw" serve --config "$config" --no-banner \
   >"$run/gateway.out" 2>&1 </dev/null &
 pid=$!
 echo "$pid" >"$run/gateway.pid"

@@ -3,7 +3,7 @@
 Does a context-reduction tool cut tokens and cost on a long coding session
 without costing the result?
 
-One Scenario, four variants. Claude Code on `claude-sonnet-5-5` gets claudish
+One Scenario, five variants. Claude Code on `claude-sonnet-5-5` gets claudish
 as it was one commit before `--context-window` landed, and a prompt that asks
 for that feature with subagents for exploration and review. The feature's own
 tests grade the result. The agent never sees them.
@@ -13,7 +13,12 @@ tests grade the result. The agent never sees them.
 | `baseline` | nothing: plain Claude Code |
 | `rtk` | a `PreToolUse` hook on `Bash` that runs `/opt/homebrew/bin/rtk hook claude`, plus the instruction file `rtk init` writes |
 | `context-mode` | the context-mode plugin, staged from `vendor/context-mode` |
-| `context-gateway` | `ANTHROPIC_BASE_URL` points at a local Context Gateway, started by a provision step |
+| `context-gateway-local` | `ANTHROPIC_BASE_URL` points at a local Context Gateway, started by a provision step. The gateway trims tool output itself (`trimming`), summarizes nothing and makes no model call |
+| `context-gateway-haiku` | the same gateway, but it compresses tool output and summarizes history with Haiku, signed with the session's own Claude login |
+
+The two gateway variants share `tools/context-gateway/start.sh` and
+`evidence.sh`. Each variant's own folder holds its `config.yaml` and two
+wrapper scripts that pass that config.
 
 ## Before a run
 
@@ -81,17 +86,26 @@ madbench's cost figure. `--json <file>` writes the rows.
 madbench has a provision step that runs before the agent, and no step that
 runs after it. So:
 
-- `tools/context-gateway/start.sh` runs as the second provision step. It stops
-  a stale listener on the port, starts the gateway with
-  `tools/context-gateway/config.yaml`, and waits for `/health`. A timer stops
-  the gateway after 6000 seconds if nothing else did.
+- `tools/context-gateway/start.sh` runs as the second provision step, called by
+  the variant's own `start.sh` with the variant's `config.yaml`. It stops a
+  stale listener on the port, starts the gateway with that config, and waits
+  for `/health`. A timer stops the gateway after 6000 seconds if nothing else
+  did.
 - `tools/context-gateway/evidence.sh` runs inside the `ToolEvidence` Check,
   after the agent stopped. It prints the gateway's counts, copies its logs to
   `out/`, and stops the gateway.
 
-The gateway config uses no third-party service. The summarizer is Haiku on
-the Anthropic API, signed with the same Claude login the session uses
-(`auth: oauth`). The `compresr` strategy is off and its URL is empty.
+Neither gateway config uses a third-party service. The `compresr` strategy is
+off and its URL is empty in both.
+
+- `context-gateway-local` configures no provider. The gateway trims tool
+  output inside its own process and makes no model call. It holds no
+  credential; it forwards Claude Code's own requests.
+- `context-gateway-haiku` sends tool output and history to Haiku on the
+  Anthropic API, signed with the same Claude login the session uses
+  (`auth: oauth`).
+
+
 The gateway makes one call that the config cannot turn off: a release check
 to `api.github.com`. That call carries no workspace data.
 
@@ -105,4 +119,4 @@ in the report JSON under the Check's `evidence.output`.
 | `baseline` | none |
 | `rtk` | `rtk gain`: the tokens rtk counts as saved |
 | `context-mode` | the files in its data folders, copied to `out/` |
-| `context-gateway` | line counts of its compression and summary logs, `session_stats.json`, logs copied to `out/` |
+| `context-gateway-local`, `context-gateway-haiku` | line counts of the gateway's compression, summary and telemetry logs, `session_stats.json`, logs copied to `out/` |
