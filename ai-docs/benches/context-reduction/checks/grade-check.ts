@@ -10,7 +10,12 @@ type Envelope = { session?: { work_dir?: string }; work_dir?: string };
 
 const TOTAL_TESTS = 114;
 
-function emit(pass: boolean, score: number, reason: string, evidence: Record<string, unknown>): never {
+function emit(
+  pass: boolean,
+  score: number,
+  reason: string,
+  evidence: Record<string, unknown>
+): never {
   console.log(JSON.stringify({ pass, score, reason, evidence }));
   process.exit(0);
 }

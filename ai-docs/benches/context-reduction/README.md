@@ -51,6 +51,31 @@ finished workspace and runs them with `bun test`. The untouched checkout gives
 Check passes only on exit 0 with no failed test; its score is the share of the
 114 tests that passed.
 
+## Subagents run in the foreground
+
+`sandbox.env` sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` for every variant.
+The `Agent` call then returns the subagent's report inside the turn. With
+background subagents the main thread's turn ends at once, and madbench 0.58.2
+ends the Session while the subagents still run.
+
+For the same reason the Scenario has no `follow_ups`: madbench types a
+follow-up when the main thread's turn ends. The review by a third subagent is
+step 4 of the prompt.
+
+## The numbers
+
+madbench's own token and cost metrics count the main thread only. To count
+the subagents too, sum the `llm_call` Events of the report:
+
+```
+bun ai-docs/benches/context-reduction/summarize.ts /absolute/path/report.json
+```
+
+It prints one row per trial and one row per variant: prompt tokens (input,
+cache creation and cache read together) and output tokens for the main thread
+and for the subagents, requests, subagents, compactions, duration, and
+madbench's cost figure. `--json <file>` writes the rows.
+
 ## The Context Gateway life cycle
 
 madbench has a provision step that runs before the agent, and no step that
