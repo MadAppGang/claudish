@@ -848,7 +848,10 @@ export default defineHook({
         });
         const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
         // Exit 0 and 3 print a rewritten command. Exit 1 and 2 mean no rewrite.
-        if (code !== 0 && code !== 3) return;
+        if (code === 1 || code === 2) return;
+        // Any other code is a failure. Throwing lets the journal record it and the
+        // five-failure limit count it. The message never holds the command.
+        if (code !== 0 && code !== 3) throw new Error(`rtk rewrite exited with code ${code}`);
         const rewritten = stdout.trim();
         if (rewritten === "" || rewritten === command) return;
         // The reason goes to the journal. It never holds the command.
