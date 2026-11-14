@@ -870,6 +870,10 @@ Save it as `rtk-bash-rewrite.ts` beside your config file and add it:
 - **Permissions.** Claude Code shows and permission-checks the command it receives, which is the
   `rtk …` form. An allow rule for the original command, such as `Bash(git status)`, no longer
   matches it.
+- **The model sees the rtk form as its own call.** claudish changes the tool call before Claude
+  Code stores it, so the conversation history shows `rtk git status` where the model wrote
+  `git status`. Most prompts are not affected. A prompt that demands one exact command can make the
+  model believe it typed the wrong command and retry it.
 - **Failures.** A failure is fail-open: rtk missing, a crash, or a timeout leaves the command as the
   model wrote it, and the journal records the failure. After 5 failures in a row claudish disables
   the hook for the rest of the process. A missing `rtk` therefore costs five tool calls of up to 2 s
@@ -952,10 +956,17 @@ that names claudish's own proxy, so one gateway serves every session.
 claudish does not start the gateway. Start it yourself, and always pass `--config`:
 
 ```bash
-context-gateway serve --config ~/context-gateway.yaml --no-banner
+GATEWAY_ALLOWED_HOSTS=127.0.0.1 context-gateway serve --config ~/context-gateway.yaml --no-banner
 ```
 
-Without `--config` the gateway writes files into `~/.config/context-gateway/configs/`.
+- **`GATEWAY_ALLOWED_HOSTS=127.0.0.1` is required.** The gateway forwards only to a fixed list of
+  provider hosts, and loopback is not on it. Without this variable every request fails with
+  `502 upstream request failed`, and claudish never receives it.
+- **`--config`.** Without it the gateway writes files into `~/.config/context-gateway/configs/`.
+- **Prompt history.** The gateway stores prompt history in
+  `~/.config/context-gateway/prompt_history.db`, with any config and any log level.
+- **Pipes are always on.** The gateway turns every pipe on whatever `enabled` says, so the configs
+  below switch a pipe off by giving it `strategy: passthrough`.
 
 **Credentials.** On a native Claude route, Claude Code sends your Claude login token with each
 request, so the token passes through the gateway process. On a foreign route Claude Code holds only
@@ -971,7 +982,9 @@ a model spec with a provider shortcut, such as `or@openai/<model>`. A bare name 
 
 **Monitor sessions.** A monitor session ignores `harnessGateway` and keeps claudish's proxy URL.
 
-**Recommended config: local only.** The gateway makes no calls of its own and writes no logs:
+**Recommended config: local only.** The gateway shortens tool results itself and sends no
+conversation text to any other service. It still checks api.github.com for a newer release when it
+starts, and it keeps the prompt history file named above:
 
 ```yaml
 server: {port: 18081, read_timeout: 30s, write_timeout: 1000s}
@@ -980,8 +993,8 @@ preemptive: {enabled: false}
 post_session: {enabled: false}
 pipes:
   tool_output: {enabled: true, strategy: trimming, fallback_strategy: passthrough, min_tokens: 512, target_compression_ratio: 0.5, enable_expand_context: true}
-  tool_discovery: {enabled: false}
-  task_output: {enabled: false}
+  tool_discovery: {strategy: passthrough}
+  task_output: {strategy: passthrough}
 monitoring: {log_level: "off", telemetry_enabled: false}
 ```
 
@@ -1002,8 +1015,8 @@ providers:
   anthropic: {auth: oauth, model: claude-haiku-4-5}
 pipes:
   tool_output: {enabled: true, strategy: external_provider, provider: anthropic, fallback_strategy: passthrough, min_tokens: 512, target_compression_ratio: 0.5, enable_expand_context: true}
-  tool_discovery: {enabled: false}
-  task_output: {enabled: false}
+  tool_discovery: {strategy: passthrough}
+  task_output: {strategy: passthrough}
 monitoring: {log_level: "off", telemetry_enabled: false}
 ```
 
