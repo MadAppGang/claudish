@@ -31,10 +31,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { setCredentialPromptRole } from "./auth/credentials/prompt-role.js";
 import { wantsAnthropicApiBilling } from "./claude-runner.js";
 import { realValueFor } from "./env-placeholder.js";
+import { LOGIN_ONLY_SIGNING } from "./handlers/shared/anthropic-forward.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { nativeRouteFor } from "./providers/native-route.js";
-import { type SlotRoute, createProxyServer } from "./proxy-server.js";
+import { type ProxyServerOptions, type SlotRoute, createProxyServer } from "./proxy-server.js";
 
 interface ServeArgs {
   port?: number;
@@ -152,6 +153,31 @@ export function serveSubscriptionSlotRefusal(
   );
 }
 
+/**
+ * The options `serve` starts its proxy with.
+ *
+ * A client may send any model, so a request can name a bare Claude model no
+ * slot maps. That is the Claude subscription: without the API-billing opt-in
+ * its native requests are signed `login-only` (a Claude Desktop request has no
+ * login, so it is refused before any upstream call) and never with the
+ * Anthropic key. With the opt-in the native signing stays `inbound`, whose
+ * fallback is the key. A mapped `anthropic@` slot signs through the `anthropic`
+ * provider's own credential, which this does not touch.
+ */
+export function serveProxyOptions(
+  slotMap: Map<string, SlotRoute>,
+  slotIds: string[],
+  apiBillingOptIn: boolean
+): ProxyServerOptions {
+  return {
+    slotMap,
+    servedSlotIds: slotIds,
+    hostMode: "serve",
+    apiBillingOptIn,
+    ...(apiBillingOptIn ? {} : { nativeSigning: LOGIN_ONLY_SIGNING }),
+  };
+}
+
 export async function serveCommand(args: string[]): Promise<void> {
   // A gateway for Claude Desktop answers requests nobody at a terminal made:
   // it never opens a credential dialog (`auth/credentials/prompt-role.ts`).
@@ -216,12 +242,7 @@ export async function serveCommand(args: string[]): Promise<void> {
     false, // monitorMode off
     anthropicApiKey,
     undefined, // no tier modelMap — slot collisions (two "opus" slots) are why we use the exact slotMap instead
-    {
-      slotMap,
-      servedSlotIds: slotIds,
-      hostMode: "serve",
-      apiBillingOptIn,
-    }
+    serveProxyOptions(slotMap, slotIds, apiBillingOptIn)
   );
 
   console.log(`[claudish serve] listening on ${proxy.url}`);
