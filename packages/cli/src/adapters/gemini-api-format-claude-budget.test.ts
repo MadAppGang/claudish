@@ -10,7 +10,7 @@ interface ThinkingPayload {
 }
 
 function buildThinkingPayload(modelId: string, maxTokens: number, effort: string): ThinkingPayload {
-  return new GeminiAPIFormat(modelId).buildPayload(
+  return new GeminiAPIFormat(modelId, undefined, { thinkingFromModelName: true }).buildPayload(
     { max_tokens: maxTokens, output_config: { effort } },
     [],
     []

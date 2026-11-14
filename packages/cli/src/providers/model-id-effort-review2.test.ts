@@ -83,7 +83,7 @@ function dialectPayload(model: string, effort: EffortLevel) {
     max_tokens: 32_768,
     output_config: { effort },
   };
-  const dialect = new GeminiAPIFormat(model);
+  const dialect = new GeminiAPIFormat(model, undefined, { thinkingFromModelName: true });
   const payload = dialect.buildPayload(request, dialect.convertMessages(request), []);
   return { payload, request };
 }
