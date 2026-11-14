@@ -120,7 +120,7 @@ import { ProvidersContent } from "./components/ProvidersContent.js";
 import { RoutingContent } from "./components/RoutingContent.js";
 import { RoutingDetail } from "./components/RoutingDetail.js";
 import { TabBar } from "./components/TabBar.js";
-import { configSaveFailure, outrankedKeyNote } from "./config-save.js";
+import { configKeySavedStatus, configSaveFailure, outrankedKeyNote } from "./config-save.js";
 import { DETAIL_H, FOOTER_H, HEADER_H, TABS_H, getChainProviders } from "./constants.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
@@ -1581,6 +1581,8 @@ export function App({ requestLogin }: AppProps = {}) {
             let saved = false;
             // The store that took the key, for the authority's replacement.
             let savedTo: KeySource = "config";
+            // Why the Keychain write failed, when the key falls back to config.json.
+            let keychainFailure: string | undefined;
             if (keychainSupported) {
               try {
                 writeKeychainSecret(envVar, val);
@@ -1616,9 +1618,7 @@ export function App({ requestLogin }: AppProps = {}) {
               } catch (err) {
                 // Fall through to config.json rather than losing the key the
                 // user just typed. The reason is surfaced, not swallowed.
-                setStatusMsg(
-                  `Keychain write failed (${err instanceof Error ? err.message : String(err)}) — saved to config.json instead.`
-                );
+                keychainFailure = err instanceof Error ? err.message : String(err);
               }
             }
             if (!saved) {
@@ -1636,11 +1636,7 @@ export function App({ requestLogin }: AppProps = {}) {
               // config.json is read by the authority itself; a read-at-use key
               // is not copied into process.env.
               if (!target.vaultKeyReadAtUse) process.env[envVar] = val;
-              // When the keychain write failed, the status line already explains
-              // the fallback and must not be clobbered.
-              if (!keychainSupported) {
-                setStatusMsg(`Key saved for ${target.displayName} (${envVar}).${note}`);
-              }
+              setStatusMsg(configKeySavedStatus(target.displayName, envVar, note, keychainFailure));
             }
             // Whichever store took it, the authority's memo for this provider is
             // now stale. The replacement drops it and makes the saved key sign

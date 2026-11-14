@@ -15,6 +15,24 @@ export function configSaveFailure(err: unknown): string {
 }
 
 /**
+ * The status line after a key was saved to `config.json`. `keychainFailure`,
+ * when given, is why the Keychain write failed and the key fell back to
+ * `config.json`. `note` ({@link outrankedKeyNote}) is appended either way: a
+ * shell export outranks a config.json key in a new launch whichever path
+ * stored it.
+ */
+export function configKeySavedStatus(
+  displayName: string,
+  envVar: string,
+  note: string,
+  keychainFailure?: string
+): string {
+  return keychainFailure === undefined
+    ? `Key saved for ${displayName} (${envVar}).${note}`
+    : `Keychain write failed (${keychainFailure}) — saved to config.json instead.${note}`;
+}
+
+/**
  * The sentence added to a key-saved status line when another store still
  * outranks the saved key in a new launch (`credentials.sourcesOutranking`).
  * This process signs with the saved key either way; a new process resolves the
