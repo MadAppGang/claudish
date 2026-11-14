@@ -41,7 +41,14 @@ export class GeminiAPIFormat extends BaseAPIFormat {
       for (const msg of claudeRequest.messages) {
         if (msg.role === "user") {
           const parts = this.convertUserParts(msg);
-          if (parts.length > 0) messages.push({ role: "user", parts });
+          if (parts.length === 0) continue;
+          // Claude Code can split one tool round's results across two user
+          // messages (a notification arrived between them). Gemini pairs a
+          // model turn's function calls with the function responses of the ONE
+          // turn after it, so adjacent user messages become one content.
+          const prev = messages[messages.length - 1];
+          if (prev?.role === "user") prev.parts.push(...parts);
+          else messages.push({ role: "user", parts });
         } else if (msg.role === "assistant") {
           const parts = this.convertAssistantParts(msg);
           if (parts.length > 0) messages.push({ role: "model", parts });
