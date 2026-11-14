@@ -19,12 +19,13 @@
  * the others.
  */
 
+import { connectionRequestRatesForInput } from "../providers/connection-price.js";
 import { getProviderByName } from "../providers/provider-definitions.js";
 import { catalogEntryForRequest, ownConnection } from "../services/pricing-cache.js";
 import { recordStats } from "../stats.js";
 import { classifyError } from "../telemetry.js";
 import type { ClaudeApiMeter, ClaudeApiTurn } from "./shared/claude-api-usage.js";
-import { getModelPricing } from "./shared/remote-provider-types.js";
+import { type ModelPricing, getModelPricing } from "./shared/remote-provider-types.js";
 import { TokenTracker, type UsageCacheDetail, computeTurnCost } from "./shared/token-tracker.js";
 
 export type {
@@ -50,6 +51,21 @@ export function claudeApiContextWindow(name: string): number {
   const entry = catalogEntryForRequest(CLAUDE_API_PROVIDER, name);
   if (!entry) return 0;
   return ownConnection(entry, CLAUDE_API_PROVIDER, name)?.contextWindow ?? entry.contextWindow ?? 0;
+}
+
+/**
+ * The rates one turn on `name` is billed at. A `tiered` price on the model's
+ * own Claude API connection is billed by the band the turn's whole input
+ * context (`inputTokens`: uncached, cache-written and cache-read) falls in, so
+ * that band is chosen here per turn; every other price is
+ * `getModelPricing`'s, as for any provider.
+ */
+function turnPricing(name: string, inputTokens: number): ModelPricing {
+  const entry = catalogEntryForRequest(CLAUDE_API_PROVIDER, name);
+  const own = entry ? ownConnection(entry, CLAUDE_API_PROVIDER, name) : undefined;
+  const banded =
+    own?.pricing?.type === "tiered" ? connectionRequestRatesForInput(own, inputTokens) : undefined;
+  return banded ?? getModelPricing(CLAUDE_API_PROVIDER, name);
 }
 
 /** True when a response reported any token count. */
@@ -144,17 +160,13 @@ export function createClaudeApiMeter(opts: {
           cacheReadTokens: cacheRead,
           cacheCreationTokens: cacheCreation,
         };
+        const pricing = turnPricing(turn.model, input);
         if (canonicalModelId(turn.model) === mainId) {
           const before = tracker.getTotalCost();
-          tracker.update(input, output, detail);
+          tracker.update(input, output, detail, undefined, pricing);
           totals.cost += tracker.getTotalCost() - before;
         } else {
-          const cost = computeTurnCost(
-            getModelPricing(CLAUDE_API_PROVIDER, turn.model),
-            input,
-            output,
-            detail
-          );
+          const cost = computeTurnCost(pricing, input, output, detail);
           tracker.addSideTurn(cost, input, output, detail);
           totals.cost += cost;
         }

@@ -188,29 +188,13 @@ export function connectionPrice(pricing: AggregatorEntry["pricing"]): Connection
  * zero is unknown): `flat` → the published input and output rates, and
  * `cachedRead` as the cache-read rate; `tiered` → the first tier, marked an
  * estimate, because a request above that tier's `maxInputTokens` is billed at a
- * higher band this does not select; `free` → zero; `unavailable`, no pricing, an
+ * higher band this does not select (a reader that knows the request's size uses
+ * {@link connectionRequestRatesForInput}); `free` → zero; `unavailable`, no pricing, an
  * unrecognised type or an unmeasured zero → undefined, so the caller falls back.
  */
 export function connectionRequestRates(agg: AggregatorEntry): ModelPricing | undefined {
   const pricing = agg.pricing;
   if (!pricing) return undefined;
-  const rates = (
-    input: number | undefined,
-    output: number | undefined,
-    cachedRead: number | undefined
-  ): ModelPricing | undefined => {
-    const inputRate = usableRate(input);
-    const outputRate = usableRate(output);
-    if (inputRate === null || outputRate === null) return undefined;
-    if (isUnmeasuredZero(inputRate + outputRate)) return undefined;
-    const cacheReadRate = usableRate(cachedRead);
-    return {
-      inputCostPer1M: inputRate,
-      outputCostPer1M: outputRate,
-      ...(cacheReadRate !== null ? { cacheReadCostPer1M: cacheReadRate } : {}),
-    };
-  };
-
   switch (pricing.type) {
     case "flat":
       return rates(pricing.input, pricing.output, pricing.cachedRead);
@@ -227,6 +211,49 @@ export function connectionRequestRates(agg: AggregatorEntry): ModelPricing | und
     default:
       return undefined;
   }
+}
+
+/**
+ * The rates of the `tiered` band one request falls in: the first band whose
+ * `maxInputTokens` covers `inputTokens` (the request's whole input context,
+ * cached and cache-written tokens included), else the last band. That band's
+ * input, output and cache-read rates apply, the cache-read rate falling back to
+ * the top-level `cachedRead`. Not marked an estimate: the band is the one the
+ * catalog publishes for this size. Any other pricing type, or a band with no
+ * usable rate: {@link connectionRequestRates}.
+ */
+export function connectionRequestRatesForInput(
+  agg: AggregatorEntry,
+  inputTokens: number
+): ModelPricing | undefined {
+  const pricing = agg.pricing;
+  const tiers = pricing?.type === "tiered" ? (pricing.tiers ?? []) : [];
+  if (!pricing || tiers.length === 0) return connectionRequestRates(agg);
+  const band =
+    tiers.find((t) => t.maxInputTokens === undefined || inputTokens <= t.maxInputTokens) ??
+    tiers[tiers.length - 1];
+  return (
+    rates(band.input, band.output, band.cachedRead ?? pricing.cachedRead) ??
+    connectionRequestRates(agg)
+  );
+}
+
+/** Published per-million rates as a `ModelPricing`; undefined when input or output is unusable. */
+function rates(
+  input: number | undefined,
+  output: number | undefined,
+  cachedRead: number | undefined
+): ModelPricing | undefined {
+  const inputRate = usableRate(input);
+  const outputRate = usableRate(output);
+  if (inputRate === null || outputRate === null) return undefined;
+  if (isUnmeasuredZero(inputRate + outputRate)) return undefined;
+  const cacheReadRate = usableRate(cachedRead);
+  return {
+    inputCostPer1M: inputRate,
+    outputCostPer1M: outputRate,
+    ...(cacheReadRate !== null ? { cacheReadCostPer1M: cacheReadRate } : {}),
+  };
 }
 
 /**

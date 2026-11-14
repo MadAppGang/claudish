@@ -324,12 +324,17 @@ export class TokenTracker {
   /**
    * Standard update: assign input (latest context), accumulate output.
    * Used by most remote providers (Gemini, AnthropicCompat, Vertex, RemoteProvider, etc.)
+   *
+   * `turnPricing`, when given, prices this turn instead of the session model's
+   * pricing: a caller that knows the turn's price band (the Claude API meter)
+   * passes it, and the token file publishes the same rates.
    */
   update(
     inputTokens: number,
     outputTokens: number,
     detail?: UsageCacheDetail,
-    billing?: RequestBilling
+    billing?: RequestBilling,
+    turnPricing?: ModelPricing
   ): void {
     this.sessionInputTokens = inputTokens;
     this.lastInputTokens = inputTokens;
@@ -337,7 +342,7 @@ export class TokenTracker {
     this.sessionBilledInputTokens += inputTokens;
     this.sessionCacheReadTokens += detail?.cacheReadTokens ?? 0;
 
-    const pricing = this.getPricing(billing);
+    const pricing = turnPricing ?? this.getPricing(billing);
     // This strategy charges the whole context every turn, so the whole context
     // is what the cache discount is clamped against.
     this.sessionTotalCost += computeTurnCost(pricing, inputTokens, outputTokens, detail);

@@ -158,8 +158,10 @@ await isolatedFile(import.meta, async () => {
       input_tokens: 1000000,
       output_tokens: 100000,
     });
-    expect(events[0].estimated_cost).toBeCloseTo(1.5, 8);
-    expect(tokens()).toMatchObject({ provider_name: "Claude API", total_cost: 1.5 });
+    // 1,000,000 input is above the first band (200,000), so the second band
+    // prices it: $2/M input and $10/M output.
+    expect(events[0].estimated_cost).toBeCloseTo(3, 8);
+    expect(tokens()).toMatchObject({ provider_name: "Claude API", total_cost: 3 });
   });
 
   test("B-54 keeps per-model cumulative totals and side-turn context separate", () => {

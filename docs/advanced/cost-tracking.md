@@ -74,7 +74,9 @@ the connection that served it:
 
 - A metered request uses the rate its provider publishes for that model's
   connection in the catalog. A tiered price uses its first tier and is marked
-  an estimate; a free connection costs nothing.
+  an estimate, except on a Claude API session, where each request pays the band
+  its whole input (cached tokens included) falls in; a free connection costs
+  nothing.
 - When the provider's connection publishes no rate, the model's OpenRouter
   price from the same catalog entry is used. With neither, claudish falls back
   to a per-provider default and marks the cost an estimate.
