@@ -36,7 +36,7 @@ type Result = {
   session?: {
     end_reason?: string;
     events?: SessionEvent[];
-    subagents?: unknown[];
+    subagents?: { name?: string }[];
     metrics?: { cost?: number; turns?: number; model_requests?: number };
   };
 };
@@ -115,6 +115,12 @@ function trialRow(file: string, r: Result) {
     costMainUsd: r.session?.metrics?.cost ?? 0,
     turns: r.session?.metrics?.turns ?? 0,
     subagents: r.session?.subagents?.length ?? 0,
+    // How often each kind of subagent was started, e.g. a variant's own agent.
+    subagentNames: (r.session?.subagents ?? []).reduce<Record<string, number>>((acc, s) => {
+      const name = s.name ?? "unnamed";
+      acc[name] = (acc[name] ?? 0) + 1;
+      return acc;
+    }, {}),
     compactions: events.filter((e) => /compact/i.test(`${e.type} ${e.raw_type ?? ""}`)).length,
     main,
     sub,
@@ -269,6 +275,25 @@ console.log(
         ),
       ];
     })
+  )
+);
+
+console.log("\n## Subagents by name, per trial\n");
+console.log(
+  table(
+    ["variant", "trial", "subagents started"],
+    variants.flatMap((v) =>
+      rows
+        .filter((r) => r.variant === v)
+        .map((r, i) => [
+          v,
+          String(i + 1),
+          Object.entries(r.subagentNames)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([name, n]) => `${name} ${n}`)
+            .join(", ") || "none",
+        ])
+    )
   )
 );
 
