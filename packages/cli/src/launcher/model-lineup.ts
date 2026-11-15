@@ -759,6 +759,20 @@ function safeDeclared(deps: LineupDeps, provider: string): string[] | null {
 // Report and overlay value
 // ---------------------------------------------------------------------------
 
+/**
+ * The context window the session is sized for, one rule for every launch: the
+ * user's own `CLAUDE_CODE_MAX_CONTEXT_TOKENS` when set (a user value always
+ * wins), else the main thread's window claudish computed when above 0, else
+ * the window Claude Code assumes for an id it does not recognize.
+ */
+export function sessionWindow(env: NodeJS.ProcessEnv, computedWindow: number): number {
+  const raw = env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
+  const user = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  if (Number.isFinite(user) && user > 0) return user;
+  if (computedWindow > 0) return computedWindow;
+  return CLAUDE_CODE_ASSUMED_WINDOW;
+}
+
 export type LineupPosture = "claude-start" | "claude-model-start" | "foreign-start" | "tiers";
 
 const PREFIX = "[claudish] ";

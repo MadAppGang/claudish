@@ -53,6 +53,7 @@ import {
   settingsClaudeLoginToken,
   settingsCredentialFindings,
   startsOnClaudeSubscription,
+  unreadableSettingsArgs,
   wantsAnthropicApiBilling,
 } from "../claude-runner.js";
 import {
@@ -474,6 +475,33 @@ export interface DecideModelListingsDeps {
   settingsFindings?: (config: ClaudishConfig) => SettingsFinding[];
   /** Default `classifierPassthroughEnabled(config)`. */
   classifierPassthrough?: (config: ClaudishConfig) => boolean;
+  /** Default `unreadableSettingsArgs(config)`: 1-based passthrough `--settings` occurrences claudish cannot read. */
+  unreadableSettings?: (config: ClaudishConfig) => number[];
+}
+
+/**
+ * The refusal for a lineup launch with a passthrough `--settings` value
+ * claudish cannot read or parse, or null. A lineup merges every `--settings`
+ * into claudish's one file: forwarded instead, the value might outrank the
+ * lineup's `modelPicker`; dropped, the user would lose settings they passed.
+ * Names the occurrence, never the value: an inline value may hold a secret.
+ */
+function unreadableSettingsRefusal(
+  config: ClaudishConfig,
+  deps: DecideModelListingsDeps
+): string | null {
+  const unreadable = (
+    deps.unreadableSettings ?? ((c: ClaudishConfig) => unreadableSettingsArgs(c))
+  )(config);
+  if (unreadable.length === 0) return null;
+  const which =
+    unreadable.length === 1
+      ? `occurrence ${unreadable[0]}`
+      : `occurrences ${unreadable.join(", ")}`;
+  return (
+    `claudish cannot read --settings (${which}); a /model lineup merges every --settings into ` +
+    `one file. Fix or remove ${unreadable.length === 1 ? "it" : "them"}.`
+  );
 }
 
 /**
@@ -531,7 +559,9 @@ function settingsBaseUrlRefusal(
  *   start, with or without the API-billing opt-in, or classifier passthrough
  *   with a resolvable login) while a settings layer sets `ANTHROPIC_BASE_URL`:
  *   every pick would bypass claudish. Reads settings files, the environment
- *   and the local login check only.
+ *   and the local login check only;
+ * - a passthrough `--settings` value claudish cannot read: the lineup merges
+ *   every `--settings` into one file.
  *
  * A launch with no listing entry is left as it is.
  */
@@ -611,6 +641,9 @@ export function decideModelListings(
 
   // Set before the base-URL check: a launch that only lists providers keeps
   // the login because of the listings themselves (`startsOnClaudeSubscription`).
+  const settingsRefusal = unreadableSettingsRefusal(config, deps);
+  if (settingsRefusal) return { ok: false, message: settingsRefusal };
+
   config.modelListings = [...byProvider.values()];
   const baseUrlRefusal = settingsBaseUrlRefusal(config, deps);
   if (baseUrlRefusal) {

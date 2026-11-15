@@ -66,6 +66,22 @@ export interface ClaudishConfig {
    */
   modelListings?: ProviderListing[];
   /**
+   * The /model lineup of an interactive launch with listing entries, built
+   * before the proxy starts: the rows (each `model` a full claudish model spec)
+   * and the ONE `modelPicker` value both writers of the `--settings` temp file
+   * carry. Absent on every other launch, and in print mode.
+   */
+  modelLineup?: {
+    rows: ReadonlyArray<{ model: string; label: string; description: string; provider: string }>;
+    picker: { options: Array<{ model: string; label: string; description: string }> };
+  };
+  /**
+   * The main thread's context window, computed once before the launch report
+   * (`computeMainThreadContextWindow`) and reused by the runner. Set only on a
+   * launch that builds a /model lineup.
+   */
+  mainThreadWindow?: number;
+  /**
    * `--model-pinned`: `--model` is a parent's pin (one spec or a chain), routed for
    * a bare name in the parent. Only the proxy reads it, to treat each element as a
    * routed hop. Cleared at startup outside a pane child (`modelPinnedHonoured`).
