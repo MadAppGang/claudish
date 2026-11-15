@@ -626,7 +626,17 @@ What this shows:
 - **No history summary ran.** No debug log has a `[compaction] history`
   line, so the history part of compaction was not tested here.
 
-### Compaction history check (not a variant, in no mean)
+### Compaction history check (not a variant, in no mean): swap PASS, replay FAIL
+
+Result: **swap PASS, replay FAIL** (a defect in build 6f869a1d; a fix is in
+progress). The swaps were applied, but no swap was replayed on the request
+after it: the log has 0 `replayed` lines. The compaction branch's analysis of
+this log found that the requests after each swap read the old 34K prefix from
+the cache instead of the swapped 27.8K one. madbench's Events show the same
+mix: of 7 requests, numbers 5 and 7 read 27,762 tokens from the cache and
+number 6 read 34,387. So the correct fourth answer below cannot be
+attributed to the summary: the request that answered it carried the full
+history.
 
 A separate Bench, `history/madbench.yaml`: one interactive session through
 claudish with `--compaction`, in a small git repository, with a config whose
@@ -664,9 +674,10 @@ The fourth answer, after both swaps:
 > are `start` (`bun src/index.ts`), `test` (`bun test`), `lint` (`biome check
 > src`) and `build` (`bun build src/index.ts --outdir dist`).
 
-The answer is right: the summary kept the first turn's facts. This is one
-session of four short turns; it shows that the history path runs end to end,
-not what it saves.
+The answer is right, but it does not test the summary, because the full
+history reached the model. This run shows that summaries are prepared and
+swaps are applied; it does not show that a swapped history is sent, or what
+it saves. The check runs again on the fixed build.
 
 ## Explanations (inference, not verified)
 
