@@ -2277,7 +2277,7 @@
         }
       }
     },
-    "fetchedAt": "2026-11-14T16:08:39.633Z",
+    "fetchedAt": "2026-11-15T00:03:45.109Z",
     "format": 1,
     "recommendations": {
       "contractVersion": 3,
@@ -2383,11 +2383,11 @@
           "tier": "luxury"
         }
       ],
-      "generationId": "g-20261114132932816-1f7e197a"
+      "generationId": "g-20261114234105679-14dde71a"
     },
     "source": "https://us-central1-claudish-6da10.cloudfunctions.net"
   },
-  "catalogGenerationId": "g-20261114132932816-1f7e197a",
+  "catalogGenerationId": "g-20261114234105679-14dde71a",
   "entries": [
     {
       "aggregators": [
@@ -2961,9 +2961,9 @@
       ],
       "aliases": [
         "anthropic/claude-opus-5.5",
+        "claude-opus-5-5-low",
         "claude-opus-5-5-medium",
         "claude-opus-5-5-high",
-        "claude-opus-5-5-low",
         "claude-opus-5-5-max",
         "claude-opus-5-5-xhigh"
       ],
@@ -3154,9 +3154,9 @@
       "aliases": [
         "anthropic/claude-sonnet-5.5",
         "claude-sonnet-5.5",
-        "claude-sonnet-5-5-low",
         "claude-sonnet-5-5-high",
         "claude-sonnet-5-5-medium",
+        "claude-sonnet-5-5-low",
         "claude-sonnet-5-5-max",
         "claude-sonnet-5-5-xhigh"
       ],
@@ -3358,8 +3358,21 @@
             "type": "flat"
           },
           "reasoning": {
+            "mode": {
+              "status": "rejected"
+            },
             "request": {
-              "status": "unknown"
+              "api": "gemini",
+              "effort": {
+                "default": "medium",
+                "path": "/generationConfig/thinkingConfig/thinkingLevel",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "medium": "medium"
+                }
+              },
+              "status": "supported"
             }
           },
           "route": {
@@ -3372,7 +3385,26 @@
             "api": "gemini",
             "evidence": [],
             "reasoning": {
-              "status": "unknown"
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "default": "medium",
+                "path": "/generationConfig/thinkingConfig/thinkingLevel",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "medium": "medium"
+                }
+              },
+              "enable": {
+                "status": "not_applicable"
+              },
+              "mode": {
+                "path": "/reasoning/mode",
+                "status": "rejected"
+              },
+              "status": "supported"
             },
             "speed": {
               "status": "unknown"
@@ -3387,8 +3419,8 @@
       ],
       "aliases": [
         "google/gemini-4-argon",
-        "gemini-4-argon-high",
         "gemini-4-argon-medium",
+        "gemini-4-argon-high",
         "gemini-4-argon-low"
       ],
       "contextWindow": 1048576,
@@ -3480,8 +3512,21 @@
             "type": "flat"
           },
           "reasoning": {
-            "request": {
+            "mode": {
               "status": "unknown"
+            },
+            "request": {
+              "api": "gemini",
+              "effort": {
+                "default": "medium",
+                "path": "/generationConfig/thinkingConfig/thinkingLevel",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "medium": "medium"
+                }
+              },
+              "status": "supported"
             }
           },
           "route": {
@@ -3494,7 +3539,25 @@
             "api": "gemini",
             "evidence": [],
             "reasoning": {
-              "status": "unknown"
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "default": "medium",
+                "path": "/generationConfig/thinkingConfig/thinkingLevel",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "medium": "medium"
+                }
+              },
+              "enable": {
+                "status": "not_applicable"
+              },
+              "mode": {
+                "status": "unknown"
+              },
+              "status": "supported"
             },
             "speed": {
               "status": "unknown"
@@ -3511,9 +3574,9 @@
       ],
       "aliases": [
         "google/gemini-4-carbon",
-        "gemini-4-carbon-high",
         "gemini-4-carbon-medium",
-        "gemini-4-carbon-low"
+        "gemini-4-carbon-low",
+        "gemini-4-carbon-high"
       ],
       "contextWindow": 1048576,
       "contractVersion": 3,
@@ -3602,8 +3665,22 @@
             "type": "flat"
           },
           "reasoning": {
-            "request": {
+            "mode": {
               "status": "unknown"
+            },
+            "request": {
+              "api": "gemini",
+              "effort": {
+                "default": "high",
+                "path": "/generationConfig/thinkingConfig/thinkingLevel",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "medium": "medium",
+                  "xhigh": "xhigh"
+                }
+              },
+              "status": "supported"
             }
           },
           "route": {
@@ -3616,7 +3693,26 @@
             "api": "gemini",
             "evidence": [],
             "reasoning": {
-              "status": "unknown"
+              "disable": {
+                "status": "not_applicable"
+              },
+              "effort": {
+                "default": "high",
+                "path": "/generationConfig/thinkingConfig/thinkingLevel",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "medium": "medium",
+                  "xhigh": "xhigh"
+                }
+              },
+              "enable": {
+                "status": "not_applicable"
+              },
+              "mode": {
+                "status": "unknown"
+              },
+              "status": "supported"
             },
             "speed": {
               "status": "unknown"
@@ -3633,10 +3729,10 @@
       ],
       "aliases": [
         "google/gemini-4-hydrogen",
-        "gemini-4-hydrogen-low",
-        "gemini-4-hydrogen-high",
         "gemini-4-hydrogen-xhigh",
-        "gemini-4-hydrogen-medium"
+        "gemini-4-hydrogen-medium",
+        "gemini-4-hydrogen-high",
+        "gemini-4-hydrogen-low"
       ],
       "contextWindow": 1048576,
       "contractVersion": 3,
@@ -6042,7 +6138,7 @@
       "supportsVision": true
     }
   ],
-  "lastUpdated": "2026-11-14T13:29:32.816Z",
+  "lastUpdated": "2026-11-14T23:41:05.679Z",
   "models": [],
   "plans": [
     {
@@ -6743,86 +6839,6 @@
       "id": "google-antigravity",
       "inclusions": [
         {
-          "externalModelId": "gemini-4-hydrogen-low",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-hydrogen",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-hydrogen-low"
-        },
-        {
-          "externalModelId": "gemini-4-carbon-high",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-carbon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-carbon-high"
-        },
-        {
-          "externalModelId": "gemini-4-hydrogen-high",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-hydrogen",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-hydrogen-high"
-        },
-        {
-          "externalModelId": "gemini-4-carbon-medium",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-carbon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-carbon-medium"
-        },
-        {
-          "externalModelId": "claude-sonnet-5-5-low",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-sonnet-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-sonnet-5-5-low"
-        },
-        {
-          "externalModelId": "claude-opus-5-5-medium",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-opus-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-opus-5-5-medium"
-        },
-        {
-          "externalModelId": "claude-sonnet-5-5-high",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-sonnet-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-sonnet-5-5-high"
-        },
-        {
-          "externalModelId": "claude-opus-5-5-high",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "claude-opus-5-5",
-            "status": "mapped"
-          },
-          "sourceText": "claude-opus-5-5-high"
-        },
-        {
           "externalModelId": "claude-opus-5-5-low",
           "kind": "provider_model",
           "provider": "antigravity",
@@ -6831,16 +6847,6 @@
             "status": "mapped"
           },
           "sourceText": "claude-opus-5-5-low"
-        },
-        {
-          "externalModelId": "gemini-4-argon-high",
-          "kind": "provider_model",
-          "provider": "antigravity",
-          "resolution": {
-            "modelId": "gemini-4-argon",
-            "status": "mapped"
-          },
-          "sourceText": "gemini-4-argon-high"
         },
         {
           "externalModelId": "gemini-4-argon-medium",
@@ -6853,14 +6859,24 @@
           "sourceText": "gemini-4-argon-medium"
         },
         {
-          "externalModelId": "claude-sonnet-5-5-medium",
+          "externalModelId": "claude-opus-5-5-medium",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
-            "modelId": "claude-sonnet-5-5",
+            "modelId": "claude-opus-5-5",
             "status": "mapped"
           },
-          "sourceText": "claude-sonnet-5-5-medium"
+          "sourceText": "claude-opus-5-5-medium"
+        },
+        {
+          "externalModelId": "gemini-4-carbon-medium",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-carbon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-carbon-medium"
         },
         {
           "externalModelId": "gemini-4-hydrogen-xhigh",
@@ -6873,14 +6889,14 @@
           "sourceText": "gemini-4-hydrogen-xhigh"
         },
         {
-          "externalModelId": "gemini-4-argon-low",
+          "externalModelId": "gemini-4-hydrogen-medium",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
-            "modelId": "gemini-4-argon",
+            "modelId": "gemini-4-hydrogen",
             "status": "mapped"
           },
-          "sourceText": "gemini-4-argon-low"
+          "sourceText": "gemini-4-hydrogen-medium"
         },
         {
           "externalModelId": "gemini-4-carbon-low",
@@ -6893,14 +6909,94 @@
           "sourceText": "gemini-4-carbon-low"
         },
         {
-          "externalModelId": "gemini-4-hydrogen-medium",
+          "externalModelId": "claude-sonnet-5-5-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-sonnet-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-sonnet-5-5-high"
+        },
+        {
+          "externalModelId": "claude-sonnet-5-5-medium",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-sonnet-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-sonnet-5-5-medium"
+        },
+        {
+          "externalModelId": "gemini-4-hydrogen-high",
           "kind": "provider_model",
           "provider": "antigravity",
           "resolution": {
             "modelId": "gemini-4-hydrogen",
             "status": "mapped"
           },
-          "sourceText": "gemini-4-hydrogen-medium"
+          "sourceText": "gemini-4-hydrogen-high"
+        },
+        {
+          "externalModelId": "claude-sonnet-5-5-low",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-sonnet-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-sonnet-5-5-low"
+        },
+        {
+          "externalModelId": "gemini-4-hydrogen-low",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-hydrogen",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-hydrogen-low"
+        },
+        {
+          "externalModelId": "claude-opus-5-5-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "claude-opus-5-5",
+            "status": "mapped"
+          },
+          "sourceText": "claude-opus-5-5-high"
+        },
+        {
+          "externalModelId": "gemini-4-argon-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-argon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-argon-high"
+        },
+        {
+          "externalModelId": "gemini-4-argon-low",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-argon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-argon-low"
+        },
+        {
+          "externalModelId": "gemini-4-carbon-high",
+          "kind": "provider_model",
+          "provider": "antigravity",
+          "resolution": {
+            "modelId": "gemini-4-carbon",
+            "status": "mapped"
+          },
+          "sourceText": "gemini-4-carbon-high"
         }
       ],
       "modelDiscovery": "client",
@@ -7224,16 +7320,6 @@
       "id": "ollama-cloud",
       "inclusions": [
         {
-          "externalModelId": "glm-5.3-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "glm-5.3-flash",
-            "status": "mapped"
-          },
-          "sourceText": "glm-5.3-flash"
-        },
-        {
           "externalModelId": "glm-5.3",
           "kind": "provider_model",
           "provider": "ollamacloud",
@@ -7242,6 +7328,16 @@
             "status": "mapped"
           },
           "sourceText": "glm-5.3"
+        },
+        {
+          "externalModelId": "mimo-v2.6-flash",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "mimo-v2.6-flash",
+            "status": "mapped"
+          },
+          "sourceText": "mimo-v2.6-flash"
         },
         {
           "externalModelId": "mimo-v2.6-pro",
@@ -7254,14 +7350,14 @@
           "sourceText": "mimo-v2.6-pro"
         },
         {
-          "externalModelId": "deepseek-v4.1-flash",
+          "externalModelId": "kimi-k3.1-pro",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "deepseek-v4.1-flash",
+            "modelId": "kimi-k3.1-pro",
             "status": "mapped"
           },
-          "sourceText": "deepseek-v4.1-flash"
+          "sourceText": "kimi-k3.1-pro"
         },
         {
           "externalModelId": "minimax-m3.1-flash",
@@ -7274,24 +7370,24 @@
           "sourceText": "minimax-m3.1-flash"
         },
         {
-          "externalModelId": "kimi-k3.1-pro",
+          "externalModelId": "glm-5.3-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "kimi-k3.1-pro",
+            "modelId": "glm-5.3-flash",
             "status": "mapped"
           },
-          "sourceText": "kimi-k3.1-pro"
+          "sourceText": "glm-5.3-flash"
         },
         {
-          "externalModelId": "mimo-v2.6-flash",
+          "externalModelId": "deepseek-v4.1-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "mimo-v2.6-flash",
+            "modelId": "deepseek-v4.1-flash",
             "status": "mapped"
           },
-          "sourceText": "mimo-v2.6-flash"
+          "sourceText": "deepseek-v4.1-flash"
         }
       ],
       "modelDiscovery": "catalog",
@@ -7536,7 +7632,7 @@
     }
   ],
   "routeRegistry": {
-    "generationId": "g-20261114132932816-1f7e197a",
+    "generationId": "g-20261114234105679-14dde71a",
     "registry": {
       "contractVersion": 3,
       "registryVersion": "3.7.0",
