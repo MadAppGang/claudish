@@ -548,8 +548,6 @@ const FORMATS: Format[] = [
     limits: {
       THINKING:
         "Gemini continues its reasoning from the thoughtSignature on each functionCall, not from thought text",
-      TOOL_REF:
-        "REPORTED: convertUserParts keeps only the text and image items of a tool_result and drops the rest with no log",
       DOCUMENT:
         "REPORTED: convertUserParts keeps only the text and image items of a tool_result and drops the rest with no log",
     },
@@ -587,10 +585,7 @@ const FORMATS: Format[] = [
     conversation: (b) => b.messages,
     pairs: anthropicPairs,
     expectedPairs: BY_ID,
-    limits: {
-      TOOL_REF:
-        "stripUnsupportedContentTypes removes tool_reference on purpose: Anthropic-compatible hosts do not know the block",
-    },
+    limits: {},
     outOfOrder: true,
     carriesErrorFlag: true,
     sendsEmptyText: true,
