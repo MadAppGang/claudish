@@ -135,9 +135,20 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
 - **Apply** at `applyAt`, when a summary is ready and the last message starts a human turn:
   `[user "[claudish: summary of the earlier conversation]\n<summary>"]` + messages `[b, end)`
   without thinking + messages after `end` unchanged. Recorded as a `history-swap` with
-  `(prefixHash over [0,b), tailHash over [b,end), b, end)`, and replayed on every later request
-  whose two hashes match. Hashes are taken over canonical JSON (sorted keys) of the messages as the
-  tool-output pass left them.
+  `(prefixHash over [0,b), tailHash over [b,end), one hash per message of [b,end), b, end)`.
+  Hashes are taken over canonical JSON (sorted keys, `cache_control` markers removed) of the
+  messages as the tool-output pass left them.
+- **Replay** on every later request of the same thread whose prefix `[0,b)` hashes to
+  `prefixHash` and which has at least `end` messages. The tail is NOT required to match. Measured
+  on native claude-sonnet-5-5: the request after a swap changed the one message in `[b,end)` (the
+  turn's human message, newest at swap time), and the old rule then resent the whole original
+  history (upstream cache_read back at the old prefix, 34,387 tokens against 27,762 on the swap
+  request; no replay in the session). The summary bytes that replace `[0,b)` are identical either
+  way; a changed tail message changes only its own bytes. Thinking is stripped from the CURRENT
+  `[b,end)` on every replay; messages after `end` keep theirs (they were produced on the swapped
+  history). A rewind into `[b,end)` (fewer than `end` messages) or a changed prefix does not match.
+  When the tail differs from the record, the debug log names it without content:
+  `[compaction] session <id>: history replayed at <b>, tail changed: recorded [<12hex>,...] current [<12hex>,...]`.
 - A request with another prefix (Claude Code's own `/compact`, a subagent's transcript) matches no
   swap and is untouched. Several threads per session are possible; records are keyed by prefix
   hash.

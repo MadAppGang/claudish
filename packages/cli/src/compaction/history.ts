@@ -19,9 +19,11 @@
  *   starts a human turn, never inside a tool round). The request becomes one
  *   user message holding the summary, followed by messages `[b, end)` with
  *   `thinking` / `redacted_thinking` blocks removed, followed by any newer
- *   messages unchanged. The swap is recorded and replayed byte-identically on
- *   every later request whose messages `[0, b)` and `[b, end)` hash the same.
- *   A request with another prefix (Claude Code's own `/compact`, a subagent's
+ *   messages unchanged. The swap is recorded and replayed on every later
+ *   request of the same thread whose messages `[0, b)` hash the same and that
+ *   holds at least `end` messages; the summary bytes are identical on each.
+ *   Messages `[b, end)` are taken from the current request, so a change to one
+ *   of them changes only that message. A request with another prefix (Claude Code's own `/compact`, a subagent's
  *   transcript) matches no swap and is left untouched.
  * - **Failures** are final for their boundary and never block a request.
  *
@@ -197,6 +199,13 @@ export function messagesHash(messages: readonly unknown[], start: number, end: n
   }
   hash.update("]");
   return hash.digest("hex");
+}
+
+/** sha256 hex of one message: canonical JSON without `cache_control` markers. */
+export function messageHash(message: unknown): string {
+  return createHash("sha256")
+    .update(canonicalJson(withoutCacheMarkers(message)))
+    .digest("hex");
 }
 
 /** The conversation thread of a request: sha256 of its first message. */
@@ -461,6 +470,9 @@ export class HistoryCompactor {
 
     const active = this.matchSwap(sessionId, thread, original, hashes);
     if (active) {
+      if (hashes.range(active.boundary, active.end) !== active.tailHash) {
+        logTailChange(sessionId, active, original);
+      }
       body.messages = applySwap(original, active);
       result.applied = "replayed";
       result.boundary = active.boundary;
@@ -518,6 +530,7 @@ export class HistoryCompactor {
       thread,
       prefixHash: ready.prefixHash,
       tailHash: hashes.range(ready.boundary, original.length),
+      tailMessageHashes: original.slice(ready.boundary).map(messageHash),
       boundary: ready.boundary,
       end: original.length,
       summary: ready.summary,
@@ -536,10 +549,10 @@ export class HistoryCompactor {
       );
       return undefined;
     }
-    // A swap recorded earlier for the same prefix with another tail is not
-    // this request's: only a record whose hashes match is sent.
+    // A swap recorded earlier for the same prefix is sent on the replay rule:
+    // it covers `[0, b)`, and this request reaches its `end`.
     if (stored.kind !== "history-swap" || stored.end > original.length) return undefined;
-    return stored.tailHash === hashes.range(stored.boundary, stored.end) ? stored : undefined;
+    return stored;
   }
 
   /**
@@ -563,7 +576,14 @@ export class HistoryCompactor {
     }
   }
 
-  /** The recorded swap with the largest boundary whose hashes match `original`. */
+  /**
+   * The recorded swap with the largest boundary whose thread and prefix hash
+   * match `original`, and whose `end` `original` reaches. Messages `[b, end)`
+   * need not hash as recorded: the summary replaces only `[0, b)`, so its
+   * bytes are the same either way, and `applySwap` sends the current
+   * `[b, end)`. Refusing the swap over a changed tail message would instead
+   * resend the whole original prefix and lose the cached summary prefix.
+   */
   private matchSwap(
     sessionId: string,
     thread: string,
@@ -578,7 +598,6 @@ export class HistoryCompactor {
       }
       if (best && record.boundary <= best.boundary) continue;
       if (hashes.prefix(record.boundary) !== record.prefixHash) continue;
-      if (hashes.range(record.boundary, record.end) !== record.tailHash) continue;
       best = record;
     }
     return best;
@@ -719,6 +738,28 @@ export class HistoryCompactor {
         : `[compaction] history summary failed in session ${job.sessionId} at message ${job.boundary}: ${record.reason}`
     );
   }
+}
+
+/**
+ * Log which messages of a replayed swap's `[b, end)` differ from the recorded
+ * ones, by the first 12 hex of each message's hash. No message content.
+ */
+function logTailChange(
+  sessionId: string,
+  swap: HistorySwapRecord,
+  original: readonly unknown[]
+): void {
+  const short = (h: unknown) => String(h).slice(0, 12);
+  const recorded = Array.isArray(swap.tailMessageHashes)
+    ? swap.tailMessageHashes.map(short).join(",")
+    : "unknown";
+  const current = original
+    .slice(swap.boundary, swap.end)
+    .map((m) => short(messageHash(m)))
+    .join(",");
+  log(
+    `[compaction] session ${sessionId}: history replayed at ${swap.boundary}, tail changed: recorded [${recorded}] current [${current}]`
+  );
 }
 
 function messagesOf(payload: unknown): unknown[] | undefined {

@@ -159,6 +159,12 @@ export interface HistorySwapRecord {
   prefixHash: string;
   /** sha256 of messages `[boundary, end)`. */
   tailHash: string;
+  /**
+   * sha256 of each message of `[boundary, end)`, in order. Diagnostic only:
+   * it names which message changed when a replay finds another tail. Absent
+   * on records written before it existed.
+   */
+  tailMessageHashes?: string[];
   boundary: number;
   /** One past the last message the swap saw (the message count at swap time). */
   end: number;

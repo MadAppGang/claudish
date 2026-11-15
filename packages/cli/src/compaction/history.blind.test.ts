@@ -243,12 +243,21 @@ if (process.env.COMPACTION_BLIND_FILE !== import.meta.path) {
     expect(swaps()).toHaveLength(1);
     expect(r.requests).toHaveLength(1);
 
-    for (const index of [0, 1, 2, 3, 5]) {
+    // A changed message in the summarised prefix [0, b) rejects the swap.
+    for (const index of [0, 1]) {
       const different = structuredClone(source);
       different.messages[index] = { role: different.messages[index]!.role, content: "CHANGED" };
       const before = structuredClone(different);
       expect(reloaded.replay(different, session)).toBe(false);
       expect(different).toEqual(before);
+    }
+    // A changed message in the kept turns [b, end) still replays the same summary bytes.
+    const summaryBytes = JSON.stringify(JSON.parse(serialized)[0]);
+    for (const index of [2, 3, 5]) {
+      const different = structuredClone(source);
+      different.messages[index] = { role: different.messages[index]!.role, content: "CHANGED" };
+      expect(reloaded.replay(different, session)).toBe(true);
+      expect(JSON.stringify(different.messages[0])).toBe(summaryBytes);
     }
   });
 
