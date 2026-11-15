@@ -182,6 +182,7 @@ import {
 import { inlineSystemAsUserText } from "./shared/format/inline-system.js";
 import { removeProviderRefusedText } from "./shared/format/provider-refused-text.js";
 import { aliasToolsForProvider } from "./shared/format/tool-name-alias.js";
+import { toolReferencesAsText } from "./shared/format/tool-reference-text.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
@@ -1621,6 +1622,35 @@ export class ComposedHandler implements ModelHandler {
     const withInlineSystem = inlineSystemAsUserText(claudeRequest.messages);
     if (withInlineSystem !== claudeRequest.messages) {
       claudeRequest = { ...claudeRequest, messages: withInlineSystem };
+    }
+
+    // 2d. Say in text what a `tool_reference` item of a tool result means.
+    // Claude Code answers `ToolSearch` with that pointer and no text, and no
+    // converter carries it: the Anthropic-shaped one removes it for every
+    // host, the others never read it. So the model read an empty result.
+    // Outside the `keepIdentity` test: a Claude model behind a gateway or
+    // `antigravity` is on the same wires. The sentence names the tool as the
+    // body will declare it: after the 2b alias, under the name the converter
+    // answers for it (`declaredToolNames`). A tool the request does not
+    // declare, one the converter declares under no name, or one past its
+    // tool-count cap is not declared, and the sentence says so. The names are
+    // asked for once, and only when a result holds a reference.
+    let declaredNames: Map<string, string | null> | undefined;
+    const sentName = (name: string): string | null => {
+      declaredNames ??= adapter.declaredToolNames(
+        (claudeRequest.tools ?? [])
+          .slice(0, adapter.getMaxToolCount() ?? undefined)
+          .map((tool: any) => tool?.name)
+          .filter((toolName: unknown): toolName is string => typeof toolName === "string")
+      );
+      return declaredNames.get(toolAlias.forward(name)) ?? null;
+    };
+    const withToolReferences = toolReferencesAsText(claudeRequest.messages, {
+      nameOf: (name) => sentName(name) ?? toolAlias.forward(name),
+      isDeclared: (name) => sentName(name) !== null,
+    });
+    if (withToolReferences !== claudeRequest.messages) {
+      claudeRequest = { ...claudeRequest, messages: withToolReferences };
     }
 
     // 3. Convert messages and tools. No identity filter here: step 2a already

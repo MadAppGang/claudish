@@ -412,6 +412,25 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   }
 
   /**
+   * The name this converter declares each of `names` under in `tools`, or null
+   * for one it does not declare. `names` are the request's tools in declaration
+   * order. Text that tells the model a tool's name (the `ToolSearch` sentence)
+   * reads it here, so it names what the body declares.
+   *
+   * The default repeats what `encodeToolNames` does on the built payload: the
+   * tools claim their encoded names in declaration order, in one binding, so a
+   * name that collides with an earlier tool's gets the same salted form here.
+   * A converter with its own name rules overrides this.
+   */
+  declaredToolNames(names: string[]): Map<string, string | null> {
+    const limit = this.getToolNameLimit();
+    const bindings = newToolNameBindings();
+    return new Map(
+      names.map((name) => [name, limit ? encodeToolName(name, limit, bindings) : name])
+    );
+  }
+
+  /**
    * This request's decode map (encoded → original).
    *
    * Read it ONCE, immediately after `prepareRequest`, and thread that reference
