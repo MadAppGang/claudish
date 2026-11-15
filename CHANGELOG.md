@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.25.1] - 2026-11-15
+
+### Bug Fixes
+
+- send no thinking field when reasoning is off *(antigravity)* ([`64ecea8`](https://github.com/MadAppGang/claudish/commit/64ecea83e899965d9409400d5b45976fa0cd1609))
+
+### Documentation
+
+- stamp the playbook verified at the v14.25.0 merge *(release)* ([`f95b9d4`](https://github.com/MadAppGang/claudish/commit/f95b9d4b9b2ae4065951a6aec87b156dc4bd9663))
+- update CHANGELOG.md for v14.25.0([`9826aed`](https://github.com/MadAppGang/claudish/commit/9826aedb399a5b8f44de9927c24cd0591bc250ae))
+
 ## [14.25.0] - 2026-11-15
 
 ### Bug Fixes
