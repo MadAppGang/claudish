@@ -38,8 +38,19 @@ describe("toolReferencesAsText", () => {
 
   test("the sentence uses the name the model sees", () => {
     const nameOf = (name: string) => (name === "Read" ? "read_file" : name);
-    const out = toolReferencesAsText([result([reference("Read")])], nameOf);
+    const out = toolReferencesAsText([result([reference("Read")])], { nameOf });
     expect(contentOf(out)[0].text).toBe("Loaded: read_file. It is in your tool list now.");
+  });
+
+  test("a tool the request does not declare is reported as not loaded, by its sent name", () => {
+    const out = toolReferencesAsText([result([reference("Read"), reference("Edit")])], {
+      nameOf: (name) => name.toLowerCase(),
+      isDeclared: (name) => name === "Read",
+    });
+    expect(contentOf(out).map((item: any) => item.text)).toEqual([
+      "Loaded: read. It is in your tool list now.",
+      "Not loaded: edit. It is not in your tool list.",
+    ]);
   });
 
   test("the other fields of the tool result stay", () => {

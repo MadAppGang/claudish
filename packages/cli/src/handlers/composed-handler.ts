@@ -63,6 +63,7 @@ import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
 import { lookupModelAcceptsImages, lookupModelForProvider } from "../adapters/model-catalog.js";
+import { encodeToolName, newToolNameBindings } from "../adapters/tool-name-utils.js";
 import type { QuotaAdapter } from "../auth/quota/adapter.js";
 import { resolveQuotaAdapter } from "../auth/quota/registry.js";
 import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
@@ -1629,9 +1630,26 @@ export class ComposedHandler implements ModelHandler {
     // converter carries it: the Anthropic-shaped one removes it for every
     // host, the others never read it. So the model read an empty result.
     // Outside the `keepIdentity` test: a Claude model behind a gateway or
-    // `antigravity` is on the same wires. After 2b: the sentence names the
-    // tool as this request declares it.
-    const withToolReferences = toolReferencesAsText(claudeRequest.messages, toolAlias.forward);
+    // `antigravity` is on the same wires. The sentence names the tool as the
+    // body will declare it: after the 2b alias, and in the encoded form a
+    // converter with a name limit gives it (a fresh binding per name, so a
+    // name that collides with another tool's is the one case it gets wrong).
+    // A tool past the converter's tool-count cap is not declared, and the
+    // sentence says so.
+    const toolNameLimit = adapter.getToolNameLimit();
+    const toolCountCap = adapter.getMaxToolCount();
+    const declaredTools = new Set(
+      (claudeRequest.tools ?? []).slice(0, toolCountCap ?? undefined).map((tool: any) => tool?.name)
+    );
+    const withToolReferences = toolReferencesAsText(claudeRequest.messages, {
+      nameOf: (name) => {
+        const declared = toolAlias.forward(name);
+        return toolNameLimit
+          ? encodeToolName(declared, toolNameLimit, newToolNameBindings())
+          : declared;
+      },
+      isDeclared: (name) => declaredTools.has(toolAlias.forward(name)),
+    });
     if (withToolReferences !== claudeRequest.messages) {
       claudeRequest = { ...claudeRequest, messages: withToolReferences };
     }
