@@ -387,6 +387,16 @@ These are only needed if you want to use your own Google Cloud OAuth application
   - **`askedAt`**: ISO 8601 timestamp of when the user was last prompted. Absent means never prompted.
   - **`promptedVersion`**: Claudish version string at time of prompting.
 - **`routing`**: Custom routing rules (see Section 7). Absent means use default auto-routing chain.
+- <a id="localproviders"></a>**`localProviders`**: The built-in local claudish providers that claudish
+  may use. A local provider is listed, routed to, and offered in the picker only when its name is in
+  this array. Values are the built-in local provider names: `ollama`, `lmstudio`, `vllm`, `mlx`.
+  Absent (the default) means none is enabled. The `claudish config` Providers tab sets it: select a
+  local provider and press `e` to add it to the array or remove it (the list is kept sorted, and the
+  key is dropped when the last one is removed).
+
+  ```json
+  { "localProviders": ["lmstudio", "ollama"] }
+  ```
 - **`hooks`**: The hook system. Read from this file (or the `--config` override) only. Full guide:
   [Hooks](advanced/hooks.md).
 
@@ -731,7 +741,7 @@ cloud models catalog. When a provider's live list fails, its rows are missing: t
 stand in for what your account may call.
 
 A local server (Ollama, LM Studio, vLLM, MLX) is listed only when it is enabled in
-`~/.claudish/config.json`, for example `"localProviders": ["ollama"]`. Otherwise the launch reports
+`~/.claudish/config.json`, for example `"localProviders": ["ollama"]` (see [`localProviders`](#localproviders)). Otherwise the launch reports
 `Provider "ollama" is a LOCAL server and is not enabled`, names that line, and starts with Claude's
 own rows.
 
