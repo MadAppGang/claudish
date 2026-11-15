@@ -335,11 +335,12 @@ async function prepare(surface: Surface, records: Json[], mayAppend = false): Pr
   expect(typeof runId).toBe("string");
   expect(slot).toBe("01");
   await settled(path, runId);
-  const status = ok(await call("team", { mode: "status", path, run_id: runId }));
-  // This run has one slot, so run.finished_at is also the slot's finish time.
-  const finishedAt = Date.parse(String((status.run as Json).finished_at));
-  expect(Number.isFinite(finishedAt)).toBe(true);
   await paneExited(path, slot, runId);
+  // The on-disk reader counts its 30 s grace from the slot's `completedAt`. The live run's
+  // `finished_at` is stamped later, when the server sees the run settle, so it cannot stand in.
+  const onDisk = JSON.parse(readFileSync(join(path, "status.json"), "utf8")) as Json;
+  const finishedAt = Date.parse(String(((onDisk.models as Json)[slot] as Json).completedAt));
+  expect(Number.isFinite(finishedAt)).toBe(true);
   if (mayAppend) {
     // Retain the original server, but its fake pane is stopped and cannot race our test data.
     // The restarted reader uses the slot's finish/quiet times, not the owner's liveness.
