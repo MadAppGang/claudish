@@ -149,6 +149,37 @@ export function computeTurnCost(
 }
 
 /**
+ * The session-wide figures of one token file, summed across every tracker that
+ * writes it.
+ *
+ * Each handler has its own tracker, and a /model switch moves the session to
+ * another handler: with each tracker writing its own totals, the file's
+ * `total_cost` dropped to the new handler's figure on every switch. So the
+ * session figures (`total_cost`, `billed_input_tokens`, `output_tokens`,
+ * `tool_calls`, `started_at`) live here, keyed by the file's path; each tracker
+ * adds what it charged since its own last write, so switching back to an
+ * earlier handler never counts its turns twice. A tracker that never writes the
+ * file (`writesTokenFile: false`) never adds to it.
+ */
+interface TokenFileTotals {
+  totalCost: number;
+  billedInputTokens: number;
+  outputTokens: number;
+  toolCalls: Map<string, number>;
+  startedAt: number;
+}
+
+const tokenFileTotals = new Map<string, TokenFileTotals>();
+
+/** What one tracker had already added to its token file's totals. */
+interface ReportedTotals {
+  totalCost: number;
+  billedInputTokens: number;
+  outputTokens: number;
+  toolCalls: Map<string, number>;
+}
+
+/**
  * Every cost-bearing update below takes an optional `billing`: the decision of
  * the request whose usage it records (`RequestBilling`, decided when that
  * request was signed). Absent, pricing falls back to `isSubscriptionProvider`,
@@ -228,6 +259,13 @@ export class TokenTracker {
    * Every other strategy accumulates and needs no such counter.
    */
   private sessionCacheReadTokens = 0;
+  /** This tracker's share already added to its token file's totals (`tokenFileTotals`). */
+  private reported: ReportedTotals = {
+    totalCost: 0,
+    billedInputTokens: 0,
+    outputTokens: 0,
+    toolCalls: new Map(),
+  };
 
   constructor(port: number, config: TokenTrackerConfig) {
     this.port = port;
@@ -610,15 +648,59 @@ export class TokenTracker {
     return name.charAt(0).toUpperCase() + name.slice(1);
   }
 
+  /**
+   * Adds what this tracker charged since its last write to the totals of the
+   * token file at `path`, and returns those totals. Deltas, never this
+   * tracker's whole figures, so trackers sharing a file sum without overlap.
+   */
+  private addToFileTotals(path: string): TokenFileTotals {
+    let totals = tokenFileTotals.get(path);
+    if (!totals) {
+      totals = {
+        totalCost: 0,
+        billedInputTokens: 0,
+        outputTokens: 0,
+        toolCalls: new Map(),
+        startedAt: this.startedAt,
+      };
+      tokenFileTotals.set(path, totals);
+    }
+    totals.startedAt = Math.min(totals.startedAt, this.startedAt);
+    totals.totalCost += this.sessionTotalCost - this.reported.totalCost;
+    totals.billedInputTokens += this.sessionBilledInputTokens - this.reported.billedInputTokens;
+    totals.outputTokens += this.sessionOutputTokens - this.reported.outputTokens;
+    for (const [name, count] of this.toolCallsByName) {
+      const delta = count - (this.reported.toolCalls.get(name) ?? 0);
+      if (delta !== 0) totals.toolCalls.set(name, (totals.toolCalls.get(name) ?? 0) + delta);
+    }
+    this.reported = {
+      totalCost: this.sessionTotalCost,
+      billedInputTokens: this.sessionBilledInputTokens,
+      outputTokens: this.sessionOutputTokens,
+      toolCalls: new Map(this.toolCallsByName),
+    };
+    return totals;
+  }
+
+  /**
+   * Writes the token file. `inputTokens` is this request's context; the
+   * session figures come from the file's totals across every tracker writing
+   * it (`addToFileTotals`), so `_outputTokens`, this tracker's own count, only
+   * documents what each caller hands over.
+   */
   private writeFile(
     inputTokens: number,
-    outputTokens: number,
+    _outputTokens: number,
     isEstimate?: boolean,
     requestPricing?: ModelPricing
   ): void {
     // The choke point of every write: each update path ends here.
     if (this.config.writesTokenFile === false) return;
     try {
+      // The ONE rule the status line and the end-of-session summary read by.
+      const outPath = resolveTokenFilePath(this.port);
+      const totals = this.addToFileTotals(outPath);
+      const outputTokens = totals.outputTokens;
       const total = inputTokens + outputTokens;
       const cw = this.config.contextWindow;
       // Context occupancy is the CURRENT conversation size, which is `inputTokens` —
@@ -645,7 +727,7 @@ export class TokenTracker {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         total_tokens: total,
-        total_cost: this.sessionTotalCost,
+        total_cost: totals.totalCost,
         context_window: cw > 0 ? cw : "unknown",
         context_left_percent: leftPct,
         provider_name: this.getDisplayName(),
@@ -657,13 +739,16 @@ export class TokenTracker {
         // proxy exiting, and the summary is printed AFTER shutdown (see
         // `session/session-summary.ts`). `started_at` pairs with `updated_at` to
         // give a duration; `tool_calls` is the distribution, not just a total.
-        started_at: this.startedAt,
-        tool_calls: this.getToolCalls(),
+        started_at: totals.startedAt,
+        tool_calls: [...totals.toolCalls]
+          .filter(([, count]) => count > 0)
+          .map(([name, count]) => ({ name, count }))
+          .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
         // The savings baseline's denominator. `input_tokens` above is the CURRENT
         // context (assigned, for the status line's occupancy bar); this is the
         // cumulative billed volume. Pricing the former against a cumulative
         // `total_cost` compares one turn to N and can invert the sign of the result.
-        billed_input_tokens: this.sessionBilledInputTokens,
+        billed_input_tokens: totals.billedInputTokens,
         // The per-million RATES, not a split of the total. Cost accumulates through four
         // different strategies above (standard, accumulate-both, delta-aware,
         // actual-cost), so maintaining a parallel input/output split in each would be
@@ -719,8 +804,6 @@ export class TokenTracker {
       // orchestrator spawning N children has no way to tell which file belongs
       // to which model. Pointing each child at a known path is what makes
       // per-model token/cost reporting possible.
-      // The ONE rule the status line and the end-of-session summary read by.
-      const outPath = resolveTokenFilePath(this.port);
       mkdirSync(dirname(outPath), { recursive: true });
       writeFileSync(outPath, JSON.stringify(data), "utf-8");
     } catch (e) {
