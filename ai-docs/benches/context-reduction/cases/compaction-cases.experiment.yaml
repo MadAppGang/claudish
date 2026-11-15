@@ -17,8 +17,9 @@ variants:
       binary: ../bin/claudish-build-plain
       tool: cases-baseline
   # The build with --compaction --debug-claudish, the key in the run's
-  # ~/.claudish/config.json from --param claudish_config.
+  # ~/.claudish/config.json from --param claudish_config. The wrapper exports
+  # a case's launch-env, then runs ../bin/claudish-compaction.
   - name: cases-compaction
     params:
-      binary: ../bin/claudish-compaction
+      binary: ../bin/claudish-cases-compaction
       tool: claudish-compaction

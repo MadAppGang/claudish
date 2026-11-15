@@ -1,0 +1,12 @@
+#!/bin/sh
+# The compaction arm of cases/: exports the variables a case's preparation
+# wrote to ~/.bench-compaction/launch-env (case d: the auto-compact window),
+# then runs ./claudish-compaction unchanged. `exec` keeps the pid, so the
+# launcher's own checks and watcher work as for the main Bench.
+f="$HOME/.bench-compaction/launch-env"
+if [ -f "$f" ]; then
+  set -a
+  . "$f"
+  set +a
+fi
+exec sh "$(dirname "$0")/claudish-compaction" "$@"

@@ -17,6 +17,13 @@
 set -u
 dir="$HOME/.bench-compaction"
 mkdir -p "$dir"
+# The variables a case's preparation wrote (case d: the auto-compact window),
+# the same file bin/claudish-cases-compaction reads.
+if [ -f "$dir/launch-env" ]; then
+  set -a
+  . "$dir/launch-env"
+  set +a
+fi
 live="$HOME/.bench-out/claudish-plain-launch-$(date +%Y%m%dT%H%M%S)-$$"
 mkdir -p "$live/debug"
 echo "$live" >"$dir/launch-dir"
