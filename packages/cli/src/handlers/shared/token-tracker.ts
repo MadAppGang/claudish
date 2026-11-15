@@ -159,7 +159,8 @@ export function computeTurnCost(
  * `tool_calls`, `started_at`) live here, keyed by the file's path; each tracker
  * adds what it charged since its own last write, so switching back to an
  * earlier handler never counts its turns twice. A tracker that never writes the
- * file (`writesTokenFile: false`) never adds to it.
+ * file (`writesTokenFile: false`) never adds to it. The totals last until the
+ * proxy that owns the file shuts down (`clearTokenFileTotals`).
  */
 interface TokenFileTotals {
   totalCost: number;
@@ -170,6 +171,16 @@ interface TokenFileTotals {
 }
 
 const tokenFileTotals = new Map<string, TokenFileTotals>();
+
+/**
+ * Ends the session on the token file at `path`: its totals start from zero for
+ * the next tracker that writes it. A proxy calls this at shutdown, so a process
+ * that builds proxies one after another (`serve` rebuilding, the probe proxy)
+ * never carries one proxy's figures into the next on the same port.
+ */
+export function clearTokenFileTotals(path: string): void {
+  tokenFileTotals.delete(path);
+}
 
 /** What one tracker had already added to its token file's totals. */
 interface ReportedTotals {

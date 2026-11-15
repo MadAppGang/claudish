@@ -46,6 +46,7 @@ import {
   releaseWhenBodyEnds,
 } from "./handlers/shared/call-context.js";
 import { UNHANDLED_ERROR_HEADER } from "./handlers/shared/hop-decision.js";
+import { clearTokenFileTotals } from "./handlers/shared/token-tracker.js";
 import type { ModelHandler } from "./handlers/types.js";
 import type { HookEngine } from "./hooks/engine.js";
 import { loadHooksOnce } from "./hooks/index.js";
@@ -101,6 +102,7 @@ import {
 import { closeAllEpisodes } from "./recovery/coordinator.js";
 import { redactExactValues, redactForClient } from "./redact.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
+import { resolveTokenFilePath } from "./session/token-file.js";
 import { resolveUpstreamUrl } from "./test-upstream.js";
 import type { ProxyServer } from "./types.js";
 
@@ -1559,6 +1561,9 @@ export async function createProxyServer(
       // in-process, and would otherwise carry a stale episode — and its stale
       // banner — across the rebuild.
       closeAllEpisodes();
+      // This proxy's session totals end with it: its handlers' trackers wrote
+      // the file keyed by `port`, and a later proxy on that port starts at zero.
+      clearTokenFileTotals(resolveTokenFilePath(port));
     },
     invalidateHandlerCache: (providerSlug?: string) => {
       if (!providerSlug) {
