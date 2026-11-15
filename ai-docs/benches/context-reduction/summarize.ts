@@ -23,6 +23,8 @@ type SessionEvent = {
   seq?: number;
   time?: string;
   tool_call_id?: string;
+  tool_name?: string;
+  tool_args?: { file_path?: string };
   usage?: Usage;
   request?: { model?: string };
   raw?: { sessionId?: string };
@@ -176,9 +178,20 @@ function trialRow(file: string, r: Result) {
   // Where each tool result sits: its thread and seq, to tie a compaction log
   // line (named by tool_use id) to the requests that sent it.
   const toolResults: Record<string, { thread: string; seq: number }> = {};
+  // The tool each tool_use id called, to name what a compressed output was.
+  const toolNames: Record<string, string> = {};
+  // A re-expansion: the model reads a compressed output's recovery file,
+  // stored under ~/.claudish/compaction/.
+  let reExpansions = 0;
   for (const e of events) {
     if (e.type === "tool_result" && e.tool_call_id) {
       toolResults[e.tool_call_id] = { thread: e.agent_id ?? "main", seq: e.seq ?? 0 };
+    }
+    if (e.type === "tool_call" && e.tool_call_id) {
+      toolNames[e.tool_call_id] = e.tool_name ?? "";
+      if (e.tool_name === "Read" && (e.tool_args?.file_path ?? "").includes("/.claudish/compaction/")) {
+        reExpansions += 1;
+      }
     }
   }
   const check = (metric: string) => r.checks?.find((c) => c.spec?.metric === metric)?.result;
@@ -222,6 +235,8 @@ function trialRow(file: string, r: Result) {
     breaks: cache.breaks,
     threads: cache.threads,
     toolResults,
+    toolNames,
+    reExpansions,
   };
 }
 
@@ -490,7 +505,15 @@ console.log(
 console.log("\n## Cache breaks per trial\n");
 console.log(
   table(
-    ["variant", "trial", "requests", "breaks", "tokens lost", "breaks after a gap over 300 s"],
+    [
+      "variant",
+      "trial",
+      "requests",
+      "breaks",
+      "tokens lost",
+      "breaks after a gap over 300 s",
+      "re-expansions (Read of a compaction recovery file)",
+    ],
     variants.flatMap((v) =>
       rows
         .filter((r) => r.variant === v)
@@ -501,6 +524,7 @@ console.log(
           String(r.breaks.length),
           int(r.breaks.reduce((s, b) => s + b.lost, 0)),
           String(r.breaks.filter((b) => b.gapS > 300).length),
+          String(r.reExpansions),
         ])
     )
   )
@@ -555,6 +579,7 @@ if (compactionLogs.length > 0) {
       out.push([
         log.split("/").pop() ?? log,
         id,
+        r?.toolNames[id] || "unknown",
         at?.thread ?? "not found",
         String(s.n),
         [...s.sha].length === 1 ? "one sha256" : `${[...s.sha].length} different sha256`,
@@ -573,6 +598,7 @@ if (compactionLogs.length > 0) {
       [
         "log",
         "tool_use id",
+        "tool",
         "thread",
         "sends logged",
         "sent text",
