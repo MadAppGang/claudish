@@ -19,7 +19,7 @@ All flags recognized by `parseArgs()` in `packages/cli/src/cli.ts`.
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--model` | `-m` | string | none (prompts interactively) | Model to use. Accepts `provider@model` syntax, legacy `prefix/model`, or bare model name for auto-detection |
+| `--model` | `-m` | string | none (prompts interactively) | Model to use. Accepts `provider@model` syntax, legacy `prefix/model`, or bare model name for auto-detection. Repeatable: `<provider>@` with no model lists that provider's models in Claude Code's `/model`, `'<provider>@*'` lists every chat model a gateway serves, and the last full model spec starts the session. See [Listing providers' models in `/model`](#522-listing-providers-models-in-claude-codes-model) |
 | `--default-provider` | | string | none | Default provider for auto-routing (v7.0.0+). Overrides env var and config file. Valid: built-in provider names or custom endpoint names |
 | `--config` | | path | none | Use this file as the run's ONLY config, replacing both the global and project config. Consumed before `parseArgs()` — see [Config File Override](#44-config-file-override---config) |
 | `--accept-served-model` | | boolean | false | Allow a reasoning-off that the connection serves with a DIFFERENT model (catalog `served_model_changes`; e.g. Kimi Code `k3`: thinking off is served by K2.8 Preview). Without it reasoning stays on and the log says why. Env: `CLAUDISH_ACCEPT_SERVED_MODEL=1` (v10.5.0+) |
@@ -696,6 +696,178 @@ server reads custom endpoints once: restart it after the rename.
 - MCP `preflight` reports a Claude model as the Claude subscription, not probed, and adds one note
   line below its table naming the Claude API route and its key, or why it is absent.
 
+### 5.2.2 Listing providers' models in Claude Code's `/model`
+
+A `--model` value that is a provider shortcut followed by `@` and no model is a **listing
+entry**. claudish puts the models that provider serves into Claude Code's own `/model` list,
+after Claude's own rows. Picking one of those rows sends the next request to that model through
+claudish, in the same session, with no restart.
+
+```bash
+claudish --model devin@                              # list Devin's models; start on Claude's default model
+claudish --model devin@ --model ag@ --model ollama@  # list three providers
+claudish --model 'or@*'                              # every chat model OpenRouter serves
+claudish --model devin@swe-1.7 --model ag@           # start on devin@swe-1.7; list Devin and Antigravity
+```
+
+Quote a `*` entry (`'or@*'`): zsh and bash otherwise read `*` as a file glob. claudish prints it
+quoted in every hint.
+
+**Which models a listing entry lists.**
+
+| Entry | Provider | Rows |
+|---|---|---|
+| `<provider>@` | a vendor's own API, a subscription, a local server | every chat model it serves |
+| `<provider>@` | a gateway (OpenRouter, Together, Fireworks, Poe, Vertex) | only the cloud models catalog's recommended models it serves, in recommendation order |
+| `'<provider>@*'` | a gateway | every chat model it serves |
+| `<name>@` or `'<name>@*'` | a custom endpoint that declares `models` | the declared ids |
+| `'<name>@*'` | a custom endpoint with no declared `models` | every chat model its `/models` route returns |
+
+A custom endpoint with no declared `models` lists nothing for `<name>@`; the report says
+`declare models for <name>, or use '<name>@*'`. A model the provider marks as not supporting tools
+is dropped. Rows come from the account's stored model list when claudish has one (a fresh copy is
+fetched in the background for the next launch), else from the provider's live list, else from the
+cloud models catalog. When a provider's live list fails, its rows are missing: the catalog does not
+stand in for what your account may call.
+
+A local server (Ollama, LM Studio, vLLM, MLX) is listed only when it is enabled in
+`~/.claudish/config.json`, for example `"localProviders": ["ollama"]`. Otherwise the launch reports
+`Provider "ollama" is a LOCAL server and is not enabled`, names that line, and starts with Claude's
+own rows.
+
+**Repeated `--model` and the start model.**
+
+- Repeat `--model` to list several providers. Providers appear in flag order, the start model's
+  provider first. Giving one provider as both `x@` and `'x@*'` lists every model.
+- The **last** full model spec (`provider@model`) starts the session. Every earlier full spec is a
+  row of its provider, first in that provider's group, and the start model's provider is listed
+  too: `--model devin@swe-1.7 --model ag@` lists Devin and Antigravity.
+- With only listing entries, the session starts on Claude's default model on your Claude
+  subscription (your Claude Code login): your `ANTHROPIC_API_KEY` is hidden from Claude Code, as
+  for any Claude subscription launch ([§5.2.1](#521-claude-the-claude-subscription-and-the-claude-api)),
+  unless you pass `--anthropic-api-billing`. A launch whose Claude Code has no Claude login is
+  refused, naming the cause: `because --model devin@ names no start model, so the session starts
+  on Claude's default model`.
+- The last full spec may also be a Claude model (`--model opus --model devin@`, or
+  `claude@<id>`): the session starts on it, on your login, and lists nothing for it. A bare
+  foreign name starts the session the same way and lists nothing.
+- With no listing entry, repeated `--model` flags behave as they always have: the last one wins and
+  nothing is listed.
+- With listing entries, no full spec and profile tiers (`--model-opus` and the rest), the tiers
+  decide the session as on any profile launch.
+
+**Which model a Claude row runs.**
+
+| Launch | A Claude row in `/model` runs |
+|---|---|
+| Only listing entries, or a Claude start model | the Claude model you picked, on your Claude Code login |
+| A foreign start model (`--model or@x --model devin@`) | the start model. The launch says: `/model: this session starts on a foreign model, so a Claude row runs that start model` |
+| Profile tiers, no full spec, not on your login | your mapped tier. The launch says: `/model: Claude rows run your mapped tiers; an unmapped Claude row is not served on this launch` |
+
+**Refused before Claude Code starts** (one line, exit 1):
+
+- A listing entry claudish does not know, worded as for any unknown shortcut.
+- `claude@` as a listing entry: Claude Code lists Claude's own models already.
+- `custom-url@`: a raw URL has no model list. Declare the endpoint under `customEndpoints` and
+  list it by name.
+- A `+` routing chain together with a listing entry. Give one model per `--model`.
+- An earlier full spec that cannot be a row: a Claude model (`claude@sonnet`, `sonnet`), a bare
+  name, a raw URL. Drop it, or give it as the last `--model` to start on it.
+- `--monitor` with a listing entry, and an `anthropic@<id>` (`a@`, `api@`) start with one: both
+  send every request to Anthropic, so no listed model could be routed.
+- A passthrough `--settings` value claudish cannot read: `claudish cannot read --settings
+  (occurrence N); a /model lineup merges every --settings into one file. Fix or remove it.` The
+  message names the occurrence, never the value.
+- A launch that keeps your Claude login while a settings layer sets `env.ANTHROPIC_BASE_URL`:
+  `<file> sets ANTHROPIC_BASE_URL, so /model picks would bypass claudish. Remove it, or start on a
+  foreign model (--model <provider>@<id>), whose launch claudish routes.` Under classifier
+  passthrough the remedy reads `launch without classifier passthrough.` A foreign start on
+  claudish's proxy auth is not refused: Claude Code ignores a settings base URL on a launch
+  claudish routes.
+
+**The launch report.** Before Claude Code takes the screen, in quiet mode too, claudish prints
+what it listed and why any provider is missing. The lines stay in the scrollback. From a run with
+one local model:
+
+```
+[claudish] /model lists 1 model after Claude's own: Ollama (local) 1
+[claudish] /model: Enter saves a pick as Claude Code's default; claudish puts your setting back at exit ("s" picks for this session only)
+```
+
+Other lines, each printed only when it applies:
+
+| Line | Means |
+|---|---|
+| `/model lists N models after Claude's own: Devin 31 · OpenRouter 10 (recommended; 'or@*' lists 312)` | the count per provider; a gateway's `x@` names how many `'x@*'` would list |
+| `/model lists no claudish models this session; Claude's own models only` | no provider gave a row |
+| `/model: <provider> not listed — <reason>` | the provider's rows are missing, and why: not signed in (with the `claudish login` command), no credential (where claudish looked), the list's error, or the 6 s limit |
+| `/model: <provider> list is partial (the cloud models catalog was unreachable; it lists recommended models only)` | the rows came from the bundled recommended list shipped inside claudish |
+| `/model: N listed models have a smaller context window than this session assumes (200K; smallest: <model> <window>)` | see the context window note below |
+| `/model: <file> sets modelPicker.replaceBuiltInOptions; claudish keeps Claude's own rows in /model for this session` | your setting is overridden for this session |
+| `/model: <file> sets modelPicker, which Claude Code applies over claudish's rows; listed models may be missing from /model` | a managed settings file outranks claudish |
+| `/model: <file> sets availableModels, which may hide listed models from /model` | that filter applies to listed rows too |
+| `starts on <model> from ANTHROPIC_MODEL in your environment` | your own `ANTHROPIC_MODEL` still picks the start model |
+| `<NAME>=<value> from your environment still applies` | your own `ANTHROPIC_SMALL_FAST_MODEL` or `ANTHROPIC_DEFAULT_HAIKU_MODEL` still applies |
+| `/model: removed <NAME>, set by a parent claudish session, from this session` | a variable a claudish outside this one set is not passed on |
+
+**The 6 s limit.** Every listed provider and the recommended list are fetched in parallel, for at
+most 6 s in total, beside the rest of startup. A provider still waiting at 6 s is reported as
+`no answer within 6 s while resolving its credential (a 1Password unlock may be waiting)`, `… while
+fetching its model list` or `… while reading the recommended list`, and the session starts without
+its rows. A list that arrives later is stored for the next launch; it is never added to the
+running session. The list is fixed for the session.
+
+**Picking in `/model`.** Measured on Claude Code 2.1.325.
+
+- Each claudish row shows the model's name and `<provider> · <context> context · <SUB | price |
+  local>`. Rows from your own `modelPicker` setting (the highest settings layer that sets one) come
+  before claudish's.
+- **Enter** (or the row's number) switches the model and saves it as Claude Code's default in your
+  user `settings.json`. **`s`** switches for this session only and saves nothing.
+- On a switch after the first turn Claude Code asks `Switch model?` (the conversation is cached for
+  the current model). Text you type while that dialog is open is dropped: answer it first.
+- Background requests (titles and similar) follow the pick. Your own `ANTHROPIC_SMALL_FAST_MODEL`
+  or `ANTHROPIC_DEFAULT_HAIKU_MODEL` still takes them, and the report names it.
+- A long list shows 10 rows; PageDown moves 10 at a time. Typing does not filter.
+- The session's context window is set once, at start. A pick with a smaller window can run out
+  before Claude Code compacts; the report counts those rows.
+- The status line's model, provider and window follow the model that answered last; its session
+  cost and token totals sum every model of the session. A Claude row writes nothing to it, so after
+  a Claude pick it keeps showing the last claudish model.
+- `cx@` rows: until a later fix lands, a `cx@` row in `/model` can fail on its first request. Its
+  rows come from the cloud models catalog's OpenAI models, not from your Codex account's own list.
+
+**Your default model is put back at exit.** Before Claude Code starts, claudish records the `model`
+value in your user `settings.json` (or that it has none). When the last claudish session using
+that file exits, and `model` still holds one of the specs claudish listed, claudish puts the old
+value back (or removes the key) and prints `[claudish] Put back your Claude Code default model in
+<path>`. Any other value, a Claude model you picked included, is yours and is left alone.
+
+- Only `model` changes. The file's indentation, its other keys, its mode and a symlinked
+  `settings.json` are kept.
+- The write is checked against the file's content: if the file changed since claudish read it,
+  claudish decides again from the new content, up to 3 times, then tries at the next launch. A
+  `model` you set in the meantime is never overwritten.
+- A file that is not valid JSON or cannot be written gets one line: `<path> is not valid JSON, so
+  claudish did not put back your default model; set or remove "model" in <path> by hand`. claudish
+  retries only after the file changes, and gives up after 14 days.
+- Limit: a second Claude Code process that writes `settings.json` in the same millisecond as the
+  restore can lose its write, or put the listed spec back.
+
+**After a crash.** If claudish is killed (`kill -9`, a power loss, or a shutdown that runs past its
+time limit), the record can stay in `~/.claudish/model-setting-restore.json`. The next interactive
+claudish launch of any kind puts the value back, once both the killed claudish and its Claude
+Code are gone: a Claude Code that outlived its claudish can still save a pick, so claudish waits
+for it. Until then plain `claude` may start on a claudish spec it cannot serve; start claudish
+once, or set `model` by hand.
+
+**Print mode.** With a prompt (`-p` or a positional prompt), listing entries are accepted, no list
+is fetched and no setting is recorded. The refusals above still apply.
+
+**`GET /v1/models`.** On a launch with listing entries the proxy's own `/v1/models` returns exactly
+the listed rows, each with a `display_name`. Claude Code's `/model` does not read it; other clients
+of the proxy can.
+
 ### 5.3 Native Auto-Detection (no provider prefix)
 
 When no `provider@` prefix is given, Claudish detects the provider from the model name pattern. Resolution is by the first matching pattern:
@@ -899,14 +1071,16 @@ For OpenAI- or Anthropic-compatible servers:
 | `apiKey` | string | yes, unless `authScheme: "none"` | API key; supports `${VAR}` env expansion. Must be **omitted** under `authScheme: "none"` |
 | `authScheme` | `"bearer"`, `"x-api-key"` or `"none"` | no | Auth header scheme (default: `bearer`) |
 | `modelPrefix` | string | no | Prepended to model name before sending to API |
-| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models`. Claude Code's `/model` command does not list them: it builds its list from Claude's own models and the `modelPicker` setting, and asks a gateway's `/v1/models` only when `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` is set, keeping only ids that contain `claude` or `anthropic`. Not an allowlist — an unlisted name still reaches the endpoint — and not the model picker's list, which comes from the endpoint itself (see below) |
+| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models`. Claude Code's `/model` command does not read that route: it builds its list from Claude's own models and the `modelPicker` setting, and asks a gateway's `/v1/models` only when `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` is set, keeping only ids that contain `claude` or `anthropic`. A launch with `--model <name>@` hands these ids to `/model` as rows ([§5.2.2](#522-listing-providers-models-in-claude-codes-model)). Not an allowlist — an unlisted name still reaches the endpoint — and not the model picker's list, which comes from the endpoint itself (see below) |
 | `wire` | object | no | How requests are built — see **Declaring the wire** below |
 
 Usage: `claudish --model my-vllm@llama3.1-70b "task"`
 
 **The picker lists what an `openai` endpoint serves.** `format: "openai"` means the host speaks
 the OpenAI API, so claudish asks it — `GET /models` beside the `/chat/completions` it already
-uses — when you scope to that provider in the interactive picker. Nothing is fetched at startup.
+uses — when you scope to that provider in the interactive picker. Nothing is fetched at startup, except
+on a launch with `--model '<name>@*'`, which asks once to fill Claude Code's `/model`
+([§5.2.2](#522-listing-providers-models-in-claude-codes-model)).
 A host that does not serve the path reports the URL and the status instead of showing an empty
 list. `format: "anthropic"` endpoints are not asked; enter the model name directly, or launch
 with `--model my-endpoint@some-model`.
@@ -967,7 +1141,7 @@ Full control over transport, auth, headers, and stream format:
 | `headers` | object | no | Additional HTTP headers |
 | `streamFormat` | string | no | Stream parser override (e.g., `"openai-sse"`, `"anthropic-sse"`) |
 | `modelPrefix` | string | no | Prepended to model name |
-| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models`; Claude Code's `/model` does not list them (see the simple table above) |
+| `models` | string[] | no | Model ids to advertise on the proxy's own `/v1/models`; Claude Code's `/model` lists them only on a launch with `--model <name>@` (see the simple table above) |
 | `wire` | object | no | How requests are built — see **Declaring the wire** below |
 
 ### Declaring the wire (v10.5.0+)
@@ -1185,6 +1359,10 @@ claudish -p myprofile    # with specific profile
 claudish --model g@gemini-2.0-flash "task"
 claudish --model oai@gpt-4o "task"
 claudish --model ollama@llama3.2 "task"
+
+# List providers' models in Claude Code's /model (switch there, no restart)
+claudish --model devin@ --model 'or@*'
+claudish --model devin@swe-1.7 --model ag@     # starts on devin@swe-1.7
 
 # Model role mapping
 claudish --model-opus g@gemini-3-pro --model-sonnet oai@gpt-5.3
