@@ -234,7 +234,8 @@ provision step inherits it although the agent does not. The gateway's
 `.env` loader never overrides a set variable, so it signed one compression
 call with that key: status 200, `claude-haiku-5-5`, 5,784 input and 1,692
 output tokens. The `env -u ANTHROPIC_API_KEY` in `start.sh` closes this; the
-re-run got `401 "invalid x-api-key"` from the fake key.
+re-run got `401 "invalid x-api-key"` from the fake key. The leak into
+provision steps is filed as MadAppGang/madbench#216.
 
 Risk for its trials: the same `expand_context` defect as below can end a
 trial; an errored trial will be reported as errored.
@@ -380,10 +381,11 @@ The manager session filed the draft's items as madbench issues #211 to #215;
    start.
 6. `madbench check` refuses `--plain`; `--no-update-check` does not exist.
 
-One more, not filed (a decision for Jack): a secret madbench withholds from
+One more, filed as MadAppGang/madbench#216: a secret madbench withholds from
 the agent under `use_subscription: required` (its keychain
 `ANTHROPIC_API_KEY`) still reaches `sandbox.provision` steps, and a process a
-step starts inherits it.
+step starts inherits it. `tools/context-gateway-haiku-key/start.sh` works
+around it with `env -u ANTHROPIC_API_KEY`.
 
 ## Other facts for whoever runs this again
 
