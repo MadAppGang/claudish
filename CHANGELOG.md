@@ -2,6 +2,41 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [14.26.0] - 2026-11-15
+
+### Bug Fixes
+
+- read a loaded tool's declared name from the converter *(adapters)* ([`b7330dd`](https://github.com/MadAppGang/claudish/commit/b7330dd30bdd01405ae5d21fa687b6202fa6239f))
+- name a loaded tool as the request body declares it *(adapters)* ([`8a37ac4`](https://github.com/MadAppGang/claudish/commit/8a37ac42867279703005640075091f79eb80000a))
+- send a ToolSearch tool_reference as a sentence *(adapters)* ([`3d9712e`](https://github.com/MadAppGang/claudish/commit/3d9712e210572db6b5b02e8cad1f2a69c2a4f3d3))
+- drop CLAUDISH_CONFIG and path overrides in the test preload *(tests)* ([`e1de62c`](https://github.com/MadAppGang/claudish/commit/e1de62ce75f5cf1871109d5d8549b5e36c4a46a3))
+- keep the blank line before a removed last line *(antigravity)* ([`38fea4e`](https://github.com/MadAppGang/claudish/commit/38fea4e64e9fce2173def55b0d8ba30ef97ebf30))
+- fix the 429 on every interactive ag@ request *(antigravity)* ([`8f981e5`](https://github.com/MadAppGang/claudish/commit/8f981e53c3756b1355ccf0344df6eb710f766ce1))
+- keep the system text after a CRLF blank line *(antigravity)* ([`e24e23a`](https://github.com/MadAppGang/claudish/commit/e24e23acebc6dbf8dfc669c4fd08a718e0e6af25))
+- remove the system-prompt text the server answers 429 to *(antigravity)* ([`eb67f22`](https://github.com/MadAppGang/claudish/commit/eb67f225c44d1078321499ab2927b4eb492de8cf))
+- settle an exited magmux --version child through its drain *(pane)* ([`5180bc2`](https://github.com/MadAppGang/claudish/commit/5180bc2ce20844f460249cd518c21b13d6544b07))
+
+### Documentation
+
+- describe declaredToolNames for the ToolSearch sentence *(adapters)* ([`49a1de1`](https://github.com/MadAppGang/claudish/commit/49a1de13a99842c707145792cda11963afb7bf4e))
+- record the limits of the tool_reference sentence *(adapters)* ([`3fc87a8`](https://github.com/MadAppGang/claudish/commit/3fc87a8af50f65d55f3071e449564c917afe6cf2))
+- describe step 2d for tool_reference items *(adapters)* ([`4a4208a`](https://github.com/MadAppGang/claudish/commit/4a4208afee77cbd44aab9a21ef2f062e17c0bc32))
+- record the pasted_content replays and the line unit *(antigravity)* ([`2158372`](https://github.com/MadAppGang/claudish/commit/21583720aa7809f6dcfd0974293f0da0d2987579))
+- record the agy 1.5.9 wire shape and the 429 replays *(antigravity)* ([`e8d6a89`](https://github.com/MadAppGang/claudish/commit/e8d6a89bacdc17ff6612a9daa0e9a57a2206ab3a))
+- update CHANGELOG.md for v14.25.1([`94a86eb`](https://github.com/MadAppGang/claudish/commit/94a86ebbb205020117c2160fff9fd8181d4bcf64))
+
+### New Features
+
+- rename Read, Write and five more tools to agy's names *(antigravity)* ([`4854663`](https://github.com/MadAppGang/claudish/commit/4854663e62e6d56d6ad984288ac516de2f3f5f9b))
+
+### Performance
+
+- scan each line once when removing a refused line *(antigravity)* ([`4970f8d`](https://github.com/MadAppGang/claudish/commit/4970f8d532466399e94c0dde0fa6da67952e134e))
+
+### Refactoring
+
+- pin the dynamic models catalog paths in the preload *(tests)* ([`a01a5aa`](https://github.com/MadAppGang/claudish/commit/a01a5aa5b623387fe9c97b97851aae0395755a60))
+
 ## [14.25.1] - 2026-11-15
 
 ### Bug Fixes
