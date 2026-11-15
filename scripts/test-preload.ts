@@ -51,9 +51,16 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as nodeOs from "node:os";
 import { join, sep } from "node:path";
+import { HOME_BYPASS_OVERRIDES } from "./home-bypass-overrides.ts";
 import { SESSION_ENV_VARS } from "./session-env-vars.ts";
 
 for (const name of SESSION_ENV_VARS) {
+  delete process.env[name];
+}
+
+// A path override outranks HOME, so moving HOME below does not isolate a run that
+// inherits one. `--config` exports CLAUDISH_CONFIG to everything a session starts.
+for (const name of HOME_BYPASS_OVERRIDES) {
   delete process.env[name];
 }
 
