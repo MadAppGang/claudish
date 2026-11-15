@@ -3,7 +3,7 @@
 Does a context-reduction tool cut tokens and cost on a long coding session
 without costing the result?
 
-One Scenario, five variants. Claude Code on `claude-sonnet-5-5` gets claudish
+One Scenario, six variants. Claude Code on `claude-sonnet-5-5` gets claudish
 as it was one commit before `--context-window` landed, and a prompt that asks
 for that feature with subagents for exploration and review. The feature's own
 tests grade the result. The agent never sees them.
@@ -14,19 +14,22 @@ tests grade the result. The agent never sees them.
 | `rtk` | a `PreToolUse` hook on `Bash` that runs `/opt/homebrew/bin/rtk hook claude`, plus the instruction file `rtk init` writes |
 | `context-mode` | the context-mode plugin, staged from `vendor/context-mode` |
 | `context-gateway-local` | `ANTHROPIC_BASE_URL` points at a local Context Gateway, started by a provision step. The gateway trims tool output itself (`trimming`), summarizes nothing and makes no model call |
-| `haiku-subagent` | the overlay `config/haiku-subagent`: a Claude Code subagent `output-digest` with `model: haiku`, which runs a large command or reads a large file region and returns only what the main agent asked for, plus a `CLAUDE.md` that tells the main agent to use it |
+| `haiku-subagent` | the overlay `config/haiku-subagent`: a Claude Code subagent `output-digest` with `model: claude-haiku-5-5`, which runs a large command or reads a large file region and returns only what the main agent asked for, plus a `CLAUDE.md` that tells the main agent to use it |
+| `context-gateway-haiku-key` | a local Context Gateway that compresses tool output and summarizes history with its own calls to `claude-haiku-5-5`, signed with an Anthropic API key, while Claude Code's requests stay on the subscription. Needs `--param gateway_env=<key file>`; see "The gateway key variant" |
 
-A gateway variant with a Haiku summarizer is not here. The gateway signs its
-own Haiku calls with the captured Claude login, and the API refuses each one
-with `429 rate_limit_error "Error"` (the shape refusal in
-`ai-docs/architecture/advisor.md`). The gateway then sends every output on
-unchanged.
+A gateway variant that signs its Haiku calls with the captured Claude login is
+not here: the API refuses each such call with `429 rate_limit_error "Error"`
+(the shape refusal in `ai-docs/architecture/advisor.md`), and the gateway then
+sends every output on unchanged.
 
 ### Through claudish
 
 `context-reduction-claudish.experiment.yaml` runs the same Scenario with
 claudish between Claude Code and the Anthropic API. Its variants set the Bench
-param `binary` to `claudish`; the model stays the bare name
+param `binary` to `./bin/claudish-unattended`, which runs the first claudish
+on `PATH` with `--quiet -y`: no question ("Update now?", "Enable
+auto-approve?") then stops claudish before Claude Code starts, which in an
+unattended trial ends the Session after a minute. The model stays the bare name
 `claude-sonnet-5-5`. A bare Claude name is a normal claudish session on the
 Claude subscription, so claudish loads its hooks. A `claude@` model would be a
 monitor session, which loads no hooks and ignores `harnessGateway`.
@@ -54,8 +57,8 @@ hooks and `harnessGateway` from the global config only.
 4. The tools must be installed: `rtk` 1.2.0 at `/opt/homebrew/bin/rtk`,
    `context-gateway` v0.5.3 at `~/.local/bin/context-gateway`.
 5. For the claudish Experiment, put the claudish build you want to measure
-   first on `PATH`. madbench looks `binary: claudish` up on `PATH`;
-   `MADBENCH_CLAUDISH` does not change it. A build older than
+   first on `PATH`. `bin/claudish-unattended` runs the `claudish` it finds
+   there; `MADBENCH_CLAUDISH` does not change it. A build older than
    `harnessGateway` runs the gateway variant without the gateway, and says
    nothing. On macOS a compiled build must be signed again before it runs,
    or the system kills it with exit code 137:
@@ -81,8 +84,14 @@ madbench ai-docs/benches/context-reduction/context-reduction.experiment.yaml \
 ```
 
 `--variant baseline` runs one variant. `--concurrency 1` is required: the
-gateway variants listen on one fixed port, 18431. The claudish Experiment runs
-the same way with `context-reduction-claudish.experiment.yaml`.
+gateway variants listen on fixed ports (18431; the key variant 18433 and
+18434). The claudish Experiment runs the same way with
+`context-reduction-claudish.experiment.yaml`.
+
+A run of `context-gateway-haiku-key` without `--param gateway_env=<key file>`
+errors at provision, before any spend. `madbench check` therefore reports
+that variant as not graded unless it gets a key file too; a fake one is
+enough, because the mock harness makes no call.
 
 ## The grade
 
@@ -115,7 +124,24 @@ bun ai-docs/benches/context-reduction/summarize.ts /absolute/path/report.json
 It prints one row per trial and one row per variant: prompt tokens (input,
 cache creation and cache read together) and output tokens for the main thread
 and for the subagents, requests, subagents, compactions, duration, and
-madbench's cost figure. `--json <file>` writes the rows.
+madbench's cost figure, then the same sums per model and the subagents started
+per trial by name. It takes several report files. A trial that errored before
+it was graded goes in its own table and in no mean. `--json <file>` writes the
+rows.
+
+## VariantCheck
+
+A graded Check that runs `tools/<tool>/variant-check.sh` when the variant's
+tool folder has one, and otherwise passes when the run left a Claude Code
+transcript, so it fails under the mock harness either way.
+
+- `haiku-subagent`: every subagent answer in Claude Code's transcripts came
+  from `claude-haiku-5-5`, at least one did, and none came from another Haiku.
+- `context-gateway-haiku-key`: every request the gateway forwarded was
+  signed with the subscription and none fell back to the key, at least one
+  Haiku call answered 200, every answer names `claude-haiku-5-5`, no Haiku
+  call was signed with a Bearer token, and the gateway compressed a tool
+  output.
 
 ## The Context Gateway life cycle
 
@@ -130,9 +156,14 @@ runs after it. So:
 - `tools/context-gateway/evidence.sh` runs inside the `ToolEvidence` Check,
   after the agent stopped. It prints the gateway's counts, copies its logs to
   `out/`, and stops the gateway.
+- A trial that errors gets no Check, and madbench deletes its sandbox. So the
+  start scripts write the gateway's and claudish's logs into `out/` from the
+  start (`out/context-gateway-live-*`, `out/claudish-live-*`). The gateway of
+  an errored trial keeps running until its timer ends.
 
-The gateway config (`tools/context-gateway-local/config.yaml`, used by both
-gateway variants) uses no third-party service. The `compresr` strategy is off
+The local gateway config (`tools/context-gateway-local/config.yaml`, used by
+`context-gateway-local` and `claudish-context-gateway-local`) uses no
+third-party service. The `compresr` strategy is off
 and its URL is empty. It configures no provider: the gateway trims tool output
 inside its own process and makes no model call. It holds no credential; it
 forwards Claude Code's own requests. The claudish variant starts it with
@@ -141,6 +172,34 @@ proxy on loopback.
 
 The gateway makes one call that the config cannot turn off: a release check
 to `api.github.com`. That call carries no workspace data.
+
+The gateway's `expand_context` append breaks Claude Code's stream when it
+cuts an event across its 4096-byte reads (`internal/pipes/tool_output/stream_buffer.go`).
+Through claudish it ended every trial; natively it ends some. The report
+has the details.
+
+## The gateway key variant
+
+`tools/context-gateway-haiku-key/` holds the config, `start.sh`, a usage
+recorder and `variant-check.sh`.
+
+- The key travels as a file. The Bench copies the file named by
+  `--param gateway_env` (one line `ANTHROPIC_API_KEY=sk-ant-…`, mode 0600) to
+  `~/.config/context-gateway/.env`, which the gateway loads at startup. The
+  generic provision step deletes that file in every run after `start.sh`, so
+  the agent never finds it. The default param value holds no key.
+- `start.sh` starts the gateway with `ANTHROPIC_API_KEY` removed from its
+  environment. A provision step inherits madbench's environment, which holds
+  madbench's own keychain key, and the gateway's `.env` loader never
+  overrides a variable that is already set.
+- `config.yaml` names `auth: "api_key"`. With no `auth` line, a provider that
+  has a key gets the mode "both", and on a 429, 529 or 402 from the
+  subscription the gateway signs the main session's requests with the key.
+- `usage-recorder.ts` sits between the gateway and `api.anthropic.com` on port
+  18434 and writes the model, status and usage of each Haiku answer to
+  `logs/haiku_calls.jsonl`, never a header. It refuses a call signed with a
+  Bearer token. The summarizer ignores the provider's endpoint, so the config
+  names the recorder twice.
 
 ## What each variant's evidence shows
 
@@ -153,5 +212,6 @@ in the report JSON under the Check's `evidence.output`.
 | `rtk` | `rtk gain`: the tokens rtk counts as saved |
 | `context-mode` | the files in its data folders, copied to `out/` |
 | `context-gateway-local` | line counts of the gateway's compression, summary and telemetry logs, `session_stats.json`, logs copied to `out/` |
-| `haiku-subagent` | none; the report's subagents and `llm_call` Events show `output-digest` and its Haiku calls |
+| `haiku-subagent` | the subagent Haiku calls by model, from `model-check.sh` |
+| `context-gateway-haiku-key` | the Haiku calls' summed usage from the recorder, the summary events without the startup line, then the gateway's counts as for `context-gateway-local` |
 | `claudish-*` | first `route=claudish` and the count of `[Proxy]` lines in claudish's own log, then the evidence of the matching native variant |
