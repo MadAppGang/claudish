@@ -115,6 +115,20 @@ export function launchSigningFor(
 }
 
 /**
+ * Whether a Claude row picked in `/model` runs as picked: a launch with listing
+ * entries whose child keeps the user's login (not proxy auth) and starts on a
+ * Claude model or on none. The proxy then sends a Claude-named request that no
+ * role mapping caught to the native passthrough as requested, instead of
+ * replacing it with the start model. A foreign start keeps the start model.
+ */
+export function claudeRowsAsPicked(config: ClaudishConfig): boolean {
+  if ((config.modelListings?.length ?? 0) === 0) return false;
+  if (isProxyAuthMode(config)) return false;
+  if (typeof config.model !== "string" || config.model.length === 0) return true;
+  return nativeRouteFor(config.model) !== null;
+}
+
+/**
  * Whether a Claude advisor member of this launch may fall back to
  * ANTHROPIC_API_KEY when its request carries no Claude login. Not on a launch
  * with no main model (plain `--monitor`, `--advisor` alone) unless the user

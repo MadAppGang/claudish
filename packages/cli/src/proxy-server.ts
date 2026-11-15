@@ -69,7 +69,11 @@ import {
   getCustomEndpointResult,
 } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
-import { claudeSubscriptionSpecRefusal, proxyRouteDecision } from "./providers/native-route.js";
+import {
+  claudeSubscriptionSpecRefusal,
+  nativeRouteFor,
+  proxyRouteDecision,
+} from "./providers/native-route.js";
 import { PROBE_HOP_ORIGIN_HEADER, probeHopOriginOf } from "./providers/probe-hop-origin.js";
 import { describeMissingCredential, getProviderByName } from "./providers/provider-definitions.js";
 import {
@@ -235,6 +239,14 @@ export interface ProxyServerOptions {
    * mappings and the `--model` fallback. Data only; absent on every other launch.
    */
   modelLineup?: ReadonlyArray<{ model: string; label: string }>;
+  /**
+   * True on a launch with listing entries whose child keeps the user's login
+   * and starts on a Claude model or none (`claudeRowsAsPicked`). A Claude-named
+   * request that no role mapping caught is sent to the native passthrough as
+   * requested, with the launch's signing, never replaced by the `--model`
+   * fallback: Claude Code's own `/model` rows run the model the user picked.
+   */
+  claudeRowsAsPicked?: boolean;
   /**
    * True when the launch opted into billing a native Claude model to the
    * Anthropic API key (`--anthropic-api-billing`). Without it, a request for a
@@ -654,6 +666,13 @@ export async function createProxyServer(
       }
     }
 
+    // 2-claude-row. On a launch that lists providers and keeps the user's login
+    // with a Claude start model (or none), a Claude-named request is a row the
+    // user picked in /model: the `--model` fallback below must not replace it.
+    // A role mapping still catches it first.
+    const claudeRowPicked =
+      options.claudeRowsAsPicked === true && nativeRouteFor(requestedModel) !== null;
+
     const req = requestedModel.toLowerCase();
     if (slotMatched || lineupMatched) {
       // Slot map already set `target`, or the request names a listed spec — skip
@@ -671,10 +690,11 @@ export async function createProxyServer(
         target = modelMap.haiku;
         wasFromModelMap = true;
       }
-      // Default model (--model) is fallback for all roles
-      else if (model) target = model;
-      targetFromLaunch = wasFromModelMap || Boolean(model);
-    } else if (model) {
+      // Default model (--model) is fallback for all roles, except a picked
+      // Claude row, which runs as requested with the launch's signing.
+      else if (model && !claudeRowPicked) target = model;
+      targetFromLaunch = wasFromModelMap || (Boolean(model) && !claudeRowPicked);
+    } else if (model && !claudeRowPicked) {
       // No role mappings at all - use default model
       target = model;
       targetFromLaunch = true;

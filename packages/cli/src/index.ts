@@ -1377,7 +1377,7 @@ async function runCli() {
     // API key, and a settings layer that would hand the child one refuses the
     // launch here, before spawn. A Claude API launch (`anthropic@<id>`) resolves
     // its key here, and the proxy signs every request with it.
-    const { advisorKeyLookupAllowed, prepareClaudeLaunch } = await import(
+    const { advisorKeyLookupAllowed, claudeRowsAsPicked, prepareClaudeLaunch } = await import(
       "./launcher/claude-launch.js"
     );
     const preparedLaunch = await traceSpan("startup:claude-launch", () =>
@@ -1580,6 +1580,8 @@ async function runCli() {
                 })),
               }
             : {}),
+          // A Claude row picked in /model runs as picked on a Claude-model start.
+          ...(claudeRowsAsPicked(cliConfig) ? { claudeRowsAsPicked: true } : {}),
           apiBillingOptIn: wantsAnthropicApiBilling(cliConfig),
           advisorKeyLookup: advisorKeyLookupAllowed(cliConfig),
           summarizeTools: cliConfig.summarizeTools,
