@@ -15,10 +15,7 @@
  */
 
 import type { Context } from "hono";
-import {
-  getAdvisorCall,
-  rewriteAdvisorToolResults,
-} from "../handlers/native-handler-advisor.js";
+import { getAdvisorCall, rewriteAdvisorToolResults } from "../handlers/native-handler-advisor.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { extractSessionId } from "../hooks/harness.js";
 import { log } from "../logger.js";

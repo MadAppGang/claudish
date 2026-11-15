@@ -7,7 +7,7 @@ import { createProxyServer } from "../proxy-server.js";
 import type { ProxyServer } from "../types.js";
 import { DEFAULT_COMPACTION_SETTINGS } from "./config.js";
 import { CompactionClient } from "./haiku-client.js";
-import { catalogContextWindow, HistoryCompactor } from "./history.js";
+import { HistoryCompactor, catalogContextWindow } from "./history.js";
 import type { CompactionRuntime } from "./runtime.js";
 import { CompactionStore } from "./store.js";
 import { ToolOutputCompactor } from "./tool-outputs.js";
@@ -101,7 +101,9 @@ function body() {
   return {
     model: REQUESTED,
     max_tokens: 16,
-    metadata: { user_id: JSON.stringify({ device_id: "d", account_uuid: "a", session_id: session }) },
+    metadata: {
+      user_id: JSON.stringify({ device_id: "d", account_uuid: "a", session_id: session }),
+    },
     messages: [
       { role: "user", content: "old ".repeat(9000) },
       { role: "assistant", content: "answer" },
@@ -114,11 +116,19 @@ test("history takes its window from the routed target, not the requested Claude 
   // The requested Claude name has a small window that this request would
   // pass; the target the proxy routes to has none, so history is off.
   const r = runtime((model) => (model === REQUESTED ? 10_000 : undefined));
-  proxy = await createProxyServer(0, undefined, undefined, false, undefined, { sonnet: TARGET }, {
-    quiet: true,
-    hooks: false,
-    compaction: r.rt,
-  });
+  proxy = await createProxyServer(
+    0,
+    undefined,
+    undefined,
+    false,
+    undefined,
+    { sonnet: TARGET },
+    {
+      quiet: true,
+      hooks: false,
+      compaction: r.rt,
+    }
+  );
   await localFetch(`${proxy.url}/v1/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },

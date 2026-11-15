@@ -33,9 +33,9 @@ import { wantsAnthropicApiBilling } from "./claude-runner.js";
 import { COMPACTION_ENV_VAR, resolveCompactionEnabled } from "./compaction/config.js";
 import { realValueFor } from "./env-placeholder.js";
 import { LOGIN_ONLY_SIGNING } from "./handlers/shared/anthropic-forward.js";
+import { loadConfig } from "./profile-config.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
-import { loadConfig } from "./profile-config.js";
 import { nativeRouteFor } from "./providers/native-route.js";
 import { type ProxyServerOptions, type SlotRoute, createProxyServer } from "./proxy-server.js";
 
