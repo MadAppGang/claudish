@@ -1,0 +1,111 @@
+# Context Gateway configuration for the Haiku variant signed with an API key.
+#
+# The gateway's own model calls (tool output compression and history
+# summarization) go to claude-haiku-5-5, signed with an Anthropic API key in
+# the x-api-key header. Claude Code's own requests are forwarded unchanged,
+# signed with Claude Code's own login.
+#
+# The key: start.sh copies it into the gateway's own environment file,
+# ~/.config/context-gateway/.env, which the gateway loads at startup, and
+# deletes that file once the gateway answers. ${ANTHROPIC_API_KEY} below is
+# expanded by the gateway when it loads this file. Claude Code never receives
+# the key.
+#
+# auth must stay "api_key". With any other value, or with no auth line, a
+# provider that has a key gets the mode "both", and on a 429, 529 or 402 from
+# the subscription the gateway switches the main session's requests to the
+# key (internal/auth/setup.go, parseAuthFromConfig).
+#
+# Every Haiku call goes to the usage recorder on port 18434, which forwards it
+# to api.anthropic.com and writes the model, status and usage of each answer.
+# The summarizer does not read the provider's endpoint, so it names it again.
+#
+# No Compresr endpoint is configured: urls.compresr is empty, there is no
+# compresr block, and no pipe uses the compresr strategy.
+#
+# Relative paths resolve against the directory start.sh starts the gateway in.
+
+metadata:
+  name: "bench-haiku-key"
+  description: "tool output compression and history summarization on claude-haiku-5-5, signed with an API key"
+  strategy: "external_provider"
+
+server:
+  port: 18433
+  read_timeout: 30s
+  write_timeout: 1000s
+
+urls:
+  compresr: ""
+
+providers:
+  anthropic:
+    auth: "api_key"
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: "claude-haiku-5-5"
+    endpoint: "http://127.0.0.1:18434/anthropic/v1/messages"
+
+preemptive:
+  enabled: true
+  trigger_threshold: 85.0
+  add_response_headers: true
+  log_dir: "logs"
+  compaction_log_path: "logs/history_compaction.jsonl"
+  summarizer:
+    strategy: "external_provider"
+    provider: "anthropic"
+    endpoint: "http://127.0.0.1:18434/anthropic/v1/messages"
+    max_tokens: 4096
+    timeout: 60s
+  session:
+    summary_ttl: 3h
+    hash_message_count: 3
+
+pipes:
+  tool_output:
+    enabled: true
+    strategy: "external_provider"
+    provider: "anthropic"
+    min_tokens: 512
+    max_tokens: 128000
+    target_compression_ratio: 0.5
+    refusal_threshold: 0.05
+    enable_expand_context: true
+
+  # The gateway forces every pipe on, so "off" is the passthrough strategy.
+  tool_discovery:
+    enabled: true
+    strategy: "passthrough"
+
+  task_output:
+    enabled: true
+    strategy: "passthrough"
+
+cost_control:
+  enabled: false
+  session_cap: 0
+  global_cap: 0
+
+notifications:
+  slack:
+    enabled: false
+
+post_session:
+  enabled: false
+
+store:
+  type: "memory"
+  ttl: 3h
+
+# Count logs only, on the run's own disk: they are the evidence that the
+# gateway handled the requests. Payloads are not logged.
+monitoring:
+  log_level: "info"
+  log_format: "console"
+  log_output: "stdout"
+  telemetry_enabled: true
+  verbose_payloads: false
+  telemetry_path: "logs/telemetry.jsonl"
+  compression_log_path: "logs/tool_output_compression.jsonl"
+  session_stats_path: "logs/session_stats.json"
+  expand_context_calls_path: "logs/expand_context_calls.jsonl"
