@@ -56,7 +56,13 @@ await isolatedFile(import.meta, async () => {
     const result = parseModelFlags([pin, "ollama@start", "devin@"]);
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("Expected a pinned-spec refusal");
-    expect(result.message).toContain(pin);
+    if (pin.startsWith("https://")) {
+      // A raw URL can carry a credential in its path, so only its origin is named.
+      expect(result.message).toContain("https://example.invalid");
+      expect(result.message).not.toContain("/v1/model");
+    } else {
+      expect(result.message).toContain(pin);
+    }
     if (pin.startsWith("claude")) {
       expect(result.message).toMatch(/drop|last --model/i);
     } else {
