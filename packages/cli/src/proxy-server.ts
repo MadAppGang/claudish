@@ -1525,6 +1525,8 @@ export async function createProxyServer(
       await server.stop(true);
       // The advisor chains were handed over at startup; the proxy owns them.
       if (advisorRuntime) await shutdownAdvisorChains(advisorRuntime.chains.values());
+      // Compaction's background summaries and its key's signing lease.
+      if (options.compaction?.shutdown) await options.compaction.shutdown();
       // "No episode may outlive the process that owns its timers" —
       // `closeAllEpisodes`'s own doc, which until now nothing but tests
       // invoked. `server.stop(true)` aborts the client signals, so waiters

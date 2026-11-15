@@ -59,6 +59,12 @@ export interface CompactionRuntime {
   store: CompactionStore;
   toolOutputs: ToolOutputCompactor;
   history: HistoryCompactor;
+  /**
+   * Abort the calls in flight (background summaries included), wait for
+   * them, and release the key's signing lease. Called by the proxy's
+   * `shutdown()`. Idempotent.
+   */
+  shutdown?: () => Promise<void>;
 }
 
 /** The slice of the credential authority startup uses. */
@@ -174,7 +180,7 @@ export async function prepareCompaction(
   log(
     `[compaction] on: model ${model.id} (from "${settings.model}"), key from ${resolution.source}, store ${store.root}`
   );
-  return {
+  const runtime: CompactionRuntime = {
     settings,
     model: model.id,
     client,
@@ -182,4 +188,14 @@ export async function prepareCompaction(
     toolOutputs: new ToolOutputCompactor({ store, client, settings: settings.toolOutputs }),
     history: new HistoryCompactor({ store, client, settings: settings.history }),
   };
+  runtime.shutdown = async () => {
+    runtime.client.close();
+    try {
+      await runtime.history.whenIdle();
+    } finally {
+      // Released only once no call that signed with the key can still log.
+      lease.release();
+    }
+  };
+  return runtime;
 }

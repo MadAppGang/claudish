@@ -61,6 +61,11 @@ export type CompactionCallResult =
       status?: number;
       /** True for the 429 "Error" shape refusal. */
       shapeRefusal?: boolean;
+      /**
+       * True when the call was cut short by `close()` (proxy shutdown). Not a
+       * decision about the input: the caller records nothing.
+       */
+      cancelled?: boolean;
     };
 
 export interface CompactionClientOptions {
@@ -79,6 +84,9 @@ export interface CompactionClientOptions {
 export class CompactionClient {
   private unauthorized = 0;
   private off = false;
+  private shut = false;
+  /** The abort controllers of the calls in flight, for `close()`. */
+  private readonly inFlight = new Set<AbortController>();
   /** Running spend and output tokens for the stats event, as the advisor reports its own. */
   private spend = 0;
   private outputTokens = 0;
@@ -95,8 +103,26 @@ export class CompactionClient {
     return this.off;
   }
 
+  /** True once `close()` ran. */
+  get closed(): boolean {
+    return this.shut;
+  }
+
+  /**
+   * Abort every call in flight and refuse new ones. Each aborted call answers
+   * `{ ok: false, cancelled: true }`. For proxy shutdown.
+   */
+  close(): void {
+    this.shut = true;
+    for (const controller of this.inFlight) controller.abort();
+    this.inFlight.clear();
+  }
+
   /** Send one request. Never rejects. */
   async complete(req: CompactionCallRequest): Promise<CompactionCallResult> {
+    if (this.shut) {
+      return { ok: false, reason: "compaction is shut down", cancelled: true };
+    }
     if (this.off) {
       return { ok: false, reason: "compaction is off for this launch after repeated 401 answers" };
     }
@@ -109,6 +135,7 @@ export class CompactionClient {
       output_config: { effort: "low" },
     };
     const controller = new AbortController();
+    this.inFlight.add(controller);
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const started = performance.now();
     const elapsed = () => Math.round(performance.now() - started);
@@ -130,6 +157,7 @@ export class CompactionClient {
       try {
         resp = await (this.opts.fetchImpl ?? fetch)(request);
       } catch (err) {
+        if (this.shut) return this.cancelled(req);
         const reason = controller.signal.aborted
           ? `no answer within ${timeoutMs} ms`
           : `request failed: ${this.redact(err instanceof Error ? err.message : String(err))}`;
@@ -141,6 +169,7 @@ export class CompactionClient {
       try {
         raw = await resp.text();
       } catch {
+        if (this.shut) return this.cancelled(req);
         const reason = controller.signal.aborted
           ? `no complete answer within ${timeoutMs} ms`
           : `HTTP ${resp.status} but the body could not be read`;
@@ -155,7 +184,13 @@ export class CompactionClient {
       return this.success(req, resp.status, text, elapsed());
     } finally {
       clearTimeout(timer);
+      this.inFlight.delete(controller);
     }
+  }
+
+  private cancelled(req: CompactionCallRequest): CompactionCallResult {
+    log(`[compaction] ${req.purpose}: cancelled at shutdown`);
+    return { ok: false, reason: "cancelled at shutdown", cancelled: true };
   }
 
   private redact(text: string): string {

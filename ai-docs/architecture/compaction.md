@@ -127,6 +127,9 @@ a launch-scoped `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, measured first.
 - Held only in the proxy's memory. The proxy runs in the launcher process and Claude Code is its
   only child, so the key never needs an environment variable, and nothing new is written to the
   child's env. The monitor branch still deletes an inherited `ANTHROPIC_API_KEY`.
+- The proxy's `shutdown()` calls `CompactionRuntime.shutdown()`: the client aborts every call in
+  flight (a background summary included; a cancelled call records nothing), waits for them, and
+  then releases the lease below.
 - Registered on a launch-wide signing lease (`acquireSigningLease`), so `log`, `logStderr`,
   `redactSecrets`, telemetry and `redactForClient` redact it by value. Upstream text the client
   logs passes `redactForClient` and `redactExactValues`.

@@ -256,6 +256,15 @@ export class ToolOutputCompactor {
     } catch (err) {
       return original(`compression threw: ${err instanceof Error ? err.message : String(err)}`);
     }
+    if (!result.ok && result.cancelled) {
+      // Shutdown, not a decision: sent as it is, and nothing is recorded.
+      return {
+        kind: "tool-output",
+        form: "original",
+        reason: result.reason,
+        decidedAt: new Date().toISOString(),
+      };
+    }
     if (!result.ok) return original(result.reason);
 
     let path: string;

@@ -617,7 +617,7 @@ export class HistoryCompactor {
     hashes: MessageHashes,
     currentBoundary: number
   ): boolean {
-    if (this.deps.client.disabled) return false;
+    if (this.deps.client.disabled || this.deps.client.closed) return false;
     const boundary = lastHumanTurnStart(original);
     if (boundary < 1 || boundary <= currentBoundary) return false;
     const flightKey = `${sessionId}\n${thread}`;
@@ -679,6 +679,9 @@ export class HistoryCompactor {
         reason: `summary call threw: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
+    // Cut short by shutdown: no decision about this boundary was made, so
+    // nothing is recorded and a later process may still summarise it.
+    if (!result.ok && result.cancelled) return;
     const decidedAt = new Date().toISOString();
     const record: HistorySummaryRecord = result.ok
       ? {
