@@ -1510,6 +1510,80 @@
           ]
         }
       },
+      "gpt-6.1-terra": {
+        "code_review": {
+          "basis": "vendor_guidance",
+          "effort": "xhigh",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-terra",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
+        "debugging": {
+          "basis": "vendor_guidance",
+          "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-terra",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
+        "default": {
+          "basis": "vendor_default",
+          "effort": "medium",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-terra",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
+        "frontend_ui": {
+          "basis": "owner_choice",
+          "effort": "high",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-terra",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
+        "quick_edit": {
+          "basis": "vendor_guidance",
+          "effort": "low",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-terra",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        },
+        "terminal_ops": {
+          "basis": "benchmark_knee",
+          "effort": "xhigh",
+          "sendableOn": [
+            {
+              "encoding": "request_parameter",
+              "externalModelId": "gpt-6.1-terra",
+              "routeId": "openai",
+              "routeProfileId": "codex-subscription"
+            }
+          ]
+        }
+      },
       "kimi-k3.1-pro": {
         "code_review": {
           "basis": "owner_choice",
@@ -2277,7 +2351,7 @@
         }
       }
     },
-    "fetchedAt": "2026-11-15T10:49:35.538Z",
+    "fetchedAt": "2026-11-15T14:24:57.472Z",
     "format": 1,
     "recommendations": {
       "contractVersion": 3,
@@ -2359,7 +2433,7 @@
           "tier": "cost_efficient"
         },
         {
-          "modelId": "gpt-6.1-sol",
+          "modelId": "gpt-6.1-terra",
           "tier": "cost_efficient"
         },
         {
@@ -2383,11 +2457,11 @@
           "tier": "luxury"
         }
       ],
-      "generationId": "g-20261115011731115-35f587b6"
+      "generationId": "g-20261115114852784-7f4f3a66"
     },
     "source": "https://us-central1-claudish-6da10.cloudfunctions.net"
   },
-  "catalogGenerationId": "g-20261115011731115-35f587b6",
+  "catalogGenerationId": "g-20261115114852784-7f4f3a66",
   "entries": [
     {
       "aggregators": [
@@ -4957,6 +5031,266 @@
     {
       "aggregators": [
         {
+          "externalModelId": "gpt-6.1-terra",
+          "reasoning": {
+            "mode": {
+              "status": "rejected"
+            },
+            "request": {
+              "status": "unknown"
+            }
+          },
+          "route": {
+            "routeId": "openai",
+            "routeProfileId": "codex-subscription"
+          },
+          "routeStatus": "mapped",
+          "sourceProviderId": "openai-codex",
+          "wire": {
+            "api": "responses",
+            "evidence": [],
+            "reasoning": {
+              "disable": [
+                {
+                  "path": "/reasoning/effort",
+                  "value": "none"
+                }
+              ],
+              "effort": {
+                "default": "low",
+                "path": "/reasoning/effort",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "max": "max",
+                  "medium": "medium",
+                  "none": "none",
+                  "xhigh": "xhigh"
+                }
+              },
+              "enable": {
+                "status": "not_applicable"
+              },
+              "mode": {
+                "path": "/reasoning/mode",
+                "status": "rejected"
+              },
+              "status": "supported"
+            },
+            "speed": {
+              "access": "open",
+              "default": "standard",
+              "echo": {
+                "status": "not_applicable"
+              },
+              "headers": [],
+              "path": "/service_tier",
+              "status": "supported",
+              "values": {
+                "fast": "priority"
+              }
+            },
+            "status": "known",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": "ok"
+          }
+        },
+        {
+          "externalModelId": "gpt-6.1-terra",
+          "pricing": {
+            "cachedRead": 0.05,
+            "cachedWrite": 1.25,
+            "input": 1,
+            "output": 5,
+            "type": "flat"
+          },
+          "reasoning": {
+            "mode": {
+              "default": "standard",
+              "status": "supported",
+              "values": [
+                "standard",
+                "pro"
+              ]
+            },
+            "request": {
+              "api": "responses",
+              "disable": [
+                {
+                  "path": "/reasoning/effort",
+                  "value": "none"
+                }
+              ],
+              "effort": {
+                "default": "medium",
+                "path": "/reasoning/effort",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "max": "max",
+                  "medium": "medium",
+                  "none": "none",
+                  "xhigh": "xhigh"
+                }
+              },
+              "status": "supported"
+            }
+          },
+          "route": {
+            "routeId": "openai",
+            "routeProfileId": "direct-api"
+          },
+          "routeStatus": "mapped",
+          "sourceProviderId": "openai",
+          "wire": {
+            "api": "responses",
+            "evidence": [],
+            "reasoning": {
+              "disable": [
+                {
+                  "path": "/reasoning/effort",
+                  "value": "none"
+                }
+              ],
+              "effort": {
+                "default": "medium",
+                "path": "/reasoning/effort",
+                "values": {
+                  "high": "high",
+                  "low": "low",
+                  "max": "max",
+                  "medium": "medium",
+                  "none": "none",
+                  "xhigh": "xhigh"
+                }
+              },
+              "enable": {
+                "status": "not_applicable"
+              },
+              "mode": {
+                "access": "open",
+                "default": "standard",
+                "echo": "/reasoning/mode",
+                "headers": [],
+                "path": "/reasoning/mode",
+                "status": "supported",
+                "values": {
+                  "pro": "pro",
+                  "standard": "standard"
+                }
+              },
+              "status": "supported"
+            },
+            "speed": {
+              "status": "unknown"
+            },
+            "status": "known",
+            "tokenParam": "max_output_tokens",
+            "toolsWithReasoning": "ok"
+          }
+        }
+      ],
+      "aliases": [
+        "openai/gpt-6.1-terra",
+        "gpt-6-1-terra-high",
+        "gpt-6-1-terra-low",
+        "gpt-6-1-terra-max",
+        "gpt-6-1-terra-medium",
+        "gpt-6-1-terra-xhigh"
+      ],
+      "contextWindow": 1050000,
+      "contractVersion": 3,
+      "displayName": "GPT-6.1 Terra",
+      "endpoints": {
+        "openai": {
+          "api": "responses",
+          "toolsWithReasoning": "ok"
+        }
+      },
+      "inputModalities": [
+        "image",
+        "text"
+      ],
+      "maxOutputTokens": 128000,
+      "modelId": "gpt-6.1-terra",
+      "outputModalities": [
+        "text"
+      ],
+      "provider": "openai",
+      "reasoning": {
+        "control": "effort",
+        "defaultEffort": "medium",
+        "efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low",
+          "none"
+        ],
+        "mandatory": false,
+        "supported": true
+      },
+      "releaseDate": "2026-10-26",
+      "status": "active",
+      "subscriptionPlanIds": [
+        "cognition-devin",
+        "llm-gateway-devpass",
+        "openai-codex"
+      ],
+      "supportsTools": true,
+      "supportsVision": true,
+      "tokenParam": "max_output_tokens",
+      "videoInput": false,
+      "videoOutput": false
+    },
+    {
+      "aggregators": [],
+      "aliases": [
+        "openai/gpt-6.1-terra-pro"
+      ],
+      "contextWindow": 1050000,
+      "contractVersion": 3,
+      "displayName": "GPT-6.1 Terra Pro",
+      "inputModalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "modelId": "gpt-6.1-terra-pro",
+      "outputModalities": [
+        "text"
+      ],
+      "provider": "openai",
+      "reasoning": {
+        "control": "effort",
+        "defaultEffort": "medium",
+        "efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low"
+        ],
+        "mandatory": true,
+        "supported": true
+      },
+      "releaseDate": "2026-10-26",
+      "routeVariant": {
+        "baseModelId": "gpt-6.1-terra",
+        "kind": "provider-preset",
+        "preset": "reasoning.mode=pro",
+        "provider": "openrouter"
+      },
+      "status": "active",
+      "supportsTools": true,
+      "supportsVision": true,
+      "videoInput": false,
+      "videoOutput": false
+    },
+    {
+      "aggregators": [
+        {
           "externalModelId": "kimi-k3.1-pro",
           "pricing": {
             "type": "unavailable"
@@ -6138,7 +6472,7 @@
       "supportsVision": true
     }
   ],
-  "lastUpdated": "2026-11-15T01:17:31.115Z",
+  "lastUpdated": "2026-11-15T11:48:52.784Z",
   "models": [],
   "plans": [
     {
@@ -6667,6 +7001,56 @@
           "sourceText": "GPT-6.1 Sol XHigh Thinking"
         },
         {
+          "externalModelId": "gpt-6-1-terra-high",
+          "kind": "provider_model",
+          "provider": "cognition",
+          "resolution": {
+            "modelId": "gpt-6.1-terra",
+            "status": "mapped"
+          },
+          "sourceText": "GPT-6.1 Terra High Thinking"
+        },
+        {
+          "externalModelId": "gpt-6-1-terra-low",
+          "kind": "provider_model",
+          "provider": "cognition",
+          "resolution": {
+            "modelId": "gpt-6.1-terra",
+            "status": "mapped"
+          },
+          "sourceText": "GPT-6.1 Terra Low Thinking"
+        },
+        {
+          "externalModelId": "gpt-6-1-terra-max",
+          "kind": "provider_model",
+          "provider": "cognition",
+          "resolution": {
+            "modelId": "gpt-6.1-terra",
+            "status": "mapped"
+          },
+          "sourceText": "GPT-6.1 Terra Max Thinking"
+        },
+        {
+          "externalModelId": "gpt-6-1-terra-medium",
+          "kind": "provider_model",
+          "provider": "cognition",
+          "resolution": {
+            "modelId": "gpt-6.1-terra",
+            "status": "mapped"
+          },
+          "sourceText": "GPT-6.1 Terra Medium Thinking"
+        },
+        {
+          "externalModelId": "gpt-6-1-terra-xhigh",
+          "kind": "provider_model",
+          "provider": "cognition",
+          "resolution": {
+            "modelId": "gpt-6.1-terra",
+            "status": "mapped"
+          },
+          "sourceText": "GPT-6.1 Terra XHigh Thinking"
+        },
+        {
           "externalModelId": "gpt-6-astra-high",
           "kind": "provider_model",
           "provider": "cognition",
@@ -7055,6 +7439,16 @@
           "sourceText": "gpt-6.1-sol"
         },
         {
+          "externalModelId": "gpt-6.1-terra",
+          "kind": "provider_model",
+          "provider": "llmgateway",
+          "resolution": {
+            "modelId": "gpt-6.1-terra",
+            "status": "mapped"
+          },
+          "sourceText": "gpt-6.1-terra"
+        },
+        {
           "externalModelId": "gpt-6-luna",
           "kind": "provider_model",
           "provider": "llmgateway",
@@ -7320,16 +7714,6 @@
       "id": "ollama-cloud",
       "inclusions": [
         {
-          "externalModelId": "minimax-m3.1-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "minimax-m3.1-flash",
-            "status": "mapped"
-          },
-          "sourceText": "minimax-m3.1-flash"
-        },
-        {
           "externalModelId": "mimo-v2.6-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
@@ -7338,26 +7722,6 @@
             "status": "mapped"
           },
           "sourceText": "mimo-v2.6-flash"
-        },
-        {
-          "externalModelId": "glm-5.3-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "glm-5.3-flash",
-            "status": "mapped"
-          },
-          "sourceText": "glm-5.3-flash"
-        },
-        {
-          "externalModelId": "kimi-k3.1-pro",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "kimi-k3.1-pro",
-            "status": "mapped"
-          },
-          "sourceText": "kimi-k3.1-pro"
         },
         {
           "externalModelId": "deepseek-v4.1-flash",
@@ -7370,14 +7734,34 @@
           "sourceText": "deepseek-v4.1-flash"
         },
         {
-          "externalModelId": "glm-5.3",
+          "externalModelId": "kimi-k3.1-pro",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "glm-5.3",
+            "modelId": "kimi-k3.1-pro",
             "status": "mapped"
           },
-          "sourceText": "glm-5.3"
+          "sourceText": "kimi-k3.1-pro"
+        },
+        {
+          "externalModelId": "minimax-m3.1-flash",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "minimax-m3.1-flash",
+            "status": "mapped"
+          },
+          "sourceText": "minimax-m3.1-flash"
+        },
+        {
+          "externalModelId": "glm-5.3-flash",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "glm-5.3-flash",
+            "status": "mapped"
+          },
+          "sourceText": "glm-5.3-flash"
         },
         {
           "externalModelId": "mimo-v2.6-pro",
@@ -7388,6 +7772,16 @@
             "status": "mapped"
           },
           "sourceText": "mimo-v2.6-pro"
+        },
+        {
+          "externalModelId": "glm-5.3",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "glm-5.3",
+            "status": "mapped"
+          },
+          "sourceText": "glm-5.3"
         }
       ],
       "modelDiscovery": "catalog",
@@ -7431,6 +7825,16 @@
             "status": "mapped"
           },
           "sourceText": "gpt-6.1-sol"
+        },
+        {
+          "externalModelId": "gpt-6.1-terra",
+          "kind": "provider_model",
+          "provider": "openai",
+          "resolution": {
+            "modelId": "gpt-6.1-terra",
+            "status": "mapped"
+          },
+          "sourceText": "gpt-6.1-terra"
         }
       ],
       "modelDiscovery": "hybrid",
@@ -7632,7 +8036,7 @@
     }
   ],
   "routeRegistry": {
-    "generationId": "g-20261115011731115-35f587b6",
+    "generationId": "g-20261115114852784-7f4f3a66",
     "registry": {
       "contractVersion": 3,
       "registryVersion": "3.7.0",
