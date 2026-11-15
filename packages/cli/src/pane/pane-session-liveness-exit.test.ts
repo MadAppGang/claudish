@@ -91,37 +91,56 @@ async function livenessExit(s: PaneSessionImpl): Promise<{ exitCode: number | nu
   return { exitCode: s.snapshot().exitCode, ms: Date.now() - started };
 }
 
+/** Above the 5 s wait in `livenessExit`, so that wait, not Bun's 5 s default, ends a slow test. */
+const TEST_TIMEOUT_MS = 15_000;
+
 describe("liveness exit after a socket drop", () => {
-  test("takes the exit code magmux still holds", async () => {
-    const { session: s, sockPath } = session();
-    fakeMagmux(sockPath, "dead-with-code", 3);
-    const { exitCode } = await livenessExit(s);
-    expect(exitCode).toBe(3);
-    expect(s.snapshot().detail ?? "").toContain("pane child exited with code 3");
-  });
+  test(
+    "takes the exit code magmux still holds",
+    async () => {
+      const { session: s, sockPath } = session();
+      fakeMagmux(sockPath, "dead-with-code", 3);
+      const { exitCode } = await livenessExit(s);
+      expect(exitCode).toBe(3);
+      expect(s.snapshot().detail ?? "").toContain("pane child exited with code 3");
+    },
+    TEST_TIMEOUT_MS
+  );
 
-  test("redials: takes the code when the socket comes back a second after the exit is seen", async () => {
-    const { session: s, sockPath } = session();
-    setTimeout(() => fakeMagmux(sockPath, "dead-with-code", 3), 1000);
-    const { exitCode, ms } = await livenessExit(s);
-    expect(exitCode).toBe(3);
-    expect(ms).toBeGreaterThanOrEqual(900);
-  });
+  test(
+    "redials: takes the code when the socket comes back a second after the exit is seen",
+    async () => {
+      const { session: s, sockPath } = session();
+      setTimeout(() => fakeMagmux(sockPath, "dead-with-code", 3), 1000);
+      const { exitCode, ms } = await livenessExit(s);
+      expect(exitCode).toBe(3);
+      expect(ms).toBeGreaterThanOrEqual(900);
+    },
+    TEST_TIMEOUT_MS
+  );
 
-  test("finishes without a code within the bound when magmux is unreachable", async () => {
-    const { session: s } = session();
-    const { exitCode, ms } = await livenessExit(s);
-    expect(exitCode).toBeNull();
-    expect(s.snapshot().detail ?? "").toContain("pane child exited (code unknown)");
-    expect(ms).toBeLessThan(2900);
-  });
+  test(
+    "finishes without a code within the bound when magmux is unreachable",
+    async () => {
+      const { session: s } = session();
+      const { exitCode, ms } = await livenessExit(s);
+      expect(exitCode).toBeNull();
+      expect(s.snapshot().detail ?? "").toContain("pane child exited (code unknown)");
+      expect(ms).toBeLessThan(2900);
+    },
+    TEST_TIMEOUT_MS
+  );
 
-  test("finishes without a code within the bound when magmux does not answer", async () => {
-    const { session: s, sockPath } = session();
-    fakeMagmux(sockPath, "silent", 3);
-    const { exitCode, ms } = await livenessExit(s);
-    expect(exitCode).toBeNull();
-    expect(ms).toBeGreaterThanOrEqual(1900);
-    expect(ms).toBeLessThan(2900);
-  });
+  test(
+    "finishes without a code within the bound when magmux does not answer",
+    async () => {
+      const { session: s, sockPath } = session();
+      fakeMagmux(sockPath, "silent", 3);
+      const { exitCode, ms } = await livenessExit(s);
+      expect(exitCode).toBeNull();
+      expect(ms).toBeGreaterThanOrEqual(1900);
+      expect(ms).toBeLessThan(2900);
+    },
+    TEST_TIMEOUT_MS
+  );
 });
