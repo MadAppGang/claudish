@@ -80,6 +80,14 @@ lives in `ROADMAP.md`.
   rows, with one readiness rule (`pickerProviderReady`) and one billing label (`displayBillingOf`)
   for every picker; the no-terminal gate; capture and compiled-binary traps. Read before editing
   `picker/` or `selectModel`
+- `model-lineup.md`: listing entries (`--model devin@`, `'or@*'`) and the model lineup handed to
+  Claude Code as `modelPicker`: why `/model` never reads `GET /v1/models`, the measured `/model`
+  facts (verbatim ids, no validation probe, Enter writes `settings.json` and `s` does not,
+  `--settings` beats a user `modelPicker`), gate M0 on the kept login, R1 to R21 as built, the
+  settings base-URL refusal, and the restore at exit (canonical ledger key, compare-and-set,
+  launcher-or-child liveness, crash sweep). Read before editing `launcher/model-lineup.ts`,
+  `launcher/model-setting-restore.ts`, `parseModelFlags`, `decideModelListings`, or the lineup
+  branch of `proxy-server.ts`
 - `context-window.md`, `theming.md`, `debugging.md`, `testing.md`
 
 Evidence behind them: `ai-docs/reports/`. Evals: `ai-docs/benches/`. User-facing site: `docs/`.
@@ -123,6 +131,8 @@ negative case: if you are about to type one of those words, stop and use the lef
 | vendor | provider (for the model's maker) | the company that makes the model; the catalog's `provider` field |
 | provider shortcut | prefix | `cx` in `cx@gpt-6-astra`. "Prefix" already means three other things in `provider-definitions.ts` |
 | model spec | model string | `provider@model`, explicit on argv |
+| listing entry | provider flag, list flag, empty spec, `provider@` spec | a `--model` value that is a provider shortcut, `@` and no model (`devin@`), or `*` after the `@` (`'or@*'`): it names a claudish provider whose models go into Claude Code's `/model`, and never starts the session |
+| model lineup | roster, model list, picker list (for `/model`) | the claudish rows one launch hands Claude Code as its `modelPicker` setting, built once at launch from its listing entries (`ModelLineup`, `launcher/model-lineup.ts`) and fixed for the session. A launch has one only when it has a listing entry |
 | bare name | unprefixed model | a model with no `provider@`; routing chooses its provider |
 | routing chain | fallback chain | the ordered, credential-filtered candidates for one request |
 | fallback | (the whole chain) | only the last-resort `defaultProvider` hop |
