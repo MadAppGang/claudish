@@ -853,11 +853,16 @@ that file exits, and `model` still holds one of the specs claudish listed, claud
 value back (or removes the key) and prints `[claudish] Put back your Claude Code default model in
 <path>`. Any other value, a Claude model you picked included, is yours and is left alone.
 
-- Only `model` changes. The file's indentation, its other keys, its mode and a symlinked
-  `settings.json` are kept.
+- Only the `model` value changes. The file's indentation, its other keys and their values, its
+  mode and a symlinked `settings.json` are kept. The file is written back as standard JSON, so
+  spellings can change while values stay the same: `1.0` becomes `1`, and an escape such as
+  `é` becomes the character it stands for.
 - The write is checked against the file's content: if the file changed since claudish read it,
   claudish decides again from the new content, up to 3 times, then tries at the next launch. A
-  `model` you set in the meantime is never overwritten.
+  `model` you set in the meantime is left alone while it is still there.
+- Limit: if you set a new default in another `claude` during the session and then press Enter on
+  a listed row in the claudish session, the file holds a listed spec again at exit, and claudish
+  puts back the value from launch time, not the one you set in between.
 - A file that is not valid JSON or cannot be written gets one line: `<path> is not valid JSON, so
   claudish did not put back your default model; set or remove "model" in <path> by hand`. claudish
   retries only after the file changes, and gives up after 14 days.
