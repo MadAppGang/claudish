@@ -626,6 +626,48 @@ What this shows:
 - **No history summary ran.** No debug log has a `[compaction] history`
   line, so the history part of compaction was not tested here.
 
+### Compaction history check (not a variant, in no mean)
+
+A separate Bench, `history/madbench.yaml`: one interactive session through
+claudish with `--compaction`, in a small git repository, with a config whose
+history thresholds are low enough for a short session. Build: source
+6f869a1d, sha256
+`65063e0bd1e1562045ed77d9dd217c25c5b9090f9a042b4839087365d170114a`
+(`claudish version 14.25.0`), a later build than the trials above. Four turns:
+
+1. "Read package.json and tell me the package name and its scripts."
+2. "List the files in the top-level folder and name the three largest."
+3. "Run `git log --oneline -5` and then `git status --short`, and summarise both."
+4. "In one sentence, what did my first question ask, and what was the answer?"
+
+The debug log shows three summaries and two swaps:
+
+```
+[compaction] history summary started in session f4bb71fa-…: messages 0..9
+[compaction] history summary ready in session f4bb71fa-…: messages 0..9, 1344 characters
+[compaction] history swap in session f4bb71fa-…: messages 0..9 replaced by a summary of 1344 characters
+[compaction] history summary started in session f4bb71fa-…: messages 0..13, rolling forward from 9
+[compaction] history summary ready in session f4bb71fa-…: messages 0..13, 1939 characters
+[compaction] history swap in session f4bb71fa-…: messages 0..13 replaced by a summary of 1939 characters
+[compaction] history summary started in session f4bb71fa-…: messages 0..15, rolling forward from 13
+[compaction] history summary ready in session f4bb71fa-…: messages 0..15, 2343 characters
+```
+
+3 Haiku calls, all `claude-haiku-5-5` with `x-api-key`, HTTP 200, 9,492 in /
+2,391 out tokens; 0 failed, 0 skipped. The third summary was ready when the
+session ended and was not swapped in. The key checks passed as in the trials.
+
+The fourth answer, after both swaps:
+
+> Your first question asked me to read `package.json` and report the package
+> name and scripts. The package is `tally-sheet` (v0.3.1), and its scripts
+> are `start` (`bun src/index.ts`), `test` (`bun test`), `lint` (`biome check
+> src`) and `build` (`bun build src/index.ts --outdir dist`).
+
+The answer is right: the summary kept the first turn's facts. This is one
+session of four short turns; it shows that the history path runs end to end,
+not what it saves.
+
 ## Explanations (inference, not verified)
 
 - **Why the gateway costs more.** Shortened tool output leaves the agent
