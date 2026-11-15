@@ -23,6 +23,15 @@ if [ -n "$stale" ]; then
   sleep 1
 fi
 
+# When the run shares an output folder, the logs live there from the start:
+# a Session that errors gets no Checks, and its sandbox, logs included, is
+# deleted.
+if [ -d "$HOME/.bench-out" ]; then
+  live="$HOME/.bench-out/context-gateway-live-$(date +%Y%m%dT%H%M%S)"
+  mkdir -p "$live"
+  ln -sfn "$live" "$run"
+  echo "start: logs in $live"
+fi
 mkdir -p "$run/logs"
 cd "$run"
 nohup "$gw" serve --config "$config" --no-banner \
