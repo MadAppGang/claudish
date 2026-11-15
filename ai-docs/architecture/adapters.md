@@ -220,11 +220,15 @@ A sibling of the identity scrub, same goal of not looking foreign, but reversibl
 narrower. `ComposedHandler` step 2b, right after the identity scrub.
 
 - `aliasToolsForProvider(req, provider)` renames the Claude Code built-ins that have a true agy
-  equivalent — `Bash`→`run_command`, `Write`→`write_to_file`, `Edit`→`edit_file`,
-  `Grep`→`grep_search`, `Glob`→`find_by_name`, `LS`→`list_dir` — in the tool definitions, in a
-  forced `tool_choice`, and in assistant-history `tool_use` blocks. The table is
-  `antigravity`-only; every other provider gets the request back unchanged. Names come from the
-  `agy` binary's own few-shot tool calls.
+  equivalent — `Bash`→`run_command`, `Read`→`read_file`, `Write`→`write_file`,
+  `Edit`→`edit_file`, `Agent`→`invoke_subagent`, `AskUserQuestion`→`ask_question`,
+  `WebSearch`→`search_web`, `SendMessage`→`send_message`, `Workflow`→`run_workflow` — in the
+  tool definitions, in a forced `tool_choice`, and in assistant-history `tool_use` blocks. The
+  table is `antigravity`-only; every other provider gets the request back unchanged. The names
+  are the `functionDeclarations` the `agy` CLI 1.5.9 sends, recorded through a proxy on
+  2026-11-15 (17 tools; the list is in `providers/antigravity.md`). `Grep`→`grep_search`,
+  `Glob`→`find_by_name` and `LS`→`list_dir` stay for a Claude Code that declares those tools:
+  the names are in the binary but not in the CLI's recorded tool set.
 - The alias is built PER REQUEST and returns `forward` and `restore` for the pairs that request
   applied. A pair is skipped when the request already declares a tool under the native name (a
   custom or MCP `run_command`): the rename would declare one name twice, and a table-wide
@@ -247,8 +251,9 @@ narrower. `ComposedHandler` step 2b, right after the identity scrub.
   its wire name; the journal still records the name the hook asked for. Without it every
   description action on a renamed tool ended `invalid: unknown_tool`. A raw `providerRequest`
   hook sees the wire names.
-- `Read` is deliberately NOT aliased: the binary carries both `read_file` and `view_file` and does
-  not settle which is current. A wrong name is worse than none.
+- The binary is not the reference, the wire is. The binary carries `write_to_file`, `view_file`
+  and `read_file` as strings; the CLI sends `write_file` and `read_file`. Until 14.25.1 the table
+  had `write_to_file` and left `Read` alone, both read from the binary.
 
 **The honest limit — names only, not shapes.** The argument SCHEMAS stay Claude Code's. agy's
 `edit_file` takes an `Instruction` plus a `CodeEdit` with `{{...}}` elision that a separate
@@ -359,6 +364,54 @@ it keeps, idempotency, what is never touched, the inputs of both review rounds) 
 `composed-handler-identity.test.ts` (the wire body for a gateway and for `antigravity`, which
 fail without step 2a; a real Claude model, a control that must stay unchanged; both outcomes on
 the real Gemini and Responses adapters).
+
+## Antigravity refuses one paragraph of Claude Code's system prompt (`format/provider-refused-text.ts`)
+
+`ComposedHandler` step 2a', between the identity scrub and the tool-name alias.
+
+**Measured 2026-11-15**, claudish 14.24.0 and `agy` 1.5.9 on one Antigravity Pro account, model
+`gemini-4-argon-medium`, through a recording proxy. Every main request from claudish answered
+`429 RESOURCE_EXHAUSTED` ("Resource has been exhausted (e.g. check quota).") with no reason and
+no retry delay, while the account's quota report said 99.5% remaining and `agy` answered 200 in
+the same minutes. One recorded claudish request was then replayed 24 times with one change each:
+
+| Change to the claudish request | Status |
+|---|---|
+| none | 429 |
+| `enabled_credit_types` removed | 429 |
+| agy's envelope and headers | 429 |
+| agy's `generationConfig` | 429 |
+| agy's tool declarations | 429 |
+| agy's system instruction | 200 |
+| `role: "user"` on the system instruction | 429 |
+| agy's system text, then claudish's after it | 429 |
+| the security paragraph alone as the system text | 429 |
+| the full system text without that paragraph | 200 |
+| `Dual-use security tools require clear authorization context: …` | 200 |
+| `Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context.` | 429 |
+
+The server refuses a request whose system instruction holds the parenthetical
+`(C2 frameworks, credential testing, exploit development)`. That text is in Claude Code's
+security paragraph ("IMPORTANT: Assist with authorized security testing …"), which every main
+request carries. A side request with another system prompt answered 200, which is why the
+refusal first read as a tool or size limit. The old account accepted the same paragraph for
+about 14.5 hours on 2026-11-13, so the refusal is newer than that or specific to an account;
+nothing measured separates the two. The Gemini API route (`g@`) accepts the paragraph.
+
+- `removeProviderRefusedText(req, provider)` removes, from the system prompt only, each paragraph
+  that starts at the start of a line with a listed opening. The table has one provider
+  (`antigravity`) and one opening. The whole paragraph goes, found by its opening words, so a
+  reworded parenthetical is still covered. A paragraph ends at the next blank line.
+- It is keyed on the claudish provider and runs OUTSIDE the `keepIdentity` test: the filter is in
+  front of every model the provider serves, the `claude-*` ones included, and step 2a skips those.
+- The conversation is never read: a user who pastes that paragraph keeps it. A block system
+  prompt keeps its shape and its `cache_control`; a text block left empty is dropped.
+- Plain `indexOf` scans, linear on any input, like every pattern of the identity scrub.
+- **A 429 from Antigravity with quota left is not a quota fact.** Before adding a retry or a
+  quota message for one, replay the request with the system instruction replaced. The replay
+  tool is a mitmproxy addon run as `mitmdump -n -s <addon> -C <flow file>`; `agy` (a Go binary)
+  accepts the proxy with `HTTPS_PROXY` plus `SSL_CERT_FILE` pointing at the mitmproxy CA, and
+  claudish with `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS` and `NO_PROXY=127.0.0.1,localhost`.
 
 ## Stream Parsers
 Located in `handlers/shared/stream-parsers/`:

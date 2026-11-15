@@ -596,3 +596,42 @@ break one line on every exit.
 `secret_guard` line would then carry it too; instead of printing nothing, that line drops every
 fact except `schema`, `claudishVersion`, `tokenRefreshed` and `failure`. One line on every exit
 holds.
+
+## What the `agy` CLI 1.5.9 puts on the wire (recorded 2026-11-15)
+
+Recorded through mitmproxy from `agy -p` on an Antigravity Pro account, one turn with two tool
+calls. Host `daily-cloudcode-pa.googleapis.com`, `POST /v1internal:streamGenerateContent?alt=sse`,
+about 53 KB per request.
+
+| Part | `agy` 1.5.9 | claudish 14.25.1 |
+|---|---|---|
+| Envelope keys | `model`, `project`, `request`, `requestId`, `requestType: "agent"`, `userAgent: "antigravity"` | `model`, `project`, `request`, `user_prompt_id`, `enabled_credit_types` on a paid tier |
+| `request` keys | `contents`, `generationConfig`, `labels`, `sessionId`, `systemInstruction`, `tools` | `contents`, `generationConfig`, `systemInstruction`, `tools` |
+| `requestId` | `agent/<cascade uuid>/<epoch ms>/<trajectory uuid>/<n>` | none |
+| `labels` | `cascade_id`, `root_cascade_id`, `trajectory_id`, `request_id`, `last_step_index`, `model_enum`, `used_claude`, `used_claude_conservative`, `used_non_gemini_model` | none |
+| `User-Agent` | `antigravity/cli/1.5.9 (aidev_client; os_type=darwin; arch=arm64; cl=1021519450; auth_method=consumer)` | the same without `cl=…`; also sends `x-activity-request-id` |
+| `systemInstruction` | `role: "user"`, one part, about 30 KB, opens with an `<identity>` block | no `role`, Claude Code's scrubbed prompt under the identity header |
+| `generationConfig` | `maxOutputTokens: 65536`, `thinkingConfig: {includeThoughts: true, thinkingLevel: "MEDIUM"}` | `temperature: 1`, `maxOutputTokens: 32000` |
+| `tools` | 17 entries, one `functionDeclarations` each | one entry holding every declaration |
+
+The identity block `agy` sends:
+
+```
+<identity>
+You are Antigravity, a powerful agentic AI assistant designed by the Google Deepmind team.
+You are working with a USER to solve their task.
+The USER will send you requests, which you must always prioritize addressing. User requests are enclosed within <USER_REQUEST> tags.
+</identity>
+```
+
+Its 17 tools: `read_file`, `run_command`, `manage_task`, `send_message`, `schedule`,
+`invoke_subagent`, `define_subagent`, `manage_subagents`, `write_file`, `edit_file`, `search_web`,
+`run_workflow`, `swarm`, `ask_question`, `call_mcp_tool`, `list_resources`, `read_resource`.
+Argument names are capitalised (`Path`, `CommandLine`, `Content`), unlike Claude Code's.
+
+**None of the differences in the table is what the server refused.** Each was put into a failing
+claudish request by replay and the answer stayed 429; `agy`'s whole body under claudish's own
+token and headers answered 200. The one thing the server refused was a paragraph of the system
+text: see `adapters.md` § "Antigravity refuses one paragraph of Claude Code's system prompt".
+So the envelope, the `User-Agent` and the generation settings are recorded here as known
+differences, not as defects.
