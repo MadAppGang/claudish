@@ -156,7 +156,7 @@ export function computeTurnCost(
  * another handler: with each tracker writing its own totals, the file's
  * `total_cost` dropped to the new handler's figure on every switch. So the
  * session figures (`total_cost`, `billed_input_tokens`, `output_tokens`,
- * `tool_calls`, `started_at`) live here, keyed by the file's path; each tracker
+ * `total_tokens`, `tool_calls`, `started_at`) live here, keyed by the file's path; each tracker
  * adds what it charged since its own last write, so switching back to an
  * earlier handler never counts its turns twice. A tracker that never writes the
  * file (`writesTokenFile: false`) never adds to it. The totals last until the
@@ -166,6 +166,8 @@ interface TokenFileTotals {
   totalCost: number;
   billedInputTokens: number;
   outputTokens: number;
+  /** Per tracker, its latest request context plus its cumulative output; summed. */
+  totalTokens: number;
   toolCalls: Map<string, number>;
   startedAt: number;
 }
@@ -187,6 +189,7 @@ interface ReportedTotals {
   totalCost: number;
   billedInputTokens: number;
   outputTokens: number;
+  totalTokens: number;
   toolCalls: Map<string, number>;
 }
 
@@ -275,6 +278,7 @@ export class TokenTracker {
     totalCost: 0,
     billedInputTokens: 0,
     outputTokens: 0,
+    totalTokens: 0,
     toolCalls: new Map(),
   };
 
@@ -663,14 +667,17 @@ export class TokenTracker {
    * Adds what this tracker charged since its last write to the totals of the
    * token file at `path`, and returns those totals. Deltas, never this
    * tracker's whole figures, so trackers sharing a file sum without overlap.
+   * `inputTokens` is the context of the request being written: this tracker's
+   * `total_tokens` share is that context plus its own cumulative output.
    */
-  private addToFileTotals(path: string): TokenFileTotals {
+  private addToFileTotals(path: string, inputTokens: number): TokenFileTotals {
     let totals = tokenFileTotals.get(path);
     if (!totals) {
       totals = {
         totalCost: 0,
         billedInputTokens: 0,
         outputTokens: 0,
+        totalTokens: 0,
         toolCalls: new Map(),
         startedAt: this.startedAt,
       };
@@ -680,6 +687,8 @@ export class TokenTracker {
     totals.totalCost += this.sessionTotalCost - this.reported.totalCost;
     totals.billedInputTokens += this.sessionBilledInputTokens - this.reported.billedInputTokens;
     totals.outputTokens += this.sessionOutputTokens - this.reported.outputTokens;
+    const ownTotalTokens = inputTokens + this.sessionOutputTokens;
+    totals.totalTokens += ownTotalTokens - this.reported.totalTokens;
     for (const [name, count] of this.toolCallsByName) {
       const delta = count - (this.reported.toolCalls.get(name) ?? 0);
       if (delta !== 0) totals.toolCalls.set(name, (totals.toolCalls.get(name) ?? 0) + delta);
@@ -688,6 +697,7 @@ export class TokenTracker {
       totalCost: this.sessionTotalCost,
       billedInputTokens: this.sessionBilledInputTokens,
       outputTokens: this.sessionOutputTokens,
+      totalTokens: ownTotalTokens,
       toolCalls: new Map(this.toolCallsByName),
     };
     return totals;
@@ -710,9 +720,9 @@ export class TokenTracker {
     try {
       // The ONE rule the status line and the end-of-session summary read by.
       const outPath = resolveTokenFilePath(this.port);
-      const totals = this.addToFileTotals(outPath);
+      const totals = this.addToFileTotals(outPath, inputTokens);
       const outputTokens = totals.outputTokens;
-      const total = inputTokens + outputTokens;
+      const total = totals.totalTokens;
       const cw = this.config.contextWindow;
       // Context occupancy is the CURRENT conversation size, which is `inputTokens` —
       // every strategy passes the latest request's context here (see lastInputTokens).
@@ -722,7 +732,8 @@ export class TokenTracker {
       // Measured on a 3-day session: input 94,018 against a 372,000 window, output
       // 2,280,419 cumulative — reported 0% left when 75% was free, which is why a
       // 200K compaction clamp went unnoticed for three days. `total` stays cumulative
-      // for `total_tokens`, which is a billing figure and genuinely session-wide.
+      // for `total_tokens`, which is a billing figure and genuinely session-wide: the
+      // file's sum over every tracker of its latest context plus its own output.
       //
       // context_left_percent: -1 means "unknown" (no catalog entry for this model)
       const leftPct =
