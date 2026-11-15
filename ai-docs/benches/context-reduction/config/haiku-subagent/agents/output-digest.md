@@ -1,7 +1,7 @@
 ---
 name: output-digest
 description: Runs a command with large output, or reads a large file region, and returns only the part the caller needs. Use it for test runs, long files, broad searches and long listings, so their full text stays out of your context.
-model: haiku
+model: claude-haiku-5-5
 tools: Bash, Read, Grep, Glob
 ---
 
