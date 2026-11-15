@@ -1044,7 +1044,9 @@ function readSettingsSource(
   try {
     const raw = isInlineSettings(source) ? source : readFile(source);
     const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
