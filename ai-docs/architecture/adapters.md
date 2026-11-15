@@ -267,8 +267,7 @@ adapter, stage B through `forward`), `gemini-sse-tool-alias.test.ts` (inbound re
 wire name in the history store), `composed-handler-tool-alias.test.ts` (outbound end to end,
 and a tool call through the handler: it fails when the handler does not pass `restore`).
 
-**Not covered.** A `ToolSearch` result carries tool definitions as a tool result, so its
-descriptions pass unscrubbed. `subscription-devin-probe.ts` replays a captured request through
+**Not covered.** `subscription-devin-probe.ts` replays a captured request through
 `filterIdentity` only, so its tool descriptions and reminders are not scrubbed. An inline system message's
 `tool_addition` blocks (tool definitions added mid-session) carry no text, so step 2c below
 does not move them, and it removes the message that carried them, so a raw `providerRequest`
@@ -325,6 +324,26 @@ Tests: `inline-system.test.ts` (each placement, the unchanged prefix) and
 `composed-handler-inline-system.test.ts` (the wire body on Chat Completions, Gemini, Responses
 and an Anthropic-shaped route; the first three fail without step 2c).
 
+**Tool references (step 2d, `format/tool-reference-text.ts`).** Claude Code loads a deferred
+tool through `ToolSearch`. The tool result holds a pointer and no text:
+`[{"type":"tool_reference","tool_name":"WebFetch"}]`. The Anthropic API replaces the pointer
+with the tool's definition; no converter here carried it. The Gemini converter sent the string
+`"OK"`, the Anthropic-shaped one an empty text (it removes the item for every host), Chat
+Completions and Ollama Cloud the item's JSON. The model could not tell a loaded tool from an
+empty search.
+
+Step 2d replaces each pointer with one text item: `Loaded: <name>. It is in your tool list
+now.` The definition needs no place in the result, because Claude Code declares the tool in
+`tools` on the next request. The step runs after step 2b and takes its `forward` map, so the
+sentence names the tool as the request declares it (`read_file` on `antigravity`). It runs for
+every request, the `keepsClaudeIdentity` ones included: a Claude model behind a gateway or
+`antigravity` is on the same converters. A pointer with no name is removed. The step reads
+user messages only and returns the same array when nothing changes.
+
+Tests: `tool-reference-text.test.ts` (the rules) and `composed-handler-tool-reference.test.ts`
+(the body sent on a Gemini-shaped and a Chat Completions route, the alias name); both, and the
+Gemini and Anthropic-shaped rows of the wire-fidelity test, fail without step 2d.
+
 **One test over every wire format (`composed-handler-wire-fidelity.test.ts`).** One request with
 every piece Claude Code sends, each with its own marker, goes through the handler once per
 format the code builds (Chat Completions through `DefaultAPIFormat`, `OpenAIAPIFormat`,
@@ -354,8 +373,7 @@ test, not fixed.
 
 Pinned as limits in the test, not decided here: `cache_control` on the system prompt is gone
 on every wire (step 1, above); a `tool_addition` block reaches no wire (step 2c moves only text);
-Gemini drops a tool result's `tool_reference` and `document` items with no log; the
-Anthropic-shaped adapter removes `tool_reference` on purpose; Ollama Cloud skips a top-level
+Gemini drops a tool result's `document` items with no log; Ollama Cloud skips a top-level
 image with no note and sends no tool definitions; the error flag of an `is_error` result exists
 only on the Anthropic-shaped wire.
 
