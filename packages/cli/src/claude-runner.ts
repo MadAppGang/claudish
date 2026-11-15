@@ -768,7 +768,7 @@ function claudeSettingsLayers(
  * NFC-normalized first, as the binary does, so a decomposed `cafe\u0301` reads
  * the composed `caf\u00e9` path.
  */
-function userSettingsFile(configDir: string | undefined, home: string, cwd: string): string {
+export function userSettingsFile(configDir: string | undefined, home: string, cwd: string): string {
   const dir = (configDir ?? join(home, ".claude")).normalize("NFC");
   return join(resolve(cwd, dir), "settings.json");
 }
@@ -2624,10 +2624,21 @@ export function scrubChildModelVars(
   );
 }
 
+/** What the caller runs at fixed points of one Claude Code launch. */
+export interface RunHooks {
+  /** Awaited once, after the temp settings path is in Claude Code's argv and before spawn. Never rejects. */
+  beforeSpawn?(settingsPath: string): Promise<void>;
+  /** Called once, synchronously, right after Claude Code (or the magmux wrap) is spawned. */
+  onChildSpawned?(pid: number): void;
+  /** Called by a signal shutdown's deadline only, before `onCleanup` and `process.exit`. */
+  onDeadline?(): void;
+}
+
 export async function runClaudeWithProxy(
   config: ClaudishConfig,
   proxyUrl: string,
-  onCleanup?: () => void
+  onCleanup?: () => void,
+  hooks: RunHooks = {}
 ): Promise<number> {
   const advisorNativeSession = isAdvisorNativeSession(config);
   const modelId = childModelIdOf(config);
@@ -2718,7 +2729,12 @@ export async function runClaudeWithProxy(
 
   // From the moment the file exists: a signal before this line would leave it behind
   // and end the process without the caller's teardown. Claude Code is attached below.
-  const signalShutdown = setupSignalHandlers(tempSettingsPath, config.quiet, onCleanup);
+  const signalShutdown = setupSignalHandlers(
+    tempSettingsPath,
+    config.quiet,
+    onCleanup,
+    hooks.onDeadline
+  );
 
   // Merge user's --settings into our temp settings file if user provided one
   mergeUserSettingsIfPresent(
@@ -3130,6 +3146,12 @@ export async function runClaudeWithProxy(
   // Find Claude binary (supports CLAUDE_PATH, local installation, and global PATH)
   const claudeBinary = await findClaudeBinary();
 
+  // The caller records the `--settings` path Claude Code is about to receive, so
+  // a process carrying it can be found even if this launcher dies before the
+  // child's pid is recorded. Before the check below, which must stay the last
+  // point a signal can stop the spawn.
+  await hooks.beforeSpawn?.(tempSettingsPath);
+
   // The last `await` before Claude Code starts, on either spawn path below, so a signal
   // handler can run only up to here. One that has run means nothing is to be started.
   const stoppedBeforeSpawn = signalShutdownExitCode();
@@ -3298,6 +3320,13 @@ export async function runClaudeWithProxy(
         shell: needsShell,
       });
   signalShutdown.attachClaudeCode(proc);
+  if (proc.pid !== undefined) {
+    try {
+      hooks.onChildSpawned?.(proc.pid);
+    } catch (err) {
+      log(`[claudish] onChildSpawned hook failed: ${err}`);
+    }
+  }
 
   if (wrap) {
     wrap.watch(proc);
@@ -3578,7 +3607,8 @@ interface SignalShutdown {
 export function setupSignalHandlers(
   tempSettingsPath: string,
   quiet: boolean,
-  onCleanup?: () => void
+  onCleanup?: () => void,
+  onDeadline?: () => void
 ): SignalShutdown {
   // Windows only supports SIGINT and SIGTERM reliably
   // SIGHUP doesn't exist on Windows
@@ -3639,6 +3669,13 @@ export function setupSignalHandlers(
   const armDeadline = (code: number): void => {
     const deadline = setTimeout(() => {
       debugLog(`[claudish] Signal shutdown passed ${SIGNAL_SHUTDOWN_BUDGET_MS} ms; exiting`);
+      // The deadline-only hook runs first: it is the last chance this process has
+      // for work the caller's normal teardown would have done.
+      try {
+        onDeadline?.();
+      } catch {
+        // Ignore hook errors
+      }
       try {
         onCleanup?.();
       } catch {

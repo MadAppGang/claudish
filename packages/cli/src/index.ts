@@ -1606,6 +1606,29 @@ async function runCli() {
       )
     );
 
+    // The user's Claude Code `model` setting: a pending restore an earlier session
+    // left (a crash, a deadline exit) is swept by every interactive launch, and a
+    // launch with a /model lineup records the setting so its exit can put it back.
+    // Before the diag output takes stderr, so the sweep's lines reach the user.
+    // A machine with no pending restore only stats a missing file.
+    let modelSettingWatch: import("./launcher/model-setting-restore.js").ModelSettingWatch | null =
+      null;
+    if (cliConfig.interactive) {
+      const { modelSettingLedgerPath } = await import("./launcher/model-setting-ledger-path.js");
+      const { statSync } = await import("node:fs");
+      const ledgerPending =
+        statSync(modelSettingLedgerPath(process.env), { throwIfNoEntry: false }) !== undefined;
+      if (ledgerPending || cliConfig.modelLineup) {
+        const restore = await import("./launcher/model-setting-restore.js");
+        if (ledgerPending) await restore.sweepModelSettingLedger();
+        if (cliConfig.modelLineup) {
+          modelSettingWatch = await restore.beginModelSettingWatch(
+            cliConfig.modelLineup.rows.map((row) => row.model)
+          );
+        }
+      }
+    }
+
     // Route diagnostic output to log file
     const diag = createDiagOutput({
       interactive: cliConfig.interactive,
@@ -1630,7 +1653,18 @@ async function runCli() {
       diag.cleanup();
     };
     try {
-      exitCode = await runClaudeWithProxy(cliConfig, proxy.url, cleanupDiag);
+      exitCode = await runClaudeWithProxy(
+        cliConfig,
+        proxy.url,
+        cleanupDiag,
+        modelSettingWatch
+          ? {
+              beforeSpawn: modelSettingWatch.recordSettingsArg,
+              onChildSpawned: modelSettingWatch.recordChild,
+              onDeadline: modelSettingWatch.endSync,
+            }
+          : {}
+      );
     } finally {
       // Clear diagOutput BEFORE cleanup to prevent write-after-end
       setDiagOutput(null);
@@ -1643,6 +1677,9 @@ async function runCli() {
         write("\n[claudish] Shutting down proxy server...");
       }
       await proxy.shutdown();
+      // Puts back the user's Claude Code model setting when this was the last
+      // session holding it; awaited, so it lands before process.exit.
+      await modelSettingWatch?.end();
     }
 
     if (!cliConfig.quiet) {
