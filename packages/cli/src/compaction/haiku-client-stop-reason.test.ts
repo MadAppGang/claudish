@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,9 +7,16 @@ import { HistoryCompactor } from "./history.js";
 import { CompactionStore, toolOutputKey } from "./store.js";
 import { ToolOutputCompactor } from "./tool-outputs.js";
 
-globalThis.fetch = (() => {
-  throw new Error("Unexpected network access");
-}) as unknown as typeof fetch;
+// Installed per file and restored: bun runs every test file in one process.
+const realFetch = globalThis.fetch;
+beforeAll(() => {
+  globalThis.fetch = (() => {
+    throw new Error("Unexpected network access");
+  }) as unknown as typeof fetch;
+});
+afterAll(() => {
+  globalThis.fetch = realFetch;
+});
 
 const model = "test-compaction-model";
 const session = "stop-reason-session";
