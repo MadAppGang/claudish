@@ -46,6 +46,7 @@ import {
   servedModelsForProvider,
 } from "../model-selector.js";
 import { loadConfig } from "../profile-config.js";
+import { readAllModelsCache } from "../providers/all-models-cache.js";
 import { bundledListActive, bundledRecommendedModelsDoc } from "../providers/bundled-list.js";
 import { ensureCatalogReady } from "../providers/catalog-client.js";
 import {
@@ -122,7 +123,11 @@ export interface LineupDeps {
   storedList(provider: string): Promise<AccountModelsList | null>;
   /** `liveOrStoredModelsCatalog(provider, "launch-lineup")`. */
   liveList(provider: string): Promise<ModelsCatalogOutcome>;
-  /** `servedModelsForProvider`: the catalog's local served-by index. */
+  /**
+   * `servedModelsForProvider`: the catalog's local served-by index, read through
+   * `readAllModelsCache` (the bundled recommended list when no disk catalog exists
+   * and the backend is settled as unreachable).
+   */
   catalogRows(provider: string): ModelInfo[];
   /** `bundledListActive`: the catalog read is the bundled recommended list. */
   catalogIsBundled(): boolean;
@@ -498,9 +503,15 @@ export function recommendedIdsOf(doc: RecommendedModelsDoc): string[] {
 }
 
 function defaultDeps(): LineupDeps {
+  // The lineup's rows read the catalog routing reads (`readAllModelsCache`):
+  // the disk catalog of any age, else the bundled recommended list once the
+  // backend is settled as unreachable. The client's own default is the
+  // disk-only reader, which lists nothing offline. Readiness waits
+  // (`ensureCatalogReady`) keep reading the disk only. Read on each call, never
+  // memoized, so nothing outlives the bundled-list condition.
   let catalog: ReturnType<typeof createCatalogClient> | null = null;
   const catalogOf = () => {
-    catalog ??= createCatalogClient();
+    catalog ??= createCatalogClient({ readSlimCache: () => readAllModelsCache() });
     return catalog;
   };
   return {
@@ -631,10 +642,11 @@ export async function buildModelLineup(
         }
       } else if (declared === null) {
         await deps.ensureCatalog(remaining());
-        source = deps.catalogIsBundled() ? "bundled" : "catalog";
       }
 
       const catalogRows = declared === null ? deps.catalogRows(provider) : [];
+      // Named right after the rows are read, so `bundled` says where these rows came from.
+      if (source === "catalog" && declared === null && deps.catalogIsBundled()) source = "bundled";
 
       let recommendedIds: string[] | null = null;
       if (tier === "gateway" && listing.scope === "recommended" && declared === null) {
