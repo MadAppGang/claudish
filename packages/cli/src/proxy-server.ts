@@ -233,8 +233,9 @@ export interface ProxyServerOptions {
    */
   claudeApiMainModel?: string;
   /**
-   * The /model lineup of a launch with listing entries: each row's `model` is a
-   * full claudish model spec Claude Code sends verbatim when the user picks it.
+   * The /model lineup of a launch with listing entries, and the user's own
+   * `modelPicker` rows that are explicit claudish model specs: each row's `model`
+   * is a full claudish model spec Claude Code sends verbatim when the user picks it.
    * A request whose model equals one is routed as sent, before the role
    * mappings and the `--model` fallback. Data only; absent on every other launch.
    */

@@ -61,6 +61,7 @@ import {
   servedOutcomeOf,
 } from "../providers/model-discovery.js";
 import { parseModelSpec } from "../providers/model-parser.js";
+import { nativeRouteFor } from "../providers/native-route.js";
 import { pickerProviderReady } from "../providers/picker-readiness.js";
 import {
   type RouteTier,
@@ -918,6 +919,42 @@ function userOption(entry: unknown): ModelPickerOption | null {
   const { model, label } = record;
   if (typeof model !== "string" || model.length === 0) return null;
   return { ...record, model, label: typeof label === "string" ? label : model };
+}
+
+/**
+ * Whether a `modelPicker` row's `model` is an explicit claudish model spec the
+ * proxy can route as sent: `provider@model` on a provider claudish knows
+ * (builtin or a registered custom endpoint). A Claude name, a `claude@` spec,
+ * a raw URL, a legacy prefix and an unknown `x@` are not.
+ */
+function isRoutableClaudishSpec(model: string): boolean {
+  if (nativeRouteFor(model) !== null) return false;
+  const parsed = parseModelSpec(model);
+  if (!parsed.isExplicitProvider || parsed.isLegacySyntax) return false;
+  if (parsed.provider === "custom-url" || parsed.provider === "native-anthropic") return false;
+  return getProviderByName(parsed.provider) !== undefined;
+}
+
+/**
+ * The user's own `modelPicker` rows the proxy must route as picked, beside the
+ * lineup's rows: every option of the overlay value that is not a lineup row and
+ * whose `model` is an explicit claudish model spec. Without them a foreign-start
+ * launch replaces such a pick with the start model. A Claude row keeps its own
+ * rule (role mapping, the start model, or the native passthrough), and a row
+ * that names no claudish provider is left to that same rule. Pure.
+ */
+export function routedUserRows(
+  options: readonly ModelPickerOption[],
+  rows: readonly LineupRow[]
+): Array<{ model: string; label: string }> {
+  const listed = new Set(rows.map((row) => row.model));
+  const out: Array<{ model: string; label: string }> = [];
+  for (const option of options) {
+    if (listed.has(option.model) || !isRoutableClaudishSpec(option.model)) continue;
+    listed.add(option.model);
+    out.push({ model: option.model, label: option.label });
+  }
+  return out;
 }
 
 /**

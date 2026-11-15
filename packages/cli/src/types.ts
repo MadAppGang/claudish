@@ -82,6 +82,11 @@ export interface ClaudishConfig {
         [field: string]: unknown;
       }>;
     };
+    /**
+     * The user's own `modelPicker` rows that are explicit claudish model specs
+     * and not lineup rows: the proxy routes a pick of one as sent, like a row.
+     */
+    userRows?: ReadonlyArray<{ model: string; label: string }>;
   };
   /**
    * The main thread's context window, computed once before the launch report

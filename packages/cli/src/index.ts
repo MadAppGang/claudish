@@ -739,7 +739,7 @@ async function reportModelLineup(
   config: import("./types.js").ClaudishConfig,
   lineup: import("./launcher/model-lineup.js").ModelLineup
 ): Promise<void> {
-  const { lineupReport, modelPickerSetting, sessionWindow } = await import(
+  const { lineupReport, modelPickerSetting, routedUserRows, sessionWindow } = await import(
     "./launcher/model-lineup.js"
   );
   const {
@@ -779,7 +779,12 @@ async function reportModelLineup(
     );
   }
   for (const line of lines) logStderr(redactSecrets(line.replace(/^\[claudish\] /, "")));
-  config.modelLineup = { rows: lineup.rows, picker: picker.setting };
+  const userRows = routedUserRows(picker.setting.options, lineup.rows);
+  config.modelLineup = {
+    rows: lineup.rows,
+    picker: picker.setting,
+    ...(userRows.length > 0 ? { userRows } : {}),
+  };
 }
 
 /**
@@ -1571,10 +1576,14 @@ async function runCli() {
           ...(cliConfig.claudeLaunch === "api" && cliConfig.claudeLaunchModel
             ? { claudeApiMainModel: cliConfig.claudeLaunchModel }
             : {}),
-          // The listed specs, as data: a /model pick of one is routed as sent.
+          // The listed specs and the user's own claudish-spec rows, as data: a
+          // /model pick of one is routed as sent.
           ...(cliConfig.modelLineup
             ? {
-                modelLineup: cliConfig.modelLineup.rows.map((row) => ({
+                modelLineup: [
+                  ...cliConfig.modelLineup.rows,
+                  ...(cliConfig.modelLineup.userRows ?? []),
+                ].map((row) => ({
                   model: row.model,
                   label: row.label,
                 })),
