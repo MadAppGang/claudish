@@ -1405,7 +1405,8 @@ export function cleanupStaleTokenFiles(
  * that one is the arm-predicate cutoff below which configuring a window turns
  * auto-compaction off. They are free to drift, so they get separate names.
  *
- * Used only to render an honest status line — never to set anything.
+ * Used only to render an honest status line and the /model lineup's
+ * smaller-window note — never to set anything.
  */
 export const CLAUDE_CODE_DEFAULT_MAX_CONTEXT = 200_000;
 

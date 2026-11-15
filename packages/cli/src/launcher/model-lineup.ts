@@ -31,6 +31,7 @@
  * renderer enters a launch's import graph.
  */
 
+import { CLAUDE_CODE_DEFAULT_MAX_CONTEXT } from "../claude-runner.js";
 import { log } from "../logger.js";
 import { RECOMMENDATION_SECTIONS, type RecommendedModelsDoc } from "../model-loader.js";
 import {
@@ -79,9 +80,6 @@ export const LINEUP_WAIT_MS = 6_000;
 export const LINEUP_LABEL_MAX = 60;
 /** The most characters a row's description carries; longer ones end in "…". */
 export const LINEUP_DESCRIPTION_MAX = 100;
-
-/** The window Claude Code assumes for a model id it does not recognize (its documented default). */
-export const CLAUDE_CODE_ASSUMED_WINDOW = 200_000;
 
 /** One row of Claude Code's `/model` list. */
 export interface LineupRow {
@@ -785,7 +783,7 @@ export function sessionWindow(env: NodeJS.ProcessEnv, computedWindow: number): n
   const user = raw ? Number.parseInt(raw, 10) : Number.NaN;
   if (Number.isFinite(user) && user > 0) return user;
   if (computedWindow > 0) return computedWindow;
-  return CLAUDE_CODE_ASSUMED_WINDOW;
+  return CLAUDE_CODE_DEFAULT_MAX_CONTEXT;
 }
 
 export type LineupPosture = "claude-start" | "claude-model-start" | "foreign-start" | "tiers";
