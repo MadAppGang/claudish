@@ -1625,8 +1625,16 @@ async function runCli() {
     if (cliConfig.interactive) {
       const { modelSettingLedgerPath } = await import("./launcher/model-setting-ledger-path.js");
       const { statSync } = await import("node:fs");
-      const ledgerPending =
-        statSync(modelSettingLedgerPath(process.env), { throwIfNoEntry: false }) !== undefined;
+      // `throwIfNoEntry` covers only a missing file; EACCES or ENOTDIR still
+      // throws, and here, before the try/finally that shuts the proxy down, a
+      // throw would fail the launch. Any error reads as "nothing pending".
+      let ledgerPending = false;
+      try {
+        ledgerPending =
+          statSync(modelSettingLedgerPath(process.env), { throwIfNoEntry: false }) !== undefined;
+      } catch {
+        ledgerPending = false;
+      }
       if (ledgerPending || cliConfig.modelLineup) {
         const restore = await import("./launcher/model-setting-restore.js");
         if (ledgerPending) await restore.sweepModelSettingLedger();
