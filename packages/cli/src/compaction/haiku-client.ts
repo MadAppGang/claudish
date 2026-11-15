@@ -225,6 +225,13 @@ export class CompactionClient {
       log(`[compaction] ${req.purpose}: the answer reached max_tokens and is incomplete`);
       return { ok: false, status, reason: "the answer reached max_tokens and is incomplete" };
     }
+    // Only a finished answer is usable. A refusal, a paused turn or a missing
+    // stop_reason can carry text that is not a summary of the input.
+    if (!COMPLETE_STOP_REASONS.has(data.stop_reason as string)) {
+      const reason = `HTTP ${status} with stop_reason ${describeStopReason(data.stop_reason)}; the answer is not used`;
+      log(`[compaction] ${req.purpose}: ${reason}`);
+      return { ok: false, status, reason };
+    }
     if (!answer) {
       log(`[compaction] ${req.purpose}: HTTP ${status} but the answer carried no text`);
       return { ok: false, status, reason: `HTTP ${status} but the answer carried no text` };
@@ -272,6 +279,16 @@ export class CompactionClient {
       // stats never break a compaction call
     }
   }
+}
+
+/** The `stop_reason` values of a finished answer. */
+const COMPLETE_STOP_REASONS: ReadonlySet<string> = new Set(["end_turn", "stop_sequence"]);
+
+/** A `stop_reason` for a log line: a short string as is, anything else by type. */
+function describeStopReason(value: unknown): string {
+  if (value === undefined || value === null) return "missing";
+  if (typeof value === "string" && /^[a-z_]{1,40}$/.test(value)) return `"${value}"`;
+  return `of type ${typeof value}`;
 }
 
 /** The `error.message` of an Anthropic error body, else its first 300 characters. */
