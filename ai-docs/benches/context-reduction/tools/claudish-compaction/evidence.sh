@@ -43,6 +43,10 @@ if [ -n "$logs" ]; then
   echo "history_failed=$(c '\[compaction\] history summary failed')"
   echo "history_swaps=$(c '\[compaction\] history swap in session')"
   echo "history_skipped=$(c '\[compaction\] history skipped')"
+  # A build that logs a Read of a recovery file. The line comes from a scan
+  # of each request, so the distinct keys are the re-expansions.
+  echo "recovery_read_lines=$(c ': recovery read ')"
+  echo "recovery_read_keys=$(cat $logs | grep -o ': recovery read [^ ]*' | sort -u | grep -c .)"
 fi
 
 bun "$here/transcripts.ts"
