@@ -313,50 +313,41 @@ export class GeminiAPIFormat extends BaseAPIFormat {
     // Reasoning configuration. By default this dialect writes no thinkingConfig:
     // the connection's catalog wire writes the reasoning field (step 5w), and a
     // wire with no published effort path sends none. The model-name rule below
-    // serves the Antigravity transport only. There, output_config.effort takes
-    // priority and the legacy thinking.budget_tokens path is the fallback;
-    // gemini-3 names get thinkingLevel and every other name thinkingBudget,
-    // never both, because Gemini 3 answers 400 when both are sent.
+    // serves the Antigravity transport only. There, an --effort pin outranks
+    // thinking.type "disabled", and a request with reasoning off sends no
+    // thinking field at all: Antigravity answers 400 INVALID_ARGUMENT to
+    // thinkingBudget 0 on Gemini 2.5 Flash models, and Gemini 2.5 Pro cannot
+    // turn thinking off. gemini-3 names get thinkingLevel and every other name
+    // thinkingBudget, never both, because Gemini 3 answers 400 when both are sent.
     if (this.thinkingFromModelName) {
-      const effort = this.resolveEffortLevel(claudeRequest);
-      if (effort) {
-        if (matchesModelFamily(this.modelId, "gemini-3")) {
+      if (!this.pinnedEffort && claudeRequest?.thinking?.type === "disabled") {
+        log(`[GeminiAPIFormat] thinking omitted (disabled) for ${this.modelId}`);
+      } else {
+        const effort = this.resolveEffortLevel(claudeRequest);
+        if (effort && matchesModelFamily(this.modelId, "gemini-3")) {
           payload.generationConfig.thinkingConfig = {
             thinkingLevel: this.effortToThinkingLevel(effort),
           };
           log(
             `[GeminiAPIFormat] thinkingLevel -> ${payload.generationConfig.thinkingConfig.thinkingLevel} (from ${effort}) for ${this.modelId}`
           );
-        } else {
-          const budget = this.budgetWithinOutputCap(
-            this.effortToThinkingBudget(effort),
-            claudeRequest.max_tokens
-          );
-          if (budget === undefined) {
-            log(
-              `[GeminiAPIFormat] thinking omitted (from ${effort}): max_tokens ${claudeRequest.max_tokens} leaves no valid budget for ${this.modelId}`
-            );
+        } else if (effort) {
+          const tier = this.effortToThinkingBudget(effort);
+          if (tier === undefined) {
+            log(`[GeminiAPIFormat] thinking omitted (from ${effort}) for ${this.modelId}`);
           } else {
-            payload.generationConfig.thinkingConfig = { thinkingBudget: budget };
-            log(
-              `[GeminiAPIFormat] thinkingBudget -> ${budget} (from ${effort}) for ${this.modelId}`
-            );
+            const budget = this.budgetWithinOutputCap(tier, claudeRequest.max_tokens);
+            if (budget === undefined) {
+              log(
+                `[GeminiAPIFormat] thinking omitted (from ${effort}): max_tokens ${claudeRequest.max_tokens} leaves no valid budget for ${this.modelId}`
+              );
+            } else {
+              payload.generationConfig.thinkingConfig = { thinkingBudget: budget };
+              log(
+                `[GeminiAPIFormat] thinkingBudget -> ${budget} (from ${effort}) for ${this.modelId}`
+              );
+            }
           }
-        }
-      } else if (claudeRequest.thinking) {
-        // Legacy fallback: raw thinking.budget_tokens.
-        const { budget_tokens } = claudeRequest.thinking;
-
-        if (matchesModelFamily(this.modelId, "gemini-3")) {
-          // Gemini 3 uses thinking_level
-          payload.generationConfig.thinkingConfig = {
-            thinkingLevel: budget_tokens >= 16000 ? "high" : "low",
-          };
-        } else {
-          // Gemini 2.5 uses thinking_budget
-          payload.generationConfig.thinkingConfig = {
-            thinkingBudget: Math.min(budget_tokens, GeminiAPIFormat.MAX_GEMINI_BUDGET),
-          };
         }
       }
     }
@@ -419,14 +410,17 @@ export class GeminiAPIFormat extends BaseAPIFormat {
   }
 
   /**
-   * Gemini 2.5 `thinkingBudget` (int). 0 = off (Flash/Lite only; Pro min 128,
-   * can't disable). Token tiers per the research §4.3, capped at MAX_GEMINI_BUDGET.
+   * Gemini 2.5 `thinkingBudget` (int), capped at MAX_GEMINI_BUDGET. Returns
+   * undefined for the off efforts (none, minimal): the caller then sends no
+   * thinking field, because Antigravity answers 400 INVALID_ARGUMENT to
+   * thinkingBudget 0 on Gemini 2.5 Flash models and Pro cannot disable thinking
+   * (minimum 128).
    */
-  private effortToThinkingBudget(effort: EffortLevel): number {
+  private effortToThinkingBudget(effort: EffortLevel): number | undefined {
     switch (effort) {
       case "none":
       case "minimal":
-        return 0;
+        return undefined;
       case "low":
         return 1024;
       case "medium":
