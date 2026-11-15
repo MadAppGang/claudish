@@ -166,9 +166,13 @@ describe("Gemini thinking config", () => {
 
   test("gemini-2.5 budget tiers (capped at 24576)", () => {
     const b = (effort: string) =>
-      geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort } }).thinkingBudget;
-    expect(b("none")).toBe(0);
-    expect(b("minimal")).toBe(0);
+      geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort } })?.thinkingBudget;
+    expect(
+      geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort: "none" } })
+    ).toBeUndefined();
+    expect(
+      geminiThinkingConfig("gemini-2.5-flash", { output_config: { effort: "minimal" } })
+    ).toBeUndefined();
     expect(b("low")).toBe(1024);
     expect(b("medium")).toBe(8192);
     expect(b("high")).toBe(16384);
@@ -179,6 +183,98 @@ describe("Gemini thinking config", () => {
   test("legacy thinking.budget_tokens still works (no output_config)", () => {
     const cfg = geminiThinkingConfig("gemini-2.5-pro", { thinking: { budget_tokens: 99999 } });
     expect(cfg.thinkingBudget).toBe(24576); // capped
+  });
+
+  // REGRESSION: reasoning-off requests on the Antigravity name rule sent thinkingBudget NaN/0 or thinkingLevel "low".
+  describe("reasoning off", () => {
+    function geminiGenerationConfig(modelId: string, req: any, pin?: EffortLevel): any {
+      const fmt = new GeminiAPIFormat(modelId, undefined, { thinkingFromModelName: true });
+      if (pin) fmt.setEffortOverride(pin);
+      return (fmt as any).buildPayload(req, [], []).generationConfig;
+    }
+
+    test.each(["gemini-2.5-pro", "gemini-3-pro-preview", "claude-sonnet-4-6"])(
+      "thinking disabled sends no thinkingConfig on %s",
+      (modelId) => {
+        const gen = geminiGenerationConfig(modelId, { thinking: { type: "disabled" } });
+        expect(gen.thinkingConfig).toBeUndefined();
+        expect(JSON.stringify(gen)).not.toContain("null");
+      }
+    );
+
+    test("an effort pin outranks thinking disabled", () => {
+      const gen = geminiGenerationConfig(
+        "gemini-2.5-pro",
+        { thinking: { type: "disabled" } },
+        "high"
+      );
+      expect(gen.thinkingConfig).toEqual({ thinkingBudget: 16384 });
+    });
+
+    test("an effort pin outranks thinking disabled on gemini-3", () => {
+      const gen = geminiGenerationConfig(
+        "gemini-3-pro-preview",
+        { thinking: { type: "disabled" } },
+        "high"
+      );
+      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "high" });
+    });
+
+    test("a none pin with thinking disabled keeps thinkingLevel minimal on gemini-3", () => {
+      const gen = geminiGenerationConfig(
+        "gemini-3-pro-preview",
+        { thinking: { type: "disabled" } },
+        "none"
+      );
+      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "minimal" });
+    });
+
+    test("a none pin with thinking disabled sends no thinkingConfig on gemini-2.5-pro", () => {
+      const gen = geminiGenerationConfig(
+        "gemini-2.5-pro",
+        { thinking: { type: "disabled" } },
+        "none"
+      );
+      expect(gen.thinkingConfig).toBeUndefined();
+    });
+
+    test("output_config.effort none sends no thinkingConfig on claude-sonnet-4-6", () => {
+      const gen = geminiGenerationConfig("claude-sonnet-4-6", {
+        output_config: { effort: "none" },
+      });
+      expect(gen.thinkingConfig).toBeUndefined();
+    });
+
+    test.each(["none", "minimal"])(
+      "output_config.effort %s sends no thinkingConfig on gemini-2.5-flash",
+      (effort) => {
+        const gen = geminiGenerationConfig("gemini-2.5-flash", { output_config: { effort } });
+        expect(gen.thinkingConfig).toBeUndefined();
+      }
+    );
+
+    test("thinking budget_tokens 0 sends no thinkingConfig on gemini-2.5-flash", () => {
+      const gen = geminiGenerationConfig("gemini-2.5-flash", {
+        thinking: { type: "enabled", budget_tokens: 0 },
+      });
+      expect(gen.thinkingConfig).toBeUndefined();
+    });
+
+    test("thinking budget_tokens 0 keeps thinkingLevel minimal on gemini-3", () => {
+      const gen = geminiGenerationConfig("gemini-3-pro-preview", {
+        thinking: { type: "enabled", budget_tokens: 0 },
+      });
+      expect(gen.thinkingConfig).toEqual({ thinkingLevel: "minimal" });
+    });
+
+    test.each(["gemini-2.5-pro", "gemini-3-pro-preview"])(
+      "thinking enabled with no budget_tokens sends no thinkingConfig on %s",
+      (modelId) => {
+        const gen = geminiGenerationConfig(modelId, { thinking: { type: "enabled" } });
+        expect(gen.thinkingConfig).toBeUndefined();
+        expect(JSON.stringify(gen)).not.toContain("null");
+      }
+    );
   });
 });
 
