@@ -340,17 +340,26 @@ with no name is removed. The step reads user messages only and returns the same 
 nothing changes.
 
 The sentence must name the tool as the body declares it, or the model calls a name the
-provider never got:
+provider never got. The step does not guess that name. It asks the converter:
+`declaredToolNames(names)` on `BaseAPIFormat` takes the request's tools in declaration order
+and answers, for each, the name it is declared under, or null when the converter declares none.
 
-- The step runs after step 2b and uses its `forward` map (`read_file` on `antigravity`).
-- A converter with a name limit (`getToolNameLimit`, 64 on the OpenAI-shaped wires) encodes a
-  long or unwirable name on the built payload, after this step. The step encodes the name the
-  same way with a fresh binding: `mcp__plugin_browser-use_browser-use__retry_with_browser_use_agent`
-  becomes the hashed 64-character form in the sentence too. A name that collides with another
-  tool's encoded name gets a different salt in the payload; that case the sentence gets wrong.
+- The step runs after step 2b and gives the converter the aliased names (`read_file` on
+  `antigravity`).
+- The default answer repeats what `encodeToolNames` does on the built payload (64 characters
+  on the OpenAI-shaped wires): the tools claim their encoded names in declaration order, in
+  one binding. `mcp__plugin_browser-use_browser-use__retry_with_browser_use_agent` becomes the
+  hashed form in the sentence too, and when an earlier tool already has that form, the same
+  salted form the payload gets.
+- `GeminiAPIFormat` answers `sanitizeToolNameForGemini`, the rule `convertToolsToGemini`
+  declares by: it cuts the same name at 64 characters and drops a tool with no usable name.
+- `OllamaAPIFormat` answers null: Ollama Cloud sends no tool definitions.
 - A converter with a tool-count cap (`getMaxToolCount`, 128 on OpenAI Chat Completions) sends
-  only the first tools. For a tool past the cap, or one the request does not declare at all,
-  the sentence is `Not loaded: <name>. It is not in your tool list.`
+  only the first tools; the step asks for those only.
+
+For a tool with no declared name, one past the cap, or one the request does not declare at
+all, the sentence is `Not loaded: <name>. It is not in your tool list.` A new converter with
+its own name rules must override `declaredToolNames`, or the sentence names the default form.
 
 Not handled on the Claude API (`anthropic`) and Vertex Claude routes: Anthropic's own server
 expands a `tool_reference`, so the right request keeps the pointer. `AnthropicAPIFormat`
@@ -358,14 +367,10 @@ removed it for every host before this step existed, and the tool stayed `defer_l
 model now reads the sentence where it read an empty text, and the definition still does not
 reach it. The Claude subscription is not affected (the native handler forwards the request).
 
-One wire where the sentence is not true: Ollama Cloud sends no tool definitions
-(`ollama-api-format.ts`), so "in your tool list" names a list that model never gets. Such a
-model cannot call `ToolSearch` itself; the item reaches it only in the history of a session
-that started on another model. Not handled.
-
 Tests: `tool-reference-text.test.ts` (the rules) and `composed-handler-tool-reference.test.ts`
 (the body sent through `GeminiAPIFormat` and through the Chat Completions converter, the alias
-name, a name over the length limit, a tool past the cap). Without step 2d its Gemini cases read `"OK"` and its Chat Completions case the item's
+name, a long name on the OpenAI and the Gemini converter, a name collision, a tool past the cap,
+Ollama Cloud). Without step 2d its Gemini cases read `"OK"` and its Chat Completions case the item's
 JSON, and the Gemini and Anthropic-shaped rows of the wire-fidelity test fail.
 
 **One test over every wire format (`composed-handler-wire-fidelity.test.ts`).** One request with
