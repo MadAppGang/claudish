@@ -184,6 +184,22 @@ export function resolveCompactionSettings(
   };
 }
 
+/**
+ * The launch's settings, as `resolveCompactionSettings`, with its warning sent
+ * to `warn` (prefixed `[compaction] `) whether or not compaction is enabled: a
+ * block the user wrote and claudish cannot read is reported on every launch,
+ * also when that block was meant to turn compaction on and so did not.
+ */
+export function compactionStartupSettings(
+  config: Pick<ClaudishProfileConfig, "compaction">,
+  enabled: boolean,
+  warn: (message: string) => void
+): CompactionSettings {
+  const { settings, warning } = resolveCompactionSettings(config, enabled);
+  if (warning) warn(`[compaction] ${warning}`);
+  return settings;
+}
+
 /** The Anthropic model id compaction calls, or why there is none. */
 export type CompactionModel =
   | { ok: true; id: string }

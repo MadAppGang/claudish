@@ -1454,24 +1454,26 @@ async function runCli() {
     // resolve) turns it off with one warning, and the launcher then adds no
     // `--add-dir` for it.
     let compactionRuntime: import("./compaction/runtime.js").CompactionRuntime | null = null;
-    if (cliConfig.compaction) {
-      const [
-        { prepareCompaction, compactionMayPromptForKey },
-        { resolveCompactionSettings },
-        { compactionKeepSessionIds },
-        { loadConfig },
-        { logStderr },
-      ] = await Promise.all([
-        import("./compaction/runtime.js"),
+    let compactionSettings: import("./compaction/config.js").CompactionSettings;
+    {
+      // An unreadable `compaction` block warns on every launch, also when
+      // compaction is off: the block may be the one meant to turn it on.
+      const [{ compactionStartupSettings }, { loadConfig }, { logStderr }] = await Promise.all([
         import("./compaction/config.js"),
-        import("./compaction/launch.js"),
         import("./profile-config.js"),
         import("./logger.js"),
       ]);
-      const { settings, warning } = resolveCompactionSettings(loadConfig(), true);
-      if (warning) logStderr(`[compaction] ${warning}`);
+      compactionSettings = compactionStartupSettings(
+        loadConfig(),
+        cliConfig.compaction === true,
+        logStderr
+      );
+    }
+    if (cliConfig.compaction) {
+      const [{ prepareCompaction, compactionMayPromptForKey }, { compactionKeepSessionIds }] =
+        await Promise.all([import("./compaction/runtime.js"), import("./compaction/launch.js")]);
       compactionRuntime = await prepareCompaction({
-        settings,
+        settings: compactionSettings,
         allowOpPrompt: compactionMayPromptForKey(),
         keepSessionIds: compactionKeepSessionIds(cliConfig.claudeArgs, resumedSessionId),
       });
