@@ -1,0 +1,139 @@
+description: "compaction cases: claudish with and without --compaction, on one build, across task shapes"
+
+# One Scenario per case. ./compaction-cases.experiment.yaml holds the two
+# arms. Run each arm as its own madbench call with --variant and --scenario,
+# and pass the case's preparation with --param case_prep=<name>:
+#
+#   madbench cases/compaction-cases.experiment.yaml --variant cases-baseline \
+#     --scenario research --param case_prep=research \
+#     --param claudish_build=/absolute/path/to/a/compiled/claudish
+#
+#   madbench cases/compaction-cases.experiment.yaml --variant cases-compaction \
+#     --scenario research --param case_prep=research \
+#     --param claudish_build=/absolute/path/to/a/compiled/claudish \
+#     --param claudish_config=/absolute/path/to/a/0600/config
+#
+# Only the compaction call names a claudish_config, so the baseline arm never
+# gets a file with a key; its start.sh refuses one.
+
+params:
+  model: claude-sonnet-5-5
+  # The launcher in ../bin and the folder in ../tools of the arm.
+  binary: ../bin/claudish-build-plain
+  tool: cases-baseline
+  # A script in ../tools/cases-prep run in the workspace before the agent.
+  case_prep: none
+  # The claudish build both arms run (a compiled executable) and the config
+  # of the compaction arm. The defaults refuse to start.
+  claudish_build: ../config/no-claudish-build
+  claudish_config: ../config/no-claudish-config.json
+
+harness:
+  type: claude-code
+  binary: "{{binary}}"
+  model: "{{model}}"
+  use_subscription: required
+  config:
+    dirs: ["../config/base"]
+  args:
+    - --permission-mode
+    - bypassPermissions
+
+defaults:
+  sandbox:
+    level: home
+    # Foreground subagents, as in ../madbench.yaml.
+    env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" }
+    share:
+      paths:
+        - { from: ~/.bun, to: ~/.bun, access: rw }
+        - { from: ~/.local/bin, to: ~/.local/bin, access: rw }
+        - { from: ~/.local/share/claude, to: ~/.local/share/claude, access: rw }
+        - { from: ../tools, to: ~/.bench-tools, access: copy }
+        - { from: ../out, to: ~/.bench-out, access: rw }
+        - { from: "{{claudish_build}}", to: ~/.bench-compaction/build, access: copy }
+        - { from: "{{claudish_config}}", to: ~/.bench-compaction/config.json, access: copy }
+    provision:
+      timeout: 5m
+      steps:
+        - sh "$HOME/.bench-tools/cases-prep/{{case_prep}}.sh"
+        # The config copy goes in every run, whatever start.sh did.
+        - s=0; sh "$HOME/.bench-tools/{{tool}}/start.sh" || s=$?; rm -f "$HOME/.bench-compaction/config.json"; exit $s
+  interactive: true
+  timeout: 75m
+  capture: log
+
+driver:
+  answers:
+    - match: "*"
+      choose: 1
+
+metrics:
+  - { name: grade, source: check.score, check: Graded, aggregate: mean, better: higher }
+  - { name: cost, source: session.cost, aggregate: sum, unit: usd, better: lower }
+  - { name: prompt_tokens, source: session.prompt_tokens, aggregate: mean, unit: tokens, better: lower }
+  - { name: output_tokens, source: session.output_tokens, aggregate: mean, unit: tokens, better: lower }
+  - { name: cache_read, source: session.cache_read_tokens, aggregate: mean, unit: tokens }
+  - { name: cache_creation, source: session.cache_creation_tokens, aggregate: mean, unit: tokens }
+  - { name: model_requests, source: session.model_requests, aggregate: mean, better: lower }
+  - { name: steps_main, source: session.steps.main, aggregate: mean }
+  - { name: steps_all, source: session.steps.all, aggregate: mean }
+  - { name: duration, source: scenario.duration, aggregate: mean, better: lower }
+
+scenarios:
+  # Case e: research with many parallel subagents, read only.
+  - name: research
+    description: "answer 12 questions about claudish from its source, with at least 6 parallel Explore subagents"
+    repo:
+      url: ../../../..
+      ref: 533e4233b9d0c6b49bfc2420fcc76d9626169677
+    timeout: 45m
+    prompt: |
+      I need exact answers to 12 questions about this claudish source tree. Answer from the code in `packages/cli/src`, not from memory.
+
+      Work in this order.
+
+      1. Start at least 6 subagents with the Agent tool (subagent_type Explore), all at the same time, and give each two of the questions below. Wait for all their reports.
+      2. Check each answer in the code yourself where a report is unsure.
+      3. Write the file `answers.md` in the top-level folder: exactly 12 lines, one per question, in the form `N. value`. The value only: no backticks, no explanation.
+
+      Questions:
+
+      1. What is the lowest magmux version claudish accepts for a pane session? (a version string)
+      2. Which function decides whether one environment variable is withheld from a pane child's environment? (a function name)
+      3. claudish remaps terminal upstream errors to HTTP 400. Which file defines the function that recovers the real upstream status? (a path from the top-level folder)
+      4. Which environment variable does claudish set to "1" in pure proxy mode so that Claude Code skips its fast-mode organisation check? (a variable name)
+      5. Which function under `packages/cli/src/pane/` tells whether the current process runs inside a session that a claudish MCP server started? (a function name)
+      6. Under `~/.claudish/`, what is the file name of the key claudish uses to name the files of the dynamic models catalog? (a file name)
+      7. Which environment variable lets a parent process choose where the proxy's token tracker writes its counts, ahead of the port? (a variable name)
+      8. For how many milliseconds is an account's dynamic models catalog list young enough to deny a model? (an integer)
+      9. After how many milliseconds without a stream event does the Responses stream stall guard fire by default? (an integer)
+      10. claudish can collect a complete message from an SSE stream outside the Responses parser. What stall timeout, in milliseconds, does that collector use? (an integer)
+      11. Which file defines the function that decides whether a model spec goes to the native Claude passthrough (a bare Claude name such as `opus`)? (a path from the top-level folder)
+      12. Which environment variable does claudish set to "1" for every child it starts in an MCP pane session, so that a claudish inside knows it is one level deep? (a variable name)
+
+      Do not change any file except `answers.md`. Do not stop to ask me anything: I am away until you finish.
+    checks:
+      - type: custom:exec
+        metric: Graded
+        command: ["bun", "./checks/answers-check.ts"]
+        timeout: "60s"
+      - { type: session:subagent-count, metric: Delegated, value: 6 }
+      - type: file-changes
+        metric: StayedInBounds
+        must:
+          create: answers.md
+        default: []
+        ignore: [logs]
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/variant-check.sh"
+        timeout: "60s"
+      - type: exec
+        metric: ToolEvidence
+        readout: true
+        in_sandbox: true
+        cmd: sh "$HOME/.bench-tools/{{tool}}/evidence.sh"; ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1
+        timeout: "60s"

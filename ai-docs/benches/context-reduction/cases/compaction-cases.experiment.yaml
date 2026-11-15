@@ -1,0 +1,24 @@
+description: "compaction cases: the same claudish build with and without --compaction"
+bench: ./madbench.yaml
+
+# Both arms run the build named by --param claudish_build. They differ only
+# in the launcher (with or without --compaction) and the tool folder (its
+# key checks and evidence). Run one arm per madbench call; see the header of
+# ./madbench.yaml.
+guard_changes:
+  allow:
+    - harness/binary
+    - sandbox/provision/steps/1
+
+variants:
+  # The build with --debug-claudish and no --compaction. No key file.
+  - name: cases-baseline
+    params:
+      binary: ../bin/claudish-build-plain
+      tool: cases-baseline
+  # The build with --compaction --debug-claudish, the key in the run's
+  # ~/.claudish/config.json from --param claudish_config.
+  - name: cases-compaction
+    params:
+      binary: ../bin/claudish-compaction
+      tool: claudish-compaction
