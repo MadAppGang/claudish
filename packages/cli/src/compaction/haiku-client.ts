@@ -9,8 +9,9 @@
  *   `authorization`, not its `x-api-key`, not the Claude login.
  * - The `system` prompt is claudish's own plain string. No Claude Code
  *   identity text is sent.
- * - Every upstream text it logs passes `redactForClient` and then
- *   `redactExactValues` over the key, and the key is on a signing lease for
+ * - Every upstream text it logs or returns passes `redactForClient` and then
+ *   `redactExactValues` over the key, both on the raw body and again on the
+ *   decoded answer and error message, and the key is on a signing lease for
  *   the life of the launch.
  * - A 429 "Error" shape refusal (`isClaudeShapeRefusal`) is a final failure,
  *   never retried. Nothing here retries.
@@ -188,7 +189,8 @@ export class CompactionClient {
         );
       }
     }
-    const reason = `HTTP ${resp.status}: ${summarize(text)}`;
+    // The decoded message is redacted again: JSON escapes can spell the key.
+    const reason = `HTTP ${resp.status}: ${this.redact(summarize(text))}`;
     log(`[compaction] ${req.purpose}: ${reason}`);
     return { ok: false, status: resp.status, reason };
   }
@@ -216,11 +218,14 @@ export class CompactionClient {
       output_tokens: typeof data.usage?.output_tokens === "number" ? data.usage.output_tokens : 0,
     };
     this.recordCall(status, latencyMs, usage);
-    const answer = (Array.isArray(data.content) ? data.content : [])
-      .filter((b) => b?.type === "text" && typeof b.text === "string")
-      .map((b) => b.text as string)
-      .join("")
-      .trim();
+    // Redacted again after decoding and joining: a key split across two text
+    // blocks, or written with JSON escapes, is whole only now.
+    const answer = this.redact(
+      (Array.isArray(data.content) ? data.content : [])
+        .filter((b) => b?.type === "text" && typeof b.text === "string")
+        .map((b) => b.text as string)
+        .join("")
+    ).trim();
     if (data.stop_reason === "max_tokens") {
       log(`[compaction] ${req.purpose}: the answer reached max_tokens and is incomplete`);
       return { ok: false, status, reason: "the answer reached max_tokens and is incomplete" };
