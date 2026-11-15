@@ -28,6 +28,12 @@ import { HistoryCompactor } from "./history.js";
 import { CompactionStore, compactionRoot, purgeExpiredSessions } from "./store.js";
 import { ToolOutputCompactor } from "./tool-outputs.js";
 
+/**
+ * How long startup waits for the cloud models catalog when a tier alias finds
+ * no id in it (a first launch has no catalog file yet).
+ */
+export const COMPACTION_CATALOG_WAIT_MS = 5000;
+
 /** The claudish provider whose key compaction signs with: the Claude API. */
 export const COMPACTION_KEY_PROVIDER = "anthropic";
 
@@ -79,6 +85,12 @@ export interface PrepareCompactionOptions {
   storeRoot?: string;
   /** Where the one warning goes. Defaults to `logStderr`. */
   warn?: (message: string) => void;
+  /**
+   * Wait for the cloud models catalog to be ready. Defaults to
+   * `ensureCatalogReady(COMPACTION_CATALOG_WAIT_MS)`, which reads the disk
+   * catalog for readiness and starts the refresh when none exists.
+   */
+  waitForCatalog?: () => Promise<void>;
   /** Test seams for the client. */
   fetchImpl?: typeof fetch;
   record?: (event: Partial<StatsEvent>) => void;
@@ -95,7 +107,25 @@ export async function prepareCompaction(
   if (!settings.enabled) return null;
   const warn = opts.warn ?? logStderr;
 
-  const model = resolveCompactionModel(settings.model);
+  let model = resolveCompactionModel(settings.model);
+  if (!model.ok && model.unresolvedAlias) {
+    // A tier alias resolves through the catalog, and on a first launch no
+    // catalog has been fetched yet: wait for it as other startup paths do.
+    const wait =
+      opts.waitForCatalog ??
+      (async () => {
+        const { ensureCatalogReady } = await import("../providers/catalog-client.js");
+        await ensureCatalogReady(COMPACTION_CATALOG_WAIT_MS);
+      });
+    try {
+      await wait();
+    } catch (err) {
+      log(
+        `[compaction] waiting for the catalog failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    model = resolveCompactionModel(settings.model);
+  }
   if (!model.ok) {
     warn(`[compaction] off for this session: compaction.model does not resolve: ${model.reason}`);
     return null;

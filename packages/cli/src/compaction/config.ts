@@ -185,7 +185,14 @@ export function resolveCompactionSettings(
 }
 
 /** The Anthropic model id compaction calls, or why there is none. */
-export type CompactionModel = { ok: true; id: string } | { ok: false; reason: string };
+export type CompactionModel =
+  | { ok: true; id: string }
+  | {
+      ok: false;
+      reason: string;
+      /** True when a tier alias found no id because the catalog holds none yet. */
+      unresolvedAlias?: boolean;
+    };
 
 /**
  * Resolve the configured model to an Anthropic model id. A tier alias resolves
@@ -195,7 +202,15 @@ export type CompactionModel = { ok: true; id: string } | { ok: false; reason: st
  */
 export function resolveCompactionModel(model: string): CompactionModel {
   const resolved = claudeAdvisorModelFor(model);
-  if (resolved.refused) return { ok: false, reason: resolved.reason };
+  if (resolved.refused) {
+    return {
+      ok: false,
+      reason: resolved.reason,
+      ...("cause" in resolved && resolved.cause === "unresolved-alias"
+        ? { unresolvedAlias: true }
+        : {}),
+    };
+  }
   const id = resolved.id.trim();
   if (!/^claude-[a-z0-9][a-z0-9.-]*$/i.test(id)) {
     return {

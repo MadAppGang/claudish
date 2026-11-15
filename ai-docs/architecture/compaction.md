@@ -142,7 +142,10 @@ a launch-scoped `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, measured first.
 
 The default is the tier alias `haiku`, resolved at startup like the advisor's defaulted collector
 (`claudeAdvisorModelFor`): the catalog alias table, then the newest `claude-haiku-*` id. No model
-id literal is in code. A name that does not resolve to a `claude-*` id turns compaction off.
+id literal is in code. When the alias finds no id because no catalog has been fetched yet (a first
+launch), startup waits for it with `ensureCatalogReady` (up to 5 s, `COMPACTION_CATALOG_WAIT_MS`)
+and resolves again. A name that still does not resolve to a `claude-*` id turns compaction off,
+with one warning.
 
 ## The store and retention
 
