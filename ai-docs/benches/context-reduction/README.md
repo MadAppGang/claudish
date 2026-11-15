@@ -40,6 +40,8 @@ monitor session, which loads no hooks and ignores `harnessGateway`.
 | `claudish-rtk` | the `toolCall` hook `rtk-bash-rewrite.ts` from `docs/advanced/hooks.md` |
 | `claudish-context-mode` | the context-mode plugin, staged as in `context-mode` |
 | `claudish-context-gateway-local` | `harnessGateway.url` in front of claudish, with the gateway config of `context-gateway-local` |
+| `claudish-context-gateway-local-streamfix` | the same, on a gateway build named by `--param gateway_bin` |
+| `claudish-compaction` | a claudish build named by `--param claudish_build`, started by `bin/claudish-compaction` with `--compaction --debug-claudish`, and its config, with the Anthropic API key compaction signs with, named by `--param claudish_config` |
 
 Provision step 2 runs `tools/claudish/start.sh`, which copies the variant's
 `config.json` (and hook file) into the run's `~/.claudish`. claudish reads
@@ -101,6 +103,40 @@ with a locally patched build; its own `gateway_bin` is
 `config/no-gateway-bin`, which refuses to start, so the variant errors at
 provision unless the command line names the build.
 
+`claudish-compaction` needs two params, and errors before the agent starts
+without them:
+
+```
+--param claudish_build=/absolute/path/to/a/compiled/claudish
+--param claudish_config=/absolute/path/to/a/0600/config.json
+```
+
+The build is copied into the run and its SHA-256 goes into the launch log.
+The config becomes the run's `~/.claudish/config.json`, never a `--config`
+argument, which claudish would pass to Claude Code as `CLAUDISH_CONFIG`.
+The start script deletes the run's copy of the source file. The launcher
+stops when its own environment holds `ANTHROPIC_API_KEY`, and records whether
+Claude Code's environment holds the key or `CLAUDISH_CONFIG`. The debug log
+and the compaction store are linked into `out/`, so they outlive the
+sandbox.
+
+### The history check
+
+`history/madbench.yaml` is a separate Bench, not a variant: one interactive
+session through `bin/claudish-compaction` in a small git repository made by
+`tools/history-repo/stage.sh`, with four short turns. The fourth asks about
+the first, and the Check `RecalledFirstTurn` requires the package name in its
+answer. The evidence counts the `[compaction] history` lines of the debug
+log. Run it with a config whose history thresholds are low enough for a
+short session:
+
+```
+madbench ai-docs/benches/context-reduction/history/madbench.yaml \
+  --param claudish_build=/absolute/path/to/a/compiled/claudish \
+  --param claudish_config=/absolute/path/to/a/0600/config.json \
+  --report-json /absolute/path/report.json
+```
+
 ## The grade
 
 `checks/grade-check.ts` copies the seven files under `hidden-tests/` into the
@@ -137,6 +173,12 @@ per trial by name. It takes several report files. A trial that errored before
 it was graded goes in its own table and in no mean. `--json <file>` writes the
 rows.
 
+It also prints the cache reuse per variant (hit rate, billed-equivalent
+input, cache breaks), and per trial the re-expansions: Read calls of a
+compaction recovery file under `/.claudish/compaction/`. Each
+`--compaction-log <claudish debug log>` adds a table of the tool outputs that
+log shows sent compressed, joined to the requests that resent them.
+
 ## VariantCheck
 
 A graded Check that runs `tools/<tool>/variant-check.sh` when the variant's
@@ -150,6 +192,12 @@ transcript, so it fails under the mock harness either way.
   Haiku call answered 200, every answer names `claude-haiku-5-5`, no Haiku
   call was signed with a Bearer token, and the gateway compressed a tool
   output.
+- `claudish-compaction`: the launcher's environment held no
+  `ANTHROPIC_API_KEY`, Claude Code's environment held neither the key nor
+  `CLAUDISH_CONFIG`, no agent tool call named the config, the debug log
+  exists, compaction is on with `claude-haiku-5-5`, every compaction call was
+  signed with `x-api-key` on `claude-haiku-5-5`, and no line says compaction
+  is off.
 
 ## The Context Gateway life cycle
 

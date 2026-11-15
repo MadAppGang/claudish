@@ -28,9 +28,15 @@ between trials.
   malformed stream. The one graded trial passed all 114 tests and used 45.6%
   more prompt tokens and 35.1% more main-thread cost than the baseline mean,
   plus 53 Haiku calls on the key.
+- **claudish's own compaction** (build 04cbb471 with known defects, Haiku on
+  an API key) was 9.4% lower on prompt tokens and 8.2% lower on main-thread
+  cost than `claudish-baseline`, inside the baseline's range. It compressed 1
+  to 3 Bash outputs per trial, with 1 to 3 Haiku calls, and broke the cache 0
+  times: the stored text replayed byte for byte.
 
-Every variant that completed built the feature: 25 of 28 graded trials passed
-all 114 hidden tests, and the other three missed one test each.
+Every variant that completed built the feature: 27 of 31 graded trials passed
+all 114 hidden tests, and the other four missed one test each. The
+compaction trial with the wrong flag is not counted.
 
 No Session reached compaction. The largest single request was 122,396 tokens.
 So this task measures what the tools cost and save in normal work. It does
@@ -81,11 +87,13 @@ Through claudish, mean over 3 trials:
 | `claudish-rtk` | 97.1% / 81.9% / 94.4% | 3,554,089 | 210,203 | 122 | 618,285 (-2.8%) | 0/0 | 0 |
 | `claudish-context-mode` | 96.7% / 90.1% / 94.4% | 4,197,764 | 242,079 | 157 | 722,532 (+13.6%) | 0/0 | 0 |
 | `claudish-context-gateway-local-streamfix` | 96.2% / 88.8% / 94.1% | 4,823,787 | 269,314 | 28,261 | 847,282 (+33.2%) | 1.7/2.0 | 82,489 |
+| `claudish-compaction`, build 04cbb471 with known defects | 97.1% / 81.4% / 94.3% | 3,265,116 | 195,703 | 117 | 571,257 (-10.2%) | 0/0 | 0 |
 
 What the tables show:
 
 - **No break in 18 trials** of `baseline`, `rtk` and `context-mode`, native
-  and through claudish. rtk and context-mode change tool output before the
+  and through claudish, nor in the 3 trials of `claudish-compaction`, whose
+  compressed outputs are sent as the same stored text every time. rtk and context-mode change tool output before the
   agent sees it, so the history they produce stays fixed once sent. Their
   cost differences come from how much the agent sends, not from the cache.
 - **The gateways break the cache 1 to 7 times per trial** and send 111 to 318
@@ -387,8 +395,8 @@ between Claude Code and the API. The model is the bare name
 subscription through its native passthrough and loads its hooks; rtk runs as
 a claudish `toolCall` hook instead of a Claude Code hook.
 
-**Build.** Every claudish trial used the worktree build of this branch,
-version 14.24.0: `claudish --version` prints `claudish version 14.24.0`, and
+**Build.** Every claudish trial except `claudish-compaction`'s (see its own
+section) used the worktree build of this branch, version 14.24.0: `claudish --version` prints `claudish version 14.24.0`, and
 the file was built at 09:39, before the first run started at 09:54.
 
 **Errored trials, excluded and re-run.** 9 of the first run's 12 trials
@@ -512,6 +520,111 @@ the trials still sent 34.1% more prompt tokens than `claudish-baseline`.
 Uncached input rose from a mean of 130 tokens per trial to 28,261, and cache
 creation rose 21.9%. This matches the native gateway result (see "Why the
 gateway costs more").
+
+### claudish-compaction: claudish's own compaction
+
+claudish's `--compaction` on `claude-haiku-5-5`: a tool output of 4,000
+tokens or more (by chars/4, about 16,000 characters) is compressed once by a
+Haiku call, stored, and the stored text is sent again byte for byte on every
+later request. A history summary is prepared ahead and swapped in near the
+window limit.
+
+**Build: 04cbb471 with known defects.** Every trial ran a compiled claudish
+from the compaction branch at source 7dd0e577, sha256
+`04cbb471e9578072c0b9c8d601b9af64bfd851587b939cf64035a5aefb88d170`, started by
+`./bin/claudish-compaction` with `--compaction --debug-claudish`. Each trial's
+launch log records that sha256. The build has two known defects, fixed in a
+later build:
+
+- a re-read of a compressed output's recovery file is compressed again;
+- a Read before an Edit is compressed.
+
+Neither occurred in these trials: no Read output was compressed, and no
+recovery file was read. This build is not the 14.24.0 build of the other
+claudish variants, so the comparison below mixes compaction with any other
+change between the two builds.
+
+**The key.** The Haiku calls are signed with an Anthropic API key from the
+run's `~/.claudish/config.json`, not passed with `--config`, which would
+reach Claude Code as `CLAUDISH_CONFIG`. Each trial checked, and passed:
+
+- `ANTHROPIC_API_KEY entries in the launcher environment: 0`;
+- Claude Code's own environment, read with `ps`: `AGENT_ENV_KEY_UNSET
+  CLAUDISH_CONFIG_present=0`;
+- `agent tool calls naming the config: 0`;
+- every compaction call logged `model: claude-haiku-5-5, auth: x-api-key`.
+
+Before each trial, one more start had the key in its environment and was
+refused by the launcher's check (`launcher environment: 1`); the trial's
+session then started with 0. Inferred: madbench's harness probe, which starts
+the harness binary once with madbench's own environment before the session.
+
+Mean over 3 trials, change against `claudish-baseline`:
+
+| Variant | Hidden tests passed | Prompt tokens, main thread | Prompt tokens, subagents | Prompt tokens, all | Output tokens, all | Main-thread cost | Requests main/sub | Duration |
+|---|---|---|---|---|---|---|---|---|
+| `claudish-baseline` | 2/3 | 2,793,813 | 1,026,200 | 3,820,013 | 51,006 | $1.54 | 36/29 | 29.1 min |
+| `claudish-compaction`, build 04cbb471 with known defects | 2/3 | 2,798,125 (+0.2%) | 662,811 (-35.4%) | 3,460,936 (-9.4%) | 47,853 (-6.2%) | $1.42 (-8.2%) | 36/22 | 25.9 min |
+| `claudish-compaction`, trial with the wrong flag (not in the mean) | 113 pass, 1 fail | | | 3,288,962 | | $1.47 | | |
+
+Ranges (least to most): `claudish-compaction` 3,005,411 to 4,152,207 prompt
+tokens, $1.30 to $1.65, 18.9 to 33.5 min. The range lies inside
+`claudish-baseline`'s (3,286,752 to 4,577,894), so the -9.4% is not larger
+than the spread between trials.
+
+The failed test: trial 2, `computeMainThreadContextWindow on lmstudio > the
+limit caps another local provider`, 113 pass, 1 fail.
+
+**The trial with the wrong flag.** The first complete trial ran with `--debug`,
+which claudish passes on to Claude Code; claudish's own debug log needs
+`--debug-claudish`. So Claude Code ran with `--debug`, and no claudish debug
+log exists for it: what compaction did in that trial cannot be shown from the
+log. The wrong flag came from the brief for this variant, which repeated the
+compaction branch's own command line. Matched by length from the report's
+tool results, 2 outputs crossed the size limit: one Bash output of 16,501
+characters and one Read of `providers/lmstudio-devices.ts` of 16,126
+characters. It is reported on its own row and is in no mean.
+
+Haiku calls, from the debug logs (tokens only):
+
+| Trial | Calls | Signed | Answers | Tokens in / out |
+|---|---|---|---|---|
+| 1 | 3 | 3 `x-api-key` on `claude-haiku-5-5` | 3 HTTP 200 | 26,331 / 3,924 |
+| 2 | 1 | 1 `x-api-key` on `claude-haiku-5-5` | 1 HTTP 200 | 9,356 / 1,942 |
+| 3 | 1 | 1 `x-api-key` on `claude-haiku-5-5` | 1 HTTP 200 | 7,844 / 727 |
+
+Compressed tool outputs, from the debug logs joined to the report's Events.
+All 5 were Bash outputs in subagent threads. 0 were Read outputs.
+
+| Trial | Tool | Characters before / after | Sends of the stored text | Distinct sha256 | Cache breaks after it |
+|---|---|---|---|---|---|
+| 1 | Bash | 17,405 / 2,526 | 7 | 1 | 0 |
+| 1 | Bash | 19,865 / 2,126 | 3 | 1 | 0 |
+| 1 | Bash | 23,505 / 3,216 | 10 | 1 | 0 |
+| 2 | Bash | 22,011 / 4,073 | 4 | 1 | 0 |
+| 3 | Bash | 18,049 / 1,573 | 3 | 1 | 0 |
+
+**Re-expansions: 0** in all 3 trials. A re-expansion is a Read whose
+`file_path` contains `/.claudish/compaction/`, the agent reading a compressed
+output's recovery file.
+
+What this shows:
+
+- **The stored text replays byte for byte.** Every compressed output was
+  resent with one sha256, and no request after it broke the cache. The
+  variant had 0 breaks in 3 trials, as rtk and context-mode had.
+- **Compression explains little of the difference.** Over all its sends,
+  compression removed about 360K, 72K and 49K characters per trial, about
+  90K, 18K and 12K tokens by chars/4. The mean difference against
+  `claudish-baseline` is about 359K prompt tokens per trial. Most of it is
+  the spread between trials (inferred).
+- **Few outputs qualify.** 1 to 3 outputs per trial reached the size limit.
+  The transcripts hold some subagent outputs twice: in trials 2 and 3, 2
+  large transcript results are 1 distinct tool_use id. Trial 1's transcripts
+  had 5 large results for 3 compressed outputs; the ids were not recorded in
+  that trial.
+- **No history summary ran.** No debug log has a `[compaction] history`
+  line, so the history part of compaction was not tested here.
 
 ## Explanations (inference, not verified)
 
