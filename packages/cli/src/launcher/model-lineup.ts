@@ -841,12 +841,12 @@ export function lineupReport(
       `${PREFIX}/model: Claude rows run your mapped tiers; an unmapped Claude row is not served on this launch`
     );
   }
-  for (const { name, value } of ctx.inheritedModelVars) {
-    const shown = redactSecrets(value);
+  // A surviving variable is named, never its value: the value is the user's own.
+  for (const { name } of ctx.inheritedModelVars) {
     lines.push(
       name === "ANTHROPIC_MODEL"
-        ? `${PREFIX}starts on ${shown} from ANTHROPIC_MODEL in your environment`
-        : `${PREFIX}${name}=${shown} from your environment still applies`
+        ? `${PREFIX}starts on the model ANTHROPIC_MODEL names in your environment`
+        : `${PREFIX}${name} from your environment still applies`
     );
   }
   return lines;
