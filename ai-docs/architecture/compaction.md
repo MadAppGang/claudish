@@ -35,9 +35,11 @@ seen, except at one deliberate point (a history swap) that costs exactly one cac
 - **Order.** It runs after the advisor's rewrite of its own tool_results (which it skips, by the
   tool name `ADVISOR_TOOL_NAME`) and before the hooks, which see the compacted body. The classifier
   shortcut is not touched.
-- `count_tokens` applies the RECORDED forms only (`applyStoredForms`: tool-output replay, then a
-  recorded history swap), with no model call, so Claude Code's gauge reads what `/v1/messages`
-  sends.
+- `count_tokens` applies the RECORDED forms only (`applyStoredForms`: the advisor's results
+  already delivered, `rewriteAdvisorToolResults` with `getAdvisorCall`, then tool-output replay,
+  then a recorded history swap), with no model call, so Claude Code's gauge reads what
+  `/v1/messages` sends. The advisor step comes first because the history hashes cover the
+  advisor's tool_results as `/v1/messages` rewrote them.
 
 The session key is `session_id` from `metadata.user_id`. A request with no session id, or an id
 that is not one safe path segment (`isSafeSessionId`), passes through untouched.

@@ -15,6 +15,10 @@
  */
 
 import type { Context } from "hono";
+import {
+  getAdvisorCall,
+  rewriteAdvisorToolResults,
+} from "../handlers/native-handler-advisor.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { extractSessionId } from "../hooks/harness.js";
 import { log } from "../logger.js";
@@ -114,12 +118,27 @@ export async function compactRequest(
 
 /**
  * Apply the recorded forms to a `count_tokens` body in place, with no model
- * call: the tool-output forms, then a recorded history swap. So Claude Code's
- * count matches what `/v1/messages` sends. Never throws.
+ * call, in the order `/v1/messages` applies them: the advisor's results
+ * already delivered (its own tool_results, which the history hashes cover),
+ * the tool-output forms, then a recorded history swap. So Claude Code's count
+ * matches what `/v1/messages` sends. Never throws.
  */
 export function applyStoredForms(runtime: CompactionRuntime, payload: unknown): void {
   const sessionId = compactionSessionOf(payload);
   if (!sessionId) return;
+  try {
+    // Stored results only: a call with no delivered result is left as it is,
+    // and no panel runs.
+    rewriteAdvisorToolResults(
+      payload as Record<string, unknown>,
+      (id) => getAdvisorCall(id, sessionId)?.result,
+      sessionId
+    );
+  } catch (err) {
+    log(
+      `[compaction] count_tokens advisor replay skipped: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
   if (runtime.settings.toolOutputs.enabled) {
     try {
       runtime.toolOutputs.replay(payload, sessionId);
