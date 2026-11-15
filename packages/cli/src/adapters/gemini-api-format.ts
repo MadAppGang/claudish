@@ -14,7 +14,10 @@
  */
 
 import { mapToolChoiceToGemini } from "../handlers/shared/format/openai-tools.js";
-import { convertToolsToGemini } from "../handlers/shared/gemini-schema.js";
+import {
+  convertToolsToGemini,
+  sanitizeToolNameForGemini,
+} from "../handlers/shared/gemini-schema.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import {
@@ -261,6 +264,11 @@ export class GeminiAPIFormat extends BaseAPIFormat {
   }
 
   // ─── Tool Conversion ──────────────────────────────────────────────
+
+  /** `convertToolsToGemini` declares each tool under its sanitized name, and drops one that has none. */
+  override declaredToolNames(names: string[]): Map<string, string | null> {
+    return new Map(names.map((name) => [name, sanitizeToolNameForGemini(name)]));
+  }
 
   override convertTools(claudeRequest: any, _summarize = false): any[] {
     const result = convertToolsToGemini(claudeRequest.tools);

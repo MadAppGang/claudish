@@ -59,6 +59,11 @@ export class OllamaAPIFormat extends BaseAPIFormat {
   /**
    * OllamaCloud doesn't support tools — return empty array.
    */
+  /** This wire sends no tool definitions. */
+  override declaredToolNames(names: string[]): Map<string, string | null> {
+    return new Map(names.map((name) => [name, null]));
+  }
+
   override convertTools(_claudeRequest: any, _summarize?: boolean): any[] {
     return [];
   }

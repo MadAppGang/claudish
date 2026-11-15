@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Context } from "hono";
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
+import { OllamaAPIFormat } from "../adapters/ollama-api-format.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import { ComposedHandler } from "./composed-handler.js";
@@ -51,7 +52,7 @@ const tool = (name: string) => ({
   input_schema: { type: "object", properties: {} },
 });
 
-type Wire = "gemini" | "chat-completions" | "openai";
+type Wire = "gemini" | "chat-completions" | "openai" | "ollama";
 
 /** The body sent for a ToolSearch whose result holds only a reference to `loaded`. */
 async function sentBody(
@@ -67,6 +68,7 @@ async function sentBody(
   const adapters = {
     gemini: () => ({ adapter: new GeminiAPIFormat(model) }),
     openai: () => ({ adapter: new OpenAIAPIFormat(model) }),
+    ollama: () => ({ adapter: new OllamaAPIFormat(model) }),
     "chat-completions": () => ({}),
   };
   const options = adapters[wire]();
@@ -140,6 +142,36 @@ describe("a ToolSearch result that holds only a tool reference", () => {
     const sent = declared.find((name: string) => name.startsWith("mcp__plugin_browser-use"));
     expect(sent).not.toBe(long);
     expect(toolMessages(body)).toEqual([`Loaded: ${sent}. It is in your tool list now.`]);
+  });
+
+  test("a long name whose encoded form another tool already has: the sentence uses the salted name", async () => {
+    const long = "mcp__plugin_browser-use_browser-use__retry_with_browser_use_agent";
+    const taken = "mcp__plugin_browser-use_browser-use__retry_with_browser_1c0e0367";
+    const body = await sentBody("openai", "gpt-6-astra", long, "openai", [taken]);
+    const declared = body.tools.map((t: any) => t.function.name);
+    const sent = declared[declared.length - 1];
+    expect(declared).toContain(taken);
+    expect(sent).not.toBe(taken);
+    expect(sent).not.toBe(long);
+    expect(toolMessages(body)).toEqual([`Loaded: ${sent}. It is in your tool list now.`]);
+  });
+
+  test("Gemini converter, a name it cuts at 64 characters: the sentence uses the cut name", async () => {
+    const long = "mcp__plugin_browser-use_browser-use__retry_with_browser_use_agent";
+    const body = await sentBody("gemini", "gemini-4-argon", long, "gemini");
+    const declared = body.tools[0].functionDeclarations.map((d: any) => d.name);
+    const sent = declared.find((name: string) => name.startsWith("mcp__plugin_browser-use"));
+    expect(sent).not.toBe(long);
+    expect(functionResponses(body)).toEqual([`Loaded: ${sent}. It is in your tool list now.`]);
+  });
+
+  test("Ollama Cloud, which sends no tool definitions: the sentence says it is not loaded", async () => {
+    const body = await sentBody("ollamacloud", "kimi-k3", "WebFetch", "ollama");
+    expect(body.tools).toBeUndefined();
+    expect(JSON.stringify(body.messages)).toContain(
+      "Not loaded: WebFetch. It is not in your tool list."
+    );
+    expect(JSON.stringify(body.messages)).not.toContain("Loaded: WebFetch. It is in");
   });
 
   test("a tool past the converter's tool-count cap: the sentence says it is not loaded", async () => {

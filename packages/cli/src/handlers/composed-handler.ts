@@ -63,7 +63,6 @@ import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
 import { lookupModelAcceptsImages, lookupModelForProvider } from "../adapters/model-catalog.js";
-import { encodeToolName, newToolNameBindings } from "../adapters/tool-name-utils.js";
 import type { QuotaAdapter } from "../auth/quota/adapter.js";
 import { resolveQuotaAdapter } from "../auth/quota/registry.js";
 import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
@@ -1631,24 +1630,24 @@ export class ComposedHandler implements ModelHandler {
     // host, the others never read it. So the model read an empty result.
     // Outside the `keepIdentity` test: a Claude model behind a gateway or
     // `antigravity` is on the same wires. The sentence names the tool as the
-    // body will declare it: after the 2b alias, and in the encoded form a
-    // converter with a name limit gives it (a fresh binding per name, so a
-    // name that collides with another tool's is the one case it gets wrong).
-    // A tool past the converter's tool-count cap is not declared, and the
-    // sentence says so.
-    const toolNameLimit = adapter.getToolNameLimit();
-    const toolCountCap = adapter.getMaxToolCount();
-    const declaredTools = new Set(
-      (claudeRequest.tools ?? []).slice(0, toolCountCap ?? undefined).map((tool: any) => tool?.name)
-    );
+    // body will declare it: after the 2b alias, under the name the converter
+    // answers for it (`declaredToolNames`). A tool the request does not
+    // declare, one the converter declares under no name, or one past its
+    // tool-count cap is not declared, and the sentence says so. The names are
+    // asked for once, and only when a result holds a reference.
+    let declaredNames: Map<string, string | null> | undefined;
+    const sentName = (name: string): string | null => {
+      declaredNames ??= adapter.declaredToolNames(
+        (claudeRequest.tools ?? [])
+          .slice(0, adapter.getMaxToolCount() ?? undefined)
+          .map((tool: any) => tool?.name)
+          .filter((toolName: unknown): toolName is string => typeof toolName === "string")
+      );
+      return declaredNames.get(toolAlias.forward(name)) ?? null;
+    };
     const withToolReferences = toolReferencesAsText(claudeRequest.messages, {
-      nameOf: (name) => {
-        const declared = toolAlias.forward(name);
-        return toolNameLimit
-          ? encodeToolName(declared, toolNameLimit, newToolNameBindings())
-          : declared;
-      },
-      isDeclared: (name) => declaredTools.has(toolAlias.forward(name)),
+      nameOf: (name) => sentName(name) ?? toolAlias.forward(name),
+      isDeclared: (name) => sentName(name) !== null,
     });
     if (withToolReferences !== claudeRequest.messages) {
       claudeRequest = { ...claudeRequest, messages: withToolReferences };
