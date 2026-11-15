@@ -1456,7 +1456,7 @@ async function runCli() {
     let compactionRuntime: import("./compaction/runtime.js").CompactionRuntime | null = null;
     if (cliConfig.compaction) {
       const [
-        { prepareCompaction },
+        { prepareCompaction, compactionMayPromptForKey },
         { resolveCompactionSettings },
         { compactionKeepSessionIds },
         { loadConfig },
@@ -1472,7 +1472,7 @@ async function runCli() {
       if (warning) logStderr(`[compaction] ${warning}`);
       compactionRuntime = await prepareCompaction({
         settings,
-        allowOpPrompt: cliConfig.interactive,
+        allowOpPrompt: compactionMayPromptForKey(),
         keepSessionIds: compactionKeepSessionIds(cliConfig.claudeArgs, resumedSessionId),
       });
       if (!compactionRuntime) cliConfig.compaction = false;

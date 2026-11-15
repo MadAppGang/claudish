@@ -15,6 +15,10 @@
  * the launch itself goes ahead.
  */
 
+import {
+  type CredentialPromptRole,
+  credentialPromptRole,
+} from "../auth/credentials/prompt-role.js";
 import { log, logStderr } from "../logger.js";
 import { acquireSigningLease } from "../redact.js";
 import type { StatsEvent } from "../stats-otlp.js";
@@ -26,6 +30,19 @@ import { ToolOutputCompactor } from "./tool-outputs.js";
 
 /** The claudish provider whose key compaction signs with: the Claude API. */
 export const COMPACTION_KEY_PROVIDER = "anthropic";
+
+/**
+ * Whether resolving the compaction key may open a 1Password prompt: only on
+ * an interactive launch with a person at the terminal. A pane child started
+ * by `team` or `create_session` runs with `-i` on a real PTY, so the
+ * interactive flag and a TTY test both say yes there, and a prompt would wait
+ * on a screen nobody watches.
+ */
+export function compactionMayPromptForKey(
+  role: CredentialPromptRole = credentialPromptRole()
+): boolean {
+  return role === "interactive-launch";
+}
 
 /** Everything the proxy needs to compact requests. */
 export interface CompactionRuntime {
