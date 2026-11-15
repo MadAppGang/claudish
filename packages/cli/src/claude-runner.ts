@@ -876,11 +876,41 @@ export function settingsClaudeLoginToken(
   env: NodeJS.ProcessEnv = process.env,
   deps: ChildAuthControlDeps = {}
 ): SettingsLoginToken {
+  const found = settingsEnvValue("CLAUDE_CODE_OAUTH_TOKEN", config, env, deps);
+  if (found.kind !== "set") return found.kind;
+  const nonEmpty = found.values.some((value) => value.trim().length > 0);
+  const empty = found.values.some((value) => value.trim().length === 0);
+  if (nonEmpty && empty) return "unknown";
+  return nonEmpty ? "set" : "cleared";
+}
+
+/**
+ * What the settings layers the child applies give one `env` variable:
+ *
+ * - `set`: the highest tier whose layers name it as a string; `values` holds
+ *   every such layer's value in that tier (an empty string included, since
+ *   Claude Code writes it over the launch environment's value);
+ * - `absent`: no layer names it; the launch environment's value stands;
+ * - `unknown`: a layer at or above the deciding tier could not be read.
+ *
+ * Reads the layers `childAuthControl` reads (managed, `--settings`, local,
+ * project, user, in that precedence), with `--setting-sources` honoured.
+ */
+export type SettingsEnvValue =
+  | { kind: "set"; values: readonly string[] }
+  | { kind: "absent" }
+  | { kind: "unknown" };
+
+export function settingsEnvValue(
+  name: string,
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ChildAuthControlDeps = {}
+): SettingsEnvValue {
   const layers = readableClaudeSettingsLayers(config, env, deps);
   for (const tier of SETTINGS_TIER_ORDER) {
     let unreadable = false;
-    let nonEmpty = false;
-    let empty = false;
+    const values: string[] = [];
     for (const layer of layers) {
       if (layer.tier !== tier) continue;
       if (layer.settings === null) {
@@ -889,16 +919,32 @@ export function settingsClaudeLoginToken(
       }
       const block = layer.settings.env;
       if (!block || typeof block !== "object") continue;
-      const value = (block as Record<string, unknown>).CLAUDE_CODE_OAUTH_TOKEN;
-      if (typeof value !== "string") continue;
-      if (value.trim().length > 0) nonEmpty = true;
-      else empty = true;
+      const value = (block as Record<string, unknown>)[name];
+      if (typeof value === "string") values.push(value);
     }
-    if (unreadable || (nonEmpty && empty)) return "unknown";
-    if (nonEmpty) return "set";
-    if (empty) return "cleared";
+    if (unreadable) return { kind: "unknown" };
+    if (values.length > 0) return { kind: "set", values };
   }
-  return "absent";
+  return { kind: "absent" };
+}
+
+/**
+ * Record, for history compaction, the `CLAUDE_CODE_AUTO_COMPACT_WINDOW` Claude
+ * Code will run with. A settings layer's `env` block overwrites the environment
+ * the child is given, so the deciding layer's value wins over `env`'s; an empty
+ * one clears it. The launch environment's value stands when no layer names the
+ * variable, when a layer at or above the deciding tier cannot be read, and when
+ * the deciding tier's layers disagree.
+ */
+export function recordLaunchAutoCompactWindow(
+  config: ClaudishConfig,
+  env: NodeJS.ProcessEnv,
+  deps: ChildAuthControlDeps = {}
+): void {
+  const fromEnv = env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW];
+  const found = settingsEnvValue(ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW, config, env, deps);
+  const distinct = found.kind === "set" ? new Set(found.values) : undefined;
+  setLaunchAutoCompactWindow(distinct?.size === 1 ? [...distinct][0] : fromEnv);
 }
 
 /** A settings file tier `--setting-sources` can turn on or off. */
@@ -3014,8 +3060,9 @@ export async function runClaudeWithProxy(
 
   if (config.compaction === true) {
     // History compaction measures each request against the lower of the
-    // model's catalog window and the auto-compact window Claude Code was given.
-    setLaunchAutoCompactWindow(env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]);
+    // model's catalog window and the auto-compact window Claude Code runs with,
+    // its settings layers included.
+    recordLaunchAutoCompactWindow(config, env);
   }
 
   const wrap =

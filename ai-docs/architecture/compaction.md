@@ -109,9 +109,16 @@ one of them is never compressed and never recorded, so it is sent as it is on ev
 ## History swap shape (`compaction/history.ts`)
 
 - **Limit** = min(the request model's catalog context window, the `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
-  this launch gave Claude Code). The runner records the child env's value
-  (`setLaunchAutoCompactWindow`, clamped to Claude Code's 100K floor and 1M ceiling) just before
-  the spawn. No catalog window ⇒ history off for that request. The model is the one the proxy
+  Claude Code runs with). Claude Code writes the `env` block of its enabled settings layers over the
+  environment it was given, so the runner records the value of the highest-precedence enabled
+  layer that names the variable (managed, `--settings`, local, project, user, with
+  `--setting-sources` honoured; `recordLaunchAutoCompactWindow` through `settingsEnvValue`,
+  `claude-runner.ts`, the same layer reader as the login-token check), else the child env's
+  value, just before the spawn. A user `~/.claude/settings.json` setting `200000` therefore limits
+  a 1M model to 200K here too, as it does in Claude Code. An empty layer value clears the window;
+  an unreadable layer at or above the deciding tier, or two layers of that tier that disagree,
+  keep the child env's value. The value is clamped to Claude Code's 100K floor and 1M ceiling
+  (`setLaunchAutoCompactWindow`); empty or non-numeric records none. No catalog window ⇒ history off for that request. The model is the one the proxy
   routes the request to (`resolveHandlerForRequest`'s target after the slot map, role mapping and
   `--model`; the bare id for `claude@<id>`), never the raw `body.model`: a role mapping can send
   `claude-sonnet-*` to a model with a smaller window, or none. A `[1m]` suffix is removed for the

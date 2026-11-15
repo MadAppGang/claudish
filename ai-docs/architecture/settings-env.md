@@ -122,7 +122,12 @@ environment the child will hold: a non-empty `CLAUDE_CODE_OAUTH_TOKEN` in the `e
 enabled settings layer (managed, `--settings`, local, project, user, in that precedence, with
 `--setting-sources` honoured) is a login (`settingsClaudeLoginToken`, `claude-runner.ts`), an
 empty one replaces the shell's, and an unreadable `--settings` value at or above the deciding tier
-makes it `unknown`. Presence only: the token value is never kept or returned. A refusal on a foreign launch names
+makes it `unknown`. Presence only: the token value is never kept or returned. The layer reading
+is one helper, `settingsEnvValue(name, …)`; history compaction reads
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` through it on every `--compaction` launch
+(`recordLaunchAutoCompactWindow`, `compaction.md`). The host marker does not stop that variable:
+read from the Claude Code 2.1.325 binary, not measured, it is in the set of safe settings `env`
+variables and is none of the provider, endpoint or credential variables the marker drops. A refusal on a foreign launch names
 the tier that made it the Claude subscription and its source. A top-level `claude@` or
 `anthropic@` launch never gets here with a tier: `decideClaudeLaunch` refuses any tier on it.
 
