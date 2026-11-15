@@ -100,6 +100,7 @@ import {
 } from "./providers/routing-rules.js";
 import { nativeShortcutForVendor, renderRecommendedText } from "./recommended-listing.js";
 import { setRecoveryFlagOverrides } from "./recovery/settings.js";
+import { redactSecrets } from "./redact.js";
 import { cliAnsi } from "./theme/ansi.js";
 import type { ClaudishConfig, ModelTier } from "./types.js";
 import { VERSION } from "./version.js";
@@ -1157,7 +1158,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   if (modelValues.some((value) => parseListingEntry(value) !== null)) {
     const flags = parseModelFlags(modelValues);
     if (!flags.ok) {
-      console.error(`[claudish] Error: ${flags.message}`);
+      console.error(`[claudish] Error: ${redactSecrets(flags.message)}`);
       process.exit(1);
     }
     config.model = flags.value.start;

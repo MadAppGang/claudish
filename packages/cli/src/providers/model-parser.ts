@@ -450,6 +450,25 @@ export type ModelFlagsResult =
   | { ok: false; message: string };
 
 /**
+ * A `--model` value as a refusal message may show it. A raw URL can carry a
+ * credential in its userinfo, path or query, so each URL element of the value
+ * is shown as "<a raw URL at ORIGIN>" and nothing past the host.
+ */
+function modelValueForMessage(value: string): string {
+  return parseModelChain(value)
+    .map((element) => {
+      const parsed = parseModelSpec(element);
+      if (parsed.provider !== "custom-url") return element;
+      try {
+        return `<a raw URL at ${new URL(parsed.model).origin}>`;
+      } catch {
+        return "<a raw URL>";
+      }
+    })
+    .join("+");
+}
+
+/**
  * Why a full spec cannot be a pinned row of a lineup launch, or null. Reads the
  * parser only: a pinned row must name a claudish provider explicitly, and that
  * provider must be one whose models can be listed.
@@ -457,7 +476,7 @@ export type ModelFlagsResult =
 function pinnedSpecRefusal(spec: string): string | null {
   const parsed = parseModelSpec(spec);
   if (parsed.provider === "custom-url") {
-    return `--model ${spec}: a raw URL cannot be listed in /model. Declare the endpoint under customEndpoints and list it by name (--model <name>@).`;
+    return `--model ${modelValueForMessage(spec)}: a raw URL cannot be listed in /model. Declare the endpoint under customEndpoints and list it by name (--model <name>@).`;
   }
   if (parsed.provider === "native-anthropic") {
     return `--model ${spec}: a Claude model cannot be listed beside the start model, because Claude Code lists Claude's own models in /model already. Drop it, or give it as the last --model to start on it.`;
@@ -519,7 +538,7 @@ export function parseModelFlags(values: readonly string[]): ModelFlagsResult {
     if ((fullSpecs[i] as string[]).length > 1) {
       return {
         ok: false,
-        message: `--model ${raw[i]}: a + routing chain cannot be combined with a listing entry. Give one model per --model.`,
+        message: `--model ${modelValueForMessage(raw[i] as string)}: a + routing chain cannot be combined with a listing entry. Give one model per --model.`,
       };
     }
   }
