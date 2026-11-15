@@ -10,31 +10,30 @@ g() { git -c user.name=bench -c user.email=bench@example.invalid -c commit.gpgsi
 
 git init -q -b main .
 
-cat >package.json <<'EOF'
-{
-  "name": "tally-sheet",
-  "version": "0.3.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "bun src/index.ts",
-    "test": "bun test",
-    "lint": "biome check src",
-    "build": "bun build src/index.ts --outdir dist"
-  }
-}
-EOF
+# printf, not a here-document: the sandbox refuses the temporary file a
+# here-document needs.
+printf '%s\n' \
+  '{' \
+  '  "name": "tally-sheet",' \
+  '  "version": "0.3.0",' \
+  '  "private": true,' \
+  '  "type": "module",' \
+  '  "scripts": {' \
+  '    "start": "bun src/index.ts",' \
+  '    "test": "bun test",' \
+  '    "lint": "biome check src",' \
+  '    "build": "bun build src/index.ts --outdir dist"' \
+  '  }' \
+  '}' >package.json
 mkdir -p src
-cat >src/index.ts <<'EOF'
-import { total } from "./total.ts";
-
-console.log(total([3, 4, 5]));
-EOF
-cat >src/total.ts <<'EOF'
-export function total(values: number[]): number {
-  return values.reduce((sum, v) => sum + v, 0);
-}
-EOF
+printf '%s\n' \
+  'import { total } from "./total.ts";' \
+  '' \
+  'console.log(total([3, 4, 5]));' >src/index.ts
+printf '%s\n' \
+  'export function total(values: number[]): number {' \
+  '  return values.reduce((sum, v) => sum + v, 0);' \
+  '}' >src/total.ts
 g add package.json src
 g commit -q -m "feat: add the total command"
 
