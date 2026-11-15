@@ -66,6 +66,7 @@ import {
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
+import { type ModelVarsScrub, recordModelVars, scrubInheritedModelVars } from "./model-vars-env.js";
 import { PANE_LAUNCH_VARS, isPaneChild } from "./pane/child-env.js";
 import { flagsRemoveRead } from "./pane/pane-launch.js";
 import { killStillLiveMembers, snapshotDescendants, waitForExit } from "./process-tree.js";
@@ -2351,24 +2352,74 @@ export function relayChildStderr(stream: NodeJS.ReadableStream): void {
   });
 }
 
+/**
+ * The model id claudish hands Claude Code for this launch, or undefined when
+ * Claude Code picks its own. Use the actual model spec (no translation), so any
+ * model works. A profile launch with tiers and no `--model` sets none, so the
+ * proxy can match tier names (opus/sonnet/haiku) and apply its mappings; so do
+ * `--monitor` and `--advisor` with no main model, which are native sessions (the
+ * "unknown" placeholder would become ANTHROPIC_MODEL=unknown and Anthropic 400s
+ * the very first request).
+ */
+export function childModelIdOf(config: ClaudishConfig): string | undefined {
+  const hasProfileMappings =
+    config.modelOpus || config.modelSonnet || config.modelHaiku || config.modelSubagent;
+  return (
+    config.model ||
+    (hasProfileMappings || config.monitor || isAdvisorNativeSession(config) ? undefined : "unknown")
+  );
+}
+
+/**
+ * The model variables claudish sets in this launch's Claude Code child: the
+ * launch model as `ANTHROPIC_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL`, the id a
+ * Claude launch gives Claude Code (`claudeLaunchModel`) on a monitor session.
+ */
+export function childModelVarsFor(
+  config: ClaudishConfig
+): Partial<Record<"ANTHROPIC_MODEL" | "ANTHROPIC_SMALL_FAST_MODEL", string>> {
+  const modelId = childModelIdOf(config);
+  const id =
+    config.monitor || isAdvisorNativeSession(config)
+      ? (config.claudeLaunchModel ?? modelId)
+      : modelId;
+  if (!id) return {};
+  return { ANTHROPIC_MODEL: id, ANTHROPIC_SMALL_FAST_MODEL: id };
+}
+
+/**
+ * True when the launch's Claude Code child keeps the user's own Claude login:
+ * not a proxy-auth launch, and not the Claude API launch (whose child holds
+ * only claudish's placeholder token).
+ */
+export function childKeepsLogin(config: ClaudishConfig): boolean {
+  return !isProxyAuthMode(config) && config.claudeLaunch !== "api";
+}
+
+/**
+ * Remove from `env` the inherited model variables this launch does not set
+ * itself (`scrubInheritedModelVars`), and return what was removed and what
+ * stays. Mutates `env`; pass a copy to preview the child's result.
+ */
+export function scrubChildModelVars(
+  config: ClaudishConfig,
+  env: Record<string, string | undefined>
+): ModelVarsScrub {
+  const set = childModelVarsFor(config);
+  return scrubInheritedModelVars(
+    env,
+    { model: Boolean(set.ANTHROPIC_MODEL), smallFast: Boolean(set.ANTHROPIC_SMALL_FAST_MODEL) },
+    { keepsLogin: childKeepsLogin(config) }
+  );
+}
+
 export async function runClaudeWithProxy(
   config: ClaudishConfig,
   proxyUrl: string,
   onCleanup?: () => void
 ): Promise<number> {
-  // Use actual OpenRouter model ID (no translation)
-  // This ensures ANY model works, not just our shortlist
-  // In profile/multi-model mode, don't set a single model - let Claude Code use its defaults
-  // so the proxy can match tier names (opus/sonnet/haiku) and apply profile mappings
-  const hasProfileMappings =
-    config.modelOpus || config.modelSonnet || config.modelHaiku || config.modelSubagent;
-  // `--advisor` with no main model is a native session: Claude Code must pick its
-  // own model exactly as under --monitor. The "unknown" placeholder would become
-  // ANTHROPIC_MODEL=unknown and Anthropic 400s the very first request.
   const advisorNativeSession = isAdvisorNativeSession(config);
-  const modelId =
-    config.model ||
-    (hasProfileMappings || config.monitor || advisorNativeSession ? undefined : "unknown");
+  const modelId = childModelIdOf(config);
 
   // Extract port from proxy URL for token file path
   const portMatch = proxyUrl.match(/:(\d+)/);
@@ -2642,6 +2693,18 @@ export async function runClaudeWithProxy(
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   }
 
+  // The model variables a parent claudish set (a nested launch, a tool shell of
+  // a claudish session) are removed where this launch does not set them itself:
+  // otherwise a launch on Claude's default model would start on the parent's
+  // model. Runs once, before the branch, so both branches get it.
+  const childModelVars = childModelVarsFor(config);
+  const inheritedModelVars = scrubChildModelVars(config, env);
+  if (inheritedModelVars.removed.length > 0) {
+    debugLog(
+      `[claude-runner] Removed inherited model variables claudish set: ${inheritedModelVars.removed.join(", ")}`
+    );
+  }
+
   // Handle API key and model based on mode
   if (config.monitor || advisorNativeSession) {
     // Monitor mode, or `--advisor` with no main model: Don't set ANTHROPIC_API_KEY
@@ -2673,12 +2736,8 @@ export async function runClaudeWithProxy(
     // Don't override ANTHROPIC_MODEL - let Claude Code use its default
     // (unless user explicitly specified a model). A Claude launch keeps the
     // user's spec in `config.model` (`claude@<id>`, `anthropic@<id>`); Claude
-    // Code is given the id it can serve.
-    const launchModelId = config.claudeLaunchModel ?? modelId;
-    if (launchModelId) {
-      env[ENV.ANTHROPIC_MODEL] = launchModelId;
-      env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = launchModelId;
-    }
+    // Code is given the id it can serve (`childModelVarsFor`).
+    recordModelVars(env, childModelVars);
     if (config.claudeLaunch) {
       debugLog(claudeLaunchAuthLine(config.claudeLaunch, env, config.claudeLaunchKeySource));
     }
@@ -2687,10 +2746,7 @@ export async function runClaudeWithProxy(
     // When using profile mode (no explicit --model), DON'T override ANTHROPIC_MODEL
     // Let Claude Code use its default model names (e.g., "claude-sonnet-4-5-20250929")
     // so the proxy can match "opus"/"sonnet"/"haiku" in the model name and apply mappings
-    if (modelId) {
-      env[ENV.ANTHROPIC_MODEL] = modelId;
-      env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = modelId;
-    }
+    recordModelVars(env, childModelVars);
     if (shouldPreserveNativeAuth(config)) {
       // Native Claude model, or classifier passthrough with resolvable Anthropic
       // creds — Claude Code talks to Anthropic directly for those requests,
