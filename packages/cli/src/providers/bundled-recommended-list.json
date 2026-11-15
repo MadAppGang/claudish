@@ -2277,7 +2277,7 @@
         }
       }
     },
-    "fetchedAt": "2026-11-15T00:03:45.109Z",
+    "fetchedAt": "2026-11-15T10:49:35.538Z",
     "format": 1,
     "recommendations": {
       "contractVersion": 3,
@@ -2383,11 +2383,11 @@
           "tier": "luxury"
         }
       ],
-      "generationId": "g-20261114234105679-14dde71a"
+      "generationId": "g-20261115011731115-35f587b6"
     },
     "source": "https://us-central1-claudish-6da10.cloudfunctions.net"
   },
-  "catalogGenerationId": "g-20261114234105679-14dde71a",
+  "catalogGenerationId": "g-20261115011731115-35f587b6",
   "entries": [
     {
       "aggregators": [
@@ -6138,7 +6138,7 @@
       "supportsVision": true
     }
   ],
-  "lastUpdated": "2026-11-14T23:41:05.679Z",
+  "lastUpdated": "2026-11-15T01:17:31.115Z",
   "models": [],
   "plans": [
     {
@@ -7320,14 +7320,14 @@
       "id": "ollama-cloud",
       "inclusions": [
         {
-          "externalModelId": "glm-5.3",
+          "externalModelId": "minimax-m3.1-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "glm-5.3",
+            "modelId": "minimax-m3.1-flash",
             "status": "mapped"
           },
-          "sourceText": "glm-5.3"
+          "sourceText": "minimax-m3.1-flash"
         },
         {
           "externalModelId": "mimo-v2.6-flash",
@@ -7340,14 +7340,14 @@
           "sourceText": "mimo-v2.6-flash"
         },
         {
-          "externalModelId": "mimo-v2.6-pro",
+          "externalModelId": "glm-5.3-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
           "resolution": {
-            "modelId": "mimo-v2.6-pro",
+            "modelId": "glm-5.3-flash",
             "status": "mapped"
           },
-          "sourceText": "mimo-v2.6-pro"
+          "sourceText": "glm-5.3-flash"
         },
         {
           "externalModelId": "kimi-k3.1-pro",
@@ -7360,26 +7360,6 @@
           "sourceText": "kimi-k3.1-pro"
         },
         {
-          "externalModelId": "minimax-m3.1-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "minimax-m3.1-flash",
-            "status": "mapped"
-          },
-          "sourceText": "minimax-m3.1-flash"
-        },
-        {
-          "externalModelId": "glm-5.3-flash",
-          "kind": "provider_model",
-          "provider": "ollamacloud",
-          "resolution": {
-            "modelId": "glm-5.3-flash",
-            "status": "mapped"
-          },
-          "sourceText": "glm-5.3-flash"
-        },
-        {
           "externalModelId": "deepseek-v4.1-flash",
           "kind": "provider_model",
           "provider": "ollamacloud",
@@ -7388,6 +7368,26 @@
             "status": "mapped"
           },
           "sourceText": "deepseek-v4.1-flash"
+        },
+        {
+          "externalModelId": "glm-5.3",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "glm-5.3",
+            "status": "mapped"
+          },
+          "sourceText": "glm-5.3"
+        },
+        {
+          "externalModelId": "mimo-v2.6-pro",
+          "kind": "provider_model",
+          "provider": "ollamacloud",
+          "resolution": {
+            "modelId": "mimo-v2.6-pro",
+            "status": "mapped"
+          },
+          "sourceText": "mimo-v2.6-pro"
         }
       ],
       "modelDiscovery": "catalog",
@@ -7632,7 +7632,7 @@
     }
   ],
   "routeRegistry": {
-    "generationId": "g-20261114234105679-14dde71a",
+    "generationId": "g-20261115011731115-35f587b6",
     "registry": {
       "contractVersion": 3,
       "registryVersion": "3.7.0",
