@@ -313,7 +313,9 @@ export function lineupRowsForProvider(input: {
 
   const isGatewayRecommended =
     tier === "gateway" && listing.scope === "recommended" && declared === null;
-  if (isGatewayRecommended && candidates.length > 0) {
+  // With no recommended list a gateway `x@` lists its pinned rows only, and
+  // says so even when the provider offered no rows at all.
+  if (isGatewayRecommended && (candidates.length > 0 || input.recommendedIds === null)) {
     const narrowed = recommendedCandidates(input, candidates);
     candidates = narrowed.candidates;
     emptyReason = narrowed.emptyReason ?? emptyReason;
