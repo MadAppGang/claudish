@@ -37,6 +37,86 @@ So this task measures what the tools cost and save in normal work. It does
 not measure them where the context window runs out, which is where they are
 meant to help most.
 
+## Cache reuse
+
+Most prompt tokens in every variant are cache reads of the same history, and
+a cache read costs a tenth of an uncached token. So a tool saves money only
+if it keeps the cached prefix intact, and it loses money when it rewrites
+something early in the prompt. Computed by `summarize.ts` from the `llm_call`
+usage in the report JSON files, over the same graded trials as the tables
+below; errored trials are in no row.
+
+Definitions:
+
+- **Hit rate** = cache read / (cache read + cache creation + uncached input),
+  in tokens, per thread kind and over all threads.
+- **Billed-equivalent input** = uncached input + 1.25 × cache creation + 0.1 ×
+  cache read. These are the list multipliers for 5-minute cache writes, not a
+  measured price.
+- **Thread**: one `agent_id` of the `llm_call` Events. The main thread has no
+  `agent_id`; each subagent has its own. Requests are ordered by the Event's
+  `seq`. This mapping is an assumption about madbench's Events, not checked
+  against Claude Code's transcripts.
+- **Cache break**: a request whose cache read is smaller than the previous
+  request's cache read + cache creation in the same thread, so the cached
+  prefix was not reused. **Tokens lost** is that shortfall, summed. The first
+  request of a thread is never a break.
+
+Native, mean over 3 trials (`context-gateway-haiku-key`: 1 graded trial):
+
+| Variant | Hit rate main / sub / all | Cache read | Cache creation | Uncached input | Billed-equivalent input | Breaks main/sub per trial | Tokens lost per trial |
+|---|---|---|---|---|---|---|---|
+| `baseline` | 96.8% / 84.3% / 94.0% | 3,421,279 | 218,861 | 120 | 615,824 | 0/0 | 0 |
+| `rtk` | 96.9% / 83.7% / 93.9% | 3,189,441 | 205,982 | 119 | 576,541 (-6.4%) | 0/0 | 0 |
+| `context-mode` | 96.6% / 88.8% / 94.5% | 4,080,114 | 237,896 | 149 | 705,531 (+14.6%) | 0/0 | 0 |
+| `context-gateway-local` | 95.9% / 89.8% / 94.2% | 4,576,035 | 263,984 | 13,284 | 800,867 (+30.0%) | 1.0/1.0 | 46,859 |
+| `haiku-subagent` | 96.3% / 83.4% / 92.3% | 3,332,716 | 271,266 | 143 | 672,496 (+9.2%) | 0/1.0 | 6,126 |
+| `context-gateway-haiku-key` | 97.0% / 92.7% / 95.7% | 5,070,602 | 189,947 | 38,190 | 782,684 (+27.1%) | 5/2 | 39,357 |
+
+Through claudish, mean over 3 trials:
+
+| Variant | Hit rate main / sub / all | Cache read | Cache creation | Uncached input | Billed-equivalent input | Breaks main/sub per trial | Tokens lost per trial |
+|---|---|---|---|---|---|---|---|
+| `claudish-baseline` | 97.2% / 85.9% / 94.2% | 3,598,940 | 220,944 | 130 | 636,204 | 0/0 | 0 |
+| `claudish-rtk` | 97.1% / 81.9% / 94.4% | 3,554,089 | 210,203 | 122 | 618,285 (-2.8%) | 0/0 | 0 |
+| `claudish-context-mode` | 96.7% / 90.1% / 94.4% | 4,197,764 | 242,079 | 157 | 722,532 (+13.6%) | 0/0 | 0 |
+| `claudish-context-gateway-local-streamfix` | 96.2% / 88.8% / 94.1% | 4,823,787 | 269,314 | 28,261 | 847,282 (+33.2%) | 1.7/2.0 | 82,489 |
+
+What the tables show:
+
+- **No break in 18 trials** of `baseline`, `rtk` and `context-mode`, native
+  and through claudish. rtk and context-mode change tool output before the
+  agent sees it, so the history they produce stays fixed once sent. Their
+  cost differences come from how much the agent sends, not from the cache.
+- **The gateways break the cache 1 to 7 times per trial** and send 111 to 318
+  times more uncached input than their baseline. Each break writes the lost prefix again at 1.25×
+  instead of reading it at 0.1×. Computed with the list multipliers, the breaks
+  account for 29% of `context-gateway-local`'s extra billed-equivalent input
+  (46,859 × 1.15 = 53,888 of 185,043) and 45% of the patched gateway's
+  (82,489 × 1.15 = 94,862 of 211,078). The rest is its extra requests: 90 and
+  93 per trial against 60 and 65.
+- **`haiku-subagent`'s one break per trial comes after a pause of more than 300
+  seconds** in a subagent thread. That fits cache expiry while the thread
+  waited, not a rewrite (inferred).
+- **Hit rate alone hides the breaks**: every variant reads 92% to 96% from
+  the cache, because a break loses tens of thousands of tokens out of
+  millions.
+
+Where the breaks fall, `claudish-context-gateway-local-streamfix` trial 1
+(request = position in its thread; the tool_use is the last tool result in
+that thread before the request):
+
+| Thread | Request | Tokens lost | Cache creation | Seconds since the previous request | Last tool_use before it |
+|---|---|---|---|---|---|
+| main | 2 | 8,908 | 14,766 | 65 | none |
+| main | 39 | 59,914 | 59,255 | 129 | `toolu_012hRQACFgswU4AToLPzTfmA` |
+| subagent `a75ce4ee206a8aadc` | 3 | 7,686 | 9,867 | 3 | `toolu_01UZvJYS4RFV29G3w1G3iqMA` |
+| subagent `a9ff22e2f1afbc8d6` | 2 | 26,253 | 28,303 | 3 | `toolu_014Y6MQnGCB7kaN7ZC9KZPPs` |
+
+The native `context-gateway-local` trial 1 has one break, at main request 2
+(34,068 tokens lost). Main request 2 breaks in both: the gateway changes the
+first request's content once it has seen it (inferred).
+
 ## The task
 
 Claude Code on `claude-sonnet-5-5` gets claudish at `fe1a93ec`, one commit
