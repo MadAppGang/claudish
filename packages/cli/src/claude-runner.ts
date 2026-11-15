@@ -129,6 +129,9 @@ function releaseTerminalIsolation(): void {
  * NOT be set — Claude Code needs its real subscription credentials so
  * NativeHandler can forward them to api.anthropic.com. Any other bare name
  * (`o4-mini`) is routed by the proxy, so it does not count.
+ *
+ * A launch that only lists providers (`--model devin@`, no full spec, no tier)
+ * counts too: it starts on Claude's default model ({@link startsOnClaudeSubscription}).
  */
 export function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
   const models = [
@@ -138,7 +141,21 @@ export function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
     config.modelHaiku,
     config.modelSubagent,
   ];
-  return models.some((m) => m && nativeRouteFor(m) !== null);
+  return models.some((m) => m && nativeRouteFor(m) !== null) || startsOnClaudeSubscription(config);
+}
+
+/**
+ * A launch with listing entries (`--model devin@`) and no start model: no full
+ * `--model` spec, no routing chain, no profile tier, not `--monitor`. Claude
+ * Code starts on Claude's default model, on the user's own Claude login, and
+ * the listed providers' models are picked from `/model`.
+ */
+export function startsOnClaudeSubscription(config: ClaudishConfig): boolean {
+  if ((config.modelListings?.length ?? 0) === 0) return false;
+  if (config.monitor) return false;
+  if (config.model || (config.modelChain?.length ?? 0) > 0) return false;
+  const tiers = [config.modelOpus, config.modelSonnet, config.modelHaiku, config.modelSubagent];
+  return !tiers.some((m) => typeof m === "string" && m.length > 0);
 }
 
 /**
@@ -2359,14 +2376,20 @@ export function relayChildStderr(stream: NodeJS.ReadableStream): void {
  * proxy can match tier names (opus/sonnet/haiku) and apply its mappings; so do
  * `--monitor` and `--advisor` with no main model, which are native sessions (the
  * "unknown" placeholder would become ANTHROPIC_MODEL=unknown and Anthropic 400s
- * the very first request).
+ * the very first request). A launch that only lists providers starts on
+ * Claude's default model, so it sets none either.
  */
 export function childModelIdOf(config: ClaudishConfig): string | undefined {
   const hasProfileMappings =
     config.modelOpus || config.modelSonnet || config.modelHaiku || config.modelSubagent;
   return (
     config.model ||
-    (hasProfileMappings || config.monitor || isAdvisorNativeSession(config) ? undefined : "unknown")
+    (hasProfileMappings ||
+    config.monitor ||
+    isAdvisorNativeSession(config) ||
+    startsOnClaudeSubscription(config)
+      ? undefined
+      : "unknown")
   );
 }
 

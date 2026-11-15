@@ -42,14 +42,17 @@ import {
 } from "../auth/claude-code-login.js";
 import { isClaudishPlaceholderCredential } from "../auth/claudish-placeholder.js";
 import type { CredentialAuthority } from "../auth/credentials/authority.js";
+import { classifierPassthroughEnabled } from "../classifier-passthrough.js";
 import {
   type SettingsFinding,
   type SettingsLoginToken,
   hasNativeAnthropicMapping,
+  isProxyAuthMode,
   managedSettingsForcesClaudeAi,
   settingsArgsForcingClaudeAi,
   settingsClaudeLoginToken,
   settingsCredentialFindings,
+  startsOnClaudeSubscription,
   wantsAnthropicApiBilling,
 } from "../claude-runner.js";
 import {
@@ -209,8 +212,17 @@ function subscriptionPrefix(cause: string | undefined): string {
  * subscription: each tier that names a Claude model, with where it came from
  * (`because the haiku model claude-haiku-x from profile "work" is a Claude
  * model`). Undefined when the main model is a Claude model or no tier is one.
+ *
+ * A launch that only lists providers names no model at all, so its cause is
+ * that it starts on Claude's default model (`because --model devin@ names no
+ * start model, …`), the listing entries as typed.
  */
 export function subscriptionCause(config: ClaudishConfig): string | undefined {
+  if (startsOnClaudeSubscription(config)) {
+    const typed = (config.modelListings ?? []).map((listing) => listing.typed);
+    const verb = typed.length === 1 ? "names" : "name";
+    return `because --model ${typed.join(", ")} ${verb} no start model, so the session starts on Claude's default model`;
+  }
   const main = typeof config.model === "string" ? config.model : undefined;
   if (main && nativeRouteFor(main) !== null) return undefined;
   const named = TIER_FIELDS.flatMap(([tier, field]) => {
@@ -364,7 +376,8 @@ export interface DecideClaudeLaunchDeps {
  *   own, a marker, a `:N` suffix) refuses the launch, and so does `claude@`
  *   inside a chain: the Claude subscription is served by Claude Code itself.
  * - A `claude@X` tier sets `claudeSubscriptionPin`; the tier keeps its spec.
- * - One `claude@X` main model: in a pane child the model becomes the bare `X`
+ * - One `claude@X` main model: in a pane child, or on a launch with listing
+ *   entries (`config.modelListings`), the model becomes the bare `X`
  *   and `claudeSubscriptionPin` is set; otherwise the launch becomes a monitor session, `claudeLaunch:
  *   "subscription"`, and `model` keeps the user's spec for every later reader
  *   (the end-of-session card, the advisor notice).
@@ -419,7 +432,11 @@ export function decideClaudeLaunch(
 
   if (!isClaudeSubscriptionSpec(main)) return { ok: true };
 
-  if (deps.paneChild ?? isPaneChild()) {
+  // A launch that lists providers runs `claude@<id>` as the bare `<id>` pinned
+  // to the Claude subscription, as a pane child does: a monitor session would
+  // send every listed model's request to Anthropic.
+  const hasListings = (config.modelListings?.length ?? 0) > 0;
+  if (hasListings || (deps.paneChild ?? isPaneChild())) {
     config.model = normalizeNativeModelSpec(claudeSubscriptionInner(main));
     config.claudeSubscriptionPin = true;
     return { ok: true };
@@ -451,6 +468,49 @@ function unknownShortcutRefusal(shortcut: string, typed: string): string {
 export interface DecideModelListingsDeps {
   /** Default `isKnownProviderName`. */
   isKnownProvider?: (name: string) => boolean;
+  /** Default `!isProxyAuthMode(config)`: the child keeps the user's own Claude login. */
+  keepsLogin?: (config: ClaudishConfig) => boolean;
+  /** Default `settingsCredentialFindings(config, process.env)`: files, environment, no network. */
+  settingsFindings?: (config: ClaudishConfig) => SettingsFinding[];
+  /** Default `classifierPassthroughEnabled(config)`. */
+  classifierPassthrough?: (config: ClaudishConfig) => boolean;
+}
+
+/**
+ * The refusal for a lineup launch whose child keeps the user's login while a
+ * settings layer sets `ANTHROPIC_BASE_URL`, or null. That child is not
+ * host-managed, so the settings value replaces claudish's proxy address and
+ * every `/model` pick of a listed model would go to the settings address
+ * instead of claudish. A proxy-auth launch is host-managed: a settings `env`
+ * block cannot set its base URL, so it is never refused here.
+ */
+function settingsBaseUrlRefusal(
+  config: ClaudishConfig,
+  deps: DecideModelListingsDeps
+): string | null {
+  const keepsLogin = deps.keepsLogin ?? ((c: ClaudishConfig) => !isProxyAuthMode(c));
+  if (!keepsLogin(config)) return null;
+  const findingsOf =
+    deps.settingsFindings ?? ((c: ClaudishConfig) => settingsCredentialFindings(c, process.env));
+  const files = [
+    ...new Set(
+      findingsOf(config)
+        .filter((finding) => finding.kind === "base-url")
+        .map((finding) => finding.where)
+    ),
+  ];
+  if (files.length === 0) return null;
+  const classifierOn =
+    deps.classifierPassthrough ?? ((c: ClaudishConfig) => classifierPassthroughEnabled(c));
+  // Classifier passthrough is what keeps the login only when nothing else does.
+  const classifierIsCause = !hasNativeAnthropicMapping(config) && classifierOn(config);
+  const remedy = classifierIsCause
+    ? "launch without classifier passthrough."
+    : "start on a foreign model (--model <provider>@<id>), whose launch claudish routes.";
+  return (
+    `${files.join(", ")} ${files.length === 1 ? "sets" : "set"} ANTHROPIC_BASE_URL, so /model picks ` +
+    `would bypass claudish. Remove ${files.length === 1 ? "it" : "them"}, or ${remedy}`
+  );
 }
 
 /**
@@ -466,7 +526,12 @@ export interface DecideModelListingsDeps {
  * - `claude@` (Claude Code lists those models itself) and `custom-url@` as a
  *   listing entry;
  * - `--monitor`, and an `anthropic@<id>` start: either forwards every request
- *   to Anthropic, so no listed model could be routed.
+ *   to Anthropic, so no listed model could be routed;
+ * - a launch whose child keeps the user's login (`!isProxyAuthMode`: a Claude
+ *   start, with or without the API-billing opt-in, or classifier passthrough
+ *   with a resolvable login) while a settings layer sets `ANTHROPIC_BASE_URL`:
+ *   every pick would bypass claudish. Reads settings files, the environment
+ *   and the local login check only.
  *
  * A launch with no listing entry is left as it is.
  */
@@ -544,7 +609,14 @@ export function decideModelListings(
     add(provider, spec, "recommended").pinnedSpecs.push(spec);
   }
 
+  // Set before the base-URL check: a launch that only lists providers keeps
+  // the login because of the listings themselves (`startsOnClaudeSubscription`).
   config.modelListings = [...byProvider.values()];
+  const baseUrlRefusal = settingsBaseUrlRefusal(config, deps);
+  if (baseUrlRefusal) {
+    delete config.modelListings;
+    return { ok: false, message: baseUrlRefusal };
+  }
   return { ok: true };
 }
 
