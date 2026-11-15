@@ -33,7 +33,7 @@ import {
 import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { setLaunchAutoCompactWindow } from "./compaction/history.js";
-import { prepareCompactionLaunch } from "./compaction/launch.js";
+import { compactionLaunchArgs } from "./compaction/launch.js";
 import { compactionRoot } from "./compaction/store.js";
 import { ENV } from "./config.js";
 import { applyProxyFastModeGates, scrubInheritedFastModeGates } from "./fast-mode-gates.js";
@@ -2986,15 +2986,9 @@ export async function runClaudeWithProxy(
   // added. Nothing is written to the child's environment.
   let compactionMintedId: string | null = null;
   if (config.compaction === true) {
-    try {
-      const compaction = prepareCompactionLaunch(config.claudeArgs, compactionRoot());
-      claudeArgs.unshift(...compaction.leadingArgs);
-      compactionMintedId = compaction.mintedSessionId;
-    } catch (err) {
-      log(
-        `[compaction] the session folder could not be prepared; no --add-dir added: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
+    const compaction = compactionLaunchArgs(config.claudeArgs, compactionRoot());
+    claudeArgs.unshift(...compaction.leadingArgs);
+    compactionMintedId = compaction.mintedSessionId;
   }
   let driverLaunch: { sink: InProcessSink; turnDir: string; sessionId: string | null } | null =
     null;

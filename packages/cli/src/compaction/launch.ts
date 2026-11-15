@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { logStderr } from "../logger.js";
 import { ensureSessionFolder } from "./store.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -130,4 +131,26 @@ export function prepareCompactionLaunch(
     mintedSessionId: minted,
     dir,
   };
+}
+
+/**
+ * The launcher's compaction step: `prepareCompactionLaunch`, and when the
+ * session folder cannot be prepared, no arguments and one warning through
+ * `logStderr`, which redacts every value on a signing lease and also writes
+ * the debug log.
+ */
+export function compactionLaunchArgs(
+  userArgs: ReadonlyArray<string>,
+  root: string,
+  mint: () => string = randomUUID
+): { leadingArgs: string[]; mintedSessionId: string | null } {
+  try {
+    const launch = prepareCompactionLaunch(userArgs, root, mint);
+    return { leadingArgs: launch.leadingArgs, mintedSessionId: launch.mintedSessionId };
+  } catch (err) {
+    logStderr(
+      `[compaction] the session folder could not be prepared; no --add-dir added: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return { leadingArgs: [], mintedSessionId: null };
+  }
 }
