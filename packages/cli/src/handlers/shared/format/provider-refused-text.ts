@@ -2,18 +2,33 @@
  * Text in Claude Code's system prompt that one provider's server refuses.
  *
  * The Antigravity backend answers `429 RESOURCE_EXHAUSTED`, with no reason and
- * no retry delay, to a request whose system instruction holds Claude Code's
- * security paragraph. The phrase it reacts to is the parenthetical
- * `(C2 frameworks, credential testing, exploit development)`; the same request
- * without the paragraph answers 200. The whole paragraph is removed, found by
- * its opening words, so a reworded parenthetical in a later Claude Code is
- * still covered.
+ * no retry delay, to a request whose system instruction holds either of two
+ * passages. Each one alone as the system text answers 429; the same request
+ * without them answers 200.
+ *
+ * - The security paragraph. The phrase the server reacts to is the
+ *   parenthetical `(C2 frameworks, credential testing, exploit development)`.
+ *   The whole paragraph is removed, found by its opening words, so a reworded
+ *   parenthetical in a later Claude Code is still covered.
+ * - The `<pasted_content>` rule, one line of the harness list that only an
+ *   interactive session carries. No part of its first sentence is refused
+ *   alone, only the sentence as a whole, so the whole line is removed.
  *
  * This is keyed on the claudish provider and not on the model: the filter sits
  * in front of every model the provider serves, Claude models included.
  */
-const REFUSED_PARAGRAPH_OPENINGS: Record<string, string[]> = {
-  antigravity: ["IMPORTANT: Assist with authorized security testing"],
+interface RefusedText {
+  /** The words the passage starts with. */
+  opening: string;
+  /** `paragraph` ends at the next blank line; `line` is one list line. */
+  unit: "paragraph" | "line";
+}
+
+const REFUSED_TEXT: Record<string, RefusedText[]> = {
+  antigravity: [
+    { opening: "IMPORTANT: Assist with authorized security testing", unit: "paragraph" },
+    { opening: "Text inside <pasted_content> tags", unit: "line" },
+  ],
 };
 
 const isLineEnd = (ch: string | undefined) => ch === "\n" || ch === "\r";
@@ -75,13 +90,57 @@ function removeParagraphs(text: string, opening: string): string {
   return out.slice(0, last);
 }
 
-function clean(text: string, openings: string[]): string {
-  return openings.reduce(removeParagraphs, text);
+/** True when only indentation and a list marker stand before `at` on its line. */
+function startsListLine(text: string, lineStart: number, at: number): boolean {
+  let i = lineStart;
+  while (text[i] === " " || text[i] === "\t") i++;
+  if (i === at) return true;
+  return text[i] === "-" && text[i + 1] === " " && i + 2 === at;
+}
+
+/**
+ * `text` without each line whose first words, after indentation and a `- `
+ * list marker, are `opening`. The line goes with its line end; the last line
+ * of the text goes with the line end before it. Linear on any input.
+ */
+function removeLines(text: string, opening: string): string {
+  let out = "";
+  let from = 0;
+  let cutAtEnd = false;
+  let at = text.indexOf(opening);
+  while (at !== -1) {
+    const lineStart = text.lastIndexOf("\n", at - 1) + 1;
+    const nl = text.indexOf("\n", at);
+    if (!startsListLine(text, lineStart, at)) {
+      // No later match on this line can start it: go on from the next line.
+      at = nl === -1 ? -1 : text.indexOf(opening, nl + 1);
+      continue;
+    }
+    out += text.slice(from, lineStart);
+    from = nl === -1 ? text.length : nl + 1;
+    cutAtEnd = nl === -1;
+    at = text.indexOf(opening, from);
+  }
+  if (from === 0) return text;
+  out += text.slice(from);
+  if (!cutAtEnd) return out;
+  let last = out.length;
+  if (out[last - 1] === "\n") last--;
+  if (out[last - 1] === "\r") last--;
+  return out.slice(0, last);
+}
+
+function clean(text: string, refused: RefusedText[]): string {
+  return refused.reduce(
+    (current, { opening, unit }) =>
+      unit === "line" ? removeLines(current, opening) : removeParagraphs(current, opening),
+    text
+  );
 }
 
 /**
  * A copy of a Claude-format request whose system prompt has lost the
- * paragraphs `providerName`'s server refuses. The request itself is returned
+ * passages `providerName`'s server refuses. The request itself is returned
  * when nothing changes. Only the system prompt is read: the conversation is the
  * user's own text. An array system stays an array, so `cache_control` on the
  * surviving blocks lives on; a text block left empty is dropped.
@@ -90,7 +149,7 @@ export function removeProviderRefusedText<T extends Record<string, any>>(
   req: T,
   providerName: string
 ): T {
-  const openings = REFUSED_PARAGRAPH_OPENINGS[providerName];
+  const openings = REFUSED_TEXT[providerName];
   if (!openings) return req;
   const system = req.system;
   if (typeof system === "string") {
