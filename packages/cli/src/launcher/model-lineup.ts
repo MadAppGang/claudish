@@ -132,8 +132,12 @@ export interface LineupDeps {
   catalogIsBundled(): boolean;
   /** `ensureCatalogReady`, bounded by the remaining deadline. */
   ensureCatalog(ms: number): Promise<void>;
-  /** The bundled doc when active, else `getRecommendedModels`; null when neither answers. */
-  recommended(signal: AbortSignal): Promise<RecommendedModelsDoc | null>;
+  /**
+   * The bundled doc when active, else `getRecommendedModels`; null when neither
+   * answers. Takes no signal: `getRecommendedModels` cannot be cancelled, so a
+   * fetch that loses the deadline race runs on unread until the process exits.
+   */
+  recommended(): Promise<RecommendedModelsDoc | null>;
   /**
    * A custom endpoint's declared `customEndpoints.<name>.models`: the ids when
    * `provider` is a custom endpoint (`[]` when it declares none), null when it
@@ -597,9 +601,8 @@ export async function buildModelLineup(
       l.scope === "recommended" &&
       safeDeclared(deps, l.provider) === null
   );
-  const controller = new AbortController();
   const recommendedPromise: Promise<RecommendedModelsDoc | null> | null = needsRecommended
-    ? deps.recommended(controller.signal).catch(() => null)
+    ? deps.recommended().catch(() => null)
     : null;
 
   const stages = new Map<string, Stage>();
@@ -695,7 +698,6 @@ export async function buildModelLineup(
 
   const all = Promise.all(listings.map(one)).then(() => undefined);
   const result = await within(all, remaining(), TIMED_OUT);
-  controller.abort();
   if (result === TIMED_OUT) log(`[model-lineup] deadline of ${deadlineMs} ms reached`);
 
   const rows: LineupRow[] = [];
