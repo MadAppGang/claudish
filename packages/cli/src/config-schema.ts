@@ -233,6 +233,42 @@ export const HarnessGatewayConfigSchema = z.object({
 
 export type HarnessGatewayConfig = z.infer<typeof HarnessGatewayConfigSchema>;
 
+/**
+ * `compaction`: claudish's own context compaction (`compaction/config.ts`).
+ * Every field is optional; an absent one takes its default there. Checked at
+ * the consumption site, which names the offending key in its warning and
+ * ignores the block rather than refusing the launch.
+ */
+export const CompactionConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    model: z.string().trim().min(1).optional(),
+    toolOutputs: z
+      .object({
+        enabled: z.boolean().optional(),
+        minTokens: z.number().int().positive().optional(),
+        timeoutMs: z.number().int().positive().optional(),
+        maxRatio: z.number().gt(0).lte(1).optional(),
+      })
+      .optional(),
+    history: z
+      .object({
+        enabled: z.boolean().optional(),
+        precomputeAt: z.number().gt(0).lt(1).optional(),
+        applyAt: z.number().gt(0).lte(1).optional(),
+      })
+      .optional(),
+  })
+  .refine(
+    (block) =>
+      block.history?.precomputeAt === undefined ||
+      block.history?.applyAt === undefined ||
+      block.history.precomputeAt < block.history.applyAt,
+    { message: "history.precomputeAt must be below history.applyAt", path: ["history"] }
+  );
+
+export type CompactionConfig = z.infer<typeof CompactionConfigSchema>;
+
 export type CustomEndpointWire = z.infer<typeof CustomEndpointWireSchema>;
 
 /**

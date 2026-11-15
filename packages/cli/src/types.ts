@@ -142,6 +142,13 @@ export interface ClaudishConfig {
   proOnUltracode?: boolean;
   /** --code-mode auto|on|off: code mode for `openai-codex` (resolved; default auto) */
   codeMode?: CodeModeSetting;
+  /**
+   * --compaction / --no-compaction: claudish's own context compaction (resolved:
+   * flag > CLAUDISH_COMPACTION env > global config > false). Startup turns it
+   * back off when it cannot run (no Anthropic API key, a model that does not
+   * resolve), so the launcher reads the final answer here.
+   */
+  compaction?: boolean;
 
   // Cost tracking
   costTracking?: boolean;

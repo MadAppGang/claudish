@@ -123,12 +123,12 @@ export interface StatsEvent {
 
   /**
    * Who issued the request. `"advisor"` marks an `--advisor` panel or collector
-   * call, made by claudish itself rather than by Claude Code; absent on every
-   * main request. `estimated_cost` keeps one meaning for both: the emitting
+   * call and `"compaction"` a compaction call to the Anthropic API, both made by
+   * claudish itself rather than by Claude Code; absent on every main request. `estimated_cost` keeps one meaning for both: the emitting
    * handler's running total, so a launch's advisor spend is the largest
    * `estimated_cost` per `(model_id, provider_name)` with this field set.
    */
-  request_role?: "advisor";
+  request_role?: "advisor" | "compaction";
 
   // Invocation
   invocation_mode: string; // "profile" | "explicit-model" | "auto-route" | "env-var" | "model-map"

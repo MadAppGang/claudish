@@ -9,6 +9,8 @@ import {
   rewriteClassifierForNative,
 } from "./classifier-passthrough.js";
 import { type CodeModeSetting, parseCodeModeSetting } from "./code-mode/policy.js";
+import { applyStoredForms, withCompaction } from "./compaction/decorator.js";
+import type { CompactionRuntime } from "./compaction/runtime.js";
 import {
   type AdvisorPresenceMonitor,
   advisorKeyArmFor,
@@ -253,6 +255,12 @@ export interface ProxyServerOptions {
    * Default `"other"`. The first proxy of a process decides it.
    */
   hostMode?: HostMode;
+  /**
+   * claudish's own context compaction, built at startup (`prepareCompaction`).
+   * Present ⇒ every `/v1/messages` request passes through `withCompaction`, and
+   * `count_tokens` applies the recorded forms. Absent ⇒ off.
+   */
+  compaction?: CompactionRuntime;
 }
 
 /**
@@ -1268,6 +1276,8 @@ export async function createProxyServer(
       const resolved: { nativeModel?: string; signing?: NativeSigning } = {};
       const handler = await getHandlerForRequest(body.model, requestProbeHopOrigin(c), resolved);
       if (resolved.nativeModel) body.model = resolved.nativeModel;
+      // The forms `/v1/messages` sends, and no model call, so the count matches.
+      if (options.compaction) applyStoredForms(options.compaction, body);
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
@@ -1405,7 +1415,13 @@ export async function createProxyServer(
       );
       const signing = resolved.signing ?? defaultRequestSigning(body.model);
       setNativeSigning(c, signing);
-      const handler = withAdvisor(withRequestHooks(resolvedHandler), signing, advisorPresence);
+      // Compaction sits between the two: after the advisor's rewrite of its own
+      // tool_results, before the hooks, which see the compacted body.
+      const handler = withAdvisor(
+        withCompaction(withRequestHooks(resolvedHandler), options.compaction),
+        signing,
+        advisorPresence
+      );
       if (resolved.nativeModel) body.model = resolved.nativeModel;
 
       // Route. The `await` is load-bearing: `return handler.handle(...)` hands

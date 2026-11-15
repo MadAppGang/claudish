@@ -1449,6 +1449,29 @@ async function runCli() {
       process.env.CLAUDISH_CONTEXT_WINDOW = String(cliConfig.contextWindow);
     }
 
+    // Compaction is built before the port is bound: its key and model resolve
+    // here, once. Anything that stops it (no key, a model that does not
+    // resolve) turns it off with one warning, and the launcher then adds no
+    // `--add-dir` for it.
+    let compactionRuntime: import("./compaction/runtime.js").CompactionRuntime | null = null;
+    if (cliConfig.compaction) {
+      const [{ prepareCompaction }, { resolveCompactionSettings }, { loadConfig }, { logStderr }] =
+        await Promise.all([
+          import("./compaction/runtime.js"),
+          import("./compaction/config.js"),
+          import("./profile-config.js"),
+          import("./logger.js"),
+        ]);
+      const { settings, warning } = resolveCompactionSettings(loadConfig(), true);
+      if (warning) logStderr(`[compaction] ${warning}`);
+      compactionRuntime = await prepareCompaction({
+        settings,
+        allowOpPrompt: cliConfig.interactive,
+        ...(resumedSessionId ? { keepSessionIds: [resumedSessionId] } : {}),
+      });
+      if (!compactionRuntime) cliConfig.compaction = false;
+    }
+
     const proxy = await traceSpan("startup:proxy-start", () =>
       createProxyServer(
         port,
@@ -1482,6 +1505,7 @@ async function runCli() {
           modelParams: cliConfig.modelParams,
           proOnUltracode: cliConfig.proOnUltracode,
           codeMode: cliConfig.codeMode,
+          ...(compactionRuntime ? { compaction: compactionRuntime } : {}),
           // Proxy events run in the process that hosts the proxy: a pane child
           // for MCP/team slots, the interactive launcher otherwise.
           hostMode: isPaneChild() ? "pane-child" : cliConfig.interactive ? "interactive" : "other",

@@ -19,6 +19,11 @@ import {
   DEFAULT_CODE_MODE_SETTING,
   parseCodeModeSetting,
 } from "./code-mode/policy.js";
+import {
+  COMPACTION_ENV_VAR,
+  parseCompactionEnv,
+  resolveCompactionEnabled,
+} from "./compaction/config.js";
 import { ENV } from "./config.js";
 import { realValueFor } from "./env-placeholder.js";
 import { setStderrQuiet } from "./logger.js";
@@ -289,6 +294,8 @@ export const CLAUDISH_FLAG_ARITY: Readonly<Record<string, ClaudishFlagArity>> = 
   "--pro-on-ultracode": "none",
   "--no-pro-on-ultracode": "none",
   "--code-mode": "value",
+  "--compaction": "none",
+  "--no-compaction": "none",
   "--accept-served-model": "none",
   "--op-env": "value",
   "--op": "value",
@@ -857,6 +864,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       config.codeMode = setting;
+    } else if (arg === "--compaction" || arg === "--no-compaction") {
+      // claudish's own context compaction. Precedence below.
+      config.compaction = arg === "--compaction";
     } else if (arg === "--accept-served-model") {
       // Some connections serve reasoning-off with a DIFFERENT model (Kimi Code
       // k3: thinking off is served by K2.8 Preview — the catalog's
@@ -1254,6 +1264,18 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       parseCodeModeSetting(process.env[CODE_MODE_ENV_VAR]) ??
       readCodeMode() ??
       DEFAULT_CODE_MODE_SETTING;
+  }
+
+  // compaction precedence: --compaction/--no-compaction flag > CLAUDISH_COMPACTION
+  // env > global config.json `compaction.enabled` > false. Opt-in: it sends tool
+  // output to Anthropic and bills the user's Anthropic API key. The config file
+  // is read only when neither the flag nor the env decides.
+  if (config.compaction === undefined) {
+    const fromEnv = parseCompactionEnv(process.env[COMPACTION_ENV_VAR]);
+    config.compaction = resolveCompactionEnabled({
+      env: process.env[COMPACTION_ENV_VAR],
+      block: fromEnv === undefined ? loadConfig().compaction : undefined,
+    });
   }
 
   return config as ClaudishConfig;
@@ -2472,6 +2494,8 @@ ${h("OPTIONS")}
   ${green("--pro-on-ultracode")}       Apply the model's catalog preset while in ultracode (opt-in)
   ${green("--no-pro-on-ultracode")}    Force that off for this run (when enabled in config/env)
   ${green("--code-mode")} ${yellow("<auto|on|off>")}  cx@ tools as one exec script tool (default auto; env CLAUDISH_CODE_MODE)
+  ${green("--compaction")}             Compress large tool outputs with Claude on your Anthropic API key (env CLAUDISH_COMPACTION)
+  ${green("--no-compaction")}          Force compaction off for this run (when enabled in config/env)
   ${green("--accept-served-model")}     Allow a reasoning-off that the connection serves with another model
   ${green("-y, --auto-approve")}       Skip permission prompts (--dangerously-skip-permissions)
   ${green("--no-auto-approve")}        Explicitly enable permission prompts (default)

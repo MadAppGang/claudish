@@ -32,6 +32,8 @@ import {
 } from "./auth/claudish-placeholder.js";
 import type { ChildAuthControl, ChildAuthSource } from "./child-auth-types.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
+import { prepareCompactionLaunch } from "./compaction/launch.js";
+import { compactionRoot } from "./compaction/store.js";
 import { ENV } from "./config.js";
 import { applyProxyFastModeGates, scrubInheritedFastModeGates } from "./fast-mode-gates.js";
 import { CLAUDE_LOGIN_BEARER } from "./handlers/shared/anthropic-forward.js";
@@ -2976,20 +2978,43 @@ export async function runClaudeWithProxy(
     sessionHooksNeedDriver: hookEngine !== null && sessionHooksNeedBinding(hookEngine),
   });
   const sessionFlags = sessionFlagsOf(config.claudeArgs);
+  // Compaction's recovery files are Read from the session's own folder, added
+  // with `--add-dir` (only that folder). The session id must be known before
+  // Claude Code starts, so claudish mints one unless the user's arguments fix it
+  // or leave it to Claude Code (`--continue`, a bare `--resume`), when nothing is
+  // added. Nothing is written to the child's environment.
+  let compactionMintedId: string | null = null;
+  if (config.compaction === true) {
+    try {
+      const compaction = prepareCompactionLaunch(config.claudeArgs, compactionRoot());
+      claudeArgs.unshift(...compaction.leadingArgs);
+      compactionMintedId = compaction.mintedSessionId;
+    } catch (err) {
+      log(
+        `[compaction] the session folder could not be prepared; no --add-dir added: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
   let driverLaunch: { sink: InProcessSink; turnDir: string; sessionId: string | null } | null =
     null;
   if (surfaces.driver) {
     // The transcript path must be known from boot, so claudish mints the session id
-    // unless the user named one or asked Claude Code to resume. Long injections go to a
-    // turn file the model Reads from the `--add-dir` directory (no prompt there: S2b).
-    const minted = sessionFlags.sessionId || sessionFlags.resumes ? null : randomUUID();
+    // unless the user named one, asked Claude Code to resume, or compaction minted
+    // one above. Long injections go to a turn file the model Reads from the
+    // `--add-dir` directory (no prompt there: S2b).
+    const minted =
+      sessionFlags.sessionId || sessionFlags.resumes || compactionMintedId ? null : randomUUID();
     const turnDir = mkdtempSync(join(tmpdir(), "claudish-turns-"));
     chmodSync(turnDir, 0o700);
     claudeArgs.unshift(...driverLeadingArgs({ mintedSessionId: minted, turnDir }));
     const sink = new InProcessSink();
     // Installed before Claude Code starts, so its first request already reports here.
     setProcessSink(sink);
-    driverLaunch = { sink, turnDir, sessionId: minted ?? sessionFlags.sessionId };
+    driverLaunch = {
+      sink,
+      turnDir,
+      sessionId: minted ?? compactionMintedId ?? sessionFlags.sessionId,
+    };
   }
 
   const wrap =
@@ -3089,8 +3114,8 @@ export async function runClaudeWithProxy(
     noSurfaceSession = startNoSurfaceSession(hookEngine, {
       kind: "interactive",
       role: null,
-      id: sessionFlags.sessionId ?? "",
-      claudeSessionId: sessionFlags.sessionId,
+      id: compactionMintedId ?? sessionFlags.sessionId ?? "",
+      claudeSessionId: compactionMintedId ?? sessionFlags.sessionId,
       model: sessionModel,
       cwd: process.cwd(),
       shape: config.interactive ? "interactive" : "one-shot",
