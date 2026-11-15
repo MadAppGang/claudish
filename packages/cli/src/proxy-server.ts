@@ -229,6 +229,13 @@ export interface ProxyServerOptions {
    */
   claudeApiMainModel?: string;
   /**
+   * The /model lineup of a launch with listing entries: each row's `model` is a
+   * full claudish model spec Claude Code sends verbatim when the user picks it.
+   * A request whose model equals one is routed as sent, before the role
+   * mappings and the `--model` fallback. Data only; absent on every other launch.
+   */
+  modelLineup?: ReadonlyArray<{ model: string; label: string }>;
+  /**
    * True when the launch opted into billing a native Claude model to the
    * Anthropic API key (`--anthropic-api-billing`). Without it, a request for a
    * native Claude name that this launch's own model mapping chose is signed
@@ -600,6 +607,9 @@ export async function createProxyServer(
   const requestProbeHopOrigin = (c: Context): "routed" | undefined =>
     probeHopOriginOf(c.req.header(PROBE_HOP_ORIGIN_HEADER), options.probeProxy);
 
+  /** Every listed spec of this launch's /model lineup, matched exactly. */
+  const lineupSpecs = new Set((options.modelLineup ?? []).map((row) => row.model));
+
   const resolveHandlerForRequest = async (
     requestedModel: string,
     out: RequestResolution,
@@ -616,6 +626,12 @@ export async function createProxyServer(
     // chose the target, rather than the request passing its own model through.
     let targetFromLaunch = false;
 
+    // 2-lineup. A /model pick of a listed model spec is routed as sent. Checked
+    // before the slot map, the role mappings (whose substring match would catch
+    // `or@anthropic/claude-opus-5` as `opus`) and the `--model` fallback (which
+    // would replace the pick with the start model).
+    const lineupMatched = lineupSpecs.has(requestedModel);
+
     // 2a. Exact slot-id map (claudish serve / Claude Desktop redirect).
     // Claude Desktop sends body.model = a Claude-recognized SLOT id; route it
     // to the real model the user assigned that slot. Checked BEFORE the
@@ -625,7 +641,7 @@ export async function createProxyServer(
     // pipeline (explicit-provider path for pinned, auto-route + catalog
     // resolution for null-provider, native passthrough for claude-* reals).
     let slotMatched = false;
-    const slot = options.slotMap?.get(requestedModel);
+    const slot = lineupMatched ? undefined : options.slotMap?.get(requestedModel);
     if (slot) {
       target =
         slot.provider != null && slot.provider !== ""
@@ -639,9 +655,10 @@ export async function createProxyServer(
     }
 
     const req = requestedModel.toLowerCase();
-    if (slotMatched) {
-      // Slot map already set `target` — skip the substring tier match and the
-      // --model fallback entirely so they can't override the exact mapping.
+    if (slotMatched || lineupMatched) {
+      // Slot map already set `target`, or the request names a listed spec — skip
+      // the substring tier match and the --model fallback entirely so they can't
+      // override it.
     } else if (modelMap) {
       // Role-specific mappings take highest priority
       if (req.includes("opus") && modelMap.opus) {

@@ -1571,6 +1571,15 @@ async function runCli() {
           ...(cliConfig.claudeLaunch === "api" && cliConfig.claudeLaunchModel
             ? { claudeApiMainModel: cliConfig.claudeLaunchModel }
             : {}),
+          // The listed specs, as data: a /model pick of one is routed as sent.
+          ...(cliConfig.modelLineup
+            ? {
+                modelLineup: cliConfig.modelLineup.rows.map((row) => ({
+                  model: row.model,
+                  label: row.label,
+                })),
+              }
+            : {}),
           apiBillingOptIn: wantsAnthropicApiBilling(cliConfig),
           advisorKeyLookup: advisorKeyLookupAllowed(cliConfig),
           summarizeTools: cliConfig.summarizeTools,
