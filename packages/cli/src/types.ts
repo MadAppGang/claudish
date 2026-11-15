@@ -73,7 +73,15 @@ export interface ClaudishConfig {
    */
   modelLineup?: {
     rows: ReadonlyArray<{ model: string; label: string; description: string; provider: string }>;
-    picker: { options: Array<{ model: string; label: string; description: string }> };
+    /** claudish's rows carry `model`, `label`, `description`; a user's row keeps every field. */
+    picker: {
+      options: Array<{
+        model: string;
+        label: string;
+        description?: string;
+        [field: string]: unknown;
+      }>;
+    };
   };
   /**
    * The main thread's context window, computed once before the launch report

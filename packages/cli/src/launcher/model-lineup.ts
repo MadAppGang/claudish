@@ -881,28 +881,40 @@ export interface ModelPickerSources {
   availableModels: string[];
 }
 
+/**
+ * One `modelPicker.options` entry. claudish's own rows carry exactly `model`,
+ * `label` and `description`; a user's row keeps every field it was written
+ * with (`behavesAs` included).
+ */
 export interface ModelPickerOption {
   model: string;
   label: string;
-  description: string;
+  description?: string;
+  [field: string]: unknown;
 }
 
+/**
+ * A user's own `modelPicker` row, passed through with its fields intact.
+ * Claude Code takes `modelPicker` from the highest layer and merges nothing,
+ * so a field dropped here is gone for the whole session: a row's `behavesAs`
+ * decides the request shape Claude Code sends for its model. Only `model` is
+ * required; a missing or non-string `label` becomes the model.
+ */
 function userOption(entry: unknown): ModelPickerOption | null {
-  if (!entry || typeof entry !== "object") return null;
-  const { model, label, description } = entry as Record<string, unknown>;
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const record = entry as Record<string, unknown>;
+  const { model, label } = record;
   if (typeof model !== "string" || model.length === 0) return null;
-  return {
-    model,
-    label: typeof label === "string" ? label : model,
-    description: typeof description === "string" ? description : "",
-  };
+  return { ...record, model, label: typeof label === "string" ? label : model };
 }
 
 /**
  * The overlay's `modelPicker` value and its notices. Pure. The user's own rows
- * (from the highest layer that sets them) come first, claudish's rows after,
- * de-duplicated by `model`. NEVER carries `replaceBuiltInOptions` or
- * `behavesAs`: Claude's own rows stay, and no model's behaviour is assumed.
+ * (from the highest layer that sets them) come first, each with every field it
+ * was written with; claudish's rows after, de-duplicated by `model`. claudish's
+ * own rows NEVER carry `behavesAs`, and the value NEVER carries
+ * `replaceBuiltInOptions`: Claude's own rows stay, and no listed model's
+ * behaviour is assumed.
  */
 export function modelPickerSetting(
   rows: readonly LineupRow[],
