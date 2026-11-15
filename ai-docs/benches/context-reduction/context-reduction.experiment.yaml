@@ -30,9 +30,18 @@ variants:
     params:
       overlay: ./config/context-gateway
       tool: context-gateway-local
-  # A Claude Code subagent on Haiku that runs a large command or reads a large
-  # file region and returns only what the main agent needs. Claude Code makes
-  # the Haiku calls itself, on the session's subscription.
+  # A Claude Code subagent on claude-haiku-5-5 that runs a large command or
+  # reads a large file region and returns only what the main agent needs.
+  # Claude Code makes the Haiku calls itself, on the session's subscription.
   - name: haiku-subagent
     params:
       overlay: ./config/haiku-subagent
+      tool: haiku-subagent
+  # Context Gateway compressing tool output and summarizing history with its
+  # own calls to claude-haiku-5-5, signed with an Anthropic API key, while
+  # Claude Code's requests stay on the subscription. Needs
+  # --param gateway_env=<key file>; without one it refuses at provision.
+  - name: context-gateway-haiku-key
+    params:
+      overlay: ./config/context-gateway-haiku-key
+      tool: context-gateway-haiku-key

@@ -11,10 +11,16 @@ params:
   # The folder under ./tools with the variant's scripts: start.sh (optional,
   # run before the agent) and evidence.sh (run after it).
   tool: baseline
-  # The executable that starts the session: `claude`, or `claudish`, which
-  # runs Claude Code behind its own proxy. MADBENCH_CLAUDISH names the claudish
-  # build to use.
+  # The executable that starts the session: `claude`, or a script that starts
+  # claudish, which runs Claude Code behind its own proxy. madbench resolves a
+  # bare name from PATH, so the claudish build that runs is the first on PATH.
   binary: claude
+  # A file copied to ~/.config/context-gateway/.env in the run, where Context
+  # Gateway reads its environment. Only context-gateway-haiku-key needs one:
+  # pass --param gateway_env=/absolute/path/to/a/0600/file holding one line
+  # ANTHROPIC_API_KEY=.... The default holds no key, and the provision step
+  # deletes the file in every run before the agent starts.
+  gateway_env: ./config/no-gateway-key.env
 
 harness:
   type: claude-code
@@ -51,12 +57,15 @@ defaults:
         - { from: ./tools, to: ~/.bench-tools, access: copy }
         # Where evidence.sh copies a tool's own logs.
         - { from: ./out, to: ~/.bench-out, access: rw }
+        # The gateway's key file, see the gateway_env param.
+        - { from: "{{gateway_env}}", to: ~/.config/context-gateway/.env, access: copy }
     provision:
       timeout: 5m
       steps:
         - bun install --frozen-lockfile
-        # A variant whose tool is a process starts it here.
-        - f="$HOME/.bench-tools/{{tool}}/start.sh"; if [ -f "$f" ]; then sh "$f"; fi
+        # A variant whose tool is a process starts it here. The key file goes
+        # in every run, whatever start.sh did, so the agent never finds one.
+        - f="$HOME/.bench-tools/{{tool}}/start.sh"; s=0; if [ -f "$f" ]; then sh "$f" || s=$?; fi; rm -f "$HOME/.config/context-gateway/.env"; exit $s
   interactive: true
   timeout: 75m
   capture: log
@@ -132,6 +141,17 @@ scenarios:
           update: packages/cli/src/cli.ts
         must-not:
           touch: [bun.lock, package.json, packages/cli/package.json]
+      # The variant's own proof that its tool ran as configured, when its
+      # tool folder ships variant-check.sh (haiku-subagent: every subagent
+      # call on claude-haiku-5-5; context-gateway-haiku-key: the main thread
+      # on the subscription and the gateway's Haiku calls answered). Other
+      # variants pass when the run left a Claude Code transcript.
+      - type: exec
+        metric: VariantCheck
+        readout: true
+        in_sandbox: true
+        cmd: f="$HOME/.bench-tools/{{tool}}/variant-check.sh"; if [ -f "$f" ]; then sh "$f"; else ls "$HOME"/.claude/projects/*/*.jsonl >/dev/null 2>&1; fi
+        timeout: "60s"
       # A measurement, not a grade: what the variant's tool recorded about its
       # own work. The output tail lands in the report. It passes only when
       # the run left a Claude Code transcript, so a run that did nothing fails.
